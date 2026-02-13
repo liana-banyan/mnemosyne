@@ -1,4 +1,4 @@
-name: Build Cephas (no deploy)
+name: Build and Deploy Cephas
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -31,7 +31,11 @@ jobs:
       - name: Build Cephas
         run: hugo --gc --minify
 
-      - name: Deploy reminder
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools
+
+      - name: Deploy to Firebase (cephas site)
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
-          echo "Deployment is manual by design."
-          echo "Use deploy-staging.ps1 (type STAGING) or deploy-production.ps1 (type DEPLOY)."
+          firebase deploy --only hosting:cephas -P default --token "$FIREBASE_TOKEN"
