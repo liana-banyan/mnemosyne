@@ -49,6 +49,13 @@ firebase-debug.log
 *.zip
 *.tar.gz
 *.rar
+*.obj
+*.stl
+*.fbx
+*.3mf
+*.mix
+*.f3d
+*.blend
 
 # Temporary files
 *.tmp
@@ -58,11 +65,93 @@ firebase-debug.log
 # NESTED GIT REPOS (have their own repos)
 escape-velocity Lovable Site/
 
-# Don't ignore these important folders
-!CONTEXT_MANAGEMENT/
-!letters/
-!PAWN_DROPZONE/
-!ROOK_DROPZONE/
-!BISHOP_DROPZONE/
-!KNIGHT_DROPZONE/
-!PAWN_PLATFORM_REVIEW/
+# ============================================
+# EVERYTHING BELOW: Lives on disk, NOT in git.
+# Only platform/ .github/ .cursor/ are tracked.
+# ============================================
+Asteroid-ProofVault/
+CONVERTED_DOCS/
+01 MarkupFiles/
+Agora/
+BEHEMOTH_IMAGES/
+BEHEMOTH_PAGES/
+BISHOP OUTPUT/
+BISHOP_DROPZONE/
+Blueprints/
+CONTEXT_MANAGEMENT/
+CROWN_LETTERS/
+Cephas/
+DAUGHTER_VIDEO_HANDOFF/
+DESIGN_DOCS/
+EMPEROR_PART_1_ALL_PATENTS/
+EMPEROR_PART_2_ACADEMIC_JOURNALS/
+EMPEROR_PRIORITY_FILES/
+EMPEROR_VERIFICATION_PACKAGE/
+EMPEROR_VERIFICATION_PACKAGE_V2/
+EMPEROR_VERIFICATION_PACKAGE_V3/
+EXTRACTED_JOURNALS/
+FABLE_ARC_FOR_DRAWING/
+FOUNDERS_JOURNAL/
+FoundersJournal/
+GENERATED_LOGOS/
+KNIGHT_DROPZONE/
+KNIGHT_INBOX/
+LAUNCH_DOCUMENTS_MASTER/
+LAUNCH_PREVIEW_FOLDER/
+LAUNCH_TONIGHT_JAN28/
+OPENING_GAMBIT/
+PARTNERSHIP_ONE_PAGERS/
+PATENT_LANDSCAPE/
+PATENT_MASTER/
+PAWN_DROPZONE/
+PAWN_PLATFORM_REVIEW/
+PERPLEXITY_PATENTS_DEEP_RESEARCH/
+ROOK_DROPZONE/
+SEND_TO_DANIEL_LAWYER/
+SOCIAL_MEDIA/
+USPTO_FILING_BAG_*/
+Upekrithen-Archive/
+Upekrithen-Trunk/
+VALUATIONS/
+_ARCHIVE_PRE_REORG_JAN23/
+academic-papers/
+architecture/
+articles/
+blueprint-site/
+business-trunk/
+checkpoints/
+docs/
+dss-the2ndsecond/
+extraction-scripts/
+founder-docs/
+functions/
+hexisle-trunk/
+kickstarter/
+launch-checklists/
+legal/
+letters/
+marketplace-trunk-fresh/
+media/
+milestones/
+network-trunk/
+nonprofit-trunk/
+patents/
+reports/
+scripts/
+social-media/
+strategy-docs/
+video-production/
+
+# Top-level markdown/scripts that aren't platform code
+*.md
+!platform/**/*.md
+*.py
+!platform/**/*.py
+*.ps1
+*.sql
+!platform/**/*.sql
+*.txt
+!platform/**/*.txt
+*.json
+!platform/**/*.json
+!.gitignore
