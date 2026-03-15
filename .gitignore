@@ -81,6 +81,7 @@ Blueprints/
 CONTEXT_MANAGEMENT/
 CROWN_LETTERS/
 Cephas/
+!platform/src/components/cephas/
 DAUGHTER_VIDEO_HANDOFF/
 DESIGN_DOCS/
 EMPEROR_PART_1_ALL_PATENTS/
@@ -138,6 +139,7 @@ nonprofit-trunk/
 patents/
 reports/
 scripts/
+!platform/scripts/
 social-media/
 strategy-docs/
 video-production/
