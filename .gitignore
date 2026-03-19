@@ -63,7 +63,7 @@ firebase-debug.log
 ~$*
 
 # NESTED GIT REPOS (have their own repos)
-escape-velocity Lovable Site/
+escape-velocity-legacy/
 
 # ============================================
 # EVERYTHING BELOW: Lives on disk, NOT in git.
