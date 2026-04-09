@@ -11,8 +11,29 @@ out/
 
 # Environment files (SENSITIVE)
 .env
+.env.*
 .env.local
 .env.*.local
+**/.env
+**/.env.*
+**/.env.local
+**/.env.*.local
+
+# Defense-in-depth: credential patterns (secondary protection)
+# Primary protection is directory-level (Asteroid-ProofVault/ on line 72)
+# These patterns catch secrets if they ever leak outside the vault
+**/API_KEYS*
+**/FounderSECRETS*
+**/DOUBLESECRET*
+**/LockBox/
+*_SECRETS.md
+*_secrets.json
+*_SECRET*
+*_KEY*
+*_TOKEN*
+**/credentials.json
+**/service-account*.json
+**/firebase-adminsdk*.json
 
 # IDE
 .idea/
@@ -64,6 +85,7 @@ firebase-debug.log
 
 # NESTED GIT REPOS (have their own repos)
 escape-velocity-legacy/
+escape-velocity Lovable Site/
 
 # ============================================
 # EVERYTHING BELOW: Lives on disk, NOT in git.
@@ -76,7 +98,8 @@ Agora/
 BEHEMOTH_IMAGES/
 BEHEMOTH_PAGES/
 BISHOP OUTPUT/
-BISHOP_DROPZONE/
+BISHOP_DROPZONE/*
+!BISHOP_DROPZONE/01_KnightPrompts/
 Blueprints/
 CONTEXT_MANAGEMENT/
 CROWN_LETTERS/
@@ -113,6 +136,11 @@ SOCIAL_MEDIA/
 USPTO_FILING_BAG_*/
 Upekrithen-Archive/
 Upekrithen-Trunk/
+ARCHIVE2April2026/
+archive/
+LETTER_REVIEW_B087/
+marketplace-trunk/
+platform-v2/
 VALUATIONS/
 _ARCHIVE_PRE_REORG_JAN23/
 academic-papers/
@@ -126,6 +154,13 @@ dss-the2ndsecond/
 extraction-scripts/
 founder-docs/
 functions/
+!platform/supabase/functions/
+!platform/supabase/functions/dispatch-crewman-episode/
+!platform/supabase/functions/dispatch-crewman-episode/index.ts
+!platform/supabase/functions/track-crewman-engagement/
+!platform/supabase/functions/track-crewman-engagement/index.ts
+!platform/supabase/functions/stage-crewman-chapter/
+!platform/supabase/functions/stage-crewman-chapter/index.ts
 hexisle-trunk/
 kickstarter/
 launch-checklists/
@@ -144,9 +179,15 @@ social-media/
 strategy-docs/
 video-production/
 
+# Stray image downloads at root
+508622355.*.jpg
+LRH.png
+MascotLRH.png
+
 # Top-level markdown/scripts that aren't platform code
 *.md
 !platform/**/*.md
+!BISHOP_DROPZONE/01_KnightPrompts/**/*.md
 *.py
 !platform/**/*.py
 *.ps1
