@@ -18,6 +18,10 @@ __pycache__/
 *.pyo
 *.pyd
 
+# R10 Eyewitness benchmark aggregate result (regenerable) — committed as .gz instead
+# Decompress locally with: gunzip -k <file>.gz
+**/all_graded.jsonl
+
 # Environment files (SENSITIVE)
 .env
 .env.*
