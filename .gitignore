@@ -8,6 +8,9 @@ dist/
 build/
 .next/
 out/
+# Vite dev-server config timestamp artifacts (auto-regenerated on dev reload)
+**/vite.config.ts.timestamp-*.mjs
+**/vite.config.*.timestamp-*.mjs
 
 # Environment files (SENSITIVE)
 .env

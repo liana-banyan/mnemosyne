@@ -1,0 +1,92 @@
+# .cursorignore — files Cursor's indexer must never read into LLM context
+# B111, April 20, 2026 — secrets hygiene + canonical-source protection
+# See AGENTS.md at workspace root for the behavioral rules this file enforces at scope.
+
+# ═══════════════════════════════════════════════════════
+# VAULTS — never index
+# ═══════════════════════════════════════════════════════
+
+Asteroid-ProofVault/
+**/Asteroid-ProofVault/
+**/LockBox/
+
+# ═══════════════════════════════════════════════════════
+# ENV FILES — never index (at any depth)
+# ═══════════════════════════════════════════════════════
+
+.env
+.env.*
+.env.local
+.env.*.local
+**/.env
+**/.env.*
+**/.env.local
+**/.env.*.local
+**/*.env
+**/*.env.*
+
+# ═══════════════════════════════════════════════════════
+# CREDENTIAL / CERTIFICATE FILES
+# ═══════════════════════════════════════════════════════
+
+**/credentials.json
+**/service-account-*.json
+**/firebase-adminsdk-*.json
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa
+**/id_ed25519
+
+# ═══════════════════════════════════════════════════════
+# CURSOR + OS CONFIG WITH SECRETS
+# ═══════════════════════════════════════════════════════
+
+# (These live outside the workspace in user-home, but listed for awareness)
+# C:\Users\Administrator\.cursor\mcp.json
+# C:\Users\Administrator\.cursor\FireBase Login.txt
+
+# ═══════════════════════════════════════════════════════
+# LARGE / NON-CODE ARTIFACTS — exclude to preserve context budget
+# ═══════════════════════════════════════════════════════
+
+node_modules/
+**/node_modules/
+.next/
+**/dist/
+**/build/
+*.docx
+*.xlsx
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mp4
+*.mp3
+*.wav
+*.zip
+*.tar.gz
+
+# Git pack files (binary)
+.git/objects/pack/
+
+# ═══════════════════════════════════════════════════════
+# SESSION TRANSCRIPTS (large, private)
+# ═══════════════════════════════════════════════════════
+
+BISHOP_DROPZONE/04_Compiled/SESSION_TRANSCRIPTS/
+**/SESSION_TRANSCRIPTS/
+
+# ═══════════════════════════════════════════════════════
+# TEMPORARY / GENERATED
+# ═══════════════════════════════════════════════════════
+
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+temp_*
+**/temp_vault_recovery/
