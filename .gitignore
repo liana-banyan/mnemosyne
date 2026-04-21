@@ -12,6 +12,12 @@ out/
 **/vite.config.ts.timestamp-*.mjs
 **/vite.config.*.timestamp-*.mjs
 
+# Python bytecode caches — never commit
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
 # Environment files (SENSITIVE)
 .env
 .env.*
