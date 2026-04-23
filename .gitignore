@@ -186,8 +186,11 @@ network-trunk/
 nonprofit-trunk/
 patents/
 reports/
-scripts/
+scripts/*
 !platform/scripts/
+!scripts/knight-dispatch.ps1
+!scripts/KNIGHT_PROMPT_CONVENTIONS.md
+!scripts/knight_dispatch.log.jsonl
 social-media/
 strategy-docs/
 video-production/
@@ -202,10 +205,12 @@ MascotLRH.png
 !platform/**/*.md
 !BISHOP_DROPZONE/01_KnightPrompts/**/*.md
 !librarian-mcp-public/**/*.md
+!scripts/KNIGHT_PROMPT_CONVENTIONS.md
 *.py
 !platform/**/*.py
 !librarian-mcp-public/**/*.py
 *.ps1
+!scripts/knight-dispatch.ps1
 *.sql
 !platform/**/*.sql
 *.txt
