@@ -201,13 +201,49 @@ MascotLRH.png
 *.md
 !platform/**/*.md
 !BISHOP_DROPZONE/01_KnightPrompts/**/*.md
+!librarian-mcp-public/**/*.md
 *.py
 !platform/**/*.py
+!librarian-mcp-public/**/*.py
 *.ps1
 *.sql
 !platform/**/*.sql
 *.txt
 !platform/**/*.txt
+!librarian-mcp-public/**/*.txt
 *.json
 !platform/**/*.json
+!librarian-mcp-public/**/*.json
+*.yaml
+!librarian-mcp-public/**/*.yaml
 !.gitignore
+
+# ============================================
+# K441 — librarian-mcp reproducibility carve-outs
+# ============================================
+# The internal librarian-mcp/ directory hosts source for the in-repo MCP
+# server. Several of its critical files (package.json, tsconfig.json,
+# package-lock.json, registry.yaml, SP*.md spec files, README) are caught
+# by the broad *.json / *.yaml / *.md ignore rules above. Without these
+# explicit negations, a fresh clone cannot `npm install` the librarian
+# and the Cathedral cannot start. .ts source files under librarian-mcp/src/
+# are not affected (no `*.ts` ignore rule exists in this file).
+#
+# DO NOT re-broaden these patterns without ALSO updating librarian-mcp/README.md
+# (which documents the policy).
+!librarian-mcp/package.json
+!librarian-mcp/package-lock.json
+!librarian-mcp/tsconfig.json
+!librarian-mcp/README.md
+!librarian-mcp/stitchpunks/scribes/registry.yaml
+!librarian-mcp/stitchpunks/SP*.md
+!librarian-mcp/stitchpunks/README.md
+!librarian-mcp/r10_cross_vendor/README.md
+!librarian-mcp/scrambler/README.md
+!librarian-mcp/touchstone/README.md
+# Index payloads and runtime state stay ignored — they are regenerable
+# via `npm run rebuild` and would bloat git history. Force-adding them is
+# explicitly NOT desired.
+librarian-mcp/index/*.json
+librarian-mcp/index/*.jsonl
+librarian-mcp/stitchpunks/sp*_state.json
