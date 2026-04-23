@@ -1,0 +1,73 @@
+name: Supabase pgTAP — Cathedral RLS
+
+# ============================================================================
+# K447(B118): CI gate for Cathedral RLS + starter-pack pgTAP suites
+# 14 assertions total (7 RLS + 7 starter-pack) must pass green before any
+# cathedral-export / cathedral-import edge-function deploy to production.
+# ============================================================================
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "platform/supabase/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "platform/supabase/**"
+
+jobs:
+  pgtap-cathedral:
+    name: pgTAP Cathedral RLS (14 cases)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: platform
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Supabase CLI ──────────────────────────────────────────────────
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # ── 3. Spin up local Supabase stack with all migrations applied ──────
+      - name: Start Supabase local stack
+        run: supabase start
+
+      # ── 4. Run both pgTAP suites and capture TAP output ──────────────────
+      #    `supabase test db` exits 1 on any failed assertion.
+      #    set -o pipefail propagates that exit code through the tee pipe.
+      - name: Run Cathedral pgTAP suites
+        run: |
+          set -o pipefail
+          supabase test db 2>&1 | tee tap-output.txt
+
+      # ── 5. Upload TAP output as artifact (even on failure) ───────────────
+      - name: Upload TAP output artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgtap-tap-output-${{ github.sha }}
+          path: platform/tap-output.txt
+          retention-days: 30
+
+      # ── 6. Summarize result counts in GitHub Actions step summary ────────
+      - name: Summarize TAP results
+        if: always()
+        run: |
+          echo "## pgTAP Results" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat tap-output.txt >> $GITHUB_STEP_SUMMARY || echo "(no output captured)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # ── 7. Tear down local stack ──────────────────────────────────────────
+      - name: Stop Supabase local stack
+        if: always()
+        run: supabase stop --no-backup
