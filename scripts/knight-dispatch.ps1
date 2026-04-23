@@ -297,8 +297,9 @@ if (-not $resolvedPath) {
     if (Test-Path $candidate) { $resolvedPath = $candidate }
 }
 
-# (c) K-number shorthand, e.g. "K443"
-if (-not $resolvedPath -and $PromptFile -match '^K\d+$') {
+# (c) K-number shorthand, e.g. "K443", "K438a", "K438b"
+# Accepts optional single-lowercase-letter suffix for continuation sessions.
+if (-not $resolvedPath -and $PromptFile -match '^K\d+[a-z]?$') {
     $glob = Join-Path $PROMPT_DIR ("PROMPT_KNIGHT_$PromptFile" + '_*.md')
     $hits = @(Get-ChildItem -Path $glob -ErrorAction SilentlyContinue)
     if ($hits.Count -eq 1) {
