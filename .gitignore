@@ -167,6 +167,7 @@ blueprint-site/
 business-trunk/
 checkpoints/
 docs/
+!/librarian-mcp/docs/
 dss-the2ndsecond/
 extraction-scripts/
 founder-docs/
@@ -210,6 +211,7 @@ MascotLRH.png
 !BISHOP_DROPZONE/01_KnightPrompts/**/*.md
 !BISHOP_DROPZONE/12_Innovations_AA/**/*.md
 !BISHOP_DROPZONE/03_BishopHandoffs/**/*.md
+!librarian-mcp/docs/**/*.md
 !BISHOP_DROPZONE/00_FOUNDER_REVIEW/**/*.md
 !BISHOP_DROPZONE/Prov14_Building/**/*.md
 !librarian-mcp-public/**/*.md
