@@ -247,3 +247,37 @@ MascotLRH.png
 librarian-mcp/index/*.json
 librarian-mcp/index/*.jsonl
 librarian-mcp/stitchpunks/sp*_state.json
+
+# ============================================
+# B117 follow-up — Stitchpunk Corps Python source
+# ============================================
+# Same class of reproducibility fix as K441 Half B. The root `*.py` ignore
+# rule catches runtime-critical Python source under librarian-mcp/stitchpunks/
+# (SP-1 Cartographer, SP-5 Sentinel, SP-6 Scribe, SP-16 Recombiner, SP-18
+# Prose Provenance, SP-20 Pollinator, session_start.py, session_end.py, etc.).
+# Without these negations a fresh clone cannot run the Stitchpunk Corps.
+# __pycache__/ and *.pyc stay ignored (generated).
+!librarian-mcp/stitchpunks/*.py
+!librarian-mcp/stitchpunks/**/*.py
+librarian-mcp/stitchpunks/**/__pycache__/
+librarian-mcp/stitchpunks/**/*.pyc
+
+# ============================================
+# K442 (B117) — TouchStone engine + predicates carve-out
+# ============================================
+# The root `*.py` / `*.json` ignore rules also catch runtime-critical files
+# under librarian-mcp/touchstone/ (verify.py, ledger.py, predicates/*.py,
+# manifest.json, manifest_schema.json, the migrate_letter_predicates.py
+# tooling, and the tests/ subtree). Without these negations the K442
+# 3-state Letter Predicate Ladder system cannot reach a fresh clone, and
+# `python touchstone/verify.py --letters-summary` (called by brief_me) and
+# `python touchstone/migrate_letter_predicates.py --apply` would silently
+# fail. __pycache__/ and *.pyc stay ignored (generated).
+!librarian-mcp/touchstone/*.py
+!librarian-mcp/touchstone/**/*.py
+!librarian-mcp/touchstone/manifest.json
+!librarian-mcp/touchstone/manifest_schema.json
+librarian-mcp/touchstone/**/__pycache__/
+librarian-mcp/touchstone/**/*.pyc
+# Append-only ledger stays ignored — runtime state, not source.
+librarian-mcp/touchstone/ledger.jsonl
