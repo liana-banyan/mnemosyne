@@ -99,6 +99,8 @@ firebase-debug.log
 # NESTED GIT REPOS (have their own repos)
 escape-velocity-legacy/
 escape-velocity Lovable Site/
+librarian-mcp-public/
+red-carpet-infra/
 
 # ============================================
 # EVERYTHING BELOW: Lives on disk, NOT in git.
