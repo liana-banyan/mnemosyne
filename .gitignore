@@ -372,3 +372,23 @@ librarian-mcp/touchstone/ledger.jsonl
 !librarian-mcp/r10_cross_vendor/results_r11_k474_union/*.jsonl
 !librarian-mcp/r10_cross_vendor/results_r12_pawn_comet/*.jsonl
 !librarian-mcp/r10_cross_vendor/results_r12_pawn_comet/*.json
+
+# ============================================
+# K477 (B122) — Injection-Pathway Iterations benchmark harness + results
+# ============================================
+# run_r12_k477_injection_iterations.py is already covered by the K455c carve-out
+# (!librarian-mcp/r10_cross_vendor/**/*.py at line 327).
+# The results directory and summary JSON are new; unignore them here.
+!librarian-mcp/r10_cross_vendor/results_r12_k477_injection_iterations/*.jsonl
+!librarian-mcp/r10_cross_vendor/results_r12_k477_injection_iterations/*.json
+
+# ============================================
+# K478 (B122) — LB Substack Plug: docs, script, tests
+# ============================================
+# BISHOP_DROPZONE/02_ProjectOps/ is a new subdirectory; the root BISHOP_DROPZONE/*
+# rule ignores it. Unignore the directory and its markdown files.
+!BISHOP_DROPZONE/02_ProjectOps/
+!BISHOP_DROPZONE/02_ProjectOps/**/*.md
+# The crosspost script and test are covered by the root *.py ignore rule.
+!librarian-mcp/scripts/substack_crosspost.py
+!librarian-mcp/tests/test_substack_crosspost.py
