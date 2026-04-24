@@ -341,3 +341,31 @@ librarian-mcp/touchstone/ledger.jsonl
 !librarian-mcp/r10_cross_vendor/results_r11_k471_realignment/*.csv
 !librarian-mcp/r10_cross_vendor/results_r11_k471_realignment/*.md
 !librarian-mcp/tests/test_r11_bank_realignment.mjs
+
+# ============================================
+# K474 (B122) — Self-Indexing Scribes auto-keyword sidecars + benchmark results
+# ============================================
+# The root *.yaml / *.py / *.json / *.mjs ignore rules catch the corpus-derived
+# auto-keyword sidecar YAMLs, the rebuild CLI, the unit tests, the Phase B/C
+# benchmark orchestrator, and the result files. Without these negations, a
+# fresh clone cannot regenerate or validate the Tier-2 distinctiveness keywords
+# and the Cathedral Effect empirics become unreproducible.
+# The auto_keywords directory name contains "_key" which triggers the *_KEY*
+# secrets-filter on Windows (case-insensitive match). Negating both the
+# directories and their contents is required to un-ignore these sidecars.
+!librarian-mcp/stitchpunks/scribes/auto_keywords/
+!librarian-mcp/stitchpunks/knight_cathedral/auto_keywords/
+!librarian-mcp/stitchpunks/scribes/auto_keywords/*.yaml
+!librarian-mcp/stitchpunks/knight_cathedral/auto_keywords/*.yaml
+# BRIDLE and KnightQueue sidecars exceed 1 MB (corpus-explosion from exclusivity-floor).
+# They are local-only; the remaining 12 Scribe sidecars cover all routing use-cases.
+# See REPORT_KNIGHT_K474_B122: "Successor Action S3 — bloat cap".
+librarian-mcp/stitchpunks/scribes/auto_keywords/BRIDLE.yaml
+librarian-mcp/stitchpunks/knight_cathedral/auto_keywords/KnightQueue.yaml
+!librarian-mcp/scripts/rebuild_auto_keywords.mjs
+!librarian-mcp/tests/test_auto_extract.mjs
+!librarian-mcp/r10_cross_vendor/run_r11_k474.py
+!librarian-mcp/r10_cross_vendor/results_r11_k474_auto_only/*.json
+!librarian-mcp/r10_cross_vendor/results_r11_k474_auto_only/*.jsonl
+!librarian-mcp/r10_cross_vendor/results_r11_k474_union/*.json
+!librarian-mcp/r10_cross_vendor/results_r11_k474_union/*.jsonl
