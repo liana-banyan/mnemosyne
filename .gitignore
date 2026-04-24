@@ -392,3 +392,15 @@ librarian-mcp/touchstone/ledger.jsonl
 # The crosspost script and test are covered by the root *.py ignore rule.
 !librarian-mcp/scripts/substack_crosspost.py
 !librarian-mcp/tests/test_substack_crosspost.py
+
+# ============================================
+# K482 (B123) — Root Miner Prototype (#2296)
+# ============================================
+!librarian-mcp/miners/
+!librarian-mcp/miners/**/*.py
+!librarian-mcp/miners/**/*.jsonl
+!librarian-mcp/miners/**/*.json
+!librarian-mcp/miners/**/*.md
+!librarian-mcp/miners/bedrock/
+# ip_ledger.jsonl is a runtime artifact (>1MB); committed as audit cert instead
+librarian-mcp/miners/ip_ledger.jsonl
