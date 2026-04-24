@@ -355,17 +355,20 @@ librarian-mcp/touchstone/ledger.jsonl
 # directories and their contents is required to un-ignore these sidecars.
 !librarian-mcp/stitchpunks/scribes/auto_keywords/
 !librarian-mcp/stitchpunks/knight_cathedral/auto_keywords/
+!librarian-mcp/stitchpunks/pawn_cathedral/auto_keywords/
 !librarian-mcp/stitchpunks/scribes/auto_keywords/*.yaml
 !librarian-mcp/stitchpunks/knight_cathedral/auto_keywords/*.yaml
-# BRIDLE and KnightQueue sidecars exceed 1 MB (corpus-explosion from exclusivity-floor).
-# They are local-only; the remaining 12 Scribe sidecars cover all routing use-cases.
-# See REPORT_KNIGHT_K474_B122: "Successor Action S3 — bloat cap".
-librarian-mcp/stitchpunks/scribes/auto_keywords/BRIDLE.yaml
-librarian-mcp/stitchpunks/knight_cathedral/auto_keywords/KnightQueue.yaml
+!librarian-mcp/stitchpunks/pawn_cathedral/auto_keywords/*.yaml
+# K475: BRIDLE.yaml and KnightQueue.yaml sidecars were gitignored in K474 due to
+# corpus-explosion exceeding 1 MB. K475 D3 adds a MAX_KEYWORDS_PER_SIDECAR=2000 hard cap
+# (autoExtract.ts), bringing both under 50 KB. They are now committed normally.
 !librarian-mcp/scripts/rebuild_auto_keywords.mjs
 !librarian-mcp/tests/test_auto_extract.mjs
 !librarian-mcp/r10_cross_vendor/run_r11_k474.py
+!librarian-mcp/r10_cross_vendor/run_r12_pawn_comet.py
 !librarian-mcp/r10_cross_vendor/results_r11_k474_auto_only/*.json
 !librarian-mcp/r10_cross_vendor/results_r11_k474_auto_only/*.jsonl
 !librarian-mcp/r10_cross_vendor/results_r11_k474_union/*.json
 !librarian-mcp/r10_cross_vendor/results_r11_k474_union/*.jsonl
+!librarian-mcp/r10_cross_vendor/results_r12_pawn_comet/*.jsonl
+!librarian-mcp/r10_cross_vendor/results_r12_pawn_comet/*.json
