@@ -326,3 +326,18 @@ librarian-mcp/touchstone/ledger.jsonl
 !librarian-mcp/r10_cross_vendor/*.py
 !librarian-mcp/r10_cross_vendor/**/*.py
 !librarian-mcp/r10_cross_vendor/results_r11_v3_cross_cathedral_K455c/*.json
+
+# ============================================
+# K471 (B121) — R11 corpus-bank realignment carve-outs
+# ============================================
+# The root *.json / *.mjs ignore rules catch the sealed question banks and
+# the reseal verification script. These are reproducibility-critical for
+# the K471 bank realignment and all subsequent R11 benchmark runs.
+!librarian-mcp/r10_cross_vendor/R11_QUESTION_BANK_SEALED_K471.json
+!librarian-mcp/r10_cross_vendor/R11_QUESTION_BANK_SEALED_K444_LEGACY.json
+!librarian-mcp/r10_cross_vendor/scripts/reseal-question-bank.mjs
+!librarian-mcp/r10_cross_vendor/results_r11_k471_realignment/*.json
+!librarian-mcp/r10_cross_vendor/results_r11_k471_realignment/*.jsonl
+!librarian-mcp/r10_cross_vendor/results_r11_k471_realignment/*.csv
+!librarian-mcp/r10_cross_vendor/results_r11_k471_realignment/*.md
+!librarian-mcp/tests/test_r11_bank_realignment.mjs
