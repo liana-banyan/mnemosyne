@@ -404,3 +404,15 @@ librarian-mcp/touchstone/ledger.jsonl
 !librarian-mcp/miners/bedrock/
 # ip_ledger.jsonl is a runtime artifact (>1MB); committed as audit cert instead
 librarian-mcp/miners/ip_ledger.jsonl
+
+# ============================================
+# K483 (B123) — Sculptor Prototype (#2297)
+# ============================================
+!librarian-mcp/sculptors/
+!librarian-mcp/sculptors/*.py
+!librarian-mcp/sculptors/*.json
+!librarian-mcp/sculptors/__init__.py
+# Runtime outputs — regenerable from bedrock; excluded per >1MB pre-commit hook
+librarian-mcp/sculptors/filter_decision_log.jsonl
+librarian-mcp/sculptors/outputs/
+librarian-mcp/sculptors/run_summary_K483.json
