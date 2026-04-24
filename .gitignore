@@ -123,6 +123,7 @@ BISHOP_DROPZONE/*
 !BISHOP_DROPZONE/10_MediaPitches/
 !BISHOP_DROPZONE/Prov14_Building/
 !BISHOP_DROPZONE/UNDER_THE_HOOD/
+!BISHOP_DROPZONE/K455b_playbook/
 Blueprints/
 CONTEXT_MANAGEMENT/
 CROWN_LETTERS/
@@ -265,6 +266,10 @@ MascotLRH.png
 !librarian-mcp/stitchpunks/knight_cathedral/README.md
 !librarian-mcp/stitchpunks/knight_cathedral/schema.json
 !librarian-mcp/stitchpunks/knight_cathedral/registry.yaml
+!librarian-mcp/stitchpunks/pawn_cathedral/README.md
+!librarian-mcp/stitchpunks/pawn_cathedral/schema.json
+!librarian-mcp/stitchpunks/pawn_cathedral/registry.yaml
+!librarian-mcp/stitchpunks/pawn_cathedral/keys/cooperative_attestation.md
 !librarian-mcp/stitchpunks/scribes/schema.json
 !librarian-mcp/r10_cross_vendor/README.md
 !librarian-mcp/scrambler/README.md
