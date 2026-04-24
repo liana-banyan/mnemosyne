@@ -124,6 +124,7 @@ BISHOP_DROPZONE/*
 !BISHOP_DROPZONE/Prov14_Building/
 !BISHOP_DROPZONE/UNDER_THE_HOOD/
 !BISHOP_DROPZONE/K455b_playbook/
+!BISHOP_DROPZONE/K455b_playbook/*.md
 Blueprints/
 CONTEXT_MANAGEMENT/
 CROWN_LETTERS/
@@ -223,6 +224,7 @@ MascotLRH.png
 !BISHOP_DROPZONE/00_FOUNDER_APPROVED/**/*.md
 !BISHOP_DROPZONE/09_Articles/**/*.md
 !BISHOP_DROPZONE/10_MediaPitches/**/*.md
+!BISHOP_DROPZONE/K455b_playbook/*.md
 !BISHOP_DROPZONE/Prov14_Building/**/*.md
 !librarian-mcp-public/**/*.md
 !scripts/KNIGHT_PROMPT_CONVENTIONS.md
