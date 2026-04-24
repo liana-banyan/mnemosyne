@@ -309,3 +309,13 @@ librarian-mcp/touchstone/**/__pycache__/
 librarian-mcp/touchstone/**/*.pyc
 # Append-only ledger stays ignored — runtime state, not source.
 librarian-mcp/touchstone/ledger.jsonl
+
+# ============================================
+# K455c (B121) — Cross-Cathedral benchmark scripts + results
+# ============================================
+# The root `*.py` / `*.json` ignore rules catch the R11 cross-cathedral
+# benchmark orchestrator, adapter, and results JSON files. These are
+# reproducibility-critical for the cooperative-corpus flywheel empirical test.
+!librarian-mcp/r10_cross_vendor/*.py
+!librarian-mcp/r10_cross_vendor/**/*.py
+!librarian-mcp/r10_cross_vendor/results_r11_v3_cross_cathedral_K455c/*.json
