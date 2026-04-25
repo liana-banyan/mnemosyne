@@ -457,3 +457,11 @@ librarian-mcp/eblets/verification_K485.json
 librarian-mcp-helm-pwa/node_modules/
 librarian-mcp-helm-pwa/out/
 librarian-mcp-helm-pwa/dist/
+
+# ============================================
+# K493 (B123) — Recency-Anchor Gradient Analysis
+# ============================================
+!librarian-mcp/analysis/
+!librarian-mcp/analysis/*.py
+!librarian-mcp/analysis/*.md
+!librarian-mcp/analysis/*.json
