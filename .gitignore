@@ -418,6 +418,17 @@ librarian-mcp/sculptors/outputs/
 librarian-mcp/sculptors/run_summary_K483.json
 
 # ============================================
+# K485 (B123) — Eblet substrate
+# ============================================
+!librarian-mcp/eblets/
+!librarian-mcp/eblets/*.py
+!librarian-mcp/eblets/*.jsonl
+!librarian-mcp/eblets/__init__.py
+# Generation stats and verification reports — regenerable; exclude large JSON outputs
+librarian-mcp/eblets/generation_stats_K485.json
+librarian-mcp/eblets/verification_K485.json
+
+# ============================================
 # K484 (B123) — Helm PWA V0 skeleton
 # ============================================
 # The root *.py / *.json / *.md / *.ts ignore rules catch the entire
