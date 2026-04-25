@@ -233,6 +233,7 @@ MascotLRH.png
 !librarian-mcp-public/**/*.py
 !librarian-mcp/seers/*.py
 !librarian-mcp/eblets/*.py
+!librarian-mcp/augurs/*.py
 !librarian-mcp/sculptors/sculptor.py
 !librarian-mcp/miners/miner.py
 !librarian-mcp/miners/bloodhound.py
@@ -248,6 +249,7 @@ MascotLRH.png
 !librarian-mcp-public/**/*.json
 !librarian-mcp/seers/K489_test_results.json
 !librarian-mcp/seers/live_feed_state.json
+!librarian-mcp/augurs/K492_test_results.json
 *.yaml
 !librarian-mcp-public/**/*.yaml
 !.gitignore
