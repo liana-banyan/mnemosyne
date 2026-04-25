@@ -467,3 +467,24 @@ librarian-mcp-helm-pwa/dist/
 !librarian-mcp/analysis/*.py
 !librarian-mcp/analysis/*.md
 !librarian-mcp/analysis/*.json
+
+# ============================================
+# K507 (B124) — Pawn-with-Substrate CLI + pyproject.toml
+# ============================================
+# pawn_with_substrate.py and pawn_with_substrate.ps1 are the K507 CLI tools:
+# substrate-injected Perplexity Sonar Pro with verified real cross-vendor calls.
+# pyproject.toml is the Python package manifest (pawn-substrate console script entry).
+# Root *.py / *.ps1 rules catch all three; carve out explicitly.
+!librarian-mcp/scripts/pawn_with_substrate.py
+!librarian-mcp/scripts/pawn_with_substrate.ps1
+!librarian-mcp/pyproject.toml
+# K505/K506/K507 savings scripts already have carve-outs via substack line above.
+# Ensure the savings runners for K506 are also committed:
+!librarian-mcp/scripts/calibration_runner.py
+!librarian-mcp/scripts/knight_session_savings.py
+!librarian-mcp/scripts/pawn_session_savings.py
+!librarian-mcp/scripts/post_commit_savings.py
+!librarian-mcp/scripts/knight_tag_watcher.py
+!librarian-mcp/scripts/install_git_hooks.py
+!librarian-mcp/scripts/git_commit_message.ps1
+!librarian-mcp/scripts/git_commit_message.sh
