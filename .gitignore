@@ -416,3 +416,24 @@ librarian-mcp/miners/ip_ledger.jsonl
 librarian-mcp/sculptors/filter_decision_log.jsonl
 librarian-mcp/sculptors/outputs/
 librarian-mcp/sculptors/run_summary_K483.json
+
+# ============================================
+# K484 (B123) — Helm PWA V0 skeleton
+# ============================================
+# The root *.py / *.json / *.md / *.ts ignore rules catch the entire
+# librarian-mcp-helm-pwa/ directory. Carve out all source files.
+# node_modules/, out/, dist/ remain excluded (via helm-pwa's own .gitignore).
+!librarian-mcp-helm-pwa/
+!librarian-mcp-helm-pwa/.gitignore
+!librarian-mcp-helm-pwa/*.ts
+!librarian-mcp-helm-pwa/*.json
+!librarian-mcp-helm-pwa/*.md
+!librarian-mcp-helm-pwa/*.py
+!librarian-mcp-helm-pwa/src/
+!librarian-mcp-helm-pwa/src/**/*.ts
+!librarian-mcp-helm-pwa/src/**/*.tsx
+!librarian-mcp-helm-pwa/src/**/*.html
+!librarian-mcp-helm-pwa/src/**/*.json
+librarian-mcp-helm-pwa/node_modules/
+librarian-mcp-helm-pwa/out/
+librarian-mcp-helm-pwa/dist/
