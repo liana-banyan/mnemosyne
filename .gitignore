@@ -240,6 +240,8 @@ MascotLRH.png
 !librarian-mcp/miners/bloodhound.py
 *.ps1
 !scripts/knight-dispatch.ps1
+!librarian-mcp-helm-pwa/Start-PawnPortal.ps1
+!librarian-mcp-helm-pwa/Stop-PawnPortal.ps1
 *.sql
 !platform/**/*.sql
 *.txt
