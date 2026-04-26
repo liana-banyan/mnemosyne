@@ -238,6 +238,8 @@ MascotLRH.png
 !librarian-mcp/sculptors/sculptor.py
 !librarian-mcp/miners/miner.py
 !librarian-mcp/miners/bloodhound.py
+!discipline_wing/*.py
+!discipline_naf/*.py
 *.ps1
 !scripts/knight-dispatch.ps1
 !librarian-mcp-helm-pwa/Start-PawnPortal.ps1
