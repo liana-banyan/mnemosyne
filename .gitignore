@@ -490,3 +490,14 @@ librarian-mcp-helm-pwa/dist/
 !librarian-mcp/scripts/install_git_hooks.py
 !librarian-mcp/scripts/git_commit_message.ps1
 !librarian-mcp/scripts/git_commit_message.sh
+
+# ============================================
+# K514 (B126) — Bishop Discipline Wing (#2295 Tier 3)
+# ============================================
+# Root *.py rule (line 232) catches discipline_wing/*.py. Carve out all source files.
+!discipline_wing/
+!discipline_wing/__init__.py
+!discipline_wing/engine.py
+!discipline_wing/consensus.py
+!discipline_wing/tests.py
+!discipline_wing/README.md
