@@ -499,5 +499,8 @@ librarian-mcp-helm-pwa/dist/
 !discipline_wing/__init__.py
 !discipline_wing/engine.py
 !discipline_wing/consensus.py
+!discipline_wing/chronicler.py
+!discipline_wing/bureau.py
 !discipline_wing/tests.py
+!discipline_wing/tests_k515.py
 !discipline_wing/README.md
