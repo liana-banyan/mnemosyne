@@ -505,4 +505,7 @@ librarian-mcp-helm-pwa/dist/
 !discipline_wing/tests_k515.py
 !discipline_wing/dragonrider.py
 !discipline_wing/tests_k516.py
+!discipline_wing/timewave_security.py
+!discipline_wing/angel_of_death.py
+!discipline_wing/tests_k517.py
 !discipline_wing/README.md
