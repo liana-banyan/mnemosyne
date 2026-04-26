@@ -503,4 +503,6 @@ librarian-mcp-helm-pwa/dist/
 !discipline_wing/bureau.py
 !discipline_wing/tests.py
 !discipline_wing/tests_k515.py
+!discipline_wing/dragonrider.py
+!discipline_wing/tests_k516.py
 !discipline_wing/README.md
