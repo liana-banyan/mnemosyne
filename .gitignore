@@ -223,6 +223,7 @@ MascotLRH.png
 !BISHOP_DROPZONE/00_FOUNDER_REVIEW/**/*.md
 !BISHOP_DROPZONE/00_FOUNDER_APPROVED/**/*.md
 !lb-test-frame/**/*.md
+!lb-omnibox-extension/**/*.md
 !BISHOP_DROPZONE/09_Articles/**/*.md
 !BISHOP_DROPZONE/10_MediaPitches/**/*.md
 !BISHOP_DROPZONE/K455b_playbook/*.md
@@ -253,6 +254,7 @@ MascotLRH.png
 !platform/**/*.json
 !librarian-mcp-public/**/*.json
 !lb-test-frame/**/*.json
+!lb-omnibox-extension/**/*.json
 !librarian-mcp/seers/K489_test_results.json
 !librarian-mcp/seers/live_feed_state.json
 !librarian-mcp/augurs/K492_test_results.json
