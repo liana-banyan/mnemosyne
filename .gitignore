@@ -258,6 +258,7 @@ MascotLRH.png
 !librarian-mcp/seers/K489_test_results.json
 !librarian-mcp/seers/live_feed_state.json
 !librarian-mcp/augurs/K492_test_results.json
+!librarian-mcp/config/pawn_dispatch_caps.json
 *.yaml
 !librarian-mcp-public/**/*.yaml
 !.gitignore
