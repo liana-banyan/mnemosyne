@@ -525,3 +525,16 @@ librarian-mcp-helm-pwa/dist/
 !discipline_wing/angel_of_death.py
 !discipline_wing/tests_k517.py
 !discipline_wing/README.md
+
+# ============================================
+# K540 (B132) — Wrasse Scribe Registry
+# ============================================
+# Pre-injection trigger registry for agent-spawn rote-cognition tax reduction.
+# JSONL files (wrasse_registry.jsonl, session_ledger.jsonl) are NOT globally
+# ignored (no *.jsonl rule at root), so only yaml/json/md need carve-outs.
+# Python files are covered by !librarian-mcp/stitchpunks/**/*.py (line 314).
+!librarian-mcp/stitchpunks/wrasse/registry.yaml
+!librarian-mcp/stitchpunks/wrasse/schema.json
+!librarian-mcp/stitchpunks/wrasse/README.md
+!BISHOP_DROPZONE/04_KnightReports/
+!BISHOP_DROPZONE/04_KnightReports/**/*.md
