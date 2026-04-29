@@ -511,6 +511,11 @@ librarian-mcp-helm-pwa/dist/
 # K-MJ-MJ-02b-Final-MISS diagnosis artifacts (B132)
 !librarian-mcp/r10_cross_vendor/results/K_MJ_02b_FINAL_MISS_diagnosis.md
 !librarian-mcp/r10_cross_vendor/results_r11v2_K535_v3_max200/mj_miss_revalidation_*.jsonl
+# KP-Option-Gamma (B132) -- new runner, tests, gamma result files
+!librarian-mcp/empirical_tests/run_kp_gamma.py
+!librarian-mcp/tests/test_kp_option_gamma.py
+!librarian-mcp/empirical_tests/results/kp_gamma_detail_*.jsonl
+!librarian-mcp/empirical_tests/results/kp_gamma_summary_*.jsonl
 
 # ============================================
 # K514 (B126) — Bishop Discipline Wing (#2295 Tier 3)
