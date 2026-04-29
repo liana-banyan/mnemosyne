@@ -505,8 +505,12 @@ librarian-mcp-helm-pwa/dist/
 !librarian-mcp/scripts/inspect_qbank.py
 !librarian-mcp/scripts/inspect_qbank2.py
 !librarian-mcp/scripts/mj_partial_refire.py
+!librarian-mcp/scripts/mj_miss_revalidation_phase_d.py
 !librarian-mcp/empirical_tests/kp_panels_test3.py
 !librarian-mcp/empirical_tests/run_kp_test3.py
+# K-MJ-MJ-02b-Final-MISS diagnosis artifacts (B132)
+!librarian-mcp/r10_cross_vendor/results/K_MJ_02b_FINAL_MISS_diagnosis.md
+!librarian-mcp/r10_cross_vendor/results_r11v2_K535_v3_max200/mj_miss_revalidation_*.jsonl
 
 # ============================================
 # K514 (B126) — Bishop Discipline Wing (#2295 Tier 3)
