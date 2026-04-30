@@ -28,6 +28,12 @@ __pycache__/
 .env.local
 .env.*.local
 **/.env
+
+# Screenshot evidence — full bundles stay local; manifests + curated samples go to git
+# (BP003 turn ~28 Founder ratification: definitive proof anchored via SHA-256 in manifests)
+# Local path: C:\Users\Administrator\Pictures\BeanSprouts\NNN\
+# Manifests committed at: BISHOP_DROPZONE/03_BishopHandoffs/screenshot_manifests/
+# Curated samples committed at: BISHOP_DROPZONE/03_BishopHandoffs/screenshot_samples/BP_NNN/
 **/.env.*
 **/.env.local
 **/.env.*.local
@@ -240,6 +246,7 @@ MascotLRH.png
 !librarian-mcp/miners/miner.py
 !librarian-mcp/miners/bloodhound.py
 !discipline_wing/*.py
+!discipline_wing/federation/*.py
 !discipline_naf/*.py
 *.ps1
 !scripts/knight-dispatch.ps1
