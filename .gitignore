@@ -305,6 +305,14 @@ MascotLRH.png
 !librarian-mcp/r10_cross_vendor/README.md
 !librarian-mcp/scrambler/README.md
 !librarian-mcp/touchstone/README.md
+!librarian-mcp/iron_tablet_metrics_config.yaml
+!librarian-mcp/src/scribes/scales_criteria_v1.yaml
+!librarian-mcp/src/scribes/bouncer_safe_patterns_v1.yaml
+!librarian-mcp/src/scribes/judge_precedents_v1.yaml
+!librarian-mcp/src/scribes/bouncer.py
+!librarian-mcp/src/scribes/scales.py
+!librarian-mcp/src/scribes/judge.py
+!librarian-mcp/bishop_librarian_gate.py
 # Index payloads and runtime state stay ignored — they are regenerable
 # via `npm run rebuild` and would bloat git history. Force-adding them is
 # explicitly NOT desired.
