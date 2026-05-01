@@ -249,9 +249,11 @@ MascotLRH.png
 !discipline_wing/federation/*.py
 !discipline_naf/*.py
 !lb_frame_installer/**/*.py
+!lb_frame_handshake/**/*.py
 *.ps1
 !scripts/knight-dispatch.ps1
 !lb_frame_installer/**/*.ps1
+!lb_frame_handshake/**/*.ps1
 !librarian-mcp-helm-pwa/Start-PawnPortal.ps1
 !librarian-mcp-helm-pwa/Stop-PawnPortal.ps1
 *.sql
@@ -558,3 +560,7 @@ librarian-mcp-helm-pwa/dist/
 !BISHOP_DROPZONE/04_KnightReports/
 !BISHOP_DROPZONE/04_KnightReports/**/*.md
 !lb_frame_installer/**/*.md
+# KN086/BP009: LB Frame Handshake Python package
+!lb_frame_handshake/**/*.md
+!lb_frame_handshake/**/*.yaml
+!lb_frame_handshake/**/*.tpl
