@@ -248,8 +248,10 @@ MascotLRH.png
 !discipline_wing/*.py
 !discipline_wing/federation/*.py
 !discipline_naf/*.py
+!lb_frame_installer/**/*.py
 *.ps1
 !scripts/knight-dispatch.ps1
+!lb_frame_installer/**/*.ps1
 !librarian-mcp-helm-pwa/Start-PawnPortal.ps1
 !librarian-mcp-helm-pwa/Stop-PawnPortal.ps1
 *.sql
@@ -555,3 +557,4 @@ librarian-mcp-helm-pwa/dist/
 !librarian-mcp/stitchpunks/wrasse/README.md
 !BISHOP_DROPZONE/04_KnightReports/
 !BISHOP_DROPZONE/04_KnightReports/**/*.md
+!lb_frame_installer/**/*.md
