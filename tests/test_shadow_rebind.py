@@ -44,7 +44,8 @@ def tmp_federation_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def tmp_eblet_root(tmp_path: Path) -> Path:
-    d = tmp_path / "eblets" / "BP011"
+    # Base directory only — session subdir is created by ShadowLifecycle.start() (KN098).
+    d = tmp_path / "eblets"
     d.mkdir(parents=True)
     return d
 
