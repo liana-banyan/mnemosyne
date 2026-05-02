@@ -503,7 +503,19 @@ def test_get_state(tmp_session_file, tmp_eblet_root):
     assert state.lighthouse_position == 1
 
 
-def test_previous_session_ids_capped_at_16(tmp_session_file, tmp_eblet_root):
+def test_previous_session_ids_capped_at_16(
+    tmp_session_file, tmp_eblet_root, tmp_path, monkeypatch
+):
+    # KN099: explicit tmp_path isolation so _do_rebind writes boundary markers
+    # to tmp_path/federation/session_boundary.jsonl, not the prod ledger.
+    # The autouse _isolate_prod_paths fixture in conftest.py already covers this,
+    # but the explicit monkeypatch here documents the dependency and provides a
+    # defence-in-depth layer if conftest isolation were ever removed.
+    import the_shadow.lifecycle as _lc
+    fed_dir = tmp_path / "federation"
+    monkeypatch.setattr(_lc, "FEDERATION_DIR", fed_dir)
+    monkeypatch.setattr(_lc, "SESSION_BOUNDARY_JSONL", fed_dir / "session_boundary.jsonl")
+
     lc = _make_lc(
         session_id="BP001",
         session_file=tmp_session_file,
