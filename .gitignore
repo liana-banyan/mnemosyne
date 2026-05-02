@@ -572,3 +572,6 @@ librarian-mcp-helm-pwa/dist/
 !lb_frame_handshake/**/*.md
 !lb_frame_handshake/**/*.yaml
 !lb_frame_handshake/**/*.tpl
+
+# K-Cathedral-BP010: LibrarianMedallion variant YAML theming registry
+!platform/src/data/librarian_medallion_variants.yaml
