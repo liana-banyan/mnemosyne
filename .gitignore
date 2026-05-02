@@ -250,6 +250,8 @@ MascotLRH.png
 !discipline_naf/*.py
 !lb_frame_installer/**/*.py
 !lb_frame_handshake/**/*.py
+!the_shadow/**/*.py
+!tests/**/*.py
 *.ps1
 !scripts/knight-dispatch.ps1
 !lb_frame_installer/**/*.ps1
