@@ -75,11 +75,27 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm exec electron-builder -- ${{ matrix.build_args }} --publish never
 
-      - name: Upload GitHub release artifacts
-        if: ${{ github.event_name == 'push' || inputs.publish == 'true' }}
+      - name: Upload Windows release artifacts
+        if: ${{ matrix.platform == 'windows' && (github.event_name == 'push' || inputs.publish == 'true') }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           name: AMPLIFY Computer ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          files: amplify-computer/release/**
+          files: |
+            amplify-computer/release/*.exe
+            amplify-computer/release/*.exe.blockmap
+            amplify-computer/release/latest.yml
+          fail_on_unmatched_files: true
+
+      - name: Upload Linux release artifacts
+        if: ${{ matrix.platform == 'linux' && (github.event_name == 'push' || inputs.publish == 'true') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          name: AMPLIFY Computer ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: |
+            amplify-computer/release/*.AppImage
+            amplify-computer/release/*.deb
+            amplify-computer/release/*.rpm
+            amplify-computer/release/latest-linux*.yml
           fail_on_unmatched_files: true
