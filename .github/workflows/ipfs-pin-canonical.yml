@@ -1,0 +1,73 @@
+name: Pin Canonical Artifacts to IPFS
+
+on:
+  push:
+    paths:
+      - 'librarian-mcp/stitchpunks/codex/codex_ledger.jsonl'
+      - 'librarian-mcp/stitchpunks/old_ones_fleet/iron_tablets.jsonl'
+      - 'BISHOP_DROPZONE/14_CanonicalReferences/STACK_LEDGER.jsonl'
+      - 'BISHOP_DROPZONE/14_CanonicalReferences/MECHANICAL_COMPUTER_LIVING_RECEIPTS.md'
+      - 'librarian-mcp/stitchpunks/pheromone_substrate/**'
+  workflow_dispatch:
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubo v0.28.0
+        run: |
+          wget -q https://dist.ipfs.tech/kubo/v0.28.0/kubo_v0.28.0_linux-amd64.tar.gz
+          tar -xzf kubo_v0.28.0_linux-amd64.tar.gz
+          sudo mv kubo/ipfs /usr/local/bin/ipfs
+          ipfs init
+          ipfs --version
+
+      - name: Compute CIDs (offline hash)
+        id: cids
+        run: |
+          CID_CODEX=$(ipfs add --only-hash -Q librarian-mcp/stitchpunks/codex/codex_ledger.jsonl)
+          CID_IRON=$(ipfs add --only-hash -Q librarian-mcp/stitchpunks/old_ones_fleet/iron_tablets.jsonl)
+          CID_STACK=$(ipfs add --only-hash -Q BISHOP_DROPZONE/14_CanonicalReferences/STACK_LEDGER.jsonl)
+          CID_LIVING=$(ipfs add --only-hash -Q "BISHOP_DROPZONE/14_CanonicalReferences/MECHANICAL_COMPUTER_LIVING_RECEIPTS.md")
+          CID_PHEROMONE=$(ipfs add --only-hash -r -Q librarian-mcp/stitchpunks/pheromone_substrate/ 2>/dev/null || echo "N/A")
+          echo "codex=$CID_CODEX" >> $GITHUB_OUTPUT
+          echo "iron=$CID_IRON" >> $GITHUB_OUTPUT
+          echo "stack=$CID_STACK" >> $GITHUB_OUTPUT
+          echo "living=$CID_LIVING" >> $GITHUB_OUTPUT
+          echo "pheromone=$CID_PHEROMONE" >> $GITHUB_OUTPUT
+          echo "--- CID MANIFEST ---"
+          echo "codex:    $CID_CODEX"
+          echo "iron:     $CID_IRON"
+          echo "stack:    $CID_STACK"
+          echo "living:   $CID_LIVING"
+          echo "pheromone:$CID_PHEROMONE"
+
+      - name: Append to IPFS_PIN_MANIFEST.jsonl
+        env:
+          CID_CODEX: ${{ steps.cids.outputs.codex }}
+          CID_IRON: ${{ steps.cids.outputs.iron }}
+          CID_STACK: ${{ steps.cids.outputs.stack }}
+          CID_LIVING: ${{ steps.cids.outputs.living }}
+          CID_PHEROMONE: ${{ steps.cids.outputs.pheromone }}
+        run: |
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          COMMIT_SHA="${{ github.sha }}"
+          MANIFEST="BISHOP_DROPZONE/14_CanonicalReferences/IPFS_PIN_MANIFEST.jsonl"
+          mkdir -p "$(dirname $MANIFEST)"
+          echo "{\"artifact\":\"codex\",\"path\":\"librarian-mcp/stitchpunks/codex/codex_ledger.jsonl\",\"cid\":\"$CID_CODEX\",\"timestamp\":\"$TIMESTAMP\",\"commit_sha\":\"$COMMIT_SHA\",\"pinning_method\":\"kubo-offline-hash\"}" >> $MANIFEST
+          echo "{\"artifact\":\"iron_tablet\",\"path\":\"librarian-mcp/stitchpunks/old_ones_fleet/iron_tablets.jsonl\",\"cid\":\"$CID_IRON\",\"timestamp\":\"$TIMESTAMP\",\"commit_sha\":\"$COMMIT_SHA\",\"pinning_method\":\"kubo-offline-hash\"}" >> $MANIFEST
+          echo "{\"artifact\":\"stack_ledger\",\"path\":\"BISHOP_DROPZONE/14_CanonicalReferences/STACK_LEDGER.jsonl\",\"cid\":\"$CID_STACK\",\"timestamp\":\"$TIMESTAMP\",\"commit_sha\":\"$COMMIT_SHA\",\"pinning_method\":\"kubo-offline-hash\"}" >> $MANIFEST
+          echo "{\"artifact\":\"living_receipts\",\"path\":\"BISHOP_DROPZONE/14_CanonicalReferences/MECHANICAL_COMPUTER_LIVING_RECEIPTS.md\",\"cid\":\"$CID_LIVING\",\"timestamp\":\"$TIMESTAMP\",\"commit_sha\":\"$COMMIT_SHA\",\"pinning_method\":\"kubo-offline-hash\"}" >> $MANIFEST
+          echo "{\"artifact\":\"pheromone\",\"path\":\"librarian-mcp/stitchpunks/pheromone_substrate/index.jsonl\",\"cid\":\"$CID_PHEROMONE\",\"timestamp\":\"$TIMESTAMP\",\"commit_sha\":\"$COMMIT_SHA\",\"pinning_method\":\"kubo-offline-hash\"}" >> $MANIFEST
+
+      - name: Commit manifest update
+        run: |
+          git config user.email "knight@lianabanyan.com"
+          git config user.name "Knight (IPFS)"
+          git add BISHOP_DROPZONE/14_CanonicalReferences/IPFS_PIN_MANIFEST.jsonl
+          git commit -m "chore(ipfs): pin canonical artifacts | ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+          git push || true
