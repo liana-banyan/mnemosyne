@@ -9,7 +9,11 @@ on:
       tag:
         description: "Release tag to build"
         required: true
-        default: "v0.1.0"
+        default: "v0.1.1"
+      publish:
+        description: "Publish artifacts to the GitHub Release"
+        required: true
+        default: "true"
 
 permissions:
   contents: write
@@ -25,12 +29,17 @@ jobs:
           - platform: windows
             os: windows-latest
             build_args: --win --x64
+            allow_failure: false
           - platform: mac
             os: macos-latest
             build_args: --mac --x64 --arm64
+            allow_failure: true
           - platform: linux
             os: ubuntu-latest
             build_args: --linux --x64
+            allow_failure: false
+
+    continue-on-error: ${{ matrix.allow_failure }}
 
     defaults:
       run:
@@ -46,9 +55,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: amplify-computer/package-lock.json
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: TypeScript main
         run: npm exec tsc -- --noEmit -p tsconfig.main.json
@@ -65,6 +76,7 @@ jobs:
         run: npm exec electron-builder -- ${{ matrix.build_args }} --publish never
 
       - name: Upload GitHub release artifacts
+        if: ${{ github.event_name == 'push' || inputs.publish == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
