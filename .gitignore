@@ -569,6 +569,8 @@ librarian-mcp-helm-pwa/dist/
 !librarian-mcp/stitchpunks/wrasse/README.md
 !BISHOP_DROPZONE/04_KnightReports/
 !BISHOP_DROPZONE/04_KnightReports/**/*.md
+!BISHOP_DROPZONE/14_CanonicalReferences/
+!BISHOP_DROPZONE/14_CanonicalReferences/**/*.md
 !lb_frame_installer/**/*.md
 # KN086/BP009: LB Frame Handshake Python package
 !lb_frame_handshake/**/*.md
