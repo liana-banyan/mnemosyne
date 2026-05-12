@@ -1,10 +1,16 @@
-name: Build and Deploy Cephas
+name: Cephas Build + Deploy
+
+# BP039 B-CEPHAS-BUILD-PIPELINE-AUTOMATION
+# Fires on: content push (any branch → main), daily 6am UTC nightly build,
+# or manual workflow_dispatch trigger.
 
 on:
   push:
     branches: [main]
     paths:
       - "Cephas/cephas-hugo/**"
+  schedule:
+    - cron: "0 6 * * *"   # Daily 6am UTC nightly build
   workflow_dispatch:
 
 jobs:
@@ -13,29 +19,80 @@ jobs:
     defaults:
       run:
         working-directory: Cephas/cephas-hugo
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Hugo
+      - name: Setup Hugo (extended, pinned)
         uses: peaceiris/actions-hugo@v2
         with:
           hugo-version: "0.152.2"
           extended: true
 
-      - name: Setup Node
+      - name: Setup Node (for Firebase CLI)
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Build Cephas
+      # G1 — Build exits 0
+      - name: Build Cephas (G1)
         run: hugo --gc --minify
+
+      # G2 — sitemap.xml generated and non-empty
+      - name: Verify sitemap.xml (G2)
+        run: |
+          if [ ! -f public/sitemap.xml ]; then
+            echo "ERROR: sitemap.xml not found in public/"
+            exit 1
+          fi
+          PAGE_COUNT=$(grep -c "<url>" public/sitemap.xml || true)
+          echo "sitemap.xml contains $PAGE_COUNT <url> entries"
+          if [ "$PAGE_COUNT" -lt 10 ]; then
+            echo "ERROR: sitemap has fewer than 10 pages ($PAGE_COUNT) — check Hugo build"
+            exit 1
+          fi
+          echo "G2 PASS: sitemap.xml valid with $PAGE_COUNT pages"
+
+      # G3 — RSS feed (index.xml) present and well-formed
+      - name: Verify RSS index.xml (G3)
+        run: |
+          if [ ! -f public/index.xml ]; then
+            echo "WARN: root index.xml not found; checking section feeds"
+            find public -name "index.xml" | head -5
+          else
+            echo "G3 PASS: RSS feed found at public/index.xml"
+            head -3 public/index.xml
+          fi
+
+      # G4 — robots.txt present (enableRobotsTXT = true in config.toml)
+      - name: Verify robots.txt (G4)
+        run: |
+          if [ ! -f public/robots.txt ]; then
+            echo "WARN: robots.txt not found — check enableRobotsTXT in config.toml"
+          else
+            echo "G4 PASS: robots.txt present"
+            cat public/robots.txt
+          fi
 
       - name: Install Firebase CLI
         run: npm install -g firebase-tools
 
-      - name: Deploy to Firebase (cephas site)
+      # G5 — Deploy to Firebase (Cephas default site: cephas-lianabanyan)
+      # Uses Cephas/cephas-hugo/firebase.json (site: cephas-lianabanyan)
+      # and Cephas/cephas-hugo/.firebaserc (project: lianabanyan-403dc)
+      - name: Deploy to Firebase Hosting — Cephas (G5)
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
-          firebase deploy --only hosting:the2ndsecond-trunk -P default --token "$FIREBASE_TOKEN"
+          firebase deploy --token "$FIREBASE_TOKEN"
+
+      - name: Report build summary
+        if: always()
+        run: |
+          echo "=== Cephas Build Summary ==="
+          echo "Hugo public/ size: $(du -sh public/ 2>/dev/null | cut -f1)"
+          echo "Total pages built: $(find public -name '*.html' | wc -l)"
+          echo "sitemap entries: $(grep -c '<url>' public/sitemap.xml 2>/dev/null || echo 'N/A')"

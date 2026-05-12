@@ -579,3 +579,6 @@ librarian-mcp-helm-pwa/dist/
 
 # K-Cathedral-BP010: LibrarianMedallion variant YAML theming registry
 !platform/src/data/librarian_medallion_variants.yaml
+
+# Mnemosyne Hugo bundle (build artifact — regenerated via npm run build:hugo)
+amplify-computer/static/cephas/
