@@ -12,13 +12,13 @@ out/
 **/vite.config.ts.timestamp-*.mjs
 **/vite.config.*.timestamp-*.mjs
 
-# Python bytecode caches ‚Äî never commit
+# Python bytecode caches ó never commit
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# R10 Eyewitness benchmark aggregate result (regenerable) ‚Äî committed as .gz instead
+# R10 Eyewitness benchmark aggregate result (regenerable) ó committed as .gz instead
 # Decompress locally with: gunzip -k <file>.gz
 **/all_graded.jsonl
 
@@ -29,7 +29,7 @@ __pycache__/
 .env.*.local
 **/.env
 
-# Screenshot evidence ‚Äî full bundles stay local; manifests + curated samples go to git
+# Screenshot evidence ó full bundles stay local; manifests + curated samples go to git
 # (BP003 turn ~28 Founder ratification: definitive proof anchored via SHA-256 in manifests)
 # Local path: C:\Users\Administrator\Pictures\BeanSprouts\NNN\
 # Manifests committed at: BISHOP_DROPZONE/03_BishopHandoffs/screenshot_manifests/
@@ -265,6 +265,7 @@ MascotLRH.png
 !librarian-mcp-public/**/*.txt
 *.json
 !platform/**/*.json
+!amplify-computer/src/renderer/public/**/*.json
 !librarian-mcp-public/**/*.json
 !lb-test-frame/**/*.json
 !lb-omnibox-extension/**/*.json
@@ -277,7 +278,7 @@ MascotLRH.png
 !.gitignore
 
 # ============================================
-# K441 ‚Äî librarian-mcp reproducibility carve-outs
+# K441 ó librarian-mcp reproducibility carve-outs
 # ============================================
 # The internal librarian-mcp/ directory hosts source for the in-repo MCP
 # server. Several of its critical files (package.json, tsconfig.json,
@@ -315,7 +316,7 @@ MascotLRH.png
 !librarian-mcp/src/scribes/scales.py
 !librarian-mcp/src/scribes/judge.py
 !librarian-mcp/bishop_librarian_gate.py
-# Index payloads and runtime state stay ignored ‚Äî they are regenerable
+# Index payloads and runtime state stay ignored ó they are regenerable
 # via `npm run rebuild` and would bloat git history. Force-adding them is
 # explicitly NOT desired.
 librarian-mcp/index/*.json
@@ -323,7 +324,7 @@ librarian-mcp/index/*.jsonl
 librarian-mcp/stitchpunks/sp*_state.json
 
 # ============================================
-# B117 follow-up ‚Äî Stitchpunk Corps Python source
+# B117 follow-up ó Stitchpunk Corps Python source
 # ============================================
 # Same class of reproducibility fix as K441 Half B. The root `*.py` ignore
 # rule catches runtime-critical Python source under librarian-mcp/stitchpunks/
@@ -337,7 +338,7 @@ librarian-mcp/stitchpunks/**/__pycache__/
 librarian-mcp/stitchpunks/**/*.pyc
 
 # ============================================
-# K442 (B117) ‚Äî TouchStone engine + predicates carve-out
+# K442 (B117) ó TouchStone engine + predicates carve-out
 # ============================================
 # The root `*.py` / `*.json` ignore rules also catch runtime-critical files
 # under librarian-mcp/touchstone/ (verify.py, ledger.py, predicates/*.py,
@@ -353,11 +354,11 @@ librarian-mcp/stitchpunks/**/*.pyc
 !librarian-mcp/touchstone/manifest_schema.json
 librarian-mcp/touchstone/**/__pycache__/
 librarian-mcp/touchstone/**/*.pyc
-# Append-only ledger stays ignored ‚Äî runtime state, not source.
+# Append-only ledger stays ignored ó runtime state, not source.
 librarian-mcp/touchstone/ledger.jsonl
 
 # ============================================
-# K455c (B121) ‚Äî Cross-Cathedral benchmark scripts + results
+# K455c (B121) ó Cross-Cathedral benchmark scripts + results
 # ============================================
 # The root `*.py` / `*.json` ignore rules catch the R11 cross-cathedral
 # benchmark orchestrator, adapter, and results JSON files. These are
@@ -367,7 +368,7 @@ librarian-mcp/touchstone/ledger.jsonl
 !librarian-mcp/r10_cross_vendor/results_r11_v3_cross_cathedral_K455c/*.json
 
 # ============================================
-# K471 (B121) ‚Äî R11 corpus-bank realignment carve-outs
+# K471 (B121) ó R11 corpus-bank realignment carve-outs
 # ============================================
 # The root *.json / *.mjs ignore rules catch the sealed question banks and
 # the reseal verification script. These are reproducibility-critical for
@@ -382,7 +383,7 @@ librarian-mcp/touchstone/ledger.jsonl
 !librarian-mcp/tests/test_r11_bank_realignment.mjs
 
 # ============================================
-# K474 (B122) ‚Äî Self-Indexing Scribes auto-keyword sidecars + benchmark results
+# K474 (B122) ó Self-Indexing Scribes auto-keyword sidecars + benchmark results
 # ============================================
 # The root *.yaml / *.py / *.json / *.mjs ignore rules catch the corpus-derived
 # auto-keyword sidecar YAMLs, the rebuild CLI, the unit tests, the Phase B/C
@@ -413,7 +414,7 @@ librarian-mcp/touchstone/ledger.jsonl
 !librarian-mcp/r10_cross_vendor/results_r12_pawn_comet/*.json
 
 # ============================================
-# K477 (B122) ‚Äî Injection-Pathway Iterations benchmark harness + results
+# K477 (B122) ó Injection-Pathway Iterations benchmark harness + results
 # ============================================
 # run_r12_k477_injection_iterations.py is already covered by the K455c carve-out
 # (!librarian-mcp/r10_cross_vendor/**/*.py at line 327).
@@ -422,7 +423,7 @@ librarian-mcp/touchstone/ledger.jsonl
 !librarian-mcp/r10_cross_vendor/results_r12_k477_injection_iterations/*.json
 
 # ============================================
-# K478 (B122) ‚Äî LB Substack Plug: docs, script, tests
+# K478 (B122) ó LB Substack Plug: docs, script, tests
 # ============================================
 # BISHOP_DROPZONE/02_ProjectOps/ is a new subdirectory; the root BISHOP_DROPZONE/*
 # rule ignores it. Unignore the directory and its markdown files.
@@ -434,7 +435,7 @@ librarian-mcp/touchstone/ledger.jsonl
 !librarian-mcp/tests/test_vendor_tablet_capture.py
 
 # ============================================
-# K482 (B123) ‚Äî Root Miner Prototype (#2296)
+# K482 (B123) ó Root Miner Prototype (#2296)
 # ============================================
 !librarian-mcp/miners/
 !librarian-mcp/miners/**/*.py
@@ -446,30 +447,30 @@ librarian-mcp/touchstone/ledger.jsonl
 librarian-mcp/miners/ip_ledger.jsonl
 
 # ============================================
-# K483 (B123) ‚Äî Sculptor Prototype (#2297)
+# K483 (B123) ó Sculptor Prototype (#2297)
 # ============================================
 !librarian-mcp/sculptors/
 !librarian-mcp/sculptors/*.py
 !librarian-mcp/sculptors/*.json
 !librarian-mcp/sculptors/__init__.py
-# Runtime outputs ‚Äî regenerable from bedrock; excluded per >1MB pre-commit hook
+# Runtime outputs ó regenerable from bedrock; excluded per >1MB pre-commit hook
 librarian-mcp/sculptors/filter_decision_log.jsonl
 librarian-mcp/sculptors/outputs/
 librarian-mcp/sculptors/run_summary_K483.json
 
 # ============================================
-# K485 (B123) ‚Äî Eblet substrate
+# K485 (B123) ó Eblet substrate
 # ============================================
 !librarian-mcp/eblets/
 !librarian-mcp/eblets/*.py
 !librarian-mcp/eblets/*.jsonl
 !librarian-mcp/eblets/__init__.py
-# Generation stats and verification reports ‚Äî regenerable; exclude large JSON outputs
+# Generation stats and verification reports ó regenerable; exclude large JSON outputs
 librarian-mcp/eblets/generation_stats_K485.json
 librarian-mcp/eblets/verification_K485.json
 
 # ============================================
-# K484 (B123) ‚Äî Helm PWA V0 skeleton
+# K484 (B123) ó Helm PWA V0 skeleton
 # ============================================
 # The root *.py / *.json / *.md / *.ts ignore rules catch the entire
 # librarian-mcp-helm-pwa/ directory. Carve out all source files.
@@ -490,7 +491,7 @@ librarian-mcp-helm-pwa/out/
 librarian-mcp-helm-pwa/dist/
 
 # ============================================
-# K493 (B123) ‚Äî Recency-Anchor Gradient Analysis
+# K493 (B123) ó Recency-Anchor Gradient Analysis
 # ============================================
 !librarian-mcp/analysis/
 !librarian-mcp/analysis/*.py
@@ -498,7 +499,7 @@ librarian-mcp-helm-pwa/dist/
 !librarian-mcp/analysis/*.json
 
 # ============================================
-# K507 (B124) ‚Äî Pawn-with-Substrate CLI + pyproject.toml
+# K507 (B124) ó Pawn-with-Substrate CLI + pyproject.toml
 # ============================================
 # pawn_with_substrate.py and pawn_with_substrate.ps1 are the K507 CLI tools:
 # substrate-injected Perplexity Sonar Pro with verified real cross-vendor calls.
@@ -517,7 +518,7 @@ librarian-mcp-helm-pwa/dist/
 !librarian-mcp/scripts/install_git_hooks.py
 !librarian-mcp/scripts/git_commit_message.ps1
 !librarian-mcp/scripts/git_commit_message.sh
-# K-MJ-Variant + KP-Refinement Bundle ‚Äî empirical audit + expansion scripts
+# K-MJ-Variant + KP-Refinement Bundle ó empirical audit + expansion scripts
 !librarian-mcp/scripts/audit_mj.py
 !librarian-mcp/scripts/audit_mj_deep.py
 !librarian-mcp/scripts/audit_kp.py
@@ -539,7 +540,7 @@ librarian-mcp-helm-pwa/dist/
 !librarian-mcp/empirical_tests/results/kp_gamma_summary_*.jsonl
 
 # ============================================
-# K514 (B126) ‚Äî Bishop Discipline Wing (#2295 Tier 3)
+# K514 (B126) ó Bishop Discipline Wing (#2295 Tier 3)
 # ============================================
 # Root *.py rule (line 232) catches discipline_wing/*.py. Carve out all source files.
 !discipline_wing/
@@ -558,7 +559,7 @@ librarian-mcp-helm-pwa/dist/
 !discipline_wing/README.md
 
 # ============================================
-# K540 (B132) ‚Äî Wrasse Scribe Registry
+# K540 (B132) ó Wrasse Scribe Registry
 # ============================================
 # Pre-injection trigger registry for agent-spawn rote-cognition tax reduction.
 # JSONL files (wrasse_registry.jsonl, session_ledger.jsonl) are NOT globally
@@ -580,5 +581,5 @@ librarian-mcp-helm-pwa/dist/
 # K-Cathedral-BP010: LibrarianMedallion variant YAML theming registry
 !platform/src/data/librarian_medallion_variants.yaml
 
-# Mnemosyne Hugo bundle (build artifact ó regenerated via npm run build:hugo)
+# Mnemosyne Hugo bundle (build artifact ù regenerated via npm run build:hugo)
 amplify-computer/static/cephas/
