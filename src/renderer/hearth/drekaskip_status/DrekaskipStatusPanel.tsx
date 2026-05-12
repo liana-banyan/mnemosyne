@@ -1,20 +1,94 @@
 // B83c — Drekaskip Wave Status Panel
 // Live readout of current Drekaskip saga + wave instance count
 // B61A commit 42ecdcd — Wave Generator LANDED, 12/12 G-gates PASS
+// BP041 Layer 4: Adaptive Concurrency Carrier hot-tune controls added
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { sagaSubscription } from './saga_subscription';
 import type { SagaState, WaveInstance } from './saga_subscription';
 import { DEFAULT_SAGA_STATE } from './saga_subscription';
+
+interface CapInfo {
+  cap: number;
+  probed_at: string | null;
+  override: number | null;
+  is_stale: boolean;
+}
+
+function formatMinutesAgo(isoTs: string | null): string {
+  if (!isoTs) return 'never';
+  const diffMs  = Date.now() - new Date(isoTs).getTime();
+  const diffMin = Math.floor(diffMs / 60_000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin === 1) return '1 min ago';
+  if (diffMin < 60) return `${diffMin} min ago`;
+  return `${Math.floor(diffMin / 60)}h ago`;
+}
 
 export function DrekaskipStatusPanel() {
   const [state, setState] = useState<SagaState>(DEFAULT_SAGA_STATE);
   const [selected, setSelected] = useState<WaveInstance | null>(null);
 
+  // Layer 4: concurrency cap hot-tune state
+  const [capInfo,     setCapInfo]     = useState<CapInfo | null>(null);
+  const [probing,     setProbing]     = useState(false);
+  const [overrideVal, setOverrideVal] = useState<number>(16);
+  const [overrideOn,  setOverrideOn]  = useState(false);
+
   useEffect(() => {
     const unsub = sagaSubscription.subscribe(setState);
     return unsub;
   }, []);
+
+  // Poll cap info on mount + every 30s
+  const fetchCapInfo = useCallback(async () => {
+    try {
+      const info = await window.amplify.concurrencyGetCap?.();
+      if (info) {
+        setCapInfo(info);
+        if (info.override !== null) {
+          setOverrideVal(info.override);
+          setOverrideOn(true);
+        }
+      }
+    } catch { /* non-fatal */ }
+  }, []);
+
+  useEffect(() => {
+    fetchCapInfo();
+    const timer = setInterval(fetchCapInfo, 30_000);
+    return () => clearInterval(timer);
+  }, [fetchCapInfo]);
+
+  const handleReprobe = useCallback(async () => {
+    setProbing(true);
+    try {
+      const result = await window.amplify.concurrencyProbeNow?.();
+      if (result) {
+        setCapInfo((prev) => prev ? { ...prev, cap: result.cap, probed_at: result.probed_at, is_stale: false } : null);
+      }
+    } catch { /* non-fatal */ }
+    setProbing(false);
+  }, []);
+
+  const handleOverrideToggle = useCallback(async (enabled: boolean) => {
+    setOverrideOn(enabled);
+    const n = enabled ? overrideVal : null;
+    try {
+      await window.amplify.concurrencySetOverride?.(n);
+      setCapInfo((prev) => prev ? { ...prev, override: n, cap: n ?? (prev.cap) } : null);
+    } catch { /* non-fatal */ }
+  }, [overrideVal]);
+
+  const handleOverrideChange = useCallback(async (n: number) => {
+    setOverrideVal(n);
+    if (overrideOn) {
+      try {
+        await window.amplify.concurrencySetOverride?.(n);
+        setCapInfo((prev) => prev ? { ...prev, override: n, cap: n } : null);
+      } catch { /* non-fatal */ }
+    }
+  }, [overrideOn]);
 
   const complete = state.wave_instances.filter((w) => w.status === 'complete').length;
   const inflight = state.wave_instances.filter((w) => w.status === 'in_flight').length;
@@ -97,6 +171,57 @@ export function DrekaskipStatusPanel() {
         <div style={styles.error}>⚠ {state.error.slice(0, 80)}</div>
       )}
 
+      {/* ── Layer 4: Concurrency Cap hot-tune (BP041 Adaptive Concurrency Carrier) ── */}
+      <div style={styles.capSection}>
+        <div style={styles.capRow}>
+          <span style={styles.capLabel}>⚡ Concurrency cap:</span>
+          <span style={{
+            ...styles.capValue,
+            color: capInfo?.override !== null ? '#f6ad55' : '#68d391',
+          }}>
+            {capInfo ? capInfo.cap : '…'}
+            {capInfo?.override !== null && <span style={styles.capOverrideTag}> (override)</span>}
+          </span>
+          <span style={{ ...styles.capStale, color: capInfo?.is_stale ? '#ef4444' : '#4a5568' }}>
+            · {formatMinutesAgo(capInfo?.probed_at ?? null)}
+          </span>
+        </div>
+
+        <div style={styles.capControls}>
+          <button
+            style={{ ...styles.reprobe, opacity: probing ? 0.5 : 1 }}
+            onClick={handleReprobe}
+            disabled={probing}
+            title="Fire fresh concurrency probe — updates cap live"
+          >
+            {probing ? '⏳ Probing…' : '🔬 Re-probe now'}
+          </button>
+        </div>
+
+        {/* Manual override slider — "observe + apply in one screen" */}
+        <div style={styles.overrideRow}>
+          <label style={styles.overrideLabel}>
+            <input
+              type="checkbox"
+              checked={overrideOn}
+              onChange={(e) => handleOverrideToggle(e.target.checked)}
+              style={{ marginRight: '0.3rem' }}
+            />
+            Force cap:
+          </label>
+          <input
+            type="range"
+            min={1}
+            max={64}
+            value={overrideVal}
+            disabled={!overrideOn}
+            onChange={(e) => handleOverrideChange(Number(e.target.value))}
+            style={{ flex: 1, opacity: overrideOn ? 1 : 0.35 }}
+          />
+          <span style={styles.overrideNum}>{overrideVal}</span>
+        </div>
+      </div>
+
       <div style={styles.footer}>
         B61A · 12/12 G-gates · {state.last_queried ? `polled ${new Date(state.last_queried).toLocaleTimeString()}` : 'awaiting first poll'}
       </div>
@@ -170,4 +295,53 @@ const styles: Record<string, React.CSSProperties> = {
   },
   error: { color: '#ef4444', fontSize: '0.7rem' },
   footer: { fontSize: '0.6rem', color: '#4a5568', marginTop: 'auto' },
+
+  // ── Layer 4: Concurrency Cap section ─────────────────────────────────────
+  capSection: {
+    borderTop: '1px solid #2d3748',
+    paddingTop: '0.4rem',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.25rem',
+  },
+  capRow: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '0.3rem',
+  },
+  capLabel: { fontSize: '0.65rem', color: '#718096' },
+  capValue: { fontSize: '0.78rem', fontWeight: 700 },
+  capOverrideTag: { fontSize: '0.6rem', color: '#f6ad55', fontStyle: 'italic' },
+  capStale: { fontSize: '0.6rem' },
+  capControls: { display: 'flex' },
+  reprobe: {
+    background: '#1a1a2e',
+    border: '1px solid #2d3748',
+    borderRadius: '4px',
+    color: '#63b3ed',
+    fontSize: '0.65rem',
+    padding: '0.2rem 0.45rem',
+    cursor: 'pointer',
+    fontWeight: 600,
+  },
+  overrideRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.3rem',
+  },
+  overrideLabel: {
+    fontSize: '0.65rem',
+    color: '#718096',
+    display: 'flex',
+    alignItems: 'center',
+    whiteSpace: 'nowrap' as const,
+    cursor: 'pointer',
+  },
+  overrideNum: {
+    fontSize: '0.65rem',
+    color: '#f6ad55',
+    fontWeight: 700,
+    minWidth: '1.6rem',
+    textAlign: 'right' as const,
+  },
 };

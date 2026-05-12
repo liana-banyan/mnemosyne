@@ -399,6 +399,17 @@ contextBridge.exposeInMainWorld('amplify', {
   drekaskipQuery: (): Promise<{ active_saga: string | null; wave_count: number; wave_instances: unknown[] }> =>
     ipcRenderer.invoke('drekaskip-query'),
 
+  // ── Adaptive Concurrency Carrier — Layer 4 hot-tune (BP041) ──────────────
+
+  concurrencyGetCap: (): Promise<{ cap: number; probed_at: string | null; override: number | null; is_stale: boolean }> =>
+    ipcRenderer.invoke('concurrency-get-cap'),
+
+  concurrencyProbeNow: (): Promise<{ cap: number; probed_at: string; tier: string }> =>
+    ipcRenderer.invoke('concurrency-probe-now'),
+
+  concurrencySetOverride: (n: number | null): Promise<{ ok: boolean; effective_cap: number | null }> =>
+    ipcRenderer.invoke('concurrency-set-override', { n }),
+
   // ── Watchdog Status (B83d) ────────────────────────────────────────────────
 
   watchdogStatus: (): Promise<{ subjects: unknown[]; watchdog_status: string; polled_at: string }> =>
@@ -481,6 +492,10 @@ declare global {
       conjunctionGetSubstrateContext: () => Promise<{ raw_preamble: string; thread_id: string | null; built_at: string }>;
       // Drekaskip (B83c)
       drekaskipQuery: () => Promise<{ active_saga: string | null; wave_count: number; wave_instances: unknown[] }>;
+      // Adaptive Concurrency Carrier — Layer 4 (BP041)
+      concurrencyGetCap: () => Promise<{ cap: number; probed_at: string | null; override: number | null; is_stale: boolean }>;
+      concurrencyProbeNow: () => Promise<{ cap: number; probed_at: string; tier: string }>;
+      concurrencySetOverride: (n: number | null) => Promise<{ ok: boolean; effective_cap: number | null }>;
       // Watchdog (B83d)
       watchdogStatus: () => Promise<{ subjects: unknown[]; watchdog_status: string; polled_at: string }>;
       watchdogHistory: (subject: string, window_hours?: number) => Promise<Array<{ ts: string; level: string; message: string }>>;

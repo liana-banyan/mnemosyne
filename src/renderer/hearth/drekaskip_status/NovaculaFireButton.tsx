@@ -34,10 +34,13 @@ export function NovaculaFireButton() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          anchor: payload.anchor,
-          segs: payload.segs,
-          synthesis_prompt: payload.synthesis_prompt,
+          anchor:              payload.anchor,
+          segs:                payload.segs,
+          synthesis_prompt:    payload.synthesis_prompt,
           synthesis_recipient: payload.synthesis_recipient,
+          // Layer 1 — Adaptive Concurrency Carrier: work-plan declaration
+          seg_count_target:    payload.seg_count_target,
+          acceptable_min:      payload.acceptable_min,
         }),
       });
 
@@ -80,7 +83,7 @@ export function NovaculaFireButton() {
 
       {/* Subtitle */}
       <div style={styles.subtitle}>
-        24 SEGs · ~3–5 min · Member-replicable · K533 canonical test #1
+        24 SEGs · adaptive concurrency · member-replicable · K533 canonical test #1
       </div>
 
       {/* Success state */}

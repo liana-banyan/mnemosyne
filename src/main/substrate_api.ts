@@ -49,6 +49,7 @@ import {
   getWaveSummary,
   type WaveRequest,
 } from './wave_generator';
+import { probeConcurrencyCap } from './concurrency_probe';
 import {
   initTriggerEngine,
   emitSubstrateEvent,
@@ -178,6 +179,13 @@ export class SubstrateAPIServer {
 
     // B61 Phase A — crash-restart resilience: restore in-flight wave state
     initWaveGenerator();
+
+    // Adaptive Concurrency Carrier: 1-hour periodic re-probe (Layer 2)
+    const CONCURRENCY_REPROBE_MS = 60 * 60 * 1_000;
+    setInterval(
+      () => probeConcurrencyCap().catch((e) => console.warn('[substrate-api] hourly cap re-probe error:', e)),
+      CONCURRENCY_REPROBE_MS,
+    ).unref(); // don't block app exit
 
     // B61 Phase C — start trigger engine (Class B/C/D)
     initTriggerEngine();

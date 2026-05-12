@@ -209,6 +209,10 @@ declare global {
       conjunctionGetSubstrateContext: () => Promise<{ raw_preamble: string; thread_id: string | null; built_at: string }>;
       // Drekaskip (B83c)
       drekaskipQuery: () => Promise<import('./hearth/drekaskip_status/saga_subscription').SagaState>;
+      // Adaptive Concurrency Carrier — Layer 4 hot-tune (BP041)
+      concurrencyGetCap?: () => Promise<{ cap: number; probed_at: string | null; override: number | null; is_stale: boolean }>;
+      concurrencyProbeNow?: () => Promise<{ cap: number; probed_at: string; tier: string }>;
+      concurrencySetOverride?: (n: number | null) => Promise<{ ok: boolean; effective_cap: number | null }>;
       // Watchdog (B83d)
       watchdogStatus: () => Promise<import('./hearth/active_substrate/ActiveSubstratePanel').WatchdogStatusPayload>;
       watchdogHistory: (subject: string, window_hours?: number) => Promise<Array<{ ts: string; level: string; message: string }>>;

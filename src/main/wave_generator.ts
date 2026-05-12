@@ -42,6 +42,9 @@ import { resolve } from 'path';
 import { homedir } from 'os';
 import { randomUUID, createHmac, createHash } from 'crypto';
 
+// Layer 2+3: Adaptive Concurrency Carrier
+import { getCachedCap, probeIfStale } from './concurrency_probe';
+
 // ─── Substrate paths ──────────────────────────────────────────────────────────
 
 export const LB_SUBSTRATE_ROOT =
@@ -99,6 +102,14 @@ export interface WaveRequest {
   synthesis_prompt?: string;
   /** Override synthesis SEG recipient. Default: template synthesis_shape or 'knight'. */
   synthesis_recipient?: SegRecipient;
+  /**
+   * Layer 1 — Adaptive Concurrency Carrier: work-plan declaration.
+   * Ideal SEG count the payload declares (not constrained by dispatch shape).
+   * Wave fails if concurrency cap < acceptable_min.
+   */
+  seg_count_target?: number;
+  /** Layer 1: minimum acceptable cap floor. Wave is aborted below this. */
+  acceptable_min?: number;
 }
 
 // ─── Wave Template Types (Phase B / LB-STACK-0164 §3) ────────────────────────
@@ -435,6 +446,13 @@ export function initWaveGenerator(): void {
   }
 
   console.log(`[wave-generator] init complete — ${_waves.size} wave(s) loaded from substrate`);
+
+  // Layer 2: boot-time concurrency cap probe (non-blocking; skips if cache is fresh)
+  setImmediate(() => {
+    probeIfStale().catch((err) =>
+      console.warn('[wave-generator] boot concurrency probe failed (non-fatal):', err),
+    );
+  });
 }
 
 // ─── Operation 2 — DECOMPOSE ──────────────────────────────────────────────────
@@ -450,6 +468,22 @@ function decomposeRequest(req: WaveRequest): SegProgress[] {
     status:    'pending' as const,
     started_at: new Date().toISOString(),
   }));
+}
+
+// ─── Layer 3: Retry-on-empty helpers (R17 SHOW-RESULTS at content layer) ──────
+
+/** Minimum character count for a reply to be considered substantive. */
+const CONTENT_SUBSTANTIVE_MIN = 100;
+
+function isSubstantiveReply(reply: string): boolean {
+  return reply.trim().length >= CONTENT_SUBSTANTIVE_MIN && reply !== '(no reply)';
+}
+
+const SEG_RETRY_MAX    = 3;
+const SEG_RETRY_DELAYS = [1_000, 2_000, 4_000] as const;
+
+async function sleepMs(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
 }
 
 // ─── Operation 3 — DISPATCH (per-SEG) ────────────────────────────────────────
@@ -529,6 +563,51 @@ async function dispatchSeg(
   throw new Error(`Unknown SEG recipient: ${seg.recipient as string}`);
 }
 
+/**
+ * Layer 3: dispatch a SEG with retry-on-empty (exponential backoff).
+ * Retries up to SEG_RETRY_MAX times if reply is null/empty/"(no reply)".
+ * Throws after max retries with a content-empty error (distinct from HTTP error).
+ * This ensures Drekaskip status='error' (not 'done') for empty-content failures — R17.
+ */
+async function dispatchSegWithRetry(
+  seg: SegProgress,
+  segConfig: SegConfig,
+  waveId: string,
+): Promise<string> {
+  for (let attempt = 0; attempt <= SEG_RETRY_MAX; attempt++) {
+    if (attempt > 0) {
+      const delay = SEG_RETRY_DELAYS[attempt - 1] ?? 4_000;
+      console.warn(
+        `[wave-generator] SEG ${seg.seg_id} empty reply (attempt ${attempt}/${SEG_RETRY_MAX}) — retrying in ${delay}ms`,
+      );
+      await sleepMs(delay);
+    }
+
+    try {
+      const reply = await dispatchSeg(seg, segConfig, waveId);
+      if (isSubstantiveReply(reply)) return reply;
+      // dispatch-OK but content-empty — loop to retry
+    } catch (err) {
+      if (attempt < SEG_RETRY_MAX) {
+        console.warn(
+          `[wave-generator] SEG ${seg.seg_id} dispatch error (attempt ${attempt + 1}) — will retry:`,
+          String(err),
+        );
+        continue;
+      }
+      throw new Error(
+        `dispatch failed after ${SEG_RETRY_MAX + 1} attempts: ${String(err)}`,
+      );
+    }
+  }
+
+  // All retries exhausted with empty content
+  throw new Error(
+    `content-empty after ${SEG_RETRY_MAX + 1} attempts — dispatch-OK but no substantive reply ` +
+    `(API concurrency throttle suspected; probe cap via Drekaskip panel)`,
+  );
+}
+
 // ─── Operations 4–6 — WATCH / SYNTHESIZE / REPORT (wave lifecycle) ────────────
 
 const DEFAULT_SYNTHESIS_PROMPT =
@@ -538,7 +617,22 @@ const DEFAULT_SYNTHESIS_PROMPT =
   'Provide a synthesis that integrates all SEG outputs.';
 
 async function runWaveLifecycle(wave: Wave, req: WaveRequest): Promise<void> {
-  // ── RUNNING: Operation 4 — WATCH (parallel dispatch + progress tracking) ──
+  // ── Layer 1: acceptable_min cap gate ──────────────────────────────────────
+  if (req.acceptable_min !== undefined && req.acceptable_min > 0) {
+    const cap = getCachedCap();
+    if (cap < req.acceptable_min) {
+      wave.status = 'aborted';
+      wave.error  =
+        `Concurrency cap (${cap}) is below acceptable_min (${req.acceptable_min}) — wave aborted. ` +
+        `Re-probe via Drekaskip panel or lower acceptable_min in the canonical payload.`;
+      saveWaveJson(wave);
+      _waves.set(wave.wave_id, wave);
+      console.warn(`[wave-generator] wave ${wave.wave_id} aborted: cap ${cap} < acceptable_min ${req.acceptable_min}`);
+      return;
+    }
+  }
+
+  // ── RUNNING: Operation 4 — WATCH (parallel or rolling-window dispatch) ────
   wave.status     = 'running';
   wave.started_at = new Date().toISOString();
   saveWaveJson(wave);
@@ -548,10 +642,10 @@ async function runWaveLifecycle(wave: Wave, req: WaveRequest): Promise<void> {
     seg_id: wave.segs[i]!.seg_id,
   }));
 
-  // Fire all SEG dispatches in parallel
-  const dispatchPromises = wave.segs.map((seg, i) => {
+  // Layer 3: dispatch task builder (retry-on-empty; status='error' on content-empty after retries)
+  function makeDispatchTask(seg: SegProgress, idx: number): Promise<void> {
     logSegProgress(wave, seg, 'STARTED');
-    return dispatchSeg(seg, segConfigs[i]!, wave.wave_id)
+    return dispatchSegWithRetry(seg, segConfigs[idx]!, wave.wave_id)
       .then((reply) => {
         seg.status  = 'done';
         seg.reply   = reply;
@@ -560,15 +654,34 @@ async function runWaveLifecycle(wave: Wave, req: WaveRequest): Promise<void> {
         saveWaveJson(wave);
       })
       .catch((err: unknown) => {
+        // Includes content-empty error — surfaces as 'error', not silently 'done'
         seg.status  = 'error';
         seg.error   = String(err);
         seg.done_at = new Date().toISOString();
         logSegProgress(wave, seg, 'ERROR');
         saveWaveJson(wave);
       });
-  });
+  }
 
-  await Promise.all(dispatchPromises);
+  // Layer 2: rolling-window dispatch when seg count exceeds concurrency cap
+  const cap      = getCachedCap();
+  const segCount = wave.segs.length;
+
+  if (segCount <= cap) {
+    // All parallel (cap is sufficient)
+    await Promise.all(wave.segs.map((seg, i) => makeDispatchTask(seg, i)));
+  } else {
+    // Rolling windows of `cap` size
+    console.log(
+      `[wave-generator] wave ${wave.wave_id}: ${segCount} SEGs > cap ${cap} — using rolling windows`,
+    );
+    for (let start = 0; start < segCount; start += cap) {
+      const end    = Math.min(start + cap, segCount);
+      const window = wave.segs.slice(start, end);
+      await Promise.all(window.map((seg, wi) => makeDispatchTask(seg, start + wi)));
+      console.log(`[wave-generator] window ${start}–${end - 1} complete`);
+    }
+  }
 
   const allDone = wave.segs.every(s => s.status === 'done' || s.status === 'error');
   if (!allDone) {

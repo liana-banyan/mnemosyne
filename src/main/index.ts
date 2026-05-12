@@ -43,6 +43,8 @@ import { querySagaState, recordWaveDispatch, recordWaveComplete } from './hearth
 import { pollWatchdogStatus, getSubjectHistory } from './hearth/active_substrate/watchdog_bridge';
 // BP037 — On-Deck Master-of-Ceremonies
 import { listOnDeck } from './on_deck/on_deck_bridge';
+// Adaptive Concurrency Carrier (Layer 2+4)
+import { getCapInfo, probeConcurrencyCap, setCapOverride } from './concurrency_probe';
 
 // Register custom OAuth scheme before app ready (Electron requirement)
 registerCustomScheme();
@@ -784,6 +786,22 @@ function registerIPCHandlers(): void {
   // Webview preload path — renderer needs this to wire the <webview> preload attribute
   ipcMain.on('get-webview-preload-path', (event) => {
     event.returnValue = join(__dirname, 'hearth', 'embedded_browser', 'webview_preload.js');
+  });
+
+  // ── Adaptive Concurrency Carrier — Layer 4 (hot-tune panel) ─────────────
+
+  ipcMain.handle('concurrency-get-cap', () => {
+    return getCapInfo();
+  });
+
+  ipcMain.handle('concurrency-probe-now', async () => {
+    const entry = await probeConcurrencyCap();
+    return { cap: entry.cap, probed_at: entry.probed_at, tier: entry.account_tier_hint };
+  });
+
+  ipcMain.handle('concurrency-set-override', (_event, { n }: { n: number | null }) => {
+    setCapOverride(n);
+    return { ok: true, effective_cap: n };
   });
 
   // ── On-Deck Master-of-Ceremonies (BP037) ──────────────────────────────────
