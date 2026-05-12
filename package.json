@@ -68,6 +68,7 @@
     "files": [
       "dist/**/*",
       "!dist/**/*.map",
+      "src/renderer/public/**/*",
       "static/**/*",
       "node_modules/**/*",
       "!node_modules/.cache/**",
