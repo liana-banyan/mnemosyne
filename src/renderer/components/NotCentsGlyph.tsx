@@ -1,62 +1,55 @@
-// BP041 — NotCents canonical glyph (D with two vertical strokes).
+// BP041 SAGA 3 — NotCents custom font glyph (replaces inline-PNG stopgap).
 //
-// Unicode "Đ" (U+0110 Latin D With Stroke) is a near-match but visually wrong:
-// it has ONE horizontal stroke through the body. The canonical NotCents is
-// D with TWO vertical strokes (carries NO-FIAT-CONVERSION Blood Rule visually).
+// Renders the canonical NotCents character (D with two vertical strokes)
+// via the CAINotCents single-glyph font at PUA codepoint U+E000.
 //
-// IMMEDIATE: this component renders the canonical PNG at text-height.
-// FUTURE: replace `<img>` with `<span className="cai-font">{''}</span>`
-// once the single-glyph custom font lands (see Knight ticket
-// P-NOTCENTS-CUSTOM-FONT). The font path maps the glyph to PUA codepoint
-// U+E000 so it behaves like real Unicode within Mnemosyne — selectable,
-// resizable, color-stylable.
+// Font file: src/renderer/public/fonts/cai-notcents.{woff2,ttf}
+// Generated: scripts/generate_notcents_font.py (fonttools; AGPL Free Forever)
 //
-// Founder direct (BP041): *"NotCents is not accurate. My png is. How do we
-// get a character set that adds NotCents to the normal things operating
-// systems and such use? Take the Font route, but just one character."*
+// Benefits over inline-PNG (Bishop stopgap in fd17e52):
+//   - CSS-styleable (color, size, weight, opacity, transform)
+//   - Selectable text — member can copy NotCents in any text context
+//   - Resolution-independent vector — crisp at any zoom level
+//   - Lighter (916-byte WOFF2 vs per-call image load)
+//   - Works in any text flow without vertical-align hacks
+//
+// Founder direct (BP041): "Take the Font route, but just one character."
+// Canon: project_notcents_custom_font_one_glyph_bp041.md
+// NO-FIAT-CONVERSION Blood Rule — this glyph IS the visual identity of
+// substitution-only cooperative economics.
 
 import type { CSSProperties } from 'react';
 
 interface NotCentsGlyphProps {
-  size?: string;           // e.g. '1em' (default) or '1.4rem'
-  alt?: string;            // accessibility label
-  style?: CSSProperties;   // additional override
+  size?: string;         // e.g. '1em' (default) or '1.4rem'
+  alt?: string;          // accessibility label for aria-label
+  style?: CSSProperties; // additional style overrides
   className?: string;
+  color?: string;        // override glyph fill color (defaults to currentColor)
 }
+
+// U+E000 — Private Use Area, first slot (CAINotCents font maps glyph here)
+const NOTCENTS_CHAR = '\uE000';
 
 export function NotCentsGlyph({
   size = '1em',
   alt = 'NotCents',
   style,
   className,
+  color,
 }: NotCentsGlyphProps) {
   return (
-    <img
-      src="/icons/notcents.png"
-      alt={alt}
-      className={className}
+    <span
+      className={`cai-glyph ${className ?? ''}`}
+      aria-label={alt}
+      role="img"
       style={{
-        height: size,
-        width: 'auto',
-        verticalAlign: '-0.14em',
-        display: 'inline-block',
-        // BP041 — Founder direct: "Can we not invert the colors, so that it is
-        // white outlined in black, so you can see it on a dark background or
-        // light regardless, and the white box is transparent or nonexistent?"
-        //
-        // Source PNG: black glyph on white background.
-        // filter: invert(1)         → white glyph on black background
-        // mix-blend-mode: screen   → black "falls away" on any non-pure-black
-        //                            surface → effectively transparent bg
-        // brightness lift           → glyph reads crisp at small sizes
-        //
-        // Future (P-NOTCENTS-CUSTOM-FONT): replace img+filter with font
-        // glyph at PUA U+E000; CSS `color` controls the rendered fill.
-        filter: 'invert(1) brightness(1.15) contrast(1.1)',
-        mixBlendMode: 'screen',
-        imageRendering: 'auto',
+        fontSize: size,
+        color: color ?? 'currentColor',
         ...style,
       }}
-    />
+    >
+      {NOTCENTS_CHAR}
+    </span>
   );
 }

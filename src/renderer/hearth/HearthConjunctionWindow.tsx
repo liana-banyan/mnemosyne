@@ -212,6 +212,24 @@ export function HearthConjunctionWindow() {
           <span style={styles.windowTitle}>Mnemosyne</span>
           <span style={styles.heavyBooster}>HEAVY BOOSTER TEST</span>
           <div style={styles.topBarSpacer} />
+          {/* BP041 SAGA 3 — Watch View toggle (Ctrl+Shift+M) */}
+          <button
+            style={{
+              ...styles.contextBtn,
+              ...(lastClickedBtn === 'watch_view' ? styles.contextBtnFlash : {}),
+            }}
+            onClick={() => {
+              flashBtn('watch_view');
+              // Hide this window; the FrameModeIndicator overlay remains visible with OverlayTag
+              window.amplify?.hideToWatchView?.().catch?.(() => {/* non-fatal */});
+            }}
+            title="Switch to Watch View — Mnemosyne fades to frame border. Press Ctrl+Shift+M or click the tag to return."
+            aria-label="Switch to Watch View — hide main window, substrate stays active"
+            aria-keyshortcuts="Control+Shift+M"
+          >
+            👁 Watch
+          </button>
+
           {/* BP041 — Page-reload button + flash feedback on click */}
           <button
             style={{

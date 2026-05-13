@@ -1,12 +1,39 @@
 /* AMPLIFY Computer — Global Styles */
 /* Transparent overlay — only the border and corner indicator are visible */
 
+/* ─── CAINotCents custom font (BP041 SAGA 3) ────────────────────────────────── */
+/* Single-glyph font: NotCents (D with two vertical strokes) at PUA U+E000.      */
+/* Founder direct: "Take the Font route, but just one character."                 */
+/* AGPL Free Forever. NO-FIAT-CONVERSION visual identity.                         */
+@font-face {
+  font-family: 'CAINotCents';
+  src: url('/fonts/cai-notcents.woff2') format('woff2'),
+       url('/fonts/cai-notcents.ttf') format('truetype');
+  font-display: block; /* prevent FOUT — glyph must render on first paint */
+  unicode-range: U+E000; /* restrict to single PUA codepoint */
+}
+
+/* Helper class: apply NotCents font. Use <span class="cai-glyph">&#xE000;</span> */
+.cai-glyph {
+  font-family: 'CAINotCents', system-ui, sans-serif;
+  font-style: normal;
+  font-weight: normal;
+  line-height: 1;
+  display: inline-block;
+  vertical-align: -0.1em;
+}
+
 :root {
-  /* §7 BP041 — mode-color tint: orange=cloud-spend, green=substrate-only, blue=local-Hearth */
-  --color-ai-burst: #f97316;
-  --color-ai-burst-dark: #ea6c0a;
-  --color-normal: #16a34a;
-  --color-fallback: #3b82f6;
+  /* §7 BP041 / SAGA 3 — mode triple-channel accessibility update (Founder direct BP041):
+     Fire=yellow(solid)  Hearth=green(dashed)  Cool=blue(dotted)
+     Triple-channel: hue + luminance + dash-pattern = WCAG-AA for all color-vision types.
+     Deuteranopia: yellow vs blue distinct + dash distinguishes Fire from Hearth.
+     Monochromacy: dash pattern is the only mode signal — critical.
+     K533 test #7: verify in DevTools Rendering > Emulate vision deficiencies. */
+  --color-ai-burst: #facc15;       /* Fire — warm yellow (was orange #f97316) */
+  --color-ai-burst-dark: #eab308;  /* Fire dark variant */
+  --color-normal: #22c55e;         /* Hearth — green (local Ollama) */
+  --color-fallback: #3b82f6;       /* Cool — blue (substrate cache) */
   --border-width: 4px;
   --corner-size: 120px;
   --corner-padding: 8px;
@@ -53,43 +80,51 @@ body {
   transition: background 0.4s ease;
 }
 
-/* AI Burst (orange — cloud API spend): pulsing border + orange corner glow */
+/* ─── SAGA 3 BP041: Fire=yellow/solid  Hearth=green/dashed  Cool=blue/dotted ── */
+/* Triple-channel accessibility: hue + luminance + border-dash-pattern.          */
+/* Founder direct: "yellow, and green, and blue … long dash, solid, short dash." */
+
+/* Fire (🔥 yellow — cloud AI spend, solid border): pulsing yellow + corner glow */
 .lb-frame--ai_burst::before {
   border-color: var(--color-ai-burst);
+  border-style: solid;   /* Fire = solid — continuous burn */
   box-shadow:
-    0 0 10px 3px rgba(249, 115, 22, 0.55),
-    inset 0 0 8px 2px rgba(249, 115, 22, 0.18);
+    0 0 10px 3px rgba(250, 204, 21, 0.55),
+    inset 0 0 8px 2px rgba(250, 204, 21, 0.18);
   animation: pulse-ai-burst 1.5s ease-in-out infinite;
 }
 .lb-frame--ai_burst::after {
   background:
-    radial-gradient(ellipse 80px 80px at 0% 0%,   rgba(249, 115, 22, 0.22) 0%, transparent 100%),
-    radial-gradient(ellipse 80px 80px at 100% 0%,  rgba(249, 115, 22, 0.22) 0%, transparent 100%),
-    radial-gradient(ellipse 80px 80px at 0% 100%,  rgba(249, 115, 22, 0.22) 0%, transparent 100%),
-    radial-gradient(ellipse 80px 80px at 100% 100%, rgba(249, 115, 22, 0.22) 0%, transparent 100%);
+    radial-gradient(ellipse 80px 80px at 0% 0%,   rgba(250, 204, 21, 0.22) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 100% 0%,  rgba(250, 204, 21, 0.22) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 0% 100%,  rgba(250, 204, 21, 0.22) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 100% 100%, rgba(250, 204, 21, 0.22) 0%, transparent 100%);
 }
 
 @keyframes pulse-ai-burst {
-  0%, 100% { box-shadow: 0 0 8px 2px rgba(249, 115, 22, 0.5), inset 0 0 4px 1px rgba(249, 115, 22, 0.12); }
-  50%       { box-shadow: 0 0 18px 5px rgba(249, 115, 22, 0.75), inset 0 0 12px 3px rgba(249, 115, 22, 0.28); }
+  0%, 100% { box-shadow: 0 0 8px 2px rgba(250, 204, 21, 0.5),  inset 0 0 4px 1px rgba(250, 204, 21, 0.12); }
+  50%       { box-shadow: 0 0 18px 5px rgba(250, 204, 21, 0.75), inset 0 0 12px 3px rgba(250, 204, 21, 0.28); }
 }
 
-/* Normal (green — substrate-only, no cloud cost): static border + green corner glow */
+/* Hearth (🪵 green — local Ollama, zero marginal cost, dashed border): rhythmic burn */
 .lb-frame--normal::before {
   border-color: var(--color-normal);
-  box-shadow: 0 0 5px 1px rgba(22, 163, 74, 0.35);
+  border-style: dashed;  /* Hearth = dashed — local model, rhythmic cadence */
+  border-width: 4px;     /* slightly explicit so dashes read cleanly */
+  box-shadow: 0 0 5px 1px rgba(34, 197, 94, 0.35);
 }
 .lb-frame--normal::after {
   background:
-    radial-gradient(ellipse 80px 80px at 0% 0%,   rgba(22, 163, 74, 0.18) 0%, transparent 100%),
-    radial-gradient(ellipse 80px 80px at 100% 0%,  rgba(22, 163, 74, 0.18) 0%, transparent 100%),
-    radial-gradient(ellipse 80px 80px at 0% 100%,  rgba(22, 163, 74, 0.18) 0%, transparent 100%),
-    radial-gradient(ellipse 80px 80px at 100% 100%, rgba(22, 163, 74, 0.18) 0%, transparent 100%);
+    radial-gradient(ellipse 80px 80px at 0% 0%,   rgba(34, 197, 94, 0.18) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 100% 0%,  rgba(34, 197, 94, 0.18) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 0% 100%,  rgba(34, 197, 94, 0.18) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 100% 100%, rgba(34, 197, 94, 0.18) 0%, transparent 100%);
 }
 
-/* Fallback (blue — local Hearth/Ollama, fully local, zero cloud): blue corner glow */
+/* Cool (❄️ blue — substrate cache only, zero always, dotted border): banked heartbeat */
 .lb-frame--fallback::before {
   border-color: var(--color-fallback);
+  border-style: dotted;  /* Cool = dotted — substrate awake, no flame */
   box-shadow: 0 0 5px 1px rgba(59, 130, 246, 0.35);
 }
 .lb-frame--fallback::after {

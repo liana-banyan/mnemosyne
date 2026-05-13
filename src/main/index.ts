@@ -722,6 +722,27 @@ function registerIPCHandlers(): void {
 
   ipcMain.on('open-hearth-conjunction', () => openHearthConjunctionWindow());
 
+  // BP041 SAGA 3 — Watch View toggle
+  // hideToWatchView: hides the conjunction window while keeping the overlay + substrate alive.
+  // The FrameModeIndicator overlay remains visible (it's a separate transparent window).
+  // Member restores by clicking the OverlayTag or pressing Ctrl+Shift+M (global shortcut below).
+  ipcMain.handle('hide-to-watch-view', () => {
+    if (hearthConjunctionWindow && !hearthConjunctionWindow.isDestroyed()) {
+      hearthConjunctionWindow.hide();
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle('show-hearth-conjunction', () => {
+    if (hearthConjunctionWindow && !hearthConjunctionWindow.isDestroyed()) {
+      hearthConjunctionWindow.show();
+      hearthConjunctionWindow.focus();
+    } else {
+      openHearthConjunctionWindow();
+    }
+    return { ok: true };
+  });
+
   ipcMain.handle('conjunction-get-state', () => conjunctionRouter.getState());
 
   ipcMain.handle('conjunction-get-availability', () => conjunctionRouter.getAvailability());
@@ -997,6 +1018,25 @@ app.whenReady().then(async () => {
     overlayWindow?.hide();
     dashboardWindow?.hide();
   });
+
+  // BP041 SAGA 3 — Ctrl+Shift+M: toggle between Configure View and Watch View.
+  // Watch View = conjunction window hidden; overlay border + OverlayTag visible.
+  // Configure View = conjunction window shown + focused.
+  const okWatchToggle = globalShortcut.register('CommandOrControl+Shift+M', () => {
+    if (!hearthConjunctionWindow || hearthConjunctionWindow.isDestroyed()) {
+      openHearthConjunctionWindow();
+      return;
+    }
+    if (hearthConjunctionWindow.isVisible()) {
+      hearthConjunctionWindow.hide();  // → Watch View
+    } else {
+      hearthConjunctionWindow.show();  // → Configure View
+      hearthConjunctionWindow.focus();
+    }
+  });
+  if (!okWatchToggle) {
+    console.warn('[index] Ctrl+Shift+M shortcut registration failed (already registered by another app)');
+  }
 
   // §6 — Dev menu toggle: Ctrl+Shift+D shows/hides the Electron application menu
   let devMenuVisible = false;

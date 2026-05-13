@@ -376,6 +376,15 @@ contextBridge.exposeInMainWorld('amplify', {
   openHearthConjunction: (): void =>
     ipcRenderer.send('open-hearth-conjunction'),
 
+  // BP041 SAGA 3 — Watch View toggle
+  // hideToWatchView: hides the full window; frame border + OverlayTag remain visible.
+  // showHearthConjunction (alias): restores window from Watch View.
+  hideToWatchView: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('hide-to-watch-view'),
+
+  showHearthConjunction: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('show-hearth-conjunction'),
+
   conjunctionGetState: (): Promise<import('./hearth/conjunction/types').ConjunctionPanelState> =>
     ipcRenderer.invoke('conjunction-get-state'),
 
@@ -559,6 +568,9 @@ declare global {
       onHearthBuildError: (cb: (err: { appUuid: string; appName: string; error: string; lastStderr: string }) => void) => () => void;
       // Hearth Conjunction Window (B83)
       openHearthConjunction: () => void;
+      // BP041 SAGA 3 — Watch View toggle
+      hideToWatchView?: () => Promise<{ ok: boolean }>;
+      showHearthConjunction?: () => Promise<{ ok: boolean }>;
       conjunctionGetState: () => Promise<unknown>;
       conjunctionGetAvailability: () => Promise<unknown>;
       conjunctionSelect: (mode: string) => Promise<{ ok: boolean; previous: string }>;
