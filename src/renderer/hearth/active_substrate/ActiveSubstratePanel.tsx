@@ -1,11 +1,13 @@
-// B83d — Active Substrate Panel (Watchdog Health Grid)
-// 9-subject health grid — visualization surface for Watchdog Knight daemon
-// Coffee §9 "9 of 9 operational" — empirical receipt for the claim
-// Polling: 5s for grid; 1s on hover; click → drilldown drawer
+// BP041 SAGA 2 — Active Substrate Panel (flip-card refactor)
+// Front face: 9-subject Watchdog health grid
+// Back face: ScribeDetailView — name · role · LB-STACK · activity · output · MONITOR toggle
+// Slide-replace animation (translateX) between front/back
+// Multi-scribe combined F/C/A dashboard when N scribes monitored
 
 import { useState, useEffect, useCallback } from 'react';
 import { HealthGrid } from './health_grid';
-import { SubjectDrilldown } from './subject_drilldown';
+import { ScribeDetailView } from './ScribeDetailView';
+import type { ScribeMetricSummary } from './ScribeDetailView';
 
 export type SubjectStatus = 'green' | 'yellow' | 'red' | 'gray';
 
@@ -29,15 +31,22 @@ export function ActiveSubstratePanel() {
   const [status, setStatus] = useState<WatchdogStatusPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<SubjectHealth | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
+
+  // Flip-card state
+  const [flippedScribe, setFlippedScribe] = useState<SubjectHealth | null>(null);
+  const [isAnimating, setIsAnimating] = useState(false);
   const [history, setHistory] = useState<Array<{ ts: string; level: string; message: string }>>([]);
+
+  // Monitor state
+  const [monitorStates, setMonitorStates] = useState<Record<string, boolean>>({});
+  const [metricsCache, setMetricsCache] = useState<Record<string, ScribeMetricSummary>>({});
 
   const poll = useCallback(async () => {
     setLoading(true);
     try {
       const result = await window.amplify.watchdogStatus?.() ?? null;
-      if (result) setStatus(result);
+      if (result) setStatus(result as WatchdogStatusPayload);
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -53,70 +62,180 @@ export function ActiveSubstratePanel() {
     return () => clearInterval(timer);
   }, [poll]);
 
-  // 1s poll when hovering
+  // 1s poll when hovering (front face only)
   useEffect(() => {
-    if (!hovered) return;
+    if (!hovered || flippedScribe) return;
     const timer = setInterval(poll, 1000);
     return () => clearInterval(timer);
-  }, [hovered, poll]);
+  }, [hovered, flippedScribe, poll]);
 
-  // Load history when subject selected
+  // Load history when scribe flipped to back face
   useEffect(() => {
-    if (!selected) { setHistory([]); return; }
-    window.amplify.watchdogHistory?.(selected.short_name, 1).then(setHistory).catch(() => setHistory([]));
-  }, [selected]);
+    if (!flippedScribe) { setHistory([]); return; }
+    window.amplify.watchdogHistory?.(flippedScribe.short_name, 1)
+      .then(setHistory)
+      .catch(() => setHistory([]));
+  }, [flippedScribe]);
+
+  // Load monitor states on mount
+  useEffect(() => {
+    window.amplify.scribeGetMetrics?.([])
+      .then((empty) => {
+        if (Array.isArray(empty)) {
+          const states: Record<string, boolean> = {};
+          (empty as ScribeMetricSummary[]).forEach((m) => {
+            states[m.scribe_id] = m.monitor_enabled;
+          });
+          setMonitorStates(states);
+        }
+      })
+      .catch(() => { /* not available yet */ });
+  }, []);
+
+  // Refresh metrics for flipped scribe + all monitored
+  const refreshMetrics = useCallback(async (scribeIds: string[]) => {
+    if (scribeIds.length === 0) return;
+    try {
+      const results = await window.amplify.scribeGetMetrics?.(scribeIds);
+      if (!results) return;
+      const next: Record<string, ScribeMetricSummary> = { ...metricsCache };
+      (results as ScribeMetricSummary[]).forEach((m) => {
+        next[m.scribe_id] = m;
+      });
+      setMetricsCache(next);
+    } catch { /* not available */ }
+  }, [metricsCache]);
+
+  // When flipping to a scribe, load its metrics + all monitored metrics
+  useEffect(() => {
+    if (!flippedScribe) return;
+    const monitoredIds = Object.entries(monitorStates)
+      .filter(([, on]) => on)
+      .map(([id]) => id);
+    const idsToFetch = Array.from(new Set([flippedScribe.short_name, ...monitoredIds]));
+    refreshMetrics(idsToFetch);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flippedScribe, monitorStates]);
+
+  const handleSubjectClick = (s: SubjectHealth) => {
+    if (isAnimating) return;
+    if (flippedScribe?.short_name === s.short_name) {
+      // Flip back
+      handleBack();
+      return;
+    }
+    setIsAnimating(true);
+    setFlippedScribe(s);
+    setTimeout(() => setIsAnimating(false), 420);
+  };
+
+  const handleBack = () => {
+    if (isAnimating) return;
+    setIsAnimating(true);
+    setFlippedScribe(null);
+    setTimeout(() => setIsAnimating(false), 420);
+  };
+
+  const handleToggleMonitor = async (scribeId: string, on: boolean) => {
+    try {
+      await window.amplify.scribeToggleMonitor?.(scribeId, on);
+      setMonitorStates((prev) => ({ ...prev, [scribeId]: on }));
+      // Refresh metrics immediately after toggle
+      const monitoredIds = Object.entries({ ...monitorStates, [scribeId]: on })
+        .filter(([, enabled]) => enabled)
+        .map(([id]) => id);
+      const idsToFetch = Array.from(new Set([scribeId, ...monitoredIds]));
+      await refreshMetrics(idsToFetch);
+    } catch { /* IPC not wired yet */ }
+  };
 
   const watchdogColor = status?.watchdog_status === 'green' ? '#22c55e'
     : status?.watchdog_status === 'yellow' ? '#f6ad55'
     : status?.watchdog_status === 'red' ? '#ef4444' : '#4a5568';
 
+  const isFlipped = flippedScribe !== null;
+
+  const monitoredMetrics = Object.entries(monitorStates)
+    .filter(([, on]) => on)
+    .map(([id]) => metricsCache[id])
+    .filter(Boolean) as ScribeMetricSummary[];
+
   return (
     <div style={styles.panel}>
+      {/* Static header — always visible */}
       <div style={styles.header}>
         <span style={styles.icon}>🔬</span>
         <span style={styles.title}>Active Substrate</span>
+        {isFlipped && flippedScribe && (
+          <span style={styles.flipLabel}>{flippedScribe.name}</span>
+        )}
         <span style={{ ...styles.watchdogBadge, color: watchdogColor }} title={`Watchdog: ${status?.watchdog_status ?? 'unknown'}`}>
           Watchdog {status?.watchdog_status ?? '…'}
         </span>
-        {loading && <span style={styles.polling}>polling</span>}
+        {loading && !isFlipped && <span style={styles.polling}>polling</span>}
       </div>
 
-      {status ? (
-        <>
-          <HealthGrid
-            subjects={status.subjects}
-            onSubjectClick={(s) => setSelected(selected?.short_name === s.short_name ? null : s)}
-            hoveredSubject={hovered}
-            onHoverChange={setHovered}
-          />
+      {/* Flip-card content area: horizontal slide between front and back */}
+      <div style={styles.flipViewport}>
+        <div
+          style={{
+            ...styles.flipTrack,
+            transform: isFlipped ? 'translateX(-50%)' : 'translateX(0)',
+          }}
+        >
+          {/* Front face — HealthGrid */}
+          <div style={styles.flipPane}>
+            {status ? (
+              <>
+                <HealthGrid
+                  subjects={status.subjects}
+                  onSubjectClick={handleSubjectClick}
+                  hoveredSubject={hovered}
+                  onHoverChange={setHovered}
+                />
 
-          {selected && (
-            <SubjectDrilldown
-              subject={selected}
-              history={history}
-              onClose={() => setSelected(null)}
-            />
-          )}
-        </>
-      ) : (
-        <div style={styles.placeholder}>
-          {loading ? 'Polling Watchdog…' : error ? `⚠ ${error.slice(0, 80)}` : 'No data yet'}
+                {status.polled_at && (
+                  <div style={styles.footer}>
+                    {status.subjects.filter((s) => s.status === 'green').length}/9 green
+                    {' · '}polled {new Date(status.polled_at).toLocaleTimeString()}
+                    {monitoredMetrics.length > 0 && (
+                      <span style={styles.monitorBadge}>
+                        {' · '}⬤ {monitoredMetrics.length} monitored
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div style={styles.legend}>
+                  <span style={styles.legendGreen}>● green</span>=healthy
+                  <span style={styles.legendYellow}> ◐ yellow</span>=degraded
+                  <span style={styles.legendRed}> ✕ red</span>=error
+                  <span style={styles.legendGray}> ○ gray</span>=not registered
+                  <span style={styles.legendHint}> · click card to inspect</span>
+                </div>
+              </>
+            ) : (
+              <div style={styles.placeholder}>
+                {loading ? 'Polling Watchdog…' : error ? `⚠ ${error.slice(0, 80)}` : 'No data yet'}
+              </div>
+            )}
+          </div>
+
+          {/* Back face — ScribeDetailView */}
+          <div style={styles.flipPane}>
+            {flippedScribe && (
+              <ScribeDetailView
+                subject={flippedScribe}
+                history={history}
+                monitorEnabled={monitorStates[flippedScribe.short_name] ?? false}
+                metrics={metricsCache[flippedScribe.short_name] ?? null}
+                allMonitoredMetrics={monitoredMetrics}
+                onToggleMonitor={(on) => handleToggleMonitor(flippedScribe.short_name, on)}
+                onBack={handleBack}
+              />
+            )}
+          </div>
         </div>
-      )}
-
-      {status?.polled_at && (
-        <div style={styles.footer}>
-          {status.subjects.filter((s) => s.status === 'green').length}/9 green
-          {' · '}polled {new Date(status.polled_at).toLocaleTimeString()}
-        </div>
-      )}
-
-      {/* Color semantics reference */}
-      <div style={styles.legend}>
-        <span style={styles.legendGreen}>● green</span>=healthy
-        <span style={styles.legendYellow}> ◐ yellow</span>=degraded
-        <span style={styles.legendRed}> ✕ red</span>=error
-        <span style={styles.legendGray}> ○ gray</span>=not registered
       </div>
     </div>
   );
@@ -134,18 +253,62 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid #2d3748',
     height: '100%',
     boxSizing: 'border-box',
-    overflow: 'auto',
+    overflow: 'hidden',
   },
-  header: { display: 'flex', alignItems: 'center', gap: '0.4rem' },
+  header: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.4rem',
+    flexShrink: 0,
+  },
   icon: { fontSize: '1rem' },
   title: { fontWeight: 700, fontSize: '0.85rem', color: '#68d391' },
+  flipLabel: {
+    fontSize: '0.72rem',
+    color: '#63b3ed',
+    background: '#1a2035',
+    borderRadius: '3px',
+    padding: '0.1rem 0.4rem',
+    maxWidth: 120,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
   watchdogBadge: { marginLeft: 'auto', fontSize: '0.7rem', fontWeight: 600 },
   polling: { fontSize: '0.65rem', color: '#4a5568' },
+
+  // Flip viewport clips overflow (shows only one pane at a time)
+  flipViewport: {
+    flex: 1,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+
+  // Track is 200% wide; each pane is 50% = 100% of viewport
+  flipTrack: {
+    display: 'flex',
+    width: '200%',
+    height: '100%',
+    transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+  },
+
+  // Each pane is 50% of track = 100% of viewport
+  flipPane: {
+    width: '50%',
+    height: '100%',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.4rem',
+    overflow: 'hidden',
+  },
+
   placeholder: { color: '#4a5568', fontSize: '0.8rem', textAlign: 'center', padding: '1rem' },
-  footer: { fontSize: '0.6rem', color: '#4a5568' },
-  legend: { fontSize: '0.6rem', color: '#4a5568', display: 'flex', gap: '0.25rem', flexWrap: 'wrap' },
+  footer: { fontSize: '0.6rem', color: '#4a5568', flexShrink: 0 },
+  monitorBadge: { color: '#68d391' },
+  legend: { fontSize: '0.6rem', color: '#4a5568', display: 'flex', gap: '0.25rem', flexWrap: 'wrap', flexShrink: 0 },
   legendGreen: { color: '#22c55e' },
   legendYellow: { color: '#f6ad55' },
   legendRed: { color: '#ef4444' },
   legendGray: { color: '#4a5568' },
+  legendHint: { color: '#2d3748', fontStyle: 'italic' },
 };

@@ -42,6 +42,7 @@ import { conjunctionRouter } from './hearth/conjunction/conjunction_router';
 import { buildSubstrateContext } from './hearth/embedded_browser/substrate_context_builder';
 import { querySagaState, recordWaveDispatch, recordWaveComplete } from './hearth/drekaskip_status/drekaskip_bridge';
 import { pollWatchdogStatus, getSubjectHistory } from './hearth/active_substrate/watchdog_bridge';
+import { toggleMonitor, getMetrics, getAllMonitorStates } from './hearth/active_substrate/scribe_monitor';
 // BP037 — On-Deck Master-of-Ceremonies
 import { listOnDeck } from './on_deck/on_deck_bridge';
 // Adaptive Concurrency Carrier (Layer 2+4)
@@ -785,6 +786,39 @@ function registerIPCHandlers(): void {
     'watchdog-history',
     async (_event, { subject, window_hours }: { subject: string; window_hours?: number }) => {
       return getSubjectHistory(subject, window_hours);
+    },
+  );
+
+  // ── Scribe Monitor — BP041 SAGA 2 ────────────────────────────────────────
+
+  ipcMain.handle(
+    'scribe-toggle-monitor',
+    (_event, { scribeId, on }: { scribeId: string; on: boolean }) => {
+      return toggleMonitor(scribeId, on);
+    },
+  );
+
+  ipcMain.handle(
+    'scribe-get-metrics',
+    (_event, { scribeIds }: { scribeIds: string[] }) => {
+      if (!scribeIds || scribeIds.length === 0) {
+        // Return current enabled states as minimal summaries for initial hydration
+        const states = getAllMonitorStates();
+        return Object.entries(states).map(([scribe_id, monitor_enabled]) => ({
+          scribe_id,
+          monitor_enabled,
+          monitored_since: null,
+          event_count: 0,
+          total_speed_delta_ms: 0,
+          total_accuracy_delta: 0,
+          total_cost_delta_tokens: 0,
+          avg_speed_delta_ms: 0,
+          avg_accuracy_delta: 0,
+          avg_cost_delta_tokens: 0,
+          last_updated: null,
+        }));
+      }
+      return getMetrics(scribeIds);
     },
   );
 

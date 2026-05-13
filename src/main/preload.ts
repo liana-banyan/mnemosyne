@@ -486,6 +486,22 @@ contextBridge.exposeInMainWorld('amplify', {
   /** Get active Pantheon sessions */
   pantheonActiveSessions: (): Promise<Array<{ session_id: string; started_at: string; folder_path: string; total_tablets_so_far: number }>> =>
     ipcRenderer.invoke('pantheon-active-sessions'),
+
+  // ── Scribe Monitor — BP041 SAGA 2 ────────────────────────────────────────
+
+  /** Toggle per-scribe metric monitoring ON/OFF */
+  scribeToggleMonitor: (
+    scribeId: string,
+    on: boolean,
+  ): Promise<{ ok: boolean; enabled: boolean; monitored_since: string | null }> =>
+    ipcRenderer.invoke('scribe-toggle-monitor', { scribeId, on }),
+
+  /**
+   * Get aggregated metric summaries for given scribe IDs.
+   * Pass an empty array to get initial enabled-state hydration for all known scribes.
+   */
+  scribeGetMetrics: (scribeIds: string[]): Promise<import('./hearth/active_substrate/scribe_monitor').ScribeMetricSummary[]> =>
+    ipcRenderer.invoke('scribe-get-metrics', { scribeIds }),
 });
 
 // ─── Global type extension ────────────────────────────────────────────────────
@@ -573,6 +589,21 @@ declare global {
       pantheonCountTablets: (memberId: string) => Promise<{ iron: number; stone: number; total: number }>;
       pantheonWipe: (memberId: string) => Promise<{ wiped: number }>;
       pantheonActiveSessions: () => Promise<unknown[]>;
+      // Scribe Monitor — BP041 SAGA 2
+      scribeToggleMonitor?: (scribeId: string, on: boolean) => Promise<{ ok: boolean; enabled: boolean; monitored_since: string | null }>;
+      scribeGetMetrics?: (scribeIds: string[]) => Promise<Array<{
+        scribe_id: string;
+        monitor_enabled: boolean;
+        monitored_since: string | null;
+        event_count: number;
+        total_speed_delta_ms: number;
+        total_accuracy_delta: number;
+        total_cost_delta_tokens: number;
+        avg_speed_delta_ms: number;
+        avg_accuracy_delta: number;
+        avg_cost_delta_tokens: number;
+        last_updated: string | null;
+      }>>;
     };
   }
 }
