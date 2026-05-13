@@ -13,7 +13,7 @@
 //   - RIGHT — running aggregates: completion %, substantive count, errors,
 //             in-flight count, wall-clock, synthesis-present flag
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { sagaSubscription } from './saga_subscription';
 
 interface SegState {
@@ -101,7 +101,44 @@ export function LiveSegWatch({ waveId: explicitWaveId, maxHeight = 320, title = 
     return () => { active = false; clearInterval(interval); };
   }, [targetWaveId]);
 
+  // BP041 — animated dot trail. Founder direct: "would it be a lot to have a
+  // .................................................................... that
+  // keeps going as each gets done... constantly showing the progress being made
+  // with motion like that?"
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!wave || wave.status === 'complete' || wave.status === 'aborted') return;
+    const t = setInterval(() => setTick((n) => (n + 1) % 60), 150);
+    return () => clearInterval(t);
+  }, [wave?.status, wave?.wave_id]);
+
+  // BP041 — auto-focus on current HOT SEG. Founder direct: "the screen should
+  // focus on the current point, like when you map in google maps, it centers
+  // you and you see your triangle move along the roadway."
+  const segListRef = useRef<HTMLDivElement | null>(null);
+
   const segs = wave?.segs ?? [];
+
+  // Find the active SEG (first HOT, else first pending, else last done)
+  const activeIdx = (() => {
+    const firstHot = segs.findIndex((s) => s.status === 'dispatched');
+    if (firstHot >= 0) return firstHot;
+    const firstPending = segs.findIndex((s) => s.status === 'pending');
+    if (firstPending >= 0) return firstPending;
+    // No active; find last completed
+    for (let i = segs.length - 1; i >= 0; i--) {
+      if (segs[i].status === 'done' || segs[i].status === 'error') return i;
+    }
+    return -1;
+  })();
+
+  useEffect(() => {
+    if (activeIdx < 0 || !segListRef.current) return;
+    const child = segListRef.current.children[activeIdx] as HTMLElement | undefined;
+    if (child) {
+      child.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [activeIdx, wave?.status]);
   const total = segs.length;
   const substantive = segs.filter((s) => s.status === 'done' && (s.reply ?? '').length > 100).length;
   const emptyDone = segs.filter((s) => s.status === 'done' && (s.reply ?? '').length <= 100).length;
@@ -157,11 +194,30 @@ export function LiveSegWatch({ waveId: explicitWaveId, maxHeight = 320, title = 
         </span>
       </div>
 
+      {/* BP041 — Animated dot-trail progress bar (Founder direct: ".... then ...... then ........") */}
+      {wave.status !== 'complete' && wave.status !== 'aborted' && total > 0 && (
+        <div style={styles.dotTrail}>
+          {(() => {
+            const completed = substantive + emptyDone + errored;
+            const slots = Math.max(40, Math.min(80, total)); // dot count scales with SEG count
+            const filledSlots = Math.floor((completed / total) * slots);
+            const animatedTrailingDots = 1 + (tick % 3); // 1-3 trailing dots cycling
+            const dots: string[] = [];
+            for (let i = 0; i < slots; i++) {
+              if (i < filledSlots) dots.push('•');               // completed
+              else if (i < filledSlots + animatedTrailingDots) dots.push('·'); // active trail (animated)
+              else dots.push(' ');
+            }
+            return <span style={styles.dotTrailInner}>{dots.join('')}</span>;
+          })()}
+        </div>
+      )}
+
       <div style={{ ...styles.body, maxHeight }}>
-        {/* LEFT: SEG list */}
-        <div style={styles.segList}>
-          {segs.map((seg) => (
-            <SegRow key={seg.seg_id} seg={seg} />
+        {/* LEFT: SEG list — auto-scrolls to active SEG (Google Maps-style focus) */}
+        <div style={styles.segList} ref={segListRef}>
+          {segs.map((seg, i) => (
+            <SegRow key={seg.seg_id} seg={seg} isActive={i === activeIdx} />
           ))}
         </div>
 
@@ -266,7 +322,7 @@ function extractSegName(seg: SegState): { display: string; fromReply: boolean } 
   return { display: pretty, fromReply: false };
 }
 
-function SegRow({ seg }: { seg: SegState }) {
+function SegRow({ seg, isActive }: { seg: SegState; isActive?: boolean }) {
   const replyLen = (seg.reply ?? '').length;
   const { display: segName, fromReply } = extractSegName(seg);
   let icon: string, color: string, label: string;
@@ -282,7 +338,11 @@ function SegRow({ seg }: { seg: SegState }) {
     icon = '⏳'; color = '#718096'; label = 'PENDING';
   }
   return (
-    <div style={{ ...styles.segRow, borderLeftColor: color }} title={seg.error ?? `${seg.seg_id} → ${seg.recipient}`}>
+    <div style={{
+      ...styles.segRow,
+      borderLeftColor: color,
+      ...(isActive ? styles.segRowActive : {}),
+    }} title={seg.error ?? `${seg.seg_id} → ${seg.recipient}`}>
       <span style={styles.segIcon}>{icon}</span>
       <span style={{
         ...styles.segId,
@@ -388,7 +448,29 @@ const styles: Record<string, React.CSSProperties> = {
     borderLeft: '3px solid',
     borderRadius: '2px',
     fontSize: '0.7rem',
-    transition: 'background 0.18s, border-left-color 0.18s',
+    transition: 'background 0.18s, border-left-color 0.18s, box-shadow 0.18s',
+    scrollMarginTop: '40px',  // for scrollIntoView smooth-center
+    scrollMarginBottom: '40px',
+  },
+  segRowActive: {
+    // BP041 — "Google Maps triangle" auto-focus highlight on current SEG
+    background: '#1f2540',
+    boxShadow: '0 0 0 1px #f6ad5544, 0 0 8px #f6ad5522',
+  },
+  dotTrail: {
+    overflow: 'hidden',
+    padding: '4px 8px',
+    background: '#070710',
+    borderBottom: '1px solid #1a1a2e',
+    fontFamily: 'monospace',
+    fontSize: '0.75rem',
+    color: '#f6ad55',
+    letterSpacing: '0.1em',
+    whiteSpace: 'nowrap' as const,
+  },
+  dotTrailInner: {
+    display: 'inline-block',
+    minWidth: '100%',
   },
   segIcon: { fontSize: '0.75rem' },
   segId: { fontFamily: 'monospace', color: '#cbd5e0', fontSize: '0.65rem' },

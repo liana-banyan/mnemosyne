@@ -427,6 +427,65 @@ contextBridge.exposeInMainWorld('amplify', {
 
   onDeckList: (): Promise<import('./on_deck/on_deck_bridge').OnDeckBridgePayload> =>
     ipcRenderer.invoke('on-deck-list'),
+
+  // ── Pantheon — Pixie Dust Mining (BP041 SAGA 1) ───────────────────────────
+
+  /** Open Electron native folder-picker dialog; returns selected folder path or null */
+  pantheonPickFolder: (): Promise<string | null> =>
+    ipcRenderer.invoke('pantheon-pick-folder'),
+
+  /** Load per-folder dual-checkbox preferences for a member */
+  pantheonGetPrefs: (memberId: string): Promise<import('./pantheon/folder_prefs').AllFolderPrefs> =>
+    ipcRenderer.invoke('pantheon-get-prefs', { memberId }),
+
+  /** Save per-folder dual-checkbox preference */
+  pantheonSetPref: (
+    memberId: string,
+    folderPath: string,
+    pixelated: boolean,
+    federationShared: boolean,
+    subfolderOverrides?: import('./pantheon/folder_prefs').SubfolderOverride[],
+  ): Promise<import('./pantheon/folder_prefs').FolderPref> =>
+    ipcRenderer.invoke('pantheon-set-pref', { memberId, folderPath, pixelated, federationShared, subfolderOverrides }),
+
+  /** Remove a folder from the substrate scope */
+  pantheonRemovePref: (memberId: string, folderPath: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('pantheon-remove-pref', { memberId, folderPath }),
+
+  /** Dispatch the Pantheon on a specific folder (all 6 personas) */
+  pantheonDispatch: (
+    memberId: string,
+    folderPath: string,
+    sharingScope: 'private' | 'federation',
+  ): Promise<import('./pantheon/types').PantheonDispatchReceipt> =>
+    ipcRenderer.invoke('pantheon-dispatch', { memberId, folderPath, sharingScope }),
+
+  /** Subscribe to Pantheon progress events */
+  onPantheonProgress: (cb: (evt: import('./pantheon/types').PantheonIpcProgress) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, evt: import('./pantheon/types').PantheonIpcProgress) => cb(evt);
+    ipcRenderer.on('pantheon-progress', handler);
+    return () => ipcRenderer.removeListener('pantheon-progress', handler);
+  },
+
+  /** List all tablets for a member */
+  pantheonListTablets: (
+    memberId: string,
+    grade?: 'iron' | 'stone',
+    persona?: string,
+  ): Promise<import('./pantheon/tablet_store').TabletSummary[]> =>
+    ipcRenderer.invoke('pantheon-list-tablets', { memberId, grade, persona }),
+
+  /** Count tablets for a member */
+  pantheonCountTablets: (memberId: string): Promise<{ iron: number; stone: number; total: number }> =>
+    ipcRenderer.invoke('pantheon-count-tablets', { memberId }),
+
+  /** Wipe all tablets for a member (sovereignty right) */
+  pantheonWipe: (memberId: string): Promise<{ wiped: number }> =>
+    ipcRenderer.invoke('pantheon-wipe', { memberId }),
+
+  /** Get active Pantheon sessions */
+  pantheonActiveSessions: (): Promise<Array<{ session_id: string; started_at: string; folder_path: string; total_tablets_so_far: number }>> =>
+    ipcRenderer.invoke('pantheon-active-sessions'),
 });
 
 // ─── Global type extension ────────────────────────────────────────────────────
@@ -503,6 +562,17 @@ declare global {
       getWebviewPreloadPath?: () => string;
       // On-Deck Master-of-Ceremonies (BP037)
       onDeckList?: () => Promise<import('./on_deck/on_deck_bridge').OnDeckBridgePayload>;
+      // Pantheon — Pixie Dust Mining (BP041 SAGA 1)
+      pantheonPickFolder: () => Promise<string | null>;
+      pantheonGetPrefs: (memberId: string) => Promise<unknown>;
+      pantheonSetPref: (memberId: string, folderPath: string, pixelated: boolean, federationShared: boolean, subfolderOverrides?: unknown[]) => Promise<unknown>;
+      pantheonRemovePref: (memberId: string, folderPath: string) => Promise<{ ok: boolean }>;
+      pantheonDispatch: (memberId: string, folderPath: string, sharingScope: 'private' | 'federation') => Promise<unknown>;
+      onPantheonProgress: (cb: (evt: unknown) => void) => () => void;
+      pantheonListTablets: (memberId: string, grade?: string, persona?: string) => Promise<unknown[]>;
+      pantheonCountTablets: (memberId: string) => Promise<{ iron: number; stone: number; total: number }>;
+      pantheonWipe: (memberId: string) => Promise<{ wiped: number }>;
+      pantheonActiveSessions: () => Promise<unknown[]>;
     };
   }
 }

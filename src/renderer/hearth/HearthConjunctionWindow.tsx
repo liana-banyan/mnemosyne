@@ -22,6 +22,7 @@ import { NotCentsGlyph } from '../components/NotCentsGlyph';
 import { NovaculaFireButton } from './drekaskip_status/NovaculaFireButton';
 import { ActiveSubstratePanel } from './active_substrate/ActiveSubstratePanel';
 import { OnDeckPanel } from './on_deck/OnDeckPanel';
+import { MakeYourselfComfortableWizard } from './substrate/MakeYourselfComfortableWizard';
 import {
   ConjunctionContext,
   DEFAULT_PANEL_STATE,
@@ -29,7 +30,7 @@ import {
 } from './conjunction/conjunction_state';
 import type { ConjunctionMode, ConjunctionPanelState, ConjunctionResult, BackendAvailability } from './conjunction/types';
 
-type HearthTab = 'prove_it' | 'app_builder' | 'browser';
+type HearthTab = 'prove_it' | 'app_builder' | 'browser' | 'substrate';
 
 export function HearthConjunctionWindow() {
   const [panelState, setPanelState] = useState<ConjunctionPanelState>(DEFAULT_PANEL_STATE);
@@ -184,6 +185,7 @@ export function HearthConjunctionWindow() {
     prove_it:    { icon: '🎯', label: 'Prove It!',   color: '#f6ad55', bgActive: '#3a2a14', bgInactive: '#1a1410' }, // amber
     app_builder: { icon: '🏗️', label: 'App Builder', color: '#48bb78', bgActive: '#143524', bgInactive: '#0e1a13' }, // green
     browser:     { icon: '🌐', label: 'Browser',     color: '#4299e1', bgActive: '#142a3a', bgInactive: '#0e161e' }, // blue
+    substrate:   { icon: '🪑', label: 'Substrate',   color: '#b48aff', bgActive: '#2a1a3a', bgInactive: '#150e1e' }, // violet — Pixie Dust Mining
   };
 
   return (
@@ -411,6 +413,13 @@ export function HearthConjunctionWindow() {
                       onInjectionResult={(r) => setInjectionEvents((e) => [r, ...e].slice(0, 10))}
                     />
                   </div>
+                </div>
+              )}
+
+              {/* ─── Substrate — Pixie Dust Mining (BP041 SAGA 1) ──────────── */}
+              {activeTab === 'substrate' && (
+                <div style={{ height: '100%', overflow: 'hidden' }}>
+                  <MakeYourselfComfortableWizard />
                 </div>
               )}
             </div>

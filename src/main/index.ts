@@ -19,6 +19,7 @@ import {
   screen,
   shell,
   globalShortcut,
+  dialog,
 } from 'electron';
 import { join } from 'path';
 import { existsSync } from 'fs';
@@ -812,6 +813,81 @@ function registerIPCHandlers(): void {
 
   ipcMain.handle('on-deck-list', () => {
     return listOnDeck();
+  });
+
+  // ── Pantheon — Pixie Dust Mining (BP041 SAGA 1) ───────────────────────────
+
+  ipcMain.handle('pantheon-pick-folder', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Choose a folder for Pixie Dust Mining',
+      properties: ['openDirectory'],
+      buttonLabel: 'Begin Mining',
+    });
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+  });
+
+  ipcMain.handle('pantheon-get-prefs', (_event, { memberId }: { memberId: string }) => {
+    const { getFolderPrefs } = require('./pantheon/folder_prefs') as typeof import('./pantheon/folder_prefs');
+    return getFolderPrefs(memberId);
+  });
+
+  ipcMain.handle('pantheon-set-pref', (_event, args: {
+    memberId: string;
+    folderPath: string;
+    pixelated: boolean;
+    federationShared: boolean;
+    subfolderOverrides?: import('./pantheon/folder_prefs').SubfolderOverride[];
+  }) => {
+    const { setFolderPref } = require('./pantheon/folder_prefs') as typeof import('./pantheon/folder_prefs');
+    return setFolderPref(args.memberId, args.folderPath, args.pixelated, args.federationShared, args.subfolderOverrides);
+  });
+
+  ipcMain.handle('pantheon-remove-pref', (_event, { memberId, folderPath }: { memberId: string; folderPath: string }) => {
+    const { removeFolderPref } = require('./pantheon/folder_prefs') as typeof import('./pantheon/folder_prefs');
+    removeFolderPref(memberId, folderPath);
+    return { ok: true };
+  });
+
+  ipcMain.handle('pantheon-dispatch', async (_event, {
+    memberId,
+    folderPath,
+    sharingScope,
+  }: {
+    memberId: string;
+    folderPath: string;
+    sharingScope: 'private' | 'federation';
+  }) => {
+    const { dispatchPantheon } = require('./pantheon/orchestrator') as typeof import('./pantheon/orchestrator');
+    return dispatchPantheon(
+      { member_id: memberId, folder_path: folderPath, sharing_scope: sharingScope, personas: ['shadow_sprite', 'forager', 'miner', 'pixies', 'shadow_spider', 'fates'], session: 'BP041' },
+      (evt) => {
+        hearthConjunctionWindow?.webContents.send('pantheon-progress', evt);
+      },
+    );
+  });
+
+  ipcMain.handle('pantheon-list-tablets', (_event, { memberId, grade, persona }: {
+    memberId: string;
+    grade?: 'iron' | 'stone';
+    persona?: string;
+  }) => {
+    const { listTablets } = require('./pantheon/tablet_store') as typeof import('./pantheon/tablet_store');
+    return listTablets(memberId, { grade, persona: persona as import('./pantheon/types').PersonaId | undefined });
+  });
+
+  ipcMain.handle('pantheon-count-tablets', (_event, { memberId }: { memberId: string }) => {
+    const { countTablets } = require('./pantheon/tablet_store') as typeof import('./pantheon/tablet_store');
+    return countTablets(memberId);
+  });
+
+  ipcMain.handle('pantheon-wipe', (_event, { memberId }: { memberId: string }) => {
+    const { wipeTablets } = require('./pantheon/tablet_store') as typeof import('./pantheon/tablet_store');
+    return wipeTablets(memberId);
+  });
+
+  ipcMain.handle('pantheon-active-sessions', () => {
+    const { getActiveSessions } = require('./pantheon/orchestrator') as typeof import('./pantheon/orchestrator');
+    return getActiveSessions();
   });
 }
 
