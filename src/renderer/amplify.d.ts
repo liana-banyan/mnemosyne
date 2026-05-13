@@ -201,6 +201,7 @@ declare global {
       onHearthBuildError: (cb: (err: { appUuid: string; appName: string; error: string; lastStderr: string }) => void) => () => void;
       // Hearth Conjunction Window (B83)
       openHearthConjunction: () => void;
+      hideToWatchView?: () => Promise<{ ok: boolean }>;
       conjunctionGetState: () => Promise<import('./hearth/conjunction/types').ConjunctionPanelState>;
       conjunctionGetAvailability: () => Promise<import('./hearth/conjunction/types').BackendAvailability>;
       conjunctionSelect: (mode: import('./hearth/conjunction/types').ConjunctionMode) => Promise<{ ok: boolean; previous: import('./hearth/conjunction/types').ConjunctionMode }>;

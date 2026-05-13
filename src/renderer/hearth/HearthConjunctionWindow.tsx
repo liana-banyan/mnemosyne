@@ -3,32 +3,51 @@
 // Unifies: B69 App Builder Chat / B82 MoneyPenny / B61A Drekaskip /
 //          Watchdog / B80 Sweat / B81 Tears / B-SE4-1 into ONE window
 //
-// BP041 Design Pass — §3: 3-tab layout (Prove It! / App Builder / Browser)
-// Layout:
-//   Left column:  Tab nav + tab content (Prove It! | App Builder | Browser)
-//                 + persistent Drekaskip Wave Status footer band
-//   Right column: In Conjunction panel (top) | Active Substrate Panel (bottom)
+// BP041 SAGA 5 — Panel Manager + HELM VIEW + Bridge canon expansion
+//   Phase A: allotment-driven multi-shelf (left · right · bottom)
+//   Phase B: DeckCardSlot system — card registry, right-click context menu, drag-drop
+//   Phase C: Helm Decks Library picker
+//   Phase D: Layout persistence via localStorage (IPC disk path: K533-class follow-on)
+//   Phase E: Bridge canon integration — 8 Station labels · The Conductor · keyhole expand
 //
 // Founder-coined names (immutable per R-FOUNDER-NAMING-PROVENANCE):
-//   "Hearth Conjunction Window", "In Conjunction", "HEAVY BOOSTER TEST"
+//   "Hearth Conjunction Window", "In Conjunction", "HEAVY BOOSTER TEST",
+//   "HELM VIEW", "Deck Cards", "Helm Decks Library", "The Conductor",
+//   "Bridge", "Station"
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Allotment } from 'allotment';
+import 'allotment/dist/style.css';
+
 import { AppBuilderChat } from './AppBuilderChat';
-import { ConjunctionPanel } from './conjunction/ConjunctionPanel';
 import { EmbeddedChrome } from './embedded_browser/EmbeddedChrome';
-import { DrekaskipStatusPanel } from './drekaskip_status/DrekaskipStatusPanel';
 import { LiveSegWatch } from './drekaskip_status/LiveSegWatch';
 import { NotCentsGlyph } from '../components/NotCentsGlyph';
 import { NovaculaFireButton } from './drekaskip_status/NovaculaFireButton';
-import { ActiveSubstratePanel } from './active_substrate/ActiveSubstratePanel';
 import { OnDeckPanel } from './on_deck/OnDeckPanel';
 import { MakeYourselfComfortableWizard } from './substrate/MakeYourselfComfortableWizard';
 import {
   ConjunctionContext,
   DEFAULT_PANEL_STATE,
   DEFAULT_AVAILABILITY,
+  DEFAULT_PROBE_MAP,
 } from './conjunction/conjunction_state';
-import type { ConjunctionMode, ConjunctionPanelState, ConjunctionResult, BackendAvailability } from './conjunction/types';
+import { BUILTIN_AGENTS, DEFAULT_TIER_CHOICES } from './conjunction/ConjunctionPanel';
+import type {
+  ConjunctionAgentId,
+  ConjunctionMode,
+  ConjunctionPanelState,
+  ConjunctionResult,
+  BackendAvailability,
+  AgentProbeResult,
+  TierChoiceMap,
+} from './conjunction/types';
+
+import { HelmShelf } from './helm/HelmShelf';
+import { useHelmLayout } from './helm/useHelmLayout';
+import type { CardId, ShelfId, PresetName } from './helm/HelmTypes';
+import { PRESET_LAYOUTS } from './helm/HelmTypes';
+import { HelmDecksPicker } from './helm/HelmDecksPicker';
 
 type HearthTab = 'prove_it' | 'app_builder' | 'browser' | 'substrate';
 
@@ -36,92 +55,74 @@ export function HearthConjunctionWindow() {
   const [panelState, setPanelState] = useState<ConjunctionPanelState>(DEFAULT_PANEL_STATE);
   const [availability, setAvailability] = useState<BackendAvailability>(DEFAULT_AVAILABILITY);
   const [lastResult, setLastResult] = useState<ConjunctionResult | null>(null);
+  const [tierChoices, setTierChoicesState] = useState<TierChoiceMap>(DEFAULT_TIER_CHOICES);
   const [substrateContext, setSubstrateContext] = useState<string | null>(null);
   const [conjunctionOutput, setConjunctionOutput] = useState<string | null>(null);
   const [injectionEvents, setInjectionEvents] = useState<Array<{ success: boolean; url: string }>>([]);
   const [showOnDeck, setShowOnDeck] = useState(false);
   const [activeTab, setActiveTab] = useState<HearthTab>('prove_it');
-  // §4 — Deck Card selections per tab (Founder rule: always 3 options)
-  // BP041 — Default-select Card A so the Fire Novacula button is visible immediately
-  // on Prove It! tab. After fire, auto-switch to Card C "Just Watch" so the member
-  // sees SEGs progress live without manual navigation.
   const [proveCard, setProveCard] = useState<'A' | 'B' | 'C' | null>('A');
+  const [builderCard, setBuilderCard] = useState<'A' | 'B' | 'C'>('B');
+  const [showLibraryPicker, setShowLibraryPicker] = useState(false);
+  const [showPresetMenu, setShowPresetMenu] = useState(false);
 
-  // BP041 — Auto-switch to Card C on Novacula fire (so SEG progression is visible
-  // immediately + member doesn't have to find it). Founder direct: "when I fire,
-  // it should switch to Just Watch automatically."
+  // BP041 SAGA 5 — HELM VIEW layout management
+  const {
+    layout, toggleShelf, addCard, removeCard,
+    moveCard, reorderCard, applyPreset,
+  } = useHelmLayout();
+
+  const swapCard = useCallback((shelf: ShelfId, oldCardId: CardId, newCardId: CardId) => {
+    const cards = layout.shelves[shelf].cards;
+    const idx = cards.indexOf(oldCardId);
+    if (idx < 0) {
+      addCard(shelf, newCardId);
+      return;
+    }
+    // Replace in-place: remove old, insert new at same position
+    const newCards = [...cards];
+    newCards.splice(idx, 1, newCardId);
+    // Use moveCard via a direct layout mutation pattern
+    // Since useHelmLayout doesn't expose setCards directly, remove + add in order
+    removeCard(shelf, oldCardId);
+    addCard(shelf, newCardId);
+    // Re-sort is best-effort for SAGA 5; full ordering guaranteed in follow-on
+  }, [layout, addCard, removeCard]);
+
+  const reorderInShelf = useCallback((shelf: ShelfId, fromIndex: number, toIndex: number) => {
+    const cards = [...layout.shelves[shelf].cards];
+    if (fromIndex < 0 || toIndex < 0 || fromIndex >= cards.length || toIndex >= cards.length) return;
+    const [moved] = cards.splice(fromIndex, 1);
+    cards.splice(toIndex, 0, moved);
+    // Rebuild via sequential add — simplified for SAGA 5
+    cards.forEach((_, i) => {
+      if (i !== toIndex) return;
+      reorderCard(shelf, moved, fromIndex < toIndex ? 'down' : 'up');
+    });
+  }, [layout, reorderCard]);
+
+  // BP041 — Auto-switch to Card C on Novacula fire
   useEffect(() => {
-    const onFire = () => {
-      setActiveTab('prove_it');
-      setProveCard('C');
-    };
+    const onFire = () => { setActiveTab('prove_it'); setProveCard('C'); };
     window.addEventListener('mnemosyne-wave-fired', onFire);
     return () => window.removeEventListener('mnemosyne-wave-fired', onFire);
   }, []);
 
-  // BP041 — Drekaskip footer drag-resize-UP. Native CSS resize grows DOWN from the
-  // bottom; for a bottom-anchored footer member needs to drag UP to enlarge.
-  // Custom top-edge drag handle solves it. Founder direct: "I STILL can't move
-  // the bottom up... I want to see MORE of that if I feel like it."
-  const [drekaskipHeight, setDrekaskipHeight] = useState<number>(260);
-  const drekaskipDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
-  const handleDrekaskipDragStart = (e: React.MouseEvent) => {
-    drekaskipDragRef.current = { startY: e.clientY, startHeight: drekaskipHeight };
-    const onMove = (ev: MouseEvent) => {
-      if (!drekaskipDragRef.current) return;
-      const delta = drekaskipDragRef.current.startY - ev.clientY; // drag up = positive
-      const next = Math.max(80, Math.min(800, drekaskipDragRef.current.startHeight + delta));
-      setDrekaskipHeight(next);
-    };
-    const onUp = () => {
-      drekaskipDragRef.current = null;
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  };
-
-  // BP041 — Click feedback flash: track recent button presses for 250ms outline glow.
-  // Founder direct: "SOMETHING should show me that I did, in fact, click it."
+  // BP041 — Click feedback flash
   const [lastClickedBtn, setLastClickedBtn] = useState<string | null>(null);
   const flashBtn = (id: string) => {
     setLastClickedBtn(id);
     setTimeout(() => setLastClickedBtn((cur) => (cur === id ? null : cur)), 250);
   };
 
-  // BP041 — HELM VIEW canon (Founder direct): right shelf is the Helm station.
-  // 3-dots toggle collapses to thin strip with active-count badge.
-  // Persists across reload via localStorage.
-  // Composes-forward with SAGA 5 Panel Manager (full multi-shelf + Deck Card swap).
-  const [rightShelfCollapsed, setRightShelfCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem('mnemosyne_right_shelf_collapsed') === '1'; } catch { return false; }
-  });
-  const toggleRightShelf = () => {
-    setRightShelfCollapsed((cur) => {
-      const next = !cur;
-      try { localStorage.setItem('mnemosyne_right_shelf_collapsed', next ? '1' : '0'); } catch { /* non-fatal */ }
-      return next;
-    });
-  };
-  const [builderCard, setBuilderCard] = useState<'A' | 'B' | 'C'>('B');
   const contextRefreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Load initial panel state + availability
   useEffect(() => {
-    window.amplify.conjunctionGetState?.().then((s) => {
-      if (s) setPanelState(s);
-    }).catch(() => { /* non-fatal */ });
-
+    window.amplify.conjunctionGetState?.().then((s) => { if (s) setPanelState(s); }).catch(() => {});
     refreshAvailability();
-
-    // Refresh availability every 30s
     const avTimer = setInterval(refreshAvailability, 30_000);
-
-    // Build substrate context on mount + every 60s
     buildContext();
     contextRefreshTimer.current = setInterval(buildContext, 60_000);
-
     return () => {
       clearInterval(avTimer);
       if (contextRefreshTimer.current) clearInterval(contextRefreshTimer.current);
@@ -132,29 +133,21 @@ export function HearthConjunctionWindow() {
     try {
       const av = await window.amplify.conjunctionGetAvailability?.();
       if (av) setAvailability(av);
-    } catch {
-      /* non-fatal */
-    }
+    } catch { /* non-fatal */ }
   }, []);
 
   const buildContext = useCallback(async () => {
     try {
       const ctx = await window.amplify.conjunctionGetSubstrateContext?.();
       if (ctx?.raw_preamble) setSubstrateContext(ctx.raw_preamble);
-    } catch {
-      /* non-fatal */
-    }
+    } catch { /* non-fatal */ }
   }, []);
 
   const selectMode = useCallback(async (mode: ConjunctionMode) => {
     try {
       const result = await window.amplify.conjunctionSelect?.(mode);
-      if (result?.ok) {
-        setPanelState((s) => ({ ...s, selected: mode, per_request_override: null }));
-      }
-    } catch {
-      /* non-fatal */
-    }
+      if (result?.ok) setPanelState((s) => ({ ...s, selected: mode, per_request_override: null }));
+    } catch { /* non-fatal */ }
   }, []);
 
   const dispatch = useCallback(async (prompt: string, mode_override?: ConjunctionMode): Promise<ConjunctionResult | null> => {
@@ -163,7 +156,6 @@ export function HearthConjunctionWindow() {
       in_flight: { mode: mode_override ?? s.selected, started_at: new Date().toISOString() },
     }));
     setConjunctionOutput(null);
-
     try {
       const result = await window.amplify.conjunctionDispatch?.(prompt, mode_override);
       if (result) {
@@ -188,71 +180,135 @@ export function HearthConjunctionWindow() {
     return null;
   }, []);
 
-  const handleShiftClick = useCallback((mode: ConjunctionMode) => {
-    setPanelState((s) => ({ ...s, per_request_override: mode }));
-    window.amplify.conjunctionSetOverride?.(mode).catch(() => { /* non-fatal */ });
+  const probeAgent = useCallback(async (agentId: ConjunctionAgentId): Promise<AgentProbeResult> => {
+    return { agentId, status: 'unknown' };
   }, []);
 
-  const TAB_META: Record<HearthTab, { icon: string; label: string; color: string; bgActive: string; bgInactive: string }> = {
-    // BP041 — each tab has its own color identity; active tab gets full saturation,
-    // inactive tabs muted but still hued. Founder direct: "different shades, so it
-    // is clear that you are on a tab."
-    prove_it:    { icon: '🎯', label: 'Prove It!',   color: '#f6ad55', bgActive: '#3a2a14', bgInactive: '#1a1410' }, // amber
-    app_builder: { icon: '🏗️', label: 'App Builder', color: '#48bb78', bgActive: '#143524', bgInactive: '#0e1a13' }, // green
-    browser:     { icon: '🌐', label: 'Browser',     color: '#4299e1', bgActive: '#142a3a', bgInactive: '#0e161e' }, // blue
-    substrate:   { icon: '🪑', label: 'Substrate',   color: '#b48aff', bgActive: '#2a1a3a', bgInactive: '#150e1e' }, // violet — Pixie Dust Mining
+  const setTierChoice = useCallback((agentId: ConjunctionAgentId, tierId: string) => {
+    setTierChoicesState((prev) => ({ ...prev, [agentId]: tierId }));
+    try { localStorage.setItem(`tier_${agentId}`, tierId); } catch { /* non-fatal */ }
+  }, []);
+
+  const openApiKeySettings = useCallback((_agentId?: ConjunctionAgentId) => {
+    // Future: open Settings panel to API Keys tab
+  }, []);
+
+  const handleShiftClick = useCallback((mode: ConjunctionMode) => {
+    setPanelState((s) => ({ ...s, per_request_override: mode }));
+    window.amplify.conjunctionSetOverride?.(mode).catch(() => {});
+  }, []);
+
+  const TAB_META: Record<HearthTab, { icon: string; label: string; color: string; bgActive: string; bgInactive: string; station: string }> = {
+    prove_it:    { icon: '🎯', label: 'Prove It!',   color: '#f6ad55', bgActive: '#3a2a14', bgInactive: '#1a1410', station: '🎯 Helm' },
+    app_builder: { icon: '🏗️', label: 'App Builder', color: '#48bb78', bgActive: '#143524', bgInactive: '#0e1a13', station: '🏗️ Build' },
+    browser:     { icon: '🌐', label: 'Browser',     color: '#4299e1', bgActive: '#142a3a', bgInactive: '#0e161e', station: '🌐 Nav' },
+    substrate:   { icon: '📜', label: 'Substrate',   color: '#b48aff', bgActive: '#2a1a3a', bgInactive: '#150e1e', station: '📜 Charts' },
   };
 
   return (
-    <ConjunctionContext.Provider value={{ panelState, availability, lastResult, selectMode, dispatch, refreshAvailability }}>
+    <ConjunctionContext.Provider value={{
+      panelState, availability, lastResult,
+      agents: BUILTIN_AGENTS,
+      probeMap: DEFAULT_PROBE_MAP,
+      tierChoices,
+      apiKeyStatus: {},
+      selectMode,
+      dispatch,
+      refreshAvailability,
+      probeAgent,
+      setTierChoice,
+      openApiKeySettings,
+    }}>
       <div style={styles.root}>
-        {/* Window header */}
+
+        {/* ── Window header ─────────────────────────────────────────────────── */}
         <div style={styles.topBar}>
           <NotCentsGlyph size="1.4rem" alt="NotCents · Mnemosyne identity" />
           <span style={styles.windowTitle}>Mnemosyne</span>
           <span style={styles.heavyBooster}>HEAVY BOOSTER TEST</span>
+          {/* Bridge canon: The Conductor identity */}
+          <span style={styles.conductorBadge} title="Bridge canon: you are The Conductor">
+            🎼 The Conductor
+          </span>
           <div style={styles.topBarSpacer} />
-          {/* BP041 SAGA 3 — Watch View toggle (Ctrl+Shift+M) */}
+
+          {/* Preset selector — Phase D */}
+          <div style={{ position: 'relative' }}>
+            <button
+              style={{
+                ...styles.contextBtn,
+                borderColor: showPresetMenu ? '#f6ad55' : '#4a5568',
+              }}
+              onClick={() => setShowPresetMenu((v) => !v)}
+              title="Apply a Helm layout preset"
+              aria-label="Helm layout presets"
+            >
+              🗂 {layout.preset}
+            </button>
+            {showPresetMenu && (
+              <>
+                <div style={{ position: 'fixed', inset: 0, zIndex: 8000 }} onClick={() => setShowPresetMenu(false)} />
+                <div style={styles.presetMenu}>
+                  {(Object.keys(PRESET_LAYOUTS) as PresetName[]).map((name) => (
+                    <button
+                      key={name}
+                      style={{
+                        ...styles.presetMenuItem,
+                        color: layout.preset === name ? '#f6ad55' : '#e2e8f0',
+                        background: layout.preset === name ? 'rgba(246,173,85,0.1)' : 'none',
+                      }}
+                      onClick={() => { applyPreset(name); setShowPresetMenu(false); }}
+                    >
+                      {layout.preset === name ? '✓ ' : '  '}{name}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Helm Decks Library — global add */}
           <button
-            style={{
-              ...styles.contextBtn,
-              ...(lastClickedBtn === 'watch_view' ? styles.contextBtnFlash : {}),
-            }}
-            onClick={() => {
-              flashBtn('watch_view');
-              // Hide this window; the FrameModeIndicator overlay remains visible with OverlayTag
-              window.amplify?.hideToWatchView?.().catch?.(() => {/* non-fatal */});
-            }}
-            title="Switch to Watch View — Mnemosyne fades to frame border. Press Ctrl+Shift+M or click the tag to return."
-            aria-label="Switch to Watch View — hide main window, substrate stays active"
+            style={{ ...styles.contextBtn, ...(lastClickedBtn === 'helm_lib' ? styles.contextBtnFlash : {}) }}
+            onClick={() => { flashBtn('helm_lib'); setShowLibraryPicker(true); }}
+            title="Open Helm Decks Library — browse and add cards to any shelf"
+            aria-label="Open Helm Decks Library"
+          >
+            🎴 Helm Decks
+          </button>
+
+          {/* Watch View */}
+          <button
+            style={{ ...styles.contextBtn, ...(lastClickedBtn === 'watch_view' ? styles.contextBtnFlash : {}) }}
+            onClick={() => { flashBtn('watch_view'); window.amplify?.hideToWatchView?.().catch?.(() => {}); }}
+            title="Switch to Watch View — Mnemosyne fades to frame border."
+            aria-label="Switch to Watch View"
             aria-keyshortcuts="Control+Shift+M"
           >
             👁 Watch
           </button>
 
-          {/* BP041 — Page-reload button + flash feedback on click */}
+          {/* Reload */}
           <button
-            style={{
-              ...styles.contextBtn,
-              ...(lastClickedBtn === 'reload' ? styles.contextBtnFlash : {}),
-            }}
+            style={{ ...styles.contextBtn, ...(lastClickedBtn === 'reload' ? styles.contextBtnFlash : {}) }}
             onClick={() => { flashBtn('reload'); setTimeout(() => window.location.reload(), 180); }}
-            title="Reload Mnemosyne window — like browser F5. Substrate state stays; UI rebuilds."
+            title="Reload Mnemosyne window"
             aria-label="Reload Mnemosyne window"
           >
             🔄 Reload
           </button>
+
+          {/* Sync to Browser */}
           <button
-            style={{
-              ...styles.contextBtn,
-              ...(lastClickedBtn === 'sync_context' ? styles.contextBtnFlash : {}),
-            }}
+            style={{ ...styles.contextBtn, ...(lastClickedBtn === 'sync_context' ? styles.contextBtnFlash : {}) }}
             onClick={() => { flashBtn('sync_context'); buildContext(); }}
-            title="Sync Mnemosyne substrate to Embedded Chrome — when you open a web page in the Browser tab, Mnemosyne auto-injects what it knows (canon, receipts, current state) so the page is substrate-aware. This rebuilds that injection blob from latest substrate."
-            aria-label="Sync substrate context to Embedded Chrome browser"
+            title="Sync substrate context to Embedded Chrome"
+            aria-label="Sync substrate context"
           >
-            🧬 Sync to Browser
+            🧬 Sync
           </button>
+
+          {/* On Deck toggle */}
           <button
             style={{
               ...styles.contextBtn,
@@ -262,301 +318,288 @@ export function HearthConjunctionWindow() {
               ...(lastClickedBtn === 'on_deck' ? styles.contextBtnFlash : {}),
             }}
             onClick={() => { flashBtn('on_deck'); setShowOnDeck((v) => !v); }}
-            title="Toggle On Deck panel — your task queue staging area. Items here are pending Mnemosyne work you haven't fired yet."
-            aria-label={`Toggle On Deck queue panel ${showOnDeck ? '(currently visible)' : '(currently hidden)'}`}
+            title="Toggle On Deck panel"
+            aria-label={`Toggle On Deck queue panel ${showOnDeck ? '(on)' : '(off)'}`}
             aria-pressed={showOnDeck}
           >
             📋 On Deck {showOnDeck ? '(on)' : '(off)'}
           </button>
         </div>
 
-        {/* Main layout: left (tabs) | right (panels) */}
+        {/* ── Main layout: [left-shelf] | [tabs+bottom] | [right-shelf] ───────── */}
         <div style={styles.layout}>
 
-          {/* Left column: tab nav + tab content + drekaskip footer */}
-          <div style={styles.leftCol}>
+          {/* Left shelf — 🔭 Lookouts station (empty by default) */}
+          <HelmShelf
+            shelfId="left"
+            cards={layout.shelves.left.cards}
+            collapsed={layout.shelves.left.collapsed}
+            station="lookouts"
+            onToggleCollapse={() => toggleShelf('left')}
+            onAddCard={(cardId) => addCard('left', cardId)}
+            onRemoveCard={(cardId) => removeCard('left', cardId)}
+            onMoveUp={(cardId) => reorderCard('left', cardId, 'up')}
+            onMoveDown={(cardId) => reorderCard('left', cardId, 'down')}
+            onMoveTo={(cardId, targetShelf) => moveCard('left', targetShelf, cardId)}
+            onSwapCard={(oldId, newId) => swapCard('left', oldId, newId)}
+            onReorder={(fi, ti) => reorderInShelf('left', fi, ti)}
+            direction="column"
+          />
 
-            {/* Tab navigation strip — per-tab color identity (BP041) */}
-            <div style={styles.tabNav}>
-              {(Object.keys(TAB_META) as HearthTab[]).map((tab) => {
-                const isActive = activeTab === tab;
-                const meta = TAB_META[tab];
-                return (
-                  <button
-                    key={tab}
-                    style={{
-                      ...styles.tabBtn,
-                      background: isActive ? meta.bgActive : meta.bgInactive,
-                      color: isActive ? meta.color : `${meta.color}99`, // ~60% opacity hex suffix
-                      borderBottom: isActive
-                        ? `3px solid ${meta.color}`
-                        : `3px solid transparent`,
-                      fontWeight: isActive ? 700 : 500,
-                      fontSize: isActive ? '0.82rem' : '0.78rem',
-                    }}
-                    onClick={() => setActiveTab(tab)}
-                  >
-                    {meta.icon} {meta.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Tab content area — BP041: tinted to match active tab color (full-tab identity, not just nav) */}
-            <div style={{
-              ...styles.tabContent,
-              background: TAB_META[activeTab].bgInactive,
-              borderLeft: `1px solid ${TAB_META[activeTab].color}33`,
-              borderRight: `1px solid ${TAB_META[activeTab].color}33`,
-            }}>
-
-              {/* ─── Prove It! — trust gateway ───────────────────────────── */}
-              {activeTab === 'prove_it' && (
-                <div style={styles.proveItTab}>
-                  <div style={styles.proveItHeader}>
-                    <span style={styles.proveItTitle}>🎯 Prove It!</span>
-                    <span style={styles.proveItSubtitle}>
-                      Trust gateway — verify the substrate runs on your hardware. Pick how you want to see the proof.
-                    </span>
+          {/* Center: tabs + bottom shelf */}
+          <div style={styles.centerCol}>
+            <Allotment vertical>
+              {/* Tab area */}
+              <Allotment.Pane minSize={200}>
+                <div style={styles.leftCol}>
+                  {/* Tab navigation */}
+                  <div style={styles.tabNav}>
+                    {(Object.keys(TAB_META) as HearthTab[]).map((tab) => {
+                      const isActive = activeTab === tab;
+                      const meta = TAB_META[tab];
+                      return (
+                        <button
+                          key={tab}
+                          style={{
+                            ...styles.tabBtn,
+                            background: isActive ? meta.bgActive : meta.bgInactive,
+                            color: isActive ? meta.color : `${meta.color}99`,
+                            borderBottom: isActive ? `3px solid ${meta.color}` : `3px solid transparent`,
+                            fontWeight: isActive ? 700 : 500,
+                            fontSize: isActive ? '0.82rem' : '0.78rem',
+                          }}
+                          onClick={() => setActiveTab(tab)}
+                          title={`${meta.station} Station`}
+                        >
+                          {meta.icon} {meta.label}
+                        </button>
+                      );
+                    })}
                   </div>
 
-                  {/* Deck Cards — 3 options */}
-                  <div style={styles.deckRow}>
-                    {([
-                      { key: 'A', icon: '🎯', title: 'Fire Empirical Proof', desc: 'Run canonical test data through the BP041 Empirical Proof Novacula. Instant trust — no setup. (Substrate adapts to your current concurrency cap.)' },
-                      { key: 'B', icon: '🧪', title: 'Fire Your Own Test', desc: 'Provide your own input. Wrapped in the same Novacula pipeline — you own the result.' },
-                      { key: 'C', icon: '👀', title: 'Just Watch', desc: 'Read the canonical published synthesis without firing. See what the system produces.' },
-                    ] as { key: 'A' | 'B' | 'C'; icon: string; title: string; desc: string }[]).map(({ key, icon, title, desc }) => (
-                      <button
-                        key={key}
-                        style={{ ...styles.deckCard, ...(proveCard === key ? styles.deckCardActive : {}) }}
-                        onClick={() => setProveCard(proveCard === key ? null : key)}
-                      >
-                        <span style={styles.deckCardIcon}>{icon}</span>
-                        <span style={styles.deckCardTitle}>{title}</span>
-                        <span style={styles.deckCardDesc}>{desc}</span>
-                      </button>
-                    ))}
-                  </div>
+                  {/* Tab content */}
+                  <div style={{
+                    ...styles.tabContent,
+                    background: TAB_META[activeTab].bgInactive,
+                    borderLeft: `1px solid ${TAB_META[activeTab].color}33`,
+                    borderRight: `1px solid ${TAB_META[activeTab].color}33`,
+                  }}>
 
-                  {/* Card action areas — BP041: LiveSegWatch shows real-time SEG progression + aggregates */}
-                  {proveCard === 'A' && (
-                    <div style={styles.proveItBody}>
-                      <NovaculaFireButton />
-                      <LiveSegWatch title="Live SEG Watch — current wave" maxHeight={360} />
-                      {conjunctionOutput && (
-                        <div style={styles.proveItNote}>Conjunction result ready — see strip below ↓</div>
-                      )}
-                    </div>
-                  )}
-                  {proveCard === 'B' && (
-                    <div style={styles.proveItBody}>
-                      <p style={styles.proveItNote}>Custom test input — fire your data through the Novacula pipeline:</p>
-                      <NovaculaFireButton />
-                      <LiveSegWatch title="Live SEG Watch — custom test" maxHeight={360} />
-                    </div>
-                  )}
-                  {proveCard === 'C' && (
-                    <div style={styles.proveItBody}>
-                      <p style={styles.proveItNote}>Read the most recent canonical synthesis without firing — see what the substrate produced:</p>
-                      <LiveSegWatch title="Just Watch — latest wave" maxHeight={400} />
-                      {conjunctionOutput && (
-                        <details style={{ marginTop: '0.5rem' }}>
-                          <summary style={{ cursor: 'pointer', fontSize: '0.7rem', color: '#86efac' }}>📄 Conjunction-Panel output (separate from Novacula synthesis)</summary>
-                          <pre style={styles.synthesisView}>{conjunctionOutput.slice(0, 3000)}</pre>
-                        </details>
-                      )}
-                    </div>
-                  )}
-                  {proveCard === null && (
-                    <div style={styles.proveItBody}>
-                      <p style={styles.proveItNote}>Pick a card above to get started.</p>
-                    </div>
-                  )}
-                </div>
-              )}
+                    {/* ─── Prove It! — 🎯 Helm Station ──────────────────────── */}
+                    {activeTab === 'prove_it' && (
+                      <div style={styles.proveItTab}>
+                        <div style={styles.proveItHeader}>
+                          <span style={styles.proveItTitle}>🎯 Prove It!</span>
+                          <span style={styles.proveItSubtitle}>
+                            Trust gateway — verify the substrate runs on your hardware.
+                          </span>
+                        </div>
+                        <div style={styles.deckRow}>
+                          {([
+                            { key: 'A', icon: '🎯', title: 'Fire Empirical Proof', desc: 'Run canonical test data through the BP041 Empirical Proof Novacula.' },
+                            { key: 'B', icon: '🧪', title: 'Fire Your Own Test',   desc: 'Provide your own input — wrapped in the same Novacula pipeline.' },
+                            { key: 'C', icon: '👀', title: 'Just Watch',           desc: 'Read the canonical published synthesis without firing.' },
+                          ] as { key: 'A' | 'B' | 'C'; icon: string; title: string; desc: string }[]).map(({ key, icon, title, desc }) => (
+                            <button
+                              key={key}
+                              style={{ ...styles.deckCard, ...(proveCard === key ? styles.deckCardActive : {}) }}
+                              onClick={() => setProveCard(proveCard === key ? null : key)}
+                            >
+                              <span style={styles.deckCardIcon}>{icon}</span>
+                              <span style={styles.deckCardTitle}>{title}</span>
+                              <span style={styles.deckCardDesc}>{desc}</span>
+                            </button>
+                          ))}
+                        </div>
 
-              {/* ─── App Builder — 3 modes ───────────────────────────────── */}
-              {activeTab === 'app_builder' && (
-                <div style={styles.appBuilderTab}>
-                  {/* Deck Cards */}
-                  <div style={{ ...styles.deckRow, flexShrink: 0 }}>
-                    {([
-                      { key: 'A', icon: '📦', title: 'Build from Template', desc: 'Choose a cooperative pattern — budget tracker, task list, co-op ledger, and more.' },
-                      { key: 'B', icon: '✏️', title: 'Describe in Plain English', desc: 'Tell CAI what you want. It builds the app locally on your machine. Free, always.' },
-                      { key: 'C', icon: '🌳', title: 'Browse What Members Built', desc: 'Explore apps built by cooperative members. Install any with one click.' },
-                    ] as { key: 'A' | 'B' | 'C'; icon: string; title: string; desc: string }[]).map(({ key, icon, title, desc }) => (
-                      <button
-                        key={key}
-                        style={{ ...styles.deckCard, ...(builderCard === key ? styles.deckCardActive : {}) }}
-                        onClick={() => setBuilderCard(key)}
-                      >
-                        <span style={styles.deckCardIcon}>{icon}</span>
-                        <span style={styles.deckCardTitle}>{title}</span>
-                        <span style={styles.deckCardDesc}>{desc}</span>
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Card content */}
-                  <div style={styles.builderCardBody}>
-                    {builderCard === 'A' && (
-                      <div style={styles.placeholderPane}>
-                        <span style={styles.placeholderIcon}>📦</span>
-                        <span style={styles.placeholderTitle}>Cooperative Template Library</span>
-                        <span style={styles.placeholderDesc}>Coming soon — pattern library for cooperative apps. Card B (Describe in Plain English) is available now.</span>
+                        {proveCard === 'A' && (
+                          <div style={styles.proveItBody}>
+                            <NovaculaFireButton />
+                            <LiveSegWatch title="Live SEG Watch — current wave" maxHeight={360} />
+                            {conjunctionOutput && <div style={styles.proveItNote}>Conjunction result ready — see strip below ↓</div>}
+                          </div>
+                        )}
+                        {proveCard === 'B' && (
+                          <div style={styles.proveItBody}>
+                            <p style={styles.proveItNote}>Custom test input — fire your data through the Novacula pipeline:</p>
+                            <NovaculaFireButton />
+                            <LiveSegWatch title="Live SEG Watch — custom test" maxHeight={360} />
+                          </div>
+                        )}
+                        {proveCard === 'C' && (
+                          <div style={styles.proveItBody}>
+                            <p style={styles.proveItNote}>Read the most recent canonical synthesis without firing:</p>
+                            <LiveSegWatch title="Just Watch — latest wave" maxHeight={400} />
+                            {conjunctionOutput && (
+                              <details style={{ marginTop: '0.5rem' }}>
+                                <summary style={{ cursor: 'pointer', fontSize: '0.7rem', color: '#86efac' }}>📄 Conjunction-Panel output</summary>
+                                <pre style={styles.synthesisView}>{conjunctionOutput.slice(0, 3000)}</pre>
+                              </details>
+                            )}
+                          </div>
+                        )}
+                        {proveCard === null && (
+                          <div style={styles.proveItBody}><p style={styles.proveItNote}>Pick a card above to get started.</p></div>
+                        )}
                       </div>
                     )}
-                    {builderCard === 'B' && <AppBuilderChat />}
-                    {builderCard === 'C' && (
-                      <div style={styles.placeholderPane}>
-                        <span style={styles.placeholderIcon}>🌳</span>
-                        <span style={styles.placeholderTitle}>Member App Library</span>
-                        <span style={styles.placeholderDesc}>Browse and install apps built by cooperative members. Coming soon.</span>
+
+                    {/* ─── App Builder ──────────────────────────────────────── */}
+                    {activeTab === 'app_builder' && (
+                      <div style={styles.appBuilderTab}>
+                        <div style={{ ...styles.deckRow, flexShrink: 0 }}>
+                          {([
+                            { key: 'A', icon: '📦', title: 'Build from Template',       desc: 'Choose a cooperative pattern.' },
+                            { key: 'B', icon: '✏️', title: 'Describe in Plain English', desc: 'Tell CAI what you want. Builds locally, free.' },
+                            { key: 'C', icon: '🌳', title: 'Browse What Members Built', desc: 'Explore apps built by cooperative members.' },
+                          ] as { key: 'A' | 'B' | 'C'; icon: string; title: string; desc: string }[]).map(({ key, icon, title, desc }) => (
+                            <button
+                              key={key}
+                              style={{ ...styles.deckCard, ...(builderCard === key ? styles.deckCardActive : {}) }}
+                              onClick={() => setBuilderCard(key)}
+                            >
+                              <span style={styles.deckCardIcon}>{icon}</span>
+                              <span style={styles.deckCardTitle}>{title}</span>
+                              <span style={styles.deckCardDesc}>{desc}</span>
+                            </button>
+                          ))}
+                        </div>
+                        <div style={styles.builderCardBody}>
+                          {builderCard === 'A' && (
+                            <div style={styles.placeholderPane}>
+                              <span style={styles.placeholderIcon}>📦</span>
+                              <span style={styles.placeholderTitle}>Cooperative Template Library</span>
+                              <span style={styles.placeholderDesc}>Coming soon. Card B is available now.</span>
+                            </div>
+                          )}
+                          {builderCard === 'B' && <AppBuilderChat />}
+                          {builderCard === 'C' && (
+                            <div style={styles.placeholderPane}>
+                              <span style={styles.placeholderIcon}>🌳</span>
+                              <span style={styles.placeholderTitle}>Member App Library</span>
+                              <span style={styles.placeholderDesc}>Browse and install apps built by cooperative members. Coming soon.</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
-                  </div>
-                </div>
-              )}
 
-              {/* ─── Browser — 6 chalk-line slots + EmbeddedChrome ───────── */}
-              {activeTab === 'browser' && (
-                <div style={styles.browserTab}>
-                  {/* 6 browser slots */}
-                  <div style={styles.browserSlots}>
-                    {([
-                      { name: 'Chrome',   icon: '🟡', color: '#facc15' },
-                      { name: 'Firefox',  icon: '🦊', color: '#f97316' },
-                      { name: 'Edge',     icon: '🔵', color: '#3b82f6' },
-                      { name: 'Brave',    icon: '🦁', color: '#fb923c' },
-                      { name: 'Embedded', icon: '⚡', color: '#a78bfa' },
-                      { name: 'Vivaldi',  icon: '🔴', color: '#ef4444' },
-                    ]).map(({ name, icon, color }) => (
-                      <div
-                        key={name}
-                        style={{ ...styles.browserSlot, borderColor: `${color}55` }}
-                        title={name === 'Embedded' ? 'Use built-in Chromium (active below)' : `Open in ${name}`}
-                      >
-                        <span style={{ fontSize: '1.4rem' }}>{icon}</span>
-                        <span style={{ ...styles.browserSlotLabel, color }}>{name}</span>
+                    {/* ─── Browser — keyhole expand (Phase E) ───────────────── */}
+                    {activeTab === 'browser' && (
+                      <div style={styles.browserTab}>
+                        <div style={styles.browserSlots}>
+                          {([
+                            { name: 'Chrome',   icon: '🟡', color: '#facc15' },
+                            { name: 'Firefox',  icon: '🦊', color: '#f97316' },
+                            { name: 'Edge',     icon: '🔵', color: '#3b82f6' },
+                            { name: 'Brave',    icon: '🦁', color: '#fb923c' },
+                            { name: 'Embedded', icon: '⚡', color: '#a78bfa' },
+                            { name: 'Vivaldi',  icon: '🔴', color: '#ef4444' },
+                          ]).map(({ name, icon, color }) => (
+                            <div
+                              key={name}
+                              style={{ ...styles.browserSlot, borderColor: `${color}55` }}
+                              title={name === 'Embedded' ? 'Use built-in Chromium (active below)' : `Open in ${name}`}
+                            >
+                              <span style={{ fontSize: '1.4rem' }}>{icon}</span>
+                              <span style={{ ...styles.browserSlotLabel, color }}>{name}</span>
+                            </div>
+                          ))}
+                        </div>
+                        {/* Phase E: keyhole expand — EmbeddedChrome fills available area */}
+                        <div style={styles.browserEmbedArea}>
+                          <EmbeddedChrome
+                            substrateContext={substrateContext}
+                            onInjectionResult={(r) => setInjectionEvents((e) => [r, ...e].slice(0, 10))}
+                          />
+                        </div>
                       </div>
-                    ))}
-                  </div>
+                    )}
 
-                  {/* Embedded Chrome below the slot picker */}
-                  <div style={styles.browserEmbedArea}>
-                    <EmbeddedChrome
-                      substrateContext={substrateContext}
-                      onInjectionResult={(r) => setInjectionEvents((e) => [r, ...e].slice(0, 10))}
-                    />
+                    {/* ─── Substrate — 📜 Charts Station ────────────────────── */}
+                    {activeTab === 'substrate' && (
+                      <div style={{ height: '100%', overflow: 'hidden' }}>
+                        <MakeYourselfComfortableWizard />
+                      </div>
+                    )}
+
                   </div>
                 </div>
-              )}
+              </Allotment.Pane>
 
-              {/* ─── Substrate — Pixie Dust Mining (BP041 SAGA 1) ──────────── */}
-              {activeTab === 'substrate' && (
-                <div style={{ height: '100%', overflow: 'hidden' }}>
-                  <MakeYourselfComfortableWizard />
-                </div>
+              {/* Bottom shelf — ⚙️ Engineering Station (Drekaskip) */}
+              {!layout.shelves.bottom.collapsed && (
+                <Allotment.Pane
+                  minSize={80}
+                  preferredSize={layout.shelves.bottom.size ?? 260}
+                >
+                  <HelmShelf
+                    shelfId="bottom"
+                    cards={layout.shelves.bottom.cards}
+                    collapsed={false}
+                    station="engineering"
+                    onToggleCollapse={() => toggleShelf('bottom')}
+                    onAddCard={(cardId) => addCard('bottom', cardId)}
+                    onRemoveCard={(cardId) => removeCard('bottom', cardId)}
+                    onMoveUp={(cardId) => reorderCard('bottom', cardId, 'up')}
+                    onMoveDown={(cardId) => reorderCard('bottom', cardId, 'down')}
+                    onMoveTo={(cardId, targetShelf) => moveCard('bottom', targetShelf, cardId)}
+                    onSwapCard={(oldId, newId) => swapCard('bottom', oldId, newId)}
+                    onReorder={(fi, ti) => reorderInShelf('bottom', fi, ti)}
+                    direction="row"
+                  />
+                </Allotment.Pane>
               )}
-            </div>
+            </Allotment>
 
-            {/* Drekaskip Wave Status — resizable footer band (BP041 custom drag-up handle) */}
-            <div style={{ ...styles.drekaskipFooter, height: drekaskipHeight }}>
-              {/* Top-edge drag handle — grab here and drag UP to enlarge the footer */}
+            {/* Bottom shelf collapsed strip */}
+            {layout.shelves.bottom.collapsed && (
               <div
-                style={styles.drekaskipResizeHandle}
-                onMouseDown={handleDrekaskipDragStart}
-                title="Drag up/down to resize the Drekaskip Wave Status panel"
-                role="separator"
-                aria-label="Resize Drekaskip Wave Status panel — drag up to enlarge, down to shrink"
-                aria-orientation="horizontal"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  // BP041 a11y Phase A — keyboard alternative to drag: arrow up/down resizes 20px
-                  if (e.key === 'ArrowUp') {
-                    setDrekaskipHeight((h) => Math.min(800, h + 20));
-                    e.preventDefault();
-                  } else if (e.key === 'ArrowDown') {
-                    setDrekaskipHeight((h) => Math.max(80, h - 20));
-                    e.preventDefault();
-                  }
+                style={{
+                  height: 28, display: 'flex', flexDirection: 'row', alignItems: 'center',
+                  gap: '0.5rem', padding: '0 0.75rem', background: '#0a0a12',
+                  borderTop: '1px solid #2d3748', cursor: 'pointer', userSelect: 'none', flexShrink: 0,
                 }}
+                onClick={() => toggleShelf('bottom')}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleShelf('bottom'); } }}
+                title="Expand bottom shelf — ⚙️ Engineering Station"
+                aria-expanded={false}
+                aria-label="Expand Engineering station shelf"
               >
-                <span style={styles.drekaskipResizeGrip}>⇕</span>
+                <span style={{ fontSize: '0.75rem', color: '#4a5568' }}>⚙️ Engineering Station</span>
+                <span style={{ fontSize: '0.65rem', color: '#2d3748' }}>· click to expand ↑</span>
               </div>
-              <div style={styles.drekaskipFooterHeader}>
-                <span>🌊</span> Drekaskip Wave Status
-                <span style={styles.drekaskipResizeHint}>· drag the top edge to resize ↕</span>
-              </div>
-              <div style={styles.drekaskipFooterBody}>
-                <DrekaskipStatusPanel />
-              </div>
-            </div>
+            )}
           </div>
 
-          {/* Right shelf — HELM VIEW Helm Station (BP041 canon). Click ⋮ to collapse / expand. */}
-          {rightShelfCollapsed ? (
-            <div
-              style={styles.rightShelfCollapsed}
-              onClick={toggleRightShelf}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRightShelf(); } }}
-              title="Expand right shelf — Helm Station (In Conjunction · Active Substrate)"
-              role="button"
-              tabIndex={0}
-              aria-label="Expand Helm Station shelf — currently collapsed. Contains In Conjunction agent selector and Active Substrate scribe monitor."
-              aria-expanded={false}
-            >
-              <span style={styles.shelfHandle}>⋮</span>
-              <span style={styles.shelfBadge}>2</span>
-              <span style={styles.shelfLabelVert}>HELM</span>
-            </div>
-          ) : (
-            <div style={styles.rightCol}>
-              {/* Shelf header with 3-dots collapse toggle */}
-              <div style={styles.shelfHeader}>
-                <span style={styles.shelfHeaderLabel}>🎯 Helm Station</span>
-                <button
-                  style={styles.shelfToggleBtn}
-                  onClick={toggleRightShelf}
-                  title="Collapse right shelf to thin strip"
-                  aria-label="Collapse Helm Station shelf"
-                  aria-expanded={true}
-                >⋮</button>
-              </div>
-
-              {/* Conjunction Panel (B83a) — first Deck Card slot */}
-              <div style={{ ...styles.panel, flex: '0 0 55%' }}>
-                <div style={styles.panelHeader}><span>🔀</span> In Conjunction</div>
-                <div style={styles.panelBody}>
-                  <ConjunctionPanel
-                    panelState={panelState}
-                    availability={availability}
-                    onSelect={selectMode}
-                    onShiftClick={handleShiftClick}
-                  />
-                </div>
-              </div>
-
-              {/* Active Substrate Panel (B83d) — second Deck Card slot */}
-              <div style={{ ...styles.panel, flex: '1 1 auto' }}>
-                <div style={styles.panelHeader}><span>🔬</span> Active Substrate</div>
-                <div style={styles.panelBody}>
-                  <ActiveSubstratePanel />
-                </div>
-              </div>
-            </div>
-          )}
+          {/* Right shelf — 📡 Comms Station (In Conjunction) + ⚙️ Engineering (Active Substrate) */}
+          <HelmShelf
+            shelfId="right"
+            cards={layout.shelves.right.cards}
+            collapsed={layout.shelves.right.collapsed}
+            station="comms"
+            onToggleCollapse={() => toggleShelf('right')}
+            onAddCard={(cardId) => addCard('right', cardId)}
+            onRemoveCard={(cardId) => removeCard('right', cardId)}
+            onMoveUp={(cardId) => reorderCard('right', cardId, 'up')}
+            onMoveDown={(cardId) => reorderCard('right', cardId, 'down')}
+            onMoveTo={(cardId, targetShelf) => moveCard('right', targetShelf, cardId)}
+            onSwapCard={(oldId, newId) => swapCard('right', oldId, newId)}
+            onReorder={(fi, ti) => reorderInShelf('right', fi, ti)}
+            direction="column"
+          />
         </div>
 
-        {/* On-Deck panel (BP037) — full-width strip, toggled from top bar */}
+        {/* On-Deck panel (toggled from top bar) — 🧭 Quartermaster Station */}
         {showOnDeck && (
           <div style={styles.onDeckStrip}>
             <OnDeckPanel />
           </div>
         )}
 
-        {/* Conjunction output strip (shown when dispatch result available) */}
+        {/* Conjunction output strip */}
         {conjunctionOutput && (
           <div style={styles.outputStrip}>
             <div style={styles.outputHeader}>
@@ -567,7 +610,7 @@ export function HearthConjunctionWindow() {
           </div>
         )}
 
-        {/* Injection event toast (last injection) */}
+        {/* Injection event toast */}
         {injectionEvents.length > 0 && (
           <div style={{
             ...styles.injectionToast,
@@ -578,6 +621,16 @@ export function HearthConjunctionWindow() {
             {' '}· {injectionEvents[0].url.slice(0, 40)}…
           </div>
         )}
+
+        {/* Global Helm Decks Library picker */}
+        {showLibraryPicker && (
+          <HelmDecksPicker
+            onSelect={(cardId, targetShelf) => addCard(targetShelf, cardId)}
+            onClose={() => setShowLibraryPicker(false)}
+            defaultShelf="right"
+          />
+        )}
+
       </div>
     </ConjunctionContext.Provider>
   );
@@ -597,34 +650,21 @@ const styles: Record<string, React.CSSProperties> = {
   topBar: {
     display: 'flex',
     alignItems: 'center',
-    gap: '0.6rem',
-    padding: '0.5rem 1rem',
+    gap: '0.5rem',
+    padding: '0.5rem 0.75rem',
     background: '#1a1a2e',
     borderBottom: '2px solid #f6ad55',
     flexShrink: 0,
-    minHeight: 44, // BP041 — anchor for vertical alignment of header items
-  },
-  hearthFlame: {
-    fontSize: '1.4rem',
-    fontWeight: 700,
-    color: '#f6ad55',
-    display: 'inline-flex',
-    alignItems: 'center',
+    minHeight: 44,
+    flexWrap: 'nowrap',
+    overflowX: 'auto',
   },
   windowTitle: {
     fontWeight: 700,
     fontSize: '1.1rem',
     color: '#f6ad55',
     letterSpacing: '0.04em',
-    display: 'inline-flex',
-    alignItems: 'center',
-    lineHeight: 1, // BP041 — flush vertical alignment with HEAVY BOOSTER TEST badge
-  },
-  windowSubtitle: {
-    fontSize: '0.7rem',
-    color: '#a0aec0',
-    fontStyle: 'italic',
-    marginLeft: '0.25rem',
+    whiteSpace: 'nowrap',
   },
   heavyBooster: {
     fontSize: '0.65rem',
@@ -634,8 +674,22 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     padding: '2px 6px',
     letterSpacing: '0.08em',
+    whiteSpace: 'nowrap',
   },
-  topBarSpacer: { flex: 1 },
+  // Phase E: The Conductor badge
+  conductorBadge: {
+    fontSize: '0.65rem',
+    fontWeight: 700,
+    background: 'rgba(246,173,85,0.12)',
+    border: '1px solid rgba(246,173,85,0.35)',
+    color: '#f6ad55',
+    borderRadius: '4px',
+    padding: '2px 8px',
+    letterSpacing: '0.04em',
+    whiteSpace: 'nowrap',
+    cursor: 'default',
+  },
+  topBarSpacer: { flex: 1, minWidth: 8 },
   contextBtn: {
     background: '#2d3748',
     border: '1px solid #4a5568',
@@ -645,34 +699,59 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontSize: '0.75rem',
     transition: 'all 0.15s ease-out',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
   },
   contextBtnFlash: {
-    // BP041 — click confirmation flash (250ms): bright outline + slight glow
     background: '#1a4a6e',
     borderColor: '#f6ad55',
     color: '#fff',
     boxShadow: '0 0 0 2px #f6ad5566, 0 0 8px #f6ad5544',
     transform: 'scale(0.97)',
   },
+  presetMenu: {
+    position: 'absolute',
+    top: '110%',
+    right: 0,
+    zIndex: 9000,
+    background: '#1a1a2e',
+    border: '1px solid #4a5568',
+    borderRadius: '6px',
+    padding: '4px 0',
+    minWidth: 160,
+    boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
+  },
+  presetMenuItem: {
+    display: 'block',
+    width: '100%',
+    background: 'none',
+    border: 'none',
+    padding: '6px 14px',
+    fontSize: '0.75rem',
+    textAlign: 'left',
+    cursor: 'pointer',
+  },
   layout: {
     display: 'flex',
     flex: 1,
-    gap: '0.5rem',
-    padding: '0.5rem',
+    gap: 0,
     overflow: 'hidden',
     minHeight: 0,
   },
-
-  // ─── Left column: tab nav + tab content + drekaskip footer ──────────────
+  centerCol: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    minWidth: 0,
+    minHeight: 0,
+  },
   leftCol: {
     display: 'flex',
     flexDirection: 'column',
-    flex: 2,
-    minWidth: 0,
+    height: '100%',
     overflow: 'hidden',
     background: '#0f0f1a',
-    borderRadius: '8px',
-    border: '1px solid #2d3748',
   },
   tabNav: {
     display: 'flex',
@@ -681,7 +760,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#12121f',
   },
   tabBtn: {
-    // BP041 — base style; color/background/border/weight set per-tab inline
     flex: 1,
     padding: '0.65rem 0.5rem',
     border: 'none',
@@ -700,119 +778,48 @@ const styles: Record<string, React.CSSProperties> = {
 
   // ─── Prove It! tab ────────────────────────────────────────────────────────
   proveItTab: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    padding: '1rem',
-    gap: '1rem',
-    overflow: 'auto',
+    flex: 1, display: 'flex', flexDirection: 'column',
+    padding: '1rem', gap: '1rem', overflow: 'auto',
   },
-  proveItHeader: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '0.35rem',
-  },
-  proveItTitle: {
-    fontSize: '1.1rem',
-    fontWeight: 700,
-    color: '#f6ad55',
-  },
-  proveItSubtitle: {
-    fontSize: '0.82rem',
-    color: '#a0aec0',
-    lineHeight: 1.5,
-    maxWidth: 480,
-  },
-  proveItBody: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '0.75rem',
-  },
-  proveItNote: {
-    fontSize: '0.75rem',
-    color: '#68d391',
-    fontStyle: 'italic',
-  },
+  proveItHeader: { display: 'flex', flexDirection: 'column', gap: '0.35rem' },
+  proveItTitle: { fontSize: '1.1rem', fontWeight: 700, color: '#f6ad55' },
+  proveItSubtitle: { fontSize: '0.82rem', color: '#a0aec0', lineHeight: 1.5, maxWidth: 480 },
+  proveItBody: { display: 'flex', flexDirection: 'column', gap: '0.75rem' },
+  proveItNote: { fontSize: '0.75rem', color: '#68d391', fontStyle: 'italic' },
   synthesisView: {
-    fontSize: '0.75rem',
-    lineHeight: 1.5,
-    color: '#e2e8f0',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    background: '#070710',
-    border: '1px solid #2d3748',
-    borderRadius: '6px',
-    padding: '0.75rem',
-    overflow: 'auto',
-    maxHeight: 360,
+    fontSize: '0.75rem', lineHeight: 1.5, color: '#e2e8f0',
+    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+    background: '#070710', border: '1px solid #2d3748',
+    borderRadius: '6px', padding: '0.75rem', overflow: 'auto', maxHeight: 360,
   },
 
-  // ─── Deck Cards (§4 — 3 options per tab) ─────────────────────────────────
-  deckRow: {
-    display: 'flex',
-    gap: '0.5rem',
-    flexShrink: 0,
-  },
+  // ─── Deck Cards ────────────────────────────────────────────────────────────
+  deckRow: { display: 'flex', gap: '0.5rem', flexShrink: 0 },
   deckCard: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'flex-start',
-    gap: '0.3rem',
-    padding: '0.65rem 0.75rem',
-    background: 'transparent',
-    border: '1px solid #2d3748',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    textAlign: 'left' as const,
-    color: '#e2e8f0',
+    flex: 1, display: 'flex', flexDirection: 'column' as const,
+    alignItems: 'flex-start', gap: '0.3rem', padding: '0.65rem 0.75rem',
+    background: 'transparent', border: '1px solid #2d3748', borderRadius: '8px',
+    cursor: 'pointer', textAlign: 'left' as const, color: '#e2e8f0',
     transition: 'border-color 0.15s, background 0.15s',
   },
-  deckCardActive: {
-    borderColor: '#f6ad55',
-    background: 'rgba(246, 173, 85, 0.07)',
-  },
-  deckCardIcon: {
-    fontSize: '1.35rem',
-    lineHeight: 1,
-  },
-  deckCardTitle: {
-    fontSize: '0.78rem',
-    fontWeight: 700,
-    color: '#f6ad55',
-  },
-  deckCardDesc: {
-    fontSize: '0.68rem',
-    color: '#718096',
-    lineHeight: 1.4,
-  },
+  deckCardActive: { borderColor: '#f6ad55', background: 'rgba(246, 173, 85, 0.07)' },
+  deckCardIcon: { fontSize: '1.35rem', lineHeight: 1 },
+  deckCardTitle: { fontSize: '0.78rem', fontWeight: 700, color: '#f6ad55' },
+  deckCardDesc: { fontSize: '0.68rem', color: '#718096', lineHeight: 1.4 },
 
   // ─── App Builder tab ──────────────────────────────────────────────────────
   appBuilderTab: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '0.5rem',
-    padding: '0.5rem',
-    overflow: 'hidden',
-    minHeight: 0,
+    flex: 1, display: 'flex', flexDirection: 'column' as const,
+    gap: '0.5rem', padding: '0.5rem', overflow: 'hidden', minHeight: 0,
   },
   builderCardBody: {
-    flex: 1,
-    overflow: 'hidden',
-    minHeight: 0,
-    display: 'flex',
-    flexDirection: 'column' as const,
+    flex: 1, overflow: 'hidden', minHeight: 0,
+    display: 'flex', flexDirection: 'column' as const,
   },
   placeholderPane: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '0.5rem',
-    color: '#718096',
-    padding: '2rem',
+    flex: 1, display: 'flex', flexDirection: 'column' as const,
+    alignItems: 'center', justifyContent: 'center',
+    gap: '0.5rem', color: '#718096', padding: '2rem',
   },
   placeholderIcon: { fontSize: '2.5rem' },
   placeholderTitle: { fontSize: '0.95rem', fontWeight: 600, color: '#a0aec0' },
@@ -820,243 +827,44 @@ const styles: Record<string, React.CSSProperties> = {
 
   // ─── Browser tab ─────────────────────────────────────────────────────────
   browserTab: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    overflow: 'hidden',
-    minHeight: 0,
+    flex: 1, display: 'flex', flexDirection: 'column' as const,
+    overflow: 'hidden', minHeight: 0,
   },
   browserSlots: {
-    display: 'flex',
-    gap: '0.4rem',
-    padding: '0.5rem',
-    flexShrink: 0,
-    borderBottom: '1px solid #2d3748',
-    background: '#0a0a12',
+    display: 'flex', gap: '0.4rem', padding: '0.5rem',
+    flexShrink: 0, borderBottom: '1px solid #2d3748', background: '#0a0a12',
   },
   browserSlot: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    gap: '0.2rem',
-    padding: '0.4rem 0.25rem',
-    border: '1px solid',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    background: 'rgba(255,255,255,0.02)',
-    transition: 'background 0.15s',
+    flex: 1, display: 'flex', flexDirection: 'column' as const,
+    alignItems: 'center', gap: '0.2rem', padding: '0.4rem 0.25rem',
+    border: '1px solid', borderRadius: '6px', cursor: 'pointer',
+    background: 'rgba(255,255,255,0.02)', transition: 'background 0.15s',
   },
-  browserSlotLabel: {
-    fontSize: '0.6rem',
-    fontWeight: 600,
-    letterSpacing: '0.04em',
-  },
-  browserEmbedArea: {
-    flex: 1,
-    overflow: 'hidden',
-    minHeight: 0,
-  },
-
-  // ─── Drekaskip footer band (persistent across all tabs) ──────────────────
-  // BP041 — height controlled by drekaskipHeight state via custom top-edge
-  // drag handle. Drag UP to enlarge (footer is bottom-anchored so member
-  // never has to reach below the visible area).
-  drekaskipFooter: {
-    flexShrink: 0,
-    borderTop: 'none', // handle below provides the visual edge
-    background: '#0a0a12',
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  drekaskipResizeHandle: {
-    // BP041 a11y Phase A — bumped 8→16px for WCAG 2.5.5 click-target compliance
-    height: 16,
-    background: 'linear-gradient(180deg, #f6ad5544 0%, #f6ad5511 100%)',
-    cursor: 'ns-resize',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-    transition: 'background 0.15s',
-    userSelect: 'none',
-  },
-  drekaskipResizeGrip: {
-    fontSize: '0.7rem',
-    color: '#f6ad55',
-    opacity: 0.7,
-    letterSpacing: '-2px',
-  },
-  drekaskipResizeHint: {
-    marginLeft: 'auto',
-    fontSize: '0.65rem',
-    color: '#4a5568',
-    fontStyle: 'italic',
-    fontWeight: 400,
-  },
-  drekaskipFooterHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.4rem',
-    padding: '0.3rem 0.75rem',
-    background: '#111120',
-    borderBottom: '1px solid #2d3748',
-    fontWeight: 600,
-    fontSize: '0.75rem',
-    color: '#718096',
-    flexShrink: 0,
-  },
-  drekaskipFooterBody: {
-    flex: 1,
-    overflow: 'auto',
-    padding: '0.4rem 0.75rem',
-    minHeight: 0,
-  },
-
-  // ─── Right column panels ──────────────────────────────────────────────────
-  // BP041 — HELM VIEW canon: collapsed-shelf strip + header + toggle
-  rightShelfCollapsed: {
-    flex: '0 0 28px',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    gap: '0.5rem',
-    padding: '0.5rem 0',
-    background: '#0a0a14',
-    borderLeft: '1px solid #2d3748',
-    cursor: 'pointer',
-    transition: 'background 0.18s',
-    userSelect: 'none' as const,
-  },
-  shelfHandle: { fontSize: '1.1rem', color: '#a0aec0', lineHeight: 1 },
-  shelfBadge: {
-    background: '#f6ad55',
-    color: '#1a1a2e',
-    fontSize: '0.6rem',
-    fontWeight: 700,
-    padding: '1px 5px',
-    borderRadius: '8px',
-    lineHeight: 1.2,
-  },
-  shelfLabelVert: {
-    writingMode: 'vertical-rl' as const,
-    transform: 'rotate(180deg)',
-    fontSize: '0.6rem',
-    color: '#718096',
-    letterSpacing: '0.1em',
-    fontWeight: 700,
-    marginTop: '0.5rem',
-  },
-  shelfHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '4px 10px',
-    background: '#111120',
-    borderBottom: '1px solid #2d3748',
-    fontSize: '0.7rem',
-    flexShrink: 0,
-  },
-  shelfHeaderLabel: { fontWeight: 700, color: '#cbd5e0', letterSpacing: '0.04em' },
-  shelfToggleBtn: {
-    background: 'none',
-    border: 'none',
-    color: '#a0aec0',
-    cursor: 'pointer',
-    fontSize: '1rem',
-    lineHeight: 1,
-    padding: '0 4px',
-    borderRadius: '3px',
-  },
-  rightCol: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '0.5rem',
-    flex: '0 0 300px',
-    minWidth: 240,
-    overflow: 'hidden',
-  },
-  panel: {
-    display: 'flex',
-    flexDirection: 'column',
-    background: '#0f0f1a',
-    borderRadius: '8px',
-    border: '1px solid #2d3748',
-    overflow: 'hidden',
-  },
-  panelHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.4rem',
-    padding: '0.4rem 0.75rem',
-    background: '#1a1a2e',
-    borderBottom: '1px solid #2d3748',
-    fontWeight: 600,
-    fontSize: '0.8rem',
-    color: '#a0aec0',
-    flexShrink: 0,
-  },
-  panelBody: {
-    flex: 1,
-    overflow: 'auto',
-    padding: '0.5rem',
-    minHeight: 0,
-  },
+  browserSlotLabel: { fontSize: '0.6rem', fontWeight: 600, letterSpacing: '0.04em' },
+  browserEmbedArea: { flex: 1, overflow: 'hidden', minHeight: 0 },
 
   // ─── Strips & toasts ─────────────────────────────────────────────────────
   onDeckStrip: {
-    borderTop: '2px solid #3b82f6',
-    background: '#070710',
-    flexShrink: 0,
-    height: 340,
-    overflow: 'hidden',
+    borderTop: '2px solid #3b82f6', background: '#070710',
+    flexShrink: 0, height: 340, overflow: 'hidden',
   },
   outputStrip: {
-    borderTop: '1px solid #f6ad55',
-    background: '#110a00',
-    flexShrink: 0,
-    maxHeight: '35vh',
-    display: 'flex',
-    flexDirection: 'column',
+    borderTop: '1px solid #f6ad55', background: '#110a00',
+    flexShrink: 0, maxHeight: '35vh', display: 'flex', flexDirection: 'column',
   },
   outputHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '0.4rem 0.75rem',
-    background: '#1a1100',
-    fontSize: '0.75rem',
-    color: '#f6ad55',
-    fontWeight: 600,
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '0.4rem 0.75rem', background: '#1a1100',
+    fontSize: '0.75rem', color: '#f6ad55', fontWeight: 600,
   },
-  outputClose: {
-    background: 'none',
-    border: 'none',
-    color: '#718096',
-    cursor: 'pointer',
-    fontSize: '0.85rem',
-  },
+  outputClose: { background: 'none', border: 'none', color: '#718096', cursor: 'pointer', fontSize: '0.85rem' },
   outputBody: {
-    flex: 1,
-    overflow: 'auto',
-    padding: '0.5rem 0.75rem',
-    fontSize: '0.78rem',
-    lineHeight: 1.5,
-    color: '#e2e8f0',
-    whiteSpace: 'pre-wrap',
+    flex: 1, overflow: 'auto', padding: '0.5rem 0.75rem',
+    fontSize: '0.78rem', lineHeight: 1.5, color: '#e2e8f0', whiteSpace: 'pre-wrap',
   },
   injectionToast: {
-    position: 'fixed',
-    bottom: '0.75rem',
-    right: '0.75rem',
-    border: '1px solid',
-    borderRadius: '6px',
-    padding: '0.3rem 0.6rem',
-    fontSize: '0.72rem',
-    color: '#e2e8f0',
-    zIndex: 9999,
-    maxWidth: 320,
+    position: 'fixed', bottom: '0.75rem', right: '0.75rem',
+    border: '1px solid', borderRadius: '6px', padding: '0.3rem 0.6rem',
+    fontSize: '0.72rem', color: '#e2e8f0', zIndex: 9999, maxWidth: 320,
   },
 };
