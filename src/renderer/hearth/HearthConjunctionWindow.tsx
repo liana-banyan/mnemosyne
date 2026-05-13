@@ -17,6 +17,8 @@ import { AppBuilderChat } from './AppBuilderChat';
 import { ConjunctionPanel } from './conjunction/ConjunctionPanel';
 import { EmbeddedChrome } from './embedded_browser/EmbeddedChrome';
 import { DrekaskipStatusPanel } from './drekaskip_status/DrekaskipStatusPanel';
+import { LiveSegWatch } from './drekaskip_status/LiveSegWatch';
+import { NotCentsGlyph } from '../components/NotCentsGlyph';
 import { NovaculaFireButton } from './drekaskip_status/NovaculaFireButton';
 import { ActiveSubstratePanel } from './active_substrate/ActiveSubstratePanel';
 import { OnDeckPanel } from './on_deck/OnDeckPanel';
@@ -39,7 +41,53 @@ export function HearthConjunctionWindow() {
   const [showOnDeck, setShowOnDeck] = useState(false);
   const [activeTab, setActiveTab] = useState<HearthTab>('prove_it');
   // §4 — Deck Card selections per tab (Founder rule: always 3 options)
-  const [proveCard, setProveCard] = useState<'A' | 'B' | 'C' | null>(null);
+  // BP041 — Default-select Card A so the Fire Novacula button is visible immediately
+  // on Prove It! tab. After fire, auto-switch to Card C "Just Watch" so the member
+  // sees SEGs progress live without manual navigation.
+  const [proveCard, setProveCard] = useState<'A' | 'B' | 'C' | null>('A');
+
+  // BP041 — Auto-switch to Card C on Novacula fire (so SEG progression is visible
+  // immediately + member doesn't have to find it). Founder direct: "when I fire,
+  // it should switch to Just Watch automatically."
+  useEffect(() => {
+    const onFire = () => {
+      setActiveTab('prove_it');
+      setProveCard('C');
+    };
+    window.addEventListener('mnemosyne-wave-fired', onFire);
+    return () => window.removeEventListener('mnemosyne-wave-fired', onFire);
+  }, []);
+
+  // BP041 — Drekaskip footer drag-resize-UP. Native CSS resize grows DOWN from the
+  // bottom; for a bottom-anchored footer member needs to drag UP to enlarge.
+  // Custom top-edge drag handle solves it. Founder direct: "I STILL can't move
+  // the bottom up... I want to see MORE of that if I feel like it."
+  const [drekaskipHeight, setDrekaskipHeight] = useState<number>(260);
+  const drekaskipDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const handleDrekaskipDragStart = (e: React.MouseEvent) => {
+    drekaskipDragRef.current = { startY: e.clientY, startHeight: drekaskipHeight };
+    const onMove = (ev: MouseEvent) => {
+      if (!drekaskipDragRef.current) return;
+      const delta = drekaskipDragRef.current.startY - ev.clientY; // drag up = positive
+      const next = Math.max(80, Math.min(800, drekaskipDragRef.current.startHeight + delta));
+      setDrekaskipHeight(next);
+    };
+    const onUp = () => {
+      drekaskipDragRef.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  // BP041 — Click feedback flash: track recent button presses for 250ms outline glow.
+  // Founder direct: "SOMETHING should show me that I did, in fact, click it."
+  const [lastClickedBtn, setLastClickedBtn] = useState<string | null>(null);
+  const flashBtn = (id: string) => {
+    setLastClickedBtn(id);
+    setTimeout(() => setLastClickedBtn((cur) => (cur === id ? null : cur)), 250);
+  };
   const [builderCard, setBuilderCard] = useState<'A' | 'B' | 'C'>('B');
   const contextRefreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -129,10 +177,13 @@ export function HearthConjunctionWindow() {
     window.amplify.conjunctionSetOverride?.(mode).catch(() => { /* non-fatal */ });
   }, []);
 
-  const TAB_META: Record<HearthTab, { icon: string; label: string }> = {
-    prove_it:    { icon: '🎯', label: 'Prove It!' },
-    app_builder: { icon: '🏗️', label: 'App Builder' },
-    browser:     { icon: '🌐', label: 'Browser' },
+  const TAB_META: Record<HearthTab, { icon: string; label: string; color: string; bgActive: string; bgInactive: string }> = {
+    // BP041 — each tab has its own color identity; active tab gets full saturation,
+    // inactive tabs muted but still hued. Founder direct: "different shades, so it
+    // is clear that you are on a tab."
+    prove_it:    { icon: '🎯', label: 'Prove It!',   color: '#f6ad55', bgActive: '#3a2a14', bgInactive: '#1a1410' }, // amber
+    app_builder: { icon: '🏗️', label: 'App Builder', color: '#48bb78', bgActive: '#143524', bgInactive: '#0e1a13' }, // green
+    browser:     { icon: '🌐', label: 'Browser',     color: '#4299e1', bgActive: '#142a3a', bgInactive: '#0e161e' }, // blue
   };
 
   return (
@@ -140,12 +191,30 @@ export function HearthConjunctionWindow() {
       <div style={styles.root}>
         {/* Window header */}
         <div style={styles.topBar}>
-          <span style={styles.hearthFlame}>🔥</span>
-          <span style={styles.windowTitle}>Hearth Conjunction Window</span>
+          <NotCentsGlyph size="1.4rem" alt="NotCents · Mnemosyne identity" />
+          <span style={styles.windowTitle}>Mnemosyne</span>
           <span style={styles.heavyBooster}>HEAVY BOOSTER TEST</span>
           <div style={styles.topBarSpacer} />
-          <button style={styles.contextBtn} onClick={buildContext} title="Refresh substrate context">
-            🧬 Refresh context
+          {/* BP041 — Page-reload button + flash feedback on click */}
+          <button
+            style={{
+              ...styles.contextBtn,
+              ...(lastClickedBtn === 'reload' ? styles.contextBtnFlash : {}),
+            }}
+            onClick={() => { flashBtn('reload'); setTimeout(() => window.location.reload(), 180); }}
+            title="Reload Mnemosyne window — like browser F5. Substrate state stays; UI rebuilds."
+          >
+            🔄 Reload
+          </button>
+          <button
+            style={{
+              ...styles.contextBtn,
+              ...(lastClickedBtn === 'sync_context' ? styles.contextBtnFlash : {}),
+            }}
+            onClick={() => { flashBtn('sync_context'); buildContext(); }}
+            title="Sync Mnemosyne substrate to Embedded Chrome — when you open a web page in the Browser tab, Mnemosyne auto-injects what it knows (canon, receipts, current state) so the page is substrate-aware. This rebuilds that injection blob from latest substrate."
+          >
+            🧬 Sync to Browser
           </button>
           <button
             style={{
@@ -153,11 +222,12 @@ export function HearthConjunctionWindow() {
               background: showOnDeck ? '#1e3a5f' : '#2d3748',
               borderColor: showOnDeck ? '#3b82f6' : '#4a5568',
               color: showOnDeck ? '#63b3ed' : '#e2e8f0',
+              ...(lastClickedBtn === 'on_deck' ? styles.contextBtnFlash : {}),
             }}
-            onClick={() => setShowOnDeck((v) => !v)}
-            title="Toggle On-Deck queue panel"
+            onClick={() => { flashBtn('on_deck'); setShowOnDeck((v) => !v); }}
+            title="Toggle On Deck panel — your task queue staging area. Items here are pending Mnemosyne work you haven't fired yet."
           >
-            📋 On Deck
+            📋 On Deck {showOnDeck ? '(on)' : '(off)'}
           </button>
         </div>
 
@@ -167,24 +237,39 @@ export function HearthConjunctionWindow() {
           {/* Left column: tab nav + tab content + drekaskip footer */}
           <div style={styles.leftCol}>
 
-            {/* Tab navigation strip */}
+            {/* Tab navigation strip — per-tab color identity (BP041) */}
             <div style={styles.tabNav}>
-              {(Object.keys(TAB_META) as HearthTab[]).map((tab) => (
-                <button
-                  key={tab}
-                  style={{
-                    ...styles.tabBtn,
-                    ...(activeTab === tab ? styles.tabBtnActive : {}),
-                  }}
-                  onClick={() => setActiveTab(tab)}
-                >
-                  {TAB_META[tab].icon} {TAB_META[tab].label}
-                </button>
-              ))}
+              {(Object.keys(TAB_META) as HearthTab[]).map((tab) => {
+                const isActive = activeTab === tab;
+                const meta = TAB_META[tab];
+                return (
+                  <button
+                    key={tab}
+                    style={{
+                      ...styles.tabBtn,
+                      background: isActive ? meta.bgActive : meta.bgInactive,
+                      color: isActive ? meta.color : `${meta.color}99`, // ~60% opacity hex suffix
+                      borderBottom: isActive
+                        ? `3px solid ${meta.color}`
+                        : `3px solid transparent`,
+                      fontWeight: isActive ? 700 : 500,
+                      fontSize: isActive ? '0.82rem' : '0.78rem',
+                    }}
+                    onClick={() => setActiveTab(tab)}
+                  >
+                    {meta.icon} {meta.label}
+                  </button>
+                );
+              })}
             </div>
 
-            {/* Tab content area */}
-            <div style={styles.tabContent}>
+            {/* Tab content area — BP041: tinted to match active tab color (full-tab identity, not just nav) */}
+            <div style={{
+              ...styles.tabContent,
+              background: TAB_META[activeTab].bgInactive,
+              borderLeft: `1px solid ${TAB_META[activeTab].color}33`,
+              borderRight: `1px solid ${TAB_META[activeTab].color}33`,
+            }}>
 
               {/* ─── Prove It! — trust gateway ───────────────────────────── */}
               {activeTab === 'prove_it' && (
@@ -199,7 +284,7 @@ export function HearthConjunctionWindow() {
                   {/* Deck Cards — 3 options */}
                   <div style={styles.deckRow}>
                     {([
-                      { key: 'A', icon: '🎯', title: 'Fire Empirical Proof', desc: 'Run canonical test data through the full 24-SEG Novacula. Instant trust — no setup.' },
+                      { key: 'A', icon: '🎯', title: 'Fire Empirical Proof', desc: 'Run canonical test data through the BP041 Empirical Proof Novacula. Instant trust — no setup. (Substrate adapts to your current concurrency cap.)' },
                       { key: 'B', icon: '🧪', title: 'Fire Your Own Test', desc: 'Provide your own input. Wrapped in the same Novacula pipeline — you own the result.' },
                       { key: 'C', icon: '👀', title: 'Just Watch', desc: 'Read the canonical published synthesis without firing. See what the system produces.' },
                     ] as { key: 'A' | 'B' | 'C'; icon: string; title: string; desc: string }[]).map(({ key, icon, title, desc }) => (
@@ -215,10 +300,11 @@ export function HearthConjunctionWindow() {
                     ))}
                   </div>
 
-                  {/* Card action areas */}
+                  {/* Card action areas — BP041: LiveSegWatch shows real-time SEG progression + aggregates */}
                   {proveCard === 'A' && (
                     <div style={styles.proveItBody}>
                       <NovaculaFireButton />
+                      <LiveSegWatch title="Live SEG Watch — current wave" maxHeight={360} />
                       {conjunctionOutput && (
                         <div style={styles.proveItNote}>Conjunction result ready — see strip below ↓</div>
                       )}
@@ -228,16 +314,18 @@ export function HearthConjunctionWindow() {
                     <div style={styles.proveItBody}>
                       <p style={styles.proveItNote}>Custom test input — fire your data through the Novacula pipeline:</p>
                       <NovaculaFireButton />
+                      <LiveSegWatch title="Live SEG Watch — custom test" maxHeight={360} />
                     </div>
                   )}
                   {proveCard === 'C' && (
                     <div style={styles.proveItBody}>
-                      {conjunctionOutput ? (
-                        <pre style={styles.synthesisView}>{conjunctionOutput.slice(0, 3000)}</pre>
-                      ) : (
-                        <p style={styles.proveItNote}>
-                          No synthesis result yet. Fire a Novacula test first (Card A or B), then return here to read the output.
-                        </p>
+                      <p style={styles.proveItNote}>Read the most recent canonical synthesis without firing — see what the substrate produced:</p>
+                      <LiveSegWatch title="Just Watch — latest wave" maxHeight={400} />
+                      {conjunctionOutput && (
+                        <details style={{ marginTop: '0.5rem' }}>
+                          <summary style={{ cursor: 'pointer', fontSize: '0.7rem', color: '#86efac' }}>📄 Conjunction-Panel output (separate from Novacula synthesis)</summary>
+                          <pre style={styles.synthesisView}>{conjunctionOutput.slice(0, 3000)}</pre>
+                        </details>
                       )}
                     </div>
                   )}
@@ -327,10 +415,19 @@ export function HearthConjunctionWindow() {
               )}
             </div>
 
-            {/* Drekaskip Wave Status — persistent footer band (visible across all tabs) */}
-            <div style={styles.drekaskipFooter}>
+            {/* Drekaskip Wave Status — resizable footer band (BP041 custom drag-up handle) */}
+            <div style={{ ...styles.drekaskipFooter, height: drekaskipHeight }}>
+              {/* Top-edge drag handle — grab here and drag UP to enlarge the footer */}
+              <div
+                style={styles.drekaskipResizeHandle}
+                onMouseDown={handleDrekaskipDragStart}
+                title="Drag up/down to resize the Drekaskip Wave Status panel"
+              >
+                <span style={styles.drekaskipResizeGrip}>⇕</span>
+              </div>
               <div style={styles.drekaskipFooterHeader}>
                 <span>🌊</span> Drekaskip Wave Status
+                <span style={styles.drekaskipResizeHint}>· drag the top edge to resize ↕</span>
               </div>
               <div style={styles.drekaskipFooterBody}>
                 <DrekaskipStatusPanel />
@@ -411,18 +508,34 @@ const styles: Record<string, React.CSSProperties> = {
   topBar: {
     display: 'flex',
     alignItems: 'center',
-    gap: '0.5rem',
+    gap: '0.6rem',
     padding: '0.5rem 1rem',
     background: '#1a1a2e',
     borderBottom: '2px solid #f6ad55',
     flexShrink: 0,
+    minHeight: 44, // BP041 — anchor for vertical alignment of header items
   },
-  hearthFlame: { fontSize: '1.2rem' },
+  hearthFlame: {
+    fontSize: '1.4rem',
+    fontWeight: 700,
+    color: '#f6ad55',
+    display: 'inline-flex',
+    alignItems: 'center',
+  },
   windowTitle: {
     fontWeight: 700,
-    fontSize: '1rem',
+    fontSize: '1.1rem',
     color: '#f6ad55',
     letterSpacing: '0.04em',
+    display: 'inline-flex',
+    alignItems: 'center',
+    lineHeight: 1, // BP041 — flush vertical alignment with HEAVY BOOSTER TEST badge
+  },
+  windowSubtitle: {
+    fontSize: '0.7rem',
+    color: '#a0aec0',
+    fontStyle: 'italic',
+    marginLeft: '0.25rem',
   },
   heavyBooster: {
     fontSize: '0.65rem',
@@ -439,9 +552,18 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid #4a5568',
     borderRadius: '4px',
     color: '#e2e8f0',
-    padding: '0.25rem 0.5rem',
+    padding: '0.3rem 0.6rem',
     cursor: 'pointer',
     fontSize: '0.75rem',
+    transition: 'all 0.15s ease-out',
+  },
+  contextBtnFlash: {
+    // BP041 — click confirmation flash (250ms): bright outline + slight glow
+    background: '#1a4a6e',
+    borderColor: '#f6ad55',
+    color: '#fff',
+    boxShadow: '0 0 0 2px #f6ad5566, 0 0 8px #f6ad5544',
+    transform: 'scale(0.97)',
   },
   layout: {
     display: 'flex',
@@ -470,23 +592,14 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#12121f',
   },
   tabBtn: {
+    // BP041 — base style; color/background/border/weight set per-tab inline
     flex: 1,
-    padding: '0.5rem 0.25rem',
-    background: 'none',
+    padding: '0.65rem 0.5rem',
     border: 'none',
     borderRight: '1px solid #2d3748',
-    color: '#718096',
-    fontSize: '0.78rem',
-    fontWeight: 600,
     cursor: 'pointer',
-    letterSpacing: '0.03em',
-    transition: 'color 0.15s, background 0.15s',
-  },
-  tabBtnActive: {
-    color: '#f6ad55',
-    background: '#1a1a2e',
-    borderBottom: '2px solid #f6ad55',
-    marginBottom: '-2px',
+    letterSpacing: '0.04em',
+    transition: 'all 0.18s ease-out',
   },
   tabContent: {
     flex: 1,
@@ -657,14 +770,41 @@ const styles: Record<string, React.CSSProperties> = {
   },
 
   // ─── Drekaskip footer band (persistent across all tabs) ──────────────────
+  // BP041 — height controlled by drekaskipHeight state via custom top-edge
+  // drag handle. Drag UP to enlarge (footer is bottom-anchored so member
+  // never has to reach below the visible area).
   drekaskipFooter: {
     flexShrink: 0,
-    borderTop: '1px solid #2d3748',
+    borderTop: 'none', // handle below provides the visual edge
     background: '#0a0a12',
     display: 'flex',
     flexDirection: 'column',
-    maxHeight: 180,
     overflow: 'hidden',
+    position: 'relative',
+  },
+  drekaskipResizeHandle: {
+    height: 8,
+    background: 'linear-gradient(180deg, #f6ad5544 0%, #f6ad5511 100%)',
+    cursor: 'ns-resize',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    transition: 'background 0.15s',
+    userSelect: 'none',
+  },
+  drekaskipResizeGrip: {
+    fontSize: '0.7rem',
+    color: '#f6ad55',
+    opacity: 0.7,
+    letterSpacing: '-2px',
+  },
+  drekaskipResizeHint: {
+    marginLeft: 'auto',
+    fontSize: '0.65rem',
+    color: '#4a5568',
+    fontStyle: 'italic',
+    fontWeight: 400,
   },
   drekaskipFooterHeader: {
     display: 'flex',

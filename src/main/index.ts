@@ -277,7 +277,11 @@ function createOverlayWindow(): void {
   });
   overlayWindow.loadURL(RENDERER_URL);
 
-  if (IS_DEV) {
+  // BP041 — DevTools auto-open opt-out per Founder direct (non-technical members
+  // running `npm run dev` should not see DevTools by default). Set MNEMOSYNE_DEVTOOLS=1
+  // in env to re-enable, OR press Ctrl+Shift+I at any time to open manually,
+  // OR press Ctrl+Shift+D for the developer menu (commit 1b0fdc7 §6).
+  if (IS_DEV && process.env.MNEMOSYNE_DEVTOOLS === '1') {
     overlayWindow.webContents.openDevTools({ mode: 'detach' });
   }
 
@@ -367,7 +371,7 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
       click: () => openDashboard(),
     },
     {
-      label: '🔥 Hearth Conjunction Window',
+      label: 'Đ Open Mnemosyne',
       click: () => openHearthConjunctionWindow(),
     },
     {
@@ -481,7 +485,7 @@ function openHearthConjunctionWindow(): void {
     height: bounds.height,
     x: bounds.x,
     y: bounds.y,
-    title: 'Hearth Conjunction Window — Heavy Booster Test',
+    title: 'Mnemosyne — Memory, powered by CAI',
     minWidth: 1280,
     minHeight: 800,
     show: false,
@@ -866,6 +870,15 @@ app.whenReady().then(async () => {
   createOverlayWindow();
   createTray();
   registerIPCHandlers();
+
+  // BP041 — Auto-open Hearth Conjunction Window on launch per Founder direct
+  // ("dead-simple = the bar"). The overlay+tray remain (mode indicator + tray
+  // menu), but members SEE the Hearth Conjunction Window (Prove It! / App
+  // Builder / Browser tabs + Drekaskip panel) immediately — no tray-menu
+  // discovery needed. Set env MNEMOSYNE_NO_AUTO_OPEN=1 to skip (dev convenience).
+  if (process.env.MNEMOSYNE_NO_AUTO_OPEN !== '1') {
+    openHearthConjunctionWindow();
+  }
 
   const okQuit = globalShortcut.register('CommandOrControl+Shift+Alt+Q', () => {
     app.quit();

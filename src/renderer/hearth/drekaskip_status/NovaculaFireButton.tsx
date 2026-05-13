@@ -2,7 +2,7 @@
 // Member-replicable dispatch of the K533 canonical test #1 payload
 // POST → http://127.0.0.1:11480/yoke/wave/dispatch
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface DispatchResponse {
   wave_id: string;
@@ -17,6 +17,19 @@ export function NovaculaFireButton() {
   const [waveId, setWaveId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
+  // BP041 micro-followup — read seg_count_target dynamically from canonical
+  // so the subtitle matches the actual payload (v2 = 60-SEG; v1 was 24-SEG).
+  const [segCountTarget, setSegCountTarget] = useState<number | null>(null);
+
+  // Load canonical on mount to populate the subtitle (separate from fire-click fetch).
+  useEffect(() => {
+    fetch('/canonical/novacula/bp041_empirical_proof.json')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((p) => {
+        if (p) setSegCountTarget(p.seg_count_target ?? p.segs?.length ?? null);
+      })
+      .catch(() => { /* non-fatal; subtitle shows em-dash */ });
+  }, []);
 
   const handleFire = async () => {
     setFireState('loading');
@@ -50,9 +63,17 @@ export function NovaculaFireButton() {
       }
 
       const result: DispatchResponse = await dispatchResp.json();
-      const id = result.wave_id ?? result.id ?? JSON.stringify(result).slice(0, 40);
-      setWaveId(String(id));
+      const id = String(result.wave_id ?? result.id ?? JSON.stringify(result).slice(0, 40));
+      setWaveId(id);
       setFireState('success');
+      // BP041 — Broadcast the fired wave_id to LiveSegWatch (and any other
+      // listeners). Direct event channel; doesn't depend on saga subscription
+      // catching the wave on its 3s poll. Also stash in localStorage so the
+      // most-recent wave survives reloads (Card C "Just Watch" reads it).
+      try {
+        window.dispatchEvent(new CustomEvent('mnemosyne-wave-fired', { detail: { waveId: id } }));
+        localStorage.setItem('mnemosyne_last_wave_id', id);
+      } catch { /* non-fatal */ }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setFireState('error');
@@ -81,20 +102,31 @@ export function NovaculaFireButton() {
         )}
       </button>
 
-      {/* Subtitle */}
+      {/* Subtitle — reads seg_count_target dynamically from loaded canonical */}
       <div style={styles.subtitle}>
-        24 SEGs · adaptive concurrency · member-replicable · K533 canonical test #1
+        {segCountTarget ?? '—'} SEGs · adaptive concurrency · member-replicable · K533 canonical test #1
       </div>
 
-      {/* Success state */}
+      {/* Success state — BP041: wave_id is text-selectable + click-to-copy */}
       {fireState === 'success' && waveId && (
         <div style={styles.successBox}>
           <span style={styles.successIcon}>✅</span>
-          <span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
             <b>Wave dispatched:</b>{' '}
-            <code style={styles.waveIdCode}>{waveId}</code>
+            <code
+              style={styles.waveIdCode}
+              title="Click to copy wave_id to clipboard"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(waveId);
+                  // Brief feedback by re-using the wave_id state value
+                  setWaveId(`✓ copied: ${waveId}`);
+                  setTimeout(() => setWaveId(waveId), 1200);
+                } catch { /* permission denied; user can still triple-click select */ }
+              }}
+            >{waveId}</code>
           </span>
-          <span style={styles.watchCta}>Watch live in Drekaskip panel below ↓</span>
+          <span style={styles.watchCta}>Watch live in Drekaskip panel below ↓ · click wave_id to copy</span>
         </div>
       )}
 
@@ -187,10 +219,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     fontSize: '0.7rem',
     background: '#0a1f10',
-    padding: '1px 4px',
+    padding: '2px 6px',
     borderRadius: '3px',
     wordBreak: 'break-all',
-  },
+    // BP041 — Founder direct: "I would LOVE to be able to highlight and copy
+    // just the line you needed, but I cannot." Electron renderer often has
+    // `user-select: none` inherited from body/root; force `text` on code
+    // elements so member can triple-click to select OR click-to-copy.
+    userSelect: 'text',
+    cursor: 'pointer',
+    border: '1px solid transparent',
+    transition: 'border-color 0.15s, background 0.15s',
+  } as React.CSSProperties,
   watchCta: {
     color: '#4ade80',
     fontStyle: 'italic',

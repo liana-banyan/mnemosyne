@@ -4,6 +4,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import type { BuildProgress } from '../../main/hearth_app_builder/types';
+import { NotCentsGlyph } from '../components/NotCentsGlyph';
 
 interface ChatMessage {
   role: 'member' | 'hearth';
@@ -137,7 +138,7 @@ export function AppBuilderChat({ onBuildComplete, onBuildError, onProgress }: Ap
               ...(msg.role === 'member' ? styles.memberBubble : styles.hearthBubble),
             }}
           >
-            <div style={styles.bubbleRole}>{msg.role === 'member' ? 'You' : 'Đ CAI'}</div>
+            <div style={styles.bubbleRole}>{msg.role === 'member' ? 'You' : (<><NotCentsGlyph size="0.95em" /> CAI</>)}</div>
             <div style={styles.bubbleContent}>{msg.content}</div>
           </div>
         ))}
@@ -145,7 +146,7 @@ export function AppBuilderChat({ onBuildComplete, onBuildError, onProgress }: Ap
         {/* Live build progress */}
         {building && progress && (
           <div style={{ ...styles.bubble, ...styles.hearthBubble }}>
-            <div style={styles.bubbleRole}>Đ CAI</div>
+            <div style={styles.bubbleRole}><NotCentsGlyph size="0.95em" /> CAI</div>
             <div style={styles.progressBar}>
               <div
                 style={{ ...styles.progressFill, width: `${progress.percent ?? 0}%` }}
@@ -157,7 +158,7 @@ export function AppBuilderChat({ onBuildComplete, onBuildError, onProgress }: Ap
 
         {building && !progress && (
           <div style={{ ...styles.bubble, ...styles.hearthBubble }}>
-            <div style={styles.bubbleRole}>Đ CAI</div>
+            <div style={styles.bubbleRole}><NotCentsGlyph size="0.95em" /> CAI</div>
             <div style={styles.spinner}>Building…</div>
           </div>
         )}

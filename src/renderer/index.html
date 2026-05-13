@@ -14,8 +14,18 @@
       height: 100vh;
       background: transparent;
       overflow: hidden;
-      user-select: none;
+      /* BP041 — Founder direct: "I would LOVE to be able to highlight and
+         copy just the line you needed, but I cannot." Default text selection
+         is enabled on the body; only specific chrome elements (buttons, tabs,
+         drag handles) opt out via explicit user-select: none. */
+      user-select: text;
+      -webkit-user-select: text;
       -webkit-app-region: no-drag;
+    }
+    /* Buttons + tabs + drag handles still don't select (they're controls) */
+    button, [role="button"], .lb-frame, .lb-corner-indicator {
+      user-select: none;
+      -webkit-user-select: none;
     }
     #root {
       width: 100%;

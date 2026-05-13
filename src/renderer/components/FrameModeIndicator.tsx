@@ -3,6 +3,7 @@
 // Per FRAME_MODE_INDICATOR_DESIGN_SPEC_BP025.md
 
 import React from 'react';
+import { NotCentsGlyph } from './NotCentsGlyph';
 
 export type FrameMode = 'ai_burst' | 'normal' | 'fallback';
 
@@ -73,7 +74,9 @@ export const FrameModeIndicator: React.FC<FrameModeIndicatorProps> = ({
       />
 
       {/* §7 BP041 — CAI Đ product-identity stamp (semi-transparent, bottom-right, non-interactive) */}
-      <span className="lb-cai-stamp" aria-hidden="true">Đ CAI</span>
+      <span className="lb-cai-stamp" aria-hidden="true">
+        <NotCentsGlyph size="0.9em" alt="" /> CAI
+      </span>
 
       {/* Corner mode indicator — bottom-right */}
       <div
