@@ -89,6 +89,21 @@ export function HearthConjunctionWindow() {
     setLastClickedBtn(id);
     setTimeout(() => setLastClickedBtn((cur) => (cur === id ? null : cur)), 250);
   };
+
+  // BP041 — HELM VIEW canon (Founder direct): right shelf is the Helm station.
+  // 3-dots toggle collapses to thin strip with active-count badge.
+  // Persists across reload via localStorage.
+  // Composes-forward with SAGA 5 Panel Manager (full multi-shelf + Deck Card swap).
+  const [rightShelfCollapsed, setRightShelfCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('mnemosyne_right_shelf_collapsed') === '1'; } catch { return false; }
+  });
+  const toggleRightShelf = () => {
+    setRightShelfCollapsed((cur) => {
+      const next = !cur;
+      try { localStorage.setItem('mnemosyne_right_shelf_collapsed', next ? '1' : '0'); } catch { /* non-fatal */ }
+      return next;
+    });
+  };
   const [builderCard, setBuilderCard] = useState<'A' | 'B' | 'C'>('B');
   const contextRefreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -205,6 +220,7 @@ export function HearthConjunctionWindow() {
             }}
             onClick={() => { flashBtn('reload'); setTimeout(() => window.location.reload(), 180); }}
             title="Reload Mnemosyne window — like browser F5. Substrate state stays; UI rebuilds."
+            aria-label="Reload Mnemosyne window"
           >
             🔄 Reload
           </button>
@@ -215,6 +231,7 @@ export function HearthConjunctionWindow() {
             }}
             onClick={() => { flashBtn('sync_context'); buildContext(); }}
             title="Sync Mnemosyne substrate to Embedded Chrome — when you open a web page in the Browser tab, Mnemosyne auto-injects what it knows (canon, receipts, current state) so the page is substrate-aware. This rebuilds that injection blob from latest substrate."
+            aria-label="Sync substrate context to Embedded Chrome browser"
           >
             🧬 Sync to Browser
           </button>
@@ -228,6 +245,8 @@ export function HearthConjunctionWindow() {
             }}
             onClick={() => { flashBtn('on_deck'); setShowOnDeck((v) => !v); }}
             title="Toggle On Deck panel — your task queue staging area. Items here are pending Mnemosyne work you haven't fired yet."
+            aria-label={`Toggle On Deck queue panel ${showOnDeck ? '(currently visible)' : '(currently hidden)'}`}
+            aria-pressed={showOnDeck}
           >
             📋 On Deck {showOnDeck ? '(on)' : '(off)'}
           </button>
@@ -431,6 +450,20 @@ export function HearthConjunctionWindow() {
                 style={styles.drekaskipResizeHandle}
                 onMouseDown={handleDrekaskipDragStart}
                 title="Drag up/down to resize the Drekaskip Wave Status panel"
+                role="separator"
+                aria-label="Resize Drekaskip Wave Status panel — drag up to enlarge, down to shrink"
+                aria-orientation="horizontal"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  // BP041 a11y Phase A — keyboard alternative to drag: arrow up/down resizes 20px
+                  if (e.key === 'ArrowUp') {
+                    setDrekaskipHeight((h) => Math.min(800, h + 20));
+                    e.preventDefault();
+                  } else if (e.key === 'ArrowDown') {
+                    setDrekaskipHeight((h) => Math.max(80, h - 20));
+                    e.preventDefault();
+                  }
+                }}
               >
                 <span style={styles.drekaskipResizeGrip}>⇕</span>
               </div>
@@ -444,29 +477,58 @@ export function HearthConjunctionWindow() {
             </div>
           </div>
 
-          {/* Right column — unchanged */}
-          <div style={styles.rightCol}>
-            {/* Conjunction Panel (B83a) */}
-            <div style={{ ...styles.panel, flex: '0 0 55%' }}>
-              <div style={styles.panelHeader}><span>🔀</span> In Conjunction</div>
-              <div style={styles.panelBody}>
-                <ConjunctionPanel
-                  panelState={panelState}
-                  availability={availability}
-                  onSelect={selectMode}
-                  onShiftClick={handleShiftClick}
-                />
-              </div>
+          {/* Right shelf — HELM VIEW Helm Station (BP041 canon). Click ⋮ to collapse / expand. */}
+          {rightShelfCollapsed ? (
+            <div
+              style={styles.rightShelfCollapsed}
+              onClick={toggleRightShelf}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRightShelf(); } }}
+              title="Expand right shelf — Helm Station (In Conjunction · Active Substrate)"
+              role="button"
+              tabIndex={0}
+              aria-label="Expand Helm Station shelf — currently collapsed. Contains In Conjunction agent selector and Active Substrate scribe monitor."
+              aria-expanded={false}
+            >
+              <span style={styles.shelfHandle}>⋮</span>
+              <span style={styles.shelfBadge}>2</span>
+              <span style={styles.shelfLabelVert}>HELM</span>
             </div>
+          ) : (
+            <div style={styles.rightCol}>
+              {/* Shelf header with 3-dots collapse toggle */}
+              <div style={styles.shelfHeader}>
+                <span style={styles.shelfHeaderLabel}>🎯 Helm Station</span>
+                <button
+                  style={styles.shelfToggleBtn}
+                  onClick={toggleRightShelf}
+                  title="Collapse right shelf to thin strip"
+                  aria-label="Collapse Helm Station shelf"
+                  aria-expanded={true}
+                >⋮</button>
+              </div>
 
-            {/* Active Substrate Panel (B83d) */}
-            <div style={{ ...styles.panel, flex: '1 1 auto' }}>
-              <div style={styles.panelHeader}><span>🔬</span> Active Substrate</div>
-              <div style={styles.panelBody}>
-                <ActiveSubstratePanel />
+              {/* Conjunction Panel (B83a) — first Deck Card slot */}
+              <div style={{ ...styles.panel, flex: '0 0 55%' }}>
+                <div style={styles.panelHeader}><span>🔀</span> In Conjunction</div>
+                <div style={styles.panelBody}>
+                  <ConjunctionPanel
+                    panelState={panelState}
+                    availability={availability}
+                    onSelect={selectMode}
+                    onShiftClick={handleShiftClick}
+                  />
+                </div>
+              </div>
+
+              {/* Active Substrate Panel (B83d) — second Deck Card slot */}
+              <div style={{ ...styles.panel, flex: '1 1 auto' }}>
+                <div style={styles.panelHeader}><span>🔬</span> Active Substrate</div>
+                <div style={styles.panelBody}>
+                  <ActiveSubstratePanel />
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* On-Deck panel (BP037) — full-width strip, toggled from top bar */}
@@ -792,7 +854,8 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'relative',
   },
   drekaskipResizeHandle: {
-    height: 8,
+    // BP041 a11y Phase A — bumped 8→16px for WCAG 2.5.5 click-target compliance
+    height: 16,
     background: 'linear-gradient(180deg, #f6ad5544 0%, #f6ad5511 100%)',
     cursor: 'ns-resize',
     display: 'flex',
@@ -835,6 +898,60 @@ const styles: Record<string, React.CSSProperties> = {
   },
 
   // ─── Right column panels ──────────────────────────────────────────────────
+  // BP041 — HELM VIEW canon: collapsed-shelf strip + header + toggle
+  rightShelfCollapsed: {
+    flex: '0 0 28px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: '0.5rem',
+    padding: '0.5rem 0',
+    background: '#0a0a14',
+    borderLeft: '1px solid #2d3748',
+    cursor: 'pointer',
+    transition: 'background 0.18s',
+    userSelect: 'none' as const,
+  },
+  shelfHandle: { fontSize: '1.1rem', color: '#a0aec0', lineHeight: 1 },
+  shelfBadge: {
+    background: '#f6ad55',
+    color: '#1a1a2e',
+    fontSize: '0.6rem',
+    fontWeight: 700,
+    padding: '1px 5px',
+    borderRadius: '8px',
+    lineHeight: 1.2,
+  },
+  shelfLabelVert: {
+    writingMode: 'vertical-rl' as const,
+    transform: 'rotate(180deg)',
+    fontSize: '0.6rem',
+    color: '#718096',
+    letterSpacing: '0.1em',
+    fontWeight: 700,
+    marginTop: '0.5rem',
+  },
+  shelfHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '4px 10px',
+    background: '#111120',
+    borderBottom: '1px solid #2d3748',
+    fontSize: '0.7rem',
+    flexShrink: 0,
+  },
+  shelfHeaderLabel: { fontWeight: 700, color: '#cbd5e0', letterSpacing: '0.04em' },
+  shelfToggleBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#a0aec0',
+    cursor: 'pointer',
+    fontSize: '1rem',
+    lineHeight: 1,
+    padding: '0 4px',
+    borderRadius: '3px',
+  },
   rightCol: {
     display: 'flex',
     flexDirection: 'column',

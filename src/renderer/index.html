@@ -27,6 +27,41 @@
       user-select: none;
       -webkit-user-select: none;
     }
+
+    /* BP041 — Accessibility Phase A landed (Founder direct: "AMEN: The Bridge serves every Conductor.") */
+
+    /* Focus-visible — keyboard navigators see what's focused.
+       Skips default browser outlines but provides bright amber ring on Tab/Shift+Tab. */
+    *:focus { outline: none; }
+    *:focus-visible {
+      outline: 2px solid #f6ad55;
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
+
+    /* Reduce-motion respect — disables substrate animations for members with
+       vestibular sensitivity, autism, dyspraxia, motion-triggered migraines.
+       The substrate's content (SEG progression, status, wave receipts) stays
+       fully functional; only the *animations* drop out. */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
+
+    /* High-contrast mode — thicker borders, brighter focus ring */
+    @media (prefers-contrast: more) {
+      *:focus-visible {
+        outline: 3px solid #f6ad55;
+        outline-offset: 3px;
+      }
+      button, [role="button"] {
+        border-width: 2px !important;
+      }
+    }
     #root {
       width: 100%;
       height: 100%;

@@ -9,6 +9,7 @@ import { ModelPullDialog } from './components/ModelPullDialog';
 import { AuthGate } from './components/AuthGate';
 import { TrialBanner } from './components/TrialBanner';
 import { HearthConjunctionWindow } from './hearth/HearthConjunctionWindow';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import type { FrameMode } from './components/FrameModeIndicator';
 import type { AuthState } from './amplify.d';
 
@@ -111,8 +112,14 @@ export default function App() {
   }
 
   // B83 — Hearth Conjunction Window (Heavy Booster Test surface)
+  // BP041 — wrapped in ErrorBoundary so single-component crashes don't white-screen the entire window.
+  // Founder direct: "I cannot get out of the white screen that happened when I clicked the substrate tab."
   if (view === 'hearth-conjunction') {
-    return <HearthConjunctionWindow />;
+    return (
+      <ErrorBoundary label="Hearth Conjunction Window">
+        <HearthConjunctionWindow />
+      </ErrorBoundary>
+    );
   }
 
   return (

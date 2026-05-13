@@ -57,10 +57,15 @@ export function LiveSegWatch({ waveId: explicitWaveId, maxHeight = 320, title = 
   useEffect(() => {
     if (explicitWaveId) return; // explicit override
 
-    // (1) Direct event channel
+    // (1) Direct event channel — BP041 Founder direct: "it should wipe the
+    //     old results when I do a new test." Clear wave state IMMEDIATELY
+    //     when a new wave fires, before the new wave_id resolves.
     const onWaveFired = (ev: Event) => {
       const detail = (ev as CustomEvent).detail;
-      if (detail?.waveId) setAutoWaveId(detail.waveId);
+      if (detail?.waveId) {
+        setWave(null);              // wipe stale rows immediately
+        setAutoWaveId(detail.waveId);
+      }
     };
     window.addEventListener('mnemosyne-wave-fired', onWaveFired);
 
@@ -82,6 +87,11 @@ export function LiveSegWatch({ waveId: explicitWaveId, maxHeight = 320, title = 
       window.removeEventListener('mnemosyne-wave-fired', onWaveFired);
       unsub();
     };
+  }, [explicitWaveId]);
+
+  // Wipe state when explicitWaveId changes (parent passed a different wave)
+  useEffect(() => {
+    if (explicitWaveId) setWave(null);
   }, [explicitWaveId]);
 
   // Poll the target wave
@@ -119,16 +129,18 @@ export function LiveSegWatch({ waveId: explicitWaveId, maxHeight = 320, title = 
 
   const segs = wave?.segs ?? [];
 
-  // Find the active SEG (first HOT, else first pending, else last done)
+  // Find the LATEST-progress SEG (Founder direct: "as each new line should
+  // push it so the view shifts as data happens"). Scroll-target = last
+  // completed (the "just landed" row at the bottom of the action), with
+  // first-HOT as a fallback if nothing's landed yet.
   const activeIdx = (() => {
-    const firstHot = segs.findIndex((s) => s.status === 'dispatched');
-    if (firstHot >= 0) return firstHot;
-    const firstPending = segs.findIndex((s) => s.status === 'pending');
-    if (firstPending >= 0) return firstPending;
-    // No active; find last completed
+    // Last completed (HIT/EMPTY/ERROR) — the leading edge of activity
     for (let i = segs.length - 1; i >= 0; i--) {
       if (segs[i].status === 'done' || segs[i].status === 'error') return i;
     }
+    // Nothing landed yet — show first HOT
+    const firstHot = segs.findIndex((s) => s.status === 'dispatched');
+    if (firstHot >= 0) return firstHot;
     return -1;
   })();
 
@@ -194,30 +206,17 @@ export function LiveSegWatch({ waveId: explicitWaveId, maxHeight = 320, title = 
         </span>
       </div>
 
-      {/* BP041 — Animated dot-trail progress bar (Founder direct: ".... then ...... then ........") */}
-      {wave.status !== 'complete' && wave.status !== 'aborted' && total > 0 && (
-        <div style={styles.dotTrail}>
-          {(() => {
-            const completed = substantive + emptyDone + errored;
-            const slots = Math.max(40, Math.min(80, total)); // dot count scales with SEG count
-            const filledSlots = Math.floor((completed / total) * slots);
-            const animatedTrailingDots = 1 + (tick % 3); // 1-3 trailing dots cycling
-            const dots: string[] = [];
-            for (let i = 0; i < slots; i++) {
-              if (i < filledSlots) dots.push('•');               // completed
-              else if (i < filledSlots + animatedTrailingDots) dots.push('·'); // active trail (animated)
-              else dots.push(' ');
-            }
-            return <span style={styles.dotTrailInner}>{dots.join('')}</span>;
-          })()}
-        </div>
-      )}
-
       <div style={{ ...styles.body, maxHeight }}>
-        {/* LEFT: SEG list — auto-scrolls to active SEG (Google Maps-style focus) */}
-        <div style={styles.segList} ref={segListRef}>
+        {/* LEFT: SEG list — auto-scrolls to LATEST progress + screen-reader announces new SEG completions */}
+        <div
+          style={styles.segList}
+          ref={segListRef}
+          role="log"
+          aria-live="polite"
+          aria-label={`Wave ${wave.wave_id.slice(0, 16)} segment progress; ${substantive} substantive, ${emptyDone} empty, ${errored} error, ${inFlight} in-flight, ${pending} pending of ${total} total`}
+        >
           {segs.map((seg, i) => (
-            <SegRow key={seg.seg_id} seg={seg} isActive={i === activeIdx} />
+            <SegRow key={seg.seg_id} seg={seg} isActive={i === activeIdx} tick={tick} />
           ))}
         </div>
 
@@ -322,7 +321,45 @@ function extractSegName(seg: SegState): { display: string; fromReply: boolean } 
   return { display: pretty, fromReply: false };
 }
 
-function SegRow({ seg, isActive }: { seg: SegState; isActive?: boolean }) {
+/**
+ * BP041 — Founder direct: "the ... is supposed to be for EACH row as it
+ * happens... so that it goes up to the end and green checkmarks if good
+ * result, and yellow if not? and red if bad?"
+ *
+ * Per-row trail render:
+ *   PENDING  → " . . . . . . . . . . . . . . " (faint grey static dots; waiting to start)
+ *   HOT      → "•••••·  ·   ·    " (orange dots animating left→right as it works)
+ *   HIT      → "•••••••••••••••• ✅"  (solid green dots + checkmark)
+ *   EMPTY    → "•••••••••••••••• ⚠️"  (amber half-fill + warning)
+ *   ERROR    → "••••••••••••••• ❌"  (red dots + X)
+ */
+function renderRowTrail(status: SegState['status'], replyLen: number, tick: number): { text: string; color: string } {
+  const TRAIL_WIDTH = 32;
+  if (status === 'error') {
+    return { text: '•'.repeat(TRAIL_WIDTH) + ' ❌', color: '#ef4444' };
+  }
+  if (status === 'done' && replyLen > 100) {
+    return { text: '•'.repeat(TRAIL_WIDTH) + ' ✅', color: '#22c55e' };
+  }
+  if (status === 'done') {
+    return { text: '•'.repeat(Math.floor(TRAIL_WIDTH * 0.5)) + '·'.repeat(TRAIL_WIDTH - Math.floor(TRAIL_WIDTH * 0.5)) + ' ⚠️', color: '#f59e0b' };
+  }
+  if (status === 'dispatched') {
+    // Animated march: as `tick` increments, the bar of solid dots slides
+    const pos = tick % TRAIL_WIDTH;
+    const dots: string[] = [];
+    for (let i = 0; i < TRAIL_WIDTH; i++) {
+      // Solid block of ~6 chars wrapping around
+      const inBlock = (i >= pos && i < pos + 6) || (pos + 6 > TRAIL_WIDTH && i < (pos + 6) % TRAIL_WIDTH);
+      dots.push(inBlock ? '•' : '·');
+    }
+    return { text: dots.join('') + '  ', color: '#f97316' };
+  }
+  // PENDING — static faint dots
+  return { text: '·'.repeat(TRAIL_WIDTH) + '  ', color: '#4a5568' };
+}
+
+function SegRow({ seg, isActive, tick = 0 }: { seg: SegState; isActive?: boolean; tick?: number }) {
   const replyLen = (seg.reply ?? '').length;
   const { display: segName, fromReply } = extractSegName(seg);
   let icon: string, color: string, label: string;
@@ -337,6 +374,7 @@ function SegRow({ seg, isActive }: { seg: SegState; isActive?: boolean }) {
   } else {
     icon = '⏳'; color = '#718096'; label = 'PENDING';
   }
+  const trail = renderRowTrail(seg.status, replyLen, tick);
   return (
     <div style={{
       ...styles.segRow,
@@ -346,18 +384,21 @@ function SegRow({ seg, isActive }: { seg: SegState; isActive?: boolean }) {
       <span style={styles.segIcon}>{icon}</span>
       <span style={{
         ...styles.segId,
-        // Once reply lands, the name pops into a brighter color — plotter-printer feel
         color: fromReply ? '#e2e8f0' : '#718096',
         fontFamily: fromReply ? 'inherit' : 'monospace',
         fontSize: fromReply ? '0.72rem' : '0.65rem',
         fontWeight: fromReply ? 600 : 400,
-        flex: 1,
+        flex: '0 0 180px',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
         whiteSpace: 'nowrap',
       }}>{segName}</span>
-      <span style={styles.segRecipient}>{seg.recipient}</span>
-      <span style={{ ...styles.segStatus, color }}>{label}</span>
+      {/* Per-row trail — Founder direct: dots PER ROW, terminating with ✅/⚠/❌ */}
+      <span style={{
+        ...styles.rowTrail,
+        color: trail.color,
+        flex: 1,
+      }}>{trail.text}</span>
       <span style={styles.segMetric}>
         {replyLen > 0 ? `${replyLen.toLocaleString()} ch` : ''}
       </span>
@@ -472,11 +513,19 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'inline-block',
     minWidth: '100%',
   },
-  segIcon: { fontSize: '0.75rem' },
+  segIcon: { fontSize: '0.75rem', flex: '0 0 auto' },
   segId: { fontFamily: 'monospace', color: '#cbd5e0', fontSize: '0.65rem' },
   segRecipient: { color: '#718096', fontSize: '0.6rem' },
-  segStatus: { fontWeight: 700, fontSize: '0.6rem', letterSpacing: '0.05em', marginLeft: 'auto' },
-  segMetric: { fontFamily: 'monospace', fontSize: '0.6rem', color: '#a0aec0', minWidth: 60, textAlign: 'right' },
+  segStatus: { fontWeight: 700, fontSize: '0.6rem', letterSpacing: '0.05em' },
+  segMetric: { fontFamily: 'monospace', fontSize: '0.6rem', color: '#a0aec0', minWidth: 60, textAlign: 'right' as const, flex: '0 0 60px' },
+  rowTrail: {
+    fontFamily: 'monospace',
+    fontSize: '0.7rem',
+    letterSpacing: '0.05em',
+    whiteSpace: 'nowrap' as const,
+    overflow: 'hidden',
+    textOverflow: 'clip',
+  },
   aggregates: {
     flex: '0 0 180px',
     display: 'flex',
