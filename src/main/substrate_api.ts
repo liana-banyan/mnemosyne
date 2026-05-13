@@ -4,6 +4,7 @@
 // B61 Phase A — Wave Generator daemon endpoints (wave orchestration)
 // B61 Phase B — Template-based dispatch (template_name + params instead of segs[])
 // B61 Phase C — Trigger Engine init; NL dispatch endpoint; trigger status endpoint
+// SAGA 6 — IP Ledger + Portal Triple-Stamp + Marketplace (BP041)
 //
 // HTTP endpoints on 127.0.0.1:11480:
 //   GET  /health                    — liveness
@@ -24,6 +25,21 @@
 //   POST /yoke/wave/abort/:id       — B61 Phase A: Abort in-flight wave
 //   POST /yoke/wave/nl              — B61 Phase C Class A: NL-text → WaveRequest compile + dispatch
 //   GET  /yoke/wave/triggers        — B61 Phase C: Trigger Engine status + config summary
+//   --- SAGA 6 IP Ledger (append-only; supersedes-chain) ---
+//   GET  /yoke/ip_ledger/owner      — canonical owner walking supersedes chain (?claim=X)
+//   GET  /yoke/ip_ledger/history    — full lineage for a claim (?claim=X)
+//   POST /yoke/ip_ledger/dispute    — submit correction (Detective + Counsel adjudicators)
+//   POST /yoke/ip_ledger/register   — register new IP claim
+//   GET  /yoke/ip_ledger/stats      — ledger statistics
+//   --- SAGA 6 Portal (Harper Guild Triple-Stamp; BLOOD RULE binds) ---
+//   POST /yoke/portal/search        — authenticated Portal search (Triple-Stamp required)
+//   POST /yoke/portal/enroll        — Harper Guild individual enrollment (admin only)
+//   POST /yoke/portal/agency_mou    — register agency MOU (admin only)
+//   GET  /yoke/portal/sessions      — Harper monitoring session log
+//   --- SAGA 6 Marketplace (AGPL umbrella; Substitution-only) ---
+//   GET  /yoke/marketplace/plugins  — list plugins (?category=X&status=active)
+//   POST /yoke/marketplace/register — submit plugin registration (draft + IP Ledger)
+//   GET  /yoke/marketplace/stats    — marketplace statistics
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { mkdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, watch } from 'fs';
@@ -56,6 +72,30 @@ import {
   parseNlWaveRequest,
   getTriggerSummary,
 } from './wave_trigger_engine';
+import {
+  registerClaim as ipLedgerRegister,
+  submitDispute as ipLedgerDispute,
+  findOwner as ipLedgerFindOwner,
+  getHistory as ipLedgerGetHistory,
+  appendPortalSearchEntry,
+  getLedgerStats,
+  type DisputeRequest,
+  type LedgerCategory,
+} from './ip_ledger/ip_ledger_store';
+import {
+  verifyTripleStamp,
+  enrollIndividual,
+  registerAgencyMou,
+  getPortalSessionLog,
+  type TripleStampRequest,
+} from './portal/triple_stamp_verifier';
+import {
+  listPlugins,
+  registerPlugin,
+  getMarketplaceStats,
+  type PluginRegistrationRequest,
+  type PluginCategory,
+} from './marketplace/marketplace_registry';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -1650,6 +1690,308 @@ export class SubstrateAPIServer {
         return;
       }
       res.end(JSON.stringify({ wave_id: waveId, status: 'aborted', message: 'wave abort requested' }));
+      return;
+    }
+
+    // ── SAGA 6: GET /yoke/ip_ledger/owner?claim=X ────────────────────────────
+    // Returns canonical owner by walking the supersedes chain.
+    if (req.method === 'GET' && url === '/yoke/ip_ledger/owner') {
+      const qs = req.url?.split('?')[1] ?? '';
+      const params = new URLSearchParams(qs);
+      const claim = params.get('claim');
+      if (!claim) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'claim query param required' }));
+        return;
+      }
+      const result = ipLedgerFindOwner(claim);
+      if (!result) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: 'No entries found for claim', claim }));
+        return;
+      }
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    // ── SAGA 6: GET /yoke/ip_ledger/history?claim=X ──────────────────────────
+    // Returns full chronological lineage for a claim.
+    if (req.method === 'GET' && url === '/yoke/ip_ledger/history') {
+      const qs = req.url?.split('?')[1] ?? '';
+      const params = new URLSearchParams(qs);
+      const claim = params.get('claim');
+      if (!claim) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'claim query param required' }));
+        return;
+      }
+      res.end(JSON.stringify(ipLedgerGetHistory(claim)));
+      return;
+    }
+
+    // ── SAGA 6: GET /yoke/ip_ledger/stats ────────────────────────────────────
+    if (req.method === 'GET' && url === '/yoke/ip_ledger/stats') {
+      res.end(JSON.stringify(getLedgerStats()));
+      return;
+    }
+
+    // ── SAGA 6: POST /yoke/ip_ledger/register ────────────────────────────────
+    // Register a new IP claim in the local append-only ledger.
+    if (req.method === 'POST' && url === '/yoke/ip_ledger/register') {
+      this._readBody(req, (body) => {
+        let parsed: { registered_by?: string; claim?: string; claim_body?: string; evidence?: string[]; category?: LedgerCategory };
+        try { parsed = JSON.parse(body) as typeof parsed; }
+        catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'Invalid JSON' })); return; }
+        if (!parsed.registered_by?.trim() || !parsed.claim?.trim()) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'registered_by and claim required' }));
+          return;
+        }
+        const entry = ipLedgerRegister({
+          registered_by: parsed.registered_by,
+          claim:         parsed.claim,
+          claim_body:    parsed.claim_body,
+          evidence:      parsed.evidence,
+          category:      parsed.category,
+        });
+        res.statusCode = 201;
+        res.end(JSON.stringify({ ledger_id: entry.ledger_id, status: entry.status, registered_at: entry.registered_at }));
+      });
+      return;
+    }
+
+    // ── SAGA 6: POST /yoke/ip_ledger/dispute ─────────────────────────────────
+    // Submit a correction entry. Requires adjudicator IDs + evidence chain.
+    if (req.method === 'POST' && url === '/yoke/ip_ledger/dispute') {
+      this._readBody(req, (body) => {
+        let parsed: Partial<DisputeRequest>;
+        try { parsed = JSON.parse(body) as typeof parsed; }
+        catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'Invalid JSON' })); return; }
+        if (!parsed.submitted_by || !parsed.claim || !parsed.supersedes || !parsed.supersedes_reason) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'submitted_by, claim, supersedes, supersedes_reason required' }));
+          return;
+        }
+        if (!parsed.adjudicators?.length || parsed.adjudicators.length < 2) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'Minimum 2 adjudicators required (Detective + Counsel)' }));
+          return;
+        }
+        const result = ipLedgerDispute(parsed as DisputeRequest);
+        if (result.status === 'rejected') {
+          res.statusCode = 422;
+          res.end(JSON.stringify(result));
+          return;
+        }
+        res.statusCode = 201;
+        res.end(JSON.stringify(result));
+      });
+      return;
+    }
+
+    // ── SAGA 6: POST /yoke/portal/search ─────────────────────────────────────
+    // Portal search endpoint — Triple-Stamp required. BLOOD RULE binds.
+    // Every access is Brand-Stamped, Triple-Stamp verified, and IP-Ledger logged.
+    // Harper Guild credential whitelist administers access; no direct member data exposed.
+    if (req.method === 'POST' && url === '/yoke/portal/search') {
+      this._readBody(req, (body) => {
+        let parsed: Partial<TripleStampRequest & { raw_query?: string }>;
+        try { parsed = JSON.parse(body) as typeof parsed; }
+        catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'Invalid JSON' })); return; }
+
+        if (!parsed.personal || !parsed.agency || !parsed.legal_basis) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'personal, agency, and legal_basis stamps required. No anonymous Portal access (Brand-Stamped Use).' }));
+          return;
+        }
+
+        // Compute query hash (never store raw query)
+        const queryHash = parsed.query_hash ?? (parsed.raw_query
+          ? createHash('sha256').update(parsed.raw_query).digest('hex')
+          : '');
+        if (!queryHash) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'query_hash or raw_query required' }));
+          return;
+        }
+
+        const req2: TripleStampRequest = {
+          personal:    parsed.personal,
+          agency:      parsed.agency,
+          legal_basis: parsed.legal_basis,
+          query_hash:  queryHash,
+          ip_address:  (req.socket?.remoteAddress) ?? undefined,
+          user_agent:  req.headers['user-agent'] ?? undefined,
+        };
+
+        const stampResult = verifyTripleStamp(req2);
+
+        if (!stampResult.valid) {
+          // Log failure to IP Ledger (even failed attempts are ledger-recorded)
+          appendPortalSearchEntry({
+            stamped_individual_id: parsed.personal.individual_id ?? 'unknown',
+            agency_id:             parsed.agency.agency_id,
+            query_hash:            queryHash,
+            result_scope:          'none',
+            stamp1_personal:       stampResult.stamp1_valid,
+            stamp2_agency:         stampResult.stamp2_valid,
+            stamp3_legal_basis:    stampResult.stamp3_valid,
+            ip_address_hash:       req.socket?.remoteAddress
+              ? createHash('sha256').update(req.socket.remoteAddress).digest('hex')
+              : undefined,
+            user_agent:            req.headers['user-agent'] ?? undefined,
+          });
+          res.statusCode = 403;
+          res.end(JSON.stringify({
+            error:       'Triple-Stamp verification failed. All three stamps required for Portal access.',
+            failed_tier: stampResult.failed_tier,
+            reason:      stampResult.reason,
+          }));
+          return;
+        }
+
+        // Log successful access to IP Ledger (Brand-Stamped Use)
+        const ledgerEntry = appendPortalSearchEntry({
+          stamped_individual_id: parsed.personal.individual_id,
+          agency_id:             parsed.agency.agency_id,
+          query_hash:            queryHash,
+          legal_basis_ref:       parsed.legal_basis.legal_basis_id,
+          result_scope:          'aggregate',  // BLOOD RULE: aggregate-only by default; full requires HG-201
+          stamp1_personal:       true,
+          stamp2_agency:         true,
+          stamp3_legal_basis:    true,
+          ip_address_hash:       req.socket?.remoteAddress
+            ? createHash('sha256').update(req.socket.remoteAddress).digest('hex')
+            : undefined,
+          user_agent:            req.headers['user-agent'] ?? undefined,
+        });
+
+        // BLOOD RULE: Portal returns aggregate/statistical data only.
+        // Member-specific data requires HG-201 public-interest adjudication.
+        // Harper Guild monitoring tier 1 (assigned Harper) is notified of this session.
+        res.end(JSON.stringify({
+          session_id:       stampResult.session_id,
+          ledger_entry_id:  ledgerEntry.ledger_id,
+          access_class:     stampResult.access_class,
+          scope:            'aggregate_only',
+          message:          'Portal access granted. This session is monitored by Harper Guild. All access is ledger-recorded.',
+          harper_notice:    'An assigned Harper has been notified of this session. Your access is transparent and accountable.',
+          // Actual search results would be injected here from Harper-Guild-pre-approved data surface
+          results:          [],
+          result_count:     0,
+          privacy_rule:     'HG default — aggregate only. Member-specific data requires HG-201 adjudication.',
+          verified_at:      stampResult.verified_at,
+        }));
+      });
+      return;
+    }
+
+    // ── SAGA 6: POST /yoke/portal/enroll ─────────────────────────────────────
+    // Harper Guild individual enrollment (admin/service_role only in production).
+    if (req.method === 'POST' && url === '/yoke/portal/enroll') {
+      this._readBody(req, (body) => {
+        let parsed: { individual_id?: string; enrolled_by?: string };
+        try { parsed = JSON.parse(body) as typeof parsed; }
+        catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'Invalid JSON' })); return; }
+        if (!parsed.individual_id || !parsed.enrolled_by) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'individual_id and enrolled_by required' }));
+          return;
+        }
+        const stamp = enrollIndividual({ individual_id: parsed.individual_id, enrolled_by: parsed.enrolled_by });
+        res.statusCode = 201;
+        res.end(JSON.stringify({
+          individual_id:   stamp.individual_id,
+          enrollment_date: stamp.enrollment_date,
+          enrolled_by:     stamp.enrolled_by,
+          active:          stamp.active,
+          // credential_hash never echoed (secrets hygiene)
+        }));
+      });
+      return;
+    }
+
+    // ── SAGA 6: POST /yoke/portal/agency_mou ─────────────────────────────────
+    if (req.method === 'POST' && url === '/yoke/portal/agency_mou') {
+      this._readBody(req, (body) => {
+        let parsed: { agency_id?: string; agency_name?: string; individual_id?: string; access_class?: string; expires_at?: string };
+        try { parsed = JSON.parse(body) as typeof parsed; }
+        catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'Invalid JSON' })); return; }
+        if (!parsed.agency_id || !parsed.agency_name || !parsed.individual_id || !parsed.access_class) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'agency_id, agency_name, individual_id, access_class required' }));
+          return;
+        }
+        const mou = registerAgencyMou(parsed as { agency_id: string; agency_name: string; individual_id: string; access_class: string; expires_at?: string });
+        res.statusCode = 201;
+        res.end(JSON.stringify({ agency_id: mou.agency_id, individual_id: mou.individual_id, active_since: mou.active_since, access_class: mou.access_class }));
+      });
+      return;
+    }
+
+    // ── SAGA 6: GET /yoke/portal/sessions ────────────────────────────────────
+    // Harper monitoring session log (last N entries).
+    if (req.method === 'GET' && url?.startsWith('/yoke/portal/sessions')) {
+      const qs = req.url?.split('?')[1] ?? '';
+      const params = new URLSearchParams(qs);
+      const limit = parseInt(params.get('limit') ?? '50', 10);
+      const sessions = getPortalSessionLog(isNaN(limit) ? 50 : limit);
+      res.end(JSON.stringify({ sessions, count: sessions.length, as_of: new Date().toISOString() }));
+      return;
+    }
+
+    // ── SAGA 6: GET /yoke/marketplace/plugins ────────────────────────────────
+    // List marketplace plugins by category / status.
+    if (req.method === 'GET' && url?.startsWith('/yoke/marketplace/plugins')) {
+      const qs = req.url?.split('?')[1] ?? '';
+      const params = new URLSearchParams(qs);
+      const category = params.get('category') as PluginCategory | null;
+      const status = params.get('status') as 'active' | 'draft' | 'suspended' | 'revoked' | null;
+      const includeAll = params.get('include_all') === '1';
+      const plugins = listPlugins({
+        category:    category ?? undefined,
+        status:      status ?? undefined,
+        include_all: includeAll,
+      });
+      res.end(JSON.stringify({ plugins, count: plugins.length, as_of: new Date().toISOString() }));
+      return;
+    }
+
+    // ── SAGA 6: GET /yoke/marketplace/stats ──────────────────────────────────
+    if (req.method === 'GET' && url === '/yoke/marketplace/stats') {
+      res.end(JSON.stringify(getMarketplaceStats()));
+      return;
+    }
+
+    // ── SAGA 6: POST /yoke/marketplace/register ───────────────────────────────
+    // Register a plugin (auto-creates IP Ledger entry; status=draft pending review).
+    if (req.method === 'POST' && url === '/yoke/marketplace/register') {
+      this._readBody(req, (body) => {
+        let parsed: Partial<PluginRegistrationRequest>;
+        try { parsed = JSON.parse(body) as typeof parsed; }
+        catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'Invalid JSON' })); return; }
+        if (!parsed.name || !parsed.version || !parsed.category || !parsed.author_member_id || !parsed.entry_point) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'name, version, category, author_member_id, entry_point required' }));
+          return;
+        }
+        // Auto-register in IP Ledger (plugin attribution)
+        const ledgerEntry = ipLedgerRegister({
+          registered_by: parsed.author_member_id,
+          claim:         `plugin:${parsed.name}:${parsed.version}`,
+          claim_body:    parsed.description,
+          category:      'plugin',
+        });
+        const plugin = registerPlugin(parsed as PluginRegistrationRequest, ledgerEntry.ledger_id);
+        res.statusCode = 201;
+        res.end(JSON.stringify({
+          plugin_id:       plugin.plugin_id,
+          status:          plugin.status,
+          ip_ledger_id:    plugin.ip_ledger_id,
+          message:         'Plugin registered as draft. Requires Detective + Counsel review before listing as active.',
+          registered_at:   plugin.registered_at,
+        }));
+      });
       return;
     }
 
