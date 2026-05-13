@@ -511,6 +511,75 @@ contextBridge.exposeInMainWorld('amplify', {
    */
   scribeGetMetrics: (scribeIds: string[]): Promise<import('./hearth/active_substrate/scribe_monitor').ScribeMetricSummary[]> =>
     ipcRenderer.invoke('scribe-get-metrics', { scribeIds }),
+
+  // ── In Conjunction Agent Panel — SAGA 4 BP041 ────────────────────────────
+
+  /**
+   * Run static + live probe for an agent.
+   * Returns AgentProbeResult — status only, never key values (R16 compliant).
+   */
+  agentProbe: (
+    agentId: string,
+    opts?: { force?: boolean; modelId?: string },
+  ): Promise<{ agentId: string; status: string; reason?: string; probed_at?: string }> =>
+    ipcRenderer.invoke('agent-probe', { agentId, ...opts }),
+
+  /**
+   * Set API key for an agent.
+   * Key value flows INTO main process; is never returned back (R16 / NO-API-KEY-EXPOSURE).
+   * Returns { ok, error? } only — key value is never echoed.
+   */
+  agentSetApiKey: (
+    agentId: string,
+    keyValue: string,
+  ): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('agent-set-api-key', { agentId, keyValue }),
+
+  /**
+   * Get API key presence status for all agents.
+   * Returns Record<agentId, isSet> — values are boolean only (R16 compliant).
+   */
+  agentGetApiKeyStatus: (): Promise<Record<string, boolean>> =>
+    ipcRenderer.invoke('agent-get-api-key-status'),
+
+  /**
+   * Get tier choices persisted at ~/.lb_substrate/in_conjunction_tiers.json.
+   */
+  agentGetTierChoices: (): Promise<Record<string, string>> =>
+    ipcRenderer.invoke('agent-get-tier-choices'),
+
+  /**
+   * Persist tier choice for an agent.
+   */
+  agentSetTierChoice: (agentId: string, tierId: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('agent-set-tier-choice', { agentId, tierId }),
+
+  /**
+   * Get loaded plugin agents (from ~/.lb_substrate/plugins/agents/*.json).
+   */
+  agentGetPlugins: (): Promise<Array<{
+    id: string;
+    displayName: string;
+    subtitle: string;
+    icon: string;
+    tiers?: Array<{ id: string; label: string; tierClass: string; modelId: string }>;
+    requiresKey?: string;
+    source: string;
+  }>> =>
+    ipcRenderer.invoke('agent-get-plugins'),
+
+  /**
+   * Get plugin registry metadata (id, filename, ipLedgerRef, authorHandle, loadedAt).
+   */
+  agentGetPluginRegistry: (): Promise<Array<{
+    id: string;
+    filename: string;
+    displayName: string;
+    ipLedgerRef?: string;
+    authorHandle?: string;
+    loadedAt: string;
+  }>> =>
+    ipcRenderer.invoke('agent-get-plugin-registry'),
 });
 
 // ─── Global type extension ────────────────────────────────────────────────────
@@ -616,6 +685,14 @@ declare global {
         avg_cost_delta_tokens: number;
         last_updated: string | null;
       }>>;
+      // In Conjunction Agent Panel — SAGA 4 BP041
+      agentProbe: (agentId: string, opts?: { force?: boolean; modelId?: string }) => Promise<{ agentId: string; status: string; reason?: string; probed_at?: string }>;
+      agentSetApiKey: (agentId: string, keyValue: string) => Promise<{ ok: boolean; error?: string }>;
+      agentGetApiKeyStatus: () => Promise<Record<string, boolean>>;
+      agentGetTierChoices: () => Promise<Record<string, string>>;
+      agentSetTierChoice: (agentId: string, tierId: string) => Promise<{ ok: boolean }>;
+      agentGetPlugins: () => Promise<Array<{ id: string; displayName: string; subtitle: string; icon: string; tiers?: Array<{ id: string; label: string; tierClass: string; modelId: string }>; requiresKey?: string; source: string }>>;
+      agentGetPluginRegistry: () => Promise<Array<{ id: string; filename: string; displayName: string; ipLedgerRef?: string; authorHandle?: string; loadedAt: string }>>;
     };
   }
 }

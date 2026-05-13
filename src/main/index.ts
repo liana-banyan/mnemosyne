@@ -23,6 +23,7 @@ import {
 } from 'electron';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { homedir } from 'os';
 import { OllamaManager } from './ollama_manager';
 import { SubstrateAPIServer, API_PORT } from './substrate_api';
 import { FederationClient } from './federation_client';
@@ -47,6 +48,20 @@ import { toggleMonitor, getMetrics, getAllMonitorStates } from './hearth/active_
 import { listOnDeck } from './on_deck/on_deck_bridge';
 // Adaptive Concurrency Carrier (Layer 2+4)
 import { getCapInfo, probeConcurrencyCap, setCapOverride } from './concurrency_probe';
+// SAGA 4 BP041 — In Conjunction Agent Panel
+import {
+  probeAgent,
+  setApiKey,
+  getApiKeyStatus,
+  loadPersistedApiKeys,
+} from './agent_probe';
+import {
+  loadPlugins,
+  getLoadedPlugins,
+  getPluginRegistry,
+  watchPluginDir,
+  ensurePluginDir,
+} from './agent_plugins';
 
 // Register custom OAuth scheme before app ready (Electron requirement)
 registerCustomScheme();
@@ -85,6 +100,64 @@ const ACTIVE_CSP = IS_DEV ? CSP_DEV : CSP_PROD;
 
 // Connectivity polling interval (30s)
 const CONNECTIVITY_POLL_MS = 30_000;
+
+// ─── SAGA 4: Tier persistence + agent IPC handlers ───────────────────────────
+
+const SUBSTRATE_ROOT_MAIN = process.env.LB_SUBSTRATE_ROOT ?? join(homedir(), '.lb_substrate');
+const TIERS_FILE = join(SUBSTRATE_ROOT_MAIN, 'in_conjunction_tiers.json');
+
+function loadTierChoices(): Record<string, string> {
+  if (!existsSync(TIERS_FILE)) return {};
+  try {
+    return JSON.parse(require('fs').readFileSync(TIERS_FILE, 'utf-8')) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function saveTierChoices(choices: Record<string, string>): void {
+  require('fs').mkdirSync(SUBSTRATE_ROOT_MAIN, { recursive: true });
+  require('fs').writeFileSync(TIERS_FILE, JSON.stringify(choices, null, 2), 'utf-8');
+}
+
+async function agentProbeHandler(
+  agentId: string,
+  opts: { force?: boolean; modelId?: string } = {},
+): Promise<{ agentId: string; status: string; reason?: string; probed_at?: string }> {
+  return probeAgent(agentId, opts);
+}
+
+function agentSetApiKeyHandler(agentId: string, keyValue: string): { ok: boolean; error?: string } {
+  // R16: keyValue is processed immediately and never stored in a variable that could be logged
+  return setApiKey(agentId, keyValue);
+}
+
+function agentGetApiKeyStatusHandler(): Record<string, boolean> {
+  return getApiKeyStatus();
+}
+
+function agentGetTierChoicesHandler(): Record<string, string> {
+  return loadTierChoices();
+}
+
+function agentSetTierChoiceHandler(agentId: string, tierId: string): { ok: boolean } {
+  try {
+    const choices = loadTierChoices();
+    choices[agentId] = tierId;
+    saveTierChoices(choices);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false };
+  }
+}
+
+function agentGetPluginsHandler() {
+  return getLoadedPlugins();
+}
+
+function agentGetPluginRegistryHandler() {
+  return getPluginRegistry();
+}
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -843,6 +916,46 @@ function registerIPCHandlers(): void {
     },
   );
 
+  // ── In Conjunction Agent Panel — SAGA 4 BP041 ────────────────────────────
+
+  ipcMain.handle(
+    'agent-probe',
+    async (_event, { agentId, force, modelId }: { agentId: string; force?: boolean; modelId?: string }) => {
+      return agentProbeHandler(agentId, { force, modelId });
+    },
+  );
+
+  ipcMain.handle(
+    'agent-set-api-key',
+    (_event, { agentId, keyValue }: { agentId: string; keyValue: string }) => {
+      // R16: key value must never be logged — handler passes directly to setApiKey
+      return agentSetApiKeyHandler(agentId, keyValue);
+    },
+  );
+
+  ipcMain.handle('agent-get-api-key-status', () => {
+    return agentGetApiKeyStatusHandler();
+  });
+
+  ipcMain.handle('agent-get-tier-choices', () => {
+    return agentGetTierChoicesHandler();
+  });
+
+  ipcMain.handle(
+    'agent-set-tier-choice',
+    (_event, { agentId, tierId }: { agentId: string; tierId: string }) => {
+      return agentSetTierChoiceHandler(agentId, tierId);
+    },
+  );
+
+  ipcMain.handle('agent-get-plugins', () => {
+    return agentGetPluginsHandler();
+  });
+
+  ipcMain.handle('agent-get-plugin-registry', () => {
+    return agentGetPluginRegistryHandler();
+  });
+
   // Webview preload path — renderer needs this to wire the <webview> preload attribute
   ipcMain.on('get-webview-preload-path', (event) => {
     event.returnValue = join(__dirname, 'hearth', 'embedded_browser', 'webview_preload.js');
@@ -978,6 +1091,18 @@ app.whenReady().then(async () => {
   // Initialize Ollama manager
   ollamaManager = new OllamaManager();
   await ollamaManager.init();
+
+  // SAGA 4 — In Conjunction Agent Panel: load persisted keys + plugins at startup
+  loadPersistedApiKeys();
+  ensurePluginDir();
+  const { errors: pluginErrors } = loadPlugins();
+  if (pluginErrors.length > 0) {
+    console.warn('[SAGA4 plugins] Load errors:', pluginErrors);
+  }
+  watchPluginDir((_updatedAgents) => {
+    // Notify conjunction window when plugins change (future: push IPC event)
+    console.log('[SAGA4 plugins] Plugin roster updated');
+  });
 
   // Initialize auto-updater
   autoUpdater = new AutoUpdateManager();
