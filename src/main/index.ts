@@ -29,6 +29,8 @@ import { SubstrateAPIServer, API_PORT } from './substrate_api';
 import { FederationClient } from './federation_client';
 import { getMoneyPennyURL, getLocalIPs } from './mobile_pwa';
 import { AutoUpdateManager } from './auto_updater';
+import { PeerDiscovery, getStablePeerId } from './federation/peer-discovery';
+import { RelayClient } from './federation/relay-client';
 import { AuthManager, registerCustomScheme } from './auth_manager';
 import {
   runHearthBuild,
@@ -170,6 +172,8 @@ let substrateServer: SubstrateAPIServer | null = null;
 let federationClient: FederationClient | null = null;
 let autoUpdater: AutoUpdateManager | null = null;
 let authManager: AuthManager | null = null;
+let peerDiscovery: PeerDiscovery | null = null;
+let relayClient: RelayClient | null = null;
 let connectivityTimer: ReturnType<typeof setInterval> | null = null;
 let watchdogOverlayInterval: NodeJS.Timeout | null = null;
 let rendererResponsive = true;
@@ -737,6 +741,21 @@ function registerIPCHandlers(): void {
     rendererResponsive = true;
   });
 
+  // ── App Version (MV-VERSION-DISPLAY BP044) ────────────────────────────────
+  ipcMain.handle('get-app-version', () => {
+    const version = app.getVersion();
+    let buildHash = process.env.BUILD_HASH ?? '';
+    if (!buildHash) {
+      try {
+        const { execSync } = require('child_process');
+        buildHash = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+      } catch {
+        buildHash = 'dev';
+      }
+    }
+    return { version, buildHash };
+  });
+
   // ── MoneyPenny Mobile ─────────────────────────────────────────────────────
   ipcMain.handle('get-moneypenny-url', () => ({
     url: getMoneyPennyURL(API_PORT),
@@ -1057,6 +1076,13 @@ function registerIPCHandlers(): void {
     const { getActiveSessions } = require('./pantheon/orchestrator') as typeof import('./pantheon/orchestrator');
     return getActiveSessions();
   });
+
+  // ── MV-CN Peer Mesh (SAGA 3 BP045 W1) ─────────────────────────────────────
+  ipcMain.handle('get-mesh-state', () => ({
+    peers: peerDiscovery?.getAllPeers() ?? [],
+    relayConnected: relayClient?.isConnected() ?? false,
+    ownPeerId: peerDiscovery ? (() => { const { getStablePeerId: gsp } = require('./federation/peer-discovery'); return gsp(); })() : '',
+  }));
 }
 
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
@@ -1107,6 +1133,13 @@ app.whenReady().then(async () => {
   // Initialize auto-updater
   autoUpdater = new AutoUpdateManager();
   autoUpdater.init();
+
+  // MV-CN: Peer discovery + WAN relay (SAGA 3 BP045 W1)
+  const peerId = getStablePeerId();
+  peerDiscovery = new PeerDiscovery(peerId);
+  relayClient = new RelayClient(peerId, peerDiscovery);
+  peerDiscovery.startLAN().catch((e) => console.warn('[PeerDiscovery] LAN start error:', e));
+  relayClient.start();
 
   // Initialize auth manager (Phase 7)
   authManager = new AuthManager();

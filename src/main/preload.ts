@@ -287,6 +287,10 @@ contextBridge.exposeInMainWorld('amplify', {
   getAMPLIFYSummary: (): Promise<TelemetrySummary> =>
     ipcRenderer.invoke('get-amplify-summary'),
 
+  // ── App Version (MV-VERSION-DISPLAY BP044) ───────────────────────────────
+  getAppVersion: (): Promise<{ version: string; buildHash: string }> =>
+    ipcRenderer.invoke('get-app-version'),
+
   // ── Auto-Update ───────────────────────────────────────────────────────────
   getUpdateState: (): Promise<UpdateState> =>
     ipcRenderer.invoke('get-update-state'),
@@ -301,6 +305,22 @@ contextBridge.exposeInMainWorld('amplify', {
     const handler = (_event: Electron.IpcRendererEvent, state: UpdateState) => cb(state);
     ipcRenderer.on('update-state-changed', handler);
     return () => ipcRenderer.removeListener('update-state-changed', handler);
+  },
+
+  // ── MV-CN Peer Mesh (SAGA 3 BP045 W1) ───────────────────────────────────
+  getMeshState: (): Promise<{ peers: unknown[]; relayConnected: boolean; ownPeerId: string }> =>
+    ipcRenderer.invoke('get-mesh-state'),
+
+  onRelayStateChanged: (cb: (state: { relayConnected: boolean }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: { relayConnected: boolean }) => cb(state);
+    ipcRenderer.on('relay-state-changed', handler);
+    return () => ipcRenderer.removeListener('relay-state-changed', handler);
+  },
+
+  onMeshStateChanged: (cb: (state: unknown) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: unknown) => cb(state);
+    ipcRenderer.on('mesh-state-changed', handler);
+    return () => ipcRenderer.removeListener('mesh-state-changed', handler);
   },
 
   // ── MoneyPenny Mobile ─────────────────────────────────────────────────────
@@ -609,11 +629,17 @@ declare global {
       // Telemetry
       getAMPLIFYSnapshot: () => Promise<AMPLIFYSnapshot>;
       getAMPLIFYSummary: () => Promise<TelemetrySummary>;
+      // App Version (MV-VERSION-DISPLAY BP044)
+      getAppVersion: () => Promise<{ version: string; buildHash: string }>;
       // Auto-Update
       getUpdateState: () => Promise<UpdateState>;
       checkForUpdates: () => void;
       installUpdate: () => void;
       onUpdateStateChanged: (cb: (state: UpdateState) => void) => () => void;
+      // MV-CN Peer Mesh (SAGA 3 BP045 W1)
+      getMeshState: () => Promise<{ peers: unknown[]; relayConnected: boolean; ownPeerId: string }>;
+      onRelayStateChanged: (cb: (state: { relayConnected: boolean }) => void) => () => void;
+      onMeshStateChanged: (cb: (state: unknown) => void) => () => void;
       // MoneyPenny
       getMoneyPennyUrl: () => Promise<{ url: string; ips: string[]; port: number }>;
       // Auth (Phase 7)
