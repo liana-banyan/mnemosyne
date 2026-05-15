@@ -8,7 +8,7 @@
 //   update-downloaded → notify renderer (show "Restart to update")
 //   User confirms     → quitAndInstall()
 //
-// Update server: GitHub Releases (configured in package.json publish.provider)
+// Update server: https://mnemosynec.ai/download/ (generic provider · latest.yml)
 // Fallback: manual check via tray menu
 
 import { autoUpdater, type UpdateInfo } from 'electron-updater';
@@ -115,7 +115,7 @@ export class AutoUpdateManager {
         releaseNotes: this._extractReleaseNotes(info.releaseNotes),
       });
       this._showSystemNotification(
-        'AMPLIFY Computer Update',
+        'Mnemosyne Update',
         `v${info.version} is available — downloading now…`,
       );
     });
@@ -141,7 +141,7 @@ export class AutoUpdateManager {
         downloadProgress: 100,
       });
       this._showSystemNotification(
-        'AMPLIFY Computer ready to update',
+        'Mnemosyne ready to update',
         `v${info.version} downloaded — restart to apply`,
       );
     });

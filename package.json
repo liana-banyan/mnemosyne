@@ -86,10 +86,9 @@
       }
     ],
     "publish": {
-      "provider": "github",
-      "owner": "lianabanyan",
-      "repo": "amplify-computer",
-      "releaseType": "release"
+      "provider": "generic",
+      "url": "https://mnemosynec.ai/download/",
+      "channel": "latest"
     },
     "win": {
       "target": [
