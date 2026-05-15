@@ -1,7 +1,7 @@
 {
   "name": "amplify-computer",
-  "version": "0.1.1",
-  "description": "AMPLIFY Computer — CAI Hearth local inference + LB Frame OS overlay",
+  "version": "0.1.3",
+  "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (AGPL Free Forever)",
   "homepage": "https://lianabanyan.com",
   "private": true,
   "main": "dist/main/index.js",
@@ -22,8 +22,9 @@
     "publish:linux": "npm run build && electron-builder --linux --publish always"
   },
   "keywords": [
-    "amplify",
+    "mnemosyne",
     "cai-hearth",
+    "memory-overlay",
     "liana-banyan",
     "cooperative-ai"
   ],
@@ -55,8 +56,8 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "com.lianabanyan.amplify-computer",
-    "productName": "AMPLIFY Computer",
+    "appId": "com.lianabanyan.mnemosyne",
+    "productName": "Mnemosyne",
     "copyright": "Copyright © 2026 Liana Banyan Corporation",
     "asar": true,
     "asarUnpack": [
@@ -119,7 +120,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "AMPLIFY Computer",
+      "shortcutName": "Mnemosyne",
       "include": "assets/installer.nsh",
       "license": "assets/LICENSE.rtf",
       "deleteAppDataOnUninstall": false,
@@ -151,7 +152,7 @@
       "identity": null
     },
     "dmg": {
-      "title": "AMPLIFY Computer ${version}",
+      "title": "Mnemosyne ${version}",
       "window": {
         "width": 540,
         "height": 380
@@ -194,8 +195,8 @@
       ],
       "category": "Office",
       "maintainer": "Liana Banyan Corporation <support@lianabanyan.com>",
-      "synopsis": "CAI Hearth local inference + cooperative substrate OS overlay",
-      "description": "AMPLIFY Computer runs CAI Hearth — local AI inference via Ollama, cooperative substrate index, and the LB Frame OS overlay. Saves cloud AI costs. Members pay $5/year."
+      "synopsis": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay",
+      "description": "Mnemosyne runs CAI — local AI inference via Ollama, cooperative substrate index, HELM VIEW workspace, IP Attribution Ledger, and Battery Dispatch Universal Remote. AGPL Free Forever. No Ads. No Strings. Members pay $5/year."
     },
     "deb": {
       "packageCategory": "utils",
