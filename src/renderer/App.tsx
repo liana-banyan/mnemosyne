@@ -1,6 +1,8 @@
 // AMPLIFY Computer — Renderer Root
 // B37 Phase 1 — Transparent overlay with FrameModeIndicator
 // B37 Phase 7 — Auth gate, trial banner, member badge
+// MV-HELM-CROWN-AMB SAGA 6 BP045 W1 — Role-gated routes added
+// MV-J SAGA 4 BP045 W1 — Federation tab route added
 
 import React, { useState, useEffect, useLayoutEffect } from 'react';
 import { FrameModeIndicator } from './components/FrameModeIndicator';
@@ -10,21 +12,60 @@ import { AuthGate } from './components/AuthGate';
 import { TrialBanner } from './components/TrialBanner';
 import { HearthConjunctionWindow } from './hearth/HearthConjunctionWindow';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { FederationTab } from './components/FederationTab';
+import { HelmCrownDashboard } from './hearth/helm/HelmCrownDashboard';
+import { AmbassadorDashboard } from './ambassador/AmbassadorDashboard';
+import { ProjectOwnerDashboard } from './project/ProjectOwnerDashboard';
 import type { FrameMode } from './components/FrameModeIndicator';
 import type { AuthState } from './amplify.d';
+import type { UserRole, RoleArray } from '../shared/roles';
+import { canAccessHelm, canAccessAmbassador, canAccessProject } from '../shared/roles';
 
-type View = 'overlay' | 'dashboard' | 'hearth-conjunction';
+type View =
+  | 'overlay'
+  | 'dashboard'
+  | 'hearth-conjunction'
+  | 'federation'
+  | 'helm'
+  | 'ambassador'
+  | 'project';
 
 function getInitialView(): View {
   const hash = window.location.hash;
   if (hash === '#/dashboard') return 'dashboard';
   if (hash === '#/hearth-conjunction') return 'hearth-conjunction';
+  if (hash === '#/federation') return 'federation';
+  if (hash === '#/helm') return 'helm';
+  if (hash === '#/ambassador') return 'ambassador';
+  if (hash.startsWith('#/project/')) return 'project';
   return 'overlay';
+}
+
+function getProjectSlug(): string {
+  const hash = window.location.hash;
+  const match = hash.match(/^#\/project\/(.+)/);
+  return match ? match[1] : '';
+}
+
+function AccessDenied({ role }: { role: string }) {
+  return (
+    <div style={{
+      background: '#0a0f1a', color: '#64748b',
+      fontFamily: 'system-ui, sans-serif',
+      height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      flexDirection: 'column', gap: 8, textAlign: 'center', padding: 24,
+    }}>
+      <div style={{ fontSize: 28 }}>🔒</div>
+      <div style={{ fontSize: 14, color: '#e2e8f0' }}>Access restricted</div>
+      <div style={{ fontSize: 11 }}>This surface requires role: <code>{role}</code></div>
+    </div>
+  );
 }
 
 export default function App() {
   const [mode, setMode] = useState<FrameMode>('normal');
   const [view] = useState<View>(getInitialView);
+  const [projectSlug] = useState<string>(getProjectSlug);
   const [showDashboard, setShowDashboard] = useState(view === 'dashboard');
   const [showModelPull, setShowModelPull] = useState(false);
   const [authState, setAuthState] = useState<AuthState | null>(null);
@@ -118,6 +159,64 @@ export default function App() {
     return (
       <ErrorBoundary label="Hearth Conjunction Window">
         <HearthConjunctionWindow />
+      </ErrorBoundary>
+    );
+  }
+
+  // MV-J SAGA 4 — Federation tab
+  if (view === 'federation') {
+    return (
+      <ErrorBoundary label="Federation Tab">
+        <FederationTab />
+      </ErrorBoundary>
+    );
+  }
+
+  // MV-HELM-CROWN-AMB SAGA 6 — Role-gated surfaces
+  // Roles are derived from authState; Founder has access to all role-gated routes.
+  const userRoles: RoleArray = (authState as any)?.member?.roles ?? [];
+  const isFounder = (authState as any)?.member?.is_founder === true;
+  const effectiveRoles: RoleArray = isFounder ? [...userRoles, 'founder'] : userRoles;
+
+  if (view === 'helm') {
+    if (!canAccessHelm(effectiveRoles)) {
+      return <AccessDenied role="helm-crown" />;
+    }
+    return (
+      <ErrorBoundary label="Helm Crown Dashboard">
+        <HelmCrownDashboard
+          userRole={isFounder ? 'founder' : 'helm-crown'}
+          displayName={(authState as any)?.member?.display_name}
+        />
+      </ErrorBoundary>
+    );
+  }
+
+  if (view === 'ambassador') {
+    if (!canAccessAmbassador(effectiveRoles)) {
+      return <AccessDenied role="ambassador" />;
+    }
+    return (
+      <ErrorBoundary label="Ambassador Dashboard">
+        <AmbassadorDashboard
+          userRole={isFounder ? 'founder' : 'ambassador'}
+          displayName={(authState as any)?.member?.display_name}
+        />
+      </ErrorBoundary>
+    );
+  }
+
+  if (view === 'project') {
+    if (!canAccessProject(effectiveRoles)) {
+      return <AccessDenied role="project-owner" />;
+    }
+    return (
+      <ErrorBoundary label="Project Owner Dashboard">
+        <ProjectOwnerDashboard
+          slug={projectSlug}
+          userRole={isFounder ? 'founder' : 'project-owner'}
+          displayName={(authState as any)?.member?.display_name}
+        />
       </ErrorBoundary>
     );
   }

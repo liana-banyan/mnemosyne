@@ -3,8 +3,109 @@
 // Folder picker → dual-checkbox (Pixie-lated for ME / Shared with Federation)
 // Pantheon dispatch progress (LiveSegWatch-style)
 // Member sovereignty: all OFF by default; member must explicitly check.
+//
+// MV-BE SAGA 5 BP045 W1 — OnboardingWizard (5-screen first-launch gate)
+// added. Fires ONLY on first launch (localStorage key: mnemosyne-onboarded).
+// ScreenWelcome · ScreenIdentity · ScreenFirstBanyan · ScreenFederation · ScreenRoll
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  ScreenWelcome,
+  ScreenIdentity,
+  ScreenFirstBanyan,
+  ScreenFederation,
+  ScreenRoll,
+} from './OnboardingScreens';
+
+// ─── OnboardingWizard ─────────────────────────────────────────────────────────
+// Wraps the 5 onboarding screens. Shown once on first launch.
+// After completion, sets localStorage['mnemosyne-onboarded'] = 'true'.
+
+const ONBOARDED_KEY = 'mnemosyne-onboarded';
+const TOTAL_STEPS = 5;
+
+type OnboardingScreen = 1 | 2 | 3 | 4 | 5;
+
+export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
+  const [step, setStep] = useState<OnboardingScreen>(1);
+  const [collected, setCollected] = useState<Record<string, unknown>>({});
+
+  const finish = () => {
+    try { localStorage.setItem(ONBOARDED_KEY, 'true'); } catch { /* ignore */ }
+    onComplete();
+  };
+
+  const handleNext = (data?: Record<string, unknown>) => {
+    if (data) setCollected((prev) => ({ ...prev, ...data }));
+    if (step === TOTAL_STEPS) {
+      finish();
+    } else {
+      setStep((prev) => (prev + 1) as OnboardingScreen);
+    }
+  };
+
+  const handleBack = () => {
+    if (step > 1) setStep((prev) => (prev - 1) as OnboardingScreen);
+  };
+
+  const screenProps = {
+    onNext: handleNext,
+    onBack: handleBack,
+    onSkip: finish,
+    step,
+    totalSteps: TOTAL_STEPS,
+    collected,
+  };
+
+  return (
+    <div style={{
+      background: '#0a0f1a',
+      color: '#e2e8f0',
+      fontFamily: 'system-ui, -apple-system, sans-serif',
+      height: '100%',
+      overflowY: 'auto',
+      padding: 24,
+      display: 'flex',
+      flexDirection: 'column',
+      justifyContent: 'center',
+    }}>
+      <div style={{ fontSize: 10, color: '#64748b', textAlign: 'center', marginBottom: 8 }}>
+        {step}/{TOTAL_STEPS}
+      </div>
+
+      {step === 1 && <ScreenWelcome {...screenProps} />}
+      {step === 2 && <ScreenIdentity {...screenProps} />}
+      {step === 3 && <ScreenFirstBanyan {...screenProps} />}
+      {step === 4 && <ScreenFederation {...screenProps} />}
+      {step === 5 && <ScreenRoll {...screenProps} />}
+    </div>
+  );
+}
+
+// ─── OnboardingGate ───────────────────────────────────────────────────────────
+// Renders OnboardingWizard on first launch, then renders children.
+// Mobile-PWA parity: checks localStorage.
+
+export function OnboardingGate({ children }: { children: React.ReactNode }) {
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    try {
+      setOnboarded(localStorage.getItem(ONBOARDED_KEY) === 'true');
+    } catch {
+      setOnboarded(true); // fail-open: don't gate on storage errors
+    }
+  }, []);
+
+  if (onboarded === null) return null; // hydrating
+
+  if (!onboarded) {
+    return <OnboardingWizard onComplete={() => setOnboarded(true)} />;
+  }
+
+  return <>{children}</>;
+}
+
 
 // ─── Types (inline to avoid cross-context import issues) ─────────────────────
 

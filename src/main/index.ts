@@ -68,6 +68,10 @@ import {
 // Register custom OAuth scheme before app ready (Electron requirement)
 registerCustomScheme();
 
+// SAGA 10 BP045 W1 — mnemosyne:// deep-link handler
+import { registerDeepLinkProtocol, handleStartupDeepLink } from './deep-link-handler';
+import type { DeepLinkPayload } from './deep-link-handler';
+
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -1159,6 +1163,24 @@ app.whenReady().then(async () => {
   createOverlayWindow();
   createTray();
   registerIPCHandlers();
+
+  // SAGA 10 BP045 W1 — Register mnemosyne:// deep-link protocol
+  registerDeepLinkProtocol(
+    () => hearthConjunctionWindow ?? overlayWindow ?? null,
+    (payload: DeepLinkPayload) => {
+      if (payload.type === 'accept-invite') {
+        console.log('[deep-link] accept-invite received for slug:', payload.slug);
+        // Route to federation accept flow via IPC
+        const win = hearthConjunctionWindow ?? overlayWindow;
+        win?.webContents.send('federation:accept-invite', {
+          slug: payload.slug,
+          token: payload.token,
+        });
+      }
+    },
+  );
+  // Handle cold-start deep-link (Windows: URL passed via argv)
+  handleStartupDeepLink(process.argv, () => hearthConjunctionWindow ?? overlayWindow ?? null);
 
   // BP041 — Auto-open Hearth Conjunction Window on launch per Founder direct
   // ("dead-simple = the bar"). The overlay+tray remain (mode indicator + tray
