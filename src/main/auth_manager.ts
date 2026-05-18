@@ -153,9 +153,10 @@ export class AuthManager {
     await this._validateAndSave(token);
   }
 
-  /** Start the 30-day trial */
+  /** Activate free access — "Use Free Forever" canonical path.
+   *  Allowed from 'unauthenticated' (first launch) or 'validating' (user cancels sign-in). */
   startTrial(): void {
-    if (this.state.status !== 'unauthenticated') return;
+    if (this.state.status !== 'unauthenticated' && this.state.status !== 'validating') return;
 
     const now = Date.now();
     this.persistedData = {

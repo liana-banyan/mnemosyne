@@ -1,6 +1,7 @@
-// AMPLIFY Computer — Trial Banner
-// B37 Phase 7 — Days-remaining countdown + $5/year CTA + expiry degraded notice
-// Shown persistently during trial_active and trial_expired states
+// Mnemosyne — Membership Invite Banner
+// B37 Phase 7 — Soft invite to join cooperative + degraded-mode notice
+// BP046B — Removed all "trial" / "30 days" language per brand canon.
+// Shown during trial_active (gentle invite) and trial_expired (full-features paused) states.
 
 import React, { useState } from 'react';
 
@@ -12,12 +13,10 @@ interface TrialBannerProps {
 
 export const TrialBanner: React.FC<TrialBannerProps> = ({
   status,
-  daysRemaining,
   dismissedThisSession = false,
 }) => {
   const [dismissed, setDismissed] = useState(dismissedThisSession);
 
-  // Expired banner is never dismissable
   if (dismissed && status === 'trial_active') return null;
 
   const handleJoin = () => {
@@ -52,11 +51,11 @@ export const TrialBanner: React.FC<TrialBannerProps> = ({
               marginBottom: 3,
             }}
           >
-            ⏰ Trial expired — degraded mode active
+            Full cooperative features paused
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', lineHeight: 1.4 }}>
-            Substrate read-only. No Ollama inference. No cloud escalation.
-            Join the cooperative to restore full access.
+            Substrate read-only · Local inference limited.
+            Join the cooperative to restore full access — $5/year.
           </div>
         </div>
         <button
@@ -80,25 +79,12 @@ export const TrialBanner: React.FC<TrialBannerProps> = ({
     );
   }
 
-  // trial_active
-  const urgency = daysRemaining <= 7;
-  const critical = daysRemaining <= 3;
-
+  // trial_active — gentle invite, no countdown
   return (
     <div
       style={{
-        background: critical
-          ? 'rgba(239,68,68,0.08)'
-          : urgency
-          ? 'rgba(245,158,11,0.08)'
-          : 'rgba(255,255,255,0.04)',
-        borderBottom: `1px solid ${
-          critical
-            ? 'rgba(239,68,68,0.2)'
-            : urgency
-            ? 'rgba(245,158,11,0.2)'
-            : 'rgba(255,255,255,0.07)'
-        }`,
+        background: 'rgba(255,255,255,0.04)',
+        borderBottom: '1px solid rgba(255,255,255,0.07)',
         padding: '7px 14px',
         display: 'flex',
         alignItems: 'center',
@@ -108,15 +94,8 @@ export const TrialBanner: React.FC<TrialBannerProps> = ({
         flexShrink: 0,
       }}
     >
-      <span
-        style={{
-          color: critical ? '#fca5a5' : urgency ? '#fbbf24' : 'rgba(255,255,255,0.45)',
-        }}
-      >
-        {critical ? '⚠️ ' : urgency ? '⏳ ' : ''}
-        {daysRemaining === 1
-          ? 'Last day of free trial'
-          : `${daysRemaining} days remaining in free trial`}
+      <span style={{ color: 'rgba(255,255,255,0.45)' }}>
+        Free to use. Better to join.
       </span>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -124,35 +103,33 @@ export const TrialBanner: React.FC<TrialBannerProps> = ({
           onClick={handleJoin}
           style={{
             padding: '4px 12px',
-            background: urgency ? 'rgba(245,158,11,0.15)' : 'transparent',
-            border: `1px solid ${urgency ? 'rgba(245,158,11,0.35)' : 'rgba(255,255,255,0.12)'}`,
+            background: 'transparent',
+            border: '1px solid rgba(255,255,255,0.12)',
             borderRadius: 20,
-            color: urgency ? '#f59e0b' : 'rgba(255,255,255,0.5)',
+            color: 'rgba(255,255,255,0.5)',
             fontSize: 11,
             cursor: 'pointer',
             whiteSpace: 'nowrap',
           }}
         >
-          Join $5/year →
+          Join cooperative · $5/year →
         </button>
 
-        {!critical && (
-          <button
-            onClick={() => setDismissed(true)}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'rgba(255,255,255,0.25)',
-              fontSize: 14,
-              cursor: 'pointer',
-              lineHeight: 1,
-              padding: '0 2px',
-            }}
-            title="Dismiss for this session"
-          >
-            ×
-          </button>
-        )}
+        <button
+          onClick={() => setDismissed(true)}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: 'rgba(255,255,255,0.25)',
+            fontSize: 14,
+            cursor: 'pointer',
+            lineHeight: 1,
+            padding: '0 2px',
+          }}
+          title="Dismiss for this session"
+        >
+          ×
+        </button>
       </div>
     </div>
   );

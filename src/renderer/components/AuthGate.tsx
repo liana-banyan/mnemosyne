@@ -1,39 +1,78 @@
-// AMPLIFY Computer — Auth Gate
-// B37 Phase 7 — First-launch sign-in / start-trial modal
-// Shown when status === 'unauthenticated' or 'validating'
+// Mnemosyne — Auth Gate
+// B37 Phase 7 — First-launch modal; shown when status === 'unauthenticated' or 'validating'
+// BP046B — Moved from always-on-top overlay to HearthConjunctionWindow (normal OS window)
+//           so the user can ALWAYS escape: native X button, Alt+F4, Esc key, or click
+//           "Use Free Forever". Single-monitor safe.
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 interface AuthGateProps {
   isValidating?: boolean;
 }
 
 export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
-  const [starting, setStarting] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
+  const [signInError, setSignInError] = useState<string | null>(null);
+  const signInTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleStartTrial = () => {
-    setStarting(true);
+  // "Use Free Forever" — the primary escape path.
+  // Calling authStartTrial() moves auth state from unauthenticated/validating → trial_active,
+  // which dismisses this gate. No account required. No countdown shown to the user.
+  const handleFreeForever = () => {
     window.amplify.authStartTrial();
-    // State change arrives via IPC; no need to manually update
   };
 
   const handleSignIn = () => {
     setSigningIn(true);
+    setSignInError(null);
     window.amplify.authSignIn();
-    // Auth state update arrives via IPC when OAuth completes
+    // 30-second UX timeout — show error + retry; auth IPC may still be pending in background
+    signInTimerRef.current = setTimeout(() => {
+      setSigningIn(false);
+      setSignInError('Sign-in timed out. Check your browser and try again, or use Free Forever.');
+    }, 30_000);
   };
 
   const handleJoin = () => {
     window.amplify.authOpenJoin();
   };
 
+  const handleCancelSignIn = () => {
+    if (signInTimerRef.current) {
+      clearTimeout(signInTimerRef.current);
+      signInTimerRef.current = null;
+    }
+    setSigningIn(false);
+    setSignInError(null);
+    handleFreeForever();
+  };
+
+  // Esc key → Use Free Forever (works because HearthConjunctionWindow is focusable)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (signingIn) {
+          handleCancelSignIn();
+        } else {
+          handleFreeForever();
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (signInTimerRef.current) clearTimeout(signInTimerRef.current);
+    };
+  }, [signingIn]);
+
+  const showSpinner = (isValidating || signingIn) && !signInError;
+
   return (
     <div
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(10, 15, 28, 0.97)',
+        background: 'rgba(10, 15, 28, 0.96)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -44,12 +83,13 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
       <div
         style={{
           width: '100%',
-          maxWidth: 400,
+          maxWidth: 420,
           background: '#1e293b',
           border: '1px solid rgba(245,158,11,0.25)',
           borderRadius: 16,
           overflow: 'hidden',
           boxShadow: '0 0 60px rgba(245,158,11,0.08)',
+          position: 'relative',
         }}
       >
         {/* Gold top stripe */}
@@ -60,9 +100,32 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
           }}
         />
 
+        {/* X close button — always visible; clicking = "Use Free Forever" */}
+        <button
+          onClick={showSpinner ? handleCancelSignIn : handleFreeForever}
+          title="Continue without account — Use Free Forever (Esc)"
+          aria-label="Continue without account"
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 12,
+            background: 'rgba(255,255,255,0.05)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            color: 'rgba(255,255,255,0.5)',
+            fontSize: 18,
+            lineHeight: 1,
+            cursor: 'pointer',
+            padding: '3px 8px',
+            borderRadius: 6,
+            zIndex: 1,
+          }}
+        >
+          ×
+        </button>
+
         <div style={{ padding: '28px 28px 24px' }}>
           {/* Logo + title */}
-          <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <div style={{ textAlign: 'center', marginBottom: 24 }}>
             <div
               style={{
                 width: 64,
@@ -79,7 +142,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
                 color: '#f59e0b',
               }}
             >
-              A
+              M
             </div>
             <div
               style={{
@@ -89,15 +152,14 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
                 marginBottom: 6,
               }}
             >
-              AMPLIFY Computer
+              Mnemosyne
             </div>
             <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.45)' }}>
-              CAI Hearth · Local AI · Cooperative Substrate
+              Memory, powered by CAI · Free to use. Better to join.
             </div>
           </div>
 
-          {isValidating || signingIn ? (
-            // Validating state
+          {showSpinner ? (
             <div style={{ textAlign: 'center', padding: '20px 0' }}>
               <div
                 style={{
@@ -112,11 +174,26 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
               />
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
               <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.6)' }}>
-                {signingIn ? 'Waiting for browser sign-in…' : 'Validating…'}
+                Waiting for browser sign-in…
               </div>
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 6 }}>
                 Complete sign-in in your browser, then return here
               </div>
+              <button
+                onClick={handleCancelSignIn}
+                style={{
+                  marginTop: 16,
+                  background: 'none',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  borderRadius: 8,
+                  color: 'rgba(255,255,255,0.5)',
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  padding: '7px 18px',
+                }}
+              >
+                Cancel → Use Free Forever
+              </button>
             </div>
           ) : (
             <>
@@ -144,18 +221,40 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
                     }}
                   >
                     <span style={{ fontSize: 15, flexShrink: 0 }}>{item.icon}</span>
-                    <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', lineHeight: 1.5 }}>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: 'rgba(255,255,255,0.6)',
+                        lineHeight: 1.5,
+                      }}
+                    >
                       {item.text}
                     </span>
                   </div>
                 ))}
               </div>
 
-              {/* CTAs */}
+              {signInError && (
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: '#fca5a5',
+                    marginBottom: 14,
+                    textAlign: 'center',
+                    background: 'rgba(239,68,68,0.08)',
+                    borderRadius: 8,
+                    padding: '8px 12px',
+                  }}
+                >
+                  {signInError}
+                </div>
+              )}
+
+              {/* CTAs — ordered by canon: Free Forever first */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {/* Primary: Use Free Forever */}
                 <button
-                  onClick={handleStartTrial}
-                  disabled={starting}
+                  onClick={handleFreeForever}
                   style={{
                     width: '100%',
                     padding: '13px 0',
@@ -165,65 +264,73 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
                     color: '#000',
                     fontSize: 14,
                     fontWeight: 700,
-                    cursor: starting ? 'default' : 'pointer',
-                    opacity: starting ? 0.7 : 1,
+                    cursor: 'pointer',
                   }}
                 >
-                  {starting ? 'Starting…' : 'Start Free Trial (30 days)'}
+                  Use Free Forever
                 </button>
 
-                <button
-                  onClick={handleSignIn}
-                  disabled={signingIn}
-                  style={{
-                    width: '100%',
-                    padding: '12px 0',
-                    background: 'rgba(255,255,255,0.06)',
-                    border: '1px solid rgba(255,255,255,0.15)',
-                    borderRadius: 10,
-                    color: 'rgba(255,255,255,0.8)',
-                    fontSize: 13,
-                    cursor: signingIn ? 'default' : 'pointer',
-                  }}
-                >
-                  Sign In with LB Account
-                </button>
-              </div>
-
-              {/* Membership CTA */}
-              <div style={{ textAlign: 'center', marginTop: 18 }}>
-                <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>
-                  Not a member?{' '}
-                </span>
+                {/* Secondary: Join cooperative */}
                 <button
                   onClick={handleJoin}
                   style={{
-                    background: 'none',
-                    border: 'none',
+                    width: '100%',
+                    padding: '12px 0',
+                    background: 'rgba(245,158,11,0.08)',
+                    border: '1px solid rgba(245,158,11,0.3)',
+                    borderRadius: 10,
                     color: '#f59e0b',
-                    fontSize: 11,
+                    fontSize: 13,
+                    fontWeight: 600,
                     cursor: 'pointer',
-                    textDecoration: 'underline',
-                    padding: 0,
                   }}
                 >
-                  Join for $5/year →
+                  Join LB Cooperative · $5/year
+                </button>
+
+                {/* Tertiary: Sign in */}
+                <button
+                  onClick={handleSignIn}
+                  style={{
+                    width: '100%',
+                    padding: '11px 0',
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    borderRadius: 10,
+                    color: 'rgba(255,255,255,0.65)',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Sign in with existing LB Account
                 </button>
               </div>
 
-              {/* Fine print */}
+              {/* Canon explanatory text — no trial language */}
               <div
                 style={{
                   marginTop: 16,
-                  fontSize: 10,
-                  color: 'rgba(255,255,255,0.2)',
+                  fontSize: 11,
+                  color: 'rgba(255,255,255,0.28)',
                   textAlign: 'center',
                   lineHeight: 1.5,
                 }}
               >
-                Trial includes full features. After 30 days, substrate read-only until you join.
+                Free to use. Better to join. Joining unlocks cooperative-class peer-mesh sharing,
+                Banyan Metric stats publishing, and Roll/Roll-vet participation.
                 <br />
-                Membership: $5/year — lianabanyan.com
+                Membership: $5/year · lianabanyan.com
+              </div>
+
+              <div
+                style={{
+                  marginTop: 10,
+                  fontSize: 10,
+                  color: 'rgba(255,255,255,0.15)',
+                  textAlign: 'center',
+                }}
+              >
+                Press Esc or click × to continue free
               </div>
             </>
           )}

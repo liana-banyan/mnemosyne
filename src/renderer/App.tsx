@@ -111,13 +111,17 @@ export default function App() {
     };
   }, []);
 
+  // AuthGate is shown in HearthConjunctionWindow (a normal movable OS window), NOT in the
+  // always-on-top overlay. This makes it impossible for the modal to trap the user:
+  // the native window has X button, Alt+F4, Esc key, and can be moved. (BP046B P0 fix)
   const showAuthGate =
-    !authState || authState.status === 'unauthenticated' || authState.status === 'validating';
+    authState !== null &&
+    (authState.status === 'unauthenticated' || authState.status === 'validating');
 
   // Single source of truth for LB Frame pointer capture (LB-STACK-0157).
-  // When any modal/gate is visible, the overlay must receive clicks; otherwise passthrough.
+  // AuthGate is no longer in the overlay — overlay stays transparent/passthrough at first launch.
   const overlayNeedsPointerCapture =
-    view === 'overlay' && (showAuthGate || showModelPull || showDashboard);
+    view === 'overlay' && (showModelPull || showDashboard);
 
   useLayoutEffect(() => {
     if (view !== 'overlay') return;
@@ -138,8 +142,7 @@ export default function App() {
   };
 
   const showTrialBanner =
-    !showAuthGate &&
-    (authState?.status === 'trial_active' || authState?.status === 'trial_expired');
+    authState?.status === 'trial_active' || authState?.status === 'trial_expired';
 
   if (view === 'dashboard') {
     return (
@@ -154,10 +157,14 @@ export default function App() {
 
   // B83 — Hearth Conjunction Window (Heavy Booster Test surface)
   // BP041 — wrapped in ErrorBoundary so single-component crashes don't white-screen the entire window.
-  // Founder direct: "I cannot get out of the white screen that happened when I clicked the substrate tab."
+  // BP046B — AuthGate is shown HERE (not in the always-on-top overlay) so the user can always escape
+  // via the native OS window X button, Alt+F4, Esc key, or the "Use Free Forever" primary CTA.
   if (view === 'hearth-conjunction') {
     return (
       <ErrorBoundary label="Hearth Conjunction Window">
+        {showAuthGate && (
+          <AuthGate isValidating={authState?.status === 'validating'} />
+        )}
         <HearthConjunctionWindow />
       </ErrorBoundary>
     );
@@ -226,18 +233,13 @@ export default function App() {
       {/* Always-present LB Frame border + corner indicator */}
       <FrameModeIndicator
         state={{ mode }}
-        onModeChange={showModelPull || showDashboard || showAuthGate ? undefined : handleCornerClick}
+        onModeChange={showModelPull || showDashboard ? undefined : handleCornerClick}
         memberBadge={authState?.member?.badge_tier}
         degraded={authState?.degraded ?? false}
       />
 
-      {/* Phase 7: First-launch / auth gate */}
-      {showAuthGate && (
-        <AuthGate isValidating={authState?.status === 'validating'} />
-      )}
-
       {/* Phase 7: Trial banner (active or expired) */}
-      {showTrialBanner && !showAuthGate && (
+      {showTrialBanner && (
         <TrialBanner
           status={authState!.status as 'trial_active' | 'trial_expired'}
           daysRemaining={authState?.trial_days_remaining ?? 0}
@@ -245,7 +247,7 @@ export default function App() {
       )}
 
       {/* First-launch model download consent */}
-      {showModelPull && !showAuthGate && (
+      {showModelPull && (
         <ModelPullDialog
           onComplete={() => {
             setShowModelPull(false);
@@ -257,7 +259,7 @@ export default function App() {
       )}
 
       {/* In-overlay dashboard (mode switcher + telemetry) */}
-      {showDashboard && !showModelPull && !showAuthGate && (
+      {showDashboard && !showModelPull && (
         <AMPLIFYDashboard
           currentMode={mode}
           onModeChange={handleModeChange}

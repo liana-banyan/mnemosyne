@@ -28,8 +28,8 @@ export function getIconSVG(): string {
   <!-- Subtitle -->
   <text x="256" y="430" text-anchor="middle"
     font-family="system-ui, -apple-system, sans-serif"
-    font-size="52" font-weight="400" letter-spacing="8"
-    fill="rgba(255,255,255,0.45)">AMPLIFY</text>
+    font-size="42" font-weight="400" letter-spacing="6"
+    fill="rgba(255,255,255,0.45)">MNEMOSYNE</text>
 </svg>`;
 }
 
@@ -40,7 +40,7 @@ export function getManifestJSON(): string {
     {
       name: 'MoneyPenny',
       short_name: 'MoneyPenny',
-      description: 'AMPLIFY Computer — CAI Hearth substrate interface',
+      description: 'Mnemosyne — Memory, powered by CAI · cooperative substrate interface',
       display: 'standalone',
       orientation: 'portrait-primary',
       start_url: '/mobile',
