@@ -5,7 +5,7 @@
 // Surfaces: nominating Crown · scope · peer-witness
 
 import React, { useState, useEffect } from 'react';
-import type { UserRole } from '../../../shared/roles';
+import type { UserRole } from '../../shared/roles';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

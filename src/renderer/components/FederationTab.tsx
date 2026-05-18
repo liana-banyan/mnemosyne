@@ -198,7 +198,7 @@ function PeerRoster({ peers, onLeave }: {
 
 // ─── Invite Flow ──────────────────────────────────────────────────────────────
 
-function InviteFlow() {
+export function InviteFlow() {
   const [token, setToken] = useState<InviteToken | null>(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);

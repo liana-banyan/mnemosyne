@@ -117,7 +117,7 @@ class RelayClient extends EventEmitter {
         this._broadcastState({ relayConnected: true });
       });
 
-      this.ws!.on('message', (data) => {
+      this.ws!.on('message', (data: Buffer | string) => {
         try {
           const msg = JSON.parse(data.toString()) as FedMsg;
           this._handleMessage(msg);
@@ -133,7 +133,7 @@ class RelayClient extends EventEmitter {
         this._scheduleReconnect();
       });
 
-      this.ws!.on('error', (err) => {
+      this.ws!.on('error', (err: Error) => {
         console.warn('[RelayClient] WS error:', err.message);
       });
 

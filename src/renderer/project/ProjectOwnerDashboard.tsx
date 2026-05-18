@@ -5,8 +5,8 @@
 // Surfaces: own initiative (Sweet 16) · contributor roster
 
 import React, { useState, useEffect } from 'react';
-import type { UserRole } from '../../../shared/roles';
-import { SWEET_SIXTEEN, getInitiativeBySlug } from '../../../shared/roles';
+import type { UserRole } from '../../shared/roles';
+import { SWEET_SIXTEEN, getInitiativeBySlug } from '../../shared/roles';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

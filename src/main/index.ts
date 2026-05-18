@@ -353,7 +353,7 @@ function createOverlayWindow(): void {
     if (win) {
       probeRendererHealth(win, RENDERER_URL, 8000).then((result) => {
         if (!result.ok) {
-          tray?.setToolTip(`AMPLIFY Computer — ⚠ renderer boot failed (root empty)`);
+          tray?.setToolTip(`Mnemosyne — ⚠ renderer boot failed (root empty)`);
         }
       }).catch(() => { /* probe errors never crash the app */ });
     }
@@ -400,7 +400,7 @@ function createTray(): void {
 
   tray = new Tray(icon);
   // §1 BP041 — NotCents Đ is the product identity; NO-FIAT-CONVERSION carried in tooltip
-  tray.setToolTip('CAI (Đ) — AMPLIFY Computer · Hearth active');
+  tray.setToolTip('CAI (Đ) — Mnemosyne · Hearth active');
   rebuildTrayMenu();
 }
 
@@ -418,7 +418,7 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
 
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: `AMPLIFY Computer — ${modeLabel[mode]}${forcedLabel}`,
+      label: `Mnemosyne — ${modeLabel[mode]}${forcedLabel}`,
       enabled: false,
     },
     { type: 'separator' },
@@ -450,7 +450,7 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
     },
     { type: 'separator' },
     {
-      label: 'AMPLIFY Dashboard',
+      label: 'Mnemosyne Dashboard',
       click: () => openDashboard(),
     },
     {
@@ -488,7 +488,7 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
     },
     { type: 'separator' },
     {
-      label: 'Quit AMPLIFY',
+      label: 'Quit Mnemosyne',
       click: () => app.quit(),
     },
   ]);
@@ -507,7 +507,7 @@ function openDashboard(): void {
   dashboardWindow = new BrowserWindow({
     width: 520,
     height: 680,
-    title: 'AMPLIFY Dashboard',
+    title: 'Mnemosyne Dashboard',
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -1229,7 +1229,7 @@ app.whenReady().then(async () => {
           { label: 'Force Reload', role: 'forceReload' },
           { label: 'Toggle DevTools', role: 'toggleDevTools' },
           { type: 'separator' },
-          { label: 'Quit AMPLIFY', click: () => app.quit() },
+          { label: 'Quit Mnemosyne', click: () => app.quit() },
         ]},
       ]);
       Menu.setApplicationMenu(devMenu);
