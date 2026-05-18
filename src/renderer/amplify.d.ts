@@ -173,6 +173,8 @@ declare global {
       // Telemetry
       getAMPLIFYSnapshot: () => Promise<AMPLIFYSnapshot>;
       getAMPLIFYSummary: () => Promise<TelemetrySummary>;
+      // App Version (MV-VERSION-DISPLAY BP044)
+      getAppVersion?: () => Promise<{ version: string; buildHash: string }>;
       // Auto-Update
       getUpdateState: () => Promise<UpdateState>;
       checkForUpdates: () => void;
@@ -228,6 +230,13 @@ declare global {
         base_dir: string;
         scanned_at: string;
       }>;
+      // SAGA 13 BP046B — 5-Marks first-install bonus
+      creditFirstInstallMarks?: () => void;
+      // SAGA 07 BP046B — Utility methods
+      openExternal?: (url: string) => void;
+      hideOverlay?: () => void;
+      showOverlay?: () => void;
+      getTelemetrySummary?: () => Promise<TelemetrySummary>;
     };
   }
 }

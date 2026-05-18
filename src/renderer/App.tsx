@@ -1,11 +1,13 @@
-// AMPLIFY Computer — Renderer Root
+// Mnemosyne — Renderer Root
 // B37 Phase 1 — Transparent overlay with FrameModeIndicator
 // B37 Phase 7 — Auth gate, trial banner, member badge
 // MV-HELM-CROWN-AMB SAGA 6 BP045 W1 — Role-gated routes added
 // MV-J SAGA 4 BP045 W1 — Federation tab route added
+// SAGA 07 BP046B — MnemosyneTabView replaces AMPLIFYDashboard as default dashboard
 
 import React, { useState, useEffect, useLayoutEffect } from 'react';
 import { FrameModeIndicator } from './components/FrameModeIndicator';
+import { MnemosyneTabView } from './components/MnemosyneTabView';
 import { AMPLIFYDashboard } from './components/AMPLIFYDashboard';
 import { ModelPullDialog } from './components/ModelPullDialog';
 import { AuthGate } from './components/AuthGate';
@@ -144,14 +146,17 @@ export default function App() {
   const showTrialBanner =
     authState?.status === 'trial_active' || authState?.status === 'trial_expired';
 
+  // SAGA 07 BP046B — Dashboard now renders the 4-tab MnemosyneTabView
   if (view === 'dashboard') {
     return (
-      <AMPLIFYDashboard
-        currentMode={mode}
-        onModeChange={handleModeChange}
-        onClose={() => window.close()}
-        authState={authState}
-      />
+      <ErrorBoundary label="Mnemosyne Tab View">
+        <MnemosyneTabView
+          currentMode={mode}
+          onModeChange={handleModeChange}
+          onClose={() => window.close()}
+          authState={authState}
+        />
+      </ErrorBoundary>
     );
   }
 

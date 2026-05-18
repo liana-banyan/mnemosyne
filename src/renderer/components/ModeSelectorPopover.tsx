@@ -1,7 +1,7 @@
 // BP041 SAGA 3 — Mode Selector Popover
 // Replaces read-only "AI Burst" label with a clickable 3-mode selector.
 //
-// Three modes (Fire / Hearth / Cool) — Founder direct BP041:
+// Three modes (AI Burst / Normal / Fallback) — SAGA 01 BP046B brand sweep:
 //   "user should be able to click it and choose which of the three to use."
 //
 // Canon: project_mnemosyne_mode_selector_and_ollama_bundling_bp041.md
@@ -15,7 +15,7 @@ import type { FrameMode } from './FrameModeIndicator';
 interface ModeOption {
   mode: FrameMode;
   icon: string;
-  label: string;    // member-facing name (Fire / Hearth / Cool)
+  label: string;    // member-facing name (AI Burst / Normal / Fallback)
   stack: string;    // what runs
   cost: string;     // cost signal
   prereq: string;   // prerequisite check
@@ -42,13 +42,13 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
   const popoverRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = React.useState<FrameMode>(currentMode);
 
-  // Mode definitions — names and colors per color+dash accessibility canon
+  // Mode definitions — SAGA 01 BP046B brand sweep: AI Burst / Normal / Fallback
   const modes: ModeOption[] = [
     {
       mode: 'ai_burst',
       icon: '🔥',
-      label: 'Fire',
-      stack: 'Cloud AI + Hearth + Substrate',
+      label: 'AI Burst',
+      stack: 'Cloud AI + Mnemosyne + Substrate',
       cost: 'Pay-per-token (~$0.054/artifact)',
       prereq: 'Requires ANTHROPIC_API_KEY',
       prereqMet: apiKeyAvailable,
@@ -56,7 +56,7 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
     {
       mode: 'normal',
       icon: '🪵',
-      label: 'Hearth',
+      label: 'Normal',
       stack: 'Local Ollama + Substrate',
       cost: 'Zero marginal (after Ollama install)',
       prereq: 'Requires Ollama installed',
@@ -65,7 +65,7 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
     {
       mode: 'fallback',
       icon: '❄️',
-      label: 'Cool',
+      label: 'Fallback',
       stack: 'Substrate cache only',
       cost: 'Zero — always. Offline-capable.',
       prereq: 'Always available',

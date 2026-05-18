@@ -6,6 +6,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import type { FrameMode } from './FrameModeIndicator';
 import { ShareCard } from './ShareCard';
+import { NotCentsGlyph } from './NotCentsGlyph';
 import type { AuthState } from '../amplify.d';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -297,6 +298,7 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
   const [forceApplied, setForceApplied] = useState(false);
   const [moneyPennyUrl, setMoneyPennyUrl] = useState<string | null>(null);
   const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' });
+  const [appVersion, setAppVersion] = useState<{ version: string; buildHash: string } | null>(null);
 
   // ── Data loading ──────────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
@@ -323,6 +325,13 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
     window.amplify.getUpdateState().then(setUpdateState);
     const cleanup = window.amplify.onUpdateStateChanged(setUpdateState);
     return cleanup;
+  }, []);
+
+  // Version display (MV-VERSION-DISPLAY BP044)
+  useEffect(() => {
+    window.amplify.getAppVersion?.().then((v) => {
+      if (v) setAppVersion(v);
+    });
   }, []);
 
   // ── Period to stats ───────────────────────────────────────────────────────
@@ -369,9 +378,9 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
             }}
           >
             <div>
-              <div className="dashboard__title">AMPLIFY Computer</div>
+              <div className="dashboard__title">Mnemosyne</div>
               <div className="dashboard__subtitle">
-                CAI Hearth — {MODES.find((m) => m.id === currentMode)?.label ?? 'Normal'} Mode
+                Mnemosyne CAI Amplifier — {MODES.find((m) => m.id === currentMode)?.label ?? 'Normal'} Mode
                 {forcedMode && (
                   <span style={{ color: '#f59e0b', marginLeft: 6, fontSize: 10 }}>(forced)</span>
                 )}
@@ -389,6 +398,29 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
                   marginTop: 2,
                 }}
               >
+                {/* BP043 SEG-G — NotCents Đ balance chip */}
+                <div
+                  title="Your NotCents Đ balance (cooperative substitution-only)"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    background: 'rgba(110,231,183,0.08)',
+                    border: '1px solid rgba(110,231,183,0.22)',
+                    borderRadius: 20,
+                    padding: '2px 9px',
+                    fontSize: 11,
+                    color: '#6ee7b7',
+                  }}
+                >
+                  <NotCentsGlyph size="0.95em" alt="NotCents balance" />
+                  <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {(() => {
+                      const bal = (authState as any)?.member?.notcents_balance;
+                      return typeof bal === 'number' ? bal.toLocaleString() : '—';
+                    })()}
+                  </span>
+                </div>
                 {authState.status === 'member' && authState.member ? (
                   <div
                     title={`Signed in as ${authState.member.email}`}
@@ -495,7 +527,22 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
                     ? `✓ v${updateState.version} ready to install`
                     : updateState.status === 'downloading'
                     ? `⬇ Downloading v${updateState.version}… ${updateState.downloadProgress ?? 0}%`
+                    : appVersion
+                    ? `↑ v${appVersion.version} → v${updateState.version} available · `
                     : `↑ v${updateState.version} available`}
+                  {updateState.status === 'available' && (
+                    <a
+                      href="https://cephas.lianabanyan.com/changelog/"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        const ext = (window as any).amplify?.openExternal;
+                        if (typeof ext === 'function') ext('https://cephas.lianabanyan.com/changelog/');
+                      }}
+                      style={{ color: '#93c5fd', fontSize: 11, cursor: 'pointer' }}
+                    >
+                      changelog
+                    </a>
+                  )}
                 </div>
                 {updateState.status === 'downloading' && (
                   <div style={{ marginTop: 4, height: 3, background: 'rgba(255,255,255,0.1)', borderRadius: 2 }}>
@@ -791,9 +838,11 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                   <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>
-                    {updateState.status === 'idle' ? 'AMPLIFY Computer v0.1.0'
+                    {updateState.status === 'idle'
+                      ? `Mnemosyne ${appVersion ? `v${appVersion.version}` : ''}`
                       : updateState.status === 'checking' ? 'Checking…'
-                      : updateState.status === 'not-available' ? '✓ Up to date'
+                      : updateState.status === 'not-available'
+                      ? `✓ v${appVersion?.version ?? '?'} — up to date`
                       : updateState.status === 'available' ? `v${updateState.version} available`
                       : updateState.status === 'downloading' ? `Downloading ${updateState.downloadProgress ?? 0}%`
                       : updateState.status === 'downloaded' ? `v${updateState.version} ready`
@@ -940,18 +989,74 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
             </div>
           )}
 
-          {/* Footer */}
+          {/* Footer — version display (MV-VERSION-DISPLAY BP044) */}
           <div
             style={{
               fontSize: 10,
               color: 'rgba(255,255,255,0.2)',
               textAlign: 'center',
               marginTop: 12,
-              marginBottom: 14,
+              marginBottom: 4,
               letterSpacing: 0.5,
             }}
           >
-            NOT AnyWair — It's CAI™ · AMPLIFY your Computer
+            Mnemosyne · powered by CAI · AGPL Free Forever · No Ads · No Strings
+          </div>
+          {appVersion && (
+            <div
+              style={{
+                fontSize: 9,
+                color: 'rgba(255,255,255,0.18)',
+                textAlign: 'center',
+                marginBottom: 4,
+                letterSpacing: 0.4,
+                fontFamily: 'monospace',
+              }}
+            >
+              v{appVersion.version}+{appVersion.buildHash} · LB Alpha-phase ·{' '}
+              <a
+                href="https://cephas.lianabanyan.com/changelog/"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const ext = (window as any).amplify?.openExternal;
+                  if (typeof ext === 'function') ext('https://cephas.lianabanyan.com/changelog/');
+                }}
+                style={{ color: 'rgba(246,173,85,0.45)', textDecoration: 'none', cursor: 'pointer' }}
+              >
+                changelog
+              </a>
+            </div>
+          )}
+          <div
+            style={{
+              textAlign: 'center',
+              marginBottom: 14,
+            }}
+          >
+            <a
+              href="https://lianabanyan.com/bonfire"
+              onClick={(e) => {
+                e.preventDefault();
+                const ext = (window as any).amplify?.openExternal;
+                if (typeof ext === 'function') {
+                  ext('https://lianabanyan.com/bonfire');
+                }
+              }}
+              style={{
+                display: 'inline-block',
+                fontSize: 10,
+                color: 'rgba(245,158,11,0.55)',
+                border: '1px solid rgba(245,158,11,0.25)',
+                borderRadius: 20,
+                padding: '2px 10px',
+                letterSpacing: 0.4,
+                textDecoration: 'none',
+                cursor: 'pointer',
+              }}
+              title="Initiative #17 — The Bonfire · cooperative open-source AI research"
+            >
+              🔥 Bonfire · Initiative #17 · cooperative open-source AI
+            </a>
           </div>
 
           <button className="close-btn" onClick={onClose}>

@@ -34,30 +34,30 @@ interface FrameModeIndicatorProps {
   apiKeyAvailable?: boolean;
 }
 
-// Member-facing mode labels: Fire / Hearth / Cool (BP041 SAGA 3 canon)
+// Member-facing mode labels: AI Burst / Normal / Fallback (SAGA 01 BP046B brand sweep)
 // Internal keys preserve compatibility: ai_burst / normal / fallback
 const MODE_META: Record<FrameMode, {
   icon: string;
-  label: string;    // member-facing Fire/Hearth/Cool
+  label: string;    // member-facing AI Burst/Normal/Fallback
   tooltip: string;
   color: string;    // triple-channel primary color
 }> = {
   ai_burst: {
     icon: '🔥',
-    label: 'Fire',
-    tooltip: 'Fire mode — Cloud AI + Hearth + Substrate. Pay-per-token.',
+    label: 'AI Burst',
+    tooltip: 'AI Burst mode — Cloud AI + Mnemosyne + Substrate. Pay-per-token.',
     color: '#facc15',
   },
   normal: {
     icon: '🪵',
-    label: 'Hearth',
-    tooltip: 'Hearth mode — Local Ollama + Substrate. Zero marginal cost.',
+    label: 'Normal',
+    tooltip: 'Normal mode — Local Ollama + Substrate. Zero marginal cost.',
     color: '#22c55e',
   },
   fallback: {
     icon: '❄️',
-    label: 'Cool',
-    tooltip: 'Cool mode — Substrate cache only. Zero cost. Offline-capable.',
+    label: 'Fallback',
+    tooltip: 'Fallback mode — Substrate cache only. Zero cost. Offline-capable.',
     color: '#3b82f6',
   },
 };

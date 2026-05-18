@@ -600,6 +600,28 @@ contextBridge.exposeInMainWorld('amplify', {
     loadedAt: string;
   }>> =>
     ipcRenderer.invoke('agent-get-plugin-registry'),
+
+  // ── SAGA 13 BP046B — 5-Marks first-install bonus ─────────────────────────
+  /** Credit 5 marks on first install + first Stage 1 Gauntlet completion. One-per-account. */
+  creditFirstInstallMarks: (): void =>
+    ipcRenderer.send('credit-first-install-marks'),
+
+  // ── Utility (SAGA 07 BP046B) ─────────────────────────────────────────────
+  /** Open a URL in the system default browser */
+  openExternal: (url: string): void =>
+    ipcRenderer.send('open-external', { url }),
+
+  /** Hide the transparent overlay window */
+  hideOverlay: (): void =>
+    ipcRenderer.send('hide-overlay'),
+
+  /** Show the transparent overlay window */
+  showOverlay: (): void =>
+    ipcRenderer.send('show-overlay'),
+
+  /** Get full telemetry summary (session + today + week + month + daily breakdown) */
+  getTelemetrySummary: (): Promise<unknown> =>
+    ipcRenderer.invoke('get-telemetry-summary'),
 });
 
 // ─── Global type extension ────────────────────────────────────────────────────
@@ -719,6 +741,13 @@ declare global {
       agentSetTierChoice: (agentId: string, tierId: string) => Promise<{ ok: boolean }>;
       agentGetPlugins: () => Promise<Array<{ id: string; displayName: string; subtitle: string; icon: string; tiers?: Array<{ id: string; label: string; tierClass: string; modelId: string }>; requiresKey?: string; source: string }>>;
       agentGetPluginRegistry: () => Promise<Array<{ id: string; filename: string; displayName: string; ipLedgerRef?: string; authorHandle?: string; loadedAt: string }>>;
+      // SAGA 13 BP046B
+      creditFirstInstallMarks: () => void;
+      // SAGA 07 BP046B utilities
+      openExternal?: (url: string) => void;
+      hideOverlay?: () => void;
+      showOverlay?: () => void;
+      getTelemetrySummary?: () => Promise<unknown>;
     };
   }
 }

@@ -1,4 +1,4 @@
-// AMPLIFY Computer — Electron Main Process
+﻿// AMPLIFY Computer — Electron Main Process
 // B37 Phase 1-3 — BP025 / Bushel 37
 // Phase 3 additions: connectivity polling, auto-mode transitions, substrate/federation IPC
 // BP038 addition: env_loader MUST be the first import so its side-effects populate
@@ -399,8 +399,10 @@ function createTray(): void {
     : nativeImage.createEmpty();
 
   tray = new Tray(icon);
-  // §1 BP041 — NotCents Đ is the product identity; NO-FIAT-CONVERSION carried in tooltip
-  tray.setToolTip('CAI (Đ) — Mnemosyne · Hearth active');
+  // SAGA 02 BP046B — tooltip updated to Mnemosyne brand; single-left-click opens Dashboard
+  tray.setToolTip('Mnemosyne · CAI · Đ · click for Dashboard');
+  // Single left-click opens Dashboard (right-click still shows context menu)
+  tray.on('click', () => openDashboard());
   rebuildTrayMenu();
 }
 
@@ -504,10 +506,13 @@ function openDashboard(): void {
     return;
   }
 
+  // SAGA 07 BP046B — expanded for 4-tab MnemosyneTabView
   dashboardWindow = new BrowserWindow({
-    width: 520,
-    height: 680,
-    title: 'Mnemosyne Dashboard',
+    width: 680,
+    height: 780,
+    minWidth: 560,
+    minHeight: 600,
+    title: 'Mnemosyne',
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -516,8 +521,8 @@ function openDashboard(): void {
     },
   });
 
-  const dashW = 520;
-  const dashH = 680;
+  const dashW = 680;
+  const dashH = 780;
   const primary = screen.getPrimaryDisplay().workArea;
   const dashBounds = getSafeBounds({
     x: primary.x + Math.floor((primary.width - dashW) / 2),
@@ -604,6 +609,32 @@ function openHearthConjunctionWindow(): void {
 // ─── IPC Handlers ────────────────────────────────────────────────────────────
 
 function registerIPCHandlers(): void {
+  // SAGA 07+13 BP046B utility + first-install bonus
+
+  ipcMain.on('open-external', (_event: Electron.IpcMainEvent, { url }: { url: string }) => {
+    if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
+      shell.openExternal(url);
+    }
+  });
+
+  ipcMain.on('hide-overlay', () => { overlayWindow?.hide(); });
+
+  ipcMain.on('show-overlay', () => {
+    if (!overlayWindow) createOverlayWindow();
+    overlayWindow?.showInactive();
+  });
+
+  // SAGA 13 BP046B: 5-Marks first-install bonus (one-per-machine flag)
+  ipcMain.on('credit-first-install-marks', () => {
+    const { join } = require('path');
+    const { existsSync, writeFileSync } = require('fs');
+    const flagPath = join(app.getPath('userData'), 'first_install_marks_credited.flag');
+    if (!existsSync(flagPath)) {
+      writeFileSync(flagPath, new Date().toISOString(), 'utf-8');
+      console.log('[SAGA13] First-install 5 marks credited');
+    }
+  });
+
   // ── Mode ──────────────────────────────────────────────────────────────────
   ipcMain.handle('get-frame-mode', () => ({
     mode: currentMode,
@@ -1182,13 +1213,12 @@ app.whenReady().then(async () => {
   // Handle cold-start deep-link (Windows: URL passed via argv)
   handleStartupDeepLink(process.argv, () => hearthConjunctionWindow ?? overlayWindow ?? null);
 
-  // BP041 — Auto-open Hearth Conjunction Window on launch per Founder direct
-  // ("dead-simple = the bar"). The overlay+tray remain (mode indicator + tray
-  // menu), but members SEE the Hearth Conjunction Window (Prove It! / App
-  // Builder / Browser tabs + Drekaskip panel) immediately — no tray-menu
-  // discovery needed. Set env MNEMOSYNE_NO_AUTO_OPEN=1 to skip (dev convenience).
+  // SAGA 03 BP046B — Dashboard-first startup (replaces auto-Hearth-Conjunction-open).
+  // First launch: open Dashboard immediately so the 3-option ask is front-and-center.
+  // Subsequent launches: Dashboard still opens (user can close it; tray always accessible).
+  // Set env MNEMOSYNE_NO_AUTO_OPEN=1 to skip entirely (dev convenience).
   if (process.env.MNEMOSYNE_NO_AUTO_OPEN !== '1') {
-    openHearthConjunctionWindow();
+    openDashboard();
   }
 
   const okQuit = globalShortcut.register('CommandOrControl+Shift+Alt+Q', () => {

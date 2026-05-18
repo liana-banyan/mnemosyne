@@ -1,4 +1,4 @@
-// AMPLIFY Computer — MoneyPenny Mobile PWA
+﻿// AMPLIFY Computer — MoneyPenny Mobile PWA
 // B37 Phase 5 — Self-contained mobile chat interface served from port 11480
 //
 // All assets generated as strings (no separate build step, no file I/O).
@@ -491,7 +491,7 @@ export function getMobileHTML(): string {
       <div id="header-icon">M</div>
       <div>
         <div id="header-title">MoneyPenny</div>
-        <div id="header-sub">AMPLIFY CAI Hearth</div>
+        <div id="header-sub">Mnemosyne CAI Amplifier</div>
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px">
@@ -729,7 +729,7 @@ export function getMobileHTML(): string {
       const m = d.month || {};
       const at = d.all_time_queries || 0;
       const lines = [
-        '<strong>AMPLIFY CAI Hearth — Status Brief</strong>',
+        '<strong>Mnemosyne CAI Amplifier — Status Brief</strong>',
         '',
         '<strong>Session</strong>',
         '  Queries: ' + (s.total_queries || 0),
@@ -873,7 +873,7 @@ export function getMobileHTML(): string {
     } catch (e) {
       removeTyping();
       if (!online) {
-        addMsg('error', '📵 Offline — is AMPLIFY Computer running on this network?');
+        addMsg('error', '📵 Offline — is Mnemosyne running on this network?');
       } else {
         addMsg('error', 'Query failed: ' + e.message);
       }
@@ -1087,14 +1087,17 @@ export function getMobileHTML(): string {
     await loadSavings();
 
     if (online) {
-      addMsg('system', '● Connected to AMPLIFY CAI Hearth');
+      addMsg('system', '● Connected to Mnemosyne CAI Amplifier');
     } else {
-      addMsg('system', '○ Offline — connect to the same WiFi as AMPLIFY Computer');
+      addMsg('system', '○ Offline — connect to the same WiFi as your Mnemosyne device');
     }
 
+    // SAGA 04 BP046B — time-of-day greeting
+    const _h = new Date().getHours();
+    const _greeting = _h >= 5 && _h < 12 ? 'Good morning' : _h >= 12 && _h < 17 ? 'Good afternoon' : _h >= 17 && _h < 22 ? 'Good evening' : 'Good night';
     addMsg(
       'assistant',
-      'Good evening. I\\'m MoneyPenny — your AMPLIFY Computer substrate interface. ' +
+      _greeting + '. I\\'m MoneyPenny — your Mnemosyne CAI Amplifier interface. ' +
       'What do you need?',
     );
   }

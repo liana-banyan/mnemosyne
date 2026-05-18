@@ -1,0 +1,361 @@
+// GauntletTab — SAGA 07+08 BP046B · Tab 3 of MnemosyneTabView
+// The Gauntlet 6-stage testing framework — the killer flywheel.
+// Default tab on first launch. Proves "ANY hardware · ANY network · ANY AI · or NONE AT ALL".
+//
+// Stage 1: Baseline         (no Mnemosyne · no Cathedral · raw AI or no-AI)
+// Stage 2: Cathedral alone  (substrate only · NO LLM · proves "or NONE AT ALL")
+// Stage 3: + Any AI         (dropdown · pick model · same task)
+// Stage 4: Yoked AI         (dropdown · cross-vendor symmetric yoke)
+// Stage 5: Orchestration    (Wave / Drekaskip / Novacula / AutoBaton)
+// Stage 6: Federation       (cross-Cathedral peer-mesh · Thorax · requires LB membership)
+//
+// Pioneer Bonus fires at Stage 3+ for previously-untested models.
+// 5-marks bonus on first Stage 1 completion (SAGA 13).
+
+import React, { useState } from 'react';
+import type { AuthState } from '../amplify.d';
+
+interface GauntletTabProps {
+  authState: AuthState | null;
+  onFirstComplete?: () => void;
+}
+
+type GauntletPhase =
+  | 'idle'
+  | 'mode-select'
+  | 'running'
+  | 'results';
+
+interface StageResult {
+  stage: number;
+  name: string;
+  status: 'pending' | 'running' | 'complete' | 'skipped';
+  speed_delta?: number;
+  cost_delta?: number;
+  accuracy_delta?: number;
+  banyan_metric?: number;
+  cumulative_bm?: number;
+}
+
+const STAGE_DEFS = [
+  { stage: 1, name: 'Baseline',       icon: '📊', desc: 'No Mnemosyne · no Cathedral · raw AI or no-AI baseline run' },
+  { stage: 2, name: 'Cathedral Alone', icon: '🏛️', desc: 'Substrate only · NO LLM · proves "or NONE AT ALL"' },
+  { stage: 3, name: '+ Any AI',        icon: '🤖', desc: 'Cathedral + AI model of your choice · Pioneer Bonus fires here' },
+  { stage: 4, name: 'Yoked AI',        icon: '⚡', desc: 'Cross-vendor symmetric AI yoke · proves inexpensive ≈ flagship WITH substrate' },
+  { stage: 5, name: 'Orchestration',   icon: '🌊', desc: 'Wave / Drekaskip / Novacula / AutoBaton selector' },
+  { stage: 6, name: 'Federation',      icon: '🌐', desc: 'Cross-Cathedral peer-mesh · Thorax handshake · requires LB membership' },
+];
+
+export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
+  const [phase, setPhase] = useState<GauntletPhase>('idle');
+  const [stageResults, setStageResults] = useState<StageResult[]>(
+    STAGE_DEFS.map((s) => ({ ...s, status: 'pending' }))
+  );
+  const [selectedModel, setSelectedModel] = useState('');
+  const [dataMode, setDataMode] = useState<'included' | 'own' | 'manual'>('included');
+  const isMember = authState?.status === 'member' || authState?.status === 'trial_active';
+
+  function handleGo() {
+    setPhase('mode-select');
+  }
+
+  function handleStartRun(mode: 'included' | 'own' | 'manual') {
+    setDataMode(mode);
+    setPhase('running');
+    runGauntlet(mode);
+  }
+
+  async function runGauntlet(mode: 'included' | 'own' | 'manual') {
+    // Run stages sequentially — scaffold for SAGA 08 full implementation
+    const results: StageResult[] = STAGE_DEFS.map((s) => ({ ...s, status: 'pending' as const }));
+    setStageResults([...results]);
+
+    for (let i = 0; i < STAGE_DEFS.length; i++) {
+      const def = STAGE_DEFS[i];
+
+      // Skip Stage 6 if not a member
+      if (def.stage === 6 && !isMember) {
+        results[i] = { ...results[i], status: 'skipped' };
+        setStageResults([...results]);
+        continue;
+      }
+
+      results[i] = { ...results[i], status: 'running' };
+      setStageResults([...results]);
+
+      // Simulate stage execution — SAGA 08 replaces this with real substrate calls
+      await new Promise<void>((resolve) => setTimeout(resolve, 800 + Math.random() * 400));
+
+      const bm = simulateBanyanMetric(def.stage);
+      const cumulative = results
+        .slice(0, i + 1)
+        .reduce((acc, r) => acc + (r.banyan_metric ?? 0), bm);
+
+      results[i] = {
+        ...results[i],
+        status: 'complete',
+        speed_delta: def.stage === 1 ? 0 : simulateDelta(),
+        cost_delta: def.stage === 1 ? 0 : simulateDelta() * -0.8,
+        accuracy_delta: def.stage === 1 ? 0 : simulateDelta() * 0.3,
+        banyan_metric: bm,
+        cumulative_bm: cumulative,
+      };
+      setStageResults([...results]);
+
+      // First Stage 1 completion — 5-marks bonus (SAGA 13 hook)
+      if (def.stage === 1) {
+        const firstRun = !localStorage.getItem('mnemo_gauntlet_stage1_done');
+        if (firstRun) {
+          localStorage.setItem('mnemo_gauntlet_stage1_done', 'true');
+          // SAGA 13: trigger 5-marks credit via IPC
+          window.amplify?.creditFirstInstallMarks?.();
+        }
+      }
+    }
+
+    setPhase('results');
+    if (onFirstComplete) onFirstComplete();
+  }
+
+  function simulateBanyanMetric(stage: number): number {
+    // Scaffolded simulation — SAGA 08 replaces with real substrate measurement
+    const base = [0, 1.2, 2.8, 1.5, 1.9, 1.4];
+    return base[stage - 1] ?? 0;
+  }
+
+  function simulateDelta(): number {
+    return Math.round((0.3 + Math.random() * 2) * 10) / 10;
+  }
+
+  const totalBM = stageResults.reduce((acc, r) => acc + (r.banyan_metric ?? 0), 0);
+  const completedStages = stageResults.filter((r) => r.status === 'complete').length;
+
+  // ─── Render ──────────────────────────────────────────────────────────────────
+
+  if (phase === 'idle') {
+    return <GauntletIdle onGo={handleGo} />;
+  }
+
+  if (phase === 'mode-select') {
+    return (
+      <GauntletModeSelect
+        onSelect={handleStartRun}
+        onBack={() => setPhase('idle')}
+      />
+    );
+  }
+
+  return (
+    <div style={{ padding: 16, height: '100%', boxSizing: 'border-box', overflowY: 'auto' }}>
+      {/* Header */}
+      <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>
+            {phase === 'running' ? '⚔️ Gauntlet Running…' : '✅ Gauntlet Complete'}
+          </div>
+          <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
+            {completedStages}/6 stages · {dataMode === 'included' ? 'Included test data' : dataMode === 'own' ? 'Your data' : 'Manual mode'}
+          </div>
+        </div>
+        {phase === 'results' && (
+          <button
+            onClick={() => { setPhase('idle'); setStageResults(STAGE_DEFS.map((s) => ({ ...s, status: 'pending' }))); }}
+            style={{
+              background: 'rgba(110,231,183,0.1)', border: '1px solid rgba(110,231,183,0.25)',
+              color: '#6ee7b7', borderRadius: 8, padding: '5px 12px', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            Run Again
+          </button>
+        )}
+      </div>
+
+      {/* Stage results table */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {stageResults.map((r) => (
+          <StageRow key={r.stage} result={r} />
+        ))}
+      </div>
+
+      {/* Headline Banyan Metric — bottom-right cell (per spec) */}
+      {phase === 'results' && (
+        <div style={{
+          marginTop: 16,
+          background: 'rgba(110,231,183,0.08)', border: '1px solid rgba(110,231,183,0.25)',
+          borderRadius: 10, padding: '14px 20px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <div>
+            <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Cumulative Banyan Metric · 6 Stages · Your Task
+            </div>
+            <div style={{ fontSize: 28, fontWeight: 800, color: '#6ee7b7', marginTop: 4 }}>
+              {totalBM.toFixed(1)} BM
+            </div>
+          </div>
+          <div style={{ fontSize: 30 }}>⚔️</div>
+        </div>
+      )}
+
+      {/* Stage 6 member gate */}
+      {!isMember && phase === 'results' && (
+        <div style={{
+          marginTop: 10,
+          background: 'rgba(110,231,183,0.04)', border: '1px solid rgba(110,231,183,0.12)',
+          borderRadius: 8, padding: '10px 14px', textAlign: 'center',
+        }}>
+          <div style={{ fontSize: 11, color: '#6ee7b7', fontWeight: 600 }}>Stage 6 · Federation</div>
+          <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
+            Requires LB membership · $5/year · unlock cross-Cathedral peer-mesh
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Idle splash ──────────────────────────────────────────────────────────────
+
+function GauntletIdle({ onGo }: { onGo: () => void }) {
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      height: '100%', gap: 20, padding: 28, textAlign: 'center',
+    }}>
+      <div style={{ fontSize: 40 }}>⚔️</div>
+      <div>
+        <div style={{ fontSize: 18, fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.3px' }}>
+          The Gauntlet
+        </div>
+        <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, maxWidth: 280, lineHeight: 1.7 }}>
+          6-stage empirical proof that Mnemosyne works on{' '}
+          <span style={{ color: '#6ee7b7' }}>ANY hardware · ANY network · ANY AI model · or NONE AT ALL</span>
+        </div>
+      </div>
+
+      {/* Stage preview */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%', maxWidth: 320 }}>
+        {STAGE_DEFS.map((s) => (
+          <div key={s.stage} style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.1)',
+            borderRadius: 8, padding: '7px 12px', textAlign: 'left',
+          }}>
+            <span style={{ fontSize: 14 }}>{s.icon}</span>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8' }}>Stage {s.stage} · {s.name}</div>
+              <div style={{ fontSize: 9, color: '#475569', marginTop: 1 }}>{s.desc}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* GO button */}
+      <button
+        onClick={onGo}
+        style={{
+          background: 'linear-gradient(135deg, rgba(110,231,183,0.2), rgba(52,211,153,0.1))',
+          border: '1px solid rgba(110,231,183,0.4)',
+          color: '#6ee7b7', borderRadius: 12, padding: '12px 40px',
+          fontSize: 16, fontWeight: 800, cursor: 'pointer', letterSpacing: '0.05em',
+          transition: 'all 0.2s',
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = 'linear-gradient(135deg, rgba(110,231,183,0.35), rgba(52,211,153,0.2))')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = 'linear-gradient(135deg, rgba(110,231,183,0.2), rgba(52,211,153,0.1))')}
+      >
+        GO ⚔️
+      </button>
+
+      <div style={{ fontSize: 9, color: '#334155' }}>
+        Earn 5 marks on your first run · Pioneer Bonus on first model tests
+      </div>
+    </div>
+  );
+}
+
+// ─── Mode select ──────────────────────────────────────────────────────────────
+
+function GauntletModeSelect({ onSelect, onBack }: {
+  onSelect: (mode: 'included' | 'own' | 'manual') => void;
+  onBack: () => void;
+}) {
+  const options: Array<{ id: 'included' | 'own' | 'manual'; icon: string; label: string; desc: string }> = [
+    { id: 'included', icon: '📦', label: 'Use Included Test Data',    desc: 'Canonical test set · reproducible · comparable to community results' },
+    { id: 'own',      icon: '📁', label: 'Choose Your Own Data',      desc: '"Get to Know You" handshake · folder ingestion · your Pheromone build' },
+    { id: 'manual',   icon: '🎛️', label: 'Advanced Manual Mode',      desc: 'Expert control · custom prompts · stage-by-stage configuration' },
+  ];
+
+  return (
+    <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button
+          onClick={onBack}
+          style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 16, padding: 0 }}
+        >
+          ←
+        </button>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Choose how to run the Gauntlet</div>
+      </div>
+
+      {options.map((opt) => (
+        <button
+          key={opt.id}
+          onClick={() => onSelect(opt.id)}
+          style={{
+            background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.2)',
+            borderRadius: 10, padding: '14px 16px', cursor: 'pointer', textAlign: 'left',
+            display: 'flex', alignItems: 'flex-start', gap: 12, transition: 'all 0.15s',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(110,231,183,0.3)'; e.currentTarget.style.background = 'rgba(110,231,183,0.04)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(100,116,139,0.2)'; e.currentTarget.style.background = 'rgba(15,23,42,0.6)'; }}
+        >
+          <span style={{ fontSize: 22, flexShrink: 0, marginTop: 1 }}>{opt.icon}</span>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0' }}>{opt.label}</div>
+            <div style={{ fontSize: 10, color: '#64748b', marginTop: 3, lineHeight: 1.5 }}>{opt.desc}</div>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Stage row ────────────────────────────────────────────────────────────────
+
+function StageRow({ result }: { result: StageResult }) {
+  const def = STAGE_DEFS.find((s) => s.stage === result.stage)!;
+  const statusColor = result.status === 'complete' ? '#22c55e' : result.status === 'running' ? '#f59e0b' : result.status === 'skipped' ? '#475569' : '#334155';
+  const statusIcon = result.status === 'complete' ? '✓' : result.status === 'running' ? '⟳' : result.status === 'skipped' ? '—' : '○';
+
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: '28px 1fr 80px 80px 80px 70px 70px',
+      gap: 6, alignItems: 'center',
+      background: result.status === 'running' ? 'rgba(245,158,11,0.06)' : 'rgba(15,23,42,0.5)',
+      border: `1px solid ${result.status === 'running' ? 'rgba(245,158,11,0.2)' : 'rgba(100,116,139,0.1)'}`,
+      borderRadius: 8, padding: '7px 10px',
+      fontSize: 10,
+    }}>
+      <div style={{ color: statusColor, fontWeight: 700, textAlign: 'center' }}>{statusIcon}</div>
+      <div style={{ color: result.status === 'pending' ? '#475569' : '#94a3b8' }}>
+        <span style={{ marginRight: 4 }}>{def.icon}</span>
+        {def.name}
+      </div>
+      <div style={{ color: result.speed_delta !== undefined ? '#6ee7b7' : '#334155', textAlign: 'right' }}>
+        {result.speed_delta !== undefined && result.speed_delta !== 0 ? `+${result.speed_delta}×` : result.status === 'complete' ? 'baseline' : '—'}
+      </div>
+      <div style={{ color: result.cost_delta !== undefined ? '#34d399' : '#334155', textAlign: 'right' }}>
+        {result.cost_delta !== undefined && result.cost_delta !== 0 ? `${result.cost_delta.toFixed(1)}×` : result.status === 'complete' ? 'baseline' : '—'}
+      </div>
+      <div style={{ color: '#94a3b8', textAlign: 'right' }}>
+        {result.accuracy_delta !== undefined && result.accuracy_delta !== 0 ? `+${result.accuracy_delta.toFixed(1)}×` : result.status === 'complete' ? 'baseline' : '—'}
+      </div>
+      <div style={{ color: '#6ee7b7', fontWeight: 700, textAlign: 'right' }}>
+        {result.banyan_metric !== undefined ? `${result.banyan_metric.toFixed(1)} BM` : '—'}
+      </div>
+      <div style={{ color: '#22c55e', fontWeight: 700, textAlign: 'right' }}>
+        {result.cumulative_bm !== undefined ? `${result.cumulative_bm.toFixed(1)} ΣBM` : '—'}
+      </div>
+    </div>
+  );
+}

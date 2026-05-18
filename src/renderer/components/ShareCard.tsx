@@ -78,7 +78,7 @@ export const ShareCard: React.FC<ShareCardProps> = ({
 
     ctx.font = '11px system-ui, sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.3)';
-    ctx.fillText('CAI Hearth · lianabanyan.com', 32, 58);
+    ctx.fillText('Mnemosyne CAI Amplifier · lianabanyan.com', 32, 58);
 
     // Main headline
     ctx.font = `bold 52px system-ui, sans-serif`;
