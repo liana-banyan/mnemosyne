@@ -15,6 +15,17 @@
 import React, { useState } from 'react';
 import type { AuthState } from '../amplify.d';
 
+// ─── Pioneer position helper (mirrors DB function logic client-side) ───────────
+// Used for optimistic UI; server validates before writing to gauntlet_pioneer_registry.
+function getPioneerPosition(existingCount: number): { position: number; multiplier: number; label: string } {
+  const pos = existingCount + 1;
+  if (pos === 1) return { position: 1, multiplier: 3.0,  label: 'First tested · Named · Permanent attribution · Pioneer #1' };
+  if (pos === 2) return { position: 2, multiplier: 2.0,  label: 'Co-validator · Named · Pioneer #2' };
+  if (pos === 3) return { position: 3, multiplier: 1.5,  label: 'Verifier · Named · Pioneer #3' };
+  if (pos <= 10) return { position: pos, multiplier: 1.2, label: 'Early-adopter · cohort listing' };
+  return { position: pos, multiplier: 1.0, label: 'Standard Gauntlet run' };
+}
+
 interface GauntletTabProps {
   authState: AuthState | null;
   onFirstComplete?: () => void;
@@ -25,6 +36,20 @@ type GauntletPhase =
   | 'mode-select'
   | 'running'
   | 'results';
+
+interface PioneerBonusState {
+  visible: boolean;
+  modelName: string;
+  position: number;
+  multiplier: number;
+  label: string;
+}
+
+interface ShareState {
+  // SAGA 12 · Battery Dispatch — OFF by default per Founder R6 + Bishop pref
+  optedIn: boolean;
+  dispatched: boolean;
+}
 
 interface StageResult {
   stage: number;
@@ -54,6 +79,12 @@ export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
   const [selectedModel, setSelectedModel] = useState('');
   const [dataMode, setDataMode] = useState<'included' | 'own' | 'manual'>('included');
   const isMember = authState?.status === 'member' || authState?.status === 'trial_active';
+  // SAGA 09 · Pioneer Bonus state
+  const [pioneerBonus, setPioneerBonus] = useState<PioneerBonusState>({
+    visible: false, modelName: '', position: 0, multiplier: 1, label: '',
+  });
+  // SAGA 12 · Battery Dispatch share state — default OFF per spec
+  const [shareState, setShareState] = useState<ShareState>({ optedIn: false, dispatched: false });
 
   function handleGo() {
     setPhase('mode-select');
@@ -109,6 +140,28 @@ export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
           localStorage.setItem('mnemo_gauntlet_stage1_done', 'true');
           // SAGA 13: trigger 5-marks credit via IPC
           window.amplify?.creditFirstInstallMarks?.();
+        }
+      }
+
+      // SAGA 09 · Pioneer Bonus — fires at Stage 3 for previously-untested models
+      if (def.stage === 3 && selectedModel) {
+        const modelKey = selectedModel || 'unknown-model';
+        // Optimistic pioneer detection: check localStorage for existing pioneer count
+        // Full DB validation happens server-side via gauntlet_pioneer_registry
+        const storageKey = `mnemo_pioneer_tested_${modelKey}`;
+        const existingCount = parseInt(localStorage.getItem(storageKey) ?? '0', 10);
+        const pioneer = getPioneerPosition(existingCount);
+        // Show Pioneer Bonus modal if multiplier > 1× (positions 1-10)
+        if (pioneer.multiplier > 1.0 && isMember) {
+          setPioneerBonus({
+            visible: true,
+            modelName: modelKey,
+            position: pioneer.position,
+            multiplier: pioneer.multiplier,
+            label: pioneer.label,
+          });
+          // Optimistically record this test locally (server validates + writes to DB)
+          localStorage.setItem(storageKey, String(existingCount + 1));
         }
       }
     }
@@ -209,6 +262,28 @@ export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
             Requires LB membership · $5/year · unlock cross-Cathedral peer-mesh
           </div>
         </div>
+      )}
+
+      {/* SAGA 09 · Pioneer Bonus Modal */}
+      {pioneerBonus.visible && (
+        <PioneerBonusModal
+          modelName={pioneerBonus.modelName}
+          position={pioneerBonus.position}
+          multiplier={pioneerBonus.multiplier}
+          label={pioneerBonus.label}
+          onDismiss={() => setPioneerBonus((s) => ({ ...s, visible: false }))}
+        />
+      )}
+
+      {/* SAGA 12 · Battery Dispatch share toggle (default OFF) */}
+      {phase === 'results' && (
+        <BatteryDispatchShareToggle
+          optedIn={shareState.optedIn}
+          dispatched={shareState.dispatched}
+          totalBM={totalBM}
+          onToggle={() => setShareState((s) => ({ ...s, optedIn: !s.optedIn }))}
+          onDispatch={() => setShareState((s) => ({ ...s, dispatched: true }))}
+        />
       )}
     </div>
   );
@@ -316,6 +391,144 @@ function GauntletModeSelect({ onSelect, onBack }: {
           </div>
         </button>
       ))}
+    </div>
+  );
+}
+
+// ─── SAGA 09 · Pioneer Bonus Modal ────────────────────────────────────────────
+
+function PioneerBonusModal({ modelName, position, multiplier, label, onDismiss }: {
+  modelName: string;
+  position: number;
+  multiplier: number;
+  label: string;
+  onDismiss: () => void;
+}) {
+  const posEmoji = position === 1 ? '🥇' : position === 2 ? '🥈' : position === 3 ? '🥉' : '⭐';
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.75)', zIndex: 9999,
+    }}>
+      <div style={{
+        background: '#0f172a', border: '1px solid rgba(110,231,183,0.4)',
+        borderRadius: 14, padding: '28px 30px', maxWidth: 360, width: '90%', textAlign: 'center',
+        boxShadow: '0 0 48px rgba(110,231,183,0.12)',
+      }}>
+        <div style={{ fontSize: 42, marginBottom: 12 }}>{posEmoji}</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: '#6ee7b7', marginBottom: 6 }}>
+          Pioneer Bonus!
+        </div>
+        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>
+          You are the <strong style={{ color: '#e2e8f0' }}>#{position} tester</strong> of
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', marginBottom: 10 }}>
+          {modelName}
+        </div>
+        <div style={{
+          background: 'rgba(110,231,183,0.08)', border: '1px solid rgba(110,231,183,0.2)',
+          borderRadius: 8, padding: '8px 12px', marginBottom: 14,
+        }}>
+          <div style={{ fontSize: 22, fontWeight: 900, color: '#6ee7b7' }}>{multiplier}×</div>
+          <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>marks multiplier</div>
+        </div>
+        <div style={{ fontSize: 10, color: '#475569', marginBottom: 18, lineHeight: 1.6 }}>
+          {label}<br />
+          Your attribution is permanent in the community Banyan Metric registry.
+          <br />
+          <span style={{ color: '#334155' }}>Server validates · IP Ledger stamp fires · marks credited on confirmation.</span>
+        </div>
+        <button
+          onClick={onDismiss}
+          style={{
+            background: 'rgba(110,231,183,0.12)', border: '1px solid rgba(110,231,183,0.3)',
+            color: '#6ee7b7', borderRadius: 8, padding: '8px 24px',
+            fontSize: 12, fontWeight: 600, cursor: 'pointer', width: '100%',
+          }}
+        >
+          Claim my Pioneer marks →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── SAGA 12 · Battery Dispatch Share Toggle ──────────────────────────────────
+// Default OFF per Founder R6 + Bishop pref · Stamp-to-Send transparency
+
+function BatteryDispatchShareToggle({ optedIn, dispatched, totalBM, onToggle, onDispatch }: {
+  optedIn: boolean;
+  dispatched: boolean;
+  totalBM: number;
+  onToggle: () => void;
+  onDispatch: () => void;
+}) {
+  if (dispatched) {
+    return (
+      <div style={{
+        marginTop: 14, background: 'rgba(110,231,183,0.05)',
+        border: '1px solid rgba(110,231,183,0.15)', borderRadius: 10, padding: '12px 16px',
+      }}>
+        <div style={{ fontSize: 11, color: '#6ee7b7', fontWeight: 600, marginBottom: 2 }}>
+          ✓ Dispatched via your Plugs
+        </div>
+        <div style={{ fontSize: 9, color: '#475569' }}>
+          +2 marks per platform · Ledger → Dashboard → Settings → My Shares
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      marginTop: 14, background: 'rgba(15,23,42,0.6)',
+      border: '1px solid rgba(100,116,139,0.15)', borderRadius: 10, padding: '12px 16px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8' }}>
+            Share your Gauntlet result
+          </div>
+          <div style={{ fontSize: 9, color: '#475569', marginTop: 2 }}>
+            BannerCard · {totalBM.toFixed(1)} BM headline · via your connected Plugs
+          </div>
+        </div>
+        {/* Toggle switch */}
+        <button
+          onClick={onToggle}
+          style={{
+            background: optedIn ? 'rgba(110,231,183,0.2)' : 'rgba(100,116,139,0.1)',
+            border: `1px solid ${optedIn ? 'rgba(110,231,183,0.4)' : 'rgba(100,116,139,0.15)'}`,
+            borderRadius: 20, padding: '4px 12px', cursor: 'pointer',
+            fontSize: 10, fontWeight: 700,
+            color: optedIn ? '#6ee7b7' : '#475569',
+            transition: 'all 0.2s',
+          }}
+        >
+          {optedIn ? 'ON' : 'OFF'}
+        </button>
+      </div>
+
+      {optedIn && (
+        <div style={{ borderTop: '1px solid rgba(100,116,139,0.1)', paddingTop: 8 }}>
+          <div style={{ fontSize: 9, color: '#475569', marginBottom: 8, lineHeight: 1.6 }}>
+            You see every post before it goes · Stamp-to-Send transparency · +2 marks per platform · You see what was sent · ledger accessible
+          </div>
+          <button
+            onClick={onDispatch}
+            style={{
+              background: 'rgba(110,231,183,0.1)', border: '1px solid rgba(110,231,183,0.25)',
+              color: '#6ee7b7', borderRadius: 6, padding: '6px 14px',
+              fontSize: 10, fontWeight: 600, cursor: 'pointer', width: '100%',
+            }}
+          >
+            Stamp · Send → ({totalBM.toFixed(1)} BM · cooperative-class real)
+          </button>
+        </div>
+      )}
+      <div style={{ fontSize: 8, color: '#1e293b', marginTop: 6, textAlign: 'center' }}>
+        The substrate gets stronger like an Encyclopedia · cooperative-class real
+      </div>
     </div>
   );
 }
