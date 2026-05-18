@@ -65,7 +65,7 @@ export const ModelPullDialog: React.FC<ModelPullDialogProps> = ({ onComplete, on
   return (
     <div className="dashboard" style={{ alignItems: 'flex-start', paddingTop: '15vh' }}>
       <div className="dashboard__panel" style={{ maxWidth: 440 }}>
-        <div className="dashboard__title">AMPLIFY Computer — Local AI Setup</div>
+        <div className="dashboard__title">Mnemosyne — Local AI Setup</div>
         <div className="dashboard__subtitle">One-time model download for local inference</div>
 
         {state === 'consent' && (
@@ -83,7 +83,7 @@ export const ModelPullDialog: React.FC<ModelPullDialogProps> = ({ onComplete, on
               }}
             >
               <p style={{ marginBottom: 10 }}>
-                AMPLIFY Computer uses a local AI model to answer queries without sending
+                Mnemosyne uses a local AI model to answer queries without sending
                 them to the cloud. This protects your privacy and eliminates per-query costs.
               </p>
               <p>
@@ -195,14 +195,14 @@ export const ModelPullDialog: React.FC<ModelPullDialogProps> = ({ onComplete, on
                 textAlign: 'center',
               }}
             >
-              🌿 Local model ready. AMPLIFY Computer will now serve queries locally.
+              🌿 Local model ready. Mnemosyne will now serve queries locally.
             </div>
             <button
               className="close-btn"
               style={{ background: 'rgba(22,163,74,0.15)', borderColor: 'rgba(22,163,74,0.4)', color: '#16a34a' }}
               onClick={onComplete}
             >
-              Start AMPLIFY Computer
+              Start Mnemosyne
             </button>
           </>
         )}

@@ -74,7 +74,7 @@ export const ShareCard: React.FC<ShareCardProps> = ({
     // Logo / brand mark
     ctx.font = 'bold 13px system-ui, sans-serif';
     ctx.fillStyle = 'rgba(245,158,11,0.85)';
-    ctx.fillText('AMPLIFY Computer', 32, 40);
+    ctx.fillText('Mnemosyne', 32, 40);
 
     ctx.font = '11px system-ui, sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.3)';
@@ -138,7 +138,7 @@ export const ShareCard: React.FC<ShareCardProps> = ({
   // ── Copy text ──────────────────────────────────────────────────────────────
   const copyText = async () => {
     const text = [
-      `AMPLIFY Computer — ${period} Savings Report`,
+      `Mnemosyne — ${period} Savings Report`,
       `Cloud cost avoided: $${costAvoided.toFixed(2)}`,
       `Total queries: ${totalQueries.toLocaleString()}`,
       `Local served: ${substratePct.toFixed(0)}% (substrate + Ollama)`,
