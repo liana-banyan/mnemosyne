@@ -13,6 +13,7 @@
 
 import React, { useState } from 'react';
 import type { AuthState } from '../amplify.d';
+import { CaiSymbol } from './CaiSymbol';
 
 type DevSurface = 'submit-test' | 'uploads' | 'fork-strain' | 'seg-control' | 'project-connect' | 'variant-voting';
 
@@ -54,7 +55,10 @@ export function DevModeTab({ authState, onDisable, onStepByStep }: DevModeTabPro
         borderRadius: 8, padding: '8px 12px',
       }}>
         <div>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}>Đ Developer Mode</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}>
+            <CaiSymbol size="0.9em" color="#f59e0b" style={{ marginRight: 4 }} />
+            Developer Mode
+          </div>
           <div style={{ fontSize: 9, color: '#64748b', marginTop: 1 }}>
             Build for the long haul · cooperative peer-witness real
           </div>

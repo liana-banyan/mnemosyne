@@ -71,10 +71,45 @@ const STAGE_DEFS = [
   { stage: 6, name: 'Federation',      icon: '🌐', desc: 'Cross-Cathedral peer-mesh · Thorax handshake · requires LB membership' },
 ];
 
+// ─── Prerequisite logic (BP047 checkmark model) ───────────────────────────────
+// Stage 6 requires: Stage 1 AND Stage 2 AND (Stage 3 OR Stage 4)
+// Stage 5 requires: Stage 3 OR Stage 4
+// Stage 4 requires: Stage 2
+// Stage 3 requires: Stage 2 (or Stage 1 as baseline)
+// Stage 1 and Stage 2: no prerequisites
+
+function getPrerequisites(stage: number): number[] {
+  if (stage === 3) return [2];
+  if (stage === 4) return [2];
+  if (stage === 5) return [3];
+  if (stage === 6) return [1, 2, 3];
+  return [];
+}
+
+function getPrereqTooltip(stage: number): string {
+  if (stage === 3) return 'Requires Stage 2 (Cathedral Alone baseline)';
+  if (stage === 4) return 'Requires Stage 2 (Cathedral Alone baseline)';
+  if (stage === 5) return 'Requires Stage 3 or Stage 4 — AI must be in the run';
+  if (stage === 6) return 'Requires Stages 1, 2, AND Stage 3 — Federation needs a full substrate + AI proof chain';
+  return '';
+}
+
+function addPrerequisites(stages: Set<number>, newStage: number): void {
+  const prereqs = getPrerequisites(newStage);
+  prereqs.forEach((p) => stages.add(p));
+  // Stage 5 needs Stage 3 OR 4 — add Stage 3 as canonical default if neither present
+  if (newStage === 5 && !stages.has(3) && !stages.has(4)) stages.add(3);
+  // Stage 6 needs Stage 3 — add if neither 3 nor 4 present
+  if (newStage === 6 && !stages.has(3) && !stages.has(4)) stages.add(3);
+}
+
 export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
   const [phase, setPhase] = useState<GauntletPhase>('idle');
   const [stageResults, setStageResults] = useState<StageResult[]>(
     STAGE_DEFS.map((s) => ({ ...s, status: 'pending' }))
+  );
+  const [selectedStages, setSelectedStages] = useState<Set<number>>(
+    new Set([1, 2, 3, 4, 5, 6])
   );
   const [selectedModel, setSelectedModel] = useState('');
   const [dataMode, setDataMode] = useState<'included' | 'own' | 'manual'>('included');
@@ -97,12 +132,19 @@ export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
   }
 
   async function runGauntlet(mode: 'included' | 'own' | 'manual') {
-    // Run stages sequentially — scaffold for SAGA 08 full implementation
+    // Run only the user-selected stages — BP047 checkmark selection model
     const results: StageResult[] = STAGE_DEFS.map((s) => ({ ...s, status: 'pending' as const }));
     setStageResults([...results]);
 
     for (let i = 0; i < STAGE_DEFS.length; i++) {
       const def = STAGE_DEFS[i];
+
+      // Skip stages the user did not select
+      if (!selectedStages.has(def.stage)) {
+        results[i] = { ...results[i], status: 'skipped' };
+        setStageResults([...results]);
+        continue;
+      }
 
       // Skip Stage 6 if not a member
       if (def.stage === 6 && !isMember) {
@@ -186,7 +228,26 @@ export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
   // ─── Render ──────────────────────────────────────────────────────────────────
 
   if (phase === 'idle') {
-    return <GauntletIdle onGo={handleGo} />;
+    return (
+      <GauntletIdle
+        onGo={handleGo}
+        isMember={isMember}
+        selectedStages={selectedStages}
+        onToggleStage={(stage) => {
+          setSelectedStages((prev) => {
+            const next = new Set(prev);
+            if (next.has(stage)) {
+              next.delete(stage);
+            } else {
+              next.add(stage);
+              // Auto-add prerequisites when a stage requiring them is selected
+              addPrerequisites(next, stage);
+            }
+            return next;
+          });
+        }}
+      />
+    );
   }
 
   if (phase === 'mode-select') {
@@ -289,61 +350,155 @@ export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
   );
 }
 
-// ─── Idle splash ──────────────────────────────────────────────────────────────
+// ─── Idle splash — checkmark stage selection (BP047) ─────────────────────────
 
-function GauntletIdle({ onGo }: { onGo: () => void }) {
+function GauntletIdle({
+  onGo,
+  isMember,
+  selectedStages,
+  onToggleStage,
+}: {
+  onGo: () => void;
+  isMember: boolean;
+  selectedStages: Set<number>;
+  onToggleStage: (stage: number) => void;
+}) {
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  function handleToggle(stage: number) {
+    const wasSelected = selectedStages.has(stage);
+    if (!wasSelected) {
+      // Check prereqs
+      const prereqs = getPrerequisites(stage);
+      const missingPrereqs = prereqs.filter((p) => !selectedStages.has(p));
+      if (missingPrereqs.length > 0) {
+        const names = missingPrereqs.map((p) => `Stage ${p}`).join(', ');
+        setToastMsg(`Prerequisites added: ${names} required for Stage ${stage}`);
+        setTimeout(() => setToastMsg(null), 3500);
+      }
+    }
+    onToggleStage(stage);
+  }
+
+  const selectedCount = selectedStages.size;
+  const canGo = selectedCount > 0;
+
   return (
     <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      height: '100%', gap: 20, padding: 28, textAlign: 'center',
+      display: 'flex', flexDirection: 'column', alignItems: 'center',
+      padding: '16px 20px', gap: 12, height: '100%', boxSizing: 'border-box', overflowY: 'auto',
     }}>
-      <div style={{ fontSize: 40 }}>⚔️</div>
-      <div>
-        <div style={{ fontSize: 18, fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.3px' }}>
+      <div style={{ textAlign: 'center', flexShrink: 0 }}>
+        <div style={{ fontSize: 36 }}>⚔️</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.3px', marginTop: 4 }}>
           The Gauntlet
         </div>
-        <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, maxWidth: 280, lineHeight: 1.7 }}>
-          6-stage empirical proof that Mnemosyne works on{' '}
-          <span style={{ color: '#6ee7b7' }}>ANY hardware · ANY network · ANY AI model · or NONE AT ALL</span>
+        <div style={{ fontSize: 10, color: '#64748b', marginTop: 4, maxWidth: 280, lineHeight: 1.6 }}>
+          Select stages · press GO · empirical proof on{' '}
+          <span style={{ color: '#6ee7b7' }}>ANY hardware · ANY network · ANY AI · or NONE AT ALL</span>
         </div>
       </div>
 
-      {/* Stage preview */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%', maxWidth: 320 }}>
-        {STAGE_DEFS.map((s) => (
-          <div key={s.stage} style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.1)',
-            borderRadius: 8, padding: '7px 12px', textAlign: 'left',
-          }}>
-            <span style={{ fontSize: 14 }}>{s.icon}</span>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8' }}>Stage {s.stage} · {s.name}</div>
-              <div style={{ fontSize: 9, color: '#475569', marginTop: 1 }}>{s.desc}</div>
-            </div>
-          </div>
-        ))}
+      {/* FREE AI note */}
+      <div style={{
+        fontSize: 10, color: '#6ee7b7',
+        background: 'rgba(110,231,183,0.06)', border: '1px solid rgba(110,231,183,0.15)',
+        borderRadius: 6, padding: '5px 10px', width: '100%', maxWidth: 340, textAlign: 'center',
+        flexShrink: 0,
+      }}>
+        FREE AI: Ollama (onboard by default) — no cloud account, no API key, no cost
       </div>
+
+      {/* Stage checkmark cards */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, width: '100%', maxWidth: 340 }}>
+        {STAGE_DEFS.map((s) => {
+          const isSelected = selectedStages.has(s.stage);
+          const prereqTip = getPrereqTooltip(s.stage);
+          const isStage6NonMember = s.stage === 6 && !isMember;
+          return (
+            <button
+              key={s.stage}
+              onClick={() => !isStage6NonMember && handleToggle(s.stage)}
+              disabled={isStage6NonMember}
+              title={prereqTip || (isStage6NonMember ? 'Requires LB membership · $5/year' : undefined)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                background: isSelected ? 'rgba(110,231,183,0.07)' : 'rgba(15,23,42,0.6)',
+                border: `1px solid ${isSelected ? 'rgba(110,231,183,0.3)' : 'rgba(100,116,139,0.12)'}`,
+                borderRadius: 8, padding: '8px 12px', textAlign: 'left',
+                cursor: isStage6NonMember ? 'not-allowed' : 'pointer',
+                opacity: isStage6NonMember ? 0.4 : 1,
+                transition: 'all 0.15s',
+              }}
+            >
+              {/* Checkbox */}
+              <div style={{
+                width: 18, height: 18, flexShrink: 0, borderRadius: 4,
+                border: `2px solid ${isSelected ? '#6ee7b7' : 'rgba(100,116,139,0.35)'}`,
+                background: isSelected ? 'rgba(110,231,183,0.15)' : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'all 0.15s',
+              }}>
+                {isSelected && <span style={{ fontSize: 10, color: '#6ee7b7', fontWeight: 900, lineHeight: 1 }}>✓</span>}
+              </div>
+              <span style={{ fontSize: 14, flexShrink: 0 }}>{s.icon}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{
+                  fontSize: 11, fontWeight: 600,
+                  color: isSelected ? '#94a3b8' : '#475569',
+                }}>
+                  Stage {s.stage} · {s.name}
+                </div>
+                <div style={{ fontSize: 9, color: '#334155', marginTop: 1, lineHeight: 1.4 }}>{s.desc}</div>
+                {prereqTip && (
+                  <div style={{ fontSize: 8, color: '#4b5563', marginTop: 2, fontStyle: 'italic' }}>{prereqTip}</div>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Toast for auto-prerequisite additions */}
+      {toastMsg && (
+        <div style={{
+          position: 'fixed', bottom: 60, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.35)',
+          color: '#f59e0b', borderRadius: 8, padding: '7px 14px',
+          fontSize: 11, fontWeight: 600, zIndex: 999, whiteSpace: 'nowrap',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+        }}>
+          {toastMsg}
+        </div>
+      )}
 
       {/* GO button */}
       <button
         onClick={onGo}
+        disabled={!canGo}
         style={{
-          background: 'linear-gradient(135deg, rgba(110,231,183,0.2), rgba(52,211,153,0.1))',
-          border: '1px solid rgba(110,231,183,0.4)',
-          color: '#6ee7b7', borderRadius: 12, padding: '12px 40px',
-          fontSize: 16, fontWeight: 800, cursor: 'pointer', letterSpacing: '0.05em',
-          transition: 'all 0.2s',
+          background: canGo
+            ? 'linear-gradient(135deg, rgba(110,231,183,0.2), rgba(52,211,153,0.1))'
+            : 'rgba(100,116,139,0.08)',
+          border: `1px solid ${canGo ? 'rgba(110,231,183,0.4)' : 'rgba(100,116,139,0.15)'}`,
+          color: canGo ? '#6ee7b7' : '#334155',
+          borderRadius: 12, padding: '11px 36px',
+          fontSize: 15, fontWeight: 800, cursor: canGo ? 'pointer' : 'not-allowed',
+          letterSpacing: '0.05em', transition: 'all 0.2s', flexShrink: 0,
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = 'linear-gradient(135deg, rgba(110,231,183,0.35), rgba(52,211,153,0.2))')}
-        onMouseLeave={(e) => (e.currentTarget.style.background = 'linear-gradient(135deg, rgba(110,231,183,0.2), rgba(52,211,153,0.1))')}
+        onMouseEnter={(e) => canGo && (e.currentTarget.style.background = 'linear-gradient(135deg, rgba(110,231,183,0.35), rgba(52,211,153,0.2))')}
+        onMouseLeave={(e) => canGo && (e.currentTarget.style.background = 'linear-gradient(135deg, rgba(110,231,183,0.2), rgba(52,211,153,0.1))')}
       >
-        GO ⚔️
+        GO ⚔️ ({selectedCount} stage{selectedCount !== 1 ? 's' : ''})
       </button>
 
-      <div style={{ fontSize: 9, color: '#334155' }}>
+      <div style={{ fontSize: 9, color: '#334155', flexShrink: 0 }}>
         Earn 5 marks on your first run · Pioneer Bonus on first model tests
       </div>
+
+      {/* Stage 0 note — OPEN AMBIGUITY: surface to Founder before wiring */}
+      {/* Stage 0 question: Ollama + CPU + substrate-only — absorbed into Stage 3 or separate stage? */}
+      {/* Bishop read: absorb into Stage 3 with Ollama-first callout. Do NOT wire Stage 0 until Founder ratifies. */}
     </div>
   );
 }
