@@ -8,7 +8,7 @@
 //   2. My Uploads ledger   — full transparency · every upload logged
 //   3. Fork Strain         — clone Mnemosyne strain · modify · submit upstream OR maintain fork
 //   4. SEG Count Control   — Wave / Drekaskip / Novacula / AutoBaton selectors
-//   5. Project Connect     — link upload to own/family/tribe/guild/business/Companion project
+//   5. Project Connect     — link upload to own/family/tribe/guild/business/Counterpart project
 //   6. Variant Voting      — submit to /gauntlet/variants/ · community votes · Level 3 auto-offer
 
 import React, { useState } from 'react';
@@ -26,7 +26,7 @@ const SURFACES: Array<{ id: DevSurface; icon: string; label: string; desc: strin
   { id: 'uploads',         icon: '📋', label: 'My Uploads',         desc: 'Full ledger · every upload logged with timestamp + status + project' },
   { id: 'fork-strain',     icon: '🍴', label: 'Fork Strain',        desc: 'Clone Mnemosyne strain · modify · run · submit upstream or maintain fork' },
   { id: 'seg-control',     icon: '⚙️', label: 'SEG Count Control',  desc: 'Wave / Drekaskip / Novacula / AutoBaton selectors · parallel SEG count' },
-  { id: 'project-connect', icon: '🔗', label: 'Project Connect',    desc: 'Link upload to project · family/tribe/guild/business · Companion peer' },
+  { id: 'project-connect', icon: '🔗', label: 'Project Connect',    desc: 'Link upload to project · family/tribe/guild/business · Counterpart peer' },
   { id: 'variant-voting',  icon: '🗳️', label: 'Variant Voting',     desc: 'Submit to /gauntlet/variants/ · community votes · Level 3 auto-offer as strain' },
 ];
 
@@ -203,7 +203,7 @@ function ProjectConnectPanel() {
     <div style={{ color: '#64748b', fontSize: 12, padding: '20px 0', textAlign: 'center' }}>
       <div style={{ fontSize: 24, marginBottom: 8 }}>🔗</div>
       <div>Connect to a project</div>
-      <div style={{ fontSize: 10, marginTop: 4 }}>Own project · family/tribe/guild/business · Companion peer</div>
+      <div style={{ fontSize: 10, marginTop: 4 }}>Own project · family/tribe/guild/business · Counterpart peer</div>
     </div>
   );
 }
