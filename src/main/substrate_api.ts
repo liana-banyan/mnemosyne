@@ -46,6 +46,10 @@ import { mkdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, wat
 import { resolve, dirname } from 'path';
 import { homedir } from 'os';
 import { randomUUID, createHash } from 'crypto';
+import {
+  logGatewayRequest as passiveSurveillanceLog,
+  startGapDetectionScheduler as startSurveillanceGapDetection,
+} from './passive_surveillance_emit';
 import { SubstrateLocalIndex, SubstrateRouter, type FrameMode } from './substrate_router';
 import { TelemetryStore, type RoutingSource } from './telemetry_store';
 import { getMobileHTML, getManifestJSON, getServiceWorker, getIconSVG } from './mobile_pwa';
@@ -230,6 +234,9 @@ export class SubstrateAPIServer {
     // B61 Phase C — start trigger engine (Class B/C/D)
     initTriggerEngine();
 
+    // BP044 W1 — Passive-Surveillance gap-detection scheduler (15-minute interval)
+    startSurveillanceGapDetection();
+
     this.server = createServer((req, res) => this._handleRequest(req, res));
     return new Promise((resolve, reject) => {
       // Bind to 0.0.0.0 so MoneyPenny mobile can reach it over WiFi
@@ -342,6 +349,16 @@ export class SubstrateAPIServer {
   }
 
   private _handleRequest(req: IncomingMessage, res: ServerResponse): void {
+    // BP044 W1 — Passive-Surveillance Logger (informative-silence class)
+    // Capture final status code via response finish event.
+    // BLOOD RULE: never modifies req, res, or response timing. Best-effort only.
+    res.on('finish', () => {
+      try {
+        const accountId = req.headers['x-lb-account-id'] as string | undefined;
+        passiveSurveillanceLog(req, res.statusCode, accountId);
+      } catch { /* surveillance failure must never affect the request */ }
+    });
+
     const url = req.url?.split('?')[0];
 
     res.setHeader('Access-Control-Allow-Origin', '*');

@@ -65,6 +65,7 @@ export function HearthConjunctionWindow() {
   const [builderCard, setBuilderCard] = useState<'A' | 'B' | 'C'>('B');
   const [showLibraryPicker, setShowLibraryPicker] = useState(false);
   const [showPresetMenu, setShowPresetMenu] = useState(false);
+  const [appVersion, setAppVersion] = useState<string>('');
 
   // BP041 SAGA 5 — HELM VIEW layout management
   const {
@@ -106,6 +107,13 @@ export function HearthConjunctionWindow() {
     const onFire = () => { setActiveTab('prove_it'); setProveCard('C'); };
     window.addEventListener('mnemosyne-wave-fired', onFire);
     return () => window.removeEventListener('mnemosyne-wave-fired', onFire);
+  }, []);
+
+  // MV-VERSION-DISPLAY BP044
+  useEffect(() => {
+    window.amplify.getAppVersion?.().then((v) => {
+      if (v) setAppVersion(`v${v.version}`);
+    });
   }, []);
 
   // BP041 — Click feedback flash
@@ -230,6 +238,29 @@ export function HearthConjunctionWindow() {
           <span style={styles.conductorBadge} title="Bridge canon: you are The Conductor">
             🎼 The Conductor
           </span>
+          {appVersion && (
+            <span
+              title="Mnemosyne version · LB Alpha-phase · click for changelog"
+              style={{
+                fontSize: '0.62rem',
+                color: '#4a5568',
+                fontFamily: 'monospace',
+                border: '1px solid #2d3748',
+                borderRadius: '4px',
+                padding: '1px 5px',
+                letterSpacing: '0.03em',
+                whiteSpace: 'nowrap',
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+              onClick={() => {
+                const ext = (window as any).amplify?.openExternal;
+                if (typeof ext === 'function') ext('https://cephas.lianabanyan.com/changelog/');
+              }}
+            >
+              {appVersion} · α
+            </span>
+          )}
           <div style={styles.topBarSpacer} />
 
           {/* Preset selector — Phase D */}
