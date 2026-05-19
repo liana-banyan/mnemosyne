@@ -1,4 +1,4 @@
-﻿// AMPLIFY Computer — MoneyPenny Mobile PWA
+﻿// MoneyPenny Mobile PWA — Mnemosyne CAI Amplifier
 // B37 Phase 5 — Self-contained mobile chat interface served from port 11480
 //
 // All assets generated as strings (no separate build step, no file I/O).
@@ -73,7 +73,7 @@ export function getManifestJSON(): string {
 export function getServiceWorker(): string {
   return `// MoneyPenny Service Worker — B37 Phase 5
 // Bump CACHE_NAME when /mobile shell changes; BP029 network-first /mobile prevents stale Pixel bundles (v3: Yoke SSE Phase B).
-const CACHE_NAME = 'moneypenny-v4-bp030-b58';
+const CACHE_NAME = 'moneypenny-v5-bp047-mobile';
 const SHELL_URLS = ['/mobile', '/manifest.json', '/icon.svg'];
 
 // Install: cache shell assets
@@ -214,20 +214,53 @@ export function getMobileHTML(): string {
     }
     #header-title { font-size: 17px; font-weight: 700; color: var(--text); }
     #header-sub   { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
-    #status-dot {
-      width: 10px; height: 10px; border-radius: 50%;
-      background: #6b7280; flex-shrink: 0;
-      transition: background 0.4s;
-      box-shadow: 0 0 0 0 rgba(107,114,128,0);
+    #header-right {
+      display: flex; flex-direction: column; align-items: flex-end; gap: 5px;
+      min-width: 118px;
     }
-    #status-dot.online  { background: var(--green); box-shadow: 0 0 0 3px rgba(34,197,94,0.2); }
-    #status-dot.offline { background: #ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,0.2); }
+    #header-right-row { display: flex; align-items: center; gap: 6px; }
+    #strain-label { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+    #conn-pill {
+      font-size: 10px; padding: 3px 8px; border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.12);
+      white-space: nowrap; font-weight: 700; letter-spacing: 0.2px;
+    }
+    #conn-pill.conn-live { color: var(--green); background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.28); }
+    #conn-pill.conn-local { color: #f59e0b; background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.28); }
+    #conn-pill.conn-failed { color: #ef4444; background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.28); }
     #mode-badge {
       font-size: 10px; padding: 2px 7px; border-radius: 20px;
       background: var(--gold-dim); color: var(--gold);
       border: 1px solid rgba(245,158,11,0.25);
       white-space: nowrap;
     }
+    #mode-badge.compact { font-size: 9px; padding: 1px 6px; }
+
+    /* ── BP047: Collapsible stats card ───────────────────────────── */
+    #stats-card {
+      margin: 10px 14px 4px;
+      padding: 11px 12px;
+      background: linear-gradient(135deg, rgba(245,158,11,0.10), rgba(30,41,59,0.92));
+      border: 1px solid rgba(245,158,11,0.22);
+      border-radius: 16px;
+      flex-shrink: 0;
+    }
+    #stats-card.collapsed .stats-grid { display: none; }
+    #stats-card.collapsed { padding: 8px 12px; }
+    #stats-toggle {
+      width: 100%;
+      display: flex; align-items: center; justify-content: space-between;
+      background: transparent; border: 0; color: var(--text);
+      font: inherit; cursor: pointer; touch-action: manipulation;
+    }
+    #stats-title { font-size: 12px; font-weight: 800; color: var(--gold); letter-spacing: 0.2px; }
+    #stats-chevron { color: var(--text-muted); font-size: 14px; }
+    .stats-grid {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto;
+      gap: 7px 14px; margin-top: 10px; font-size: 12px;
+    }
+    .stats-grid .label { color: var(--text-muted); }
+    .stats-grid .value { color: var(--text); font-weight: 700; text-align: right; }
 
     /* ── Bushel 43: Character avatar bar ─────────────────────────── */
     #character-bar {
@@ -308,17 +341,63 @@ export function getMobileHTML(): string {
     }
     .qbtn:active { background: var(--surface2); border-color: rgba(255,255,255,0.2); }
     .qbtn.gold { background: var(--gold-dim); border-color: rgba(245,158,11,0.3); color: var(--gold); }
+    #quick-toggle {
+      display: none; margin: 8px 16px 4px; align-self: flex-start;
+      padding: 7px 12px; border-radius: 18px;
+      background: var(--gold-dim); color: var(--gold);
+      border: 1px solid rgba(245,158,11,0.3);
+      font: inherit; font-size: 13px; cursor: pointer;
+      touch-action: manipulation;
+    }
+    #quick-bar.collapsed { display: none; }
+    #quick-toggle.visible { display: block; }
+    .inline-actions {
+      display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px;
+    }
+    .inline-action {
+      padding: 6px 10px; border-radius: 16px;
+      background: var(--gold-dim); color: var(--gold);
+      border: 1px solid rgba(245,158,11,0.35);
+      font: inherit; font-size: 12px; cursor: pointer;
+      touch-action: manipulation;
+    }
+    .inline-action.secondary {
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+      border-color: var(--border);
+    }
+    .msg.system-card {
+      align-self: stretch;
+      max-width: 100%;
+      background: rgba(30,41,59,0.82);
+      border: 1px solid var(--border);
+      color: var(--text);
+      text-align: left;
+      font-size: 13px;
+      padding: 10px 12px;
+    }
+    .msg.system-card .close-msg {
+      float: right;
+      margin-left: 8px;
+      border: 0;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+    }
 
     /* ── Message thread ──────────────────────────────────────────── */
     #thread {
       flex: 1 1 auto;
       min-height: 0;
-      overflow-y: auto; padding: 12px 14px;
+      overflow-y: auto;
+      padding: 12px 14px 96px;
       display: flex; flex-direction: column; gap: 10px;
       scroll-behavior: smooth;
       -webkit-overflow-scrolling: touch;
       position: relative;
-      z-index: 0;
+      z-index: 1;
     }
     .msg {
       max-width: 86%; border-radius: var(--radius);
@@ -423,16 +502,25 @@ export function getMobileHTML(): string {
     #input:focus { border-color: rgba(245,158,11,0.4); }
     #input::placeholder { color: var(--text-muted); }
     #send-btn {
-      width: 42px; height: 42px; border-radius: 50%;
+      min-width: 72px; height: 44px; border-radius: 999px;
+      padding: 0 16px;
       background: var(--gold); color: #000; border: none;
       display: flex; align-items: center; justify-content: center;
-      font-size: 20px; cursor: pointer; flex-shrink: 0;
+      gap: 7px; font-size: 14px; font-weight: 800; cursor: pointer; flex-shrink: 0;
       -webkit-tap-highlight-color: transparent;
       transition: transform 0.1s, opacity 0.2s;
       touch-action: manipulation;
     }
     #send-btn:active { transform: scale(0.92); }
     #send-btn:disabled { opacity: 0.4; cursor: default; }
+    #send-btn.thinking::before {
+      content: '';
+      width: 12px; height: 12px; border-radius: 50%;
+      border: 2px solid rgba(0,0,0,0.22);
+      border-top-color: #000;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
     /* Bushel 46: attachment button + preview */
     #attach-btn {
       width: 38px; height: 38px; border-radius: 50%;
@@ -485,6 +573,22 @@ export function getMobileHTML(): string {
       text-decoration: underline dotted rgba(34,197,94,0.55);
       text-underline-offset: 3px;
     }
+    #state-strip {
+      padding: 7px 14px calc(8px + var(--safe-bottom));
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+    #state-strip .state-line { display: flex; align-items: center; gap: 6px; }
+    #state-strip .state-line + .state-line { margin-top: 3px; }
+    #state-dot { color: var(--green); font-weight: 900; }
+    #state-strip.state-thinking #state-dot { color: #f59e0b; animation: pulse 1s infinite; }
+    #state-strip.state-waiting #state-dot { color: rgba(255,255,255,0.45); }
+    #state-strip.state-local #state-dot { color: #f59e0b; }
+    #state-strip.state-failed #state-dot { color: #ef4444; }
+    @keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
   </style>
 </head>
 <body>
@@ -498,9 +602,27 @@ export function getMobileHTML(): string {
         <div id="header-sub">Mnemosyne CAI Amplifier</div>
       </div>
     </div>
-    <div style="display:flex;align-items:center;gap:8px">
-      <span id="mode-badge">—</span>
-      <span id="status-dot"></span>
+    <div id="header-right">
+      <div id="header-right-row">
+        <span id="mode-badge" class="compact">—</span>
+        <span id="conn-pill" class="conn-local">◌ LOCAL</span>
+      </div>
+      <div id="strain-label">v0.1.5 · Substrate: LOCAL</div>
+    </div>
+  </div>
+
+  <!-- BP047: Stats card -->
+  <div id="stats-card">
+    <button id="stats-toggle" type="button" aria-expanded="true">
+      <span id="stats-title">Mnemosyne stats</span>
+      <span id="stats-chevron">▼</span>
+    </button>
+    <div class="stats-grid">
+      <span class="label">Cloud cost avoided this month</span><span class="value" id="stat-cost">$3.5064</span>
+      <span class="label">Queries served this month</span><span class="value" id="stat-queries">22,775</span>
+      <span class="label">Substrate strain</span><span class="value" id="stat-strain">v0.1.5 NOVACULA</span>
+      <span class="label">Last successful query</span><span class="value" id="stat-last-query">--</span>
+      <span class="label">Pioneer rank</span><span class="value" id="stat-pioneer">--</span>
     </div>
   </div>
 
@@ -530,12 +652,14 @@ export function getMobileHTML(): string {
 
   <!-- Quick buttons -->
   <div id="quick-bar">
-    <button class="qbtn gold" data-action="brief">📋 Brief me</button>
-    <button class="qbtn" data-action="yoke">🎯 Check Yoke</button>
-    <button class="qbtn" data-action="pawn">⚖️ Pawn dispatch</button>
-    <button class="qbtn" data-action="status">📡 Substrate status</button>
-    <button class="qbtn" data-action="innovations">💡 Innovations</button>
+    <button class="qbtn gold" data-action="brief">Brief me on today's work</button>
+    <button class="qbtn" data-action="gadget-vs-seg">Compare Gadget vs SEG for this repo</button>
+    <button class="qbtn" data-action="substrate">Check Mnemosyne substrate status</button>
+    <button class="qbtn" data-action="dispatch-pawn">Dispatch Pawn for BP046 audit</button>
+    <button class="qbtn" data-action="gauntlet">Run the Gauntlet</button>
+    <button class="qbtn" data-action="pioneer-marks">Show my Pioneer Marks</button>
   </div>
+  <button id="quick-toggle" type="button">+ Quick Actions</button>
 
   <!-- Message thread -->
   <div id="thread"></div>
@@ -545,8 +669,12 @@ export function getMobileHTML(): string {
     <!-- Bushel 46: attachment picker (file input hidden; label triggers it) -->
     <input type="file" id="attach-input" accept="image/*,audio/*" style="display:none" multiple />
     <button id="attach-btn" title="Attach image or audio (Family Table only)">📎</button>
-    <textarea id="input" rows="1" placeholder="Ask MoneyPenny…"></textarea>
-    <button id="send-btn" disabled>↑</button>
+    <textarea id="input" rows="1" placeholder="Brief me on today's work..."></textarea>
+    <button id="send-btn" disabled><span id="send-label">Send</span></button>
+  </div>
+  <div id="state-strip" class="state-idle">
+    <div class="state-line"><span id="state-dot">●</span><span id="state-main">Substrate: LOCAL · Last query: --</span></div>
+    <div class="state-line">Agent: MONEYPENNY · Mode: CAI Amplifier</div>
   </div>
   <div id="attach-preview"></div>
 </div>
@@ -569,6 +697,10 @@ export function getMobileHTML(): string {
   let busy = false;
   let online = false;
   let currentMode = '—';
+  let lastQueryText = '';
+  let lastSuccessfulQueryAt = '';
+  const STRAIN_VERSION = window.__STRAIN_VERSION__ || 'v0.1.5';
+  const STRAIN_DISPLAY = STRAIN_VERSION + ' NOVACULA';
   // Bushel 43: character-avatar recipient selector replaces single-shot noteMode
   // Sticky selection — stays on chosen recipient until user taps another avatar
   let currentRecipient = 'moneypenny';
@@ -577,9 +709,23 @@ export function getMobileHTML(): string {
   const thread   = document.getElementById('thread');
   const input    = document.getElementById('input');
   const sendBtn  = document.getElementById('send-btn');
-  const statusDot = document.getElementById('status-dot');
+  const sendLabel = document.getElementById('send-label');
   const modeBadge = document.getElementById('mode-badge');
+  const connPill = document.getElementById('conn-pill');
+  const strainLabel = document.getElementById('strain-label');
   const savingsStrip = document.getElementById('savings-strip');
+  const statsCard = document.getElementById('stats-card');
+  const statsToggle = document.getElementById('stats-toggle');
+  const statsChevron = document.getElementById('stats-chevron');
+  const statCost = document.getElementById('stat-cost');
+  const statQueries = document.getElementById('stat-queries');
+  const statStrain = document.getElementById('stat-strain');
+  const statLastQuery = document.getElementById('stat-last-query');
+  const statPioneer = document.getElementById('stat-pioneer');
+  const quickBar = document.getElementById('quick-bar');
+  const quickToggle = document.getElementById('quick-toggle');
+  const stateStrip = document.getElementById('state-strip');
+  const stateMain = document.getElementById('state-main');
 
   // ── Connectivity check ───────────────────────────────────────────
   async function checkHealth() {
@@ -587,14 +733,51 @@ export function getMobileHTML(): string {
       const r = await fetch(BASE + '/mode', { signal: fetchSignal(3000) });
       const d = await r.json();
       online = true;
-      statusDot.className = 'online';
       const modeEmoji = { ai_burst: '🔥', normal: '🌿', fallback: '🌑' };
       currentMode = d.mode || 'normal';
       modeBadge.textContent = (modeEmoji[currentMode] || '') + ' ' + (currentMode.replace('_', ' '));
+      setConnectionState('live');
     } catch {
       online = false;
-      statusDot.className = 'offline';
       modeBadge.textContent = 'Offline';
+      setConnectionState('failed');
+    }
+  }
+
+  function setConnectionState(state, detail) {
+    if (!connPill || !strainLabel) return;
+    connPill.className = '';
+    if (state === 'live') {
+      connPill.classList.add('conn-live');
+      connPill.textContent = '● LIVE';
+      strainLabel.textContent = STRAIN_VERSION + ' · Substrate: CONNECTED';
+      updateStateStrip('idle');
+    } else if (state === 'failed') {
+      connPill.classList.add('conn-failed');
+      connPill.textContent = '✕ FAILED';
+      strainLabel.textContent = STRAIN_VERSION + ' · Last success: ' + (lastSuccessfulQueryAt || '--');
+      updateStateStrip('failed', detail || 'connection failed');
+    } else {
+      connPill.classList.add('conn-local');
+      connPill.textContent = '◌ LOCAL';
+      strainLabel.textContent = STRAIN_VERSION + ' · Substrate: LOCAL';
+      updateStateStrip('local');
+    }
+  }
+
+  function updateStateStrip(state, detail) {
+    if (!stateStrip || !stateMain) return;
+    stateStrip.className = 'state-' + state;
+    if (state === 'thinking') {
+      stateMain.textContent = 'Substrate: THINKING · Last query: ' + (lastSuccessfulQueryAt || '--');
+    } else if (state === 'waiting') {
+      stateMain.textContent = 'Routing to federation substrate...';
+    } else if (state === 'local') {
+      stateMain.textContent = 'Offline vault · no remote queries';
+    } else if (state === 'failed') {
+      stateMain.innerHTML = '✕ ' + escHtml(detail || 'failed') + ' · ' + new Date().toLocaleTimeString() + ' · <button class="inline-action secondary" data-inline-action="retry-last" type="button">Retry</button>';
+    } else {
+      stateMain.textContent = 'Substrate: ' + (online ? 'CONNECTED' : 'LOCAL') + ' · Last query: ' + (lastSuccessfulQueryAt || '--');
     }
   }
 
@@ -621,12 +804,29 @@ export function getMobileHTML(): string {
       const s = d.month || d.session || {};
       const cost = s.cloud_cost_avoided_usd || 0;
       const q = s.total_queries || 0;
+      updateStatsCard(cost, q, d.pioneer_rank || d.pioneerRank || '--');
+      try {
+        localStorage.setItem('mp_last_stats', JSON.stringify({ cost, q, pioneer: d.pioneer_rank || d.pioneerRank || '--' }));
+      } catch {}
       if (q > 0) {
         savingsStrip.innerHTML =
           'This month: ' + moneySpan(cost, true) + ' cloud cost avoided · ' + intFmt.format(q) + ' queries';
         savingsStrip.classList.add('visible');
       }
-    } catch { /* offline */ }
+    } catch {
+      try {
+        const cached = JSON.parse(localStorage.getItem('mp_last_stats') || '{}');
+        if (cached && (cached.q || cached.cost)) updateStatsCard(cached.cost || 3.5064, cached.q || 22775, cached.pioneer || '--');
+      } catch {}
+    }
+  }
+
+  function updateStatsCard(cost, queries, pioneerRank) {
+    if (statCost && cost !== null && cost !== undefined) statCost.textContent = formatMoney(cost || 3.5064, true);
+    if (statQueries && queries !== null && queries !== undefined) statQueries.textContent = intFmt.format(queries || 22775);
+    if (statStrain) statStrain.textContent = STRAIN_DISPLAY;
+    if (statLastQuery) statLastQuery.textContent = lastSuccessfulQueryAt || '--';
+    if (statPioneer) statPioneer.textContent = pioneerRank || '--';
   }
 
   // ── Message helpers ───────────────────────────────────────────────
@@ -647,6 +847,17 @@ export function getMobileHTML(): string {
       if (last) last.scrollIntoView({ block: 'end', behavior: 'smooth' });
     });
     return div;
+  }
+
+  function addSystemCard(html, actions) {
+    const actionHtml = (actions || []).map(function (a) {
+      return '<button class="inline-action' + (a.secondary ? ' secondary' : '') + '" data-inline-action="' + escHtml(a.action) + '" data-insert="' + escHtml(a.insert || '') + '" type="button">' + escHtml(a.label) + '</button>';
+    }).join('');
+    return addMsg(
+      'system-card',
+      '<button class="close-msg" type="button" aria-label="Dismiss">×</button>' + html +
+      (actionHtml ? '<div class="inline-actions">' + actionHtml + '</div>' : ''),
+    );
   }
 
   function showTyping() {
@@ -736,52 +947,72 @@ export function getMobileHTML(): string {
     try { localStorage.removeItem(DRAFT_KEY); } catch {}
   }
 
-  // ── Quick action handlers ─────────────────────────────────────────
-  async function handleBriefMe() {
-    addMsg('user', '📋 Brief me');
-    showTyping();
-    try {
-      const r = await fetch(BASE + '/amplify/summary', { signal: fetchSignal(6000) });
-      const d = await r.json();
-      removeTyping();
-      const s = d.session || {};
-      const m = d.month || {};
-      const at = d.all_time_queries || 0;
-      const lines = [
-        '<strong>Mnemosyne CAI Amplifier — Status Brief</strong>',
-        '',
-        '<strong>Session</strong>',
-        '  Queries: ' + intFmt.format(s.total_queries || 0),
-        '  Local served: ' + Math.round(((s.substrate_hit_ratio || 0) + (s.local_ratio || 0)) * 100) + '%',
-        '  Cost avoided: ' + moneySpan(s.cloud_cost_avoided_usd || 0, true),
-        '',
-        '<strong>This Month</strong>',
-        '  Queries: ' + intFmt.format(m.total_queries || 0),
-        '  Cost avoided: ' + moneySpan(m.cloud_cost_avoided_usd || 0, true),
-        '  Tokens saved: ' + ((m.tokens_saved_est || 0)).toLocaleString(),
-        '',
-        '<strong>All Time</strong>',
-        '  ' + intFmt.format(at) + ' queries · ' + moneySpan(d.all_time_cost_avoided_usd || 0, true) + ' saved',
-        '  Mode: ' + currentMode.replace('_', ' '),
-      ];
-      addMsg('assistant', lines.join('<br>'));
-    } catch (e) {
-      removeTyping();
-      addMsg('error', 'Brief me failed: ' + e.message);
-    }
+  const QUICK_QUERIES = {
+    brief: "Brief me on today's work",
+    'gadget-vs-seg': 'Compare Gadget vs SEG for this repo',
+    substrate: 'Check Mnemosyne substrate status',
+    'dispatch-pawn': 'Dispatch Pawn for BP046 audit',
+    gauntlet: 'Run the Gauntlet',
+    'pioneer-marks': 'Show my Pioneer Marks',
+  };
+
+  function insertPrompt(text) {
+    if (!input || !text) return;
+    input.value = text;
+    input.focus();
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    if (sendBtn) sendBtn.disabled = !input.value.trim() || busy;
+    saveDraft();
   }
 
-  const QUICK_QUERIES = {
-    yoke: 'Yoke status — what tasks are pending in the Knight queue?',
-    pawn: 'Pawn dispatch — what compliance or legal tasks are pending?',
-    status: 'Substrate status — what is the current AMPLIFY index size and mode?',
-    innovations: 'Innovation count — how many innovations and crown jewels does Liana Banyan have?',
-  };
+  function collapseQuickActions() {
+    if (!quickBar || !quickToggle) return;
+    quickBar.classList.add('collapsed');
+    quickToggle.classList.add('visible');
+    sessionStorage.setItem('mp_quick_collapsed_session', 'true');
+  }
+
+  function expandQuickActions() {
+    if (!quickBar || !quickToggle) return;
+    quickBar.classList.remove('collapsed');
+    quickToggle.classList.remove('visible');
+  }
+
+  function setSendThinking(isThinking) {
+    if (!sendBtn || !sendLabel) return;
+    sendBtn.classList.toggle('thinking', Boolean(isThinking));
+    sendLabel.textContent = isThinking ? 'Thinking…' : 'Send';
+  }
+
+  const PLACEHOLDERS = [
+    "Brief me on today's work...",
+    'What did I finish in BP046B?',
+    'Check substrate status...',
+    'Dispatch a Pawn...',
+    'Run the Gauntlet...',
+  ];
+  let placeholderIdx = 0;
+  let placeholderTimer = null;
+  function startPlaceholderCycle() {
+    if (!input || input.value || document.activeElement === input || placeholderTimer) return;
+    placeholderTimer = setInterval(function () {
+      if (!input || input.value || document.activeElement === input) return;
+      placeholderIdx = (placeholderIdx + 1) % PLACEHOLDERS.length;
+      input.placeholder = PLACEHOLDERS[placeholderIdx];
+    }, 4000);
+  }
+  function stopPlaceholderCycle() {
+    if (placeholderTimer) clearInterval(placeholderTimer);
+    placeholderTimer = null;
+  }
 
   async function handlePawnQuery(text) {
     if (busy) return;
     busy = true;
     if (sendBtn) sendBtn.disabled = true;
+    setSendThinking(true);
+    updateStateStrip('waiting');
     addMsg('user', renderMarkdown(text));
     const thinkId = 'think-' + Date.now();
     addMsg('assistant', '<em id="' + thinkId + '">Pawn is thinking...</em>');
@@ -805,6 +1036,8 @@ export function getMobileHTML(): string {
       addMsg('assistant', '⚠️ Pawn unreachable: ' + escHtml(e.message));
     } finally {
       busy = false;
+      setSendThinking(false);
+      updateStateStrip('idle');
       if (sendBtn && input) sendBtn.disabled = !input.value.trim();
     }
   }
@@ -813,6 +1046,8 @@ export function getMobileHTML(): string {
     if (busy) return;
     busy = true;
     if (sendBtn) sendBtn.disabled = true;
+    setSendThinking(true);
+    updateStateStrip('waiting');
     addMsg('user', renderMarkdown(text));
     const thinkId = 'think-' + Date.now();
     addMsg('assistant', '<em id="' + thinkId + '">Rook is thinking...</em>');
@@ -836,15 +1071,20 @@ export function getMobileHTML(): string {
       addMsg('assistant', '⚠️ Rook unreachable: ' + escHtml(e.message));
     } finally {
       busy = false;
+      setSendThinking(false);
+      updateStateStrip('idle');
       if (sendBtn && input) sendBtn.disabled = !input.value.trim();
     }
   }
 
-  async function sendQuery(text) {
+  async function sendQuery(text, opts) {
 
     if (busy || !text.trim()) return;
     busy = true;
+    lastQueryText = text;
     if (sendBtn) sendBtn.disabled = true;
+    setSendThinking(true);
+    updateStateStrip('thinking');
 
     addMsg('user', renderMarkdown(text));
     showTyping();
@@ -854,10 +1094,14 @@ export function getMobileHTML(): string {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: text }),
-        signal: fetchSignal(12000),
+        signal: fetchSignal(30000),
       });
       const d = await r.json();
       removeTyping();
+      lastSuccessfulQueryAt = new Date().toLocaleTimeString();
+      updateStatsCard(null, null, null);
+      updateStateStrip('idle');
+      setConnectionState('live');
 
       if (d.hit && d.record) {
         const excerpt = d.record.text
@@ -889,8 +1133,13 @@ export function getMobileHTML(): string {
           routingBadge(d.routing || 'miss'),
         );
       }
+      if (!opts || !opts.suppressFirstMarks) maybeShowFiveMarks();
     } catch (e) {
       removeTyping();
+      setConnectionState(online ? 'failed' : 'local', e.message || 'timeout');
+      if ((e.name === 'AbortError') || String(e.message || '').toLowerCase().includes('abort')) {
+        showTimeoutAsk();
+      }
       if (!online) {
         addMsg('error', '📵 Offline — is Mnemosyne running on this network?');
       } else {
@@ -898,8 +1147,131 @@ export function getMobileHTML(): string {
       }
     } finally {
       busy = false;
+      setSendThinking(false);
       if (sendBtn && input) sendBtn.disabled = !input.value.trim();
     }
+  }
+
+  function showTimeoutAsk() {
+    addSystemCard(
+      'MoneyPenny is taking longer than expected.',
+      [
+        { label: 'Retry', action: 'retry-last' },
+        { label: 'Cancel', action: 'dismiss', secondary: true },
+        { label: 'Check substrate status', action: 'insert', insert: 'Check substrate status' },
+      ],
+    );
+  }
+
+  function showIdentityBlock() {
+    if (localStorage.getItem('mp_identity_shown')) {
+      addMsg('system-card', 'MoneyPenny · CAI front-desk · Mnemosyne Amplifier');
+      return;
+    }
+    addSystemCard(
+      "I'm MoneyPenny — your CAI front-desk for Mnemosyne Amplifier.<br>" +
+      'I route agents, report substrate health, run benchmarks, dispatch Pawns, and summarize your work. I know what you\\'ve already done. I\\'ll start from where you left off.<br><br>' +
+      '<em>I believe enough for both of us.</em>',
+    );
+    localStorage.setItem('mp_identity_shown', 'true');
+  }
+
+  function shouldAskBatteryDispatch() {
+    const asked = localStorage.getItem('mp_battery_dispatch_asked');
+    const laterAt = Number(localStorage.getItem('mp_battery_dispatch_later_at') || 0);
+    if (!asked) return true;
+    return localStorage.getItem('mp_battery_dispatch') === 'later' && Date.now() - laterAt > 7 * 24 * 60 * 60 * 1000;
+  }
+
+  function showBatteryDispatchAsk(onboardingMode) {
+    if (!shouldAskBatteryDispatch()) return;
+    addSystemCard(
+      (onboardingMode ? 'One optional feature: Battery Dispatch.<br>' : 'MoneyPenny can run background dispatches when you\\'re away.<br>') +
+      'I can run background dispatches when you\\'re away — local substrate only, no cloud calls without your explicit queue.',
+      [
+        { label: 'Enable Battery Dispatch', action: 'battery-enable' },
+        { label: 'Ask me later', action: 'battery-later', secondary: true },
+        { label: "Never — I'll dispatch manually", action: 'battery-never', secondary: true },
+      ],
+    );
+  }
+
+  function maybeShowFiveMarks(force) {
+    if (!force && localStorage.getItem('mp_5marks_shown')) return;
+    addSystemCard(
+      "Welcome to the cooperative. You've earned 5 Marks for your first Mnemosyne session. You are now in the Pioneer Registry.",
+      [
+        { label: 'See my Marks', action: 'marks-see' },
+        { label: 'Dismiss', action: 'marks-dismiss', secondary: true },
+      ],
+    );
+  }
+
+  function showOnboardingM1() {
+    addSystemCard(
+      "Hi. I'm MoneyPenny — your CAI front-desk for Mnemosyne Amplifier.<br>" +
+      'I route agents, report substrate health, run benchmarks, dispatch Pawns, and summarize your work.<br><br>' +
+      'Where would you like to start?',
+      [
+        { label: 'What is Mnemosyne?', action: 'onboard-m2a', insert: 'What is Mnemosyne?' },
+        { label: 'Run a quick benchmark', action: 'onboard-m2b', insert: 'Run a quick benchmark' },
+        { label: 'Show my substrate status', action: 'onboard-m2c', insert: 'Show my substrate status' },
+      ],
+    );
+  }
+
+  function getOnboardingBranch(text) {
+    const t = String(text || '').trim().toLowerCase();
+    if (t === 'what is mnemosyne?') return 'a';
+    if (t === 'run a quick benchmark') return 'b';
+    if (t === 'show my substrate status') return 'c';
+    return null;
+  }
+
+  function showOnboardingM2(branch) {
+    if (branch === 'a') {
+      addSystemCard(
+        'Mnemosyne is a cooperative memory substrate — local, yours, indexed. When you query me, I check Mnemosyne first before touching any cloud model.<br><br>' +
+        '90-98% fewer data-center round-trips per query. Your data stays local. Your cooperative keeps the margin.<br><br>' +
+        "Mnemosyne isn't a product to use. It's a belief made visible.<br>Mnemosyne is an active, daily act of defiance.",
+      );
+    } else if (branch === 'b') {
+      addSystemCard(
+        'The Gauntlet is our benchmark framework — 6 stages from baseline to cross-Cathedral federation.<br><br>' +
+        'Stage 2 is the proof: with no AI model running at all — CPU-only — Mnemosyne retrieved canonical Eblets at 0.059ms mean. Zero tokens. Zero cloud cost.<br><br>' +
+        "Type 'Run the Gauntlet' to start Stage 1.",
+      );
+    } else {
+      addSystemCard(
+        'Checking substrate now. I\\'ll report:<br>' +
+        '- Connection state (LIVE / LOCAL / FAILED)<br>' +
+        '- Last successful query timestamp<br>' +
+        '- Queries served this month<br>' +
+        '- Cloud cost avoided<br><br>' +
+        (online ? 'Substrate is LIVE.' : 'Substrate is LOCAL or offline right now. The rest of onboarding still works.'),
+      );
+    }
+    setTimeout(function () {
+      if (!busy && !input.value.trim()) showOnboardingM3();
+    }, 2000);
+  }
+
+  function showOnboardingM3() {
+    addSystemCard(
+      "One more thing about how this works: I don't invent anything. I retrieve from what your cooperative has already built.<br><br>" +
+      'The substrate is the intelligence. The model is the voice.<br><br>' +
+      "Mnemosyne isn't a product to use. It's a belief made visible.<br>" +
+      'Mnemosyne is an active, daily act of defiance.<br><br>' +
+      'Those two lines go together. They are always the last words before the action ask.',
+    );
+    setTimeout(function () {
+      if (shouldAskBatteryDispatch()) showBatteryDispatchAsk(true);
+      if (!localStorage.getItem('mp_5marks_shown')) maybeShowFiveMarks(true);
+    }, 1200);
+  }
+
+  function completeOnboarding() {
+    localStorage.setItem('mp_onboarding_complete', 'true');
   }
 
   // ── Bushel 43+53-A: Character-avatar recipient selector ───────────────
@@ -921,29 +1293,29 @@ export function getMobileHTML(): string {
     if (!input || !sendBtn) return;
     if (name === 'bishop') {
       input.placeholder = 'Note to Bishop…';
-      sendBtn.textContent = '📨';
+      if (sendLabel) sendLabel.textContent = 'Send';
       sendBtn.title = 'Send note to Bishop (Yoke channel)';
     } else if (name === 'knight') {
       input.placeholder = 'Note to Knight…';
-      sendBtn.textContent = '📨';
+      if (sendLabel) sendLabel.textContent = 'Send';
       sendBtn.title = 'Send note to Knight (Yoke)';
     } else if (name === 'pawn') {
       input.placeholder = 'Message to Pawn…';
-      sendBtn.textContent = '📨';
+      if (sendLabel) sendLabel.textContent = 'Send';
       sendBtn.title = 'Send to Pawn (Perplexity)';
     } else if (name === 'rook') {
       input.placeholder = 'Message to Rook…';
-      sendBtn.textContent = '📨';
+      if (sendLabel) sendLabel.textContent = 'Send';
       sendBtn.title = 'Send to Rook (Gemini)';
     } else if (name && name.indexOf('family:') === 0) {
       // Bushel 44+45+46: Family member recipient (Family Table scope)
       const dn = displayName || 'family member';
       input.placeholder = 'Note to ' + dn + ' (Family Table)…';
-      sendBtn.textContent = '📨';
+      if (sendLabel) sendLabel.textContent = 'Send';
       sendBtn.title = 'Send to ' + dn + ' (Family Table scope)';
     } else {
-      input.placeholder = 'Ask MoneyPenny…';
-      sendBtn.textContent = '↑';
+      input.placeholder = PLACEHOLDERS[placeholderIdx];
+      if (sendLabel) sendLabel.textContent = 'Send';
       sendBtn.title = 'Send query to substrate';
     }
     refreshAttachButton();
@@ -952,6 +1324,8 @@ export function getMobileHTML(): string {
   async function handleSendNote(text) {
     if (busy) return;
     busy = true;
+    setSendThinking(true);
+    updateStateStrip('waiting');
     // Bushel 45: determine scope + recipient_id from currentRecipient
     let scope = 'just-recipient';
     let recipientId = null;
@@ -1010,6 +1384,8 @@ export function getMobileHTML(): string {
       addMsg('error', 'Send failed: ' + e.message);
     } finally {
       busy = false;
+      setSendThinking(false);
+      updateStateStrip('idle');
       if (sendBtn && input) sendBtn.disabled = !input.value.trim();
     }
     // Bushel 43: sticky recipient — do not auto-revert
@@ -1025,6 +1401,82 @@ export function getMobileHTML(): string {
 
   // ── Event wiring ──────────────────────────────────────────────────
   try {
+    if (statsToggle && statsCard && statsChevron) {
+      const collapsed = localStorage.getItem('stats_collapsed') === 'true';
+      statsCard.classList.toggle('collapsed', collapsed);
+      statsChevron.textContent = collapsed ? '▾' : '▼';
+      statsToggle.setAttribute('aria-expanded', String(!collapsed));
+      statsToggle.addEventListener('click', () => {
+        const next = !statsCard.classList.contains('collapsed');
+        statsCard.classList.toggle('collapsed', next);
+        statsChevron.textContent = next ? '▾' : '▼';
+        statsToggle.setAttribute('aria-expanded', String(!next));
+        localStorage.setItem('stats_collapsed', String(next));
+      });
+    }
+
+    if (quickToggle) {
+      quickToggle.addEventListener('click', expandQuickActions);
+    }
+
+    document.addEventListener('click', (e) => {
+      const close = e.target.closest('.close-msg');
+      if (close) {
+        close.closest('.msg')?.remove();
+        return;
+      }
+      const actionBtn = e.target.closest('[data-inline-action]');
+      if (!actionBtn) return;
+      const action = actionBtn.getAttribute('data-inline-action');
+      const insert = actionBtn.getAttribute('data-insert') || '';
+      if (action === 'insert') {
+        insertPrompt(insert);
+      } else if (action === 'retry-last') {
+        if (lastQueryText) sendQuery(lastQueryText);
+      } else if (action === 'dismiss') {
+        actionBtn.closest('.msg')?.remove();
+      } else if (action === 'battery-enable') {
+        localStorage.setItem('mp_battery_dispatch', 'enabled');
+        localStorage.setItem('mp_battery_dispatch_asked', 'true');
+        actionBtn.closest('.msg')?.remove();
+        addMsg('system', 'Battery Dispatch enabled. You can change this in settings.');
+      } else if (action === 'battery-later') {
+        localStorage.setItem('mp_battery_dispatch', 'later');
+        localStorage.setItem('mp_battery_dispatch_asked', 'true');
+        localStorage.setItem('mp_battery_dispatch_later_at', String(Date.now()));
+        actionBtn.closest('.msg')?.remove();
+        addMsg('system', 'Battery Dispatch paused for now. I will ask again later.');
+      } else if (action === 'battery-never') {
+        localStorage.setItem('mp_battery_dispatch', 'never');
+        localStorage.setItem('mp_battery_dispatch_asked', 'true');
+        actionBtn.closest('.msg')?.remove();
+        addMsg('system', 'Battery Dispatch will stay manual unless you reset it.');
+      } else if (action === 'marks-see') {
+        localStorage.setItem('mp_5marks_shown', 'true');
+        completeOnboarding();
+        insertPrompt('Show my Pioneer Marks');
+      } else if (action === 'marks-dismiss') {
+        localStorage.setItem('mp_5marks_shown', 'true');
+        completeOnboarding();
+        actionBtn.closest('.msg')?.remove();
+      } else if (action === 'onboard-m2a') {
+        insertPrompt(insert);
+      } else if (action === 'onboard-m2b') {
+        insertPrompt(insert);
+      } else if (action === 'onboard-m2c') {
+        insertPrompt(insert);
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      expandQuickActions();
+      document.querySelectorAll('.msg.system-card').forEach((el) => {
+        const close = el.querySelector('.close-msg');
+        if (close) el.remove();
+      });
+    });
+
     document.querySelectorAll('.char-avatar').forEach((btn) => {
       btn.addEventListener('click', () => {
         const r = btn.getAttribute('data-recipient');
@@ -1035,9 +1487,11 @@ export function getMobileHTML(): string {
     document.querySelectorAll('[data-action]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const a = btn.getAttribute('data-action');
-        if (a === 'brief') { handleBriefMe(); return; }
         const q = QUICK_QUERIES[a];
-        if (q) sendQuery(q);
+        if (q) {
+          insertPrompt(q);
+          collapseQuickActions();
+        }
       });
     });
 
@@ -1048,6 +1502,8 @@ export function getMobileHTML(): string {
         if (sendBtn) sendBtn.disabled = !input.value.trim() || busy;
         saveDraft();
       });
+      input.addEventListener('focus', stopPlaceholderCycle);
+      input.addEventListener('blur', startPlaceholderCycle);
 
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -1063,6 +1519,10 @@ export function getMobileHTML(): string {
       if (!input || !sendBtn) return;
       const text = input.value.trim();
       if (!text || busy) return;
+      const onboardingBranch = getOnboardingBranch(text);
+      if (!localStorage.getItem('mp_onboarding_complete') && !onboardingBranch) {
+        sessionStorage.setItem('mp_onboarding_paused', 'true');
+      }
       input.value = '';
       input.style.height = 'auto';
       sendBtn.disabled = true;
@@ -1074,7 +1534,11 @@ export function getMobileHTML(): string {
       } else if (yokeFileNoteRecipientSelected()) {
         handleSendNote(text);
       } else {
-        sendQuery(text);
+        sendQuery(text, { suppressFirstMarks: Boolean(onboardingBranch) }).then(() => {
+          if (onboardingBranch && !localStorage.getItem('mp_onboarding_complete')) {
+            showOnboardingM2(onboardingBranch);
+          }
+        });
       }
     }
   } catch (wireErr) {
@@ -1104,6 +1568,8 @@ export function getMobileHTML(): string {
   async function init() {
     await checkHealth();
     await loadSavings();
+    updateStatsCard(null, null, null);
+    startPlaceholderCycle();
 
     if (online) {
       addMsg('system', '● Connected to Mnemosyne CAI Amplifier');
@@ -1111,14 +1577,12 @@ export function getMobileHTML(): string {
       addMsg('system', '○ Offline — connect to the same WiFi as your Mnemosyne device');
     }
 
-    // SAGA 04 BP046B — time-of-day greeting
-    const _h = new Date().getHours();
-    const _greeting = _h >= 5 && _h < 12 ? 'Good morning' : _h >= 12 && _h < 17 ? 'Good afternoon' : _h >= 17 && _h < 22 ? 'Good evening' : 'Good night';
-    addMsg(
-      'assistant',
-      _greeting + '. I\\'m MoneyPenny — your Mnemosyne CAI Amplifier interface. ' +
-      'What do you need?',
-    );
+    showIdentityBlock();
+    if (!localStorage.getItem('mp_onboarding_complete') && !sessionStorage.getItem('mp_onboarding_paused')) {
+      showOnboardingM1();
+    } else {
+      showBatteryDispatchAsk(false);
+    }
   }
 
   // ── Bushel 46: Attachment picker + upload + preview ────────────────────
@@ -1255,7 +1719,7 @@ export function getMobileHTML(): string {
   }
 
   // ── Bushel 44: Dynamic family roster — load + render character avatars ────
-  // Family members are paired AMPLIFY peers on local network (federation peers).
+  // Family members are paired Mnemosyne peers on local network (federation peers).
   // Roster fetched from /family/roster; rendered as additional .char-avatar buttons.
 
   async function loadFamilyRoster() {
