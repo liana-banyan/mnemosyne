@@ -1,4 +1,4 @@
-// DevModeTab — SAGA 11 BP046B · Tab 4 of MnemosyneTabView (conditional)
+// DevModeTab — SAGA 11 BP046B · Tab 6 of MnemosyneTabView (conditional) · BP047 W1
 // Developer Mode surfaces — gated by:
 //   (a) LB membership + Cooperative Defensive Patent Pledge #2260 signed (free for members), OR
 //   (b) Paid business license (annual fee TBD per HL#5)
@@ -19,6 +19,7 @@ type DevSurface = 'submit-test' | 'uploads' | 'fork-strain' | 'seg-control' | 'p
 interface DevModeTabProps {
   authState: AuthState | null;
   onDisable: () => void;
+  onStepByStep: (surfaceId: DevSurface) => void;
 }
 
 const SURFACES: Array<{ id: DevSurface; icon: string; label: string; desc: string }> = [
@@ -30,8 +31,9 @@ const SURFACES: Array<{ id: DevSurface; icon: string; label: string; desc: strin
   { id: 'variant-voting',  icon: '🗳️', label: 'Variant Voting',     desc: 'Submit to /gauntlet/variants/ · community votes · Level 3 auto-offer as strain' },
 ];
 
-export function DevModeTab({ authState, onDisable }: DevModeTabProps) {
+export function DevModeTab({ authState, onDisable, onStepByStep }: DevModeTabProps) {
   const [activeSurface, setActiveSurface] = useState<DevSurface | null>(null);
+  const [flippedCard, setFlippedCard] = useState<DevSurface | null>(null);
 
   if (activeSurface) {
     return (
@@ -54,7 +56,7 @@ export function DevModeTab({ authState, onDisable }: DevModeTabProps) {
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}>Đ Developer Mode</div>
           <div style={{ fontSize: 9, color: '#64748b', marginTop: 1 }}>
-            Build for the long haul · cooperative-class peer-witness real
+            Build for the long haul · cooperative peer-witness real
           </div>
         </div>
         <button
@@ -68,24 +70,112 @@ export function DevModeTab({ authState, onDisable }: DevModeTabProps) {
         </button>
       </div>
 
-      {/* Surface grid */}
+      {/* Surface grid — flip-box cards */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
         {SURFACES.map((s) => (
-          <button
+          <div
             key={s.id}
-            onClick={() => setActiveSurface(s.id)}
             style={{
-              background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.15)',
-              borderRadius: 10, padding: '12px 12px', cursor: 'pointer', textAlign: 'left',
-              transition: 'all 0.15s',
+              position: 'relative',
+              perspective: 600,
+              height: 120,
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(245,158,11,0.3)'; e.currentTarget.style.background = 'rgba(245,158,11,0.04)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(100,116,139,0.15)'; e.currentTarget.style.background = 'rgba(15,23,42,0.6)'; }}
           >
-            <div style={{ fontSize: 18, marginBottom: 6 }}>{s.icon}</div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0' }}>{s.label}</div>
-            <div style={{ fontSize: 9, color: '#475569', marginTop: 3, lineHeight: 1.5 }}>{s.desc}</div>
-          </button>
+            <div
+              style={{
+                position: 'absolute', inset: 0,
+                transformStyle: 'preserve-3d',
+                transition: 'transform 0.35s ease',
+                transform: flippedCard === s.id ? 'rotateY(180deg)' : 'rotateY(0deg)',
+              }}
+            >
+              {/* FRONT face */}
+              <div
+                style={{
+                  position: 'absolute', inset: 0,
+                  backfaceVisibility: 'hidden',
+                  WebkitBackfaceVisibility: 'hidden',
+                  background: 'rgba(15,23,42,0.6)',
+                  border: '1px solid rgba(100,116,139,0.15)',
+                  borderRadius: 10, padding: '12px 12px',
+                  display: 'flex', flexDirection: 'column',
+                  cursor: 'pointer',
+                  boxSizing: 'border-box',
+                }}
+                onClick={() => setActiveSurface(s.id)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(245,158,11,0.3)';
+                  e.currentTarget.style.background = 'rgba(245,158,11,0.04)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(100,116,139,0.15)';
+                  e.currentTarget.style.background = 'rgba(15,23,42,0.6)';
+                }}
+              >
+                <div style={{ fontSize: 18, marginBottom: 4 }}>{s.icon}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0' }}>{s.label}</div>
+                <div style={{ fontSize: 9, color: '#475569', marginTop: 3, lineHeight: 1.5, flex: 1 }}>{s.desc}</div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFlippedCard(s.id);
+                  }}
+                  style={{
+                    alignSelf: 'flex-end', marginTop: 4,
+                    background: 'none', border: '1px solid rgba(100,116,139,0.2)',
+                    color: '#475569', borderRadius: 4, padding: '2px 7px', fontSize: 8,
+                    cursor: 'pointer', letterSpacing: '0.03em',
+                  }}
+                  title={`More info about ${s.label}`}
+                  aria-label={`More info about ${s.label}`}
+                >
+                  More Info
+                </button>
+              </div>
+
+              {/* BACK face */}
+              <div
+                style={{
+                  position: 'absolute', inset: 0,
+                  backfaceVisibility: 'hidden',
+                  WebkitBackfaceVisibility: 'hidden',
+                  transform: 'rotateY(180deg)',
+                  background: 'rgba(15,23,42,0.92)',
+                  border: '1px solid rgba(245,158,11,0.2)',
+                  borderRadius: 10, padding: '10px 12px',
+                  display: 'flex', flexDirection: 'column', gap: 6,
+                  overflowY: 'auto',
+                  boxSizing: 'border-box',
+                }}
+              >
+                <CardDetailContent surfaceId={s.id} />
+                <div style={{ display: 'flex', gap: 6, marginTop: 'auto' }}>
+                  <button
+                    onClick={() => setFlippedCard(null)}
+                    style={{
+                      flex: 1, background: 'none', border: '1px solid rgba(100,116,139,0.2)',
+                      color: '#64748b', borderRadius: 6, padding: '4px 0', fontSize: 9, cursor: 'pointer',
+                    }}
+                  >
+                    ← Back
+                  </button>
+                  <button
+                    onClick={() => {
+                      setFlippedCard(null);
+                      onStepByStep(s.id);
+                    }}
+                    style={{
+                      flex: 1, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)',
+                      color: '#f59e0b', borderRadius: 6, padding: '4px 0', fontSize: 9,
+                      cursor: 'pointer', fontWeight: 600,
+                    }}
+                  >
+                    Step-By-Step
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         ))}
       </div>
 
@@ -100,6 +190,45 @@ export function DevModeTab({ authState, onDisable }: DevModeTabProps) {
           Variants crossing community Level 3 (1,000+ credits) are auto-offered as optional download strains.
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Card detail content (flip back face) ─────────────────────────────────────
+
+const CARD_DETAIL: Record<DevSurface, { headline: string; body: string }> = {
+  'submit-test': {
+    headline: 'Submit New Test',
+    body: 'Define a new Gauntlet variant. Describe a task, upload or point to test data, and register it as a named project. Community runs it. Pioneer Bonus fires if you are first.',
+  },
+  'uploads': {
+    headline: 'My Uploads',
+    body: 'Full ledger of every file or dataset you have submitted — timestamp, content snapshot, processing status, linked project, and its place in the variant lineage.',
+  },
+  'fork-strain': {
+    headline: 'Fork Strain',
+    body: 'Clone the current Mnemosyne strain, modify it, run it locally against your own tests, then submit a pull upstream or maintain your own fork permanently.',
+  },
+  'seg-control': {
+    headline: 'SEG Count Control',
+    body: 'Choose your orchestration pattern: Wave (sequential fan-out), Drekaskip (priority-skip routing), Novacula (18-SEG parallel — current default), or AutoBaton (Maestro auto-selects).',
+  },
+  'project-connect': {
+    headline: 'Project Connect',
+    body: 'Link an upload to a specific project — your own, a family member, tribe group, guild, business, or a Counterpart peer node in the cooperative.',
+  },
+  'variant-voting': {
+    headline: 'Variant Voting',
+    body: 'Submit a Gauntlet variant to the community voting pool. Community members vote with credits. A variant reaching Level 3 (1,000+ credits) is auto-offered as an optional download strain.',
+  },
+};
+
+function CardDetailContent({ surfaceId }: { surfaceId: DevSurface }) {
+  const c = CARD_DETAIL[surfaceId];
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: '#f59e0b' }}>{c.headline}</div>
+      <div style={{ fontSize: 9, color: '#94a3b8', lineHeight: 1.6 }}>{c.body}</div>
     </div>
   );
 }

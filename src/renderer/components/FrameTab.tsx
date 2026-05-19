@@ -31,6 +31,11 @@ const MODE_INFO: Record<FrameMode, { icon: string; label: string; color: string;
 };
 
 const LS_CURRENCY_PRECISION = 'mnemo_display_currency_precision';
+const LS_SUB_TOGGLE         = 'mnemosyne_sub_toggle';
+const LS_SUB_CURSOR         = 'mnemosyne_sub_cost_cursor_usd';
+const LS_SUB_CLAUDE         = 'mnemosyne_sub_cost_claude_usd';
+const LS_SUB_TAX            = 'mnemosyne_sub_cost_tax_usd';
+
 const CURRENCY_PRECISION_TOOLTIP =
   'Sub-cent precision tracking - queries cost fractions of a cent each. The 4-decimal value is the exact substrate tally; rounded display shows normal cents.';
 
@@ -47,11 +52,40 @@ export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = 
     localStorage.getItem(LS_CURRENCY_PRECISION) !== 'rounded',
   );
 
+  // Subscription toggle state (Section 1 — Cloud Cost WITH/WITHOUT)
+  const [subToggle, setSubToggle] = useState(() =>
+    localStorage.getItem(LS_SUB_TOGGLE) !== 'off'
+  );
+  const [subCostCursor, setSubCostCursor] = useState(() =>
+    parseFloat(localStorage.getItem(LS_SUB_CURSOR) ?? '200')
+  );
+  const [subCostClaude, setSubCostClaude] = useState(() =>
+    parseFloat(localStorage.getItem(LS_SUB_CLAUDE) ?? '200')
+  );
+  const [subCostTax, setSubCostTax] = useState(() =>
+    parseFloat(localStorage.getItem(LS_SUB_TAX) ?? '15')
+  );
+  const fetchedAtRef = useRef<number | null>(null);
+  const [fetchedAgoLabel, setFetchedAgoLabel] = useState('');
+
+  function updateFetchedLabel() {
+    if (fetchedAtRef.current === null) return;
+    const secs = Math.floor((Date.now() - fetchedAtRef.current) / 1000);
+    if (secs < 60) setFetchedAgoLabel('synced just now');
+    else setFetchedAgoLabel(`synced ${Math.floor(secs / 60)} min ago`);
+  }
+
   useEffect(() => {
     if (!window.amplify) return;
     window.amplify.getAMPLIFYSummary?.().then((summary) => {
-      if (summary?.month) setMonthStats(summary.month);
+      if (summary?.month) {
+        setMonthStats(summary.month);
+        fetchedAtRef.current = Date.now();
+        setFetchedAgoLabel('synced just now');
+      }
     });
+    const interval = setInterval(updateFetchedLabel, 30_000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -101,13 +135,6 @@ export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = 
   }, []);
 
   const mode = MODE_INFO[currentMode];
-  const currencyDigits = showCurrencyPrecision ? 4 : 2;
-  const cloudCostDisplay = monthStats
-    ? `$${monthStats.cloud_cost_avoided_usd.toLocaleString('en-US', {
-      minimumFractionDigits: currencyDigits,
-      maximumFractionDigits: currencyDigits,
-    })}`
-    : '$0.0000';
 
   function handleCurrencyPrecisionToggle() {
     const next = !showCurrencyPrecision;
@@ -223,13 +250,27 @@ export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <StatCell label="Queries" value={monthStats.total_queries.toLocaleString()} />
             <StatCell label="Substrate Hits" value={`${(monthStats.substrate_hit_ratio * 100).toFixed(1)}%`} color="#6ee7b7" />
-            <StatCell
-              label="Cloud Cost Avoided"
-              value={cloudCostDisplay}
-              color="#34d399"
-              title={CURRENCY_PRECISION_TOOLTIP}
-            />
             <StatCell label="Local Served" value={`${monthStats.substrate_hits.toLocaleString()}`} />
+            <div style={{ gridColumn: '1 / -1' }}>
+              <CloudCostBlock
+                rawCost={monthStats.cloud_cost_avoided_usd}
+                subToggle={subToggle}
+                onToggle={(val) => {
+                  setSubToggle(val);
+                  localStorage.setItem(LS_SUB_TOGGLE, val ? 'on' : 'off');
+                }}
+                subCostCursor={subCostCursor}
+                subCostClaude={subCostClaude}
+                subCostTax={subCostTax}
+                onSubCostChange={(field, v) => {
+                  if (field === 'cursor') { setSubCostCursor(v); localStorage.setItem(LS_SUB_CURSOR, String(v)); }
+                  if (field === 'claude') { setSubCostClaude(v); localStorage.setItem(LS_SUB_CLAUDE, String(v)); }
+                  if (field === 'tax')    { setSubCostTax(v);    localStorage.setItem(LS_SUB_TAX,    String(v)); }
+                }}
+                showPrecision={showCurrencyPrecision}
+                fetchedAgoLabel={fetchedAgoLabel}
+              />
+            </div>
           </div>
         </div>
       )}
@@ -283,6 +324,148 @@ function StatCell({ label, value, color, title }: { label: string; value: string
     >
       <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
       <div style={{ fontSize: 14, fontWeight: 700, color: color ?? '#e2e8f0', marginTop: 3 }}>{value}</div>
+    </div>
+  );
+}
+
+// ─── Cloud Cost Block ─────────────────────────────────────────────────────────
+
+interface CloudCostBlockProps {
+  rawCost: number;
+  subToggle: boolean;
+  onToggle: (val: boolean) => void;
+  subCostCursor: number;
+  subCostClaude: number;
+  subCostTax: number;
+  onSubCostChange: (field: 'cursor' | 'claude' | 'tax', v: number) => void;
+  showPrecision: boolean;
+  fetchedAgoLabel: string;
+}
+
+function CloudCostBlock({
+  rawCost, subToggle, onToggle,
+  subCostCursor, subCostClaude, subCostTax, onSubCostChange,
+  showPrecision, fetchedAgoLabel,
+}: CloudCostBlockProps) {
+  const fmt = (n: number) =>
+    `$${n.toLocaleString('en-US', {
+      minimumFractionDigits: showPrecision ? 4 : 2,
+      maximumFractionDigits: showPrecision ? 4 : 2,
+    })}`;
+  const fmtRounded = (n: number) =>
+    `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const subTotal = subCostCursor + subCostClaude + subCostTax;
+
+  // rawCost is GROSS (per-token cost avoided with no subscription — confirmed via main-process grep:
+  // cloud_cost_avoided_usd = CLOUD_COST_PER_TOKEN_USD * TYPICAL_RESPONSE_TOKENS per substrate hit)
+  // WITHOUT subscription: rawCost (what you'd pay at per-token rates)
+  // WITH subscription:    rawCost - subTotal (net savings after subscription costs)
+  const withoutVal = rawCost;
+  const withVal    = rawCost - subTotal;
+  const netSavings = rawCost - subTotal;
+
+  const displayVal = subToggle ? withVal : withoutVal;
+
+  return (
+    <div style={{
+      background: 'rgba(15,23,42,0.5)', borderRadius: 8, padding: '10px 12px',
+      display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      {/* Header row */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Cloud Cost Avoided
+        </div>
+        {fetchedAgoLabel && (
+          <div style={{ fontSize: 8, color: '#334155' }}>{fetchedAgoLabel}</div>
+        )}
+      </div>
+
+      {/* Primary number */}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+        <div style={{ fontSize: 20, fontWeight: 700, color: '#34d399' }}>
+          {fmt(displayVal)}
+        </div>
+        {showPrecision && (
+          <div style={{ fontSize: 10, color: '#475569' }}>({fmtRounded(displayVal)} rounded)</div>
+        )}
+      </div>
+
+      {/* Toggle */}
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none' }}>
+        <input
+          type="checkbox"
+          checked={subToggle}
+          onChange={() => onToggle(!subToggle)}
+          style={{ accentColor: '#34d399', width: 13, height: 13 }}
+        />
+        <span style={{ fontSize: 10, color: subToggle ? '#6ee7b7' : '#64748b' }}>
+          {subToggle
+            ? 'WITH subscription (Cursor Ultra + Claude Code Ultra)'
+            : 'WITHOUT subscription (gross per-token cost)'}
+        </span>
+      </label>
+
+      {/* Subscription cost detail — visible only when toggle ON */}
+      {subToggle && (
+        <div style={{
+          background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.1)',
+          borderRadius: 6, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 5,
+        }}>
+          <div style={{ fontSize: 9, color: '#475569', marginBottom: 2 }}>
+            Subscription cost (edit if yours differs):
+          </div>
+          <SubCostRow label="Cursor Ultra /mo" value={subCostCursor}
+            onChange={(v) => onSubCostChange('cursor', v)} />
+          <SubCostRow label="Claude Code Ultra /mo" value={subCostClaude}
+            onChange={(v) => onSubCostChange('claude', v)} />
+          <SubCostRow label="Tax /mo" value={subCostTax}
+            onChange={(v) => onSubCostChange('tax', v)} />
+          <div style={{
+            borderTop: '1px solid rgba(100,116,139,0.15)', marginTop: 4, paddingTop: 4,
+            display: 'flex', justifyContent: 'space-between',
+          }}>
+            <span style={{ fontSize: 9, color: '#64748b' }}>Total subscription /mo</span>
+            <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8' }}>{fmtRounded(subTotal)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
+            <span style={{ fontSize: 10, color: '#64748b' }}>Net savings this month</span>
+            <span style={{
+              fontSize: 11, fontWeight: 700,
+              color: netSavings >= 0 ? '#34d399' : '#f87171',
+            }}>
+              {netSavings >= 0 ? '+' : ''}{fmt(netSavings)}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* WITHOUT context line */}
+      {subToggle && (
+        <div style={{ fontSize: 9, color: '#334155' }}>
+          Without subscription: gross cost would have been {fmt(withoutVal)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubCostRow({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <span style={{ fontSize: 9, color: '#475569' }}>{label}</span>
+      <input
+        type="number"
+        value={value}
+        min={0}
+        step={1}
+        onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+        style={{
+          width: 64, background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.2)',
+          color: '#e2e8f0', borderRadius: 4, padding: '2px 6px', fontSize: 9, textAlign: 'right',
+        }}
+      />
     </div>
   );
 }

@@ -1,13 +1,15 @@
-// MnemosyneTabView — SAGA 07 BP046B
-// 4-tab Mnemosyne application shell:
-//   Tab 1 · Frame   — Transparent Outlining Window status + controls (daily driver)
-//   Tab 2 · Helm    — LB platform interface + Beacons side-shelves (membership gate)
-//   Tab 3 · Gauntlet — 6-stage testing framework + GO button (first-launch default)
-//   Tab 4 · Developer — conditional, gated by membership + Pledge #2260 OR business license
+// MnemosyneTabView — SAGA 07 BP046B · updated BP047 W1
+// 6-tab Mnemosyne application shell:
+//   Tab 1 · Frame     — Transparent Outlining Window status + controls (daily driver)
+//   Tab 2 · Helm      — LB platform interface + Beacons side-shelves (membership gate)
+//   Tab 3 · Gauntlet  — 6-stage testing framework + checkmark selection (first-launch default)
+//   Tab 4 · Settings  — update · appearance · AI model assignment · substrate default (always visible)
+//   Tab 5 · FAQ       — tl;dr / full-steps toggle · 7 seed entries (always visible)
+//   Tab 6 · Developer — conditional, gated by membership + Pledge #2260 OR business license
 //
 // First-launch default = Tab 3 (Gauntlet front-and-center to onboard).
 // After first Gauntlet completion, default shifts to Tab 1 (Frame as daily driver).
-// Tab 4 visibility = developer_mode_enabled flag in localStorage.
+// Tab 6 visibility = developer_mode_enabled flag in localStorage.
 
 import React, { useCallback, useRef, useState, useEffect } from 'react';
 import type { FrameMode } from './FrameModeIndicator';
@@ -15,6 +17,10 @@ import type { AuthState } from '../amplify.d';
 import { GauntletTab } from './GauntletTab';
 import { FrameTab } from './FrameTab';
 import { DevModeTab } from './DevModeTab';
+import { SettingsTab } from './SettingsTab';
+import { FAQTab } from './FAQTab';
+import { CaiSymbol } from './CaiSymbol';
+
 import { HelmCrownDashboard } from '../hearth/helm/HelmCrownDashboard';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
@@ -28,20 +34,23 @@ const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'developer';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer';
 
 interface TabDef {
   id: TabId;
   label: string;
   icon: string;
+  iconElement?: React.ReactNode;
   tooltip: string;
 }
 
 const TABS: TabDef[] = [
   { id: 'frame',     label: 'Frame',     icon: '🪟', tooltip: 'Tab 1 · Frame — Transparent Outlining Window (your daily driver)' },
   { id: 'helm',      label: 'Helm',      icon: '🧭', tooltip: 'Tab 2 · Helm — LB platform · Beacons · cooperative peer-mesh' },
-  { id: 'gauntlet',  label: 'Gauntlet',  icon: '⚔️', tooltip: 'Tab 3 · Gauntlet — 6-stage testing framework · GO button · Pioneer Bonus' },
-  { id: 'developer', label: 'Developer', icon: 'Đ',  tooltip: 'Tab 4 · Developer Mode — submit variants · fork strain · SEG controls' },
+  { id: 'gauntlet',  label: 'Gauntlet',  icon: '⚔️', tooltip: 'Tab 3 · Gauntlet — 6-stage testing framework · stage selection · Pioneer Bonus' },
+  { id: 'settings',  label: 'Settings',  icon: '⚙️', tooltip: 'Tab 4 · Settings — update Mnemosyne · AI model assignment · appearance · preferences' },
+  { id: 'faq',       label: 'FAQ',       icon: '❓',  tooltip: 'Tab 5 · FAQ — common questions · tl;dr answers' },
+  { id: 'developer', label: 'Developer', icon: '',    iconElement: <CaiSymbol size={13} color="#f59e0b" aria-label="CAI" />, tooltip: 'Tab 6 · Developer Mode — submit variants · fork strain · SEG controls' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -84,7 +93,8 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    if (saved && (saved !== 'developer' || devEnabled)) return saved;
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer'];
+    if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
 
@@ -107,6 +117,12 @@ export function MnemosyneTabView({
     setDevEnabled(enabled);
     localStorage.setItem(LS_DEVELOPER_MODE, enabled ? 'true' : 'false');
     if (!enabled && activeTab === 'developer') setActiveTab('gauntlet');
+  }
+
+  // Step-by-step interlock — forward-wires to FAQ tab (no-op until tab exists)
+  function handleStepByStep(surfaceId: string) {
+    localStorage.setItem('mnemosyne_faq_topic', surfaceId);
+    setActiveTab('faq' as TabId); // will no-op visually until 'faq' tab is added to TABS array
   }
 
   // 3-option ask handlers
@@ -288,7 +304,7 @@ export function MnemosyneTabView({
 
       {/* SAGA 03 — 3-option ask (first launch only) */}
       {showOnboardAsk && (
-        <ThreeOptionAsk onChoice={handleOnboardChoice} />
+        <ThreeOptionAsk onChoice={handleOnboardChoice} devModeEnabled={devEnabled} />
       )}
 
       {/* Tab bar */}
@@ -304,7 +320,7 @@ export function MnemosyneTabView({
             onClick={() => setActiveTab(tab.id)}
             title={tab.tooltip}
           >
-            <span style={styles.tabIcon} aria-hidden>{tab.icon}</span>
+            <span style={styles.tabIcon} aria-hidden>{tab.iconElement ?? tab.icon}</span>
             {tab.label}
             {tab.id === 'developer' && (
               <span style={{ fontSize: 9, color: '#f59e0b', marginLeft: 2 }}>DEV</span>
@@ -363,6 +379,32 @@ export function MnemosyneTabView({
           </div>
         )}
 
+        {activeTab === 'settings' && (
+          <div
+            id="panel-settings"
+            role="tabpanel"
+            aria-labelledby="tab-settings"
+            style={{ height: '100%' }}
+          >
+            <SettingsTab
+              authState={authState}
+              devEnabled={devEnabled}
+              onDevModeToggle={handleDevModeToggle}
+            />
+          </div>
+        )}
+
+        {activeTab === 'faq' && (
+          <div
+            id="panel-faq"
+            role="tabpanel"
+            aria-labelledby="tab-faq"
+            style={{ height: '100%' }}
+          >
+            <FAQTab />
+          </div>
+        )}
+
         {activeTab === 'developer' && devEnabled && (
           <div
             id="panel-developer"
@@ -373,6 +415,7 @@ export function MnemosyneTabView({
             <DevModeTab
               authState={authState}
               onDisable={() => handleDevModeToggle(false)}
+              onStepByStep={handleStepByStep}
             />
           </div>
         )}
@@ -417,7 +460,13 @@ function HelmGate({ onJoin }: { onJoin: () => void }) {
 
 // ─── 3-option ask (SAGA 03) ──────────────────────────────────────────────────
 
-function ThreeOptionAsk({ onChoice }: { onChoice: (c: 'free' | 'member' | 'developer') => void }) {
+function ThreeOptionAsk({
+  onChoice,
+  devModeEnabled,
+}: {
+  onChoice: (c: 'free' | 'member' | 'developer') => void;
+  devModeEnabled?: boolean;
+}) {
   return (
     <div style={{
       background: 'rgba(10,15,26,0.97)',
@@ -448,26 +497,32 @@ function ThreeOptionAsk({ onChoice }: { onChoice: (c: 'free' | 'member' | 'devel
         />
         <OptionCard
           number={3}
-          label="Enable Developer Mode"
-          desc="Become a tester · submit Gauntlet variants · earn Pioneer Bonus marks · requires Option 2 OR business license"
+          label={devModeEnabled ? 'Developer Mode Enabled' : 'Enable Developer Mode'}
+          desc={
+            devModeEnabled
+              ? 'Active — submitting variants, forking strains, and controlling SEG count is now available in Tab 4'
+              : 'Become a tester · submit Gauntlet variants · earn Pioneer Bonus marks · requires Option 2 OR business license'
+          }
           color="#f59e0b"
           onClick={() => onChoice('developer')}
+          enabled={devModeEnabled}
         />
       </div>
     </div>
   );
 }
 
-function OptionCard({ number, label, desc, color, onClick }: {
-  number: number; label: string; desc: string; color: string; onClick: () => void;
+function OptionCard({ number, label, desc, color, onClick, enabled }: {
+  number: number; label: string; desc: string; color: string; onClick: () => void; enabled?: boolean;
 }) {
+  const rgba = color === '#6ee7b7' ? '110,231,183' : color === '#34d399' ? '52,211,153' : '245,158,11';
   return (
     <button
       onClick={onClick}
       style={{
         display: 'flex', alignItems: 'flex-start', gap: 10, textAlign: 'left',
-        background: `rgba(${color === '#6ee7b7' ? '110,231,183' : color === '#34d399' ? '52,211,153' : '245,158,11'},0.06)`,
-        border: `1px solid rgba(${color === '#6ee7b7' ? '110,231,183' : color === '#34d399' ? '52,211,153' : '245,158,11'},0.2)`,
+        background: `rgba(${rgba},0.06)`,
+        border: `1px solid rgba(${rgba},${enabled ? '0.4' : '0.2'})`,
         borderRadius: 8, padding: '9px 12px', cursor: 'pointer', width: '100%',
         transition: 'all 0.15s',
       }}
@@ -476,14 +531,24 @@ function OptionCard({ number, label, desc, color, onClick }: {
     >
       <div style={{
         width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
-        background: `rgba(${color === '#6ee7b7' ? '110,231,183' : color === '#34d399' ? '52,211,153' : '245,158,11'},0.15)`,
+        background: `rgba(${rgba},0.15)`,
         border: `1px solid ${color}`, color, fontSize: 11, fontWeight: 700,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
-        {number}
+        {enabled ? '✓' : number}
       </div>
-      <div>
-        <div style={{ fontSize: 11, fontWeight: 600, color }}>{label}</div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color, display: 'flex', alignItems: 'center', gap: 5 }}>
+          {label}
+          {enabled && (
+            <span style={{
+              fontSize: 8, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)',
+              color: '#f59e0b', borderRadius: 10, padding: '1px 5px', fontWeight: 700,
+            }}>
+              ACTIVE
+            </span>
+          )}
+        </div>
         <div style={{ fontSize: 9, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{desc}</div>
       </div>
     </button>
@@ -512,7 +577,7 @@ function DevModeUnlockBar({ onEnable }: { onEnable: () => void }) {
           fontWeight: 600, cursor: 'pointer',
         }}
       >
-        Unlock Đ Dev
+        Unlock <CaiSymbol size="0.85em" style={{ marginLeft: 3, marginRight: 3, verticalAlign: '-0.1em' }} /> Dev
       </button>
     </div>
   );
