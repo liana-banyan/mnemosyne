@@ -288,8 +288,7 @@ export function getMobileHTML(): string {
     /* ── Quick buttons ───────────────────────────────────────────── */
     #quick-bar {
       display: flex; gap: 8px; padding: 10px 16px 6px;
-      overflow-x: auto; flex-shrink: 0;
-      scrollbar-width: none;
+      flex-wrap: wrap; overflow: visible; flex-shrink: 0;
       position: relative;
       z-index: 2;
       touch-action: manipulation;
@@ -481,6 +480,11 @@ export function getMobileHTML(): string {
       text-align: center; flex-shrink: 0;
     }
     #savings-strip.visible { display: block; }
+    #savings-strip .money-precision {
+      cursor: help;
+      text-decoration: underline dotted rgba(34,197,94,0.55);
+      text-underline-offset: 3px;
+    }
   </style>
 </head>
 <body>
@@ -595,6 +599,21 @@ export function getMobileHTML(): string {
   }
 
   // ── Savings strip ─────────────────────────────────────────────────
+  const moneyFmt = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const moneyPrecisionFmt = new Intl.NumberFormat('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  const intFmt = new Intl.NumberFormat('en-US');
+  const MONEY_PRECISION_TITLE = 'Sub-cent precision tracking — queries cost fractions of a cent each. The 4-decimal value is the exact substrate tally; rounded display shows normal cents.';
+
+  function formatMoney(value, precision) {
+    return '$' + (precision ? moneyPrecisionFmt : moneyFmt).format(Number(value) || 0);
+  }
+
+  function moneySpan(value, precision) {
+    return '<span class="money-precision" title="' + escHtml(MONEY_PRECISION_TITLE) + '">' +
+      formatMoney(value, precision) +
+      '</span>';
+  }
+
   async function loadSavings() {
     try {
       const r = await fetch(BASE + '/amplify/summary', { signal: fetchSignal(4000) });
@@ -603,8 +622,8 @@ export function getMobileHTML(): string {
       const cost = s.cloud_cost_avoided_usd || 0;
       const q = s.total_queries || 0;
       if (q > 0) {
-        savingsStrip.textContent =
-          'This month: $' + cost.toFixed(4) + ' cloud cost avoided · ' + q + ' queries';
+        savingsStrip.innerHTML =
+          'This month: ' + moneySpan(cost, true) + ' cloud cost avoided · ' + intFmt.format(q) + ' queries';
         savingsStrip.classList.add('visible');
       }
     } catch { /* offline */ }
@@ -732,17 +751,17 @@ export function getMobileHTML(): string {
         '<strong>Mnemosyne CAI Amplifier — Status Brief</strong>',
         '',
         '<strong>Session</strong>',
-        '  Queries: ' + (s.total_queries || 0),
+        '  Queries: ' + intFmt.format(s.total_queries || 0),
         '  Local served: ' + Math.round(((s.substrate_hit_ratio || 0) + (s.local_ratio || 0)) * 100) + '%',
-        '  Cost avoided: $' + (s.cloud_cost_avoided_usd || 0).toFixed(4),
+        '  Cost avoided: ' + moneySpan(s.cloud_cost_avoided_usd || 0, true),
         '',
         '<strong>This Month</strong>',
-        '  Queries: ' + (m.total_queries || 0),
-        '  Cost avoided: $' + (m.cloud_cost_avoided_usd || 0).toFixed(4),
+        '  Queries: ' + intFmt.format(m.total_queries || 0),
+        '  Cost avoided: ' + moneySpan(m.cloud_cost_avoided_usd || 0, true),
         '  Tokens saved: ' + ((m.tokens_saved_est || 0)).toLocaleString(),
         '',
         '<strong>All Time</strong>',
-        '  ' + at.toLocaleString() + ' queries · $' + (d.all_time_cost_avoided_usd || 0).toFixed(4) + ' saved',
+        '  ' + intFmt.format(at) + ' queries · ' + moneySpan(d.all_time_cost_avoided_usd || 0, true) + ' saved',
         '  Mode: ' + currentMode.replace('_', ' '),
       ];
       addMsg('assistant', lines.join('<br>'));

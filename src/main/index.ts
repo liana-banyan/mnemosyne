@@ -170,6 +170,7 @@ function agentGetPluginRegistryHandler() {
 let overlayWindow: BrowserWindow | null = null;
 let dashboardWindow: BrowserWindow | null = null;
 let hearthConjunctionWindow: BrowserWindow | null = null;
+let moneyPennyWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let ollamaManager: OllamaManager | null = null;
 let substrateServer: SubstrateAPIServer | null = null;
@@ -205,6 +206,47 @@ function getSafeBounds(bounds: Electron.Rectangle): Electron.Rectangle {
     width: bounds.width,
     height: bounds.height,
   };
+}
+
+const MONEY_PENNY_BOUNDS_FILE = join(SUBSTRATE_ROOT_MAIN, 'moneypenny_window_bounds.json');
+const MONEY_PENNY_MIN_WIDTH = 320;
+const MONEY_PENNY_MIN_HEIGHT = 480;
+
+function clampMoneyPennyBounds(bounds?: Partial<Electron.Rectangle>): Electron.Rectangle {
+  const workArea = screen.getDisplayMatching({
+    x: bounds?.x ?? screen.getPrimaryDisplay().workArea.x,
+    y: bounds?.y ?? screen.getPrimaryDisplay().workArea.y,
+    width: bounds?.width ?? 1,
+    height: bounds?.height ?? 1,
+  }).workArea;
+  const maxWidth = Math.floor(workArea.width * 0.9);
+  const maxHeight = Math.floor(workArea.height * 0.9);
+  const defaultWidth = Math.max(MONEY_PENNY_MIN_WIDTH, Math.min(maxWidth, Math.floor(workArea.width * 0.3)));
+  const defaultHeight = Math.max(MONEY_PENNY_MIN_HEIGHT, Math.min(maxHeight, Math.floor(workArea.height * 0.6)));
+  const width = Math.max(MONEY_PENNY_MIN_WIDTH, Math.min(maxWidth, Math.floor(bounds?.width ?? defaultWidth)));
+  const height = Math.max(MONEY_PENNY_MIN_HEIGHT, Math.min(maxHeight, Math.floor(bounds?.height ?? defaultHeight)));
+  const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, Math.floor(bounds?.x ?? workArea.x + (workArea.width - width) / 2)));
+  const y = Math.max(workArea.y, Math.min(workArea.y + workArea.height - height, Math.floor(bounds?.y ?? workArea.y + (workArea.height - height) / 2)));
+  return getSafeBounds({ x, y, width, height });
+}
+
+function loadMoneyPennyBounds(): Electron.Rectangle {
+  if (!existsSync(MONEY_PENNY_BOUNDS_FILE)) return clampMoneyPennyBounds();
+  try {
+    const parsed = JSON.parse(require('fs').readFileSync(MONEY_PENNY_BOUNDS_FILE, 'utf-8')) as Partial<Electron.Rectangle>;
+    return clampMoneyPennyBounds(parsed);
+  } catch {
+    return clampMoneyPennyBounds();
+  }
+}
+
+function saveMoneyPennyBounds(bounds: Electron.Rectangle): void {
+  try {
+    require('fs').mkdirSync(SUBSTRATE_ROOT_MAIN, { recursive: true });
+    require('fs').writeFileSync(MONEY_PENNY_BOUNDS_FILE, JSON.stringify(clampMoneyPennyBounds(bounds), null, 2), 'utf-8');
+  } catch {
+    // Non-fatal: window sizing should never block MoneyPenny.
+  }
 }
 
 function stopOverlayWatchdog(): void {
@@ -470,7 +512,7 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
     },
     {
       label: `MoneyPenny Mobile: ${getMoneyPennyURL(API_PORT)}`,
-      click: () => shell.openExternal(getMoneyPennyURL(API_PORT)),
+      click: () => openMoneyPennyWindow(),
     },
     {
       label: 'Open lianabanyan.com',
@@ -499,6 +541,54 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
 }
 
 // ─── Dashboard Window ─────────────────────────────────────────────────────────
+
+function openMoneyPennyWindow(): void {
+  if (moneyPennyWindow && !moneyPennyWindow.isDestroyed()) {
+    moneyPennyWindow.focus();
+    return;
+  }
+
+  const bounds = loadMoneyPennyBounds();
+  const workArea = screen.getDisplayMatching(bounds).workArea;
+
+  moneyPennyWindow = new BrowserWindow({
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
+    minWidth: MONEY_PENNY_MIN_WIDTH,
+    minHeight: MONEY_PENNY_MIN_HEIGHT,
+    maxWidth: Math.floor(workArea.width * 0.9),
+    maxHeight: Math.floor(workArea.height * 0.9),
+    title: 'MoneyPenny — Mnemosyne CAI Amplifier',
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  moneyPennyWindow.once('ready-to-show', () => {
+    moneyPennyWindow?.show();
+  });
+
+  moneyPennyWindow.on('resize', () => {
+    if (moneyPennyWindow && !moneyPennyWindow.isDestroyed()) {
+      saveMoneyPennyBounds(moneyPennyWindow.getBounds());
+    }
+  });
+  moneyPennyWindow.on('move', () => {
+    if (moneyPennyWindow && !moneyPennyWindow.isDestroyed()) {
+      saveMoneyPennyBounds(moneyPennyWindow.getBounds());
+    }
+  });
+  moneyPennyWindow.on('closed', () => {
+    moneyPennyWindow = null;
+  });
+
+  moneyPennyWindow.loadURL(getMoneyPennyURL(API_PORT));
+}
 
 function openDashboard(): void {
   if (dashboardWindow) {

@@ -26,10 +26,17 @@ const MODE_INFO: Record<FrameMode, { icon: string; label: string; color: string;
   fallback:  { icon: '❄️', label: 'Fallback',  color: '#3b82f6', description: 'Substrate cache only · Zero cost · Offline-capable' },
 };
 
+const LS_CURRENCY_PRECISION = 'mnemo_display_currency_precision';
+const CURRENCY_PRECISION_TOOLTIP =
+  'Sub-cent precision tracking - queries cost fractions of a cent each. The 4-decimal value is the exact substrate tally; rounded display shows normal cents.';
+
 export function FrameTab({ currentMode, onModeChange, authState }: FrameTabProps) {
   const [showModeSelector, setShowModeSelector] = useState(false);
   const [monthStats, setMonthStats] = useState<TelemetryMonth | null>(null);
   const [isOverlayVisible, setIsOverlayVisible] = useState(true);
+  const [showCurrencyPrecision, setShowCurrencyPrecision] = useState(() =>
+    localStorage.getItem(LS_CURRENCY_PRECISION) !== 'rounded',
+  );
 
   useEffect(() => {
     if (!window.amplify) return;
@@ -39,6 +46,19 @@ export function FrameTab({ currentMode, onModeChange, authState }: FrameTabProps
   }, []);
 
   const mode = MODE_INFO[currentMode];
+  const currencyDigits = showCurrencyPrecision ? 4 : 2;
+  const cloudCostDisplay = monthStats
+    ? `$${monthStats.cloud_cost_avoided_usd.toLocaleString('en-US', {
+      minimumFractionDigits: currencyDigits,
+      maximumFractionDigits: currencyDigits,
+    })}`
+    : '$0.0000';
+
+  function handleCurrencyPrecisionToggle() {
+    const next = !showCurrencyPrecision;
+    setShowCurrencyPrecision(next);
+    localStorage.setItem(LS_CURRENCY_PRECISION, next ? 'precision' : 'rounded');
+  }
 
   const handleToggleOverlay = () => {
     if (isOverlayVisible) {
@@ -117,12 +137,29 @@ export function FrameTab({ currentMode, onModeChange, authState }: FrameTabProps
           borderRadius: 10, padding: '12px 16px',
         }}>
           <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
-            This Month · Mnemosyne CAI Amplifier
+            <span>This Month · Mnemosyne CAI Amplifier</span>
+            <button
+              type="button"
+              onClick={handleCurrencyPrecisionToggle}
+              title="Dashboard -> Settings -> Display: toggle rounded/precision currency display"
+              style={{
+                marginLeft: 8, background: 'rgba(100,116,139,0.1)', border: '1px solid rgba(100,116,139,0.2)',
+                color: '#94a3b8', borderRadius: 999, padding: '2px 7px', fontSize: 9,
+                cursor: 'pointer', textTransform: 'none', letterSpacing: 0,
+              }}
+            >
+              {showCurrencyPrecision ? 'Precision' : 'Rounded'}
+            </button>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <StatCell label="Queries" value={monthStats.total_queries.toLocaleString()} />
             <StatCell label="Substrate Hits" value={`${(monthStats.substrate_hit_ratio * 100).toFixed(1)}%`} color="#6ee7b7" />
-            <StatCell label="Cloud Cost Avoided" value={`$${monthStats.cloud_cost_avoided_usd.toFixed(4)}`} color="#34d399" />
+            <StatCell
+              label="Cloud Cost Avoided"
+              value={cloudCostDisplay}
+              color="#34d399"
+              title={CURRENCY_PRECISION_TOOLTIP}
+            />
             <StatCell label="Local Served" value={`${monthStats.substrate_hits.toLocaleString()}`} />
           </div>
         </div>
@@ -164,11 +201,16 @@ export function FrameTab({ currentMode, onModeChange, authState }: FrameTabProps
   );
 }
 
-function StatCell({ label, value, color }: { label: string; value: string; color?: string }) {
+function StatCell({ label, value, color, title }: { label: string; value: string; color?: string; title?: string }) {
   return (
     <div style={{
       background: 'rgba(15,23,42,0.5)', borderRadius: 8, padding: '8px 10px',
-    }}>
+      cursor: title ? 'help' : 'default',
+      textDecoration: title ? 'underline dotted rgba(52,211,153,0.45)' : 'none',
+      textUnderlineOffset: 3,
+    }}
+    title={title}
+    >
       <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
       <div style={{ fontSize: 14, fontWeight: 700, color: color ?? '#e2e8f0', marginTop: 3 }}>{value}</div>
     </div>
