@@ -53,6 +53,171 @@ body {
   overflow: hidden;
 }
 
+/* ─── BP047 Swirling Winds Ambience ────────────────────────────────────────── */
+
+.wind-frame-shell {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+}
+
+.wind-ambience-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  filter: blur(12px);
+  animation: wind-ambience-fade-in 300ms ease-out;
+}
+
+@keyframes wind-ambience-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.wind-unlock-toast {
+  position: fixed;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(10, 15, 26, 0.95);
+  border: 1px solid rgba(110, 231, 183, 0.4);
+  color: #6ee7b7;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 20px;
+  z-index: 9999;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.wind-settings-card {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(110, 231, 183, 0.15);
+  border-radius: 10px;
+  padding: 12px 16px;
+}
+
+.wind-settings-card__header,
+.wind-settings-card__title,
+.wind-settings-card__actions,
+.wind-reduced-motion__actions {
+  display: flex;
+  align-items: center;
+}
+
+.wind-settings-card__header {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.wind-settings-card__title {
+  gap: 6px;
+  min-width: 0;
+}
+
+.wind-settings-card__title span:nth-child(2) {
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wind-settings-card__title small {
+  color: #64748b;
+  font-size: 9px;
+}
+
+.wind-live-badge,
+.wind-tier,
+.wind-action {
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  touch-action: manipulation;
+}
+
+.wind-live-badge {
+  padding: 2px 8px;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  background: rgba(100, 116, 139, 0.08);
+  color: #64748b;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.wind-live-badge--active {
+  border-color: rgba(110, 231, 183, 0.4);
+  background: rgba(110, 231, 183, 0.1);
+  color: #6ee7b7;
+}
+
+.wind-tier-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.wind-tier {
+  padding: 4px 10px;
+  border: 1px solid rgba(100, 116, 139, 0.2);
+  background: rgba(15, 23, 42, 0.4);
+  color: #94a3b8;
+  font-size: 10px;
+  transition: all 0.12s ease;
+}
+
+.wind-tier--active {
+  border-color: rgba(110, 231, 183, 0.5);
+  background: rgba(110, 231, 183, 0.12);
+  color: #6ee7b7;
+  font-weight: 700;
+}
+
+.wind-settings-card__actions,
+.wind-reduced-motion__actions {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.wind-action {
+  padding: 3px 9px;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  background: rgba(100, 116, 139, 0.08);
+  color: #94a3b8;
+  font-size: 9px;
+}
+
+.wind-action--primary {
+  border-color: rgba(110, 231, 183, 0.3);
+  background: rgba(110, 231, 183, 0.08);
+  color: #6ee7b7;
+}
+
+.wind-saved-label {
+  color: #334155;
+  font-size: 9px;
+}
+
+.wind-reduced-motion {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(100, 116, 139, 0.08);
+  border: 1px solid rgba(100, 116, 139, 0.2);
+  border-radius: 8px;
+  color: #94a3b8;
+  font-size: 10px;
+}
+
+.wind-reduced-motion > div:first-child {
+  margin-bottom: 6px;
+}
+
 /* ─── Frame Overlay ─────────────────────────────────────────────────────────── */
 
 .lb-frame {

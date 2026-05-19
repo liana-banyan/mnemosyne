@@ -2,15 +2,19 @@
 // Transparent Outlining Window status, mode controls, and MoneyPenny telemetry.
 // This is the "daily driver" tab — after first Gauntlet completion, opens here by default.
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { FrameMode } from './FrameModeIndicator';
 import type { AuthState } from '../amplify.d';
 import { ModeSelectorPopover } from './ModeSelectorPopover';
+import { WindRenderer } from '../swirling-winds/canvas-2d-wind';
+import { WindSettingsCard } from '../swirling-winds/wind-settings-card';
+import type { WindTier } from '../swirling-winds/canvas-2d-wind';
 
 interface FrameTabProps {
   currentMode: FrameMode;
   onModeChange: (mode: FrameMode) => void;
   authState: AuthState | null;
+  windUnlocked?: boolean;
 }
 
 interface TelemetryMonth {
@@ -30,10 +34,15 @@ const LS_CURRENCY_PRECISION = 'mnemo_display_currency_precision';
 const CURRENCY_PRECISION_TOOLTIP =
   'Sub-cent precision tracking - queries cost fractions of a cent each. The 4-decimal value is the exact substrate tally; rounded display shows normal cents.';
 
-export function FrameTab({ currentMode, onModeChange, authState }: FrameTabProps) {
+export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = false }: FrameTabProps) {
   const [showModeSelector, setShowModeSelector] = useState(false);
   const [monthStats, setMonthStats] = useState<TelemetryMonth | null>(null);
   const [isOverlayVisible, setIsOverlayVisible] = useState(true);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rendererRef = useRef<WindRenderer | null>(null);
+  const [windTier, setWindTier] = useState<WindTier>(() =>
+    (localStorage.getItem('mnem_wind_tier') as WindTier | null) ?? 'BREEZE',
+  );
   const [showCurrencyPrecision, setShowCurrencyPrecision] = useState(() =>
     localStorage.getItem(LS_CURRENCY_PRECISION) !== 'rounded',
   );
@@ -43,6 +52,52 @@ export function FrameTab({ currentMode, onModeChange, authState }: FrameTabProps
     window.amplify.getAMPLIFYSummary?.().then((summary) => {
       if (summary?.month) setMonthStats(summary.month);
     });
+  }, []);
+
+  useEffect(() => {
+    if (!windUnlocked || !canvasRef.current) return undefined;
+
+    const canvas = canvasRef.current;
+    const parent = canvas.parentElement;
+    const renderer = new WindRenderer(canvas);
+    rendererRef.current = renderer;
+
+    const resize = () => {
+      if (!parent) return;
+      renderer.resize(parent.clientWidth, parent.clientHeight);
+    };
+
+    resize();
+    renderer.setTier(windTier);
+
+    const onBlur = () => renderer.pauseOnBlur();
+    const onFocus = () => renderer.resumeOnFocus();
+    const onVisibilityChange = () => {
+      if (document.hidden) renderer.pauseOnBlur();
+      else renderer.resumeOnFocus();
+    };
+
+    const resizeObserver = typeof ResizeObserver !== 'undefined' && parent
+      ? new ResizeObserver(resize)
+      : null;
+    resizeObserver?.observe(parent);
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      renderer.destroy();
+      rendererRef.current = null;
+      resizeObserver?.disconnect();
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [windUnlocked]);
+
+  const handleTierChange = useCallback((tier: WindTier) => {
+    setWindTier(tier);
+    rendererRef.current?.setTier(tier);
   }, []);
 
   const mode = MODE_INFO[currentMode];
@@ -70,7 +125,17 @@ export function FrameTab({ currentMode, onModeChange, authState }: FrameTabProps
   };
 
   return (
-    <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16, height: '100%', boxSizing: 'border-box', overflowY: 'auto' }}>
+    <div className="wind-frame-shell">
+      {windUnlocked && (
+        <canvas
+          ref={canvasRef}
+          aria-hidden="true"
+          role="presentation"
+          className="wind-ambience-canvas"
+        />
+      )}
+
+      <div style={{ position: 'relative', zIndex: 1, padding: 20, display: 'flex', flexDirection: 'column', gap: 16, height: '100%', boxSizing: 'border-box', overflowY: 'auto' }}>
 
       {/* Mode card */}
       <div style={{
@@ -129,6 +194,10 @@ export function FrameTab({ currentMode, onModeChange, authState }: FrameTabProps
           {isOverlayVisible ? 'Hide' : 'Show'}
         </button>
       </div>
+
+      {windUnlocked && (
+        <WindSettingsCard onTierChange={handleTierChange} />
+      )}
 
       {/* MoneyPenny stats */}
       {monthStats && (
@@ -197,6 +266,7 @@ export function FrameTab({ currentMode, onModeChange, authState }: FrameTabProps
           onClose={() => setShowModeSelector(false)}
         />
       )}
+    </div>
     </div>
   );
 }

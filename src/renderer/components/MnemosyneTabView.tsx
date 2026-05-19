@@ -9,7 +9,7 @@
 // After first Gauntlet completion, default shifts to Tab 1 (Frame as daily driver).
 // Tab 4 visibility = developer_mode_enabled flag in localStorage.
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useRef, useState, useEffect } from 'react';
 import type { FrameMode } from './FrameModeIndicator';
 import type { AuthState } from '../amplify.d';
 import { GauntletTab } from './GauntletTab';
@@ -23,6 +23,8 @@ const LS_GAUNTLET_FIRST_COMPLETE = 'mnemo_gauntlet_first_complete';
 const LS_DEVELOPER_MODE = 'mnemo_developer_mode_enabled';
 const LS_ACTIVE_TAB = 'mnemo_active_tab';
 const LS_ONBOARD_CHOICE = 'mnemo_onboard_choice'; // 'free' | 'member' | 'developer' | 'dismissed'
+const LS_WIND_UNLOCKED = 'mnem_wind_unlocked';
+const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
@@ -72,6 +74,11 @@ export function MnemosyneTabView({
   const [showOnboardAsk, setShowOnboardAsk] = useState(() =>
     !localStorage.getItem(LS_ONBOARD_CHOICE)
   );
+  const [windUnlocked, setWindUnlocked] = useState(() =>
+    localStorage.getItem(LS_WIND_UNLOCKED) === 'true'
+  );
+  const windClickCount = useRef(0);
+  const windClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Determine default tab: Tab 3 (gauntlet) on first launch, Tab 1 (frame) after first run
   function resolveDefaultTab(): TabId {
@@ -114,6 +121,41 @@ export function MnemosyneTabView({
       // Developer mode unlock is confirmed after membership + pledge sign
     }
   }
+
+  function showWindToast() {
+    const existing = document.getElementById('wind-unlock-toast');
+    if (existing) return;
+    const toast = document.createElement('div');
+    toast.id = 'wind-unlock-toast';
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    toast.className = 'wind-unlock-toast';
+    toast.textContent = '✨ Ambience unlocked — Tab 1 · Frame';
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2500);
+  }
+
+  const handleBrandTripleClick = useCallback(() => {
+    if (localStorage.getItem(LS_WIND_UNLOCKED) === 'true') return;
+
+    windClickCount.current += 1;
+    if (windClickTimer.current) clearTimeout(windClickTimer.current);
+    windClickTimer.current = setTimeout(() => {
+      windClickCount.current = 0;
+    }, 600);
+
+    if (windClickCount.current >= 3) {
+      windClickCount.current = 0;
+      if (windClickTimer.current) clearTimeout(windClickTimer.current);
+      if (!localStorage.getItem(LS_WIND_TIER)) {
+        localStorage.setItem(LS_WIND_TIER, 'BREEZE');
+      }
+      localStorage.setItem(LS_WIND_UNLOCKED, 'true');
+      setWindUnlocked(true);
+      setActiveTab('frame');
+      showWindToast();
+    }
+  }, []);
 
   const visibleTabs = TABS.filter((t) => t.id !== 'developer' || devEnabled);
 
@@ -218,7 +260,14 @@ export function MnemosyneTabView({
       <div style={styles.titleBar}>
         <div style={styles.brand}>
           <div>
-            <div style={styles.brandName}>Mnemosyne</div>
+            <div
+              style={styles.brandName}
+              onClick={handleBrandTripleClick}
+              title={windUnlocked ? 'Mnemosyne — Ambience active' : 'Mnemosyne'}
+              aria-label="Mnemosyne"
+            >
+              Mnemosyne
+            </div>
             <div style={styles.brandSub}>CAI Amplifier · Liana Banyan</div>
           </div>
         </div>
@@ -277,6 +326,7 @@ export function MnemosyneTabView({
               currentMode={currentMode}
               onModeChange={onModeChange}
               authState={authState}
+              windUnlocked={windUnlocked}
             />
           </div>
         )}
