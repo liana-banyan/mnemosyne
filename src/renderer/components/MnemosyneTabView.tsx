@@ -284,7 +284,10 @@ export function MnemosyneTabView({
             >
               Mnemosyne
             </div>
-            <div style={styles.brandSub}>CAI Amplifier · Liana Banyan</div>
+            <div style={{ ...styles.brandSub, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <CaiSymbol size={12} color="#6ee7b7" aria-label="CAI" />
+              <span>CAI Amplifier · Liana Banyan</span>
+            </div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -306,6 +309,29 @@ export function MnemosyneTabView({
       {showOnboardAsk && (
         <ThreeOptionAsk onChoice={handleOnboardChoice} devModeEnabled={devEnabled} />
       )}
+
+      {/* BP048 — Dashboard → Bridge discoverability (complementary surfaces) */}
+      <div style={{ padding: '8px 16px 0' }}>
+        <button
+          type="button"
+          onClick={() => window.amplify?.openHearthConjunction?.()}
+          style={{
+            width: '100%',
+            padding: '8px 12px',
+            background: 'rgba(100,116,139,0.08)',
+            border: '1px solid rgba(100,116,139,0.25)',
+            borderRadius: 8,
+            color: '#94a3b8',
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: 'pointer',
+            textAlign: 'left',
+          }}
+          title="Open the Heavy Booster operator console"
+        >
+          Open the Bridge →
+        </button>
+      </div>
 
       {/* Tab bar */}
       <div style={styles.tabBar} role="tablist" aria-label="Mnemosyne navigation">

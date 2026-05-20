@@ -398,9 +398,9 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
                   marginTop: 2,
                 }}
               >
-                {/* BP043 SEG-G — NotCents Đ balance chip */}
+                {/* BP043 SEG-G — NotCents balance chip */}
                 <div
-                  title="Your NotCents Đ balance (cooperative substitution-only)"
+                  title="Your NotCents balance (cooperative substitution-only)"
                   style={{
                     display: 'flex',
                     alignItems: 'center',

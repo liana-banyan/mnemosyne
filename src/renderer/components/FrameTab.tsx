@@ -172,7 +172,20 @@ export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = 
         padding: '14px 16px',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
+          <button
+            type="button"
+            onClick={() => setShowModeSelector(true)}
+            title="Choose substrate mode"
+            aria-label={`Active mode ${mode.label} — click to change`}
+            style={{
+              flex: 1,
+              textAlign: 'left',
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+            }}
+          >
             <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
               Active Mode
             </div>
@@ -181,7 +194,7 @@ export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = 
               <span>{mode.label}</span>
             </div>
             <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{mode.description}</div>
-          </div>
+          </button>
           <button
             onClick={() => setShowModeSelector(true)}
             style={{

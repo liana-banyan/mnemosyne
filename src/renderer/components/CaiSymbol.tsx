@@ -1,6 +1,6 @@
 // CaiSymbol — Cooperative AI (CAI) canonical glyph
-// Doublebar backwards C — Founder canon · replaces Đ placeholder throughout Mnemosyne
-// BP047: created to replace Đ (D-with-crossbar, wrong glyph) with correct doublebar-backwards-C
+// Doublebar backwards C — Founder canon · replaces U+0110 placeholder throughout Mnemosyne
+// BP047: created to replace D-with-crossbar (wrong glyph) with correct doublebar-backwards-C
 // Shape: right-opening arc (backwards C) with two horizontal strokes through the arc body
 // BARN DRAFT — show screenshot to Founder for ratification of exact bar placement + arc curve
 

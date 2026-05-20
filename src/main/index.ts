@@ -436,13 +436,16 @@ function createOverlayWindow(): void {
 
 function createTray(): void {
   const iconPath = join(__dirname, '../../assets/tray-icon.png');
-  const icon = existsSync(iconPath)
+  let icon = existsSync(iconPath)
     ? nativeImage.createFromPath(iconPath)
     : nativeImage.createEmpty();
+  if (!icon.isEmpty()) {
+    icon = icon.resize({ width: 16, height: 16 });
+  }
 
   tray = new Tray(icon);
   // SAGA 02 BP046B — tooltip updated to Mnemosyne brand; single-left-click opens Dashboard
-  tray.setToolTip('Mnemosyne · CAI · Đ · click for Dashboard');
+  tray.setToolTip('Mnemosyne · CAI · Ↄ · click for Dashboard');
   // Single left-click opens Dashboard (right-click still shows context menu)
   tray.on('click', () => openDashboard());
   rebuildTrayMenu();
@@ -498,7 +501,7 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
       click: () => openDashboard(),
     },
     {
-      label: 'Đ Open Mnemosyne',
+      label: 'Ↄ Open the Bridge',
       click: () => openHearthConjunctionWindow(),
     },
     {

@@ -340,7 +340,7 @@ body {
   color: var(--color-fallback);
 }
 
-/* §7 — CAI Đ product-identity stamp in bottom-right frame corner */
+/* §7 — CAI product-identity stamp in bottom-right frame corner */
 .lb-cai-stamp {
   position: fixed;
   bottom: calc(var(--corner-padding) + var(--border-width) + 28px);

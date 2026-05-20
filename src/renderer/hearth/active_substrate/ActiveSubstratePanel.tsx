@@ -45,11 +45,26 @@ export function ActiveSubstratePanel() {
   const poll = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await window.amplify.watchdogStatus?.() ?? null;
+      if (typeof window.amplify?.watchdogStatus !== 'function') {
+        // Bridge not exposed (preload mismatch or pre-v0.1.6 build)
+        setError('Watchdog unavailable in this build · update Mnemosyne to v0.1.6+ for live status');
+        return;
+      }
+      const result = await window.amplify.watchdogStatus();
       if (result) setStatus(result as WatchdogStatusPayload);
       setError(null);
     } catch (err) {
-      setError(String(err));
+      const msg = String(err);
+      // Build-artifact drift: main process is missing the ipcMain.handle('watchdog-status', ...)
+      // registration even though preload exposes the method. Surface a graceful message instead
+      // of the raw Electron rejection. Tracked in BP048.
+      if (msg.includes('No handler registered') || msg.includes('watchdog-status')) {
+        console.warn('[ActiveSubstratePanel] watchdog-status IPC handler missing — build drift suspected', err);
+        setError('Watchdog unavailable in this build · update Mnemosyne to v0.1.6+ for live status');
+      } else {
+        console.error('[ActiveSubstratePanel] watchdog poll failed', err);
+        setError(msg.slice(0, 120));
+      }
     } finally {
       setLoading(false);
     }

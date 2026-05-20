@@ -1,6 +1,6 @@
 {
   "name": "amplify-computer",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (AGPL Free Forever)",
   "homepage": "https://lianabanyan.com",
   "private": true,
@@ -9,7 +9,7 @@
     "dev": "concurrently -k \"npm run dev:renderer\" \"wait-on http://127.0.0.1:5173 && npm run dev:main\"",
     "dev:renderer": "vite --config vite.renderer.config.ts",
     "dev:main": "tsc -p tsconfig.main.json && electron .",
-    "build": "npm run build:renderer && npm run build:main",
+    "build": "node scripts/unicode-check.mjs && npm run build:renderer && npm run build:main",
     "build:renderer": "vite build --config vite.renderer.config.ts",
     "build:main": "tsc -p tsconfig.main.json",
     "build:hugo": "node scripts/copy-hugo-bundle.mjs",
@@ -75,6 +75,7 @@
     "files": [
       "dist/**/*",
       "!dist/**/*.map",
+      "assets/tray-icon.png",
       "src/renderer/public/**/*",
       "static/**/*",
       "node_modules/**/*",
