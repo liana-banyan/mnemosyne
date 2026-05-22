@@ -224,6 +224,23 @@ MascotLRH.png
 
 # Top-level markdown/scripts that aren't platform code
 *.md
+# BP051 canon allowlist — exempt from broad *.md exclusion (Founder Option B ratification)
+!TRADEMARK_USE_POLICY.md
+!LICENSE.md
+!LICENSE_SSPL.md
+!NOTICE.md
+!README.md
+!CONTRIBUTING.md
+!CHANGELOG.md
+!CODE_OF_CONDUCT.md
+!SECURITY.md
+!docs/*.md
+!docs/**/*.md
+!amplify-computer/TRADEMARK_USE_POLICY.md
+!amplify-computer/LICENSE_SSPL.md
+!amplify-computer/README.md
+!amplify-computer/docs/*.md
+!amplify-computer/docs/**/*.md
 !platform/**/*.md
 !BISHOP_DROPZONE/01_KnightPrompts/**/*.md
 !BISHOP_DROPZONE/12_Innovations_AA/**/*.md
