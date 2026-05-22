@@ -601,6 +601,29 @@ contextBridge.exposeInMainWorld('amplify', {
   }>> =>
     ipcRenderer.invoke('agent-get-plugin-registry'),
 
+  // ── Kitchen Table™ + Recipes™ + Atlas™ (BP052 v0.1.8) ────────────────────
+  kitchenTable: {
+    listSessions: () => ipcRenderer.invoke('kitchen-table:list-sessions'),
+    getSession: (id: string) => ipcRenderer.invoke('kitchen-table:get-session', { id }),
+    createSession: (data: unknown) => ipcRenderer.invoke('kitchen-table:create-session', data),
+    updateSession: (id: string, data: unknown) => ipcRenderer.invoke('kitchen-table:update-session', { id, data }),
+    deleteSession: (id: string) => ipcRenderer.invoke('kitchen-table:delete-session', { id }),
+    listRecipes: () => ipcRenderer.invoke('kitchen-table:list-recipes'),
+    getRecipe: (id: string) => ipcRenderer.invoke('kitchen-table:get-recipe', { id }),
+    createRecipe: (data: unknown) => ipcRenderer.invoke('kitchen-table:create-recipe', data),
+    updateRecipe: (id: string, data: unknown) => ipcRenderer.invoke('kitchen-table:update-recipe', { id, data }),
+    deleteRecipe: (id: string) => ipcRenderer.invoke('kitchen-table:delete-recipe', { id }),
+    listAtlasEvents: () => ipcRenderer.invoke('kitchen-table:list-atlas-events'),
+    getAtlasEvent: (id: string) => ipcRenderer.invoke('kitchen-table:get-atlas-event', { id }),
+    createAtlasEvent: (data: unknown) => ipcRenderer.invoke('kitchen-table:create-atlas-event', data),
+    updateAtlasEvent: (id: string, data: unknown) => ipcRenderer.invoke('kitchen-table:update-atlas-event', { id, data }),
+    deleteAtlasEvent: (id: string) => ipcRenderer.invoke('kitchen-table:delete-atlas-event', { id }),
+    openPhotoDialog: () => ipcRenderer.invoke('kitchen-table:open-photo-dialog'),
+    p2pStart: (peerId: string, displayName: string) => ipcRenderer.invoke('kitchen-table:p2p-start', { peerId, displayName }),
+    p2pStop: () => ipcRenderer.invoke('kitchen-table:p2p-stop'),
+    p2pPeers: () => ipcRenderer.invoke('kitchen-table:p2p-peers'),
+  },
+
   // ── SAGA 13 BP046B — 5-Marks first-install bonus ─────────────────────────
   /** Credit 5 marks on first install + first Stage 1 Gauntlet completion. One-per-account. */
   creditFirstInstallMarks: (): void =>
@@ -748,6 +771,28 @@ declare global {
       hideOverlay?: () => void;
       showOverlay?: () => void;
       getTelemetrySummary?: () => Promise<unknown>;
+      // Kitchen Table™ + Recipes™ + Atlas™ (BP052 v0.1.8)
+      kitchenTable: {
+        listSessions: () => Promise<unknown[]>;
+        getSession: (id: string) => Promise<unknown>;
+        createSession: (data: unknown) => Promise<unknown>;
+        updateSession: (id: string, data: unknown) => Promise<unknown>;
+        deleteSession: (id: string) => Promise<boolean>;
+        listRecipes: () => Promise<unknown[]>;
+        getRecipe: (id: string) => Promise<unknown>;
+        createRecipe: (data: unknown) => Promise<unknown>;
+        updateRecipe: (id: string, data: unknown) => Promise<unknown>;
+        deleteRecipe: (id: string) => Promise<boolean>;
+        listAtlasEvents: () => Promise<unknown[]>;
+        getAtlasEvent: (id: string) => Promise<unknown>;
+        createAtlasEvent: (data: unknown) => Promise<unknown>;
+        updateAtlasEvent: (id: string, data: unknown) => Promise<unknown>;
+        deleteAtlasEvent: (id: string) => Promise<boolean>;
+        openPhotoDialog: () => Promise<string | null>;
+        p2pStart: (peerId: string, displayName: string) => Promise<{ ok: boolean; active: boolean }>;
+        p2pStop: () => Promise<{ ok: boolean }>;
+        p2pPeers: () => Promise<{ peers: unknown[]; active: boolean }>;
+      };
     };
   }
 }

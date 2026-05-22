@@ -68,6 +68,9 @@ import {
 // Register custom OAuth scheme before app ready (Electron requirement)
 registerCustomScheme();
 
+// BP052 v0.1.8 — Kitchen Table™ IPC store
+import { registerKitchenTableIpc } from './kitchen_table/kitchen_table_store';
+
 // SAGA 10 BP045 W1 — mnemosyne:// deep-link handler
 import { registerDeepLinkProtocol, handleStartupDeepLink } from './deep-link-handler';
 import type { DeepLinkPayload } from './deep-link-handler';
@@ -1287,6 +1290,9 @@ function registerIPCHandlers(): void {
     const { getActiveSessions } = require('./pantheon/orchestrator') as typeof import('./pantheon/orchestrator');
     return getActiveSessions();
   });
+
+  // ── Kitchen Table™ + Atlas™ + P2P (BP052 v0.1.8) ────────────────────────
+  registerKitchenTableIpc(ipcMain);
 
   // ── MV-CN Peer Mesh (SAGA 3 BP045 W1) ─────────────────────────────────────
   ipcMain.handle('get-mesh-state', () => ({

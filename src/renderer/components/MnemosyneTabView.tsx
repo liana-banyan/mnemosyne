@@ -22,6 +22,8 @@ import { FAQTab } from './FAQTab';
 import { CaiSymbol } from './CaiSymbol';
 
 import { HelmCrownDashboard } from '../hearth/helm/HelmCrownDashboard';
+import { AtlasView } from '../kitchen_table/AtlasView';
+import { KitchenTableView } from '../kitchen_table/KitchenTableView';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -34,7 +36,7 @@ const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table';
 
 interface TabDef {
   id: TabId;
@@ -50,7 +52,9 @@ const TABS: TabDef[] = [
   { id: 'gauntlet',  label: 'Gauntlet',  icon: '⚔️', tooltip: 'Tab 3 · Gauntlet — 6-stage testing framework · stage selection · Pioneer Bonus' },
   { id: 'settings',  label: 'Settings',  icon: '⚙️', tooltip: 'Tab 4 · Settings — update Mnemosyne · AI model assignment · appearance · preferences' },
   { id: 'faq',       label: 'FAQ',       icon: '❓',  tooltip: 'Tab 5 · FAQ — common questions · tl;dr answers' },
-  { id: 'developer', label: 'Developer', icon: '',    iconElement: <CaiSymbol size={13} color="#f59e0b" aria-label="CAI" />, tooltip: 'Tab 6 · Developer Mode — submit variants · fork strain · SEG controls' },
+  { id: 'developer',     label: 'Developer',     icon: '',    iconElement: <CaiSymbol size={13} color="#f59e0b" aria-label="CAI" />, tooltip: 'Tab 6 · Developer Mode — Caithedral™ · Eblet™ · Pheromone · Banyan Metric™ · SEG controls' },
+  { id: 'atlas',         label: 'Atlas™',         icon: '📅', tooltip: 'Tab 7 · Atlas™ — Calendar · Events · Multi-person scheduling · P2P sync' },
+  { id: 'kitchen-table', label: 'Kitchen Table',  icon: '🍽️', tooltip: 'Tab 8 · The Kitchen Table™ — Recipes™ · Meal planning · LAN peer discovery' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -94,7 +98,7 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer'];
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table'];
     if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
@@ -179,6 +183,7 @@ export function MnemosyneTabView({
   }, []);
 
   const visibleTabs = TABS.filter((t) => t.id !== 'developer' || devEnabled);
+  // Atlas™ and Kitchen Table™ are always visible (core v0.1.8 features)
 
   // ─── Styles ────────────────────────────────────────────────────────────────
 
@@ -466,6 +471,28 @@ export function MnemosyneTabView({
               onDisable={() => handleDevModeToggle(false)}
               onStepByStep={handleStepByStep}
             />
+          </div>
+        )}
+
+        {activeTab === 'atlas' && (
+          <div
+            id="panel-atlas"
+            role="tabpanel"
+            aria-labelledby="tab-atlas"
+            style={{ height: '100%' }}
+          >
+            <AtlasView />
+          </div>
+        )}
+
+        {activeTab === 'kitchen-table' && (
+          <div
+            id="panel-kitchen-table"
+            role="tabpanel"
+            aria-labelledby="tab-kitchen-table"
+            style={{ height: '100%' }}
+          >
+            <KitchenTableView />
           </div>
         )}
       </div>

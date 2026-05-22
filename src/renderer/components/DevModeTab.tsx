@@ -1,21 +1,22 @@
-// DevModeTab — SAGA 11 BP046B · Tab 6 of MnemosyneTabView (conditional) · BP047 W1
-// Developer Mode surfaces — gated by:
-//   (a) LB membership + Cooperative Defensive Patent Pledge #2260 signed (free for members), OR
-//   (b) Paid business license (annual fee TBD per HL#5)
-//
-// 6 surfaces:
-//   1. Submit New Test      — define Gauntlet variant · upload data · register project
-//   2. My Uploads ledger   — full transparency · every upload logged
-//   3. Fork Strain         — clone Mnemosyne strain · modify · submit upstream OR maintain fork
-//   4. SEG Count Control   — Wave / Drekaskip / Novacula / AutoBaton selectors
-//   5. Project Connect     — link upload to own/family/tribe/guild/business/Counterpart project
-//   6. Variant Voting      — submit to /gauntlet/variants/ · community votes · Level 3 auto-offer
+// DevModeTab — SAGA 11 BP046B · v0.1.8 BP052 NOVACULA W1 SEG-FT-4
+// Developer Mode — 6 inspector panels (pill tabs at top):
+//   1. Caithedral™ Inspector   — retrieval log (W2 full implementation)
+//   2. Eblet™ Inspector        — searchable Eblet store (W2 full implementation)
+//   3. Pheromone Visualizer    — trail heat map (W2 full implementation)
+//   4. Banyan Metric™ Ledger   — composite score ledger (W2 full implementation)
+//   5. Atlas™ Panel            — links to Atlas™ scheduling tab
+//   6. SEG Controls            — Wave/Drekaskip/Novacula/AutoBaton + Gauntlet surfaces
 
 import React, { useState } from 'react';
 import type { AuthState } from '../amplify.d';
 import { CaiSymbol } from './CaiSymbol';
+import { CaithedralInspector } from '../kitchen_table/CaithedralInspector';
+import { EbletInspector } from '../kitchen_table/EbletInspector';
+import { PheromoneVisualizer } from '../kitchen_table/PheromoneVisualizer';
+import { BanyanMetricLedger } from '../kitchen_table/BanyanMetricLedger';
 
 type DevSurface = 'submit-test' | 'uploads' | 'fork-strain' | 'seg-control' | 'project-connect' | 'variant-voting';
+type DevPanel = 'caithedral' | 'eblet' | 'pheromone' | 'banyan-metric' | 'atlas' | 'seg-controls';
 
 interface DevModeTabProps {
   authState: AuthState | null;
@@ -32,36 +33,34 @@ const SURFACES: Array<{ id: DevSurface; icon: string; label: string; desc: strin
   { id: 'variant-voting',  icon: '🗳️', label: 'Variant Voting',     desc: 'Submit to /gauntlet/variants/ · community votes · Level 3 auto-offer as strain' },
 ];
 
+// ─── Inspector panel definitions ──────────────────────────────────────────────
+
+const PANELS: Array<{ id: DevPanel; label: string; mark?: string }> = [
+  { id: 'caithedral',    label: 'Caithedral™' },
+  { id: 'eblet',         label: 'Eblet™' },
+  { id: 'pheromone',     label: 'Pheromone' },
+  { id: 'banyan-metric', label: 'Banyan Metric™' },
+  { id: 'atlas',         label: 'Atlas™' },
+  { id: 'seg-controls',  label: 'SEG Controls' },
+];
+
 export function DevModeTab({ authState, onDisable, onStepByStep }: DevModeTabProps) {
+  const [activePanel, setActivePanel] = useState<DevPanel>('caithedral');
   const [activeSurface, setActiveSurface] = useState<DevSurface | null>(null);
   const [flippedCard, setFlippedCard] = useState<DevSurface | null>(null);
 
-  if (activeSurface) {
-    return (
-      <SurfaceView
-        surface={activeSurface}
-        authState={authState}
-        onBack={() => setActiveSurface(null)}
-      />
-    );
-  }
-
   return (
-    <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* Header */}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      {/* Header bar */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.2)',
-        borderRadius: 8, padding: '8px 12px',
+        background: 'rgba(245,158,11,0.06)', borderBottom: '1px solid rgba(245,158,11,0.15)',
+        padding: '6px 12px', flexShrink: 0,
       }}>
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}>
-            <CaiSymbol size="0.9em" color="#f59e0b" style={{ marginRight: 4 }} />
-            Developer Mode
-          </div>
-          <div style={{ fontSize: 9, color: '#64748b', marginTop: 1 }}>
-            Build for the long haul · cooperative peer-witness real
-          </div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', display: 'flex', alignItems: 'center', gap: 5 }}>
+          <CaiSymbol size="0.9em" color="#f59e0b" />
+          Developer Mode
+          <span style={{ fontSize: 8, color: '#64748b', fontWeight: 400 }}>· cooperative peer-witness real</span>
         </div>
         <button
           onClick={onDisable}
@@ -74,17 +73,114 @@ export function DevModeTab({ authState, onDisable, onStepByStep }: DevModeTabPro
         </button>
       </div>
 
-      {/* Surface grid — flip-box cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-        {SURFACES.map((s) => (
-          <div
-            key={s.id}
+      {/* Pill-style panel tabs */}
+      <div style={{
+        display: 'flex', gap: 4, padding: '8px 12px 0',
+        borderBottom: '1px solid rgba(100,116,139,0.12)',
+        flexShrink: 0, overflowX: 'auto',
+      }}>
+        {PANELS.map((panel) => (
+          <button
+            key={panel.id}
+            onClick={() => setActivePanel(panel.id)}
             style={{
-              position: 'relative',
-              perspective: 600,
-              height: 120,
+              padding: '4px 10px',
+              borderRadius: 12,
+              fontSize: 10,
+              fontWeight: activePanel === panel.id ? 700 : 400,
+              cursor: 'pointer',
+              border: activePanel === panel.id ? '1px solid rgba(245,158,11,0.4)' : '1px solid rgba(100,116,139,0.15)',
+              background: activePanel === panel.id ? 'rgba(245,158,11,0.08)' : 'transparent',
+              color: activePanel === panel.id ? '#f59e0b' : '#64748b',
+              whiteSpace: 'nowrap',
+              transition: 'all 0.15s',
             }}
           >
+            {panel.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Panel content */}
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        {activePanel === 'caithedral' && <CaithedralInspector />}
+        {activePanel === 'eblet' && <EbletInspector />}
+        {activePanel === 'pheromone' && <PheromoneVisualizer />}
+        {activePanel === 'banyan-metric' && <BanyanMetricLedger />}
+        {activePanel === 'atlas' && <AtlasPanel />}
+        {activePanel === 'seg-controls' && (
+          <SegControlsPanel
+            authState={authState}
+            onDisable={onDisable}
+            onStepByStep={onStepByStep}
+            activeSurface={activeSurface}
+            setActiveSurface={setActiveSurface}
+            flippedCard={flippedCard}
+            setFlippedCard={setFlippedCard}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Atlas™ Panel — links to Atlas tab ────────────────────────────────────────
+
+function AtlasPanel() {
+  return (
+    <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{
+        background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.2)',
+        borderRadius: 8, padding: '16px 14px', textAlign: 'center',
+      }}>
+        <div style={{ fontSize: 28, marginBottom: 8 }}>📅</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#38bdf8', marginBottom: 4 }}>Atlas™ Scheduling</div>
+        <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.6 }}>
+          Atlas™ is available in its own primary tab.<br />
+          Switch to the Atlas™ tab to manage calendar events, participants, and P2P sync.
+        </div>
+        <div style={{ fontSize: 9, color: '#334155', marginTop: 10 }}>
+          Dev panel integration coming in a future wave — will show Atlas sync state, P2P event queue, and AI-suggest logs.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SEG Controls Panel (existing DevModeTab surface grid + original Gauntlet surfaces) ───
+
+function SegControlsPanel({
+  authState,
+  onDisable,
+  onStepByStep,
+  activeSurface,
+  setActiveSurface,
+  flippedCard,
+  setFlippedCard,
+}: {
+  authState: AuthState | null;
+  onDisable: () => void;
+  onStepByStep: (s: DevSurface) => void;
+  activeSurface: DevSurface | null;
+  setActiveSurface: (s: DevSurface | null) => void;
+  flippedCard: DevSurface | null;
+  setFlippedCard: (s: DevSurface | null) => void;
+}) {
+  if (activeSurface) {
+    return (
+      <SurfaceView
+        surface={activeSurface}
+        authState={authState}
+        onBack={() => setActiveSurface(null)}
+      />
+    );
+  }
+
+  return (
+    <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        {SURFACES.map((s) => (
+          <div key={s.id} style={{ position: 'relative', perspective: 600, height: 120 }}>
             <div
               style={{
                 position: 'absolute', inset: 0,
@@ -93,89 +189,45 @@ export function DevModeTab({ authState, onDisable, onStepByStep }: DevModeTabPro
                 transform: flippedCard === s.id ? 'rotateY(180deg)' : 'rotateY(0deg)',
               }}
             >
-              {/* FRONT face */}
+              {/* FRONT */}
               <div
                 style={{
                   position: 'absolute', inset: 0,
-                  backfaceVisibility: 'hidden',
-                  WebkitBackfaceVisibility: 'hidden',
-                  background: 'rgba(15,23,42,0.6)',
-                  border: '1px solid rgba(100,116,139,0.15)',
+                  backfaceVisibility: 'hidden', WebkitBackfaceVisibility: 'hidden',
+                  background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.15)',
                   borderRadius: 10, padding: '12px 12px',
-                  display: 'flex', flexDirection: 'column',
-                  cursor: 'pointer',
-                  boxSizing: 'border-box',
+                  display: 'flex', flexDirection: 'column', cursor: 'pointer', boxSizing: 'border-box',
                 }}
                 onClick={() => setActiveSurface(s.id)}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'rgba(245,158,11,0.3)';
-                  e.currentTarget.style.background = 'rgba(245,158,11,0.04)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'rgba(100,116,139,0.15)';
-                  e.currentTarget.style.background = 'rgba(15,23,42,0.6)';
-                }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(245,158,11,0.3)'; e.currentTarget.style.background = 'rgba(245,158,11,0.04)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(100,116,139,0.15)'; e.currentTarget.style.background = 'rgba(15,23,42,0.6)'; }}
               >
                 <div style={{ fontSize: 18, marginBottom: 4 }}>{s.icon}</div>
                 <div style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0' }}>{s.label}</div>
                 <div style={{ fontSize: 9, color: '#475569', marginTop: 3, lineHeight: 1.5, flex: 1 }}>{s.desc}</div>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setFlippedCard(s.id);
-                  }}
-                  style={{
-                    alignSelf: 'flex-end', marginTop: 4,
-                    background: 'none', border: '1px solid rgba(100,116,139,0.2)',
-                    color: '#475569', borderRadius: 4, padding: '2px 7px', fontSize: 8,
-                    cursor: 'pointer', letterSpacing: '0.03em',
-                  }}
+                  onClick={(e) => { e.stopPropagation(); setFlippedCard(s.id); }}
+                  style={{ alignSelf: 'flex-end', marginTop: 4, background: 'none', border: '1px solid rgba(100,116,139,0.2)', color: '#475569', borderRadius: 4, padding: '2px 7px', fontSize: 8, cursor: 'pointer' }}
                   title={`More info about ${s.label}`}
-                  aria-label={`More info about ${s.label}`}
                 >
                   More Info
                 </button>
               </div>
-
-              {/* BACK face */}
+              {/* BACK */}
               <div
                 style={{
                   position: 'absolute', inset: 0,
-                  backfaceVisibility: 'hidden',
-                  WebkitBackfaceVisibility: 'hidden',
+                  backfaceVisibility: 'hidden', WebkitBackfaceVisibility: 'hidden',
                   transform: 'rotateY(180deg)',
-                  background: 'rgba(15,23,42,0.92)',
-                  border: '1px solid rgba(245,158,11,0.2)',
+                  background: 'rgba(15,23,42,0.92)', border: '1px solid rgba(245,158,11,0.2)',
                   borderRadius: 10, padding: '10px 12px',
-                  display: 'flex', flexDirection: 'column', gap: 6,
-                  overflowY: 'auto',
-                  boxSizing: 'border-box',
+                  display: 'flex', flexDirection: 'column', gap: 6, overflowY: 'auto', boxSizing: 'border-box',
                 }}
               >
                 <CardDetailContent surfaceId={s.id} />
                 <div style={{ display: 'flex', gap: 6, marginTop: 'auto' }}>
-                  <button
-                    onClick={() => setFlippedCard(null)}
-                    style={{
-                      flex: 1, background: 'none', border: '1px solid rgba(100,116,139,0.2)',
-                      color: '#64748b', borderRadius: 6, padding: '4px 0', fontSize: 9, cursor: 'pointer',
-                    }}
-                  >
-                    ← Back
-                  </button>
-                  <button
-                    onClick={() => {
-                      setFlippedCard(null);
-                      onStepByStep(s.id);
-                    }}
-                    style={{
-                      flex: 1, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)',
-                      color: '#f59e0b', borderRadius: 6, padding: '4px 0', fontSize: 9,
-                      cursor: 'pointer', fontWeight: 600,
-                    }}
-                  >
-                    Step-By-Step
-                  </button>
+                  <button onClick={() => setFlippedCard(null)} style={{ flex: 1, background: 'none', border: '1px solid rgba(100,116,139,0.2)', color: '#64748b', borderRadius: 6, padding: '4px 0', fontSize: 9, cursor: 'pointer' }}>← Back</button>
+                  <button onClick={() => { setFlippedCard(null); onStepByStep(s.id); }} style={{ flex: 1, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', color: '#f59e0b', borderRadius: 6, padding: '4px 0', fontSize: 9, cursor: 'pointer', fontWeight: 600 }}>Step-By-Step</button>
                 </div>
               </div>
             </div>
@@ -183,11 +235,7 @@ export function DevModeTab({ authState, onDisable, onStepByStep }: DevModeTabPro
         ))}
       </div>
 
-      {/* Pledge reminder */}
-      <div style={{
-        background: 'rgba(15,23,42,0.5)', border: '1px solid rgba(100,116,139,0.1)',
-        borderRadius: 8, padding: '8px 12px',
-      }}>
+      <div style={{ background: 'rgba(15,23,42,0.5)', border: '1px solid rgba(100,116,139,0.1)', borderRadius: 8, padding: '8px 12px' }}>
         <div style={{ fontSize: 9, color: '#475569', lineHeight: 1.6 }}>
           <span style={{ color: '#64748b', fontWeight: 600 }}>Cooperative Defensive Patent Pledge #2260</span>
           {' '}— all Developer Mode submissions are bound by this pledge.
