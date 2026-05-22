@@ -261,6 +261,18 @@ export function getMobileHTML(): string {
     }
     .stats-grid .label { color: var(--text-muted); }
     .stats-grid .value { color: var(--text); font-weight: 700; text-align: right; }
+    .sippin-dual { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+    .sippin-panel {
+      padding: 8px 10px; border-radius: 10px;
+      background: rgba(15,23,42,0.55); border: 1px solid rgba(245,158,11,0.18);
+    }
+    .sippin-panel .panel-hd {
+      font-size: 10px; font-weight: 700; color: var(--gold);
+      margin-bottom: 4px; display: flex; align-items: center; gap: 4px;
+    }
+    .sippin-panel .panel-val { font-size: 14px; font-weight: 800; color: var(--text); }
+    .sippin-panel .panel-cap { font-size: 9px; color: var(--text-muted); margin-top: 3px; line-height: 1.4; }
+    .sippin-hint { color: var(--gold); text-decoration: none; font-weight: 700; }
 
     /* ── Bushel 43: Character avatar bar ─────────────────────────── */
     #character-bar {
@@ -617,8 +629,24 @@ export function getMobileHTML(): string {
       <span id="stats-title">Mnemosyne stats</span>
       <span id="stats-chevron">▼</span>
     </button>
+    <div class="sippin-dual">
+      <div class="sippin-panel">
+        <div class="panel-hd">Tech-nerd view · subscription throttle avoided
+          <a class="sippin-hint" href="https://cephas.lianabanyan.org/economics/sippin-ethereal-t" title="Sippin' Ethereal T · Honest-Alpha estimate">?</a>
+        </div>
+        <div class="panel-val" id="stat-sub-throttle">~$—</div>
+        <div class="panel-cap">ESTIMATED · extra Ultra-class accounts not needed this month</div>
+      </div>
+      <div class="sippin-panel">
+        <div class="panel-hd">Normal-user view · pepperoni-slice avoided
+          <a class="sippin-hint" href="https://cephas.lianabanyan.org/economics/sippin-ethereal-t" title="Per-call nickel-and-dime pattern">?</a>
+        </div>
+        <div class="panel-val" id="stat-pepperoni">~$—</div>
+        <div class="panel-cap">ESTIMATED · ChatGPT-Plus-style per-call stack vs Mnemosyne substrate</div>
+      </div>
+    </div>
     <div class="stats-grid">
-      <span class="label">Cloud cost avoided this month</span><span class="value" id="stat-cost">$3.5064</span>
+      <span class="label">Direct cloud API (measured)</span><span class="value" id="stat-cost">$3.5064</span>
       <span class="label">Queries served this month</span><span class="value" id="stat-queries">22,775</span>
       <span class="label">Substrate strain</span><span class="value" id="stat-strain">v0.1.5 NOVACULA</span>
       <span class="label">Last successful query</span><span class="value" id="stat-last-query">--</span>
@@ -699,7 +727,7 @@ export function getMobileHTML(): string {
   let currentMode = '—';
   let lastQueryText = '';
   let lastSuccessfulQueryAt = '';
-  const STRAIN_VERSION = window.__STRAIN_VERSION__ || 'v0.1.5';
+  const STRAIN_VERSION = window.__STRAIN_VERSION__ || 'v0.1.7';
   const STRAIN_DISPLAY = STRAIN_VERSION + ' NOVACULA';
   // Bushel 43: character-avatar recipient selector replaces single-shot noteMode
   // Sticky selection — stays on chosen recipient until user taps another avatar
@@ -722,6 +750,8 @@ export function getMobileHTML(): string {
   const statStrain = document.getElementById('stat-strain');
   const statLastQuery = document.getElementById('stat-last-query');
   const statPioneer = document.getElementById('stat-pioneer');
+  const statSubThrottle = document.getElementById('stat-sub-throttle');
+  const statPepperoni = document.getElementById('stat-pepperoni');
   const quickBar = document.getElementById('quick-bar');
   const quickToggle = document.getElementById('quick-toggle');
   const stateStrip = document.getElementById('state-strip');
@@ -821,9 +851,35 @@ export function getMobileHTML(): string {
     }
   }
 
+  function computeSippinViews(queries, directCost) {
+    const q = Number(queries) || 0;
+    const direct = Number(directCost) || 0;
+    const peakPerAccount = 5000;
+    const accountsRequired = q > 0 ? Math.ceil(q / peakPerAccount) : 0;
+    const subAvoided = Math.max(0, accountsRequired - 1) * 216;
+    const subLow = Math.max(0, accountsRequired - 2) * 216;
+    const subHigh = accountsRequired * 216;
+    const casualPerQuery = 0.04;
+    const normalEst = q * casualPerQuery;
+    const pepperoni = Math.max(0, normalEst - direct);
+    return { subAvoided, subLow, subHigh, pepperoni, normalEst, accountsRequired };
+  }
+
   function updateStatsCard(cost, queries, pioneerRank) {
-    if (statCost && cost !== null && cost !== undefined) statCost.textContent = formatMoney(cost || 3.5064, true);
-    if (statQueries && queries !== null && queries !== undefined) statQueries.textContent = intFmt.format(queries || 22775);
+    const q = queries || 0;
+    const c = cost ?? 0;
+    const sippin = computeSippinViews(q, c);
+    if (statCost && cost !== null && cost !== undefined) statCost.textContent = formatMoney(c, true);
+    if (statQueries && queries !== null && queries !== undefined) statQueries.textContent = intFmt.format(q);
+    if (statSubThrottle) {
+      const band = sippin.subLow !== sippin.subHigh
+        ? '~$' + moneyFmt.format(sippin.subLow) + '–' + moneyFmt.format(sippin.subHigh)
+        : '~$' + moneyFmt.format(sippin.subAvoided);
+      statSubThrottle.textContent = band + '/mo';
+    }
+    if (statPepperoni) {
+      statPepperoni.textContent = '~$' + moneyFmt.format(sippin.pepperoni);
+    }
     if (statStrain) statStrain.textContent = STRAIN_DISPLAY;
     if (statLastQuery) statLastQuery.textContent = lastSuccessfulQueryAt || '--';
     if (statPioneer) statPioneer.textContent = pioneerRank || '--';

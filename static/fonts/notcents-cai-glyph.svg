@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NotCents-CAI master glyph — doublebar-reversed-C
+  Canonical source: C:\Users\Administrator\Downloads\NotCents.png (BP047 Founder direct)
+  Geometry: 1000x1000 em square, baseline y=0, ascent y=800, descent y=-200
+  Design: "C" rotated 180° about vertical axis (opens LEFT) + two horizontal crossbars
+  License: Liana Banyan internal canon BP048
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g fill="#000000" fill-rule="evenodd">
+    <!-- Reversed-C ring (opens LEFT). Built as outer arc minus inner arc.
+         Outer radius 320, inner radius 200, centered at (520, 500).
+         Mouth opens to the LEFT: arc spans from angle 150° down through 210° (the LEFT side is the opening).
+         Equivalently: draw a near-full ring with a wedge cut on the LEFT. -->
+    <path d="
+      M 520 180
+      A 320 320 0 1 1 343.5 745.2
+      L 446.2 643.7
+      A 200 200 0 1 0 520 300
+      Z
+    "/>
+    <!-- Top crossbar: horizontal, extends past the C on both sides -->
+    <rect x="120" y="335" width="800" height="70"/>
+    <!-- Bottom crossbar: horizontal, extends past the C on both sides -->
+    <rect x="120" y="595" width="800" height="70"/>
+  </g>
+</svg>

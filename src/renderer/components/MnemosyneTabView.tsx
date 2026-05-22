@@ -86,6 +86,7 @@ export function MnemosyneTabView({
   const [windUnlocked, setWindUnlocked] = useState(() =>
     localStorage.getItem(LS_WIND_UNLOCKED) === 'true'
   );
+  const [appVersion, setAppVersion] = useState('');
   const windClickCount = useRef(0);
   const windClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -104,6 +105,10 @@ export function MnemosyneTabView({
   useEffect(() => {
     localStorage.setItem(LS_ACTIVE_TAB, activeTab);
   }, [activeTab]);
+
+  useEffect(() => {
+    window.amplify?.getAppVersion?.().then((v) => setAppVersion(v?.version ?? '')).catch(() => {});
+  }, []);
 
   // Called by GauntletTab when the first full Gauntlet run completes
   function handleGauntletFirstComplete() {
@@ -291,6 +296,24 @@ export function MnemosyneTabView({
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => window.amplify?.checkForUpdates?.()}
+            title="Check for updates to Mnemosyne"
+            style={{
+              padding: '5px 10px',
+              background: 'rgba(110,231,183,0.1)',
+              border: '1px solid rgba(110,231,183,0.3)',
+              borderRadius: 6,
+              color: '#6ee7b7',
+              fontSize: 10,
+              fontWeight: 600,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Check for Updates{appVersion ? ` · v${appVersion}` : ''}
+          </button>
           <div style={styles.modeChip}>
             {modeLabel[currentMode]}
           </div>
@@ -307,7 +330,7 @@ export function MnemosyneTabView({
 
       {/* SAGA 03 — 3-option ask (first launch only) */}
       {showOnboardAsk && (
-        <ThreeOptionAsk onChoice={handleOnboardChoice} devModeEnabled={devEnabled} />
+        <ThreeOptionAsk onChoice={handleOnboardChoice} devModeEnabled={devEnabled} appVersion={appVersion} />
       )}
 
       {/* BP048 — Dashboard → Bridge discoverability (complementary surfaces) */}
@@ -489,9 +512,11 @@ function HelmGate({ onJoin }: { onJoin: () => void }) {
 function ThreeOptionAsk({
   onChoice,
   devModeEnabled,
+  appVersion = '',
 }: {
   onChoice: (c: 'free' | 'member' | 'developer') => void;
   devModeEnabled?: boolean;
+  appVersion?: string;
 }) {
   return (
     <div style={{
@@ -532,6 +557,17 @@ function ThreeOptionAsk({
           color="#f59e0b"
           onClick={() => onChoice('developer')}
           enabled={devModeEnabled}
+        />
+        <OptionCard
+          number={4}
+          label="Check for Updates"
+          desc={
+            appVersion
+              ? `Currently v${appVersion} · tap to check mnemosynec.ai for the latest strain`
+              : 'Check mnemosynec.ai for the latest Mnemosyne strain'
+          }
+          color="#38bdf8"
+          onClick={() => window.amplify?.checkForUpdates?.()}
         />
       </div>
     </div>

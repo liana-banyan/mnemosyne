@@ -297,7 +297,9 @@ export function ScreenFederation({ onNext, onBack, onSkip, step, totalSteps }: S
       <div style={{ fontSize: 28, marginBottom: 8, textAlign: 'center' }}>🕸️</div>
       <h2 style={s.title}>Federation (Optional)</h2>
       <p style={s.body}>
-        Mnemosyne is more powerful when peers federate. You can invite someone now
+        On your home network, Mnemosyne can automatically find other installs and ask
+        if you want to connect (LOCAL-HANDSHAKE). You can also invite someone manually now.
+        Mnemosyne is more powerful when peers federate.
         or skip — the invitation tool is always available in the Federation tab.
       </p>
 

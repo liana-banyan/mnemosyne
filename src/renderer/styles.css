@@ -1,21 +1,26 @@
 /* AMPLIFY Computer — Global Styles */
 /* Transparent overlay — only the border and corner indicator are visible */
 
-/* ─── CAINotCents custom font (BP041 SAGA 3) ────────────────────────────────── */
-/* Single-glyph font: NotCents (D with two vertical strokes) at PUA U+E000.      */
-/* Founder direct: "Take the Font route, but just one character."                 */
-/* AGPL Free Forever. NO-FIAT-CONVERSION visual identity.                         */
+/* ─── NotCents-CAI font (BP048 SEG-GLYPH) ───────────────────────────────────── */
+/* U+E000 PUA primary · U+2183 Ↄ overload upgrades prose wherever font is active. */
+@font-face {
+  font-family: 'NotCents-CAI';
+  src: url('./fonts/NotCents-CAI.otf') format('opentype'),
+       url('./fonts/NotCents-CAI.ttf') format('truetype');
+  font-display: block;
+  unicode-range: U+E000, U+2183;
+}
+
 @font-face {
   font-family: 'CAINotCents';
-  src: url('/fonts/cai-notcents.woff2') format('woff2'),
-       url('/fonts/cai-notcents.ttf') format('truetype');
-  font-display: block; /* prevent FOUT — glyph must render on first paint */
-  unicode-range: U+E000; /* restrict to single PUA codepoint */
+  src: url('./fonts/NotCents-CAI.ttf') format('truetype');
+  font-display: block;
+  unicode-range: U+E000, U+2183;
 }
 
 /* Helper class: apply NotCents font. Use <span class="cai-glyph">&#xE000;</span> */
 .cai-glyph {
-  font-family: 'CAINotCents', system-ui, sans-serif;
+  font-family: 'NotCents-CAI', 'CAINotCents', system-ui, sans-serif;
   font-style: normal;
   font-weight: normal;
   line-height: 1;

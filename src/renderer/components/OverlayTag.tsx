@@ -51,11 +51,16 @@ export const OverlayTag: React.FC<OverlayTagProps> = ({
     return () => window.removeEventListener('keydown', handler);
   }, [onExpand]);
 
+  const handleOpen = () => {
+    window.amplify?.openDashboard?.();
+    onExpand();
+  };
+
   return (
     <button
-      onClick={onExpand}
-      title="Open Mnemosyne — substrate active in background (Ctrl+Shift+M)"
-      aria-label="Open Mnemosyne — click or press Ctrl+Shift+M to expand"
+      onClick={handleOpen}
+      title="Click to open Dashboard"
+      aria-label="Click to open Dashboard"
       style={{
         position: 'fixed',
         bottom: 12,

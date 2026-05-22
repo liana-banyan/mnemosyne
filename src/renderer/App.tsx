@@ -7,6 +7,7 @@
 
 import React, { useState, useEffect, useLayoutEffect } from 'react';
 import { FrameModeIndicator } from './components/FrameModeIndicator';
+import { DashboardCornerAffordance } from './components/DashboardCornerAffordance';
 import { MnemosyneTabView } from './components/MnemosyneTabView';
 import { AMPLIFYDashboard } from './components/AMPLIFYDashboard';
 import { ModelPullDialog } from './components/ModelPullDialog';
@@ -235,6 +236,7 @@ export default function App() {
 
   return (
     <>
+      <DashboardCornerAffordance />
       {/* Always-present LB Frame border + corner indicator */}
       <FrameModeIndicator
         state={{ mode }}

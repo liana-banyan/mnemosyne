@@ -1,0 +1,29 @@
+# Build outputs — do not commit
+dist/
+release/
+release-*/
+
+# Electron build intermediates
+out/
+.webpack/
+
+# Runtime / debug
+*.log
+npm-debug.log*
+
+# Local development
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln

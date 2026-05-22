@@ -112,6 +112,44 @@ const CONNECTIVITY_POLL_MS = 30_000;
 const SUBSTRATE_ROOT_MAIN = process.env.LB_SUBSTRATE_ROOT ?? join(homedir(), '.lb_substrate');
 const TIERS_FILE = join(SUBSTRATE_ROOT_MAIN, 'in_conjunction_tiers.json');
 
+// BP048 v0.1.7 — wife-install first-run + LOCAL-HANDSHAKE prefs (~/.mnemosyne/)
+const MNEMOSYNE_HOME = join(homedir(), '.mnemosyne');
+const FIRST_RUN_FLAG = join(MNEMOSYNE_HOME, 'first_run.flag');
+const LAN_HANDSHAKE_PREFS = join(MNEMOSYNE_HOME, 'lan_handshake.json');
+
+interface LanHandshakePrefs {
+  neverAsk?: boolean;
+  connectedPeers?: string[];
+}
+
+function isFirstRun(): boolean {
+  return !existsSync(FIRST_RUN_FLAG);
+}
+
+function markFirstRunComplete(): void {
+  const fs = require('fs') as typeof import('fs');
+  fs.mkdirSync(MNEMOSYNE_HOME, { recursive: true });
+  fs.writeFileSync(FIRST_RUN_FLAG, new Date().toISOString(), 'utf-8');
+}
+
+function loadLanHandshakePrefs(): LanHandshakePrefs {
+  if (!existsSync(LAN_HANDSHAKE_PREFS)) return {};
+  try {
+    return JSON.parse(require('fs').readFileSync(LAN_HANDSHAKE_PREFS, 'utf-8')) as LanHandshakePrefs;
+  } catch {
+    return {};
+  }
+}
+
+function saveLanHandshakePrefs(prefs: LanHandshakePrefs): void {
+  const fs = require('fs') as typeof import('fs');
+  fs.mkdirSync(MNEMOSYNE_HOME, { recursive: true });
+  fs.writeFileSync(LAN_HANDSHAKE_PREFS, JSON.stringify(prefs, null, 2), 'utf-8');
+}
+
+let lanHandshakeEligible = false;
+let lanHandshakePromptInFlight = false;
+
 function loadTierChoices(): Record<string, string> {
   if (!existsSync(TIERS_FILE)) return {};
   try {
@@ -593,13 +631,14 @@ function openMoneyPennyWindow(): void {
   moneyPennyWindow.loadURL(getMoneyPennyURL(API_PORT));
 }
 
-function openDashboard(): void {
-  if (dashboardWindow) {
-    dashboardWindow.focus();
+function openDashboard(opts?: { focus?: boolean }): void {
+  if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+    dashboardWindow.show();
+    if (opts?.focus !== false) dashboardWindow.focus();
     return;
   }
 
-  // SAGA 07 BP046B — expanded for 4-tab MnemosyneTabView
+  // SAGA 07 BP046B — expanded for 6-tab MnemosyneTabView
   dashboardWindow = new BrowserWindow({
     width: 680,
     height: 780,
@@ -624,11 +663,15 @@ function openDashboard(): void {
     height: dashH,
   });
   dashboardWindow.setBounds(dashBounds);
-  dashboardWindow.show();
+
+  dashboardWindow.once('ready-to-show', () => {
+    dashboardWindow?.show();
+    if (opts?.focus !== false) dashboardWindow?.focus();
+  });
 
   dashboardWindow.loadURL(
     IS_DEV
-      ? 'http://localhost:5173/#/dashboard'
+      ? 'http://127.0.0.1:5173/#/dashboard'
       : `file://${join(__dirname, '../renderer/index.html')}#/dashboard`,
   );
 
@@ -638,6 +681,46 @@ function openDashboard(): void {
 
   if (autoUpdater) autoUpdater.registerWindow(dashboardWindow);
   if (authManager) authManager.registerWindow(dashboardWindow);
+}
+
+function setupLanHandshakeDiscovery(): void {
+  if (!peerDiscovery) return;
+  const ownId = getStablePeerId();
+
+  peerDiscovery.on('peer-discovered', (peer) => {
+    if (peer.transport !== 'lan' || peer.peerId === ownId) return;
+    if (!lanHandshakeEligible || lanHandshakePromptInFlight) return;
+
+    const prefs = loadLanHandshakePrefs();
+    if (prefs.neverAsk) return;
+    if (prefs.connectedPeers?.includes(peer.peerId)) return;
+
+    lanHandshakePromptInFlight = true;
+    const hostname = peer.displayName || peer.address || peer.peerId.slice(0, 12);
+
+    void dialog.showMessageBox({
+      type: 'question',
+      title: 'Mnemosyne on your network',
+      message: `Found another Mnemosyne on your network: ${hostname}`,
+      detail: 'Would you like to connect to it? (LOCAL-HANDSHAKE · same house LAN)',
+      buttons: ['Yes, connect', 'Not Now', 'Never Ask Again'],
+      defaultId: 0,
+      cancelId: 1,
+    }).then((result) => {
+      if (result.response === 0) {
+        openDashboard({ focus: true });
+        dashboardWindow?.webContents.send('federation:lan-peer-offer', peer);
+        saveLanHandshakePrefs({
+          ...prefs,
+          connectedPeers: [...(prefs.connectedPeers ?? []), peer.peerId],
+        });
+      } else if (result.response === 2) {
+        saveLanHandshakePrefs({ ...prefs, neverAsk: true });
+      }
+    }).finally(() => {
+      lanHandshakePromptInFlight = false;
+    });
+  });
 }
 
 // ─── Hearth Conjunction Window (B83) ─────────────────────────────────────────
@@ -1269,6 +1352,13 @@ app.whenReady().then(async () => {
   peerDiscovery.startLAN().catch((e) => console.warn('[PeerDiscovery] LAN start error:', e));
   relayClient.start();
 
+  const firstRun = isFirstRun();
+  if (firstRun) {
+    lanHandshakeEligible = true;
+    setTimeout(() => { lanHandshakeEligible = false; }, 90_000);
+    setupLanHandshakeDiscovery();
+  }
+
   // Initialize auth manager (Phase 7)
   authManager = new AuthManager();
   authManager.init();
@@ -1306,12 +1396,17 @@ app.whenReady().then(async () => {
   // Handle cold-start deep-link (Windows: URL passed via argv)
   handleStartupDeepLink(process.argv, () => hearthConjunctionWindow ?? overlayWindow ?? null);
 
-  // SAGA 03 BP046B — Dashboard-first startup (replaces auto-Hearth-Conjunction-open).
-  // First launch: open Dashboard immediately so the 3-option ask is front-and-center.
-  // Subsequent launches: Dashboard still opens (user can close it; tray always accessible).
-  // Set env MNEMOSYNE_NO_AUTO_OPEN=1 to skip entirely (dev convenience).
+  // BP048 v0.1.7 B1 — first launch forces Dashboard (wife-install BLOCKER).
+  // Subsequent launches: tray-only unless user opens Dashboard (MNEMOSYNE_NO_AUTO_OPEN skips).
   if (process.env.MNEMOSYNE_NO_AUTO_OPEN !== '1') {
-    openDashboard();
+    if (firstRun) {
+      openDashboard({ focus: true });
+      if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+        dashboardWindow.once('ready-to-show', () => markFirstRunComplete());
+      } else {
+        setTimeout(() => markFirstRunComplete(), 2000);
+      }
+    }
   }
 
   const okQuit = globalShortcut.register('CommandOrControl+Shift+Alt+Q', () => {

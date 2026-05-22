@@ -1,6 +1,6 @@
 {
   "name": "amplify-computer",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (AGPL Free Forever)",
   "homepage": "https://lianabanyan.com",
   "private": true,
@@ -63,6 +63,7 @@
   "build": {
     "appId": "com.lianabanyan.mnemosyne",
     "productName": "Mnemosyne",
+    "icon": "assets/app-icon",
     "copyright": "Copyright © 2026 Liana Banyan Corporation",
     "asar": true,
     "asarUnpack": [
@@ -76,6 +77,9 @@
       "dist/**/*",
       "!dist/**/*.map",
       "assets/tray-icon.png",
+      "assets/app-icon.ico",
+      "assets/app-icon.png",
+      "assets/app-icon-*.png",
       "src/renderer/public/**/*",
       "static/**/*",
       "node_modules/**/*",
