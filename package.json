@@ -82,9 +82,17 @@
       "assets/app-icon-*.png",
       "src/renderer/public/**/*",
       "static/**/*",
+      "!static/cephas/**",
+      "!static/**/*.map",
       "node_modules/**/*",
       "!node_modules/.cache/**",
       "!node_modules/**/{test,__tests__,tests,powered-test,example,examples}/**"
+    ],
+    "extraFiles": [
+      {
+        "from": "assets/post_install_message.txt",
+        "to": "README_INSTALL.txt"
+      }
     ],
     "extraResources": [
       {
