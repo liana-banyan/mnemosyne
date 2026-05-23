@@ -289,10 +289,10 @@ export function MnemosyneTabView({
             <div
               style={styles.brandName}
               onClick={handleBrandTripleClick}
-              title={windUnlocked ? 'Mnemosyne — Ambience active' : 'Mnemosyne'}
-              aria-label="Mnemosyne"
+              title={windUnlocked ? 'Mnemosyne™ — Ambience active' : 'Mnemosyne™'}
+              aria-label="Mnemosyne™"
             >
-              Mnemosyne
+              Mnemosyne™
             </div>
             <div style={{ ...styles.brandSub, display: 'flex', alignItems: 'center', gap: 4 }}>
               <CaiSymbol size={12} color="#6ee7b7" aria-label="CAI" />

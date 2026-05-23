@@ -378,7 +378,7 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
             }}
           >
             <div>
-              <div className="dashboard__title">Mnemosyne</div>
+              <div className="dashboard__title">Mnemosyne™</div>
               <div className="dashboard__subtitle">
                 Mnemosyne CAI Amplifier — {MODES.find((m) => m.id === currentMode)?.label ?? 'Normal'} Mode
                 {forcedMode && (

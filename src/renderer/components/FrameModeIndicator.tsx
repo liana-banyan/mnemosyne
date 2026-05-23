@@ -23,6 +23,9 @@ interface FrameModeState {
 interface FrameModeIndicatorProps {
   state: FrameModeState;
   onModeChange?: (mode: FrameMode) => void;
+  /** KniPr005: optional direct chip-click override — bypasses the mode-selector popover.
+   *  Used by overlay view to open Dashboard on single click instead of opening the popover. */
+  onChipClick?: () => void;
   showCostControls?: boolean;
   /** Phase 7: cooperative member badge tier ('stamped' shows gold dot) */
   memberBadge?: 'stamped' | 'ghost';
@@ -65,6 +68,7 @@ const MODE_META: Record<FrameMode, {
 export const FrameModeIndicator: React.FC<FrameModeIndicatorProps> = ({
   state,
   onModeChange,
+  onChipClick,
   memberBadge,
   degraded = false,
   ollamaAvailable = false,
@@ -77,8 +81,22 @@ export const FrameModeIndicator: React.FC<FrameModeIndicatorProps> = ({
 
   const handleClick = useCallback(() => {
     if (degraded) return;
-    setPopoverOpen(true);
-  }, [degraded]);
+    if (onChipClick) {
+      onChipClick();
+    } else {
+      setPopoverOpen(true);
+    }
+  }, [degraded, onChipClick]);
+
+  // KniPr005 Bug 1: toggle overlay click-through when mouse hovers chip.
+  // In overlay (click-through) window, chip must capture pointer on hover.
+  const handleChipMouseEnter = useCallback(() => {
+    window.amplify?.setClickthrough?.(false);
+  }, []);
+
+  const handleChipMouseLeave = useCallback(() => {
+    if (!popoverOpen) window.amplify?.setClickthrough?.(true);
+  }, [popoverOpen]);
 
   const handleModeSelect = useCallback((mode: FrameMode) => {
     onModeChange?.(mode);
@@ -103,11 +121,13 @@ export const FrameModeIndicator: React.FC<FrameModeIndicatorProps> = ({
         <NotCentsGlyph size="0.9em" alt="" /> CAI
       </span>
 
-      {/* Corner mode indicator — bottom-right; clickable to open mode selector */}
+      {/* Corner mode indicator — bottom-right; clickable to open mode selector or Dashboard */}
       <div
         className={`lb-corner-indicator lb-corner-indicator--${effectiveMode}`}
         title={degraded ? 'Degraded mode — trial expired' : meta.tooltip}
         onClick={handleClick}
+        onMouseEnter={handleChipMouseEnter}
+        onMouseLeave={handleChipMouseLeave}
         role="button"
         tabIndex={0}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(); } }}

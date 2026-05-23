@@ -14,7 +14,7 @@ interface RetrievalEntry {
 const MOCK_ENTRIES: RetrievalEntry[] = [
   { timestamp: new Date(Date.now() - 300_000).toISOString(), query: 'Kitchen Table meal planning', sourceScribe: 'KnightQueue', score: 0.94, resultSnippet: 'Family meal coordination via cooperative Kitchen Table™ module…' },
   { timestamp: new Date(Date.now() - 900_000).toISOString(), query: 'Atlas™ scheduling conflict resolution', sourceScribe: 'KnightArchitecture', score: 0.88, resultSnippet: 'Multi-participant scheduling with availability juggling visualization…' },
-  { timestamp: new Date(Date.now() - 1_800_000).toISOString(), query: 'Banyan Metric composite score', sourceScribe: 'KnightBRIDLEMemory', score: 0.91, resultSnippet: 'BP052 NOVACULA v0.1.8 wave target composite score 89.4…' },
+  { timestamp: new Date(Date.now() - 1_800_000).toISOString(), query: 'Banyan Metric™ composite score', sourceScribe: 'KnightBRIDLEMemory', score: 0.91, resultSnippet: 'BP052 NOVACULA v0.1.8 wave target composite score 89.4…' },
   { timestamp: new Date(Date.now() - 3_600_000).toISOString(), query: 'P2P discovery peer expiry', sourceScribe: 'KnightQueue', score: 0.76, resultSnippet: 'UDP multicast beacon expiry at 90s, peer map cleanup on 15s interval…' },
   { timestamp: new Date(Date.now() - 7_200_000).toISOString(), query: 'Recipe™ AI-assist fallback', sourceScribe: 'KnightHandoffs', score: 0.82, resultSnippet: 'Graceful fallback when window.amplify.ai unavailable — silent no-op…' },
 ];

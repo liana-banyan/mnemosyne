@@ -121,7 +121,7 @@ export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: 
 
       {/* ── Section 1: MNEMOSYNE UPDATE ─────────────────────────────────── */}
       <section style={s.section}>
-        <div style={s.sectionHeader}>⬆️ Mnemosyne Update</div>
+        <div style={s.sectionHeader}>⬆️ Mnemosyne™ Update</div>
         <div style={s.card}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
             <div>

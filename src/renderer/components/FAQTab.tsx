@@ -15,7 +15,7 @@ interface FaqEntry {
 const FAQ_ENTRIES: FaqEntry[] = [
   {
     id: 'what-is-mnemosyne',
-    question: 'What is Mnemosyne?',
+    question: 'What is Mnemosyne™?',
     tldr: 'A substrate layer that makes any AI faster and cheaper by caching what it knows locally.',
     full: 'Mnemosyne is a local AI substrate — a Cathedral — that stores compressed semantic knowledge on your own hardware. Every query gets routed through the Cathedral first, dramatically reducing how much work any external AI model has to do. Speed increases, cost drops, and accuracy improves because the model is starting from a richer, pre-loaded context. Works with any AI model, or none at all.',
   },

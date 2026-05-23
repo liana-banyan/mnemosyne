@@ -99,10 +99,48 @@ export function ScreenWelcome({ onNext, onBack, onSkip, step, totalSteps }: Scre
       <div style={s.badge}>LianaBanyan Alpha</div>
 
       <p style={s.body}>
-        <strong style={{ color: C.text }}>Mnemosyne works now.</strong>{' '}
+        <strong style={{ color: C.text }}>Mnemosyne™ works now.</strong>{' '}
         This is Alpha — things may shift, features may change, and your feedback shapes
         what comes next.
       </p>
+
+      {/* KniPr005 — Non-destructive disclosure (A2 canon) before Get Started */}
+      <div style={{
+        background: '#1a1a2e',
+        border: '1px solid #16213e',
+        borderRadius: 8,
+        padding: 14,
+        margin: '0 0 16px',
+        fontSize: 12,
+        textAlign: 'left',
+      }}>
+        <div style={{ color: '#60a5fa', fontWeight: 700, marginBottom: 7, fontSize: 13 }}>
+          🛡️ What Mnemosyne™ does to your computer
+        </div>
+        <div style={{ color: '#94a3b8', lineHeight: 1.7 }}>
+          <strong style={{ color: C.text }}>READ-ONLY companion.</strong> Mnemosyne™ reads only folders
+          you mark as Substrated and creates sha256-verified Eblet™ records inside its own data folder.
+          Your original files are never moved, modified, or uploaded.{' '}
+          No account required. No telemetry. No phone-home.
+        </div>
+        <button
+          onClick={() => {
+            try { window.amplify?.openDashboard?.(); } catch { /* non-fatal */ }
+          }}
+          style={{
+            marginTop: 8,
+            color: C.amber,
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: 11,
+            textDecoration: 'underline',
+            padding: 0,
+          }}
+        >
+          Show me how to verify in the Caithedral™ Inspector →
+        </button>
+      </div>
 
       <div style={s.callout}>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 8 }}>

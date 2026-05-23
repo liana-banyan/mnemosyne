@@ -136,8 +136,9 @@ export default function App() {
     window.amplify.setFrameMode(newMode);
   };
 
+  // KniPr005 Bug 2: overlay chip click opens the real Dashboard window (not in-overlay sheet).
   const handleCornerClick = () => {
-    setShowDashboard(true);
+    window.amplify?.openDashboard?.();
   };
 
   const handleDashboardClose = () => {
@@ -238,9 +239,11 @@ export default function App() {
     <>
       <DashboardCornerAffordance />
       {/* Always-present LB Frame border + corner indicator */}
+      {/* KniPr005: onChipClick opens Dashboard window; onModeChange handles mode changes */}
       <FrameModeIndicator
         state={{ mode }}
-        onModeChange={showModelPull || showDashboard ? undefined : handleCornerClick}
+        onModeChange={handleModeChange}
+        onChipClick={showModelPull ? undefined : handleCornerClick}
         memberBadge={authState?.member?.badge_tier}
         degraded={authState?.degraded ?? false}
       />
