@@ -1,0 +1,35 @@
+﻿# .cursorignore — amplify-computer
+# Prevent Cursor indexer from loading asar/binary artifacts into LLM context.
+
+# Installer release artifacts — prevent asar lock contention (KniPr009 · BP053)
+release/
+release-knipr008/
+
+# node_modules
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+**/dist/
+out/
+**/out/
+
+# Electron asar artifacts
+*.asar
+**/*.asar
+
+# Binary / large non-code
+*.exe
+*.zip
+*.tar.gz
+*.dmg
+*.deb
+*.AppImage
+
+# Env / secrets
+.env
+.env.*
+**/.env
+**/.env.*
+**/*.env
