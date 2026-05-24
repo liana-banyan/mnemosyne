@@ -17,6 +17,7 @@ import {
   ScreenFederation,
   ScreenRoll,
 } from './OnboardingScreens';
+import { LocFaqModal } from '../../components/LocFaqPanel';
 
 // ─── OnboardingWizard (non-blocking sidebar) ──────────────────────────────────
 // KniPr012: converted from full-page replacement to position:fixed right sidebar.
@@ -141,6 +142,7 @@ function OllamaCheckCard() {
 export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const [step, setStep] = useState<OnboardingScreen>(1);
   const [collected, setCollected] = useState<Record<string, unknown>>({});
+  const [showLocFaq, setShowLocFaq] = useState(false);
 
   const finish = () => {
     try { localStorage.setItem(ONBOARDED_KEY, 'true'); } catch { /* ignore */ }
@@ -244,7 +246,36 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
           {step === 4 && <ScreenFederation {...screenProps} />}
           {step === 5 && <ScreenRoll {...screenProps} />}
         </div>
+
+        {/* Sidebar footer — Grand Project link */}
+        <div style={{
+          borderTop: '1px solid rgba(100,116,139,0.15)',
+          padding: '10px 20px',
+          flexShrink: 0,
+        }}>
+          <button
+            onClick={() => setShowLocFaq(true)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#6ee7b7',
+              cursor: 'pointer',
+              fontSize: 11,
+              fontWeight: 500,
+              padding: 0,
+              textDecoration: 'underline',
+              textDecorationColor: 'rgba(110,231,183,0.35)',
+            }}
+          >
+            Learn about the Grand Project →
+          </button>
+          <div style={{ fontSize: 9, color: '#334155', marginTop: 2 }}>
+            Library of Congress · 10,000-node cooperative network
+          </div>
+        </div>
       </div>
+
+      {showLocFaq && <LocFaqModal onClose={() => setShowLocFaq(false)} />}
     </>
   );
 }

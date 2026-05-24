@@ -122,7 +122,7 @@ export function UpdateToast() {
             Mnemosyne v{updateState.version} ready
           </span>
           <button
-            onClick={() => setDismissed(true)}
+            onClick={() => { setDismissed(true); window.amplify?.setClickthrough?.(true); }}
             style={{
               background: 'none',
               border: 'none',
@@ -161,7 +161,7 @@ export function UpdateToast() {
             Install &amp; Restart
           </button>
           <button
-            onClick={() => setDismissed(true)}
+            onClick={() => { setDismissed(true); window.amplify?.setClickthrough?.(true); }}
             style={{
               padding: '7px 10px',
               background: 'rgba(255,255,255,0.05)',
