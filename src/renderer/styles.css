@@ -276,6 +276,11 @@ body {
   50%       { box-shadow: 0 0 18px 5px rgba(250, 204, 21, 0.75), inset 0 0 12px 3px rgba(250, 204, 21, 0.28); }
 }
 
+@keyframes mnemo-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
 /* Hearth (🪵 green — local Ollama, zero marginal cost, dashed border): rhythmic burn */
 .lb-frame--normal::before {
   border-color: var(--color-normal);

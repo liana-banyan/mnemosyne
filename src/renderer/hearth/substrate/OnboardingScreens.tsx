@@ -187,7 +187,7 @@ export function ScreenIdentity({ onNext, onBack, onSkip, step, totalSteps }: Scr
         setPubkeyShort(result.pubkeyShort);
       } else {
         // Placeholder — real keygen is IPC-backed
-        setPubkeyShort('mnemo-' + crypto.randomUUID?.().slice(0, 12) ?? '000000000000');
+        setPubkeyShort('mnemo-' + (crypto.randomUUID?.().slice(0, 12) ?? '000000000000'));
       }
       setPubkeyStatus('done');
     } catch {

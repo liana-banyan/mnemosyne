@@ -107,6 +107,8 @@ export function UpdateToast() {
         }}
         role="alertdialog"
         aria-label={`Mnemosyne v${updateState.version ?? ''} ready to install`}
+        onMouseEnter={() => window.amplify?.setClickthrough?.(false)}
+        onMouseLeave={() => window.amplify?.setClickthrough?.(true)}
       >
         <div
           style={{
