@@ -6,6 +6,7 @@
 
 import React, { useState, useEffect } from 'react';
 import type { AuthState } from '../amplify.d';
+import { LocFaqModal } from './LocFaqPanel';
 
 interface SettingsTabProps {
   authState: AuthState | null;
@@ -397,6 +398,7 @@ interface ContributionStats {
       moderate: number;
       strenuous: number;
       veryStrenuous: number;
+      extreme: number;
     };
   };
 }
@@ -409,18 +411,40 @@ const PLACEHOLDER_STATS: ContributionStats = {
   codeBreaker: {
     eligible: false,
     tier: 'none',
-    progress: { easy: 0, moderate: 0, strenuous: 0, veryStrenuous: 0 },
+    progress: { easy: 0, moderate: 0, strenuous: 0, veryStrenuous: 0, extreme: 0 },
   },
 };
+
+// ─── KniPr037: Code Breaker guild entry tracking ────────────────────────────
+
+type CodeBreakerTier = 'none' | 'apprentice' | 'master';
+
+function computeTier(stats: ContributionStats): CodeBreakerTier {
+  const { easy, moderate, strenuous, veryStrenuous, extreme } = stats.codeBreaker.progress;
+  const weightedMarks = easy * 10 + moderate * 25 + strenuous * 60 + veryStrenuous * 140 + extreme * 141;
+  const apprenticeEligible = easy >= 10 && moderate >= 5 && strenuous >= 2 && veryStrenuous >= 1 && weightedMarks >= 61;
+  const masterEligible = weightedMarks >= 250 && (extreme >= 1 || veryStrenuous >= 3);
+  if (masterEligible) return 'master';
+  if (apprenticeEligible) return 'apprentice';
+  return 'none';
+}
 
 function MyContributionPanel() {
   const stats = PLACEHOLDER_STATS;
   const [showTooltip, setShowTooltip] = useState(false);
 
-  const marksGoal = 61;
-  const pct = Math.min(100, Math.round((stats.marksEarned / marksGoal) * 100));
+  const { easy, moderate, strenuous, veryStrenuous, extreme } = stats.codeBreaker.progress;
+  const weightedMarks = easy * 10 + moderate * 25 + strenuous * 60 + veryStrenuous * 140 + extreme * 141;
+  const tier = computeTier(stats);
+
+  const apprenticeGoal = 61;
+  const masterGoal = 250;
+  const apprenticePct = Math.min(100, Math.round((weightedMarks / apprenticeGoal) * 100));
+  const masterPct = Math.min(100, Math.round((weightedMarks / masterGoal) * 100));
+  const apprenticeEligible = easy >= 10 && moderate >= 5 && strenuous >= 2 && veryStrenuous >= 1 && weightedMarks >= 61;
 
   const s = styles;
+  const cb = cbStyles;
 
   return (
     <section style={s.section}>
@@ -470,28 +494,114 @@ function MyContributionPanel() {
 
         <div style={contribStyles.divider} />
 
-        {/* Code Breaker progress */}
+        {/* ── Code Breaker Guild Entry (KniPr037) ─────────────────────────── */}
         <div style={{ marginBottom: 8 }}>
-          <div style={{ ...contribStyles.rowLabel, marginBottom: 6 }}>Code Breaker progress</div>
+          <div style={cb.sectionTitle}>Code Breaker Guild Entry</div>
 
-          {/* Progress bar */}
-          <div style={contribStyles.progressTrack}>
-            <div style={{ ...contribStyles.progressFill, width: `${pct}%` }} />
-          </div>
-          <div style={{ fontSize: 9, color: '#64748b', marginTop: 3, marginBottom: 6 }}>
-            {stats.marksEarned} / {marksGoal} Marks for Apprentice
+          {/* Weighted Mark calculator */}
+          <div style={cb.calcBox}>
+            <div style={cb.calcTotal}>
+              Weighted Marks:{' '}
+              <span style={cb.calcTotalValue}>{weightedMarks}</span>
+            </div>
+            <div style={cb.calcDivider} />
+            {([
+              { label: 'Easy (×10)',            count: easy,         weight: 10  },
+              { label: 'Moderate (×25)',         count: moderate,     weight: 25  },
+              { label: 'Strenuous (×60)',        count: strenuous,    weight: 60  },
+              { label: 'Very Strenuous (×140)',  count: veryStrenuous,weight: 140 },
+              { label: 'Extreme (×141)',         count: extreme,      weight: 141 },
+            ] as const).map(({ label, count, weight }) => (
+              <div key={label} style={cb.calcRow}>
+                <span style={cb.calcLabel}>{label}:</span>
+                <span style={cb.calcFormula}>
+                  {count} × {weight} = {count * weight}
+                </span>
+              </div>
+            ))}
           </div>
 
-          {/* Breakdown */}
-          <div style={contribStyles.breakdownRow}>
-            <span style={contribStyles.breakdownItem}>Easy: {stats.codeBreaker.progress.easy}/10</span>
-            <span style={contribStyles.breakdownDot}>·</span>
-            <span style={contribStyles.breakdownItem}>Moderate: {stats.codeBreaker.progress.moderate}/5</span>
-            <span style={contribStyles.breakdownDot}>·</span>
-            <span style={contribStyles.breakdownItem}>Strenuous: {stats.codeBreaker.progress.strenuous}/2</span>
-            <span style={contribStyles.breakdownDot}>·</span>
-            <span style={contribStyles.breakdownItem}>Very Strenuous: {stats.codeBreaker.progress.veryStrenuous}/1</span>
+          {/* Tier badge */}
+          <div style={cb.tierRow}>
+            <span style={cb.tierLabel}>Code Breaker Tier:</span>
+            <span style={{
+              ...cb.tierBadge,
+              ...(tier === 'master' ? cb.tierMaster : tier === 'apprentice' ? cb.tierApprentice : cb.tierNone),
+            }}>
+              {tier === 'master' ? 'Master' : tier === 'apprentice' ? 'Apprentice' : 'None'}
+            </span>
           </div>
+
+          {/* Progress toward Apprentice */}
+          {tier === 'none' && (
+            <div style={cb.progressSection}>
+              <div style={cb.progressLabel}>
+                Next tier: Apprentice{' '}
+                <span style={cb.progressGoal}>(61 Marks needed)</span>
+              </div>
+              <div style={cb.reqNote}>
+                Requirements: 10 Easy + 5 Moderate + 2 Strenuous + 1 Very-Strenuous
+              </div>
+              <div style={contribStyles.progressTrack}>
+                <div style={{ ...contribStyles.progressFill, width: `${apprenticePct}%` }} />
+              </div>
+              <div style={cb.progressCount}>
+                {weightedMarks} / 61 Marks
+              </div>
+              <div style={cb.masterNote}>
+                After Apprentice → Master Code Breaker requires 250 Marks
+                + 1 Extreme completion OR 3 Very-Strenuous substitute
+              </div>
+            </div>
+          )}
+
+          {/* Progress toward Master (once Apprentice) */}
+          {tier === 'apprentice' && (
+            <div style={cb.progressSection}>
+              <div style={cb.progressLabel}>
+                Progress toward Master{' '}
+                <span style={cb.progressGoal}>(250 Marks needed)</span>
+              </div>
+              <div style={contribStyles.progressTrack}>
+                <div style={{ ...contribStyles.progressFill, width: `${masterPct}%` }} />
+              </div>
+              <div style={cb.progressCount}>
+                {weightedMarks} / 250 Marks
+                {' · '}
+                {extreme >= 1
+                  ? '✓ Extreme req met'
+                  : veryStrenuous >= 3
+                  ? '✓ 3×VS req met'
+                  : 'Need: 1 Extreme OR 3 Very-Strenuous'}
+              </div>
+              <div style={cb.masterNote}>
+                Master also requires: 1 Extreme completion OR 3 Very-Strenuous substitute
+              </div>
+            </div>
+          )}
+
+          {/* Eligibility indicator — Apprentice threshold hit */}
+          {apprenticeEligible && tier === 'none' && (
+            <div style={cb.eligibilityBox}>
+              <div style={cb.eligibilityCheck}>✓ Code Breaker Apprentice eligibility met!</div>
+              <button style={cb.claimBtn} disabled>
+                Claim your Apprentice badge →
+                <span style={cb.claimNote}> (backend next wave)</span>
+              </button>
+            </div>
+          )}
+
+          {tier === 'apprentice' && (
+            <div style={cb.eligibilityBox}>
+              <div style={cb.eligibilityCheck}>✓ Apprentice Code Breaker</div>
+            </div>
+          )}
+
+          {tier === 'master' && (
+            <div style={{ ...cb.eligibilityBox, borderColor: 'rgba(251,191,36,0.35)', background: 'rgba(251,191,36,0.05)' }}>
+              <div style={{ ...cb.eligibilityCheck, color: '#fbbf24' }}>✓ Master Code Breaker</div>
+            </div>
+          )}
         </div>
 
         <div style={contribStyles.divider} />
@@ -625,6 +735,151 @@ const contribStyles = {
   },
 };
 
+// ─── Code Breaker guild entry styles (KniPr037) ──────────────────────────────
+const cbStyles = {
+  sectionTitle: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#94a3b8',
+    letterSpacing: '0.04em',
+    marginBottom: 8,
+    textTransform: 'uppercase' as const,
+  },
+  calcBox: {
+    background: 'rgba(100,116,139,0.06)',
+    border: '1px solid rgba(100,116,139,0.12)',
+    borderRadius: 6,
+    padding: '8px 10px',
+    marginBottom: 10,
+  },
+  calcTotal: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: '#e2e8f0',
+    marginBottom: 4,
+  },
+  calcTotalValue: {
+    color: '#6ee7b7',
+  },
+  calcDivider: {
+    height: 1,
+    background: 'rgba(100,116,139,0.15)',
+    margin: '5px 0 6px',
+  },
+  calcRow: {
+    display: 'flex' as const,
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    marginBottom: 3,
+  },
+  calcLabel: {
+    fontSize: 9,
+    color: '#64748b',
+    minWidth: 140,
+  },
+  calcFormula: {
+    fontSize: 9,
+    color: '#94a3b8',
+    fontVariantNumeric: 'tabular-nums' as const,
+  },
+  tierRow: {
+    display: 'flex' as const,
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  tierLabel: {
+    fontSize: 10,
+    color: '#64748b',
+  },
+  tierBadge: {
+    fontSize: 10,
+    fontWeight: 700,
+    borderRadius: 4,
+    padding: '2px 8px',
+    border: '1px solid',
+  } as React.CSSProperties,
+  tierNone: {
+    color: '#475569',
+    borderColor: 'rgba(71,85,105,0.3)',
+    background: 'rgba(71,85,105,0.08)',
+  } as React.CSSProperties,
+  tierApprentice: {
+    color: '#6ee7b7',
+    borderColor: 'rgba(110,231,183,0.35)',
+    background: 'rgba(110,231,183,0.08)',
+  } as React.CSSProperties,
+  tierMaster: {
+    color: '#fbbf24',
+    borderColor: 'rgba(251,191,36,0.35)',
+    background: 'rgba(251,191,36,0.08)',
+  } as React.CSSProperties,
+  progressSection: {
+    marginBottom: 8,
+  },
+  progressLabel: {
+    fontSize: 10,
+    fontWeight: 600,
+    color: '#94a3b8',
+    marginBottom: 3,
+  },
+  progressGoal: {
+    fontSize: 9,
+    fontWeight: 400,
+    color: '#475569',
+  },
+  reqNote: {
+    fontSize: 9,
+    color: '#64748b',
+    marginBottom: 5,
+    lineHeight: 1.5,
+  },
+  progressCount: {
+    fontSize: 9,
+    color: '#64748b',
+    marginTop: 3,
+    marginBottom: 4,
+  },
+  masterNote: {
+    fontSize: 9,
+    color: '#475569',
+    fontStyle: 'italic' as const,
+    lineHeight: 1.5,
+  },
+  eligibilityBox: {
+    background: 'rgba(110,231,183,0.05)',
+    border: '1px solid rgba(110,231,183,0.25)',
+    borderRadius: 6,
+    padding: '7px 10px',
+    marginTop: 8,
+    display: 'flex' as const,
+    flexDirection: 'column' as const,
+    gap: 5,
+  },
+  eligibilityCheck: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#6ee7b7',
+  },
+  claimBtn: {
+    background: 'rgba(110,231,183,0.1)',
+    border: '1px solid rgba(110,231,183,0.3)',
+    borderRadius: 5,
+    color: '#6ee7b7',
+    fontSize: 10,
+    fontWeight: 600,
+    padding: '4px 10px',
+    cursor: 'not-allowed',
+    opacity: 0.7,
+    alignSelf: 'flex-start',
+  } as React.CSSProperties,
+  claimNote: {
+    fontSize: 9,
+    fontWeight: 400,
+    color: '#475569',
+  },
+};
+
 const MODEL_OPTIONS: Array<{ id: ModelAssignment; label: string; desc: string }> = [
   { id: 'ollama_local', label: 'Ollama (local)',      desc: 'Free · runs on your hardware · no API key needed' },
   { id: 'anthropic_cloud', label: 'Anthropic (cloud)', desc: 'Claude family · requires API key' },
@@ -646,6 +901,7 @@ const MODE_OPTIONS: Array<{ id: SubstrateMode; label: string; desc: string }> = 
 export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: SettingsTabProps) {
   const isMember = authState?.status === 'member' || authState?.status === 'trial_active';
   const isFounder = (authState as any)?.member?.is_founder === true;
+  const [showLocFaq, setShowLocFaq] = useState(false);
 
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
     checking: false,
@@ -878,6 +1134,37 @@ export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: 
 
       {/* ── Section 7: MY CONTRIBUTION ───────────────────────────────────── */}
       <MyContributionPanel />
+
+      {/* ── Section 8: GRAND PROJECTS (KniPr022) ────────────────────────── */}
+      <section style={s.section}>
+        <div style={s.sectionHeader}>🏛️ Grand Projects</div>
+        <div style={s.card}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0', marginBottom: 3 }}>
+                Library of Congress Grand Project
+              </div>
+              <div style={{ fontSize: 9, color: '#64748b', lineHeight: 1.5 }}>
+                10,000-node cooperative network · digitizing human knowledge · free forever
+              </div>
+            </div>
+            <button
+              onClick={() => setShowLocFaq(true)}
+              style={{
+                ...s.btn,
+                background: 'rgba(110,231,183,0.08)',
+                borderColor: 'rgba(110,231,183,0.25)',
+                color: '#6ee7b7',
+                whiteSpace: 'nowrap' as const,
+              }}
+            >
+              Library of Congress FAQ →
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {showLocFaq && <LocFaqModal onClose={() => setShowLocFaq(false)} />}
 
     </div>
   );
