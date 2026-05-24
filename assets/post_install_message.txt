@@ -1,0 +1,13 @@
+Mnemosyne™ has been installed. Thank you.
+
+What Mnemosyne™ does to your computer:
+READ-ONLY. Your files are never moved, modified, or uploaded.
+Mnemosyne creates Eblet™ records inside its own data folder only.
+
+Verify the installer sha256:
+  PowerShell: Get-FileHash "Mnemosyne-Setup-0.1.9.exe" -Algorithm SHA256
+  Expected:   See SHA-256 at: https://github.com/Upekrithen/LianaBanyanPlatform/releases/tag/v0.1.9
+
+Open Developer Tab → Caithedral™ Inspector to verify each Eblet™ matches your original files.
+
+FOR THE KEEP.

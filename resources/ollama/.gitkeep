@@ -1,0 +1,9 @@
+# Ollama bundled binary goes here for packaged builds.
+# Platform-specific binaries:
+#   Windows: ollama/ollama.exe
+#   macOS:   ollama/ollama
+#   Linux:   ollama/ollama
+#
+# Download from: https://github.com/ollama/ollama/releases
+# Version pinned in package.json build.extraResources
+# License: MIT (https://github.com/ollama/ollama/blob/main/LICENSE)

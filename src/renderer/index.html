@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Strict CSP — no unsafe-eval in prod; dev CSP is injected via webRequest.onHeadersReceived -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:11480 http://127.0.0.1:11481; img-src 'self' data: blob:; font-src 'self' data:" />
+  <title>Mnemosyne</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      background: transparent;
+      overflow: hidden;
+      /* BP041 — Founder direct: "I would LOVE to be able to highlight and
+         copy just the line you needed, but I cannot." Default text selection
+         is enabled on the body; only specific chrome elements (buttons, tabs,
+         drag handles) opt out via explicit user-select: none. */
+      user-select: text;
+      -webkit-user-select: text;
+      -webkit-app-region: no-drag;
+    }
+    /* Buttons + tabs + drag handles still don't select (they're controls) */
+    button, [role="button"], .lb-frame, .lb-corner-indicator {
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* BP041 — Accessibility Phase A landed (Founder direct: "AMEN: The Bridge serves every Conductor.") */
+
+    /* Focus-visible — keyboard navigators see what's focused.
+       Skips default browser outlines but provides bright amber ring on Tab/Shift+Tab. */
+    *:focus { outline: none; }
+    *:focus-visible {
+      outline: 2px solid #f6ad55;
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
+
+    /* Reduce-motion respect — disables substrate animations for members with
+       vestibular sensitivity, autism, dyspraxia, motion-triggered migraines.
+       The substrate's content (SEG progression, status, wave receipts) stays
+       fully functional; only the *animations* drop out. */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
+
+    /* High-contrast mode — thicker borders, brighter focus ring */
+    @media (prefers-contrast: more) {
+      *:focus-visible {
+        outline: 3px solid #f6ad55;
+        outline-offset: 3px;
+      }
+      button, [role="button"] {
+        border-width: 2px !important;
+      }
+    }
+    #root {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./main.tsx"></script>
+</body>
+</html>

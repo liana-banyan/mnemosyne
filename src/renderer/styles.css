@@ -1,0 +1,499 @@
+/* AMPLIFY Computer — Global Styles */
+/* Transparent overlay — only the border and corner indicator are visible */
+
+/* ─── NotCents-CAI font (BP048 SEG-GLYPH) ───────────────────────────────────── */
+/* U+E000 PUA primary · U+2183 Ↄ overload upgrades prose wherever font is active. */
+@font-face {
+  font-family: 'NotCents-CAI';
+  src: url('./fonts/NotCents-CAI.otf') format('opentype'),
+       url('./fonts/NotCents-CAI.ttf') format('truetype');
+  font-display: block;
+  unicode-range: U+E000, U+2183;
+}
+
+@font-face {
+  font-family: 'CAINotCents';
+  src: url('./fonts/NotCents-CAI.ttf') format('truetype');
+  font-display: block;
+  unicode-range: U+E000, U+2183;
+}
+
+/* Helper class: apply NotCents font. Use <span class="cai-glyph">&#xE000;</span> */
+.cai-glyph {
+  font-family: 'NotCents-CAI', 'CAINotCents', system-ui, sans-serif;
+  font-style: normal;
+  font-weight: normal;
+  line-height: 1;
+  display: inline-block;
+  vertical-align: -0.1em;
+}
+
+:root {
+  /* §7 BP041 / SAGA 3 — mode triple-channel accessibility update (Founder direct BP041):
+     Fire=yellow(solid)  Hearth=green(dashed)  Cool=blue(dotted)
+     Triple-channel: hue + luminance + dash-pattern = WCAG-AA for all color-vision types.
+     Deuteranopia: yellow vs blue distinct + dash distinguishes Fire from Hearth.
+     Monochromacy: dash pattern is the only mode signal — critical.
+     K533 test #7: verify in DevTools Rendering > Emulate vision deficiencies. */
+  --color-ai-burst: #facc15;       /* Fire — warm yellow (was orange #f97316) */
+  --color-ai-burst-dark: #eab308;  /* Fire dark variant */
+  --color-normal: #22c55e;         /* Hearth — green (local Ollama) */
+  --color-fallback: #3b82f6;       /* Cool — blue (substrate cache) */
+  --border-width: 4px;
+  --corner-size: 120px;
+  --corner-padding: 8px;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: transparent;
+  color: white;
+  overflow: hidden;
+}
+
+/* ─── BP047 Swirling Winds Ambience ────────────────────────────────────────── */
+
+.wind-frame-shell {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+}
+
+.wind-ambience-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  filter: blur(12px);
+  animation: wind-ambience-fade-in 300ms ease-out;
+}
+
+@keyframes wind-ambience-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.wind-unlock-toast {
+  position: fixed;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(10, 15, 26, 0.95);
+  border: 1px solid rgba(110, 231, 183, 0.4);
+  color: #6ee7b7;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 20px;
+  z-index: 9999;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.wind-settings-card {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(110, 231, 183, 0.15);
+  border-radius: 10px;
+  padding: 12px 16px;
+}
+
+.wind-settings-card__header,
+.wind-settings-card__title,
+.wind-settings-card__actions,
+.wind-reduced-motion__actions {
+  display: flex;
+  align-items: center;
+}
+
+.wind-settings-card__header {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.wind-settings-card__title {
+  gap: 6px;
+  min-width: 0;
+}
+
+.wind-settings-card__title span:nth-child(2) {
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wind-settings-card__title small {
+  color: #64748b;
+  font-size: 9px;
+}
+
+.wind-live-badge,
+.wind-tier,
+.wind-action {
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  touch-action: manipulation;
+}
+
+.wind-live-badge {
+  padding: 2px 8px;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  background: rgba(100, 116, 139, 0.08);
+  color: #64748b;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.wind-live-badge--active {
+  border-color: rgba(110, 231, 183, 0.4);
+  background: rgba(110, 231, 183, 0.1);
+  color: #6ee7b7;
+}
+
+.wind-tier-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.wind-tier {
+  padding: 4px 10px;
+  border: 1px solid rgba(100, 116, 139, 0.2);
+  background: rgba(15, 23, 42, 0.4);
+  color: #94a3b8;
+  font-size: 10px;
+  transition: all 0.12s ease;
+}
+
+.wind-tier--active {
+  border-color: rgba(110, 231, 183, 0.5);
+  background: rgba(110, 231, 183, 0.12);
+  color: #6ee7b7;
+  font-weight: 700;
+}
+
+.wind-settings-card__actions,
+.wind-reduced-motion__actions {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.wind-action {
+  padding: 3px 9px;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  background: rgba(100, 116, 139, 0.08);
+  color: #94a3b8;
+  font-size: 9px;
+}
+
+.wind-action--primary {
+  border-color: rgba(110, 231, 183, 0.3);
+  background: rgba(110, 231, 183, 0.08);
+  color: #6ee7b7;
+}
+
+.wind-saved-label {
+  color: #334155;
+  font-size: 9px;
+}
+
+.wind-reduced-motion {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(100, 116, 139, 0.08);
+  border: 1px solid rgba(100, 116, 139, 0.2);
+  border-radius: 8px;
+  color: #94a3b8;
+  font-size: 10px;
+}
+
+.wind-reduced-motion > div:first-child {
+  margin-bottom: 6px;
+}
+
+/* ─── Frame Overlay ─────────────────────────────────────────────────────────── */
+
+.lb-frame {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ::before — full-perimeter border */
+.lb-frame::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: var(--border-width) solid transparent;
+  transition: border-color 0.4s ease, box-shadow 0.4s ease;
+}
+
+/* ::after — corner glow radials (§7 BP041: 4-corner soft ambient glow) */
+.lb-frame::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: background 0.4s ease;
+}
+
+/* ─── SAGA 3 BP041: Fire=yellow/solid  Hearth=green/dashed  Cool=blue/dotted ── */
+/* Triple-channel accessibility: hue + luminance + border-dash-pattern.          */
+/* Founder direct: "yellow, and green, and blue … long dash, solid, short dash." */
+
+/* Fire (🔥 yellow — cloud AI spend, solid border): pulsing yellow + corner glow */
+.lb-frame--ai_burst::before {
+  border-color: var(--color-ai-burst);
+  border-style: solid;   /* Fire = solid — continuous burn */
+  box-shadow:
+    0 0 10px 3px rgba(250, 204, 21, 0.55),
+    inset 0 0 8px 2px rgba(250, 204, 21, 0.18);
+  animation: pulse-ai-burst 1.5s ease-in-out infinite;
+}
+.lb-frame--ai_burst::after {
+  background:
+    radial-gradient(ellipse 80px 80px at 0% 0%,   rgba(250, 204, 21, 0.22) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 100% 0%,  rgba(250, 204, 21, 0.22) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 0% 100%,  rgba(250, 204, 21, 0.22) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 100% 100%, rgba(250, 204, 21, 0.22) 0%, transparent 100%);
+}
+
+@keyframes pulse-ai-burst {
+  0%, 100% { box-shadow: 0 0 8px 2px rgba(250, 204, 21, 0.5),  inset 0 0 4px 1px rgba(250, 204, 21, 0.12); }
+  50%       { box-shadow: 0 0 18px 5px rgba(250, 204, 21, 0.75), inset 0 0 12px 3px rgba(250, 204, 21, 0.28); }
+}
+
+@keyframes mnemo-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
+/* Hearth (🪵 green — local Ollama, zero marginal cost, dashed border): rhythmic burn */
+.lb-frame--normal::before {
+  border-color: var(--color-normal);
+  border-style: dashed;  /* Hearth = dashed — local model, rhythmic cadence */
+  border-width: 4px;     /* slightly explicit so dashes read cleanly */
+  box-shadow: 0 0 5px 1px rgba(34, 197, 94, 0.35);
+}
+.lb-frame--normal::after {
+  background:
+    radial-gradient(ellipse 80px 80px at 0% 0%,   rgba(34, 197, 94, 0.18) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 100% 0%,  rgba(34, 197, 94, 0.18) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 0% 100%,  rgba(34, 197, 94, 0.18) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 100% 100%, rgba(34, 197, 94, 0.18) 0%, transparent 100%);
+}
+
+/* Cool (❄️ blue — substrate cache only, zero always, dotted border): banked heartbeat */
+.lb-frame--fallback::before {
+  border-color: var(--color-fallback);
+  border-style: dotted;  /* Cool = dotted — substrate awake, no flame */
+  box-shadow: 0 0 5px 1px rgba(59, 130, 246, 0.35);
+}
+.lb-frame--fallback::after {
+  background:
+    radial-gradient(ellipse 80px 80px at 0% 0%,   rgba(59, 130, 246, 0.18) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 100% 0%,  rgba(59, 130, 246, 0.18) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 0% 100%,  rgba(59, 130, 246, 0.18) 0%, transparent 100%),
+    radial-gradient(ellipse 80px 80px at 100% 100%, rgba(59, 130, 246, 0.18) 0%, transparent 100%);
+}
+
+/* ─── Corner Mode Indicator ─────────────────────────────────────────────────── */
+
+.lb-corner-indicator {
+  position: fixed;
+  bottom: calc(var(--corner-padding) + var(--border-width));
+  right: calc(var(--corner-padding) + var(--border-width));
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px 4px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  pointer-events: auto;
+  cursor: default;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background 0.3s ease, border-color 0.3s ease;
+  user-select: none;
+}
+
+.lb-corner-indicator--ai_burst {
+  background: rgba(35, 18, 5, 0.80);
+  border: 1px solid rgba(249, 115, 22, 0.65);
+  color: var(--color-ai-burst);
+}
+
+.lb-corner-indicator--normal {
+  background: rgba(0, 20, 8, 0.80);
+  border: 1px solid rgba(22, 163, 74, 0.55);
+  color: var(--color-normal);
+}
+
+.lb-corner-indicator--fallback {
+  background: rgba(5, 10, 28, 0.80);
+  border: 1px solid rgba(59, 130, 246, 0.55);
+  color: var(--color-fallback);
+}
+
+/* §7 — CAI product-identity stamp in bottom-right frame corner */
+.lb-cai-stamp {
+  position: fixed;
+  bottom: calc(var(--corner-padding) + var(--border-width) + 28px);
+  right: calc(var(--corner-padding) + var(--border-width));
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  opacity: 0.38;
+  pointer-events: none;
+  user-select: none;
+  color: #e2e8f0;
+  font-family: var(--font-sans);
+}
+
+.lb-corner-indicator__icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.lb-corner-indicator__label {
+  line-height: 1;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ─── Dashboard ─────────────────────────────────────────────────────────────── */
+
+.dashboard {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(12px);
+  pointer-events: auto;
+}
+
+.dashboard__panel {
+  background: rgba(15, 15, 20, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 24px;
+  width: 420px;
+  max-width: 90vw;
+}
+
+.dashboard__title {
+  font-size: 18px;
+  font-weight: 700;
+  color: white;
+  margin-bottom: 4px;
+}
+
+.dashboard__subtitle {
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  margin-bottom: 20px;
+  letter-spacing: 0.3px;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.stat-card {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.stat-card__label {
+  font-size: 10px;
+  color: rgba(255,255,255,0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.stat-card__value {
+  font-size: 20px;
+  font-weight: 700;
+  color: white;
+}
+
+.stat-card__value--green { color: var(--color-normal); }
+.stat-card__value--gold  { color: var(--color-ai-burst); }
+
+.mode-switcher {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 8px 4px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.6);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: center;
+}
+
+.mode-btn:hover { background: rgba(255,255,255,0.08); }
+
+.mode-btn--active-ai_burst {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.5);
+  color: var(--color-ai-burst);
+}
+
+.mode-btn--active-normal {
+  background: rgba(22, 163, 74, 0.15);
+  border-color: rgba(22, 163, 74, 0.5);
+  color: var(--color-normal);
+}
+
+.mode-btn--active-fallback {
+  background: rgba(107, 114, 128, 0.15);
+  border-color: rgba(107, 114, 128, 0.4);
+  color: var(--color-fallback);
+}
+
+.close-btn {
+  width: 100%;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.7);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.close-btn:hover { background: rgba(255,255,255,0.1); }
