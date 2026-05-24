@@ -52,7 +52,7 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
       label: 'AI Burst',
       stack: 'Cloud AI + Mnemosyne + Substrate',
       cost: 'Pay-per-token (~$0.054/artifact)',
-      prereq: 'Requires ANTHROPIC_API_KEY',
+      prereq: 'Needs a free Anthropic API key',
       prereqMet: apiKeyAvailable,
     },
     {
@@ -192,7 +192,7 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
           })}
         </div>
 
-        {/* Bug #3 v0.1.10: inline API key panel — shown when AI Burst selected without key */}
+        {/* KniPr012: plain-English AI Burst gate — no jargon */}
         {showApiKeyPanel && selected === 'ai_burst' && !apiKeyAvailable && (
           <div style={{
             margin: '0 12px 10px',
@@ -205,9 +205,26 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
             gap: 8,
           }}>
             <div style={{ fontSize: 11, color: '#fbbf24', fontWeight: 600 }}>
-              ⚠ AI Burst requires an Anthropic API key
+              AI Burst uses Anthropic's Claude AI for enhanced analysis.
+            </div>
+            <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.55)', lineHeight: 1.6 }}>
+              You'll need a free API key from Anthropic.
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' as const }}>
+              <button
+                onClick={() => window.amplify?.openExternal?.('https://console.anthropic.com')}
+                style={{
+                  flex: 1, padding: '5px 10px',
+                  background: 'rgba(250,204,21,0.12)',
+                  border: '1px solid rgba(250,204,21,0.35)',
+                  borderRadius: 5, color: '#fbbf24',
+                  fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                  whiteSpace: 'nowrap' as const,
+                }}
+                title="Get a free API key from Anthropic"
+              >
+                Get your key →
+              </button>
               <button
                 onClick={() => {
                   window.amplify?.openDashboard?.();
@@ -223,7 +240,7 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
                 }}
                 title="Open Dashboard → Settings → API Keys"
               >
-                Set key in Settings →
+                Set it in Settings →
               </button>
               <button
                 onClick={() => {
@@ -239,19 +256,6 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
                 }}
               >
                 Use Normal
-              </button>
-              <button
-                onClick={() => window.amplify?.openExternal?.('https://docs.mnemosynec.ai/modes#ai-burst')}
-                style={{
-                  padding: '5px 10px',
-                  background: 'rgba(255,255,255,0.03)',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  borderRadius: 5, color: '#475569',
-                  fontSize: 10, cursor: 'pointer',
-                }}
-                title="Open AI Burst documentation"
-              >
-                What is AI Burst?
               </button>
             </div>
           </div>

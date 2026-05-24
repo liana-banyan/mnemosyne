@@ -239,6 +239,10 @@ contextBridge.exposeInMainWorld('amplify', {
   getOllamaStatus: (): Promise<OllamaStatus> =>
     ipcRenderer.invoke('get-ollama-status'),
 
+  // KniPr012 — check if Ollama binary is installed (not just daemon running)
+  checkOllama: (): Promise<{ installed: boolean; version?: string }> =>
+    ipcRenderer.invoke('check-ollama'),
+
   pullDefaultModel: (): Promise<{ success: boolean; alreadyInstalled?: boolean; error?: string }> =>
     ipcRenderer.invoke('pull-default-model'),
 
@@ -687,6 +691,7 @@ declare global {
       setClickthrough: (enabled: boolean) => void;
       // Ollama
       getOllamaStatus: () => Promise<OllamaStatus>;
+      checkOllama: () => Promise<{ installed: boolean; version?: string }>;
       pullDefaultModel: () => Promise<{ success: boolean; alreadyInstalled?: boolean; error?: string }>;
       listOllamaModels: () => Promise<string[]>;
       checkDiskSpace: () => Promise<{ ok: boolean; requiredGB: number }>;

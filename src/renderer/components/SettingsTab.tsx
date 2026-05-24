@@ -44,9 +44,9 @@ const THEME_OPTIONS: Array<{ id: Theme; label: string; icon: string }> = [
 ];
 
 const MODE_OPTIONS: Array<{ id: SubstrateMode; label: string; desc: string }> = [
-  { id: 'ai_burst',  label: '🔥 AI Burst',  desc: 'Maximum throughput · all AI channels open' },
-  { id: 'normal',    label: '🪵 Normal',     desc: 'Balanced · recommended for most tasks' },
-  { id: 'fallback',  label: '❄️ Fallback',   desc: 'Substrate-only · no AI required · Stage 2 mode' },
+  { id: 'ai_burst',  label: '🔥 AI Burst',  desc: 'Claude AI for enhanced analysis · free API key from console.anthropic.com · pay-per-token' },
+  { id: 'normal',    label: '🪵 Normal',     desc: 'Balanced · Ollama local AI · recommended for most tasks · zero marginal cost' },
+  { id: 'fallback',  label: '❄️ Fallback',   desc: 'Substrate-only · no AI required · Stage 2 mode · always offline-capable' },
 ];
 
 export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: SettingsTabProps) {
@@ -219,7 +219,7 @@ export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: 
 
       {/* ── Section 4: SUBSTRATE MODE ────────────────────────────────────── */}
       <section style={s.section}>
-        <div style={s.sectionHeader}>⚙️ Substrate Default Mode</div>
+        <div style={s.sectionHeader}>⚙️ Substrate Mode</div>
         <div style={s.card}>
           <div style={s.toggleRow}>
             {MODE_OPTIONS.map((m) => (
@@ -239,6 +239,17 @@ export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: 
           <div style={{ fontSize: 9, color: '#475569', marginTop: 6 }}>
             {MODE_OPTIONS.find((m) => m.id === substrateMode)?.desc}
           </div>
+          {substrateMode === 'ai_burst' && (
+            <div style={{ fontSize: 9, color: '#fbbf24', marginTop: 6, lineHeight: 1.6 }}>
+              AI Burst uses Anthropic's Claude AI.{' '}
+              <button
+                onClick={() => window.amplify?.openExternal?.('https://console.anthropic.com')}
+                style={{ background: 'none', border: 'none', color: '#fbbf24', cursor: 'pointer', fontSize: 9, padding: 0, textDecoration: 'underline' }}
+              >
+                Get your free API key →
+              </button>
+            </div>
+          )}
         </div>
       </section>
 

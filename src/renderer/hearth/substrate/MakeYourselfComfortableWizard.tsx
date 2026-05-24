@@ -1,4 +1,4 @@
-// Make Yourself Comfortable — First-touch substrate-scoping wizard
+// Mnemosyne — Make Yourself Comfortable Wizard + OnboardingWizard (sidebar)
 // BP041 Canon: "What do you want substrate access to for yourself?"
 // Folder picker → dual-checkbox (Pixie-lated for ME / Shared with Federation)
 // Pantheon dispatch progress (LiveSegWatch-style)
@@ -6,6 +6,7 @@
 //
 // MV-BE SAGA 5 BP045 W1 — OnboardingWizard (5-screen first-launch gate)
 // added. Fires ONLY on first launch (localStorage key: mnemosyne-onboarded).
+// KniPr012 — converted from blocking full-page to non-blocking right sidebar.
 // ScreenWelcome · ScreenIdentity · ScreenFirstBanyan · ScreenFederation · ScreenRoll
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -17,14 +18,125 @@ import {
   ScreenRoll,
 } from './OnboardingScreens';
 
-// ─── OnboardingWizard ─────────────────────────────────────────────────────────
-// Wraps the 5 onboarding screens. Shown once on first launch.
-// After completion, sets localStorage['mnemosyne-onboarded'] = 'true'.
+// ─── OnboardingWizard (non-blocking sidebar) ──────────────────────────────────
+// KniPr012: converted from full-page replacement to position:fixed right sidebar.
+// Main app content is visible and interactive behind it.
 
 const ONBOARDED_KEY = 'mnemosyne-onboarded';
 const TOTAL_STEPS = 5;
 
+const C = {
+  bg: '#0a0f1a',
+  surface: '#111827',
+  border: '#1e2d45',
+  text: '#e2e8f0',
+  muted: '#64748b',
+  accent: '#3b82f6',
+  green: '#22c55e',
+  amber: '#f59e0b',
+};
+
 type OnboardingScreen = 1 | 2 | 3 | 4 | 5;
+
+// ─── OllamaCheckCard ─────────────────────────────────────────────────────────
+// Shows Ollama install state; auto-detects on mount via check-ollama IPC.
+
+function OllamaCheckCard() {
+  const [ollamaState, setOllamaState] = useState<'checking' | 'installed' | 'missing'>('checking');
+  const [ollamaVersion, setOllamaVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const result = await (window as any).amplify?.checkOllama?.();
+        if (result?.installed) {
+          setOllamaState('installed');
+          setOllamaVersion(result.version ?? null);
+        } else {
+          setOllamaState('missing');
+        }
+      } catch {
+        setOllamaState('missing');
+      }
+    };
+    void check();
+  }, []);
+
+  if (ollamaState === 'checking') {
+    return (
+      <div style={{
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        borderRadius: 8,
+        padding: '10px 12px',
+        marginTop: 12,
+        fontSize: 11,
+        color: C.muted,
+      }}>
+        ⏳ Checking for Ollama…
+      </div>
+    );
+  }
+
+  if (ollamaState === 'installed') {
+    return (
+      <div style={{
+        background: '#0a1f0e',
+        border: `1px solid ${C.green}44`,
+        borderRadius: 8,
+        padding: '10px 12px',
+        marginTop: 12,
+        fontSize: 11,
+        color: C.green,
+        fontWeight: 600,
+      }}>
+        ✓ Ollama detected — private AI ready
+        {ollamaVersion && (
+          <span style={{ fontWeight: 400, color: `${C.green}aa`, marginLeft: 6, fontFamily: 'monospace', fontSize: 10 }}>
+            ({ollamaVersion})
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      borderRadius: 8,
+      padding: '12px 14px',
+      marginTop: 12,
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 4 }}>
+        Ollama not detected
+      </div>
+      <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginBottom: 8 }}>
+        Ollama enables private AI without an API key.
+      </div>
+      <button
+        onClick={() => (window as any).amplify?.openExternal?.('https://ollama.com')}
+        style={{
+          background: '#1e3a5f',
+          border: `1px solid ${C.accent}`,
+          borderRadius: 6,
+          color: C.accent,
+          cursor: 'pointer',
+          fontSize: 11,
+          fontWeight: 600,
+          padding: '6px 14px',
+          width: '100%',
+        }}
+      >
+        Install Ollama — free →
+      </button>
+    </div>
+  );
+}
+
+// ─── OnboardingWizard ─────────────────────────────────────────────────────────
+// KniPr012: sidebar variant. Renders as position:fixed right panel; main UI
+// remains interactive behind it. Completes by setting localStorage key.
 
 export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const [step, setStep] = useState<OnboardingScreen>(1);
@@ -58,33 +170,88 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   };
 
   return (
-    <div style={{
-      background: '#0a0f1a',
-      color: '#e2e8f0',
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-      height: '100%',
-      overflowY: 'auto',
-      padding: 24,
-      display: 'flex',
-      flexDirection: 'column',
-      justifyContent: 'center',
-    }}>
-      <div style={{ fontSize: 10, color: '#64748b', textAlign: 'center', marginBottom: 8 }}>
-        {step}/{TOTAL_STEPS}
-      </div>
+    <>
+      {/* Click-through semi-transparent backdrop — does NOT block clicks on main UI */}
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,0.25)',
+          zIndex: 800,
+          pointerEvents: 'none',
+        }}
+        aria-hidden="true"
+      />
 
-      {step === 1 && <ScreenWelcome {...screenProps} />}
-      {step === 2 && <ScreenIdentity {...screenProps} />}
-      {step === 3 && <ScreenFirstBanyan {...screenProps} />}
-      {step === 4 && <ScreenFederation {...screenProps} />}
-      {step === 5 && <ScreenRoll {...screenProps} />}
-    </div>
+      {/* Sidebar panel */}
+      <div
+        role="dialog"
+        aria-modal="false"
+        aria-label="Mnemosyne first-run setup"
+        style={{
+          position: 'fixed',
+          right: 0,
+          top: 0,
+          height: '100%',
+          width: 380,
+          background: C.bg,
+          borderLeft: `1px solid ${C.border}`,
+          boxShadow: '-8px 0 32px rgba(0,0,0,0.6)',
+          zIndex: 801,
+          display: 'flex',
+          flexDirection: 'column',
+          overflowY: 'auto',
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+        }}
+      >
+        {/* Dismiss × */}
+        <button
+          onClick={finish}
+          aria-label="Dismiss setup sidebar"
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 14,
+            background: 'none',
+            border: 'none',
+            color: C.muted,
+            cursor: 'pointer',
+            fontSize: 18,
+            lineHeight: 1,
+            padding: '2px 4px',
+            zIndex: 1,
+          }}
+          title="Skip setup — you can find these options in Settings later"
+        >
+          ×
+        </button>
+
+        {/* Ollama card always visible at top of sidebar */}
+        <div style={{ padding: '16px 20px 0' }}>
+          <OllamaCheckCard />
+        </div>
+
+        {/* Step counter */}
+        <div style={{ fontSize: 10, color: C.muted, textAlign: 'center', paddingTop: 16 }}>
+          {step}/{TOTAL_STEPS}
+        </div>
+
+        {/* Screen content */}
+        <div style={{ flex: 1, padding: '0 20px 20px' }}>
+          {step === 1 && <ScreenWelcome {...screenProps} />}
+          {step === 2 && <ScreenIdentity {...screenProps} />}
+          {step === 3 && <ScreenFirstBanyan {...screenProps} />}
+          {step === 4 && <ScreenFederation {...screenProps} />}
+          {step === 5 && <ScreenRoll {...screenProps} />}
+        </div>
+      </div>
+    </>
   );
 }
 
 // ─── OnboardingGate ───────────────────────────────────────────────────────────
-// Renders OnboardingWizard on first launch, then renders children.
-// Mobile-PWA parity: checks localStorage.
+// Renders OnboardingWizard sidebar on first launch, then renders children.
+// KniPr012: sidebar is non-blocking — children are always rendered.
 
 export function OnboardingGate({ children }: { children: React.ReactNode }) {
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
@@ -97,13 +264,16 @@ export function OnboardingGate({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  if (onboarded === null) return null; // hydrating
+  if (onboarded === null) return <>{children}</>; // render children immediately; sidebar appears after hydration
 
-  if (!onboarded) {
-    return <OnboardingWizard onComplete={() => setOnboarded(true)} />;
-  }
-
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      {!onboarded && (
+        <OnboardingWizard onComplete={() => setOnboarded(true)} />
+      )}
+    </>
+  );
 }
 
 

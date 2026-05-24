@@ -874,6 +874,17 @@ function registerIPCHandlers(): void {
     return ollamaManager?.listModels() ?? [];
   });
 
+  // KniPr012 — check if Ollama binary is installed (distinct from daemon running)
+  ipcMain.handle('check-ollama', async () => {
+    const { execSync } = require('child_process');
+    try {
+      const out = execSync('ollama --version', { timeout: 3000 }).toString();
+      return { installed: true, version: out.trim() };
+    } catch {
+      return { installed: false };
+    }
+  });
+
   ipcMain.handle('check-disk-space', async () => {
     const ok = (await ollamaManager?.checkDiskSpace(6)) ?? true;
     return { ok, requiredGB: 6 };

@@ -21,6 +21,7 @@ import { DevModeTab } from './DevModeTab';
 import { SettingsTab } from './SettingsTab';
 import { FAQTab } from './FAQTab';
 import { CaiSymbol } from './CaiSymbol';
+import { OnboardingGate } from '../hearth/substrate/MakeYourselfComfortableWizard';
 
 import { HelmCrownDashboard } from '../hearth/helm/HelmCrownDashboard';
 import { AtlasView } from '../kitchen_table/AtlasView';
@@ -290,6 +291,7 @@ export function MnemosyneTabView({
   };
 
   return (
+    <OnboardingGate>
     <div style={styles.shell}>
       {/* Title bar */}
       <div style={styles.titleBar}>
@@ -585,6 +587,7 @@ export function MnemosyneTabView({
         <DevModeUnlockBar onEnable={() => handleDevModeToggle(true)} />
       )}
     </div>
+    </OnboardingGate>
   );
 }
 
