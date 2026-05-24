@@ -404,9 +404,33 @@ export function MnemosyneTabView({
           >
             Check for Updates{appVersion ? ` · v${appVersion}` : ''}
           </button>
-          <div style={styles.modeChip}>
+          {/* G.4 KniPr011: AI Burst chip is now clickable — triggers setFrameMode('ai_burst') */}
+          <button
+            type="button"
+            onClick={() => {
+              const nextMode = currentMode === 'ai_burst' ? 'normal' : 'ai_burst';
+              onModeChange(nextMode);
+              window.amplify?.setFrameMode?.(nextMode);
+            }}
+            title={currentMode === 'ai_burst'
+              ? 'AI Burst active — click to switch to Normal mode'
+              : 'Click to enable AI Burst mode (Cloud AI + Substrate)'}
+            aria-label={`Current mode: ${modeLabel[currentMode]}. Click to toggle AI Burst.`}
+            style={{
+              ...styles.modeChip,
+              cursor: 'pointer',
+              border: currentMode === 'ai_burst'
+                ? '1px solid rgba(250,204,21,0.4)'
+                : '1px solid rgba(100,116,139,0.2)',
+              color: currentMode === 'ai_burst' ? '#facc15' : '#64748b',
+              background: currentMode === 'ai_burst'
+                ? 'rgba(250,204,21,0.08)'
+                : 'rgba(100,116,139,0.1)',
+              transition: 'all 0.15s ease',
+            }}
+          >
             {modeLabel[currentMode]}
-          </div>
+          </button>
           <button
             style={styles.closeBtn}
             onClick={onClose}

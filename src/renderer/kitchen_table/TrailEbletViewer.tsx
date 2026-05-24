@@ -319,8 +319,7 @@ export function TrailEbletViewer() {
             <div style={{ fontSize: 9, color: '#334155', padding: '10px 12px' }}>Loading…</div>
           ) : files.length === 0 ? (
             <div style={{ fontSize: 9, color: '#334155', padding: '10px 12px', lineHeight: 1.6 }}>
-              No .eblet.md files found.<br />
-              Run Pawn Phase 3 to generate Trail Eblets.
+              No trails yet — your cooperative history will appear here.
             </div>
           ) : (
             files.map((f) => (

@@ -119,7 +119,7 @@ export function UpdateToast() {
           }}
         >
           <span style={{ color: '#6ee7b7', fontWeight: 700, fontSize: 12 }}>
-            Mnemosyne v{updateState.version} ready
+            Updated to v{updateState.version} ✓ — restart to apply
           </span>
           <button
             onClick={() => { setDismissed(true); window.amplify?.setClickthrough?.(true); }}

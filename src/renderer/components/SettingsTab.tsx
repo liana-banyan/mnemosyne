@@ -160,13 +160,15 @@ function ChronosResearchPanel() {
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0', marginBottom: 4 }}>
-              Chronos Research Opt-In
+              Chronos Research
             </div>
             <div style={cs.desc}>
-              Contribute anonymized action data to the Liana Banyan research corpus.
-              Your participation earns Marks and supports the cooperative's AI research mission.
+              Chronos Research lets your Mnemosyne help everyone — anonymously. You keep control. The cooperative gets smarter.{' '}
+              <button onClick={() => setShowModal(true)} style={{ ...cs.learnMoreBtn, display: 'inline' }}>
+                [Learn more]
+              </button>
               <br />
-              <span style={cs.kNote}>k-anonymity = 10: your data is only shared when at least 10 other members take the same action.</span>
+              <span style={cs.kNote}>Your data only joins the pool when at least 10 other members took the same action.</span>
             </div>
           </div>
           <button
@@ -221,7 +223,7 @@ function ChronosResearchPanel() {
             onClick={() => setShowModal(true)}
             style={cs.learnMoreBtn}
           >
-            Learn more: What is Chronos? →
+            What is Chronos? →
           </button>
         </div>
 
@@ -430,6 +432,7 @@ function computeTier(stats: ContributionStats): CodeBreakerTier {
 }
 
 function MyContributionPanel() {
+  // [PLACEHOLDER: IPC data binding for Marks ledger — next session]
   const stats = PLACEHOLDER_STATS;
   const [showTooltip, setShowTooltip] = useState(false);
 
@@ -911,6 +914,23 @@ export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: 
     error: null,
   });
 
+  // G.2 KniPr011: Subscribe to electron-updater state changes for proper install button state machine.
+  // Status machine: idle/not-available → "Check for update"; checking → "Checking…";
+  // available → show available version; downloading → show progress; downloaded → "Restart to update"
+  const [liveUpdateState, setLiveUpdateState] = useState<{
+    status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error' | 'not-available';
+    version?: string;
+    downloadProgress?: number;
+    errorMessage?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!window.amplify) return;
+    window.amplify.getUpdateState?.().then(setLiveUpdateState).catch(() => {});
+    const cleanup = window.amplify.onUpdateStateChanged?.((s) => setLiveUpdateState(s));
+    return cleanup ?? undefined;
+  }, []);
+
   const [theme, setTheme] = useState<Theme>(() =>
     (localStorage.getItem('mnemo_theme') as Theme | null) ?? 'dark'
   );
@@ -970,44 +990,67 @@ export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: 
     <div style={s.container}>
 
       {/* ── Section 1: MNEMOSYNE UPDATE ─────────────────────────────────── */}
+      {/* G.2 KniPr011: state machine — NO_UPDATE→hidden; AVAILABLE→active; DOWNLOADING→progress; DOWNLOADED→"Restart to update" */}
       <section style={s.section}>
         <div style={s.sectionHeader}>⬆️ Mnemosyne™ Update</div>
         <div style={s.card}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
             <div>
               <div style={s.label}>Current strain</div>
-              <div style={s.value}>{updateStatus.currentVersion || '—'}</div>
+              <div style={s.value}>{updateStatus.currentVersion || liveUpdateState?.version || '—'}</div>
             </div>
-            {updateStatus.latestVersion && !updateStatus.upToDate && (
+            {liveUpdateState?.status === 'available' && liveUpdateState.version && (
               <div>
                 <div style={s.label}>Available</div>
-                <div style={{ ...s.value, color: '#6ee7b7' }}>{updateStatus.latestVersion}</div>
+                <div style={{ ...s.value, color: '#6ee7b7' }}>{liveUpdateState.version}</div>
               </div>
             )}
-            <button
-              onClick={handleCheckForUpdate}
-              disabled={updateStatus.checking}
-              style={{ ...s.btn, opacity: updateStatus.checking ? 0.6 : 1 }}
-            >
-              {updateStatus.checking ? 'Checking…' : 'Check for update'}
-            </button>
+            {/* Install button — only visible when there is meaningful state to act on */}
+            {(!liveUpdateState || liveUpdateState.status === 'idle' || liveUpdateState.status === 'not-available' || liveUpdateState.status === 'error') && (
+              <button
+                onClick={handleCheckForUpdate}
+                disabled={updateStatus.checking}
+                style={{ ...s.btn, opacity: updateStatus.checking ? 0.6 : 1 }}
+              >
+                {updateStatus.checking ? 'Checking…' : 'Check for update'}
+              </button>
+            )}
+            {liveUpdateState?.status === 'checking' && (
+              <button disabled style={{ ...s.btn, opacity: 0.5 }}>Checking…</button>
+            )}
+            {liveUpdateState?.status === 'downloading' && (
+              <div style={{ fontSize: 10, color: '#6ee7b7' }}>
+                Downloading… {liveUpdateState.downloadProgress ?? 0}%
+              </div>
+            )}
+            {liveUpdateState?.status === 'downloaded' && (
+              <button
+                onClick={() => window.amplify?.installUpdate?.()}
+                style={{ ...s.btn, background: 'rgba(34,197,94,0.15)', borderColor: 'rgba(34,197,94,0.4)', color: '#22c55e', fontWeight: 700 }}
+              >
+                Restart to update →
+              </button>
+            )}
           </div>
 
-          {updateStatus.upToDate === true && (
+          {/* Progress bar for downloading state */}
+          {liveUpdateState?.status === 'downloading' && (
+            <div style={{ marginTop: 8, height: 4, background: 'rgba(100,116,139,0.2)', borderRadius: 2, overflow: 'hidden' }}>
+              <div style={{
+                height: '100%',
+                width: `${liveUpdateState.downloadProgress ?? 0}%`,
+                background: 'linear-gradient(90deg, #6ee7b7, #22c55e)',
+                borderRadius: 2,
+                transition: 'width 0.3s ease',
+              }} />
+            </div>
+          )}
+
+          {liveUpdateState?.status === 'not-available' && (
             <div style={s.successMsg}>✓ You're on the latest strain</div>
           )}
-          {updateStatus.upToDate === false && updateStatus.latestVersion && (
-            <div style={{ ...s.card, marginTop: 8, background: 'rgba(110,231,183,0.06)' }}>
-              <div style={{ fontSize: 11, color: '#6ee7b7', fontWeight: 600, marginBottom: 6 }}>
-                Mnemosyne {updateStatus.latestVersion} is available
-              </div>
-              <button
-                style={{ ...s.btn, background: 'rgba(110,231,183,0.15)', borderColor: 'rgba(110,231,183,0.4)' }}
-                onClick={() => (window as any).amplify?.installUpdate?.()}
-              >
-                Install + Restart →
-              </button>
-            </div>
+          {(!liveUpdateState || liveUpdateState.status === 'idle') && updateStatus.upToDate === true && (
+            <div style={s.successMsg}>✓ You're on the latest strain</div>
           )}
           {updateStatus.error && (
             <div style={{ fontSize: 10, color: '#f87171', marginTop: 6 }}>{updateStatus.error}</div>

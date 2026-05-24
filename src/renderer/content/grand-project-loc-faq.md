@@ -4,6 +4,14 @@
 
 ---
 
+### What does Library of Congress registration mean?
+
+It means your idea has a timestamp that nobody can dispute. Registered the moment you saved it. No lawyers needed.
+
+When Mnemosyne writes an Eblet — your idea, your Pudding, your vote — it cryptographically signs it and timestamps it. That timestamp is your proof of existence. The Library of Congress Grand Project extends this to the entire cooperative corpus: every contribution we make together is permanently, publicly timestamped in a way that no one can retroactively alter. The cooperative's work becomes undeniable. So does yours.
+
+---
+
 ### What is the Library of Congress Grand Project?
 
 We're using thousands of regular people's computers — running Mnemosyne quietly in the background — to help make the Library of Congress easier for everyone to read, search, and learn from. **It's the first big thing we're building together as a cooperative.** Our goal is 10,000 people running the network. Help us get there.

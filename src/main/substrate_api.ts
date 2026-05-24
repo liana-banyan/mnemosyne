@@ -239,6 +239,23 @@ export class SubstrateAPIServer {
 
     this.server = createServer((req, res) => this._handleRequest(req, res));
     return new Promise((resolve, reject) => {
+      // D.15 BP055 W3: port-conflict singleton-reuse guard.
+      // On app relaunch (e.g. after a crash without proper quit), port API_PORT may still be
+      // held by a zombie instance. Detect EADDRINUSE and reuse the existing instance rather
+      // than failing hard — the live server will respond to health checks normally.
+      this.server!.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          console.warn(
+            `[SubstrateAPI] Port ${API_PORT} already in use — zombie instance detected. ` +
+            `Reusing existing server; this instance will not re-bind. ` +
+            `Health checks will still succeed against the live process.`,
+          );
+          // Treat as success: the cooperative substrate is already running.
+          resolve();
+        } else {
+          reject(err);
+        }
+      });
       // Bind to 0.0.0.0 so MoneyPenny mobile can reach it over WiFi
       this.server!.listen(API_PORT, '0.0.0.0', () => {
         console.log(
@@ -247,7 +264,6 @@ export class SubstrateAPIServer {
         );
         resolve();
       });
-      this.server!.on('error', reject);
     });
   }
 
