@@ -828,6 +828,7 @@ function registerIPCHandlers(): void {
 
   ipcMain.on('show-overlay', () => {
     if (!overlayWindow) createOverlayWindow();
+    overlayWindow?.setOpacity(1.0);
     overlayWindow?.showInactive();
   });
 
