@@ -697,6 +697,15 @@ contextBridge.exposeInMainWorld('amplify', {
   /** Write a sha256-signed revocation Eblet to ~/.amplify/consent/ */
   revokeChronosConsent: (payload?: object): Promise<{ ok: boolean; ebletPath?: string }> =>
     ipcRenderer.invoke('revoke-chronos-consent', payload),
+
+  // ── Phoebe™ Idea Storage (C.17 · BP055) ─────────────────────────────────
+  /** Save an idea to the in-memory Phoebe store */
+  saveIdea: (idea: { title: string; content: string; timestamp: string }): Promise<{ ok: boolean; id: string }> =>
+    ipcRenderer.invoke('save-idea', idea),
+
+  /** Retrieve all saved ideas (most recent first) */
+  getIdeas: (): Promise<{ ok: boolean; ideas: Array<{ id: string; title: string; content: string; timestamp: string }> }> =>
+    ipcRenderer.invoke('get-ideas'),
 });
 
 // ─── Global type extension ────────────────────────────────────────────────────
@@ -844,6 +853,9 @@ declare global {
       // Chronos Research Consent (KniPr038)
       writeChronosConsent?: (consentPayload: object) => Promise<{ ok: boolean; ebletPath?: string }>;
       revokeChronosConsent?: (payload?: object) => Promise<{ ok: boolean; ebletPath?: string }>;
+      // Phoebe™ Idea Storage (C.17 · BP055)
+      saveIdea?: (idea: { title: string; content: string; timestamp: string }) => Promise<{ ok: boolean; id: string }>;
+      getIdeas?: () => Promise<{ ok: boolean; ideas: Array<{ id: string; title: string; content: string; timestamp: string }> }>;
       // Kitchen Table™ + Recipes™ + Atlas™ (BP052 v0.1.8)
       kitchenTable: {
         listSessions: () => Promise<unknown[]>;

@@ -1331,6 +1331,17 @@ function registerIPCHandlers(): void {
     return getActiveSessions();
   });
 
+  // ── Phoebe™ Idea Storage IPC (C.17 · BP055) ─────────────────────────────
+  const _phoebeIdeas: Array<{ id: string; title: string; content: string; timestamp: string }> = [];
+  ipcMain.handle('save-idea', async (_event, idea: { title: string; content: string; timestamp: string }) => {
+    const id = `idea_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    _phoebeIdeas.push({ id, ...idea });
+    return { ok: true, id };
+  });
+  ipcMain.handle('get-ideas', async () => {
+    return { ok: true, ideas: [..._phoebeIdeas].reverse() };
+  });
+
   // ── Kitchen Table™ + Atlas™ + P2P (BP052 v0.1.8) ────────────────────────
   registerKitchenTableIpc(ipcMain);
 
