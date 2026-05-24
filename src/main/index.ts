@@ -531,7 +531,12 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
       label: '🔥 AI Burst Mode',
       type: 'radio',
       checked: mode === 'ai_burst',
-      click: () => setMode('ai_burst'),
+      click: () => {
+        // SAGA-1 BP055: Burst Mode is the opt-in path that also surfaces the overlay.
+        setMode('ai_burst');
+        if (!overlayWindow) createOverlayWindow();
+        overlayWindow?.showInactive();
+      },
     },
     {
       label: '🌿 Normal Mode',
@@ -1524,8 +1529,8 @@ app.whenReady().then(async () => {
   // SAGA-γ v0.1.10 — SubstratedFolderWatcher™ singleton (must be after app.ready for getPath)
   folderWatcher = new SubstratedFolderWatcher();
 
-  // Create overlay + tray
-  createOverlayWindow();
+  // Create tray only — overlay is opt-in (tray → Show Overlay, or Burst Mode).
+  // SAGA-1 BP055: Dashboard is the default boot surface; overlay never auto-creates.
   createTray();
   registerIPCHandlers();
 
@@ -1547,11 +1552,13 @@ app.whenReady().then(async () => {
   // Handle cold-start deep-link (Windows: URL passed via argv)
   handleStartupDeepLink(process.argv, () => hearthConjunctionWindow ?? overlayWindow ?? null);
 
-  // BP048 v0.1.7 B1 — first launch forces Dashboard (wife-install BLOCKER).
-  // Subsequent launches: tray-only unless user opens Dashboard (MNEMOSYNE_NO_AUTO_OPEN skips).
+  // SAGA-1 BP055: Dashboard is now the default boot surface on every launch.
+  // Overlay only appears via tray right-click → Show Overlay / Burst Mode (opt-in).
+  // MNEMOSYNE_NO_AUTO_OPEN=1 skips auto-open (CI / headless environments).
   if (process.env.MNEMOSYNE_NO_AUTO_OPEN !== '1') {
+    openDashboard({ focus: true });
     if (firstRun) {
-      openDashboard({ focus: true });
+      // Mark first-run complete after Dashboard is ready (wife-install BLOCKER preserved).
       if (dashboardWindow && !dashboardWindow.isDestroyed()) {
         dashboardWindow.once('ready-to-show', () => markFirstRunComplete());
       } else {
@@ -1638,7 +1645,8 @@ app.whenReady().then(async () => {
   connectivityTimer = setInterval(runConnectivityPoll, CONNECTIVITY_POLL_MS);
 
   app.on('activate', () => {
-    if (!overlayWindow) createOverlayWindow();
+    // SAGA-1 BP055: macOS dock click → open Dashboard (not overlay).
+    openDashboard({ focus: true });
   });
 });
 
