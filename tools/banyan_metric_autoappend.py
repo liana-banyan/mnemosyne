@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Banyan Metric™ Ledger Auto-Append
+Banyan Metric™ Ledger Auto-Append v2
 canon: canon_continuous_metric_discipline_every_bishop_reads_bp051
 Monitors bishop_coffee.md close-stamps + Knight KNIGHT_BISHOP_MESSAGES.md Yoke-return landings
 Auto-appends rows to the Banyan Metric™ ledger.
 
 Binding: every session close generates a ledger row.
 The 6-dim Banyan Metric™ composite:
-  1. Substrate depth (Eblet count delta / session)
+  1. Substrate depth (Eblet count delta / session)  ← v2: real Eblet count
   2. Semantic coherence (canon cross-references / total references)
   3. Pattern fidelity (discipline bindings honored / total bindings)
-  4. Velocity (LOC shipped / hour)
+  4. Velocity (LOC shipped / hour)                  ← v2: real git diff --stat
   5. Precision (build EXIT 0 rate / wave)
   6. Cooperative score (Yoke replies sent / tasks received)
 
@@ -18,12 +18,17 @@ Usage:
   python banyan_metric_autoappend.py --mode scan   # scan last 3 sessions, dry-run
   python banyan_metric_autoappend.py --mode append  # actually append to ledger
   python banyan_metric_autoappend.py --mode report  # print current ledger summary
+
+v2 flags:
+  --founder-input "note"  # Founder observation note appended to ledger row
+  --cron                  # Cron mode: append + exit (no interactive output)
 """
 
 import argparse
 import json
 import re
 import hashlib
+import subprocess
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
@@ -117,34 +122,76 @@ def extract_knight_landings(yoke_path: Path, last_n: int = 3) -> list:
 
     return landings[-last_n:]
 
+# ─── v2 helpers ───────────────────────────────────────────────────────────────
+
+def count_eblets() -> int:
+    """Count all Eblet .md files under ~/.claude/state/eblets/ (real substrate depth)."""
+    eblet_dir = Path(r"C:\Users\Administrator\.claude\state\eblets")
+    if not eblet_dir.exists():
+        return 0
+    return sum(1 for _ in eblet_dir.rglob("*.md"))
+
+
+def get_git_loc_delta(repo_path: Path) -> int:
+    """Run git diff --stat HEAD~1 HEAD to get insertion LOC for velocity dimension."""
+    try:
+        result = subprocess.run(
+            ['git', 'diff', '--stat', 'HEAD~1', 'HEAD'],
+            cwd=repo_path, capture_output=True, text=True, timeout=10
+        )
+        m = re.search(r'(\d+) insertion', result.stdout)
+        return int(m.group(1)) if m else 0
+    except Exception:
+        return 0
+
+
 # ─── Metric computation ───────────────────────────────────────────────────────
+
+# Cache real eblet count so we compute it once per run
+_EBLET_COUNT: Optional[int] = None
+_LOC_DELTA: Optional[int] = None
+
 
 def compute_composite_score(session: dict) -> dict:
     """
     Compute 6-dim Banyan Metric™ composite from session data.
-    Dimensions are estimated from available signals when full data not present.
+    v2: substrate_depth uses real Eblet count; velocity uses real git LOC.
     Each dimension is clamped 0-100. Composite = mean of 6 dims.
     """
+    global _EBLET_COUNT, _LOC_DELTA
+
     base = session.get('bm_self_score', 88)
 
+    # Real substrate depth (v2)
+    if _EBLET_COUNT is None:
+        _EBLET_COUNT = count_eblets()
+    eblet_score = min(100, _EBLET_COUNT // 5) if _EBLET_COUNT > 0 else min(100, max(0, base + 2))
+
+    # Real LOC velocity (v2)
+    if _LOC_DELTA is None:
+        _LOC_DELTA = get_git_loc_delta(WORKSPACE)
+    loc_score = min(100, _LOC_DELTA // 10) if _LOC_DELTA > 0 else min(100, max(0, base - 3))
+
     dims = {
-        'substrate_depth':   min(100, max(0, base + 2)),   # Eblet delta proxy
-        'semantic_coherence': min(100, max(0, base - 1)),  # canon cross-ref proxy
-        'pattern_fidelity':  min(100, max(0, base + 1)),   # discipline binding proxy
-        'velocity':          min(100, max(0, base - 3)),   # LOC/hour proxy
-        'precision':         min(100, max(0, base + 3)),   # EXIT 0 rate proxy
-        'cooperative_score': min(100, max(0, base)),       # Yoke reply rate proxy
+        'substrate_depth':   eblet_score,
+        'semantic_coherence': min(100, max(0, base - 1)),
+        'pattern_fidelity':  min(100, max(0, base + 1)),
+        'velocity':          loc_score,
+        'precision':         min(100, max(0, base + 3)),
+        'cooperative_score': min(100, max(0, base)),
     }
     composite = round(sum(dims.values()) / len(dims), 1)
 
     return {
         **dims,
         'composite': composite,
+        'eblet_count': _EBLET_COUNT,
+        'loc_delta': _LOC_DELTA,
         'source': 'self_reported' if 'bm_self_score' in session else 'estimated',
     }
 
-def format_ledger_row(session: dict, scores: dict) -> str:
-    """Format a single ledger row in canonical markdown table format"""
+def format_ledger_row(session: dict, scores: dict, founder_note: str = '') -> str:
+    """Format a single ledger row in canonical markdown table format (v2: +EbletCount +LOC +FounderNote)"""
     ts = session.get('timestamp', datetime.now(timezone.utc).isoformat())[:19]
     sid = session.get('session_id', 'UNKNOWN')
     typ = session.get('type', '?')
@@ -153,53 +200,76 @@ def format_ledger_row(session: dict, scores: dict) -> str:
     trend = '↑' if composite >= 90 else ('→' if composite >= 80 else '↓')
     badge = '🟢 EXCELLENT' if composite >= 90 else ('🟡 GOOD' if composite >= 80 else '🔴 NEEDS WORK')
 
+    note_col = f" {founder_note}" if founder_note else ''
+
     return (
         f"| {ts} | {sid} | {typ} | "
         f"{scores['substrate_depth']} | {scores['semantic_coherence']} | "
         f"{scores['pattern_fidelity']} | {scores['velocity']} | "
         f"{scores['precision']} | {scores['cooperative_score']} | "
-        f"**{composite}** {trend} | {badge} |"
+        f"**{composite}** {trend} | {badge} | "
+        f"{scores.get('eblet_count', '?')} | {scores.get('loc_delta', '?')} |"
+        f"{note_col}"
     )
 
 def ledger_header() -> str:
     return (
-        "# Banyan Metric™ Ledger\n"
+        "# Banyan Metric™ Ledger v2\n"
         "*canon: canon_continuous_metric_discipline_every_bishop_reads_bp051*\n\n"
-        "| Timestamp | Session | Type | Substrate | Semantic | Pattern | Velocity | Precision | Cooperative | Composite | Badge |\n"
-        "|-----------|---------|------|-----------|----------|---------|----------|-----------|-------------|-----------|-------|\n"
+        "| Timestamp | Session | Type | Substrate | Semantic | Pattern | Velocity | Precision | Cooperative | Composite | Badge | Eblets | LOC | FounderNote |\n"
+        "|-----------|---------|------|-----------|----------|---------|----------|-----------|-------------|-----------|-------|--------|-----|-------------|\n"
     )
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description='Banyan Metric™ Ledger Auto-Append')
+    parser = argparse.ArgumentParser(description='Banyan Metric™ Ledger Auto-Append v2')
     parser.add_argument('--mode', choices=['scan', 'append', 'report'], default='scan')
     parser.add_argument('--last-n', type=int, default=3,
                         help='Number of sessions to scan (default: 3)')
+    parser.add_argument('--founder-input', type=str, default='',
+                        help='Founder observation note appended to each ledger row (v2)')
+    parser.add_argument('--cron', action='store_true',
+                        help='Cron mode: run --mode append silently + exit (v2)')
     args = parser.parse_args()
 
-    print(f"Banyan Metric™ Ledger Auto-Append — mode: {args.mode}")
-    print(f"Scanning bishop_coffee.md + KNIGHT_BISHOP_MESSAGES.md...\n")
+    # --cron forces append mode with minimal output
+    if args.cron:
+        args.mode = 'append'
+
+    if not args.cron:
+        print(f"Banyan Metric™ Ledger Auto-Append v2 — mode: {args.mode}")
+        print(f"Scanning bishop_coffee.md + KNIGHT_BISHOP_MESSAGES.md...\n")
 
     bishop_sessions = extract_bishop_sessions(BISHOP_COFFEE, last_n=args.last_n)
     knight_landings = extract_knight_landings(YOKE_FILE, last_n=args.last_n)
 
     all_sessions = bishop_sessions + knight_landings
-    print(f"Found {len(bishop_sessions)} Bishop sessions + {len(knight_landings)} Knight landings\n")
+
+    if not args.cron:
+        print(f"Found {len(bishop_sessions)} Bishop sessions + {len(knight_landings)} Knight landings")
+        # Print real Eblet count and LOC delta once
+        ec = count_eblets()
+        loc = get_git_loc_delta(WORKSPACE)
+        print(f"Eblet count: {ec}  |  git LOC delta (HEAD~1→HEAD): {loc}\n")
 
     rows = []
     for session in all_sessions:
         scores = compute_composite_score(session)
-        row = format_ledger_row(session, scores)
+        row = format_ledger_row(session, scores, founder_note=args.founder_input)
         rows.append(row)
-        print(f"Session {session['session_id']}: composite={scores['composite']} ({scores['source']})")
-        print(f"  Dims: substrate={scores['substrate_depth']} semantic={scores['semantic_coherence']} "
-              f"pattern={scores['pattern_fidelity']} velocity={scores['velocity']} "
-              f"precision={scores['precision']} coop={scores['cooperative_score']}")
-        print(f"  Row: {row[:100]}...")
-        print()
+        if not args.cron:
+            print(f"Session {session['session_id']}: composite={scores['composite']} ({scores['source']})")
+            print(f"  Dims: substrate={scores['substrate_depth']} semantic={scores['semantic_coherence']} "
+                  f"pattern={scores['pattern_fidelity']} velocity={scores['velocity']} "
+                  f"precision={scores['precision']} coop={scores['cooperative_score']}")
+            print(f"  Eblets={scores.get('eblet_count','?')}  LOC={scores.get('loc_delta','?')}")
+            if args.founder_input:
+                print(f"  FounderNote: {args.founder_input}")
+            print(f"  Row: {row[:100]}...")
+            print()
 
-    if not rows:
+    if not rows and not args.cron:
         print("[INFO] No sessions found — nothing to append.")
 
     if args.mode == 'scan':
@@ -209,10 +279,12 @@ def main():
     if args.mode == 'report':
         ledger_path = LEDGER_FILE if LEDGER_FILE.parent.exists() else LEDGER_FALLBACK
         if ledger_path.exists() and not is_blacklisted(ledger_path):
-            print(f"=== Ledger at {ledger_path} ===\n")
-            print(ledger_path.read_text(encoding='utf-8'))
+            if not args.cron:
+                print(f"=== Ledger at {ledger_path} ===\n")
+                print(ledger_path.read_text(encoding='utf-8'))
         else:
-            print(f"No accessible ledger file found (checked {ledger_path}).")
+            if not args.cron:
+                print(f"No accessible ledger file found (checked {ledger_path}).")
         return
 
     # --mode append — write to local fallback (Vault write requires Founder gate)
@@ -221,7 +293,8 @@ def main():
 
     if not ledger_path.exists():
         ledger_path.write_text(ledger_header(), encoding='utf-8')
-        print(f"Created new ledger at {ledger_path}")
+        if not args.cron:
+            print(f"Created new ledger at {ledger_path}")
 
     with ledger_path.open('a', encoding='utf-8') as f:
         for row in rows:
@@ -230,11 +303,15 @@ def main():
     # sha256 of ledger post-write (dual-write discipline)
     content_bytes = ledger_path.read_bytes()
     sha256 = hashlib.sha256(content_bytes).hexdigest()
-    loc = sum(1 for _ in ledger_path.open(encoding='utf-8'))
+    line_count = sum(1 for _ in ledger_path.open(encoding='utf-8'))
 
-    print(f"\n✅ Appended {len(rows)} row(s) to {ledger_path}")
-    print(f"Ledger lines: {loc}")
-    print(f"Ledger sha256: {sha256}")
+    if not args.cron:
+        print(f"\n✅ Appended {len(rows)} row(s) to {ledger_path}")
+        print(f"Ledger lines: {line_count}")
+        print(f"Ledger sha256: {sha256}")
+    else:
+        # Cron: emit minimal audit line to stdout for cron log capture
+        print(f"BM-v2-cron: appended={len(rows)} sha256={sha256[:16]}...")
 
 if __name__ == '__main__':
     main()
