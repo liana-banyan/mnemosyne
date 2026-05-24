@@ -64,6 +64,17 @@ export class AutoUpdateManager {
       console.log('[AutoUpdater] Skipping check — not packaged');
       return;
     }
+    // Zombie re-download guard: if a complete update is already on disk, skip re-download.
+    // electron-updater would otherwise re-fire the download flow on every checkForUpdates call.
+    if (this.state.status === 'downloaded') {
+      console.log('[AutoUpdater] Update already downloaded — skipping re-check; re-broadcasting ready state');
+      this._broadcast('update-state-changed', this.state);
+      return;
+    }
+    if (this.state.status === 'downloading') {
+      console.log('[AutoUpdater] Download already in progress — skipping duplicate check');
+      return;
+    }
     try {
       await autoUpdater.checkForUpdates();
     } catch (err) {
@@ -73,7 +84,7 @@ export class AutoUpdateManager {
 
   installNow(): void {
     if (this.state.status === 'downloaded') {
-      autoUpdater.quitAndInstall(false, true);
+      autoUpdater.quitAndInstall(true, true);
     }
   }
 

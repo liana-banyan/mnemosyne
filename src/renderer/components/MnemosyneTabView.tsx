@@ -14,6 +14,7 @@
 import React, { useCallback, useRef, useState, useEffect } from 'react';
 import type { FrameMode } from './FrameModeIndicator';
 import type { AuthState } from '../amplify.d';
+import type { UpdateState } from '../amplify.d';
 import { GauntletTab } from './GauntletTab';
 import { FrameTab } from './FrameTab';
 import { DevModeTab } from './DevModeTab';
@@ -91,6 +92,7 @@ export function MnemosyneTabView({
     localStorage.getItem(LS_WIND_UNLOCKED) === 'true'
   );
   const [appVersion, setAppVersion] = useState('');
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null);
   const windClickCount = useRef(0);
   const windClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -112,6 +114,13 @@ export function MnemosyneTabView({
 
   useEffect(() => {
     window.amplify?.getAppVersion?.().then((v) => setAppVersion(v?.version ?? '')).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!window.amplify) return;
+    window.amplify.getUpdateState?.().then(setUpdateState).catch(() => {});
+    const cleanup = window.amplify.onUpdateStateChanged?.((s) => setUpdateState(s));
+    return cleanup ?? undefined;
   }, []);
 
   // Called by GauntletTab when the first full Gauntlet run completes
@@ -296,7 +305,81 @@ export function MnemosyneTabView({
             </div>
             <div style={{ ...styles.brandSub, display: 'flex', alignItems: 'center', gap: 4 }}>
               <CaiSymbol size={12} color="#6ee7b7" aria-label="CAI" />
-              <span>CAI Amplifier · Liana Banyan</span>
+              <span>
+                {appVersion ? `v${appVersion} · ` : ''}CAI Amplifier · Liana Banyan
+              </span>
+              {/* Bug #2 v0.1.10: update status pill */}
+              {updateState && updateState.status === 'downloaded' && (
+                <button
+                  onClick={() => window.amplify?.installUpdate?.()}
+                  title={`v${updateState.version} ready — click to install & restart`}
+                  style={{
+                    background: 'rgba(59,130,246,0.15)',
+                    border: '1px solid rgba(59,130,246,0.4)',
+                    borderRadius: 10,
+                    color: '#60a5fa',
+                    fontSize: 9,
+                    fontWeight: 700,
+                    padding: '1px 6px',
+                    cursor: 'pointer',
+                    animation: 'mnemo-pulse 2s ease-in-out infinite',
+                    whiteSpace: 'nowrap',
+                  }}
+                  aria-label={`v${updateState.version} ready to install`}
+                >
+                  v{updateState.version} · install ↻
+                </button>
+              )}
+              {updateState && updateState.status === 'available' && (
+                <span
+                  title={`v${updateState.version} downloading…`}
+                  style={{
+                    background: 'rgba(245,158,11,0.15)',
+                    border: '1px solid rgba(245,158,11,0.3)',
+                    borderRadius: 10,
+                    color: '#fbbf24',
+                    fontSize: 9,
+                    fontWeight: 600,
+                    padding: '1px 6px',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  update available
+                </span>
+              )}
+              {updateState && updateState.status === 'downloading' && (
+                <span
+                  style={{
+                    background: 'rgba(110,231,183,0.1)',
+                    border: '1px solid rgba(110,231,183,0.25)',
+                    borderRadius: 10,
+                    color: '#6ee7b7',
+                    fontSize: 9,
+                    fontWeight: 600,
+                    padding: '1px 6px',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  downloading {updateState.downloadProgress ?? 0}%
+                </span>
+              )}
+              {(!updateState || updateState.status === 'idle' || updateState.status === 'not-available') && appVersion && (
+                <span
+                  style={{
+                    background: 'rgba(34,197,94,0.1)',
+                    border: '1px solid rgba(34,197,94,0.25)',
+                    borderRadius: 10,
+                    color: '#4ade80',
+                    fontSize: 9,
+                    fontWeight: 600,
+                    padding: '1px 6px',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title="Up to date"
+                >
+                  up to date
+                </span>
+              )}
             </div>
           </div>
         </div>

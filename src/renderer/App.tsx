@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useLayoutEffect } from 'react';
 import { FrameModeIndicator } from './components/FrameModeIndicator';
 import { DashboardCornerAffordance } from './components/DashboardCornerAffordance';
+import { UpdateToast } from './components/UpdateToast';
 import { MnemosyneTabView } from './components/MnemosyneTabView';
 import { AMPLIFYDashboard } from './components/AMPLIFYDashboard';
 import { ModelPullDialog } from './components/ModelPullDialog';
@@ -247,6 +248,9 @@ export default function App() {
         memberBadge={authState?.member?.badge_tier}
         degraded={authState?.degraded ?? false}
       />
+
+      {/* Bug #1 v0.1.10: update download progress + ready-to-install toast */}
+      <UpdateToast />
 
       {/* Phase 7: Trial banner (active or expired) */}
       {showTrialBanner && (

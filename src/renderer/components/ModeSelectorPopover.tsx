@@ -41,6 +41,8 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
 }) => {
   const popoverRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = React.useState<FrameMode>(currentMode);
+  // Bug #3 v0.1.10: show inline API key panel when AI Burst is selected without a key
+  const [showApiKeyPanel, setShowApiKeyPanel] = React.useState(false);
 
   // Mode definitions — SAGA 01 BP046B brand sweep: AI Burst / Normal / Fallback
   const modes: ModeOption[] = [
@@ -101,11 +103,16 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
   }, []);
 
   const handleApply = useCallback(() => {
+    // Bug #3 v0.1.10: if AI Burst selected without API key → show inline panel instead of applying
+    if (selected === 'ai_burst' && !apiKeyAvailable) {
+      setShowApiKeyPanel(true);
+      return;
+    }
     if (selected !== currentMode) {
       onSelect(selected);
     }
     onClose();
-  }, [selected, currentMode, onSelect, onClose]);
+  }, [selected, currentMode, onSelect, onClose, apiKeyAvailable]);
 
   return (
     <div
@@ -132,22 +139,34 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
           {modes.map((opt) => {
             const isSelected = selected === opt.mode;
             const colors = modeColors[opt.mode];
+            // Bug #3 v0.1.10: AI Burst is always clickable; prereqMet only affects display hint
+            const isDisabled = opt.mode !== 'ai_burst' && !opt.prereqMet;
             return (
               <button
                 key={opt.mode}
                 role="radio"
                 aria-checked={isSelected}
-                aria-disabled={!opt.prereqMet}
-                disabled={!opt.prereqMet}
-                onClick={() => opt.prereqMet && setSelected(opt.mode)}
+                aria-disabled={isDisabled}
+                disabled={isDisabled}
+                onClick={() => {
+                  if (!isDisabled) {
+                    setSelected(opt.mode);
+                    // Reveal API key panel immediately on AI Burst click if key missing
+                    if (opt.mode === 'ai_burst' && !apiKeyAvailable) {
+                      setShowApiKeyPanel(true);
+                    } else {
+                      setShowApiKeyPanel(false);
+                    }
+                  }
+                }}
                 style={{
                   ...styles.modeRow,
                   background: isSelected ? colors.bg : 'rgba(255,255,255,0.03)',
                   border: `1px solid ${isSelected ? colors.border : 'rgba(255,255,255,0.1)'}`,
-                  opacity: opt.prereqMet ? 1 : 0.45,
-                  cursor: opt.prereqMet ? 'pointer' : 'not-allowed',
+                  opacity: isDisabled ? 0.45 : 1,
+                  cursor: isDisabled ? 'not-allowed' : 'pointer',
                 }}
-                title={opt.prereqMet ? `Select ${opt.label} mode` : `${opt.prereq} — unavailable`}
+                title={isDisabled ? `${opt.prereq} — unavailable` : `Select ${opt.label} mode`}
               >
                 {/* Mode icon + name */}
                 <div style={styles.modeLeft}>
@@ -172,6 +191,71 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
             );
           })}
         </div>
+
+        {/* Bug #3 v0.1.10: inline API key panel — shown when AI Burst selected without key */}
+        {showApiKeyPanel && selected === 'ai_burst' && !apiKeyAvailable && (
+          <div style={{
+            margin: '0 12px 10px',
+            padding: '10px 12px',
+            background: 'rgba(250,204,21,0.08)',
+            border: '1px solid rgba(250,204,21,0.3)',
+            borderRadius: 7,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}>
+            <div style={{ fontSize: 11, color: '#fbbf24', fontWeight: 600 }}>
+              ⚠ AI Burst requires an Anthropic API key
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' as const }}>
+              <button
+                onClick={() => {
+                  window.amplify?.openDashboard?.();
+                  onClose();
+                }}
+                style={{
+                  flex: 1, padding: '5px 10px',
+                  background: 'rgba(110,231,183,0.12)',
+                  border: '1px solid rgba(110,231,183,0.35)',
+                  borderRadius: 5, color: '#6ee7b7',
+                  fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                  whiteSpace: 'nowrap' as const,
+                }}
+                title="Open Dashboard → Settings → API Keys"
+              >
+                Set key in Settings →
+              </button>
+              <button
+                onClick={() => {
+                  setSelected('normal');
+                  setShowApiKeyPanel(false);
+                }}
+                style={{
+                  padding: '5px 10px',
+                  background: 'rgba(255,255,255,0.05)',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  borderRadius: 5, color: '#64748b',
+                  fontSize: 10, cursor: 'pointer',
+                }}
+              >
+                Use Normal
+              </button>
+              <button
+                onClick={() => window.amplify?.openExternal?.('https://docs.mnemosynec.ai/modes#ai-burst')}
+                style={{
+                  padding: '5px 10px',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 5, color: '#475569',
+                  fontSize: 10, cursor: 'pointer',
+                }}
+                title="Open AI Burst documentation"
+              >
+                What is AI Burst?
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Footer: Cancel / Apply */}
         <div style={styles.footer}>

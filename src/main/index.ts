@@ -651,7 +651,7 @@ function openDashboard(opts?: { focus?: boolean }): void {
     height: 780,
     minWidth: 560,
     minHeight: 600,
-    title: 'Mnemosyne',
+    title: `Mnemosyne v${app.getVersion()}`,
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -674,6 +674,11 @@ function openDashboard(opts?: { focus?: boolean }): void {
   dashboardWindow.once('ready-to-show', () => {
     dashboardWindow?.show();
     if (opts?.focus !== false) dashboardWindow?.focus();
+  });
+
+  // Bug #2 v0.1.10: keep versioned title after any reload/navigation
+  dashboardWindow.webContents.on('did-finish-load', () => {
+    dashboardWindow?.setTitle(`Mnemosyne v${app.getVersion()}`);
   });
 
   dashboardWindow.loadURL(
