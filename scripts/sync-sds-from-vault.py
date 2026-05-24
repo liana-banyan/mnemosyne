@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""
+Sync SDS.env from Supabase project secrets (canonical source of truth).
+
+Architecture: Supabase project secrets → SDS.env (auto-generated mirror).
+Direction is ALWAYS Vault→Local. Never edit SDS.env by hand.
+
+Usage:
+    python scripts/sync-sds-from-vault.py [options]
+
+Options:
+    --project-ref REF   Supabase project ref (or set SUPABASE_PROJECT_REF env)
+    --output PATH       Output path for SDS.env (default: Asteroid-ProofVault/LockBox/SDS.env)
+    --dry-run           Print what would be written without writing
+    --validate-mcp      Also validate ~/.cursor/mcp.json keys are in sync
+    --include-social     Include social/payment keys from DOUBLESECRET.env scope
+    --verbose           Print secret NAMES (never values) during sync
+
+Environment:
+    SUPABASE_ACCESS_TOKEN  Personal access token from Supabase Dashboard → Account → Access Tokens
+    SUPABASE_PROJECT_REF   Project reference (e.g., ruuxzilgmuwddcofqecc)
+
+Safety:
+    - NEVER prints secret values to stdout/stderr
+    - NEVER commits SDS.env (enforced by .gitignore)
+    - Writes atomically (tmp + rename) to avoid partial writes
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT = WORKSPACE_ROOT / "Asteroid-ProofVault" / "LockBox" / "SDS.env"
+MCP_JSON_PATH = Path.home() / ".cursor" / "mcp.json"
+
+CANONICAL_AI_KEYS = [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "PERPLEXITY_API_KEY",
+]
+
+CANONICAL_INFRA_KEYS = [
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_ANON_KEY",
+]
+
+CANONICAL_PAYMENT_KEYS = [
+    "STRIPE_SECRET_KEY",
+    "STRIPE_WEBHOOK_SECRET",
+    "STRIPE_CONNECT_WEBHOOK_SECRET",
+    "STRIPE_PROJECT_FUNDING_WEBHOOK_SECRET",
+    "STRIPE_FUNDING_WEBHOOK_SECRET",
+    "RESEND_API_KEY",
+]
+
+CANONICAL_SOCIAL_KEYS = [
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_AUTH_TOKEN",
+    "BLUESKY_APP_PASSWORD",
+    "TWITTER_CONSUMER_KEY",
+    "TWITTER_CONSUMER_SECRET",
+    "TWITTER_ACCESS_TOKEN",
+    "TWITTER_ACCESS_SECRET",
+    "FACEBOOK_APP_ID",
+    "FACEBOOK_APP_SECRET",
+    "BUFFER_ACCESS_TOKEN",
+]
+
+CANONICAL_MISC_KEYS = [
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+    "GMAIL_CLIENT_ID",
+    "GMAIL_CLIENT_SECRET",
+    "GMAIL_REFRESH_TOKEN",
+    "NOTION_API_KEY",
+    "PINATA_API_KEY",
+    "PINATA_SECRET_KEY",
+    "ADMIN_WALLET_PRIVATE_KEY",
+    "LB_SYSTEM_KEY",
+    "CONGRESS_API_KEY",
+    "KICKSTARTER_API_KEY",
+    "LITHIC_WEBHOOK_SECRET",
+    "META_ACCESS_TOKEN",
+]
+
+SUPABASE_INTERNAL = {
+    "POSTGRES_PASSWORD",
+    "JWT_SECRET",
+    "ANON_KEY",
+    "SERVICE_ROLE_KEY",
+}
+
+MCP_WATCHED_KEYS = {"PERPLEXITY_API_KEY", "RESEND_API_KEY"}
+
+
+def get_canonical_names(include_social: bool = True) -> list[str]:
+    names = CANONICAL_AI_KEYS + CANONICAL_INFRA_KEYS + CANONICAL_PAYMENT_KEYS + CANONICAL_MISC_KEYS
+    if include_social:
+        names += CANONICAL_SOCIAL_KEYS
+    return names
+
+
+def fetch_secrets_via_api(project_ref: str, access_token: str) -> dict[str, str]:
+    """Fetch project secrets via Supabase Management API."""
+    import httpx
+
+    url = f"https://api.supabase.com/v1/projects/{project_ref}/secrets"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+
+    resp = httpx.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    secrets: dict[str, str] = {}
+    for item in resp.json():
+        name = item.get("name", "")
+        value = item.get("value", "")
+        if name and name not in SUPABASE_INTERNAL:
+            secrets[name] = value
+
+    return secrets
+
+
+def fetch_secrets_via_cli(project_ref: str) -> dict[str, str]:
+    """Fallback: fetch secrets using Supabase CLI (requires linked project)."""
+    try:
+        result = subprocess.run(
+            ["supabase", "secrets", "list", "--project-ref", project_ref],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            print(f"[WARN] supabase CLI failed: {result.stderr.strip()}", file=sys.stderr)
+            return {}
+    except FileNotFoundError:
+        print("[WARN] supabase CLI not found", file=sys.stderr)
+        return {}
+
+    secrets: dict[str, str] = {}
+    for line in result.stdout.strip().splitlines():
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$", line)
+        if match:
+            name, value = match.group(1), match.group(2)
+            if name not in SUPABASE_INTERNAL:
+                secrets[name] = value
+
+    return secrets
+
+
+def write_sds_env(secrets: dict[str, str], output_path: Path, canonical_names: list[str], dry_run: bool, verbose: bool) -> int:
+    """Write secrets to SDS.env file. Returns count of keys written."""
+    lines = [
+        f"# SDS.env — AUTO-GENERATED by scripts/sync-sds-from-vault.py",
+        f"# Source of truth: Supabase project secrets",
+        f"# Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"# DO NOT EDIT BY HAND. DO NOT COMMIT.",
+        "",
+    ]
+
+    written = 0
+    missing: list[str] = []
+
+    for name in canonical_names:
+        if name in secrets:
+            lines.append(f"{name}={secrets[name]}")
+            written += 1
+            if verbose:
+                print(f"  [OK] {name}")
+        else:
+            missing.append(name)
+            if verbose:
+                print(f"  [MISS] {name} — not in Vault")
+
+    extra_keys = sorted(set(secrets.keys()) - set(canonical_names))
+    if extra_keys:
+        lines.append("")
+        lines.append("# --- Non-canonical keys found in Vault (review for inclusion) ---")
+        for name in extra_keys:
+            lines.append(f"{name}={secrets[name]}")
+            written += 1
+            if verbose:
+                print(f"  [EXTRA] {name} — in Vault but not in canonical list")
+
+    content = "\n".join(lines) + "\n"
+
+    if dry_run:
+        print(f"\n[DRY RUN] Would write {written} keys to {output_path}")
+        print(f"[DRY RUN] Missing from Vault: {', '.join(missing) if missing else 'none'}")
+        print(f"[DRY RUN] Extra in Vault: {', '.join(extra_keys) if extra_keys else 'none'}")
+        return written
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        Path(tmp_path).replace(output_path)
+    except Exception:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
+
+    print(f"\n[OK] Wrote {written} keys to {output_path}")
+    if missing:
+        print(f"[WARN] Missing from Vault ({len(missing)}): {', '.join(missing)}")
+    if extra_keys:
+        print(f"[INFO] Extra keys in Vault ({len(extra_keys)}): {', '.join(extra_keys)}")
+
+    return written
+
+
+def validate_mcp_json(secrets: dict[str, str], verbose: bool) -> bool:
+    """Check that keys referenced in mcp.json match Vault values."""
+    if not MCP_JSON_PATH.exists():
+        print("[WARN] mcp.json not found, skipping validation", file=sys.stderr)
+        return True
+
+    try:
+        mcp_data = json.loads(MCP_JSON_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[WARN] Failed to read mcp.json: {e}", file=sys.stderr)
+        return True
+
+    all_ok = True
+    servers = mcp_data.get("mcpServers", {})
+
+    for server_name, server_config in servers.items():
+        env_block = server_config.get("env", {})
+        for key, mcp_value in env_block.items():
+            if key in MCP_WATCHED_KEYS:
+                if key not in secrets:
+                    print(f"[WARN] mcp.json/{server_name} has {key} but Vault does not")
+                    all_ok = False
+                elif secrets[key] != mcp_value:
+                    print(f"[WARN] mcp.json/{server_name}/{key} differs from Vault value (lengths: mcp={len(mcp_value)}, vault={len(secrets[key])})")
+                    all_ok = False
+                elif verbose:
+                    print(f"  [SYNC OK] mcp.json/{server_name}/{key} matches Vault")
+
+    if all_ok:
+        print("[OK] mcp.json keys in sync with Vault")
+
+    return all_ok
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Sync SDS.env from Supabase project secrets (Vault → local mirror)"
+    )
+    parser.add_argument("--project-ref", default=os.environ.get("SUPABASE_PROJECT_REF", ""),
+                        help="Supabase project reference")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT,
+                        help="Output path for SDS.env")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print what would change without writing")
+    parser.add_argument("--validate-mcp", action="store_true",
+                        help="Also validate mcp.json keys match Vault")
+    parser.add_argument("--include-social", action="store_true", default=True,
+                        help="Include social/payment keys (default: True)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print key names during sync")
+    args = parser.parse_args()
+
+    if not args.project_ref:
+        print("[ERROR] --project-ref required (or set SUPABASE_PROJECT_REF env)", file=sys.stderr)
+        return 1
+
+    access_token = os.environ.get("SUPABASE_ACCESS_TOKEN", "")
+
+    if access_token:
+        print(f"[INFO] Fetching secrets from Supabase Management API for project {args.project_ref}...")
+        try:
+            secrets = fetch_secrets_via_api(args.project_ref, access_token)
+        except Exception as e:
+            print(f"[ERROR] Management API failed: {e}", file=sys.stderr)
+            print("[INFO] Falling back to Supabase CLI...", file=sys.stderr)
+            secrets = fetch_secrets_via_cli(args.project_ref)
+    else:
+        print("[INFO] No SUPABASE_ACCESS_TOKEN set. Using Supabase CLI fallback...")
+        secrets = fetch_secrets_via_cli(args.project_ref)
+
+    if not secrets:
+        print("[ERROR] No secrets retrieved from either API or CLI. Aborting.", file=sys.stderr)
+        return 1
+
+    print(f"[INFO] Retrieved {len(secrets)} secrets from Vault (names only, values hidden)")
+
+    canonical = get_canonical_names(include_social=args.include_social)
+    written = write_sds_env(secrets, args.output, canonical, args.dry_run, args.verbose)
+
+    if args.validate_mcp and not args.dry_run:
+        validate_mcp_json(secrets, args.verbose)
+
+    if written == 0:
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
