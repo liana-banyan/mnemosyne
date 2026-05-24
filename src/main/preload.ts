@@ -687,6 +687,16 @@ contextBridge.exposeInMainWorld('amplify', {
   /** Get full telemetry summary (session + today + week + month + daily breakdown) */
   getTelemetrySummary: (): Promise<unknown> =>
     ipcRenderer.invoke('get-telemetry-summary'),
+
+  // ── Chronos Research Consent (KniPr038) ──────────────────────────────────
+
+  /** Write a sha256-signed consent Eblet to ~/.amplify/consent/ */
+  writeChronosConsent: (consentPayload: object): Promise<{ ok: boolean; ebletPath?: string }> =>
+    ipcRenderer.invoke('write-chronos-consent', consentPayload),
+
+  /** Write a sha256-signed revocation Eblet to ~/.amplify/consent/ */
+  revokeChronosConsent: (payload?: object): Promise<{ ok: boolean; ebletPath?: string }> =>
+    ipcRenderer.invoke('revoke-chronos-consent', payload),
 });
 
 // ─── Global type extension ────────────────────────────────────────────────────
@@ -831,6 +841,9 @@ declare global {
       hideOverlay?: () => void;
       showOverlay?: () => void;
       getTelemetrySummary?: () => Promise<unknown>;
+      // Chronos Research Consent (KniPr038)
+      writeChronosConsent?: (consentPayload: object) => Promise<{ ok: boolean; ebletPath?: string }>;
+      revokeChronosConsent?: (payload?: object) => Promise<{ ok: boolean; ebletPath?: string }>;
       // Kitchen Table™ + Recipes™ + Atlas™ (BP052 v0.1.8)
       kitchenTable: {
         listSessions: () => Promise<unknown[]>;

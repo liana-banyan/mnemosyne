@@ -1379,6 +1379,54 @@ function registerIPCHandlers(): void {
     relayConnected: relayClient?.isConnected() ?? false,
     ownPeerId: peerDiscovery ? (() => { const { getStablePeerId: gsp } = require('./federation/peer-discovery'); return gsp(); })() : '',
   }));
+
+  // ── Chronos Research Consent (KniPr038) ──────────────────────────────────
+
+  ipcMain.handle('write-chronos-consent', async (_event, consentPayload: object) => {
+    const fsp = require('path') as typeof import('path');
+    const fs = require('fs') as typeof import('fs');
+    const crypto = require('crypto') as typeof import('crypto');
+    const consentDir = fsp.join(app.getPath('home'), '.amplify', 'consent');
+    fs.mkdirSync(consentDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `chronos_consent_${timestamp}.eblet.json`;
+    const filePath = fsp.join(consentDir, filename);
+    const body = JSON.stringify({
+      type: 'chronos_consent_eblet',
+      version: '1.0.0',
+      action: 'grant',
+      timestamp: new Date().toISOString(),
+      consent: consentPayload,
+      kAnonymityMin: 10,
+      revocationAvailable: true,
+      researchConsentVersion: '1.0.0',
+      canonRef: 'canon_chronos_research_aggregation_opt_in_member_mark_dividend_bp054',
+    });
+    const signed_hash = crypto.createHash('sha256').update(body).digest('hex');
+    fs.writeFileSync(filePath, JSON.stringify({ ...JSON.parse(body), signed_hash }, null, 2));
+    return { ok: true, ebletPath: filePath };
+  });
+
+  ipcMain.handle('revoke-chronos-consent', async (_event, _payload?: object) => {
+    const fsp = require('path') as typeof import('path');
+    const fs = require('fs') as typeof import('fs');
+    const crypto = require('crypto') as typeof import('crypto');
+    const consentDir = fsp.join(app.getPath('home'), '.amplify', 'consent');
+    fs.mkdirSync(consentDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `chronos_revocation_${timestamp}.eblet.json`;
+    const filePath = fsp.join(consentDir, filename);
+    const body = JSON.stringify({
+      type: 'chronos_consent_eblet',
+      version: '1.0.0',
+      action: 'revoke',
+      timestamp: new Date().toISOString(),
+      canonRef: 'canon_chronos_research_aggregation_opt_in_member_mark_dividend_bp054',
+    });
+    const signed_hash = crypto.createHash('sha256').update(body).digest('hex');
+    fs.writeFileSync(filePath, JSON.stringify({ ...JSON.parse(body), signed_hash }, null, 2));
+    return { ok: true, ebletPath: filePath };
+  });
 }
 
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
