@@ -95,7 +95,7 @@ export function ScreenWelcome({ onNext, onBack, onSkip, step, totalSteps }: Scre
   return (
     <div style={s.screen}>
       <div style={{ fontSize: 36, marginBottom: 12, textAlign: 'center' }}>🌿</div>
-      <h1 style={s.title}>Welcome to Mnemosyne</h1>
+      <h1 style={s.title}>Welcome to Mnemosyne™</h1>
       <div style={s.badge}>LianaBanyan Alpha</div>
 
       <p style={s.body}>
@@ -449,7 +449,7 @@ export function ScreenRoll({ onNext, onBack, onSkip, step, totalSteps }: ScreenP
         onSkip={onSkip}
         step={step}
         totalSteps={totalSteps}
-        nextLabel="Enter Mnemosyne"
+        nextLabel="Enter Mnemosyne™"
       />
     </div>
   );
