@@ -230,6 +230,16 @@ declare global {
         base_dir: string;
         scanned_at: string;
       }>;
+      // SubstratedFolderWatcher™ (SAGA-γ v0.1.10)
+      watcher?: {
+        addFolder: (folderPath: string) => Promise<any>;
+        removeFolder: (folderId: string) => Promise<boolean>;
+        listFolders: () => Promise<any[]>;
+        getStats: () => Promise<any>;
+        openFolderDialog: () => Promise<{ canceled: boolean; filePaths: string[] }>;
+        onEbletMinted: (callback: (eblet: any) => void) => void;
+        onFolderError: (callback: (payload: { folderId: string; error: string }) => void) => void;
+      };
       // SAGA 13 BP046B — 5-Marks first-install bonus
       creditFirstInstallMarks?: () => void;
       // SAGA 07 BP046B — Utility methods

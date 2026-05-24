@@ -71,6 +71,9 @@ registerCustomScheme();
 // BP052 v0.1.8 — Kitchen Table™ IPC store
 import { registerKitchenTableIpc } from './kitchen_table/kitchen_table_store';
 
+// SAGA-γ v0.1.10 — SubstratedFolderWatcher™
+import { SubstratedFolderWatcher, registerWatcherIpc } from './services/SubstratedFolderWatcher';
+
 // SAGA 10 BP045 W1 — mnemosyne:// deep-link handler
 import { registerDeepLinkProtocol, handleStartupDeepLink } from './deep-link-handler';
 import type { DeepLinkPayload } from './deep-link-handler';
@@ -210,6 +213,7 @@ function agentGetPluginRegistryHandler() {
 
 let overlayWindow: BrowserWindow | null = null;
 let dashboardWindow: BrowserWindow | null = null;
+let folderWatcher: SubstratedFolderWatcher | null = null;
 let hearthConjunctionWindow: BrowserWindow | null = null;
 let moneyPennyWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -684,6 +688,7 @@ function openDashboard(opts?: { focus?: boolean }): void {
 
   if (autoUpdater) autoUpdater.registerWindow(dashboardWindow);
   if (authManager) authManager.registerWindow(dashboardWindow);
+  if (folderWatcher && dashboardWindow) folderWatcher.setMainWindow(dashboardWindow);
 }
 
 function setupLanHandshakeDiscovery(): void {
@@ -1294,6 +1299,13 @@ function registerIPCHandlers(): void {
   // ── Kitchen Table™ + Atlas™ + P2P (BP052 v0.1.8) ────────────────────────
   registerKitchenTableIpc(ipcMain);
 
+  // ── SubstratedFolderWatcher™ (SAGA-γ v0.1.10) ────────────────────────────
+  if (folderWatcher) registerWatcherIpc(folderWatcher);
+
+  ipcMain.handle('watcher:open-folder-dialog', async () => {
+    return dialog.showOpenDialog({ properties: ['openDirectory'] });
+  });
+
   // ── MV-CN Peer Mesh (SAGA 3 BP045 W1) ─────────────────────────────────────
   ipcMain.handle('get-mesh-state', () => ({
     peers: peerDiscovery?.getAllPeers() ?? [],
@@ -1378,6 +1390,9 @@ app.whenReady().then(async () => {
   // §6 BP041 — Hide Electron menu bar by default (non-technical member protection).
   // Ctrl+Shift+D toggles developer menu on/off at runtime.
   Menu.setApplicationMenu(null);
+
+  // SAGA-γ v0.1.10 — SubstratedFolderWatcher™ singleton (must be after app.ready for getPath)
+  folderWatcher = new SubstratedFolderWatcher();
 
   // Create overlay + tray
   createOverlayWindow();
@@ -1504,6 +1519,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', async () => {
   stopOverlayWatchdog();
   if (connectivityTimer) clearInterval(connectivityTimer);
+  folderWatcher?.stopAll();
   autoUpdater?.destroy();
   await ollamaManager?.shutdown();
   await federationClient?.stop();

@@ -1,7 +1,7 @@
 /**
- * SubstratedFoldersPanel™ — Mnemosyne™ v0.1.10 scaffold
- * Renders in Developer Tab → Atlas™ panel or standalone Settings section.
- * TODO v0.1.10: wire to watcher IPC channels, connect to CaithedralInspector™
+ * SubstratedFoldersPanel™ — Mnemosyne™ v0.1.10
+ * Renders in Developer Tab → Substrate panel.
+ * Live IPC: watcher:list-folders, watcher:add-folder, watcher:eblet-minted
  */
 import React, { useState, useEffect } from 'react';
 
@@ -19,27 +19,63 @@ interface EbletMintRecord {
   event: 'created' | 'changed' | 'deleted';
 }
 
+interface WatcherStats {
+  foldersWatched: number;
+  ebletsMinted: number;
+  lastEventAt: string | null;
+  errors: string[];
+}
+
 export function SubstratedFoldersPanel() {
   const [folders, setFolders] = useState<SubstratedFolder[]>([]);
   const [recentEblets, setRecentEblets] = useState<EbletMintRecord[]>([]);
-  const [stats, setStats] = useState({ foldersWatched: 0, ebletsMinted: 0, lastEventAt: null as string | null });
+  const [stats, setStats] = useState<WatcherStats>({ foldersWatched: 0, ebletsMinted: 0, lastEventAt: null, errors: [] });
 
   useEffect(() => {
-    // TODO v0.1.10: wire to window.amplify.watcher.listFolders()
-    // TODO v0.1.10: subscribe to watcher:eblet-minted IPC events
+    const w = window.amplify?.watcher;
+    if (!w) return;
+
+    w.listFolders?.().then((f) => setFolders(f as SubstratedFolder[])).catch(console.error);
+    w.getStats?.().then((s) => setStats(s as WatcherStats)).catch(console.error);
+
+    w.onEbletMinted?.((eblet) => {
+      const e = eblet as EbletMintRecord;
+      setRecentEblets((prev) => [...prev.slice(-49), e]);
+      setStats((prev) => ({ ...prev, ebletsMinted: prev.ebletsMinted + 1, lastEventAt: e.mintedAt }));
+    });
   }, []);
 
   const handleAddFolder = async () => {
-    // TODO v0.1.10: call window.amplify.dialog.showOpenDialog({ properties: ['openDirectory'] })
-    // then window.amplify.watcher.addFolder(path)
-    alert('TODO v0.1.10: folder picker not yet wired — add via IPC');
+    const w = window.amplify?.watcher;
+    if (!w) return;
+
+    const result = await w.openFolderDialog?.();
+    if (!result || result.canceled || !result.filePaths?.[0]) return;
+
+    const added = await w.addFolder?.(result.filePaths[0]);
+    if (!added) return;
+
+    if ((added as { error?: string }).error) {
+      alert((added as { error: string }).error);
+      return;
+    }
+    setFolders((prev) => [...prev, added as SubstratedFolder]);
+    setStats((prev) => ({ ...prev, foldersWatched: prev.foldersWatched + 1 }));
+  };
+
+  const handleRemoveFolder = async (folderId: string) => {
+    const ok = await window.amplify?.watcher?.removeFolder?.(folderId);
+    if (ok) {
+      setFolders((prev) => prev.filter((f) => f.id !== folderId));
+      setStats((prev) => ({ ...prev, foldersWatched: Math.max(0, prev.foldersWatched - 1) }));
+    }
   };
 
   return (
     <div style={{ padding: 16, color: '#e2e8f0', fontFamily: 'monospace' }}>
       <div style={{ fontSize: 14, fontWeight: 700, color: '#f59e0b', marginBottom: 12 }}>
         Substrated Folders™
-        <span style={{ fontSize: 11, color: '#64748b', marginLeft: 8 }}>v0.1.10 scaffold</span>
+        <span style={{ fontSize: 11, color: '#64748b', marginLeft: 8 }}>v0.1.10</span>
       </div>
 
       {/* Stats bar */}
@@ -57,9 +93,17 @@ export function SubstratedFoldersPanel() {
           </div>
         ) : (
           folders.map(f => (
-            <div key={f.id} style={{ background: '#1e293b', borderRadius: 6, padding: '8px 12px', marginBottom: 6, fontSize: 12 }}>
-              <span style={{ color: '#34d399' }}>✓</span> {f.absolutePath}
-              <span style={{ color: '#475569', marginLeft: 8 }}>{new Date(f.addedAt).toLocaleDateString()}</span>
+            <div key={f.id} style={{ background: '#1e293b', borderRadius: 6, padding: '8px 12px', marginBottom: 6, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span>
+                <span style={{ color: '#34d399' }}>✓</span> {f.absolutePath}
+                <span style={{ color: '#475569', marginLeft: 8 }}>{new Date(f.addedAt).toLocaleDateString()}</span>
+              </span>
+              <button
+                onClick={() => handleRemoveFolder(f.id)}
+                style={{ background: 'none', border: '1px solid rgba(248,113,113,0.3)', color: '#f87171', borderRadius: 4, padding: '2px 7px', fontSize: 10, cursor: 'pointer' }}
+              >
+                ✕
+              </button>
             </div>
           ))
         )}

@@ -624,6 +624,32 @@ contextBridge.exposeInMainWorld('amplify', {
     p2pPeers: () => ipcRenderer.invoke('kitchen-table:p2p-peers'),
   },
 
+  // ── SubstratedFolderWatcher™ (SAGA-γ v0.1.10) ────────────────────────────
+  watcher: {
+    addFolder: (folderPath: string): Promise<unknown> =>
+      ipcRenderer.invoke('watcher:add-folder', folderPath),
+
+    removeFolder: (folderId: string): Promise<boolean> =>
+      ipcRenderer.invoke('watcher:remove-folder', folderId),
+
+    listFolders: (): Promise<unknown[]> =>
+      ipcRenderer.invoke('watcher:list-folders'),
+
+    getStats: (): Promise<unknown> =>
+      ipcRenderer.invoke('watcher:get-stats'),
+
+    openFolderDialog: (): Promise<{ canceled: boolean; filePaths: string[] }> =>
+      ipcRenderer.invoke('watcher:open-folder-dialog'),
+
+    onEbletMinted: (callback: (eblet: unknown) => void): void => {
+      ipcRenderer.on('watcher:eblet-minted', (_event, eblet) => callback(eblet));
+    },
+
+    onFolderError: (callback: (payload: { folderId: string; error: string }) => void): void => {
+      ipcRenderer.on('watcher:folder-error', (_event, payload) => callback(payload));
+    },
+  },
+
   // ── SAGA 13 BP046B — 5-Marks first-install bonus ─────────────────────────
   /** Credit 5 marks on first install + first Stage 1 Gauntlet completion. One-per-account. */
   creditFirstInstallMarks: (): void =>
@@ -764,6 +790,16 @@ declare global {
       agentSetTierChoice: (agentId: string, tierId: string) => Promise<{ ok: boolean }>;
       agentGetPlugins: () => Promise<Array<{ id: string; displayName: string; subtitle: string; icon: string; tiers?: Array<{ id: string; label: string; tierClass: string; modelId: string }>; requiresKey?: string; source: string }>>;
       agentGetPluginRegistry: () => Promise<Array<{ id: string; filename: string; displayName: string; ipLedgerRef?: string; authorHandle?: string; loadedAt: string }>>;
+      // SubstratedFolderWatcher™ (SAGA-γ v0.1.10)
+      watcher?: {
+        addFolder: (folderPath: string) => Promise<unknown>;
+        removeFolder: (folderId: string) => Promise<boolean>;
+        listFolders: () => Promise<unknown[]>;
+        getStats: () => Promise<unknown>;
+        openFolderDialog: () => Promise<{ canceled: boolean; filePaths: string[] }>;
+        onEbletMinted: (callback: (eblet: unknown) => void) => void;
+        onFolderError: (callback: (payload: { folderId: string; error: string }) => void) => void;
+      };
       // SAGA 13 BP046B
       creditFirstInstallMarks: () => void;
       // SAGA 07 BP046B utilities

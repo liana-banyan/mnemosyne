@@ -14,9 +14,10 @@ import { CaithedralInspector } from '../kitchen_table/CaithedralInspector';
 import { EbletInspector } from '../kitchen_table/EbletInspector';
 import { PheromoneVisualizer } from '../kitchen_table/PheromoneVisualizer';
 import { BanyanMetricLedger } from '../kitchen_table/BanyanMetricLedger';
+import { SubstratedFoldersPanel } from './SubstratedFoldersPanel';
 
 type DevSurface = 'submit-test' | 'uploads' | 'fork-strain' | 'seg-control' | 'project-connect' | 'variant-voting';
-type DevPanel = 'caithedral' | 'eblet' | 'pheromone' | 'banyan-metric' | 'atlas' | 'seg-controls';
+type DevPanel = 'caithedral' | 'eblet' | 'pheromone' | 'banyan-metric' | 'atlas' | 'seg-controls' | 'substrate';
 
 interface DevModeTabProps {
   authState: AuthState | null;
@@ -42,6 +43,7 @@ const PANELS: Array<{ id: DevPanel; label: string; mark?: string }> = [
   { id: 'banyan-metric', label: 'Banyan Metric™' },
   { id: 'atlas',         label: 'Atlas™' },
   { id: 'seg-controls',  label: 'SEG Controls' },
+  { id: 'substrate',     label: 'Substrate™' },
 ];
 
 export function DevModeTab({ authState, onDisable, onStepByStep }: DevModeTabProps) {
@@ -119,6 +121,7 @@ export function DevModeTab({ authState, onDisable, onStepByStep }: DevModeTabPro
             setFlippedCard={setFlippedCard}
           />
         )}
+        {activePanel === 'substrate' && <SubstratedFoldersPanel />}
       </div>
     </div>
   );
