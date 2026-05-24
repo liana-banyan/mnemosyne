@@ -236,11 +236,11 @@ MascotLRH.png
 !SECURITY.md
 !docs/*.md
 !docs/**/*.md
-!amplify-computer/TRADEMARK_USE_POLICY.md
-!amplify-computer/LICENSE_SSPL.md
-!amplify-computer/README.md
-!amplify-computer/docs/*.md
-!amplify-computer/docs/**/*.md
+!TRADEMARK_USE_POLICY.md
+!LICENSE_SSPL.md
+!README.md
+!docs/mnemosyne/*.md
+!docs/mnemosyne/**/*.md
 !platform/**/*.md
 !BISHOP_DROPZONE/01_KnightPrompts/**/*.md
 !BISHOP_DROPZONE/12_Innovations_AA/**/*.md
@@ -287,7 +287,7 @@ MascotLRH.png
 !librarian-mcp-public/**/*.txt
 *.json
 !platform/**/*.json
-!amplify-computer/src/renderer/public/**/*.json
+!src/renderer/public/**/*.json
 !librarian-mcp-public/**/*.json
 !lb-test-frame/**/*.json
 !lb-omnibox-extension/**/*.json
@@ -604,4 +604,4 @@ librarian-mcp-helm-pwa/dist/
 !platform/src/data/librarian_medallion_variants.yaml
 
 # Mnemosyne Hugo bundle (build artifact � regenerated via npm run build:hugo)
-amplify-computer/static/cephas/
+static/cephas/
