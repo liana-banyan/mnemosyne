@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NotCents-CAI Glyph   (U+0110, Latin Capital Letter D with Stroke)
+  Cooperative-finance mark for Liana Banyan Platform / Mnemosyne
+  BP055 · D.1 USPTO TM specimen asset
+
+  EXPORT SIZES (minimum USPTO specimen requirement: 250×250px):
+    " 256×256 px   USPTO TM application specimen (minimum)
+    " 512×512 px   high-res specimen / app icon
+    " 1024×1024 px  USPTO design-patent quality / print
+    " 72×72 px     tray / notification icon (informational only)
+
+  Raster export command (ImageMagick):
+    magick -background none assets/notcents_d_glyph.svg -resize 256x256 assets/notcents_d_glyph_256.png
+    magick -background none assets/notcents_d_glyph.svg -resize 512x512 assets/notcents_d_glyph_512.png
+    magick -background none assets/notcents_d_glyph.svg -resize 1024x1024 assets/notcents_d_glyph_1024.png
+
+  Unicode note for USPTO:
+    U+0110  LATIN CAPITAL LETTER D WITH STROKE  ()   the NotCents glyph
+    U+20AB  DONG SIGN  («)   Vietnamese Óng currency; DISTINCT from U+0110
+    These are different codepoints. The NotCents mark is exclusively U+0110.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 500 500"
+     width="500"
+     height="500"
+     role="img"
+     aria-label="NotCents D-glyph (U+0110)">
+  <title>NotCents   (D with Stroke)</title>
+  <desc>The NotCents cooperative-finance glyph: Latin Capital Letter D with Stroke (U+0110).
+  Liana Banyan Platform mark. Distinct from Vietnamese Dong sign (U+20AB).</desc>
+
+  <!-- Background circle  cooperative gold -->
+  <circle cx="250" cy="250" r="240"
+          fill="#1a1a2e"
+          stroke="#c9a84c"
+          stroke-width="12"/>
+
+  <!--  character rendered via SVG text (font-stack: system serif fallback) -->
+  <!-- Primary render: geometric SVG path approximation of  -->
+  <!-- D body: rounded rectangle right half -->
+  <path d="M 155 120
+           L 155 380
+           L 240 380
+           Q 340 380 340 250
+           Q 340 120 240 120
+           Z"
+        fill="none"
+        stroke="#c9a84c"
+        stroke-width="28"
+        stroke-linejoin="round"
+        stroke-linecap="round"/>
+
+  <!-- D inner fill for stroke weight -->
+  <path d="M 183 150
+           L 183 350
+           L 238 350
+           Q 310 350 310 250
+           Q 310 150 238 150
+           Z"
+        fill="#c9a84c"
+        opacity="0.15"/>
+
+  <!-- Horizontal stroke through D (the distinguishing mark) -->
+  <line x1="115" y1="250" x2="300" y2="250"
+        stroke="#c9a84c"
+        stroke-width="28"
+        stroke-linecap="round"/>
+
+  <!-- Fallback text layer (rendered if SVG path fonts available) -->
+  <text x="250" y="295"
+        font-family="'Times New Roman', 'Georgia', 'DejaVu Serif', serif"
+        font-size="220"
+        font-weight="bold"
+        text-anchor="middle"
+        fill="#c9a84c"
+        opacity="0"
+        aria-hidden="true">&#x110;</text>
+
+  <!-- Cooperative mark  small subtitle -->
+  <text x="250" y="435"
+        font-family="'Arial', 'Helvetica', sans-serif"
+        font-size="22"
+        font-weight="600"
+        letter-spacing="3"
+        text-anchor="middle"
+        fill="#c9a84c"
+        opacity="0.75">NOTCENTS · U+0110</text>
+</svg>
