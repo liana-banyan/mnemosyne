@@ -31,6 +31,7 @@ export class AutoUpdateManager {
   private windows: Set<BrowserWindow> = new Set();
   private checkTimer: ReturnType<typeof setTimeout> | null = null;
   private periodicTimer: ReturnType<typeof setInterval> | null = null;
+  private stateListeners: Array<(state: UpdateState) => void> = [];
 
   // 4-hour periodic check interval
   private static readonly PERIODIC_CHECK_MS = 4 * 60 * 60 * 1000;
@@ -90,6 +91,11 @@ export class AutoUpdateManager {
 
   getState(): UpdateState {
     return { ...this.state };
+  }
+
+  /** Subscribe to update state changes from the main process (e.g. to update tray tooltip). */
+  onStateChanged(listener: (state: UpdateState) => void): void {
+    this.stateListeners.push(listener);
   }
 
   destroy(): void {
@@ -191,6 +197,9 @@ export class AutoUpdateManager {
   private _setState(update: Partial<UpdateState>): void {
     this.state = { ...this.state, ...update };
     this._broadcast('update-state-changed', this.state);
+    for (const listener of this.stateListeners) {
+      listener(this.state);
+    }
   }
 
   private _broadcast(channel: string, payload: unknown): void {

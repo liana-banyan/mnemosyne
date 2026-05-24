@@ -7,7 +7,7 @@
 // Founder direct: "user should be able to click it and choose which of the three to use."
 // Brick Wall: NO-FIAT-CONVERSION (mode = cost visibility) · AGPL · 8-dim accessibility.
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { NotCentsGlyph } from './NotCentsGlyph';
 import { ModeSelectorPopover } from './ModeSelectorPopover';
 
@@ -75,6 +75,11 @@ export const FrameModeIndicator: React.FC<FrameModeIndicatorProps> = ({
   apiKeyAvailable = false,
 }) => {
   const [popoverOpen, setPopoverOpen] = useState(false);
+  // KniPr026: track chip hover state separately so the useEffect below can
+  // re-enable click-through the moment the popover closes (even if the mouse
+  // is no longer over the chip — the old handleChipMouseLeave guard was
+  // insufficient for that path).
+  const [chipHovered, setChipHovered] = useState(false);
 
   const effectiveMode = degraded ? 'fallback' : state.mode;
   const meta = MODE_META[effectiveMode];
@@ -88,15 +93,26 @@ export const FrameModeIndicator: React.FC<FrameModeIndicatorProps> = ({
     }
   }, [degraded, onChipClick]);
 
-  // KniPr005 Bug 1: toggle overlay click-through when mouse hovers chip.
-  // In overlay (click-through) window, chip must capture pointer on hover.
+  // KniPr005 / KniPr026: toggle overlay click-through on chip hover.
+  // chipHovered state is set here; useEffect below handles the popover-close path.
   const handleChipMouseEnter = useCallback(() => {
+    setChipHovered(true);
     window.amplify?.setClickthrough?.(false);
   }, []);
 
   const handleChipMouseLeave = useCallback(() => {
+    setChipHovered(false);
     if (!popoverOpen) window.amplify?.setClickthrough?.(true);
   }, [popoverOpen]);
+
+  // KniPr026: re-enable click-through whenever the popover closes while the
+  // chip is not hovered (covers mode-select and keyboard-close paths that
+  // bypassed handleChipMouseLeave).
+  useEffect(() => {
+    if (!popoverOpen && !chipHovered) {
+      window.amplify?.setClickthrough?.(true);
+    }
+  }, [popoverOpen, chipHovered]);
 
   const handleModeSelect = useCallback((mode: FrameMode) => {
     onModeChange?.(mode);
@@ -134,7 +150,7 @@ export const FrameModeIndicator: React.FC<FrameModeIndicatorProps> = ({
         aria-label={`Current mode: ${meta.label}. Click to change mode.`}
         aria-haspopup="dialog"
         aria-expanded={popoverOpen}
-        style={degraded ? { opacity: 0.55, filter: 'grayscale(0.6)', cursor: 'not-allowed' } : { cursor: 'pointer' }}
+        style={degraded ? { opacity: 0.55, filter: 'grayscale(0.6)', cursor: 'not-allowed' } : { cursor: 'pointer', transition: 'opacity 100ms ease, box-shadow 100ms ease' }}
       >
         <span className="lb-corner-indicator__icon">
           {degraded ? '⚠️' : meta.icon}

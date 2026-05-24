@@ -28,7 +28,7 @@ import { OllamaManager } from './ollama_manager';
 import { SubstrateAPIServer, API_PORT } from './substrate_api';
 import { FederationClient } from './federation_client';
 import { getMoneyPennyURL, getLocalIPs } from './mobile_pwa';
-import { AutoUpdateManager } from './auto_updater';
+import { AutoUpdateManager, type UpdateState } from './auto_updater';
 import { PeerDiscovery, getStablePeerId } from './federation/peer-discovery';
 import { RelayClient } from './federation/relay-client';
 import { AuthManager, registerCustomScheme } from './auth_manager';
@@ -489,11 +489,24 @@ function createTray(): void {
   }
 
   tray = new Tray(icon);
-  // SAGA 02 BP046B — tooltip updated to Mnemosyne brand; single-left-click opens Dashboard
-  tray.setToolTip('Mnemosyne · CAI · Ↄ · click for Dashboard');
+  // KniPr026: versioned initial tooltip; updated by updateTrayTooltip() on update events.
+  tray.setToolTip(`Mnemosyne v${app.getVersion()}`);
   // Single left-click opens Dashboard (right-click still shows context menu)
   tray.on('click', () => openDashboard());
   rebuildTrayMenu();
+}
+
+// KniPr026: refresh tray tooltip to reflect the current auto-update state.
+function updateTrayTooltip(updateStatus?: UpdateState['status']): void {
+  if (!tray || tray.isDestroyed()) return;
+  const version = app.getVersion();
+  if (updateStatus === 'downloaded') {
+    tray.setToolTip(`Mnemosyne v${version} — Update ready to install`);
+  } else if (updateStatus === 'available' || updateStatus === 'downloading') {
+    tray.setToolTip(`Mnemosyne v${version} — Update available`);
+  } else {
+    tray.setToolTip(`Mnemosyne v${version}`);
+  }
 }
 
 function rebuildTrayMenu(mode: FrameMode = currentMode): void {
@@ -1477,6 +1490,8 @@ app.whenReady().then(async () => {
   // Initialize auto-updater
   autoUpdater = new AutoUpdateManager();
   autoUpdater.init();
+  // KniPr026: reflect update state in tray tooltip (available / downloading / ready)
+  autoUpdater.onStateChanged((state) => updateTrayTooltip(state.status));
 
   // MV-CN: Peer discovery + WAN relay (SAGA 3 BP045 W1)
   const peerId = getStablePeerId();
