@@ -103,16 +103,15 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
   }, []);
 
   const handleApply = useCallback(() => {
-    // Bug #3 v0.1.10: if AI Burst selected without API key → show inline panel instead of applying
-    if (selected === 'ai_burst' && !apiKeyAvailable) {
-      setShowApiKeyPanel(true);
-      return;
-    }
+    // BP055 W4 Founder direct: align dashboard to tray-menu behavior.
+    // Mode switch is unconditional — the tray right-click menu already lets
+    // users flip to AI Burst without a key check; the dashboard must match.
+    // The API key prompt surfaces naturally at first-actual-use downstream.
     if (selected !== currentMode) {
       onSelect(selected);
     }
     onClose();
-  }, [selected, currentMode, onSelect, onClose, apiKeyAvailable]);
+  }, [selected, currentMode, onSelect, onClose]);
 
   return (
     <div
