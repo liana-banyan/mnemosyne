@@ -26,6 +26,7 @@ import { OnboardingGate } from '../hearth/substrate/MakeYourselfComfortableWizar
 import { HelmCrownDashboard } from '../hearth/helm/HelmCrownDashboard';
 import { AtlasView } from '../kitchen_table/AtlasView';
 import { KitchenTableView } from '../kitchen_table/KitchenTableView';
+import { PearlGalleryTab } from './PearlGalleryTab';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls';
 
 interface TabDef {
   id: TabId;
@@ -57,6 +58,7 @@ const TABS: TabDef[] = [
   { id: 'developer',     label: 'Developer',     icon: '',    iconElement: <CaiSymbol size={13} color="#f59e0b" aria-label="CAI" />, tooltip: 'Tab 6 · Developer Mode — Caithedral™ · Eblet™ · Pheromone · Banyan Metric™ · SEG controls' },
   { id: 'atlas',         label: 'Atlas™',         icon: '📅', tooltip: 'Tab 7 · Atlas™ — Calendar · Events · Multi-person scheduling · P2P sync' },
   { id: 'kitchen-table', label: 'Kitchen Table',  icon: '🍽️', tooltip: 'Tab 8 · The Kitchen Table™ — Recipes™ · Meal planning · LAN peer discovery' },
+  { id: 'pearls',        label: 'Pearls',          icon: '🪶', tooltip: 'Tab 9 · Pearl Gallery™ — cooperative substrate Pearl registry · compressed Eblet references · 6.1× compression' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -101,7 +103,7 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table'];
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls'];
     if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
@@ -602,6 +604,17 @@ export function MnemosyneTabView({
             style={{ height: '100%' }}
           >
             <KitchenTableView />
+          </div>
+        )}
+
+        {activeTab === 'pearls' && (
+          <div
+            id="panel-pearls"
+            role="tabpanel"
+            aria-labelledby="tab-pearls"
+            style={{ height: '100%' }}
+          >
+            <PearlGalleryTab />
           </div>
         )}
       </div>
