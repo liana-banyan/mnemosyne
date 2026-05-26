@@ -1,0 +1,98 @@
+# release-sign.yml
+# Azure Artifact Signing — Liana Banyan Platform (Mnemosyne release artifacts)
+# Prereq: Founder must create Azure account + Artifact Signing resource, then fill all
+# repository secrets listed below before this workflow will succeed.
+# See: docs/azure-signing-setup.md for step-by-step setup guide.
+# Canon: eblet-pawn-session-full-dump-10-parts-*-bp058 Part 5
+# Note: "Trusted Signing" was renamed to "Artifact Signing" by Microsoft in Jan 2026.
+#   The GitHub Action package name has not yet been updated — still azure/trusted-signing-action.
+#   Use @v0.3.18 or latest from https://github.com/azure/trusted-signing-action/releases
+
+name: Release — Azure Artifact Signing
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to sign (e.g. v0.1.16)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # needed to upload release assets
+  id-token: write   # needed for OIDC if switching from client-secret to federated identity
+
+jobs:
+  sign-and-release:
+    name: Sign Mnemosyne release artifacts
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download release artifacts from dist
+        # Artifacts produced by the build job land in amplify-computer/dist/
+        # If using a separate build job, replace this with actions/download-artifact
+        run: |
+          if (!(Test-Path "amplify-computer\dist")) {
+            Write-Error "amplify-computer\dist does not exist — run build job first or wire artifact download."
+            exit 1
+          }
+          $exes = Get-ChildItem "amplify-computer\dist\*.exe" -ErrorAction SilentlyContinue
+          $msis = Get-ChildItem "amplify-computer\dist\*.msi" -ErrorAction SilentlyContinue
+          if (-not $exes -and -not $msis) {
+            Write-Error "No .exe or .msi artifacts found in amplify-computer\dist\"
+            exit 1
+          }
+          Write-Host "Artifacts to sign:"
+          $exes | ForEach-Object { Write-Host "  $($_.FullName)" }
+          $msis | ForEach-Object { Write-Host "  $($_.FullName)" }
+
+      - name: Azure Artifact Signing
+        uses: azure/trusted-signing-action@v0.3.18
+        with:
+          # ── Azure identity ──────────────────────────────────────────────────────────
+          # Fill these secrets in GitHub → Settings → Secrets → Actions
+          # See docs/azure-signing-setup.md §3 for what each value is and where to find it
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # ── Artifact Signing resource ───────────────────────────────────────────────
+          endpoint: https://eus.codesigning.azure.net/
+          trusted-signing-account-name: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+          # ── Files to sign ───────────────────────────────────────────────────────────
+          files-folder: amplify-computer\dist
+          files-folder-filter: exe,msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          $artifacts = Get-ChildItem "amplify-computer\dist\*.exe","amplify-computer\dist\*.msi" -ErrorAction SilentlyContinue
+          foreach ($file in $artifacts) {
+            $sig = Get-AuthenticodeSignature $file.FullName
+            Write-Host "File: $($file.Name) — Status: $($sig.Status) — Issuer: $($sig.SignerCertificate?.Issuer)"
+            if ($sig.Status -ne "Valid") {
+              Write-Warning "Signature NOT valid for $($file.Name) — status: $($sig.Status)"
+            }
+          }
+
+      - name: Upload signed artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            amplify-computer/dist/*.exe
+            amplify-computer/dist/*.msi
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

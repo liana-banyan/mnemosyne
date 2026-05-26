@@ -1,0 +1,25 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Liana Banyan Platform//Knight K-C BP058 W6//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+BEGIN:VEVENT
+DTSTART:20270426T090000Z
+DTEND:20270426T100000Z
+DTSTAMP:20260526T000000Z
+UID:azure-identity-renewal-11m-lb-kc-bp058@lianabanyan.com
+SUMMARY:⚠️ Azure Identity Verification Renewal Due (Liana Banyan Code Signing)
+DESCRIPTION:Renew Azure Trusted/Artifact Signing identity verification at au10tix before it expires.\n\nSteps:\n1. Log into Azure Portal (portal.azure.com)\n2. Navigate to: Artifact Signing → <your account> → Identity Validation\n3. Re-upload government-issued photo ID\n4. Take new selfie\n5. Re-scan Microsoft Authenticator QR code\n\nIf automated check passes: verification returns in HOURS.\nIf escalated: up to SEVERAL DAYS — do not wait until last minute.\n\nCanon ref: azure-signing-setup.md §6 · K-C BP058 W6
+LOCATION:portal.azure.com
+BEGIN:VALARM
+TRIGGER:-P7D
+ACTION:DISPLAY
+DESCRIPTION:7 days until Azure identity verification renewal due
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Tomorrow: Azure identity verification renewal due
+END:VALARM
+END:VEVENT
+END:VCALENDAR
