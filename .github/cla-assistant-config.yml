@@ -1,0 +1,12 @@
+# CLA Assistant Configuration — cla-assistant.io
+cla_path: CLA.md
+pr_comment: |
+  Thank you for your contribution to the Liana Banyan Platform!
+
+  Please sign our [Contributor License Agreement](https://cla-assistant.io/LianaBanyanCorporation/LianaBanyanPlatform) before we can merge your PR.
+
+  We Are Those Workers / Builders / Creators — your contribution matters.
+allowlist:
+  - bot*
+  - dependabot[bot]
+  - github-actions[bot]
