@@ -71,6 +71,9 @@ registerCustomScheme();
 // BP052 v0.1.8 — Kitchen Table™ IPC store
 import { registerKitchenTableIpc } from './kitchen_table/kitchen_table_store';
 
+// BP060 Application 002 Step 1 — Caithedral Tools IPC
+import { registerCaithedralToolsIPC } from './caithedral_tools_ipc';
+
 // SAGA-γ v0.1.10 — SubstratedFolderWatcher™
 import { SubstratedFolderWatcher, registerWatcherIpc } from './services/SubstratedFolderWatcher';
 
@@ -1341,6 +1344,49 @@ function registerIPCHandlers(): void {
   ipcMain.handle('get-ideas', async () => {
     return { ok: true, ideas: [..._phoebeIdeas].reverse() };
   });
+
+  // ── Pearl-decode IPC (Tier G · v0.1.16 · BP057 W5c) ─────────────────────
+  ipcMain.handle('decode-pearl', async (_event, pearlId: string) => {
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      const registryPath = path.join(
+        'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\Asteroid-ProofVault\\pearl_registry',
+        'PEARL_REGISTRY_INDEX.json'
+      );
+      if (!fs.existsSync(registryPath)) {
+        return { ok: false, error: 'Pearl registry not found on substrate' };
+      }
+      const registry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+      const pearl = (registry.pearls as Array<Record<string, string>>).find(
+        (p) => p.pearl_id === pearlId || p.canonical_ref === pearlId
+      );
+      if (!pearl) {
+        return { ok: false, error: `Pearl not found: ${pearlId}` };
+      }
+      const canonDir = 'C:\\Users\\Administrator\\.claude\\state\\eblets\\CANON';
+      const candidates = [
+        path.join(canonDir, `${pearl.canonical_ref}.eblet.md`),
+        path.join(canonDir, `canon_${pearl.canonical_ref}.eblet.md`),
+      ];
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+          const content = fs.readFileSync(candidate, 'utf-8');
+          return { ok: true, pearl, content };
+        }
+      }
+      return {
+        ok: true,
+        pearl,
+        content: `# ${pearl.canonical_ref}\n\n**Pearl ID:** ${pearl.pearl_id}\n**Class:** ${pearl.class}\n**Cathedral:** ${pearl.cathedral}\n**Wave:** ${pearl.wave}\n\n*Eblet source not found on local substrate — canonical_ref: ${pearl.canonical_ref}*`,
+      };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  });
+
+  // ── Caithedral Tools IPC (BP060 Application 002 Step 1) ─────────────────
+  registerCaithedralToolsIPC();
 
   // ── Kitchen Table™ + Atlas™ + P2P (BP052 v0.1.8) ────────────────────────
   registerKitchenTableIpc(ipcMain);

@@ -706,6 +706,37 @@ contextBridge.exposeInMainWorld('amplify', {
   /** Retrieve all saved ideas (most recent first) */
   getIdeas: (): Promise<{ ok: boolean; ideas: Array<{ id: string; title: string; content: string; timestamp: string }> }> =>
     ipcRenderer.invoke('get-ideas'),
+
+  // ── Pearl-decode IPC (Tier G · v0.1.16 · BP057 W5c) ─────────────────────
+  /** Decode a Pearl by pearl_id or canonical_ref — returns eblet content from CANON substrate */
+  decodePearl: (pearlId: string): Promise<{ ok: boolean; pearl?: Record<string, string>; content?: string; error?: string }> =>
+    ipcRenderer.invoke('decode-pearl', pearlId),
+
+  // ── Caithedral Tools (BP060 Application 002 Step 1) ─────────────────────
+  caithedralTools: {
+    soccerball_emit: (pearls: string[], bindings?: Record<string, string>) =>
+      ipcRenderer.invoke('caithedral:soccerball_emit', pearls, bindings),
+    soccerball_decode: (sid: string) =>
+      ipcRenderer.invoke('caithedral:soccerball_decode', sid),
+    soccerball_lookup: (sid: string) =>
+      ipcRenderer.invoke('caithedral:soccerball_lookup', sid),
+    speckle_nibble: (sid: string, position: number) =>
+      ipcRenderer.invoke('caithedral:speckle_nibble', sid, position),
+    eblit_emit: (pearl_id: string, source_cathedral: string, ts?: number) =>
+      ipcRenderer.invoke('caithedral:eblit_emit', pearl_id, source_cathedral, ts),
+    substrace_weave: (eblit_null_lines: string[], weaver: string, weave_ts?: number) =>
+      ipcRenderer.invoke('caithedral:substrace_weave', eblit_null_lines, weaver, weave_ts),
+    quilt_compose: (substrace_ids: string[], narrative_tag: string, weaver: string, ts?: number) =>
+      ipcRenderer.invoke('caithedral:quilt_compose', substrace_ids, narrative_tag, weaver, ts),
+    substrate_address_emit: (seed: string, ts?: number) =>
+      ipcRenderer.invoke('caithedral:substrate_address_emit', seed, ts),
+    substrate_address_validate: (address: string) =>
+      ipcRenderer.invoke('caithedral:substrate_address_validate', address),
+    ten_pearl_roundtrip: () =>
+      ipcRenderer.invoke('caithedral:ten_pearl_roundtrip'),
+    areopagus_query: (query: string) =>
+      ipcRenderer.invoke('caithedral:areopagus_query', query),
+  },
 });
 
 // ─── Global type extension ────────────────────────────────────────────────────
@@ -856,6 +887,22 @@ declare global {
       // Phoebe™ Idea Storage (C.17 · BP055)
       saveIdea?: (idea: { title: string; content: string; timestamp: string }) => Promise<{ ok: boolean; id: string }>;
       getIdeas?: () => Promise<{ ok: boolean; ideas: Array<{ id: string; title: string; content: string; timestamp: string }> }>;
+      // Pearl-decode IPC (Tier G · v0.1.16 · BP057 W5c)
+      decodePearl?: (pearlId: string) => Promise<{ ok: boolean; pearl?: Record<string, string>; content?: string; error?: string }>;
+      // Caithedral Tools IPC (BP060 Application 002 Step 1)
+      caithedralTools?: {
+        soccerball_emit: (pearls: string[], bindings?: Record<string, string>) => Promise<{ ok: boolean; sid?: string; error?: string }>;
+        soccerball_decode: (sid: string) => Promise<{ ok: boolean; result?: { pearls: string[]; bindings: Record<string, string> } | null; error?: string }>;
+        soccerball_lookup: (sid: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        speckle_nibble: (sid: string, position: number) => Promise<{ ok: boolean; nibble?: string; error?: string }>;
+        eblit_emit: (pearl_id: string, source_cathedral: string, ts?: number) => Promise<{ ok: boolean; eblit?: unknown; error?: string }>;
+        substrace_weave: (eblit_null_lines: string[], weaver: string, weave_ts?: number) => Promise<{ ok: boolean; substrace?: unknown; error?: string }>;
+        quilt_compose: (substrace_ids: string[], narrative_tag: string, weaver: string, ts?: number) => Promise<{ ok: boolean; quilt?: unknown; error?: string }>;
+        substrate_address_emit: (seed: string, ts?: number) => Promise<{ ok: boolean; address?: unknown; error?: string }>;
+        substrate_address_validate: (address: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        ten_pearl_roundtrip: () => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        areopagus_query: (query: string) => Promise<{ ok: boolean; matches?: Array<{ sid: string; pearls: string[]; score: number }>; query?: string; searched_at?: number; error?: string }>;
+      };
       // Kitchen Table™ + Recipes™ + Atlas™ (BP052 v0.1.8)
       kitchenTable: {
         listSessions: () => Promise<unknown[]>;

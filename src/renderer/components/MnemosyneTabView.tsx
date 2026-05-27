@@ -27,6 +27,9 @@ import { HelmCrownDashboard } from '../hearth/helm/HelmCrownDashboard';
 import { AtlasView } from '../kitchen_table/AtlasView';
 import { KitchenTableView } from '../kitchen_table/KitchenTableView';
 import { PearlGalleryTab } from './PearlGalleryTab';
+// BP060 Application 002 Step 1 — Substrate UI surfaces
+import { ShirleyTempleToggles } from './ShirleyTempleToggles';
+import { SubstrateTab } from './SubstrateTab';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -39,7 +42,7 @@ const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate';
 
 interface TabDef {
   id: TabId;
@@ -59,6 +62,7 @@ const TABS: TabDef[] = [
   { id: 'atlas',         label: 'Atlas™',         icon: '📅', tooltip: 'Tab 7 · Atlas™ — Calendar · Events · Multi-person scheduling · P2P sync' },
   { id: 'kitchen-table', label: 'Kitchen Table',  icon: '🍽️', tooltip: 'Tab 8 · The Kitchen Table™ — Recipes™ · Meal planning · LAN peer discovery' },
   { id: 'pearls',        label: 'Pearls',          icon: '🪶', tooltip: 'Tab 9 · Pearl Gallery™ — cooperative substrate Pearl registry · compressed Eblet references · 6.1× compression' },
+  { id: 'substrate',    label: 'Substrate',       icon: '🕸', tooltip: 'Tab 10 · Substrate™ — BP060 Application 002 · caithedral-core tools · Areopagus · Theorem viz · Markers · Second Door' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -103,7 +107,7 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls'];
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate'];
     if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
@@ -449,6 +453,9 @@ export function MnemosyneTabView({
         <ThreeOptionAsk onChoice={handleOnboardChoice} devModeEnabled={devEnabled} appVersion={appVersion} />
       )}
 
+      {/* UI-2 · Shirley Temple Policy toggles — easy to find at chamber root per Founder direct */}
+      <ShirleyTempleToggles />
+
       {/* BP048 — Dashboard → Bridge discoverability (complementary surfaces) */}
       <div style={{ padding: '8px 16px 0' }}>
         <button
@@ -615,6 +622,18 @@ export function MnemosyneTabView({
             style={{ height: '100%' }}
           >
             <PearlGalleryTab />
+          </div>
+        )}
+
+        {/* BP060 Application 002 Step 1 — Substrate™ tab */}
+        {activeTab === 'substrate' && (
+          <div
+            id="panel-substrate"
+            role="tabpanel"
+            aria-labelledby="tab-substrate"
+            style={{ height: '100%' }}
+          >
+            <SubstrateTab />
           </div>
         )}
       </div>
