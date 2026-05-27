@@ -30,6 +30,9 @@ import { PearlGalleryTab } from './PearlGalleryTab';
 // BP060 Application 002 Step 1 — Substrate UI surfaces
 import { ShirleyTempleToggles } from './ShirleyTempleToggles';
 import { SubstrateTab } from './SubstrateTab';
+// BP060 v3 UI-7 + UI-8
+import { UnifiedSubstrateConsole } from './UnifiedSubstrateConsole';
+import { MultiAISelector } from './MultiAISelector';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -42,7 +45,7 @@ const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector';
 
 interface TabDef {
   id: TabId;
@@ -63,6 +66,8 @@ const TABS: TabDef[] = [
   { id: 'kitchen-table', label: 'Kitchen Table',  icon: '🍽️', tooltip: 'Tab 8 · The Kitchen Table™ — Recipes™ · Meal planning · LAN peer discovery' },
   { id: 'pearls',        label: 'Pearls',          icon: '🪶', tooltip: 'Tab 9 · Pearl Gallery™ — cooperative substrate Pearl registry · compressed Eblet references · 6.1× compression' },
   { id: 'substrate',    label: 'Substrate',       icon: '🕸', tooltip: 'Tab 10 · Substrate™ — BP060 Application 002 · caithedral-core tools · Areopagus · Theorem viz · Markers · Second Door' },
+  { id: 'console',      label: 'Console',         icon: '🖥', tooltip: 'Tab 11 · Unified Substrate Console — Bridge view + Dashboard view · Ctrl+Tab to switch (UI-7)' },
+  { id: 'ai-selector',  label: 'AI',              icon: '🤖', tooltip: 'Tab 12 · Multi-AI Selector — Quick-pick · Court presets · Default Ollama doctrine (UI-8)' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -634,6 +639,30 @@ export function MnemosyneTabView({
             style={{ height: '100%' }}
           >
             <SubstrateTab />
+          </div>
+        )}
+
+        {/* BP060 v3 UI-7 — Unified Substrate Console */}
+        {activeTab === 'console' && (
+          <div
+            id="panel-console"
+            role="tabpanel"
+            aria-labelledby="tab-console"
+            style={{ height: '100%' }}
+          >
+            <UnifiedSubstrateConsole />
+          </div>
+        )}
+
+        {/* BP060 v3 UI-8 — Multi-AI Selector */}
+        {activeTab === 'ai-selector' && (
+          <div
+            id="panel-ai-selector"
+            role="tabpanel"
+            aria-labelledby="tab-ai-selector"
+            style={{ height: '100%' }}
+          >
+            <MultiAISelector />
           </div>
         )}
       </div>

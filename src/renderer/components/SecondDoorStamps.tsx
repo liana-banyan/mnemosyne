@@ -21,16 +21,20 @@ interface ThresholdStamp {
   receipt_hash: string;
 }
 
-// ─── Simple receipt hash ──────────────────────────────────────────────────────
+// ─── SHA-256 receipt hash (DELTA-2 §X.A2 fix) ────────────────────────────────
+// Uses Web Crypto API (window.crypto.subtle) — available in Electron renderer.
+// Returns first 16 hex chars of SHA-256 digest as the receipt_hash.
+// Async: caller must await.
 
-function makeReceiptHash(content_ref: string, direction: StampDirection, ts: number): string {
-  // Browser-safe hash using TextEncoder + iterative XOR fold
+async function makeReceiptHash(content_ref: string, direction: StampDirection, ts: number): Promise<string> {
   const str = `${content_ref}:${direction}:${ts}`;
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash).toString(16).padStart(8, '0') + '-stamp';
+  const enc = new TextEncoder();
+  const data = enc.encode(str);
+  const hashBuf = await window.crypto.subtle.digest('SHA-256', data);
+  const hex = Array.from(new Uint8Array(hashBuf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return hex.slice(0, 16) + '-sha256';
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -42,10 +46,10 @@ export function SecondDoorStamps() {
   const [stamps, setStamps] = useState<ThresholdStamp[]>([]);
   const [activeStamps, setActiveStamps] = useState<Map<string, ThresholdStamp>>(new Map());
 
-  const stamp = useCallback((direction: StampDirection) => {
+  const stamp = useCallback(async (direction: StampDirection) => {
     if (!contentRef.trim()) return;
     const ts = Date.now();
-    const receipt_hash = makeReceiptHash(contentRef.trim(), direction, ts);
+    const receipt_hash = await makeReceiptHash(contentRef.trim(), direction, ts);
     const s: ThresholdStamp = {
       id: `stamp-${ts.toString(36)}`,
       direction,
