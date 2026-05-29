@@ -33,6 +33,7 @@ import { SubstrateTab } from './SubstrateTab';
 // BP060 v3 UI-7 + UI-8
 import { UnifiedSubstrateConsole } from './UnifiedSubstrateConsole';
 import { MultiAISelector } from './MultiAISelector';
+import { CaithedralCoreTab } from './CaithedralCoreTab';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core';
 
 interface TabDef {
   id: TabId;
@@ -68,6 +69,7 @@ const TABS: TabDef[] = [
   { id: 'substrate',    label: 'Substrate',       icon: '🕸', tooltip: 'Tab 10 · Substrate™ — BP060 Application 002 · caithedral-core tools · Areopagus · Theorem viz · Markers · Second Door' },
   { id: 'console',      label: 'Console',         icon: '🖥', tooltip: 'Tab 11 · Unified Substrate Console — Bridge view + Dashboard view · Ctrl+Tab to switch (UI-7)' },
   { id: 'ai-selector',  label: 'AI',              icon: '🤖', tooltip: 'Tab 12 · Multi-AI Selector — Quick-pick · Court presets · Default Ollama doctrine (UI-8)' },
+  { id: 'caithedral-core', label: 'Caithedral Core', icon: '🏛', tooltip: 'Tab 13 · Caithedral™ Core — SSPL open-source substrate · Designed to Be Copied · Banyan Metric™ · MoneyPenny™ · Substrated Folders · CPU-only inference' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -112,7 +114,7 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate'];
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core'];
     if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
@@ -663,6 +665,18 @@ export function MnemosyneTabView({
             style={{ height: '100%' }}
           >
             <MultiAISelector />
+          </div>
+        )}
+
+        {/* BP061 — Caithedral™ Core Tab 13 */}
+        {activeTab === 'caithedral-core' && (
+          <div
+            id="panel-caithedral-core"
+            role="tabpanel"
+            aria-labelledby="tab-caithedral-core"
+            style={{ height: '100%' }}
+          >
+            <CaithedralCoreTab />
           </div>
         )}
       </div>
