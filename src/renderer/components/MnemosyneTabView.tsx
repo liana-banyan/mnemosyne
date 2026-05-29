@@ -26,9 +26,14 @@ import { OnboardingGate } from '../hearth/substrate/MakeYourselfComfortableWizar
 import { HelmCrownDashboard } from '../hearth/helm/HelmCrownDashboard';
 import { AtlasView } from '../kitchen_table/AtlasView';
 import { KitchenTableView } from '../kitchen_table/KitchenTableView';
-import { AppTab } from './AppTab';
 import { PearlGalleryTab } from './PearlGalleryTab';
-import { PhoebePage } from './PhoebePage';
+// BP060 Application 002 Step 1 — Substrate UI surfaces
+import { ShirleyTempleToggles } from './ShirleyTempleToggles';
+import { SubstrateTab } from './SubstrateTab';
+// BP060 v3 UI-7 + UI-8
+import { UnifiedSubstrateConsole } from './UnifiedSubstrateConsole';
+import { MultiAISelector } from './MultiAISelector';
+import { CaithedralCoreTab } from './CaithedralCoreTab';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -41,7 +46,7 @@ const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'app' | 'pearl-gallery' | 'phoebe';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core';
 
 interface TabDef {
   id: TabId;
@@ -60,9 +65,11 @@ const TABS: TabDef[] = [
   { id: 'developer',     label: 'Developer',     icon: '',    iconElement: <CaiSymbol size={13} color="#f59e0b" aria-label="CAI" />, tooltip: 'Tab 6 · Developer Mode — Caithedral™ · Eblet™ · Pheromone · Banyan Metric™ · SEG controls' },
   { id: 'atlas',         label: 'Atlas™',         icon: '📅', tooltip: 'Tab 7 · Atlas™ — Calendar · Events · Multi-person scheduling · P2P sync' },
   { id: 'kitchen-table', label: 'Kitchen Table',  icon: '🍽️', tooltip: 'Tab 8 · The Kitchen Table™ — Recipes™ · Meal planning · LAN peer discovery' },
-  { id: 'app',           label: 'Services',       icon: '🧩', tooltip: 'Tab 9 · Cooperative Services — 10 member-services · App Tab BP054' },
-  { id: 'pearl-gallery', label: 'Pearls',         icon: '💎', tooltip: 'Tab 10 · Pearl Gallery — Cooperative Memory Substrate · decoded transmissions' },
-  { id: 'phoebe',        label: 'Idea Storage',   icon: '💡', tooltip: 'Tab 11 · Idea Storage™ — Phoebe™ · articles · URLs · inspiration boards' },
+  { id: 'pearls',        label: 'Pearls',          icon: '🪶', tooltip: 'Tab 9 · Pearl Gallery™ — cooperative substrate Pearl registry · compressed Eblet references · 6.1× compression' },
+  { id: 'substrate',    label: 'Substrate',       icon: '🕸', tooltip: 'Tab 10 · Substrate™ — BP060 Application 002 · caithedral-core tools · Areopagus · Theorem viz · Markers · Second Door' },
+  { id: 'console',      label: 'Console',         icon: '🖥', tooltip: 'Tab 11 · Unified Substrate Console — Bridge view + Dashboard view · Ctrl+Tab to switch (UI-7)' },
+  { id: 'ai-selector',  label: 'AI',              icon: '🤖', tooltip: 'Tab 12 · Multi-AI Selector — Quick-pick · Court presets · Default Ollama doctrine (UI-8)' },
+  { id: 'caithedral-core', label: 'Caithedral Core', icon: '🏛', tooltip: 'Tab 13 · Caithedral™ Core — SSPL open-source substrate · Designed to Be Copied · Banyan Metric™ · MoneyPenny™ · Substrated Folders · CPU-only inference' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -107,7 +114,7 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'app', 'pearl-gallery', 'phoebe'];
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core'];
     if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
@@ -135,12 +142,6 @@ export function MnemosyneTabView({
     if (!localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE)) {
       localStorage.setItem(LS_GAUNTLET_FIRST_COMPLETE, 'true');
     }
-  }
-
-  // Cross-tab navigation — used by AppTab service tiles
-  function handleNavigate(tabId: string) {
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'app', 'pearl-gallery', 'phoebe'];
-    if (validTabs.includes(tabId as TabId)) setActiveTab(tabId as TabId);
   }
 
   // Developer mode unlock from DevModeTab or settings
@@ -416,9 +417,33 @@ export function MnemosyneTabView({
           >
             Check for Updates{appVersion ? ` · v${appVersion}` : ''}
           </button>
-          <div style={styles.modeChip}>
+          {/* G.4 KniPr011: AI Burst chip is now clickable — triggers setFrameMode('ai_burst') */}
+          <button
+            type="button"
+            onClick={() => {
+              const nextMode = currentMode === 'ai_burst' ? 'normal' : 'ai_burst';
+              onModeChange(nextMode);
+              window.amplify?.setFrameMode?.(nextMode);
+            }}
+            title={currentMode === 'ai_burst'
+              ? 'AI Burst active — click to switch to Normal mode'
+              : 'Click to enable AI Burst mode (Cloud AI + Substrate)'}
+            aria-label={`Current mode: ${modeLabel[currentMode]}. Click to toggle AI Burst.`}
+            style={{
+              ...styles.modeChip,
+              cursor: 'pointer',
+              border: currentMode === 'ai_burst'
+                ? '1px solid rgba(250,204,21,0.4)'
+                : '1px solid rgba(100,116,139,0.2)',
+              color: currentMode === 'ai_burst' ? '#facc15' : '#64748b',
+              background: currentMode === 'ai_burst'
+                ? 'rgba(250,204,21,0.08)'
+                : 'rgba(100,116,139,0.1)',
+              transition: 'all 0.15s ease',
+            }}
+          >
             {modeLabel[currentMode]}
-          </div>
+          </button>
           <button
             style={styles.closeBtn}
             onClick={onClose}
@@ -434,6 +459,9 @@ export function MnemosyneTabView({
       {showOnboardAsk && (
         <ThreeOptionAsk onChoice={handleOnboardChoice} devModeEnabled={devEnabled} appVersion={appVersion} />
       )}
+
+      {/* UI-2 · Shirley Temple Policy toggles — easy to find at chamber root per Founder direct */}
+      <ShirleyTempleToggles />
 
       {/* BP048 — Dashboard → Bridge discoverability (complementary surfaces) */}
       <div style={{ padding: '8px 16px 0' }}>
@@ -593,36 +621,62 @@ export function MnemosyneTabView({
           </div>
         )}
 
-        {activeTab === 'app' && (
+        {activeTab === 'pearls' && (
           <div
-            id="panel-app"
+            id="panel-pearls"
             role="tabpanel"
-            aria-labelledby="tab-app"
-            style={{ height: '100%' }}
-          >
-            <AppTab authState={authState} onNavigate={handleNavigate} />
-          </div>
-        )}
-
-        {activeTab === 'pearl-gallery' && (
-          <div
-            id="panel-pearl-gallery"
-            role="tabpanel"
-            aria-labelledby="tab-pearl-gallery"
+            aria-labelledby="tab-pearls"
             style={{ height: '100%' }}
           >
             <PearlGalleryTab />
           </div>
         )}
 
-        {activeTab === 'phoebe' && (
+        {/* BP060 Application 002 Step 1 — Substrate™ tab */}
+        {activeTab === 'substrate' && (
           <div
-            id="panel-phoebe"
+            id="panel-substrate"
             role="tabpanel"
-            aria-labelledby="tab-phoebe"
+            aria-labelledby="tab-substrate"
             style={{ height: '100%' }}
           >
-            <PhoebePage />
+            <SubstrateTab />
+          </div>
+        )}
+
+        {/* BP060 v3 UI-7 — Unified Substrate Console */}
+        {activeTab === 'console' && (
+          <div
+            id="panel-console"
+            role="tabpanel"
+            aria-labelledby="tab-console"
+            style={{ height: '100%' }}
+          >
+            <UnifiedSubstrateConsole />
+          </div>
+        )}
+
+        {/* BP060 v3 UI-8 — Multi-AI Selector */}
+        {activeTab === 'ai-selector' && (
+          <div
+            id="panel-ai-selector"
+            role="tabpanel"
+            aria-labelledby="tab-ai-selector"
+            style={{ height: '100%' }}
+          >
+            <MultiAISelector />
+          </div>
+        )}
+
+        {/* BP061 — Caithedral™ Core Tab 13 */}
+        {activeTab === 'caithedral-core' && (
+          <div
+            id="panel-caithedral-core"
+            role="tabpanel"
+            aria-labelledby="tab-caithedral-core"
+            style={{ height: '100%' }}
+          >
+            <CaithedralCoreTab />
           </div>
         )}
       </div>

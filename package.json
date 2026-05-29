@@ -1,6 +1,6 @@
 {
   "name": "amplify-computer",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (AGPL Free Forever)",
   "homepage": "https://lianabanyan.com",
   "private": true,
@@ -13,6 +13,7 @@
     "build:renderer": "vite build --config vite.renderer.config.ts",
     "build:main": "tsc -p tsconfig.main.json",
     "build:hugo": "node scripts/copy-hugo-bundle.mjs",
+    "catacombs:build": "node scripts/catacombs-indexer.mjs",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
@@ -35,12 +36,15 @@
   },
   "license": "UNLICENSED",
   "dependencies": {
+    "caithedral-core": "file:./caithedral-core",
     "@google/generative-ai": "^0.24.1",
     "@peculiar/asn1-schema": "^2.7.0",
     "@peculiar/asn1-tsp": "^2.7.0",
     "@peculiar/asn1-x509": "^2.7.0",
     "allotment": "^1.20.5",
     "electron-updater": "^6.1.7",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -104,10 +108,9 @@
       }
     ],
     "publish": {
-      "provider": "github",
-      "owner": "liana-banyan",
-      "repo": "mnemosyne",
-      "releaseType": "prerelease"
+      "provider": "generic",
+      "url": "https://mnemosynec.ai/download/",
+      "channel": "latest"
     },
     "win": {
       "target": [
@@ -124,7 +127,9 @@
           ]
         }
       ],
-      "forceCodeSigning": false,
+      "signingHashAlgorithms": [
+        "sha256"
+      ],
       "signDlls": false,
       "signAndEditExecutable": false,
       "verifyUpdateCodeSignature": false
