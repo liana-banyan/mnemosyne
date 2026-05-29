@@ -43,6 +43,8 @@ export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = 
   const [showModeSelector, setShowModeSelector] = useState(false);
   const [monthStats, setMonthStats] = useState<TelemetryMonth | null>(null);
   const [isOverlayVisible, setIsOverlayVisible] = useState(true);
+  // AI Burst key gate: check if the 'bishop' agent (Anthropic/Claude) key is configured
+  const [apiKeyAvailable, setApiKeyAvailable] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<WindRenderer | null>(null);
   const [windTier, setWindTier] = useState<WindTier>(() =>
@@ -86,6 +88,13 @@ export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = 
     });
     const interval = setInterval(updateFetchedLabel, 30_000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    window.amplify?.agentGetApiKeyStatus?.().then((keyStatus) => {
+      // 'bishop' is the Anthropic/Claude agent — required for AI Burst mode
+      setApiKeyAvailable(keyStatus?.['bishop'] === true);
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -192,6 +201,15 @@ export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = 
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 18, fontWeight: 700, color: mode.color }}>
               <span>{mode.icon}</span>
               <span>{mode.label}</span>
+              {currentMode === 'ai_burst' && !apiKeyAvailable && (
+                <span style={{
+                  fontSize: 10, fontWeight: 600, color: '#f87171',
+                  background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
+                  borderRadius: 6, padding: '2px 7px', marginLeft: 4,
+                }}>
+                  🔒 No API key
+                </span>
+              )}
             </div>
             <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{mode.description}</div>
           </button>
@@ -206,6 +224,28 @@ export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = 
             Change
           </button>
         </div>
+        {/* AI Burst key-missing inline prompt */}
+        {currentMode === 'ai_burst' && !apiKeyAvailable && (
+          <div style={{
+            marginTop: 10, padding: '8px 10px',
+            background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.2)',
+            borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+          }}>
+            <span style={{ fontSize: 10, color: '#fca5a5', lineHeight: 1.5 }}>
+              AI Burst requires an Anthropic API key to function.
+            </span>
+            <button
+              onClick={() => window.amplify?.openExternal?.('https://console.anthropic.com')}
+              style={{
+                background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)',
+                borderRadius: 5, color: '#f87171', fontSize: 10, fontWeight: 700,
+                padding: '3px 9px', cursor: 'pointer', whiteSpace: 'nowrap',
+              }}
+            >
+              Add API key →
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Overlay toggle */}
@@ -318,6 +358,7 @@ export function FrameTab({ currentMode, onModeChange, authState, windUnlocked = 
           currentMode={currentMode}
           onSelect={(m) => { onModeChange(m); setShowModeSelector(false); }}
           onClose={() => setShowModeSelector(false)}
+          apiKeyAvailable={apiKeyAvailable}
         />
       )}
     </div>

@@ -65,6 +65,9 @@ import {
   ensurePluginDir,
 } from './agent_plugins';
 
+// Soccerball/reference-pyramid registry (v0.1.14 SEG-D)
+import { initSoccerball } from './soccerball_registry';
+
 // Register custom OAuth scheme before app ready (Electron requirement)
 registerCustomScheme();
 
@@ -556,7 +559,7 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
     { type: 'separator' },
     {
       label: 'Check for Updates…',
-      click: () => autoUpdater?.checkNow(),
+      click: () => autoUpdater?.checkNowManual(),
     },
     {
       label: `MoneyPenny Mobile: ${getMoneyPennyURL(API_PORT)}`,
@@ -651,7 +654,7 @@ function openDashboard(opts?: { focus?: boolean }): void {
     height: 780,
     minWidth: 560,
     minHeight: 600,
-    title: `Mnemosyne v${app.getVersion()}`,
+    title: 'Mnemosyne',
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -676,9 +679,9 @@ function openDashboard(opts?: { focus?: boolean }): void {
     if (opts?.focus !== false) dashboardWindow?.focus();
   });
 
-  // Bug #2 v0.1.10: keep versioned title after any reload/navigation
+  // Keep clean title after any reload/navigation — version is shown in the UI, not the OS title bar
   dashboardWindow.webContents.on('did-finish-load', () => {
-    dashboardWindow?.setTitle(`Mnemosyne v${app.getVersion()}`);
+    dashboardWindow?.setTitle('Mnemosyne');
   });
 
   dashboardWindow.loadURL(
@@ -969,7 +972,7 @@ function registerIPCHandlers(): void {
 
   // ── Auto-Update ───────────────────────────────────────────────────────────
   ipcMain.handle('get-update-state', () => autoUpdater?.getState() ?? { status: 'idle' });
-  ipcMain.on('check-for-updates', () => autoUpdater?.checkNow());
+  ipcMain.on('check-for-updates', () => autoUpdater?.checkNowManual());
   ipcMain.on('install-update', () => autoUpdater?.installNow());
 
   ipcMain.on('watchdog-pong', () => {
@@ -1328,6 +1331,45 @@ function registerIPCHandlers(): void {
     relayConnected: relayClient?.isConnected() ?? false,
     ownPeerId: peerDiscovery ? (() => { const { getStablePeerId: gsp } = require('./federation/peer-discovery'); return gsp(); })() : '',
   }));
+
+  // ── Pearl Decode IPC (v0.1.14) ─────────────────────────────────────────────
+  ipcMain.handle('pearl:decode', async (_event, sspsPayload: string) => {
+    try {
+      const response = await fetch('http://127.0.0.1:3001/jsonrpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'pearl_decode',
+          params: { ssps_payload: sspsPayload },
+        }),
+      });
+      const data = await response.json() as { result?: unknown };
+      return data.result ?? null;
+    } catch {
+      return { decoded: false, error: 'librarian_unreachable' };
+    }
+  });
+
+  ipcMain.handle('pearl:list', async () => {
+    return [] as unknown[];
+  });
+
+  // ── Phoebe™ Idea Storage IPC (v0.1.14) ────────────────────────────────────
+  ipcMain.handle('phoebe:save', async (_event, item: { title: string; body?: string; url?: string; tags?: string[] }) => {
+    return { ok: true, id: Date.now() };
+  });
+
+  ipcMain.handle('phoebe:list', async () => {
+    return [] as unknown[];
+  });
+
+  // ── MoneyPenny Orchestration (SEG-D v0.1.14) ──────────────────────────────
+  ipcMain.handle('moneypenny:orchestrate', async (_event, task: string) => {
+    const { orchestrate } = await import('./moneypenny_orchestrator');
+    return orchestrate({ task });
+  });
 }
 
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
@@ -1349,6 +1391,10 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+
+  // Soccerball/reference-pyramid — must initialize before substrate so the
+  // pyramid is always in a valid state on first launch (SEG-D v0.1.14).
+  await initSoccerball();
 
   // Initialize substrate API server (Phase 3: full implementation)
   substrateServer = new SubstrateAPIServer();

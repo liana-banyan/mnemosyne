@@ -654,6 +654,28 @@ contextBridge.exposeInMainWorld('amplify', {
     },
   },
 
+  // ── Pearl Decode IPC (v0.1.14) ────────────────────────────────────────────
+  pearl: {
+    decode: (sspsPayload: string): Promise<unknown> =>
+      ipcRenderer.invoke('pearl:decode', sspsPayload),
+    list: (): Promise<unknown[]> =>
+      ipcRenderer.invoke('pearl:list'),
+  },
+
+  // ── Phoebe™ Idea Storage IPC (v0.1.14) ───────────────────────────────────
+  phoebe: {
+    save: (item: { title: string; body?: string; url?: string; tags?: string[] }): Promise<{ ok: boolean; id: number }> =>
+      ipcRenderer.invoke('phoebe:save', item),
+    list: (): Promise<unknown[]> =>
+      ipcRenderer.invoke('phoebe:list'),
+  },
+
+  // ── MoneyPenny Orchestration (SEG-D v0.1.14) ─────────────────────────────
+  moneypenny: {
+    orchestrate: (task: string): Promise<{ briefing: string | null; rules: string[]; domains: string[]; error?: string }> =>
+      ipcRenderer.invoke('moneypenny:orchestrate', task),
+  },
+
   // ── SAGA 13 BP046B — 5-Marks first-install bonus ─────────────────────────
   /** Credit 5 marks on first install + first Stage 1 Gauntlet completion. One-per-account. */
   creditFirstInstallMarks: (): void =>
@@ -805,6 +827,10 @@ declare global {
         onEbletMinted: (callback: (eblet: unknown) => void) => void;
         onFolderError: (callback: (payload: { folderId: string; error: string }) => void) => void;
       };
+      // MoneyPenny Orchestration (SEG-D v0.1.14)
+      moneypenny?: {
+        orchestrate: (task: string) => Promise<{ briefing: string | null; rules: string[]; domains: string[]; error?: string }>;
+      };
       // SAGA 13 BP046B
       creditFirstInstallMarks: () => void;
       // SAGA 07 BP046B utilities
@@ -812,6 +838,16 @@ declare global {
       hideOverlay?: () => void;
       showOverlay?: () => void;
       getTelemetrySummary?: () => Promise<unknown>;
+      // Pearl Decode IPC (v0.1.14)
+      pearl?: {
+        decode: (sspsPayload: string) => Promise<unknown>;
+        list: () => Promise<unknown[]>;
+      };
+      // Phoebe™ Idea Storage IPC (v0.1.14)
+      phoebe?: {
+        save: (item: { title: string; body?: string; url?: string; tags?: string[] }) => Promise<{ ok: boolean; id: number }>;
+        list: () => Promise<unknown[]>;
+      };
       // Kitchen Table™ + Recipes™ + Atlas™ (BP052 v0.1.8)
       kitchenTable: {
         listSessions: () => Promise<unknown[]>;

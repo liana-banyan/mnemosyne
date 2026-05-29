@@ -247,8 +247,42 @@ declare global {
       hideOverlay?: () => void;
       showOverlay?: () => void;
       getTelemetrySummary?: () => Promise<TelemetrySummary>;
+      // Pearl Decode IPC (v0.1.14)
+      pearl?: {
+        decode: (sspsPayload: string) => Promise<unknown>;
+        list: () => Promise<PearlItem[]>;
+      };
+      // Phoebe™ Idea Storage IPC (v0.1.14)
+      phoebe?: {
+        save: (item: { title: string; body?: string; url?: string; tags?: string[] }) => Promise<{ ok: boolean; id: number }>;
+        list: () => Promise<PhoebeIdeaItem[]>;
+      };
+      // MoneyPenny Orchestration (SEG-D v0.1.14)
+      moneypenny?: {
+        orchestrate: (task: string) => Promise<{ briefing: string | null; rules: string[]; domains: string[]; error?: string }>;
+      };
     };
   }
+}
+
+// Pearl types (v0.1.14)
+export interface PearlItem {
+  pearl_id: string;
+  timestamp: string;
+  soul: string;
+  decay_class: 'ephemeral' | 'session' | 'persistent' | 'eternal';
+  decoded: boolean;
+  source?: string;
+}
+
+// Phoebe™ Idea Storage types (v0.1.14)
+export interface PhoebeIdeaItem {
+  id: string | number;
+  title: string;
+  body?: string;
+  url?: string;
+  tags?: string[];
+  saved_at: string;
 }
 
 // On-Deck item type (mirrored from main process; no import)

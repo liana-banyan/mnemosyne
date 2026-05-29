@@ -26,6 +26,9 @@ import { OnboardingGate } from '../hearth/substrate/MakeYourselfComfortableWizar
 import { HelmCrownDashboard } from '../hearth/helm/HelmCrownDashboard';
 import { AtlasView } from '../kitchen_table/AtlasView';
 import { KitchenTableView } from '../kitchen_table/KitchenTableView';
+import { AppTab } from './AppTab';
+import { PearlGalleryTab } from './PearlGalleryTab';
+import { PhoebePage } from './PhoebePage';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -38,7 +41,7 @@ const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'app' | 'pearl-gallery' | 'phoebe';
 
 interface TabDef {
   id: TabId;
@@ -57,6 +60,9 @@ const TABS: TabDef[] = [
   { id: 'developer',     label: 'Developer',     icon: '',    iconElement: <CaiSymbol size={13} color="#f59e0b" aria-label="CAI" />, tooltip: 'Tab 6 · Developer Mode — Caithedral™ · Eblet™ · Pheromone · Banyan Metric™ · SEG controls' },
   { id: 'atlas',         label: 'Atlas™',         icon: '📅', tooltip: 'Tab 7 · Atlas™ — Calendar · Events · Multi-person scheduling · P2P sync' },
   { id: 'kitchen-table', label: 'Kitchen Table',  icon: '🍽️', tooltip: 'Tab 8 · The Kitchen Table™ — Recipes™ · Meal planning · LAN peer discovery' },
+  { id: 'app',           label: 'Services',       icon: '🧩', tooltip: 'Tab 9 · Cooperative Services — 10 member-services · App Tab BP054' },
+  { id: 'pearl-gallery', label: 'Pearls',         icon: '💎', tooltip: 'Tab 10 · Pearl Gallery — Cooperative Memory Substrate · decoded transmissions' },
+  { id: 'phoebe',        label: 'Idea Storage',   icon: '💡', tooltip: 'Tab 11 · Idea Storage™ — Phoebe™ · articles · URLs · inspiration boards' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -101,7 +107,7 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table'];
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'app', 'pearl-gallery', 'phoebe'];
     if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
@@ -129,6 +135,12 @@ export function MnemosyneTabView({
     if (!localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE)) {
       localStorage.setItem(LS_GAUNTLET_FIRST_COMPLETE, 'true');
     }
+  }
+
+  // Cross-tab navigation — used by AppTab service tiles
+  function handleNavigate(tabId: string) {
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'app', 'pearl-gallery', 'phoebe'];
+    if (validTabs.includes(tabId as TabId)) setActiveTab(tabId as TabId);
   }
 
   // Developer mode unlock from DevModeTab or settings
@@ -578,6 +590,39 @@ export function MnemosyneTabView({
             style={{ height: '100%' }}
           >
             <KitchenTableView />
+          </div>
+        )}
+
+        {activeTab === 'app' && (
+          <div
+            id="panel-app"
+            role="tabpanel"
+            aria-labelledby="tab-app"
+            style={{ height: '100%' }}
+          >
+            <AppTab authState={authState} onNavigate={handleNavigate} />
+          </div>
+        )}
+
+        {activeTab === 'pearl-gallery' && (
+          <div
+            id="panel-pearl-gallery"
+            role="tabpanel"
+            aria-labelledby="tab-pearl-gallery"
+            style={{ height: '100%' }}
+          >
+            <PearlGalleryTab />
+          </div>
+        )}
+
+        {activeTab === 'phoebe' && (
+          <div
+            id="panel-phoebe"
+            role="tabpanel"
+            aria-labelledby="tab-phoebe"
+            style={{ height: '100%' }}
+          >
+            <PhoebePage />
           </div>
         )}
       </div>

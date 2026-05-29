@@ -1,6 +1,6 @@
 {
   "name": "amplify-computer",
-  "version": "0.1.10",
+  "version": "0.1.14",
   "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (AGPL Free Forever)",
   "homepage": "https://lianabanyan.com",
   "private": true,
@@ -104,9 +104,10 @@
       }
     ],
     "publish": {
-      "provider": "generic",
-      "url": "https://mnemosynec.ai/download/",
-      "channel": "latest"
+      "provider": "github",
+      "owner": "liana-banyan",
+      "repo": "mnemosyne",
+      "releaseType": "prerelease"
     },
     "win": {
       "target": [
@@ -123,9 +124,7 @@
           ]
         }
       ],
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
+      "forceCodeSigning": false,
       "signDlls": false,
       "signAndEditExecutable": false,
       "verifyUpdateCodeSignature": false
