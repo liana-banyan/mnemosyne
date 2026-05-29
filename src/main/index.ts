@@ -28,7 +28,7 @@ import { OllamaManager } from './ollama_manager';
 import { SubstrateAPIServer, API_PORT } from './substrate_api';
 import { FederationClient } from './federation_client';
 import { getMoneyPennyURL, getLocalIPs } from './mobile_pwa';
-import { AutoUpdateManager } from './auto_updater';
+import { AutoUpdateManager, type UpdateState } from './auto_updater';
 import { PeerDiscovery, getStablePeerId } from './federation/peer-discovery';
 import { RelayClient } from './federation/relay-client';
 import { AuthManager, registerCustomScheme } from './auth_manager';
@@ -65,14 +65,20 @@ import {
   ensurePluginDir,
 } from './agent_plugins';
 
-// Soccerball/reference-pyramid registry (v0.1.14 SEG-D)
-import { initSoccerball } from './soccerball_registry';
-
 // Register custom OAuth scheme before app ready (Electron requirement)
 registerCustomScheme();
 
 // BP052 v0.1.8 — Kitchen Table™ IPC store
 import { registerKitchenTableIpc } from './kitchen_table/kitchen_table_store';
+
+// BP060 Application 002 Step 1 — Caithedral Tools IPC
+import { registerCaithedralToolsIPC } from './caithedral_tools_ipc';
+
+// BP060 Application 002 Steps 3+4 — Bridge IPC (UI-7 live Yoke wire)
+import { registerBridgeIPC } from './bridge_ipc';
+
+// BP060 Application 002 Steps 3+4 — AI Dispatch IPC (UI-8 backend)
+import { registerAiDispatchIPC } from './ai_dispatch_ipc';
 
 // SAGA-γ v0.1.10 — SubstratedFolderWatcher™
 import { SubstratedFolderWatcher, registerWatcherIpc } from './services/SubstratedFolderWatcher';
@@ -492,11 +498,24 @@ function createTray(): void {
   }
 
   tray = new Tray(icon);
-  // SAGA 02 BP046B — tooltip updated to Mnemosyne brand; single-left-click opens Dashboard
-  tray.setToolTip('Mnemosyne · CAI · Ↄ · click for Dashboard');
+  // KniPr026: versioned initial tooltip; updated by updateTrayTooltip() on update events.
+  tray.setToolTip(`Mnemosyne v${app.getVersion()}`);
   // Single left-click opens Dashboard (right-click still shows context menu)
   tray.on('click', () => openDashboard());
   rebuildTrayMenu();
+}
+
+// KniPr026: refresh tray tooltip to reflect the current auto-update state.
+function updateTrayTooltip(updateStatus?: UpdateState['status']): void {
+  if (!tray || tray.isDestroyed()) return;
+  const version = app.getVersion();
+  if (updateStatus === 'downloaded') {
+    tray.setToolTip(`Mnemosyne v${version} — Update ready to install`);
+  } else if (updateStatus === 'available' || updateStatus === 'downloading') {
+    tray.setToolTip(`Mnemosyne v${version} — Update available`);
+  } else {
+    tray.setToolTip(`Mnemosyne v${version}`);
+  }
 }
 
 function rebuildTrayMenu(mode: FrameMode = currentMode): void {
@@ -521,7 +540,12 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
       label: '🔥 AI Burst Mode',
       type: 'radio',
       checked: mode === 'ai_burst',
-      click: () => setMode('ai_burst'),
+      click: () => {
+        // SAGA-1 BP055: Burst Mode is the opt-in path that also surfaces the overlay.
+        setMode('ai_burst');
+        if (!overlayWindow) createOverlayWindow();
+        overlayWindow?.showInactive();
+      },
     },
     {
       label: '🌿 Normal Mode',
@@ -559,7 +583,7 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
     { type: 'separator' },
     {
       label: 'Check for Updates…',
-      click: () => autoUpdater?.checkNowManual(),
+      click: () => autoUpdater?.checkNow(),
     },
     {
       label: `MoneyPenny Mobile: ${getMoneyPennyURL(API_PORT)}`,
@@ -654,7 +678,7 @@ function openDashboard(opts?: { focus?: boolean }): void {
     height: 780,
     minWidth: 560,
     minHeight: 600,
-    title: 'Mnemosyne',
+    title: `Mnemosyne v${app.getVersion()}`,
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -679,9 +703,9 @@ function openDashboard(opts?: { focus?: boolean }): void {
     if (opts?.focus !== false) dashboardWindow?.focus();
   });
 
-  // Keep clean title after any reload/navigation — version is shown in the UI, not the OS title bar
+  // Bug #2 v0.1.10: keep versioned title after any reload/navigation
   dashboardWindow.webContents.on('did-finish-load', () => {
-    dashboardWindow?.setTitle('Mnemosyne');
+    dashboardWindow?.setTitle(`Mnemosyne v${app.getVersion()}`);
   });
 
   dashboardWindow.loadURL(
@@ -813,6 +837,7 @@ function registerIPCHandlers(): void {
 
   ipcMain.on('show-overlay', () => {
     if (!overlayWindow) createOverlayWindow();
+    overlayWindow?.setOpacity(1.0);
     overlayWindow?.showInactive();
   });
 
@@ -972,7 +997,7 @@ function registerIPCHandlers(): void {
 
   // ── Auto-Update ───────────────────────────────────────────────────────────
   ipcMain.handle('get-update-state', () => autoUpdater?.getState() ?? { status: 'idle' });
-  ipcMain.on('check-for-updates', () => autoUpdater?.checkNowManual());
+  ipcMain.on('check-for-updates', () => autoUpdater?.checkNow());
   ipcMain.on('install-update', () => autoUpdater?.installNow());
 
   ipcMain.on('watchdog-pong', () => {
@@ -1315,6 +1340,66 @@ function registerIPCHandlers(): void {
     return getActiveSessions();
   });
 
+  // ── Phoebe™ Idea Storage IPC (C.17 · BP055) ─────────────────────────────
+  const _phoebeIdeas: Array<{ id: string; title: string; content: string; timestamp: string }> = [];
+  ipcMain.handle('save-idea', async (_event, idea: { title: string; content: string; timestamp: string }) => {
+    const id = `idea_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    _phoebeIdeas.push({ id, ...idea });
+    return { ok: true, id };
+  });
+  ipcMain.handle('get-ideas', async () => {
+    return { ok: true, ideas: [..._phoebeIdeas].reverse() };
+  });
+
+  // ── Pearl-decode IPC (Tier G · v0.1.16 · BP057 W5c) ─────────────────────
+  ipcMain.handle('decode-pearl', async (_event, pearlId: string) => {
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      const registryPath = path.join(
+        'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\Asteroid-ProofVault\\pearl_registry',
+        'PEARL_REGISTRY_INDEX.json'
+      );
+      if (!fs.existsSync(registryPath)) {
+        return { ok: false, error: 'Pearl registry not found on substrate' };
+      }
+      const registry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+      const pearl = (registry.pearls as Array<Record<string, string>>).find(
+        (p) => p.pearl_id === pearlId || p.canonical_ref === pearlId
+      );
+      if (!pearl) {
+        return { ok: false, error: `Pearl not found: ${pearlId}` };
+      }
+      const canonDir = 'C:\\Users\\Administrator\\.claude\\state\\eblets\\CANON';
+      const candidates = [
+        path.join(canonDir, `${pearl.canonical_ref}.eblet.md`),
+        path.join(canonDir, `canon_${pearl.canonical_ref}.eblet.md`),
+      ];
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+          const content = fs.readFileSync(candidate, 'utf-8');
+          return { ok: true, pearl, content };
+        }
+      }
+      return {
+        ok: true,
+        pearl,
+        content: `# ${pearl.canonical_ref}\n\n**Pearl ID:** ${pearl.pearl_id}\n**Class:** ${pearl.class}\n**Cathedral:** ${pearl.cathedral}\n**Wave:** ${pearl.wave}\n\n*Eblet source not found on local substrate — canonical_ref: ${pearl.canonical_ref}*`,
+      };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  });
+
+  // ── Caithedral Tools IPC (BP060 Application 002 Step 1) ─────────────────
+  registerCaithedralToolsIPC();
+
+  // ── Bridge IPC (BP060 Application 002 Steps 3+4 · UI-7 live Yoke wire) ──
+  registerBridgeIPC();
+
+  // ── AI Dispatch IPC (BP060 Application 002 Steps 3+4 · UI-8 backend) ────
+  registerAiDispatchIPC();
+
   // ── Kitchen Table™ + Atlas™ + P2P (BP052 v0.1.8) ────────────────────────
   registerKitchenTableIpc(ipcMain);
 
@@ -1325,6 +1410,57 @@ function registerIPCHandlers(): void {
     return dialog.showOpenDialog({ properties: ['openDirectory'] });
   });
 
+  // ── Trail Eblet Reader (KniPr035) ─────────────────────────────────────────
+  ipcMain.handle('trail-eblet:list', async () => {
+    const fs = require('fs') as typeof import('fs');
+    const path = require('path') as typeof import('path');
+    const os = require('os') as typeof import('os');
+    const trailsDir = path.join(os.homedir(), '.claude', 'state', 'eblets', 'TRAILS');
+    if (!fs.existsSync(trailsDir)) return { files: [], dir: trailsDir };
+    const files = fs.readdirSync(trailsDir)
+      .filter((f: string) => f.endsWith('.eblet.md'))
+      .sort((a: string, b: string) => a.localeCompare(b));
+    return { files, dir: trailsDir };
+  });
+
+  ipcMain.handle('trail-eblet:read', async (_event, { filePath }: { filePath: string }) => {
+    const fs = require('fs') as typeof import('fs');
+    if (!fs.existsSync(filePath)) return { ok: false, error: 'File not found' };
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      return { ok: true, content };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  });
+
+  ipcMain.handle('trail-eblet:list-screenshots', async (_event, { ebletPath }: { ebletPath: string }) => {
+    const fs = require('fs') as typeof import('fs');
+    const path = require('path') as typeof import('path');
+    const screenshotsDir = path.join(path.dirname(ebletPath), 'screenshots');
+    if (!fs.existsSync(screenshotsDir)) return { files: [], dir: screenshotsDir };
+    const files = fs.readdirSync(screenshotsDir)
+      .filter((f: string) => /\.(png|jpg|jpeg|webp|gif)$/i.test(f));
+    return { files, dir: screenshotsDir };
+  });
+
+  ipcMain.handle('trail-eblet:read-screenshot', async (_event, { filePath }: { filePath: string }) => {
+    const fs = require('fs') as typeof import('fs');
+    const path = require('path') as typeof import('path');
+    if (!fs.existsSync(filePath)) return { ok: false };
+    try {
+      const buf = fs.readFileSync(filePath);
+      const ext = path.extname(filePath).toLowerCase().slice(1);
+      const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+        : ext === 'png' ? 'image/png'
+        : ext === 'webp' ? 'image/webp'
+        : 'image/gif';
+      return { ok: true, dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  });
+
   // ── MV-CN Peer Mesh (SAGA 3 BP045 W1) ─────────────────────────────────────
   ipcMain.handle('get-mesh-state', () => ({
     peers: peerDiscovery?.getAllPeers() ?? [],
@@ -1332,43 +1468,52 @@ function registerIPCHandlers(): void {
     ownPeerId: peerDiscovery ? (() => { const { getStablePeerId: gsp } = require('./federation/peer-discovery'); return gsp(); })() : '',
   }));
 
-  // ── Pearl Decode IPC (v0.1.14) ─────────────────────────────────────────────
-  ipcMain.handle('pearl:decode', async (_event, sspsPayload: string) => {
-    try {
-      const response = await fetch('http://127.0.0.1:3001/jsonrpc', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'pearl_decode',
-          params: { ssps_payload: sspsPayload },
-        }),
-      });
-      const data = await response.json() as { result?: unknown };
-      return data.result ?? null;
-    } catch {
-      return { decoded: false, error: 'librarian_unreachable' };
-    }
+  // ── Chronos Research Consent (KniPr038) ──────────────────────────────────
+
+  ipcMain.handle('write-chronos-consent', async (_event, consentPayload: object) => {
+    const fsp = require('path') as typeof import('path');
+    const fs = require('fs') as typeof import('fs');
+    const crypto = require('crypto') as typeof import('crypto');
+    const consentDir = fsp.join(app.getPath('home'), '.amplify', 'consent');
+    fs.mkdirSync(consentDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `chronos_consent_${timestamp}.eblet.json`;
+    const filePath = fsp.join(consentDir, filename);
+    const body = JSON.stringify({
+      type: 'chronos_consent_eblet',
+      version: '1.0.0',
+      action: 'grant',
+      timestamp: new Date().toISOString(),
+      consent: consentPayload,
+      kAnonymityMin: 10,
+      revocationAvailable: true,
+      researchConsentVersion: '1.0.0',
+      canonRef: 'canon_chronos_research_aggregation_opt_in_member_mark_dividend_bp054',
+    });
+    const signed_hash = crypto.createHash('sha256').update(body).digest('hex');
+    fs.writeFileSync(filePath, JSON.stringify({ ...JSON.parse(body), signed_hash }, null, 2));
+    return { ok: true, ebletPath: filePath };
   });
 
-  ipcMain.handle('pearl:list', async () => {
-    return [] as unknown[];
-  });
-
-  // ── Phoebe™ Idea Storage IPC (v0.1.14) ────────────────────────────────────
-  ipcMain.handle('phoebe:save', async (_event, item: { title: string; body?: string; url?: string; tags?: string[] }) => {
-    return { ok: true, id: Date.now() };
-  });
-
-  ipcMain.handle('phoebe:list', async () => {
-    return [] as unknown[];
-  });
-
-  // ── MoneyPenny Orchestration (SEG-D v0.1.14) ──────────────────────────────
-  ipcMain.handle('moneypenny:orchestrate', async (_event, task: string) => {
-    const { orchestrate } = await import('./moneypenny_orchestrator');
-    return orchestrate({ task });
+  ipcMain.handle('revoke-chronos-consent', async (_event, _payload?: object) => {
+    const fsp = require('path') as typeof import('path');
+    const fs = require('fs') as typeof import('fs');
+    const crypto = require('crypto') as typeof import('crypto');
+    const consentDir = fsp.join(app.getPath('home'), '.amplify', 'consent');
+    fs.mkdirSync(consentDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `chronos_revocation_${timestamp}.eblet.json`;
+    const filePath = fsp.join(consentDir, filename);
+    const body = JSON.stringify({
+      type: 'chronos_consent_eblet',
+      version: '1.0.0',
+      action: 'revoke',
+      timestamp: new Date().toISOString(),
+      canonRef: 'canon_chronos_research_aggregation_opt_in_member_mark_dividend_bp054',
+    });
+    const signed_hash = crypto.createHash('sha256').update(body).digest('hex');
+    fs.writeFileSync(filePath, JSON.stringify({ ...JSON.parse(body), signed_hash }, null, 2));
+    return { ok: true, ebletPath: filePath };
   });
 }
 
@@ -1391,10 +1536,6 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
-
-  // Soccerball/reference-pyramid — must initialize before substrate so the
-  // pyramid is always in a valid state on first launch (SEG-D v0.1.14).
-  await initSoccerball();
 
   // Initialize substrate API server (Phase 3: full implementation)
   substrateServer = new SubstrateAPIServer();
@@ -1424,6 +1565,8 @@ app.whenReady().then(async () => {
   // Initialize auto-updater
   autoUpdater = new AutoUpdateManager();
   autoUpdater.init();
+  // KniPr026: reflect update state in tray tooltip (available / downloading / ready)
+  autoUpdater.onStateChanged((state) => updateTrayTooltip(state.status));
 
   // MV-CN: Peer discovery + WAN relay (SAGA 3 BP045 W1)
   const peerId = getStablePeerId();
@@ -1456,8 +1599,8 @@ app.whenReady().then(async () => {
   // SAGA-γ v0.1.10 — SubstratedFolderWatcher™ singleton (must be after app.ready for getPath)
   folderWatcher = new SubstratedFolderWatcher();
 
-  // Create overlay + tray
-  createOverlayWindow();
+  // Create tray only — overlay is opt-in (tray → Show Overlay, or Burst Mode).
+  // SAGA-1 BP055: Dashboard is the default boot surface; overlay never auto-creates.
   createTray();
   registerIPCHandlers();
 
@@ -1479,11 +1622,13 @@ app.whenReady().then(async () => {
   // Handle cold-start deep-link (Windows: URL passed via argv)
   handleStartupDeepLink(process.argv, () => hearthConjunctionWindow ?? overlayWindow ?? null);
 
-  // BP048 v0.1.7 B1 — first launch forces Dashboard (wife-install BLOCKER).
-  // Subsequent launches: tray-only unless user opens Dashboard (MNEMOSYNE_NO_AUTO_OPEN skips).
+  // SAGA-1 BP055: Dashboard is now the default boot surface on every launch.
+  // Overlay only appears via tray right-click → Show Overlay / Burst Mode (opt-in).
+  // MNEMOSYNE_NO_AUTO_OPEN=1 skips auto-open (CI / headless environments).
   if (process.env.MNEMOSYNE_NO_AUTO_OPEN !== '1') {
+    openDashboard({ focus: true });
     if (firstRun) {
-      openDashboard({ focus: true });
+      // Mark first-run complete after Dashboard is ready (wife-install BLOCKER preserved).
       if (dashboardWindow && !dashboardWindow.isDestroyed()) {
         dashboardWindow.once('ready-to-show', () => markFirstRunComplete());
       } else {
@@ -1570,7 +1715,8 @@ app.whenReady().then(async () => {
   connectivityTimer = setInterval(runConnectivityPoll, CONNECTIVITY_POLL_MS);
 
   app.on('activate', () => {
-    if (!overlayWindow) createOverlayWindow();
+    // SAGA-1 BP055: macOS dock click → open Dashboard (not overlay).
+    openDashboard({ focus: true });
   });
 });
 

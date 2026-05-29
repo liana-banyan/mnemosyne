@@ -654,32 +654,22 @@ contextBridge.exposeInMainWorld('amplify', {
     },
   },
 
-  // ── Pearl Decode IPC (v0.1.14) ────────────────────────────────────────────
-  pearl: {
-    decode: (sspsPayload: string): Promise<unknown> =>
-      ipcRenderer.invoke('pearl:decode', sspsPayload),
-    list: (): Promise<unknown[]> =>
-      ipcRenderer.invoke('pearl:list'),
-  },
-
-  // ── Phoebe™ Idea Storage IPC (v0.1.14) ───────────────────────────────────
-  phoebe: {
-    save: (item: { title: string; body?: string; url?: string; tags?: string[] }): Promise<{ ok: boolean; id: number }> =>
-      ipcRenderer.invoke('phoebe:save', item),
-    list: (): Promise<unknown[]> =>
-      ipcRenderer.invoke('phoebe:list'),
-  },
-
-  // ── MoneyPenny Orchestration (SEG-D v0.1.14) ─────────────────────────────
-  moneypenny: {
-    orchestrate: (task: string): Promise<{ briefing: string | null; rules: string[]; domains: string[]; error?: string }> =>
-      ipcRenderer.invoke('moneypenny:orchestrate', task),
-  },
-
   // ── SAGA 13 BP046B — 5-Marks first-install bonus ─────────────────────────
   /** Credit 5 marks on first install + first Stage 1 Gauntlet completion. One-per-account. */
   creditFirstInstallMarks: (): void =>
     ipcRenderer.send('credit-first-install-marks'),
+
+  // ── Trail Eblet Reader (KniPr035) ────────────────────────────────────────
+  trailEblet: {
+    list: (): Promise<{ files: string[]; dir: string }> =>
+      ipcRenderer.invoke('trail-eblet:list'),
+    read: (args: { filePath: string }): Promise<{ ok: boolean; content?: string; error?: string }> =>
+      ipcRenderer.invoke('trail-eblet:read', args),
+    listScreenshots: (args: { ebletPath: string }): Promise<{ files: string[]; dir: string }> =>
+      ipcRenderer.invoke('trail-eblet:list-screenshots', args),
+    readScreenshot: (args: { filePath: string }): Promise<{ ok: boolean; dataUrl?: string; error?: string }> =>
+      ipcRenderer.invoke('trail-eblet:read-screenshot', args),
+  },
 
   // ── Utility (SAGA 07 BP046B) ─────────────────────────────────────────────
   /** Open a URL in the system default browser */
@@ -697,6 +687,78 @@ contextBridge.exposeInMainWorld('amplify', {
   /** Get full telemetry summary (session + today + week + month + daily breakdown) */
   getTelemetrySummary: (): Promise<unknown> =>
     ipcRenderer.invoke('get-telemetry-summary'),
+
+  // ── Chronos Research Consent (KniPr038) ──────────────────────────────────
+
+  /** Write a sha256-signed consent Eblet to ~/.amplify/consent/ */
+  writeChronosConsent: (consentPayload: object): Promise<{ ok: boolean; ebletPath?: string }> =>
+    ipcRenderer.invoke('write-chronos-consent', consentPayload),
+
+  /** Write a sha256-signed revocation Eblet to ~/.amplify/consent/ */
+  revokeChronosConsent: (payload?: object): Promise<{ ok: boolean; ebletPath?: string }> =>
+    ipcRenderer.invoke('revoke-chronos-consent', payload),
+
+  // ── Phoebe™ Idea Storage (C.17 · BP055) ─────────────────────────────────
+  /** Save an idea to the in-memory Phoebe store */
+  saveIdea: (idea: { title: string; content: string; timestamp: string }): Promise<{ ok: boolean; id: string }> =>
+    ipcRenderer.invoke('save-idea', idea),
+
+  /** Retrieve all saved ideas (most recent first) */
+  getIdeas: (): Promise<{ ok: boolean; ideas: Array<{ id: string; title: string; content: string; timestamp: string }> }> =>
+    ipcRenderer.invoke('get-ideas'),
+
+  // ── Pearl-decode IPC (Tier G · v0.1.16 · BP057 W5c) ─────────────────────
+  /** Decode a Pearl by pearl_id or canonical_ref — returns eblet content from CANON substrate */
+  decodePearl: (pearlId: string): Promise<{ ok: boolean; pearl?: Record<string, string>; content?: string; error?: string }> =>
+    ipcRenderer.invoke('decode-pearl', pearlId),
+
+  // ── Bridge (BP060 Application 002 Steps 3+4 · UI-7 live Yoke wire) ──────
+  bridge: {
+    checkMessages: (count?: number) =>
+      ipcRenderer.invoke('bridge:check-messages', count),
+    sendMessage: (args: { to: string; type: string; content: string; from?: string }) =>
+      ipcRenderer.invoke('bridge:send-message', args),
+  },
+
+  // ── AI Dispatch (BP060 Application 002 Steps 3+4 · UI-8 backend) ─────────
+  aiDispatch: {
+    query: (args: { court_member: string; messages: Array<{role: string; content: string}>; model_override?: string }) =>
+      ipcRenderer.invoke('ai-dispatch:query', args),
+    listLocalModels: () =>
+      ipcRenderer.invoke('ai-dispatch:list-local-models'),
+    testConnection: () =>
+      ipcRenderer.invoke('ai-dispatch:test-connection'),
+    getSettings: () =>
+      ipcRenderer.invoke('ai-dispatch:get-settings'),
+    saveSettings: (settings: { local_runtime_url?: string }) =>
+      ipcRenderer.invoke('ai-dispatch:save-settings', settings),
+  },
+
+  // ── Caithedral Tools (BP060 Application 002 Step 1) ─────────────────────
+  caithedralTools: {
+    soccerball_emit: (pearls: string[], bindings?: Record<string, string>) =>
+      ipcRenderer.invoke('caithedral:soccerball_emit', pearls, bindings),
+    soccerball_decode: (sid: string) =>
+      ipcRenderer.invoke('caithedral:soccerball_decode', sid),
+    soccerball_lookup: (sid: string) =>
+      ipcRenderer.invoke('caithedral:soccerball_lookup', sid),
+    speckle_nibble: (sid: string, position: number) =>
+      ipcRenderer.invoke('caithedral:speckle_nibble', sid, position),
+    eblit_emit: (pearl_id: string, source_cathedral: string, ts?: number) =>
+      ipcRenderer.invoke('caithedral:eblit_emit', pearl_id, source_cathedral, ts),
+    substrace_weave: (eblit_null_lines: string[], weaver: string, weave_ts?: number) =>
+      ipcRenderer.invoke('caithedral:substrace_weave', eblit_null_lines, weaver, weave_ts),
+    quilt_compose: (substrace_ids: string[], narrative_tag: string, weaver: string, ts?: number) =>
+      ipcRenderer.invoke('caithedral:quilt_compose', substrace_ids, narrative_tag, weaver, ts),
+    substrate_address_emit: (seed: string, ts?: number) =>
+      ipcRenderer.invoke('caithedral:substrate_address_emit', seed, ts),
+    substrate_address_validate: (address: string) =>
+      ipcRenderer.invoke('caithedral:substrate_address_validate', address),
+    ten_pearl_roundtrip: () =>
+      ipcRenderer.invoke('caithedral:ten_pearl_roundtrip'),
+    areopagus_query: (query: string) =>
+      ipcRenderer.invoke('caithedral:areopagus_query', query),
+  },
 });
 
 // ─── Global type extension ────────────────────────────────────────────────────
@@ -827,9 +889,12 @@ declare global {
         onEbletMinted: (callback: (eblet: unknown) => void) => void;
         onFolderError: (callback: (payload: { folderId: string; error: string }) => void) => void;
       };
-      // MoneyPenny Orchestration (SEG-D v0.1.14)
-      moneypenny?: {
-        orchestrate: (task: string) => Promise<{ briefing: string | null; rules: string[]; domains: string[]; error?: string }>;
+      // Trail Eblet Reader (KniPr035)
+      trailEblet?: {
+        list: () => Promise<{ files: string[]; dir: string }>;
+        read: (args: { filePath: string }) => Promise<{ ok: boolean; content?: string; error?: string }>;
+        listScreenshots: (args: { ebletPath: string }) => Promise<{ files: string[]; dir: string }>;
+        readScreenshot: (args: { filePath: string }) => Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
       };
       // SAGA 13 BP046B
       creditFirstInstallMarks: () => void;
@@ -838,15 +903,44 @@ declare global {
       hideOverlay?: () => void;
       showOverlay?: () => void;
       getTelemetrySummary?: () => Promise<unknown>;
-      // Pearl Decode IPC (v0.1.14)
-      pearl?: {
-        decode: (sspsPayload: string) => Promise<unknown>;
-        list: () => Promise<unknown[]>;
+      // Chronos Research Consent (KniPr038)
+      writeChronosConsent?: (consentPayload: object) => Promise<{ ok: boolean; ebletPath?: string }>;
+      revokeChronosConsent?: (payload?: object) => Promise<{ ok: boolean; ebletPath?: string }>;
+      // Phoebe™ Idea Storage (C.17 · BP055)
+      saveIdea?: (idea: { title: string; content: string; timestamp: string }) => Promise<{ ok: boolean; id: string }>;
+      getIdeas?: () => Promise<{ ok: boolean; ideas: Array<{ id: string; title: string; content: string; timestamp: string }> }>;
+      // Pearl-decode IPC (Tier G · v0.1.16 · BP057 W5c)
+      decodePearl?: (pearlId: string) => Promise<{ ok: boolean; pearl?: Record<string, string>; content?: string; error?: string }>;
+      // Bridge IPC (BP060 Application 002 Steps 3+4 · UI-7)
+      bridge?: {
+        checkMessages: (count?: number) => Promise<{
+          ok: boolean; messages: Array<{id: string; type: string; from: string; to: string; content: string; ts: number; pinned?: boolean}>;
+          pinned: Array<{id: string; type: string; from: string; to: string; content: string; ts: number; pinned?: boolean}>;
+          total_in_file: number; yoke_path: string; read_at: string; error?: string;
+        }>;
+        sendMessage: (args: { to: string; type: string; content: string; from?: string }) => Promise<{ ok: boolean; message_id?: string; error?: string }>;
       };
-      // Phoebe™ Idea Storage IPC (v0.1.14)
-      phoebe?: {
-        save: (item: { title: string; body?: string; url?: string; tags?: string[] }) => Promise<{ ok: boolean; id: number }>;
-        list: () => Promise<unknown[]>;
+      // AI Dispatch IPC (BP060 Application 002 Steps 3+4 · UI-8)
+      aiDispatch?: {
+        query: (args: { court_member: string; messages: Array<{role: string; content: string}>; model_override?: string }) => Promise<{ ok: boolean; text?: string; model?: string; provider?: string; error?: string }>;
+        listLocalModels: () => Promise<{ ok: boolean; models: string[]; error?: string }>;
+        testConnection: () => Promise<{ ok: boolean; models: string[]; url: string; error?: string }>;
+        getSettings: () => Promise<{ local_runtime_url: string }>;
+        saveSettings: (settings: { local_runtime_url?: string }) => Promise<{ ok: boolean }>;
+      };
+      // Caithedral Tools IPC (BP060 Application 002 Step 1)
+      caithedralTools?: {
+        soccerball_emit: (pearls: string[], bindings?: Record<string, string>) => Promise<{ ok: boolean; sid?: string; error?: string }>;
+        soccerball_decode: (sid: string) => Promise<{ ok: boolean; result?: { pearls: string[]; bindings: Record<string, string> } | null; error?: string }>;
+        soccerball_lookup: (sid: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        speckle_nibble: (sid: string, position: number) => Promise<{ ok: boolean; nibble?: string; error?: string }>;
+        eblit_emit: (pearl_id: string, source_cathedral: string, ts?: number) => Promise<{ ok: boolean; eblit?: unknown; error?: string }>;
+        substrace_weave: (eblit_null_lines: string[], weaver: string, weave_ts?: number) => Promise<{ ok: boolean; substrace?: unknown; error?: string }>;
+        quilt_compose: (substrace_ids: string[], narrative_tag: string, weaver: string, ts?: number) => Promise<{ ok: boolean; quilt?: unknown; error?: string }>;
+        substrate_address_emit: (seed: string, ts?: number) => Promise<{ ok: boolean; address?: unknown; error?: string }>;
+        substrate_address_validate: (address: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        ten_pearl_roundtrip: () => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        areopagus_query: (query: string) => Promise<{ ok: boolean; matches?: Array<{ sid: string; pearls: string[]; score: number }>; query?: string; searched_at?: number; error?: string }>;
       };
       // Kitchen Table™ + Recipes™ + Atlas™ (BP052 v0.1.8)
       kitchenTable: {
