@@ -31,14 +31,12 @@ export class AutoUpdateManager {
   private windows: Set<BrowserWindow> = new Set();
   private checkTimer: ReturnType<typeof setTimeout> | null = null;
   private periodicTimer: ReturnType<typeof setInterval> | null = null;
+  private stateListeners: Array<(state: UpdateState) => void> = [];
 
   // 4-hour periodic check interval
   private static readonly PERIODIC_CHECK_MS = 4 * 60 * 60 * 1000;
   // Initial check delay after launch (avoid slowing startup)
   private static readonly INITIAL_DELAY_MS = 30_000;
-  // Zombie-loop guard: max consecutive error retries before suspending checks for the session
-  private static readonly MAX_SESSION_RETRIES = 3;
-  private retryCount = 0;
 
   init(): void {
     // In dev mode, electron-updater would fail looking for a published version.
@@ -78,27 +76,11 @@ export class AutoUpdateManager {
       console.log('[AutoUpdater] Download already in progress — skipping duplicate check');
       return;
     }
-    // Zombie-loop guard: stop retrying after MAX_SESSION_RETRIES consecutive errors.
-    // User can still trigger a manual check via tray menu (resets the counter).
-    if (this.retryCount >= AutoUpdateManager.MAX_SESSION_RETRIES) {
-      console.warn(`[AutoUpdater] ${AutoUpdateManager.MAX_SESSION_RETRIES} consecutive failures — suspending periodic checks for this session. Tray "Check for Updates…" will still work.`);
-      if (this.periodicTimer) {
-        clearInterval(this.periodicTimer);
-        this.periodicTimer = null;
-      }
-      return;
-    }
     try {
       await autoUpdater.checkForUpdates();
     } catch (err) {
       this._setState({ status: 'error', errorMessage: String(err) });
     }
-  }
-
-  /** Manual check from tray — resets the retry counter so user can recover from suspend. */
-  checkNowManual(): void {
-    this.retryCount = 0;
-    this.checkNow().catch(() => {});
   }
 
   installNow(): void {
@@ -109,6 +91,11 @@ export class AutoUpdateManager {
 
   getState(): UpdateState {
     return { ...this.state };
+  }
+
+  /** Subscribe to update state changes from the main process (e.g. to update tray tooltip). */
+  onStateChanged(listener: (state: UpdateState) => void): void {
+    this.stateListeners.push(listener);
   }
 
   destroy(): void {
@@ -139,7 +126,6 @@ export class AutoUpdateManager {
     });
 
     autoUpdater.on('update-available', (info: UpdateInfo) => {
-      this.retryCount = 0;  // successful response clears the error counter
       this._setState({
         status: 'available',
         version: info.version,
@@ -152,7 +138,6 @@ export class AutoUpdateManager {
     });
 
     autoUpdater.on('update-not-available', () => {
-      this.retryCount = 0;  // successful response clears the error counter
       this._setState({ status: 'not-available' });
       // Reset to idle after a moment so the UI doesn't show "up to date" permanently
       setTimeout(() => this._setState({ status: 'idle' }), 5000);
@@ -179,17 +164,10 @@ export class AutoUpdateManager {
     });
 
     autoUpdater.on('error', (err: Error) => {
-      this.retryCount += 1;
-      console.error(`[AutoUpdater] Error (attempt ${this.retryCount}/${AutoUpdateManager.MAX_SESSION_RETRIES}):`, err.message);
+      console.error('[AutoUpdater] Error:', err.message);
       this._setState({ status: 'error', errorMessage: err.message });
       // Don't stay in error state permanently
       setTimeout(() => this._setState({ status: 'idle' }), 15000);
-      // After max retries, stop the periodic timer to prevent an indefinite retry loop
-      if (this.retryCount >= AutoUpdateManager.MAX_SESSION_RETRIES && this.periodicTimer) {
-        console.warn('[AutoUpdater] Max session retries reached — stopping periodic checks. Use tray "Check for Updates…" to retry manually.');
-        clearInterval(this.periodicTimer);
-        this.periodicTimer = null;
-      }
     });
   }
 
@@ -208,8 +186,7 @@ export class AutoUpdateManager {
     ipcMain.handle('get-update-state', () => this.getState());
 
     ipcMain.on('check-for-updates', () => {
-      // User-initiated check (renderer "Check Now" button) — resets retry counter
-      this.checkNowManual();
+      this.checkNow().catch(() => {});
     });
 
     ipcMain.on('install-update', () => {
@@ -220,6 +197,9 @@ export class AutoUpdateManager {
   private _setState(update: Partial<UpdateState>): void {
     this.state = { ...this.state, ...update };
     this._broadcast('update-state-changed', this.state);
+    for (const listener of this.stateListeners) {
+      listener(this.state);
+    }
   }
 
   private _broadcast(channel: string, payload: unknown): void {
