@@ -36,12 +36,12 @@
   },
   "license": "UNLICENSED",
   "dependencies": {
-    "caithedral-core": "file:./caithedral-core",
     "@google/generative-ai": "^0.24.1",
     "@peculiar/asn1-schema": "^2.7.0",
     "@peculiar/asn1-tsp": "^2.7.0",
     "@peculiar/asn1-x509": "^2.7.0",
     "allotment": "^1.20.5",
+    "caithedral-core": "file:caithedral-core",
     "electron-updater": "^6.1.7",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
@@ -90,7 +90,10 @@
       "!static/**/*.map",
       "node_modules/**/*",
       "!node_modules/.cache/**",
-      "!node_modules/**/{test,__tests__,tests,powered-test,example,examples}/**"
+      "!node_modules/**/{test,__tests__,tests,powered-test,example,examples}/**",
+      "!node_modules/caithedral-core/release/**",
+      "!node_modules/caithedral-core/node_modules/**",
+      "!node_modules/caithedral-core/win-unpacked/**"
     ],
     "extraFiles": [
       {
