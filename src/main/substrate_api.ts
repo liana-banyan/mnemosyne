@@ -36,7 +36,7 @@
 //   POST /yoke/portal/enroll        — Harper Guild individual enrollment (admin only)
 //   POST /yoke/portal/agency_mou    — register agency MOU (admin only)
 //   GET  /yoke/portal/sessions      — Harper monitoring session log
-//   --- SAGA 6 Marketplace (AGPL umbrella; Substitution-only) ---
+//   --- SAGA 6 Marketplace (SSPL umbrella; Substitution-only) ---
 //   GET  /yoke/marketplace/plugins  — list plugins (?category=X&status=active)
 //   POST /yoke/marketplace/register — submit plugin registration (draft + IP Ledger)
 //   GET  /yoke/marketplace/stats    — marketplace statistics

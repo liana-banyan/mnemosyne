@@ -1,7 +1,7 @@
 {
   "name": "amplify-computer",
-  "version": "0.1.19",
-  "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (AGPL Free Forever)",
+  "version": "0.1.20",
+  "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (SSPL · Pledge #2260)",
   "homepage": "https://lianabanyan.com",
   "private": true,
   "main": "dist/main/index.js",
@@ -224,7 +224,7 @@
       "category": "Office",
       "maintainer": "Liana Banyan Corporation <support@lianabanyan.com>",
       "synopsis": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay",
-      "description": "Mnemosyne runs CAI — local AI inference via Ollama, cooperative substrate index, HELM VIEW workspace, IP Attribution Ledger, and Battery Dispatch Universal Remote. AGPL Free Forever. No Ads. No Strings. Members pay $5/year."
+      "description": "Mnemosyne runs CAI — local AI inference via Ollama, cooperative substrate index, HELM VIEW workspace, IP Attribution Ledger, and Battery Dispatch Universal Remote. SSPL · Pledge #2260. No Ads. No Strings. Members pay $5/year."
     },
     "deb": {
       "packageCategory": "utils",

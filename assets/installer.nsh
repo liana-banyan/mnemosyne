@@ -17,7 +17,7 @@
   File /nonfatal "${BUILD_RESOURCES_DIR}\..\assets\post_install_message.txt"
   IfFileExists "$INSTDIR\post_install_message.txt" 0 +2
     Rename "$INSTDIR\post_install_message.txt" "$INSTDIR\README_INSTALL.txt"
-  DetailPrint "Mnemosyne ${VERSION} install ready — AGPL Free Forever · No Ads · No Strings"
+  DetailPrint "Mnemosyne ${VERSION} install ready — SSPL · Pledge #2260 · No Ads · No Strings"
 !macroend
 
 ; On uninstall, leave user data intact (substrate cache, telemetry)

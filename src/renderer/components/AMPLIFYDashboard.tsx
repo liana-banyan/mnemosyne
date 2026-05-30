@@ -1000,7 +1000,7 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
               letterSpacing: 0.5,
             }}
           >
-            Mnemosyne · powered by CAI · AGPL Free Forever · No Ads · No Strings
+            Mnemosyne · powered by CAI · SSPL · Pledge #2260 · No Ads · No Strings
           </div>
           {appVersion && (
             <div
