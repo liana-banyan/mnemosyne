@@ -5,7 +5,7 @@
 // Mode triple-channel accessibility: hue + luminance + border-dash-pattern (BP041 canon).
 //
 // Founder direct: "user should be able to click it and choose which of the three to use."
-// Brick Wall: NO-FIAT-CONVERSION (mode = cost visibility) · AGPL · 8-dim accessibility.
+// Brick Wall: NO-FIAT-CONVERSION (mode = cost visibility) · SSPL · 8-dim accessibility.
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { NotCentsGlyph } from './NotCentsGlyph';

@@ -17,6 +17,7 @@ import {
 } from 'fs';
 import { resolve } from 'path';
 import type { SubstrateRecord, SubstrateLocalIndex } from './substrate_router';
+import { dag_soccerball_lookup as _dagLookupForFetch } from 'caithedral-core/tools/dag_soccerball';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ const LB_SUBSTRATE_WRITE_URL = 'https://lianabanyan.com/api/substrate/write';
 const LB_SUBSTRATE_SYNC_URL = 'https://lianabanyan.com/api/substrate/sync';
 
 // Peer-to-peer discovery (local AMPLIFY instances announce on this port)
-const PEER_ANNOUNCE_PORT = 11481;
+const PEER_ANNOUNCE_PORT = Number(process.env.PEER_ANNOUNCE_PORT ?? 11481);
 const PEER_SYNC_TIMEOUT_MS = 5000;
 
 // Sync intervals
@@ -350,6 +351,8 @@ export class FederationClient {
           const msg = JSON.parse(line) as {
             type: string;
             record_ids?: string[];
+            dag_id?: string;
+            payload?: { dag_id?: string };
           };
 
           if (msg.type === 'sync_request') {
@@ -369,6 +372,35 @@ export class FederationClient {
               JSON.stringify({ type: 'sync_response', records: toSend }) + '\n',
             );
             socket.end();
+          } else if (msg.type === 'sid_fetch_request') {
+            // MESH-6 Blocker B1 fix: respond on the same socket before ending
+            const dag_id = msg.payload?.dag_id ?? msg.dag_id;
+            if (!dag_id) {
+              socket.write(JSON.stringify({ type: 'sid_fetch_response', peerId: '', payload: { dag_id: '', found: false, node: null }, ts: new Date().toISOString() }) + '\n');
+              socket.end();
+              return;
+            }
+            try {
+              const node = _dagLookupForFetch(dag_id);
+              const response = {
+                type: 'sid_fetch_response',
+                peerId: '',
+                payload: { dag_id, found: !!node, node: node ?? null },
+                ts: new Date().toISOString(),
+              };
+              socket.write(JSON.stringify(response) + '\n', () => {
+                socket.end();
+              });
+              if (node) {
+                console.log(`[FederationClient] sid_fetch_request: dag_id=${dag_id} found=true — served to ${peerAddr}`);
+              } else {
+                console.log(`[FederationClient] sid_fetch_request: dag_id=${dag_id} found=false — not in local crystal`);
+              }
+            } catch (err) {
+              socket.write(JSON.stringify({ type: 'sid_fetch_response', peerId: '', payload: { dag_id, found: false, node: null }, ts: new Date().toISOString() }) + '\n', () => {
+                socket.end();
+              });
+            }
           }
         } catch {
           // Malformed — ignore

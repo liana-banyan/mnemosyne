@@ -8,6 +8,9 @@
 //
 // HTTP endpoints on 127.0.0.1:11480:
 //   GET  /health                    — liveness
+//   POST /dag/emit                  — MESH-6 Option-B: emit DAG node + trigger pointer_advance
+//   GET  /dag/lookup/:sid           — MESH-6 Option-B: lookup DAG node by SID (proves replication)
+//   POST /dag/fetch_from_peer       — MESH-6 Option-B: fetch SID from peer via TCP, hash-verify, store
 //   GET  /mode                      — current + forced mode
 //   POST /mode/force                — force or clear override mode
 //   POST /substrate/query           — three-mode routed query
@@ -36,7 +39,7 @@
 //   POST /yoke/portal/enroll        — Harper Guild individual enrollment (admin only)
 //   POST /yoke/portal/agency_mou    — register agency MOU (admin only)
 //   GET  /yoke/portal/sessions      — Harper monitoring session log
-//   --- SAGA 6 Marketplace (AGPL umbrella; Substitution-only) ---
+//   --- SAGA 6 Marketplace (SSPL umbrella; Substitution-only) ---
 //   GET  /yoke/marketplace/plugins  — list plugins (?category=X&status=active)
 //   POST /yoke/marketplace/register — submit plugin registration (draft + IP Ledger)
 //   GET  /yoke/marketplace/stats    — marketplace statistics
@@ -100,10 +103,24 @@ import {
   type PluginRegistrationRequest,
   type PluginCategory,
 } from './marketplace/marketplace_registry';
+import { dag_soccerball_emit as _dagEmit, dag_soccerball_lookup as _dagLookup } from 'caithedral-core/tools/dag_soccerball';
+
+// MESH-6 Option-B: hook set by index.ts so /dag/emit can trigger pointer_advance broadcast
+let _dagEmitMeshHook: ((sid: string) => void) | null = null;
+export function setDagEmitMeshHook(fn: (sid: string) => void): void {
+  _dagEmitMeshHook = fn;
+}
+
+// MESH-6 Option-B: hook set by index.ts so /dag/fetch_from_peer can call _fetchSidViaTCP
+type FetchSidResult = { ok: boolean; node?: unknown; hash_verified: boolean; error?: string };
+let _fetchSidFromPeerHook: ((address: string, port: number, dag_id: string) => Promise<FetchSidResult>) | null = null;
+export function setFetchSidFromPeerHook(fn: (address: string, port: number, dag_id: string) => Promise<FetchSidResult>): void {
+  _fetchSidFromPeerHook = fn;
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-export const API_PORT = 11480;
+export const API_PORT = Number(process.env.SUBSTRATE_PORT ?? 11480);
 
 const LOG_DIR = resolve(
   process.env.APPDATA || process.env.HOME || '.',
@@ -404,6 +421,86 @@ export class SubstrateAPIServer {
         mode: this.router.getEffectiveMode(),
         forced_mode: this.router.getForcedMode(),
       }));
+      return;
+    }
+
+    // ── POST /dag/emit — MESH-6 Option-B test surface ─────────────────────────
+    // Emits a DAG soccerball node, triggers pointer_advance broadcast to peers.
+    // Body: { pearls: string[], bindings?: Record<string,string>, faces?: Record<string,string> }
+    if (req.method === 'POST' && url === '/dag/emit') {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const { pearls, bindings = {}, faces = {} } = JSON.parse(body) as {
+            pearls: string[];
+            bindings?: Record<string, string>;
+            faces?: Record<string, string>;
+          };
+          if (!Array.isArray(pearls) || pearls.length === 0) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ ok: false, error: 'pearls must be a non-empty array' }));
+            return;
+          }
+          const sid = _dagEmit(pearls, bindings, faces);
+          _dagEmitMeshHook?.(sid);
+          console.log(`[SubstrateAPI/dag/emit] sid=${sid} pearls=${JSON.stringify(pearls)}`);
+          res.end(JSON.stringify({ ok: true, sid, pearls, bindings, faces }));
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ ok: false, error: String(err) }));
+        }
+      });
+      return;
+    }
+
+    // ── GET /dag/lookup/:sid — MESH-6 Option-B test surface ───────────────────
+    // Looks up a DAG node by SID. Returns node if found (proves replication).
+    if (req.method === 'GET' && url?.startsWith('/dag/lookup/')) {
+      const sid = url.slice('/dag/lookup/'.length);
+      try {
+        const node = _dagLookup(sid);
+        if (node) {
+          res.end(JSON.stringify({ ok: true, found: true, sid, node }));
+        } else {
+          res.end(JSON.stringify({ ok: true, found: false, sid }));
+        }
+      } catch (err) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+      }
+      return;
+    }
+
+    // ── POST /dag/fetch_from_peer — MESH-6 Option-B receipt walk ──────────────
+    // Fetches a dag_id from a peer via TCP, hash-verifies, writes to local crystal.
+    // Body: { address: string, port: number, dag_id: string }
+    if (req.method === 'POST' && url === '/dag/fetch_from_peer') {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', async () => {
+        try {
+          const { address, port, dag_id } = JSON.parse(body) as {
+            address: string; port: number; dag_id: string;
+          };
+          if (!address || !port || !dag_id) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ ok: false, error: 'address, port, dag_id required' }));
+            return;
+          }
+          if (!_fetchSidFromPeerHook) {
+            res.statusCode = 503;
+            res.end(JSON.stringify({ ok: false, error: 'fetchSidFromPeerHook not wired' }));
+            return;
+          }
+          const result = await _fetchSidFromPeerHook(address, port, dag_id);
+          console.log(`[SubstrateAPI/dag/fetch_from_peer] dag_id=${dag_id} ok=${result.ok} hash_verified=${result.hash_verified}`);
+          res.end(JSON.stringify({ ...result, dag_id, address, port }));
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ ok: false, error: String(err) }));
+        }
+      });
       return;
     }
 

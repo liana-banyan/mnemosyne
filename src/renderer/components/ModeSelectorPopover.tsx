@@ -7,7 +7,7 @@
 // Canon: project_mnemosyne_mode_selector_and_ollama_bundling_bp041.md
 // Brick Wall: R16 NO-API-KEY-EXPOSURE · R17 SHOW-RESULTS · R18 R-FOREMAN-FIRST
 //             NO-FIAT-CONVERSION (mode selector makes cost visible at glance)
-//             AGPL Free Forever · 8-dim accessibility (aria-labels, keyboard)
+//             SSPL · Pledge #2260 · 8-dim accessibility (aria-labels, keyboard)
 
 import React, { useCallback, useEffect, useRef } from 'react';
 import type { FrameMode } from './FrameModeIndicator';

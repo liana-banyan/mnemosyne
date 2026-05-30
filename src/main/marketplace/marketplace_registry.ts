@@ -6,7 +6,7 @@
 // that you can pick and choose from with categories." — Founder direct, BP041
 //
 // Distribution model:
-//   - AGPL umbrella: all plugins must bind AGPL license (cooperative-class)
+//   - SSPL umbrella: all plugins must bind SSPL license (cooperative-class)
 //   - Substitution-only payment (NO-FIAT-CONVERSION Blood Rule)
 //   - IP Ledger registration required per plugin (appendPortalSearchEntry pattern)
 //   - Developer keeps 83.3%; platform margin Cost+20%; Substitution-only settlement
@@ -37,7 +37,7 @@ export type PluginStatus =
   | 'draft'       // submitted; under Detective + Counsel review
   | 'active'      // approved; listed in marketplace
   | 'suspended'   // temporarily removed (Harper Guild or Detective review)
-  | 'revoked';    // permanently removed (AGPL violation or policy breach)
+  | 'revoked';    // permanently removed (SSPL violation or policy breach)
 
 export interface PluginManifest {
   plugin_id:          string;
@@ -46,7 +46,7 @@ export interface PluginManifest {
   category:           PluginCategory;
   description:        string;
   author_member_id:   string;   // cooperative-substrate member_id; never real-name (BLOOD RULE)
-  license:            'AGPL-3.0'; // enforced; no other license accepted
+  license:            'SSPL-1.0'; // enforced; no other license accepted
   ip_ledger_id:       string;   // ledger_id from IP Ledger registration
   entry_point:        string;   // relative path to main TS/JS module
   min_mnemosyne_ver:  string;
@@ -157,7 +157,7 @@ export function registerPlugin(
     category:          req.category,
     description:       req.description,
     author_member_id:  req.author_member_id,
-    license:           'AGPL-3.0',
+    license:           'SSPL-1.0',
     ip_ledger_id,
     entry_point:       req.entry_point,
     min_mnemosyne_ver: req.min_mnemosyne_ver,

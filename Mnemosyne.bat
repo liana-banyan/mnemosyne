@@ -25,7 +25,7 @@ cd /d "%~dp0"
 echo.
 echo  ===============================================================
 echo    Mnemosyne. Memory, powered by CAI.
-echo    AGPL Free Forever. No Ads. No Strings.
+echo    SSPL - Pledge #2260. No Ads. No Strings.
 echo  ===============================================================
 echo.
 

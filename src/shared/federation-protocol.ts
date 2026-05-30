@@ -6,7 +6,7 @@
 // WAN peers: WebSocket relay at wss://relay.mnemosynec.ai
 
 export const MNEMOSYNE_SERVICE_NAME = '_mnemosyne._tcp.local.';
-export const LAN_ANNOUNCE_PORT = 11481;
+export const LAN_ANNOUNCE_PORT = Number(process.env.PEER_ANNOUNCE_PORT ?? 11481);
 export const LAN_MULTICAST_ADDR = '224.0.0.251';
 export const LAN_MULTICAST_PORT = 5354;
 export const RELAY_URL = 'wss://relay.mnemosynec.ai';

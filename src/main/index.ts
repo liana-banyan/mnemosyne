@@ -73,6 +73,7 @@ import { registerKitchenTableIpc } from './kitchen_table/kitchen_table_store';
 
 // BP060 Application 002 Step 1 — Caithedral Tools IPC
 import { registerCaithedralToolsIPC, setMeshPointerAdvanceHook, dag_soccerball_emit_reexport } from './caithedral_tools_ipc';
+import { setDagEmitMeshHook, setFetchSidFromPeerHook } from './substrate_api';
 
 // MESH-6 — shared protocol payload types
 import {
@@ -103,7 +104,10 @@ import type { DeepLinkPayload } from './deep-link-handler';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
+// MNEMOSYNE_PROD_LAUNCH=1 forces loadFile of built renderer even from source tree
+// (used for smoke-launch + two-instance tests without full packaging)
+const IS_DEV = process.env.MNEMOSYNE_PROD_LAUNCH !== '1' &&
+  (process.env.NODE_ENV === 'development' || !app.isPackaged);
 // Use explicit 127.0.0.1 (IPv4) — avoids Windows ::1 vs 127.0.0.1 split-brain
 // where Vite binds to ::1 but Chromium connects to 127.0.0.1.
 const VITE_DEV_URL = 'http://127.0.0.1:5173';
@@ -114,12 +118,14 @@ const RENDERER_URL = IS_DEV
 // ─── CSP ─────────────────────────────────────────────────────────────────────
 // Strict prod / minimal dev relaxation (HMR style + module loading only).
 // NO unsafe-eval in either environment.
+const _SUBSTRATE_PORT = Number(process.env.SUBSTRATE_PORT ?? 11480);
+const _ANNOUNCE_PORT = Number(process.env.PEER_ANNOUNCE_PORT ?? 11481);
 const CSP_DEV =
   "default-src 'self' http://127.0.0.1:5173; " +
   "script-src 'self' 'unsafe-inline' http://127.0.0.1:5173; " +
   "style-src 'self' 'unsafe-inline'; " +
-  "connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173 " +
-  "http://127.0.0.1:11480 http://127.0.0.1:11481; " +
+  `connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173 ` +
+  `http://127.0.0.1:${_SUBSTRATE_PORT} http://127.0.0.1:${_ANNOUNCE_PORT}; ` +
   "img-src 'self' data: blob:; " +
   "font-src 'self' data:";
 
@@ -127,7 +133,7 @@ const CSP_PROD =
   "default-src 'self'; " +
   "script-src 'self'; " +
   "style-src 'self' 'unsafe-inline'; " +
-  "connect-src 'self' http://127.0.0.1:11480 http://127.0.0.1:11481; " +
+  `connect-src 'self' http://127.0.0.1:${_SUBSTRATE_PORT} http://127.0.0.1:${_ANNOUNCE_PORT}; ` +
   "img-src 'self' data: blob:; " +
   "font-src 'self' data:";
 
@@ -1155,7 +1161,7 @@ function registerIPCHandlers(): void {
       if (!substrateServer) return { hit: false, routing: 'miss', latency_ms: 0 };
       const degraded = authManager?.isDegraded() ?? false;
       try {
-        const res = await fetch(`http://127.0.0.1:11480/substrate/query`, {
+        const res = await fetch(`http://127.0.0.1:${_SUBSTRATE_PORT}/substrate/query`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           // In degraded mode, skip Ollama by omitting model and forcing Normal mode
@@ -1177,7 +1183,7 @@ function registerIPCHandlers(): void {
         return { ok: false, reason: 'degraded_mode' };
       }
       try {
-        const res = await fetch(`http://127.0.0.1:11480/substrate/write`, {
+        const res = await fetch(`http://127.0.0.1:${_SUBSTRATE_PORT}/substrate/write`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text, source, keywords }),
@@ -1898,6 +1904,29 @@ app.whenReady().then(async () => {
 
   // MESH-6: Wire pointer-advance hook from caithedral tools IPC
   setMeshPointerAdvanceHook(_emitPointerAdvanceToPeers);
+
+  // MESH-6 Option-B: Wire HTTP /dag/emit endpoint to the same pointer_advance broadcast
+  setDagEmitMeshHook(_emitPointerAdvanceToPeers);
+
+  // MESH-6 Option-B: Wire HTTP /dag/fetch_from_peer to _fetchSidViaTCP
+  setFetchSidFromPeerHook(async (address, port, dag_id) => {
+    const peer = {
+      peerId: 'http-test-peer',
+      displayName: 'HTTP test peer',
+      address,
+      port,
+      transport: 'lan' as const,
+      phase: 'identified' as const,
+      lastSeen: new Date().toISOString(),
+    };
+    const reqMsg: FedMsg = {
+      type: 'sid_fetch_request',
+      peerId: getStablePeerId(),
+      payload: { dag_id, requester_peer_id: getStablePeerId() } satisfies SidFetchRequestPayload,
+      ts: new Date().toISOString(),
+    };
+    return _fetchSidViaTCP(peer, dag_id, reqMsg);
+  });
 
   // MESH-6: Inject mDNS peer source into FederationClient
   federationClient?.setPeerDiscoverySource(() =>

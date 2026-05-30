@@ -1,7 +1,7 @@
 {
   "name": "amplify-computer",
-  "version": "0.1.17",
-  "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (AGPL Free Forever)",
+  "version": "0.1.21",
+  "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (SSPL · Pledge #2260)",
   "homepage": "https://lianabanyan.com",
   "private": true,
   "main": "dist/main/index.js",

@@ -1,7 +1,7 @@
 // SAGA 4 BP041 — Agent Plugins Loader
 // Watches ~/.lb_substrate/plugins/agents/*.json for community plugin manifests.
-// AGPL Free Forever Blood Rule: all plugins distributed for Mnemosyne carry AGPL umbrella.
-// Higher Standards Class: third-party plugin authors held to AGPL + cooperative-class.
+// SSPL Blood Rule: all plugins distributed for Mnemosyne carry SSPL umbrella.
+// Higher Standards Class: third-party plugin authors held to SSPL + cooperative-class.
 // IP Ledger: member-developed plugins attributed via plugin manifest `ipLedgerRef` field.
 //
 // Plugin spec (JSON manifest):
@@ -12,14 +12,14 @@
 //     icon: string;
 //     tiers?: Array<{id, label, tierClass, modelId}>;
 //     requiresKey?: string;         env var name
-//     licenseType: 'AGPL-3.0';      REQUIRED — rejected if absent or wrong
+//     licenseType: 'SSPL-1.0';      REQUIRED — rejected if absent or wrong
 //     ipLedgerRef?: string;         IP Ledger innovation ID (e.g. "IL-0042")
 //     authorHandle?: string;        Discord/GitHub handle
 //     schemaVersion: 1;
 //   }
 //
 // Distribution paths:
-//   Path A — Commercial AI company: AGPL fork of Mnemosyne with integration
+//   Path A — Commercial AI company: SSPL fork of Mnemosyne with integration
 //   Path B — Member developer: JSON manifest + plugin index on Discord/GitHub
 //   Path C — LB blessed: reviewed + ships in default Mnemosyne build
 
@@ -57,7 +57,7 @@ export interface InConjunctionAgent {
 const SUBSTRATE_ROOT = process.env.LB_SUBSTRATE_ROOT ?? join(homedir(), '.lb_substrate');
 const PLUGIN_DIR = join(SUBSTRATE_ROOT, 'plugins', 'agents');
 const SCHEMA_VERSION = 1;
-const REQUIRED_LICENSE = 'AGPL-3.0';
+const REQUIRED_LICENSE = 'SSPL-1.0';
 
 // IDs reserved for builtins — plugin loader rejects any manifest claiming these
 const RESERVED_IDS = new Set([
@@ -130,7 +130,7 @@ function validateManifest(raw: unknown, filename: string): ValidationResult {
   if (m.licenseType !== REQUIRED_LICENSE) {
     return {
       ok: false,
-      reason: `${filename}: licenseType must be "${REQUIRED_LICENSE}" — AGPL umbrella is non-negotiable per Mnemosyne Blood Rule`,
+      reason: `${filename}: licenseType must be "${REQUIRED_LICENSE}" — SSPL umbrella is non-negotiable per Mnemosyne Blood Rule`,
     };
   }
   if (m.tiers !== undefined) {
@@ -240,7 +240,7 @@ function writePluginReadme(path: string): void {
     '  displayName: "My Agent"',
     '  subtitle: "Helena-pedagogy one-liner"',
     '  icon: single emoji',
-    '  licenseType: "AGPL-3.0"   ← required; AGPL umbrella is non-negotiable',
+    '  licenseType: "SSPL-1.0"   ← required; SSPL umbrella is non-negotiable',
     '',
     'Optional fields:',
     '  tiers: [{id, label, tierClass, modelId}]',

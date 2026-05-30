@@ -5,7 +5,7 @@
 # Output: amplify-computer/src/renderer/public/fonts/cai-notcents.{woff2,ttf}
 #
 # Canon: project_notcents_custom_font_one_glyph_bp041.md
-# Font: family "CAINotCents", version 1.0, AGPL Free Forever, PUA U+E000 single-glyph.
+# Font: family "CAINotCents", version 1.0, SSPL · Pledge #2260, PUA U+E000 single-glyph.
 #
 # Run: python.exe scripts\generate_notcents_font.py
 
@@ -197,7 +197,7 @@ fb.setupNameTable({
     "fullName":                "CAI NotCents",
     "version":                 "Version 1.0",
     "psName":                  "CAINotCents-Regular",
-    "copyright":               "Liana Banyan Corporation. AGPL Free Forever.",
+    "copyright":               "Liana Banyan Corporation. SSPL · Pledge #2260.",
     "description":             "Single-glyph: NotCents (D with two vertical strokes) at PUA E000. NO-FIAT-CONVERSION identity.",
 })
 fb.setupOS2(
@@ -243,6 +243,6 @@ print()
 print("=== NotCents font generated ===")
 print(f"  Family:    CAINotCents")
 print(f"  Codepoint: U+E000  (PUA first slot)")
-print(f"  AGPL:      Free Forever")
+print(f"  License:   SSPL · Pledge #2260")
 print(f"  TTF:       {TTF_PATH}")
 print(f"  WOFF2:     {WOFF2_PATH}")
