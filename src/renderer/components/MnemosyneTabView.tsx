@@ -709,6 +709,18 @@ export function MnemosyneTabView({
             <BroadcastScheduleTab />
           </div>
         )}
+
+        {/* BP063 SEG-1 — Battery Dispatch Tab 15 */}
+        {activeTab === 'battery-dispatch' && (
+          <div
+            id="panel-battery-dispatch"
+            role="tabpanel"
+            aria-labelledby="tab-battery-dispatch"
+            style={{ height: '100%' }}
+          >
+            <BatteryDispatchTab />
+          </div>
+        )}
       </div>
 
       {/* Developer mode unlock prompt — shown at bottom only if not yet enabled */}
