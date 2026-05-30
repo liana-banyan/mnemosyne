@@ -15,18 +15,18 @@ import {
   soccerball_decode,
   soccerball_lookup,
   speckle_nibble,
-} from 'caithedral-core/dist/main/tools/soccerball_tools';
+} from 'caithedral-core/tools/soccerball';
 
-import { eblit_emit } from 'caithedral-core/dist/main/tools/eblit_tools';
+import { eblit_emit } from 'caithedral-core/tools/eblit';
 
-import { substrace_weave } from 'caithedral-core/dist/main/tools/substrace_tools';
+import { substrace_weave } from 'caithedral-core/tools/substrace';
 
-import { quilt_compose } from 'caithedral-core/dist/main/tools/quilt_tools';
+import { quilt_compose } from 'caithedral-core/tools/quilt';
 
 import {
   substrate_address_validate,
   gen_valid_address,
-} from 'caithedral-core/dist/main/tools/substrate_address';
+} from 'caithedral-core/tools/substrate_address';
 
 // ─── Types (re-exported from caithedral-core for IPC shape reference) ─────────
 
@@ -94,6 +94,20 @@ async function wrapAsync<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
   }
 }
 
+// ─── MESH-6: pointer-advance hook (set by index.ts after relay/peer init) ────
+
+let _meshPointerAdvanceHook: ((newDagId: string) => void) | null = null;
+
+export function setMeshPointerAdvanceHook(fn: (newDagId: string) => void): void {
+  _meshPointerAdvanceHook = fn;
+}
+
+import { dag_soccerball_emit as _dag_emit } from 'caithedral-core/tools/dag_soccerball';
+
+export function dag_soccerball_emit_reexport(pearls: string[], bindings?: Record<string, string>, faces?: Record<string, string>): string {
+  return _dag_emit(pearls, bindings, faces);
+}
+
 // ─── IPC registration ─────────────────────────────────────────────────────────
 
 export function registerCaithedralToolsIPC(): void {
@@ -103,6 +117,8 @@ export function registerCaithedralToolsIPC(): void {
     wrap(() => {
       const sid = soccerball_emit(pearls, bindings);
       indexSid(sid, pearls, bindings);
+      // MESH-6 Piece 3: notify peers of pointer advance
+      _meshPointerAdvanceHook?.(sid);
       return sid;
     }),
   );

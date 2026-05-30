@@ -315,6 +315,19 @@ contextBridge.exposeInMainWorld('amplify', {
   getMeshState: (): Promise<{ peers: unknown[]; relayConnected: boolean; ownPeerId: string }> =>
     ipcRenderer.invoke('get-mesh-state'),
 
+  // ── MESH-6: Federation invite/accept/leave + SID fetch ───────────────────
+  federationGenerateInvite: (): Promise<{ token: string; expiresAt: string }> =>
+    ipcRenderer.invoke('federation:generate-invite'),
+
+  federationAcceptInvite: (token: string): Promise<{ success: boolean; peerName?: string; error?: string }> =>
+    ipcRenderer.invoke('federation:accept-invite', token),
+
+  federationLeavePeer: (peerId: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('federation:leave-peer', peerId),
+
+  federationFetchSid: (dag_id: string, peerId: string): Promise<{ ok: boolean; node?: unknown; hash_verified: boolean; error?: string }> =>
+    ipcRenderer.invoke('federation:fetch-sid', dag_id, peerId),
+
   onRelayStateChanged: (cb: (state: { relayConnected: boolean }) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: { relayConnected: boolean }) => cb(state);
     ipcRenderer.on('relay-state-changed', handler);
@@ -712,6 +725,28 @@ contextBridge.exposeInMainWorld('amplify', {
   decodePearl: (pearlId: string): Promise<{ ok: boolean; pearl?: Record<string, string>; content?: string; error?: string }> =>
     ipcRenderer.invoke('decode-pearl', pearlId),
 
+  // ── Bridge (BP060 Application 002 Steps 3+4 · UI-7 live Yoke wire) ──────
+  bridge: {
+    checkMessages: (count?: number) =>
+      ipcRenderer.invoke('bridge:check-messages', count),
+    sendMessage: (args: { to: string; type: string; content: string; from?: string }) =>
+      ipcRenderer.invoke('bridge:send-message', args),
+  },
+
+  // ── AI Dispatch (BP060 Application 002 Steps 3+4 · UI-8 backend) ─────────
+  aiDispatch: {
+    query: (args: { court_member: string; messages: Array<{role: string; content: string}>; model_override?: string }) =>
+      ipcRenderer.invoke('ai-dispatch:query', args),
+    listLocalModels: () =>
+      ipcRenderer.invoke('ai-dispatch:list-local-models'),
+    testConnection: () =>
+      ipcRenderer.invoke('ai-dispatch:test-connection'),
+    getSettings: () =>
+      ipcRenderer.invoke('ai-dispatch:get-settings'),
+    saveSettings: (settings: { local_runtime_url?: string }) =>
+      ipcRenderer.invoke('ai-dispatch:save-settings', settings),
+  },
+
   // ── Caithedral Tools (BP060 Application 002 Step 1) ─────────────────────
   caithedralTools: {
     soccerball_emit: (pearls: string[], bindings?: Record<string, string>) =>
@@ -778,6 +813,11 @@ declare global {
       getMeshState: () => Promise<{ peers: unknown[]; relayConnected: boolean; ownPeerId: string }>;
       onRelayStateChanged: (cb: (state: { relayConnected: boolean }) => void) => () => void;
       onMeshStateChanged: (cb: (state: unknown) => void) => () => void;
+      // MESH-6: Federation invite/accept/leave + SID fetch
+      federationGenerateInvite?: () => Promise<{ token: string; expiresAt: string }>;
+      federationAcceptInvite?: (token: string) => Promise<{ success: boolean; peerName?: string; error?: string }>;
+      federationLeavePeer?: (peerId: string) => Promise<{ ok: boolean }>;
+      federationFetchSid?: (dag_id: string, peerId: string) => Promise<{ ok: boolean; node?: unknown; hash_verified: boolean; error?: string }>;
       // MoneyPenny
       getMoneyPennyUrl: () => Promise<{ url: string; ips: string[]; port: number }>;
       // Auth (Phase 7)
@@ -889,6 +929,23 @@ declare global {
       getIdeas?: () => Promise<{ ok: boolean; ideas: Array<{ id: string; title: string; content: string; timestamp: string }> }>;
       // Pearl-decode IPC (Tier G · v0.1.16 · BP057 W5c)
       decodePearl?: (pearlId: string) => Promise<{ ok: boolean; pearl?: Record<string, string>; content?: string; error?: string }>;
+      // Bridge IPC (BP060 Application 002 Steps 3+4 · UI-7)
+      bridge?: {
+        checkMessages: (count?: number) => Promise<{
+          ok: boolean; messages: Array<{id: string; type: string; from: string; to: string; content: string; ts: number; pinned?: boolean}>;
+          pinned: Array<{id: string; type: string; from: string; to: string; content: string; ts: number; pinned?: boolean}>;
+          total_in_file: number; yoke_path: string; read_at: string; error?: string;
+        }>;
+        sendMessage: (args: { to: string; type: string; content: string; from?: string }) => Promise<{ ok: boolean; message_id?: string; error?: string }>;
+      };
+      // AI Dispatch IPC (BP060 Application 002 Steps 3+4 · UI-8)
+      aiDispatch?: {
+        query: (args: { court_member: string; messages: Array<{role: string; content: string}>; model_override?: string }) => Promise<{ ok: boolean; text?: string; model?: string; provider?: string; error?: string }>;
+        listLocalModels: () => Promise<{ ok: boolean; models: string[]; error?: string }>;
+        testConnection: () => Promise<{ ok: boolean; models: string[]; url: string; error?: string }>;
+        getSettings: () => Promise<{ local_runtime_url: string }>;
+        saveSettings: (settings: { local_runtime_url?: string }) => Promise<{ ok: boolean }>;
+      };
       // Caithedral Tools IPC (BP060 Application 002 Step 1)
       caithedralTools?: {
         soccerball_emit: (pearls: string[], bindings?: Record<string, string>) => Promise<{ ok: boolean; sid?: string; error?: string }>;

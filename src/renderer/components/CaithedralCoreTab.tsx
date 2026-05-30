@@ -685,10 +685,24 @@ function DagSoccerballPanel({ cai }: { cai: CaithedralApi | null }) {
   const [emitPearls, setEmitPearls] = useState('af5be14111467931');
   const [emitFaces, setEmitFaces] = useState('');
 
+  // MESH-6 Piece 6: fetch-from-peer state
+  const [fetchPeerDagId, setFetchPeerDagId] = useState('');
+  const [fetchPeerSelectedId, setFetchPeerSelectedId] = useState('');
+  const [meshPeers, setMeshPeers] = useState<Array<{ peerId: string; displayName?: string }>>([]);
+  const [fetchPeerResult, setFetchPeerResult] = useState<string | null>(null);
+  const [fetchPeerLoading, setFetchPeerLoading] = useState(false);
+
   useEffect(() => {
     if (!cai?.dagSoccerball) return;
     cai.dagSoccerball.stats().then(setStats).catch(() => {});
   }, [cai]);
+
+  // Load mesh peers for peer-selector (independent of dagSoccerball bridge)
+  useEffect(() => {
+    (window as typeof window & { amplify?: { getMeshState?: () => Promise<{ peers: Array<{ peerId: string; displayName?: string }> }> } }).amplify?.getMeshState?.()
+      .then((state) => { if (state?.peers) setMeshPeers(state.peers); })
+      .catch(() => {});
+  }, []);
 
   const refreshStats = useCallback(async () => {
     if (!cai?.dagSoccerball) return;
@@ -731,6 +745,28 @@ function DagSoccerballPanel({ cai }: { cai: CaithedralApi | null }) {
       setLoading(false);
     }
   }, [cai, activeOp, emitPearls, emitFaces, rootId, path, sessionMeta, handle, refreshStats]);
+
+  // MESH-6 Piece 6: fetch-from-peer op (independent of dagSoccerball bridge)
+  const runFetchPeer = useCallback(async () => {
+    if (!fetchPeerDagId.trim() || !fetchPeerSelectedId) {
+      setFetchPeerResult('Error: provide dag_id and select a peer');
+      return;
+    }
+    setFetchPeerLoading(true);
+    setFetchPeerResult(null);
+    try {
+      const r = await (window as unknown as { amplify?: { federationFetchSid?: (dag_id: string, peerId: string) => Promise<{ ok: boolean; node?: unknown; hash_verified: boolean; error?: string }> } }).amplify?.federationFetchSid?.(fetchPeerDagId.trim(), fetchPeerSelectedId);
+      if (r?.ok && r.hash_verified) {
+        setFetchPeerResult(JSON.stringify({ hash_verified: true, node: r.node }, null, 2));
+      } else {
+        setFetchPeerResult(`Error: ok=${r?.ok} hash_verified=${r?.hash_verified} error=${r?.error}`);
+      }
+    } catch (err) {
+      setFetchPeerResult(`Error: ${(err as Error).message}`);
+    } finally {
+      setFetchPeerLoading(false);
+    }
+  }, [fetchPeerDagId, fetchPeerSelectedId]);
 
   const addressingRows = [1,2,3,4,5,6].map(d => ({ depth: d, count: Math.pow(6, d) }));
 
@@ -897,7 +933,69 @@ function DagSoccerballPanel({ cai }: { cai: CaithedralApi | null }) {
       }}>
         <strong style={{ color: P.subtext }}>Context Lever™ mechanics:</strong> A ~135-byte handle encodes root_id + depth + node_count + pearls_hash + epoch. Feed the handle into dag_soccerball_handle (decode) at session-open to instantly re-weave the full DAG from the substrate — no re-reading context. Target: 72% context → {'<'}30%.
         <br />
-        <strong style={{ color: P.muted }}>Blocked (POCKET-6):</strong> DNS-as-resolver deferred — needs Cloudflare API token (Zone:Edit lianabanyan.com).
+        <strong style={{ color: P.success }}>POCKET-6 LIVE:</strong> soccerball-over-DNS emitting via Google Cloud DNS (ns-cloud-a1..a4.googledomains.com · Zone: soccerball-s · pearl_82fc6d2e03a9c98c).
+      </div>
+
+      {/* MESH-6 Piece 6: Resolve from peer — independent of local dagSoccerball bridge */}
+      <div style={{
+        padding: '10px 14px',
+        background: 'rgba(34,197,94,0.05)',
+        border: `1px solid rgba(34,197,94,0.2)`,
+        borderRadius: 8,
+        display: 'flex', flexDirection: 'column', gap: 8,
+      }}>
+        <div style={{ fontSize: 11, color: P.success, fontWeight: 600 }}>
+          MESH-6 · Resolve from Peer
+        </div>
+        <div style={{ fontSize: 10, color: P.muted }}>
+          Fetch a DAG node from a peer by dag_id. Hash-verified on receipt (SID = sha256(pearls,bindings,faces)[:32]).
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <input
+            value={fetchPeerDagId}
+            onChange={e => setFetchPeerDagId(e.target.value)}
+            placeholder="remote dag_id (32 chars)"
+            style={{ background: P.surface, color: P.text, border: `1px solid ${P.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 11, fontFamily: 'monospace', outline: 'none' }}
+          />
+          <select
+            value={fetchPeerSelectedId}
+            onChange={e => setFetchPeerSelectedId(e.target.value)}
+            style={{ background: P.surface, color: P.text, border: `1px solid ${P.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 11 }}
+          >
+            <option value="">— select peer —</option>
+            {meshPeers.map(p => (
+              <option key={p.peerId} value={p.peerId}>
+                {p.displayName ?? p.peerId.slice(0, 12)} ({p.peerId.slice(0, 8)}…)
+              </option>
+            ))}
+          </select>
+        </div>
+        {meshPeers.length === 0 && (
+          <div style={{ fontSize: 10, color: P.muted, fontStyle: 'italic' }}>
+            No peers discovered yet — open Federation tab to connect peers first.
+          </div>
+        )}
+        <button
+          onClick={() => void runFetchPeer()}
+          disabled={fetchPeerLoading}
+          style={{
+            alignSelf: 'flex-start', padding: '6px 16px',
+            background: fetchPeerLoading ? '#333' : 'rgba(34,197,94,0.8)',
+            color: '#fff', border: 'none', borderRadius: 6,
+            cursor: fetchPeerLoading ? 'not-allowed' : 'pointer', fontSize: 11, fontWeight: 600,
+          }}
+        >
+          {fetchPeerLoading ? '…fetching' : 'Fetch + Verify Hash'}
+        </button>
+        {fetchPeerResult && (
+          <div style={{
+            padding: 10, background: P.surface, border: `1px solid ${P.border}`,
+            borderRadius: 6, fontSize: 10, color: fetchPeerResult.startsWith('Error') ? P.danger : '#ccc',
+            whiteSpace: 'pre-wrap', fontFamily: 'monospace', maxHeight: 200, overflow: 'auto',
+          }}>
+            {fetchPeerResult}
+          </div>
+        )}
       </div>
     </div>
   );

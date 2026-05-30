@@ -44,7 +44,10 @@ export type FedMsgType =
   | 'relay_route'    // Relay envelope: from → to → payload
   | 'relay_broadcast'// Relay envelope: from → all connected peers
   | 'ping'
-  | 'pong';
+  | 'pong'
+  | 'sid_fetch_request'   // Requester → holder: "do you have dag_id X?"
+  | 'sid_fetch_response'  // Holder → requester: full DagNode or null
+  | 'pointer_advance';    // Emitter → all peers: "root dag_id pointer moved from old→new"
 
 export interface FedMsg {
   type: FedMsgType;
@@ -87,6 +90,35 @@ export interface RelayRoutePayload {
 
 export interface RelayBroadcastPayload {
   innerMsg: FedMsg;
+}
+
+// ─── MESH-6: SID-targeted peer fetch + pointer-advance payloads ────────────
+
+export interface SidFetchRequestPayload {
+  dag_id: string;                // 32-char target dag_id
+  requester_peer_id: string;
+}
+
+export interface SidFetchResponsePayload {
+  dag_id: string;                // echo of the requested dag_id
+  found: boolean;
+  node?: {                       // only present when found === true
+    id: string;
+    pearls: string[];
+    bindings: Record<string, string>;
+    faces: Record<string, string>;
+    depth: number;
+    ts: number;
+  };
+  holder_peer_id: string;
+}
+
+export interface PointerAdvancePayload {
+  old_dag_id: string | null;     // null on first emit
+  new_dag_id: string;
+  pointer_label: string;         // human tag e.g. "session-root"
+  emitter_peer_id: string;
+  advanced_at: string;           // ISO-8601 UTC
 }
 
 // ─── 4-Frame telemetry ─────────────────────────────────────────────────────

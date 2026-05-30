@@ -2,7 +2,15 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src"
+    "rootDir": "./src",
+    "paths": {
+      "caithedral-core/tools/soccerball":        ["./caithedral-core/dist/main/tools/soccerball_tools"],
+      "caithedral-core/tools/eblit":             ["./caithedral-core/dist/main/tools/eblit_tools"],
+      "caithedral-core/tools/substrace":         ["./caithedral-core/dist/main/tools/substrace_tools"],
+      "caithedral-core/tools/quilt":             ["./caithedral-core/dist/main/tools/quilt_tools"],
+      "caithedral-core/tools/substrate_address": ["./caithedral-core/dist/main/tools/substrate_address"],
+      "caithedral-core/tools/dag_soccerball":    ["./caithedral-core/dist/main/tools/dag_soccerball_tools"]
+    }
   },
   "include": ["src/main/**/*", "src/shared/**/*"]
 }

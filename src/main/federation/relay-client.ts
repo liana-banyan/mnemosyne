@@ -41,6 +41,13 @@ class RelayClient extends EventEmitter {
   private discovery: PeerDiscovery;
   private windows: Set<BrowserWindow> = new Set();
 
+  // MESH-6: inbound message hook for sid_fetch_request/response/pointer_advance
+  private inboundHook: ((msg: FedMsg) => void) | null = null;
+
+  setInboundHook(fn: (msg: FedMsg) => void): void {
+    this.inboundHook = fn;
+  }
+
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectAttempts = 0;
@@ -197,6 +204,9 @@ class RelayClient extends EventEmitter {
         console.log('[RelayClient] Peer reached SYNCED:', msg.peerId);
       }
     }
+
+    // MESH-6: forward unhandled messages (sid_fetch_*, pointer_advance) to main-process hook
+    this.inboundHook?.(msg);
   }
 
   private _send(msg: FedMsg): void {

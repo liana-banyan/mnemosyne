@@ -72,7 +72,27 @@ registerCustomScheme();
 import { registerKitchenTableIpc } from './kitchen_table/kitchen_table_store';
 
 // BP060 Application 002 Step 1 — Caithedral Tools IPC
-import { registerCaithedralToolsIPC } from './caithedral_tools_ipc';
+import { registerCaithedralToolsIPC, setMeshPointerAdvanceHook, dag_soccerball_emit_reexport } from './caithedral_tools_ipc';
+
+// MESH-6 — shared protocol payload types
+import {
+  FedMsg,
+  SidFetchRequestPayload,
+  SidFetchResponsePayload,
+  PointerAdvancePayload,
+} from '../shared/federation-protocol';
+
+// MESH-6 — dag soccerball lookup (canonical exports-map path; tsconfig paths resolves types)
+import {
+  dag_soccerball_lookup as _dagLookup,
+  type DagNode,
+} from 'caithedral-core/tools/dag_soccerball';
+
+// BP060 Application 002 Steps 3+4 — Bridge IPC (UI-7 live Yoke wire)
+import { registerBridgeIPC } from './bridge_ipc';
+
+// BP060 Application 002 Steps 3+4 — AI Dispatch IPC (UI-8 backend)
+import { registerAiDispatchIPC } from './ai_dispatch_ipc';
 
 // SAGA-γ v0.1.10 — SubstratedFolderWatcher™
 import { SubstratedFolderWatcher, registerWatcherIpc } from './services/SubstratedFolderWatcher';
@@ -228,9 +248,222 @@ let authManager: AuthManager | null = null;
 let peerDiscovery: PeerDiscovery | null = null;
 let relayClient: RelayClient | null = null;
 let connectivityTimer: ReturnType<typeof setInterval> | null = null;
+
+// ─── MESH-6: in-flight relay fetch listeners ──────────────────────────────────
+const meshFetchListeners = new Map<string, (payload: SidFetchResponsePayload) => void>();
 let watchdogOverlayInterval: NodeJS.Timeout | null = null;
 let rendererResponsive = true;
 let displayMetricsListenerAttached = false;
+
+// ─── MESH-6 helpers ───────────────────────────────────────────────────────────
+
+function _recomputeDagId(
+  node: { pearls: string[]; bindings: Record<string, string>; faces: Record<string, string> },
+): string {
+  const { createHash } = require('crypto') as typeof import('crypto');
+  function sortedJson(obj: Record<string, string>): string {
+    const sorted: Record<string, string> = {};
+    for (const k of Object.keys(obj).sort()) sorted[k] = obj[k];
+    return JSON.stringify(sorted);
+  }
+  const payload = JSON.stringify([
+    [...node.pearls].sort(),
+    sortedJson(node.bindings),
+    sortedJson(node.faces),
+  ]);
+  return createHash('sha256').update(payload).digest('hex').slice(0, 32);
+}
+
+function _broadcastMeshStateChanged(): void {
+  // Push mesh-state-changed to all renderer windows
+  const allWindows = (require('electron') as typeof import('electron')).BrowserWindow.getAllWindows();
+  for (const win of allWindows) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('mesh-state-changed', {
+        peers: peerDiscovery?.getAllPeers() ?? [],
+        relayConnected: relayClient?.isConnected() ?? false,
+      });
+    }
+  }
+}
+
+async function _fetchSidViaTCP(
+  peer: import('../shared/federation-protocol').MnemosynePeer,
+  dag_id: string,
+  reqMsg: FedMsg,
+): Promise<{ ok: boolean; node?: DagNode; hash_verified: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    const { createConnection } = require('net') as typeof import('net');
+    const timeout = 5000;
+    let buffer = '';
+    const socket = createConnection({ host: peer.address, port: peer.port, timeout }, () => {
+      socket.write(JSON.stringify(reqMsg) + '\n');
+    });
+    socket.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        try {
+          const resp = JSON.parse(line) as FedMsg;
+          if (resp.type === 'sid_fetch_response') {
+            const payload = resp.payload as SidFetchResponsePayload;
+            if (!payload.found || !payload.node) {
+              socket.destroy();
+              resolve({ ok: true, hash_verified: false, error: 'not found on peer' });
+              return;
+            }
+            const recomputed = _recomputeDagId(payload.node);
+            const hash_verified = recomputed === dag_id;
+            if (!hash_verified) {
+              console.error(`[MESH-6] SID hash mismatch: expected=${dag_id} got=${recomputed}`);
+              socket.destroy();
+              resolve({ ok: false, hash_verified: false, error: 'SID hash mismatch — rejected' });
+              return;
+            }
+            socket.destroy();
+            resolve({ ok: true, node: payload.node as DagNode, hash_verified: true });
+          }
+        } catch { /* malformed — continue */ }
+      }
+    });
+    socket.on('error', (err: Error) => resolve({ ok: false, hash_verified: false, error: err.message }));
+    socket.on('close', () => resolve({ ok: false, hash_verified: false, error: 'connection closed' }));
+    setTimeout(() => { socket.destroy(); resolve({ ok: false, hash_verified: false, error: 'timeout' }); }, timeout);
+  });
+}
+
+async function _fetchSidViaRelay(
+  toPeerId: string,
+  dag_id: string,
+  reqMsg: FedMsg,
+): Promise<{ ok: boolean; node?: DagNode; hash_verified: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    if (!relayClient) {
+      resolve({ ok: false, hash_verified: false, error: 'relay not connected' });
+      return;
+    }
+    const timer = setTimeout(() => {
+      meshFetchListeners.delete(dag_id);
+      resolve({ ok: false, hash_verified: false, error: 'relay fetch timeout' });
+    }, 8000);
+
+    meshFetchListeners.set(dag_id, (payload: SidFetchResponsePayload) => {
+      clearTimeout(timer);
+      meshFetchListeners.delete(dag_id);
+      if (!payload.found || !payload.node) {
+        resolve({ ok: true, hash_verified: false, error: 'not found on peer' });
+        return;
+      }
+      const recomputed = _recomputeDagId(payload.node);
+      const hash_verified = recomputed === dag_id;
+      if (!hash_verified) {
+        console.error(`[MESH-6] relay SID hash mismatch: expected=${dag_id} got=${recomputed}`);
+        resolve({ ok: false, hash_verified: false, error: 'SID hash mismatch — rejected' });
+        return;
+      }
+      resolve({ ok: true, node: payload.node as DagNode, hash_verified: true });
+    });
+
+    relayClient.sendToPeer(toPeerId, reqMsg);
+  });
+}
+
+function _handleInboundMeshMsg(msg: FedMsg): void {
+  if (msg.type === 'sid_fetch_request') {
+    const payload = msg.payload as SidFetchRequestPayload;
+    const node = _dagLookup(payload.dag_id);
+    const response: FedMsg = {
+      type: 'sid_fetch_response',
+      peerId: getStablePeerId(),
+      payload: {
+        dag_id: payload.dag_id,
+        found: !!node,
+        node: node ?? undefined,
+        holder_peer_id: getStablePeerId(),
+      } satisfies SidFetchResponsePayload,
+      ts: new Date().toISOString(),
+    };
+    if (relayClient?.isConnected()) {
+      relayClient.sendToPeer(msg.peerId, response);
+    }
+  }
+
+  if (msg.type === 'sid_fetch_response') {
+    const payload = msg.payload as SidFetchResponsePayload;
+    const listener = meshFetchListeners.get(payload.dag_id);
+    if (listener) listener(payload);
+  }
+
+  if (msg.type === 'pointer_advance') {
+    const payload = msg.payload as PointerAdvancePayload;
+    if (payload.new_dag_id) {
+      console.log(`[MESH-6] pointer_advance received: ${payload.old_dag_id} → ${payload.new_dag_id} from ${payload.emitter_peer_id}`);
+      _autoFetchOnPointerAdvance(payload).catch((e) =>
+        console.warn('[MESH-6] auto-fetch on pointer_advance failed:', e),
+      );
+    }
+  }
+}
+
+async function _autoFetchOnPointerAdvance(payload: PointerAdvancePayload): Promise<void> {
+  const peer = peerDiscovery?.getAllPeers().find((p) => p.peerId === payload.emitter_peer_id);
+  if (!peer) return;
+  const reqMsg: FedMsg = {
+    type: 'sid_fetch_request',
+    peerId: getStablePeerId(),
+    payload: {
+      dag_id: payload.new_dag_id,
+      requester_peer_id: getStablePeerId(),
+    } satisfies SidFetchRequestPayload,
+    ts: new Date().toISOString(),
+  };
+  const result = peer.transport === 'lan'
+    ? await _fetchSidViaTCP(peer, payload.new_dag_id, reqMsg)
+    : await _fetchSidViaRelay(payload.emitter_peer_id, payload.new_dag_id, reqMsg);
+
+  if (result.ok && result.hash_verified && result.node) {
+    const n = result.node;
+    dag_soccerball_emit_reexport(n.pearls, n.bindings, n.faces);
+    console.log(`[MESH-6] pointer_advance auto-replicated dag_id=${payload.new_dag_id} hash_verified=true`);
+    _broadcastMeshStateChanged();
+  } else {
+    console.warn(`[MESH-6] pointer_advance auto-fetch failed: ok=${result.ok} hash_verified=${result.hash_verified} error=${result.error}`);
+  }
+}
+
+function _emitPointerAdvanceToPeers(newDagId: string): void {
+  if (!peerDiscovery) return;
+  const peers = peerDiscovery.getAllPeers();
+  if (peers.length === 0) return;
+
+  const msg: FedMsg = {
+    type: 'pointer_advance',
+    peerId: getStablePeerId(),
+    payload: {
+      old_dag_id: null,
+      new_dag_id: newDagId,
+      pointer_label: 'local-dag-root',
+      emitter_peer_id: getStablePeerId(),
+      advanced_at: new Date().toISOString(),
+    } satisfies PointerAdvancePayload,
+    ts: new Date().toISOString(),
+  };
+
+  if (relayClient?.isConnected()) {
+    for (const peer of peers.filter((p) => p.transport === 'wan-relay')) {
+      relayClient.sendToPeer(peer.peerId, msg);
+    }
+  }
+  for (const peer of peers.filter((p) => p.transport === 'lan')) {
+    const { createConnection } = require('net') as typeof import('net');
+    const socket = createConnection({ host: peer.address, port: peer.port, timeout: 2000 }, () => {
+      socket.write(JSON.stringify(msg) + '\n');
+      socket.end();
+    });
+    socket.on('error', () => {});
+  }
+}
 
 // ─── Monitor-safe bounds (multi-display; prevents off-screen window trap) ─────
 
@@ -1388,6 +1621,12 @@ function registerIPCHandlers(): void {
   // ── Caithedral Tools IPC (BP060 Application 002 Step 1) ─────────────────
   registerCaithedralToolsIPC();
 
+  // ── Bridge IPC (BP060 Application 002 Steps 3+4 · UI-7 live Yoke wire) ──
+  registerBridgeIPC();
+
+  // ── AI Dispatch IPC (BP060 Application 002 Steps 3+4 · UI-8 backend) ────
+  registerAiDispatchIPC();
+
   // ── Kitchen Table™ + Atlas™ + P2P (BP052 v0.1.8) ────────────────────────
   registerKitchenTableIpc(ipcMain);
 
@@ -1455,6 +1694,97 @@ function registerIPCHandlers(): void {
     relayConnected: relayClient?.isConnected() ?? false,
     ownPeerId: peerDiscovery ? (() => { const { getStablePeerId: gsp } = require('./federation/peer-discovery'); return gsp(); })() : '',
   }));
+
+  // ── MESH-6: SID-targeted peer fetch ────────────────────────────────────────
+  ipcMain.handle(
+    'federation:fetch-sid',
+    async (
+      _ev,
+      dag_id: string,
+      peerId: string,
+    ): Promise<{ ok: boolean; node?: DagNode; hash_verified: boolean; error?: string }> => {
+      const peer = peerDiscovery?.getAllPeers().find((p) => p.peerId === peerId);
+      if (!peer) {
+        return { ok: false, hash_verified: false, error: `peer ${peerId} not in mesh` };
+      }
+      const reqMsg: FedMsg = {
+        type: 'sid_fetch_request',
+        peerId: getStablePeerId(),
+        payload: {
+          dag_id,
+          requester_peer_id: getStablePeerId(),
+        } satisfies SidFetchRequestPayload,
+        ts: new Date().toISOString(),
+      };
+      if (peer.transport === 'lan') {
+        return await _fetchSidViaTCP(peer, dag_id, reqMsg);
+      } else {
+        return await _fetchSidViaRelay(peerId, dag_id, reqMsg);
+      }
+    },
+  );
+
+  // ── MESH-6: Federation invite/accept/leave ──────────────────────────────────
+  ipcMain.handle('federation:generate-invite', (): { token: string; expiresAt: string } => {
+    const { randomBytes } = require('crypto') as typeof import('crypto');
+    const nonce = randomBytes(16).toString('hex');
+    const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
+    const raw = `${getStablePeerId()}:${nonce}:${expiresAt}`;
+    const token = `mnemo-invite-${Buffer.from(raw).toString('base64url')}`;
+    return { token, expiresAt };
+  });
+
+  ipcMain.handle(
+    'federation:accept-invite',
+    async (_ev, token: string): Promise<{ success: boolean; peerName?: string; error?: string }> => {
+      try {
+        if (!token || !token.startsWith('mnemo-invite-')) {
+          return { success: false, error: 'invalid token format' };
+        }
+        const raw = Buffer.from(token.replace('mnemo-invite-', ''), 'base64url').toString();
+        const [peerId, , expiresAtStr] = raw.split(':');
+        if (!peerId || !expiresAtStr) {
+          return { success: false, error: 'malformed token' };
+        }
+        if (Date.now() > new Date(expiresAtStr).getTime()) {
+          return { success: false, error: 'token expired' };
+        }
+        if (peerDiscovery) {
+          peerDiscovery.registerWANPeer({
+            peerId,
+            address: 'relay',
+            port: 0,
+            transport: 'wan-relay',
+            phase: 'identified',
+            lastSeen: new Date().toISOString(),
+          });
+        }
+        if (relayClient?.isConnected()) {
+          relayClient.sendToPeer(peerId, {
+            type: 'identify',
+            peerId: getStablePeerId(),
+            payload: {
+              peerId: getStablePeerId(),
+              version: app.getVersion(),
+              pubkeyFingerprint: getStablePeerId(),
+            },
+            ts: new Date().toISOString(),
+          });
+        }
+        return { success: true };
+      } catch (e) {
+        return { success: false, error: String(e) };
+      }
+    },
+  );
+
+  ipcMain.handle('federation:leave-peer', (_ev, peerId: string): { ok: boolean } => {
+    if (peerDiscovery) {
+      peerDiscovery.removeWANPeer(peerId);
+      peerDiscovery.removeLANPeer(peerId);
+    }
+    return { ok: true };
+  });
 
   // ── Chronos Research Consent (KniPr038) ──────────────────────────────────
 
@@ -1562,6 +1892,19 @@ app.whenReady().then(async () => {
   relayClient = new RelayClient(peerId, peerDiscovery);
   peerDiscovery.startLAN().catch((e) => console.warn('[PeerDiscovery] LAN start error:', e));
   relayClient.start();
+
+  // MESH-6: Wire relay inbound hook for sid_fetch_*, pointer_advance
+  relayClient.setInboundHook(_handleInboundMeshMsg);
+
+  // MESH-6: Wire pointer-advance hook from caithedral tools IPC
+  setMeshPointerAdvanceHook(_emitPointerAdvanceToPeers);
+
+  // MESH-6: Inject mDNS peer source into FederationClient
+  federationClient?.setPeerDiscoverySource(() =>
+    (peerDiscovery?.getAllPeers() ?? [])
+      .filter((p) => p.transport === 'lan')
+      .map((p) => ({ address: p.address, port: p.port })),
+  );
 
   const firstRun = isFirstRun();
   if (firstRun) {

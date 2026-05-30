@@ -118,6 +118,13 @@ class PeerDiscovery extends EventEmitter {
     }
   }
 
+  // MESH-6 Blocker B3: remove a LAN-discovered peer (mirrors removeWANPeer)
+  removeLANPeer(peerId: string): void {
+    if (this.lanPeers.delete(peerId)) {
+      this.emit('peer-lost', peerId);
+    }
+  }
+
   getAllPeers(): MnemosynePeer[] {
     return [
       ...Array.from(this.lanPeers.values()),

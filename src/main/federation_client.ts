@@ -79,6 +79,13 @@ export class FederationClient {
   private peerScanTimer: ReturnType<typeof setInterval> | null = null;
   private announceServer: Server | null = null;
 
+  // MESH-6 Piece 5: mDNS peer source injection (replaces hardcoded subnet scan)
+  private peerDiscoverySource: (() => Array<{ address: string; port: number }>) | null = null;
+
+  setPeerDiscoverySource(fn: () => Array<{ address: string; port: number }>): void {
+    this.peerDiscoverySource = fn;
+  }
+
   constructor(index: SubstrateLocalIndex) {
     this.index = index;
     if (!existsSync(FEDERATION_DATA_DIR)) {
@@ -383,9 +390,10 @@ export class FederationClient {
   }
 
   private async _scanLocalPeers(): Promise<void> {
-    // Attempt to connect to common local network addresses on PEER_ANNOUNCE_PORT
-    // In a real deployment, mDNS/Bonjour would be used; this is a lightweight fallback
-    const localCandidates = this._guessLocalPeerAddresses();
+    // MESH-6 Piece 5: prefer mDNS-discovered peers from PeerDiscovery when available
+    const localCandidates: string[] = this.peerDiscoverySource
+      ? this.peerDiscoverySource().map((p) => p.address)
+      : this._guessLocalPeerAddresses(); // fallback: hardcoded subnet probe
     const results = await Promise.allSettled(
       localCandidates.map((addr) => this._probePeer(addr)),
     );
