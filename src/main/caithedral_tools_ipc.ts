@@ -15,18 +15,18 @@ import {
   soccerball_decode,
   soccerball_lookup,
   speckle_nibble,
-} from 'caithedral-core/dist/main/tools/soccerball_tools';
+} from 'caithedral-core/tools/soccerball';
 
-import { eblit_emit } from 'caithedral-core/dist/main/tools/eblit_tools';
+import { eblit_emit } from 'caithedral-core/tools/eblit';
 
-import { substrace_weave } from 'caithedral-core/dist/main/tools/substrace_tools';
+import { substrace_weave } from 'caithedral-core/tools/substrace';
 
-import { quilt_compose } from 'caithedral-core/dist/main/tools/quilt_tools';
+import { quilt_compose } from 'caithedral-core/tools/quilt';
 
 import {
   substrate_address_validate,
   gen_valid_address,
-} from 'caithedral-core/dist/main/tools/substrate_address';
+} from 'caithedral-core/tools/substrate_address';
 
 // ─── Types (re-exported from caithedral-core for IPC shape reference) ─────────
 

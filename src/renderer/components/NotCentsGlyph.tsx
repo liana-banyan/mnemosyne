@@ -4,7 +4,7 @@
 // via the CAINotCents single-glyph font at PUA codepoint U+E000.
 //
 // Font file: src/renderer/public/fonts/cai-notcents.{woff2,ttf}
-// Generated: scripts/generate_notcents_font.py (fonttools; AGPL Free Forever)
+// Generated: scripts/generate_notcents_font.py (fonttools; SSPL · Pledge #2260)
 //
 // Benefits over inline-PNG (Bishop stopgap in fd17e52):
 //   - CSS-styleable (color, size, weight, opacity, transform)

@@ -9,6 +9,13 @@
     "forceConsistentCasingInFileNames": true,
     "moduleResolution": "node",
     "resolveJsonModule": true,
+    "paths": {
+      "caithedral-core/tools/soccerball": ["./node_modules/caithedral-core/dist/main/tools/soccerball_tools"],
+      "caithedral-core/tools/eblit": ["./node_modules/caithedral-core/dist/main/tools/eblit_tools"],
+      "caithedral-core/tools/substrace": ["./node_modules/caithedral-core/dist/main/tools/substrace_tools"],
+      "caithedral-core/tools/quilt": ["./node_modules/caithedral-core/dist/main/tools/quilt_tools"],
+      "caithedral-core/tools/substrate_address": ["./node_modules/caithedral-core/dist/main/tools/substrate_address"]
+    },
     "outDir": "./dist/main",
     "rootDir": "./src/main",
     "sourceMap": true
