@@ -35,6 +35,9 @@ import { SubstrateTab } from './SubstrateTab';
 import { UnifiedSubstrateConsole } from './UnifiedSubstrateConsole';
 import { MultiAISelector } from './MultiAISelector';
 import { CaithedralCoreTab } from './CaithedralCoreTab';
+// BP063 SEG-1 — Battery Dispatch tab
+import { BatteryDispatchTab } from './BatteryDispatchTab';
+import { BroadcastScheduleTab } from './BroadcastScheduleTab';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -48,7 +51,7 @@ const LS_YVAINE_SEEN = 'mnemo_yvaine_seen';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core' | 'broadcast-schedule' | 'battery-dispatch';
 
 interface TabDef {
   id: TabId;
@@ -72,6 +75,8 @@ const TABS: TabDef[] = [
   { id: 'console',      label: 'Console',         icon: '🖥', tooltip: 'Tab 11 · Unified Substrate Console — Bridge view + Dashboard view · Ctrl+Tab to switch (UI-7)' },
   { id: 'ai-selector',  label: 'AI',              icon: '🤖', tooltip: 'Tab 12 · Multi-AI Selector — Quick-pick · Court presets · Default Ollama doctrine (UI-8)' },
   { id: 'caithedral-core', label: 'Caithedral Core', icon: '🏛', tooltip: 'Tab 13 · Caithedral™ Core — SSPL open-source substrate · Designed to Be Copied · Banyan Metric™ · MoneyPenny™ · Substrated Folders · CPU-only inference' },
+  { id: 'broadcast-schedule', label: 'Broadcast Schedule', icon: '📡', tooltip: 'Tab 14 · Broadcast Schedule — Opening Gambit TV-Guide · 7-day social launch sequence · As You Wish confirmation gate' },
+  { id: 'battery-dispatch',   label: 'Battery Dispatch',   icon: '🔋', tooltip: 'Tab 15 · Battery Dispatch — Coordinated social media barrage · ARM → FIRE · Campaign scheduler · As You Wish confirmation gate' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -126,7 +131,7 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core'];
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core', 'broadcast-schedule', 'battery-dispatch'];
     if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
@@ -690,6 +695,18 @@ export function MnemosyneTabView({
             style={{ height: '100%' }}
           >
             <CaithedralCoreTab />
+          </div>
+        )}
+
+        {/* BP063 SEG-2 — Broadcast Schedule Tab 14 */}
+        {activeTab === 'broadcast-schedule' && (
+          <div
+            id="panel-broadcast-schedule"
+            role="tabpanel"
+            aria-labelledby="tab-broadcast-schedule"
+            style={{ height: '100%' }}
+          >
+            <BroadcastScheduleTab />
           </div>
         )}
       </div>
