@@ -14,23 +14,57 @@ import type { BrowserWindow } from 'electron';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface DeepLinkPayload {
+export interface DeepLinkAcceptInvite {
   type: 'accept-invite';
   slug: string;
   token: string;
 }
+
+export interface DeepLinkAuthCallback {
+  type: 'auth-callback';
+  access_token: string;
+  refresh_token: string;
+}
+
+export type DeepLinkPayload = DeepLinkAcceptInvite | DeepLinkAuthCallback;
 
 export type DeepLinkHandler = (payload: DeepLinkPayload) => void;
 
 // ─── Protocol name ────────────────────────────────────────────────────────────
 
 const PROTOCOL = 'mnemosyne';
+// BP065: mnemo:// protocol for LB auth callback
+const PROTOCOL_MNEMO = 'mnemo';
 
 // ─── URL parser ───────────────────────────────────────────────────────────────
 
 export function parseDeepLink(url: string): DeepLinkPayload | null {
   try {
     const parsed = new URL(url);
+
+    // BP065: mnemo://auth/callback#access_token=...&refresh_token=...
+    // Supabase appends tokens as hash fragments; Windows argv may deliver them as query params
+    if (parsed.protocol === `${PROTOCOL_MNEMO}:`) {
+      const host = parsed.hostname;
+      if (host === 'auth') {
+        // Try hash first (Supabase default), then query params (fallback)
+        const hashParams = new URLSearchParams(parsed.hash.replace(/^#/, ''));
+        const accessToken =
+          parsed.searchParams.get('access_token') ||
+          hashParams.get('access_token');
+        const refreshToken =
+          parsed.searchParams.get('refresh_token') ||
+          hashParams.get('refresh_token');
+        if (accessToken && refreshToken) {
+          return { type: 'auth-callback', access_token: accessToken, refresh_token: refreshToken };
+        }
+        // Partial — log and ignore rather than returning a broken payload
+        console.warn('[deep-link] mnemo://auth/callback received but tokens missing in URL');
+        return null;
+      }
+      return null;
+    }
+
     if (parsed.protocol !== `${PROTOCOL}:`) return null;
 
     const host = parsed.hostname; // 'accept'
@@ -57,13 +91,23 @@ export function registerDeepLinkProtocol(
   mainWindow: (() => BrowserWindow | null),
   handler?: DeepLinkHandler,
 ): void {
-  // Register as default protocol client (idempotent)
+  // Register mnemosyne:// as default protocol client (idempotent)
   if (!app.isDefaultProtocolClient(PROTOCOL)) {
     const registered = app.setAsDefaultProtocolClient(PROTOCOL);
     if (!registered) {
       console.warn('[deep-link] Failed to register mnemosyne:// protocol client');
     } else {
       console.log('[deep-link] Registered mnemosyne:// protocol');
+    }
+  }
+
+  // BP065: also register mnemo:// for LB auth callback
+  if (!app.isDefaultProtocolClient(PROTOCOL_MNEMO)) {
+    const registeredMnemo = app.setAsDefaultProtocolClient(PROTOCOL_MNEMO);
+    if (!registeredMnemo) {
+      console.warn('[deep-link] Failed to register mnemo:// protocol client');
+    } else {
+      console.log('[deep-link] Registered mnemo:// protocol (LB auth)');
     }
   }
 
@@ -76,7 +120,9 @@ export function registerDeepLinkProtocol(
   // Windows: second-instance event passes argv; URL is in args
   app.on('second-instance', (_event, argv) => {
     // On Windows, the deep-link URL is the last argv item
-    const url = argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
+    const url = argv.find((arg) =>
+      arg.startsWith(`${PROTOCOL}://`) || arg.startsWith(`${PROTOCOL_MNEMO}://`)
+    );
     if (url) {
       handleDeepLink(url, mainWindow, handler);
     }
@@ -124,7 +170,9 @@ export function handleStartupDeepLink(
   mainWindow: () => BrowserWindow | null,
   handler?: DeepLinkHandler,
 ): void {
-  const url = argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
+  const url = argv.find((arg) =>
+    arg.startsWith(`${PROTOCOL}://`) || arg.startsWith(`${PROTOCOL_MNEMO}://`)
+  );
   if (url) {
     handleDeepLink(url, mainWindow, handler);
   }

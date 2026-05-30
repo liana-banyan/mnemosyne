@@ -712,6 +712,76 @@ contextBridge.exposeInMainWorld('amplify', {
   decodePearl: (pearlId: string): Promise<{ ok: boolean; pearl?: Record<string, string>; content?: string; error?: string }> =>
     ipcRenderer.invoke('decode-pearl', pearlId),
 
+  // ── BP065 · Tier-2 — LB Account + Frontier IPC ──────────────────────────
+  /**
+   * Start the magic-link auth flow. Sends OTP email.
+   * Returns { ok, error? }.
+   */
+  lbStartAuth: (email: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('lb:start-auth', { email }),
+
+  /**
+   * Complete auth after receiving mnemo://auth/callback deep-link.
+   * Main process handles the deep-link automatically; this is a manual fallback for dev.
+   */
+  lbLinkDevice: (accessToken: string, refreshToken: string): Promise<{
+    ok: boolean;
+    session?: { user_id: string; email: string; peer_id: string; linked_at: string };
+    error?: string;
+  }> =>
+    ipcRenderer.invoke('lb:link-device', { accessToken, refreshToken }),
+
+  /** Get the current LB session (tokens never returned — identity info only). */
+  lbGetSession: (): Promise<{
+    user_id: string;
+    email: string;
+    peer_id: string;
+    linked_at: string;
+  } | null> =>
+    ipcRenderer.invoke('lb:get-session'),
+
+  /** Revoke/unlink this device from the LB account. */
+  lbRevokeDevice: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('lb:revoke-device'),
+
+  /** Subscribe to LB auth-complete events from the deep-link handler. */
+  onLBAuthComplete: (cb: (result: {
+    ok: boolean;
+    user_id?: string;
+    email?: string;
+    peer_id?: string;
+    linked_at?: string;
+    error?: string;
+  }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, result: unknown) =>
+      cb(result as { ok: boolean; user_id?: string; email?: string; peer_id?: string; linked_at?: string; error?: string });
+    ipcRenderer.on('lb:auth-complete', handler);
+    return () => ipcRenderer.removeListener('lb:auth-complete', handler);
+  },
+
+  /** Register this device on the Frontier mesh (requires 2a linked). */
+  lbRegisterFrontierNode: (): Promise<{
+    ok: boolean;
+    frontierNodeId?: string;
+    error?: string;
+  }> =>
+    ipcRenderer.invoke('lb:register-frontier-node'),
+
+  /** Withdraw this device from the Frontier mesh. */
+  lbWithdrawFrontierNode: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('lb:withdraw-frontier-node'),
+
+  /** Get current Frontier status (linked, registered, active nodes). */
+  lbGetFrontierStatus: (): Promise<{
+    linked: boolean;
+    registered: boolean;
+    peer_id?: string;
+    my_node?: unknown;
+    nodes: unknown[];
+    heartbeat_active: boolean;
+  }> =>
+    ipcRenderer.invoke('lb:get-frontier-status'),
+
   // ── Bridge (BP060 Application 002 Steps 3+4 · UI-7 live Yoke wire) ──────
   bridge: {
     checkMessages: (count?: number) =>
@@ -911,6 +981,15 @@ declare global {
       getIdeas?: () => Promise<{ ok: boolean; ideas: Array<{ id: string; title: string; content: string; timestamp: string }> }>;
       // Pearl-decode IPC (Tier G · v0.1.16 · BP057 W5c)
       decodePearl?: (pearlId: string) => Promise<{ ok: boolean; pearl?: Record<string, string>; content?: string; error?: string }>;
+      // BP065 · Tier-2 — LB Account + Frontier
+      lbStartAuth?: (email: string) => Promise<{ ok: boolean; error?: string }>;
+      lbLinkDevice?: (accessToken: string, refreshToken: string) => Promise<{ ok: boolean; session?: { user_id: string; email: string; peer_id: string; linked_at: string }; error?: string }>;
+      lbGetSession?: () => Promise<{ user_id: string; email: string; peer_id: string; linked_at: string } | null>;
+      lbRevokeDevice?: () => Promise<{ ok: boolean }>;
+      onLBAuthComplete?: (cb: (result: { ok: boolean; user_id?: string; email?: string; peer_id?: string; linked_at?: string; error?: string }) => void) => () => void;
+      lbRegisterFrontierNode?: () => Promise<{ ok: boolean; frontierNodeId?: string; error?: string }>;
+      lbWithdrawFrontierNode?: () => Promise<{ ok: boolean; error?: string }>;
+      lbGetFrontierStatus?: () => Promise<{ linked: boolean; registered: boolean; peer_id?: string; my_node?: unknown; nodes: unknown[]; heartbeat_active: boolean }>;
       // Bridge IPC (BP060 Application 002 Steps 3+4 · UI-7)
       bridge?: {
         checkMessages: (count?: number) => Promise<{
