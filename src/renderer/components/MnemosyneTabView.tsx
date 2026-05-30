@@ -24,6 +24,7 @@ import { CaiSymbol } from './CaiSymbol';
 import { OnboardingGate } from '../hearth/substrate/MakeYourselfComfortableWizard';
 
 import { HelmCrownDashboard } from '../hearth/helm/HelmCrownDashboard';
+import { YvaineSplash } from './YvaineSplash';
 import { AtlasView } from '../kitchen_table/AtlasView';
 import { KitchenTableView } from '../kitchen_table/KitchenTableView';
 import { PearlGalleryTab } from './PearlGalleryTab';
@@ -43,6 +44,7 @@ const LS_ACTIVE_TAB = 'mnemo_active_tab';
 const LS_ONBOARD_CHOICE = 'mnemo_onboard_choice'; // 'free' | 'member' | 'developer' | 'dismissed'
 const LS_WIND_UNLOCKED = 'mnem_wind_unlocked';
 const LS_WIND_TIER = 'mnem_wind_tier';
+const LS_YVAINE_SEEN = 'mnemo_yvaine_seen';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
@@ -97,6 +99,16 @@ export function MnemosyneTabView({
   const [devEnabled, setDevEnabled] = useState(() =>
     localStorage.getItem(LS_DEVELOPER_MODE) === 'true'
   );
+
+  // Yvaine SHINE splash: shown once on very first launch
+  const [showYvaine, setShowYvaine] = useState(() =>
+    !localStorage.getItem(LS_YVAINE_SEEN)
+  );
+
+  function handleYvaineDismiss() {
+    localStorage.setItem(LS_YVAINE_SEEN, 'true');
+    setShowYvaine(false);
+  }
 
   // 3-option ask: shown on first launch until user dismisses
   const [showOnboardAsk, setShowOnboardAsk] = useState(() =>
@@ -305,6 +317,7 @@ export function MnemosyneTabView({
 
   return (
     <OnboardingGate>
+    {showYvaine && <YvaineSplash onDismiss={handleYvaineDismiss} />}
     <div style={styles.shell}>
       {/* Title bar */}
       <div style={styles.titleBar}>
