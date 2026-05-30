@@ -88,9 +88,12 @@
       "static/**/*",
       "!static/cephas/**",
       "!static/**/*.map",
-      "node_modules/**/*",
-      "!node_modules/.cache/**",
-      "!node_modules/**/{test,__tests__,tests,powered-test,example,examples}/**"
+        "node_modules/**/*",
+        "!node_modules/.cache/**",
+        "!node_modules/**/{test,__tests__,tests,powered-test,example,examples}/**",
+        "!node_modules/caithedral-core/release/**",
+        "!node_modules/caithedral-core/node_modules/**",
+        "!node_modules/caithedral-core/.git/**"
     ],
     "extraFiles": [
       {
