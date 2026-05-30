@@ -321,7 +321,7 @@ export function MnemosyneTabView({
             <div style={{ ...styles.brandSub, display: 'flex', alignItems: 'center', gap: 4 }}>
               <CaiSymbol size={12} color="#6ee7b7" aria-label="CAI" />
               <span>
-                {appVersion ? `v${appVersion} · ` : ''}CAI Amplifier · Liana Banyan
+                {appVersion ? `v${appVersion} · ` : ''}Caithedral™ · Liana Banyan
               </span>
               {/* Bug #2 v0.1.10: update status pill */}
               {updateState && updateState.status === 'downloaded' && (

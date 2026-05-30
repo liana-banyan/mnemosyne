@@ -147,7 +147,7 @@ export function ScreenWelcome({ onNext, onBack, onSkip, step, totalSteps }: Scre
           What this is:
         </div>
         <ul style={s.list}>
-          <li>A cooperative platform where creators <strong>may earn</strong> 83.3% of every transaction</li>
+          <li>A cooperative platform where Workers, Builders, and Creators <strong>may earn</strong> 83.3% of every transaction</li>
           <li>$5/year membership — same for everyone</li>
           <li>Platform margin: Cost + 20%. Books open every quarter.</li>
           <li>Federated, sovereign, no lock-in</li>

@@ -231,7 +231,7 @@ export function HearthConjunctionWindow() {
 
         {/* ── Window header ─────────────────────────────────────────────────── */}
         <div style={styles.topBar}>
-          <NotCentsGlyph size="1.4rem" alt="NotCents · Mnemosyne identity" />
+          <NotCentsGlyph size="1.4rem" alt="NotCents · Mnemosyne identity" color="white" style={{ verticalAlign: 'middle' }} />
           <span style={styles.windowTitle}>Mnemosyne</span>
           <span style={styles.heavyBooster}>HEAVY BOOSTER TEST</span>
           {/* Bridge canon: The Conductor identity */}
