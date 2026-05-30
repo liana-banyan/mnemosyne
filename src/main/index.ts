@@ -80,6 +80,18 @@ import { registerBridgeIPC } from './bridge_ipc';
 // BP060 Application 002 Steps 3+4 — AI Dispatch IPC (UI-8 backend)
 import { registerAiDispatchIPC } from './ai_dispatch_ipc';
 
+// BP065 · Tier-2 Onboarding — LB Account auth + Frontier mesh
+import {
+  startLBAuthFlow,
+  completeLBAuth,
+  getLBSession,
+  revokeDevice,
+  registerFrontierNode,
+  withdrawFrontierNode,
+  sendFrontierHeartbeat,
+  getFrontierNodes,
+} from './lb_auth';
+
 // SAGA-γ v0.1.10 — SubstratedFolderWatcher™
 import { SubstratedFolderWatcher, registerWatcherIpc } from './services/SubstratedFolderWatcher';
 
@@ -237,6 +249,10 @@ let connectivityTimer: ReturnType<typeof setInterval> | null = null;
 let watchdogOverlayInterval: NodeJS.Timeout | null = null;
 let rendererResponsive = true;
 let displayMetricsListenerAttached = false;
+
+// BP065 · Tier-2 — Frontier heartbeat timer (starts only after explicit registration)
+let frontierHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+const FRONTIER_HEARTBEAT_MS = 5 * 60 * 1000; // 5 minutes
 
 // ─── Monitor-safe bounds (multi-display; prevents off-screen window trap) ─────
 
@@ -1515,6 +1531,98 @@ function registerIPCHandlers(): void {
     fs.writeFileSync(filePath, JSON.stringify({ ...JSON.parse(body), signed_hash }, null, 2));
     return { ok: true, ebletPath: filePath };
   });
+
+  // ── BP065 · Tier-2 — LB Account + Frontier Mesh IPC ─────────────────────
+
+  ipcMain.handle('lb:start-auth', async (_event, { email }: { email: string }) => {
+    return startLBAuthFlow(email);
+  });
+
+  ipcMain.handle('lb:get-session', () => {
+    const s = getLBSession();
+    if (!s) return null;
+    // Never return raw tokens to renderer
+    return {
+      user_id: s.user_id,
+      email: s.email,
+      peer_id: s.peer_id,
+      linked_at: s.linked_at,
+    };
+  });
+
+  ipcMain.handle('lb:link-device', async (_event, {
+    accessToken,
+    refreshToken,
+  }: { accessToken: string; refreshToken: string }) => {
+    const peerId = getStablePeerId();
+    const version = app.getVersion();
+    return completeLBAuth(accessToken, refreshToken, peerId, version);
+  });
+
+  ipcMain.handle('lb:revoke-device', () => {
+    // Stop frontier heartbeat if active
+    if (frontierHeartbeatTimer) {
+      clearInterval(frontierHeartbeatTimer);
+      frontierHeartbeatTimer = null;
+    }
+    revokeDevice();
+    return { ok: true };
+  });
+
+  ipcMain.handle('lb:register-frontier-node', async () => {
+    const session = getLBSession();
+    if (!session) return { ok: false, error: 'Not linked to a LB account' };
+    const peerId = getStablePeerId();
+    const relayStatus = relayClient?.isConnected() ? 'relay' : 'direct';
+    const result = await registerFrontierNode({
+      peerId,
+      appVersion: app.getVersion(),
+      transportHint: relayStatus,
+      relayPeerId: undefined,
+    });
+
+    if (result.ok && !frontierHeartbeatTimer) {
+      // Start heartbeat ONLY after explicit registration (never on launch)
+      frontierHeartbeatTimer = setInterval(async () => {
+        const currentSession = getLBSession();
+        if (!currentSession) {
+          clearInterval(frontierHeartbeatTimer!);
+          frontierHeartbeatTimer = null;
+          return;
+        }
+        await sendFrontierHeartbeat(peerId);
+      }, FRONTIER_HEARTBEAT_MS);
+      console.log('[Frontier] heartbeat timer started (5-min interval)');
+    }
+
+    return result;
+  });
+
+  ipcMain.handle('lb:withdraw-frontier-node', async () => {
+    if (frontierHeartbeatTimer) {
+      clearInterval(frontierHeartbeatTimer);
+      frontierHeartbeatTimer = null;
+      console.log('[Frontier] heartbeat timer stopped (node withdrawn)');
+    }
+    const peerId = getStablePeerId();
+    return withdrawFrontierNode(peerId);
+  });
+
+  ipcMain.handle('lb:get-frontier-status', async () => {
+    const session = getLBSession();
+    if (!session) return { linked: false, registered: false, nodes: [] };
+    const nodesResult = await getFrontierNodes();
+    const peerId = getStablePeerId();
+    const myNode = nodesResult.nodes?.find((n) => n.peer_id === peerId);
+    return {
+      linked: true,
+      registered: !!myNode,
+      peer_id: peerId,
+      my_node: myNode ?? null,
+      nodes: nodesResult.nodes ?? [],
+      heartbeat_active: !!frontierHeartbeatTimer,
+    };
+  });
 }
 
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
@@ -1616,6 +1724,30 @@ app.whenReady().then(async () => {
           slug: payload.slug,
           token: payload.token,
         });
+      }
+      // BP065: handle mnemo://auth/callback (LB magic-link return)
+      if (payload.type === 'auth-callback') {
+        console.log('[deep-link] mnemo://auth/callback received — completing LB auth');
+        const { access_token, refresh_token } = payload;
+        const peerId = getStablePeerId();
+        completeLBAuth(access_token, refresh_token, peerId, app.getVersion())
+          .then((result) => {
+            const win = dashboardWindow ?? overlayWindow;
+            if (result.ok) {
+              win?.webContents.send('lb:auth-complete', {
+                ok: true,
+                user_id: result.session?.user_id,
+                email: result.session?.email,
+                peer_id: result.session?.peer_id,
+                linked_at: result.session?.linked_at,
+              });
+            } else {
+              win?.webContents.send('lb:auth-complete', { ok: false, error: result.error });
+            }
+          })
+          .catch((err: Error) => {
+            console.error('[deep-link] auth-callback handler error:', err.message);
+          });
       }
     },
   );
@@ -1727,6 +1859,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', async () => {
   stopOverlayWatchdog();
   if (connectivityTimer) clearInterval(connectivityTimer);
+  if (frontierHeartbeatTimer) { clearInterval(frontierHeartbeatTimer); frontierHeartbeatTimer = null; }
   folderWatcher?.stopAll();
   autoUpdater?.destroy();
   await ollamaManager?.shutdown();
