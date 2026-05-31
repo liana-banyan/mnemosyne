@@ -38,6 +38,10 @@ import { CaithedralCoreTab } from './CaithedralCoreTab';
 import { LBAccountTab } from './LBAccountTab';
 import { OptInPrompt } from './OptInPrompt';
 import { shouldShowPrompt, recordStrike, setDecision } from '../lib/opt_in_strike_tracker';
+// BP067 Phase 1A — $5 join flow
+import { FirstStepsView } from './FirstStepsView';
+// BP067 Phase 1B — SaltFighter first-run
+import { SaltFighterFirstRun } from './SaltFighterFirstRun';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -102,6 +106,17 @@ export function MnemosyneTabView({
   const [devEnabled, setDevEnabled] = useState(() =>
     localStorage.getItem(LS_DEVELOPER_MODE) === 'true'
   );
+
+  // BP067 Phase 1A — $5 join flow modal
+  const [showFirstSteps, setShowFirstSteps] = useState(false);
+
+  // BP067 Phase 1B — SaltFighter first-run (gate: localStorage mnemosyne-saltfighter-done)
+  const [saltfighterDone, setSaltfighterDone] = useState(() =>
+    localStorage.getItem('mnemosyne-saltfighter-done') === 'true'
+  );
+
+  // BP067 Phase 1C — "Schedule this meal" cross-tab handoff
+  const [scheduledMealTitle, setScheduledMealTitle] = useState<string | null>(null);
 
   // 3-option ask: shown on first launch until user dismisses
   const [showOnboardAsk, setShowOnboardAsk] = useState(() =>
@@ -186,12 +201,8 @@ export function MnemosyneTabView({
   function handleOnboardChoice(choice: 'free' | 'member' | 'developer') {
     localStorage.setItem(LS_ONBOARD_CHOICE, choice);
     setShowOnboardAsk(false);
-    if (choice === 'member') {
-      window.amplify?.openExternal?.('https://lianabanyan.com/join');
-    }
-    if (choice === 'developer') {
-      window.amplify?.openExternal?.('https://lianabanyan.com/join');
-      // Developer mode unlock is confirmed after membership + pledge sign
+    if (choice === 'member' || choice === 'developer') {
+      setShowFirstSteps(true);
     }
   }
 
@@ -328,7 +339,25 @@ export function MnemosyneTabView({
     fallback: '❄️ Fallback',
   };
 
+  const handleScheduleMeal = (recipeName: string) => {
+    setScheduledMealTitle(recipeName);
+    setActiveTab('atlas');
+  };
+
   return (
+    <>
+    {/* BP067 Phase 1B — SaltFighter first-run (shown before main app on first launch) */}
+    {!saltfighterDone && (
+      <SaltFighterFirstRun
+        onComplete={() => {
+          localStorage.setItem('mnemosyne-saltfighter-done', 'true');
+          setSaltfighterDone(true);
+        }}
+        onJoin={() => setShowFirstSteps(true)}
+      />
+    )}
+    {/* BP067 Phase 1A — $5 join flow modal */}
+    {showFirstSteps && <FirstStepsView onClose={() => setShowFirstSteps(false)} />}
     <OnboardingGate>
     <div style={styles.shell}>
       {/* Title bar */}
@@ -567,7 +596,7 @@ export function MnemosyneTabView({
                 displayName={displayName}
               />
             ) : (
-              <HelmGate onJoin={() => window.amplify?.openExternal?.('https://lianabanyan.com/join')} />
+              <HelmGate onJoin={() => setShowFirstSteps(true)} />
             )}
           </div>
         )}
@@ -634,7 +663,10 @@ export function MnemosyneTabView({
             aria-labelledby="tab-atlas"
             style={{ height: '100%' }}
           >
-            <AtlasView />
+            <AtlasView
+              prefilledTitle={scheduledMealTitle}
+              onPrefilledConsumed={() => setScheduledMealTitle(null)}
+            />
           </div>
         )}
 
@@ -645,7 +677,7 @@ export function MnemosyneTabView({
             aria-labelledby="tab-kitchen-table"
             style={{ height: '100%' }}
           >
-            <KitchenTableView />
+            <KitchenTableView onScheduleMeal={handleScheduleMeal} />
           </div>
         )}
 
@@ -747,6 +779,7 @@ export function MnemosyneTabView({
       )}
     </div>
     </OnboardingGate>
+    </>
   );
 }
 

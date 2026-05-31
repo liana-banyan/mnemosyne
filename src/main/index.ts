@@ -2049,6 +2049,48 @@ function registerIPCHandlers(): void {
     fs.writeFileSync(filePath, JSON.stringify({ ...JSON.parse(body), signed_hash }, null, 2));
     return { ok: true, ebletPath: filePath };
   });
+
+  // BP067 Phase 1A — $5 membership checkout IPC
+  // Calls Supabase edge function create-membership-checkout → returns Stripe Checkout URL
+  // Renderer then calls shell.openExternal with the returned URL (never exposed here)
+  ipcMain.handle('membership:create-checkout', async (_event, autoRenew: boolean) => {
+    const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      console.warn('[membership] Supabase URL/key not configured — falling back to web join page');
+      return { ok: false, error: 'not_configured', fallbackUrl: 'https://lianabanyan.com/join' };
+    }
+
+    try {
+      const resp = await globalThis.fetch(`${supabaseUrl}/functions/v1/create-membership-checkout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${supabaseKey}`,
+          'apikey': supabaseKey,
+        },
+        body: JSON.stringify({ autoRenew }),
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        console.error('[membership] create-checkout failed:', resp.status, errText.slice(0, 200));
+        return { ok: false, error: `checkout_error_${resp.status}` };
+      }
+
+      const json = await resp.json() as { url?: string; error?: string };
+      if (!json.url) {
+        return { ok: false, error: json.error ?? 'no_url_returned' };
+      }
+
+      shell.openExternal(json.url).catch(() => {});
+      return { ok: true };
+    } catch (err) {
+      console.error('[membership] create-checkout exception:', err);
+      return { ok: false, error: String(err) };
+    }
+  });
 }
 
 // ─── App Lifecycle ────────────────────────────────────────────────────────────

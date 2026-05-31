@@ -260,7 +260,73 @@ const S = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function RecipesView() {
+// ─── Starter recipes seed data ────────────────────────────────────────────────
+
+const STARTER_RECIPES: Array<Omit<Recipe, 'id' | 'createdAt' | 'updatedAt'>> = [
+  {
+    title: "Grandma's Pasta",
+    description: 'Simple, hearty tomato pasta the whole family loves. Ready in 25 minutes.',
+    ingredients: [
+      { name: 'Spaghetti', amount: '400', unit: 'g', optional: false },
+      { name: 'Crushed tomatoes', amount: '400', unit: 'ml', optional: false },
+      { name: 'Garlic', amount: '3', unit: 'cloves', optional: false },
+      { name: 'Olive oil', amount: '2', unit: 'tbsp', optional: false },
+      { name: 'Fresh basil', amount: 'handful', unit: '', optional: true },
+    ],
+    steps: [
+      { stepNumber: 1, instruction: 'Boil pasta in salted water per package instructions.', durationMinutes: 12, photoRef: null },
+      { stepNumber: 2, instruction: 'Sauté garlic in olive oil 2 min, add tomatoes, simmer 10 min.', durationMinutes: 12, photoRef: null },
+      { stepNumber: 3, instruction: 'Drain pasta, toss with sauce. Top with fresh basil.', durationMinutes: 2, photoRef: null },
+    ],
+    photos: [],
+    aiSuggested: false,
+    authorId: 'local',
+    tags: ['pasta', 'family', 'quick'],
+  },
+  {
+    title: 'Tuesday Soup',
+    description: 'Use whatever vegetables are in the fridge. Nourishing and zero-waste.',
+    ingredients: [
+      { name: 'Mixed vegetables (carrots, celery, onion)', amount: '4', unit: 'cups chopped', optional: false },
+      { name: 'Chicken or vegetable broth', amount: '6', unit: 'cups', optional: false },
+      { name: 'Garlic', amount: '2', unit: 'cloves', optional: false },
+      { name: 'Salt and pepper', amount: 'to taste', unit: '', optional: false },
+    ],
+    steps: [
+      { stepNumber: 1, instruction: 'Sauté onion and garlic in a pot until soft, ~3 min.', durationMinutes: 3, photoRef: null },
+      { stepNumber: 2, instruction: 'Add remaining vegetables and broth. Bring to boil.', durationMinutes: 5, photoRef: null },
+      { stepNumber: 3, instruction: 'Simmer 20 minutes until vegetables are tender. Season and serve.', durationMinutes: 20, photoRef: null },
+    ],
+    photos: [],
+    aiSuggested: false,
+    authorId: 'local',
+    tags: ['soup', 'vegetables', 'healthy', 'zero-waste'],
+  },
+  {
+    title: 'Saturday Pancakes',
+    description: 'Weekend morning staple. Fluffy, golden, done in 20 minutes.',
+    ingredients: [
+      { name: 'All-purpose flour', amount: '1.5', unit: 'cups', optional: false },
+      { name: 'Milk', amount: '1.25', unit: 'cups', optional: false },
+      { name: 'Egg', amount: '1', unit: 'large', optional: false },
+      { name: 'Baking powder', amount: '2', unit: 'tsp', optional: false },
+      { name: 'Butter', amount: '2', unit: 'tbsp melted', optional: false },
+      { name: 'Sugar', amount: '1', unit: 'tbsp', optional: false },
+      { name: 'Salt', amount: '0.5', unit: 'tsp', optional: false },
+    ],
+    steps: [
+      { stepNumber: 1, instruction: 'Whisk dry ingredients (flour, baking powder, sugar, salt).', durationMinutes: 2, photoRef: null },
+      { stepNumber: 2, instruction: 'Mix wet ingredients (milk, egg, butter) separately, then combine. Do not overmix — lumps are fine.', durationMinutes: 2, photoRef: null },
+      { stepNumber: 3, instruction: 'Cook on a buttered griddle over medium heat. Flip when bubbles form on surface.', durationMinutes: 10, photoRef: null },
+    ],
+    photos: [],
+    aiSuggested: false,
+    authorId: 'local',
+    tags: ['breakfast', 'family', 'weekend'],
+  },
+];
+
+export function RecipesView({ onScheduleMeal }: { onScheduleMeal?: (recipeName: string) => void } = {}) {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -272,7 +338,20 @@ export function RecipesView() {
   const load = useCallback(async () => {
     try {
       const data = await window.amplify?.kitchenTable?.listRecipes?.() as Recipe[];
-      setRecipes(data ?? []);
+      const loaded = data ?? [];
+      // Seed starter recipes if list is empty on first load
+      if (loaded.length === 0) {
+        const seeded: Recipe[] = [];
+        for (const r of STARTER_RECIPES) {
+          try {
+            const created = await window.amplify?.kitchenTable?.createRecipe?.(r) as Recipe;
+            if (created) seeded.push(created);
+          } catch { /* non-fatal */ }
+        }
+        setRecipes(seeded);
+      } else {
+        setRecipes(loaded);
+      }
     } catch {
       setRecipes([]);
     } finally {
@@ -473,6 +552,15 @@ export function RecipesView() {
               )}
             </div>
             <div style={S.actionBar}>
+              {onScheduleMeal && (
+                <button
+                  style={{ ...S.btn('primary'), flex: 1 }}
+                  onClick={() => onScheduleMeal(selected.title)}
+                  title="Open Atlas and schedule this meal"
+                >
+                  📅 Schedule this meal →
+                </button>
+              )}
               <button style={S.btn('danger')} onClick={() => handleDelete(selected.id)}>Delete</button>
             </div>
           </>

@@ -16,7 +16,7 @@ const TAB_ITEMS: Array<{ id: KitchenTab; label: string }> = [
   { id: 'bounty-board', label: '🏹 Bounty Board' },
 ];
 
-export function KitchenTableView() {
+export function KitchenTableView({ onScheduleMeal }: { onScheduleMeal?: (recipeName: string) => void } = {}) {
   const [activeTab, setActiveTab] = useState<KitchenTab>('kitchen');
 
   return (
@@ -80,7 +80,7 @@ export function KitchenTableView() {
           <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
             {/* Recipes (takes most space) */}
             <div style={{ flex: 1, overflow: 'hidden', borderRight: '1px solid rgba(100,116,139,0.1)' }}>
-              <RecipesView />
+              <RecipesView onScheduleMeal={onScheduleMeal} />
             </div>
             {/* Right rail — P2P discovery */}
             <div style={{ width: 220, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

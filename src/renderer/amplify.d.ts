@@ -179,6 +179,7 @@ declare global {
       getUpdateState: () => Promise<UpdateState>;
       checkForUpdates: () => void;
       installUpdate: () => void;
+      downloadUpdate: () => void;  // BP067 Phase 1D — safe tier: user-triggered download
       onUpdateStateChanged: (cb: (state: UpdateState) => void) => () => void;
       // MoneyPenny
       getMoneyPennyUrl: () => Promise<{ url: string; ips: string[]; port: number }>;
@@ -247,6 +248,10 @@ declare global {
       hideOverlay?: () => void;
       showOverlay?: () => void;
       getTelemetrySummary?: () => Promise<TelemetrySummary>;
+      // BP067 Phase 1A — $5 Membership Checkout
+      membership?: {
+        createCheckout: (autoRenew: boolean) => Promise<{ ok: boolean; error?: string; fallbackUrl?: string }>;
+      };
       // BP065 — LB Account + Frontier Node (Part A/B)
       lbStartAuth?: (email: string) => Promise<{ ok: boolean; error?: string }>;
       lbGetSession?: () => Promise<{ linked: boolean; user_id?: string; email?: string; peer_id?: string; linked_at?: string; crewman_number?: number }>;

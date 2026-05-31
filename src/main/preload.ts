@@ -305,6 +305,10 @@ contextBridge.exposeInMainWorld('amplify', {
   installUpdate: (): void =>
     ipcRenderer.send('install-update'),
 
+  // BP067 Phase 1D — user-triggered download (safe tier: no auto-download on unsigned binary)
+  downloadUpdate: (): void =>
+    ipcRenderer.send('download-update'),
+
   onUpdateStateChanged: (cb: (state: UpdateState) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: UpdateState) => cb(state);
     ipcRenderer.on('update-state-changed', handler);
@@ -811,6 +815,12 @@ contextBridge.exposeInMainWorld('amplify', {
   }): Promise<{ ok: boolean; results?: Record<string, boolean> }> =>
     ipcRenderer.invoke('onboarding:apply-prefs', prefs),
 
+  // ── BP067 Phase 1A — $5 Membership Checkout ───────────────────────────────
+  membership: {
+    createCheckout: (autoRenew: boolean): Promise<{ ok: boolean; error?: string; fallbackUrl?: string }> =>
+      ipcRenderer.invoke('membership:create-checkout', autoRenew),
+  },
+
   // ── Caithedral Tools (BP060 Application 002 Step 1) ─────────────────────
   caithedralTools: {
     soccerball_emit: (pearls: string[], bindings?: Record<string, string>) =>
@@ -1026,6 +1036,10 @@ declare global {
       lbOptInGetState?: () => Promise<{ strikes: number; lastShown: number | null; decision: string }>;
       lbOptInRecordStrike?: () => Promise<{ ok: boolean }>;
       lbOptInSetDecision?: (decision: 'never' | 'pending' | 'linked') => Promise<{ ok: boolean }>;
+      // BP067 Phase 1A — $5 membership checkout
+      membership?: {
+        createCheckout: (autoRenew: boolean) => Promise<{ ok: boolean; error?: string; fallbackUrl?: string }>;
+      };
       // Caithedral Tools IPC (BP060 Application 002 Step 1)
       caithedralTools?: {
         soccerball_emit: (pearls: string[], bindings?: Record<string, string>) => Promise<{ ok: boolean; sid?: string; error?: string }>;

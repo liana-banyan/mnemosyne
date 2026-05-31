@@ -89,6 +89,14 @@ export class AutoUpdateManager {
     }
   }
 
+  downloadNow(): void {
+    if (this.state.status === 'available') {
+      autoUpdater.downloadUpdate().catch((err) => {
+        this._setState({ status: 'error', errorMessage: String(err) });
+      });
+    }
+  }
+
   getState(): UpdateState {
     return { ...this.state };
   }
@@ -106,8 +114,16 @@ export class AutoUpdateManager {
   // ─── Private ─────────────────────────────────────────────────────────────
 
   private _configureUpdater(): void {
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    // BP067 Phase 1D — SAFE TIER: notify + one-click apply, NOT silent auto-install.
+    // DO NOT change autoDownload to true on an unsigned binary (malware vector risk:
+    // compromised feed/DNS → unsigned exe executes with no OS warning).
+    //
+    // Safe-silent prerequisites (unlock only when ALL three land):
+    //   1. electron-updater wired with sha512 verify [DONE — this file]
+    //   2. Windows code-signed installer [PENDING — requires EV cert]
+    //   3. Signed update manifest (latest.yml signed with private key) [PENDING]
+    autoUpdater.autoDownload = false;      // user confirms download via "Download" button
+    autoUpdater.autoInstallOnAppQuit = true;  // install on next quit once downloaded
     autoUpdater.allowPrerelease = false;
     autoUpdater.allowDowngrade = false;
 
@@ -131,9 +147,10 @@ export class AutoUpdateManager {
         version: info.version,
         releaseNotes: this._extractReleaseNotes(info.releaseNotes),
       });
+      // BP067 Phase 1D — safe tier: notify but do NOT auto-download
       this._showSystemNotification(
-        'Mnemosyne Update',
-        `v${info.version} is available — downloading now…`,
+        'MnemosyneC Update Available',
+        `v${info.version} is ready — open MnemosyneC to download`,
       );
     });
 
@@ -191,6 +208,11 @@ export class AutoUpdateManager {
 
     ipcMain.on('install-update', () => {
       this.installNow();
+    });
+
+    // BP067 Phase 1D — user-triggered download (safe tier: notify+one-click)
+    ipcMain.on('download-update', () => {
+      this.downloadNow();
     });
   }
 
