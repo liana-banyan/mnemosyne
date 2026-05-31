@@ -1055,6 +1055,9 @@ export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: 
           {updateStatus.error && (
             <div style={{ fontSize: 10, color: '#f87171', marginTop: 6 }}>{updateStatus.error}</div>
           )}
+
+          {/* 1D-FIX: Auto-install on quit toggle */}
+          <AutoInstallToggle />
         </div>
       </section>
 
@@ -1178,6 +1181,9 @@ export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: 
       {/* ── Section 7: MY CONTRIBUTION ───────────────────────────────────── */}
       <MyContributionPanel />
 
+      {/* ── Section 8a: MANAGED FOLDERS (Phase 2D) ───────────────────────── */}
+      <FolderManagerPanel />
+
       {/* ── Section 8: GRAND PROJECTS (KniPr022) ────────────────────────── */}
       <section style={s.section}>
         <div style={s.sectionHeader}>🏛️ Grand Projects</div>
@@ -1209,6 +1215,119 @@ export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: 
 
       {showLocFaq && <LocFaqModal onClose={() => setShowLocFaq(false)} />}
 
+    </div>
+  );
+}
+
+// ─── Phase 2D: Folder Manager Panel ──────────────────────────────────────────
+
+interface WatchedFolder { id: string; path: string; }
+
+function FolderManagerPanel() {
+  const [folders, setFolders] = React.useState<WatchedFolder[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [picking, setPicking] = React.useState(false);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const data = await window.amplify?.watcher?.listFolders?.() as WatchedFolder[] | undefined;
+        setFolders(data ?? []);
+      } catch { /* watcher unavailable */ }
+    })();
+  }, []);
+
+  async function pick() {
+    setPicking(true);
+    try {
+      const result = await window.amplify?.watcher?.openFolderDialog?.();
+      if (result && !result.canceled && result.filePaths.length > 0) {
+        const path = result.filePaths[0];
+        await window.amplify?.watcher?.addFolder?.(path);
+        const data = await window.amplify?.watcher?.listFolders?.() as WatchedFolder[] | undefined;
+        setFolders(data ?? []);
+        // Record that N=3 prompt 1 was shown (first-run already handles this)
+        const n = Number(localStorage.getItem('mnemo_folder_prompt_count') ?? 0);
+        if (n < 1) localStorage.setItem('mnemo_folder_prompt_count', '1');
+      }
+    } catch { /* dialog unavailable */ }
+    finally { setPicking(false); }
+  }
+
+  return (
+    <section style={{ margin: '0 0 8px', padding: '0 0 8px' }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.07em', padding: '6px 0 4px', marginBottom: 4 }}>
+        📂 Managed Folders
+      </div>
+      <div style={{ background: 'rgba(15,23,42,0.5)', border: '1px solid rgba(100,116,139,0.15)', borderRadius: 8, padding: '10px 12px' }}>
+        <div style={{ fontSize: 10, color: '#64748b', marginBottom: 8, lineHeight: 1.5 }}>
+          Folders your AI indexes for memory. Add more to improve recall.
+        </div>
+        {folders.length === 0 ? (
+          <div style={{ fontSize: 10, color: '#334155', marginBottom: 8 }}>No folders indexed yet.</div>
+        ) : (
+          <div style={{ marginBottom: 8 }}>
+            {folders.map((f) => (
+              <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', fontSize: 10, color: '#94a3b8' }}>
+                <span style={{ color: '#6ee7b7', fontSize: 10 }}>✓</span>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 9 }}>{f.path}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <button
+          onClick={pick}
+          disabled={picking}
+          style={{ padding: '5px 12px', borderRadius: 6, fontSize: 10, fontWeight: 600, cursor: picking ? 'not-allowed' : 'pointer', border: '1px solid rgba(59,130,246,0.35)', background: 'rgba(59,130,246,0.08)', color: '#60a5fa', opacity: picking ? 0.6 : 1 }}
+        >
+          {picking ? 'Opening…' : '+ Add Folder'}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// ─── 1D-FIX: Auto-install on quit toggle ─────────────────────────────────────
+
+function AutoInstallToggle() {
+  const [enabled, setEnabled] = React.useState(() =>
+    localStorage.getItem('mnemo_auto_install_on_quit') !== 'false'
+  );
+
+  function toggle() {
+    const next = !enabled;
+    setEnabled(next);
+    localStorage.setItem('mnemo_auto_install_on_quit', next ? 'true' : 'false');
+    window.amplify?.setAutoInstallOnQuit?.(next);
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(100,116,139,0.12)' }}>
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 600, color: '#94a3b8' }}>Auto-install on quit</div>
+        <div style={{ fontSize: 9, color: '#475569', marginTop: 2 }}>
+          When a downloaded update is ready, install it automatically when the app closes.
+          Turn off to control when updates apply.
+        </div>
+      </div>
+      <button
+        onClick={toggle}
+        style={{
+          padding: '3px 10px',
+          borderRadius: 6,
+          fontSize: 10,
+          fontWeight: 600,
+          cursor: 'pointer',
+          border: enabled ? '1px solid rgba(110,231,183,0.4)' : '1px solid rgba(100,116,139,0.3)',
+          background: enabled ? 'rgba(110,231,183,0.1)' : 'rgba(100,116,139,0.06)',
+          color: enabled ? '#6ee7b7' : '#64748b',
+          marginLeft: 12,
+          whiteSpace: 'nowrap' as const,
+          flexShrink: 0,
+        }}
+      >
+        {enabled ? 'ON' : 'OFF'}
+      </button>
     </div>
   );
 }

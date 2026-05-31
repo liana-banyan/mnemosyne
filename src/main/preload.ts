@@ -309,6 +309,10 @@ contextBridge.exposeInMainWorld('amplify', {
   downloadUpdate: (): void =>
     ipcRenderer.send('download-update'),
 
+  // 1D-FIX — opt-out toggle for autoInstallOnAppQuit (persisted in renderer localStorage)
+  setAutoInstallOnQuit: (enabled: boolean): void =>
+    ipcRenderer.send('set-auto-install-on-quit', enabled),
+
   onUpdateStateChanged: (cb: (state: UpdateState) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: UpdateState) => cb(state);
     ipcRenderer.on('update-state-changed', handler);

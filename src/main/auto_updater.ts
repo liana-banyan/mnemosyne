@@ -97,6 +97,12 @@ export class AutoUpdateManager {
     }
   }
 
+  /** 1D-FIX: opt-out toggle — persisted by renderer in localStorage, propagated via IPC */
+  setAutoInstallOnQuit(enabled: boolean): void {
+    autoUpdater.autoInstallOnAppQuit = enabled;
+    console.log(`[AutoUpdater] autoInstallOnAppQuit = ${enabled}`);
+  }
+
   getState(): UpdateState {
     return { ...this.state };
   }
@@ -213,6 +219,11 @@ export class AutoUpdateManager {
     // BP067 Phase 1D — user-triggered download (safe tier: notify+one-click)
     ipcMain.on('download-update', () => {
       this.downloadNow();
+    });
+
+    // 1D-FIX: renderer persists opt-out preference, propagates here
+    ipcMain.on('set-auto-install-on-quit', (_event, enabled: boolean) => {
+      this.setAutoInstallOnQuit(enabled);
     });
   }
 

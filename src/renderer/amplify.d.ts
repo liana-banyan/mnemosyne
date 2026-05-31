@@ -180,6 +180,7 @@ declare global {
       checkForUpdates: () => void;
       installUpdate: () => void;
       downloadUpdate: () => void;  // BP067 Phase 1D — safe tier: user-triggered download
+      setAutoInstallOnQuit: (enabled: boolean) => void;  // 1D-FIX: opt-out toggle
       onUpdateStateChanged: (cb: (state: UpdateState) => void) => () => void;
       // MoneyPenny
       getMoneyPennyUrl: () => Promise<{ url: string; ips: string[]; port: number }>;

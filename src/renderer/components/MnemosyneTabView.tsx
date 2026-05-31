@@ -1,11 +1,21 @@
-// MnemosyneTabView — SAGA 07 BP046B · updated BP047 W1
-// 6-tab Mnemosyne application shell:
-//   Tab 1 · Frame     — Transparent Outlining Window status + controls (daily driver)
-//   Tab 2 · Helm      — LB platform interface + Beacons side-shelves (membership gate)
-//   Tab 3 · Gauntlet  — 6-stage testing framework + checkmark selection (first-launch default)
-//   Tab 4 · Settings  — update · appearance · AI model assignment · substrate default (always visible)
-//   Tab 5 · FAQ       — tl;dr / full-steps toggle · 7 seed entries (always visible)
-//   Tab 6 · Developer — conditional, gated by membership + Pledge #2260 OR business license
+// MnemosyneTabView — SAGA 07 BP046B · updated BP067 Phase 2
+// 16-tab Mnemosyne application shell:
+//   Tab 1  · Frame          — Transparent Outlining Window status + controls (daily driver)
+//   Tab 2  · Helm           — LB platform interface + Beacons side-shelves (membership gate)
+//   Tab 3  · Gauntlet       — 6-stage testing framework + checkmark selection (first-launch default)
+//   Tab 4  · Settings       — update · appearance · AI model assignment · substrate default (always visible)
+//   Tab 5  · FAQ            — tl;dr / full-steps toggle · 7 seed entries (always visible)
+//   Tab 6  · Developer      — conditional, gated by membership + Pledge #2260 OR business license
+//   Tab 7  · Atlas™         — Calendar · Events · Multi-person scheduling · P2P sync
+//   Tab 8  · Kitchen Table  — Recipes · Meal planning · LAN peer discovery
+//   Tab 9  · Pearls         — Pearl Gallery™ · compressed Eblet references
+//   Tab 10 · Substrate      — BP060 Application 002 · caithedral-core tools · Areopagus
+//   Tab 11 · Console        — Unified Substrate Console · Bridge + Dashboard view
+//   Tab 12 · AI             — Multi-AI Selector · Quick-pick · Court presets
+//   Tab 13 · Caithedral Core — SSPL open-source substrate · Banyan Metric™ · MoneyPenny™
+//   Tab 14 · LB Account     — Link your LB cooperative account · Join the Frontier mesh
+//   Tab 15 · Battery Dispatch — Cooperative time/energy dispatch · Reserve vs Spend
+//   Tab 16 · Broadcast Schedule — Cooperative content/announcement scheduler
 //
 // First-launch default = Tab 3 (Gauntlet front-and-center to onboard).
 // After first Gauntlet completion, default shifts to Tab 1 (Frame as daily driver).
@@ -42,6 +52,9 @@ import { shouldShowPrompt, recordStrike, setDecision } from '../lib/opt_in_strik
 import { FirstStepsView } from './FirstStepsView';
 // BP067 Phase 1B — SaltFighter first-run
 import { SaltFighterFirstRun } from './SaltFighterFirstRun';
+// BP067 Phase 2B/2C — Battery Dispatch + Broadcast Schedule
+import { BatteryDispatchTab } from './BatteryDispatchTab';
+import { BroadcastScheduleTab } from './BroadcastScheduleTab';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -54,7 +67,7 @@ const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core' | 'lb-account';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core' | 'lb-account' | 'battery-dispatch' | 'broadcast-schedule';
 
 interface TabDef {
   id: TabId;
@@ -78,7 +91,9 @@ const TABS: TabDef[] = [
   { id: 'console',      label: 'Console',         icon: '🖥', tooltip: 'Tab 11 · Unified Substrate Console — Bridge view + Dashboard view · Ctrl+Tab to switch (UI-7)' },
   { id: 'ai-selector',  label: 'AI',              icon: '🤖', tooltip: 'Tab 12 · Multi-AI Selector — Quick-pick · Court presets · Default Ollama doctrine (UI-8)' },
   { id: 'caithedral-core', label: 'Caithedral Core', icon: '🏛', tooltip: 'Tab 13 · Caithedral™ Core — SSPL open-source substrate · Designed to Be Copied · Banyan Metric™ · MoneyPenny™ · Substrated Folders · CPU-only inference' },
-  { id: 'lb-account',     label: 'LB Account',     icon: '$', tooltip: 'Tab 14 · LB Account — Link your Liana Banyan cooperative account · Join the Frontier mesh · Crewman attribution' },
+  { id: 'lb-account',        label: 'LB Account',        icon: '$',  tooltip: 'Tab 14 · LB Account — Link your Liana Banyan cooperative account · Join the Frontier mesh · Crewman attribution' },
+  { id: 'battery-dispatch',  label: 'Battery',           icon: '⚡', tooltip: 'Tab 15 · Battery Dispatch™ — Cooperative time/energy dispatch · Reserve vs Spend' },
+  { id: 'broadcast-schedule', label: 'Broadcast',        icon: '📡', tooltip: 'Tab 16 · Broadcast Schedule — Cooperative content/announcement scheduler · Pending vs Sent' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -118,6 +133,10 @@ export function MnemosyneTabView({
   // BP067 Phase 1C — "Schedule this meal" cross-tab handoff
   const [scheduledMealTitle, setScheduledMealTitle] = useState<string | null>(null);
 
+  // BP067 Phase 2D — Organic N=3 folder prompt
+  const [showFolderPrompt, setShowFolderPrompt] = useState(false);
+  const [folderPromptMsg, setFolderPromptMsg] = useState('');
+
   // 3-option ask: shown on first launch until user dismisses
   const [showOnboardAsk, setShowOnboardAsk] = useState(() =>
     !localStorage.getItem(LS_ONBOARD_CHOICE)
@@ -136,7 +155,7 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core', 'lb-account'];
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core', 'lb-account', 'battery-dispatch', 'broadcast-schedule'];
     if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
@@ -171,6 +190,51 @@ export function MnemosyneTabView({
     window.amplify.getUpdateState?.().then(setUpdateState).catch(() => {});
     const cleanup = window.amplify.onUpdateStateChanged?.((s) => setUpdateState(s));
     return cleanup ?? undefined;
+  }, []);
+
+  // BP067 Phase 2D — Organic N=3 folder-prompt harness
+  useEffect(() => {
+    const shown = Number(localStorage.getItem('mnemo_folder_prompt_count') ?? 0);
+    if (shown >= 3) return; // stop after 3 prompts
+
+    // Prompt 2: after first substrate query returns results
+    const promptTimer = setTimeout(async () => {
+      if (shown >= 1) return; // prompt 1 was first-run
+      try {
+        const snap = await window.amplify?.getAMPLIFYSnapshot?.();
+        if (snap && snap.substrate_hits > 0) {
+          const cur = Number(localStorage.getItem('mnemo_folder_prompt_count') ?? 0);
+          if (cur < 2) {
+            localStorage.setItem('mnemo_folder_prompt_count', String(cur + 1));
+            setFolderPromptMsg('Want to index more folders? More folders = better memory for your AI.');
+            setShowFolderPrompt(true);
+          }
+        }
+      } catch { /* substrate unavailable */ }
+    }, 15_000);
+
+    // Prompt 3: after 7 days with only 1 folder
+    const installTs = Number(localStorage.getItem('mnemo_install_ts') ?? 0);
+    if (!installTs) localStorage.setItem('mnemo_install_ts', String(Date.now()));
+    const daysSinceInstall = (Date.now() - (installTs || Date.now())) / (1000 * 60 * 60 * 24);
+    if (daysSinceInstall >= 7 && shown < 3) {
+      const timer2 = setTimeout(async () => {
+        try {
+          const folders = await window.amplify?.watcher?.listFolders?.() as Array<unknown> | undefined;
+          if (folders && folders.length <= 1) {
+            const cur = Number(localStorage.getItem('mnemo_folder_prompt_count') ?? 0);
+            if (cur < 3) {
+              localStorage.setItem('mnemo_folder_prompt_count', String(cur + 1));
+              setFolderPromptMsg(`You have ${folders.length} folder indexed. Add more for better memory recall.`);
+              setShowFolderPrompt(true);
+            }
+          }
+        } catch { /* watcher unavailable */ }
+      }, 5_000);
+      return () => { clearTimeout(promptTimer); clearTimeout(timer2); };
+    }
+
+    return () => clearTimeout(promptTimer);
   }, []);
 
   // Called by GauntletTab when the first full Gauntlet run completes
@@ -517,6 +581,34 @@ export function MnemosyneTabView({
       {/* UI-2 · Shirley Temple Policy toggles — easy to find at chamber root per Founder direct */}
       <ShirleyTempleToggles />
 
+      {/* BP067 Phase 2D — Organic N=3 folder prompt */}
+      {showFolderPrompt && (
+        <div style={{
+          margin: '4px 16px 0',
+          background: 'rgba(59,130,246,0.08)',
+          border: '1px solid rgba(59,130,246,0.25)',
+          borderRadius: 8,
+          padding: '8px 12px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          flexShrink: 0,
+        }}>
+          <span style={{ fontSize: 11, color: '#60a5fa', flex: 1 }}>📂 {folderPromptMsg}</span>
+          <button
+            style={{ padding: '3px 10px', borderRadius: 6, fontSize: 10, fontWeight: 600, cursor: 'pointer', border: '1px solid rgba(59,130,246,0.4)', background: 'rgba(59,130,246,0.12)', color: '#60a5fa', whiteSpace: 'nowrap' }}
+            onClick={() => { setShowFolderPrompt(false); setActiveTab('settings'); }}
+          >
+            Manage Folders →
+          </button>
+          <button
+            style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 14, flexShrink: 0 }}
+            onClick={() => setShowFolderPrompt(false)}
+          >✕</button>
+        </div>
+      )}
+
       {/* BP065 — "Open the Bridge" navigates to LB Account (Tab 14) · fix for dead button */}
       <div style={{ padding: '8px 16px 0' }}>
         <button
@@ -749,6 +841,30 @@ export function MnemosyneTabView({
             style={{ height: '100%', overflowY: 'auto' }}
           >
             <LBAccountTab />
+          </div>
+        )}
+
+        {/* BP067 Phase 2B — Battery Dispatch Tab 15 */}
+        {activeTab === 'battery-dispatch' && (
+          <div
+            id="panel-battery-dispatch"
+            role="tabpanel"
+            aria-labelledby="tab-battery-dispatch"
+            style={{ height: '100%', overflowY: 'auto' }}
+          >
+            <BatteryDispatchTab />
+          </div>
+        )}
+
+        {/* BP067 Phase 2C — Broadcast Schedule Tab 16 */}
+        {activeTab === 'broadcast-schedule' && (
+          <div
+            id="panel-broadcast-schedule"
+            role="tabpanel"
+            aria-labelledby="tab-broadcast-schedule"
+            style={{ height: '100%', overflowY: 'auto' }}
+          >
+            <BroadcastScheduleTab />
           </div>
         )}
       </div>

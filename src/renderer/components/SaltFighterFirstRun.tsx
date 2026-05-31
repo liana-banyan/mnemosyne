@@ -96,12 +96,17 @@ export function SaltFighterFirstRun({ onComplete, onJoin }: SaltFighterFirstRunP
 
   const advance = useCallback(() => {
     audioRef.current?.pause();
+    // 1B-FIX: "Do not show again" checked on screen 1 → skip straight to app
+    if (screen === 1 && doNotShowAgain) {
+      onComplete();
+      return;
+    }
     if (screen < 3) {
       setScreen((s) => (s + 1) as 1 | 2 | 3);
     } else {
       onComplete();
     }
-  }, [screen, onComplete]);
+  }, [screen, doNotShowAgain, onComplete]);
 
   const handlePickFolder = async () => {
     setPickingFolder(true);
