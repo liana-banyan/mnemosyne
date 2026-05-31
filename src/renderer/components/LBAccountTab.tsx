@@ -1,4 +1,4 @@
-// LBAccountTab.tsx — Tab 14 "🪙 LB Account"
+// LBAccountTab.tsx — Tab 14 "LB Account"
 // BP065 Part A (SEG-D2a) + Part B (SEG-C2b) · Mnemosyne v0.1.22
 //
 // States:
@@ -266,7 +266,7 @@ export function LBAccountTab() {
     <div style={s.root}>
       {/* Header */}
       <div>
-        <h2 style={s.heading}>🪙 LB Account</h2>
+        <h2 style={s.heading}>LB Account</h2>
         <p style={{ ...s.sub, marginTop: 6 }}>
           Link your Liana Banyan cooperative account to this device. Enables
           Frontier node registration, shared-substrate credits, and Crewman attribution.

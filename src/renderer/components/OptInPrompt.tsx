@@ -273,7 +273,7 @@ function TellMeWherePhase({ onNavigate, onClose }: { onNavigate: () => void; onC
       </div>
       <div style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.6 }}>
         In Mnemosyne, look for the{' '}
-        <strong style={{ color: '#fbbf24' }}>🪙 LB Account</strong>{' '}
+        <strong style={{ color: '#fbbf24' }}>LB Account</strong>{' '}
         tab in the tab bar at the top.
         <br /><br />
         From there you can link your account and join the Frontier any time you're ready.

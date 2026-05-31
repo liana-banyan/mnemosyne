@@ -74,7 +74,7 @@ const TABS: TabDef[] = [
   { id: 'console',      label: 'Console',         icon: '🖥', tooltip: 'Tab 11 · Unified Substrate Console — Bridge view + Dashboard view · Ctrl+Tab to switch (UI-7)' },
   { id: 'ai-selector',  label: 'AI',              icon: '🤖', tooltip: 'Tab 12 · Multi-AI Selector — Quick-pick · Court presets · Default Ollama doctrine (UI-8)' },
   { id: 'caithedral-core', label: 'Caithedral Core', icon: '🏛', tooltip: 'Tab 13 · Caithedral™ Core — SSPL open-source substrate · Designed to Be Copied · Banyan Metric™ · MoneyPenny™ · Substrated Folders · CPU-only inference' },
-  { id: 'lb-account',     label: 'LB Account',     icon: '🪙', tooltip: 'Tab 14 · 🪙 LB Account — Link your Liana Banyan cooperative account · Join the Frontier mesh · Crewman attribution' },
+  { id: 'lb-account',     label: 'LB Account',     icon: '$', tooltip: 'Tab 14 · LB Account — Link your Liana Banyan cooperative account · Join the Frontier mesh · Crewman attribution' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -488,7 +488,7 @@ export function MnemosyneTabView({
       {/* UI-2 · Shirley Temple Policy toggles — easy to find at chamber root per Founder direct */}
       <ShirleyTempleToggles />
 
-      {/* BP065 — "Open the Bridge" navigates to 🪙 LB Account (Tab 14) · fix for dead button */}
+      {/* BP065 — "Open the Bridge" navigates to LB Account (Tab 14) · fix for dead button */}
       <div style={{ padding: '8px 16px 0' }}>
         <button
           type="button"
@@ -510,7 +510,7 @@ export function MnemosyneTabView({
           }}
           title="Open the LB Account tab — link your Liana Banyan account · join the Frontier"
         >
-          🪙 Open the Bridge — Link LB Account →
+          Open the Bridge — Link LB Account →
         </button>
       </div>
 
