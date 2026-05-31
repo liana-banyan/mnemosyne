@@ -138,14 +138,14 @@
       "verifyUpdateCodeSignature": false
     },
     "nsis": {
-      "artifactName": "Mnemosyne-Setup-${version}.${ext}",
+      "artifactName": "MnemosyneC-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Mnemosyne",
+      "shortcutName": "MnemosyneC",
       "include": "assets/installer.nsh",
       "license": "assets/LICENSE.rtf",
       "deleteAppDataOnUninstall": false,
