@@ -242,6 +242,9 @@ declare global {
         onEbletMinted: (callback: (eblet: any) => void) => void;
         onFolderError: (callback: (payload: { folderId: string; error: string }) => void) => void;
       };
+      // BP067 Phase 3B — mnemo://focus/<tab_id> deep-link → per-install focus-tab
+      onNavigateFocusTab?: (cb: (tabId: string) => void) => () => void;
+
       // SAGA 13 BP046B — 5-Marks first-install bonus
       creditFirstInstallMarks?: () => void;
       // SAGA 07 BP046B — Utility methods

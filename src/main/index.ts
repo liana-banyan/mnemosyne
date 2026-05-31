@@ -98,6 +98,9 @@ import { registerAiDispatchIPC } from './ai_dispatch_ipc';
 // SAGA-γ v0.1.10 — SubstratedFolderWatcher™
 import { SubstratedFolderWatcher, registerWatcherIpc } from './services/SubstratedFolderWatcher';
 
+// BP067 Correction 2 — Folder→DAG bridge
+import { setDagBridgeMeshHook, getDagEmitCount } from './dag_bridge';
+
 // SAGA 10 BP045 W1 — mnemosyne:// + mnemo:// deep-link handler
 import { registerDeepLinkProtocol, handleStartupDeepLink } from './deep-link-handler';
 import type { DeepLinkPayload } from './deep-link-handler';
@@ -1853,6 +1856,11 @@ function registerIPCHandlers(): void {
     return dialog.showOpenDialog({ properties: ['openDirectory'] });
   });
 
+  // ── DAG Bridge status (BP067 Correction 2) ────────────────────────────────
+  ipcMain.handle('dag:emit-status', () => {
+    return { emitted: getDagEmitCount() };
+  });
+
   // ── Trail Eblet Reader (KniPr035) ─────────────────────────────────────────
   ipcMain.handle('trail-eblet:list', async () => {
     const fs = require('fs') as typeof import('fs');
@@ -2157,6 +2165,9 @@ app.whenReady().then(async () => {
   // MESH-6: Wire pointer-advance hook from caithedral tools IPC
   setMeshPointerAdvanceHook(_emitPointerAdvanceToPeers);
 
+  // BP067 Correction 2: Wire folder→DAG bridge mesh hook
+  setDagBridgeMeshHook(_emitPointerAdvanceToPeers);
+
   // MESH-6 Option-B: Wire HTTP /dag/emit endpoint to the same pointer_advance broadcast
   setDagEmitMeshHook(_emitPointerAdvanceToPeers);
 
@@ -2227,6 +2238,14 @@ app.whenReady().then(async () => {
           slug: payload.slug,
           token: payload.token,
         });
+      } else if (payload.type === 'focus-tab') {
+        // BP067 Phase 3B — mnemo://focus/<tab_id> → navigate to tab
+        console.log('[deep-link] focus-tab received:', payload.tabId);
+        openDashboard({ focus: true });
+        const win = dashboardWindow;
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('navigate:focus-tab', { tabId: payload.tabId });
+        }
       } else if (payload.type === 'lb-auth-callback') {
         // BP065 Part A — Complete the LB Account magic-link auth flow
         console.log('[deep-link] lb-auth-callback received');

@@ -675,6 +675,13 @@ contextBridge.exposeInMainWorld('amplify', {
     },
   },
 
+  // ── BP067 Phase 3B — mnemo://focus/<tab_id> deep-link focus-tab event ──────
+  onNavigateFocusTab: (cb: (tabId: string) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: { tabId: string }) => cb(payload.tabId);
+    ipcRenderer.on('navigate:focus-tab', handler);
+    return () => ipcRenderer.removeListener('navigate:focus-tab', handler);
+  },
+
   // ── SAGA 13 BP046B — 5-Marks first-install bonus ─────────────────────────
   /** Credit 5 marks on first install + first Stage 1 Gauntlet completion. One-per-account. */
   creditFirstInstallMarks: (): void =>
@@ -992,6 +999,8 @@ declare global {
         listScreenshots: (args: { ebletPath: string }) => Promise<{ files: string[]; dir: string }>;
         readScreenshot: (args: { filePath: string }) => Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
       };
+      // BP067 Phase 3B — focus-tab deep-link event
+      onNavigateFocusTab?: (cb: (tabId: string) => void) => () => void;
       // SAGA 13 BP046B
       creditFirstInstallMarks: () => void;
       // SAGA 07 BP046B utilities

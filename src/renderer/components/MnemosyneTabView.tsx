@@ -192,6 +192,20 @@ export function MnemosyneTabView({
     return cleanup ?? undefined;
   }, []);
 
+  // BP067 Phase 3B — mnemo://focus/<tab_id> deep-link: switch to requested tab
+  useEffect(() => {
+    if (!window.amplify?.onNavigateFocusTab) return;
+    const cleanup = window.amplify.onNavigateFocusTab((tabId) => {
+      const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer',
+        'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector',
+        'caithedral-core', 'lb-account', 'battery-dispatch', 'broadcast-schedule'];
+      if (validTabs.includes(tabId as TabId)) {
+        setActiveTab(tabId as TabId);
+      }
+    });
+    return cleanup;
+  }, []);
+
   // BP067 Phase 2D — Organic N=3 folder-prompt harness
   useEffect(() => {
     const shown = Number(localStorage.getItem('mnemo_folder_prompt_count') ?? 0);

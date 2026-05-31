@@ -3,6 +3,8 @@
 // Week view of scheduled broadcasts · Add broadcast form · Pending vs Sent · local storage
 
 import React, { useState } from 'react';
+import { useDeckCue } from '../hooks/useDeckCue';
+import { DeckCuePullup } from './DeckCuePullup';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -68,6 +70,7 @@ function fmt(d: Date): string { return d.toISOString().split('T')[0]; }
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function BroadcastScheduleTab() {
+  const { cards, showCard, dismissCard, isPullupOpen, closePullup } = useDeckCue();
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>(load);
   const [showForm, setShowForm] = useState(false);
   const [filter, setFilter] = useState<'all' | 'pending' | 'sent'>('all');
@@ -102,6 +105,7 @@ export function BroadcastScheduleTab() {
     setFTitle('');
     setFBody('');
     setShowForm(false);
+    showCard('broadcast');
   }
 
   function markSent(id: string) {
@@ -126,6 +130,7 @@ export function BroadcastScheduleTab() {
   const pending = broadcasts.filter(b => b.status === 'pending').length;
 
   return (
+    <>
     <div style={{ padding:'16px 20px', overflowY:'auto', height:'100%', boxSizing:'border-box' }}>
       <div style={{ maxWidth:700, margin:'0 auto' }}>
 
@@ -249,6 +254,15 @@ export function BroadcastScheduleTab() {
         </div>
       </div>
     </div>
+
+    {/* BP067 Phase 3A — Deck Cue Card pullup (shared with Battery tab) */}
+    <DeckCuePullup
+      cards={cards}
+      isOpen={isPullupOpen}
+      onDismiss={dismissCard}
+      onClose={closePullup}
+    />
+    </>
   );
 }
 

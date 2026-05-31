@@ -9,8 +9,9 @@
 //   Never ask again → sets decision = 'never' → closes prompt
 //   Tell me where to find this → shows path to Tab 14 LB Account → closes prompt
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { recordStrike, setDecision, setCadence, type OptInCadence } from '../lib/opt_in_strike_tracker';
+import { getHenNarration } from '../lib/little_red_hen';
 
 interface OptInPromptProps {
   onClose: () => void;
@@ -20,6 +21,8 @@ interface OptInPromptProps {
 
 export function OptInPrompt({ onClose, onYes, onNavigateToTab }: OptInPromptProps) {
   const [phase, setPhase] = useState<'main' | 'yes-email' | 'tell-me-where'>('main');
+  // LRH narration is stable for the lifetime of this prompt instance
+  const henNarration = useMemo(() => getHenNarration('join'), []);
   const [email, setEmail] = useState('');
   const [emailError, setEmailError] = useState('');
 
@@ -74,7 +77,7 @@ export function OptInPrompt({ onClose, onYes, onNavigateToTab }: OptInPromptProp
           gap: 12,
         }}
       >
-        {phase === 'main' && <MainPhase onRemind={handleRemind} onNever={handleNever} onYes={() => setPhase('yes-email')} onTellMe={handleTellMe} />}
+        {phase === 'main' && <MainPhase onRemind={handleRemind} onNever={handleNever} onYes={() => setPhase('yes-email')} onTellMe={handleTellMe} henNarration={henNarration} />}
         {phase === 'yes-email' && (
           <YesEmailPhase
             email={email}
@@ -102,11 +105,13 @@ function MainPhase({
   onNever,
   onYes,
   onTellMe,
+  henNarration,
 }: {
   onRemind: (c: OptInCadence) => void;
   onNever: () => void;
   onYes: () => void;
   onTellMe: () => void;
+  henNarration: string;
 }) {
   return (
     <>
@@ -119,6 +124,10 @@ function MainPhase({
           <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, lineHeight: 1.6 }}>
             Linking your Liana Banyan account lets your device join the Frontier — a cooperative mesh
             where members share substrate and multiply what Mnemosyne knows. Free to use. Better together.
+          </div>
+          {/* Little Red Hen narration — join context */}
+          <div style={{ fontSize: 10, color: '#475569', marginTop: 6, fontStyle: 'italic' }}>
+            {henNarration}
           </div>
         </div>
       </div>

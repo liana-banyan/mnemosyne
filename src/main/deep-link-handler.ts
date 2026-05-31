@@ -27,7 +27,12 @@ export interface DeepLinkAuthPayload {
   email: string;
 }
 
-export type DeepLinkPayload = DeepLinkAcceptPayload | DeepLinkAuthPayload;
+export interface DeepLinkFocusPayload {
+  type: 'focus-tab';
+  tabId: string;
+}
+
+export type DeepLinkPayload = DeepLinkAcceptPayload | DeepLinkAuthPayload | DeepLinkFocusPayload;
 
 export type DeepLinkHandler = (payload: DeepLinkPayload) => void;
 
@@ -60,8 +65,18 @@ export function parseDeepLink(url: string): DeepLinkPayload | null {
     // Supabase redirects to: mnemo://auth/callback#access_token=X&refresh_token=Y&...
     // or as query params: mnemo://auth/callback?access_token=X&...
     if (proto === `${MNEMO_PROTOCOL}:`) {
-      const host = parsed.hostname; // 'auth'
-      const pathname = parsed.pathname; // '/callback'
+      const host = parsed.hostname; // 'auth' | 'focus'
+      const pathname = parsed.pathname;
+
+      // BP067 Phase 3B — mnemo://focus/<tab_id> → per-install focus-tab navigation
+      if (host === 'focus') {
+        const tabId = pathname.replace(/^\//, '').split('/')[0];
+        if (tabId) {
+          return { type: 'focus-tab', tabId };
+        }
+        return null;
+      }
+
       if (host === 'auth' && pathname.startsWith('/callback')) {
         // Supabase fragment-based callback: parse from hash
         const raw = url.includes('#') ? url.slice(url.indexOf('#') + 1) : '';

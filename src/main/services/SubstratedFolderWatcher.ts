@@ -219,8 +219,14 @@ export class SubstratedFolderWatcher {
 
     this.mainWindow?.webContents.send(IPC_WATCHER.EBLET_MINTED, eblet);
 
-    // TODO v0.1.10: persist Eblet to KitchenTableStore / Cathedral substrate
-    // TODO v0.1.10: sha256 dual-write to Asteroid-ProofVault compatible path
+    // BP067 Correction 2: emit into soccerball-DAG so a user-picked local folder
+    // becomes a peer-resolvable bank (MESH-6 SID-fetch path). Best-effort.
+    if (!eblet.source_deleted) {
+      try {
+        const { emitFolderEntryToDAG } = require('../dag_bridge') as typeof import('../dag_bridge');
+        emitFolderEntryToDAG(eblet);
+      } catch { /* dag_bridge is best-effort — never crash the watcher */ }
+    }
   }
 
   private loadPersistedFolders(): void {

@@ -4,6 +4,8 @@
 // Reserve vs Spend · dispatch log · local storage · no backend required
 
 import React, { useState, useEffect } from 'react';
+import { useDeckCue } from '../hooks/useDeckCue';
+import { DeckCuePullup } from './DeckCuePullup';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +55,7 @@ function thisWeekEntries(entries: DispatchEntry[]): DispatchEntry[] {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function BatteryDispatchTab() {
+  const { cards, showCard, dismissCard, isPullupOpen, closePullup } = useDeckCue();
   const [entries, setEntries] = useState<DispatchEntry[]>(loadEntries);
   const [capacity, setCapacity] = useState(loadCapacity);
   const [task, setTask] = useState('');
@@ -84,6 +87,7 @@ export function BatteryDispatchTab() {
     setTask('');
     setHours(1);
     setNote('');
+    showCard('dispatch');
   }
 
   function removeEntry(id: string) {
@@ -103,6 +107,7 @@ export function BatteryDispatchTab() {
   const chargeColor = chargePercent > 60 ? '#6ee7b7' : chargePercent > 30 ? '#f59e0b' : '#f87171';
 
   return (
+    <>
     <div style={{ padding:'16px 20px', overflowY:'auto', height:'100%', boxSizing:'border-box' }}>
       <div style={{ maxWidth:600, margin:'0 auto' }}>
 
@@ -264,5 +269,14 @@ export function BatteryDispatchTab() {
         </div>
       </div>
     </div>
+
+    {/* BP067 Phase 3A — Deck Cue Card pullup (shared with Broadcast tab) */}
+    <DeckCuePullup
+      cards={cards}
+      isOpen={isPullupOpen}
+      onDismiss={dismissCard}
+      onClose={closePullup}
+    />
+    </>
   );
 }
