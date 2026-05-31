@@ -32,6 +32,13 @@ export interface ModelPullProgress {
   error?: string;
 }
 
+export interface EngineSetupProgress {
+  step: string;
+  message: string;
+  detail?: string;
+  percentComplete?: number;
+}
+
 export interface AMPLIFYSnapshot {
   total_queries: number;
   substrate_hits: number;
@@ -256,6 +263,22 @@ contextBridge.exposeInMainWorld('amplify', {
     const handler = (_event: Electron.IpcRendererEvent, progress: ModelPullProgress) => cb(progress);
     ipcRenderer.on('ollama-pull-progress', handler);
     return () => ipcRenderer.removeListener('ollama-pull-progress', handler);
+  },
+
+  // BP067 v0.1.24 — transparent install + floor model
+  setupPrivateAI: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('setup-private-ai'),
+
+  markBp067FirstRunComplete: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('mark-bp067-first-run-complete'),
+
+  askFloorModel: (prompt: string): Promise<{ ok: boolean; text?: string; error?: string }> =>
+    ipcRenderer.invoke('ask-floor-model', { prompt }),
+
+  onEngineSetupProgress: (cb: (progress: EngineSetupProgress) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: EngineSetupProgress) => cb(progress);
+    ipcRenderer.on('engine-setup-progress', handler);
+    return () => ipcRenderer.removeListener('engine-setup-progress', handler);
   },
 
   // ── Substrate (Phase 3) ───────────────────────────────────────────────────
@@ -878,6 +901,10 @@ declare global {
       listOllamaModels: () => Promise<string[]>;
       checkDiskSpace: () => Promise<{ ok: boolean; requiredGB: number }>;
       onOllamaPullProgress: (cb: (progress: ModelPullProgress) => void) => () => void;
+      setupPrivateAI: () => Promise<{ ok: boolean; error?: string }>;
+      markBp067FirstRunComplete: () => Promise<{ ok: boolean }>;
+      askFloorModel: (prompt: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
+      onEngineSetupProgress: (cb: (progress: EngineSetupProgress) => void) => () => void;
       // Substrate
       substrateQuery: (query: string, model?: string) => Promise<SubstrateQueryResult>;
       substrateWrite: (text: string, source?: string, keywords?: string[]) => Promise<{ ok: boolean; id?: string }>;

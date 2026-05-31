@@ -1,14 +1,13 @@
-; Mnemosyne — NSIS custom installer script
+; MnemosyneC — NSIS custom installer script
 ; B37 Phase 6 — additional installer behaviors
-; MV-VERSION-DISPLAY BP044 — version-class display in installer
-; KniPr005 v0.1.9 — Non-destructive disclosure (A2 canon) added to installer welcome
+; BP067 v0.1.24 — transparent install copy (Truth-Always: Ollama attribution)
 
-; Non-destructive disclosure shown on installer welcome screen
-!define MUI_WELCOMEPAGE_TEXT "Mnemosyne(TM) is a READ-ONLY companion.$\r$\n$\r$\nWhat Mnemosyne does to your computer:$\r$\n$\r$\n- Reads ONLY folders you explicitly mark as Substrated$\r$\n- Creates sha256-verified Eblet records inside its own data folder$\r$\n- Your original files are NEVER moved, modified, or uploaded$\r$\n- No account required. No telemetry. No phone-home.$\r$\n$\r$\nVerify via Developer Tab > Caithedral(TM) Inspector:$\r$\nevery Eblet shows its source path and matching sha256 hash.$\r$\n$\r$\nInstaller sha256: See SHA-256 at: https://github.com/Upekrithen/LianaBanyanPlatform/releases/tag/v0.1.9$\r$\n$\r$\nClick Next to continue."
+!define MUI_WELCOMEPAGE_TEXT "MnemosyneC(TM) — your private AI on your computer.$\r$\n$\r$\nDuring first launch, MnemosyneC will set up Ollama — a free, open-source AI engine (MIT license, created by a Y-Combinator startup). Your questions and files never leave your machine. Free, forever.$\r$\n$\r$\nMnemosyneC is READ-ONLY toward your files:$\r$\n- Reads ONLY folders you explicitly choose$\r$\n- Creates verified records in its own data folder$\r$\n- Your originals are NEVER moved, modified, or uploaded$\r$\n$\r$\nClick Next to install."
 
 ; Kill any running Mnemosyne process before installing
 !macro customInstall
-  DetailPrint "Installing Mnemosyne ${VERSION} — LB Alpha-phase · craft authority"
+  DetailPrint "Installing MnemosyneC ${VERSION} — private AI · family-install release"
+  nsExec::Exec 'taskkill /F /IM "MnemosyneC.exe" /T'
   nsExec::Exec 'taskkill /F /IM "Mnemosyne.exe" /T'
   ; Legacy process name cleanup (pre-v0.1.2 installs)
   nsExec::Exec 'taskkill /F /IM "AMPLIFY Computer.exe" /T'

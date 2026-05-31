@@ -3,12 +3,18 @@
 // Handles: pre-installed Ollama detection, bundled binary fallback, model management
 
 import { spawn, ChildProcess, execSync } from 'child_process';
-import { existsSync, statSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readdirSync } from 'fs';
+import { homedir } from 'os';
 import { join } from 'path';
 import { app } from 'electron';
+import {
+  FLOOR_MODEL,
+  FLOOR_MODEL_ALIASES,
+  isFloorModel,
+} from '../shared/floor-model';
 
 const OLLAMA_API_BASE = 'http://localhost:11434';
-const DEFAULT_MODEL = 'llama3.1:8b-instruct-q4_K_M';
+const DEFAULT_MODEL = FLOOR_MODEL;
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const STARTUP_TIMEOUT_MS = 15_000;
 
@@ -26,6 +32,23 @@ export interface ModelPullProgress {
   totalBytes?: number;
   percentComplete?: number;
   error?: string;
+}
+
+/** BP067 — transparent install progress (real steps, plain language). */
+export type EngineSetupStep =
+  | 'checking'
+  | 'found_existing'
+  | 'starting_engine'
+  | 'importing_bundled'
+  | 'pulling_floor'
+  | 'ready'
+  | 'error';
+
+export interface EngineSetupProgress {
+  step: EngineSetupStep;
+  message: string;
+  detail?: string;
+  percentComplete?: number;
 }
 
 export class OllamaManager {
@@ -212,6 +235,106 @@ export class OllamaManager {
     return models.some((m) => m === modelName || m.startsWith(modelName.split(':')[0]));
   }
 
+  async hasFloorModel(): Promise<boolean> {
+    const models = await this.listModels();
+    return models.some((m) => isFloorModel(m));
+  }
+
+  private _resourcesOllamaPath(): string {
+    return app.isPackaged
+      ? join(process.resourcesPath, 'ollama')
+      : join(__dirname, '../../resources/ollama');
+  }
+
+  private _bundledModelsPath(): string {
+    return join(this._resourcesOllamaPath(), 'bundled', 'models');
+  }
+
+  /** Copy pre-built Ollama model tree from installer bundle into user store. */
+  private _importBundledModels(): boolean {
+    const bundled = this._bundledModelsPath();
+    if (!existsSync(bundled)) return false;
+
+    const userModels = join(homedir(), '.ollama', 'models');
+    mkdirSync(userModels, { recursive: true });
+
+    const copyTree = (src: string, dest: string) => {
+      for (const entry of readdirSync(src, { withFileTypes: true })) {
+        const s = join(src, entry.name);
+        const d = join(dest, entry.name);
+        if (entry.isDirectory()) {
+          mkdirSync(d, { recursive: true });
+          copyTree(s, d);
+        } else if (!existsSync(d)) {
+          cpSync(s, d);
+        }
+      }
+    };
+
+    try {
+      copyTree(bundled, userModels);
+      console.log('[Ollama] Imported bundled floor model from installer resources');
+      return true;
+    } catch (err) {
+      console.warn('[Ollama] Bundled model import failed:', err);
+      return false;
+    }
+  }
+
+  /**
+   * BP067 — ensure private AI floor is ready: bundled import first, then pull.
+   */
+  async ensureFloorModel(
+    onProgress?: (p: EngineSetupProgress) => void,
+    pullProgress?: (p: ModelPullProgress) => void,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const emit = (step: EngineSetupStep, message: string, extra?: Partial<EngineSetupProgress>) => {
+      onProgress?.({ step, message, ...extra });
+    };
+
+    emit('checking', 'Checking your computer for an AI engine…');
+
+    if (!(await this.isReachable())) {
+      emit('starting_engine', 'Starting your private AI engine…');
+      await this.init();
+    }
+
+    if (!(await this.isReachable())) {
+      emit('error', 'Could not start a local AI engine.', {
+        detail: 'Install Ollama from ollama.com or re-run the MnemosyneC installer.',
+      });
+      return { ok: false, error: 'Ollama not reachable' };
+    }
+
+    if (this.status.source === 'pre-installed') {
+      emit('found_existing', '✓ You already have Ollama — using it.');
+    }
+
+    if (await this.hasFloorModel()) {
+      this.status.model = FLOOR_MODEL;
+      emit('ready', '✓ Your private AI is ready.');
+      return { ok: true };
+    }
+
+    emit('importing_bundled', 'Setting up your AI model…');
+    if (this._importBundledModels() && (await this.hasFloorModel())) {
+      this.status.model = FLOOR_MODEL;
+      emit('ready', '✓ Your private AI is ready.');
+      return { ok: true };
+    }
+
+    emit('pulling_floor', `Downloading your AI model (${FLOOR_MODEL})… one time, stays on your computer.`);
+    try {
+      await this.pullModel(FLOOR_MODEL, pullProgress);
+      emit('ready', '✓ Your private AI is ready.');
+      return { ok: true };
+    } catch (err) {
+      const msg = String(err);
+      emit('error', 'Could not download the AI model.', { detail: msg });
+      return { ok: false, error: msg };
+    }
+  }
+
   async pullModel(
     modelName: string = DEFAULT_MODEL,
     progressCb?: (progress: ModelPullProgress) => void,
@@ -294,6 +417,43 @@ export class OllamaManager {
 
   getStatus(): OllamaStatus {
     return { ...this.status };
+  }
+
+  /** BP067 — direct floor-model answer for first-run instant payoff (bypasses Normal-mode substrate-only path). */
+  async askFloorModel(prompt: string): Promise<{ ok: boolean; text?: string; error?: string }> {
+    if (!(await this.isReachable())) {
+      return { ok: false, error: 'Local AI engine not running' };
+    }
+    const model = (await this.hasFloorModel())
+      ? (await this.listModels()).find((m) => isFloorModel(m)) ?? FLOOR_MODEL
+      : FLOOR_MODEL;
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60_000);
+      const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+          options: { num_predict: 256, temperature: 0.7 },
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+
+      if (!res.ok) {
+        return { ok: false, error: `Model request failed (${res.status})` };
+      }
+      const data = await res.json() as { response?: string };
+      const text = data.response?.trim();
+      if (!text) return { ok: false, error: 'Empty response from local model' };
+      this.status.model = model;
+      return { ok: true, text };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
   }
 
   private _startHealthMonitor(): void {

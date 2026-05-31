@@ -46,6 +46,13 @@ export interface ModelPullProgress {
   error?: string;
 }
 
+export interface EngineSetupProgress {
+  step: string;
+  message: string;
+  detail?: string;
+  percentComplete?: number;
+}
+
 export interface SubstrateQueryResult {
   hit: boolean;
   record?: {
@@ -164,6 +171,10 @@ declare global {
       listOllamaModels: () => Promise<string[]>;
       checkDiskSpace: () => Promise<{ ok: boolean; requiredGB: number }>;
       onOllamaPullProgress: (cb: (progress: ModelPullProgress) => void) => () => void;
+      setupPrivateAI: () => Promise<{ ok: boolean; error?: string }>;
+      markBp067FirstRunComplete: () => Promise<{ ok: boolean }>;
+      askFloorModel: (prompt: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
+      onEngineSetupProgress: (cb: (progress: EngineSetupProgress) => void) => () => void;
       // Substrate (Phase 3)
       substrateQuery: (query: string, model?: string) => Promise<SubstrateQueryResult>;
       substrateWrite: (text: string, source?: string, keywords?: string[]) => Promise<{ ok: boolean; id?: string }>;

@@ -5,8 +5,10 @@
 import React, { useEffect, useState } from 'react';
 import type { ModelPullProgress } from '../amplify.d';
 
-const DEFAULT_MODEL = 'llama3.1:8b-instruct-q4_K_M';
-const MODEL_SIZE_GB = 4.9;
+import { FLOOR_MODEL, FLOOR_MODEL_ALIASES } from '../../shared/floor-model';
+
+const DEFAULT_MODEL = FLOOR_MODEL;
+const MODEL_SIZE_GB = 1.6;
 
 interface ModelPullDialogProps {
   onComplete: () => void;

@@ -1185,7 +1185,7 @@ function registerIPCHandlers(): void {
     if (!ollamaManager) return { success: false, error: 'Ollama manager not initialized' };
     const reachable = await ollamaManager.isReachable();
     if (!reachable) return { success: false, error: 'Ollama not running' };
-    const hasModel = await ollamaManager.hasModel();
+    const hasModel = await ollamaManager.hasFloorModel();
     if (hasModel) return { success: true, alreadyInstalled: true };
     try {
       await ollamaManager.pullModel(undefined, (progress) => {
@@ -1196,6 +1196,32 @@ function registerIPCHandlers(): void {
     } catch (err) {
       return { success: false, error: String(err) };
     }
+  });
+
+  // BP067 v0.1.24 — transparent install + bundled Gemma floor
+  ipcMain.handle('setup-private-ai', async () => {
+    if (!ollamaManager) return { ok: false, error: 'Ollama manager not initialized' };
+    const sendProgress = (p: import('./ollama_manager').EngineSetupProgress) => {
+      overlayWindow?.webContents.send('engine-setup-progress', p);
+      dashboardWindow?.webContents.send('engine-setup-progress', p);
+    };
+    return ollamaManager.ensureFloorModel(
+      sendProgress,
+      (pull) => {
+        overlayWindow?.webContents.send('ollama-pull-progress', pull);
+        dashboardWindow?.webContents.send('ollama-pull-progress', pull);
+      },
+    );
+  });
+
+  ipcMain.handle('mark-bp067-first-run-complete', () => {
+    markFirstRunComplete();
+    return { ok: true };
+  });
+
+  ipcMain.handle('ask-floor-model', async (_event, { prompt }: { prompt: string }) => {
+    if (!ollamaManager) return { ok: false, error: 'Ollama manager not initialized' };
+    return ollamaManager.askFloorModel(prompt);
   });
 
   ipcMain.handle('list-ollama-models', async () => {
@@ -2279,14 +2305,7 @@ app.whenReady().then(async () => {
   // MNEMOSYNE_NO_AUTO_OPEN=1 skips auto-open (CI / headless environments).
   if (process.env.MNEMOSYNE_NO_AUTO_OPEN !== '1') {
     openDashboard({ focus: true });
-    if (firstRun) {
-      // Mark first-run complete after Dashboard is ready (wife-install BLOCKER preserved).
-      if (dashboardWindow && !dashboardWindow.isDestroyed()) {
-        dashboardWindow.once('ready-to-show', () => markFirstRunComplete());
-      } else {
-        setTimeout(() => markFirstRunComplete(), 2000);
-      }
-    }
+    // BP067: first_run.flag is set only after launch-walk completes (mark-bp067-first-run-complete IPC).
   }
 
   const okQuit = globalShortcut.register('CommandOrControl+Shift+Alt+Q', () => {

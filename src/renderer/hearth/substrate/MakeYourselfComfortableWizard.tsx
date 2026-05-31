@@ -199,31 +199,11 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   );
 }
 
-// ─── OnboardingGate ───────────────────────────────────────────────────────────
-// Renders OnboardingWizard sidebar on first launch, then renders children.
-// KniPr012: sidebar is non-blocking — children are always rendered.
+// BP067 v0.1.24 — OnboardingWizard deferred per BP067 (one-spine first-run supersedes sidebar wizard).
+// OnboardingGate is a pass-through; optional wizard available later via Settings if needed.
 
 export function OnboardingGate({ children }: { children: React.ReactNode }) {
-  const [onboarded, setOnboarded] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    try {
-      setOnboarded(localStorage.getItem(ONBOARDED_KEY) === 'true');
-    } catch {
-      setOnboarded(true); // fail-open: don't gate on storage errors
-    }
-  }, []);
-
-  if (onboarded === null) return <>{children}</>; // render children immediately; sidebar appears after hydration
-
-  return (
-    <>
-      {children}
-      {!onboarded && (
-        <OnboardingWizard onComplete={() => setOnboarded(true)} />
-      )}
-    </>
-  );
+  return <>{children}</>;
 }
 
 

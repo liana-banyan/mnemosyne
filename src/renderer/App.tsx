@@ -66,6 +66,16 @@ function AccessDenied({ role }: { role: string }) {
   );
 }
 
+// Shared localStorage key — cross-window overlay visibility (default OFF = opt-in)
+const LS_OVERLAY_ACTIVE = 'mnemo_overlay_active';
+
+// Cycle order for bottom-right chip: ai_burst → normal → fallback → ai_burst
+const OVERLAY_MODE_CYCLE: Record<FrameMode, FrameMode> = {
+  ai_burst: 'normal',
+  normal:   'fallback',
+  fallback: 'ai_burst',
+};
+
 export default function App() {
   const [mode, setMode] = useState<FrameMode>('normal');
   const [view] = useState<View>(getInitialView);
@@ -73,6 +83,10 @@ export default function App() {
   const [showDashboard, setShowDashboard] = useState(view === 'dashboard');
   const [showModelPull, setShowModelPull] = useState(false);
   const [authState, setAuthState] = useState<AuthState | null>(null);
+  // Overlay visible = opt-in (default false); synced via localStorage across windows
+  const [overlayActive, setOverlayActive] = useState<boolean>(() =>
+    localStorage.getItem(LS_OVERLAY_ACTIVE) === 'true'
+  );
 
   // Sync mode from main process + check first-launch model
   useEffect(() => {
@@ -95,25 +109,26 @@ export default function App() {
       setAuthState(state);
     });
 
-    // First-launch: check if default model needs pulling
-    window.amplify.getOllamaStatus().then((status) => {
-      if (status.running && !status.model) {
-        window.amplify.listOllamaModels().then((models) => {
-          const defaultInstalled = models.some((m) =>
-            m.startsWith('llama3.1:8b'),
-          );
-          if (!defaultInstalled && view === 'overlay') {
-            setShowModelPull(true);
-          }
-        });
-      }
-    });
+    // First-launch model check deferred to BP067 Bp067FirstRunSpine (setupPrivateAI)
 
     return () => {
       cleanupMode?.();
       cleanupAuth?.();
     };
   }, []);
+
+  // Cross-window sync: when FrameTab (dashboard window) writes mnemo_overlay_active,
+  // the storage event fires here (overlay window) and updates overlayActive.
+  useEffect(() => {
+    if (view !== 'overlay') return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === LS_OVERLAY_ACTIVE) {
+        setOverlayActive(e.newValue === 'true');
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [view]);
 
   // AuthGate is shown in HearthConjunctionWindow (a normal movable OS window), NOT in the
   // always-on-top overlay. This makes it impossible for the modal to trap the user:
@@ -137,9 +152,10 @@ export default function App() {
     window.amplify.setFrameMode(newMode);
   };
 
-  // KniPr005 Bug 2: overlay chip click opens the real Dashboard window (not in-overlay sheet).
+  // Bottom-right chip cycles through 3 modes: AI Burst → Normal → Fallback → AI Burst.
+  // (Dashboard opens from DashboardCornerAffordance top-left pill; chip is reserved for mode cycling.)
   const handleCornerClick = () => {
-    window.amplify?.openDashboard?.();
+    handleModeChange(OVERLAY_MODE_CYCLE[mode]);
   };
 
   const handleDashboardClose = () => {
@@ -239,15 +255,18 @@ export default function App() {
   return (
     <>
       <DashboardCornerAffordance />
-      {/* Always-present LB Frame border + corner indicator */}
-      {/* KniPr005: onChipClick opens Dashboard window; onModeChange handles mode changes */}
-      <FrameModeIndicator
-        state={{ mode }}
-        onModeChange={handleModeChange}
-        onChipClick={showModelPull ? undefined : handleCornerClick}
-        memberBadge={authState?.member?.badge_tier}
-        degraded={authState?.degraded ?? false}
-      />
+      {/* LB Frame border + corner indicator — opt-in only (defaults OFF).
+          Enabled from FrameTab "Show" button → writes mnemo_overlay_active to localStorage.
+          Bottom-right chip cycles AI Burst → Normal → Fallback → AI Burst. */}
+      {overlayActive && (
+        <FrameModeIndicator
+          state={{ mode }}
+          onModeChange={handleModeChange}
+          onChipClick={showModelPull ? undefined : handleCornerClick}
+          memberBadge={authState?.member?.badge_tier}
+          degraded={authState?.degraded ?? false}
+        />
+      )}
 
       {/* Bug #1 v0.1.10: update download progress + ready-to-install toast */}
       <UpdateToast />

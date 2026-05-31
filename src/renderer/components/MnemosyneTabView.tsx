@@ -50,8 +50,8 @@ import { OptInPrompt } from './OptInPrompt';
 import { shouldShowPrompt, recordStrike, setDecision } from '../lib/opt_in_strike_tracker';
 // BP067 Phase 1A — $5 join flow
 import { FirstStepsView } from './FirstStepsView';
-// BP067 Phase 1B — SaltFighter first-run
-import { SaltFighterFirstRun } from './SaltFighterFirstRun';
+// BP067 v0.1.24 — one-spine first-run (supersedes SaltFighterFirstRun + OnboardingWizard)
+import { Bp067FirstRunSpine, LS_BP067_FIRST_RUN_COMPLETE } from './Bp067FirstRunSpine';
 // BP067 Phase 2B/2C — Battery Dispatch + Broadcast Schedule
 import { BatteryDispatchTab } from './BatteryDispatchTab';
 import { BroadcastScheduleTab } from './BroadcastScheduleTab';
@@ -62,6 +62,7 @@ const LS_GAUNTLET_FIRST_COMPLETE = 'mnemo_gauntlet_first_complete';
 const LS_DEVELOPER_MODE = 'mnemo_developer_mode_enabled';
 const LS_ACTIVE_TAB = 'mnemo_active_tab';
 const LS_ONBOARD_CHOICE = 'mnemo_onboard_choice'; // 'free' | 'member' | 'developer' | 'dismissed'
+const LS_FOR_TECHIES = 'mnemo_for_techies_unlocked';
 const LS_WIND_UNLOCKED = 'mnem_wind_unlocked';
 const LS_WIND_TIER = 'mnem_wind_tier';
 
@@ -125,9 +126,13 @@ export function MnemosyneTabView({
   // BP067 Phase 1A — $5 join flow modal
   const [showFirstSteps, setShowFirstSteps] = useState(false);
 
-  // BP067 Phase 1B — SaltFighter first-run (gate: localStorage mnemosyne-saltfighter-done)
-  const [saltfighterDone, setSaltfighterDone] = useState(() =>
-    localStorage.getItem('mnemosyne-saltfighter-done') === 'true'
+  // BP067 v0.1.24 — one-spine first-run complete gate
+  const [bp067Complete, setBp067Complete] = useState(() =>
+    localStorage.getItem(LS_BP067_FIRST_RUN_COMPLETE) === 'true'
+  );
+
+  const [forTechies, setForTechies] = useState(() =>
+    localStorage.getItem(LS_FOR_TECHIES) === 'true'
   );
 
   // BP067 Phase 1C — "Schedule this meal" cross-tab handoff
@@ -137,10 +142,8 @@ export function MnemosyneTabView({
   const [showFolderPrompt, setShowFolderPrompt] = useState(false);
   const [folderPromptMsg, setFolderPromptMsg] = useState('');
 
-  // 3-option ask: shown on first launch until user dismisses
-  const [showOnboardAsk, setShowOnboardAsk] = useState(() =>
-    !localStorage.getItem(LS_ONBOARD_CHOICE)
-  );
+  // 3-option ask: deferred per BP067 (not shown on first-run spine)
+  const [showOnboardAsk, setShowOnboardAsk] = useState(false);
   const [windUnlocked, setWindUnlocked] = useState(() =>
     localStorage.getItem(LS_WIND_UNLOCKED) === 'true'
   );
@@ -151,13 +154,12 @@ export function MnemosyneTabView({
   const windClickCount = useRef(0);
   const windClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Determine default tab: Tab 3 (gauntlet) on first launch, Tab 1 (frame) after first run
+  // BP067: default Tab 1 Frame (daily driver) — Gauntlet hidden behind For Techies
   function resolveDefaultTab(): TabId {
-    const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
     const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core', 'lb-account', 'battery-dispatch', 'broadcast-schedule'];
-    if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
-    return gauntletDone ? 'frame' : 'gauntlet';
+    if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled) && (saved !== 'gauntlet' || forTechies)) return saved;
+    return 'frame';
   }
 
   const [activeTab, setActiveTab] = useState<TabId>(resolveDefaultTab);
@@ -319,7 +321,14 @@ export function MnemosyneTabView({
     }
   }, []);
 
-  const visibleTabs = TABS.filter((t) => t.id !== 'developer' || devEnabled);
+  const visibleTabs = TABS.filter((t) => {
+    if (t.id === 'developer') return devEnabled;
+    if (t.id === 'gauntlet') return forTechies;
+    return true;
+  });
+
+  const showBridgeBanner = bp067Complete && (isMember || isFounder);
+  const showModeChip = bp067Complete && (isMember || isFounder);
   // Atlas™ and Kitchen Table™ are always visible (core v0.1.8 features)
 
   // ─── Styles ────────────────────────────────────────────────────────────────
@@ -425,13 +434,12 @@ export function MnemosyneTabView({
   return (
     <>
     {/* BP067 Phase 1B — SaltFighter first-run (shown before main app on first launch) */}
-    {!saltfighterDone && (
-      <SaltFighterFirstRun
+    {!bp067Complete && (
+      <Bp067FirstRunSpine
         onComplete={() => {
-          localStorage.setItem('mnemosyne-saltfighter-done', 'true');
-          setSaltfighterDone(true);
+          setBp067Complete(true);
+          setActiveTab('frame');
         }}
-        onJoin={() => setShowFirstSteps(true)}
       />
     )}
     {/* BP067 Phase 1A — $5 join flow modal */}
@@ -549,7 +557,8 @@ export function MnemosyneTabView({
           >
             Check for Updates{appVersion ? ` · v${appVersion}` : ''}
           </button>
-          {/* G.4 KniPr011: AI Burst chip is now clickable — triggers setFrameMode('ai_burst') */}
+          {/* BP067: mode chip hidden until authenticated/member state */}
+          {showModeChip && (
           <button
             type="button"
             onClick={() => {
@@ -576,6 +585,7 @@ export function MnemosyneTabView({
           >
             {modeLabel[currentMode]}
           </button>
+          )}
           <button
             style={styles.closeBtn}
             onClick={onClose}
@@ -623,7 +633,8 @@ export function MnemosyneTabView({
         </div>
       )}
 
-      {/* BP065 — "Open the Bridge" navigates to LB Account (Tab 14) · fix for dead button */}
+      {/* BP067: Bridge banner hidden until member/authenticated */}
+      {showBridgeBanner && (
       <div style={{ padding: '8px 16px 0' }}>
         <button
           type="button"
@@ -648,6 +659,32 @@ export function MnemosyneTabView({
           Open the Bridge — Link LB Account →
         </button>
       </div>
+      )}
+
+      {/* BP067: For Techies disclosure — reveals Gauntlet tab */}
+      {bp067Complete && !forTechies && (
+        <div style={{ padding: '4px 16px 0', flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={() => {
+              localStorage.setItem(LS_FOR_TECHIES, 'true');
+              setForTechies(true);
+              setActiveTab('gauntlet');
+            }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#475569',
+              fontSize: 10,
+              cursor: 'pointer',
+              textDecoration: 'underline',
+              padding: 0,
+            }}
+          >
+            For Techies →
+          </button>
+        </div>
+      )}
 
       {/* Tab bar */}
       <div style={styles.tabBar} role="tablist" aria-label="Mnemosyne navigation">
