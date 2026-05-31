@@ -98,9 +98,17 @@ import { registerAiDispatchIPC } from './ai_dispatch_ipc';
 // SAGA-γ v0.1.10 — SubstratedFolderWatcher™
 import { SubstratedFolderWatcher, registerWatcherIpc } from './services/SubstratedFolderWatcher';
 
-// SAGA 10 BP045 W1 — mnemosyne:// deep-link handler
+// SAGA 10 BP045 W1 — mnemosyne:// + mnemo:// deep-link handler
 import { registerDeepLinkProtocol, handleStartupDeepLink } from './deep-link-handler';
 import type { DeepLinkPayload } from './deep-link-handler';
+
+// BP065 Part A — LB Account authentication + device linking
+import {
+  startLBAuthFlow,
+  completeLBAuth,
+  getLBSession,
+  revokeDevice as lbRevokeDevice,
+} from './lb_auth';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -1636,6 +1644,152 @@ function registerIPCHandlers(): void {
   // ── Kitchen Table™ + Atlas™ + P2P (BP052 v0.1.8) ────────────────────────
   registerKitchenTableIpc(ipcMain);
 
+  // ── LB Account + Frontier Node IPC (BP065 Part A/B · SEG-C2a/B2b) ─────────
+
+  ipcMain.handle('lb:start-auth', async (_event, { email }: { email: string }) => {
+    return startLBAuthFlow(email);
+  });
+
+  ipcMain.handle('lb:get-session', async () => {
+    const session = getLBSession();
+    if (!session) return { linked: false };
+    return {
+      linked: true,
+      user_id: session.user_id,
+      email: session.email,
+      peer_id: session.peer_id,
+      linked_at: session.linked_at,
+      crewman_number: session.crewman_number,
+    };
+  });
+
+  ipcMain.handle('lb:link-device', async (_event, { access_token, refresh_token, email }: { access_token: string; refresh_token: string; email: string }) => {
+    const result = await completeLBAuth(access_token, refresh_token, email);
+    if (result.ok && result.session) {
+      // Broadcast lb:auth-complete to all windows
+      const wins = [dashboardWindow, hearthConjunctionWindow, overlayWindow];
+      for (const win of wins) {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('lb:auth-complete', {
+            user_id: result.session.user_id,
+            email: result.session.email,
+            peer_id: result.session.peer_id,
+            crewman_number: result.session.crewman_number,
+          });
+        }
+      }
+    }
+    return { ok: result.ok, error: result.error };
+  });
+
+  ipcMain.handle('lb:revoke-device', async () => {
+    return lbRevokeDevice();
+  });
+
+  // Frontier node: heartbeat timer state
+  let frontierHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  const FRONTIER_HEARTBEAT_MS = 5 * 60 * 1000; // 5 minutes
+
+  function startFrontierHeartbeat(accessToken: string, peerId: string): void {
+    stopFrontierHeartbeat();
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+    if (!supabaseUrl || !anonKey) return;
+    const hbUrl = `${supabaseUrl.replace(/\/$/, '')}/functions/v1/frontier-node-heartbeat`;
+    frontierHeartbeatTimer = setInterval(async () => {
+      try {
+        await fetch(hbUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}`, apikey: anonKey },
+          body: JSON.stringify({ peer_id: peerId }),
+        });
+      } catch {
+        // Heartbeat errors are non-fatal — logged silently
+      }
+    }, FRONTIER_HEARTBEAT_MS);
+  }
+
+  function stopFrontierHeartbeat(): void {
+    if (frontierHeartbeatTimer !== null) {
+      clearInterval(frontierHeartbeatTimer);
+      frontierHeartbeatTimer = null;
+    }
+  }
+
+  // Frontier node status stored in-memory (supplement with safeStorage if needed in future)
+  let _frontierNodeId: string | null = null;
+
+  ipcMain.handle('lb:register-frontier-node', async () => {
+    const session = getLBSession();
+    if (!session) return { ok: false, error: 'LB Account not linked. Link first.' };
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+    if (!supabaseUrl || !anonKey) return { ok: false, error: 'Platform config not available.' };
+    try {
+      const { getStablePeerId } = await import('./federation/peer-discovery');
+      const peerId = await getStablePeerId();
+      const regUrl = `${supabaseUrl.replace(/\/$/, '')}/functions/v1/frontier-node-register`;
+      const resp = await fetch(regUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}`, apikey: anonKey },
+        body: JSON.stringify({ peer_id: peerId, app_version: app.getVersion(), node_label: `Mnemosyne ${app.getVersion()}` }),
+      });
+      const data = await resp.json() as { registered?: boolean; frontier_node_id?: string; error?: string };
+      if (!resp.ok) return { ok: false, error: data.error ?? `Register failed (${resp.status})` };
+      _frontierNodeId = data.frontier_node_id ?? null;
+      startFrontierHeartbeat(session.access_token, peerId);
+      return { ok: true, frontier_node_id: data.frontier_node_id };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('lb:withdraw-frontier-node', async () => {
+    stopFrontierHeartbeat();
+    const session = getLBSession();
+    if (!session) { _frontierNodeId = null; return { ok: true }; }
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+    if (!supabaseUrl || !anonKey) { _frontierNodeId = null; return { ok: true }; }
+    try {
+      const { getStablePeerId } = await import('./federation/peer-discovery');
+      const peerId = await getStablePeerId();
+      const withdrawUrl = `${supabaseUrl.replace(/\/$/, '')}/functions/v1/frontier-node-register`;
+      await fetch(withdrawUrl, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}`, apikey: anonKey },
+        body: JSON.stringify({ peer_id: peerId }),
+      });
+    } catch {
+      // Non-fatal
+    }
+    _frontierNodeId = null;
+    return { ok: true };
+  });
+
+  ipcMain.handle('lb:get-frontier-status', async () => {
+    return {
+      registered: _frontierNodeId !== null,
+      frontier_node_id: _frontierNodeId ?? undefined,
+    };
+  });
+
+  // Opt-In Strike Tracker IPC stubs (renderer primarily uses localStorage; IPC for cross-window sync)
+  const _optInStore = { strikes: 0, lastShown: null as number | null, decision: 'pending' as string };
+
+  ipcMain.handle('lb:opt-in-get-state', () => ({ ..._optInStore }));
+
+  ipcMain.handle('lb:opt-in-record-strike', () => {
+    _optInStore.strikes = Math.min(_optInStore.strikes + 1, 3);
+    _optInStore.lastShown = Date.now();
+    return { ok: true };
+  });
+
+  ipcMain.handle('lb:opt-in-set-decision', (_event, { decision }: { decision: string }) => {
+    _optInStore.decision = decision;
+    return { ok: true };
+  });
+
   // ── SubstratedFolderWatcher™ (SAGA-γ v0.1.10) ────────────────────────────
   if (folderWatcher) registerWatcherIpc(folderWatcher);
 
@@ -1964,18 +2118,39 @@ app.whenReady().then(async () => {
   createTray();
   registerIPCHandlers();
 
-  // SAGA 10 BP045 W1 — Register mnemosyne:// deep-link protocol
+  // SAGA 10 BP045 W1 — Register mnemosyne:// + mnemo:// deep-link protocols (BP065)
   registerDeepLinkProtocol(
-    () => hearthConjunctionWindow ?? overlayWindow ?? null,
+    () => dashboardWindow ?? hearthConjunctionWindow ?? overlayWindow ?? null,
     (payload: DeepLinkPayload) => {
       if (payload.type === 'accept-invite') {
         console.log('[deep-link] accept-invite received for slug:', payload.slug);
-        // Route to federation accept flow via IPC
         const win = hearthConjunctionWindow ?? overlayWindow;
         win?.webContents.send('federation:accept-invite', {
           slug: payload.slug,
           token: payload.token,
         });
+      } else if (payload.type === 'lb-auth-callback') {
+        // BP065 Part A — Complete the LB Account magic-link auth flow
+        console.log('[deep-link] lb-auth-callback received');
+        void (async () => {
+          const result = await completeLBAuth(
+            payload.access_token,
+            payload.refresh_token,
+            payload.email,
+          );
+          // Broadcast auth-complete to all windows so LBAccountTab updates
+          const wins = [dashboardWindow, hearthConjunctionWindow, overlayWindow];
+          for (const win of wins) {
+            if (win && !win.isDestroyed() && result.ok && result.session) {
+              win.webContents.send('lb:auth-complete', {
+                user_id: result.session.user_id,
+                email: result.session.email,
+                peer_id: result.session.peer_id,
+                crewman_number: result.session.crewman_number,
+              });
+            }
+          }
+        })();
       }
     },
   );

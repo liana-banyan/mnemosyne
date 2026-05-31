@@ -247,6 +247,16 @@ declare global {
       hideOverlay?: () => void;
       showOverlay?: () => void;
       getTelemetrySummary?: () => Promise<TelemetrySummary>;
+      // BP065 — LB Account + Frontier Node (Part A/B)
+      lbStartAuth?: (email: string) => Promise<{ ok: boolean; error?: string }>;
+      lbGetSession?: () => Promise<{ linked: boolean; user_id?: string; email?: string; peer_id?: string; linked_at?: string; crewman_number?: number }>;
+      lbLinkDevice?: (access_token: string, refresh_token: string, email: string) => Promise<{ ok: boolean; error?: string }>;
+      lbRevokeDevice?: () => Promise<{ ok: boolean; error?: string }>;
+      onLbAuthComplete?: (cb: (session: { user_id: string; email: string; peer_id: string; crewman_number?: number }) => void) => () => void;
+      lbRegisterFrontierNode?: () => Promise<{ ok: boolean; frontier_node_id?: string; error?: string }>;
+      lbWithdrawFrontierNode?: () => Promise<{ ok: boolean; error?: string }>;
+      lbGetFrontierStatus?: () => Promise<{ registered: boolean; frontier_node_id?: string; last_heartbeat?: string; withdrawn?: boolean }>;
+
       // BP060 Application 002 Step 1 — Caithedral Tools
       caithedralTools?: {
         soccerball_emit: (pearls: string[], bindings?: Record<string, string>) => Promise<{ ok: boolean; sid?: string; error?: string }>;

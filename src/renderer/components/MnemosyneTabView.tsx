@@ -34,6 +34,10 @@ import { SubstrateTab } from './SubstrateTab';
 import { UnifiedSubstrateConsole } from './UnifiedSubstrateConsole';
 import { MultiAISelector } from './MultiAISelector';
 import { CaithedralCoreTab } from './CaithedralCoreTab';
+// BP065 — Tier-2 Part A (LB Account) + 3-strikes opt-in
+import { LBAccountTab } from './LBAccountTab';
+import { OptInPrompt } from './OptInPrompt';
+import { shouldShowPrompt, recordStrike, setDecision } from '../lib/opt_in_strike_tracker';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -46,7 +50,7 @@ const LS_WIND_TIER = 'mnem_wind_tier';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core' | 'lb-account';
 
 interface TabDef {
   id: TabId;
@@ -70,6 +74,7 @@ const TABS: TabDef[] = [
   { id: 'console',      label: 'Console',         icon: '🖥', tooltip: 'Tab 11 · Unified Substrate Console — Bridge view + Dashboard view · Ctrl+Tab to switch (UI-7)' },
   { id: 'ai-selector',  label: 'AI',              icon: '🤖', tooltip: 'Tab 12 · Multi-AI Selector — Quick-pick · Court presets · Default Ollama doctrine (UI-8)' },
   { id: 'caithedral-core', label: 'Caithedral Core', icon: '🏛', tooltip: 'Tab 13 · Caithedral™ Core — SSPL open-source substrate · Designed to Be Copied · Banyan Metric™ · MoneyPenny™ · Substrated Folders · CPU-only inference' },
+  { id: 'lb-account',     label: 'LB Account',     icon: '🪙', tooltip: 'Tab 14 · 🪙 LB Account — Link your Liana Banyan cooperative account · Join the Frontier mesh · Crewman attribution' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -107,6 +112,8 @@ export function MnemosyneTabView({
   );
   const [appVersion, setAppVersion] = useState('');
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
+  // BP065 — 3-strikes opt-in prompt state
+  const [showOptIn, setShowOptIn] = useState(false);
   const windClickCount = useRef(0);
   const windClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -114,7 +121,7 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core'];
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core', 'lb-account'];
     if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
@@ -130,6 +137,20 @@ export function MnemosyneTabView({
     window.amplify?.getAppVersion?.().then((v) => setAppVersion(v?.version ?? '')).catch(() => {});
   }, []);
 
+  // BP065 — 3-strikes opt-in: check if we should show the prompt on first meaningful interaction
+  // Trigger after a short delay on mount if substrate already has hits
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (shouldShowPrompt()) {
+        // Only show if already done at least one substrate query
+        window.amplify?.getAMPLIFYSnapshot?.()
+          .then((snap) => { if (snap.substrate_hits > 0 || snap.total_queries > 2) setShowOptIn(true); })
+          .catch(() => {});
+      }
+    }, 8000); // 8s delay — user has oriented to the app
+    return () => clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     if (!window.amplify) return;
     window.amplify.getUpdateState?.().then(setUpdateState).catch(() => {});
@@ -141,6 +162,10 @@ export function MnemosyneTabView({
   function handleGauntletFirstComplete() {
     if (!localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE)) {
       localStorage.setItem(LS_GAUNTLET_FIRST_COMPLETE, 'true');
+    }
+    // BP065 — after Gauntlet completes, check if opt-in prompt should appear (frontier-beneficial action)
+    if (shouldShowPrompt()) {
+      setTimeout(() => setShowOptIn(true), 1500);
     }
   }
 
@@ -463,26 +488,29 @@ export function MnemosyneTabView({
       {/* UI-2 · Shirley Temple Policy toggles — easy to find at chamber root per Founder direct */}
       <ShirleyTempleToggles />
 
-      {/* BP048 — Dashboard → Bridge discoverability (complementary surfaces) */}
+      {/* BP065 — "Open the Bridge" navigates to 🪙 LB Account (Tab 14) · fix for dead button */}
       <div style={{ padding: '8px 16px 0' }}>
         <button
           type="button"
-          onClick={() => window.amplify?.openHearthConjunction?.()}
+          onClick={() => setActiveTab('lb-account')}
           style={{
             width: '100%',
             padding: '8px 12px',
-            background: 'rgba(100,116,139,0.08)',
-            border: '1px solid rgba(100,116,139,0.25)',
+            background: 'rgba(250,204,21,0.06)',
+            border: '1px solid rgba(250,204,21,0.2)',
             borderRadius: 8,
-            color: '#94a3b8',
+            color: '#fbbf24',
             fontSize: 12,
             fontWeight: 600,
             cursor: 'pointer',
             textAlign: 'left',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
           }}
-          title="Open the Heavy Booster operator console"
+          title="Open the LB Account tab — link your Liana Banyan account · join the Frontier"
         >
-          Open the Bridge →
+          🪙 Open the Bridge — Link LB Account →
         </button>
       </div>
 
@@ -679,7 +707,39 @@ export function MnemosyneTabView({
             <CaithedralCoreTab />
           </div>
         )}
+
+        {/* BP065 — LB Account Tab 14 (Part A: device link + Part B: Frontier registration) */}
+        {activeTab === 'lb-account' && (
+          <div
+            id="panel-lb-account"
+            role="tabpanel"
+            aria-labelledby="tab-lb-account"
+            style={{ height: '100%', overflowY: 'auto' }}
+          >
+            <LBAccountTab />
+          </div>
+        )}
       </div>
+
+      {/* BP065 — 3-strikes contextual opt-in prompt (not buried in a tab) */}
+      {showOptIn && (
+        <OptInPrompt
+          onClose={() => setShowOptIn(false)}
+          onYes={async (email: string) => {
+            // Record strike #1 (the first ask), then trigger auth flow
+            recordStrike();
+            setShowOptIn(false);
+            if (window.amplify?.lbStartAuth) {
+              await window.amplify.lbStartAuth(email).then((result: { ok: boolean; error?: string }) => {
+                if (result.ok) {
+                  setActiveTab('lb-account');
+                }
+              }).catch(() => {});
+            }
+          }}
+          onNavigateToTab={() => setActiveTab('lb-account')}
+        />
+      )}
 
       {/* Developer mode unlock prompt — shown at bottom only if not yet enabled */}
       {!devEnabled && (isMember || isFounder) && (

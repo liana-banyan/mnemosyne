@@ -747,6 +747,60 @@ contextBridge.exposeInMainWorld('amplify', {
       ipcRenderer.invoke('ai-dispatch:save-settings', settings),
   },
 
+  // ── LB Account (BP065 Part A · SEG-C2a) ─────────────────────────────────
+
+  lbStartAuth: (email: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('lb:start-auth', { email }),
+
+  lbGetSession: (): Promise<{
+    linked: boolean;
+    user_id?: string;
+    email?: string;
+    peer_id?: string;
+    linked_at?: string;
+    crewman_number?: number;
+  }> =>
+    ipcRenderer.invoke('lb:get-session'),
+
+  lbLinkDevice: (access_token: string, refresh_token: string, email: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('lb:link-device', { access_token, refresh_token, email }),
+
+  lbRevokeDevice: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('lb:revoke-device'),
+
+  onLbAuthComplete: (cb: (session: { user_id: string; email: string; peer_id: string; crewman_number?: number }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, session: { user_id: string; email: string; peer_id: string; crewman_number?: number }) => cb(session);
+    ipcRenderer.on('lb:auth-complete', handler);
+    return () => ipcRenderer.removeListener('lb:auth-complete', handler);
+  },
+
+  // ── Frontier Node (BP065 Part B · SEG-B2b) ───────────────────────────────
+
+  lbRegisterFrontierNode: (): Promise<{ ok: boolean; frontier_node_id?: string; error?: string }> =>
+    ipcRenderer.invoke('lb:register-frontier-node'),
+
+  lbWithdrawFrontierNode: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('lb:withdraw-frontier-node'),
+
+  lbGetFrontierStatus: (): Promise<{
+    registered: boolean;
+    frontier_node_id?: string;
+    last_heartbeat?: string;
+    withdrawn?: boolean;
+  }> =>
+    ipcRenderer.invoke('lb:get-frontier-status'),
+
+  // ── Opt-In Strike Tracker IPC (BP065 3-strikes · SEG-C from renderer) ────
+
+  lbOptInGetState: (): Promise<{ strikes: number; lastShown: number | null; decision: string }> =>
+    ipcRenderer.invoke('lb:opt-in-get-state'),
+
+  lbOptInRecordStrike: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('lb:opt-in-record-strike'),
+
+  lbOptInSetDecision: (decision: 'never' | 'pending' | 'linked'): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('lb:opt-in-set-decision', { decision }),
+
   // ── Caithedral Tools (BP060 Application 002 Step 1) ─────────────────────
   caithedralTools: {
     soccerball_emit: (pearls: string[], bindings?: Record<string, string>) =>
@@ -946,6 +1000,20 @@ declare global {
         getSettings: () => Promise<{ local_runtime_url: string }>;
         saveSettings: (settings: { local_runtime_url?: string }) => Promise<{ ok: boolean }>;
       };
+      // LB Account (BP065 Part A)
+      lbStartAuth?: (email: string) => Promise<{ ok: boolean; error?: string }>;
+      lbGetSession?: () => Promise<{ linked: boolean; user_id?: string; email?: string; peer_id?: string; linked_at?: string; crewman_number?: number }>;
+      lbLinkDevice?: (access_token: string, refresh_token: string, email: string) => Promise<{ ok: boolean; error?: string }>;
+      lbRevokeDevice?: () => Promise<{ ok: boolean; error?: string }>;
+      onLbAuthComplete?: (cb: (session: { user_id: string; email: string; peer_id: string; crewman_number?: number }) => void) => () => void;
+      // Frontier Node (BP065 Part B)
+      lbRegisterFrontierNode?: () => Promise<{ ok: boolean; frontier_node_id?: string; error?: string }>;
+      lbWithdrawFrontierNode?: () => Promise<{ ok: boolean; error?: string }>;
+      lbGetFrontierStatus?: () => Promise<{ registered: boolean; frontier_node_id?: string; last_heartbeat?: string; withdrawn?: boolean }>;
+      // Opt-In Strike Tracker (BP065 3-strikes)
+      lbOptInGetState?: () => Promise<{ strikes: number; lastShown: number | null; decision: string }>;
+      lbOptInRecordStrike?: () => Promise<{ ok: boolean }>;
+      lbOptInSetDecision?: (decision: 'never' | 'pending' | 'linked') => Promise<{ ok: boolean }>;
       // Caithedral Tools IPC (BP060 Application 002 Step 1)
       caithedralTools?: {
         soccerball_emit: (pearls: string[], bindings?: Record<string, string>) => Promise<{ ok: boolean; sid?: string; error?: string }>;
