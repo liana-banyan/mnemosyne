@@ -41,19 +41,21 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
 }) => {
   const popoverRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = React.useState<FrameMode>(currentMode);
-  // Bug #3 v0.1.10: show inline API key panel when AI Burst is selected without a key
-  const [showApiKeyPanel, setShowApiKeyPanel] = React.useState(false);
+  // BP065: showApiKeyPanel removed — AI Burst works key-free by default.
+  // Key is optional; never block the user with a key-wall. Apply is unconditional.
 
   // Mode definitions — SAGA 01 BP046B brand sweep: AI Burst / Normal / Fallback
+  // BP065: AI Burst prereq reframed — works key-free by default (local Ollama + substrate).
+  // API key is optional enhancement, never a wall. per canon_ai_burst_works_key_free_bp065.
   const modes: ModeOption[] = [
     {
       mode: 'ai_burst',
       icon: '🔥',
       label: 'AI Burst',
-      stack: 'Cloud AI + Mnemosyne + Substrate',
-      cost: 'Pay-per-token (~$0.054/artifact)',
-      prereq: 'Needs a free Anthropic API key',
-      prereqMet: apiKeyAvailable,
+      stack: 'Local AI + Substrate (+ Cloud if key set)',
+      cost: apiKeyAvailable ? 'Cloud-enhanced (~$0.054/artifact)' : 'Free, local — works without a key',
+      prereq: 'Works free and local. Add an API key in Settings for cloud-frontier results.',
+      prereqMet: true,
     },
     {
       mode: 'normal',
@@ -150,12 +152,6 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
                 onClick={() => {
                   if (!isDisabled) {
                     setSelected(opt.mode);
-                    // Reveal API key panel immediately on AI Burst click if key missing
-                    if (opt.mode === 'ai_burst' && !apiKeyAvailable) {
-                      setShowApiKeyPanel(true);
-                    } else {
-                      setShowApiKeyPanel(false);
-                    }
                   }
                 }}
                 style={{
@@ -191,72 +187,20 @@ export const ModeSelectorPopover: React.FC<ModeSelectorPopoverProps> = ({
           })}
         </div>
 
-        {/* KniPr012: plain-English AI Burst gate — no jargon */}
-        {showApiKeyPanel && selected === 'ai_burst' && !apiKeyAvailable && (
+        {/* BP065: AI Burst key-free — show optional key hint when AI Burst selected without key */}
+        {selected === 'ai_burst' && !apiKeyAvailable && (
           <div style={{
             margin: '0 12px 10px',
-            padding: '10px 12px',
-            background: 'rgba(250,204,21,0.08)',
-            border: '1px solid rgba(250,204,21,0.3)',
+            padding: '8px 12px',
+            background: 'rgba(34,197,94,0.07)',
+            border: '1px solid rgba(34,197,94,0.25)',
             borderRadius: 7,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
+            fontSize: 10,
+            color: 'rgba(255,255,255,0.55)',
+            lineHeight: 1.6,
           }}>
-            <div style={{ fontSize: 11, color: '#fbbf24', fontWeight: 600 }}>
-              AI Burst uses Anthropic's Claude AI for enhanced analysis.
-            </div>
-            <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.55)', lineHeight: 1.6 }}>
-              You'll need a free API key from Anthropic.
-            </div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' as const }}>
-              <button
-                onClick={() => window.amplify?.openExternal?.('https://console.anthropic.com')}
-                style={{
-                  flex: 1, padding: '5px 10px',
-                  background: 'rgba(250,204,21,0.12)',
-                  border: '1px solid rgba(250,204,21,0.35)',
-                  borderRadius: 5, color: '#fbbf24',
-                  fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                  whiteSpace: 'nowrap' as const,
-                }}
-                title="Get a free API key from Anthropic"
-              >
-                Get your key →
-              </button>
-              <button
-                onClick={() => {
-                  window.amplify?.openDashboard?.();
-                  onClose();
-                }}
-                style={{
-                  flex: 1, padding: '5px 10px',
-                  background: 'rgba(110,231,183,0.12)',
-                  border: '1px solid rgba(110,231,183,0.35)',
-                  borderRadius: 5, color: '#6ee7b7',
-                  fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                  whiteSpace: 'nowrap' as const,
-                }}
-                title="Open Dashboard → Settings → API Keys"
-              >
-                Set it in Settings →
-              </button>
-              <button
-                onClick={() => {
-                  setSelected('normal');
-                  setShowApiKeyPanel(false);
-                }}
-                style={{
-                  padding: '5px 10px',
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  borderRadius: 5, color: '#64748b',
-                  fontSize: 10, cursor: 'pointer',
-                }}
-              >
-                Use Normal
-              </button>
-            </div>
+            ✓ <strong style={{ color: '#22c55e' }}>AI Burst works now, free, local.</strong>{' '}
+            Add an Anthropic API key in Settings → API Keys for cloud-frontier results (optional).
           </div>
         )}
 

@@ -801,6 +801,16 @@ contextBridge.exposeInMainWorld('amplify', {
   lbOptInSetDecision: (decision: 'never' | 'pending' | 'linked'): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('lb:opt-in-set-decision', { decision }),
 
+  // ── Onboarding Prefs (BP065 v0.1.23) ─────────────────────────────────────
+  /** Apply first-run setup preferences: desktop shortcut, startup item, optional API key. */
+  applyOnboardingPrefs: (prefs: {
+    displayName?: string;
+    addDesktopShortcut?: boolean;
+    addStartupItem?: boolean;
+    apiKey?: string;
+  }): Promise<{ ok: boolean; results?: Record<string, boolean> }> =>
+    ipcRenderer.invoke('onboarding:apply-prefs', prefs),
+
   // ── Caithedral Tools (BP060 Application 002 Step 1) ─────────────────────
   caithedralTools: {
     soccerball_emit: (pearls: string[], bindings?: Record<string, string>) =>
@@ -1000,6 +1010,8 @@ declare global {
         getSettings: () => Promise<{ local_runtime_url: string }>;
         saveSettings: (settings: { local_runtime_url?: string }) => Promise<{ ok: boolean }>;
       };
+      // Onboarding Prefs (BP065 v0.1.23)
+      applyOnboardingPrefs?: (prefs: { displayName?: string; addDesktopShortcut?: boolean; addStartupItem?: boolean; apiKey?: string }) => Promise<{ ok: boolean; results?: Record<string, boolean> }>;
       // LB Account (BP065 Part A)
       lbStartAuth?: (email: string) => Promise<{ ok: boolean; error?: string }>;
       lbGetSession?: () => Promise<{ linked: boolean; user_id?: string; email?: string; peer_id?: string; linked_at?: string; crewman_number?: number }>;

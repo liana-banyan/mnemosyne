@@ -1,11 +1,17 @@
-// Mnemosyne — Onboarding Screen Components
-// MV-BE SAGA 5 BP045 W1 — 5-screen first-launch wizard screens
+// MnemosyneC — Onboarding Screen Components
+// BP065 v0.1.23 — Minimal-click revamp per canon eblets:
+//   canon_onboarding_minimal_clicks_sensible_defaults_skip_everything_explain_or_skip_bp065
+//   canon_mnemosynec_minimum_install_substrate_only_no_ollama_no_key_any_hardware_bp065
+//   canon_ai_burst_works_key_free_by_default_api_key_optional_never_block_untech_bp065
 //
-// Used by OnboardingWizard (inside MakeYourselfComfortableWizard.tsx).
-// Each screen receives: onNext, onBack, onSkip, step, totalSteps.
+// NEW flow: 3 screens · minimum 2 clicks · or 1-click "Skip all → open the app"
+//   Screen 1: Welcome + Skip-all affordance
+//   Screen 2: ~4 optional questions, all with defaults, all skippable
+//   Screen 3: All Set — auto-proceeds after 3 seconds
+//
+// Replaces 5-screen, 6-click flow (Welcome, Identity, FirstBanyan, Federation, Roll).
 
-import React, { useState } from 'react';
-import { InviteFlow } from '../../components/FederationTab';
+import React, { useState, useEffect } from 'react';
 
 // ─── Shared props ─────────────────────────────────────────────────────────────
 
@@ -35,7 +41,7 @@ const C = {
 
 export function ProgressDots({ step, total }: { step: number; total: number }) {
   return (
-    <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginBottom: 24 }}>
+    <div style={{ display: 'flex', gap: 6, justifyContent: 'center', margin: '20px 0 0' }}>
       {Array.from({ length: total }).map((_, i) => (
         <div
           key={i}
@@ -53,404 +59,194 @@ export function ProgressDots({ step, total }: { step: number; total: number }) {
   );
 }
 
-// ─── Nav buttons ──────────────────────────────────────────────────────────────
-
-export function ScreenNav({
-  onNext,
-  onBack,
-  onSkip,
-  step,
-  totalSteps,
-  nextLabel = 'Continue →',
-  nextDisabled = false,
-}: {
-  onNext: () => void;
-  onBack: () => void;
-  onSkip: () => void;
-  step: number;
-  totalSteps: number;
-  nextLabel?: string;
-  nextDisabled?: boolean;
-}) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 24 }}>
-      <button onClick={onSkip} style={s.skipBtn}>
-        Skip to app
-      </button>
-      <div style={{ display: 'flex', gap: 8 }}>
-        {step > 1 && (
-          <button onClick={onBack} style={s.backBtn}>← Back</button>
-        )}
-        <button onClick={onNext} disabled={nextDisabled} style={s.nextBtn}>
-          {step === totalSteps ? '🌿 Get on a Roll' : nextLabel}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ─── Screen 1: Welcome ────────────────────────────────────────────────────────
+// Canon: explain in plain English, no jargon, "Skip all" prominent.
+// Keypair auto-generated silently on mount — no click needed.
 
-export function ScreenWelcome({ onNext, onBack, onSkip, step, totalSteps }: ScreenProps) {
+export function ScreenWelcome({ onNext, onSkip, step, totalSteps }: ScreenProps) {
+  useEffect(() => {
+    // Silent background keypair generation — no user action or UI required.
+    try {
+      void (window as any).amplify?.generateMemberKeypair?.();
+    } catch { /* non-fatal */ }
+  }, []);
+
   return (
     <div style={s.screen}>
-      <div style={{ fontSize: 36, marginBottom: 12, textAlign: 'center' }}>🌿</div>
-      <h1 style={s.title}>Welcome to Mnemosyne™</h1>
-      <div style={s.badge}>LianaBanyan Alpha</div>
-
+      <div style={{ fontSize: 48, marginBottom: 12, textAlign: 'center' }}>🌿</div>
+      <h1 style={s.title}>Welcome to MnemosyneC™</h1>
       <p style={s.body}>
-        <strong style={{ color: C.text }}>Mnemosyne™ works now.</strong>{' '}
-        This is Alpha — things may shift, features may change, and your feedback shapes
-        what comes next.
+        Your private AI memory that runs on <em>your</em> computer.
+        No account required. No cloud upload. Free forever.
       </p>
 
-      {/* KniPr005 — Non-destructive disclosure (A2 canon) before Get Started */}
-      <div style={{
-        background: '#1a1a2e',
-        border: '1px solid #16213e',
-        borderRadius: 8,
-        padding: 14,
-        margin: '0 0 16px',
-        fontSize: 12,
-        textAlign: 'left',
-      }}>
-        <div style={{ color: '#60a5fa', fontWeight: 700, marginBottom: 7, fontSize: 13 }}>
-          🛡️ What Mnemosyne™ does to your computer
+      <div style={s.infoBox}>
+        <div style={{ fontWeight: 700, fontSize: 12, color: C.text, marginBottom: 6 }}>
+          🛡️ What MnemosyneC does
         </div>
-        <div style={{ color: '#94a3b8', lineHeight: 1.7 }}>
-          <strong style={{ color: C.text }}>READ-ONLY companion.</strong> Mnemosyne™ reads only folders
-          you mark as Substrated and creates sha256-verified Eblet™ records inside its own data folder.
-          Your original files are never moved, modified, or uploaded.{' '}
-          No account required. No telemetry. No phone-home.
+        <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.7 }}>
+          Reads folders you choose, builds a private memory index, and lets you search
+          and query your own knowledge using local AI — entirely offline if you prefer.
+          Your files are never moved, modified, or uploaded.
         </div>
-        <button
-          onClick={() => {
-            try { window.amplify?.openDashboard?.(); } catch { /* non-fatal */ }
-          }}
-          style={{
-            marginTop: 8,
-            color: C.amber,
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            fontSize: 11,
-            textDecoration: 'underline',
-            padding: 0,
-          }}
-        >
-          Show me how to verify in the Caithedral™ Inspector →
-        </button>
       </div>
 
-      <div style={s.callout}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 8 }}>
-          What this is:
-        </div>
-        <ul style={s.list}>
-          <li>A cooperative platform where Workers, Builders, and Creators <strong>may earn</strong> 83.3% of every transaction</li>
-          <li>$5/year membership — same for everyone</li>
-          <li>Platform margin: Cost + 20%. Books open every quarter.</li>
-          <li>Federated, sovereign, no lock-in</li>
-        </ul>
-      </div>
-
-      <p style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
-        This setup takes about 2 minutes. You can skip any step.
-      </p>
+      <button onClick={() => onNext()} style={s.primaryBtn}>
+        Get Started →
+      </button>
+      <button onClick={onSkip} style={s.skipAllBtn}>
+        Skip all → open the app
+      </button>
 
       <ProgressDots step={step} total={totalSteps} />
-      <ScreenNav
-        onNext={() => onNext()}
-        onBack={onBack}
-        onSkip={onSkip}
-        step={step}
-        totalSteps={totalSteps}
-        nextLabel="Get on a Roll →"
-      />
     </div>
   );
 }
 
-// ─── Screen 2: Identity ───────────────────────────────────────────────────────
+// ─── Screen 2: Quick Setup ────────────────────────────────────────────────────
+// Canon: ~6 optional questions with sensible defaults, all skippable.
+// Explain-or-skip: every field has a plain-English description.
+// Shortcut question required per canon (taskbar/desktop, default yes).
+// AI key optional — AI Burst works without it.
 
-export function ScreenIdentity({ onNext, onBack, onSkip, step, totalSteps }: ScreenProps) {
+export interface SetupPrefs {
+  displayName: string;
+  addDesktopShortcut: boolean;
+  addStartupItem: boolean;
+  apiKey: string;
+}
+
+export function ScreenSetup({ onNext, onSkip, step, totalSteps }: ScreenProps) {
   const [displayName, setDisplayName] = useState('');
-  const [email, setEmail] = useState('');
-  const [pubkeyStatus, setPubkeyStatus] = useState<'idle' | 'generating' | 'done'>('idle');
-  const [pubkeyShort, setPubkeyShort] = useState('');
+  const [addDesktopShortcut, setAddDesktopShortcut] = useState(true);
+  const [addStartupItem, setAddStartupItem] = useState(false);
+  const [apiKey, setApiKey] = useState('');
 
-  const genKey = async () => {
-    setPubkeyStatus('generating');
-    try {
-      const result = await (window as any).amplify?.generateMemberKeypair?.();
-      if (result?.pubkeyShort) {
-        setPubkeyShort(result.pubkeyShort);
-      } else {
-        // Placeholder — real keygen is IPC-backed
-        setPubkeyShort('mnemo-' + (crypto.randomUUID?.().slice(0, 12) ?? '000000000000'));
-      }
-      setPubkeyStatus('done');
-    } catch {
-      setPubkeyShort('mnemo-key-pending');
-      setPubkeyStatus('done');
-    }
+  const handleApply = () => {
+    onNext({ displayName, addDesktopShortcut, addStartupItem, apiKey });
   };
 
   return (
     <div style={s.screen}>
-      <div style={{ fontSize: 28, marginBottom: 8, textAlign: 'center' }}>🪪</div>
-      <h2 style={s.title}>Your Identity</h2>
-      <p style={s.body}>
-        All fields are optional. Your identity is stored locally — never uploaded unless
-        you explicitly share it with a federated peer.
+      <h2 style={s.title}>Quick Setup</h2>
+      <p style={{ ...s.body, marginBottom: 18 }}>
+        All optional. Sensible defaults are already set — just change what you want.
       </p>
 
-      <div style={s.fieldGroup}>
-        <label style={s.label}>Display name (optional)</label>
+      {/* Q1: Display name */}
+      <div style={s.question}>
+        <div style={s.questionLabel}>
+          What should we call you?
+          <span style={s.optTag}>optional</span>
+        </div>
+        <p style={s.questionDesc}>Used only on this device — never shared or uploaded.</p>
         <input
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
-          placeholder="How should peers see you?"
+          placeholder="Your name or nickname"
           style={s.input}
           maxLength={60}
         />
       </div>
 
-      <div style={s.fieldGroup}>
-        <label style={s.label}>Email (optional, local only)</label>
-        <input
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="For local notifications only"
-          type="email"
-          style={s.input}
-        />
-      </div>
-
-      <div style={s.fieldGroup}>
-        <label style={s.label}>Local keypair</label>
-        {pubkeyStatus === 'done' ? (
-          <div style={{
-            fontFamily: 'monospace', fontSize: 11, color: C.green,
-            background: '#0a1f0e', padding: '8px 12px', borderRadius: 8,
-            border: `1px solid ${C.green}44`,
-          }}>
-            ✓ Keypair generated: {pubkeyShort}
-          </div>
-        ) : (
-          <button
-            onClick={() => void genKey()}
-            disabled={pubkeyStatus === 'generating'}
-            style={s.outlineBtn}
-          >
-            {pubkeyStatus === 'generating' ? '⏳ Generating…' : '🔑 Generate local keypair'}
-          </button>
-        )}
-        <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>
-          Stays on your device. Used to sign federation invites.
-        </div>
-      </div>
-
-      <ProgressDots step={step} total={totalSteps} />
-      <ScreenNav
-        onNext={() => onNext({ displayName, email, pubkeyShort })}
-        onBack={onBack}
-        onSkip={onSkip}
-        step={step}
-        totalSteps={totalSteps}
-      />
-    </div>
-  );
-}
-
-// ─── Screen 3: First Banyan ───────────────────────────────────────────────────
-
-export function ScreenFirstBanyan({ onNext, onBack, onSkip, step, totalSteps }: ScreenProps) {
-  const [ebletText, setEbletText] = useState(
-    'This is my first canon-eblet. I am here to help each other help ourselves.'
-  );
-  const [saved, setSaved] = useState(false);
-
-  const saveEblet = async () => {
-    try {
-      await (window as any).amplify?.pantheonSeedEblet?.({ text: ebletText, type: 'first-banyan' });
-    } catch { /* non-fatal for first-launch */ }
-    setSaved(true);
-  };
-
-  return (
-    <div style={s.screen}>
-      <div style={{ fontSize: 28, marginBottom: 8, textAlign: 'center' }}>🌳</div>
-      <h2 style={s.title}>Plant Your First Banyan</h2>
-      <p style={s.body}>
-        A <em>canon-eblet</em> is a small piece of personal canon — a statement, an intention,
-        a root. Edit the draft below, then plant it. You can always add more later.
-      </p>
-
-      <div style={s.fieldGroup}>
-        <label style={s.label}>Your first eblet (edit freely)</label>
-        <textarea
-          value={ebletText}
-          onChange={(e) => setEbletText(e.target.value)}
-          rows={4}
-          style={{ ...s.input, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.6 }}
-          maxLength={500}
-        />
-        <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>
-          {ebletText.length}/500 characters · stays in your local substrate
-        </div>
-      </div>
-
-      {saved && (
-        <div style={{ fontSize: 11, color: C.green, marginBottom: 8 }}>
-          ✓ Banyan planted. Your substrate now has a root.
-        </div>
-      )}
-
-      {!saved && (
-        <button onClick={() => void saveEblet()} style={s.outlineBtn}>
-          🌱 Plant this eblet
-        </button>
-      )}
-
-      <ProgressDots step={step} total={totalSteps} />
-      <ScreenNav
-        onNext={() => onNext({ ebletText, ebletPlanted: saved })}
-        onBack={onBack}
-        onSkip={onSkip}
-        step={step}
-        totalSteps={totalSteps}
-      />
-    </div>
-  );
-}
-
-// ─── Screen 4: Federation (optional) ─────────────────────────────────────────
-
-export function ScreenFederation({ onNext, onBack, onSkip, step, totalSteps }: ScreenProps) {
-  const [showInvite, setShowInvite] = useState(false);
-
-  return (
-    <div style={s.screen}>
-      <div style={{ fontSize: 28, marginBottom: 8, textAlign: 'center' }}>🕸️</div>
-      <h2 style={s.title}>Federation (Optional)</h2>
-      <p style={s.body}>
-        On your home network, Mnemosyne can automatically find other installs and ask
-        if you want to connect (LOCAL-HANDSHAKE). You can also invite someone manually now.
-        Mnemosyne is more powerful when peers federate.
-        or skip — the invitation tool is always available in the Federation tab.
-      </p>
-
-      {!showInvite ? (
-        <div style={{ display: 'flex', gap: 10, flexDirection: 'column' }}>
-          <button onClick={() => setShowInvite(true)} style={s.outlineBtn}>
-            🔑 Invite a peer now
-          </button>
-          <div style={{ textAlign: 'center', fontSize: 11, color: C.muted }}>or</div>
-          <button onClick={() => onNext({ federationSkipped: true })} style={s.ghostBtn}>
-            Skip federation for now →
-          </button>
-        </div>
-      ) : (
-        <>
-          <InviteFlow />
-          <div style={{ marginTop: 12 }}>
-            <button onClick={() => setShowInvite(false)} style={s.ghostBtn}>← Back</button>
-          </div>
-        </>
-      )}
-
-      <ProgressDots step={step} total={totalSteps} />
-      <div style={{ marginTop: 24 }}>
-        <ScreenNav
-          onNext={() => onNext()}
-          onBack={onBack}
-          onSkip={onSkip}
-          step={step}
-          totalSteps={totalSteps}
-        />
-      </div>
-    </div>
-  );
-}
-
-// ─── Screen 5: Roll ───────────────────────────────────────────────────────────
-
-export function ScreenRoll({ onNext, onBack, onSkip, step, totalSteps }: ScreenProps) {
-  const [nominated, setNominated] = useState(false);
-  const [nomineeNote, setNomineeNote] = useState('');
-
-  const nominate = async () => {
-    try {
-      await (window as any).amplify?.submitSelfNomination?.({ note: nomineeNote });
-    } catch { /* non-fatal */ }
-    setNominated(true);
-  };
-
-  return (
-    <div style={s.screen}>
-      <div style={{ fontSize: 28, marginBottom: 8, textAlign: 'center' }}>🎖️</div>
-      <h2 style={s.title}>Get on a Roll</h2>
-
-      <div style={s.callout}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 8 }}>
-          What is the Roll?
-        </div>
-        <p style={{ margin: 0, fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
-          The Roll is the cooperative's public ledger of recognized members — people who
-          have made a meaningful contribution and been ratified by dual review
-          (Founder + Helm-Crown). It is not a leaderboard; it is a record of presence.
+      {/* Q2: Desktop shortcut */}
+      <div style={s.question}>
+        <label style={s.checkRow}>
+          <input
+            type="checkbox"
+            checked={addDesktopShortcut}
+            onChange={(e) => setAddDesktopShortcut(e.target.checked)}
+            style={{ accentColor: C.accent, width: 15, height: 15, flexShrink: 0 }}
+          />
+          <span style={s.questionLabel}>Add a shortcut to your Desktop</span>
+        </label>
+        <p style={{ ...s.questionDesc, marginLeft: 23 }}>
+          Makes it easy to launch MnemosyneC anytime by double-clicking the icon.
         </p>
       </div>
 
-      <div style={{ fontSize: 11, color: C.muted, margin: '12px 0', lineHeight: 1.6 }}>
-        Nominations go to dual-veto review. Either reviewer may decline — no grudge, no
-        explanation owed. EXCLUSION-WITHOUT-JUDGMENT is canon here.
+      {/* Q3: Startup */}
+      <div style={s.question}>
+        <label style={s.checkRow}>
+          <input
+            type="checkbox"
+            checked={addStartupItem}
+            onChange={(e) => setAddStartupItem(e.target.checked)}
+            style={{ accentColor: C.accent, width: 15, height: 15, flexShrink: 0 }}
+          />
+          <span style={s.questionLabel}>Start automatically when Windows starts?</span>
+        </label>
+        <p style={{ ...s.questionDesc, marginLeft: 23 }}>
+          MnemosyneC will be ready in the background before you need it. Change anytime in Settings.
+        </p>
       </div>
 
-      <div style={{ marginBottom: 4 }}>
-        <a
-          href="https://cephas.lianabanyan.com/roll/"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ fontSize: 11, color: C.accent }}
-        >
-          Browse the current Roll →
-        </a>
-      </div>
-
-      {!nominated ? (
-        <>
-          <div style={s.fieldGroup}>
-            <label style={s.label}>Nominate yourself (optional)</label>
-            <textarea
-              value={nomineeNote}
-              onChange={(e) => setNomineeNote(e.target.value)}
-              placeholder="A sentence or two about your work or intention here…"
-              rows={3}
-              style={{ ...s.input, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.6 }}
-              maxLength={300}
-            />
-          </div>
-          <button onClick={() => void nominate()} disabled={!nomineeNote.trim()} style={s.outlineBtn}>
-            Submit nomination
-          </button>
-        </>
-      ) : (
-        <div style={{ fontSize: 11, color: C.green, padding: '8px 12px', background: '#0a1f0e', borderRadius: 8, border: `1px solid ${C.green}44` }}>
-          ✓ Nomination submitted. The dual-veto review will reach out if ratified.
+      {/* Q4: API key */}
+      <div style={s.question}>
+        <div style={s.questionLabel}>
+          AI key for cloud-enhanced results
+          <span style={s.optTag}>optional</span>
         </div>
-      )}
+        <p style={s.questionDesc}>
+          AI Burst works <strong style={{ color: C.green }}>free and local</strong> without
+          a key — local AI already gives strong results. Add a key later in Settings if you
+          want cloud-frontier analysis.
+        </p>
+        <input
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder="sk-ant-... (leave blank — AI Burst works without it)"
+          style={s.input}
+          type="password"
+          autoComplete="off"
+        />
+      </div>
+
+      <button onClick={handleApply} style={{ ...s.primaryBtn, marginTop: 16 }}>
+        Apply &amp; Continue →
+      </button>
+      <button onClick={onSkip} style={s.skipAllBtn}>
+        Skip all → open the app
+      </button>
 
       <ProgressDots step={step} total={totalSteps} />
-      <ScreenNav
-        onNext={() => onNext({ nominated })}
-        onBack={onBack}
-        onSkip={onSkip}
-        step={step}
-        totalSteps={totalSteps}
-        nextLabel="Enter Mnemosyne™"
-      />
+    </div>
+  );
+}
+
+// ─── Screen 3: All Set ────────────────────────────────────────────────────────
+// Canon: confirm, auto-proceed after 3 seconds.
+
+export function ScreenAllSet({ onNext, onSkip, step, totalSteps }: ScreenProps) {
+  const [countdown, setCountdown] = useState(3);
+
+  useEffect(() => {
+    if (countdown <= 0) {
+      onNext();
+      return;
+    }
+    const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [countdown, onNext]);
+
+  return (
+    <div style={s.screen}>
+      <div style={{ fontSize: 48, marginBottom: 12, textAlign: 'center' }}>✅</div>
+      <h2 style={s.title}>You're all set.</h2>
+      <p style={s.body}>
+        MnemosyneC is ready. Your private memory is running.
+        No account required. No cloud upload.
+      </p>
+      <p style={{ fontSize: 11, color: C.muted, textAlign: 'center', marginBottom: 20 }}>
+        You can add folders to index from the Substrate tab anytime.
+      </p>
+      <button onClick={() => onNext()} style={s.primaryBtn}>
+        Open MnemosyneC{countdown > 0 ? ` (${countdown})` : ''} →
+      </button>
+      <button onClick={onSkip} style={{ ...s.skipAllBtn, opacity: 0.6 }}>
+        Skip
+      </button>
+      <ProgressDots step={step} total={totalSteps} />
     </div>
   );
 }
@@ -459,31 +255,17 @@ export function ScreenRoll({ onNext, onBack, onSkip, step, totalSteps }: ScreenP
 
 const s: Record<string, React.CSSProperties> = {
   screen: {
-    maxWidth: 480,
+    maxWidth: 420,
     margin: '0 auto',
     padding: '0 4px',
+    display: 'flex',
+    flexDirection: 'column',
   },
   title: {
-    margin: '0 0 8px',
+    margin: '0 0 10px',
     fontSize: 20,
     fontWeight: 700,
     color: C.text,
-    textAlign: 'center',
-  },
-  badge: {
-    display: 'inline-block',
-    fontSize: 10,
-    fontWeight: 700,
-    padding: '2px 10px',
-    borderRadius: 20,
-    background: `${C.amber}22`,
-    color: C.amber,
-    border: `1px solid ${C.amber}55`,
-    letterSpacing: '0.04em',
-    textTransform: 'uppercase',
-    marginBottom: 16,
-    marginLeft: 'auto',
-    marginRight: 'auto',
     textAlign: 'center',
   },
   body: {
@@ -493,31 +275,71 @@ const s: Record<string, React.CSSProperties> = {
     lineHeight: 1.7,
     textAlign: 'center',
   },
-  callout: {
-    background: C.surface,
+  infoBox: {
+    background: '#0f1923',
     border: `1px solid ${C.border}`,
-    borderRadius: 10,
+    borderRadius: 8,
     padding: '12px 14px',
+    marginBottom: 20,
+  },
+  primaryBtn: {
+    background: '#1e3a5f',
+    border: `1px solid ${C.accent}`,
+    borderRadius: 8,
+    color: C.accent,
+    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: 700,
+    padding: '11px 20px',
+    width: '100%',
+    marginBottom: 10,
+    fontFamily: 'inherit',
+  },
+  skipAllBtn: {
+    background: 'transparent',
+    border: 'none',
+    color: C.muted,
+    cursor: 'pointer',
+    fontSize: 11,
+    textDecoration: 'underline',
+    padding: '4px 0',
+    width: '100%',
+    textAlign: 'center' as const,
+    display: 'block',
+  },
+  question: {
     marginBottom: 16,
   },
-  list: {
-    margin: '0',
-    paddingLeft: 18,
-    fontSize: 11,
-    color: C.muted,
-    lineHeight: 1.8,
-  },
-  fieldGroup: {
-    marginBottom: 14,
-  },
-  label: {
-    display: 'block',
-    fontSize: 11,
+  questionLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    fontSize: 12,
     fontWeight: 600,
+    color: C.text,
+    marginBottom: 3,
+  },
+  optTag: {
+    fontSize: 10,
+    fontWeight: 400,
     color: C.muted,
-    marginBottom: 5,
-    textTransform: 'uppercase',
-    letterSpacing: '0.04em',
+    background: '#1e2d45',
+    padding: '1px 6px',
+    borderRadius: 10,
+    letterSpacing: '0.02em',
+  },
+  questionDesc: {
+    margin: '0 0 6px',
+    fontSize: 10,
+    color: C.muted,
+    lineHeight: 1.6,
+  },
+  checkRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 8,
+    cursor: 'pointer',
+    marginBottom: 2,
   },
   input: {
     background: '#070d1a',
@@ -528,55 +350,7 @@ const s: Record<string, React.CSSProperties> = {
     padding: '8px 12px',
     width: '100%',
     outline: 'none',
-    boxSizing: 'border-box',
-  },
-  outlineBtn: {
-    background: 'transparent',
-    border: `1px solid ${C.accent}`,
-    borderRadius: 8,
-    color: C.accent,
-    cursor: 'pointer',
-    fontSize: 12,
-    fontWeight: 600,
-    padding: '8px 16px',
-    width: '100%',
-  },
-  ghostBtn: {
-    background: 'transparent',
-    border: `1px solid ${C.border}`,
-    borderRadius: 8,
-    color: C.muted,
-    cursor: 'pointer',
-    fontSize: 11,
-    padding: '6px 12px',
-    width: '100%',
-  },
-  skipBtn: {
-    background: 'transparent',
-    border: 'none',
-    color: C.muted,
-    cursor: 'pointer',
-    fontSize: 10,
-    textDecoration: 'underline',
-    padding: 0,
-  },
-  backBtn: {
-    background: 'transparent',
-    border: `1px solid ${C.border}`,
-    borderRadius: 8,
-    color: C.muted,
-    cursor: 'pointer',
-    fontSize: 11,
-    padding: '6px 14px',
-  },
-  nextBtn: {
-    background: '#1e3a5f',
-    border: `1px solid ${C.accent}`,
-    borderRadius: 8,
-    color: C.accent,
-    cursor: 'pointer',
-    fontSize: 12,
-    fontWeight: 600,
-    padding: '8px 20px',
+    boxSizing: 'border-box' as const,
+    fontFamily: 'inherit',
   },
 };

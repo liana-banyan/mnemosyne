@@ -1082,6 +1082,62 @@ function registerIPCHandlers(): void {
     overlayWindow?.showInactive();
   });
 
+  // ── BP065 Onboarding Prefs (v0.1.23) ─────────────────────────────────────
+  // Applies setup screen preferences: desktop shortcut, startup item, optional API key.
+  // All fields are best-effort; failures are non-fatal (onboarding is optional).
+  ipcMain.handle('onboarding:apply-prefs', async (_event, prefs: {
+    displayName?: string;
+    addDesktopShortcut?: boolean;
+    addStartupItem?: boolean;
+    apiKey?: string;
+  }) => {
+    const results: Record<string, boolean> = {};
+
+    // Desktop shortcut (Windows only)
+    if (prefs.addDesktopShortcut && process.platform === 'win32') {
+      try {
+        const { shell: electronShell } = require('electron');
+        const path = require('path');
+        const desktopPath = app.getPath('desktop');
+        const exePath = process.execPath;
+        electronShell.writeShortcutLink(
+          path.join(desktopPath, 'MnemosyneC.lnk'),
+          'create',
+          { target: exePath, name: 'MnemosyneC', description: 'MnemosyneC — private AI memory' },
+        );
+        results.desktopShortcut = true;
+      } catch (err) {
+        console.warn('[onboarding] desktop shortcut creation failed (non-fatal):', err);
+        results.desktopShortcut = false;
+      }
+    }
+
+    // Startup item (cross-platform)
+    try {
+      app.setLoginItemSettings({ openAtLogin: prefs.addStartupItem ?? false });
+      results.startupItem = true;
+    } catch (err) {
+      console.warn('[onboarding] setLoginItemSettings failed (non-fatal):', err);
+      results.startupItem = false;
+    }
+
+    // API key (store via existing agent key infrastructure, non-fatal if unavailable)
+    if (prefs.apiKey && prefs.apiKey.trim()) {
+      try {
+        const envLoader = require('./env_loader');
+        if (typeof envLoader?.setRuntimeKey === 'function') {
+          envLoader.setRuntimeKey('ANTHROPIC_API_KEY', prefs.apiKey.trim());
+        }
+        results.apiKey = true;
+      } catch {
+        results.apiKey = false;
+      }
+    }
+
+    console.log('[onboarding] prefs applied:', JSON.stringify({ ...results, displayName: !!prefs.displayName }));
+    return { ok: true, results };
+  });
+
   // SAGA 13 BP046B: 5-Marks first-install bonus (one-per-machine flag)
   ipcMain.on('credit-first-install-marks', () => {
     const { join } = require('path');

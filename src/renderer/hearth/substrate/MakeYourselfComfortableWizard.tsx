@@ -1,30 +1,33 @@
-// Mnemosyne — Make Yourself Comfortable Wizard + OnboardingWizard (sidebar)
+// MnemosyneC — Make Yourself Comfortable Wizard + OnboardingWizard (sidebar)
 // BP041 Canon: "What do you want substrate access to for yourself?"
 // Folder picker → dual-checkbox (Pixie-lated for ME / Shared with Federation)
 // Pantheon dispatch progress (LiveSegWatch-style)
 // Member sovereignty: all OFF by default; member must explicitly check.
 //
-// MV-BE SAGA 5 BP045 W1 — OnboardingWizard (5-screen first-launch gate)
-// added. Fires ONLY on first launch (localStorage key: mnemosyne-onboarded).
-// KniPr012 — converted from blocking full-page to non-blocking right sidebar.
-// ScreenWelcome · ScreenIdentity · ScreenFirstBanyan · ScreenFederation · ScreenRoll
+// BP065 v0.1.23 — OnboardingWizard revamp: 6-click → minimal-click per canon:
+//   canon_onboarding_minimal_clicks_sensible_defaults_skip_everything_explain_or_skip_bp065
+//   canon_mnemosynec_minimum_install_substrate_only_no_ollama_no_key_any_hardware_bp065
+//   canon_ai_burst_works_key_free_by_default_api_key_optional_never_block_untech_bp065
+// Now 3 screens: Welcome · Quick Setup · All Set. Keypair auto-generated silently.
+// Ollama card removed from sidebar (jargon, not needed at onboarding).
+// "Skip all → open the app" on every screen.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ScreenWelcome,
-  ScreenIdentity,
-  ScreenFirstBanyan,
-  ScreenFederation,
-  ScreenRoll,
+  ScreenSetup,
+  ScreenAllSet,
+  type SetupPrefs,
 } from './OnboardingScreens';
 import { LocFaqModal } from '../../components/LocFaqPanel';
 
 // ─── OnboardingWizard (non-blocking sidebar) ──────────────────────────────────
 // KniPr012: converted from full-page replacement to position:fixed right sidebar.
 // Main app content is visible and interactive behind it.
+// BP065: reduced to 3 screens, Ollama card removed, keypair auto-generated silently.
 
 const ONBOARDED_KEY = 'mnemosyne-onboarded';
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 3;
 
 const C = {
   bg: '#0a0f1a',
@@ -37,107 +40,12 @@ const C = {
   amber: '#f59e0b',
 };
 
-type OnboardingScreen = 1 | 2 | 3 | 4 | 5;
-
-// ─── OllamaCheckCard ─────────────────────────────────────────────────────────
-// Shows Ollama install state; auto-detects on mount via check-ollama IPC.
-
-function OllamaCheckCard() {
-  const [ollamaState, setOllamaState] = useState<'checking' | 'installed' | 'missing'>('checking');
-  const [ollamaVersion, setOllamaVersion] = useState<string | null>(null);
-
-  useEffect(() => {
-    const check = async () => {
-      try {
-        const result = await (window as any).amplify?.checkOllama?.();
-        if (result?.installed) {
-          setOllamaState('installed');
-          setOllamaVersion(result.version ?? null);
-        } else {
-          setOllamaState('missing');
-        }
-      } catch {
-        setOllamaState('missing');
-      }
-    };
-    void check();
-  }, []);
-
-  if (ollamaState === 'checking') {
-    return (
-      <div style={{
-        background: C.surface,
-        border: `1px solid ${C.border}`,
-        borderRadius: 8,
-        padding: '10px 12px',
-        marginTop: 12,
-        fontSize: 11,
-        color: C.muted,
-      }}>
-        ⏳ Checking for Ollama…
-      </div>
-    );
-  }
-
-  if (ollamaState === 'installed') {
-    return (
-      <div style={{
-        background: '#0a1f0e',
-        border: `1px solid ${C.green}44`,
-        borderRadius: 8,
-        padding: '10px 12px',
-        marginTop: 12,
-        fontSize: 11,
-        color: C.green,
-        fontWeight: 600,
-      }}>
-        ✓ Ollama detected — private AI ready
-        {ollamaVersion && (
-          <span style={{ fontWeight: 400, color: `${C.green}aa`, marginLeft: 6, fontFamily: 'monospace', fontSize: 10 }}>
-            ({ollamaVersion})
-          </span>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div style={{
-      background: C.surface,
-      border: `1px solid ${C.border}`,
-      borderRadius: 8,
-      padding: '12px 14px',
-      marginTop: 12,
-    }}>
-      <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 4 }}>
-        Ollama not detected
-      </div>
-      <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginBottom: 8 }}>
-        Ollama enables private AI without an API key.
-      </div>
-      <button
-        onClick={() => (window as any).amplify?.openExternal?.('https://ollama.com')}
-        style={{
-          background: '#1e3a5f',
-          border: `1px solid ${C.accent}`,
-          borderRadius: 6,
-          color: C.accent,
-          cursor: 'pointer',
-          fontSize: 11,
-          fontWeight: 600,
-          padding: '6px 14px',
-          width: '100%',
-        }}
-      >
-        Install Ollama — free →
-      </button>
-    </div>
-  );
-}
+type OnboardingScreen = 1 | 2 | 3;
 
 // ─── OnboardingWizard ─────────────────────────────────────────────────────────
-// KniPr012: sidebar variant. Renders as position:fixed right panel; main UI
-// remains interactive behind it. Completes by setting localStorage key.
+// BP065 v0.1.23: 3-screen minimal flow. Ollama card removed (jargon).
+// Keypair auto-generated silently in ScreenWelcome. Skip-all on every screen.
+// Setup prefs (shortcut, startup, apiKey) applied via IPC on Screen 2 → 3 transition.
 
 export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   const [step, setStep] = useState<OnboardingScreen>(1);
@@ -149,11 +57,28 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
     onComplete();
   };
 
+  const applySetupPrefs = async (prefs: SetupPrefs) => {
+    try {
+      await (window as any).amplify?.applyOnboardingPrefs?.(prefs);
+    } catch { /* non-fatal: prefs are best-effort */ }
+  };
+
   const handleNext = (data?: Record<string, unknown>) => {
-    if (data) setCollected((prev) => ({ ...prev, ...data }));
+    const merged = data ? { ...collected, ...data } : collected;
+    setCollected(merged);
+
     if (step === TOTAL_STEPS) {
       finish();
     } else {
+      // On transition from Screen 2 (setup), apply prefs in background
+      if (step === 2 && data) {
+        void applySetupPrefs({
+          displayName: (data.displayName as string) ?? '',
+          addDesktopShortcut: (data.addDesktopShortcut as boolean) ?? true,
+          addStartupItem: (data.addStartupItem as boolean) ?? false,
+          apiKey: (data.apiKey as string) ?? '',
+        });
+      }
       setStep((prev) => (prev + 1) as OnboardingScreen);
     }
   };
@@ -189,13 +114,13 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
       <div
         role="dialog"
         aria-modal="false"
-        aria-label="Mnemosyne first-run setup"
+        aria-label="MnemosyneC first-run setup"
         style={{
           position: 'fixed',
           right: 0,
           top: 0,
           height: '100%',
-          width: 380,
+          width: 400,
           background: C.bg,
           borderLeft: `1px solid ${C.border}`,
           boxShadow: '-8px 0 32px rgba(0,0,0,0.6)',
@@ -206,10 +131,10 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
           fontFamily: 'system-ui, -apple-system, sans-serif',
         }}
       >
-        {/* Dismiss × */}
+        {/* Dismiss × — always available, always skips to app */}
         <button
           onClick={finish}
-          aria-label="Dismiss setup sidebar"
+          aria-label="Skip setup — open the app now"
           style={{
             position: 'absolute',
             top: 12,
@@ -223,34 +148,27 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
             padding: '2px 4px',
             zIndex: 1,
           }}
-          title="Skip setup — you can find these options in Settings later"
+          title="Skip setup — all options available in Settings later"
         >
           ×
         </button>
 
-        {/* Ollama card always visible at top of sidebar */}
-        <div style={{ padding: '16px 20px 0' }}>
-          <OllamaCheckCard />
-        </div>
-
         {/* Step counter */}
-        <div style={{ fontSize: 10, color: C.muted, textAlign: 'center', paddingTop: 16 }}>
-          {step}/{TOTAL_STEPS}
+        <div style={{ fontSize: 10, color: C.muted, textAlign: 'center', paddingTop: 20 }}>
+          Step {step} of {TOTAL_STEPS}
         </div>
 
         {/* Screen content */}
-        <div style={{ flex: 1, padding: '0 20px 20px' }}>
+        <div style={{ flex: 1, padding: '8px 24px 20px' }}>
           {step === 1 && <ScreenWelcome {...screenProps} />}
-          {step === 2 && <ScreenIdentity {...screenProps} />}
-          {step === 3 && <ScreenFirstBanyan {...screenProps} />}
-          {step === 4 && <ScreenFederation {...screenProps} />}
-          {step === 5 && <ScreenRoll {...screenProps} />}
+          {step === 2 && <ScreenSetup {...screenProps} />}
+          {step === 3 && <ScreenAllSet {...screenProps} />}
         </div>
 
         {/* Sidebar footer — Grand Project link */}
         <div style={{
           borderTop: '1px solid rgba(100,116,139,0.15)',
-          padding: '10px 20px',
+          padding: '10px 24px',
           flexShrink: 0,
         }}>
           <button
@@ -265,6 +183,7 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
               padding: 0,
               textDecoration: 'underline',
               textDecorationColor: 'rgba(110,231,183,0.35)',
+              fontFamily: 'inherit',
             }}
           >
             Learn about the Grand Project →
