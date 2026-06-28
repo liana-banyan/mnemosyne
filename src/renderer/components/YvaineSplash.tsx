@@ -3,18 +3,13 @@
 // Shown once on first launch (before ThreeOptionAsk).
 // LocalStorage key: mnemo_yvaine_seen
 
-import React, { useRef, useState, useEffect, useCallback } from 'react';
-
-// BP099 K5: local bundled asset — remote URL blocked by Electron prod CSP
-const AUDIO_SRC = './audio/WhatDoStarsDOShine.m4a';
+import React, { useState, useEffect, useCallback } from 'react';
 
 interface YvaineSplashProps {
   onDismiss: () => void;
 }
 
 export function YvaineSplash({ onDismiss }: YvaineSplashProps) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [playing, setPlaying] = useState(false);
   const [visible, setVisible] = useState(true);
   const [shineGlow, setShineGlow] = useState(false);
 
@@ -24,31 +19,7 @@ export function YvaineSplash({ onDismiss }: YvaineSplashProps) {
     return () => clearInterval(id);
   }, []);
 
-  const handlePlay = useCallback(() => {
-    if (!audioRef.current) {
-      audioRef.current = new Audio(AUDIO_SRC);
-      audioRef.current.onended = () => setPlaying(false);
-    }
-    if (playing) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-      setPlaying(false);
-    } else {
-      audioRef.current.play().catch((err: unknown) => {
-        if (process.env.NODE_ENV === 'development') {
-          console.warn('[YvaineSplash] audio play failed:', err);
-        }
-        setPlaying(false);
-      });
-      setPlaying(true);
-    }
-  }, [playing]);
-
   const handleDismiss = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-    }
     setVisible(false);
     // Small fade delay before calling parent dismiss
     setTimeout(onDismiss, 350);
@@ -151,36 +122,6 @@ export function YvaineSplash({ onDismiss }: YvaineSplashProps) {
           — Yvaine, Stardust (2007)
         </p>
       </div>
-
-      {/* Audio play button */}
-      <button
-        onClick={handlePlay}
-        title={playing ? 'Pause audio' : 'Play "What Do Stars Do"'}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '9px 22px',
-          background: playing ? 'rgba(110,231,183,0.15)' : 'rgba(255,255,255,0.07)',
-          border: playing
-            ? '1px solid rgba(110,231,183,0.5)'
-            : '1px solid rgba(255,255,255,0.2)',
-          borderRadius: 24,
-          color: playing ? '#6ee7b7' : 'rgba(255,255,255,0.75)',
-          fontSize: 13,
-          fontWeight: 600,
-          cursor: 'pointer',
-          transition: 'all 0.2s ease',
-          letterSpacing: '0.04em',
-          position: 'relative',
-          zIndex: 1,
-        }}
-        onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.8'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
-      >
-        <span style={{ fontSize: 16 }}>{playing ? '⏸' : '▶'}</span>
-        {playing ? 'Playing…' : 'Hear it'}
-      </button>
 
       {/* Dismiss */}
       <button
