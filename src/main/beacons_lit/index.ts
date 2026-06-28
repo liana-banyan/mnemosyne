@@ -28,7 +28,7 @@ const SUPABASE_URL = 'https://ruuxzilgmuwddcofqecc.supabase.co';
 const LB_EDGE_BASE = `${SUPABASE_URL}/functions/v1`;
 const PHANTOM_PREFIX = '49f3e597';
 const HEARTBEAT_MS = 5 * 60 * 1000; // 5 minutes -- stays under wan-relay-publish rate limit
-const CAI_VERSION = '0.8.2'; // M43 CAI semantic version
+const CAI_VERSION = '0.8.6'; // BP099 K10 CAI semantic version
 
 // ─── Module State ─────────────────────────────────────────────────────────────
 
@@ -57,8 +57,13 @@ function isPhantomPeer(peerId: string): boolean {
   return peerId.startsWith(PHANTOM_PREFIX);
 }
 
+// SUPABASE_ANON_KEY is the PUBLISHABLE (anon) key — intentionally safe to bundle per Supabase spec.
+// env_loader populates this at runtime from WORKING_KEYS.env; this constant is the shipped fallback
+// for packaged builds where env_loader's vault file may not be present.
+const SUPABASE_ANON_KEY_FALLBACK = 'sb_publishable_2KjyBXCIPaUUPiFL-p0Srg_EQj3d5FM';
+
 function getAnonKey(): string {
-  return _anonKey ?? (process.env.SUPABASE_ANON_KEY ?? '');
+  return _anonKey ?? process.env.SUPABASE_ANON_KEY ?? SUPABASE_ANON_KEY_FALLBACK;
 }
 
 async function callHandshake(peerId: string): Promise<void> {

@@ -520,7 +520,7 @@ function createTray(): void {
 
   tray = new Tray(icon);
   // KniPr026: versioned initial tooltip; updated by updateTrayTooltip() on update events.
-  tray.setToolTip(`Mnemosyne v${app.getVersion()}`);
+  tray.setToolTip(`MnemosyneC v${app.getVersion()}`);
   // Single left-click opens Dashboard (right-click still shows context menu)
   tray.on('click', () => openDashboard());
   rebuildTrayMenu();
@@ -531,11 +531,11 @@ function updateTrayTooltip(updateStatus?: UpdateState['status']): void {
   if (!tray || tray.isDestroyed()) return;
   const version = app.getVersion();
   if (updateStatus === 'downloaded') {
-    tray.setToolTip(`Mnemosyne v${version} — Update ready to install`);
+    tray.setToolTip(`MnemosyneC v${version} — Update ready to install`);
   } else if (updateStatus === 'available' || updateStatus === 'downloading') {
-    tray.setToolTip(`Mnemosyne v${version} — Update available`);
+    tray.setToolTip(`MnemosyneC v${version} — Update available`);
   } else {
-    tray.setToolTip(`Mnemosyne v${version}`);
+    tray.setToolTip(`MnemosyneC v${version}`);
   }
 }
 
@@ -699,7 +699,7 @@ function openDashboard(opts?: { focus?: boolean }): void {
     height: 900,
     minWidth: 680,
     minHeight: 600,
-    title: `Mnemosyne v${app.getVersion()}`,
+    title: `MnemosyneC v${app.getVersion()}`,
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -726,7 +726,7 @@ function openDashboard(opts?: { focus?: boolean }): void {
 
   // Bug #2 v0.1.10: keep versioned title after any reload/navigation
   dashboardWindow.webContents.on('did-finish-load', () => {
-    dashboardWindow?.setTitle(`Mnemosyne v${app.getVersion()}`);
+    dashboardWindow?.setTitle(`MnemosyneC v${app.getVersion()}`);
   });
 
   dashboardWindow.loadURL(
@@ -1015,11 +1015,6 @@ function registerIPCHandlers(): void {
   ipcMain.handle('get-amplify-summary', () => {
     return substrateServer?.getTelemetryStore().getSummary() ?? null;
   });
-
-  // ── Auto-Update ───────────────────────────────────────────────────────────
-  ipcMain.handle('get-update-state', () => autoUpdater?.getState() ?? { status: 'idle' });
-  ipcMain.on('check-for-updates', () => autoUpdater?.checkNow());
-  ipcMain.on('install-update', () => autoUpdater?.installNow());
 
   ipcMain.on('watchdog-pong', () => {
     rendererResponsive = true;

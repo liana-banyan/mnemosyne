@@ -1,6 +1,6 @@
 {
   "name": "amplify-computer",
-  "version": "0.1.24",
+  "version": "0.8.6",
   "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (SSPL · Pledge #2260)",
   "homepage": "https://lianabanyan.com",
   "private": true,
@@ -45,6 +45,7 @@
     "electron-updater": "^6.1.7",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "ws": "^8.20.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -61,8 +62,7 @@
     "react-dom": "^18.3.1",
     "typescript": "^5.4.5",
     "vite": "^5.3.1",
-    "wait-on": "^7.2.0",
-    "ws": "^8.20.1"
+    "wait-on": "^7.2.0"
   },
   "build": {
     "appId": "com.lianabanyan.mnemosyne",
@@ -142,7 +142,7 @@
       "verifyUpdateCodeSignature": false
     },
     "nsis": {
-      "artifactName": "MnemosyneC-Setup-0.8.5.${ext}",
+      "artifactName": "MnemosyneC-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": true,
@@ -156,7 +156,7 @@
       "runAfterFinish": true
     },
     "portable": {
-      "artifactName": "MnemosyneC-Portable-0.8.5.${ext}"
+      "artifactName": "MnemosyneC-Portable-${version}.${ext}"
     },
     "mac": {
       "target": [
