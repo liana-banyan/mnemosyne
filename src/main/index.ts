@@ -458,9 +458,10 @@ function createOverlayWindow(): void {
   });
 
   // Guarantee passthrough AFTER the compositor attaches (BP029 / LB-STACK-0157).
+  // BP099 K4: hide overlay by default until user activates via tray
   overlayWindow.once('ready-to-show', () => {
     applyLBFrameClickthrough(true);
-    overlayWindow?.showInactive();
+    overlayWindow?.hide();
   });
   overlayWindow.webContents.once('did-finish-load', () => {
     applyLBFrameClickthrough(true);
