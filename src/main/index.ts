@@ -1695,10 +1695,23 @@ app.whenReady().then(async () => {
     (e: Error) => console.warn('[BeaconsLit] init error (non-fatal):', e.message),
   );
 
+  // BP099-K15: relay poll — hardcoded URL+key fallbacks ensure poller starts on fresh install
   // BP099-K13: Start relay-answer poller — wires peer as active mesh inference node
   {
-    const _supabaseUrl = (process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').replace(/\/$/, '');
-    const _anonKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
+    // BP099-K15: Hardcoded fallbacks — these are the publishable/public Supabase values.
+    // SUPABASE_URL is the project URL (not a secret). SUPABASE_ANON_KEY_FALLBACK is the
+    // publishable anon key (Supabase intentional pattern — safe to bundle per Supabase spec;
+    // RLS policies are the access control layer, not key secrecy).
+    // env_loader populates process.env at runtime from WORKING_KEYS.env when available.
+    // These constants ensure the relay poller starts on a fresh install with NO env files.
+    const SUPABASE_URL_FALLBACK = 'https://ruuxzilgmuwddcofqecc.supabase.co';
+    const SUPABASE_ANON_KEY_FALLBACK = 'sb_publishable_2KjyBXCIPaUUPiFL-p0Srg_EQj3d5FM';
+
+    const _supabaseUrl = (process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? SUPABASE_URL_FALLBACK).replace(/\/$/, '');
+    const _anonKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? SUPABASE_ANON_KEY_FALLBACK;
+    const urlSource = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL ? 'env' : 'fallback';
+    const keySource = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? 'env' : 'fallback';
+    console.log(`[relay_answer] using SUPABASE_URL=${_supabaseUrl} (source: ${urlSource}) key-source: ${keySource}`);
     if (_supabaseUrl && _anonKey) {
       const stopRelayPoller = startRelayAnswerPoller({
         peerId,
