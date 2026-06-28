@@ -1,6 +1,6 @@
 {
   "name": "amplify-computer",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "description": "Mnemosyne — Memory, powered by CAI · local inference + cooperative substrate OS overlay (SSPL · Pledge #2260)",
   "homepage": "https://lianabanyan.com",
   "private": true,
@@ -34,7 +34,7 @@
     "email": "support@lianabanyan.com",
     "url": "https://lianabanyan.com"
   },
-  "license": "UNLICENSED",
+  "license": "SSPL-1.0",
   "dependencies": {
     "caithedral-core": "file:./caithedral-core",
     "@google/generative-ai": "^0.24.1",
@@ -66,7 +66,7 @@
   },
   "build": {
     "appId": "com.lianabanyan.mnemosyne",
-    "productName": "Mnemosyne",
+    "productName": "MnemosyneC",
     "icon": "assets/app-icon",
     "copyright": "Copyright © 2026 Liana Banyan Corporation",
     "asar": true,
@@ -99,6 +99,10 @@
       {
         "from": "assets/post_install_message.txt",
         "to": "README_INSTALL.txt"
+      },
+      {
+        "from": "LICENSE_SSPL.md",
+        "to": "LICENSE_SSPL.txt"
       }
     ],
     "extraResources": [
@@ -138,21 +142,21 @@
       "verifyUpdateCodeSignature": false
     },
     "nsis": {
-      "artifactName": "Mnemosyne-Setup-${version}.${ext}",
+      "artifactName": "MnemosyneC-Setup-0.8.3.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Mnemosyne",
+      "shortcutName": "MnemosyneC",
       "include": "assets/installer.nsh",
       "license": "assets/LICENSE.rtf",
       "deleteAppDataOnUninstall": false,
       "runAfterFinish": true
     },
     "portable": {
-      "artifactName": "Mnemosyne-Portable-${version}.${ext}"
+      "artifactName": "MnemosyneC-Portable-0.8.3.${ext}"
     },
     "mac": {
       "target": [
