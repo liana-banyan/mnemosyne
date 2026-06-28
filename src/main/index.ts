@@ -103,6 +103,9 @@ import type { DeepLinkPayload } from './deep-link-handler';
 import { initializeBeaconsLit, destroyBeaconsLit, setAccessToken as setBeaconsLitToken } from './beacons_lit/index';
 import { registerBeaconsLitIpc } from './beacons_lit/ipc_channels';
 
+// BP099-K13 — Relay Answer Poller (permanent mesh inference dispatch)
+import { startRelayAnswerPoller } from './relay_answer/index';
+
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -1691,6 +1694,23 @@ app.whenReady().then(async () => {
   initializeBeaconsLit({ anonKey: process.env.SUPABASE_ANON_KEY }).catch(
     (e: Error) => console.warn('[BeaconsLit] init error (non-fatal):', e.message),
   );
+
+  // BP099-K13: Start relay-answer poller — wires peer as active mesh inference node
+  {
+    const _supabaseUrl = (process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').replace(/\/$/, '');
+    const _anonKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
+    if (_supabaseUrl && _anonKey) {
+      const stopRelayPoller = startRelayAnswerPoller({
+        peerId,
+        supabaseUrl: _supabaseUrl,
+        anonKey: _anonKey,
+      });
+      app.on('before-quit', () => stopRelayPoller());
+      console.log('[relay_answer] poller started for peer', peerId.slice(0, 8));
+    } else {
+      console.warn('[relay_answer] SUPABASE_URL or ANON_KEY missing — relay-answer poller NOT started');
+    }
+  }
 
   const firstRun = isFirstRun();
   if (firstRun) {
