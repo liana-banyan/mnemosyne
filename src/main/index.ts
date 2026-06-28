@@ -695,9 +695,9 @@ function openDashboard(opts?: { focus?: boolean }): void {
 
   // SAGA 07 BP046B — expanded for 6-tab MnemosyneTabView
   dashboardWindow = new BrowserWindow({
-    width: 680,
-    height: 780,
-    minWidth: 560,
+    width: 1280,
+    height: 900,
+    minWidth: 680,
     minHeight: 600,
     title: `Mnemosyne v${app.getVersion()}`,
     show: false,
@@ -708,8 +708,8 @@ function openDashboard(opts?: { focus?: boolean }): void {
     },
   });
 
-  const dashW = 680;
-  const dashH = 780;
+  const dashW = 1280;
+  const dashH = 900;
   const primary = screen.getPrimaryDisplay().workArea;
   const dashBounds = getSafeBounds({
     x: primary.x + Math.floor((primary.width - dashW) / 2),
