@@ -5,7 +5,8 @@
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 
-const AUDIO_SRC = 'https://lianabanyan.com/audio/WhatDoStarsDOShine.m4a';
+// BP099 K5: local bundled asset — remote URL blocked by Electron prod CSP
+const AUDIO_SRC = './audio/WhatDoStarsDOShine.m4a';
 
 interface YvaineSplashProps {
   onDismiss: () => void;
@@ -33,7 +34,12 @@ export function YvaineSplash({ onDismiss }: YvaineSplashProps) {
       audioRef.current.currentTime = 0;
       setPlaying(false);
     } else {
-      audioRef.current.play().catch(() => {});
+      audioRef.current.play().catch((err: unknown) => {
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('[YvaineSplash] audio play failed:', err);
+        }
+        setPlaying(false);
+      });
       setPlaying(true);
     }
   }, [playing]);
