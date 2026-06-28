@@ -79,7 +79,7 @@ const TABS: TabDef[] = [
   { id: 'caithedral-core', label: 'Caithedral Core', icon: '🏛', tooltip: 'Tab 13 · Caithedral™ Core — SSPL open-source substrate · Designed to Be Copied · Banyan Metric™ · MoneyPenny™ · Substrated Folders · CPU-only inference' },
   { id: 'broadcast-schedule', label: 'Broadcast Schedule', icon: '📡', tooltip: 'Tab 14 · Broadcast Schedule — Opening Gambit TV-Guide · 7-day social launch sequence · As You Wish confirmation gate' },
   { id: 'battery-dispatch',   label: 'Battery Dispatch',   icon: '🔋', tooltip: 'Tab 15 · Battery Dispatch — Coordinated social media barrage · ARM → FIRE · Campaign scheduler · As You Wish confirmation gate' },
-  { id: 'lb-account',        label: 'LB Account',         icon: '🪙', tooltip: 'Tab 16 · LB Account — Connect Mnemosyne to your Liana Banyan account · Join the Frontier mesh (Node of Socceri)' },
+  { id: 'lb-account',        label: 'LB Account',         icon: '$', tooltip: 'Tab 16 · LB Account — Connect Mnemosyne to your Liana Banyan account · Join the Frontier mesh (Node of Socceri)' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────

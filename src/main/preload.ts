@@ -782,6 +782,27 @@ contextBridge.exposeInMainWorld('amplify', {
   }> =>
     ipcRenderer.invoke('lb:get-frontier-status'),
 
+  // ── Beacons Lit (BP098 M43) ──────────────────────────────────────────────
+  bonfireLitStatus: (): Promise<{
+    enabled: boolean;
+    initialized: boolean;
+    peer_id: string;
+    cai_version: string;
+    last_handshake_at: string | null;
+    error: string | null;
+  }> =>
+    ipcRenderer.invoke('bonfire_lit:status'),
+
+  bonfireLitToggle: (enabled: boolean): Promise<{
+    enabled: boolean;
+    initialized: boolean;
+    peer_id: string;
+    cai_version: string;
+    last_handshake_at: string | null;
+    error: string | null;
+  }> =>
+    ipcRenderer.invoke('bonfire_lit:toggle', { enabled }),
+
   // ── Bridge (BP060 Application 002 Steps 3+4 · UI-7 live Yoke wire) ──────
   bridge: {
     checkMessages: (count?: number) =>
@@ -990,6 +1011,9 @@ declare global {
       lbRegisterFrontierNode?: () => Promise<{ ok: boolean; frontierNodeId?: string; error?: string }>;
       lbWithdrawFrontierNode?: () => Promise<{ ok: boolean; error?: string }>;
       lbGetFrontierStatus?: () => Promise<{ linked: boolean; registered: boolean; peer_id?: string; my_node?: unknown; nodes: unknown[]; heartbeat_active: boolean }>;
+      // Beacons Lit (BP098 M43)
+      bonfireLitStatus?: () => Promise<{ enabled: boolean; initialized: boolean; peer_id: string; cai_version: string; last_handshake_at: string | null; error: string | null }>;
+      bonfireLitToggle?: (enabled: boolean) => Promise<{ enabled: boolean; initialized: boolean; peer_id: string; cai_version: string; last_handshake_at: string | null; error: string | null }>;
       // Bridge IPC (BP060 Application 002 Steps 3+4 · UI-7)
       bridge?: {
         checkMessages: (count?: number) => Promise<{

@@ -99,6 +99,10 @@ import { SubstratedFolderWatcher, registerWatcherIpc } from './services/Substrat
 import { registerDeepLinkProtocol, handleStartupDeepLink } from './deep-link-handler';
 import type { DeepLinkPayload } from './deep-link-handler';
 
+// BP098 M43 — Beacons Lit (bonfire_lit) desktop port
+import { initializeBeaconsLit, destroyBeaconsLit, setAccessToken as setBeaconsLitToken } from './beacons_lit/index';
+import { registerBeaconsLitIpc } from './beacons_lit/ipc_channels';
+
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -1419,6 +1423,9 @@ function registerIPCHandlers(): void {
   // ── Kitchen Table™ + Atlas™ + P2P (BP052 v0.1.8) ────────────────────────
   registerKitchenTableIpc(ipcMain);
 
+  // ── Beacons Lit IPC (BP098 M43) ──────────────────────────────────────────
+  registerBeaconsLitIpc();
+
   // ── SubstratedFolderWatcher™ (SAGA-γ v0.1.10) ────────────────────────────
   if (folderWatcher) registerWatcherIpc(folderWatcher);
 
@@ -1683,6 +1690,12 @@ app.whenReady().then(async () => {
   peerDiscovery.startLAN().catch((e) => console.warn('[PeerDiscovery] LAN start error:', e));
   relayClient.start();
 
+  // BP098 M43 — Beacons Lit auto-start (§18 / Founder ratification: no gate)
+  // Non-blocking: fire-and-forget so launch is not delayed by network call.
+  initializeBeaconsLit({ anonKey: process.env.SUPABASE_ANON_KEY }).catch(
+    (e: Error) => console.warn('[BeaconsLit] init error (non-fatal):', e.message),
+  );
+
   const firstRun = isFirstRun();
   if (firstRun) {
     lanHandshakeEligible = true;
@@ -1734,6 +1747,8 @@ app.whenReady().then(async () => {
           .then((result) => {
             const win = dashboardWindow ?? overlayWindow;
             if (result.ok) {
+              // BP098 M43: pass LB auth token to Beacons Lit for authenticated handshakes
+              setBeaconsLitToken(result.session?.access_token ?? null);
               win?.webContents.send('lb:auth-complete', {
                 ok: true,
                 user_id: result.session?.user_id,
@@ -1860,6 +1875,7 @@ app.on('before-quit', async () => {
   stopOverlayWatchdog();
   if (connectivityTimer) clearInterval(connectivityTimer);
   if (frontierHeartbeatTimer) { clearInterval(frontierHeartbeatTimer); frontierHeartbeatTimer = null; }
+  destroyBeaconsLit();
   folderWatcher?.stopAll();
   autoUpdater?.destroy();
   await ollamaManager?.shutdown();

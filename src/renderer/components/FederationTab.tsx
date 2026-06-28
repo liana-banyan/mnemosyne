@@ -374,6 +374,99 @@ function AcceptFlow() {
   );
 }
 
+// ─── Beacons Lit Status Panel (BP098 M43) ────────────────────────────────────
+
+interface BeaconsLitStatus {
+  enabled: boolean;
+  initialized: boolean;
+  peer_id: string;
+  cai_version: string;
+  last_handshake_at: string | null;
+  error: string | null;
+}
+
+function BeaconsLitPanel() {
+  const [status, setStatus] = useState<BeaconsLitStatus | null>(null);
+  const [toggling, setToggling] = useState(false);
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const s = await (window as any).amplify?.bonfireLitStatus?.();
+      if (s) setStatus(s);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    void loadStatus();
+    const iv = setInterval(() => void loadStatus(), 30_000);
+    return () => clearInterval(iv);
+  }, [loadStatus]);
+
+  const handleToggle = async () => {
+    if (!status) return;
+    setToggling(true);
+    try {
+      const next = await (window as any).amplify?.bonfireLitToggle?.(!status.enabled);
+      if (next) setStatus(next);
+    } catch { /* ignore */ } finally {
+      setToggling(false);
+    }
+  };
+
+  const statusColor = status?.enabled ? C.green : C.muted;
+  const lastSeen = status?.last_handshake_at
+    ? new Date(status.last_handshake_at).toLocaleTimeString()
+    : 'never';
+
+  return (
+    <div style={{
+      background: C.surface,
+      border: `1px solid ${status?.enabled ? C.green + '44' : C.border}`,
+      borderRadius: 8,
+      padding: '10px 14px',
+      marginTop: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{
+            width: 7, height: 7, borderRadius: '50%',
+            background: statusColor,
+            boxShadow: status?.enabled ? `0 0 4px ${C.green}` : 'none',
+          }} />
+          <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Beacons Lit</span>
+          {status?.cai_version && (
+            <span style={{ fontSize: 9, color: C.muted, fontFamily: 'monospace' }}>
+              CAI {status.cai_version}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={handleToggle}
+          disabled={toggling || !status}
+          style={{
+            background: status?.enabled ? '#1c2e1a' : '#1e2d45',
+            border: `1px solid ${status?.enabled ? C.green + '88' : C.border}`,
+            borderRadius: 5,
+            color: status?.enabled ? C.green : C.muted,
+            cursor: toggling ? 'default' : 'pointer',
+            fontSize: 9,
+            padding: '2px 8px',
+            opacity: toggling ? 0.6 : 1,
+          }}
+        >
+          {toggling ? '...' : status?.enabled ? 'Active' : 'Off'}
+        </button>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 9, color: C.muted, lineHeight: 1.5 }}>
+        <span>Priming-sync across M0/M2/M3 mesh · last sync: {lastSeen}</span>
+        {status?.error && (
+          <div style={{ color: C.amber, marginTop: 2 }}>{status.error}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main FederationTab ───────────────────────────────────────────────────────
 
 export function FederationTab() {
@@ -488,6 +581,11 @@ export function FederationTab() {
           </span>
         </div>
       )}
+
+      {/* Beacons Lit status panel (BP098 M43) */}
+      <div style={{ padding: '0 12px 12px' }}>
+        <BeaconsLitPanel />
+      </div>
     </div>
   );
 }
