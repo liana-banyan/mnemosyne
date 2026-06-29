@@ -7,9 +7,16 @@
 //   3. Invite flow — generate 24h signed token + copy-to-clipboard
 //   4. Accept flow — paste-token + verify + join-mesh confirmation
 //   5. Empty state — cooperative-class, no mock peers
+//
+// K16 v0.8.10 additions:
+//   - LAN peer discovery via kitchenTable.p2pStart/p2pPeers IPC
+//   - lan_addresses surfaced on peer roster cards
+//   - onSwitchTab prop for cross-link (Diagnostic Mode "View Federation" button)
+// Migrated to mnemosyne repo: 2026-06-28 -- SEG-MM Novaculi BP099
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import type { MnemosynePeer } from '../../shared/federation-protocol';
+import { PeerCueCard } from './PeerCueCard';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -125,10 +132,16 @@ function MeshVisualizer({ peers, ownId }: { peers: MnemosynePeer[]; ownId: strin
 }
 
 // ─── Peer Roster ──────────────────────────────────────────────────────────────
+// Renders peers as a flex-wrap card grid using PeerCueCard.
+// ⚠ TRUTH-ALWAYS (SEG-V0153A): handleConnectPeer uses federationAcceptInvite as a
+//   stopgap because no `federation:connect-peer` IPC handler exists. A dedicated
+//   handler calling connectToPeerWithEscalation() must be added to src/main/index.ts
+//   and exposed via preload.ts before this button has full connect semantics.
 
-function PeerRoster({ peers, onLeave }: {
+function PeerRoster({ peers, onLeave, onConnect }: {
   peers: MnemosynePeer[];
   onLeave: (peerId: string) => void;
+  onConnect: (peerId: string) => void;
 }) {
   if (peers.length === 0) {
     return (
@@ -147,153 +160,521 @@ function PeerRoster({ peers, onLeave }: {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {peers.map((p) => {
-        const pubShort = p.peerId.slice(0, 8) + '…' + p.peerId.slice(-4);
-        const lastSyncAgo = Math.round((Date.now() - new Date(p.lastSeen).getTime()) / 1000);
-        const lastSyncLabel = lastSyncAgo < 60
-          ? `${lastSyncAgo}s ago`
-          : lastSyncAgo < 3600
-          ? `${Math.round(lastSyncAgo / 60)}m ago`
-          : `${Math.round(lastSyncAgo / 3600)}h ago`;
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, padding: 8 }}>
+      {peers.map((peer) => (
+        <div key={peer.peerId}>
+          <PeerCueCard
+            peer={peer}
+            onConnect={onConnect}
+          />
+          {/* K16 v0.8.10 -- LAN IP addresses */}
+          {peer.lan_addresses && peer.lan_addresses.length > 0 && (
+            <div style={{ fontSize: 10, color: '#475569', marginTop: 2, paddingLeft: 4 }}>
+              {peer.lan_addresses.join(' · ')}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
-        return (
-          <div key={p.peerId} style={s.peerRow}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>
-                {p.displayName ?? `Peer ${p.peerId.slice(0, 6)}`}
-              </div>
-              <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>
-                <span style={{ fontFamily: 'monospace' }}>{pubShort}</span>
-                {' · '}
-                {p.transport === 'lan' ? '🔵 LAN' : '🌐 WAN'}
-                {' · '}last seen {lastSyncLabel}
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{
-                fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 8,
-                background: p.phase === 'synced' ? '#16301b' : '#1c1a30',
-                color: p.phase === 'synced' ? C.green : C.purple,
-                border: `1px solid ${p.phase === 'synced' ? C.green + '44' : C.purple + '44'}`,
-                textTransform: 'uppercase',
-                letterSpacing: '0.04em',
-              }}>
-                {p.phase}
-              </span>
-              <button
-                onClick={() => onLeave(p.peerId)}
-                style={s.leaveBtn}
-                title="Leave mesh with this peer"
-              >
-                Leave
-              </button>
-            </div>
+// ─── Invite Cue Card Preview ──────────────────────────────────────────────────
+
+function InviteCueCardPreview({
+  displayName,
+  recipientName,
+}: {
+  displayName: string;
+  recipientName: string;
+}) {
+  const CARD_W = 280;
+  const CARD_H = 160;
+  const recipientLabel = recipientName.trim()
+    ? `${recipientName.trim()}'s MnemosyneC network`
+    : 'Your MnemosyneC network';
+  const isHandleStyle = displayName.startsWith('@') || displayName.includes('#');
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{
+        fontSize: 9, color: '#475569', marginBottom: 6,
+        textTransform: 'uppercase', letterSpacing: '0.07em',
+      }}>
+        Your Invite Card Preview
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+
+        {/* FRONT face — brand/identity */}
+        <div style={{
+          width: CARD_W, height: CARD_H,
+          background: '#0a0f1a',
+          border: '1px solid #6ee7b7',
+          borderRadius: 10,
+          padding: '12px 14px',
+          boxSizing: 'border-box',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+          flexShrink: 0,
+        }}>
+          <div style={{ fontSize: 18, lineHeight: 1 }}>🧠</div>
+          <div style={{
+            textAlign: 'center',
+            fontSize: 15,
+            fontWeight: 700,
+            color: isHandleStyle ? '#6ee7b7' : '#e2e8f0',
+          }}>
+            {displayName}
           </div>
-        );
-      })}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+            <div style={{
+              fontSize: 9, color: '#475569',
+              letterSpacing: '0.06em', textTransform: 'uppercase',
+            }}>
+              FounderDenken
+            </div>
+            <div style={{
+              width: 16, height: 16, background: '#1a2235',
+              borderRadius: 3, border: '1px solid #1e2d45',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 7, color: '#475569',
+            }}>QR</div>
+          </div>
+        </div>
+
+        {/* BACK face — action */}
+        <div style={{
+          width: CARD_W, height: CARD_H,
+          background: '#0a0f1a',
+          border: '1px solid #22c55e',
+          borderRadius: 10,
+          padding: '12px 14px',
+          boxSizing: 'border-box',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+          flexShrink: 0,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#6ee7b7', letterSpacing: '0.08em' }}>
+            MnemosyneC
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 12, color: '#e2e8f0', marginBottom: 8 }}>
+              {recipientLabel}
+            </div>
+            <div style={{
+              width: 16, height: 16, background: '#1a2235',
+              borderRadius: 3, border: '1px solid #1e2d45',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 7, color: '#475569',
+            }}>QR</div>
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', textAlign: 'center' }}>
+            Scan to accept ↑
+          </div>
+        </div>
+
+      </div>
     </div>
   );
 }
 
 // ─── Invite Flow ──────────────────────────────────────────────────────────────
 
-export function InviteFlow() {
-  const [token, setToken] = useState<InviteToken | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export function InviteFlow({ displayName }: { displayName?: string }) {
+  const resolvedDisplayName = displayName?.trim() || 'Your Name';
 
-  const generate = async () => {
-    setLoading(true);
-    setError(null);
+  const [recipientName, setRecipientName] = useState('');
+  const [recipientEmail, setRecipientEmail] = useState('');
+  const [personalNote, setPersonalNote] = useState('');
+  const [sendStatus, setSendStatus] = useState<
+    'idle' | 'validating' | 'generating' | 'opening' | 'success' | 'error'
+  >('idle');
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [sentToken, setSentToken] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [tokenCopied, setTokenCopied] = useState(false);
+  const openTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [cooldownActive, setCooldownActive] = useState(false);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
+
+  const [signCard, setSignCard] = useState(true);
+
+  const [legacyToken, setLegacyToken] = useState<InviteToken | null>(null);
+  const [legacyLoading, setLegacyLoading] = useState(false);
+  const [legacyCopied, setLegacyCopied] = useState(false);
+  const [legacyError, setLegacyError] = useState<string | null>(null);
+
+  const isBusy =
+    sendStatus === 'validating' ||
+    sendStatus === 'generating' ||
+    sendStatus === 'opening';
+
+  useEffect(() => {
+    if (!cooldownActive || cooldownSeconds <= 0) return;
+    const interval = setInterval(() => {
+      setCooldownSeconds(s => {
+        if (s <= 60) {
+          setCooldownActive(false);
+          clearInterval(interval);
+          return 0;
+        }
+        return s - 60;
+      });
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [cooldownActive, cooldownSeconds]);
+
+  const handleSend = async () => {
+    if (isBusy) return;
+    setSendStatus('validating');
+    setEmailError(null);
+    setSendError(null);
+
+    if (!/.+@.+\..+/.test(recipientEmail.trim())) {
+      setEmailError('Please enter a valid email address.');
+      setSendStatus('idle');
+      return;
+    }
+
+    setSendStatus('generating');
+    let inviteToken: string;
+    let expiresAt: string;
+    try {
+      const rawResult = await (window as any).amplify?.federationGenerateInvite?.();
+      const result = rawResult && 'ok' in rawResult ? rawResult : { ok: true, ...rawResult };
+      if (!result.ok && result.error === 'cooldown') {
+        setCooldownSeconds(result.wait_seconds ?? 3600);
+        setCooldownActive(true);
+        setSendStatus('idle');
+        return;
+      }
+      if (result?.token) {
+        inviteToken = result.token;
+        expiresAt = result.expiresAt;
+      } else {
+        inviteToken = `mnemo-invite-${crypto.randomUUID?.() ?? Date.now()}`;
+        expiresAt = new Date(Date.now() + 86400000).toISOString();
+      }
+    } catch (e) {
+      setSendStatus('error');
+      setSendError('Failed to generate invite token: ' + String(e));
+      return;
+    }
+
+    const acceptLink = `mnemo://accept?token=${inviteToken}`;
+    const note = personalNote.trim();
+    const fromLine = signCard ? `From: ${resolvedDisplayName}\n` : '';
+    const noteBlock = signCard && note ? `\n${note}\n` : '';
+    const body =
+      fromLine +
+      noteBlock +
+      (fromLine || noteBlock ? '\n' : '') +
+      "I'd like to share context with you via MnemosyneC.\n\n" +
+      `Click to accept:\n${acceptLink}\n\n` +
+      `Or paste this token in MnemosyneC → Federation → Accept tab:\n${inviteToken}\n\n` +
+      `This invite expires: ${new Date(expiresAt).toLocaleString()}\n\n` +
+      'Get MnemosyneC: https://mnemosynec.ai';
+
+    const subjectRecipient = recipientName.trim();
+    const mailtoUrl =
+      'mailto:' + encodeURIComponent(recipientEmail.trim()) +
+      '?subject=' + encodeURIComponent(
+        subjectRecipient
+          ? `${subjectRecipient}, you're invited to join MnemosyneC`
+          : "You're invited to join MnemosyneC"
+      ) +
+      '&body=' + encodeURIComponent(body);
+
+    setSendStatus('opening');
+    setSentToken(inviteToken);
+    (window as any).amplify?.openExternal?.(mailtoUrl);
+
+    if (openTimeoutRef.current) clearTimeout(openTimeoutRef.current);
+    openTimeoutRef.current = setTimeout(() => {
+      setSendStatus('success');
+    }, 3000);
+  };
+
+  const copyFallbackToken = async () => {
+    if (!sentToken) return;
+    try {
+      await navigator.clipboard.writeText(sentToken);
+      setTokenCopied(true);
+      setTimeout(() => setTokenCopied(false), 2000);
+    } catch { /* ignore */ }
+  };
+
+  const resetForm = () => {
+    if (openTimeoutRef.current) clearTimeout(openTimeoutRef.current);
+    setSendStatus('idle');
+    setEmailError(null);
+    setSendError(null);
+    setSentToken(null);
+    setTokenCopied(false);
+    setRecipientName('');
+    setRecipientEmail('');
+    setPersonalNote('');
+  };
+
+  const sendButtonLabel = (): string => {
+    switch (sendStatus) {
+      case 'validating': return '⏳ Validating…';
+      case 'generating': return '🔑 Generating…';
+      case 'opening':    return '📧 Opening email client…';
+      default:           return '✉️ Send Invite Card';
+    }
+  };
+
+  const legacyGenerate = async () => {
+    setLegacyLoading(true);
+    setLegacyError(null);
     try {
       const result = await (window as any).amplify?.federationGenerateInvite?.();
       if (result?.token) {
-        setToken({ token: result.token, expiresAt: result.expiresAt });
+        setLegacyToken({ token: result.token, expiresAt: result.expiresAt });
       } else {
-        setToken({
+        setLegacyToken({
           token: `mnemo-invite-${crypto.randomUUID?.() ?? Date.now()}`,
           expiresAt: new Date(Date.now() + 86400000).toISOString(),
         });
       }
     } catch (e) {
-      setError(String(e));
+      setLegacyError(String(e));
     } finally {
-      setLoading(false);
+      setLegacyLoading(false);
     }
   };
 
-  const copyToken = async () => {
-    if (!token) return;
+  const legacyCopy = async () => {
+    if (!legacyToken) return;
     try {
-      await navigator.clipboard.writeText(token.token);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(legacyToken.token);
+      setLegacyCopied(true);
+      setTimeout(() => setLegacyCopied(false), 2000);
     } catch {
-      setError('Could not copy to clipboard.');
+      setLegacyError('Could not copy to clipboard.');
     }
   };
 
-  const expiresLabel = token
-    ? new Date(token.expiresAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const legacyExpiresLabel = legacyToken
+    ? new Date(legacyToken.expiresAt).toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      })
     : '';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
-        Generate a signed invite token (valid 24 hours). Share it with one peer — only
-        they can use it. The token is cryptographically bound to your peer identity.
-      </div>
 
-      {error && (
-        <div style={{ fontSize: 10, color: C.red, padding: '6px 10px', background: '#1c0808', borderRadius: 6 }}>
-          {error}
+      {sendStatus === 'success' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{
+            fontSize: 12, color: C.green, padding: '10px 14px',
+            background: '#0a1f0e', borderRadius: 8,
+            border: `1px solid ${C.green}44`, lineHeight: 1.6,
+          }}>
+            ✓ Invite opened in your email client. Check your drafts.
+          </div>
+          {sentToken && (
+            <div style={s.tokenBox}>
+              <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>
+                Fallback token — paste in Accept tab if email client didn't open
+              </div>
+              <div style={{
+                fontFamily: 'monospace', fontSize: 10, color: C.accent,
+                wordBreak: 'break-all', lineHeight: 1.5,
+                background: '#070d1a', padding: '6px 10px', borderRadius: 6,
+                border: `1px solid ${C.border}`,
+              }}>
+                {sentToken}
+              </div>
+              <button
+                onClick={() => void copyFallbackToken()}
+                style={{ ...s.ghostBtn, marginTop: 6, fontSize: 10 }}
+              >
+                {tokenCopied ? '✓ Copied!' : '📋 Copy token'}
+              </button>
+            </div>
+          )}
+          <button onClick={resetForm} style={s.ghostBtn}>
+            Send another invite
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {cooldownActive ? (
+            <div style={{
+              background: '#1a1200',
+              border: '1px solid #d97706',
+              borderRadius: 8,
+              padding: '12px 16px',
+              color: '#d97706',
+              fontSize: 13,
+            }}>
+              ⏳ You can send your next invite in {Math.ceil(cooldownSeconds / 60)} minute{Math.ceil(cooldownSeconds / 60) !== 1 ? 's' : ''}.
+              <div style={{ fontSize: 11, color: '#92400e', marginTop: 4 }}>
+                Invite responsibly — senders who get rejected too often enter a cooldown period.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+                Send a signed invite — valid 24 hours, single-use. Opens your mail client.
+              </div>
+
+              <div>
+                <input
+                  type="text"
+                  value={recipientName}
+                  onChange={(e) => setRecipientName(e.target.value)}
+                  placeholder="Their name"
+                  disabled={isBusy}
+                  maxLength={60}
+                  style={s.input}
+                />
+              </div>
+
+              <div>
+                <input
+                  type="email"
+                  value={recipientEmail}
+                  onChange={(e) => { setRecipientEmail(e.target.value); setEmailError(null); }}
+                  placeholder="their@email.com"
+                  disabled={isBusy}
+                  style={{
+                    ...s.input,
+                    borderColor: emailError ? C.red : undefined,
+                  }}
+                />
+                {emailError && (
+                  <div style={{ fontSize: 10, color: C.red, marginTop: 4 }}>{emailError}</div>
+                )}
+              </div>
+
+              <div>
+                <textarea
+                  value={personalNote}
+                  onChange={(e) => setPersonalNote(e.target.value.slice(0, 280))}
+                  placeholder="Why you're inviting them… (optional)"
+                  rows={3}
+                  disabled={isBusy}
+                  style={{ ...s.input, resize: 'vertical', fontFamily: 'inherit', fontSize: 11 }}
+                />
+              </div>
+
+              {sendError && (
+                <div style={{ fontSize: 10, color: C.red, padding: '6px 10px', background: '#1c0808', borderRadius: 6 }}>
+                  {sendError}
+                </div>
+              )}
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#94a3b8', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={signCard}
+                  onChange={(e) => setSignCard(e.target.checked)}
+                  style={{ cursor: 'pointer' }}
+                />
+                Sign this card as <span style={{ color: '#6ee7b7', marginLeft: 4 }}>{displayName?.trim() || 'you'}</span>
+              </label>
+
+              <button
+                onClick={() => void handleSend()}
+                disabled={isBusy}
+                style={{
+                  ...s.primaryBtn,
+                  background: '#0e2a1a',
+                  border: `1px solid ${C.green}`,
+                  color: C.green,
+                  opacity: isBusy ? 0.7 : 1,
+                }}
+              >
+                {sendButtonLabel()}
+              </button>
+
+              <InviteCueCardPreview
+                displayName={resolvedDisplayName}
+                recipientName={recipientName}
+              />
+            </>
+          )}
         </div>
       )}
 
-      {!token ? (
-        <button onClick={() => void generate()} disabled={loading} style={s.primaryBtn}>
-          {loading ? '⏳ Generating…' : '🔑 Generate Invite Token'}
-        </button>
-      ) : (
-        <>
-          <div style={s.tokenBox}>
-            <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>
-              Invite token · expires {expiresLabel}
+      <details style={{ marginTop: 4 }}>
+        <summary style={{
+          fontSize: 10, color: C.muted, cursor: 'pointer',
+          userSelect: 'none', padding: '4px 0', listStyle: 'none',
+        }}>
+          ▸ Generate token manually (copy-paste fallback)
+        </summary>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+          {legacyError && (
+            <div style={{ fontSize: 10, color: C.red, padding: '6px 10px', background: '#1c0808', borderRadius: 6 }}>
+              {legacyError}
             </div>
-            <div style={{
-              fontFamily: 'monospace', fontSize: 11, color: C.accent,
-              wordBreak: 'break-all', lineHeight: 1.5,
-              background: '#070d1a', padding: '8px 10px', borderRadius: 6,
-              border: `1px solid ${C.border}`,
-            }}>
-              {token.token}
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={() => void copyToken()} style={s.primaryBtn}>
-              {copied ? '✓ Copied!' : '📋 Copy Token'}
+          )}
+          {!legacyToken ? (
+            <button onClick={() => void legacyGenerate()} disabled={legacyLoading} style={s.primaryBtn}>
+              {legacyLoading ? '⏳ Generating…' : '🔑 Generate Invite Token'}
             </button>
-            <button onClick={() => { setToken(null); setCopied(false); }} style={s.ghostBtn}>
-              Regenerate
-            </button>
-          </div>
-          <div style={{ fontSize: 10, color: C.muted }}>
-            ⚠️ Single-use. Do not share publicly. Expires in 24 hours.
-          </div>
-        </>
-      )}
+          ) : (
+            <>
+              <div style={s.tokenBox}>
+                <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>
+                  Invite token · expires {legacyExpiresLabel}
+                </div>
+                <div style={{
+                  fontFamily: 'monospace', fontSize: 11, color: C.accent,
+                  wordBreak: 'break-all', lineHeight: 1.5,
+                  background: '#070d1a', padding: '8px 10px', borderRadius: 6,
+                  border: `1px solid ${C.border}`,
+                }}>
+                  {legacyToken.token}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => void legacyCopy()} style={s.primaryBtn}>
+                  {legacyCopied ? '✓ Copied!' : '📋 Copy Token'}
+                </button>
+                <button
+                  onClick={() => { setLegacyToken(null); setLegacyCopied(false); }}
+                  style={s.ghostBtn}
+                >
+                  Regenerate
+                </button>
+              </div>
+              <div style={{ fontSize: 10, color: C.muted }}>
+                ⚠️ Single-use. Do not share publicly. Expires in 24 hours.
+              </div>
+            </>
+          )}
+        </div>
+      </details>
+
     </div>
   );
 }
 
 // ─── Accept Flow ──────────────────────────────────────────────────────────────
 
-function AcceptFlow() {
-  const [tokenInput, setTokenInput] = useState('');
+function AcceptFlow({ initialToken }: { initialToken?: string }) {
+  const [tokenInput, setTokenInput] = useState(initialToken ?? '');
   const [status, setStatus] = useState<'idle' | 'verifying' | 'success' | 'error'>('idle');
   const [message, setMessage] = useState('');
+  const [deepLinkBanner, setDeepLinkBanner] = useState(!!initialToken);
+  const [rejecting, setRejecting] = useState(false);
+
+  useEffect(() => {
+    if (initialToken) {
+      setTokenInput(initialToken);
+      setStatus('idle');
+      setMessage('');
+      setDeepLinkBanner(true);
+    }
+  }, [initialToken]);
 
   const verify = async () => {
     const t = tokenInput.trim();
@@ -321,10 +702,32 @@ function AcceptFlow() {
     setTokenInput('');
     setStatus('idle');
     setMessage('');
+    setDeepLinkBanner(false);
+  };
+
+  const handleRejectInvite = async () => {
+    if (rejecting || !tokenInput.trim()) return;
+    setRejecting(true);
+    void (window as any).amplify?.federationRejectInvite?.({
+      invite_token: tokenInput.trim(),
+      source: 'in_app',
+    });
+    setTimeout(() => {
+      setTokenInput('');
+      setStatus('idle');
+      setMessage('');
+      setDeepLinkBanner(false);
+      setRejecting(false);
+    }, 1500);
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {deepLinkBanner && status !== 'success' && (
+        <div style={{ fontSize: 11, color: C.accent, padding: '8px 12px', background: '#0d1f38', borderRadius: 8, border: `1px solid ${C.accent}55` }}>
+          🔗 Token received! Click <strong>Verify &amp; Join Mesh</strong> to connect.
+        </div>
+      )}
       <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
         Paste an invite token from a peer. Mnemosyne will verify the signature and
         initiate the mesh handshake.
@@ -368,108 +771,35 @@ function AcceptFlow() {
           >
             {status === 'verifying' ? '⏳ Verifying…' : '🤝 Verify & Join Mesh'}
           </button>
+
+          {tokenInput.trim() && (
+            <button
+              style={{
+                marginTop: 8,
+                padding: '6px 12px',
+                background: 'transparent',
+                border: '1px solid #475569',
+                color: '#64748b',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+              onClick={() => void handleRejectInvite()}
+              disabled={rejecting}
+            >
+              {rejecting ? 'Dismissed' : 'Not interested'}
+            </button>
+          )}
         </>
       )}
     </div>
   );
 }
 
-// ─── Beacons Lit Status Panel (BP098 M43) ────────────────────────────────────
-
-interface BeaconsLitStatus {
-  enabled: boolean;
-  initialized: boolean;
-  peer_id: string;
-  cai_version: string;
-  last_handshake_at: string | null;
-  error: string | null;
-}
-
-function BeaconsLitPanel() {
-  const [status, setStatus] = useState<BeaconsLitStatus | null>(null);
-  const [toggling, setToggling] = useState(false);
-
-  const loadStatus = useCallback(async () => {
-    try {
-      const s = await (window as any).amplify?.bonfireLitStatus?.();
-      if (s) setStatus(s);
-    } catch { /* ignore */ }
-  }, []);
-
-  useEffect(() => {
-    void loadStatus();
-    const iv = setInterval(() => void loadStatus(), 30_000);
-    return () => clearInterval(iv);
-  }, [loadStatus]);
-
-  const handleToggle = async () => {
-    if (!status) return;
-    setToggling(true);
-    try {
-      const next = await (window as any).amplify?.bonfireLitToggle?.(!status.enabled);
-      if (next) setStatus(next);
-    } catch { /* ignore */ } finally {
-      setToggling(false);
-    }
-  };
-
-  const statusColor = status?.enabled ? C.green : C.muted;
-  const lastSeen = status?.last_handshake_at
-    ? new Date(status.last_handshake_at).toLocaleTimeString()
-    : 'never';
-
-  return (
-    <div style={{
-      background: C.surface,
-      border: `1px solid ${status?.enabled ? C.green + '44' : C.border}`,
-      borderRadius: 8,
-      padding: '10px 14px',
-      marginTop: 10,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{
-            width: 7, height: 7, borderRadius: '50%',
-            background: statusColor,
-            boxShadow: status?.enabled ? `0 0 4px ${C.green}` : 'none',
-          }} />
-          <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Beacons Lit</span>
-          {status?.cai_version && (
-            <span style={{ fontSize: 9, color: C.muted, fontFamily: 'monospace' }}>
-              CAI {status.cai_version}
-            </span>
-          )}
-        </div>
-        <button
-          onClick={handleToggle}
-          disabled={toggling || !status}
-          style={{
-            background: status?.enabled ? '#1c2e1a' : '#1e2d45',
-            border: `1px solid ${status?.enabled ? C.green + '88' : C.border}`,
-            borderRadius: 5,
-            color: status?.enabled ? C.green : C.muted,
-            cursor: toggling ? 'default' : 'pointer',
-            fontSize: 9,
-            padding: '2px 8px',
-            opacity: toggling ? 0.6 : 1,
-          }}
-        >
-          {toggling ? '...' : status?.enabled ? 'Active' : 'Off'}
-        </button>
-      </div>
-      <div style={{ marginTop: 6, fontSize: 9, color: C.muted, lineHeight: 1.5 }}>
-        <span>Priming-sync across M0/M2/M3 mesh · last sync: {lastSeen}</span>
-        {status?.error && (
-          <div style={{ color: C.amber, marginTop: 2 }}>{status.error}</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ─── Main FederationTab ───────────────────────────────────────────────────────
 
-export function FederationTab() {
+// K16 v0.8.10 -- onSwitchTab prop for cross-link (e.g., Diagnostic Mode "View Federation" button)
+export function FederationTab({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } = {}) {
   const [meshState, setMeshState] = useState<MeshState>({
     peers: [],
     relayConnected: false,
@@ -477,6 +807,21 @@ export function FederationTab() {
   });
   const [activeTab, setActiveTab] = useState<TabId>('mesh');
   const [loading, setLoading] = useState(true);
+  const [displayName, setDisplayName] = useState<string | undefined>(undefined);
+  const [deepLinkToken, setDeepLinkToken] = useState<string | undefined>(undefined);
+  // K16 v0.8.10 -- LAN discovery state
+  const [lanDiscovering, setLanDiscovering] = useState(false);
+  const [lanDiscovered, setLanDiscovered] = useState<Array<{ ip: string; label?: string }>>([]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const authState = await (window as any).amplify?.getAuthState?.();
+        const name: string | undefined = authState?.member?.display_name;
+        if (name) setDisplayName(name);
+      } catch { /* non-fatal */ }
+    })();
+  }, []);
 
   const loadMesh = useCallback(async () => {
     try {
@@ -500,6 +845,16 @@ export function FederationTab() {
     };
   }, [loadMesh]);
 
+  useEffect(() => {
+    const cleanup = (window as any).amplify?.onFederationDeepLinkAccept?.(
+      (data: { token: string; slug: string }) => {
+        setDeepLinkToken(data.token);
+        setActiveTab('accept');
+      },
+    );
+    return () => cleanup?.();
+  }, []);
+
   const handleLeave = async (peerId: string) => {
     if (!confirm('Leave mesh with this peer? They will still exist in their own mesh.')) return;
     try {
@@ -507,6 +862,44 @@ export function FederationTab() {
       await loadMesh();
     } catch { /* ignore */ }
   };
+
+  const handleConnectPeer = async (peerId: string) => {
+    try {
+      await (window as any).amplify?.federationAcceptInvite?.(peerId);
+      await loadMesh();
+    } catch { /* ignore */ }
+  };
+
+  // K16 v0.8.10 -- LAN peer discovery using kitchenTable.p2pStart/p2pStop/p2pPeers IPC
+  async function handleLanSearch() {
+    setLanDiscovering(true);
+    setLanDiscovered([]);
+    try {
+      const peerId = localStorage.getItem('mnemo_peer_id') ?? Math.random().toString(36).slice(2);
+      localStorage.setItem('mnemo_peer_id', peerId);
+      const label = localStorage.getItem('mnemo_display_name') ?? 'MnemosyneC';
+      await (window as any).amplify?.kitchenTable?.p2pStart?.(peerId, label);
+
+      let elapsed = 0;
+      const tick = setInterval(async () => {
+        elapsed += 2000;
+        try {
+          const result = await (window as any).amplify?.kitchenTable?.p2pPeers?.() as
+            { peers: Array<{ address: string; displayName?: string }>; active: boolean } | null;
+          if (result?.peers) {
+            setLanDiscovered(result.peers.map((p) => ({ ip: p.address, label: p.displayName })));
+          }
+        } catch { /* ignore */ }
+        if (elapsed >= 10_000) {
+          clearInterval(tick);
+          await (window as any).amplify?.kitchenTable?.p2pStop?.().catch(() => {});
+          setLanDiscovering(false);
+        }
+      }, 2000);
+    } catch {
+      setLanDiscovering(false);
+    }
+  }
 
   const TABS: Array<{ id: TabId; label: string }> = [
     { id: 'mesh',   label: '🕸️ Mesh' },
@@ -562,13 +955,49 @@ export function FederationTab() {
         {loading && activeTab === 'mesh' ? (
           <div style={{ textAlign: 'center', color: C.muted, padding: 24, fontSize: 11 }}>Scanning…</div>
         ) : activeTab === 'mesh' ? (
-          <MeshVisualizer peers={meshState.peers} ownId={meshState.ownPeerId} />
+          <>
+            <MeshVisualizer peers={meshState.peers} ownId={meshState.ownPeerId} />
+            {/* K16 v0.8.10 -- Search LAN Peers */}
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+              <button
+                onClick={() => void handleLanSearch()}
+                disabled={lanDiscovering}
+                style={{
+                  padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                  cursor: lanDiscovering ? 'not-allowed' : 'pointer',
+                  background: 'rgba(59,130,246,0.12)', border: '1px solid rgba(59,130,246,0.35)',
+                  color: '#60a5fa',
+                }}
+              >
+                {lanDiscovering ? 'Searching LAN...' : 'Search LAN Peers'}
+              </button>
+              {lanDiscovered.length > 0 && (
+                <div style={{ width: '100%', maxWidth: 340 }}>
+                  {lanDiscovered.map((p) => (
+                    <div key={p.ip} style={{ fontSize: 11, color: '#94a3b8', padding: '3px 0' }}>
+                      🌐 {p.ip}{p.label ? ` · ${p.label}` : ''}{' '}
+                      <span style={{ color: '#475569' }}>LAN discovered</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!lanDiscovering && lanDiscovered.length === 0 && (
+                <div style={{ fontSize: 10, color: '#475569' }}>
+                  Click to scan for MnemosyneC peers on your local network
+                </div>
+              )}
+            </div>
+          </>
         ) : activeTab === 'roster' ? (
-          <PeerRoster peers={meshState.peers} onLeave={(id) => void handleLeave(id)} />
+          <PeerRoster
+            peers={meshState.peers}
+            onLeave={(id) => void handleLeave(id)}
+            onConnect={(id) => void handleConnectPeer(id)}
+          />
         ) : activeTab === 'invite' ? (
-          <InviteFlow />
+          <InviteFlow displayName={displayName} />
         ) : (
-          <AcceptFlow />
+          <AcceptFlow initialToken={deepLinkToken} />
         )}
       </div>
 
@@ -581,11 +1010,6 @@ export function FederationTab() {
           </span>
         </div>
       )}
-
-      {/* Beacons Lit status panel (BP098 M43) */}
-      <div style={{ padding: '0 12px 12px' }}>
-        <BeaconsLitPanel />
-      </div>
     </div>
   );
 }

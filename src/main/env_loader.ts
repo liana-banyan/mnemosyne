@@ -14,10 +14,39 @@
 // This module MUST be imported FIRST in src/main/index.ts so its side-effects
 // populate process.env before any consumer (wave_generator, opus_claude_adapter,
 // substrate_api, etc.) reads from process.env at module-load time.
+//
+// BP099-K16 augmentation: adds EnvLoaderStatus + getEnvLoaderStatus() for
+// diagnostic_mode and startup_diagnostic consumers.
 
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
+
+// ─── Diagnostic state (consumed by diagnostic_mode + startup_diagnostic) ──────
+// §4 BLOOD: anonKeyHash is sha256 of anon key value -- key value never stored here.
+
+export interface EnvLoaderStatus {
+  supabaseUrl: string;
+  supabaseUrlSource: 'env' | 'fallback' | 'vault' | 'absent';
+  anonKeySource: 'env' | 'fallback' | 'vault' | 'absent';
+  anonKeyHash: string;
+  pathsChecked: Array<{ path: string; exists: boolean }>;
+  activeVaultPath: string | null;
+}
+
+let _status: EnvLoaderStatus = {
+  supabaseUrl: '',
+  supabaseUrlSource: 'absent',
+  anonKeySource: 'absent',
+  anonKeyHash: '',
+  pathsChecked: [],
+  activeVaultPath: null,
+};
+
+export function getEnvLoaderStatus(): EnvLoaderStatus {
+  return { ..._status };
+}
 
 function loadWorkingKeysEnv(): void {
   const candidates: string[] = [
@@ -31,8 +60,12 @@ function loadWorkingKeysEnv(): void {
     resolve(homedir(), '.lb_substrate', 'WORKING_KEYS.env'),
   ].filter((p): p is string => Boolean(p));
 
+  const pathsChecked: Array<{ path: string; exists: boolean }> = [];
+
   for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue;
+    const exists = existsSync(candidate);
+    pathsChecked.push({ path: candidate, exists });
+    if (!exists) continue;
 
     let content: string;
     try {
@@ -55,16 +88,24 @@ function loadWorkingKeysEnv(): void {
       const key = line.slice(0, eq).trim();
       let val = line.slice(eq + 1).trim();
 
-      // Strip surrounding quotes if present
+      // Standard dotenv parsing:
+      //   Quoted values  --> strip surrounding quotes; # inside quotes is NOT a comment
+      //   Unquoted values --> strip inline # comment (e.g., "eyJ...ngk  # gitleaks:allow")
       if (val.length >= 2) {
         const first = val[0];
-        const last = val[val.length - 1];
+        const last  = val[val.length - 1];
         if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-          val = val.slice(1, -1);
+          val = val.slice(1, -1); // quoted -- preserve content verbatim
+        } else {
+          const hashIdx = val.indexOf('#');
+          if (hashIdx > -1) val = val.slice(0, hashIdx).trim();
         }
+      } else {
+        const hashIdx = val.indexOf('#');
+        if (hashIdx > -1) val = val.slice(0, hashIdx).trim();
       }
 
-      // Respect explicit overrides — don't clobber a key already set in the environment
+      // Respect explicit overrides -- don't clobber a key already set in the environment
       if (process.env[key] !== undefined && process.env[key] !== '') {
         skippedNames.push(key);
         continue;
@@ -80,8 +121,44 @@ function loadWorkingKeysEnv(): void {
       (loadedNames.length > 0 ? ` (names: ${loadedNames.join(', ')})` : '') +
       (skippedNames.length > 0 ? ` | skipped ${skippedNames.length} (already set: ${skippedNames.join(', ')})` : '')
     );
+
+    // Capture diagnostic state after successful vault load
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+    const anonKeyHash = anonKey
+      ? createHash('sha256').update(anonKey).digest('hex')
+      : '';
+
+    // Determine source: LockBox = 'vault', cwd .env = 'fallback'
+    const isVault =
+      candidate.includes('LockBox') ||
+      candidate.includes('.lb_substrate');
+    const isFallback = candidate.includes('.env') && !isVault;
+
+    _status = {
+      supabaseUrl,
+      supabaseUrlSource: supabaseUrl ? (isVault ? 'vault' : isFallback ? 'fallback' : 'env') : 'absent',
+      anonKeySource: anonKey ? (isVault ? 'vault' : isFallback ? 'fallback' : 'env') : 'absent',
+      anonKeyHash,
+      pathsChecked,
+      activeVaultPath: candidate,
+    };
+
     return; // First found vault wins
   }
+
+  // No vault found -- populate status from existing process.env
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+
+  _status = {
+    supabaseUrl,
+    supabaseUrlSource: supabaseUrl ? 'env' : 'absent',
+    anonKeySource: anonKey ? 'env' : 'absent',
+    anonKeyHash: anonKey ? createHash('sha256').update(anonKey).digest('hex') : '',
+    pathsChecked,
+    activeVaultPath: null,
+  };
 
   console.warn(
     `[LB Frame env-load] no env vault found. Searched: ${candidates.join(' | ')}. ` +
