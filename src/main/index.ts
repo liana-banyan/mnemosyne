@@ -106,6 +106,10 @@ import { registerBeaconsLitIpc } from './beacons_lit/ipc_channels';
 // BP099-K13 — Relay Answer Poller (permanent mesh inference dispatch)
 import { startRelayAnswerPoller } from './relay_answer/index';
 
+// K16 v0.8.10 — Diagnostic Mode poller + Startup Diagnostic
+import { startDiagnosticPoller, stopDiagnosticPoller } from './diagnostic_mode/index';
+import { submitStartupDiagnostic } from './relay_answer/startup_diagnostic';
+
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -1720,6 +1724,16 @@ app.whenReady().then(async () => {
       });
       app.on('before-quit', () => stopRelayPoller());
       console.log('[relay_answer] poller started for peer', peerId.slice(0, 8));
+
+      // K16 v0.8.10 — Diagnostic Mode poller (reads peerId + env internally)
+      startDiagnosticPoller();
+      app.on('before-quit', () => stopDiagnosticPoller());
+      console.log('[diagnostic_mode] poller started for peer', peerId.slice(0, 8));
+
+      // K16 v0.8.10 — Startup Diagnostic (fire-and-forget; non-blocking; reads env internally)
+      submitStartupDiagnostic()
+        .then(() => console.log('[startup_diagnostic] submitted for peer', peerId.slice(0, 8)))
+        .catch((err: Error) => console.warn('[startup_diagnostic] submit failed (non-fatal):', err.message));
     } else {
       console.warn('[relay_answer] SUPABASE_URL or ANON_KEY missing — relay-answer poller NOT started');
     }

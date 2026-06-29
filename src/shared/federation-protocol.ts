@@ -28,6 +28,8 @@ export interface MnemosynePeer {
   lastSeen: string;
   recordCount?: number;
   relaySessionId?: string;
+  // K16 v0.8.10 -- LAN IP addresses surfaced from peer_presence or LAN discovery
+  lan_addresses?: string[];
 }
 
 // ─── Wire messages ────────────────────────────────────────────────────────

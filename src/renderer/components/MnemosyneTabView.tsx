@@ -40,6 +40,9 @@ import { BatteryDispatchTab } from './BatteryDispatchTab';
 import { BroadcastScheduleTab } from './BroadcastScheduleTab';
 // BP065 · Tier-2 — LB Account tab
 import { LBAccountTab } from './LBAccountTab';
+// K16 v0.8.10 -- Federation + Help tabs
+import { FederationTab } from './FederationTab';
+import { HelpTab } from './HelpTab';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -53,7 +56,7 @@ const LS_YVAINE_SEEN = 'mnemo_yvaine_seen';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core' | 'broadcast-schedule' | 'battery-dispatch' | 'lb-account';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core' | 'broadcast-schedule' | 'battery-dispatch' | 'lb-account' | 'federation' | 'help';
 
 interface TabDef {
   id: TabId;
@@ -80,6 +83,9 @@ const TABS: TabDef[] = [
   { id: 'broadcast-schedule', label: 'Broadcast Schedule', icon: '📡', tooltip: 'Tab 14 · Broadcast Schedule — Opening Gambit TV-Guide · 7-day social launch sequence · As You Wish confirmation gate' },
   { id: 'battery-dispatch',   label: 'Battery Dispatch',   icon: '🔋', tooltip: 'Tab 15 · Battery Dispatch — Coordinated social media barrage · ARM → FIRE · Campaign scheduler · As You Wish confirmation gate' },
   { id: 'lb-account',        label: 'LB Account',         icon: '$', tooltip: 'Tab 16 · LB Account — Connect Mnemosyne to your Liana Banyan account · Join the Frontier mesh (Node of Socceri)' },
+  // K16 v0.8.10 -- Federation + Help tabs
+  { id: 'federation',        label: 'Federation',         icon: '🕸', tooltip: 'Tab 17 · Federation — Peer mesh · LAN discovery · WAN relay · peer roster + PeerCueCards' },
+  { id: 'help',              label: 'Help',               icon: '🆘', tooltip: 'Tab 18 · Help — Founder↔Son copy/paste pipeline · screenshots · Diagnostic Mode · remote terminal access' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -134,7 +140,7 @@ export function MnemosyneTabView({
   function resolveDefaultTab(): TabId {
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
-    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core', 'broadcast-schedule', 'battery-dispatch', 'lb-account'];
+    const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core', 'broadcast-schedule', 'battery-dispatch', 'lb-account', 'federation', 'help'];
     if (saved && validTabs.includes(saved) && (saved !== 'developer' || devEnabled)) return saved;
     return gauntletDone ? 'frame' : 'gauntlet';
   }
@@ -734,6 +740,30 @@ export function MnemosyneTabView({
             style={{ height: '100%', overflowY: 'auto' }}
           >
             <LBAccountTab />
+          </div>
+        )}
+
+        {/* K16 v0.8.10 — Federation Tab 17 */}
+        {activeTab === 'federation' && (
+          <div
+            id="panel-federation"
+            role="tabpanel"
+            aria-labelledby="tab-federation"
+            style={{ height: '100%' }}
+          >
+            <FederationTab onSwitchTab={(tab) => setActiveTab(tab as TabId)} />
+          </div>
+        )}
+
+        {/* K16 v0.8.10 — Help Tab 18 */}
+        {activeTab === 'help' && (
+          <div
+            id="panel-help"
+            role="tabpanel"
+            aria-labelledby="tab-help"
+            style={{ height: '100%' }}
+          >
+            <HelpTab onSwitchTab={(tab) => setActiveTab(tab as TabId)} />
           </div>
         )}
       </div>
