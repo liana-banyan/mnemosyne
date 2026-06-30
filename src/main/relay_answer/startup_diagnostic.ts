@@ -16,14 +16,18 @@ import { OllamaManager } from '../ollama_manager';
 // Singleton OllamaManager for diagnostics -- best-effort, never throws
 const _diagOllama = new OllamaManager();
 
-// Re-exported state from diagnostic_mode -- populated by startDiagnosticPoller()
+// Relay-answer poller liveness state -- populated by relay_answer/index.ts tick()
 // Imported lazily to avoid circular dependency
-async function getPollerState(): Promise<{ started: boolean; lastError: string | null }> {
+async function getPollerState(): Promise<{ started: boolean; lastHeartbeat: string | null; lastError: string | null }> {
   try {
-    const mod = await import('../diagnostic_mode/index');
-    return { started: mod.pollerStarted, lastError: mod.pollerLastError };
-  } catch {
-    return { started: false, lastError: 'diagnostic_mode module unavailable' };
+    const mod = await import('./index');
+    return {
+      started: mod.relayPollerStarted,
+      lastHeartbeat: mod.relayPollerLastHeartbeat,
+      lastError: mod.relayPollerLastError,
+    };
+  } catch (e: unknown) {
+    return { started: false, lastHeartbeat: null, lastError: `relay_answer module unavailable: ${(e as Error).message}` };
   }
 }
 
@@ -86,6 +90,7 @@ export async function submitStartupDiagnostic(): Promise<void> {
       anon_key_source: envStatus.anonKeySource,
       anon_key_hash: envStatus.anonKeyHash,
       relay_answer_poller_started: pollerState.started,
+      relay_answer_poller_heartbeat: pollerState.lastHeartbeat ?? null,
       relay_answer_poller_error: pollerState.lastError ?? null,
       beacons_lit_active: beaconsState.active,
       beacons_lit_handshake_ok: beaconsState.handshakeOk,

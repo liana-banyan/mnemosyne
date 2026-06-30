@@ -707,8 +707,7 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
       </div>
 
       {/* ── Diagnostic Mode Panel ── */}
-      <div style={{ borderTop: '1px solid #1e2a38', flexShrink: 0 }}>
-        <button
+      <div style={{ borderTop: '1px solid #1e2a38', flexShrink: 0 }}>        <button
           onClick={() => setDiagOpen((v) => !v)}
           style={{
             width: '100%', padding: '8px 12px', background: 'transparent',
@@ -1013,6 +1012,114 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
           </div>
         )}
       </div>
+
+      {/* ── K20 Terminal Recipes ── */}
+      <TerminalRecipesPanel />
+    </div>
+  );
+}
+
+// ─── TerminalRecipesPanel (K20 Tab 18) ────────────────────────────────────────
+// BP099→BP100 K20: four PowerShell recipe blocks for poller health, autostart,
+// Ollama, and split-brain recovery. Read-only; no clipboard API (Electron env).
+// canon: canon_fix_as_we_go_build_for_the_long_haul_always_convenient_immutables_bp053
+
+interface Recipe {
+  title: string;
+  code: string;
+}
+
+const TERMINAL_RECIPES: Recipe[] = [
+  {
+    title: 'Poller Health Diagnostic',
+    code: [
+      '# Check if answer-poller is registered as Scheduled Task (Windows)',
+      'schtasks /Query /TN MnemosyneCAutoStart /V /FO LIST',
+      '',
+      '# View recent poller events from electron-store log',
+      'Get-Content "$env:APPDATA\\MnemosyneC\\poller_crash_log.json" | ConvertFrom-Json | Select-Object -Last 20',
+      '',
+      '# Force-restart MnemosyneC (triggers Scheduled Task respawn path)',
+      'Stop-Process -Name "MnemosyneC" -Force',
+    ].join('\n'),
+  },
+  {
+    title: 'Autostart Management',
+    code: [
+      '# Disable autostart (opt-out · persists across reinstalls)',
+      'schtasks /Delete /TN MnemosyneCAutoStart /F',
+      '# Then launch with opt-out flag:',
+      '& "$env:LOCALAPPDATA\\Programs\\mnemosynec\\MnemosyneC.exe" --no-autostart',
+      '',
+      '# Re-enable autostart after opt-out',
+      'schtasks /Create /F /TN MnemosyneCAutoStart /TR "`"$env:LOCALAPPDATA\\Programs\\mnemosynec\\MnemosyneC.exe`" --hidden" /SC ONLOGON /RL HIGHEST',
+    ].join('\n'),
+  },
+  {
+    title: 'Ollama Health Check',
+    code: [
+      '# Verify Ollama is reachable (same check MnemosyneC runs internally)',
+      'Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -Method GET | Select-Object -ExpandProperty models | Select-Object name',
+      '',
+      '# Start Ollama if not running',
+      'ollama serve',
+    ].join('\n'),
+  },
+  {
+    title: 'Poller Split-Brain Manual Recovery',
+    code: [
+      '# If Diagnostic Mode Tab 17 shows DEAD poller but heartbeat is fresh:',
+      '# 1. Open Task Manager → look for MnemosyneC child processes',
+      '# 2. If none visible, trigger manual restart:',
+      'Stop-Process -Name "MnemosyneC" -Force',
+      '# MnemosyneC restarts via Scheduled Task; poller spawns on app start',
+    ].join('\n'),
+  },
+];
+
+function TerminalRecipesPanel() {
+  const [open, setOpen] = React.useState<number | null>(null);
+
+  return (
+    <div style={{
+      borderTop: '1px solid #1e2a38',
+      padding: '10px 0 4px 0',
+      flexShrink: 0,
+    }}>
+      <div style={{
+        fontSize: 10, fontWeight: 700, color: '#475569',
+        letterSpacing: '0.08em', textTransform: 'uppercase',
+        padding: '0 12px 6px 12px',
+      }}>
+        Terminal Recipes
+      </div>
+      {TERMINAL_RECIPES.map((recipe, idx) => (
+        <div key={recipe.title} style={{ borderBottom: '1px solid #0d1520' }}>
+          <button
+            onClick={() => setOpen(open === idx ? null : idx)}
+            style={{
+              width: '100%', textAlign: 'left', background: 'transparent',
+              border: 'none', cursor: 'pointer', padding: '6px 12px',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              color: '#94a3b8', fontSize: 11, fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            <span>{recipe.title}</span>
+            <span style={{ fontSize: 10, color: '#334155' }}>{open === idx ? '▲' : '▼'}</span>
+          </button>
+          {open === idx && (
+            <pre style={{
+              margin: 0, padding: '6px 12px 10px 12px',
+              fontSize: 10, lineHeight: '16px', color: '#7dd3fc',
+              background: '#060c18', overflowX: 'auto',
+              fontFamily: 'Consolas, "Courier New", monospace',
+              whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+            }}>
+              {recipe.code}
+            </pre>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

@@ -908,6 +908,40 @@ export function FederationTab({ onSwitchTab }: { onSwitchTab?: (tab: string) => 
     { id: 'accept', label: '🤝 Accept' },
   ];
 
+  // BP099→BP100 K20 Module 4: Poller health panel — polls every 5s
+  const [pollerHealth, setPollerHealth] = useState<{
+    alive: boolean;
+    uptime_seconds: number;
+    last_route_processed_at: string | null;
+    last_route_id: string | null;
+    restart_count: number;
+    ollama_status: 'up' | 'down';
+    current_consecutive_crashes: number;
+  } | null>(null);
+
+  useEffect(() => {
+    async function fetchHealth() {
+      try {
+        const h = await (window as any).amplify?.pollerHealthQuery?.();
+        if (h) setPollerHealth(h);
+      } catch { /* non-fatal */ }
+    }
+    void fetchHealth();
+    const interval = setInterval(() => void fetchHealth(), 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const pollerStatusLabel = !pollerHealth
+    ? 'QUERYING…'
+    : pollerHealth.alive
+      ? 'ALIVE'
+      : (pollerHealth.current_consecutive_crashes >= 30 ? 'CRASH-LOOP HALTED' : 'DEAD');
+  const pollerStatusColor = !pollerHealth
+    ? C.muted
+    : pollerHealth.alive
+      ? C.green
+      : (pollerHealth.current_consecutive_crashes >= 30 ? C.red : C.amber);
+
   return (
     <div style={s.root}>
       {/* Header */}
@@ -930,6 +964,37 @@ export function FederationTab({ onSwitchTab }: { onSwitchTab?: (tab: string) => 
             {meshState.peers.length} peer{meshState.peers.length !== 1 ? 's' : ''}
           </span>
         </div>
+      </div>
+
+      {/* ── K20 Poller Health Panel ── */}
+      <div style={{
+        margin: '6px 12px', borderRadius: 8, border: `1px solid ${C.border}`,
+        background: C.surface, padding: '8px 12px', flexShrink: 0,
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: pollerStatusColor, display: 'inline-block', flexShrink: 0 }} />
+          <span style={{ fontSize: 10, fontWeight: 700, color: pollerStatusColor, letterSpacing: '0.06em' }}>
+            ANSWER-POLLER: {pollerStatusLabel}
+          </span>
+        </div>
+        {pollerHealth && (
+          <>
+            <span style={{ fontSize: 10, color: C.muted }}>uptime: {pollerHealth.uptime_seconds}s</span>
+            <span style={{ fontSize: 10, color: C.muted }}>restarts: {pollerHealth.restart_count}</span>
+            <span style={{ fontSize: 10, color: pollerHealth.ollama_status === 'down' ? C.red : C.green }}>
+              Ollama: {pollerHealth.ollama_status.toUpperCase()}
+            </span>
+            {pollerHealth.current_consecutive_crashes > 0 && (
+              <span style={{ fontSize: 10, color: C.amber }}>crashes: {pollerHealth.current_consecutive_crashes}</span>
+            )}
+            {pollerHealth.last_route_processed_at && (
+              <span style={{ fontSize: 10, color: C.muted }}>
+                last route: {new Date(pollerHealth.last_route_processed_at).toLocaleTimeString()}
+              </span>
+            )}
+          </>
+        )}
       </div>
 
       {/* Tab bar */}

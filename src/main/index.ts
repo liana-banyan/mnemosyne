@@ -104,7 +104,17 @@ import { initializeBeaconsLit, destroyBeaconsLit, setAccessToken as setBeaconsLi
 import { registerBeaconsLitIpc } from './beacons_lit/ipc_channels';
 
 // BP099-K13 — Relay Answer Poller (permanent mesh inference dispatch)
-import { startRelayAnswerPoller } from './relay_answer/index';
+import {
+  startRelayAnswerPoller,
+  pollerProcess,
+  pollerStartedAt,
+  lastRouteProcessedAt,
+  lastRouteId,
+  totalRestartCount,
+  ollamaCurrentlyDown,
+  consecutiveCrashCount,
+  lastHeartbeatEmittedAt,
+} from './relay_answer/index';
 
 // K16 v0.8.10 — Diagnostic Mode poller + Startup Diagnostic
 import { startDiagnosticPoller, stopDiagnosticPoller } from './diagnostic_mode/index';
@@ -1542,6 +1552,20 @@ function registerIPCHandlers(): void {
     return { ok: true, ebletPath: filePath };
   });
 
+  // BP099→BP100 K20 Module 4: IPC poller:health-query channel.
+  // Main holds live state from Module 1 supervisor + Module 2 Ollama tracker.
+  // Renderer polls every 5s and displays in Diagnostic Mode Tab 17.
+  // canon: canon_diagnostic_mode_remote_hand_with_brand_stamp_reciprocal_trust_for_untechs_bp099
+  ipcMain.handle('poller:health-query', () => ({
+    alive: pollerProcess !== null && !pollerProcess.killed,
+    uptime_seconds: pollerStartedAt ? Math.floor((Date.now() - pollerStartedAt) / 1000) : 0,
+    last_route_processed_at: lastRouteProcessedAt ?? null,
+    last_route_id: lastRouteId ?? null,
+    restart_count: totalRestartCount,
+    ollama_status: ollamaCurrentlyDown ? 'down' : 'up',
+    current_consecutive_crashes: consecutiveCrashCount,
+  }));
+
   // ── BP065 · Tier-2 — LB Account + Frontier Mesh IPC ─────────────────────
 
   ipcMain.handle('lb:start-auth', async (_event, { email }: { email: string }) => {
@@ -1734,6 +1758,66 @@ app.whenReady().then(async () => {
       submitStartupDiagnostic()
         .then(() => console.log('[startup_diagnostic] submitted for peer', peerId.slice(0, 8)))
         .catch((err: Error) => console.warn('[startup_diagnostic] submit failed (non-fatal):', err.message));
+
+      // BP099→BP100 K20 Module 5: Split-brain detector.
+      // Watcher runs every 60s. Condition: presence-poller fresh + answer-poller idle 10+ min.
+      // Action: force-restart answer-poller. Captures the chronic "heartbeat alive, answers dead" failure.
+      // Empirically observed M2/M3/M0 across T27/T28/T28B BP100.
+      // canon: canon_fix_as_we_go_build_for_the_long_haul_always_convenient_immutables_bp053
+      const SPLIT_BRAIN_IDLE_MS = process.argv.find(a => a.startsWith('--debug-split-brain-threshold-seconds='))
+        ? parseInt((process.argv.find(a => a.startsWith('--debug-split-brain-threshold-seconds=')) ?? '=600').split('=')[1]) * 1000
+        : 10 * 60 * 1000; // default 10 minutes
+
+      const splitBrainWatcher = setInterval(() => {
+        const now = Date.now();
+        const answerPollerIdle = lastRouteProcessedAt === null ||
+          (now - new Date(lastRouteProcessedAt).getTime()) > SPLIT_BRAIN_IDLE_MS;
+        const presencePollerFresh = (now - lastHeartbeatEmittedAt) < 90 * 1000;
+
+        if (presencePollerFresh && answerPollerIdle) {
+          const payload = {
+            event: 'split_brain_detected',
+            timestamp: new Date().toISOString(),
+            last_route_processed_at: lastRouteProcessedAt,
+            last_heartbeat_at: new Date(lastHeartbeatEmittedAt).toISOString(),
+          };
+          console.warn('[split_brain] detected — force-restarting answer-poller', payload);
+          // Write to local crash log file
+          try {
+            const fs = require('fs') as typeof import('fs');
+            const path = require('path') as typeof import('path');
+            const os = require('os') as typeof import('os');
+            const sbDir = path.join(os.homedir(), '.mnemosyne');
+            fs.mkdirSync(sbDir, { recursive: true });
+            const sbFile = path.join(sbDir, 'split_brain_events.json');
+            let entries: object[] = [];
+            if (fs.existsSync(sbFile)) {
+              try { entries = JSON.parse(fs.readFileSync(sbFile, 'utf-8')); } catch { /* reset */ }
+            }
+            entries.push(payload);
+            if (entries.length > 200) entries = entries.slice(-200);
+            fs.writeFileSync(sbFile, JSON.stringify(entries, null, 2), 'utf-8');
+          } catch { /* non-fatal */ }
+          // Telemetry via edge function (fire-and-forget)
+          try {
+            const _sbAnonKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? _anonKey;
+            const _sbUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? _supabaseUrl;
+            fetch(`${_sbUrl}/functions/v1/record-poller-health-event`, {
+              method: 'POST',
+              headers: { apikey: _sbAnonKey, Authorization: `Bearer ${_sbAnonKey}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ peer_id: peerId, event_type: 'split_brain_detected', event_data: payload }),
+              signal: AbortSignal.timeout(8000),
+            }).catch(() => { /* non-fatal */ });
+          } catch { /* non-fatal */ }
+          // Restart the poller child by invoking stop + re-start
+          if (pollerProcess && !pollerProcess.killed) {
+            try { pollerProcess.send({ type: 'stop' }); } catch { /* ignore */ }
+            setTimeout(() => { pollerProcess?.kill?.('SIGTERM'); }, 2000);
+          }
+        }
+      }, 60 * 1000);
+
+      app.on('before-quit', () => { clearInterval(splitBrainWatcher); });
     } else {
       console.warn('[relay_answer] SUPABASE_URL or ANON_KEY missing — relay-answer poller NOT started');
     }
@@ -1744,6 +1828,60 @@ app.whenReady().then(async () => {
     lanHandshakeEligible = true;
     setTimeout(() => { lanHandshakeEligible = false; }, 90_000);
     setupLanHandshakeDiscovery();
+
+    // BP099→BP100 K20 Module 3: OS-level autostart registration at first run.
+    // Windows: app.setLoginItemSettings + optional NSIS Scheduled Task fallback.
+    // macOS: ~/Library/LaunchAgents/ plist. Linux: systemd user unit.
+    // --no-autostart CLI flag opts member out.
+    // canon: canon_designed_to_be_copied_autonomous_propagation_doctrine_bp051
+    if (!process.argv.includes('--no-autostart')) {
+      if (process.platform === 'win32') {
+        app.setLoginItemSettings({ openAtLogin: true, name: 'MnemosyneC', args: ['--hidden'] });
+      } else if (process.platform === 'darwin') {
+        try {
+          const fs = require('fs') as typeof import('fs');
+          const path = require('path') as typeof import('path');
+          const os = require('os') as typeof import('os');
+          const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.lianabanyan.mnemosynec</string>
+  <key>ProgramArguments</key><array>
+    <string>/Applications/MnemosyneC.app/Contents/MacOS/MnemosyneC</string>
+    <string>--hidden</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+</dict></plist>`;
+          const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+          fs.mkdirSync(launchAgentsDir, { recursive: true });
+          fs.writeFileSync(path.join(launchAgentsDir, 'com.lianabanyan.mnemosynec.plist'), plistContent, 'utf-8');
+          console.log('[Module3] macOS LaunchAgent plist written');
+        } catch (e) { console.warn('[Module3] macOS plist write failed (non-fatal):', (e as Error).message); }
+      } else if (process.platform === 'linux') {
+        try {
+          const fs = require('fs') as typeof import('fs');
+          const path = require('path') as typeof import('path');
+          const os = require('os') as typeof import('os');
+          const unitContent = `[Unit]
+Description=MnemosyneC — Memory, powered by CAI
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/MnemosyneC/MnemosyneC --hidden
+Restart=no
+
+[Install]
+WantedBy=default.target
+`;
+          const systemdDir = path.join(os.homedir(), '.config', 'systemd', 'user');
+          fs.mkdirSync(systemdDir, { recursive: true });
+          fs.writeFileSync(path.join(systemdDir, 'mnemosynec.service'), unitContent, 'utf-8');
+          console.log('[Module3] Linux systemd user unit written');
+        } catch (e) { console.warn('[Module3] Linux systemd write failed (non-fatal):', (e as Error).message); }
+      }
+    }
   }
 
   // Initialize auth manager (Phase 7)
