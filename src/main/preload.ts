@@ -783,6 +783,19 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.invoke('lb:get-frontier-status'),
 
   // ── Beacons Lit (BP098 M43) ──────────────────────────────────────────────
+
+  // BP099→BP100 K20 Module 4: poller health IPC bridge
+  pollerHealthQuery: (): Promise<{
+    alive: boolean;
+    uptime_seconds: number;
+    last_route_processed_at: string | null;
+    last_route_id: string | null;
+    restart_count: number;
+    ollama_status: 'up' | 'down';
+    current_consecutive_crashes: number;
+  }> =>
+    ipcRenderer.invoke('poller:health-query'),
+
   bonfireLitStatus: (): Promise<{
     enabled: boolean;
     initialized: boolean;
@@ -1014,6 +1027,8 @@ declare global {
       // Beacons Lit (BP098 M43)
       bonfireLitStatus?: () => Promise<{ enabled: boolean; initialized: boolean; peer_id: string; cai_version: string; last_handshake_at: string | null; error: string | null }>;
       bonfireLitToggle?: (enabled: boolean) => Promise<{ enabled: boolean; initialized: boolean; peer_id: string; cai_version: string; last_handshake_at: string | null; error: string | null }>;
+      // K20 Module 4: poller health
+      pollerHealthQuery?: () => Promise<{ alive: boolean; uptime_seconds: number; last_route_processed_at: string | null; last_route_id: string | null; restart_count: number; ollama_status: 'up' | 'down'; current_consecutive_crashes: number }>;
       // Bridge IPC (BP060 Application 002 Steps 3+4 · UI-7)
       bridge?: {
         checkMessages: (count?: number) => Promise<{
