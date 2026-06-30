@@ -1770,7 +1770,10 @@ app.whenReady().then(async () => {
 
       const splitBrainWatcher = setInterval(() => {
         const now = Date.now();
-        const answerPollerIdle = lastRouteProcessedAt === null ||
+        // BP101 K22: fix splitBrainWatcher false-positive at first 60s tick after boot.
+        // Original treated `lastRouteProcessedAt === null` (every fresh boot) as infinitely idle → killed every healthy worker.
+        // Now: only flag idle if a route WAS processed AND it's been stale > SPLIT_BRAIN_IDLE_MS.
+        const answerPollerIdle = lastRouteProcessedAt !== null &&
           (now - new Date(lastRouteProcessedAt).getTime()) > SPLIT_BRAIN_IDLE_MS;
         const presencePollerFresh = (now - lastHeartbeatEmittedAt) < 90 * 1000;
 
