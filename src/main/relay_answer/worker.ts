@@ -6,8 +6,17 @@
 // canon: canon_designed_to_be_copied_autonomous_propagation_doctrine_bp051
 
 // floor-model fallback (no shared import — worker is a standalone Node.js child)
+// BP101 K21 + Founder directive: gemma4:12b LOCKED across M0/M2/M3 (Founder verbatim BP101: "Here is the only configuration I want you to work on: M0 M2 and M3 working on gemma 4:12b. That's it.")
+// Doctrine canon: BP089 "EAT OUR OWN COOKING · gemma4:12b first" + BP097 "cb4ef450 gemma swap + Tier2 gemma".
+// Model held constant; THIS yoke fixes the unbounded-fetch + supervisor bugs instead of swapping the model.
 const FLOOR_MODEL = 'gemma4:12b';
 const PHANTOM_PREFIX = '49f3e597';
+
+// BP101 K21: fetch timeouts. All three fetches (fetchPendingRoutes, runOllama, submitReplyViaEdgeFunction)
+// were unbounded in K20 v0.8.13 → Ollama queue stalls (incl. CPU-mode offload when VRAM tight on gemma4:12b)
+// hung tick() forever → inflight=true latched permanent → no replies written. Empirically reproduced T29 canary 0/1.
+const OLLAMA_FETCH_TIMEOUT_MS = 180_000;   // 3 min for inference — accommodates CPU-mode offload on tight-VRAM machines
+const SUPABASE_FETCH_TIMEOUT_MS = 10_000;   // 10s for DB writes (PostgREST + edge fn)
 
 export interface WorkerConfig {
   peerId: string;
@@ -119,6 +128,7 @@ async function fetchPendingRoutes(
   try {
     const res = await fetch(url, {
       headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` },
+      signal: AbortSignal.timeout(SUPABASE_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
       log(`fetch routes FAILED: HTTP ${res.status}`);
@@ -141,6 +151,7 @@ async function runOllama(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, prompt, stream: false }),
+    signal: AbortSignal.timeout(OLLAMA_FETCH_TIMEOUT_MS),
   });
   const elapsed = Date.now() - t0;
   if (!res.ok) {
@@ -167,6 +178,7 @@ async function submitReplyViaEdgeFunction(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ route_id: routeId, peer_id: peerId, answer_json: { answer }, processing_ms: processingMs }),
+      signal: AbortSignal.timeout(SUPABASE_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
       log(`submit reply FAILED route=${routeId.slice(0, 8)}: HTTP ${res.status}`);

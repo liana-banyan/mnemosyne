@@ -7,10 +7,15 @@
 import { fork, type ChildProcess } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 
 const MNEMOSYNE_HOME = join(homedir(), '.mnemosyne');
 const CRASH_LOG_FILE = join(MNEMOSYNE_HOME, 'poller_crash_log.json');
+// BP101 K21: singleton PID-file lock — refuses double-spawn of the poller worker.
+const POLLER_PID_FILE = join(MNEMOSYNE_HOME, 'relay_worker.pid');
+// BP101 K21: supervisor liveness watchdog — detects wedged-but-alive worker (inflight latched true forever).
+const LIVENESS_CHECK_INTERVAL_MS = 30_000;
+const LIVENESS_STALE_THRESHOLD_MS = 120_000;
 
 const ts = () => new Date().toISOString().slice(11, 23);
 const log = (msg: string) => console.log(`[relay_supervisor] [${ts()}] ${msg}`);
@@ -99,11 +104,67 @@ function scheduleStableReset(): void {
   }, 60_000);
 }
 
+// ─── Singleton PID-file lock (BP101 K21) ──────────────────────────────────────
+
+/**
+ * Returns true if a worker may be spawned (no live conflicting process holds the lock).
+ * Stale (dead-PID) lock files are cleaned up automatically. Reversible: any failure here
+ * is logged and treated as "lock not held" so a write/read glitch never blocks spawning.
+ */
+function acquirePollerLock(): boolean {
+  try {
+    if (existsSync(POLLER_PID_FILE)) {
+      const raw = readFileSync(POLLER_PID_FILE, 'utf-8').trim();
+      const existingPid = parseInt(raw, 10);
+      if (!Number.isNaN(existingPid) && existingPid !== process.pid) {
+        try {
+          process.kill(existingPid, 0); // signal 0 = liveness probe, throws if dead
+          log(`REFUSING double-spawn — relay_worker.pid (${existingPid}) is alive`);
+          return false;
+        } catch {
+          log(`stale PID file (pid ${existingPid} not alive) — clearing and proceeding`);
+        }
+      }
+    }
+  } catch (e: unknown) {
+    process.stderr.write(`[relay_supervisor] PID-lock read failed (non-fatal, proceeding): ${(e as Error).message}\n`);
+  }
+  return true;
+}
+
+function writePollerLock(pid: number): void {
+  try {
+    mkdirSync(MNEMOSYNE_HOME, { recursive: true });
+    writeFileSync(POLLER_PID_FILE, String(pid), 'utf-8');
+  } catch (e: unknown) {
+    process.stderr.write(`[relay_supervisor] PID-lock write failed (non-fatal): ${(e as Error).message}\n`);
+  }
+}
+
+function clearPollerLock(): void {
+  try {
+    if (existsSync(POLLER_PID_FILE)) {
+      const raw = readFileSync(POLLER_PID_FILE, 'utf-8').trim();
+      // Only clear if it's still our own PID (avoid clobbering a newer lock holder's file)
+      if (parseInt(raw, 10) === process.pid || raw === '') {
+        unlinkSync(POLLER_PID_FILE);
+      }
+    }
+  } catch (e: unknown) {
+    process.stderr.write(`[relay_supervisor] PID-lock clear failed (non-fatal): ${(e as Error).message}\n`);
+  }
+}
+
 // ─── Spawn + supervise ────────────────────────────────────────────────────────
 
 function spawnWorker(config: RelayAnswerPollerConfig): void {
   if (pollerHaltedUntilUserAction) {
     log('HALTED — crash-loop guard active; poller will not restart until user action');
+    return;
+  }
+
+  // BP101 K21: singleton lock — refuse to spawn a second worker if one is already alive.
+  if (!acquirePollerLock()) {
     return;
   }
 
@@ -119,6 +180,7 @@ function spawnWorker(config: RelayAnswerPollerConfig): void {
   pollerProcess = child;
   pollerStartedAt = Date.now();
   scheduleStableReset();
+  writePollerLock(child.pid ?? process.pid);
 
   // Send config to child
   child.send({ type: 'init', config });
@@ -161,6 +223,7 @@ function spawnWorker(config: RelayAnswerPollerConfig): void {
     const unexpectedExit = code !== 0 || signal !== null;
     if (!unexpectedExit) {
       log('worker exited cleanly');
+      clearPollerLock();
       return;
     }
 
@@ -202,11 +265,34 @@ function spawnWorker(config: RelayAnswerPollerConfig): void {
   });
 }
 
+// ─── Supervisor liveness watchdog (BP101 K21) ─────────────────────────────────
+
+let livenessIntervalHandle: ReturnType<typeof setInterval> | null = null;
+
+function startLivenessWatchdog(): void {
+  if (livenessIntervalHandle) return;
+  livenessIntervalHandle = setInterval(() => {
+    if (pollerHaltedUntilUserAction) return;
+    if (!pollerProcess || pollerProcess.killed) return;
+    const gapMs = Date.now() - lastHeartbeatEmittedAt;
+    if (gapMs > LIVENESS_STALE_THRESHOLD_MS) {
+      log(`wedged worker detected: heartbeat stale > ${LIVENESS_STALE_THRESHOLD_MS}ms (gap=${gapMs}ms) — force-kill + respawn`);
+      try {
+        pollerProcess.kill('SIGKILL');
+      } catch (e: unknown) {
+        process.stderr.write(`[relay_supervisor] liveness force-kill failed: ${(e as Error).message}\n`);
+      }
+      // existing child.on('exit', ...) backoff handler will respawn naturally
+    }
+  }, LIVENESS_CHECK_INTERVAL_MS);
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export function startRelayAnswerPoller(config: RelayAnswerPollerConfig): () => void {
   _config = config;
   spawnWorker(config);
+  startLivenessWatchdog();
 
   return () => {
     log('stop requested — sending SIGTERM to worker');
@@ -222,5 +308,7 @@ export function startRelayAnswerPoller(config: RelayAnswerPollerConfig): () => v
       } catch { /* ignore */ }
     }
     if (stableRunTimer) { clearTimeout(stableRunTimer); stableRunTimer = null; }
+    if (livenessIntervalHandle) { clearInterval(livenessIntervalHandle); livenessIntervalHandle = null; }
+    clearPollerLock();
   };
 }
