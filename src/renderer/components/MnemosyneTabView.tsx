@@ -43,6 +43,12 @@ import { LBAccountTab } from './LBAccountTab';
 // K16 v0.8.10 -- Federation + Help tabs
 import { FederationTab } from './FederationTab';
 import { HelpTab } from './HelpTab';
+import { MeshStatusStrip } from './standard/MeshStatusStrip';
+import { AskTab } from './standard/AskTab';
+import { ProveItWorksTab } from './standard/ProveItWorksTab';
+import { WhatThisIsForTab } from './standard/WhatThisIsForTab';
+import { TheKitchenTab } from './standard/TheKitchenTab';
+import { HouseholdSchedulerTab } from './standard/HouseholdSchedulerTab';
 
 // ─── Local-storage keys ───────────────────────────────────────────────────────
 
@@ -53,10 +59,12 @@ const LS_ONBOARD_CHOICE = 'mnemo_onboard_choice'; // 'free' | 'member' | 'develo
 const LS_WIND_UNLOCKED = 'mnem_wind_unlocked';
 const LS_WIND_TIER = 'mnem_wind_tier';
 const LS_YVAINE_SEEN = 'mnemo_yvaine_seen';
+const LS_VIEW_MODE = 'mnemo_view_mode';
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 
-type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core' | 'broadcast-schedule' | 'battery-dispatch' | 'lb-account' | 'federation' | 'help';
+type TabId = 'frame' | 'helm' | 'gauntlet' | 'settings' | 'faq' | 'developer' | 'atlas' | 'kitchen-table' | 'pearls' | 'substrate' | 'console' | 'ai-selector' | 'caithedral-core' | 'broadcast-schedule' | 'battery-dispatch' | 'lb-account' | 'federation' | 'help'
+  | 'ask' | 'prove-it-works' | 'what-this-is-for' | 'kitchen' | 'household-scheduler';
 
 interface TabDef {
   id: TabId;
@@ -86,6 +94,14 @@ const TABS: TabDef[] = [
   // K16 v0.8.10 -- Federation + Help tabs
   { id: 'federation',        label: 'Federation',         icon: '🕸', tooltip: 'Tab 17 · Federation — Peer mesh · LAN discovery · WAN relay · peer roster + PeerCueCards' },
   { id: 'help',              label: 'Help',               icon: '🆘', tooltip: 'Tab 18 · Help — Founder↔Son copy/paste pipeline · screenshots · Diagnostic Mode · remote terminal access' },
+];
+
+const STANDARD_TABS: Array<{ id: TabId; label: string }> = [
+  { id: 'ask', label: 'Ask' },
+  { id: 'prove-it-works', label: 'Prove It Works' },
+  { id: 'what-this-is-for', label: 'What This Is For' },
+  { id: 'kitchen', label: 'The Kitchen' },
+  { id: 'household-scheduler', label: 'Household Scheduler' },
 ];
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -136,8 +152,19 @@ export function MnemosyneTabView({
   const windClickCount = useRef(0);
   const windClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const [viewMode, setViewMode] = React.useState<'standard' | 'advanced'>(() => {
+    const stored = localStorage.getItem(LS_VIEW_MODE);
+    if (stored === 'standard' || stored === 'advanced') return stored;
+    // Fresh install: default to 'standard'
+    // Existing user upgrading (has other LS keys set): default to 'advanced' to preserve their experience
+    const hasExistingData = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) !== null
+      || localStorage.getItem(LS_ACTIVE_TAB) !== null;
+    return hasExistingData ? 'advanced' : 'standard';
+  });
+
   // Determine default tab: Tab 3 (gauntlet) on first launch, Tab 1 (frame) after first run
   function resolveDefaultTab(): TabId {
+    if (viewMode === 'standard') return 'ask';
     const gauntletDone = localStorage.getItem(LS_GAUNTLET_FIRST_COMPLETE) === 'true';
     const saved = localStorage.getItem(LS_ACTIVE_TAB) as TabId | null;
     const validTabs: TabId[] = ['frame', 'helm', 'gauntlet', 'settings', 'faq', 'developer', 'atlas', 'kitchen-table', 'pearls', 'substrate', 'console', 'ai-selector', 'caithedral-core', 'broadcast-schedule', 'battery-dispatch', 'lb-account', 'federation', 'help'];
@@ -151,6 +178,10 @@ export function MnemosyneTabView({
   useEffect(() => {
     localStorage.setItem(LS_ACTIVE_TAB, activeTab);
   }, [activeTab]);
+
+  React.useEffect(() => {
+    localStorage.setItem(LS_VIEW_MODE, viewMode);
+  }, [viewMode]);
 
   useEffect(() => {
     window.amplify?.getAppVersion?.().then((v) => setAppVersion(v?.version ?? '')).catch(() => {});
@@ -231,7 +262,9 @@ export function MnemosyneTabView({
     }
   }, []);
 
-  const visibleTabs = TABS.filter((t) => t.id !== 'developer' || devEnabled);
+  const visibleTabs = viewMode === 'standard'
+    ? STANDARD_TABS
+    : TABS.filter((t) => t.id !== 'developer' || devEnabled);
   // Atlas™ and Kitchen Table™ are always visible (core v0.1.8 features)
 
   // ─── Styles ────────────────────────────────────────────────────────────────
@@ -427,6 +460,22 @@ export function MnemosyneTabView({
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <button
+            onClick={() => setViewMode(m => m === 'standard' ? 'advanced' : 'standard')}
+            style={{
+              fontSize: 11,
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: '1px solid rgba(100,200,150,0.3)',
+              backgroundColor: viewMode === 'advanced' ? 'rgba(100,200,150,0.12)' : 'transparent',
+              color: viewMode === 'advanced' ? '#8bc8a0' : '#606060',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+            title={viewMode === 'standard' ? 'Switch to Advanced (18 tabs)' : 'Switch to Standard (5 tabs)'}
+          >
+            {viewMode === 'standard' ? '⚙ Advanced' : '← Standard'}
+          </button>
+          <button
             type="button"
             onClick={() => window.amplify?.checkForUpdates?.()}
             title="Check for updates to Mnemosyne"
@@ -524,9 +573,11 @@ export function MnemosyneTabView({
             id={`tab-${tab.id}`}
             style={styles.tab(activeTab === tab.id)}
             onClick={() => setActiveTab(tab.id)}
-            title={tab.tooltip}
+            title={'tooltip' in tab ? (tab as TabDef).tooltip : tab.label}
           >
-            <span style={styles.tabIcon} aria-hidden>{tab.iconElement ?? tab.icon}</span>
+            {'icon' in tab && (
+              <span style={styles.tabIcon} aria-hidden>{(tab as TabDef).iconElement ?? (tab as TabDef).icon}</span>
+            )}
             {tab.label}
             {tab.id === 'developer' && (
               <span style={{ fontSize: 9, color: '#f59e0b', marginLeft: 2 }}>DEV</span>
@@ -534,6 +585,8 @@ export function MnemosyneTabView({
           </button>
         ))}
       </div>
+
+      <MeshStatusStrip />
 
       {/* Tab panels */}
       <div style={styles.tabContent}>
@@ -596,6 +649,8 @@ export function MnemosyneTabView({
               authState={authState}
               devEnabled={devEnabled}
               onDevModeToggle={handleDevModeToggle}
+              viewMode={viewMode}
+              onViewModeChange={setViewMode}
             />
           </div>
         )}
@@ -765,6 +820,22 @@ export function MnemosyneTabView({
           >
             <HelpTab onSwitchTab={(tab) => setActiveTab(tab as TabId)} />
           </div>
+        )}
+
+        {activeTab === 'ask' && (
+          <AskTab authState={authState} onSwitchTab={(tab) => setActiveTab(tab as TabId)} />
+        )}
+        {activeTab === 'prove-it-works' && (
+          <ProveItWorksTab onFirstComplete={() => {}} onSwitchTab={(tab) => setActiveTab(tab as TabId)} />
+        )}
+        {activeTab === 'what-this-is-for' && (
+          <WhatThisIsForTab onSwitchTab={(tab) => setActiveTab(tab as TabId)} />
+        )}
+        {activeTab === 'kitchen' && (
+          <TheKitchenTab authState={authState} onSwitchTab={(tab) => setActiveTab(tab as TabId)} />
+        )}
+        {activeTab === 'household-scheduler' && (
+          <HouseholdSchedulerTab authState={authState} onSwitchTab={(tab) => setActiveTab(tab as TabId)} />
         )}
       </div>
 
