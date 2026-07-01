@@ -1,7 +1,7 @@
 {
     "name":  "amplify-computer",
     "version":  "0.8.18",
-    "description":  "Mnemosyne â€” Memory, powered by CAI Â· local inference + cooperative substrate OS overlay (SSPL Â· Pledge #2260)",
+    "description":  "Mnemosyne Ã¢â‚¬â€ Memory, powered by CAI Ã‚Â· local inference + cooperative substrate OS overlay (SSPL Ã‚Â· Pledge #2260)",
     "homepage":  "https://lianabanyan.com",
     "private":  true,
     "main":  "dist/main/index.js",
@@ -68,7 +68,7 @@
                   "appId":  "com.lianabanyan.mnemosyne",
                   "productName":  "MnemosyneC",
                   "icon":  "assets/app-icon",
-                  "copyright":  "Copyright Â© 2026 Liana Banyan Corporation",
+                  "copyright":  "Copyright Ã‚Â© 2026 Liana Banyan Corporation",
                   "asar":  true,
                   "asarUnpack":  [
                                      "resources/ollama/**"
@@ -227,8 +227,8 @@
                                            ],
                                 "category":  "Office",
                                 "maintainer":  "Liana Banyan Corporation \u003csupport@lianabanyan.com\u003e",
-                                "synopsis":  "Mnemosyne â€” Memory, powered by CAI Â· local inference + cooperative substrate OS overlay",
-                                "description":  "Mnemosyne runs CAI â€” local AI inference via Ollama, cooperative substrate index, HELM VIEW workspace, IP Attribution Ledger, and Battery Dispatch Universal Remote. SSPL Â· Pledge #2260. No Ads. No Strings. Members pay $5/year."
+                                "synopsis":  "Mnemosyne Ã¢â‚¬â€ Memory, powered by CAI Ã‚Â· local inference + cooperative substrate OS overlay",
+                                "description":  "Mnemosyne runs CAI Ã¢â‚¬â€ local AI inference via Ollama, cooperative substrate index, HELM VIEW workspace, IP Attribution Ledger, and Battery Dispatch Universal Remote. SSPL Ã‚Â· Pledge #2260. No Ads. No Strings. Members pay $5/year."
                             },
                   "deb":  {
                               "packageCategory":  "utils",
