@@ -304,6 +304,24 @@ process.on('message', (msg: { type: string; config?: WorkerConfig }) => {
     }
   }
 
+  // BP102 K25.1 fix: independent heartbeat interval, fully decoupled from tick()/runTick().
+  // Empirical root cause (M2 log, 18+ SIGKILL/respawn cycles): a batch of pending routes is
+  // processed SERIALLY inside tick() through Ollama (~25-30s/inference). A 5-route batch takes
+  // ~150s, during which tick() never returns to the top of runTick() and the K25 per-tick
+  // heartbeats (in tick() and writePollerHeartbeat) never fire. The supervisor's 120s liveness
+  // watchdog then SIGKILLs the worker mid-batch (ollamaCurrentlyDown=false — it's not down, it's
+  // just busy), the respawned worker sees the same N pending routes, and the cycle repeats
+  // forever. This interval proves process-alive independent of what tick() is doing at any moment.
+  // canon: canon_release_verification_curl_both_human_and_machine_facing_surfaces_bp099
+  const independentHeartbeatIntervalId = setInterval(() => {
+    process.send?.({
+      type: 'heartbeat',
+      heartbeatAt: new Date().toISOString(),
+      pollCount,
+      source: 'independent-interval',
+    });
+  }, 30_000);
+
   runTick();
   const intervalId = setInterval(() => { runTick(); }, resolved.pollIntervalMs);
 
@@ -311,9 +329,16 @@ process.on('message', (msg: { type: string; config?: WorkerConfig }) => {
   process.on('message', (inner: { type: string }) => {
     if (inner.type === 'stop') {
       clearInterval(intervalId);
+      clearInterval(independentHeartbeatIntervalId);
       log('worker stopping gracefully');
       process.exit(0);
     }
+  });
+
+  // Belt + suspenders: clean up the independent heartbeat interval on any process exit path
+  // (uncaughtException / unhandledRejection handlers below call process.exit(1) directly).
+  process.on('exit', () => {
+    clearInterval(independentHeartbeatIntervalId);
   });
 });
 
