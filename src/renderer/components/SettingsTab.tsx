@@ -10,6 +10,8 @@ interface SettingsTabProps {
   authState: AuthState | null;
   onDevModeToggle?: (enabled: boolean) => void;
   devEnabled?: boolean;
+  viewMode?: 'standard' | 'advanced';
+  onViewModeChange?: (mode: 'standard' | 'advanced') => void;
 }
 
 type Theme = 'dark' | 'light' | 'system';
@@ -49,7 +51,7 @@ const MODE_OPTIONS: Array<{ id: SubstrateMode; label: string; desc: string }> = 
   { id: 'fallback',  label: '❄️ Fallback',   desc: 'Substrate-only · no AI required · Stage 2 mode · always offline-capable' },
 ];
 
-export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: SettingsTabProps) {
+export function SettingsTab({ authState, onDevModeToggle, devEnabled = false, viewMode, onViewModeChange }: SettingsTabProps) {
   const isMember = authState?.status === 'member' || authState?.status === 'trial_active';
   const isFounder = (authState as any)?.member?.is_founder === true;
 
@@ -278,6 +280,34 @@ export function SettingsTab({ authState, onDevModeToggle, devEnabled = false }: 
           </div>
         </section>
       )}
+
+      {/* View Mode */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 12, color: '#7a9b8a', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.08em' }}>View Mode</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {(['standard', 'advanced'] as const).map(mode => (
+            <button
+              key={mode}
+              onClick={() => onViewModeChange?.(mode)}
+              style={{
+                padding: '6px 16px',
+                borderRadius: 4,
+                border: '1px solid rgba(100,200,150,0.3)',
+                backgroundColor: viewMode === mode ? 'rgba(100,200,150,0.15)' : 'transparent',
+                color: viewMode === mode ? '#8bc8a0' : '#606060',
+                cursor: 'pointer',
+                fontSize: 13,
+                textTransform: 'capitalize'
+              }}
+            >
+              {mode === 'standard' ? '5-Tab Standard' : '⚙ Advanced (18 tabs)'}
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: '#505050', marginTop: 6 }}>
+          Standard: 5 core tabs for everyday use. Advanced: full 18-tab power-user view.
+        </div>
+      </div>
 
     </div>
   );
