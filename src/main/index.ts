@@ -1784,7 +1784,7 @@ app.whenReady().then(async () => {
             last_route_processed_at: lastRouteProcessedAt,
             last_heartbeat_at: new Date(lastHeartbeatEmittedAt).toISOString(),
           };
-          console.warn('[split_brain] detected — force-restarting answer-poller', payload);
+          console.warn('[split_brain] detected — advisory only, worker NOT killed (K22.1)', payload);
           // Write to local crash log file
           try {
             const fs = require('fs') as typeof import('fs');
@@ -1812,11 +1812,20 @@ app.whenReady().then(async () => {
               signal: AbortSignal.timeout(8000),
             }).catch(() => { /* non-fatal */ });
           } catch { /* non-fatal */ }
-          // Restart the poller child by invoking stop + re-start
-          if (pollerProcess && !pollerProcess.killed) {
-            try { pollerProcess.send({ type: 'stop' }); } catch { /* ignore */ }
-            setTimeout(() => { pollerProcess?.kill?.('SIGTERM'); }, 2000);
-          }
+          // BP101 K22.1: splitBrainWatcher is now ADVISORY only. Do NOT kill the worker on idle.
+          // K20's kill-on-idle was production-fatal — any peer sitting idle for SPLIT_BRAIN_IDLE_MS
+          // gets murdered, but idle ≠ broken. Real users won't fire queries every 10 minutes.
+          // K21's supervisor liveness watchdog (relay_answer/index.ts, LIVENESS_STALE_THRESHOLD_MS=120s
+          // measuring actual heartbeat staleness — not route-idle) remains the sole worker-killer for
+          // genuinely wedged workers. The telemetry emit above is retained as advisory diagnostic.
+          // Empirical driver: T29 canary 2026-07-01 00:06:51 M0 (4b3bdf00) answered a route correctly,
+          // then sat idle for the 10-min quorum window; at 00:17:26 this kill fired and killed the
+          // healthy worker; subsequent star-chamber escalations found no worker to answer.
+          //
+          // if (pollerProcess && !pollerProcess.killed) {
+          //   try { pollerProcess.send({ type: 'stop' }); } catch { /* ignore */ }
+          //   setTimeout(() => { pollerProcess?.kill?.('SIGTERM'); }, 2000);
+          // }
         }
       }, 60 * 1000);
 
