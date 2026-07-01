@@ -277,6 +277,7 @@ function startLivenessWatchdog(): void {
     const gapMs = Date.now() - lastHeartbeatEmittedAt;
     if (gapMs > LIVENESS_STALE_THRESHOLD_MS) {
       log(`wedged worker detected: heartbeat stale > ${LIVENESS_STALE_THRESHOLD_MS}ms (gap=${gapMs}ms) — force-kill + respawn`);
+      log(`[supervisor] SIGKILL wedged worker: gap=${gapMs}ms ollamaCurrentlyDown=${ollamaCurrentlyDown}`);
       try {
         pollerProcess.kill('SIGKILL');
       } catch (e: unknown) {
