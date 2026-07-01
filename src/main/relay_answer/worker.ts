@@ -93,6 +93,9 @@ function writePollerHeartbeat(
   pollCount: number,
 ): void {
   const heartbeatAt = new Date().toISOString();
+  // BP102 fix: tell the supervisor the worker is alive BEFORE attempting the network write.
+  // Liveness (process alive) must not depend on Supabase reachability.
+  process.send?.({ type: 'heartbeat', heartbeatAt, pollCount });
   fetch(`${supabaseUrl}/rest/v1/peer_presence?peer_id=eq.${encodeURIComponent(peerId)}`, {
     method: 'PATCH',
     headers: {
@@ -106,11 +109,8 @@ function writePollerHeartbeat(
       relay_poller_poll_count: pollCount,
     }),
     signal: AbortSignal.timeout(5000),
-  }).then(() => {
-    // Send heartbeat timestamp to supervisor
-    process.send?.({ type: 'heartbeat', heartbeatAt, pollCount });
   }).catch((e: unknown) => {
-    process.stderr.write(`[relay_worker] heartbeat PATCH failed: ${(e as Error).message}\n`);
+    process.stderr.write(`[relay_worker] heartbeat PATCH failed (DB write only — liveness already reported): ${(e as Error).message}\n`);
   });
 }
 
@@ -207,6 +207,9 @@ async function tick(config: Required<WorkerConfig>, pollCount: number): Promise<
       writeTelemetryEvent(config.supabaseUrl, config.anonKey, config.peerId, 'ollama_down', eventData);
     }
     ollamaDownCount++;
+    // BP102 fix: emit local liveness ping even while Ollama is down so supervisor's
+    // 120s liveness watchdog does not SIGKILL a worker that is correctly backing off.
+    process.send?.({ type: 'heartbeat', heartbeatAt: new Date().toISOString(), pollCount, ollamaDown: true });
     const backoffMs = Math.min(10000 * Math.pow(2, ollamaDownCount - 1), 60000);
     log(`Ollama down — skip tick, retry in ${backoffMs}ms (count=${ollamaDownCount})`);
     await new Promise(r => setTimeout(r, backoffMs));
@@ -280,12 +283,19 @@ process.on('message', (msg: { type: string; config?: WorkerConfig }) => {
 
   let inflight = false;
   let pollCount = 0;
+  let bootHealthLogged = false;
 
   async function runTick(): Promise<void> {
     if (inflight) return;
     inflight = true;
     pollCount++;
     try {
+      if (!bootHealthLogged) {
+        bootHealthLogged = true;
+        // BP102 instrumentation: log first Ollama health-check result at boot
+        const firstOllamaResult = await checkOllamaHealth(resolved.ollamaUrl);
+        log(`boot: first checkOllamaHealth() → ${firstOllamaResult ? 'HEALTHY' : 'UNHEALTHY'} at ${new Date().toISOString()}`);
+      }
       await tick(resolved, pollCount);
     } catch (e: unknown) {
       process.send?.({ type: 'tick_error', message: (e as Error).message });

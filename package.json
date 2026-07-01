@@ -1,6 +1,6 @@
 {
     "name":  "amplify-computer",
-    "version":  "0.8.18",
+    "version":  "0.8.19",
     "description":  "Mnemosyne Ã¢â‚¬â€ Memory, powered by CAI Ã‚Â· local inference + cooperative substrate OS overlay (SSPL Ã‚Â· Pledge #2260)",
     "homepage":  "https://lianabanyan.com",
     "private":  true,
@@ -71,7 +71,8 @@
                   "copyright":  "Copyright Ã‚Â© 2026 Liana Banyan Corporation",
                   "asar":  true,
                   "asarUnpack":  [
-                                     "resources/ollama/**"
+                                     "resources/ollama/**",
+                                     "dist/main/relay_answer/**"
                                  ],
                   "directories":  {
                                       "output":  "release",
