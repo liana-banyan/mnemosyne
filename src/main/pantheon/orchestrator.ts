@@ -264,3 +264,17 @@ export async function dispatchPantheon(
   activeSessions.delete(sessionId);
   return receipt;
 }
+
+// BP092 M24 Block 4 — ABSTAIN cascade hook (stub for M24b Electron integration)
+// When a Hearth dispatch returns council_did_not_converge, call this.
+// M24b will wire Posse + Tier 2 here as the orchestrator-side equivalent
+// of the validate-relay.mjs cascade.
+export async function abstainCascadeHook(
+  questionId: string,
+  domain: string,
+  peerAnswers: Record<string, string | null>,
+): Promise<{ resolved: boolean; answer: string | null; tier: string }> {
+  // BP092 M24b: implement full cascade here (Tier 1 -> Posse -> Tier 2 -> Tier 3)
+  // For M24a: stub returns unresolved so existing Tier 3 path handles it
+  return { resolved: false, answer: null, tier: 'tier_3_human' };
+}

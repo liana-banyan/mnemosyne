@@ -1,0 +1,25 @@
+{
+  "plugin_id": "plugin_sample_three_currency_wallet",
+  "name": "Three-Currency Wallet",
+  "version": "0.1.0",
+  "category": "cooperative-finance",
+  "description": "Visual dashboard for your Joules, Marks, and Credits balances. Substitution-only routing display; no fiat conversion. Composes with three_currency_ledger BP040 migration.",
+  "author_member_id": "liana-banyan-corp",
+  "license": "AGPL-3.0",
+  "ip_ledger_id": "ipl_sample_three_currency_wallet_001",
+  "entry_point": "three_currency_wallet/index.ts",
+  "min_mnemosyne_ver": "0.4.0",
+  "payment_marks": 0,
+  "payment_joules": 0,
+  "payment_credits": 0,
+  "tags": ["finance", "cooperative", "marks", "joules", "credits", "substitution-only"],
+  "status": "draft",
+  "registered_at": "2026-05-12T22:00:00.000Z",
+  "updated_at": "2026-05-12T22:00:00.000Z",
+  "sub_panel_config": {
+    "mount_point": "sidebar",
+    "default_width": 280,
+    "requires_ipc": ["getThreeCurrencyBalance", "getLedgerHistory"]
+  },
+  "_note": "Sample plugin — NO-FIAT-CONVERSION Blood Rule applies. Substitution-only display."
+}

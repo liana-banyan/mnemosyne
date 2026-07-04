@@ -40,7 +40,7 @@ If you're contributing computing time and electricity, you can choose to use **A
 
 - Premium features inside Mnemosyne (priority queries · expanded Substrate access · etc.)
 - Code Breaker guild access (the cooperative-class research-and-development tier)
-- Federation Cathedral upgrades (when those launch)
+- Federation Caithedral upgrades (when those launch)
 - Member-only Bounties and exchanges
 
 Marks are **NOT money.** They're not securities. You can't trade them for dollars on an exchange. They're a contribution credit inside the cooperative. They're explicitly worth-something *to members of our cooperative for cooperative things*.

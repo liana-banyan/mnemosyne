@@ -1,4 +1,4 @@
-// Mnemosyne — Project Owner Dashboard
+// MnemosyneC — Project Owner Dashboard
 // MV-HELM-CROWN-AMB SAGA 6 BP045 W1
 //
 // Role-gated: project-owner | founder

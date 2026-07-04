@@ -1,5 +1,5 @@
 // Ambience card — inline Tab 1 settings, BP047 Phase 1.
-// The card is unlocked by the Mnemosyne brand-name easter egg.
+// The card is unlocked by the Mnemosyne brand-name easter egg. // KEEP: easter egg references parent-platform name
 
 import React, { useEffect, useState } from 'react';
 import type { WindTier } from './canvas-2d-wind';

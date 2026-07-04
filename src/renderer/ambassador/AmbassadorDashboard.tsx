@@ -1,4 +1,4 @@
-// Mnemosyne — Ambassador Dashboard
+// MnemosyneC — Ambassador Dashboard
 // MV-HELM-CROWN-AMB SAGA 6 BP045 W1
 //
 // Role-gated: ambassador | founder

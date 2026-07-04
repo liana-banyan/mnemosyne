@@ -1,4 +1,4 @@
-// Mnemosyne — Federation Tab (MV-J Full Surface)
+// MnemosyneC — Federation Tab (MV-J Full Surface)
 // SAGA 4 BP045 W1 — extends FederationPeerMeshPanel
 //
 // Surfaces:
@@ -7,16 +7,12 @@
 //   3. Invite flow — generate 24h signed token + copy-to-clipboard
 //   4. Accept flow — paste-token + verify + join-mesh confirmation
 //   5. Empty state — cooperative-class, no mock peers
-//
-// K16 v0.8.10 additions:
-//   - LAN peer discovery via kitchenTable.p2pStart/p2pPeers IPC
-//   - lan_addresses surfaced on peer roster cards
-//   - onSwitchTab prop for cross-link (Diagnostic Mode "View Federation" button)
-// Migrated to mnemosyne repo: 2026-06-28 -- SEG-MM Novaculi BP099
+//   6. Fleet Health — D7 per-peer health verdict panel (BP105)
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import type { MnemosynePeer } from '../../shared/federation-protocol';
 import { PeerCueCard } from './PeerCueCard';
+import { FleetHealthPanel } from '../hearth/active_substrate/FleetHealthPanel';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,7 +29,7 @@ interface InviteToken {
   expiresAt: string;
 }
 
-type TabId = 'mesh' | 'roster' | 'invite' | 'accept';
+type TabId = 'mesh' | 'roster' | 'invite' | 'accept' | 'fleet';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 
@@ -162,24 +158,19 @@ function PeerRoster({ peers, onLeave, onConnect }: {
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, padding: 8 }}>
       {peers.map((peer) => (
-        <div key={peer.peerId}>
-          <PeerCueCard
-            peer={peer}
-            onConnect={onConnect}
-          />
-          {/* K16 v0.8.10 -- LAN IP addresses */}
-          {peer.lan_addresses && peer.lan_addresses.length > 0 && (
-            <div style={{ fontSize: 10, color: '#475569', marginTop: 2, paddingLeft: 4 }}>
-              {peer.lan_addresses.join(' · ')}
-            </div>
-          )}
-        </div>
+        <PeerCueCard
+          key={peer.peerId}
+          peer={peer}
+          onConnect={onConnect}
+        />
       ))}
     </div>
   );
 }
 
 // ─── Invite Cue Card Preview ──────────────────────────────────────────────────
+// SEG-V0153A-P0-INVITE-FORM: stacked pair (FRONT=brand/identity, BACK=action).
+// NOT a CSS 3D flip — vertically stacked display in-app alongside the form.
 
 function InviteCueCardPreview({
   displayName,
@@ -281,10 +272,24 @@ function InviteCueCardPreview({
 }
 
 // ─── Invite Flow ──────────────────────────────────────────────────────────────
+// SEG-V0153A-P0-INVITE-FORM + SEG-V0153A-INVITE-FORM-ENHANCE
+//
+// Truth-Always flags:
+//   [T1] window.amplify.getProfile does NOT exist in preload.ts.
+//        displayName is sourced from getAuthState().member?.display_name (FederationTab state),
+//        passed as prop to InviteFlow. Falls back to "Your Name" for resolvedDisplayName,
+//        and to "you" for the Sign-this-card checkbox label.
+//   [T2] window.amplify.openExternal IS confirmed in preload.ts (ipcRenderer.send — fire-and-forget,
+//        no Promise return). 3s timeout used to transition to success state.
+//   [T3] Sent invites history (Part C): P1-DEFERRED — not implemented in this version.
+//        Shape: localStorage key 'mnemosynec.sent_invites', capped 20 entries.
+//   [T4] Cooldown IPC shape: SEG-P1-REJECTION-COOLDOWN may not have landed yet.
+//        Both old shape { token, expiresAt } and new shape { ok, ... } are handled gracefully.
 
 export function InviteFlow({ displayName }: { displayName?: string }) {
   const resolvedDisplayName = displayName?.trim() || 'Your Name';
 
+  // — Primary form state —
   const [recipientName, setRecipientName] = useState('');
   const [recipientEmail, setRecipientEmail] = useState('');
   const [personalNote, setPersonalNote] = useState('');
@@ -297,11 +302,14 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
   const [tokenCopied, setTokenCopied] = useState(false);
   const openTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // — Cooldown state —
   const [cooldownActive, setCooldownActive] = useState(false);
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
 
+  // — Sign card state —
   const [signCard, setSignCard] = useState(true);
 
+  // — Legacy manual token state (collapsible fallback) —
   const [legacyToken, setLegacyToken] = useState<InviteToken | null>(null);
   const [legacyLoading, setLegacyLoading] = useState(false);
   const [legacyCopied, setLegacyCopied] = useState(false);
@@ -312,6 +320,7 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
     sendStatus === 'generating' ||
     sendStatus === 'opening';
 
+  // Live countdown — ticks every 60 s; clears cooldown when ≤ 60 s remain
   useEffect(() => {
     if (!cooldownActive || cooldownSeconds <= 0) return;
     const interval = setInterval(() => {
@@ -329,21 +338,26 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
 
   const handleSend = async () => {
     if (isBusy) return;
+
+    // Step 1 — immediate feedback on every click
     setSendStatus('validating');
     setEmailError(null);
     setSendError(null);
 
+    // Step 2 — validate email
     if (!/.+@.+\..+/.test(recipientEmail.trim())) {
       setEmailError('Please enter a valid email address.');
       setSendStatus('idle');
       return;
     }
 
+    // Step 3 — generate token
     setSendStatus('generating');
     let inviteToken: string;
     let expiresAt: string;
     try {
       const rawResult = await (window as any).amplify?.federationGenerateInvite?.();
+      // Support both old shape { token, expiresAt } and new shape { ok, token, expiresAt } | { ok: false, error, wait_seconds }
       const result = rawResult && 'ok' in rawResult ? rawResult : { ok: true, ...rawResult };
       if (!result.ok && result.error === 'cooldown') {
         setCooldownSeconds(result.wait_seconds ?? 3600);
@@ -364,6 +378,7 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
       return;
     }
 
+    // Steps 4–5 — compose accept link + mailto body
     const acceptLink = `mnemo://accept?token=${inviteToken}`;
     const note = personalNote.trim();
     const fromLine = signCard ? `From: ${resolvedDisplayName}\n` : '';
@@ -388,10 +403,12 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
       ) +
       '&body=' + encodeURIComponent(body);
 
+    // Step 6 — fire openExternal ([T2] fire-and-forget, no await)
     setSendStatus('opening');
     setSentToken(inviteToken);
     (window as any).amplify?.openExternal?.(mailtoUrl);
 
+    // Step 7 — 3s timeout then show success (openExternal has no return value)
     if (openTimeoutRef.current) clearTimeout(openTimeoutRef.current);
     openTimeoutRef.current = setTimeout(() => {
       setSendStatus('success');
@@ -428,6 +445,7 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
     }
   };
 
+  // — Legacy handlers —
   const legacyGenerate = async () => {
     setLegacyLoading(true);
     setLegacyError(null);
@@ -469,6 +487,7 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
       {sendStatus === 'success' ? (
+        /* ── Success state ── */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{
             fontSize: 12, color: C.green, padding: '10px 14px',
@@ -503,8 +522,10 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
           </button>
         </div>
       ) : (
+        /* ── Form state ── */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {cooldownActive ? (
+            /* ── Cooldown banner — replaces form fields ── */
             <div style={{
               background: '#1a1200',
               border: '1px solid #d97706',
@@ -524,6 +545,7 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
                 Send a signed invite — valid 24 hours, single-use. Opens your mail client.
               </div>
 
+              {/* Recipient name */}
               <div>
                 <input
                   type="text"
@@ -534,8 +556,14 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
                   maxLength={60}
                   style={s.input}
                 />
+                {recipientName.length > 40 && (
+                  <div style={{ fontSize: 9, textAlign: 'right', marginTop: 2, color: C.muted }}>
+                    {recipientName.length}/60
+                  </div>
+                )}
               </div>
 
+              {/* Email */}
               <div>
                 <input
                   type="email"
@@ -553,6 +581,7 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
                 )}
               </div>
 
+              {/* Personal note */}
               <div>
                 <textarea
                   value={personalNote}
@@ -562,6 +591,14 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
                   disabled={isBusy}
                   style={{ ...s.input, resize: 'vertical', fontFamily: 'inherit', fontSize: 11 }}
                 />
+                {personalNote.length > 220 && (
+                  <div style={{
+                    fontSize: 9, textAlign: 'right', marginTop: 2,
+                    color: personalNote.length >= 280 ? C.red : C.muted,
+                  }}>
+                    {personalNote.length}/280
+                  </div>
+                )}
               </div>
 
               {sendError && (
@@ -570,6 +607,7 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
                 </div>
               )}
 
+              {/* Sign this card checkbox */}
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#94a3b8', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
@@ -580,6 +618,7 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
                 Sign this card as <span style={{ color: '#6ee7b7', marginLeft: 4 }}>{displayName?.trim() || 'you'}</span>
               </label>
 
+              {/* Primary send button — big green */}
               <button
                 onClick={() => void handleSend()}
                 disabled={isBusy}
@@ -594,6 +633,7 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
                 {sendButtonLabel()}
               </button>
 
+              {/* Stacked invite card preview — live updates as user types recipient name */}
               <InviteCueCardPreview
                 displayName={resolvedDisplayName}
                 recipientName={recipientName}
@@ -603,6 +643,7 @@ export function InviteFlow({ displayName }: { displayName?: string }) {
         </div>
       )}
 
+      {/* Legacy generate — collapsible secondary section */}
       <details style={{ marginTop: 4 }}>
         <summary style={{
           fontSize: 10, color: C.muted, cursor: 'pointer',
@@ -667,6 +708,7 @@ function AcceptFlow({ initialToken }: { initialToken?: string }) {
   const [deepLinkBanner, setDeepLinkBanner] = useState(!!initialToken);
   const [rejecting, setRejecting] = useState(false);
 
+  // SEG-V0153A: when a new initialToken arrives (deep-link), pre-populate input + show banner
   useEffect(() => {
     if (initialToken) {
       setTokenInput(initialToken);
@@ -729,7 +771,7 @@ function AcceptFlow({ initialToken }: { initialToken?: string }) {
         </div>
       )}
       <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
-        Paste an invite token from a peer. Mnemosyne will verify the signature and
+        Paste an invite token from a peer. MnemosyneC will verify the signature and
         initiate the mesh handshake.
       </div>
 
@@ -798,8 +840,7 @@ function AcceptFlow({ initialToken }: { initialToken?: string }) {
 
 // ─── Main FederationTab ───────────────────────────────────────────────────────
 
-// K16 v0.8.10 -- onSwitchTab prop for cross-link (e.g., Diagnostic Mode "View Federation" button)
-export function FederationTab({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } = {}) {
+export function FederationTab() {
   const [meshState, setMeshState] = useState<MeshState>({
     peers: [],
     relayConnected: false,
@@ -808,10 +849,8 @@ export function FederationTab({ onSwitchTab }: { onSwitchTab?: (tab: string) => 
   const [activeTab, setActiveTab] = useState<TabId>('mesh');
   const [loading, setLoading] = useState(true);
   const [displayName, setDisplayName] = useState<string | undefined>(undefined);
+  // SEG-V0153A: deep-link token from mnemo://accept?token=<token>
   const [deepLinkToken, setDeepLinkToken] = useState<string | undefined>(undefined);
-  // K16 v0.8.10 -- LAN discovery state
-  const [lanDiscovering, setLanDiscovering] = useState(false);
-  const [lanDiscovered, setLanDiscovered] = useState<Array<{ ip: string; label?: string }>>([]);
 
   useEffect(() => {
     void (async () => {
@@ -845,6 +884,7 @@ export function FederationTab({ onSwitchTab }: { onSwitchTab?: (tab: string) => 
     };
   }, [loadMesh]);
 
+  // SEG-V0153A: listen for mnemo://accept?token=<token> deep-link from main process
   useEffect(() => {
     const cleanup = (window as any).amplify?.onFederationDeepLinkAccept?.(
       (data: { token: string; slug: string }) => {
@@ -863,84 +903,23 @@ export function FederationTab({ onSwitchTab }: { onSwitchTab?: (tab: string) => 
     } catch { /* ignore */ }
   };
 
+  // ⚠ TRUTH-ALWAYS (SEG-V0153A): No `federation:connect-peer` IPC handler exists.
+  // Using federationAcceptInvite as a STOPGAP. A dedicated IPC handler wiring
+  // connectToPeerWithEscalation() is needed in src/main/index.ts + preload.ts.
   const handleConnectPeer = async (peerId: string) => {
     try {
       await (window as any).amplify?.federationAcceptInvite?.(peerId);
       await loadMesh();
-    } catch { /* ignore */ }
+    } catch { /* ignore — visual feedback is handled by PeerCueCard's local state */ }
   };
-
-  // K16 v0.8.10 -- LAN peer discovery using kitchenTable.p2pStart/p2pStop/p2pPeers IPC
-  async function handleLanSearch() {
-    setLanDiscovering(true);
-    setLanDiscovered([]);
-    try {
-      const peerId = localStorage.getItem('mnemo_peer_id') ?? Math.random().toString(36).slice(2);
-      localStorage.setItem('mnemo_peer_id', peerId);
-      const label = localStorage.getItem('mnemo_display_name') ?? 'MnemosyneC';
-      await (window as any).amplify?.kitchenTable?.p2pStart?.(peerId, label);
-
-      let elapsed = 0;
-      const tick = setInterval(async () => {
-        elapsed += 2000;
-        try {
-          const result = await (window as any).amplify?.kitchenTable?.p2pPeers?.() as
-            { peers: Array<{ address: string; displayName?: string }>; active: boolean } | null;
-          if (result?.peers) {
-            setLanDiscovered(result.peers.map((p) => ({ ip: p.address, label: p.displayName })));
-          }
-        } catch { /* ignore */ }
-        if (elapsed >= 10_000) {
-          clearInterval(tick);
-          await (window as any).amplify?.kitchenTable?.p2pStop?.().catch(() => {});
-          setLanDiscovering(false);
-        }
-      }, 2000);
-    } catch {
-      setLanDiscovering(false);
-    }
-  }
 
   const TABS: Array<{ id: TabId; label: string }> = [
     { id: 'mesh',   label: '🕸️ Mesh' },
+    { id: 'fleet',  label: '🩺 Fleet' },
     { id: 'roster', label: '📋 Roster' },
     { id: 'invite', label: '🔑 Invite' },
     { id: 'accept', label: '🤝 Accept' },
   ];
-
-  // BP099→BP100 K20 Module 4: Poller health panel — polls every 5s
-  const [pollerHealth, setPollerHealth] = useState<{
-    alive: boolean;
-    uptime_seconds: number;
-    last_route_processed_at: string | null;
-    last_route_id: string | null;
-    restart_count: number;
-    ollama_status: 'up' | 'down';
-    current_consecutive_crashes: number;
-  } | null>(null);
-
-  useEffect(() => {
-    async function fetchHealth() {
-      try {
-        const h = await (window as any).amplify?.pollerHealthQuery?.();
-        if (h) setPollerHealth(h);
-      } catch { /* non-fatal */ }
-    }
-    void fetchHealth();
-    const interval = setInterval(() => void fetchHealth(), 5000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const pollerStatusLabel = !pollerHealth
-    ? 'QUERYING…'
-    : pollerHealth.alive
-      ? 'ALIVE'
-      : (pollerHealth.current_consecutive_crashes >= 30 ? 'CRASH-LOOP HALTED' : 'DEAD');
-  const pollerStatusColor = !pollerHealth
-    ? C.muted
-    : pollerHealth.alive
-      ? C.green
-      : (pollerHealth.current_consecutive_crashes >= 30 ? C.red : C.amber);
 
   return (
     <div style={s.root}>
@@ -966,37 +945,6 @@ export function FederationTab({ onSwitchTab }: { onSwitchTab?: (tab: string) => 
         </div>
       </div>
 
-      {/* ── K20 Poller Health Panel ── */}
-      <div style={{
-        margin: '6px 12px', borderRadius: 8, border: `1px solid ${C.border}`,
-        background: C.surface, padding: '8px 12px', flexShrink: 0,
-        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: pollerStatusColor, display: 'inline-block', flexShrink: 0 }} />
-          <span style={{ fontSize: 10, fontWeight: 700, color: pollerStatusColor, letterSpacing: '0.06em' }}>
-            ANSWER-POLLER: {pollerStatusLabel}
-          </span>
-        </div>
-        {pollerHealth && (
-          <>
-            <span style={{ fontSize: 10, color: C.muted }}>uptime: {pollerHealth.uptime_seconds}s</span>
-            <span style={{ fontSize: 10, color: C.muted }}>restarts: {pollerHealth.restart_count}</span>
-            <span style={{ fontSize: 10, color: pollerHealth.ollama_status === 'down' ? C.red : C.green }}>
-              Ollama: {pollerHealth.ollama_status.toUpperCase()}
-            </span>
-            {pollerHealth.current_consecutive_crashes > 0 && (
-              <span style={{ fontSize: 10, color: C.amber }}>crashes: {pollerHealth.current_consecutive_crashes}</span>
-            )}
-            {pollerHealth.last_route_processed_at && (
-              <span style={{ fontSize: 10, color: C.muted }}>
-                last route: {new Date(pollerHealth.last_route_processed_at).toLocaleTimeString()}
-              </span>
-            )}
-          </>
-        )}
-      </div>
-
       {/* Tab bar */}
       <div style={s.tabBar}>
         {TABS.map(({ id, label }) => (
@@ -1019,40 +967,10 @@ export function FederationTab({ onSwitchTab }: { onSwitchTab?: (tab: string) => 
       <div style={s.body}>
         {loading && activeTab === 'mesh' ? (
           <div style={{ textAlign: 'center', color: C.muted, padding: 24, fontSize: 11 }}>Scanning…</div>
+        ) : activeTab === 'fleet' ? (
+          <FleetHealthPanel />
         ) : activeTab === 'mesh' ? (
-          <>
-            <MeshVisualizer peers={meshState.peers} ownId={meshState.ownPeerId} />
-            {/* K16 v0.8.10 -- Search LAN Peers */}
-            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-              <button
-                onClick={() => void handleLanSearch()}
-                disabled={lanDiscovering}
-                style={{
-                  padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
-                  cursor: lanDiscovering ? 'not-allowed' : 'pointer',
-                  background: 'rgba(59,130,246,0.12)', border: '1px solid rgba(59,130,246,0.35)',
-                  color: '#60a5fa',
-                }}
-              >
-                {lanDiscovering ? 'Searching LAN...' : 'Search LAN Peers'}
-              </button>
-              {lanDiscovered.length > 0 && (
-                <div style={{ width: '100%', maxWidth: 340 }}>
-                  {lanDiscovered.map((p) => (
-                    <div key={p.ip} style={{ fontSize: 11, color: '#94a3b8', padding: '3px 0' }}>
-                      🌐 {p.ip}{p.label ? ` · ${p.label}` : ''}{' '}
-                      <span style={{ color: '#475569' }}>LAN discovered</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {!lanDiscovering && lanDiscovered.length === 0 && (
-                <div style={{ fontSize: 10, color: '#475569' }}>
-                  Click to scan for MnemosyneC peers on your local network
-                </div>
-              )}
-            </div>
-          </>
+          <MeshVisualizer peers={meshState.peers} ownId={meshState.ownPeerId} />
         ) : activeTab === 'roster' ? (
           <PeerRoster
             peers={meshState.peers}

@@ -4,7 +4,7 @@
 // §4.2 Court Preset Management: named role→AI mappings · default "Solo Ollama"
 // §4.3 On-the-fly Single-Use: one-shot override · auto-revert after
 // §4.4 User-Defined Rules: IF-THEN form · opt-in · default no rules
-// §4.5 Multi-Select Parallel Cathedrals: checkbox list · cost warning
+// §4.5 Multi-Select Parallel Caithedrals: checkbox list · cost warning
 // §4.6 Default Discipline (DOCTRINE-CLASS): Ollama ALWAYS default
 //      Cloud-AI = explicit opt-in. Cost transparency displayed.
 //      NO silent cloud default. This is DOCTRINE not UX preference.
@@ -19,6 +19,8 @@
 // decay_class: BETWEEN on substrate emissions. DOCTRINE on §4.6.
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+// BP087 Wave 3 SEG-E2 -- Multi-Segment Gemma panel
+import { MultiSegGemmaPanel } from './MultiSegGemmaPanel';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -203,7 +205,7 @@ function DoctrineBanner({ activeIsLocal }: { activeIsLocal: boolean }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function MultiAISelector() {
-  const [activeSection, setActiveSection] = useState<'quick' | 'court' | 'single-use' | 'rules' | 'parallel' | 'local'>('quick');
+  const [activeSection, setActiveSection] = useState<'quick' | 'court' | 'single-use' | 'rules' | 'parallel' | 'multi-seg-gemma'>('quick');
 
   // §4.6 — active model (default: Ollama local, DOCTRINE)
   const [activeModel, setActiveModel] = useState<AIModelId>(() => {
@@ -277,42 +279,6 @@ export function MultiAISelector() {
     setRules((prev) => prev.filter((r) => r.id !== id));
   }, []);
 
-  // §4.6 Local LLM Engine settings state
-  const [localRuntimeUrl, setLocalRuntimeUrl] = useState('http://localhost:11434');
-  const [localTestResult, setLocalTestResult] = useState<{ ok?: boolean; models?: string[]; error?: string } | null>(null);
-  const [localTestLoading, setLocalTestLoading] = useState(false);
-  const [localSaveMsg, setLocalSaveMsgRaw] = useState<string | null>(null);
-
-  // Load persisted LOCAL_RUNTIME_URL on mount
-  useEffect(() => {
-    window.amplify?.aiDispatch?.getSettings?.().then((s) => {
-      if (s?.local_runtime_url) setLocalRuntimeUrl(s.local_runtime_url);
-    }).catch(() => {/* ignore */});
-  }, []);
-
-  const testLocalConnection = useCallback(async () => {
-    setLocalTestLoading(true);
-    setLocalTestResult(null);
-    try {
-      const result = await window.amplify?.aiDispatch?.testConnection?.();
-      setLocalTestResult(result ?? { ok: false, models: [], error: 'IPC not available' });
-    } catch (err) {
-      setLocalTestResult({ ok: false, models: [], error: String(err) });
-    } finally {
-      setLocalTestLoading(false);
-    }
-  }, []);
-
-  const saveLocalUrl = useCallback(async () => {
-    try {
-      await window.amplify?.aiDispatch?.saveSettings?.({ local_runtime_url: localRuntimeUrl });
-      setLocalSaveMsgRaw('Saved.');
-      setTimeout(() => setLocalSaveMsgRaw(null), 2000);
-    } catch (err) {
-      setLocalSaveMsgRaw('Error: ' + String(err));
-    }
-  }, [localRuntimeUrl]);
-
   const sectionBtn = (id: typeof activeSection, label: string): React.CSSProperties => ({
     padding: '5px 10px', fontSize: 9, fontWeight: 600, cursor: 'pointer',
     background: activeSection === id ? 'rgba(167,139,250,0.12)' : 'transparent',
@@ -370,7 +336,7 @@ export function MultiAISelector() {
         <button style={sectionBtn('single-use', 'Single-Use')} onClick={() => setActiveSection('single-use')}>§4.3 Single-Use</button>
         <button style={sectionBtn('rules', 'Rules')} onClick={() => setActiveSection('rules')}>§4.4 Rules</button>
         <button style={sectionBtn('parallel', 'Parallel')} onClick={() => setActiveSection('parallel')}>§4.5 Parallel</button>
-        <button style={sectionBtn('local', 'Local Engine')} onClick={() => setActiveSection('local')}>§4.6 Local Engine</button>
+        <button style={sectionBtn('multi-seg-gemma', 'Multi-Seg Gemma')} onClick={() => setActiveSection('multi-seg-gemma')}>Multi-Seg Gemma</button>
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '10px 14px' }}>
@@ -596,10 +562,17 @@ export function MultiAISelector() {
           </div>
         )}
 
-        {/* ── §4.5 Multi-Select Parallel Cathedrals ─────────────────────── */}
+        {/* ── Multi-Seg Gemma Panel (BP087 Wave 3 SEG-E2) ──────────────── */}
+        {activeSection === 'multi-seg-gemma' && (
+          <div>
+            <MultiSegGemmaPanel />
+          </div>
+        )}
+
+        {/* ── §4.5 Multi-Select Parallel Caithedrals ─────────────────────── */}
         {activeSection === 'parallel' && (
           <div>
-            <SectionHeader icon="⚡⚡" title="§4.5 Multi-Select Parallel Cathedrals" subtitle="Side-by-side results · cost warning for cloud" />
+            <SectionHeader icon="⚡⚡" title="§4.5 Multi-Select Parallel Caithedrals" subtitle="Side-by-side results · cost warning for cloud" />
             {hasCloudInParallel && (
               <div style={{
                 padding: '7px 10px', marginBottom: 10, borderRadius: 6,
@@ -645,120 +618,6 @@ export function MultiAISelector() {
                 {hasCloudInParallel && <span style={{ color: '#fbbf24' }}> · cloud cost applies</span>}
               </div>
             )}
-          </div>
-        )}
-
-        {/* ── §4.6 Local LLM Engine Settings ────────────────────────────── */}
-        {activeSection === 'local' && (
-          <div>
-            <SectionHeader
-              icon="⚙️"
-              title="§4.6 Local LLM Engine"
-              subtitle="Runtime-agnostic · NOT Ollama-hardcoded · any OpenAI-compatible server"
-            />
-
-            {/* Doctrine reminder */}
-            <div style={{
-              padding: '7px 10px', marginBottom: 12, borderRadius: 6,
-              background: 'rgba(110,231,183,0.05)', border: '1px solid rgba(110,231,183,0.2)',
-              fontSize: 8, color: '#6ee7b7', lineHeight: 1.6,
-            }}>
-              <div style={{ fontWeight: 700, marginBottom: 2 }}>§4.6 DOCTRINE — Default = Local LLM Engine</div>
-              <div style={{ color: '#64748b' }}>
-                Mnemosyne defaults to your local runtime. Compatible: Ollama · llama.cpp · vLLM · LM Studio · any OpenAI-compatible server.
-              </div>
-            </div>
-
-            {/* URL field */}
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', marginBottom: 4 }}>
-                Local LLM Engine URL
-              </div>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <input
-                  type="text"
-                  value={localRuntimeUrl}
-                  onChange={(e) => setLocalRuntimeUrl(e.target.value)}
-                  placeholder="http://localhost:11434"
-                  style={{
-                    flex: 1, padding: '5px 8px', fontSize: 9, borderRadius: 5,
-                    background: 'rgba(15,23,42,0.8)', border: '1px solid rgba(100,116,139,0.3)',
-                    color: '#e2e8f0', outline: 'none', fontFamily: 'monospace',
-                  }}
-                />
-                <button
-                  onClick={saveLocalUrl}
-                  style={{
-                    padding: '5px 10px', fontSize: 9, background: 'rgba(110,231,183,0.1)',
-                    border: '1px solid rgba(110,231,183,0.3)', borderRadius: 5,
-                    color: '#6ee7b7', cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap',
-                  }}
-                >
-                  Save
-                </button>
-              </div>
-              {localSaveMsg && (
-                <div style={{ fontSize: 8, color: '#6ee7b7', marginTop: 3 }}>{localSaveMsg}</div>
-              )}
-              <div style={{ fontSize: 8, color: '#475569', marginTop: 4 }}>
-                Default: http://localhost:11434 (Ollama) · Change to llama.cpp / vLLM / LM Studio URL as needed
-              </div>
-            </div>
-
-            {/* Test connection */}
-            <div>
-              <button
-                onClick={testLocalConnection}
-                disabled={localTestLoading}
-                style={{
-                  padding: '6px 14px', fontSize: 9, background: 'rgba(56,189,248,0.08)',
-                  border: '1px solid rgba(56,189,248,0.25)', borderRadius: 5,
-                  color: '#38bdf8', cursor: localTestLoading ? 'not-allowed' : 'pointer',
-                  fontWeight: 600,
-                }}
-              >
-                {localTestLoading ? '⟳ Testing…' : '⚡ Test Connection'}
-              </button>
-
-              {localTestResult && (
-                <div style={{
-                  marginTop: 8, padding: '8px 10px', borderRadius: 6,
-                  background: localTestResult.ok ? 'rgba(110,231,183,0.05)' : 'rgba(248,113,113,0.05)',
-                  border: `1px solid ${localTestResult.ok ? 'rgba(110,231,183,0.2)' : 'rgba(248,113,113,0.2)'}`,
-                }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: localTestResult.ok ? '#6ee7b7' : '#f87171', marginBottom: 4 }}>
-                    {localTestResult.ok ? '✓ Connected' : '✗ Connection failed'}
-                  </div>
-                  {localTestResult.error && (
-                    <div style={{ fontSize: 8, color: '#f87171', marginBottom: 4 }}>{localTestResult.error}</div>
-                  )}
-                  {localTestResult.ok && localTestResult.models && localTestResult.models.length > 0 && (
-                    <div>
-                      <div style={{ fontSize: 8, color: '#94a3b8', marginBottom: 3 }}>
-                        Models available ({localTestResult.models.length}):
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {localTestResult.models.slice(0, 12).map((m) => (
-                          <span key={m} style={{
-                            fontSize: 7, padding: '1px 5px', borderRadius: 3,
-                            background: 'rgba(110,231,183,0.08)', border: '1px solid rgba(110,231,183,0.2)',
-                            color: '#6ee7b7', fontFamily: 'monospace',
-                          }}>
-                            {m}
-                          </span>
-                        ))}
-                        {localTestResult.models.length > 12 && (
-                          <span style={{ fontSize: 7, color: '#475569' }}>+{localTestResult.models.length - 12} more</span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  {localTestResult.ok && (!localTestResult.models || localTestResult.models.length === 0) && (
-                    <div style={{ fontSize: 8, color: '#94a3b8' }}>No models listed by runtime.</div>
-                  )}
-                </div>
-              )}
-            </div>
           </div>
         )}
       </div>

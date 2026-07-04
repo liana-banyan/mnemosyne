@@ -1,16 +1,24 @@
-// Mnemosyne — Renderer Root
+// MnemosyneC — Renderer Root
 // B37 Phase 1 — Transparent overlay with FrameModeIndicator
 // B37 Phase 7 — Auth gate, trial banner, member badge
 // MV-HELM-CROWN-AMB SAGA 6 BP045 W1 — Role-gated routes added
 // MV-J SAGA 4 BP045 W1 — Federation tab route added
 // SAGA 07 BP046B — MnemosyneTabView replaces AMPLIFYDashboard as default dashboard
+// SEG-R-1 BP067 — First-run gate: view=dashboard -> MnemosyneTabView -> Bp067FirstRunSpine
+//   WelcomeView (Amnesia headline + two-doorway cascade) is the first spine step.
+//   localStorage keys: 'mnemosynec_onboarding_complete' (WelcomeView done)
+//                      'mnemosyne-bp067-first-run-complete' (full spine done)
+//   Settings remain reachable via gear icon (SettingsTab inside MnemosyneTabView).
 
 import React, { useState, useEffect, useLayoutEffect } from 'react';
 import { FrameModeIndicator } from './components/FrameModeIndicator';
 import { DashboardCornerAffordance } from './components/DashboardCornerAffordance';
 import { UpdateToast } from './components/UpdateToast';
+import { UpdateModal } from './components/UpdateModal';
 import { MnemosyneTabView } from './components/MnemosyneTabView';
+import { LeanShell } from './components/LeanShell';
 import { AMPLIFYDashboard } from './components/AMPLIFYDashboard';
+import { ClipboardCaptureModal } from './components/ClipboardCaptureModal';
 import { ModelPullDialog } from './components/ModelPullDialog';
 import { AuthGate } from './components/AuthGate';
 import { TrialBanner } from './components/TrialBanner';
@@ -66,6 +74,16 @@ function AccessDenied({ role }: { role: string }) {
   );
 }
 
+// Shared localStorage key — cross-window overlay visibility (default OFF = opt-in)
+const LS_OVERLAY_ACTIVE = 'mnemo_overlay_active';
+
+// Cycle order for bottom-right chip: ai_burst → normal → fallback → ai_burst
+const OVERLAY_MODE_CYCLE: Record<FrameMode, FrameMode> = {
+  ai_burst: 'normal',
+  normal:   'fallback',
+  fallback: 'ai_burst',
+};
+
 export default function App() {
   const [mode, setMode] = useState<FrameMode>('normal');
   const [view] = useState<View>(getInitialView);
@@ -73,6 +91,16 @@ export default function App() {
   const [showDashboard, setShowDashboard] = useState(view === 'dashboard');
   const [showModelPull, setShowModelPull] = useState(false);
   const [authState, setAuthState] = useState<AuthState | null>(null);
+  // Overlay visible = opt-in (default false); synced via localStorage across windows
+  const [overlayActive, setOverlayActive] = useState<boolean>(() =>
+    localStorage.getItem(LS_OVERLAY_ACTIVE) === 'true'
+  );
+  // v0.4.0 BP083 SEG-5: post-install restart prompt state
+  const [restartPrompt, setRestartPrompt] = useState<{ version: string; message: string } | null>(null);
+  // v0.4.2 BP083 SEG-3.5: lifecycle diagnostic banner
+  const [lifecycleBanner, setLifecycleBanner] = useState<string | null>(null);
+  // v0.4.2 BP083 SEG-5: Plow resume modal
+  const [plowResumeData, setPlowResumeData] = useState<Record<string, unknown> | null>(null);
 
   // Sync mode from main process + check first-launch model
   useEffect(() => {
@@ -95,25 +123,55 @@ export default function App() {
       setAuthState(state);
     });
 
-    // First-launch: check if default model needs pulling
-    window.amplify.getOllamaStatus().then((status) => {
-      if (status.running && !status.model) {
-        window.amplify.listOllamaModels().then((models) => {
-          const defaultInstalled = models.some((m) =>
-            m.startsWith('llama3.1:8b'),
-          );
-          if (!defaultInstalled && view === 'overlay') {
-            setShowModelPull(true);
-          }
-        });
-      }
+    // v0.4.0 BP083 SEG-5: listen for post-install restart prompt
+    window.amplify.onShowRestartPrompt?.((data) => {
+      setRestartPrompt(data as { version: string; message: string });
     });
+
+    // v0.4.2 BP083 SEG-5: listen for Plow resume prompt
+    window.amplify.onPlowResumePrompt?.((data) => {
+      setPlowResumeData(data);
+    });
+
+    // v0.4.2 BP083 SEG-3.5: Lifecycle diagnostic banner
+    // Check if onboarding is stuck (stage A/B/C, last-modified > 24h ago)
+    try {
+      const stage = localStorage.getItem('mnemosynec_lifecycle_stage');
+      const onboardingComplete = localStorage.getItem('mnemosynec_onboarding_complete');
+      const stageTs = localStorage.getItem('mnemosynec_lifecycle_stage_ts');
+      if (stage && !onboardingComplete && ['A', 'B', 'C'].includes(stage)) {
+        const ageMs = stageTs ? Date.now() - parseInt(stageTs, 10) : Infinity;
+        const ageDays = ageMs / (1000 * 60 * 60 * 24);
+        if (ageDays > 14) {
+          // Auto-advance: offer Reset (14+ days stuck)
+          setLifecycleBanner(`reset-offer:${stage}`);
+        } else if (ageDays > 1) {
+          // Diagnostic banner: visible reminder (> 24h stuck)
+          setLifecycleBanner(`stuck:${stage}`);
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    // First-launch model check deferred to BP067 Bp067FirstRunSpine (setupPrivateAI)
 
     return () => {
       cleanupMode?.();
       cleanupAuth?.();
     };
   }, []);
+
+  // Cross-window sync: when FrameTab (dashboard window) writes mnemo_overlay_active,
+  // the storage event fires here (overlay window) and updates overlayActive.
+  useEffect(() => {
+    if (view !== 'overlay') return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === LS_OVERLAY_ACTIVE) {
+        setOverlayActive(e.newValue === 'true');
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [view]);
 
   // AuthGate is shown in HearthConjunctionWindow (a normal movable OS window), NOT in the
   // always-on-top overlay. This makes it impossible for the modal to trap the user:
@@ -137,9 +195,10 @@ export default function App() {
     window.amplify.setFrameMode(newMode);
   };
 
-  // KniPr005 Bug 2: overlay chip click opens the real Dashboard window (not in-overlay sheet).
+  // Bottom-right chip cycles through 3 modes: AI Burst → Normal → Fallback → AI Burst.
+  // (Dashboard opens from DashboardCornerAffordance top-left pill; chip is reserved for mode cycling.)
   const handleCornerClick = () => {
-    window.amplify?.openDashboard?.();
+    handleModeChange(OVERLAY_MODE_CYCLE[mode]);
   };
 
   const handleDashboardClose = () => {
@@ -149,16 +208,151 @@ export default function App() {
   const showTrialBanner =
     authState?.status === 'trial_active' || authState?.status === 'trial_expired';
 
-  // SAGA 07 BP046B — Dashboard now renders the 4-tab MnemosyneTabView
+  // SEG-V0151-P0-3TAB-SHELL: LeanShell wraps MnemosyneTabView — decides lean vs advanced internally.
   if (view === 'dashboard') {
     return (
-      <ErrorBoundary label="Mnemosyne Tab View">
-        <MnemosyneTabView
+      <ErrorBoundary label="Lean Shell / MnemosyneC Tab View">
+        <LeanShell
           currentMode={mode}
           onModeChange={handleModeChange}
           onClose={() => window.close()}
           authState={authState}
         />
+        {/* BP083 v0.3.2: update UI must mount in dashboard window (was overlay-only) */}
+        <UpdateToast />
+        <UpdateModal />
+        {/* SEG-5 v0.1.59: Clipboard Q+A capture modal — hidden until triggered via tray or Ctrl+Shift+M */}
+        <ClipboardCaptureModal />
+        {/* v0.4.0 BP083 SEG-5: post-install restart prompt modal */}
+        {restartPrompt && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', zIndex: 9999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <div style={{
+              background: '#1e293b', border: '1px solid #334155', borderRadius: 12,
+              padding: 28, maxWidth: 440, color: '#e2e8f0', textAlign: 'center',
+            }}>
+              <p style={{ fontSize: 15, marginBottom: 16 }}>{restartPrompt.message}</p>
+              <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+                <button
+                  onClick={() => window.amplify?.requestAppQuit?.()}
+                  style={{
+                    background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8,
+                    padding: '8px 20px', cursor: 'pointer', fontSize: 14, fontWeight: 600,
+                  }}
+                >
+                  Close MnemosyneC now
+                </button>
+                <button
+                  onClick={() => setRestartPrompt(null)}
+                  style={{
+                    background: 'transparent', color: '#94a3b8', border: '1px solid #334155',
+                    borderRadius: 8, padding: '8px 20px', cursor: 'pointer', fontSize: 14,
+                  }}
+                >
+                  Later
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* v0.4.2 BP083 SEG-5: Plow Resume modal */}
+        {plowResumeData && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.72)', zIndex: 9998,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <div style={{
+              background: '#1e293b', border: '1px solid #6ee7b7', borderRadius: 14,
+              padding: 28, maxWidth: 460, color: '#e2e8f0', textAlign: 'center',
+              boxShadow: '0 0 30px rgba(110,231,183,0.15)',
+            }}>
+              <div style={{ fontSize: 20, marginBottom: 8 }}>🌾 Resume Plow?</div>
+              <p style={{ fontSize: 13, color: '#94a3b8', marginBottom: 4 }}>
+                We detected an interrupted Plow from {String(plowResumeData.lastUpdated ?? '')}
+              </p>
+              <p style={{ fontSize: 15, color: '#6ee7b7', marginBottom: 4, fontWeight: 600 }}>
+                {String(plowResumeData.totalQuestionsCompleted ?? 0)} / {String(plowResumeData.totalQuestionsTarget ?? 0)} questions complete
+                ({String(plowResumeData.completedPct ?? 0)}%)
+              </p>
+              <p style={{ fontSize: 12, color: '#64748b', marginBottom: 20 }}>
+                Model: {String((plowResumeData.config as Record<string, unknown>)?.model ?? 'unknown')} ·
+                Domains: {((plowResumeData.config as Record<string, unknown>)?.domains as string[] | undefined)?.length ?? 0}
+              </p>
+              <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+                <button
+                  onClick={() => {
+                    window.amplify?.plowResumeFromCheckpoint?.();
+                    setPlowResumeData(null);
+                  }}
+                  style={{
+                    background: '#6ee7b7', color: '#0a0f1a', border: 'none', borderRadius: 8,
+                    padding: '8px 22px', cursor: 'pointer', fontSize: 14, fontWeight: 700,
+                  }}
+                >
+                  Resume Plow
+                </button>
+                <button
+                  onClick={() => {
+                    window.amplify?.plowDiscardCheckpoint?.();
+                    setPlowResumeData(null);
+                  }}
+                  style={{
+                    background: 'transparent', color: '#94a3b8', border: '1px solid #334155',
+                    borderRadius: 8, padding: '8px 18px', cursor: 'pointer', fontSize: 14,
+                  }}
+                >
+                  Start Fresh
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* v0.4.2 BP083 SEG-3.5: Lifecycle diagnostic banner */}
+        {lifecycleBanner && (
+          <div style={{
+            position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)',
+            background: lifecycleBanner.startsWith('reset-offer') ? '#854d0e' : '#1e3a5f',
+            border: `1px solid ${lifecycleBanner.startsWith('reset-offer') ? '#fbbf24' : '#3b82f6'}`,
+            borderRadius: 10, padding: '10px 20px', zIndex: 9997,
+            display: 'flex', alignItems: 'center', gap: 14, maxWidth: 520,
+            boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+          }}>
+            <span style={{ fontSize: 12, color: '#e2e8f0', flex: 1 }}>
+              {lifecycleBanner.startsWith('reset-offer')
+                ? `MnemosyneC setup has been stuck for 14+ days. Reset onboarding to continue.`
+                : `MnemosyneC didn't finish setting up · click here to continue.`}
+            </span>
+            <button
+              onClick={() => {
+                if (lifecycleBanner.startsWith('reset-offer')) {
+                  if (confirm('Reset onboarding state? Your substrate and settings will be preserved.')) {
+                    localStorage.removeItem('mnemosynec_lifecycle_stage');
+                    localStorage.removeItem('mnemosynec_onboarding_complete');
+                    localStorage.removeItem('mnemosynec_lifecycle_stage_ts');
+                    localStorage.removeItem('mnemosyne-bp067-first-run-complete');
+                    window.location.reload();
+                  }
+                } else {
+                  localStorage.setItem('mnemosyne-bp067-first-run-complete', 'false');
+                  window.location.reload();
+                }
+              }}
+              style={{
+                background: lifecycleBanner.startsWith('reset-offer') ? '#fbbf24' : '#3b82f6',
+                color: '#0a0f1a', border: 'none', borderRadius: 6,
+                padding: '5px 14px', cursor: 'pointer', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+              }}
+            >
+              {lifecycleBanner.startsWith('reset-offer') ? 'Reset Onboarding' : 'Continue Setup'}
+            </button>
+            <button
+              onClick={() => setLifecycleBanner(null)}
+              style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 16, padding: '0 4px' }}
+            >×</button>
+          </div>
+        )}
       </ErrorBoundary>
     );
   }
@@ -239,18 +433,22 @@ export default function App() {
   return (
     <>
       <DashboardCornerAffordance />
-      {/* Always-present LB Frame border + corner indicator */}
-      {/* KniPr005: onChipClick opens Dashboard window; onModeChange handles mode changes */}
-      <FrameModeIndicator
-        state={{ mode }}
-        onModeChange={handleModeChange}
-        onChipClick={showModelPull ? undefined : handleCornerClick}
-        memberBadge={authState?.member?.badge_tier}
-        degraded={authState?.degraded ?? false}
-      />
+      {/* LB Frame border + corner indicator — opt-in only (defaults OFF).
+          Enabled from FrameTab "Show" button → writes mnemo_overlay_active to localStorage.
+          Bottom-right chip cycles AI Burst → Normal → Fallback → AI Burst. */}
+      {overlayActive && (
+        <FrameModeIndicator
+          state={{ mode }}
+          onModeChange={handleModeChange}
+          onChipClick={showModelPull ? undefined : handleCornerClick}
+          memberBadge={authState?.member?.badge_tier}
+          degraded={authState?.degraded ?? false}
+        />
+      )}
 
-      {/* Bug #1 v0.1.10: update download progress + ready-to-install toast */}
+      {/* Bug #1 v0.1.10 + BP083 v0.3.2: update download progress + install modal */}
       <UpdateToast />
+      <UpdateModal />
 
       {/* Phase 7: Trial banner (active or expired) */}
       {showTrialBanner && (

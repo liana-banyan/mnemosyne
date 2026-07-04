@@ -28,7 +28,7 @@ interface DevModeTabProps {
 const SURFACES: Array<{ id: DevSurface; icon: string; label: string; desc: string }> = [
   { id: 'submit-test',     icon: '📝', label: 'Submit New Test',    desc: 'Define a Gauntlet variant · upload test data · register as project' },
   { id: 'uploads',         icon: '📋', label: 'My Uploads',         desc: 'Full ledger · every upload logged with timestamp + status + project' },
-  { id: 'fork-strain',     icon: '🍴', label: 'Fork Strain',        desc: 'Clone Mnemosyne strain · modify · run · submit upstream or maintain fork' },
+  { id: 'fork-strain',     icon: '🍴', label: 'Fork Strain',        desc: 'Clone MnemosyneC strain · modify · run · submit upstream or maintain fork' },
   { id: 'seg-control',     icon: '⚙️', label: 'SEG Count Control',  desc: 'Wave / Drekaskip / Novacula / AutoBaton selectors · parallel SEG count' },
   { id: 'project-connect', icon: '🔗', label: 'Project Connect',    desc: 'Link upload to project · family/tribe/guild/business · Counterpart peer' },
   { id: 'variant-voting',  icon: '🗳️', label: 'Variant Voting',     desc: 'Submit to /gauntlet/variants/ · community votes · Level 3 auto-offer as strain' },
@@ -262,7 +262,7 @@ const CARD_DETAIL: Record<DevSurface, { headline: string; body: string }> = {
   },
   'fork-strain': {
     headline: 'Fork Strain',
-    body: 'Clone the current Mnemosyne strain, modify it, run it locally against your own tests, then submit a pull upstream or maintain your own fork permanently.',
+    body: 'Clone the current MnemosyneC strain, modify it, run it locally against your own tests, then submit a pull upstream or maintain your own fork permanently.',
   },
   'seg-control': {
     headline: 'SEG Count Control',
@@ -351,7 +351,7 @@ function ForkStrainPanel() {
   return (
     <div style={{ color: '#64748b', fontSize: 12, padding: '20px 0', textAlign: 'center' }}>
       <div style={{ fontSize: 24, marginBottom: 8 }}>🍴</div>
-      <div>Fork current Mnemosyne strain</div>
+      <div>Fork current MnemosyneC strain</div>
       <div style={{ fontSize: 10, marginTop: 4 }}>Clone · modify · run locally · submit upstream OR maintain personal fork</div>
     </div>
   );

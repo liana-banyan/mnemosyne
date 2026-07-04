@@ -6,10 +6,6 @@
 // Realtime subscription forwarded from main process via help:new-message push.
 // No horizontal scroll (NEVER SCROLL SIDEWAYS BP081 canon).
 // ErrorBoundary wrapping at bottom of file.
-//
-// K16 v0.8.10 -- Diagnostic Mode panel added (grant Bishop scoped terminal access
-// with Brand Stamp/TTL/audit/revoke + Remote Terminals pane).
-// Migrated to mnemosyne repo: 2026-06-28 -- SEG-MM Novaculi BP099
 
 import React, {
   useState,
@@ -90,51 +86,9 @@ class HelpTabErrorBoundary extends Component<{ children: ReactNode }, EBState> {
   }
 }
 
-// ─── Diagnostic Mode types ────────────────────────────────────────────────────
-
-type DiagPermStatus = 'DENIED' | 'ACTIVE' | 'EXPIRED' | 'REVOKED';
-type DiagTier = 'READ_ONLY' | 'WRITE' | 'ADMIN';
-
-interface DiagPermission {
-  id: string;
-  peer_id: string;
-  status: string;
-  expires_at: string;
-  granted_at: string;
-  granted_to: string;
-  scope_set: string;
-}
-
-interface DiagCommand {
-  id: string;
-  command_key?: string;
-  command_text?: string;
-  tier?: string;
-  status: string;
-  created_at: string;
-  output_blob?: string;
-  output_text?: string;
-  requested_by: string;
-}
-
-interface TerminalLine {
-  type: 'input' | 'output' | 'error';
-  text: string;
-  ts: string;
-}
-
-interface PeerTerminal {
-  peerId: string;
-  label: string;
-  ttlRemaining: number;
-  lines: TerminalLine[];
-  input: string;
-  submitting: boolean;
-}
-
 // ─── HelpTabInner ─────────────────────────────────────────────────────────────
 
-function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } = {}) {
+function HelpTabInner() {
   const [state, setState] = useState<HelpTabState>({
     messages: [],
     draftText: '',
@@ -151,20 +105,6 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
   const threadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── Diagnostic Mode state ────────────────────────────────────────────────
-  const [diagOpen, setDiagOpen] = useState(false);
-  const [diagPermStatus, setDiagPermStatus] = useState<DiagPermStatus>('DENIED');
-  const [diagPerm, setDiagPerm] = useState<DiagPermission | null>(null);
-  const [diagTtl, setDiagTtl] = useState<5 | 15 | 60>(15);
-  const [diagTier, setDiagTier] = useState<DiagTier>('READ_ONLY');
-  const [diagAudit, setDiagAudit] = useState<DiagCommand[]>([]);
-  const [diagGranting, setDiagGranting] = useState(false);
-  const [diagRevoking, setDiagRevoking] = useState(false);
-  const [diagError, setDiagError] = useState<string | null>(null);
-  const [peerTerminals, setPeerTerminals] = useState<PeerTerminal[]>([]);
-  const [activeTerminalPeer, setActiveTerminalPeer] = useState<string | null>(null);
-  const diagPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   // ── Load peer ID + initial messages on mount ──────────────────────────────
 
   useEffect(() => {
@@ -172,10 +112,12 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
 
     async function init() {
       try {
+        // Get stable peer ID from main process
         const peerIdResult = await window.amplify?.helpGetPeerId?.();
         const myPeerId = peerIdResult?.peerId ?? 'unknown';
         setState(prev => ({ ...prev, myPeerId }));
 
+        // Load existing messages
         const loadResult = await window.amplify?.helpLoadMessages?.({ limit: 50 });
         if (loadResult && 'error' in loadResult) {
           setState(prev => ({ ...prev, loadError: `Could not load messages · ${loadResult.error}`, peerStatus: 'disconnected' }));
@@ -187,6 +129,7 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
           }));
         }
 
+        // Start realtime subscription via main process push
         const subResult = await window.amplify?.helpStartRealtimeSub?.();
         if (subResult && 'error' in subResult) {
           setState(prev => ({
@@ -197,8 +140,10 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
           setState(prev => ({ ...prev, peerStatus: 'connected' }));
         }
 
+        // Listen for pushed realtime messages
         unsubRealtime = window.amplify?.onHelpMessageReceived?.((msg: HelpMessage) => {
           setState(prev => {
+            // De-duplicate by id
             if (prev.messages.some(m => m.id === msg.id)) return prev;
             return { ...prev, messages: [msg, ...prev.messages] };
           });
@@ -220,6 +165,7 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
     };
   }, []);
 
+  // Auto-scroll thread to top (newest first) on new messages
   useEffect(() => {
     if (threadRef.current) {
       threadRef.current.scrollTop = 0;
@@ -241,6 +187,7 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
         setState(prev => ({ ...prev, uploadingImage: true, error: null }));
 
         try {
+          // Convert File blob to base64 for IPC transfer
           const arrayBuffer = await blob.arrayBuffer();
           const base64 = btoa(
             String.fromCharCode(...new Uint8Array(arrayBuffer))
@@ -274,7 +221,7 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
               error: `Could not upload screenshot · ${err instanceof Error ? err.message : 'Upload failed'}`,
           }));
         }
-        return;
+        return; // Only handle first image per paste event
       }
     }
   }, []);
@@ -293,7 +240,7 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
         text: draftText.trim(),
         imageUrl: draftImageUrl,
         fromPeer: myPeerId ?? 'unknown',
-        toPeer: null,
+        toPeer: null, // broadcast
       });
 
       if (!result || result.success === false) {
@@ -306,6 +253,7 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
         return;
       }
 
+      // Optimistically add to thread
       const optimisticMsg: HelpMessage = {
         id: result.id ?? `opt-${Date.now()}`,
         from_peer: myPeerId ?? 'unknown',
@@ -353,232 +301,6 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
       console.error('[HelpTab] openExternal failed:', err);
     }
   }, []);
-
-  // ── Diagnostic Mode helpers ──────────────────────────────────────────────
-
-  const getSupabaseConfig = useCallback((): { url: string; anonKey: string } | null => {
-    const url = (window as any).__SUPABASE_URL__ ||
-      (window as any).amplify?._supabaseUrl ||
-      '';
-    const anonKey = (window as any).__SUPABASE_ANON_KEY__ ||
-      (window as any).amplify?._anonKey ||
-      '';
-    if (!url || !anonKey) return null;
-    return { url, anonKey };
-  }, []);
-
-  const loadDiagPermission = useCallback(async () => {
-    try {
-      const peerId = (await window.amplify?.helpGetPeerId?.())?.peerId;
-      if (!peerId) return;
-      const cfg = getSupabaseConfig();
-      if (!cfg) return;
-      const res = await fetch(
-        `${cfg.url}/rest/v1/diagnostic_permissions?peer_id=eq.${encodeURIComponent(peerId)}&order=created_at.desc&limit=1`,
-        { headers: { apikey: cfg.anonKey, Authorization: `Bearer ${cfg.anonKey}` } }
-      );
-      const rows = await res.json() as DiagPermission[];
-      if (!rows || rows.length === 0) {
-        setDiagPermStatus('DENIED');
-        setDiagPerm(null);
-        return;
-      }
-      const row = rows[0];
-      setDiagPerm(row);
-      const now = Date.now();
-      const expiresAt = new Date(row.expires_at).getTime();
-      if (row.status === 'revoked') setDiagPermStatus('REVOKED');
-      else if (row.status === 'expired' || expiresAt < now) setDiagPermStatus('EXPIRED');
-      else if (row.status === 'active') setDiagPermStatus('ACTIVE');
-      else setDiagPermStatus('DENIED');
-    } catch { /* non-fatal */ }
-  }, [getSupabaseConfig]);
-
-  const loadDiagAudit = useCallback(async () => {
-    try {
-      const peerId = (await window.amplify?.helpGetPeerId?.())?.peerId;
-      if (!peerId) return;
-      const cfg = getSupabaseConfig();
-      if (!cfg) return;
-      const res = await fetch(
-        `${cfg.url}/rest/v1/diagnostic_commands?target_peer_id=eq.${encodeURIComponent(peerId)}&order=created_at.desc&limit=20`,
-        { headers: { apikey: cfg.anonKey, Authorization: `Bearer ${cfg.anonKey}` } }
-      );
-      const rows = await res.json() as DiagCommand[];
-      setDiagAudit(Array.isArray(rows) ? rows : []);
-    } catch { /* non-fatal */ }
-  }, [getSupabaseConfig]);
-
-  useEffect(() => {
-    if (!diagOpen) return;
-    void loadDiagPermission();
-    void loadDiagAudit();
-    diagPollRef.current = setInterval(() => {
-      void loadDiagPermission();
-      void loadDiagAudit();
-    }, 15_000);
-    return () => {
-      if (diagPollRef.current) clearInterval(diagPollRef.current);
-    };
-  }, [diagOpen, loadDiagPermission, loadDiagAudit]);
-
-  const handleGrantAccess = useCallback(async () => {
-    setDiagGranting(true);
-    setDiagError(null);
-    try {
-      const peerId = (await window.amplify?.helpGetPeerId?.())?.peerId;
-      if (!peerId) throw new Error('Cannot determine peer ID');
-      const cfg = getSupabaseConfig();
-      if (!cfg) throw new Error('Supabase not configured');
-      const expiresAt = new Date(Date.now() + diagTtl * 60 * 1000).toISOString();
-      const res = await fetch(`${cfg.url}/rest/v1/diagnostic_permissions`, {
-        method: 'POST',
-        headers: {
-          apikey: cfg.anonKey,
-          Authorization: `Bearer ${cfg.anonKey}`,
-          'Content-Type': 'application/json',
-          Prefer: 'return=representation',
-        },
-        body: JSON.stringify({
-          peer_id: peerId,
-          expires_at: expiresAt,
-          granted_to: 'bishop',
-          scope_set: diagTier,
-          brand_stamp_signature: '',
-          peer_key_signature: '',
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json() as { message?: string };
-        throw new Error(err.message ?? `HTTP ${res.status}`);
-      }
-      setDiagPermStatus('ACTIVE');
-      await loadDiagPermission();
-    } catch (err: unknown) {
-      setDiagError(`Grant failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setDiagGranting(false);
-    }
-  }, [diagTtl, diagTier, getSupabaseConfig, loadDiagPermission]);
-
-  const handleRevokeAccess = useCallback(async () => {
-    if (!diagPerm) return;
-    setDiagRevoking(true);
-    setDiagError(null);
-    try {
-      const cfg = getSupabaseConfig();
-      if (!cfg) throw new Error('Supabase not configured');
-      const res = await fetch(
-        `${cfg.url}/rest/v1/diagnostic_permissions?id=eq.${encodeURIComponent(diagPerm.id)}`,
-        {
-          method: 'PATCH',
-          headers: {
-            apikey: cfg.anonKey,
-            Authorization: `Bearer ${cfg.anonKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ status: 'revoked', revoked_at: new Date().toISOString() }),
-        }
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setDiagPermStatus('REVOKED');
-      await loadDiagPermission();
-    } catch (err: unknown) {
-      setDiagError(`Revoke failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setDiagRevoking(false);
-    }
-  }, [diagPerm, getSupabaseConfig, loadDiagPermission]);
-
-  useEffect(() => {
-    if (diagPermStatus !== 'ACTIVE' || !diagOpen) return;
-    void (async () => {
-      try {
-        const res = await window.amplify?.helpGetPeerId?.();
-        const peerId = (res as { peerId?: string } | undefined)?.peerId;
-        if (!peerId) return;
-        setPeerTerminals((prev) => {
-          if (prev.some((t) => t.peerId === peerId)) return prev;
-          return [...prev, { peerId, label: peerId.slice(0, 8), ttlRemaining: diagTtl * 60, lines: [], input: '', submitting: false }];
-        });
-        if (!activeTerminalPeer) setActiveTerminalPeer(peerId);
-      } catch { /* non-fatal */ }
-    })();
-  }, [diagPermStatus, diagOpen, diagTtl, activeTerminalPeer]);
-
-  const handleTerminalSubmit = useCallback(async (peerId: string, permissionId: string) => {
-    const term = peerTerminals.find((t) => t.peerId === peerId);
-    if (!term || !term.input.trim()) return;
-    const commandText = term.input.trim();
-
-    setPeerTerminals((prev) => prev.map((t) =>
-      t.peerId !== peerId ? t : {
-        ...t,
-        submitting: true,
-        lines: [...t.lines, { type: 'input', text: commandText, ts: new Date().toISOString() }],
-        input: '',
-      }
-    ));
-
-    try {
-      const cfg = getSupabaseConfig();
-      if (!cfg) throw new Error('Supabase not configured');
-      const res = await fetch(`${cfg.url}/functions/v1/submit-diagnostic-command`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${cfg.anonKey}`,
-        },
-        body: JSON.stringify({
-          permission_id: permissionId,
-          target_peer_id: peerId,
-          command_key: 'command_text',
-          command_text: commandText,
-          tier: diagTier,
-        }),
-      });
-      const json = await res.json() as { id?: string; status?: string; ok?: boolean; error?: string };
-      if (json.id) {
-        let attempts = 0;
-        const pollOutput = setInterval(async () => {
-          attempts++;
-          try {
-            const pollRes = await fetch(
-              `${cfg.url}/rest/v1/diagnostic_commands?id=eq.${encodeURIComponent(json.id!)}&select=status,output_blob,output_text`,
-              { headers: { apikey: cfg.anonKey, Authorization: `Bearer ${cfg.anonKey}` } }
-            );
-            const rows = await pollRes.json() as Array<{ status: string; output_blob?: string; output_text?: string }>;
-            if (rows?.[0]?.status === 'executed') {
-              clearInterval(pollOutput);
-              const out = rows[0].output_text ?? rows[0].output_blob ?? '(no output)';
-              setPeerTerminals((prev) => prev.map((t) =>
-                t.peerId !== peerId ? t : {
-                  ...t, submitting: false,
-                  lines: [...t.lines, { type: 'output', text: out, ts: new Date().toISOString() }],
-                }
-              ));
-            }
-          } catch { /* ignore */ }
-          if (attempts > 30) {
-            clearInterval(pollOutput);
-            setPeerTerminals((prev) => prev.map((t) =>
-              t.peerId !== peerId ? t : { ...t, submitting: false }
-            ));
-          }
-        }, 2000);
-      } else {
-        throw new Error(json.error ?? 'Submit failed');
-      }
-    } catch (err: unknown) {
-      setPeerTerminals((prev) => prev.map((t) =>
-        t.peerId !== peerId ? t : {
-          ...t,
-          submitting: false,
-          lines: [...t.lines, { type: 'error', text: `ERROR: ${err instanceof Error ? err.message : String(err)}`, ts: new Date().toISOString() }],
-        }
-      ));
-    }
-  }, [peerTerminals, diagTier, getSupabaseConfig]);
 
   const handleImageClick = useCallback((url: string) => {
     try {
@@ -669,6 +391,7 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
           disabled={sending}
         />
 
+        {/* Image preview */}
         {uploadingImage && (
           <div style={s.uploadingIndicator}>Uploading screenshot…</div>
         )}
@@ -705,421 +428,6 @@ function HelpTabInner({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } =
           Manage update channel →
         </button>
       </div>
-
-      {/* ── Diagnostic Mode Panel ── */}
-      <div style={{ borderTop: '1px solid #1e2a38', flexShrink: 0 }}>        <button
-          onClick={() => setDiagOpen((v) => !v)}
-          style={{
-            width: '100%', padding: '8px 12px', background: 'transparent',
-            border: 'none', borderBottom: diagOpen ? '1px solid #1e2a38' : 'none',
-            color: '#64748b', fontSize: 11, fontWeight: 600, cursor: 'pointer',
-            textAlign: 'left', display: 'flex', justifyContent: 'space-between',
-            fontFamily: 'system-ui, sans-serif',
-          }}
-        >
-          <span>🔬 Diagnostic Mode</span>
-          <span style={{ color: diagPermStatus === 'ACTIVE' ? '#22c55e' : '#475569', fontSize: 10 }}>
-            {diagPermStatus === 'ACTIVE' ? 'ACTIVE' : diagPermStatus === 'DENIED' ? 'DENIED' : diagPermStatus} {diagOpen ? '▲' : '▼'}
-          </span>
-        </button>
-
-        {diagOpen && (
-          <div style={{ padding: '12px', background: '#0a0f1a', overflowY: 'auto', maxHeight: 520 }}>
-            {diagError && (
-              <div style={{ background: '#3b0b0b', border: '1px solid #7f1d1d', borderRadius: 6, padding: '6px 10px', marginBottom: 8, fontSize: 11, color: '#fca5a5' }}>
-                {diagError}
-                <button onClick={() => setDiagError(null)} style={{ float: 'right', background: 'none', border: 'none', color: '#fca5a5', cursor: 'pointer', fontSize: 13 }}>x</button>
-              </div>
-            )}
-
-            {/* (a) Permission status badge */}
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <span style={{
-                  padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 700,
-                  background:
-                    diagPermStatus === 'ACTIVE' ? 'rgba(34,197,94,0.15)' :
-                    diagPermStatus === 'REVOKED' ? 'rgba(249,115,22,0.15)' :
-                    diagPermStatus === 'EXPIRED' ? 'rgba(100,116,139,0.15)' :
-                    'rgba(239,68,68,0.15)',
-                  color:
-                    diagPermStatus === 'ACTIVE' ? '#22c55e' :
-                    diagPermStatus === 'REVOKED' ? '#f97316' :
-                    diagPermStatus === 'EXPIRED' ? '#94a3b8' : '#ef4444',
-                  border: '1px solid',
-                  borderColor:
-                    diagPermStatus === 'ACTIVE' ? 'rgba(34,197,94,0.3)' :
-                    diagPermStatus === 'REVOKED' ? 'rgba(249,115,22,0.3)' :
-                    diagPermStatus === 'EXPIRED' ? 'rgba(100,116,139,0.3)' : 'rgba(239,68,68,0.3)',
-                }}>
-                  {diagPermStatus === 'ACTIVE' && diagPerm
-                    ? `ACTIVE - ${Math.max(0, Math.round((new Date(diagPerm.expires_at).getTime() - Date.now()) / 60000))} min remaining`
-                    : diagPermStatus}
-                </span>
-                {onSwitchTab && (
-                  <button
-                    onClick={() => onSwitchTab('federation')}
-                    style={{
-                      padding: '3px 8px', borderRadius: 6, fontSize: 10, cursor: 'pointer',
-                      background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.3)',
-                      color: '#60a5fa', fontWeight: 600, fontFamily: 'system-ui, sans-serif',
-                    }}
-                  >
-                    View Federation →
-                  </button>
-                )}
-              </div>
-              {diagPerm && diagPermStatus !== 'DENIED' && (
-                <div style={{ fontSize: 10, color: '#475569' }}>
-                  Granted to: {diagPerm.granted_to} · at {new Date(diagPerm.granted_at).toLocaleString()}
-                </div>
-              )}
-            </div>
-
-            {/* (b) Grant access button + brand stamp */}
-            {diagPermStatus !== 'ACTIVE' && (
-              <div style={{ marginBottom: 12 }}>
-                <div style={{
-                  background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.2)',
-                  borderRadius: 8, padding: '8px 12px', marginBottom: 8,
-                  fontSize: 10, color: '#64748b',
-                }}>
-                  <div style={{ fontWeight: 700, color: '#94a3b8', marginBottom: 2 }}>Brand Stamped by Liana Banyan Cooperative</div>
-                  <div>Allows Bishop to run curated diagnostic commands on this peer. All commands logged to immutable audit chain.</div>
-                </div>
-
-                {/* (d) TTL selector */}
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Duration:</div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    {([5, 15, 60] as const).map((t) => (
-                      <button
-                        key={t}
-                        onClick={() => setDiagTtl(t)}
-                        style={{
-                          padding: '3px 10px', borderRadius: 6, fontSize: 10, cursor: 'pointer',
-                          background: diagTtl === t ? 'rgba(59,130,246,0.2)' : 'transparent',
-                          border: `1px solid ${diagTtl === t ? 'rgba(59,130,246,0.5)' : 'rgba(100,116,139,0.2)'}`,
-                          color: diagTtl === t ? '#60a5fa' : '#64748b',
-                          fontFamily: 'system-ui, sans-serif',
-                        }}
-                      >
-                        {t} min
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Tier selector */}
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Scope tier:</div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    {(['READ_ONLY', 'WRITE', 'ADMIN'] as DiagTier[]).map((t) => (
-                      <button
-                        key={t}
-                        onClick={() => setDiagTier(t)}
-                        style={{
-                          padding: '3px 10px', borderRadius: 6, fontSize: 9, cursor: 'pointer',
-                          background: diagTier === t ? 'rgba(59,130,246,0.2)' : 'transparent',
-                          border: `1px solid ${diagTier === t ? 'rgba(59,130,246,0.5)' : 'rgba(100,116,139,0.2)'}`,
-                          color: diagTier === t ? '#60a5fa' : '#64748b',
-                          fontFamily: 'system-ui, sans-serif',
-                        }}
-                      >
-                        {t}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => void handleGrantAccess()}
-                  disabled={diagGranting}
-                  style={{
-                    padding: '6px 14px', borderRadius: 6, fontSize: 11, fontWeight: 600,
-                    cursor: diagGranting ? 'not-allowed' : 'pointer',
-                    background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.35)',
-                    color: '#22c55e', fontFamily: 'system-ui, sans-serif',
-                  }}
-                >
-                  {diagGranting ? 'Granting...' : 'Grant Diagnostic Access'}
-                </button>
-              </div>
-            )}
-
-            {/* (c) Scoped command preview */}
-            <details style={{ marginBottom: 12 }}>
-              <summary style={{ fontSize: 10, color: '#475569', cursor: 'pointer', marginBottom: 4 }}>
-                Permitted commands ({diagTier})
-              </summary>
-              <div style={{ fontSize: 10, color: '#64748b', paddingLeft: 8 }}>
-                {diagTier === 'READ_ONLY' ? (
-                  <>
-                    <div>ollama_tags -- list local Ollama models</div>
-                    <div>peer_presence_self -- own presence row</div>
-                    <div>bonfire_lit_self -- bonfire state (last 10)</div>
-                    <div>log_tail -- last 100 lines of app log</div>
-                    <div>env_loader_status -- env paths checked at startup</div>
-                    <div>relay_answer_poller_state -- relay poller status</div>
-                    <div>ollama list / dir / Get-* / curl / ipconfig</div>
-                  </>
-                ) : diagTier === 'WRITE' ? (
-                  <>
-                    <div>All READ_ONLY commands plus:</div>
-                    <div>setx / Copy-Item / Set-Content / npm install</div>
-                  </>
-                ) : (
-                  <>
-                    <div>All WRITE commands plus:</div>
-                    <div>Remove-Item / Stop-Process / npm uninstall</div>
-                    <div>Any command (with confirmation modal)</div>
-                  </>
-                )}
-              </div>
-            </details>
-
-            {/* (f) Revoke access */}
-            {diagPermStatus === 'ACTIVE' && (
-              <button
-                onClick={() => void handleRevokeAccess()}
-                disabled={diagRevoking}
-                style={{
-                  padding: '5px 12px', borderRadius: 6, fontSize: 10, fontWeight: 600,
-                  cursor: diagRevoking ? 'not-allowed' : 'pointer',
-                  background: 'rgba(249,115,22,0.1)', border: '1px solid rgba(249,115,22,0.3)',
-                  color: '#f97316', fontFamily: 'system-ui, sans-serif', marginBottom: 12,
-                }}
-              >
-                {diagRevoking ? 'Revoking...' : 'Revoke Access'}
-              </button>
-            )}
-
-            {/* ── Remote Terminals ── */}
-            {diagPermStatus === 'ACTIVE' && peerTerminals.length > 0 && (
-              <div style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  Remote Terminals
-                </div>
-                <div style={{ display: 'flex', gap: 4, marginBottom: 6, flexWrap: 'wrap' }}>
-                  {peerTerminals.map((t) => (
-                    <button
-                      key={t.peerId}
-                      onClick={() => setActiveTerminalPeer(t.peerId)}
-                      style={{
-                        padding: '3px 8px', borderRadius: 6, fontSize: 10, cursor: 'pointer',
-                        background: activeTerminalPeer === t.peerId ? 'rgba(59,130,246,0.2)' : 'rgba(30,42,56,0.5)',
-                        border: `1px solid ${activeTerminalPeer === t.peerId ? 'rgba(59,130,246,0.5)' : 'rgba(100,116,139,0.2)'}`,
-                        color: activeTerminalPeer === t.peerId ? '#60a5fa' : '#64748b',
-                        fontFamily: 'system-ui, sans-serif',
-                      }}
-                    >
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-                {peerTerminals.filter((t) => t.peerId === activeTerminalPeer).map((term) => (
-                  <div key={term.peerId}>
-                    <div style={{
-                      background: '#050a14', border: '1px solid #1e2a38', borderRadius: 6,
-                      padding: '8px', fontFamily: 'monospace', fontSize: 11,
-                      height: 160, overflowY: 'auto', marginBottom: 6,
-                    }}>
-                      {term.lines.length === 0 && (
-                        <span style={{ color: '#475569' }}>No output yet. Type a command below.</span>
-                      )}
-                      {term.lines.map((line, i) => (
-                        <div key={i} style={{
-                          color: line.type === 'input' ? '#60a5fa' : line.type === 'error' ? '#f87171' : '#94a3b8',
-                          marginBottom: 2,
-                          whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                        }}>
-                          {line.type === 'input' ? `> ${line.text}` : line.text}
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <input
-                        value={term.input}
-                        onChange={(e) => setPeerTerminals((prev) => prev.map((t) =>
-                          t.peerId !== term.peerId ? t : { ...t, input: e.target.value }
-                        ))}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !term.submitting && diagPerm) {
-                            void handleTerminalSubmit(term.peerId, diagPerm.id);
-                          }
-                        }}
-                        placeholder="Type command + Enter"
-                        disabled={term.submitting}
-                        style={{
-                          flex: 1, background: '#0d1526', border: '1px solid #1e2a38',
-                          borderRadius: 6, padding: '5px 8px', color: '#e2e8f0',
-                          fontFamily: 'monospace', fontSize: 11, outline: 'none',
-                        }}
-                      />
-                      <button
-                        onClick={() => { if (diagPerm) void handleTerminalSubmit(term.peerId, diagPerm.id); }}
-                        disabled={term.submitting || !term.input.trim()}
-                        style={{
-                          padding: '5px 10px', borderRadius: 6, fontSize: 10,
-                          cursor: term.submitting || !term.input.trim() ? 'not-allowed' : 'pointer',
-                          background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.3)',
-                          color: '#60a5fa', fontFamily: 'system-ui, sans-serif',
-                        }}
-                      >
-                        {term.submitting ? '...' : 'Run'}
-                      </button>
-                    </div>
-                    {diagTier !== 'READ_ONLY' && (
-                      <div style={{ fontSize: 9, color: '#ef4444', marginTop: 3 }}>
-                        {diagTier} scope active -- commands outside allowlist will be rejected by peer
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* (e) Audit log */}
-            <div>
-              <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                Audit Log
-              </div>
-              {diagAudit.length === 0 ? (
-                <div style={{ fontSize: 10, color: '#475569' }}>No audit entries yet.</div>
-              ) : (
-                <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-                  {diagAudit.map((cmd) => (
-                    <div key={cmd.id} style={{
-                      fontSize: 10, color: '#64748b', padding: '4px 0',
-                      borderBottom: '1px solid rgba(30,42,56,0.5)',
-                    }}>
-                      <span style={{
-                        color: cmd.status === 'executed' ? '#22c55e' : cmd.status === 'rejected' ? '#ef4444' : '#94a3b8',
-                        fontWeight: 700, marginRight: 6,
-                      }}>
-                        {cmd.status.toUpperCase()}
-                      </span>
-                      <span style={{ color: '#94a3b8', marginRight: 6 }}>{cmd.command_text ?? cmd.command_key}</span>
-                      <span style={{ color: '#475569' }}>by {cmd.requested_by}</span>
-                      <span style={{ color: '#334155', marginLeft: 6 }}>
-                        {new Date(cmd.created_at).toLocaleTimeString()}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ── K20 Terminal Recipes ── */}
-      <TerminalRecipesPanel />
-    </div>
-  );
-}
-
-// ─── TerminalRecipesPanel (K20 Tab 18) ────────────────────────────────────────
-// BP099→BP100 K20: four PowerShell recipe blocks for poller health, autostart,
-// Ollama, and split-brain recovery. Read-only; no clipboard API (Electron env).
-// canon: canon_fix_as_we_go_build_for_the_long_haul_always_convenient_immutables_bp053
-
-interface Recipe {
-  title: string;
-  code: string;
-}
-
-const TERMINAL_RECIPES: Recipe[] = [
-  {
-    title: 'Poller Health Diagnostic',
-    code: [
-      '# Check if answer-poller is registered as Scheduled Task (Windows)',
-      'schtasks /Query /TN MnemosyneCAutoStart /V /FO LIST',
-      '',
-      '# View recent poller events from electron-store log',
-      'Get-Content "$env:APPDATA\\MnemosyneC\\poller_crash_log.json" | ConvertFrom-Json | Select-Object -Last 20',
-      '',
-      '# Force-restart MnemosyneC (triggers Scheduled Task respawn path)',
-      'Stop-Process -Name "MnemosyneC" -Force',
-    ].join('\n'),
-  },
-  {
-    title: 'Autostart Management',
-    code: [
-      '# Disable autostart (opt-out · persists across reinstalls)',
-      'schtasks /Delete /TN MnemosyneCAutoStart /F',
-      '# Then launch with opt-out flag:',
-      '& "$env:LOCALAPPDATA\\Programs\\mnemosynec\\MnemosyneC.exe" --no-autostart',
-      '',
-      '# Re-enable autostart after opt-out',
-      'schtasks /Create /F /TN MnemosyneCAutoStart /TR "`"$env:LOCALAPPDATA\\Programs\\mnemosynec\\MnemosyneC.exe`" --hidden" /SC ONLOGON /RL HIGHEST',
-    ].join('\n'),
-  },
-  {
-    title: 'Ollama Health Check',
-    code: [
-      '# Verify Ollama is reachable (same check MnemosyneC runs internally)',
-      'Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -Method GET | Select-Object -ExpandProperty models | Select-Object name',
-      '',
-      '# Start Ollama if not running',
-      'ollama serve',
-    ].join('\n'),
-  },
-  {
-    title: 'Poller Split-Brain Manual Recovery',
-    code: [
-      '# If Diagnostic Mode Tab 17 shows DEAD poller but heartbeat is fresh:',
-      '# 1. Open Task Manager → look for MnemosyneC child processes',
-      '# 2. If none visible, trigger manual restart:',
-      'Stop-Process -Name "MnemosyneC" -Force',
-      '# MnemosyneC restarts via Scheduled Task; poller spawns on app start',
-    ].join('\n'),
-  },
-];
-
-function TerminalRecipesPanel() {
-  const [open, setOpen] = React.useState<number | null>(null);
-
-  return (
-    <div style={{
-      borderTop: '1px solid #1e2a38',
-      padding: '10px 0 4px 0',
-      flexShrink: 0,
-    }}>
-      <div style={{
-        fontSize: 10, fontWeight: 700, color: '#475569',
-        letterSpacing: '0.08em', textTransform: 'uppercase',
-        padding: '0 12px 6px 12px',
-      }}>
-        Terminal Recipes
-      </div>
-      {TERMINAL_RECIPES.map((recipe, idx) => (
-        <div key={recipe.title} style={{ borderBottom: '1px solid #0d1520' }}>
-          <button
-            onClick={() => setOpen(open === idx ? null : idx)}
-            style={{
-              width: '100%', textAlign: 'left', background: 'transparent',
-              border: 'none', cursor: 'pointer', padding: '6px 12px',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              color: '#94a3b8', fontSize: 11, fontFamily: 'system-ui, sans-serif',
-            }}
-          >
-            <span>{recipe.title}</span>
-            <span style={{ fontSize: 10, color: '#334155' }}>{open === idx ? '▲' : '▼'}</span>
-          </button>
-          {open === idx && (
-            <pre style={{
-              margin: 0, padding: '6px 12px 10px 12px',
-              fontSize: 10, lineHeight: '16px', color: '#7dd3fc',
-              background: '#060c18', overflowX: 'auto',
-              fontFamily: 'Consolas, "Courier New", monospace',
-              whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-            }}>
-              {recipe.code}
-            </pre>
-          )}
-        </div>
-      ))}
     </div>
   );
 }
@@ -1171,10 +479,10 @@ function MessageRow({
 
 // ─── HelpTab (exported with ErrorBoundary) ────────────────────────────────────
 
-export function HelpTab({ onSwitchTab }: { onSwitchTab?: (tab: string) => void } = {}) {
+export function HelpTab() {
   return (
     <HelpTabErrorBoundary>
-      <HelpTabInner onSwitchTab={onSwitchTab} />
+      <HelpTabInner />
     </HelpTabErrorBoundary>
   );
 }

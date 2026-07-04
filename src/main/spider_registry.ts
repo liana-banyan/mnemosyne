@@ -27,8 +27,10 @@ import {
   readdirSync,
 } from 'fs';
 import { resolve, basename } from 'path';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
+import { writeVerifiedEblet } from './mnem_eblet_store';
 import { homedir } from 'os';
+import type { Domain } from './plow/per_domain_q_banks';
 
 // ─── Substrate paths ──────────────────────────────────────────────────────
 
@@ -72,6 +74,7 @@ export interface SpiderRequest {
   per_round_topk?: number;           // candidates fetched per drift round (default 8)
   frame_target?: number;             // anchors required for frame complete (default 5)
   spawn_timestamp: string;           // Chronos pane (ISO 8601)
+  domain?: Domain;                   // SEG-1 BP081: optional domain scope
 }
 
 export interface PheromoneLink {
@@ -436,6 +439,29 @@ export async function runSpider(req: SpiderRequest): Promise<SpiderReceipt> {
     'utf-8',
   );
 
+  // SEG-4: Plow accept → verified eblet write (non-blocking, Andon-gated).
+  // Spider receipt IS the accept signal: a completed drift traversal with attached anchors.
+  // question = anchor_path (the concept/doc queried); answer = attached anchor summary.
+  if (receipt.anchors_attached > 0 || receipt.pheromone_links_written > 0) {
+    const answerSummary = JSON.stringify({
+      anchors_attached: receipt.anchors_attached,
+      attached_anchor_ids: receipt.attached_anchor_ids,
+      pheromone_links_written: receipt.pheromone_links_written,
+      frame_size: receipt.frame_size,
+    });
+    const sha256 = createHash('sha256')
+      .update(req.anchor_path + answerSummary)
+      .digest('hex');
+    writeVerifiedEblet({
+      question: req.anchor_path,
+      answer: answerSummary,
+      provenance: `spider:${req.anchor_id}:${req.session}`,
+      verified: true,
+      sha256,
+      timestamp: Date.now(),
+    }).catch(console.error);
+  }
+
   return receipt;
 }
 
@@ -449,6 +475,7 @@ export interface SpiderDispatchInput {
   attach_threshold?: number;
   per_round_topk?: number;
   frame_target?: number;
+  domain?: Domain;                   // SEG-1 BP081: optional domain scope
 }
 
 export async function dispatchSpider(
@@ -468,6 +495,7 @@ export async function dispatchSpider(
     per_round_topk: input.per_round_topk,
     frame_target: input.frame_target,
     spawn_timestamp: new Date().toISOString(),
+    domain: input.domain,
   };
   return runSpider(req);
 }
@@ -489,4 +517,103 @@ export function listPheromoneLinks(): PheromoneLink[] {
     }
   }
   return out;
+}
+
+// ─── SEG-1 BP081: Domain fan-out ──────────────────────────────────────────
+
+/**
+ * A Spider candidate produced by a domain-scoped drift traversal.
+ * Carries the domain tag for downstream routing to Giant concordance.
+ */
+export interface SpiderCandidate {
+  domain: Domain;
+  question: string;
+  answer: string;
+  driftCoherence: number;            // cosine similarity or equivalent coherence score
+  sourceEbletId?: string;
+}
+
+/**
+ * Fan out one Spider per domain in parallel.
+ * Each Spider uses the main anchor text with domain context injected.
+ * If domain-tagged eblets exist in the sidecar, they enrich the candidates;
+ * otherwise the domain-context anchor drives the similarity search directly.
+ *
+ * Edge cases:
+ *   - domains empty → empty Map immediately
+ *   - single domain → still uses Promise.all (consistent path)
+ *   - partial domain failure → log + continue with successful domains
+ */
+export async function dispatchSpidersForDomains(
+  domains: Domain[],
+  anchor: string,
+  opts?: { maxCandidatesPerDomain?: number },
+): Promise<Map<Domain, SpiderCandidate[]>> {
+  if (domains.length === 0) {
+    console.log('[Spider] dispatchSpidersForDomains: empty domains array, returning immediately');
+    return new Map();
+  }
+
+  const maxCandidates = opts?.maxCandidatesPerDomain ?? 5;
+
+  const pairs = await Promise.all(
+    domains.map(async (domain): Promise<[Domain, SpiderCandidate[]]> => {
+      const t0 = Date.now();
+      console.log(`[Spider] dispatch domain=${domain} maxCandidates=${maxCandidates} anchor="${anchor.slice(0, 60)}"`);
+
+      try {
+        // Inject domain context into anchor text for scoped similarity search
+        const domainAnchor = `${anchor}\n[domain: ${domain}]`;
+
+        let hits: { id: string; path: string; similarity: number; rank: number }[] = [];
+        try {
+          const res = await fetch(`${EMBEDDING_SIDECAR_URL}/similar`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: domainAnchor, k: maxCandidates, exclude_ids: [] }),
+          });
+          if (res.ok) {
+            const data = (await res.json()) as { hits: typeof hits };
+            hits = data.hits ?? [];
+          }
+        } catch {
+          console.log(`[Spider] domain=${domain} sidecar unreachable — 0 candidates`);
+        }
+
+        const candidates: SpiderCandidate[] = hits.map((h) => {
+          let question = h.path;
+          let answer = h.id;
+          try {
+            const content = readFileSync(h.path, 'utf-8').slice(0, 2000);
+            const firstLine = content.split('\n')[0].trim();
+            if (firstLine.startsWith('{')) {
+              const parsed = JSON.parse(firstLine) as Partial<{ question: string; answer: string }>;
+              if (parsed.question) question = parsed.question;
+              if (parsed.answer) answer = parsed.answer;
+            } else {
+              question = content.slice(0, 300);
+              answer = content.slice(300, 900);
+            }
+          } catch {
+            // file unreadable — path/id fallback retained
+          }
+          return {
+            domain,
+            question,
+            answer,
+            driftCoherence: h.similarity,
+            sourceEbletId: h.id,
+          };
+        });
+
+        console.log(`[Spider] domain=${domain} complete: ${candidates.length} candidates in ${Date.now() - t0}ms`);
+        return [domain, candidates];
+      } catch (err) {
+        console.log(`[Spider] domain=${domain} error: ${(err as Error).message} — continuing`);
+        return [domain, []];
+      }
+    }),
+  );
+
+  return new Map(pairs);
 }

@@ -14,58 +14,29 @@
 // This module MUST be imported FIRST in src/main/index.ts so its side-effects
 // populate process.env before any consumer (wave_generator, opus_claude_adapter,
 // substrate_api, etc.) reads from process.env at module-load time.
-//
-// BP099-K16 augmentation: adds EnvLoaderStatus + getEnvLoaderStatus() for
-// diagnostic_mode and startup_diagnostic consumers.
 
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { createHash } from 'node:crypto';
-
-// ─── Diagnostic state (consumed by diagnostic_mode + startup_diagnostic) ──────
-// §4 BLOOD: anonKeyHash is sha256 of anon key value -- key value never stored here.
-
-export interface EnvLoaderStatus {
-  supabaseUrl: string;
-  supabaseUrlSource: 'env' | 'fallback' | 'vault' | 'absent';
-  anonKeySource: 'env' | 'fallback' | 'vault' | 'absent';
-  anonKeyHash: string;
-  pathsChecked: Array<{ path: string; exists: boolean }>;
-  activeVaultPath: string | null;
-}
-
-let _status: EnvLoaderStatus = {
-  supabaseUrl: '',
-  supabaseUrlSource: 'absent',
-  anonKeySource: 'absent',
-  anonKeyHash: '',
-  pathsChecked: [],
-  activeVaultPath: null,
-};
-
-export function getEnvLoaderStatus(): EnvLoaderStatus {
-  return { ..._status };
-}
+import { app } from 'electron';
 
 function loadWorkingKeysEnv(): void {
   const candidates: string[] = [
     // 1. Explicit operator override
     process.env.LB_WORKING_KEYS_PATH,
-    // 2. Canonical LockBox vault (BP038 Founder-ratified path)
+    // 2. Packaged Electron app: supabase_public.env beside app.asar (BP086 I4b)
+    //    Only checked on packaged builds — dev builds skip this and use LockBox
+    app.isPackaged ? resolve(process.resourcesPath, 'supabase_public.env') : undefined,
+    // 3. Canonical LockBox vault (BP038 Founder-ratified path)
     resolve(homedir(), 'Documents', 'LianaBanyanPlatform', 'Asteroid-ProofVault', 'LockBox', 'WORKING_KEYS.env'),
-    // 3. Project-local fallback (amplify-computer/.env)
+    // 4. Project-local fallback (amplify-computer/.env)
     resolve(process.cwd(), '.env'),
-    // 4. User home fallback (~/.lb_substrate/WORKING_KEYS.env)
+    // 5. User home fallback (~/.lb_substrate/WORKING_KEYS.env)
     resolve(homedir(), '.lb_substrate', 'WORKING_KEYS.env'),
   ].filter((p): p is string => Boolean(p));
 
-  const pathsChecked: Array<{ path: string; exists: boolean }> = [];
-
   for (const candidate of candidates) {
-    const exists = existsSync(candidate);
-    pathsChecked.push({ path: candidate, exists });
-    if (!exists) continue;
+    if (!existsSync(candidate)) continue;
 
     let content: string;
     try {
@@ -88,14 +59,14 @@ function loadWorkingKeysEnv(): void {
       const key = line.slice(0, eq).trim();
       let val = line.slice(eq + 1).trim();
 
-      // Standard dotenv parsing:
-      //   Quoted values  --> strip surrounding quotes; # inside quotes is NOT a comment
-      //   Unquoted values --> strip inline # comment (e.g., "eyJ...ngk  # gitleaks:allow")
+      // Standard dotenv parsing (BP087 I11):
+      //   Quoted values  → strip surrounding quotes; # inside quotes is NOT a comment
+      //   Unquoted values → strip inline # comment (e.g., "eyJ…ngk  # gitleaks:allow")
       if (val.length >= 2) {
         const first = val[0];
         const last  = val[val.length - 1];
         if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-          val = val.slice(1, -1); // quoted -- preserve content verbatim
+          val = val.slice(1, -1); // quoted — preserve content verbatim
         } else {
           const hashIdx = val.indexOf('#');
           if (hashIdx > -1) val = val.slice(0, hashIdx).trim();
@@ -105,7 +76,7 @@ function loadWorkingKeysEnv(): void {
         if (hashIdx > -1) val = val.slice(0, hashIdx).trim();
       }
 
-      // Respect explicit overrides -- don't clobber a key already set in the environment
+      // Respect explicit overrides — don't clobber a key already set in the environment
       if (process.env[key] !== undefined && process.env[key] !== '') {
         skippedNames.push(key);
         continue;
@@ -121,44 +92,8 @@ function loadWorkingKeysEnv(): void {
       (loadedNames.length > 0 ? ` (names: ${loadedNames.join(', ')})` : '') +
       (skippedNames.length > 0 ? ` | skipped ${skippedNames.length} (already set: ${skippedNames.join(', ')})` : '')
     );
-
-    // Capture diagnostic state after successful vault load
-    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-    const anonKeyHash = anonKey
-      ? createHash('sha256').update(anonKey).digest('hex')
-      : '';
-
-    // Determine source: LockBox = 'vault', cwd .env = 'fallback'
-    const isVault =
-      candidate.includes('LockBox') ||
-      candidate.includes('.lb_substrate');
-    const isFallback = candidate.includes('.env') && !isVault;
-
-    _status = {
-      supabaseUrl,
-      supabaseUrlSource: supabaseUrl ? (isVault ? 'vault' : isFallback ? 'fallback' : 'env') : 'absent',
-      anonKeySource: anonKey ? (isVault ? 'vault' : isFallback ? 'fallback' : 'env') : 'absent',
-      anonKeyHash,
-      pathsChecked,
-      activeVaultPath: candidate,
-    };
-
     return; // First found vault wins
   }
-
-  // No vault found -- populate status from existing process.env
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-
-  _status = {
-    supabaseUrl,
-    supabaseUrlSource: supabaseUrl ? 'env' : 'absent',
-    anonKeySource: anonKey ? 'env' : 'absent',
-    anonKeyHash: anonKey ? createHash('sha256').update(anonKey).digest('hex') : '',
-    pathsChecked,
-    activeVaultPath: null,
-  };
 
   console.warn(
     `[LB Frame env-load] no env vault found. Searched: ${candidates.join(' | ')}. ` +

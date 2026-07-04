@@ -35,6 +35,7 @@ import {
 import { resolve, basename, join, dirname } from 'path';
 import { randomUUID, createHash } from 'crypto';
 import { homedir } from 'os';
+import { writeVerifiedEblet } from './mnem_eblet_store';
 
 // ─── Substrate paths ──────────────────────────────────────────────────────
 
@@ -511,6 +512,20 @@ export class SpriteRegistry {
       if (!accepted) {
         // Should not happen given the wx-guarded write, but defensive:
         try { unlinkSync(deliveredPath); } catch { /* ignore */ }
+      } else {
+        // SEG-4: Delivery race winner → verified eblet write (non-blocking, Andon-gated).
+        // question = package_path (artifact dispatched); answer = delivered_to path.
+        const sha256 = createHash('sha256')
+          .update(dispatch.package_path + deliveredPath)
+          .digest('hex');
+        writeVerifiedEblet({
+          question: dispatch.package_path,
+          answer: `delivered:${deliveredPath}`,
+          provenance: `sprite:${dispatch.dispatch_id}:${dispatch.session}`,
+          verified: true,
+          sha256,
+          timestamp: Date.now(),
+        }).catch(console.error);
       }
       return;
     }

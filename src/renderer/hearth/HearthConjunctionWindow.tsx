@@ -231,8 +231,8 @@ export function HearthConjunctionWindow() {
 
         {/* ── Window header ─────────────────────────────────────────────────── */}
         <div style={styles.topBar}>
-          <NotCentsGlyph size="1.4rem" alt="NotCents · Mnemosyne identity" />
-          <span style={styles.windowTitle}>Mnemosyne</span>
+          <NotCentsGlyph size="1.4rem" alt="NotCents · MnemosyneC identity" color="white" style={{ verticalAlign: 'middle' }} />
+          <span style={styles.windowTitle}>MnemosyneC</span>
           <span style={styles.heavyBooster}>HEAVY BOOSTER TEST</span>
           {/* Bridge canon: The Conductor identity */}
           <span style={styles.conductorBadge} title="Bridge canon: you are The Conductor">
@@ -240,7 +240,7 @@ export function HearthConjunctionWindow() {
           </span>
           {appVersion && (
             <span
-              title="Mnemosyne version · LB Alpha-phase · click for changelog"
+              title="MnemosyneC version · LB Alpha-phase · click for changelog"
               style={{
                 fontSize: '0.62rem',
                 color: '#4a5568',
@@ -312,7 +312,7 @@ export function HearthConjunctionWindow() {
           <button
             style={{ ...styles.contextBtn, ...(lastClickedBtn === 'watch_view' ? styles.contextBtnFlash : {}) }}
             onClick={() => { flashBtn('watch_view'); window.amplify?.hideToWatchView?.().catch?.(() => {}); }}
-            title="Switch to Watch View — Mnemosyne fades to frame border."
+            title="Switch to Watch View — MnemosyneC fades to frame border."
             aria-label="Switch to Watch View"
             aria-keyshortcuts="Control+Shift+M"
           >
@@ -323,8 +323,8 @@ export function HearthConjunctionWindow() {
           <button
             style={{ ...styles.contextBtn, ...(lastClickedBtn === 'reload' ? styles.contextBtnFlash : {}) }}
             onClick={() => { flashBtn('reload'); setTimeout(() => window.location.reload(), 180); }}
-            title="Reload Mnemosyne window"
-            aria-label="Reload Mnemosyne window"
+            title="Reload MnemosyneC window"
+            aria-label="Reload MnemosyneC window"
           >
             🔄 Reload
           </button>

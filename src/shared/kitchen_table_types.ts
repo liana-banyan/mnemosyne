@@ -59,6 +59,8 @@ export interface RecurrenceRule {
   daysOfWeek: number[];
 }
 
+export type MealSlot = 'breakfast' | 'lunch' | 'dinner';
+
 export interface AtlasEvent {
   id: string;
   title: string;
@@ -73,6 +75,10 @@ export interface AtlasEvent {
   aiSuggested: boolean;
   p2pSynced: boolean;
   createdAt: string;
+  // Phase 2 extensions
+  delegate?: string | null;
+  mealSlot?: MealSlot | null;
+  ingredients?: string[];
 }
 
 // ─── Kitchen Table™ session ───────────────────────────────────────────────────

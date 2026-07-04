@@ -1293,7 +1293,7 @@ export function getMobileHTML(): string {
       );
     } else if (branch === 'b') {
       addSystemCard(
-        'The Gauntlet is our benchmark framework — 6 stages from baseline to cross-Cathedral federation.<br><br>' +
+        'The Gauntlet is our benchmark framework — 6 stages from baseline to cross-Caithedral federation.<br><br>' +
         'Stage 2 is the proof: with no AI model running at all — CPU-only — Mnemosyne retrieved canonical Eblets at 0.059ms mean. Zero tokens. Zero cloud cost.<br><br>' +
         "Type 'Run the Gauntlet' to start Stage 1.",
       );

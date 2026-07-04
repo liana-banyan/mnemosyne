@@ -47,7 +47,7 @@ export function ActiveSubstratePanel() {
     try {
       if (typeof window.amplify?.watchdogStatus !== 'function') {
         // Bridge not exposed (preload mismatch or pre-v0.1.6 build)
-        setError('Watchdog unavailable in this build · update Mnemosyne to v0.1.6+ for live status');
+        setError('Watchdog unavailable in this build · update MnemosyneC to v0.1.6+ for live status');
         return;
       }
       const result = await window.amplify.watchdogStatus();
@@ -60,7 +60,7 @@ export function ActiveSubstratePanel() {
       // of the raw Electron rejection. Tracked in BP048.
       if (msg.includes('No handler registered') || msg.includes('watchdog-status')) {
         console.warn('[ActiveSubstratePanel] watchdog-status IPC handler missing — build drift suspected', err);
-        setError('Watchdog unavailable in this build · update Mnemosyne to v0.1.6+ for live status');
+        setError('Watchdog unavailable in this build · update MnemosyneC to v0.1.6+ for live status');
       } else {
         console.error('[ActiveSubstratePanel] watchdog poll failed', err);
         setError(msg.slice(0, 120));

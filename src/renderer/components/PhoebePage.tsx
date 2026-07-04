@@ -1,334 +1,179 @@
-// PhoebePage™ — Idea Storage
-// Phoebe™ is the Mnemosyne sub-component for Idea Storage / inspiration boards.
-// Named after the Greek Titaness. Zero ads. Member IP retained.
-// IPC stubs: window.amplify.phoebe?.save() and window.amplify.phoebe?.list()
-// Cooperative-class alternative to Pinterest / Are.na.
+// PhoebePage™ — Idea Storage with IPC
+// SAGA-45 · BP054 close-stretch canon mint
+// C.17 · BP055: IPC layer wired (save-idea + get-ideas handlers in src/main/index.ts)
+// Integration note: wire as a new tab in MnemosyneTabView (TabId: 'phoebe') or
+// as a new View in App.tsx (View: 'phoebe') with hash '#/phoebe'.
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface IdeaItem {
-  id: string | number;
+interface Idea {
+  id: string;
   title: string;
-  body?: string;
-  url?: string;
-  tags?: string[];
-  saved_at: string;
+  content: string;
+  timestamp: string;
 }
 
-interface SaveForm {
-  title: string;
-  body: string;
-  url: string;
-  tags: string;
-}
-
-// ─── Component ───────────────────────────────────────────────────────────────
 
 export function PhoebePage() {
-  const [ideas, setIdeas] = useState<IdeaItem[]>([]);
-  const [form, setForm] = useState<SaveForm>({ title: '', body: '', url: '', tags: '' });
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [ideas, setIdeas] = useState<Idea[]>([]);
   const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
-  const [ipcAvailable, setIpcAvailable] = useState<boolean | null>(null);
-  const [selectedIdea, setSelectedIdea] = useState<IdeaItem | null>(null);
-  const titleRef = useRef<HTMLInputElement>(null);
+  const [status, setStatus] = useState<string | null>(null);
 
-  useEffect(() => {
-    const api = (window.amplify as any)?.phoebe;
-    setIpcAvailable(!!api?.save && !!api?.list);
-    if (api?.list) {
-      api.list().then((items: IdeaItem[]) => setIdeas(items ?? [])).catch(() => {});
-    }
+  const loadIdeas = useCallback(async () => {
+    if (!window.amplify?.getIdeas) return;
+    const result = await window.amplify.getIdeas();
+    if (result.ok) setIdeas(result.ideas);
   }, []);
 
-  function handleField(field: keyof SaveForm, value: string) {
-    setForm((prev) => ({ ...prev, [field]: value }));
-  }
+  useEffect(() => { loadIdeas(); }, [loadIdeas]);
 
-  async function handleSave() {
-    if (!form.title.trim()) return;
+  const handleSave = async () => {
+    if (!title.trim() && !content.trim()) return;
+    if (!window.amplify?.saveIdea) {
+      setStatus('IPC bridge not available — run in Electron');
+      return;
+    }
     setSaving(true);
-    setSaveMsg(null);
+    setStatus(null);
     try {
-      const api = (window.amplify as any)?.phoebe;
-      const tagsArr = form.tags
-        ? form.tags.split(',').map((t) => t.trim()).filter(Boolean)
-        : undefined;
-      const payload = {
-        title: form.title.trim(),
-        body: form.body.trim() || undefined,
-        url: form.url.trim() || undefined,
-        tags: tagsArr,
-      };
-      if (api?.save) {
-        const result = await api.save(payload);
-        const newItem: IdeaItem = {
-          id: (result as any)?.id ?? Date.now(),
-          ...payload,
-          saved_at: new Date().toISOString(),
-        };
-        setIdeas((prev) => [newItem, ...prev]);
-      } else {
-        const newItem: IdeaItem = {
-          id: Date.now(),
-          ...payload,
-          saved_at: new Date().toISOString(),
-        };
-        setIdeas((prev) => [newItem, ...prev]);
+      const result = await window.amplify.saveIdea({
+        title: title.trim(),
+        content: content.trim(),
+        timestamp: new Date().toISOString(),
+      });
+      if (result.ok) {
+        setTitle('');
+        setContent('');
+        setStatus('Idea saved.');
+        await loadIdeas();
       }
-      setForm({ title: '', body: '', url: '', tags: '' });
-      setSaveMsg({ type: 'ok', text: 'Idea saved.' });
-      titleRef.current?.focus();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setSaveMsg({ type: 'error', text: msg });
     } finally {
       setSaving(false);
-      setTimeout(() => setSaveMsg(null), 3000);
     }
-  }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%',
+    background: 'rgba(255,255,255,0.04)',
+    border: '1px solid rgba(110,231,183,0.2)',
+    borderRadius: 6,
+    padding: '8px 12px',
+    color: '#e2e8f0',
+    fontSize: 13,
+    fontFamily: 'system-ui, -apple-system, sans-serif',
+    outline: 'none',
+    boxSizing: 'border-box',
+  };
 
   return (
-    <div style={{
-      height: '100%', display: 'flex', flexDirection: 'column',
-      boxSizing: 'border-box',
-    }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        minHeight: 320,
+        padding: 24,
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+        background: '#0a0f1a',
+        gap: 16,
+        overflowY: 'auto',
+      }}
+    >
       {/* Header */}
-      <div style={{
-        padding: '16px 20px 12px', flexShrink: 0,
-        borderBottom: '1px solid rgba(100,116,139,0.12)',
-      }}>
-        <div style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.3px' }}>
-          Idea Storage™
-        </div>
-        <div style={{ fontSize: 10, color: '#475569', marginTop: 3 }}>
-          Collect articles, URLs, and inspiration — your IP retained, zero ads
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ fontSize: 24, lineHeight: 1 }}>🪶</span>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.3px' }}>
+            Phoebe™ — Idea Storage
+          </div>
+          <div style={{ fontSize: 11, color: '#6ee7b7', fontWeight: 500 }}>
+            Your ideas, preserved. Forever.
+          </div>
         </div>
       </div>
 
-      {/* IPC unavailable banner */}
-      {ipcAvailable === false && (
-        <div style={{
-          margin: '8px 20px 0', padding: '8px 12px',
-          background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)',
-          borderRadius: 8, fontSize: 10, color: '#fbbf24',
-          flexShrink: 0,
-        }}>
-          Idea Storage coming soon — infrastructure connecting…
+      <div style={{ height: 1, background: 'rgba(110,231,183,0.15)' }} />
+
+      {/* Input form */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <input
+          value={title}
+          onChange={e => setTitle(e.target.value)}
+          placeholder="Idea title (optional)"
+          style={inputStyle}
+        />
+        <textarea
+          value={content}
+          onChange={e => setContent(e.target.value)}
+          placeholder="Write your idea here..."
+          rows={4}
+          style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.6 }}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            onClick={handleSave}
+            disabled={saving || (!title.trim() && !content.trim())}
+            style={{
+              padding: '7px 18px',
+              background: saving ? 'rgba(99,102,241,0.3)' : 'rgba(99,102,241,0.7)',
+              border: '1px solid rgba(99,102,241,0.5)',
+              borderRadius: 6,
+              color: '#e2e8f0',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: saving ? 'not-allowed' : 'pointer',
+              letterSpacing: '0.03em',
+            }}
+          >
+            {saving ? 'Saving…' : 'Save Idea'}
+          </button>
+          {status && (
+            <span style={{ fontSize: 11, color: '#6ee7b7' }}>{status}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Saved ideas list */}
+      {ideas.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+          <div style={{ fontSize: 10, color: '#475569', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+            Saved Ideas ({ideas.length})
+          </div>
+          {ideas.map(idea => (
+            <div
+              key={idea.id}
+              style={{
+                padding: '10px 12px',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(110,231,183,0.1)',
+                borderRadius: 6,
+              }}
+            >
+              {idea.title && (
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#cbd5e1', marginBottom: 4 }}>
+                  {idea.title}
+                </div>
+              )}
+              <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                {idea.content}
+              </div>
+              <div style={{ fontSize: 10, color: '#334155', marginTop: 6 }}>
+                {new Date(idea.timestamp).toLocaleString()}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
-      {/* Body: two-pane layout */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-
-        {/* Left pane — saved ideas list (1/3) */}
-        <div style={{
-          width: '33%', borderRight: '1px solid rgba(100,116,139,0.12)',
-          display: 'flex', flexDirection: 'column', overflowY: 'auto',
-        }}>
-          <div style={{
-            padding: '10px 14px 6px', fontSize: 10, fontWeight: 600, color: '#475569',
-            textTransform: 'uppercase', letterSpacing: '0.06em', flexShrink: 0,
-          }}>
-            Saved Ideas ({ideas.length})
-          </div>
-
-          {ideas.length === 0 && (
-            <div style={{
-              flex: 1, display: 'flex', flexDirection: 'column',
-              alignItems: 'center', justifyContent: 'center',
-              padding: '20px 14px', gap: 8, textAlign: 'center',
-            }}>
-              <div style={{ fontSize: 28, opacity: 0.3 }}>💡</div>
-              <div style={{ fontSize: 10, color: '#334155', lineHeight: 1.6 }}>
-                No ideas saved yet
-              </div>
-              <div style={{ fontSize: 9, color: '#1e293b', lineHeight: 1.6 }}>
-                Use the form on the right to save your first idea.
-              </div>
-            </div>
-          )}
-
-          <div style={{ flex: 1, overflowY: 'auto', padding: '4px 10px 16px' }}>
-            {ideas.map((idea) => {
-              const isSelected = selectedIdea?.id === idea.id;
-              return (
-                <button
-                  key={idea.id}
-                  onClick={() => setSelectedIdea(isSelected ? null : idea)}
-                  style={{
-                    width: '100%', textAlign: 'left',
-                    background: isSelected ? 'rgba(110,231,183,0.07)' : 'transparent',
-                    border: `1px solid ${isSelected ? 'rgba(110,231,183,0.2)' : 'rgba(100,116,139,0.1)'}`,
-                    borderRadius: 8, padding: '9px 10px', cursor: 'pointer',
-                    marginBottom: 5, transition: 'all 0.12s',
-                  }}
-                >
-                  <div style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0', lineHeight: 1.3 }}>
-                    {idea.title}
-                  </div>
-                  {idea.url && (
-                    <div style={{
-                      fontSize: 9, color: '#6ee7b7', marginTop: 2,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
-                      🔗 {idea.url}
-                    </div>
-                  )}
-                  {idea.tags && idea.tags.length > 0 && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 4 }}>
-                      {idea.tags.map((tag) => (
-                        <span key={tag} style={{
-                          fontSize: 8, background: 'rgba(110,231,183,0.08)',
-                          border: '1px solid rgba(110,231,183,0.15)',
-                          color: '#6ee7b7', borderRadius: 6, padding: '1px 5px',
-                        }}>
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div style={{ fontSize: 8, color: '#334155', marginTop: 4 }}>
-                    {new Date(idea.saved_at).toLocaleDateString()}
-                  </div>
-
-                  {isSelected && idea.body && (
-                    <div style={{
-                      marginTop: 8, padding: '7px 9px',
-                      background: 'rgba(100,116,139,0.06)',
-                      border: '1px solid rgba(100,116,139,0.12)',
-                      borderRadius: 6, fontSize: 10, color: '#94a3b8', lineHeight: 1.6,
-                    }}>
-                      {idea.body}
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+      {ideas.length === 0 && (
+        <div style={{ fontSize: 11, color: '#334155', textAlign: 'center', marginTop: 16, lineHeight: 1.8 }}>
+          No ideas saved yet. Your ideas are stored locally — no cloud required.
         </div>
-
-        {/* Right pane — save form (2/3) */}
-        <div style={{
-          flex: 1, overflowY: 'auto', padding: '16px 20px 24px',
-          display: 'flex', flexDirection: 'column', gap: 12,
-        }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8' }}>
-            Save an idea
-          </div>
-
-          {/* Title */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <label style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>
-              Title <span style={{ color: '#475569' }}>*</span>
-            </label>
-            <input
-              ref={titleRef}
-              type="text"
-              value={form.title}
-              onChange={(e) => handleField('title', e.target.value)}
-              placeholder="Name this idea…"
-              style={{
-                background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.2)',
-                borderRadius: 7, padding: '8px 10px', color: '#e2e8f0', fontSize: 11,
-                outline: 'none',
-              }}
-              onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSave(); }}
-            />
-          </div>
-
-          {/* Body / Notes */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <label style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>
-              Notes <span style={{ color: '#334155' }}>(optional)</span>
-            </label>
-            <textarea
-              value={form.body}
-              onChange={(e) => handleField('body', e.target.value)}
-              placeholder="Write notes, paste a snippet, or describe the idea…"
-              rows={5}
-              style={{
-                background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.2)',
-                borderRadius: 7, padding: '8px 10px', color: '#e2e8f0', fontSize: 11,
-                outline: 'none', resize: 'vertical', fontFamily: 'inherit',
-              }}
-            />
-          </div>
-
-          {/* URL */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <label style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>
-              URL <span style={{ color: '#334155' }}>(optional)</span>
-            </label>
-            <input
-              type="url"
-              value={form.url}
-              onChange={(e) => handleField('url', e.target.value)}
-              placeholder="https://…"
-              style={{
-                background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.2)',
-                borderRadius: 7, padding: '8px 10px', color: '#6ee7b7', fontSize: 11,
-                outline: 'none',
-              }}
-            />
-          </div>
-
-          {/* Tags */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <label style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>
-              Tags <span style={{ color: '#334155' }}>(optional, comma-separated)</span>
-            </label>
-            <input
-              type="text"
-              value={form.tags}
-              onChange={(e) => handleField('tags', e.target.value)}
-              placeholder="inspiration, article, research…"
-              style={{
-                background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.2)',
-                borderRadius: 7, padding: '8px 10px', color: '#e2e8f0', fontSize: 11,
-                outline: 'none',
-              }}
-            />
-          </div>
-
-          {/* Save button */}
-          <button
-            onClick={handleSave}
-            disabled={saving || !form.title.trim()}
-            style={{
-              background: form.title.trim()
-                ? 'rgba(110,231,183,0.12)'
-                : 'rgba(100,116,139,0.08)',
-              border: `1px solid ${form.title.trim() ? 'rgba(110,231,183,0.35)' : 'rgba(100,116,139,0.15)'}`,
-              color: form.title.trim() ? '#6ee7b7' : '#334155',
-              borderRadius: 8, padding: '9px 0',
-              fontSize: 12, fontWeight: 700, cursor: saving || !form.title.trim() ? 'not-allowed' : 'pointer',
-              width: '100%', transition: 'all 0.15s',
-              opacity: saving ? 0.7 : 1,
-            }}
-          >
-            {saving ? 'Saving…' : '💾 Save Idea'}
-          </button>
-
-          {/* Feedback message */}
-          {saveMsg && (
-            <div style={{
-              padding: '7px 10px', borderRadius: 7, fontSize: 10, fontWeight: 600,
-              background: saveMsg.type === 'ok' ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-              border: `1px solid ${saveMsg.type === 'ok' ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
-              color: saveMsg.type === 'ok' ? '#4ade80' : '#f87171',
-            }}>
-              {saveMsg.text}
-            </div>
-          )}
-
-          <div style={{ fontSize: 9, color: '#1e293b', marginTop: 4 }}>
-            ⌘+Enter or Ctrl+Enter to save quickly
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
+
+export default PhoebePage;

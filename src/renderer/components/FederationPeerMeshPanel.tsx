@@ -1,4 +1,4 @@
-// Mnemosyne — Federation Peer Mesh Panel
+// MnemosyneC — Federation Peer Mesh Panel
 // MV-CN Cross-Network Mesh · SAGA 3 BP045 W1
 //
 // Surfaces discovered peers (LAN + WAN relay), their handshake phase,
@@ -15,6 +15,12 @@ interface MeshState {
   relayConnected: boolean;
   ownPeerId: string;
 }
+
+const TIER_COLOR: Record<string, string> = {
+  member: '#D4AF37',
+  base: '#22c55e',
+  unknown: '#475569',
+};
 
 // ─── Phase badge ──────────────────────────────────────────────────────────────
 
@@ -93,6 +99,7 @@ export function FederationPeerMeshPanel() {
     ownPeerId: '',
   });
   const [loading, setLoading] = useState(true);
+  const [relayTier, setRelayTier] = useState<string>('unknown');
 
   const loadMesh = useCallback(async () => {
     try {
@@ -103,23 +110,35 @@ export function FederationPeerMeshPanel() {
     }
   }, []);
 
+  const loadTier = useCallback(async () => {
+    try {
+      const result = await (window as any).amplify?.getRelayTier?.();
+      if (result?.tier) setRelayTier(result.tier);
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     loadMesh();
+    loadTier();
     const iv = setInterval(loadMesh, 5000);
+    const tierIv = setInterval(loadTier, 30000);
 
     const cleanup1 = (window as any).amplify?.onMeshStateChanged?.((state: MeshState) => {
       setMeshState(state);
     });
     const cleanup2 = (window as any).amplify?.onRelayStateChanged?.((s: { relayConnected: boolean }) => {
       setMeshState((prev) => ({ ...prev, ...s }));
+      // Refresh tier on relay reconnect
+      void loadTier();
     });
 
     return () => {
       clearInterval(iv);
+      clearInterval(tierIv);
       cleanup1?.();
       cleanup2?.();
     };
-  }, [loadMesh]);
+  }, [loadMesh, loadTier]);
 
   const lanPeers = meshState.peers.filter((p) => p.transport === 'lan');
   const wanPeers = meshState.peers.filter((p) => p.transport === 'wan-relay');
@@ -138,12 +157,16 @@ export function FederationPeerMeshPanel() {
           Peer Mesh
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{
-            width: 8, height: 8, borderRadius: '50%',
-            background: meshState.relayConnected ? '#22c55e' : '#475569',
-          }} />
-          <span style={{ fontSize: 10, color: meshState.relayConnected ? '#22c55e' : '#475569' }}>
-            {meshState.relayConnected ? 'Relay connected' : 'Relay offline'}
+          <span style={{
+            fontSize: 12,
+            color: meshState.relayConnected
+              ? (TIER_COLOR[relayTier] ?? TIER_COLOR.base)
+              : '#475569',
+          }}>●</span>
+          <span style={{ fontSize: 10, color: meshState.relayConnected ? (TIER_COLOR[relayTier] ?? TIER_COLOR.base) : '#475569' }}>
+            {meshState.relayConnected
+              ? `Connected · ${relayTier === 'member' ? 'Member' : relayTier === 'base' ? 'Base' : 'Connecting...'}`
+              : 'Relay offline'}
           </span>
         </div>
       </div>
@@ -185,7 +208,7 @@ export function FederationPeerMeshPanel() {
           border: '1px dashed rgba(255,255,255,0.06)', borderRadius: 8,
         }}>
           No peers discovered yet.<br />
-          <span style={{ color: '#475569' }}>Other Mnemosyne instances on your network<br />will appear here automatically.</span>
+          <span style={{ color: '#475569' }}>Other MnemosyneC instances on your network<br />will appear here automatically.</span>
         </div>
       ) : (
         <>

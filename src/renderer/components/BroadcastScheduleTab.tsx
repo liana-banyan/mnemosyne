@@ -1,340 +1,329 @@
-// BroadcastScheduleTab.tsx — BP063 SEG-2 · Tab 14
-// Opening Gambit Broadcast Schedule / TV-Guide embedded view.
-// Loads platform route /staff/launch-schedule via Electron <webview>.
-// Fallback: open-in-platform button when webview tag is unavailable.
-//
-// Opening Gambit: 7-day coordinated social launch sequence across
-// Twitter/X, Bluesky, LinkedIn — 4 posts/day, 2h minimum spacing.
-// "As You Wish" confirmation gate before any post fires.
+﻿// BroadcastScheduleTab — MnemosyneC™ Tab 16 · BP067 Phase 2C
+// Cooperative content/announcement scheduler
+// Week view of scheduled broadcasts · Add broadcast form · Pending vs Sent · local storage
 
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useDeckCue } from '../hooks/useDeckCue';
+import { DeckCuePullup } from './DeckCuePullup';
 
-const SCHEDULE_URL = 'https://lianabanyan.com/staff/launch-schedule';
-const AS_YOU_WISH_URL = 'https://lianabanyan.com/as-you-wish';
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-interface WebviewElement extends HTMLElement {
-  src: string;
-  loadURL: (url: string) => void;
-  getURL: () => string;
-  addEventListener(event: 'did-navigate' | 'did-finish-load' | 'did-start-loading', handler: (e: { url?: string }) => void): void;
-  addEventListener(event: string, handler: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
-  removeEventListener(event: string, handler: EventListenerOrEventListenerObject): void;
+type BroadcastChannel = 'email' | 'push' | 'in-app';
+type BroadcastStatus = 'pending' | 'sent';
+
+interface Broadcast {
+  id: string;
+  title: string;
+  scheduledAt: string;
+  channel: BroadcastChannel;
+  body: string;
+  status: BroadcastStatus;
+  createdAt: string;
 }
+
+// ─── Local storage ────────────────────────────────────────────────────────────
+
+const LS_KEY = 'mnemo_broadcasts';
+
+function load(): Broadcast[] {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    return raw ? (JSON.parse(raw) as Broadcast[]) : [];
+  } catch { return []; }
+}
+
+function save(broadcasts: Broadcast[]) {
+  localStorage.setItem(LS_KEY, JSON.stringify(broadcasts));
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const CHANNEL_LABELS: Record<BroadcastChannel, string> = {
+  email: '📧 Email',
+  push: '🔔 Push',
+  'in-app': '💬 In-App',
+};
+
+const CHANNEL_COLORS: Record<BroadcastChannel, string> = {
+  email: '#38bdf8',
+  push: '#f59e0b',
+  'in-app': '#6ee7b7',
+};
+
+function getWeekDays(): Date[] {
+  const today = new Date();
+  const day = today.getDay();
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - (day === 0 ? 6 : day - 1));
+  monday.setHours(0, 0, 0, 0);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    return d;
+  });
+}
+
+const DAY_NAMES_SHORT = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+function fmt(d: Date): string { return d.toISOString().split('T')[0]; }
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export function BroadcastScheduleTab() {
-  const webviewRef = useRef<WebviewElement | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [currentUrl, setCurrentUrl] = useState(SCHEDULE_URL);
-  const [webviewAvailable] = useState(() => {
-    // Electron webview tag is available when running inside Electron with webviewTag: true
-    try {
-      return typeof window !== 'undefined' && typeof (window as { amplify?: unknown }).amplify !== 'undefined';
-    } catch {
-      return false;
-    }
+  const { cards, showCard, dismissCard, isPullupOpen, closePullup } = useDeckCue();
+  const [broadcasts, setBroadcasts] = useState<Broadcast[]>(load);
+  const [showForm, setShowForm] = useState(false);
+  const [filter, setFilter] = useState<'all' | 'pending' | 'sent'>('all');
+
+  // Form state
+  const [fTitle, setFTitle] = useState('');
+  const [fScheduledAt, setFScheduledAt] = useState(() => {
+    const d = new Date();
+    d.setMinutes(0, 0, 0);
+    return d.toISOString().slice(0, 16);
   });
+  const [fChannel, setFChannel] = useState<BroadcastChannel>('in-app');
+  const [fBody, setFBody] = useState('');
 
-  const attachListeners = useCallback((wv: WebviewElement) => {
-    wv.addEventListener('did-start-loading', () => setLoading(true));
-    wv.addEventListener('did-finish-load', () => setLoading(false));
-    wv.addEventListener('did-navigate', (e) => {
-      const url = (e as { url?: string }).url;
-      if (url) setCurrentUrl(url);
-      setLoading(false);
-    });
-  }, []);
+  const weekDays = getWeekDays();
+  const todayStr = fmt(new Date());
 
-  useEffect(() => {
-    const wv = webviewRef.current;
-    if (wv) attachListeners(wv);
-  }, [attachListeners]);
-
-  function openExternal(url: string) {
-    (window as { amplify?: { openExternal?: (u: string) => void } }).amplify?.openExternal?.(url);
+  function addBroadcast() {
+    if (!fTitle.trim() || !fBody.trim()) return;
+    const entry: Broadcast = {
+      id: Math.random().toString(36).slice(2) + Date.now().toString(36),
+      title: fTitle.trim(),
+      scheduledAt: fScheduledAt,
+      channel: fChannel,
+      body: fBody.trim(),
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    };
+    const next = [entry, ...broadcasts];
+    setBroadcasts(next);
+    save(next);
+    setFTitle('');
+    setFBody('');
+    setShowForm(false);
+    showCard('broadcast');
   }
 
-  function reload() {
-    if (webviewRef.current) {
-      setLoading(true);
-      webviewRef.current.loadURL(currentUrl);
-    }
+  function markSent(id: string) {
+    const next = broadcasts.map(b => b.id === id ? { ...b, status: 'sent' as BroadcastStatus } : b);
+    setBroadcasts(next);
+    save(next);
   }
+
+  function remove(id: string) {
+    const next = broadcasts.filter(b => b.id !== id);
+    setBroadcasts(next);
+    save(next);
+  }
+
+  // Group by day for week view
+  function broadcastsForDay(date: Date): Broadcast[] {
+    const ds = fmt(date);
+    return broadcasts.filter(b => b.scheduledAt.startsWith(ds));
+  }
+
+  const filtered = broadcasts.filter(b => filter === 'all' || b.status === filter);
+  const pending = broadcasts.filter(b => b.status === 'pending').length;
 
   return (
-    <div style={styles.container}>
-      {/* Header bar */}
-      <div style={styles.headerBar}>
-        <div style={styles.headerLeft}>
-          <span style={styles.headerIcon}>📡</span>
+    <>
+    <div style={{ padding:'16px 20px', overflowY:'auto', height:'100%', boxSizing:'border-box' }}>
+      <div style={{ maxWidth:700, margin:'0 auto' }}>
+
+        {/* Header */}
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16 }}>
           <div>
-            <div style={styles.headerTitle}>Broadcast Schedule</div>
-            <div style={styles.headerSub}>Opening Gambit · 7-day social launch sequence</div>
+            <div style={{ fontSize:16, fontWeight:700, color:'#e2e8f0', marginBottom:2 }}>📡 Broadcast Schedule</div>
+            <div style={{ fontSize:11, color:'#475569' }}>Cooperative content and announcement scheduler</div>
+          </div>
+          <button
+            onClick={() => setShowForm(s => !s)}
+            style={{ padding:'7px 16px', borderRadius:7, fontSize:12, fontWeight:600, cursor:'pointer', border:'1px solid rgba(110,231,183,0.35)', background:'rgba(110,231,183,0.1)', color:'#6ee7b7' }}
+          >
+            {showForm ? 'Cancel' : '+ Add Broadcast'}
+          </button>
+        </div>
+
+        {/* Add form */}
+        {showForm && (
+          <div style={{ background:'rgba(15,23,42,0.6)', border:'1px solid rgba(110,231,183,0.15)', borderRadius:10, padding:'14px 16px', marginBottom:16 }}>
+            <div style={{ fontSize:12, fontWeight:600, color:'#e2e8f0', marginBottom:12 }}>New Broadcast</div>
+            <div style={{ marginBottom:8 }}>
+              <label style={{ fontSize:9, color:'#64748b', display:'block', marginBottom:3 }}>Title *</label>
+              <input
+                style={inputStyle} value={fTitle} onChange={e => setFTitle(e.target.value)}
+                placeholder="Broadcast title or announcement subject"
+              />
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
+              <div>
+                <label style={{ fontSize:9, color:'#64748b', display:'block', marginBottom:3 }}>Date & Time</label>
+                <input type="datetime-local" style={inputStyle} value={fScheduledAt} onChange={e => setFScheduledAt(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ fontSize:9, color:'#64748b', display:'block', marginBottom:3 }}>Channel</label>
+                <select style={inputStyle} value={fChannel} onChange={e => setFChannel(e.target.value as BroadcastChannel)}>
+                  {(Object.keys(CHANNEL_LABELS) as BroadcastChannel[]).map(ch => (
+                    <option key={ch} value={ch}>{CHANNEL_LABELS[ch]}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div style={{ marginBottom:12 }}>
+              <label style={{ fontSize:9, color:'#64748b', display:'block', marginBottom:3 }}>Message body *</label>
+              <textarea
+                style={{ ...inputStyle, height:80, resize:'vertical' as const, fontFamily:'system-ui,-apple-system,sans-serif' }}
+                value={fBody} onChange={e => setFBody(e.target.value)}
+                placeholder="Write your cooperative announcement here…"
+              />
+            </div>
+            <div style={{ display:'flex', gap:8 }}>
+              <button
+                onClick={addBroadcast}
+                disabled={!fTitle.trim() || !fBody.trim()}
+                style={{ flex:1, padding:'8px 0', borderRadius:7, fontSize:12, fontWeight:700, cursor:fTitle.trim()&&fBody.trim()?'pointer':'not-allowed', border:'1px solid rgba(110,231,183,0.35)', background:'rgba(110,231,183,0.1)', color:'#6ee7b7', opacity:fTitle.trim()&&fBody.trim()?1:0.5 }}
+              >
+                Schedule Broadcast
+              </button>
+              <button onClick={() => setShowForm(false)} style={{ padding:'8px 16px', borderRadius:7, fontSize:12, cursor:'pointer', border:'1px solid rgba(100,116,139,0.2)', background:'transparent', color:'#64748b' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Week view */}
+        <div style={{ background:'rgba(15,23,42,0.4)', border:'1px solid rgba(100,116,139,0.1)', borderRadius:10, padding:'12px 14px', marginBottom:16 }}>
+          <div style={{ fontSize:11, fontWeight:600, color:'#94a3b8', marginBottom:10 }}>This Week</div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:4 }}>
+            {weekDays.map((day, i) => {
+              const isToday = fmt(day) === todayStr;
+              const dayBroadcasts = broadcastsForDay(day);
+              return (
+                <div key={i} style={{ background:isToday?'rgba(110,231,183,0.04)':'rgba(15,23,42,0.4)', border:isToday?'1px solid rgba(110,231,183,0.2)':'1px solid rgba(100,116,139,0.08)', borderRadius:6, padding:'5px 6px', minHeight:80 }}>
+                  <div style={{ fontSize:9, fontWeight:isToday?700:500, color:isToday?'#6ee7b7':'#64748b', marginBottom:4, textAlign:'center' }}>
+                    {DAY_NAMES_SHORT[i]}<br />{day.getDate()}
+                  </div>
+                  {dayBroadcasts.length === 0 && <div style={{ fontSize:8, color:'rgba(100,116,139,0.25)', textAlign:'center' }}>—</div>}
+                  {dayBroadcasts.map(b => (
+                    <div key={b.id} style={{
+                      fontSize:8, borderRadius:3, padding:'2px 4px', marginBottom:2,
+                      background:`${CHANNEL_COLORS[b.channel]}18`, border:`1px solid ${CHANNEL_COLORS[b.channel]}40`,
+                      color:b.status==='sent'?'#475569':CHANNEL_COLORS[b.channel],
+                      textDecoration:b.status==='sent'?'line-through':'none',
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+                    }} title={b.title}>
+                      {b.title}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </div>
-        <div style={styles.headerActions}>
-          {loading && (
-            <span style={styles.loadingBadge}>loading…</span>
+
+        {/* Filter tabs */}
+        <div style={{ display:'flex', gap:6, marginBottom:12 }}>
+          {(['all','pending','sent'] as const).map(f => (
+            <button key={f} onClick={() => setFilter(f)} style={{
+              padding:'4px 12px', borderRadius:6, fontSize:10, fontWeight:filter===f?700:500, cursor:'pointer',
+              border:filter===f?'1px solid rgba(110,231,183,0.35)':'1px solid rgba(100,116,139,0.2)',
+              background:filter===f?'rgba(110,231,183,0.08)':'transparent',
+              color:filter===f?'#6ee7b7':'#64748b',
+            }}>
+              {f === 'all' ? `All (${broadcasts.length})` : f === 'pending' ? `Pending (${pending})` : `Sent (${broadcasts.length - pending})`}
+            </button>
+          ))}
+        </div>
+
+        {/* Broadcast list */}
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+          {filtered.length === 0 ? (
+            <div style={{ fontSize:11, color:'#334155', textAlign:'center', padding:'24px 0' }}>
+              {filter === 'all' ? 'No broadcasts yet. Schedule your first cooperative announcement.' : `No ${filter} broadcasts.`}
+            </div>
+          ) : (
+            filtered.map(b => (
+              <BroadcastCard key={b.id} broadcast={b} onMarkSent={() => markSent(b.id)} onRemove={() => remove(b.id)} />
+            ))
           )}
-          <button
-            style={styles.actionBtn}
-            onClick={reload}
-            title="Reload broadcast schedule"
-          >
-            ↺ Reload
-          </button>
-          <button
-            style={{ ...styles.actionBtn, ...styles.actionBtnGreen }}
-            onClick={() => openExternal(AS_YOU_WISH_URL)}
-            title="Open As You Wish confirmation gate"
-          >
-            ⚔️ As You Wish
-          </button>
-          <button
-            style={styles.actionBtn}
-            onClick={() => openExternal(SCHEDULE_URL)}
-            title="Open in platform browser"
-          >
-            ↗ Open in Platform
-          </button>
         </div>
       </div>
-
-      {/* Webview or fallback */}
-      <div style={styles.body}>
-        {webviewAvailable ? (
-          <webview
-            ref={(el) => {
-              if (el && el !== webviewRef.current) {
-                webviewRef.current = el as unknown as WebviewElement;
-                attachListeners(el as unknown as WebviewElement);
-              }
-            }}
-            src={SCHEDULE_URL}
-            style={styles.webview}
-            /* @ts-expect-error — webview is an Electron custom element not in React types */
-            allowpopups="true"
-          />
-        ) : (
-          <FallbackView onOpen={() => openExternal(SCHEDULE_URL)} />
-        )}
-      </div>
-
-      {/* Footer: day legend */}
-      <div style={styles.footer}>
-        <span style={styles.footerItem}>Day 1 · THE PAIN</span>
-        <span style={styles.footerDot}>·</span>
-        <span style={styles.footerItem}>Day 2 · THE VISION</span>
-        <span style={styles.footerDot}>·</span>
-        <span style={styles.footerItem}>Day 3 · THE PROOF</span>
-        <span style={styles.footerDot}>·</span>
-        <span style={styles.footerItem}>Days 4–7 · PEOPLE · ARCHITECTURE · CONSOLIDATION</span>
-        <span style={styles.footerDot}>·</span>
-        <span style={{ ...styles.footerItem, color: '#facc15' }}>max 4 posts/day · 2h min gap · NOTHING fires without "As You Wish"</span>
-      </div>
     </div>
+
+    {/* BP067 Phase 3A — Deck Cue Card pullup (shared with Battery tab) */}
+    <DeckCuePullup
+      cards={cards}
+      isOpen={isPullupOpen}
+      onDismiss={dismissCard}
+      onClose={closePullup}
+    />
+    </>
   );
 }
 
-function FallbackView({ onOpen }: { onOpen: () => void }) {
-  const days = [
-    { day: 1, theme: 'THE PAIN', platforms: 'Twitter/X · Bluesky', posts: 4 },
-    { day: 2, theme: 'THE VISION', platforms: 'Twitter/X · LinkedIn', posts: 4 },
-    { day: 3, theme: 'THE PROOF', platforms: 'Twitter/X · LinkedIn · Bluesky', posts: 3 },
-    { day: 4, theme: 'THE PEOPLE', platforms: 'Twitter/X · LinkedIn', posts: 3 },
-    { day: 5, theme: 'THE ARCHITECTURE', platforms: 'LinkedIn · Twitter/X', posts: 3 },
-    { day: 6, theme: 'CONSOLIDATION', platforms: 'All platforms', posts: 0, engagement: true },
-    { day: 7, theme: 'CONSOLIDATION', platforms: 'All platforms', posts: 0, engagement: true },
-  ];
+// ─── Broadcast Card ───────────────────────────────────────────────────────────
+
+function BroadcastCard({ broadcast: b, onMarkSent, onRemove }: {
+  broadcast: Broadcast;
+  onMarkSent: () => void;
+  onRemove: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const color = CHANNEL_COLORS[b.channel];
+  const isPending = b.status === 'pending';
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', padding: '20px 24px 32px' }}>
-      <div style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>
-          Opening Gambit — 7-Day TV Guide
-        </div>
-        <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.6, marginBottom: 12 }}>
-          Coordinated multi-platform launch sequence. Loaded into The Battery.
-          Nothing fires until "As You Wish" confirmation.
-        </div>
-        <button
-          onClick={onOpen}
-          style={{
-            background: 'rgba(110,231,183,0.12)',
-            border: '1px solid rgba(110,231,183,0.3)',
-            borderRadius: 8,
-            color: '#6ee7b7',
-            fontSize: 11,
-            fontWeight: 600,
-            padding: '8px 16px',
-            cursor: 'pointer',
-          }}
-        >
-          Open Full Schedule in Platform →
-        </button>
-      </div>
-
-      {/* Day grid */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {days.map(({ day, theme, platforms, posts, engagement }) => (
-          <div
-            key={day}
-            style={{
-              background: 'rgba(15,23,42,0.6)',
-              border: '1px solid rgba(100,116,139,0.15)',
-              borderRadius: 10,
-              padding: '12px 16px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 16,
-            }}
-          >
-            <div style={{
-              width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
-              background: engagement ? 'rgba(100,116,139,0.15)' : 'rgba(110,231,183,0.1)',
-              border: `1px solid ${engagement ? 'rgba(100,116,139,0.3)' : 'rgba(110,231,183,0.3)'}`,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 12, fontWeight: 800,
-              color: engagement ? '#475569' : '#6ee7b7',
-            }}>
-              D{day}
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0' }}>
-                {theme}
-              </div>
-              <div style={{ fontSize: 9, color: '#64748b', marginTop: 2 }}>
-                {platforms}
-              </div>
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              {engagement ? (
-                <span style={{ fontSize: 9, color: '#475569', fontStyle: 'italic' }}>engage only</span>
-              ) : (
-                <span style={{
-                  fontSize: 10, fontWeight: 700,
-                  color: '#6ee7b7',
-                  background: 'rgba(110,231,183,0.08)',
-                  border: '1px solid rgba(110,231,183,0.2)',
-                  borderRadius: 6, padding: '2px 8px',
-                }}>
-                  {posts} post{posts !== 1 ? 's' : ''}
-                </span>
-              )}
-            </div>
+    <div style={{
+      background:'rgba(15,23,42,0.5)', border:`1px solid ${isPending?'rgba(100,116,139,0.15)':'rgba(100,116,139,0.08)'}`,
+      borderRadius:8, padding:'10px 14px', opacity:isPending?1:0.7,
+    }}>
+      <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+        <div style={{ flex:1 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
+            <span style={{ fontSize:11, fontWeight:700, color:isPending?'#e2e8f0':'#64748b', textDecoration:isPending?'none':'line-through' }}>{b.title}</span>
+            <span style={{ fontSize:9, padding:'1px 7px', borderRadius:10, background:`${color}18`, border:`1px solid ${color}40`, color }}>{CHANNEL_LABELS[b.channel]}</span>
+            {b.status === 'sent' && <span style={{ fontSize:9, padding:'1px 7px', borderRadius:10, background:'rgba(110,231,183,0.1)', border:'1px solid rgba(110,231,183,0.25)', color:'#6ee7b7' }}>✓ Sent</span>}
           </div>
-        ))}
-      </div>
-
-      <div style={{
-        marginTop: 16, padding: '10px 14px',
-        background: 'rgba(250,204,21,0.06)',
-        border: '1px solid rgba(250,204,21,0.18)',
-        borderRadius: 8, fontSize: 10, color: '#fbbf24',
-        lineHeight: 1.6,
-      }}>
-        ⚔️ All posts require "As You Wish" confirmation before firing.
-        Max 4 posts/day · minimum 2 hours between posts.
+          <div style={{ fontSize:10, color:'#475569', marginBottom:4 }}>
+            🕐 {new Date(b.scheduledAt).toLocaleString(undefined, { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}
+          </div>
+          {expanded && (
+            <div style={{ fontSize:11, color:'#94a3b8', lineHeight:1.7, marginTop:6, background:'rgba(15,23,42,0.4)', borderRadius:6, padding:'8px 10px', whiteSpace:'pre-wrap' }}>
+              {b.body}
+            </div>
+          )}
+        </div>
+        <div style={{ display:'flex', flexDirection:'column', gap:4, flexShrink:0 }}>
+          <button onClick={() => setExpanded(e => !e)} style={{ background:'none', border:'none', color:'#475569', cursor:'pointer', fontSize:11 }} title={expanded?'Collapse':'Expand'}>
+            {expanded ? '▲' : '▼'}
+          </button>
+          {isPending && (
+            <button onClick={onMarkSent} style={{ background:'rgba(110,231,183,0.08)', border:'1px solid rgba(110,231,183,0.25)', borderRadius:5, color:'#6ee7b7', fontSize:9, fontWeight:600, cursor:'pointer', padding:'3px 7px', whiteSpace:'nowrap' }}>
+              Mark Sent
+            </button>
+          )}
+          <button onClick={onRemove} style={{ background:'none', border:'none', color:'#334155', cursor:'pointer', fontSize:12 }} title="Remove">✕</button>
+        </div>
       </div>
     </div>
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100%',
-    background: '#0a0f1a',
-    overflow: 'hidden',
-  },
-  headerBar: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '10px 14px',
-    background: 'rgba(15,23,42,0.8)',
-    borderBottom: '1px solid rgba(100,116,139,0.2)',
-    flexShrink: 0,
-    gap: 12,
-    flexWrap: 'wrap' as const,
-  },
-  headerLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-  },
-  headerIcon: {
-    fontSize: 22,
-    lineHeight: 1,
-  },
-  headerTitle: {
-    fontSize: 12,
-    fontWeight: 700,
-    color: '#e2e8f0',
-  },
-  headerSub: {
-    fontSize: 9,
-    color: '#475569',
-    marginTop: 1,
-  },
-  headerActions: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    flexWrap: 'wrap' as const,
-  },
-  loadingBadge: {
-    fontSize: 9,
-    color: '#6ee7b7',
-    background: 'rgba(110,231,183,0.08)',
-    border: '1px solid rgba(110,231,183,0.2)',
-    borderRadius: 10,
-    padding: '2px 8px',
-    animation: 'none',
-  },
-  actionBtn: {
-    background: 'rgba(100,116,139,0.1)',
-    border: '1px solid rgba(100,116,139,0.25)',
-    borderRadius: 6,
-    color: '#94a3b8',
-    fontSize: 9,
-    fontWeight: 600,
-    padding: '4px 10px',
-    cursor: 'pointer',
-    whiteSpace: 'nowrap' as const,
-  },
-  actionBtnGreen: {
-    background: 'rgba(110,231,183,0.08)',
-    border: '1px solid rgba(110,231,183,0.25)',
-    color: '#6ee7b7',
-  },
-  body: {
-    flex: 1,
-    overflow: 'hidden',
-    position: 'relative' as const,
-  },
-  webview: {
-    width: '100%',
-    height: '100%',
-    display: 'block',
-  },
-  footer: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 4,
-    flexWrap: 'wrap' as const,
-    padding: '4px 12px',
-    background: 'rgba(10,15,26,0.9)',
-    borderTop: '1px solid rgba(100,116,139,0.12)',
-    flexShrink: 0,
-  },
-  footerItem: {
-    fontSize: 8,
-    color: '#334155',
-    whiteSpace: 'nowrap' as const,
-  },
-  footerDot: {
-    fontSize: 8,
-    color: '#1e293b',
-  },
+// ─── Shared input style ───────────────────────────────────────────────────────
+
+const inputStyle: React.CSSProperties = {
+  width: '100%',
+  background: 'rgba(15,23,42,0.6)',
+  border: '1px solid rgba(100,116,139,0.2)',
+  borderRadius: 5,
+  color: '#e2e8f0',
+  fontSize: 11,
+  padding: '6px 9px',
+  outline: 'none',
+  boxSizing: 'border-box',
 };

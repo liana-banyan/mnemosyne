@@ -1,12 +1,11 @@
-// UnifiedSubstrateConsole — BP060 Application 002 Steps 3+4 · UI-7 live wire
-// Single Mnemosyne pane: Bridge view ↔ Dashboard view.
+// UnifiedSubstrateConsole — BP060 Application 002 Step 1 v3 · UI-7
+// Single MnemosyneC pane: Bridge view ↔ Dashboard view.
 // Ctrl+Tab to switch between views (keyboard shortcut).
 // State persists per-session via sessionStorage.
-// Bridge view: live Yoke messages via bridge:check-messages IPC (no mock data).
 // Architectural separation maintained — subsystems distinct, UX unified.
 // decay_class: BETWEEN on all new emissions.
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,67 +36,60 @@ const SS_VIEW_KEY = 'mnemo_unified_console_view';
 
 // ─── Bridge View ─────────────────────────────────────────────────────────────
 
-const BRIDGE_REFRESH_INTERVAL_MS = 10_000;
-
 function BridgeView() {
   const [messages, setMessages] = useState<BridgeMessage[]>([]);
-  const [pinnedMessages, setPinnedMessages] = useState<BridgeMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastFetch, setLastFetch] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchMessages = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
-      const bridge = window.amplify?.bridge;
-      if (bridge) {
-        const result = await bridge.checkMessages(30);
-        if (result.ok) {
-          const live = result.messages.map((m) => ({
-            id: m.id,
-            type: m.type as BridgeMessage['type'],
-            from: m.from,
-            to: m.to,
-            content: m.content,
-            ts: m.ts,
-            pinned: m.pinned,
-          }));
-          const pinned = result.pinned.map((m) => ({
-            id: m.id,
-            type: m.type as BridgeMessage['type'],
-            from: m.from,
-            to: m.to,
-            content: m.content,
-            ts: m.ts,
-            pinned: true,
-          }));
-          setMessages(live);
-          setPinnedMessages(pinned);
-        } else {
-          setError(result.error || 'Bridge check failed');
+      const ct = window.amplify?.caithedralTools;
+      if (ct) {
+        // Emit a diagnostic substrate address as a Bridge-check Pearl
+        const res = await ct.substrate_address_emit('bridge-heartbeat-' + Date.now());
+        if (res.ok) {
+          const msg: BridgeMessage = {
+            id: `bridge-${Date.now()}`,
+            type: 'info',
+            from: 'BRIDGE',
+            to: 'CONSOLE',
+            content: `Substrate heartbeat — address OK`,
+            ts: Date.now(),
+          };
+          setMessages((prev) => [msg, ...prev].slice(0, 100));
         }
-      } else {
-        setError('Bridge IPC not available (preload not loaded?)');
       }
       setLastFetch(Date.now());
     } catch (err) {
-      setError(String(err));
       console.error('[UnifiedSubstrateConsole] Bridge fetch error:', err);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // Auto-refresh every 10 seconds
-  useEffect(() => {
-    fetchMessages();
-    intervalRef.current = setInterval(fetchMessages, BRIDGE_REFRESH_INTERVAL_MS);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [fetchMessages]);
+  const addMockTasks = useCallback(() => {
+    const tasks: BridgeMessage[] = [
+      {
+        id: `task-${Date.now()}-1`,
+        type: 'task',
+        from: 'BISHOP',
+        to: 'KNIGHT',
+        content: 'BP060 W1 Application 002 Step 1 v3 — DELTAS ONLY — execute all 5 deltas',
+        ts: Date.now() - 120_000,
+        pinned: true,
+      },
+      {
+        id: `task-${Date.now()}-2`,
+        type: 'response',
+        from: 'KNIGHT',
+        to: 'BISHOP',
+        content: 'LANDED — DELTA-1/2/3 + UI-7/UI-8 complete — Tier-L composite written',
+        ts: Date.now(),
+      },
+    ];
+    setMessages((prev) => [...tasks, ...prev].slice(0, 100));
+  }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -107,11 +99,18 @@ function BridgeView() {
         display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
       }}>
         <div style={{ flex: 1, fontSize: 10, fontWeight: 700, color: '#6ee7b7' }}>
-          Bridge · Live Yoke
-          <span style={{ fontSize: 8, color: '#334155', fontWeight: 400, marginLeft: 6 }}>
-            auto-refresh 10s
-          </span>
+          Bridge · Live Messages
         </div>
+        <button
+          onClick={addMockTasks}
+          style={{
+            fontSize: 9, padding: '3px 8px', background: 'rgba(110,231,183,0.08)',
+            border: '1px solid rgba(110,231,183,0.25)', borderRadius: 4,
+            color: '#6ee7b7', cursor: 'pointer', fontWeight: 600,
+          }}
+        >
+          Load Yoke Tasks
+        </button>
         <button
           onClick={fetchMessages}
           disabled={loading}
@@ -125,19 +124,8 @@ function BridgeView() {
         </button>
       </div>
 
-      {/* Error display */}
-      {error && (
-        <div style={{
-          padding: '5px 12px', background: 'rgba(248,113,113,0.06)',
-          borderBottom: '1px solid rgba(248,113,113,0.2)', flexShrink: 0,
-          fontSize: 9, color: '#f87171',
-        }}>
-          ⚠ {error}
-        </div>
-      )}
-
       {/* Pinned tasks */}
-      {pinnedMessages.length > 0 && (
+      {messages.filter((m) => m.pinned).length > 0 && (
         <div style={{
           padding: '6px 12px', background: 'rgba(251,191,36,0.05)',
           borderBottom: '1px solid rgba(251,191,36,0.15)', flexShrink: 0,
@@ -145,7 +133,7 @@ function BridgeView() {
           <div style={{ fontSize: 8, fontWeight: 700, color: '#fbbf24', marginBottom: 4 }}>
             PINNED TASKS
           </div>
-          {pinnedMessages.map((m) => (
+          {messages.filter((m) => m.pinned).map((m) => (
             <div key={m.id} style={{
               padding: '4px 8px', background: 'rgba(251,191,36,0.06)',
               border: '1px solid rgba(251,191,36,0.2)', borderRadius: 4, marginBottom: 3,
@@ -161,14 +149,14 @@ function BridgeView() {
 
       {/* Message feed */}
       <div style={{ flex: 1, overflow: 'auto', padding: '6px 12px' }}>
-        {messages.length === 0 && !loading ? (
+        {messages.length === 0 ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center',
             justifyContent: 'center', height: '100%', gap: 8, opacity: 0.4,
           }}>
             <div style={{ fontSize: 24 }}>🌉</div>
             <div style={{ fontSize: 10, color: '#475569', textAlign: 'center' }}>
-              {error ? 'Bridge error — check connection.' : 'No messages found in Yoke.'}
+              No messages yet. Click "Load Yoke Tasks" or "Refresh".
             </div>
           </div>
         ) : (

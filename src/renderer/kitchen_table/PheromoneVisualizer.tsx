@@ -1,4 +1,4 @@
-// Pheromone Visualizer — Mnemosyne™ v0.1.8 · SEG-FT-6 · BP052 NOVACULA
+﻿// Pheromone Visualizer — MnemosyneC™ v0.1.8 · SEG-FT-6 · BP052 NOVACULA
 // Trail heat map · access frequency · auto-refresh every 10s
 
 import React, { useState, useEffect, useCallback } from 'react';

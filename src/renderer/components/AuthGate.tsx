@@ -1,4 +1,4 @@
-// Mnemosyne — Auth Gate
+// MnemosyneC — Auth Gate
 // B37 Phase 7 — First-launch modal; shown when status === 'unauthenticated' or 'validating'
 // BP046B — Moved from always-on-top overlay to HearthConjunctionWindow (normal OS window)
 //           so the user can ALWAYS escape: native X button, Alt+F4, Esc key, or click
@@ -152,7 +152,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
                 marginBottom: 6,
               }}
             >
-              Mnemosyne
+              MnemosyneC
             </div>
             <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.45)' }}>
               Memory, powered by CAI · Free to use. Better to join.

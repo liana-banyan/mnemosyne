@@ -7,6 +7,7 @@
 //   Fallback:  substrate + peer-sync only (zero cloud, zero Ollama)
 
 import { createHash } from 'crypto';
+import { FLOOR_MODEL } from '../shared/floor-model';
 import {
   existsSync,
   readFileSync,
@@ -357,7 +358,7 @@ export class SubstrateRouter {
 
   private async _tryOllama(
     query: string,
-    model = 'llama3.1:8b-instruct-q4_K_M',
+    model = FLOOR_MODEL,
   ): Promise<string | null> {
     try {
       const controller = new AbortController();

@@ -1,4 +1,4 @@
-// Mnemosyne — Membership Invite Banner
+// MnemosyneC — Membership Invite Banner
 // B37 Phase 7 — Soft invite to join cooperative + degraded-mode notice
 // BP046B — Removed all "trial" / "30 days" language per brand canon.
 // Shown during trial_active (gentle invite) and trial_expired (full-features paused) states.

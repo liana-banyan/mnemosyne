@@ -13,6 +13,7 @@ import { createSocket, Socket as UDPSocket } from 'dgram';
 import { createHash, randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { app } from 'electron';
+import { ensureLocalPeerKeypair } from '../identity/localPeerKeypair';
 import {
   LAN_MULTICAST_ADDR,
   LAN_MULTICAST_PORT,
@@ -118,6 +119,13 @@ class PeerDiscovery extends EventEmitter {
     }
   }
 
+  // MESH-6 Blocker B3: remove a LAN-discovered peer (mirrors removeWANPeer)
+  removeLANPeer(peerId: string): void {
+    if (this.lanPeers.delete(peerId)) {
+      this.emit('peer-lost', peerId);
+    }
+  }
+
   getAllPeers(): MnemosynePeer[] {
     return [
       ...Array.from(this.lanPeers.values()),
@@ -192,23 +200,53 @@ class PeerDiscovery extends EventEmitter {
   }
 }
 
-// ─── Singleton peer ID (stable per install) ────────────────────────────────
+// ─── Singleton peer ID (BP104 D3: Ed25519 keypair, fallback UUID) ───────────
 
 let _cachedPeerId: string | null = null;
 
-export function getStablePeerId(): string {
+/** Boot-time init — call before mesh / relay poll. */
+export async function initializeLocalPeerKeypair(): Promise<{ peerId: string; publicKeyHex: string }> {
+  const kp = ensureLocalPeerKeypair();
+  _cachedPeerId = kp.peerId;
+  return kp;
+}
+
+export async function getStablePeerIdAsync(): Promise<string> {
   if (_cachedPeerId) return _cachedPeerId;
-  // Derive stable ID from machine ID hash (no PII)
+  try {
+    const kp = ensureLocalPeerKeypair();
+    _cachedPeerId = kp.peerId;
+    return kp.peerId;
+  } catch {
+    return getStablePeerId();
+  }
+}
+
+function deriveUuidFallbackPeerId(): string {
   try {
     const { execSync } = require('child_process') as typeof import('child_process');
-    const raw = execSync('wmic csproduct get uuid', { encoding: 'utf8', timeout: 3000 });
-    const uuid = raw.split('\n').find((l) => l.trim().match(/^[0-9A-F-]{36}$/i))?.trim();
-    if (uuid) {
-      _cachedPeerId = createHash('sha256').update(`mnemosyne:${uuid}`).digest('hex').slice(0, 16);
-      return _cachedPeerId;
+    const raw = execSync(
+      'powershell -NoProfile -Command "(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID"',
+      { encoding: 'utf8', timeout: 5000 },
+    );
+    const uuid = raw.trim();
+    if (uuid && /^[0-9A-F-]{36}$/i.test(uuid)) {
+      return createHash('sha256').update(`mnemosyne:${uuid}`).digest('hex').slice(0, 16);
     }
-  } catch { /* fallback */ }
-  _cachedPeerId = randomUUID().replace(/-/g, '').slice(0, 16);
+  } catch { /* fallback to random ID */ }
+  return randomUUID().replace(/-/g, '').slice(0, 16);
+}
+
+export function getStablePeerId(): string {
+  if (_cachedPeerId) return _cachedPeerId;
+  try {
+    const kp = ensureLocalPeerKeypair();
+    _cachedPeerId = kp.peerId;
+    return kp.peerId;
+  } catch {
+    // Keypair unavailable (e.g. before app ready) — legacy machine UUID fallback
+  }
+  _cachedPeerId = deriveUuidFallbackPeerId();
   return _cachedPeerId;
 }
 

@@ -17,6 +17,7 @@ import {
 } from 'fs';
 import { resolve } from 'path';
 import type { SubstrateRecord, SubstrateLocalIndex } from './substrate_router';
+import { dag_soccerball_lookup as _dagLookupForFetch } from 'caithedral-core/tools/dag_soccerball';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ const LB_SUBSTRATE_WRITE_URL = 'https://lianabanyan.com/api/substrate/write';
 const LB_SUBSTRATE_SYNC_URL = 'https://lianabanyan.com/api/substrate/sync';
 
 // Peer-to-peer discovery (local AMPLIFY instances announce on this port)
-const PEER_ANNOUNCE_PORT = 11481;
+const PEER_ANNOUNCE_PORT = Number(process.env.PEER_ANNOUNCE_PORT ?? 11481);
 const PEER_SYNC_TIMEOUT_MS = 5000;
 
 // Sync intervals
@@ -78,6 +79,20 @@ export class FederationClient {
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private peerScanTimer: ReturnType<typeof setInterval> | null = null;
   private announceServer: Server | null = null;
+
+  // MESH-6 Piece 5: mDNS peer source injection (replaces hardcoded subnet scan)
+  private peerDiscoverySource: (() => Array<{ address: string; port: number }>) | null = null;
+
+  setPeerDiscoverySource(fn: () => Array<{ address: string; port: number }>): void {
+    this.peerDiscoverySource = fn;
+  }
+
+  // BP072: inbound TCP hook for pair_* and assist_* messages not handled by this server
+  private inboundHook: ((msg: { type: string; peerId: string; payload?: unknown; ts: string }) => void) | null = null;
+
+  setInboundHook(fn: (msg: { type: string; peerId: string; payload?: unknown; ts: string }) => void): void {
+    this.inboundHook = fn;
+  }
 
   constructor(index: SubstrateLocalIndex) {
     this.index = index;
@@ -343,6 +358,8 @@ export class FederationClient {
           const msg = JSON.parse(line) as {
             type: string;
             record_ids?: string[];
+            dag_id?: string;
+            payload?: { dag_id?: string };
           };
 
           if (msg.type === 'sync_request') {
@@ -362,6 +379,38 @@ export class FederationClient {
               JSON.stringify({ type: 'sync_response', records: toSend }) + '\n',
             );
             socket.end();
+          } else if (msg.type === 'sid_fetch_request') {
+            // MESH-6 Blocker B1 fix: respond on the same socket before ending
+            const dag_id = msg.payload?.dag_id ?? msg.dag_id;
+            if (!dag_id) {
+              socket.write(JSON.stringify({ type: 'sid_fetch_response', peerId: '', payload: { dag_id: '', found: false, node: null }, ts: new Date().toISOString() }) + '\n');
+              socket.end();
+              return;
+            }
+            try {
+              const node = _dagLookupForFetch(dag_id);
+              const response = {
+                type: 'sid_fetch_response',
+                peerId: '',
+                payload: { dag_id, found: !!node, node: node ?? null },
+                ts: new Date().toISOString(),
+              };
+              socket.write(JSON.stringify(response) + '\n', () => {
+                socket.end();
+              });
+              if (node) {
+                console.log(`[FederationClient] sid_fetch_request: dag_id=${dag_id} found=true — served to ${peerAddr}`);
+              } else {
+                console.log(`[FederationClient] sid_fetch_request: dag_id=${dag_id} found=false — not in local crystal`);
+              }
+            } catch (err) {
+              socket.write(JSON.stringify({ type: 'sid_fetch_response', peerId: '', payload: { dag_id, found: false, node: null }, ts: new Date().toISOString() }) + '\n', () => {
+                socket.end();
+              });
+            }
+          } else {
+            // BP072: forward pair_* and assist_* (and any future message types) to registered hook
+            this.inboundHook?.(msg as { type: string; peerId: string; payload?: unknown; ts: string });
           }
         } catch {
           // Malformed — ignore
@@ -383,9 +432,10 @@ export class FederationClient {
   }
 
   private async _scanLocalPeers(): Promise<void> {
-    // Attempt to connect to common local network addresses on PEER_ANNOUNCE_PORT
-    // In a real deployment, mDNS/Bonjour would be used; this is a lightweight fallback
-    const localCandidates = this._guessLocalPeerAddresses();
+    // MESH-6 Piece 5: prefer mDNS-discovered peers from PeerDiscovery when available
+    const localCandidates: string[] = this.peerDiscoverySource
+      ? this.peerDiscoverySource().map((p) => p.address)
+      : this._guessLocalPeerAddresses(); // fallback: hardcoded subnet probe
     const results = await Promise.allSettled(
       localCandidates.map((addr) => this._probePeer(addr)),
     );

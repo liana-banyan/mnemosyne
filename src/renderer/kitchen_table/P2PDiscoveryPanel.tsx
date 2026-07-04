@@ -1,4 +1,4 @@
-// P2P Discovery Panel — Mnemosyne™ v0.1.8 · SEG-FT-3 · BP052 NOVACULA
+﻿// P2P Discovery Panel — MnemosyneC™ v0.1.8 · SEG-FT-3 · BP052 NOVACULA
 // LAN peer discovery status panel — no cloud relay.
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -44,7 +44,7 @@ export function P2PDiscoveryPanel() {
       } else {
         const peerId = localStorage.getItem('mnemo_peer_id') ?? Math.random().toString(36).slice(2);
         localStorage.setItem('mnemo_peer_id', peerId);
-        const displayName = localStorage.getItem('mnemo_display_name') ?? 'Mnemosyne™';
+        const displayName = localStorage.getItem('mnemo_display_name') ?? 'MnemosyneC™';
         await (window.amplify as any)?.kitchenTable?.p2pStart?.(peerId, displayName);
         setActive(true);
         setTimeout(() => { void refresh(); }, 2000);
@@ -114,7 +114,7 @@ export function P2PDiscoveryPanel() {
       )}
       {peers.length === 0 && !active && (
         <div style={{ fontSize: 10, color: '#334155', textAlign: 'center', padding: '8px 0' }}>
-          Start discovery to find other Mnemosyne™ instances on your network
+          Start discovery to find other MnemosyneC™ instances on your network
         </div>
       )}
       {peers.map((peer) => (

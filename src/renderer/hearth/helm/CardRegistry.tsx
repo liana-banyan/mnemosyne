@@ -83,7 +83,7 @@ export const CARD_META_LIST: CardMeta[] = [
   { id: 'in_conjunction',   icon: '📡', label: 'In Conjunction',    category: 'agent',     description: '8-agent CAI Bridge panel — select and dispatch AI modes.' },
   { id: 'active_substrate', icon: '🔬', label: 'Active Substrate',  category: 'substrate', description: 'Live scribe monitor — substrate metrics, flip-card detail.' },
   { id: 'drekaskip',        icon: '🌊', label: 'Drekaskip',         category: 'activity',  description: 'Wave status panel — live SEG progression and dispatch receipts.' },
-  { id: 'on_deck',          icon: '🧭', label: 'On Deck',           category: 'activity',  description: 'Task queue staging — pending Mnemosyne work items.' },
+  { id: 'on_deck',          icon: '🧭', label: 'On Deck',           category: 'activity',  description: 'Task queue staging — pending MnemosyneC work items.' },
   { id: 'banyan_metric',    icon: '📊', label: 'Banyan Metric',     category: 'ledger',    description: 'Cooperative platform metrics — member activity, cost avoided.' },
   { id: 'my_tablets',       icon: '📋', label: 'My Tablets',        category: 'substrate', description: 'Personal substrate tablets — notes, decisions, session anchors.' },
   { id: 'hearth_pantheon',  icon: '🏛️', label: 'Hearth Pantheon',  category: 'agent',     description: 'Active Pantheon agents — status, queue depth, last dispatch.' },

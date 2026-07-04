@@ -1,0 +1,25 @@
+{
+  "plugin_id": "plugin_sample_ip_ledger_browser",
+  "name": "IP Ledger Browser",
+  "version": "0.1.0",
+  "category": "community",
+  "description": "Browse and verify IP Ledger entries directly from your Mnemosyne frame. Displays correction chains, adjudicator badges, and evidence links. Composes with SAGA 6 supersedes-chain query API.",
+  "author_member_id": "liana-banyan-corp",
+  "license": "AGPL-3.0",
+  "ip_ledger_id": "ipl_sample_ip_ledger_browser_001",
+  "entry_point": "ip_ledger_browser/index.ts",
+  "min_mnemosyne_ver": "0.4.0",
+  "payment_marks": 0,
+  "payment_joules": 0,
+  "payment_credits": 0,
+  "tags": ["ip-ledger", "transparency", "cooperative", "verification"],
+  "status": "draft",
+  "registered_at": "2026-05-12T22:00:00.000Z",
+  "updated_at": "2026-05-12T22:00:00.000Z",
+  "sub_panel_config": {
+    "mount_point": "tab",
+    "default_width": 400,
+    "requires_ipc": ["ipLedgerQuery", "ipLedgerHistory"]
+  },
+  "_note": "Sample plugin — demonstrates IP Ledger integration. Replace with real entry after AGPL review."
+}

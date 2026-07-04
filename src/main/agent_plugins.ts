@@ -1,7 +1,7 @@
 // SAGA 4 BP041 — Agent Plugins Loader
 // Watches ~/.lb_substrate/plugins/agents/*.json for community plugin manifests.
-// SSPL + Cooperative Defensive Patent Pledge #2260 Blood Rule: all plugins distributed for Mnemosyne carry SSPL umbrella.
-// Higher Standards Class: third-party plugin authors held to SSPL-1.0 + cooperative-class.
+// SSPL Blood Rule: all plugins distributed for Mnemosyne carry SSPL umbrella.
+// Higher Standards Class: third-party plugin authors held to SSPL + cooperative-class.
 // IP Ledger: member-developed plugins attributed via plugin manifest `ipLedgerRef` field.
 //
 // Plugin spec (JSON manifest):

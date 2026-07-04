@@ -1,4 +1,4 @@
-// Mnemosyne — Roll Queue Dashboard
+// MnemosyneC — Roll Queue Dashboard
 // SAGA 14 BP045 W1 — Dual-veto nomination admin surface
 //
 // Role-gated: founder | helm-crown

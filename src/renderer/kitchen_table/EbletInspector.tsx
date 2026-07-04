@@ -1,4 +1,4 @@
-// Eblet™ Inspector — Mnemosyne™ v0.1.8 · SEG-FT-6 · BP052 NOVACULA
+﻿// Eblet™ Inspector — MnemosyneC™ v0.1.8 · SEG-FT-6 · BP052 NOVACULA
 // Searchable list of Eblets · expand for full content · export · provenance chain
 
 import React, { useState, useEffect, useCallback } from 'react';

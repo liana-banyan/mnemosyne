@@ -1,19 +1,21 @@
 // B83e — Ollama Backend Adapter
-// Calls http://localhost:11434/api/generate (Ollama default)
+// Routes availability checks through the process-wide OllamaManager singleton (SEG-1 v0.1.55).
 // Model: llama3.1:8b-instruct-q4_K_M (matches B69 codegen path)
 // R-MECHANISM-VERIFY: verify Ollama daemon running before claiming available:ok
 
 import type { AdapterReceipt } from '../types';
+import { ollamaManager } from '../../../ollama_manager';
 
-const OLLAMA_BASE = 'http://localhost:11434';
+const OLLAMA_BASE = 'http://127.0.0.1:11434';
 const OLLAMA_MODEL = 'llama3.1:8b-instruct-q4_K_M';
 
 export async function ollamaAvailable(): Promise<{ ok: boolean; degraded_reason?: string }> {
   try {
-    const res = await fetch(`${OLLAMA_BASE}/api/tags`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!res.ok) return { ok: false, degraded_reason: `Ollama returned ${res.status}` };
+    const status = ollamaManager.getStatus();
+    const reachable = status.running || (await ollamaManager.isReachable());
+    if (!reachable) {
+      return { ok: false, degraded_reason: 'Ollama unreachable — local AI engine not running' };
+    }
     return { ok: true };
   } catch (err) {
     return { ok: false, degraded_reason: `Ollama unreachable: ${String(err)}` };
@@ -27,6 +29,17 @@ export async function ollamaDispatch(
   const start = Date.now();
 
   try {
+    const status = ollamaManager.getStatus();
+    const reachable = status.running || (await ollamaManager.isReachable());
+    if (!reachable) {
+      return {
+        name: 'ollama',
+        result: null,
+        error: 'Ollama unreachable — local AI engine not running',
+        latency_ms: Date.now() - start,
+      };
+    }
+
     const res = await fetch(`${OLLAMA_BASE}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

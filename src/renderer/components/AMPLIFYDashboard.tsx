@@ -378,9 +378,9 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
             }}
           >
             <div>
-              <div className="dashboard__title">Mnemosyne™</div>
+              <div className="dashboard__title">MnemosyneC™</div>
               <div className="dashboard__subtitle">
-                Mnemosyne CAI Amplifier — {MODES.find((m) => m.id === currentMode)?.label ?? 'Normal'} Mode
+                MnemosyneC CAI Amplifier — {MODES.find((m) => m.id === currentMode)?.label ?? 'Normal'} Mode
                 {forcedMode && (
                   <span style={{ color: '#f59e0b', marginLeft: 6, fontSize: 10 }}>(forced)</span>
                 )}
@@ -839,7 +839,7 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                   <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>
                     {updateState.status === 'idle'
-                      ? `Mnemosyne ${appVersion ? `v${appVersion.version}` : ''}`
+                      ? `MnemosyneC ${appVersion ? `v${appVersion.version}` : ''}`
                       : updateState.status === 'checking' ? 'Checking…'
                       : updateState.status === 'not-available'
                       ? `✓ v${appVersion?.version ?? '?'} — up to date`
@@ -1000,7 +1000,7 @@ export const AMPLIFYDashboard: React.FC<AMPLIFYDashboardProps> = ({
               letterSpacing: 0.5,
             }}
           >
-            Mnemosyne · powered by CAI · SSPL · Pledge #2260 · No Ads · No Strings
+            MnemosyneC · powered by CAI · SSPL · Pledge #2260 · No Ads · No Strings
           </div>
           {appVersion && (
             <div
