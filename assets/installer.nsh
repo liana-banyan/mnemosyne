@@ -18,7 +18,7 @@
   nsExec::Exec 'taskkill /F /IM "AMPLIFY Computer.exe" /T'
 
   ; D3 persistence — Layer 1a: restore keypair from CommonAppData backup if AppData was wiped
-  ; This fires when NSIS upgrade or user-initiated uninstall deleted %APPDATA%\MnemosyneC\keys\
+  ; This fires when NSIS upgrade or user-initiated uninstall deleted the keys folder under %APPDATA%\MnemosyneC
   ${IfNot} ${FileExists} "$APPDATA\MnemosyneC\keys\peer.ed25519.priv"
     ${If} ${FileExists} "$%PROGRAMDATA%\MnemosyneC\keys\peer.ed25519.priv"
       DetailPrint "D3 persistence: restoring keypair from CommonAppData backup"
