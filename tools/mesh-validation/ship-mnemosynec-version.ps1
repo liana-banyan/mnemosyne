@@ -1,4 +1,4 @@
-# ship-mnemosynec-version.ps1
+﻿# ship-mnemosynec-version.ps1
 # MnemosyneC Canonical Ship Pipeline — BP099 SEG-MM Novaculi
 # Written: 2026-06-29
 #
