@@ -14,7 +14,9 @@
       "caithedral-core/tools/eblit": ["./node_modules/caithedral-core/dist/main/tools/eblit_tools"],
       "caithedral-core/tools/substrace": ["./node_modules/caithedral-core/dist/main/tools/substrace_tools"],
       "caithedral-core/tools/quilt": ["./node_modules/caithedral-core/dist/main/tools/quilt_tools"],
-      "caithedral-core/tools/substrate_address": ["./node_modules/caithedral-core/dist/main/tools/substrate_address"]
+      "caithedral-core/tools/substrate_address": ["./node_modules/caithedral-core/dist/main/tools/substrate_address"],
+      "caithedral-core/tools/dag_soccerball": ["./node_modules/caithedral-core/dist/main/tools/dag_soccerball_tools"],
+      "caithedral-core/dns/wan_soccerball_address": ["./node_modules/caithedral-core/dist/main/dns/wan_soccerball_address"]
     },
     "outDir": "./dist/main",
     "rootDir": "./src/main",
