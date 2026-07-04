@@ -30,3 +30,8 @@ Thumbs.db
 
 node_modules/
 caithedral-core/
+
+# Ollama bundled model blobs (large binaries — not for git)
+resources/ollama/bundled/models/blobs/
+resources/ollama/ollama.exe
+resources/ollama/ollama
