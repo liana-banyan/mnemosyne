@@ -6,7 +6,7 @@
 // that you can pick and choose from with categories." — Founder direct, BP041
 //
 // Distribution model:
-//   - SSPL umbrella: all plugins must bind SSPL-1.0 license (cooperative-class)
+//   - SSPL umbrella: all plugins must bind SSPL license (cooperative-class)
 //   - Substitution-only payment (NO-FIAT-CONVERSION Blood Rule)
 //   - IP Ledger registration required per plugin (appendPortalSearchEntry pattern)
 //   - Developer keeps 83.3%; platform margin Cost+20%; Substitution-only settlement

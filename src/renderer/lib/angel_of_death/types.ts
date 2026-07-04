@@ -49,7 +49,7 @@ export interface CooperativeStamp {
   memberId: string;
   /** Display name of the attesting member (may be null if member chose anonymity). */
   memberDisplayName: string | null;
-  /** Cathedral Federation node that recorded the stamp attestation. */
+  /** Caithedral Federation node that recorded the stamp attestation. */
   attesingCathedralNode: string;
   /** ISO-8601 timestamp of stamp application. */
   stampedAt: string;
@@ -61,7 +61,7 @@ export interface CooperativeStamp {
   federationHops: FederationHop[];
 }
 
-/** Single hop in the Cathedral Federation provenance chain. */
+/** Single hop in the Caithedral Federation provenance chain. */
 export interface FederationHop {
   nodeId: string;
   nodeLabel: string;

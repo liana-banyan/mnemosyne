@@ -1,189 +1,140 @@
-// bridge_ipc.ts — BP060 Application 002 Steps 3+4 · UI-7 Bridge live wire
-// Exposes IPC channels for live Yoke (knight-bishop-bridge) message access.
-// Reads/writes KNIGHT_BISHOP_MESSAGES.md — the canonical Yoke per R-USE-THE-YOKE.
-// decay_class: BETWEEN on all emissions.
+// bridge_ipc.ts — SEG-MC-4 Wave D · migrated to pearl-based JSONL store BP079
+// Original: BP060 Application 002 Steps 3+4 · UI-7 live Yoke wire
+//
+// Channels:
+//   bridge:send-message  — peer-to-peer via JSONL store; AI via Ollama (in-mem reply)
+//   bridge:check-messages — reads JSONL store for clientId (or Ollama reply queue)
+//   bridge:ack-message   — NEW: marks a pearl read in the JSONL store
+//
+// Migration note: in-memory _inbox replaced by ~/.mnemosynec/messages.jsonl
+// for all non-Ollama messages (Ollama AI replies stay in _aiReplies: in-memory
+// since they are ephemeral renderer feedback, not durable Yoke pearls).
 
 import { ipcMain } from 'electron';
-import { readFileSync, appendFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
-import { homedir } from 'os';
+import {
+  sendMessage,
+  checkMessages,
+  ackMessage,
+} from './mnemosynec_message_store';
 
-// ─── Yoke file path ──────────────────────────────────────────────────────────
+const OLLAMA_API_BASE = 'http://127.0.0.1:11434';
 
-const WORKSPACE_ROOT = 'C:/Users/Administrator/Documents/LianaBanyanPlatform';
-const YOKE_PATH = resolve(WORKSPACE_ROOT, 'KNIGHT_BISHOP_MESSAGES.md');
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface BridgeMessage {
-  id: string;
-  type: 'task' | 'response' | 'info' | 'request';
-  from: string;
+// Ephemeral queue for Ollama AI replies only (not persisted; session-scoped).
+interface AiReply {
+  pearl_id: string;
   to: string;
-  content: string;
-  ts: number;
-  pinned?: boolean;
-  raw_section?: string;
+  from: string;
+  subject: string;
+  body: string;
+  ts: string;
 }
-
-export interface BridgeCheckResult {
-  ok: boolean;
-  messages: BridgeMessage[];
-  pinned: BridgeMessage[];
-  total_in_file: number;
-  yoke_path: string;
-  read_at: string;
-  error?: string;
-}
-
-export interface BridgeSendResult {
-  ok: boolean;
-  message_id?: string;
-  error?: string;
-}
-
-// ─── Yoke markdown parser ─────────────────────────────────────────────────────
-
-function parseYokeMessages(content: string, count = 20): BridgeMessage[] {
-  const messages: BridgeMessage[] = [];
-  // Split into sections by "---" or "##" headers
-  const sections = content.split(/\n(?=##\s|\n---\n)/);
-
-  for (const section of sections) {
-    const lines = section.trim().split('\n');
-    if (lines.length < 2) continue;
-
-    const header = lines[0] || '';
-
-    // Parse type from header keywords
-    let msgType: BridgeMessage['type'] = 'info';
-    if (/task/i.test(header)) msgType = 'task';
-    else if (/response|LANDED|reply/i.test(header)) msgType = 'response';
-    else if (/request|ASK/i.test(header)) msgType = 'request';
-    else if (/NOTIFICATION|info|FYI/i.test(header)) msgType = 'info';
-
-    // Extract from/to
-    let from = 'SYSTEM';
-    let to = 'BOTH';
-    const directionMatch = header.match(/\(([A-Z]+)\s*(?:→|->)\s*([A-Z]+)\)/i)
-      || section.match(/\*\*From:\*\*\s*([A-Z]+)/i)
-      || section.match(/\*\*To:\*\*\s*([A-Z]+)/i);
-    if (directionMatch) {
-      from = directionMatch[1]?.toUpperCase() || 'SYSTEM';
-      to = directionMatch[2]?.toUpperCase() || 'BOTH';
-    } else if (/BISHOP.*KNIGHT/i.test(header)) {
-      from = 'BISHOP'; to = 'KNIGHT';
-    } else if (/KNIGHT.*BISHOP/i.test(header)) {
-      from = 'KNIGHT'; to = 'BISHOP';
-    } else if (/KNIGHT.*FOUNDER/i.test(header)) {
-      from = 'KNIGHT'; to = 'FOUNDER';
-    } else if (/BISHOP.*FOUNDER/i.test(header)) {
-      from = 'BISHOP'; to = 'FOUNDER';
-    }
-
-    // Extract timestamp
-    let ts = Date.now();
-    const tsMatch = section.match(/\*\*Time:\*\*\s*(\d{4}-\d{2}-\d{2}T[\d:Z.+-]+)/i)
-      || section.match(/(\d{4}-\d{2}-\d{2}T[\d:Z.+-]+)/);
-    if (tsMatch) {
-      try { ts = new Date(tsMatch[1]).getTime(); } catch { /* keep Date.now() */ }
-    }
-
-    // Content is everything after the header line
-    const contentLines = lines.slice(1).join('\n').trim();
-    if (!contentLines) continue;
-
-    // Truncate long sections for the message list
-    const contentPreview = contentLines.length > 400
-      ? contentLines.slice(0, 400) + '…'
-      : contentLines;
-
-    // Detect pinned tasks (headers with "TASK" and not yet acknowledged)
-    const isPinned = /\[TASK\]|\[task\]|pinned/i.test(header) && msgType === 'task';
-
-    const id = `yoke-${ts}-${Math.random().toString(36).slice(2, 8)}`;
-    messages.push({ id, type: msgType, from, to, content: contentPreview, ts, pinned: isPinned });
-  }
-
-  // Sort newest first, take count
-  messages.sort((a, b) => b.ts - a.ts);
-  return messages.slice(0, count);
-}
-
-// ─── IPC registration ─────────────────────────────────────────────────────────
+const _aiReplies: AiReply[] = [];
 
 export function registerBridgeIPC(): void {
+  // ── bridge:send-message ──────────────────────────────────────────────────
+  // Args (new shape):  { from, to, subject, body }
+  // Args (legacy shape): { from?, to, type, content } — remapped internally
+  // AI messages (type === 'ai' OR to === 'floor-model') still route to Ollama.
+  ipcMain.handle(
+    'bridge:send-message',
+    async (
+      _event,
+      args: {
+        to: string;
+        from?: string;
+        // New pearl shape
+        subject?: string;
+        body?: string;
+        // Legacy shape (BP060)
+        type?: string;
+        content?: string;
+      },
+    ) => {
+      const from = args.from ?? 'user';
+      const to = args.to;
+      // Normalize subject/body from either new or legacy shape
+      const subject = args.subject ?? args.type ?? 'message';
+      const body = args.body ?? args.content ?? '';
 
-  // bridge:check-messages — read live Yoke messages
-  ipcMain.handle('bridge:check-messages', async (_ev, count = 20): Promise<BridgeCheckResult> => {
-    try {
-      if (!existsSync(YOKE_PATH)) {
-        return {
-          ok: false,
-          messages: [],
-          pinned: [],
-          total_in_file: 0,
-          yoke_path: YOKE_PATH,
-          read_at: new Date().toISOString(),
-          error: `Yoke file not found: ${YOKE_PATH}`,
-        };
+      // Route AI messages through Ollama (ephemeral, not stored in pearl JSONL)
+      if (subject === 'ai' || to === 'floor-model') {
+        try {
+          const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'gemma2:2b',
+              prompt: body,
+              stream: false,
+              options: { num_predict: 512, temperature: 0.7 },
+            }),
+          });
+          if (!res.ok) {
+            return { ok: false, error: `Ollama request failed: ${res.statusText}` };
+          }
+          const data = (await res.json()) as { response?: string };
+          const reply: AiReply = {
+            pearl_id: crypto.randomUUID(),
+            to: from,
+            from: to,
+            subject: 'ai-reply',
+            body: data.response ?? '(no response)',
+            ts: new Date().toISOString(),
+          };
+          _aiReplies.push(reply);
+          // Keep bounded to avoid unbounded memory growth
+          if (_aiReplies.length > 200) _aiReplies.splice(0, _aiReplies.length - 200);
+          return { ok: true, pearl_id: reply.pearl_id };
+        } catch (err) {
+          return { ok: false, error: String(err) };
+        }
       }
 
-      const content = readFileSync(YOKE_PATH, 'utf-8');
-      const all = parseYokeMessages(content, Math.max(count, 50));
-      const pinned = all.filter((m) => m.pinned);
-      const messages = all.slice(0, count);
+      // All other peer messages → durable JSONL pearl store
+      return sendMessage({ from, to, subject, body });
+    },
+  );
 
-      return {
-        ok: true,
-        messages,
-        pinned,
-        total_in_file: all.length,
-        yoke_path: YOKE_PATH,
-        read_at: new Date().toISOString(),
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        messages: [],
-        pinned: [],
-        total_in_file: 0,
-        yoke_path: YOKE_PATH,
-        read_at: new Date().toISOString(),
-        error: String(err),
-      };
+  // ── bridge:check-messages ────────────────────────────────────────────────
+  // New arg: clientId (string) — returns all unread pearls addressed to clientId.
+  // Legacy arg: count (number) — returned a slice of the in-memory inbox.
+  // Both are handled: if arg is a string it is treated as clientId;
+  // if arg is a number (legacy) or { clientId, count } object, adapted accordingly.
+  ipcMain.handle('bridge:check-messages', (_event, arg?: string | number | { clientId?: string; count?: number }) => {
+    // Resolve clientId from any arg shape
+    let clientId: string;
+    let maxCount: number = 20;
+
+    if (typeof arg === 'string') {
+      clientId = arg;
+    } else if (typeof arg === 'number') {
+      // Legacy: caller sent count only — return messages for 'global' recipient
+      clientId = 'global';
+      maxCount = arg;
+    } else if (arg && typeof arg === 'object') {
+      clientId = arg.clientId ?? 'global';
+      maxCount = arg.count ?? 20;
+    } else {
+      clientId = 'global';
     }
+
+    // Pearl JSONL store results
+    const pearls = checkMessages(clientId).slice(0, maxCount);
+
+    // Also drain any Ollama AI replies addressed to this clientId
+    const aiForClient = _aiReplies.filter((r) => r.to === clientId);
+    aiForClient.forEach((r) => {
+      const idx = _aiReplies.indexOf(r);
+      if (idx !== -1) _aiReplies.splice(idx, 1);
+    });
+
+    const messages = [...pearls, ...aiForClient];
+    return { ok: true, messages, total: messages.length };
   });
 
-  // bridge:send-message — append to Yoke
-  ipcMain.handle('bridge:send-message', async (
-    _ev,
-    args: { to: string; type: string; content: string; from?: string }
-  ): Promise<BridgeSendResult> => {
-    try {
-      const { to, type, content, from = 'MNEMOSYNE' } = args;
-      const ts = new Date().toISOString();
-      const messageId = `mnemosyne-${Date.now()}`;
-
-      // Append in Yoke markdown format
-      const entry = [
-        '',
-        '---',
-        '',
-        `## [${type.toUpperCase()}] ${from} -> ${to} (via Mnemosyne UI-7)`,
-        `**Time:** ${ts}`,
-        `**Message-ID:** ${messageId}`,
-        '',
-        content,
-        '',
-      ].join('\n');
-
-      appendFileSync(YOKE_PATH, entry, 'utf-8');
-
-      return { ok: true, message_id: messageId };
-    } catch (err) {
-      return { ok: false, error: String(err) };
-    }
+  // ── bridge:ack-message (NEW) ─────────────────────────────────────────────
+  // Marks a pearl as read so it no longer appears in bridge:check-messages.
+  ipcMain.handle('bridge:ack-message', (_event, pearlId: string) => {
+    return ackMessage(pearlId);
   });
-
 }

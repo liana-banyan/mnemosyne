@@ -74,11 +74,11 @@ export const ShareCard: React.FC<ShareCardProps> = ({
     // Logo / brand mark
     ctx.font = 'bold 13px system-ui, sans-serif';
     ctx.fillStyle = 'rgba(245,158,11,0.85)';
-    ctx.fillText('Mnemosyne', 32, 40);
+    ctx.fillText('MnemosyneC', 32, 40);
 
     ctx.font = '11px system-ui, sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.3)';
-    ctx.fillText('Mnemosyne CAI Amplifier · lianabanyan.com', 32, 58);
+    ctx.fillText('MnemosyneC CAI Amplifier · lianabanyan.com', 32, 58);
 
     // Main headline
     ctx.font = `bold 52px system-ui, sans-serif`;
@@ -138,7 +138,7 @@ export const ShareCard: React.FC<ShareCardProps> = ({
   // ── Copy text ──────────────────────────────────────────────────────────────
   const copyText = async () => {
     const text = [
-      `Mnemosyne — ${period} Savings Report`,
+      `MnemosyneC — ${period} Savings Report`,
       `Cloud cost avoided: $${costAvoided.toFixed(2)}`,
       `Total queries: ${totalQueries.toLocaleString()}`,
       `Local served: ${substratePct.toFixed(0)}% (substrate + Ollama)`,

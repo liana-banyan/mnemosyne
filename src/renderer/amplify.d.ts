@@ -11,6 +11,14 @@ export interface UpdateState {
   errorMessage?: string;
 }
 
+// M21: Automatic update scheduler config
+export interface AutoUpdateConfig {
+  autoUpdates: boolean;
+  installTiming: 'launch' | 'quit' | 'scheduled' | 'approve';
+  scheduledTime: string;
+  majorVersionRequiresApproval: boolean;
+}
+
 export interface FrameModePayload {
   mode: FrameMode;
   forced_mode: FrameMode | null;
@@ -44,6 +52,18 @@ export interface ModelPullProgress {
   totalBytes?: number;
   percentComplete?: number;
   error?: string;
+  // Phase 3 granular progress fields (SEG-3: fields used in ModelSetupProgress.tsx)
+  phase?: string;
+  layerIndex?: number;
+  layerCount?: number;
+  completed?: number;
+}
+
+export interface EngineSetupProgress {
+  step: string;
+  message: string;
+  detail?: string;
+  percentComplete?: number;
 }
 
 export interface SubstrateQueryResult {
@@ -105,6 +125,14 @@ export interface TelemetrySummary {
   all_time_queries: number;
 }
 
+// BP078 Scope 6.5 — SKU pull progress
+export interface SkuPullProgress {
+  downloaded: number;   // bytes downloaded
+  total: number;        // total bytes (0 if unknown)
+  speed?: string;       // e.g. "12.3 MB/s"
+  status?: string;      // raw ollama status line
+}
+
 export interface FederationPeer {
   address: string;
   port: number;
@@ -164,6 +192,12 @@ declare global {
       listOllamaModels: () => Promise<string[]>;
       checkDiskSpace: () => Promise<{ ok: boolean; requiredGB: number }>;
       onOllamaPullProgress: (cb: (progress: ModelPullProgress) => void) => () => void;
+      pullNamedModel: (modelName: string) => Promise<{ success: boolean; alreadyInstalled?: boolean; error?: string }>;
+      checkOllamaAndModel: (modelName: string) => Promise<{ reachable: boolean; hasModel: boolean; models: string[] }>;
+      setupPrivateAI: () => Promise<{ ok: boolean; error?: string }>;
+      markBp067FirstRunComplete: () => Promise<{ ok: boolean }>;
+      askFloorModel: (prompt: string) => Promise<{ ok: boolean; text?: string; error?: string }>;
+      onEngineSetupProgress: (cb: (progress: EngineSetupProgress) => void) => () => void;
       // Substrate (Phase 3)
       substrateQuery: (query: string, model?: string) => Promise<SubstrateQueryResult>;
       substrateWrite: (text: string, source?: string, keywords?: string[]) => Promise<{ ok: boolean; id?: string }>;
@@ -179,7 +213,17 @@ declare global {
       getUpdateState: () => Promise<UpdateState>;
       checkForUpdates: () => void;
       installUpdate: () => void;
+      downloadUpdate: () => void;  // BP067 Phase 1D — safe tier: user-triggered download
+      setAutoInstallOnQuit: (enabled: boolean) => void;  // 1D-FIX: opt-out toggle
       onUpdateStateChanged: (cb: (state: UpdateState) => void) => () => void;
+      // M21: Automatic update scheduler (Block 1-6)
+      getAutoUpdateConfig: () => Promise<AutoUpdateConfig>;
+      setAutoUpdateConfig: (cfg: Partial<AutoUpdateConfig>) => Promise<AutoUpdateConfig>;
+      getUpdateHistory: () => Promise<Record<string, unknown>[]>;
+      approveAutoUpdateInstall: (readyPath: string) => void;
+      onAutoUpdatePatchReady: (cb: (data: { version: string }) => void) => () => void;
+      onAutoUpdateMajorAvailable: (cb: (data: { version: string }) => void) => () => void;
+      onAutoUpdateApproveRequired: (cb: (data: { version: string; readyPath: string }) => void) => () => void;
       // MoneyPenny
       getMoneyPennyUrl: () => Promise<{ url: string; ips: string[]; port: number }>;
       // Auth (Phase 7)
@@ -240,6 +284,9 @@ declare global {
         onEbletMinted: (callback: (eblet: any) => void) => void;
         onFolderError: (callback: (payload: { folderId: string; error: string }) => void) => void;
       };
+      // BP067 Phase 3B — mnemo://focus/<tab_id> deep-link → per-install focus-tab
+      onNavigateFocusTab?: (cb: (tabId: string) => void) => () => void;
+
       // SAGA 13 BP046B — 5-Marks first-install bonus
       creditFirstInstallMarks?: () => void;
       // SAGA 07 BP046B — Utility methods
@@ -247,42 +294,280 @@ declare global {
       hideOverlay?: () => void;
       showOverlay?: () => void;
       getTelemetrySummary?: () => Promise<TelemetrySummary>;
-      // Pearl Decode IPC (v0.1.14)
-      pearl?: {
-        decode: (sspsPayload: string) => Promise<unknown>;
-        list: () => Promise<PearlItem[]>;
+      // BP067 Phase 1A — $5 Membership Checkout
+      membership?: {
+        createCheckout: (autoRenew: boolean) => Promise<{ ok: boolean; url?: string; error?: string; fallbackUrl?: string }>;
+        verifyStatus: () => Promise<{ ok: boolean; membership_active: boolean; error?: string }>;
       };
-      // Phoebe™ Idea Storage IPC (v0.1.14)
-      phoebe?: {
-        save: (item: { title: string; body?: string; url?: string; tags?: string[] }) => Promise<{ ok: boolean; id: number }>;
-        list: () => Promise<PhoebeIdeaItem[]>;
+      // runMeshTest (BP078 Scope 1)
+      runMeshTest?: (payload?: { testId?: string; timeoutMs?: number }) => Promise<{
+        success: boolean;
+        grading?: { accuracy: number; hash_verified: number; p50_latency_ms: number; p95_latency_ms?: number; total_questions: number };
+        error?: 'MISSING_API_KEY' | 'TIMEOUT' | 'PYTHON_ERROR' | 'MISSING_PYTHON_RUNTIME' | 'NO_PEER';
+        static_fallback?: boolean;
+      }>;
+      // BP065 — LB Account + Frontier Node (Part A/B)
+      lbStartAuth?: (email: string) => Promise<{ ok: boolean; error?: string }>;
+      lbGetSession?: () => Promise<{ linked: boolean; user_id?: string; email?: string; peer_id?: string; linked_at?: string; crewman_number?: number }>;
+      lbLinkDevice?: (access_token: string, refresh_token: string, email: string) => Promise<{ ok: boolean; error?: string }>;
+      lbRevokeDevice?: () => Promise<{ ok: boolean; error?: string }>;
+      onLbAuthComplete?: (cb: (session: { user_id: string; email: string; peer_id: string; crewman_number?: number }) => void) => () => void;
+      lbRegisterFrontierNode?: () => Promise<{ ok: boolean; frontier_node_id?: string; error?: string }>;
+      lbWithdrawFrontierNode?: () => Promise<{ ok: boolean; error?: string }>;
+      lbGetFrontierStatus?: () => Promise<{ registered: boolean; frontier_node_id?: string; last_heartbeat?: string; withdrawn?: boolean }>;
+      lbGetBorrowStatus?: () => Promise<{ borrow_opt_in: boolean; trust_list: string[] }>;
+      lbSetBorrowOptIn?: (enabled: boolean) => Promise<{ ok: boolean }>;
+      lbRequestFrontierBorrow?: () => Promise<{ ok: boolean; error?: string; cost_transport_usd?: number; cost_compute_usd_approx?: number; node_count?: number; disclosure?: string }>;
+
+      // BP078 Scope 6.5 — SKU upgrade IPC
+      sku: {
+        checkModel: (modelName: string) => Promise<{ exists: boolean; modelName: string }>;
+        upgradeTo: (tier: 'core' | 'lite' | 'full') => Promise<{ ok: boolean; error?: string }>;
+        cancelUpgrade: () => Promise<{ ok: boolean }>;
+        currentTier: () => Promise<{ tier: 'nano' | 'core' | 'lite' | 'full' }>;
+        onboardingCheck: () => Promise<{ skuExists: boolean }>;
+        onPullProgress: (cb: (data: SkuPullProgress) => void) => () => void;
+        onPullComplete: (cb: () => void) => () => void;
+        onPullError: (cb: (err: string) => void) => () => void;
       };
-      // MoneyPenny Orchestration (SEG-D v0.1.14)
-      moneypenny?: {
-        orchestrate: (task: string) => Promise<{ briefing: string | null; rules: string[]; domains: string[]; error?: string }>;
+      // BP078 — Black Crow Feather earn IPC
+      earnBlackCrowFeather?: (payload: { userId: string; reason: string; metadata?: Record<string, unknown> }) => Promise<{ ok: boolean; featherId?: string; alreadyIssued?: boolean; error?: string }>;
+      // SEG-Q-3 BP078 — DevTools toggle (For Techies fallback path)
+      toggleDevTools?: () => void;
+      // SEG-Q-13 BP078 — Run Diagnostic
+      runDiagnostic?: () => Promise<{ ok: boolean; logPath: string; content: string }>;
+      // SEG-R-13 — Open folder containing a diagnostic log file
+      openDiagFolder?: (folderPath: string) => Promise<void>;
+      // SEG-U-7 BP078 — mesh-test-complete push event
+      onMeshTestComplete?: (cb: (metrics: {
+        hot_accuracy_pct: number;
+        cold_accuracy_pct: number;
+        delta_pp: number;
+        fast_cheap_good: string;
+        svgPath?: string;
+      }) => void) => () => void;
+      // SEG-V0149-P0-INSTALL-FLOW — Lean install IPC
+      leanInstallStart?: () => Promise<{ ok: boolean; waitingForInstall?: boolean; error?: string }>;
+      onLeanInstallStatus?: (cb: (data: { step: string; message: string }) => void) => () => void;
+      onLeanInstallProgress?: (cb: (data: {
+        bytesDownloaded: number; totalBytes: number; percentComplete: number;
+        speedLabel: string; eta_s: number;
+      }) => void) => () => void;
+      onLeanInstallError?: (cb: (data: { message: string; retryable: boolean }) => void) => () => void;
+      // SEG-V0150-P0-FIX-BRIDGE-OR-FALLBACK: skip-path
+      writeSkuTierSkip?: () => Promise<{ ok: boolean; error?: string }>;
+      // SEG-V0151-P0-AUTOMATIC-BACKGROUND: lean background status events
+      onLeanBgStatus?: (cb: (payload: { type: string; msg: string; pct?: number }) => void) => () => void;
+      // MV-CN Peer Mesh (SAGA 3 BP045 W1) — mesh state
+      getMeshState?: () => Promise<{ peers: Array<{ peerId: string; displayName?: string }>; relayConnected: boolean; ownPeerId: string }>;
+      getOwnPeerId?: () => Promise<string>;
+      getMachineLabel?: () => Promise<string>;
+      setMachineLabel?: (label: string) => Promise<string>;
+      getBootZombieCount?: () => Promise<{ count: number }>;
+      callTestMyBox?: (peerId?: string) => Promise<{
+        ok: boolean;
+        answer?: string;
+        correct_answer?: string;
+        wall_clock_s?: number;
+        processing_ms?: number;
+        error?: string;
+      }>;
+      onBootZombieFlush?: (cb: (data: { count: number }) => void) => () => void;
+      onMeshStateChanged?: (cb: (state: unknown) => void) => () => void;
+      onRelayStateChanged?: (cb: (state: { relayConnected: boolean }) => void) => () => void;
+      onWanStatusUpdate?: (cb: (payload: { status: string; ts: string }) => void) => () => void;
+      // MESH-6: Federation invite/accept/leave
+      federationGenerateInvite?: () => Promise<{ token: string; expiresAt: string }>;
+      federationAcceptInvite?: (token: string) => Promise<{ success: boolean; peerName?: string; error?: string }>;
+      federationLeavePeer?: (peerId: string) => Promise<{ ok: boolean }>;
+      // SEG-3 v0.1.55 — COMMUNITY-CONNECT first-launch seed peer handshake
+      communityConnectHandshake?: () => Promise<{ success: boolean; peerName?: string; error?: string }>;
+      // SEG-2 v0.1.56 — first-launch progressive auto-pull (gemma4:12b)
+      firstLaunchModelPull: {
+        check: (modelName: string) => Promise<{ exists: boolean; modelName: string }>;
+        start: (modelName: string) => Promise<{ ok: boolean; alreadyInstalled?: boolean; cancelled?: boolean; error?: string }>;
+        cancel: () => Promise<{ ok: boolean }>;
+        onProgress: (cb: (data: { percent: number; downloaded: number; total: number; status: string }) => void) => () => void;
+        onComplete: (cb: () => void) => () => void;
+        onError: (cb: (err: string) => void) => () => void;
+      };
+      // SEG-1 v0.1.57 / v0.1.57.1 (BP081): AI Dispatch IPC — substrate HOT retrieve + Ollama streaming
+      aiDispatch?: {
+        query: (args: {
+          court_member: string;
+          messages: Array<{ role: string; content: string }>;
+          model_override?: string;
+        }) => Promise<{ ok: boolean; text?: string; error?: string; model_used?: string; streaming?: boolean }>;
+        // v0.1.57.1: token streaming push events
+        onAskTokenProgress: (handler: (data: { delta: string; assembled: string; coldStart?: boolean }) => void) => () => void;
+        onAskTokenComplete: (handler: (data: { content: string; error?: string; hotHits?: number }) => void) => () => void;
+      };
+      // SEG-2 v0.1.57: Test It Out — substrate-warming 5-question workout
+      runTestItOut?: () => Promise<{ success: boolean; score?: number; total?: number; error?: string }>;
+      getTestItOutHistory?: () => Promise<{ runs: Array<{ ts: number; score: number; total: number; model: string }> }>;
+      onTestItOutProgress?: (cb: (data: {
+        questionIndex: number;
+        total: number;
+        question: string;
+        modelAnswer: string;
+        correctAnswer: string;
+        isCorrect: boolean;
+      }) => void) => () => void;
+      onTestItOutComplete?: (cb: (data: {
+        score: number;
+        total: number;
+        results: Array<{
+          questionIndex: number;
+          question: string;
+          modelAnswer: string;
+          correctAnswer: string;
+          isCorrect: boolean;
+        }>;
+      }) => void) => () => void;
+      // Phoebe™ — Idea Storage IPC (BP054/BP055)
+      saveIdea?: (idea: { title: string; content: string; timestamp: string }) => Promise<{ ok: boolean; id: string }>;
+      getIdeas?: () => Promise<{ ok: boolean; ideas: Array<{ id: string; title: string; content: string; timestamp: string }> }>;
+
+      // UI zoom control
+      setZoomFactor?: (factor: number) => void;
+
+      // Auto-Prepare FULL upgrade (SettingsTab)
+      getAutoPrepare?: () => Promise<{ enabled: boolean; modelReady: boolean; pulling: boolean }>;
+      onAutoPrepareReady?: (cb: () => void) => () => void;
+      setAutoPrepare?: (enabled: boolean) => void;
+
+      // Active Substrate — Scribe monitoring IPC (ActiveSubstratePanel)
+      scribeGetMetrics?: (scribeIds: string[]) => Promise<Array<{
+        scribe_id: string;
+        monitor_enabled: boolean;
+        monitored_since: string | null;
+        event_count: number;
+        total_speed_delta_ms: number;
+        total_accuracy_delta: number;
+        total_cost_delta_tokens: number;
+        avg_speed_delta_ms: number;
+        avg_accuracy_delta: number;
+        avg_cost_delta_tokens: number;
+        last_updated: string | null;
+      }>>;
+      scribeToggleMonitor?: (scribeId: string, on: boolean) => Promise<void>;
+
+      // Pantheon substrate mining IPC (MakeYourselfComfortableWizard)
+      pantheonGetPrefs: (memberId: string) => Promise<{
+        member_id: string;
+        updated_at: string;
+        folders: Array<{
+          folder_path: string;
+          pixelated: boolean;
+          federation_shared: boolean;
+          subfolder_overrides: Array<{ folder_path: string; pixelated: boolean; federation_shared: boolean }>;
+          added_at: string;
+          last_mined_at?: string;
+          tablet_counts?: { iron: number; stone: number };
+        }>;
+      }>;
+      pantheonCountTablets: (memberId: string) => Promise<{ iron: number; stone: number; total: number }>;
+      onPantheonProgress: (cb: (evt: {
+        session_id: string;
+        persona: string;
+        persona_label: string;
+        persona_icon: string;
+        phase: 'scanning' | 'generating' | 'done' | 'error';
+        message: string;
+        tablets_written?: number;
+        total_so_far?: number;
+      }) => void) => () => void;
+      pantheonPickFolder: () => Promise<string | null>;
+      pantheonSetPref: (memberId: string, folderPath: string, pixelated: boolean, federationShared: boolean) => Promise<void>;
+      pantheonRemovePref: (memberId: string, folderPath: string) => Promise<void>;
+      pantheonDispatch: (memberId: string, folderPath: string, scope: string) => Promise<unknown>;
+      pantheonWipe: (memberId: string) => Promise<{ wiped: number }>;
+
+      // Kitchen Table — Recipes IPC (RecipesView)
+      kitchenTable?: {
+        listRecipes: () => Promise<unknown>;
+        createRecipe: (recipe: unknown) => Promise<unknown>;
+        deleteRecipe: (id: string) => Promise<void>;
+        openPhotoDialog: () => Promise<string | null>;
+      };
+
+      // SEG-A2 BP081: Substrate stats dashboard
+      getSubstrateStats?: () => Promise<{
+        totalEblets: number;
+        verifiedCount: number;
+        lastWriteTimestamp: number | null;
+        topDomains: Array<{ domain: string; count: number; lastWrite: number }>;
+        recentWrites: Array<{ questionExcerpt: string; provenanceSource: string; timestamp: number }>;
+        growthTrend: Array<{ date: string; count: number }>;
+        quarantinedCount: number;
+        error?: string;
+      }>;
+
+      // BP081 K-1: Membership backend (stub tier)
+      membershipStartCheckout?: () => Promise<{ success: boolean; sessionId?: string; checkoutUrl?: string; error?: string; isStub: boolean }>;
+      membershipGetStatus?: () => Promise<{ tier: string; status: string; annualFeeUsd: number }>;
+      membershipCancel?: () => Promise<{ success: boolean; reason?: string }>;
+
+      // BP085 — open-checkout direct URL + activation listener
+      openMembershipCheckout?: () => Promise<{ ok: boolean; error?: string }>;
+      checkLocalMembershipStatus?: () => Promise<{ ok: boolean; is_member: boolean; member_id: string | null }>;
+      onMembershipActivated?: (cb: (result: { ok: boolean; member_id?: string; error?: string }) => void) => () => void;
+
+      // BP082 v0.3.1 — 3-Condition Mesh Comparison
+      runMeshComparison?: (config: { nPerDomain: number; randomSeed: number; model: string; ollamaBaseUrl: string }) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+      cancelMeshComparison?: () => Promise<{ ok: boolean }>;
+      onMeshComparisonProgress?: (callback: (event: Record<string, unknown>) => void) => () => void;
+
+      // BP060 Application 002 Step 1 — Caithedral Tools
+      caithedralTools?: {
+        soccerball_emit: (pearls: string[], bindings?: Record<string, string>) => Promise<{ ok: boolean; sid?: string; error?: string }>;
+        soccerball_decode: (sid: string) => Promise<{ ok: boolean; result?: { pearls: string[]; bindings: Record<string, string> } | null; error?: string }>;
+        soccerball_lookup: (sid: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        speckle_nibble: (sid: string, position: number) => Promise<{ ok: boolean; nibble?: string; error?: string }>;
+        eblit_emit: (pearl_id: string, source_cathedral: string, ts?: number) => Promise<{ ok: boolean; eblit?: unknown; error?: string }>;
+        substrace_weave: (eblit_null_lines: string[], weaver: string, weave_ts?: number) => Promise<{ ok: boolean; substrace?: unknown; error?: string }>;
+        quilt_compose: (substrace_ids: string[], narrative_tag: string, weaver: string, ts?: number) => Promise<{ ok: boolean; quilt?: unknown; error?: string }>;
+        substrate_address_emit: (seed: string, ts?: number) => Promise<{ ok: boolean; address?: unknown; error?: string }>;
+        substrate_address_validate: (address: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        ten_pearl_roundtrip: () => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+        areopagus_query: (query: string) => Promise<{ ok: boolean; matches?: Array<{ sid: string; pearls: string[]; score: number }>; query?: string; searched_at?: number; error?: string }>;
+      };
+
+      // BP094 v0.8.0 -- CSIA-Hybrid Inference Pipeline
+      csia?: {
+        query: (question: string) => Promise<{
+          verdict: 'ANSWER' | 'REFUSAL';
+          answer?: string;
+          refusal_reason?: string;
+          provenance: Array<{
+            evidence_id: string;
+            category_slug: string;
+            content_preview: string;
+            contributor_member_id: string;
+            soccerball_hash?: string;
+          }>;
+          system_prompt_used: string;
+          model_used: string;
+          star_chamber: 'GREEN' | 'RED' | 'SKIP';
+          scrambler: 'GREEN' | 'RED' | 'SKIP';
+          keys_engines: 'GREEN' | 'RED' | 'SKIP';
+          green_count: number;
+          run_id: string;
+          elapsed_ms: number;
+          evidence_count: number;
+        }>;
       };
     };
+    // SEG-V0150-P0-DIAGNOSE-BRIDGE: sentinel -- set by preload before main bridge wires up
+    __preloadLoaded?: boolean;
+    // BP087 Brain Swap -- brain registry hot-swap
+    brainRegistry?: {
+      list: () => Promise<{ ok: boolean; brains?: unknown[]; active_brain_id?: string; error?: string }>;
+      getActive: () => Promise<{ ok: boolean; brain_id?: string; error?: string }>;
+      setActive: (brain_id: string) => Promise<{ ok: boolean; error?: string }>;
+      smokeTest: (brain_id: string) => Promise<{ ok: boolean; content?: string; brain_id?: string; kind?: string; latency_ms?: number; error?: string }>;
+    };
   }
-}
-
-// Pearl types (v0.1.14)
-export interface PearlItem {
-  pearl_id: string;
-  timestamp: string;
-  soul: string;
-  decay_class: 'ephemeral' | 'session' | 'persistent' | 'eternal';
-  decoded: boolean;
-  source?: string;
-}
-
-// Phoebe™ Idea Storage types (v0.1.14)
-export interface PhoebeIdeaItem {
-  id: string | number;
-  title: string;
-  body?: string;
-  url?: string;
-  tags?: string[];
-  saved_at: string;
 }
 
 // On-Deck item type (mirrored from main process; no import)

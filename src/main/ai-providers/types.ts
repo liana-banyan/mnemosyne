@@ -1,48 +1,34 @@
-// ai-providers/types.ts — BP060 Application 002 Steps 3+4 · AI-agnostic provider types
-// All provider clients implement ProviderClient interface.
-// NO provider hardcoded as default in routing layer.
-// decay_class: BETWEEN
+// types.ts -- AI Provider interface contracts (BP060 Application 002 Steps 3+4)
+// All provider clients (local, anthropic, future frontier) implement ProviderClient.
 
-export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
+export interface ProviderMessage {
+  role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
 export interface ProviderQueryArgs {
+  messages: ProviderMessage[];
   model?: string;
-  messages: ChatMessage[];
   max_tokens?: number;
   temperature?: number;
+  court_member?: string;
 }
 
 export interface ProviderResponse {
   ok: boolean;
   text?: string;
   model?: string;
-  provider?: string;
-  usage?: { input_tokens?: number; output_tokens?: number };
+  provider: string;
   error?: string;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+  };
 }
 
 export interface ProviderClient {
   readonly provider_id: string;
   readonly display_name: string;
-  query(args: ProviderQueryArgs): Promise<ProviderResponse>;
   is_configured(): boolean;
+  query(args: ProviderQueryArgs): Promise<ProviderResponse>;
 }
-
-export interface CourtMapping {
-  bishop: string;   // court member → provider_id
-  rook: string;
-  knight: string;
-  pawn: string;
-  local: string;    // default
-}
-
-export const DEFAULT_COURT_MAPPING: CourtMapping = {
-  bishop: 'anthropic',
-  rook: 'openai',
-  knight: 'gemini',
-  pawn: 'perplexity',
-  local: 'local',
-};

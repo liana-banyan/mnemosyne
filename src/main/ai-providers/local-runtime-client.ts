@@ -8,9 +8,10 @@
 // decay_class: BETWEEN
 
 import type { ProviderClient, ProviderQueryArgs, ProviderResponse } from './types';
+import { FLOOR_MODEL } from '../../shared/floor-model';
 
 const DEFAULT_LOCAL_RUNTIME_URL = 'http://localhost:11434';
-const DEFAULT_LOCAL_MODEL = 'llama3.3';
+const DEFAULT_LOCAL_MODEL = FLOOR_MODEL;
 
 export class LocalRuntimeClient implements ProviderClient {
   readonly provider_id = 'local';

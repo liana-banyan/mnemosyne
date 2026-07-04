@@ -14,68 +14,109 @@ import type { BrowserWindow } from 'electron';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface DeepLinkAcceptInvite {
+export interface DeepLinkAcceptPayload {
   type: 'accept-invite';
   slug: string;
   token: string;
 }
 
-export interface DeepLinkAuthCallback {
-  type: 'auth-callback';
+export interface DeepLinkAuthPayload {
+  type: 'lb-auth-callback';
   access_token: string;
   refresh_token: string;
+  email: string;
 }
 
-export type DeepLinkPayload = DeepLinkAcceptInvite | DeepLinkAuthCallback;
+export interface DeepLinkFocusPayload {
+  type: 'focus-tab';
+  tabId: string;
+}
+
+export interface DeepLinkMembershipActivatedPayload {
+  type: 'membership-activated';
+  memberId: string;
+  token: string;
+}
+
+export type DeepLinkPayload = DeepLinkAcceptPayload | DeepLinkAuthPayload | DeepLinkFocusPayload | DeepLinkMembershipActivatedPayload;
 
 export type DeepLinkHandler = (payload: DeepLinkPayload) => void;
 
-// ─── Protocol name ────────────────────────────────────────────────────────────
+// ─── Protocol names ───────────────────────────────────────────────────────────
 
 const PROTOCOL = 'mnemosyne';
-// BP065: mnemo:// protocol for LB auth callback
-const PROTOCOL_MNEMO = 'mnemo';
+const MNEMO_PROTOCOL = 'mnemo';
+const MNEMOSYNEC_PROTOCOL = 'mnemosynec';
 
 // ─── URL parser ───────────────────────────────────────────────────────────────
 
 export function parseDeepLink(url: string): DeepLinkPayload | null {
   try {
     const parsed = new URL(url);
+    const proto = parsed.protocol;
 
-    // BP065: mnemo://auth/callback#access_token=...&refresh_token=...
-    // Supabase appends tokens as hash fragments; Windows argv may deliver them as query params
-    if (parsed.protocol === `${PROTOCOL_MNEMO}:`) {
+    // ── mnemosyne:// — federation accept-invite ───────────────────────────────
+    if (proto === `${PROTOCOL}:`) {
       const host = parsed.hostname;
-      if (host === 'auth') {
-        // Try hash first (Supabase default), then query params (fallback)
-        const hashParams = new URLSearchParams(parsed.hash.replace(/^#/, ''));
-        const accessToken =
-          parsed.searchParams.get('access_token') ||
-          hashParams.get('access_token');
-        const refreshToken =
-          parsed.searchParams.get('refresh_token') ||
-          hashParams.get('refresh_token');
-        if (accessToken && refreshToken) {
-          return { type: 'auth-callback', access_token: accessToken, refresh_token: refreshToken };
-        }
-        // Partial — log and ignore rather than returning a broken payload
-        console.warn('[deep-link] mnemo://auth/callback received but tokens missing in URL');
-        return null;
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      // mnemosyne://accept/{slug}/{token}
+      if (host === 'accept' && parts.length >= 2) {
+        const [slug, token] = parts;
+        if (!slug || !token) return null;
+        return { type: 'accept-invite', slug, token };
       }
       return null;
     }
 
-    if (parsed.protocol !== `${PROTOCOL}:`) return null;
+    // ── mnemo:// — LB Account magic-link auth callback (BP065 Part A) ─────────
+    // Supabase redirects to: mnemo://auth/callback#access_token=X&refresh_token=Y&...
+    // or as query params: mnemo://auth/callback?access_token=X&...
+    if (proto === `${MNEMO_PROTOCOL}:`) {
+      const host = parsed.hostname; // 'accept' | 'auth' | 'focus'
+      const pathname = parsed.pathname;
 
-    const host = parsed.hostname; // 'accept'
-    const parts = parsed.pathname.split('/').filter(Boolean);
-    // mnemosyne://accept/{slug}/{token}
-    // → hostname='accept', pathname='/{slug}/{token}'
+      // SEG-V0153A — mnemo://accept?token=<token> — email invite deep-link
+      if (host === 'accept') {
+        const token = parsed.searchParams.get('token');
+        if (token) {
+          return { type: 'accept-invite', slug: '', token };
+        }
+        return null;
+      }
 
-    if (host === 'accept' && parts.length >= 2) {
-      const [slug, token] = parts;
-      if (!slug || !token) return null;
-      return { type: 'accept-invite', slug, token };
+      // BP067 Phase 3B — mnemo://focus/<tab_id> → per-install focus-tab navigation
+      if (host === 'focus') {
+        const tabId = pathname.replace(/^\//, '').split('/')[0];
+        if (tabId) {
+          return { type: 'focus-tab', tabId };
+        }
+        return null;
+      }
+
+      if (host === 'auth' && pathname.startsWith('/callback')) {
+        // Supabase fragment-based callback: parse from hash
+        const raw = url.includes('#') ? url.slice(url.indexOf('#') + 1) : '';
+        const params = new URLSearchParams(raw || parsed.search);
+        const access_token = params.get('access_token') ?? '';
+        const refresh_token = params.get('refresh_token') ?? '';
+        const email = params.get('email') ?? '';
+        if (!access_token) return null;
+        return { type: 'lb-auth-callback', access_token, refresh_token, email };
+      }
+      return null;
+    }
+
+    // ── mnemosynec:// — membership return callback (BP085) ───────────────────
+    // mnemosynec://membership-active?member_id=...&token=...
+    if (proto === `${MNEMOSYNEC_PROTOCOL}:`) {
+      const host = parsed.hostname;
+      if (host === 'membership-active') {
+        const memberId = parsed.searchParams.get('member_id') ?? '';
+        const token = parsed.searchParams.get('token') ?? '';
+        if (!memberId || !token) return null;
+        return { type: 'membership-activated', memberId, token };
+      }
+      return null;
     }
 
     return null;
@@ -91,7 +132,7 @@ export function registerDeepLinkProtocol(
   mainWindow: (() => BrowserWindow | null),
   handler?: DeepLinkHandler,
 ): void {
-  // Register mnemosyne:// as default protocol client (idempotent)
+  // Register mnemosyne:// (federation) — idempotent
   if (!app.isDefaultProtocolClient(PROTOCOL)) {
     const registered = app.setAsDefaultProtocolClient(PROTOCOL);
     if (!registered) {
@@ -101,13 +142,23 @@ export function registerDeepLinkProtocol(
     }
   }
 
-  // BP065: also register mnemo:// for LB auth callback
-  if (!app.isDefaultProtocolClient(PROTOCOL_MNEMO)) {
-    const registeredMnemo = app.setAsDefaultProtocolClient(PROTOCOL_MNEMO);
-    if (!registeredMnemo) {
+  // Register mnemo:// (LB Account auth callback — BP065 Part A) — idempotent
+  if (!app.isDefaultProtocolClient(MNEMO_PROTOCOL)) {
+    const registered = app.setAsDefaultProtocolClient(MNEMO_PROTOCOL);
+    if (!registered) {
       console.warn('[deep-link] Failed to register mnemo:// protocol client');
     } else {
-      console.log('[deep-link] Registered mnemo:// protocol (LB auth)');
+      console.log('[deep-link] Registered mnemo:// protocol');
+    }
+  }
+
+  // Register mnemosynec:// (membership return — BP085) — idempotent
+  if (!app.isDefaultProtocolClient(MNEMOSYNEC_PROTOCOL)) {
+    const registered = app.setAsDefaultProtocolClient(MNEMOSYNEC_PROTOCOL);
+    if (!registered) {
+      console.warn('[deep-link] Failed to register mnemosynec:// protocol client');
+    } else {
+      console.log('[deep-link] Registered mnemosynec:// protocol');
     }
   }
 
@@ -120,8 +171,11 @@ export function registerDeepLinkProtocol(
   // Windows: second-instance event passes argv; URL is in args
   app.on('second-instance', (_event, argv) => {
     // On Windows, the deep-link URL is the last argv item
-    const url = argv.find((arg) =>
-      arg.startsWith(`${PROTOCOL}://`) || arg.startsWith(`${PROTOCOL_MNEMO}://`)
+    const url = argv.find(
+      (arg) =>
+        arg.startsWith(`${PROTOCOL}://`) ||
+        arg.startsWith(`${MNEMO_PROTOCOL}://`) ||
+        arg.startsWith(`${MNEMOSYNEC_PROTOCOL}://`),
     );
     if (url) {
       handleDeepLink(url, mainWindow, handler);
@@ -170,8 +224,11 @@ export function handleStartupDeepLink(
   mainWindow: () => BrowserWindow | null,
   handler?: DeepLinkHandler,
 ): void {
-  const url = argv.find((arg) =>
-    arg.startsWith(`${PROTOCOL}://`) || arg.startsWith(`${PROTOCOL_MNEMO}://`)
+  const url = argv.find(
+    (arg) =>
+      arg.startsWith(`${PROTOCOL}://`) ||
+      arg.startsWith(`${MNEMO_PROTOCOL}://`) ||
+      arg.startsWith(`${MNEMOSYNEC_PROTOCOL}://`),
   );
   if (url) {
     handleDeepLink(url, mainWindow, handler);

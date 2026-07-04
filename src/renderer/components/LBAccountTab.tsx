@@ -1,471 +1,641 @@
-// Mnemosyne — LB Account Tab
-// BP065 · Tier-2 Onboarding · Part A (SEG-D2a) + Part B (SEG-C2b)
-// Tab: Connect your Liana Banyan account (2a) + Join the Frontier (2b)
+// LBAccountTab.tsx — Tab 14 "LB Account"
+// BP065 Part A (SEG-D2a) + Part B (SEG-C2b) · MnemosyneC v0.1.22
 //
 // States:
-//   Not linked → "Connect your Liana Banyan account" CTA (email input + send magic link)
-//   Linking    → "Check your email for a magic link…"
-//   Linked     → email, peer id, linked date, Crewman #X, Unlink button
-//   Frontier   → opt-in CTA (gated on 2a) + registered state + Withdraw
+//   Unlinked  — email input + "Link My LB Account" CTA
+//   Linking   — spinner + "Check your email…" message
+//   Linked    — account info + Frontier registration section + Unlink button
 //
-// Authored: 2026-05-30T21:30:00Z · Knight BP065
+// Frontier section (gated on LB Account being linked):
+//   Unregistered — "Join the Frontier" button (explicit opt-in with disclosure)
+//   Registered   — node info + last heartbeat + "Leave the Frontier" button
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { NotCentsGlyph } from './NotCentsGlyph';
+// BP087 Wave 3 SEG-G2 -- Preference Inference
+import { PreferenceInferencePanel } from './PreferenceInferencePanel';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-interface LBSessionInfo {
-  user_id: string;
-  email: string;
-  peer_id: string;
-  linked_at: string;
-}
-
-interface FrontierStatus {
+interface LBAccountState {
   linked: boolean;
-  registered: boolean;
+  user_id?: string;
+  email?: string;
   peer_id?: string;
-  my_node?: {
-    id: string;
-    peer_id: string;
-    node_label: string | null;
-    app_version: string | null;
-    registered_at: string;
-    last_heartbeat_at: string;
-    withdrawn_at: string | null;
-  } | null;
-  nodes: Array<{
-    id: string;
-    user_id: string;
-    peer_id: string;
-    node_label: string | null;
-    app_version: string | null;
-    registered_at: string;
-    last_heartbeat_at: string;
-    withdrawn_at: string | null;
-  }>;
-  heartbeat_active: boolean;
+  linked_at?: string;
+  crewman_number?: number;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function shortPeerId(peerId: string): string {
-  if (!peerId) return '—';
-  return peerId.slice(0, 8) + '…' + peerId.slice(-4);
+interface FrontierState {
+  registered: boolean;
+  frontier_node_id?: string;
+  last_heartbeat?: string;
 }
 
-function crewmanNumber(userId: string): string {
-  if (!userId) return '?';
-  // Derive a stable display number from user_id (first 6 hex digits as decimal, mod 999999)
-  const hex = userId.replace(/-/g, '').slice(0, 8);
-  const n = parseInt(hex, 16) % 999999;
-  return String(n + 1).padStart(5, '0');
-}
+type LinkPhase = 'idle' | 'sending' | 'sent' | 'error';
 
-function fmtDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: 'numeric', month: 'short', day: 'numeric',
-    });
-  } catch {
-    return iso;
-  }
-}
-
-// ─── Styles ──────────────────────────────────────────────────────────────────
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const s = {
-  container: {
-    padding: 20,
-    display: 'flex',
+  root: {
+    padding: 24,
+    display: 'flex' as const,
     flexDirection: 'column' as const,
     gap: 20,
-    color: '#e2e8f0',
-    fontFamily: 'system-ui, sans-serif',
-    fontSize: 13,
+    maxWidth: 560,
   },
-  section: {
-    background: 'rgba(30,41,59,0.5)',
-    border: '1px solid rgba(100,116,139,0.2)',
+  heading: {
+    fontSize: 15,
+    fontWeight: 700,
+    color: '#e2e8f0',
+    margin: 0,
+  },
+  sub: {
+    fontSize: 12,
+    color: '#64748b',
+    lineHeight: 1.6,
+    margin: 0,
+  },
+  card: {
+    background: 'rgba(15,23,42,0.6)',
+    border: '1px solid rgba(100,116,139,0.25)',
     borderRadius: 10,
-    padding: 16,
-    display: 'flex',
+    padding: '16px 18px',
+    display: 'flex' as const,
     flexDirection: 'column' as const,
     gap: 12,
   },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: 700,
-    color: '#6ee7b7',
-    marginBottom: 2,
-  },
-  sectionSub: {
-    fontSize: 11,
-    color: '#64748b',
-    lineHeight: 1.5,
-  },
-  row: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
+  cardGreen: {
+    background: 'rgba(6,78,59,0.2)',
+    border: '1px solid rgba(110,231,183,0.3)',
+    borderRadius: 10,
+    padding: '16px 18px',
+    display: 'flex' as const,
+    flexDirection: 'column' as const,
+    gap: 12,
   },
   label: {
-    color: '#64748b',
     fontSize: 11,
+    color: '#94a3b8',
+    fontWeight: 600,
+    letterSpacing: '0.05em',
+    textTransform: 'uppercase' as const,
   },
   value: {
-    color: '#e2e8f0',
     fontSize: 12,
-    fontWeight: 600,
+    color: '#e2e8f0',
     fontFamily: 'monospace',
   },
   input: {
     width: '100%',
+    padding: '8px 12px',
     background: 'rgba(15,23,42,0.8)',
-    border: '1px solid rgba(100,116,139,0.3)',
+    border: '1px solid rgba(100,116,139,0.35)',
     borderRadius: 6,
     color: '#e2e8f0',
     fontSize: 13,
-    padding: '8px 10px',
     outline: 'none',
-  } as React.CSSProperties,
-  btn: (color: string, bg: string): React.CSSProperties => ({
-    background: bg,
-    border: `1px solid ${color}`,
-    borderRadius: 7,
-    color,
+    boxSizing: 'border-box' as const,
+  },
+  btnPrimary: {
+    padding: '8px 18px',
+    background: 'rgba(110,231,183,0.12)',
+    border: '1px solid rgba(110,231,183,0.35)',
+    borderRadius: 6,
+    color: '#6ee7b7',
     fontSize: 12,
-    fontWeight: 700,
-    padding: '7px 16px',
+    fontWeight: 600,
     cursor: 'pointer',
-    whiteSpace: 'nowrap',
-    transition: 'opacity 0.15s',
-  }),
-  pill: (color: string): React.CSSProperties => ({
-    background: `rgba(${color},0.12)`,
-    border: `1px solid rgba(${color},0.3)`,
-    borderRadius: 10,
-    color: `rgb(${color})`,
-    fontSize: 10,
-    fontWeight: 700,
-    padding: '2px 8px',
-    whiteSpace: 'nowrap',
-  }),
-  error: {
+    whiteSpace: 'nowrap' as const,
+  },
+  btnDanger: {
+    padding: '6px 14px',
+    background: 'rgba(239,68,68,0.08)',
+    border: '1px solid rgba(239,68,68,0.25)',
+    borderRadius: 6,
     color: '#f87171',
     fontSize: 11,
-    marginTop: 2,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  btnFrontier: {
+    padding: '8px 18px',
+    background: 'rgba(250,204,21,0.08)',
+    border: '1px solid rgba(250,204,21,0.3)',
+    borderRadius: 6,
+    color: '#facc15',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  error: {
+    fontSize: 11,
+    color: '#f87171',
+    background: 'rgba(239,68,68,0.08)',
+    border: '1px solid rgba(239,68,68,0.2)',
+    borderRadius: 6,
+    padding: '6px 10px',
   },
   success: {
-    color: '#6ee7b7',
     fontSize: 11,
-    marginTop: 2,
+    color: '#6ee7b7',
+    background: 'rgba(110,231,183,0.08)',
+    border: '1px solid rgba(110,231,183,0.2)',
+    borderRadius: 6,
+    padding: '6px 10px',
   },
-  nodeCard: {
-    background: 'rgba(15,23,42,0.6)',
-    border: '1px solid rgba(100,116,139,0.15)',
-    borderRadius: 8,
-    padding: '10px 12px',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 4,
+  row: {
+    display: 'flex' as const,
+    alignItems: 'center' as const,
+    gap: 8,
   },
+  tag: (color: string) => ({
+    fontSize: 9,
+    fontWeight: 700,
+    padding: '2px 6px',
+    borderRadius: 10,
+    background: `rgba(${color},0.12)`,
+    border: `1px solid rgba(${color},0.3)`,
+    color: `rgb(${color})`,
+    whiteSpace: 'nowrap' as const,
+  }),
 };
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export function LBAccountTab() {
-  const [session, setSession] = useState<LBSessionInfo | null | undefined>(undefined);
-  const [frontier, setFrontier] = useState<FrontierStatus | null>(null);
-
-  // Auth flow state
+  const [accountState, setAccountState] = useState<LBAccountState>({ linked: false });
+  const [frontierState, setFrontierState] = useState<FrontierState>({ registered: false });
   const [email, setEmail] = useState('');
-  const [authStep, setAuthStep] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
-  const [authError, setAuthError] = useState('');
-  const [authMsg, setAuthMsg] = useState('');
-
-  // Frontier action state
+  const [linkPhase, setLinkPhase] = useState<LinkPhase>('idle');
+  const [linkError, setLinkError] = useState('');
   const [frontierBusy, setFrontierBusy] = useState(false);
-  const [frontierMsg, setFrontierMsg] = useState('');
   const [frontierError, setFrontierError] = useState('');
+  const [revokeBusy, setRevokeBusy] = useState(false);
 
-  const amplify = window.amplify;
-
-  const refreshSession = useCallback(async () => {
-    const s = await amplify?.lbGetSession?.() ?? null;
-    setSession(s);
-    if (s) {
-      const f = await amplify?.lbGetFrontierStatus?.() ?? null;
-      setFrontier(f);
-    } else {
-      setFrontier(null);
+  const loadState = useCallback(async () => {
+    if (!window.amplify?.lbGetSession) return;
+    try {
+      const session = await window.amplify.lbGetSession();
+      setAccountState(session);
+      // SEG-V0146-CRIT-2: persist user_id for ShareMnemosyneC ref= URLs (survives app restarts)
+      if (session.linked && session.user_id) {
+        try { localStorage.setItem('mnemo_lb_user_id', session.user_id); } catch {}
+      }
+      if (session.linked) {
+        const frontier = await window.amplify.lbGetFrontierStatus?.();
+        if (frontier) setFrontierState(frontier);
+      }
+    } catch {
+      // Ignore load errors
     }
-  }, [amplify]);
+  }, []);
 
   useEffect(() => {
-    refreshSession();
+    void loadState();
 
-    // Listen for deep-link auth-complete events
-    const cleanup = amplify?.onLBAuthComplete?.((result) => {
-      if (result.ok) {
-        setAuthStep('idle');
-        setAuthMsg('');
-        refreshSession();
-      } else {
-        setAuthStep('error');
-        setAuthError(result.error ?? 'Auth failed — please try again.');
+    // Listen for auth-complete broadcasts (from deep-link or link-device IPC)
+    const cleanup = window.amplify?.onLbAuthComplete?.((session: { user_id: string; email: string; peer_id: string; crewman_number?: number }) => {
+      setAccountState({ linked: true, ...session });
+      setLinkPhase('idle');
+      // SEG-V0146-CRIT-2: persist user_id so ShareMnemosyneC.tsx can build ref= URLs
+      if (session.user_id) {
+        try { localStorage.setItem('mnemo_lb_user_id', session.user_id); } catch {}
       }
     });
 
-    return () => { cleanup?.(); };
-  }, [refreshSession, amplify]);
+    return cleanup ?? undefined;
+  }, [loadState]);
 
-  // ── Handlers ───────────────────────────────────────────────────────────────
-
-  async function handleSendMagicLink() {
-    if (!email.trim()) return;
-    setAuthStep('sending');
-    setAuthError('');
-    const result = await amplify?.lbStartAuth?.(email.trim());
-    if (result?.ok) {
-      setAuthStep('sent');
-    } else {
-      setAuthStep('error');
-      setAuthError(result?.error ?? 'Could not send magic link.');
+  async function handleStartAuth() {
+    if (!email.trim() || !window.amplify?.lbStartAuth) return;
+    setLinkPhase('sending');
+    setLinkError('');
+    try {
+      const result = await window.amplify.lbStartAuth(email.trim());
+      if (result.ok) {
+        setLinkPhase('sent');
+      } else {
+        setLinkError(result.error ?? 'Failed to send magic link. Check your email and try again.');
+        setLinkPhase('error');
+      }
+    } catch (err) {
+      setLinkError((err as Error).message);
+      setLinkPhase('error');
     }
   }
 
-  async function handleUnlink() {
-    setFrontierMsg('');
-    setFrontierError('');
-    if (frontier?.registered) {
-      await amplify?.lbWithdrawFrontierNode?.();
+  async function handleRevoke() {
+    if (!window.amplify?.lbRevokeDevice) return;
+    setRevokeBusy(true);
+    try {
+      await window.amplify.lbWithdrawFrontierNode?.();
+      await window.amplify.lbRevokeDevice();
+      setAccountState({ linked: false });
+      setFrontierState({ registered: false });
+      setLinkPhase('idle');
+      setEmail('');
+    } catch {
+      // Ignore
+    } finally {
+      setRevokeBusy(false);
     }
-    await amplify?.lbRevokeDevice?.();
-    setSession(null);
-    setFrontier(null);
-    setAuthStep('idle');
   }
 
-  async function handleRegisterFrontier() {
+  async function handleJoinFrontier() {
+    if (!window.amplify?.lbRegisterFrontierNode) return;
     setFrontierBusy(true);
-    setFrontierMsg('');
     setFrontierError('');
-    const result = await amplify?.lbRegisterFrontierNode?.();
-    if (result?.ok) {
-      setFrontierMsg('Your device is now part of the Frontier mesh.');
-      await refreshSession();
-    } else {
-      setFrontierError(result?.error ?? 'Registration failed.');
+    try {
+      const result = await window.amplify.lbRegisterFrontierNode();
+      if (result.ok) {
+        setFrontierState({ registered: true, frontier_node_id: result.frontier_node_id });
+      } else {
+        setFrontierError(result.error ?? 'Registration failed.');
+      }
+    } catch (err) {
+      setFrontierError((err as Error).message);
+    } finally {
+      setFrontierBusy(false);
     }
-    setFrontierBusy(false);
   }
 
-  async function handleWithdrawFrontier() {
+  async function handleLeaveFrontier() {
+    if (!window.amplify?.lbWithdrawFrontierNode) return;
     setFrontierBusy(true);
-    setFrontierMsg('');
-    setFrontierError('');
-    const result = await amplify?.lbWithdrawFrontierNode?.();
-    if (result?.ok) {
-      setFrontierMsg('Withdrawn from the Frontier mesh.');
-      await refreshSession();
-    } else {
-      setFrontierError(result?.error ?? 'Withdraw failed.');
+    try {
+      await window.amplify.lbWithdrawFrontierNode();
+      setFrontierState({ registered: false });
+    } catch {
+      // Ignore
+    } finally {
+      setFrontierBusy(false);
     }
-    setFrontierBusy(false);
   }
-
-  // ── Render: loading ────────────────────────────────────────────────────────
-
-  if (session === undefined) {
-    return (
-      <div style={{ ...s.container, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-        <span style={{ color: '#64748b', fontSize: 12 }}>Loading…</span>
-      </div>
-    );
-  }
-
-  // ── Render: not linked ─────────────────────────────────────────────────────
-
-  if (!session) {
-    return (
-      <div style={s.container}>
-        {/* 2a — Connect CTA */}
-        <div style={s.section}>
-          <div style={s.sectionTitle}>🔗 Connect your Liana Banyan account</div>
-          <div style={s.sectionSub}>
-            Link this Mnemosyne device to your LB membership.
-            Enter your LB email — we'll send a magic link to your inbox.
-          </div>
-
-          {authStep !== 'sent' ? (
-            <>
-              <input
-                style={s.input}
-                type="email"
-                placeholder="your@email.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleSendMagicLink(); }}
-                disabled={authStep === 'sending'}
-              />
-              <div style={s.row}>
-                <button
-                  style={s.btn('#6ee7b7', 'rgba(110,231,183,0.1)')}
-                  onClick={handleSendMagicLink}
-                  disabled={authStep === 'sending' || !email.trim()}
-                >
-                  {authStep === 'sending' ? 'Sending…' : 'Send magic link →'}
-                </button>
-                {authMsg && <span style={s.success}>{authMsg}</span>}
-              </div>
-              {authError && <div style={s.error}>{authError}</div>}
-            </>
-          ) : (
-            <>
-              <div style={{ ...s.sectionSub, color: '#6ee7b7' }}>
-                ✓ Magic link sent to <strong>{email}</strong> — check your inbox and click the link.
-              </div>
-              <div style={s.sectionSub}>
-                Once you click the link, Mnemosyne will complete the connection automatically.
-              </div>
-              <button
-                style={{ ...s.btn('#64748b', 'transparent'), alignSelf: 'flex-start' }}
-                onClick={() => { setAuthStep('idle'); setAuthError(''); }}
-              >
-                Use a different email
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* Frontier section — disabled (requires 2a) */}
-        <div style={{ ...s.section, opacity: 0.45, pointerEvents: 'none' }}>
-          <div style={s.sectionTitle}>🌐 Join the Frontier</div>
-          <div style={s.sectionSub}>
-            Connect your LB account first to join the public cooperative Frontier mesh.
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Render: linked ─────────────────────────────────────────────────────────
 
   return (
-    <div style={s.container}>
-      {/* 2a — Linked state */}
-      <div style={s.section}>
-        <div style={{ ...s.row, marginBottom: 2 }}>
-          <div style={s.sectionTitle}>🔗 Liana Banyan Account</div>
-          <span style={s.pill('110,231,183')}>LINKED</span>
-        </div>
-
-        <div style={s.row}>
-          <span style={s.label}>Account</span>
-          <span style={s.value}>{session.email}</span>
-        </div>
-        <div style={s.row}>
-          <span style={s.label}>Peer ID</span>
-          <span style={s.value} title={session.peer_id}>{shortPeerId(session.peer_id)}</span>
-        </div>
-        <div style={s.row}>
-          <span style={s.label}>Linked</span>
-          <span style={s.value}>{fmtDate(session.linked_at)}</span>
-        </div>
-        <div style={s.row}>
-          <span style={s.label}>Crewman #</span>
-          <span style={{ ...s.value, color: '#6ee7b7' }}>#{crewmanNumber(session.user_id)}</span>
-        </div>
-
-        <div style={{ marginTop: 4 }}>
-          <button
-            style={s.btn('#f87171', 'rgba(248,113,113,0.08)')}
-            onClick={handleUnlink}
-          >
-            Unlink this device
-          </button>
-        </div>
+    <div style={s.root}>
+      {/* Header */}
+      <div>
+        <h2 style={s.heading}><NotCentsGlyph /> LB Account</h2>
+        <p style={{ ...s.sub, marginTop: 6 }}>
+          Link your Liana Banyan cooperative account to this device. Enables
+          Frontier node registration, shared-substrate credits, and Crewman attribution.
+        </p>
       </div>
 
-      {/* 2b — Frontier section */}
-      <div style={s.section}>
-        <div style={{ ...s.row, marginBottom: 2 }}>
-          <div style={s.sectionTitle}>🌐 The Frontier</div>
-          {frontier?.registered && (
-            <span style={s.pill('110,231,183')}>NODE ACTIVE</span>
+      {/* SEG-UX-5: $5/year membership entry point (persistent, top of page) */}
+      {!accountState.linked && (
+        <div style={{
+          background: 'rgba(110,231,183,0.06)',
+          border: '1px solid rgba(110,231,183,0.25)',
+          borderRadius: 10,
+          padding: '14px 18px',
+          display: 'flex',
+          flexDirection: 'column' as const,
+          gap: 10,
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#6ee7b7', marginBottom: 4 }}>
+              Join the cooperative -- $5/year
+            </div>
+            <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.6 }}>
+              Unlock Helm, Federation Stage 6, Banyan Metric sharing, and Crewman attribution.
+              Free to use MnemosyneC. Better to join.
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' as const }}>
+            <button
+              style={s.btnPrimary}
+              onClick={() => {
+                void (async () => {
+                  try {
+                    const result = await (window as any).amplify?.membership?.createCheckout?.(false);
+                    const url = result?.url;
+                    (window as any).amplify?.openExternal?.(url ?? 'https://lianabanyan.com/join');
+                  } catch {
+                    (window as any).amplify?.openExternal?.('https://lianabanyan.com/join');
+                  }
+                })();
+              }}
+            >
+              Join -- $5/year
+            </button>
+            <span style={{ fontSize: 10, color: '#334155' }}>
+              Using free? No account required.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Linked State ── */}
+      {accountState.linked ? (
+        <>
+          <div style={s.cardGreen}>
+            <div style={s.row}>
+              <span style={{ fontSize: 18 }}>✅</span>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#6ee7b7' }}>LB Account Linked</div>
+                {accountState.crewman_number && (
+                  <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                    Crewman #{accountState.crewman_number} on this device
+                  </div>
+                )}
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              {accountState.email && (
+                <div>
+                  <div style={s.label}>Email</div>
+                  <div style={s.value}>{accountState.email}</div>
+                </div>
+              )}
+              {accountState.linked_at && (
+                <div>
+                  <div style={s.label}>Linked</div>
+                  <div style={{ ...s.value, fontSize: 11 }}>
+                    {new Date(accountState.linked_at).toLocaleDateString()}
+                  </div>
+                </div>
+              )}
+              {accountState.peer_id && (
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <div style={s.label}>Peer ID</div>
+                  <div style={{ ...s.value, fontSize: 10, opacity: 0.7 }}>
+                    {accountState.peer_id.slice(0, 20)}…
+                  </div>
+                </div>
+              )}
+            </div>
+            <div>
+              <button
+                style={s.btnDanger}
+                onClick={handleRevoke}
+                disabled={revokeBusy}
+              >
+                {revokeBusy ? 'Unlinking…' : 'Unlink This Device'}
+              </button>
+            </div>
+          </div>
+
+          {/* ── Frontier Section (gated on linked) ── */}
+          <FrontierSection
+            frontierState={frontierState}
+            busy={frontierBusy}
+            error={frontierError}
+            onJoin={handleJoinFrontier}
+            onLeave={handleLeaveFrontier}
+          />
+
+          {/* ── Frontier Borrow Section (WAVE-24) ── */}
+          <FrontierBorrowSection linked={true} />
+        </>
+      ) : (
+        /* ── Unlinked State ── */
+        <div style={s.card}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>
+            Connect your Liana Banyan account
+          </div>
+          <p style={s.sub}>
+            Enter your LB account email. We'll send a one-click magic link — no password needed.
+            Click the link in your email and this device links automatically.
+          </p>
+
+          {linkPhase === 'sent' ? (
+            <div style={s.success}>
+              ✉️ Magic link sent to <strong>{email}</strong>. Check your email and click the link to complete linking.
+              The tab will update automatically when your device is linked.
+            </div>
+          ) : (
+            <>
+              <div style={s.row}>
+                <input
+                  type="email"
+                  placeholder="your@email.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleStartAuth()}
+                  style={s.input}
+                  disabled={linkPhase === 'sending'}
+                  autoComplete="email"
+                />
+                <button
+                  style={s.btnPrimary}
+                  onClick={handleStartAuth}
+                  disabled={linkPhase === 'sending' || !email.trim()}
+                >
+                  {linkPhase === 'sending' ? '⟳ Sending…' : 'Link →'}
+                </button>
+              </div>
+              {linkError && <div style={s.error}>⚠ {linkError}</div>}
+              {linkPhase !== 'sending' && (
+                <p style={{ ...s.sub, fontSize: 10 }}>
+                  Don't have an LB account?{' '}
+                  <button
+                    style={{ background: 'none', border: 'none', color: '#6ee7b7', cursor: 'pointer', fontSize: 10, padding: 0, textDecoration: 'underline' }}
+                    onClick={() => window.amplify?.openExternal?.('https://lianabanyan.com/join')}
+                  >
+                    Join — $5/year →
+                  </button>
+                </p>
+              )}
+            </>
           )}
         </div>
+      )}
 
-        {!frontier?.registered ? (
-          <>
-            <div style={s.sectionSub}>
-              Make your device visible in the public cooperative Frontier mesh — the synaptic network
-              of Nodes of Socceri. You can withdraw anytime.
-            </div>
-            <div style={s.sectionSub}>
-              <strong style={{ color: '#e2e8f0' }}>This makes your device visible.</strong> Active
-              (non-withdrawn) nodes are readable by all authenticated members of the cooperative.
-            </div>
-            <button
-              style={s.btn('#6ee7b7', 'rgba(110,231,183,0.1)')}
-              onClick={handleRegisterFrontier}
-              disabled={frontierBusy}
-            >
-              {frontierBusy ? 'Registering…' : 'Join the Frontier →'}
-            </button>
-          </>
-        ) : (
-          <>
-            {frontier.my_node && (
-              <div style={s.nodeCard}>
-                <div style={{ ...s.row }}>
-                  <span style={s.label}>Node</span>
-                  <span style={s.value} title={frontier.my_node.peer_id}>
-                    {shortPeerId(frontier.my_node.peer_id)}
-                  </span>
-                </div>
-                <div style={s.row}>
-                  <span style={s.label}>Version</span>
-                  <span style={s.value}>{frontier.my_node.app_version ?? '—'}</span>
-                </div>
-                <div style={s.row}>
-                  <span style={s.label}>Last heartbeat</span>
-                  <span style={s.value}>{fmtDate(frontier.my_node.last_heartbeat_at)}</span>
-                </div>
-                <div style={s.row}>
-                  <span style={s.label}>Heartbeat</span>
-                  <span style={s.pill(frontier.heartbeat_active ? '110,231,183' : '100,116,139')}>
-                    {frontier.heartbeat_active ? '● active' : '○ stopped'}
-                  </span>
-                </div>
-              </div>
-            )}
+      {/* BP087 Wave 3 SEG-G2 -- Preference Inference */}
+      <PreferenceInferencePanel />
+    </div>
+  );
+}
 
-            <div style={s.sectionSub}>
-              {frontier.nodes.length} active node{frontier.nodes.length !== 1 ? 's' : ''} on the
-              Frontier (including yours).
-            </div>
+// ─── Frontier Borrow Section (WAVE-24) ────────────────────────────────────────
 
-            <div style={{ ...s.sectionSub, color: '#fbbf24' }}>
-              Reinstalling Mnemosyne generates a new peer_id — your old node will remain until
-              you withdraw it here.
-            </div>
+function FrontierBorrowSection({ linked }: { linked: boolean }) {
+  const [borrowOptIn, setBorrowOptIn] = React.useState(false);
+  const [borrowLoading, setBorrowLoading] = React.useState(false);
+  const [borrowResult, setBorrowResult] = React.useState<{
+    ok: boolean;
+    cost_transport_usd?: number;
+    cost_compute_usd_approx?: number;
+    disclosure?: string;
+    error?: string;
+  } | null>(null);
 
-            <button
-              style={s.btn('#fbbf24', 'rgba(251,191,36,0.08)')}
-              onClick={handleWithdrawFrontier}
-              disabled={frontierBusy}
-            >
-              {frontierBusy ? 'Withdrawing…' : 'Withdraw from Frontier'}
-            </button>
-          </>
-        )}
+  React.useEffect(() => {
+    void window.amplify?.lbGetBorrowStatus?.()
+      .then((res) => { if (res) setBorrowOptIn(res.borrow_opt_in); })
+      .catch(() => {});
+  }, []);
 
-        {frontierMsg && <div style={s.success}>{frontierMsg}</div>}
-        {frontierError && <div style={s.error}>{frontierError}</div>}
+  const handleToggleBorrow = async () => {
+    const next = !borrowOptIn;
+    setBorrowOptIn(next);
+    await window.amplify?.lbSetBorrowOptIn?.(next).catch(() => {});
+  };
+
+  const handleRequestBorrow = async () => {
+    setBorrowLoading(true);
+    setBorrowResult(null);
+    try {
+      const res = await window.amplify?.lbRequestFrontierBorrow?.();
+      setBorrowResult(res ?? { ok: false, error: 'No response from main process.' });
+    } catch {
+      setBorrowResult({ ok: false, error: 'Request failed.' });
+    } finally {
+      setBorrowLoading(false);
+    }
+  };
+
+  return (
+    <div style={s.card}>
+      <div style={s.row}>
+        <span style={{ fontSize: 16 }}>+</span>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>
+          Borrow a Frontier Node
+        </div>
+        <span style={{
+          fontSize: 9,
+          fontWeight: 700,
+          padding: '2px 6px',
+          borderRadius: 10,
+          background: 'rgba(59,130,246,0.12)',
+          border: '1px solid rgba(59,130,246,0.3)',
+          color: 'rgb(96,165,250)',
+          whiteSpace: 'nowrap' as const,
+        }}>
+          OPT-IN
+        </span>
       </div>
+
+      <p style={s.sub}>
+        Your computer is busy -- borrow a trusted Frontier node for this inference.
+        Opt-in only. You choose which nodes to trust.
+      </p>
+
+      <div style={{ display: 'flex', gap: 14, marginBottom: 4 }}>
+        <div style={{ textAlign: 'center' as const }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: '#4ade80' }}>$0</div>
+          <div style={{ fontSize: 10, color: '#64748b' }}>transport</div>
+        </div>
+        <div style={{ textAlign: 'center' as const }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: '#94a3b8' }}>~$0.01</div>
+          <div style={{ fontSize: 10, color: '#64748b' }}>compute / inference</div>
+        </div>
+      </div>
+
+      {!linked && (
+        <div style={s.error}>
+          Link your LB account above to access Frontier nodes.
+        </div>
+      )}
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: linked ? 'pointer' : 'not-allowed' }}>
+        <input
+          type="checkbox"
+          checked={borrowOptIn}
+          onChange={() => void handleToggleBorrow()}
+          disabled={!linked}
+          style={{ accentColor: '#6ee7b7', width: 14, height: 14 }}
+        />
+        <span style={{ fontSize: 12, color: linked ? '#94a3b8' : '#475569' }}>
+          Enable borrowing from trusted Frontier nodes
+        </span>
+      </label>
+
+      {borrowOptIn && linked && (
+        <>
+          <div style={{ ...s.sub, fontSize: 10, color: '#475569' }}>
+            Trust list is shared from your LB cooperative membership. Nodes are verified cooperative members only.
+          </div>
+          <button
+            style={s.btnFrontier}
+            onClick={() => void handleRequestBorrow()}
+            disabled={borrowLoading}
+          >
+            {borrowLoading ? 'Requesting...' : 'Borrow a node for this session'}
+          </button>
+          {borrowResult?.ok && (
+            <div style={s.success}>
+              Ready. {borrowResult.disclosure ?? ''}
+            </div>
+          )}
+          {borrowResult && !borrowResult.ok && (
+            <div style={s.error}>{borrowResult.error}</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Frontier Section ─────────────────────────────────────────────────────────
+
+function FrontierSection({
+  frontierState,
+  busy,
+  error,
+  onJoin,
+  onLeave,
+}: {
+  frontierState: FrontierState;
+  busy: boolean;
+  error: string;
+  onJoin: () => void;
+  onLeave: () => void;
+}) {
+  return (
+    <div style={s.card}>
+      <div style={s.row}>
+        <span style={{ fontSize: 16 }}>🌐</span>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>
+          The Frontier
+        </div>
+        {frontierState.registered && (
+          <span style={s.tag('110,231,183')}>REGISTERED</span>
+        )}
+      </div>
+
+      {frontierState.registered ? (
+        <>
+          <p style={s.sub}>
+            Your device is visible in the cooperative Frontier mesh. Withdraw anytime — this only
+            removes your node from the public registry, not from the cooperative.
+          </p>
+          {frontierState.frontier_node_id && (
+            <div>
+              <div style={s.label}>Node ID</div>
+              <div style={{ ...s.value, fontSize: 10 }}>
+                {frontierState.frontier_node_id.slice(0, 28)}…
+              </div>
+            </div>
+          )}
+          <div style={s.row}>
+            <span style={{ fontSize: 10, color: '#475569' }}>
+              Heartbeat: every 5 minutes
+            </span>
+          </div>
+          <button style={s.btnDanger} onClick={onLeave} disabled={busy}>
+            {busy ? 'Withdrawing…' : 'Leave the Frontier'}
+          </button>
+        </>
+      ) : (
+        <>
+          <p style={s.sub}>
+            Making your device visible in the Frontier cooperative mesh enables substrate
+            peer-sync and shared memory across nodes. You can withdraw at any time.
+          </p>
+          <p style={{ ...s.sub, fontSize: 10, color: '#475569' }}>
+            ⚠ This makes your device visible in the cooperative mesh. Withdraw anytime. Reinstalling
+            MnemosyneC creates a new peer ID — the old node will be orphaned until you withdraw it.
+          </p>
+          {error && <div style={s.error}>⚠ {error}</div>}
+          <button style={s.btnFrontier} onClick={onJoin} disabled={busy}>
+            {busy ? 'Registering…' : 'Join the Frontier →'}
+          </button>
+        </>
+      )}
     </div>
   );
 }

@@ -9,7 +9,6 @@
 //   handleConnectPeer uses window.amplify?.federationAcceptInvite?.(peerId) as a STOPGAP.
 //   A new `federation:connect-peer` IPC handler is REQUIRED to properly connect to
 //   an already-discovered peer without a full invite token flow.
-// Migrated to mnemosyne repo: 2026-06-28 -- SEG-MM Novaculi BP099
 
 import React, { useState } from 'react';
 import type { MnemosynePeer, PeerPhase } from '../../shared/federation-protocol';

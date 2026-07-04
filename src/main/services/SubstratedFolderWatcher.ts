@@ -55,6 +55,7 @@ export const IPC_WATCHER = {
   REMOVE_FOLDER: 'watcher:remove-folder', // renderer → main: { folderId: string }
   LIST_FOLDERS:  'watcher:list-folders',  // renderer → main (no args) → SubstratedFolder[]
   GET_STATS:     'watcher:get-stats',     // renderer → main (no args) → WatcherStats
+  GET_EBLETS:    'watcher:get-eblets',    // renderer → main (no args) → EbletMintRecord[] (persistent log)
   EBLET_MINTED:  'watcher:eblet-minted',  // main → renderer: EbletMintRecord (push event)
   FOLDER_ERROR:  'watcher:folder-error',  // main → renderer: { folderId, error }
 } as const;
@@ -73,12 +74,15 @@ export class SubstratedFolderWatcher {
   };
   private mainWindow: BrowserWindow | null = null;
   private persistPath: string;
+  private ebletLogPath: string;
   private debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
   constructor() {
     const userDataPath = app.getPath('userData');
     this.persistPath = path.join(userDataPath, 'substrated_folders.json');
+    this.ebletLogPath = path.join(userDataPath, 'substrated_eblet_log.json');
     this.loadPersistedFolders();
+    this.loadPersistedEblets();
   }
 
   // ─── Public API ─────────────────────────────────────────────────────────────
@@ -217,10 +221,44 @@ export class SubstratedFolderWatcher {
     this.stats.ebletsMinted++;
     this.stats.lastEventAt = eblet.mintedAt;
 
+    // Persist the eblet log to disk so it survives restarts.
+    // Keep the last 10,000 records; older records are pruned to cap disk use.
+    this.persistEbletLog();
+
     this.mainWindow?.webContents.send(IPC_WATCHER.EBLET_MINTED, eblet);
 
-    // TODO v0.1.10: persist Eblet to KitchenTableStore / Cathedral substrate
-    // TODO v0.1.10: sha256 dual-write to Asteroid-ProofVault compatible path
+    // BP067 Correction 2: emit into soccerball-DAG so a user-picked local folder
+    // becomes a peer-resolvable bank (MESH-6 SID-fetch path). Best-effort.
+    if (!eblet.source_deleted) {
+      try {
+        const { emitFolderEntryToDAG } = require('../dag_bridge') as typeof import('../dag_bridge');
+        emitFolderEntryToDAG(eblet);
+      } catch { /* dag_bridge is best-effort — never crash the watcher */ }
+    }
+  }
+
+  private persistEbletLog(): void {
+    try {
+      const MAX_RECORDS = 10_000;
+      const records = this.ebletLog.slice(-MAX_RECORDS);
+      fs.writeFileSync(this.ebletLogPath, JSON.stringify(records, null, 2), 'utf8');
+    } catch { /* non-fatal -- eblet log is best-effort */ }
+  }
+
+  private loadPersistedEblets(): void {
+    try {
+      if (fs.existsSync(this.ebletLogPath)) {
+        const data = JSON.parse(fs.readFileSync(this.ebletLogPath, 'utf8')) as EbletMintRecord[];
+        this.ebletLog = Array.isArray(data) ? data : [];
+        this.stats.ebletsMinted = this.ebletLog.length;
+        this.stats.lastEventAt = this.ebletLog.at(-1)?.mintedAt ?? null;
+      }
+    } catch { /* corrupt log -- start fresh */ }
+  }
+
+  /** Return all persisted eblet records (for CaithedralInspector feed). */
+  getEbletLog(): EbletMintRecord[] {
+    return [...this.ebletLog];
   }
 
   private loadPersistedFolders(): void {
@@ -255,19 +293,23 @@ export class SubstratedFolderWatcher {
  * TODO v0.1.10: wire into src/main/index.ts registerKitchenTableIpc pattern
  */
 export function registerWatcherIpc(watcher: SubstratedFolderWatcher): void {
-  ipcMain.handle(IPC_WATCHER.ADD_FOLDER, (_event, folderPath: string) => {
+  ipcMain.handle('watcher:add-folder', (_event, folderPath: string) => {
     return watcher.addFolder(folderPath);
   });
 
-  ipcMain.handle(IPC_WATCHER.REMOVE_FOLDER, (_event, folderId: string) => {
+  ipcMain.handle('watcher:remove-folder', (_event, folderId: string) => {
     return watcher.removeFolder(folderId);
   });
 
-  ipcMain.handle(IPC_WATCHER.LIST_FOLDERS, () => {
+  ipcMain.handle('watcher:list-folders', () => {
     return watcher.listFolders();
   });
 
-  ipcMain.handle(IPC_WATCHER.GET_STATS, () => {
+  ipcMain.handle('watcher:get-stats', () => {
     return watcher.getStats();
+  });
+
+  ipcMain.handle('watcher:get-eblets', () => {
+    return watcher.getEbletLog();
   });
 }

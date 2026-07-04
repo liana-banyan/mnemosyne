@@ -8,6 +8,9 @@
 //
 // HTTP endpoints on 127.0.0.1:11480:
 //   GET  /health                    — liveness
+//   POST /dag/emit                  — MESH-6 Option-B: emit DAG node + trigger pointer_advance
+//   GET  /dag/lookup/:sid           — MESH-6 Option-B: lookup DAG node by SID (proves replication)
+//   POST /dag/fetch_from_peer       — MESH-6 Option-B: fetch SID from peer via TCP, hash-verify, store
 //   GET  /mode                      — current + forced mode
 //   POST /mode/force                — force or clear override mode
 //   POST /substrate/query           — three-mode routed query
@@ -43,8 +46,14 @@
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { mkdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, watch } from 'fs';
-import { resolve, dirname } from 'path';
-import { homedir } from 'os';
+import { resolve, dirname, join } from 'path';
+import { homedir, networkInterfaces } from 'os';
+import { createRequire } from 'module';
+
+// Dynamic version read from package.json (backlog #27 — never hardcode version here)
+const _pkgRequire = createRequire(__filename);
+const _pkg = _pkgRequire(join(__dirname, '../../package.json')) as { version: string };
+const APP_VERSION: string = _pkg.version;
 import { randomUUID, createHash } from 'crypto';
 import {
   logGatewayRequest as passiveSurveillanceLog,
@@ -100,10 +109,24 @@ import {
   type PluginRegistrationRequest,
   type PluginCategory,
 } from './marketplace/marketplace_registry';
+import { dag_soccerball_emit as _dagEmit, dag_soccerball_lookup as _dagLookup } from 'caithedral-core/tools/dag_soccerball';
+
+// MESH-6 Option-B: hook set by index.ts so /dag/emit can trigger pointer_advance broadcast
+let _dagEmitMeshHook: ((sid: string) => void) | null = null;
+export function setDagEmitMeshHook(fn: (sid: string) => void): void {
+  _dagEmitMeshHook = fn;
+}
+
+// MESH-6 Option-B: hook set by index.ts so /dag/fetch_from_peer can call _fetchSidViaTCP
+type FetchSidResult = { ok: boolean; node?: unknown; hash_verified: boolean; error?: string };
+let _fetchSidFromPeerHook: ((address: string, port: number, dag_id: string) => Promise<FetchSidResult>) | null = null;
+export function setFetchSidFromPeerHook(fn: (address: string, port: number, dag_id: string) => Promise<FetchSidResult>): void {
+  _fetchSidFromPeerHook = fn;
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-export const API_PORT = 11480;
+export const API_PORT = Number(process.env.SUBSTRATE_PORT ?? 11480);
 
 const LOG_DIR = resolve(
   process.env.APPDATA || process.env.HOME || '.',
@@ -167,6 +190,35 @@ function contentHash(payload: unknown): string {
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 32);
 }
 
+// ─── Mesh Glance (SEG-V0148-P0-GLANCE) ────────────────────────────────────────
+
+export interface NodeProgress {
+  nodeId: string;
+  label: string;
+  pct: number;
+  eta_s: number;
+  cold_accuracy: number;
+  hot_accuracy: number;
+  last_seen: number;
+  total_rounds: number;
+  rounds_done: number;
+}
+
+/** Returns the first non-loopback IPv4 address on the LAN, or 127.0.0.1 as fallback. */
+function getFirstLanIp(): string {
+  for (const iface of Object.values(networkInterfaces())) {
+    for (const info of iface ?? []) {
+      if (info.family === 'IPv4' && !info.internal) return info.address;
+    }
+  }
+  return '127.0.0.1';
+}
+
+/** Simple HTML-escape for template strings. */
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 // ─── Substrate API Server ─────────────────────────────────────────────────────
 
 export class SubstrateAPIServer {
@@ -178,6 +230,10 @@ export class SubstrateAPIServer {
   private degradedMode = false;
   private yokeSseClients = new Set<ServerResponse>();
   private inboxWatchInstalled = false;
+  /** SEG-V0148-P0-GLANCE: per-node mesh test progress store */
+  private meshProgressStore = new Map<string, NodeProgress>();
+  /** SEG-V0148-P0-GLANCE: hook called on every progress/update POST (wired to tray tooltip updater) */
+  private _onMeshProgressUpdate?: () => void;
 
   constructor() {
     this.index = new SubstrateLocalIndex();
@@ -217,6 +273,28 @@ export class SubstrateAPIServer {
     this.degradedMode = degraded;
   }
 
+  /** SEG-V0148-P0-GLANCE: wire tray tooltip hook; called on every /mesh/progress/update POST. */
+  setMeshProgressUpdateHook(fn: () => void): void {
+    this._onMeshProgressUpdate = fn;
+  }
+
+  /** SEG-V0148-P0-GLANCE: returns "Mesh: 47% (ETA 2h 14m)" when a run is active, null otherwise. */
+  getMeshProgressSuffix(): string | null {
+    if (this.meshProgressStore.size === 0) return null;
+    const now = Math.floor(Date.now() / 1000);
+    const nodes = Array.from(this.meshProgressStore.values());
+    const runActive = nodes.some((n) => now - n.last_seen < 30 * 60);
+    if (!runActive) return null;
+    const globalPct = nodes.reduce((s, n) => s + n.pct, 0) / nodes.length;
+    const globalEta_s = nodes.reduce((s, n) => s + n.eta_s, 0) / nodes.length;
+    const etaStr = globalEta_s > 0 ? (() => {
+      const h = Math.floor(globalEta_s / 3600);
+      const m = Math.floor((globalEta_s % 3600) / 60);
+      return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m` : `${Math.round(globalEta_s)}s`;
+    })() : 'finishing';
+    return `Mesh: ${Math.round(globalPct)}% (ETA ${etaStr})`;
+  }
+
   async start(): Promise<void> {
     if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
     await this.index.load();
@@ -239,6 +317,23 @@ export class SubstrateAPIServer {
 
     this.server = createServer((req, res) => this._handleRequest(req, res));
     return new Promise((resolve, reject) => {
+      // D.15 BP055 W3: port-conflict singleton-reuse guard.
+      // On app relaunch (e.g. after a crash without proper quit), port API_PORT may still be
+      // held by a zombie instance. Detect EADDRINUSE and reuse the existing instance rather
+      // than failing hard — the live server will respond to health checks normally.
+      this.server!.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          console.warn(
+            `[SubstrateAPI] Port ${API_PORT} already in use — zombie instance detected. ` +
+            `Reusing existing server; this instance will not re-bind. ` +
+            `Health checks will still succeed against the live process.`,
+          );
+          // Treat as success: the cooperative substrate is already running.
+          resolve();
+        } else {
+          reject(err);
+        }
+      });
       // Bind to 0.0.0.0 so MoneyPenny mobile can reach it over WiFi
       this.server!.listen(API_PORT, '0.0.0.0', () => {
         console.log(
@@ -247,7 +342,6 @@ export class SubstrateAPIServer {
         );
         resolve();
       });
-      this.server!.on('error', reject);
     });
   }
 
@@ -382,12 +476,92 @@ export class SubstrateAPIServer {
     if (req.method === 'GET' && url === '/health') {
       res.end(JSON.stringify({
         ok: true,
-        version: '0.4.0',
+        version: APP_VERSION,
         port: API_PORT,
         index_size: this.index.size,
         mode: this.router.getEffectiveMode(),
         forced_mode: this.router.getForcedMode(),
       }));
+      return;
+    }
+
+    // ── POST /dag/emit — MESH-6 Option-B test surface ─────────────────────────
+    // Emits a DAG soccerball node, triggers pointer_advance broadcast to peers.
+    // Body: { pearls: string[], bindings?: Record<string,string>, faces?: Record<string,string> }
+    if (req.method === 'POST' && url === '/dag/emit') {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const { pearls, bindings = {}, faces = {} } = JSON.parse(body) as {
+            pearls: string[];
+            bindings?: Record<string, string>;
+            faces?: Record<string, string>;
+          };
+          if (!Array.isArray(pearls) || pearls.length === 0) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ ok: false, error: 'pearls must be a non-empty array' }));
+            return;
+          }
+          const sid = _dagEmit(pearls, bindings, faces);
+          _dagEmitMeshHook?.(sid);
+          console.log(`[SubstrateAPI/dag/emit] sid=${sid} pearls=${JSON.stringify(pearls)}`);
+          res.end(JSON.stringify({ ok: true, sid, pearls, bindings, faces }));
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ ok: false, error: String(err) }));
+        }
+      });
+      return;
+    }
+
+    // ── GET /dag/lookup/:sid — MESH-6 Option-B test surface ───────────────────
+    // Looks up a DAG node by SID. Returns node if found (proves replication).
+    if (req.method === 'GET' && url?.startsWith('/dag/lookup/')) {
+      const sid = url.slice('/dag/lookup/'.length);
+      try {
+        const node = _dagLookup(sid);
+        if (node) {
+          res.end(JSON.stringify({ ok: true, found: true, sid, node }));
+        } else {
+          res.end(JSON.stringify({ ok: true, found: false, sid }));
+        }
+      } catch (err) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+      }
+      return;
+    }
+
+    // ── POST /dag/fetch_from_peer — MESH-6 Option-B receipt walk ──────────────
+    // Fetches a dag_id from a peer via TCP, hash-verifies, writes to local crystal.
+    // Body: { address: string, port: number, dag_id: string }
+    if (req.method === 'POST' && url === '/dag/fetch_from_peer') {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', async () => {
+        try {
+          const { address, port, dag_id } = JSON.parse(body) as {
+            address: string; port: number; dag_id: string;
+          };
+          if (!address || !port || !dag_id) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ ok: false, error: 'address, port, dag_id required' }));
+            return;
+          }
+          if (!_fetchSidFromPeerHook) {
+            res.statusCode = 503;
+            res.end(JSON.stringify({ ok: false, error: 'fetchSidFromPeerHook not wired' }));
+            return;
+          }
+          const result = await _fetchSidFromPeerHook(address, port, dag_id);
+          console.log(`[SubstrateAPI/dag/fetch_from_peer] dag_id=${dag_id} ok=${result.ok} hash_verified=${result.hash_verified}`);
+          res.end(JSON.stringify({ ...result, dag_id, address, port }));
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ ok: false, error: String(err) }));
+        }
+      });
       return;
     }
 
@@ -2012,8 +2186,172 @@ export class SubstrateAPIServer {
       return;
     }
 
+    // ── GET /mnemosyne/context — Chrome extension + external memory snapshot ──
+    // Returns a brief context snapshot for the extension popup and overlay frame.
+    // No body required. CORS * already set in the response headers above.
+    if (req.method === 'GET' && url === '/mnemosyne/context') {
+      const snap = this.getAMPLIFYSnapshot() as Record<string, unknown>;
+      res.end(JSON.stringify({
+        ok: true,
+        version: APP_VERSION,
+        port: API_PORT,
+        index_size: this.index.size,
+        mode: this.router.getEffectiveMode(),
+        substrate_hits: snap.substrate_hits ?? 0,
+        total_queries: snap.total_queries ?? 0,
+        substrate_hit_ratio: snap.substrate_hit_ratio ?? 0,
+        local_ratio: snap.local_ratio ?? 0,
+        as_of: new Date().toISOString(),
+        endpoints: {
+          query: 'POST /substrate/query',
+          note: 'POST /yoke/note',
+          health: 'GET /health',
+        },
+      }));
+      return;
+    }
+
+    // ── SEG-V0148-P0-GLANCE: POST /mesh/progress/update — localhost-only ──────
+    if (req.method === 'POST' && url === '/mesh/progress/update') {
+      const remoteAddr = req.socket.remoteAddress ?? '';
+      if (remoteAddr !== '127.0.0.1' && remoteAddr !== '::1' && remoteAddr !== '::ffff:127.0.0.1') {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ ok: false, error: 'localhost only' }));
+        return;
+      }
+      this._readBody(req, (body) => {
+        try {
+          const np = JSON.parse(body) as NodeProgress;
+          if (!np.nodeId) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ ok: false, error: 'nodeId required' }));
+            return;
+          }
+          np.last_seen = Math.floor(Date.now() / 1000);
+          this.meshProgressStore.set(np.nodeId, np);
+          this._onMeshProgressUpdate?.();
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, error: String(e) }));
+        }
+      });
+      return;
+    }
+
+    // ── SEG-V0148-P0-GLANCE: GET /mesh/progress — LAN-visible JSON ───────────
+    if (req.method === 'GET' && url === '/mesh/progress') {
+      const now = Math.floor(Date.now() / 1000);
+      const nodes = Array.from(this.meshProgressStore.values());
+      const runActive = nodes.some((n) => now - n.last_seen < 30 * 60);
+      const globalPct = nodes.length > 0
+        ? nodes.reduce((s, n) => s + n.pct, 0) / nodes.length
+        : 0;
+      const globalEta_s = nodes.length > 0
+        ? nodes.reduce((s, n) => s + n.eta_s, 0) / nodes.length
+        : 0;
+      res.end(JSON.stringify({ nodes, runActive, globalPct, globalEta_s }));
+      return;
+    }
+
+    // ── SEG-V0148-P0-GLANCE: GET /mesh/progress.html — LAN-visible glance page ─
+    if (req.method === 'GET' && url === '/mesh/progress.html') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.removeHeader('Content-Type');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(this._buildMeshProgressHtml());
+      return;
+    }
+
     res.statusCode = 404;
     res.end(JSON.stringify({ error: 'Not found' }));
+  }
+
+  /** SEG-V0148-P0-GLANCE: build the inline HTML glance page. */
+  private _buildMeshProgressHtml(): string {
+    const now = Math.floor(Date.now() / 1000);
+    const nodes = Array.from(this.meshProgressStore.values());
+    const runActive = nodes.some((n) => now - n.last_seen < 30 * 60);
+    const globalPct = nodes.length > 0
+      ? nodes.reduce((s, n) => s + n.pct, 0) / nodes.length
+      : 0;
+    const globalEta_s = nodes.length > 0
+      ? nodes.reduce((s, n) => s + n.eta_s, 0) / nodes.length
+      : 0;
+    const localIp = getFirstLanIp();
+
+    const fmt = (s: number): string => {
+      if (s <= 0) return 'done';
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m`;
+      return `${Math.round(s)}s`;
+    };
+
+    const relTime = (ts: number): string => {
+      const d = now - ts;
+      if (d < 60) return `${d}s ago`;
+      if (d < 3600) return `${Math.floor(d / 60)}m ago`;
+      return `${Math.floor(d / 3600)}h ago`;
+    };
+
+    const nodesHtml = nodes.length === 0
+      ? `<div class="no-data">No active nodes — waiting for mesh test to start.</div>`
+      : nodes.map((n) => {
+        const stale = (now - n.last_seen) > 240;
+        const coldPct = (n.cold_accuracy * 100).toFixed(1);
+        const hotPct = (n.hot_accuracy * 100).toFixed(1);
+        const lift = ((n.hot_accuracy - n.cold_accuracy) * 100);
+        const liftStr = (lift >= 0 ? '+' : '') + lift.toFixed(1) + '%';
+        return `<div class="node">
+  <div class="nh"><span class="nl">${esc(n.label)}</span>${stale ? ' <span class="stale">STALE</span>' : ''}<span class="ls"> · ${relTime(n.last_seen)}</span></div>
+  <div class="bar-track"><div class="bar-fill${stale ? ' s' : ''}" style="width:${Math.min(100, n.pct).toFixed(1)}%"></div></div>
+  <div class="ns">${n.rounds_done}/${n.total_rounds} rounds · ${n.pct.toFixed(0)}%</div>
+  <div class="acc">COLD ${coldPct}% · HOT ${hotPct}% · Lift ${liftStr}</div>
+  ${n.eta_s > 0 ? `<div class="eta">ETA ~${fmt(n.eta_s)}</div>` : ''}
+</div>`;
+      }).join('');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="30">
+<title>MnemosyneC · Mesh Test</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#111;color:#eee;font-family:system-ui,sans-serif;padding:14px;max-width:520px}
+h1{font-size:1.05rem;margin-bottom:12px;color:#aaf}
+.global{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;margin-bottom:14px}
+.gl{font-size:.82rem;color:#aaa;margin-bottom:4px}
+.bar-track{background:#333;border-radius:5px;height:17px;overflow:hidden;margin:4px 0}
+.bar-fill{background:#3d3;height:100%;border-radius:5px}
+.bar-fill.s{background:#a44}
+.node{background:#1c1c1c;border:1px solid #2a2a2a;border-radius:8px;padding:10px;margin-bottom:10px}
+.nh{font-weight:600;font-size:.9rem;margin-bottom:4px}
+.nl{}
+.stale{color:#f44;font-weight:bold}
+.ls{color:#555;font-size:.75rem}
+.ns{color:#888;font-size:.78rem;margin:2px 0}
+.acc{font-size:.78rem;color:#7c7;margin:3px 0}
+.eta{font-size:.78rem;color:#aa8;margin-top:3px}
+.no-data{color:#555;padding:20px 0;text-align:center;font-size:.9rem}
+.footer{margin-top:14px;font-size:.7rem;color:#444;border-top:1px solid #222;padding-top:8px;word-break:break-all}
+</style>
+</head>
+<body>
+<h1>MnemosyneC · Mesh Test</h1>
+<div class="global">
+  <div class="gl">Global · ${globalPct.toFixed(0)}%${runActive ? ` · ETA ~${fmt(globalEta_s)}` : ' · idle'}</div>
+  <div class="bar-track"><div class="bar-fill" style="width:${Math.min(100, globalPct).toFixed(1)}%"></div></div>
+</div>
+${nodesHtml}
+<div class="footer">Auto-refreshes every 30s · MnemosyneC mesh test · http://${esc(localIp)}:${API_PORT}/mesh/progress.html</div>
+</body>
+</html>`;
   }
 
   // ─── Telemetry ────────────────────────────────────────────────────────────

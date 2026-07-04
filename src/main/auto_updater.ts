@@ -13,6 +13,9 @@
 
 import { autoUpdater, type UpdateInfo } from 'electron-updater';
 import { ipcMain, BrowserWindow, Notification, app } from 'electron';
+import { runQuorumCheck } from './keys_engines/quorum_check';
+import { getCircleMembership } from './keys_engines/circle_membership';
+import { verifySocceriKey } from './keys_engines/key_verifier';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -89,6 +92,24 @@ export class AutoUpdateManager {
     }
   }
 
+  downloadNow(): void {
+    if (this.state.status === 'available') {
+      const version = this.state.version ?? '';
+      this._runTrustGate(version, '').then((trusted) => {
+        if (!trusted) return;
+        autoUpdater.downloadUpdate().catch((err: Error) => {
+          this._setState({ status: 'error', errorMessage: err.message });
+        });
+      }).catch(() => {});
+    }
+  }
+
+  /** 1D-FIX: opt-out toggle — persisted by renderer in localStorage, propagated via IPC */
+  setAutoInstallOnQuit(enabled: boolean): void {
+    autoUpdater.autoInstallOnAppQuit = enabled;
+    console.log(`[AutoUpdater] autoInstallOnAppQuit = ${enabled}`);
+  }
+
   getState(): UpdateState {
     return { ...this.state };
   }
@@ -106,8 +127,29 @@ export class AutoUpdateManager {
   // ─── Private ─────────────────────────────────────────────────────────────
 
   private _configureUpdater(): void {
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    // Canonical release-channel feed URL: https://mnemosynec.ai/download/
+    // This is set at build time via the `publish` block in package.json (provider: generic).
+    // There is NO runtime setFeedURL call -- electron-updater reads the baked-in URL from
+    // the app-update.yml embedded in the asar. Do NOT add a setFeedURL override here;
+    // doing so would require keeping two URLs in sync. If the release URL ever changes,
+    // update package.json `build.publish.url` (single source of truth) and rebuild.
+    //
+    // M22 §A.8 / canon_hugo_tower_version_data_source_is_version_trust_json_bp090:
+    // version_trust.json at https://mnemosynec.org/download/version_trust.json is the
+    // human-readable version-of-record. The electron-updater generic provider reads
+    // latest.yml from the same base URL. Both must be updated in lockstep on release.
+    // Current feedURL verified: https://mnemosynec.ai/download/ (package.json publish.url).
+    //
+    // BP067 Phase 1D — SAFE TIER: notify + one-click apply, NOT silent auto-install.
+    // DO NOT change autoDownload to true on an unsigned binary (malware vector risk:
+    // compromised feed/DNS → unsigned exe executes with no OS warning).
+    //
+    // Safe-silent prerequisites (unlock only when ALL three land):
+    //   1. electron-updater wired with sha512 verify [DONE — this file]
+    //   2. Windows code-signed installer [PENDING — requires EV cert]
+    //   3. Signed update manifest (latest.yml signed with private key) [PENDING]
+    autoUpdater.autoDownload = false;      // user confirms download via "Download" button
+    autoUpdater.autoInstallOnAppQuit = true;  // install on next quit once downloaded
     autoUpdater.allowPrerelease = false;
     autoUpdater.allowDowngrade = false;
 
@@ -131,9 +173,10 @@ export class AutoUpdateManager {
         version: info.version,
         releaseNotes: this._extractReleaseNotes(info.releaseNotes),
       });
+      // BP067 Phase 1D — safe tier: notify but do NOT auto-download
       this._showSystemNotification(
-        'Mnemosyne Update',
-        `v${info.version} is available — downloading now…`,
+        'MnemosyneC Update Available',
+        `v${info.version} is ready — open MnemosyneC to download`,
       );
     });
 
@@ -158,7 +201,7 @@ export class AutoUpdateManager {
         downloadProgress: 100,
       });
       this._showSystemNotification(
-        'Mnemosyne ready to update',
+        'MnemosyneC ready to update',
         `v${info.version} downloaded — restart to apply`,
       );
     });
@@ -183,7 +226,8 @@ export class AutoUpdateManager {
   }
 
   private _registerIPCHandlers(): void {
-    ipcMain.handle('get-update-state', () => this.getState());
+    // 'get-update-state' handle lives in registerIPCHandlers (index.ts) -- canonical site.
+    // DO NOT add a second ipcMain.handle here; electron-updater would throw on duplicate.
 
     ipcMain.on('check-for-updates', () => {
       this.checkNow().catch(() => {});
@@ -191,6 +235,16 @@ export class AutoUpdateManager {
 
     ipcMain.on('install-update', () => {
       this.installNow();
+    });
+
+    // BP067 Phase 1D — user-triggered download (safe tier: notify+one-click)
+    ipcMain.on('download-update', () => {
+      this.downloadNow();
+    });
+
+    // 1D-FIX: renderer persists opt-out preference, propagates here
+    ipcMain.on('set-auto-install-on-quit', (_event, enabled: boolean) => {
+      this.setAutoInstallOnQuit(enabled);
     });
   }
 
@@ -228,5 +282,64 @@ export class AutoUpdateManager {
         .slice(0, 500);
     }
     return undefined;
+  }
+
+  private async _runTrustGate(version: string, payloadHash: string): Promise<boolean> {
+    try {
+      const circle = await getCircleMembership();
+      if (circle.peers.length < 2) {
+        console.warn('[AutoUpdater] Trust gate: fewer than 2 Circle peers available, bypassing quorum (AMBER)');
+        return true;
+      }
+      const peerAddresses = circle.peers.map((p) => p.address);
+
+      const ledgerUrl = `${process.env.SUPABASE_URL}/rest/v1/frontier_reputation_log?update_version=eq.${encodeURIComponent(version)}&select=claimed_hash&order=timestamp.desc&limit=1`;
+      let ledgerHash = '';
+      try {
+        const ledgerRes = await fetch(ledgerUrl, {
+          headers: { apikey: process.env.SUPABASE_ANON_KEY ?? '' },
+        });
+        const rows = await ledgerRes.json() as Array<{ claimed_hash: string }>;
+        ledgerHash = rows[0]?.claimed_hash ?? payloadHash;
+      } catch {
+        ledgerHash = payloadHash;
+      }
+
+      const quorum = await runQuorumCheck(version, ledgerHash, peerAddresses);
+
+      if (!quorum.passed) {
+        const frameId = process.env.LB_FRAME_ID ?? 'unknown';
+        await fetch(
+          `${process.env.SUPABASE_URL}/rest/v1/frontier_reputation_log`,
+          {
+            method: 'POST',
+            headers: {
+              apikey: process.env.SUPABASE_ANON_KEY ?? '',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              source_frame_id: quorum.peerResponses[0]?.peerId ?? 'unknown',
+              claimed_hash: payloadHash,
+              ledger_hash: ledgerHash,
+              mismatch_delta: quorum.mismatchDelta ? JSON.parse(quorum.mismatchDelta) : null,
+              requesting_frame_id: frameId,
+              update_version: version,
+              severity: 'quorum_fail',
+              resolved: false,
+            }),
+          },
+        ).catch((e: Error) => console.error('[AutoUpdater] Ledger emit failed:', e.message));
+
+        this._setState({
+          status: 'error',
+          errorMessage: 'Update blocked · trust verification failed · check Reputation Log',
+        });
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error('[AutoUpdater] Trust gate error:', err);
+      return true;
+    }
   }
 }

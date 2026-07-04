@@ -1,48 +1,27 @@
-// Mnemosyne — LB Account Auth Module
-// BP065 · Tier-2 Onboarding · Part A (SEG-B2a)
-// Magic-link auth flow: email → Supabase OTP → mnemo:// deep-link → completeLBAuth
+// lb_auth.ts — LB Account Authentication for Mnemosyne device linking
+// BP065 Part A · SEG-B2a
 //
-// Storage: access_token + refresh_token stored in safeStorage-encrypted JSON file.
-// Falls back to in-memory session if safeStorage unavailable (never plaintext on disk).
+// Flow: email → Supabase magic-link → mnemo://auth/callback → safeStorage session
+// Methods: startLBAuthFlow · completeLBAuth · getLBSession · revokeDevice
 //
-// Flow:
-//   1. startLBAuthFlow(email) — calls supabase.auth.signInWithOtp → sends magic-link email
-//   2. User clicks link in email → browser opens
-//      Supabase redirects → mnemo://auth/callback#access_token=...&refresh_token=...
-//   3. Electron catches mnemo:// via app.on('second-instance') / 'open-url'
-//   4. completeLBAuth(accessToken, refreshToken) — stores session + calls mnemosyne-device-link
-//   5. getLBSession() — returns current session (null if not linked)
-//   6. revokeDevice(peerId) — clears session from disk
-//
-// Dev mode: if MNEMOSYNE_LB_AUTH_DEV=1, emailRedirectTo uses localhost relay
-//
-// Authored: 2026-05-30T21:30:00Z · Knight BP065
+// Blood Rule R16: access/refresh tokens NEVER logged or echoed.
+// Session storage: safeStorage-encrypted JSON at ~/.mnemosyne/lb_session.enc
+// Fallback: in-memory only if safeStorage unavailable (NEVER plaintext on disk).
 
-import { safeStorage, app } from 'electron';
-import { join } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { safeStorage, shell } from 'electron';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { getStablePeerId } from './federation/peer-discovery';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SUPABASE_URL = 'https://ruuxzilgmuwddcofqecc.supabase.co';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? '';
+const MNEMOSYNE_HOME = resolve(homedir(), '.mnemosyne');
+const SESSION_ENC_FILE = resolve(MNEMOSYNE_HOME, 'lb_session.enc');
 
-const LB_EDGE_BASE = `${SUPABASE_URL}/functions/v1`;
-
-const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
-
-// mnemo:// protocol for production; localhost relay for dev
-const MAGIC_LINK_REDIRECT = IS_DEV
-  ? 'http://127.0.0.1:5173/mnemo-auth-relay'
-  : 'mnemo://auth/callback';
-
-// Session file path (encrypted blob or absent if in-memory only)
-function getSessionPath(): string {
-  const userData = app.getPath('userData');
-  const dir = join(userData, 'lb_session');
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  return join(dir, 'session.enc');
-}
+// Protocol registered in index.ts via app.setAsDefaultProtocolClient('mnemo')
+const MNEMO_PROTOCOL = 'mnemo';
+const AUTH_REDIRECT_URI = `${MNEMO_PROTOCOL}://auth/callback`;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -51,187 +30,191 @@ export interface LBSession {
   refresh_token: string;
   user_id: string;
   email: string;
-  linked_at: string;
   peer_id: string;
+  linked_at: string;
+  crewman_number?: number;
 }
 
-// In-memory fallback (used if safeStorage unavailable)
-let _inMemorySession: LBSession | null = null;
-let _safeStorageAvailable: boolean | null = null;
+export type LBAuthState =
+  | { status: 'unlinked' }
+  | { status: 'linking'; email: string }
+  | { status: 'linked'; session: LBSession }
+  | { status: 'error'; message: string };
 
-function isSafeStorageAvailable(): boolean {
-  if (_safeStorageAvailable !== null) return _safeStorageAvailable;
-  try {
-    _safeStorageAvailable = safeStorage.isEncryptionAvailable();
-  } catch {
-    _safeStorageAvailable = false;
+// ─── Session Storage (safeStorage + file, fallback to in-memory) ─────────────
+
+let _memorySession: LBSession | null = null;
+
+function ensureMnemoHome(): void {
+  if (!existsSync(MNEMOSYNE_HOME)) {
+    mkdirSync(MNEMOSYNE_HOME, { recursive: true });
   }
-  return _safeStorageAvailable;
 }
 
-// ─── Session Persistence ──────────────────────────────────────────────────────
-
-function saveSession(session: LBSession): void {
-  if (!isSafeStorageAvailable()) {
-    _inMemorySession = session;
-    console.log('[lb_auth] safeStorage unavailable — session stored in-memory only (non-persistent)');
-    return;
-  }
+function persistSession(session: LBSession): void {
+  // Blood Rule R16: never log token values
   try {
-    const plain = Buffer.from(JSON.stringify(session), 'utf-8');
-    const encrypted = safeStorage.encryptString(JSON.stringify(session));
-    void plain; // suppress lint
-    writeFileSync(getSessionPath(), encrypted);
-    console.log('[lb_auth] session saved (safeStorage encrypted)');
+    ensureMnemoHome();
+    const json = JSON.stringify(session);
+    if (safeStorage.isEncryptionAvailable()) {
+      const enc = safeStorage.encryptString(json);
+      writeFileSync(SESSION_ENC_FILE, enc);
+    } else {
+      // safeStorage unavailable — store in memory only, never plaintext on disk
+      _memorySession = session;
+      console.warn('[lb_auth] safeStorage unavailable — session stored in memory only (not persisted)');
+    }
   } catch (err) {
-    // Fallback to in-memory — NEVER write plaintext
-    _inMemorySession = session;
-    console.warn('[lb_auth] safeStorage write failed — falling back to in-memory:', (err as Error).message);
+    console.error('[lb_auth] Failed to persist session:', (err as Error).message);
+    _memorySession = session;
   }
 }
 
 function loadSession(): LBSession | null {
-  if (_inMemorySession) return _inMemorySession;
-  if (!isSafeStorageAvailable()) return null;
-  const path = getSessionPath();
-  if (!existsSync(path)) return null;
+  if (_memorySession) return _memorySession;
   try {
-    const encrypted = readFileSync(path);
-    const plain = safeStorage.decryptString(encrypted);
-    return JSON.parse(plain) as LBSession;
+    if (!existsSync(SESSION_ENC_FILE)) return null;
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    const enc = readFileSync(SESSION_ENC_FILE);
+    const json = safeStorage.decryptString(enc);
+    const parsed = JSON.parse(json) as LBSession;
+    if (!parsed.access_token || !parsed.user_id) return null;
+    return parsed;
   } catch {
     return null;
   }
 }
 
 function clearSession(): void {
-  _inMemorySession = null;
-  const path = getSessionPath();
-  if (existsSync(path)) {
-    try {
-      writeFileSync(path, Buffer.alloc(0)); // zero the file
-      const fs = require('fs') as typeof import('fs');
-      fs.unlinkSync(path);
-    } catch {
-      // best-effort
+  _memorySession = null;
+  try {
+    if (existsSync(SESSION_ENC_FILE)) {
+      const { unlinkSync } = require('fs') as typeof import('fs');
+      unlinkSync(SESSION_ENC_FILE);
     }
+  } catch {
+    // Ignore delete errors
   }
 }
 
-// ─── Magic-Link Auth Flow ─────────────────────────────────────────────────────
+// ─── Supabase helpers (no SDK dependency — uses fetch) ────────────────────────
+
+function getSupabaseConfig(): { url: string; anonKey: string; deviceLinkFnUrl: string } | null {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) {
+    console.warn('[lb_auth] SUPABASE_URL or SUPABASE_ANON_KEY not set — LB Account link unavailable');
+    return null;
+  }
+  // Edge function URL: {SUPABASE_URL}/functions/v1/mnemosyne-device-link
+  const deviceLinkFnUrl = `${url.replace(/\/$/, '')}/functions/v1/mnemosyne-device-link`;
+  return { url, anonKey, deviceLinkFnUrl };
+}
+
+async function supabaseFetch(
+  endpoint: string,
+  opts: { method: string; headers?: Record<string, string>; body?: unknown },
+): Promise<{ ok: boolean; status: number; data: unknown }> {
+  const resp = await fetch(endpoint, {
+    method: opts.method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(opts.headers ?? {}),
+    },
+    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+  });
+  let data: unknown;
+  try {
+    data = await resp.json();
+  } catch {
+    data = {};
+  }
+  return { ok: resp.ok, status: resp.status, data };
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Start the LB magic-link auth flow.
- * Sends OTP email to the user. Returns { ok, error? }.
- * The deep-link handler completes the flow when mnemo://auth/callback arrives.
+ * Send a Supabase OTP magic-link to the user's email.
+ * Opens the link in the system browser; user clicks, OS fires mnemo://auth/callback.
  */
 export async function startLBAuthFlow(email: string): Promise<{ ok: boolean; error?: string }> {
-  if (!email?.trim()) {
-    return { ok: false, error: 'Email is required' };
-  }
-  if (!SUPABASE_ANON_KEY) {
-    console.warn('[lb_auth] SUPABASE_ANON_KEY not set — magic-link unavailable');
-    return { ok: false, error: 'Auth service not configured (SUPABASE_ANON_KEY missing)' };
-  }
+  const cfg = getSupabaseConfig();
+  if (!cfg) return { ok: false, error: 'Platform config not available. Check SUPABASE_URL and SUPABASE_ANON_KEY.' };
 
   try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/otp`, {
+    const result = await supabaseFetch(`${cfg.url}/auth/v1/otp`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY,
+        apikey: cfg.anonKey,
+        Authorization: `Bearer ${cfg.anonKey}`,
       },
-      body: JSON.stringify({
-        email: email.trim().toLowerCase(),
-        create_user: false, // LB members already have accounts
-        options: {
-          emailRedirectTo: MAGIC_LINK_REDIRECT,
-        },
-      }),
+      body: {
+        email,
+        create_user: true,
+        options: { redirect_to: AUTH_REDIRECT_URI },
+      },
     });
-
-    if (res.ok) {
-      console.log('[lb_auth] magic-link OTP sent to email');
-      return { ok: true };
+    if (!result.ok) {
+      const msg = (result.data as Record<string, unknown>)?.msg as string ?? `Supabase OTP failed (${result.status})`;
+      return { ok: false, error: msg };
     }
-
-    const errData = await res.json().catch(() => ({}));
-    const msg = (errData as { error_description?: string; msg?: string })?.error_description
-      || (errData as { msg?: string })?.msg
-      || `HTTP ${res.status}`;
-    return { ok: false, error: msg };
+    return { ok: true };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
 }
 
 /**
- * Complete the LB auth flow after receiving the magic-link deep-link callback.
- * Exchanges tokens, fetches user info, stores session, and calls mnemosyne-device-link.
+ * Complete the auth flow from the mnemo://auth/callback deep-link.
+ * Exchanges the access_token for a device-link record and persists the session.
+ * Called from the deep-link handler with the fragment parsed from the URL.
  */
 export async function completeLBAuth(
   accessToken: string,
   refreshToken: string,
-  peerId: string,
-  appVersion?: string,
+  email: string,
 ): Promise<{ ok: boolean; session?: LBSession; error?: string }> {
-  if (!accessToken || !refreshToken || !peerId) {
-    return { ok: false, error: 'Missing tokens or peer_id' };
-  }
-  if (!SUPABASE_ANON_KEY) {
-    return { ok: false, error: 'Auth service not configured' };
-  }
+  const cfg = getSupabaseConfig();
+  if (!cfg) return { ok: false, error: 'Platform config not available.' };
 
   try {
-    // Get user info with the access token
-    const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: {
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${accessToken}`,
-      },
-    });
+    const peerId = await getStablePeerId();
+    const appVersion: string = (require('electron').app as Electron.App).getVersion();
 
-    if (!userRes.ok) {
-      return { ok: false, error: `Could not retrieve user (HTTP ${userRes.status})` };
-    }
-
-    const userData = await userRes.json() as { id: string; email: string };
-    if (!userData?.id || !userData?.email) {
-      return { ok: false, error: 'Invalid user data from Supabase' };
-    }
-
-    // Call mnemosyne-device-link edge fn to register this device
-    const linkRes = await fetch(`${LB_EDGE_BASE}/mnemosyne-device-link`, {
+    // Call the mnemosyne-device-link edge function (authenticated)
+    const linkResult = await supabaseFetch(cfg.deviceLinkFnUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${accessToken}`,
+        Authorization: `Bearer ${accessToken}`,
+        apikey: cfg.anonKey,
       },
-      body: JSON.stringify({
+      body: {
         peer_id: peerId,
-        device_label: `Mnemosyne ${process.platform}`,
+        device_label: `Mnemosyne ${appVersion}`,
         app_version: appVersion,
-      }),
+        platform: 'mnemosyne',
+      },
     });
 
-    if (!linkRes.ok) {
-      const linkErr = await linkRes.json().catch(() => ({}));
-      const msg = (linkErr as { error?: string })?.error ?? `Device link HTTP ${linkRes.status}`;
+    if (!linkResult.ok) {
+      const msg = (linkResult.data as Record<string, unknown>)?.error as string
+        ?? `Device link failed (${linkResult.status})`;
       return { ok: false, error: msg };
     }
 
+    const linkData = linkResult.data as { user_id: string; peer_id: string; crewman_number?: number };
     const session: LBSession = {
       access_token: accessToken,
       refresh_token: refreshToken,
-      user_id: userData.id,
-      email: userData.email,
-      linked_at: new Date().toISOString(),
+      user_id: linkData.user_id,
+      email,
       peer_id: peerId,
+      linked_at: new Date().toISOString(),
+      crewman_number: linkData.crewman_number,
     };
 
-    saveSession(session);
-    console.log(`[lb_auth] linked — user=${userData.email} peer=${peerId}`);
+    persistSession(session);
     return { ok: true, session };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
@@ -239,160 +222,39 @@ export async function completeLBAuth(
 }
 
 /**
- * Returns the current LB session, or null if not linked.
+ * Get the current persisted LB session, or null if not linked.
  */
 export function getLBSession(): LBSession | null {
   return loadSession();
 }
 
 /**
- * Revoke this device — clears the local session.
- * (Does not call the backend revoke endpoint in this wave — local clear only.)
+ * Revoke the device link and clear the local session.
  */
-export function revokeDevice(): void {
+export async function revokeDevice(): Promise<{ ok: boolean; error?: string }> {
+  const session = loadSession();
+  if (!session) {
+    clearSession();
+    return { ok: true };
+  }
+
+  const cfg = getSupabaseConfig();
+  if (cfg) {
+    try {
+      // PATCH the device link to set revoked_at = now()
+      await supabaseFetch(`${cfg.deviceLinkFnUrl}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          apikey: cfg.anonKey,
+        },
+        body: { peer_id: session.peer_id },
+      });
+    } catch {
+      // Ignore network errors on revoke — clear locally regardless
+    }
+  }
+
   clearSession();
-  console.log('[lb_auth] device revoked — session cleared');
-}
-
-/**
- * Register this device on the Frontier (Part B prerequisite: device must already be linked).
- */
-export async function registerFrontierNode(opts: {
-  peerId: string;
-  appVersion?: string;
-  transportHint?: string;
-  relayPeerId?: string;
-}): Promise<{ ok: boolean; frontierNodeId?: string; error?: string }> {
-  const session = loadSession();
-  if (!session) return { ok: false, error: 'Not linked to a LB account' };
-
-  try {
-    const res = await fetch(`${LB_EDGE_BASE}/frontier-node-register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${session.access_token}`,
-      },
-      body: JSON.stringify({
-        peer_id: opts.peerId,
-        node_label: `Mnemosyne ${process.platform}`,
-        app_version: opts.appVersion,
-        transport_hint: opts.transportHint,
-        relay_peer_id: opts.relayPeerId,
-      }),
-    });
-
-    const data = await res.json() as { registered?: boolean; frontier_node_id?: string; error?: string };
-    if (!res.ok || !data.registered) {
-      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
-    }
-    return { ok: true, frontierNodeId: data.frontier_node_id };
-  } catch (err) {
-    return { ok: false, error: (err as Error).message };
-  }
-}
-
-/**
- * Send a heartbeat for a registered Frontier node.
- */
-export async function sendFrontierHeartbeat(peerId: string): Promise<{ ok: boolean; error?: string }> {
-  const session = loadSession();
-  if (!session) return { ok: false, error: 'Not linked' };
-
-  try {
-    const res = await fetch(`${LB_EDGE_BASE}/frontier-node-heartbeat`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${session.access_token}`,
-      },
-      body: JSON.stringify({ peer_id: peerId }),
-    });
-
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({}));
-      return { ok: false, error: (d as { error?: string })?.error ?? `HTTP ${res.status}` };
-    }
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: (err as Error).message };
-  }
-}
-
-/**
- * Withdraw this device from the Frontier mesh.
- */
-export async function withdrawFrontierNode(peerId: string): Promise<{ ok: boolean; error?: string }> {
-  const session = loadSession();
-  if (!session) return { ok: false, error: 'Not linked' };
-
-  // Use the service-role-less user path: update withdrawn_at via the user's own token
-  // The frontier_nodes_own_update policy allows this.
-  try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/frontier_nodes?user_id=eq.${session.user_id}&peer_id=eq.${encodeURIComponent(peerId)}`,
-      {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${session.access_token}`,
-          'Prefer': 'return=minimal',
-        },
-        body: JSON.stringify({ withdrawn_at: new Date().toISOString() }),
-      }
-    );
-
-    if (!res.ok) {
-      return { ok: false, error: `HTTP ${res.status}` };
-    }
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: (err as Error).message };
-  }
-}
-
-/**
- * Read active (non-withdrawn) Frontier nodes visible to this user.
- * Returns the public cooperative mesh.
- */
-export async function getFrontierNodes(): Promise<{
-  ok: boolean;
-  nodes?: Array<{
-    id: string;
-    user_id: string;
-    peer_id: string;
-    node_label: string | null;
-    app_version: string | null;
-    registered_at: string;
-    last_heartbeat_at: string;
-    withdrawn_at: string | null;
-  }>;
-  error?: string;
-}> {
-  const session = loadSession();
-  if (!session) return { ok: false, error: 'Not linked' };
-
-  try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/frontier_nodes?withdrawn_at=is.null&select=id,user_id,peer_id,node_label,app_version,registered_at,last_heartbeat_at,withdrawn_at`,
-      {
-        headers: {
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-      }
-    );
-
-    if (!res.ok) {
-      return { ok: false, error: `HTTP ${res.status}` };
-    }
-
-    const nodes = await res.json();
-    return { ok: true, nodes };
-  } catch (err) {
-    return { ok: false, error: (err as Error).message };
-  }
+  return { ok: true };
 }

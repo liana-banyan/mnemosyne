@@ -397,8 +397,6 @@ body {
   padding: 24px;
   width: 420px;
   max-width: 90vw;
-  max-height: 90vh;
-  overflow-y: auto;
 }
 
 .dashboard__title {
@@ -499,3 +497,68 @@ body {
 }
 
 .close-btn:hover { background: rgba(255,255,255,0.1); }
+
+/* ─── Glow tiers v0.4.1 BP083 · Golden Keys canon ───────────────────────────── */
+/* Founder-ratified: "a mark makes it glow, and the more, the glowier it is."    */
+/* VISIBILITY CANON (Heart of Peace BP051): glow surfaces attention, NEVER gates  */
+
+.diagnosis-card { transition: box-shadow 0.3s ease, border-color 0.3s ease; }
+
+/* 0 Marks — no glow */
+.glow-none { box-shadow: none; }
+
+/* 1-9 Marks — dim */
+.glow-dim {
+  box-shadow: 0 0 4px 1px rgba(255, 215, 0, 0.25);
+  animation: glow-pulse-dim 3s ease-in-out infinite;
+}
+
+/* 10-99 Marks — visible */
+.glow-visible {
+  box-shadow: 0 0 8px 2px rgba(255, 215, 0, 0.5);
+  animation: glow-pulse-visible 2s ease-in-out infinite;
+}
+
+/* 100-999 Marks — bright (cyan/yellow) */
+.glow-bright {
+  box-shadow: 0 0 16px 4px rgba(0, 255, 200, 0.65), 0 0 32px 8px rgba(255, 215, 0, 0.3);
+  animation: glow-pulse-bright 1.5s ease-in-out infinite;
+}
+
+/* 1000+ Marks — Golden Key max */
+.glow-golden {
+  box-shadow: 0 0 24px 8px rgba(255, 215, 0, 0.9), 0 0 48px 16px rgba(255, 165, 0, 0.5);
+  animation: glow-pulse-golden 1s ease-in-out infinite;
+  border-color: rgba(255, 215, 0, 0.8) !important;
+}
+
+@keyframes glow-pulse-dim {
+  0%, 100% { box-shadow: 0 0 4px 1px rgba(255, 215, 0, 0.2); }
+  50%       { box-shadow: 0 0 6px 2px rgba(255, 215, 0, 0.35); }
+}
+
+@keyframes glow-pulse-visible {
+  0%, 100% { box-shadow: 0 0 6px 2px rgba(255, 215, 0, 0.4); }
+  50%       { box-shadow: 0 0 12px 4px rgba(255, 215, 0, 0.65); }
+}
+
+@keyframes glow-pulse-bright {
+  0%, 100% { box-shadow: 0 0 12px 3px rgba(0, 255, 200, 0.5), 0 0 24px 6px rgba(255, 215, 0, 0.25); }
+  50%       { box-shadow: 0 0 20px 6px rgba(0, 255, 200, 0.8), 0 0 40px 10px rgba(255, 215, 0, 0.45); }
+}
+
+@keyframes glow-pulse-golden {
+  0%, 100% { box-shadow: 0 0 20px 6px rgba(255, 215, 0, 0.8), 0 0 40px 12px rgba(255, 165, 0, 0.4); }
+  50%       { box-shadow: 0 0 32px 10px rgba(255, 215, 0, 1.0), 0 0 60px 20px rgba(255, 165, 0, 0.7); }
+}
+
+/* Node pulse for high-glow Diagnosis arrivals in ConstellationSwitchboard */
+@keyframes node-pulse-glow {
+  0%   { background: rgba(255, 215, 0, 0.0); }
+  30%  { background: rgba(255, 215, 0, 0.18); }
+  100% { background: rgba(255, 215, 0, 0.0); }
+}
+
+.peer-row-pulse {
+  animation: node-pulse-glow 1.8s ease-out forwards;
+}

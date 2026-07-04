@@ -2,12 +2,12 @@
 // The Gauntlet 6-stage testing framework — the killer flywheel.
 // Default tab on first launch. Proves "ANY hardware · ANY network · ANY AI · or NONE AT ALL".
 //
-// Stage 1: Baseline         (no Mnemosyne · no Cathedral · raw AI or no-AI)
-// Stage 2: Cathedral alone  (substrate only · NO LLM · proves "or NONE AT ALL")
+// Stage 1: Baseline         (no MnemosyneC · no Caithedral · raw AI or no-AI)
+// Stage 2: Caithedral alone  (substrate only · NO LLM · proves "or NONE AT ALL")
 // Stage 3: + Any AI         (dropdown · pick model · same task)
 // Stage 4: Yoked AI         (dropdown · cross-vendor symmetric yoke)
 // Stage 5: Orchestration    (Wave / Drekaskip / Novacula / AutoBaton)
-// Stage 6: Federation       (cross-Cathedral peer-mesh · Thorax · requires LB membership)
+// Stage 6: Federation       (cross-Caithedral peer-mesh · Thorax · requires LB membership)
 //
 // Pioneer Bonus fires at Stage 3+ for previously-untested models.
 // 5-marks bonus on first Stage 1 completion (SAGA 13).
@@ -63,12 +63,12 @@ interface StageResult {
 }
 
 const STAGE_DEFS = [
-  { stage: 1, name: 'Baseline',       icon: '📊', desc: 'No Mnemosyne · no Cathedral · raw AI or no-AI baseline run' },
-  { stage: 2, name: 'Cathedral Alone', icon: '🏛️', desc: 'Substrate only · NO LLM · proves "or NONE AT ALL"' },
-  { stage: 3, name: '+ Any AI',        icon: '🤖', desc: 'Cathedral + AI model of your choice · Pioneer Bonus fires here' },
+  { stage: 1, name: 'Baseline',       icon: '📊', desc: 'No MnemosyneC · no Caithedral · raw AI or no-AI baseline run' },
+  { stage: 2, name: 'Caithedral Alone', icon: '🏛️', desc: 'Substrate only · NO LLM · proves "or NONE AT ALL"' },
+  { stage: 3, name: '+ Any AI',        icon: '🤖', desc: 'Caithedral + AI model of your choice · Pioneer Bonus fires here' },
   { stage: 4, name: 'Yoked AI',        icon: '⚡', desc: 'Cross-vendor symmetric AI yoke · proves inexpensive ≈ flagship WITH substrate' },
   { stage: 5, name: 'Orchestration',   icon: '🌊', desc: 'Wave / Drekaskip / Novacula / AutoBaton selector' },
-  { stage: 6, name: 'Federation',      icon: '🌐', desc: 'Cross-Cathedral peer-mesh · Thorax handshake · requires LB membership' },
+  { stage: 6, name: 'Federation',      icon: '🌐', desc: 'Cross-Caithedral peer-mesh · Thorax handshake · requires LB membership' },
 ];
 
 // ─── Prerequisite logic (BP047 checkmark model) ───────────────────────────────
@@ -87,8 +87,8 @@ function getPrerequisites(stage: number): number[] {
 }
 
 function getPrereqTooltip(stage: number): string {
-  if (stage === 3) return 'Requires Stage 2 (Cathedral Alone baseline)';
-  if (stage === 4) return 'Requires Stage 2 (Cathedral Alone baseline)';
+  if (stage === 3) return 'Requires Stage 2 (Caithedral Alone baseline)';
+  if (stage === 4) return 'Requires Stage 2 (Caithedral Alone baseline)';
   if (stage === 5) return 'Requires Stage 3 or Stage 4 — AI must be in the run';
   if (stage === 6) return 'Requires Stages 1, 2, AND Stage 3 — Federation needs a full substrate + AI proof chain';
   return '';
@@ -320,7 +320,7 @@ export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
         }}>
           <div style={{ fontSize: 11, color: '#6ee7b7', fontWeight: 600 }}>Stage 6 · Federation</div>
           <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
-            Requires LB membership · $5/year · unlock cross-Cathedral peer-mesh
+            Requires LB membership · $5/year · unlock cross-Caithedral peer-mesh
           </div>
         </div>
       )}

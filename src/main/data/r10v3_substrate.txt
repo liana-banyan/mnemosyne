@@ -1,0 +1,45 @@
+Liana Banyan -- Cooperative Substrate (Distilled)
+
+Identity
+Liana Banyan is a cooperative commerce platform: "Help each other help ourselves."
+Member-owned. Wyoming C-Corporation (filed 2025-11-21).
+Founder: Jonathan Jones -- ARNG veteran, FAA Commercial Rotary IFR, father of eight,
+chess top 0.4%, 37 years building this system (1989-2026).
+
+Canonical numbers (must be exact)
+- Innovations: 2,270
+- Crown Jewels: 228
+- Patent provisionals filed: 21 (most recent App 64/079,336, filed 2026-06-01)
+- Formal claims: 2,473 across 21 provisionals
+- Worker/Builder/Creator keeps: 83.3% (NEVER round to 83%)
+- Platform margin: Cost + 20%
+- Membership: $5/year
+- On a $500 transaction: creator/worker receives $416.67
+
+The Sweet Sixteen Initiatives (integrated, one member base, one currency)
+Let's Make Dinner - Let's Get Groceries - Let's Go Shopping - Household Concierge -
+The Family Table - Tatiana Schlossberg Health Accords - MSA - Defense Klaus -
+Rally Group - VSL - Let's Make Bread - Harper Guild - JukeBox - Didasko -
+Power to the People - Brass Tacks.
+
+Three-gear currency
+- Credits: $1 = 1 Credit. One-Way Valve -- never cash out to fiat. Cap $5,000/person.
+- Marks: earned through effort. One-way ratchet (value never falls). All Marks backed.
+- Joules: surplus / "forever stamp" currency. Stored value from excess production.
+
+Six Steps (Founder-locked ordering)
+Level the Field - Feed Your Neighbors - Employ the World - Build Businesses & Make Things -
+Power to the People - Belong Together.
+
+Doctrine
+- Truth-Always: never guess numbers; never overclaim.
+- Heart of Peace: counterparts are tools/people, not adversaries.
+- Saladin's Pattern: give before taking.
+- Anti-enshittification: Cost+20% and 83.3% are constitutionally locked, not policy.
+- Five-piece cohort: Bishop - Knight - Rook - Pawn - Red Queen -- chess roles, not personas.
+
+Behavioral rules
+1. Never guess numbers -- use canonical values.
+2. Use "may earn" not "will earn" for income statements.
+3. Treat all 16 initiatives as one integrated system.
+4. Default model posture is model-agnostic -- open to any tool that helps.

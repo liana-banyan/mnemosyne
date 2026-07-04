@@ -3,14 +3,14 @@
 //
 // THE COOPERATIVE-CLASS MOAT: every other verifier returns "AI / not AI."
 // LB returns "AI / not AI · PLUS which cooperative member vouched for this
-// asset, through which Cathedral Federation node, and when."
+// asset, through which Caithedral Federation node, and when."
 //
-// Per Cathedral Federation Protocol B122 canon ("Basically TCP/IP"):
-// - Stamps are stored on Cathedral Federation nodes
+// Per Caithedral Federation Protocol B122 canon ("Basically TCP/IP"):
+// - Stamps are stored on Caithedral Federation nodes
 // - Cross-federation provenance chain is cryptographically attested
 // - Revocation is first-class (revoked stamp → 'unsigned-ambiguous')
 //
-// KNIGHT TODO: Wire to the Cathedral Federation Protocol API.
+// KNIGHT TODO: Wire to the Caithedral Federation Protocol API.
 // Endpoint contract is defined below in _FEDERATION_API_CONTRACT.
 // Auth: requires valid lbAuthToken (member JWT from Supabase auth).
 
@@ -30,7 +30,7 @@ const LAYER_LABEL = 'LB Cooperative Stamp';
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /**
- * Cathedral Federation Protocol endpoint.
+ * Caithedral Federation Protocol endpoint.
  * KNIGHT TODO: Replace with canonical production URL once Federation Stage 6 is live.
  * For now, use the MoneyPenny-resolved Hearth URL from window.amplify.getMoneyPennyUrl().
  */
@@ -105,10 +105,10 @@ interface FederationStampLookupResponse {
  * Layer 3: LB Cooperative Stamp Verifier.
  *
  * Checks whether a cooperative-class LB member has applied a Stamp to this
- * asset through the Cathedral Federation Protocol.
+ * asset through the Caithedral Federation Protocol.
  *
  * A valid Stamp means: "A cooperative member vouched for this asset's
- * attribution. The Cathedral Federation recorded and cross-attested the claim."
+ * attribution. The Caithedral Federation recorded and cross-attested the claim."
  *
  * A revoked Stamp is treated as 'unsigned-ambiguous' — revocation is visible,
  * not silently hidden.
@@ -117,7 +117,7 @@ interface FederationStampLookupResponse {
  * Without a token, returns 'detection-unavailable'.
  *
  * This layer makes ONE network call (to the member's own Hearth node or the
- * public Cathedral Federation API). No asset bytes leave the device.
+ * public Caithedral Federation API). No asset bytes leave the device.
  */
 export class LbStampLayer implements VerificationLayer {
   readonly name = LAYER_NAME;
@@ -151,7 +151,7 @@ export class LbStampLayer implements VerificationLayer {
       // Resolve the Federation endpoint URL.
       const baseUrl = await this._resolveFederationBaseUrl();
 
-      // Query the Cathedral Federation Protocol stamp-lookup endpoint.
+      // Query the Caithedral Federation Protocol stamp-lookup endpoint.
       const response = await this._federationLookup(
         baseUrl,
         assetHash,
@@ -167,7 +167,7 @@ export class LbStampLayer implements VerificationLayer {
           verdict: 'unsigned-ambiguous',
           confidence: 0,
           durationMs: Date.now() - startMs,
-          explanation: 'No LB Cooperative Stamp found for this asset in the Cathedral Federation. The asset has not been attested by any cooperative member.',
+          explanation: 'No LB Cooperative Stamp found for this asset in the Caithedral Federation. The asset has not been attested by any cooperative member.',
         };
       }
 
@@ -231,9 +231,9 @@ export class LbStampLayer implements VerificationLayer {
   }
 
   /**
-   * KNIGHT TODO: Resolve the Cathedral Federation base URL.
+   * KNIGHT TODO: Resolve the Caithedral Federation base URL.
    * Primary: call window.amplify.getMoneyPennyUrl() to get the local Hearth node URL.
-   * Fallback: use the canonical public Cathedral Federation API URL.
+   * Fallback: use the canonical public Caithedral Federation API URL.
    */
   private async _resolveFederationBaseUrl(): Promise<string> {
     // TODO: const { url } = await window.amplify.getMoneyPennyUrl();

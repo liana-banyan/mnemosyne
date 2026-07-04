@@ -1,20 +1,20 @@
 // BP041 SAGA 3 — Transparency Watch View: OverlayTag
 //
-// The small persistent tag visible when Mnemosyne is in Watch View (overlay-only mode).
+// The small persistent tag visible when MnemosyneC is in Watch View (overlay-only mode).
 // Member clicks it to expand back to the full Configure View.
 //
 // Founder direct (BP041): "switch to the transparent view … so that you can load
-// Mnemosyne, choose what you like, then SWITCH TO NORMAL VIEW (which is transparency
+// MnemosyneC, choose what you like, then SWITCH TO NORMAL VIEW (which is transparency
 // and just the outline, and the toggle as maybe a tag the size of the NotCents
-// Mnemosyne button I outlined in Green)."
+// MnemosyneC button I outlined in Green)." // KEEP: Founder direct quote — historical/documentary
 //
 // Two views:
-//   Configure View (default) — full Mnemosyne window open
+//   Configure View (default) — full MnemosyneC window open
 //   Watch View               — full window hidden; only this tag + frame border visible
 //
 // Keyboard shortcut: Ctrl+Shift+M toggles between views (wired in main index.ts).
-// Canon: project_mnemosyne_bp041_post_first_fire_design_vision.md §2
-// BLOOD RULE binding: Watch View must NEVER leak member data outside Mnemosyne window.
+// Canon: project_mnemosyne_bp041_post_first_fire_design_vision.md §2 // KEEP: canon reference uses Mnemosyne (parent system)
+// BLOOD RULE binding: Watch View must NEVER leak member data outside MnemosyneC window.
 
 import React, { useEffect } from 'react';
 import type { FrameMode } from './FrameModeIndicator';
@@ -23,7 +23,7 @@ import { NotCentsGlyph } from './NotCentsGlyph';
 interface OverlayTagProps {
   /** Current substrate mode — used for tag accent color */
   mode?: FrameMode;
-  /** Called when member clicks the tag (open Mnemosyne window) */
+  /** Called when member clicks the tag (open MnemosyneC window) */
   onExpand: () => void;
 }
 
@@ -85,7 +85,7 @@ export const OverlayTag: React.FC<OverlayTagProps> = ({
       }}
     >
       <NotCentsGlyph size="0.95em" alt="" style={{ color: accentColor }} />
-      <span style={{ color: accentColor }}>Mnemosyne™</span>
+      <span style={{ color: accentColor }}>MnemosyneC™</span>
       <span style={{ fontSize: 10, opacity: 0.5, marginLeft: 2 }}>⌨ M</span>
     </button>
   );

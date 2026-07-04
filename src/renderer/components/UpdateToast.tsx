@@ -29,6 +29,70 @@ export function UpdateToast() {
 
   if (!updateState) return null;
 
+  // "Update available" banner — notify + one-click download (safe tier, BP067 Phase 1D)
+  if (updateState.status === 'available' && !dismissed) {
+    return (
+      <div
+        style={{
+          position: 'fixed',
+          bottom: 36,
+          right: 16,
+          background: 'rgba(15,17,26,0.97)',
+          border: '1px solid rgba(245,158,11,0.4)',
+          borderRadius: 10,
+          padding: '12px 16px',
+          zIndex: 99998,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          fontSize: 12,
+          color: '#e2e8f0',
+          backdropFilter: 'blur(8px)',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+          maxWidth: 290,
+          minWidth: 230,
+        }}
+        role="alertdialog"
+        aria-label={`MnemosyneC v${updateState.version ?? ''} is available`}
+        onMouseEnter={() => window.amplify?.setClickthrough?.(false)}
+        onMouseLeave={() => window.amplify?.setClickthrough?.(true)}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+          <span style={{ color: '#fbbf24', fontWeight: 700, fontSize: 12 }}>
+            MnemosyneC v{updateState.version} available ↑
+          </span>
+          <button
+            onClick={() => { setDismissed(true); window.amplify?.setClickthrough?.(true); }}
+            style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1, flexShrink: 0 }}
+            title="Dismiss"
+            aria-label="Dismiss update notification"
+          >
+            ✕
+          </button>
+        </div>
+        <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.5 }}>
+          Click to download — installs on next restart.
+        </div>
+        <button
+          onClick={() => { window.amplify?.downloadUpdate?.(); setDismissed(true); window.amplify?.setClickthrough?.(true); }}
+          style={{
+            padding: '7px 10px',
+            background: 'rgba(245,158,11,0.12)',
+            border: '1px solid rgba(245,158,11,0.4)',
+            borderRadius: 6,
+            color: '#fbbf24',
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: 'pointer',
+          }}
+          aria-label="Download update"
+        >
+          Download Update →
+        </button>
+      </div>
+    );
+  }
+
   // Download progress pill — bottom-center, non-interactive (passthrough)
   if (updateState.status === 'downloading') {
     const pct = updateState.downloadProgress ?? 0;
@@ -56,7 +120,7 @@ export function UpdateToast() {
         }}
         role="status"
         aria-live="polite"
-        aria-label={`Downloading Mnemosyne update: ${pct}%`}
+        aria-label={`Downloading MnemosyneC update: ${pct}%`}
       >
         <div
           style={{
@@ -106,7 +170,7 @@ export function UpdateToast() {
           minWidth: 230,
         }}
         role="alertdialog"
-        aria-label={`Mnemosyne v${updateState.version ?? ''} ready to install`}
+        aria-label={`MnemosyneC v${updateState.version ?? ''} ready to install`}
         onMouseEnter={() => window.amplify?.setClickthrough?.(false)}
         onMouseLeave={() => window.amplify?.setClickthrough?.(true)}
       >
@@ -119,10 +183,10 @@ export function UpdateToast() {
           }}
         >
           <span style={{ color: '#6ee7b7', fontWeight: 700, fontSize: 12 }}>
-            Mnemosyne v{updateState.version} ready
+            Updated to v{updateState.version} ✓ — restart to apply
           </span>
           <button
-            onClick={() => setDismissed(true)}
+            onClick={() => { setDismissed(true); window.amplify?.setClickthrough?.(true); }}
             style={{
               background: 'none',
               border: 'none',
@@ -161,7 +225,7 @@ export function UpdateToast() {
             Install &amp; Restart
           </button>
           <button
-            onClick={() => setDismissed(true)}
+            onClick={() => { setDismissed(true); window.amplify?.setClickthrough?.(true); }}
             style={{
               padding: '7px 10px',
               background: 'rgba(255,255,255,0.05)',

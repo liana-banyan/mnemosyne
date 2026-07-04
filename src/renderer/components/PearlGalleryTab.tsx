@@ -1,4 +1,4 @@
-// PearlGalleryTab — Mnemosyne v0.1.16 · BP057 W5c · Pearl-decode IPC wired
+// PearlGalleryTab — MnemosyneC v0.1.14 · BP057 W5 GOLD
 // Tab 9 · Pearls — cooperative substrate Pearl registry viewer
 // Displays received Pearls (SSPS compressed Eblet references) for member inspection
 // Pearl-class: atomic wire-non-atomic-meaning data primitives (canon_pearls_eblet_condensate_data_class_bp055)
@@ -115,24 +115,22 @@ export function PearlGalleryTab() {
     setIsDecoding(true);
     setDecodedContent(null);
     try {
-      // Pearl-decode IPC (Tier G · v0.1.16 · BP057 W5c)
-      const result = await window.amplify?.decodePearl?.(pearl.hash);
-      if (result?.ok && result.content) {
-        setDecodedContent(result.content);
-      } else {
-        setDecodedContent(
-          `# ${pearl.name}\n\n` +
-          `**Pearl ID:** ${pearl.hash}\n` +
-          `**Domain:** ${pearl.domain}\n` +
-          `**Tags:** ${pearl.tags.join(', ')}\n` +
-          `**Minted:** ${pearl.mintedAt}\n` +
-          `**Compression:** ${pearl.compressionRatio?.toFixed(1)}\u00d7 (${pearl.byteSize}b SSPS)\n\n` +
-          `## Summary\n${pearl.shortDescription ?? ''}\n\n` +
-          `---\n*${result?.error ?? 'Eblet not yet on local substrate'}*`
-        );
-      }
+      // In production: call pearl_decode MCP tool via IPC
+      // const result = await window.amplify?.decodePearl?.(pearl.hash);
+      // For now: show Pearl metadata as decoded content
+      await new Promise((r) => setTimeout(r, 600)); // simulate decode
+      setDecodedContent(
+        `# ${pearl.name}\n\n` +
+        `**Hash:** ${pearl.hash}\n` +
+        `**Domain:** ${pearl.domain}\n` +
+        `**Tags:** ${pearl.tags.join(', ')}\n` +
+        `**Minted:** ${pearl.mintedAt}\n` +
+        `**Compression:** ${pearl.compressionRatio?.toFixed(1)}× (${pearl.byteSize} bytes SSPS → ${Math.round(pearl.byteSize * (pearl.compressionRatio ?? 6))} bytes Eblet)\n\n` +
+        `## Summary\n${pearl.shortDescription}\n\n` +
+        `---\n*Full Eblet requires pearl_decode MCP connection to librarian-mcp substrate*`
+      );
     } catch {
-      setDecodedContent('Pearl decode failed \u2014 substrate connection required');
+      setDecodedContent('Pearl decode failed — substrate connection required');
     } finally {
       setIsDecoding(false);
     }

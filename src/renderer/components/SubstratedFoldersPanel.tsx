@@ -1,5 +1,5 @@
-/**
- * SubstratedFoldersPanel™ — Mnemosyne™ v0.1.10
+﻿/**
+ * SubstratedFoldersPanel™ — MnemosyneC™ v0.1.10
  * Renders in Developer Tab → Substrate panel.
  * Live IPC: watcher:list-folders, watcher:add-folder, watcher:eblet-minted
  */

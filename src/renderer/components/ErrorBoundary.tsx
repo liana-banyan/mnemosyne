@@ -1,14 +1,14 @@
 // BP041 — Renderer Error Boundary
 //
 // Catches React render-tree crashes so a single broken component doesn't
-// white-screen the entire Mnemosyne window. Empirical anchor: Knight SAGA 1
+// white-screen the entire MnemosyneC window. Empirical anchor: Knight SAGA 1
 // b53a09d wired new IPC handlers in main+preload but Vite HMR only reloads
 // renderer; old main process didn't have window.amplify.pantheonGetPrefs() →
 // MakeYourselfComfortableWizard threw on mount → React tree crashed → white
 // screen. Founder direct: "I cannot get out of the white screen."
 //
 // This boundary now catches such errors, displays a recovery panel, and lets
-// the rest of Mnemosyne keep functioning. Member sees what went wrong AND
+// the rest of MnemosyneC keep functioning. Member sees what went wrong AND
 // has a Reload button to re-mount the renderer.
 
 import React, { Component } from 'react';
@@ -61,7 +61,7 @@ export class ErrorBoundary extends Component<Props, State> {
           </div>
           <div style={styles.body}>
             <p style={styles.hint}>
-              The rest of Mnemosyne is still working. Try the actions below, or click another tab.
+              The rest of MnemosyneC is still working. Try the actions below, or click another tab.
             </p>
             <details style={styles.details}>
               <summary style={styles.summary}>📋 Error details (click to expand)</summary>

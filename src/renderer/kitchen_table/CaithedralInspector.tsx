@@ -1,4 +1,4 @@
-// Caithedral™ Retrieval Inspector — Mnemosyne™ v0.1.8 · SEG-FT-5 · BP052 NOVACULA
+﻿// Caithedral™ Retrieval Inspector — MnemosyneC™ v0.1.8 · SEG-FT-5 · BP052 NOVACULA
 // Displays retrieval log · test query · source scribe filter · score histogram
 
 import React, { useState, useEffect, useCallback } from 'react';

@@ -1,4 +1,4 @@
-// Banyan Metric™ Ledger Viewer — Mnemosyne™ v0.1.8 · SEG-FT-6 · BP052 NOVACULA
+﻿// Banyan Metric™ Ledger Viewer — MnemosyneC™ v0.1.8 · SEG-FT-6 · BP052 NOVACULA
 // Session ledger · composite scores · trend · color-coded health
 
 import React, { useState, useEffect, useCallback } from 'react';
