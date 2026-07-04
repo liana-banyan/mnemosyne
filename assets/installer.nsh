@@ -42,7 +42,7 @@
   ; K-D6-6-11: Register scheduled task for autostart — handles both admin and non-admin accounts
   ; /RU "" runs as the current user (resolves UAC issues for non-admin accounts)
   ; /RL LIMITED used instead of HIGHEST to allow non-admin users to run the task
-  nsExec::ExecToStack 'powershell.exe -NonInteractive -Command "schtasks /Create /F /TN MnemosyneCAutoStart /TR ''\"$INSTDIR\MnemosyneC.exe\" --hidden'' /SC ONLOGON /RL LIMITED 2>&1; exit $LASTEXITCODE"'
+  nsExec::ExecToStack 'powershell.exe -NonInteractive -Command "schtasks /Create /F /TN MnemosyneCAutoStart /TR ''\"$INSTDIR\MnemosyneC.exe\" --hidden'' /SC ONLOGON /RL LIMITED 2>&1; exit $$LASTEXITCODE"'
   Pop $0  ; exit code
   Pop $1  ; output
   ${If} $0 == 0
