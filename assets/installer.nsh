@@ -17,17 +17,17 @@
   nsExec::Exec 'taskkill /F /IM "Mnemosyne.exe" /T'
   nsExec::Exec 'taskkill /F /IM "AMPLIFY Computer.exe" /T'
 
-  ; D3 persistence — Layer 1a: restore keypair from ProgramData backup if AppData was wiped
+  ; D3 persistence — Layer 1a: restore keypair from CommonAppData backup if AppData was wiped
   ; This fires when NSIS upgrade or user-initiated uninstall deleted %APPDATA%\MnemosyneC\keys\
   ${IfNot} ${FileExists} "$APPDATA\MnemosyneC\keys\peer.ed25519.priv"
-    ${If} ${FileExists} "$PROGRAMDATA\MnemosyneC\keys\peer.ed25519.priv"
-      DetailPrint "D3 persistence: restoring keypair from ProgramData backup"
+    ${If} ${FileExists} "$COMMONAPPDATA\MnemosyneC\keys\peer.ed25519.priv"
+      DetailPrint "D3 persistence: restoring keypair from CommonAppData backup"
       CreateDirectory "$APPDATA\MnemosyneC\keys"
-      CopyFiles /SILENT "$PROGRAMDATA\MnemosyneC\keys\peer.ed25519.priv" "$APPDATA\MnemosyneC\keys\peer.ed25519.priv"
-      CopyFiles /SILENT "$PROGRAMDATA\MnemosyneC\keys\peer.ed25519.pub" "$APPDATA\MnemosyneC\keys\peer.ed25519.pub"
+      CopyFiles /SILENT "$COMMONAPPDATA\MnemosyneC\keys\peer.ed25519.priv" "$APPDATA\MnemosyneC\keys\peer.ed25519.priv"
+      CopyFiles /SILENT "$COMMONAPPDATA\MnemosyneC\keys\peer.ed25519.pub" "$APPDATA\MnemosyneC\keys\peer.ed25519.pub"
       DetailPrint "D3 persistence: keypair restored — peer identity preserved across upgrade"
     ${Else}
-      DetailPrint "D3 persistence: no backup found in ProgramData — fresh identity will be generated on first launch"
+      DetailPrint "D3 persistence: no backup found in CommonAppData — fresh identity will be generated on first launch"
     ${EndIf}
   ${Else}
     DetailPrint "D3 persistence: existing keypair found in AppData — identity will survive this upgrade"
@@ -57,17 +57,17 @@
 !macroend
 
 ; D3 persistence — never delete user identity or config
-; On uninstall: back up keypair to ProgramData BEFORE AppData deletion (cooperative sovereignty right)
+; On uninstall: back up keypair to CommonAppData before AppData deletion (cooperative sovereignty right)
 !macro customUnInstall
   DetailPrint "MnemosyneC ${VERSION} uninstall: preserving user identity (D3 cooperative sovereignty right)"
 
-  ; D3 persistence — Layer 1b: back up keypair to ProgramData before it might be wiped
+  ; D3 persistence — Layer 1b: back up keypair to CommonAppData before it might be wiped
   ; customUnInstall runs before AppData deletion (isDeleteAppData guard), so files still exist here
   ${If} ${FileExists} "$APPDATA\MnemosyneC\keys\peer.ed25519.priv"
-    CreateDirectory "$PROGRAMDATA\MnemosyneC\keys"
-    CopyFiles /SILENT "$APPDATA\MnemosyneC\keys\peer.ed25519.priv" "$PROGRAMDATA\MnemosyneC\keys\peer.ed25519.priv"
-    CopyFiles /SILENT "$APPDATA\MnemosyneC\keys\peer.ed25519.pub" "$PROGRAMDATA\MnemosyneC\keys\peer.ed25519.pub"
-    DetailPrint "D3 persistence: keypair backed up to ProgramData (survives AppData wipe)"
+    CreateDirectory "$COMMONAPPDATA\MnemosyneC\keys"
+    CopyFiles /SILENT "$APPDATA\MnemosyneC\keys\peer.ed25519.priv" "$COMMONAPPDATA\MnemosyneC\keys\peer.ed25519.priv"
+    CopyFiles /SILENT "$APPDATA\MnemosyneC\keys\peer.ed25519.pub" "$COMMONAPPDATA\MnemosyneC\keys\peer.ed25519.pub"
+    DetailPrint "D3 persistence: keypair backed up to CommonAppData (survives AppData wipe)"
   ${EndIf}
 
   ; Intentionally leave %APPDATA%\MnemosyneC substrate cache + telemetry
