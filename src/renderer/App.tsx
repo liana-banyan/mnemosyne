@@ -138,12 +138,19 @@ export default function App() {
     try {
       const stage = localStorage.getItem('mnemosynec_lifecycle_stage');
       const onboardingComplete = localStorage.getItem('mnemosynec_onboarding_complete');
-      const stageTs = localStorage.getItem('mnemosynec_lifecycle_stage_ts');
+      const tsRaw = localStorage.getItem('mnemosynec_lifecycle_stage_ts');
+      // Ensure ts is set on first-write so age computation is valid
+      if (stage && !tsRaw) {
+        localStorage.setItem('mnemosynec_lifecycle_stage_ts', Date.now().toString());
+      }
       if (stage && !onboardingComplete && ['A', 'B', 'C'].includes(stage)) {
-        const ageMs = stageTs ? Date.now() - parseInt(stageTs, 10) : Infinity;
+        const tsMs = tsRaw ? parseInt(tsRaw, 10) : null;
+        // Guard: null/NaN ts means fresh install — ageMs stays 0, never false-positives
+        const ageMs = (tsMs !== null && !isNaN(tsMs)) ? (Date.now() - tsMs) : 0;
         const ageDays = ageMs / (1000 * 60 * 60 * 24);
-        if (ageDays > 14) {
-          // Auto-advance: offer Reset (14+ days stuck)
+        const isGenuinelyStuck = ageDays > 14 && tsMs !== null;
+        if (isGenuinelyStuck) {
+          // Auto-advance: offer Reset (genuinely stuck 14+ days — not fresh install)
           setLifecycleBanner(`reset-offer:${stage}`);
         } else if (ageDays > 1) {
           // Diagnostic banner: visible reminder (> 24h stuck)
@@ -327,13 +334,13 @@ export default function App() {
             <button
               onClick={() => {
                 if (lifecycleBanner.startsWith('reset-offer')) {
-                  if (confirm('Reset onboarding state? Your substrate and settings will be preserved.')) {
-                    localStorage.removeItem('mnemosynec_lifecycle_stage');
-                    localStorage.removeItem('mnemosynec_onboarding_complete');
-                    localStorage.removeItem('mnemosynec_lifecycle_stage_ts');
-                    localStorage.removeItem('mnemosyne-bp067-first-run-complete');
-                    window.location.reload();
-                  }
+                  // Option B: no confirm() gate — user committed intent by clicking;
+                  // confirm() is silently rejected in security-hardened Electron builds
+                  localStorage.removeItem('mnemosynec_lifecycle_stage');
+                  localStorage.removeItem('mnemosynec_onboarding_complete');
+                  localStorage.removeItem('mnemosynec_lifecycle_stage_ts');
+                  localStorage.removeItem('mnemosyne-bp067-first-run-complete');
+                  window.location.reload();
                 } else {
                   localStorage.setItem('mnemosyne-bp067-first-run-complete', 'false');
                   window.location.reload();

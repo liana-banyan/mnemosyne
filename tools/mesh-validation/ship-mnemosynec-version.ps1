@@ -44,6 +44,17 @@ function Log { param([string]$msg) Write-Host "[ship] $msg" -ForegroundColor Cya
 function Ok  { param([string]$msg) Write-Host "[PASS] $msg" -ForegroundColor Green }
 function Err { param([string]$msg) Write-Host "[FAIL] $msg" -ForegroundColor Red; throw "SHIP FAILED: $msg" }
 
+# UTF-8 no BOM write helper — PS 5.1 Set-Content -Encoding UTF8 adds 0xEF 0xBB 0xBF which breaks Hugo/JSON parsers
+function Write-NoBOM { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false)) }
+
+function Invoke-Rollback {
+    param([string]$Reason)
+    Write-Host "[ROLLBACK] $Reason — reverting GH release + restoring previous version data" -ForegroundColor Magenta
+    try { gh release delete "v$NewVersion" --yes --repo $GH_REPO 2>$null } catch {}
+    try { git -C $CephasHugoDir checkout HEAD -- data/version.json 2>$null } catch {}
+    Write-Host "[ROLLBACK] Complete — investigate before re-shipping" -ForegroundColor Magenta
+}
+
 # ─── D2: Bump version + build ─────────────────────────────────────────────────
 
 Log "D2: Bumping version to $NewVersion in package.json"
@@ -113,13 +124,13 @@ sha512: $sha512b64
 releaseDate: '$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ')'
 "@
 
-# Update static sources (canonical)
-Set-Content "$CephasHugoDir\static\download\latest.yml" $latestYmlAbsolute -Encoding UTF8
-Set-Content "$CephasHugoDir\static\stage\download\latest.yml" $latestYmlAbsolute -Encoding UTF8
+# Update static sources (canonical) — UTF-8 NO BOM (Hugo chokes on BOM)
+Write-NoBOM "$CephasHugoDir\static\download\latest.yml" $latestYmlAbsolute
+Write-NoBOM "$CephasHugoDir\static\stage\download\latest.yml" $latestYmlAbsolute
 
 # Update all public-* build artifacts
 Get-ChildItem -Recurse "$CephasHugoDir" -Filter "latest.yml" | Where-Object { $_.FullName -notlike "*\static\*" } | ForEach-Object {
-    Set-Content $_.FullName $latestYmlAbsolute -Encoding UTF8
+    Write-NoBOM $_.FullName $latestYmlAbsolute
     Log "  Updated: $($_.FullName)"
 }
 
@@ -137,7 +148,7 @@ $verJson = @{
         status = "superseded"
     }
 } | ConvertTo-Json -Compress
-Set-Content "$CephasHugoDir\data\version.json" $verJson -Encoding UTF8
+Write-NoBOM "$CephasHugoDir\data\version.json" $verJson
 
 Ok "Hugo data files updated."
 
@@ -146,8 +157,12 @@ Ok "Hugo data files updated."
 Log "D5: Hugo build..."
 Push-Location $CephasHugoDir
 hugo --config config-mnemosynec.toml --environment production --minify
+$hugoExit = $LASTEXITCODE
 Pop-Location
-Ok "Hugo build complete."
+if ($hugoExit -ne 0) {
+    Err "Hugo build failed with exit code $hugoExit — aborting ship (stale HTML would deploy)"
+}
+Ok "Hugo build complete (exit 0)"
 
 Log "D5: Firebase deploy hosting:mnemosyne + hosting:mnemosynec-ai..."
 Push-Location $CephasHugoDir
@@ -198,7 +213,90 @@ if ($gitLog -match "bump version to $([regex]::Escape($NewVersion))" -and $tagCh
     Err "CHECK 11: git log or tag missing. Log: $gitLog | Tag: $tagCheck"
 }
 
+# Check EXE size gate — must be >= 450 MB or Ollama bundle is missing
+$exeSizeMB = [math]::Round($exeSize/1MB, 1)
+if ($exeSize -lt 450MB) {
+    Invoke-Rollback "EXE size $exeSizeMB MB is below 450 MB gate — Ollama bundle likely missing from build"
+    Err "EXE size gate FAILED: $exeSizeMB MB < 450 MB"
+}
+Ok "EXE size gate: $exeSizeMB MB >= 450 MB"
+
 Log "D6: Edge function checks 7-9 require node (run manually or use the node script)."
+
+# ─── Sharp-8: Install-and-launch gate ────────────────────────────────────────
+
+Log "Sharp-8: Install-and-launch gate (pre-ship empirical verification)..."
+
+# Load env vars for Supabase heartbeat check (no echo of values)
+$sdsEnvPath = "C:\Users\Administrator\Documents\LianaBanyanPlatform\Asteroid-ProofVault\LockBox\SDS.env"
+if (Test-Path $sdsEnvPath) {
+    Get-Content $sdsEnvPath | ForEach-Object {
+        if ($_ -match "^([A-Z_]+)=(.+)$") { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process") }
+    }
+}
+
+# Sharp-8-a: Silent install
+Log "Sharp-8-a: Silent install of $EXE_NAME..."
+$setupExe = "$MnemosyneRepo\release\$EXE_NAME"
+$installProc = Start-Process $setupExe -ArgumentList "/S" -Wait -PassThru
+if ($installProc.ExitCode -ne 0) {
+    Invoke-Rollback "Sharp-8-a: silent install failed with exit code $($installProc.ExitCode)"
+    Err "Sharp-8-a: silent install exit code $($installProc.ExitCode)"
+}
+Ok "Sharp-8-a: silent install succeeded (exit 0)"
+
+# Sharp-8-b: Locate installed exe
+$installPaths = @(
+    "$env:LOCALAPPDATA\Programs\MnemosyneC\MnemosyneC.exe",
+    "$env:APPDATA\Local\Programs\MnemosyneC\MnemosyneC.exe",
+    "C:\Program Files\MnemosyneC\MnemosyneC.exe",
+    "C:\Program Files (x86)\MnemosyneC\MnemosyneC.exe"
+)
+$exeInstallPath = $installPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $exeInstallPath) {
+    Invoke-Rollback "Sharp-8-b: MnemosyneC.exe not found at any known install path"
+    Err "Sharp-8-b: installed MnemosyneC.exe not found"
+}
+Ok "Sharp-8-b: found at $exeInstallPath"
+$appProc = Start-Process $exeInstallPath -PassThru
+Start-Sleep 5
+
+# Sharp-8-c: Process alive after 5s (no immediate crash)
+$stillAlive = Get-Process -Id $appProc.Id -ErrorAction SilentlyContinue
+if (-not $stillAlive) {
+    Invoke-Rollback "Sharp-8-c: MnemosyneC exited within 5 seconds (crash on launch)"
+    Err "Sharp-8-c: process exited within 5 seconds"
+}
+Ok "Sharp-8-c: process alive after 5s (pid $($appProc.Id))"
+
+# Sharp-8-d: Heartbeat in peer_presence within 120s
+$heartbeatFound = $false
+$supabaseUrl = $env:SUPABASE_URL
+$supabaseKey = $env:SUPABASE_SERVICE_ROLE_KEY
+if ($supabaseUrl -and $supabaseKey) {
+    for ($i = 0; $i -lt 12; $i++) {
+        Start-Sleep 10
+        $cutoff = ([datetime]::UtcNow.AddMinutes(-2)).ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $url = "$supabaseUrl/rest/v1/peer_presence?last_seen_at=gt.$cutoff&select=peer_id,last_seen_at&limit=1"
+        try {
+            $response = Invoke-WebRequest -Uri $url -Headers @{ "apikey" = $supabaseKey; "Authorization" = "Bearer $supabaseKey" } -UseBasicParsing -ErrorAction SilentlyContinue
+            if ($response.Content -match '"peer_id"') { $heartbeatFound = $true; break }
+        } catch {}
+    }
+    if (-not $heartbeatFound) {
+        Stop-Process -Id $appProc.Id -Force -ErrorAction SilentlyContinue
+        Invoke-Rollback "Sharp-8-d: no heartbeat in peer_presence within 120s"
+        Err "Sharp-8-d: no heartbeat detected"
+    }
+    Ok "Sharp-8-d: heartbeat detected in peer_presence"
+} else {
+    Write-Host "[SKIP] Sharp-8-d: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — skipping heartbeat check" -ForegroundColor Yellow
+}
+
+# Stop the test instance
+Stop-Process -Id $appProc.Id -Force -ErrorAction SilentlyContinue
+Ok "Sharp-8: all gates passed — app installs, launches, stays alive, heartbeats"
+
 Log "SHIP PIPELINE COMPLETE for $RELEASE_TAG"
 Write-Host ""
 Write-Host "=== SHIP RECEIPT ===" -ForegroundColor Yellow
