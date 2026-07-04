@@ -20,11 +20,11 @@
   ; D3 persistence — Layer 1a: restore keypair from CommonAppData backup if AppData was wiped
   ; This fires when NSIS upgrade or user-initiated uninstall deleted %APPDATA%\MnemosyneC\keys\
   ${IfNot} ${FileExists} "$APPDATA\MnemosyneC\keys\peer.ed25519.priv"
-    ${If} ${FileExists} "$COMMONAPPDATA\MnemosyneC\keys\peer.ed25519.priv"
+    ${If} ${FileExists} "$%PROGRAMDATA%\MnemosyneC\keys\peer.ed25519.priv"
       DetailPrint "D3 persistence: restoring keypair from CommonAppData backup"
       CreateDirectory "$APPDATA\MnemosyneC\keys"
-      CopyFiles /SILENT "$COMMONAPPDATA\MnemosyneC\keys\peer.ed25519.priv" "$APPDATA\MnemosyneC\keys\peer.ed25519.priv"
-      CopyFiles /SILENT "$COMMONAPPDATA\MnemosyneC\keys\peer.ed25519.pub" "$APPDATA\MnemosyneC\keys\peer.ed25519.pub"
+      CopyFiles /SILENT "$%PROGRAMDATA%\MnemosyneC\keys\peer.ed25519.priv" "$APPDATA\MnemosyneC\keys\peer.ed25519.priv"
+      CopyFiles /SILENT "$%PROGRAMDATA%\MnemosyneC\keys\peer.ed25519.pub" "$APPDATA\MnemosyneC\keys\peer.ed25519.pub"
       DetailPrint "D3 persistence: keypair restored — peer identity preserved across upgrade"
     ${Else}
       DetailPrint "D3 persistence: no backup found in CommonAppData — fresh identity will be generated on first launch"
@@ -64,9 +64,9 @@
   ; D3 persistence — Layer 1b: back up keypair to CommonAppData before it might be wiped
   ; customUnInstall runs before AppData deletion (isDeleteAppData guard), so files still exist here
   ${If} ${FileExists} "$APPDATA\MnemosyneC\keys\peer.ed25519.priv"
-    CreateDirectory "$COMMONAPPDATA\MnemosyneC\keys"
-    CopyFiles /SILENT "$APPDATA\MnemosyneC\keys\peer.ed25519.priv" "$COMMONAPPDATA\MnemosyneC\keys\peer.ed25519.priv"
-    CopyFiles /SILENT "$APPDATA\MnemosyneC\keys\peer.ed25519.pub" "$COMMONAPPDATA\MnemosyneC\keys\peer.ed25519.pub"
+    CreateDirectory "$%PROGRAMDATA%\MnemosyneC\keys"
+    CopyFiles /SILENT "$APPDATA\MnemosyneC\keys\peer.ed25519.priv" "$%PROGRAMDATA%\MnemosyneC\keys\peer.ed25519.priv"
+    CopyFiles /SILENT "$APPDATA\MnemosyneC\keys\peer.ed25519.pub" "$%PROGRAMDATA%\MnemosyneC\keys\peer.ed25519.pub"
     DetailPrint "D3 persistence: keypair backed up to CommonAppData (survives AppData wipe)"
   ${EndIf}
 
