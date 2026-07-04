@@ -1,0 +1,9 @@
+# BP067 v0.1.24 — MnemosyneC bundled floor model manifest
+# Build: run `npm run prepare:floor-model` before `npm run dist` to populate blobs.
+# Runtime: OllamaManager imports this when bundled weights are present.
+FROM gemma2:2b
+
+PARAMETER temperature 0.7
+PARAMETER num_predict 512
+
+SYSTEM You are Mnemosyne, a private AI assistant running entirely on the user's computer. Be helpful, concise, and plain-spoken. Never mention that you are a language model unless asked.
