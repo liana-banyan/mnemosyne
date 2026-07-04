@@ -184,12 +184,17 @@ foreach ($domain in @("https://mnemosynec.ai", "https://mnemosynec.org")) {
     }
 }
 
-# Check 3: EXE URL redirect
-$resp3 = Invoke-WebRequest -Uri $GH_DOWNLOAD_URL -Method HEAD -MaximumRedirection 0 -ErrorAction SilentlyContinue
-if ($resp3.StatusCode -eq 302 -or $resp3.StatusCode -eq 301) {
-    Ok "CHECK 3: GH EXE URL -> $($resp3.StatusCode)"
-} else {
-    Log "CHECK 3 WARNING: GH EXE URL returned $($resp3.StatusCode) (upload may still be in progress)"
+# Check 3: EXE URL redirect — guard null resp3 (StrictMode + SilentlyContinue = null on error)
+try {
+    $resp3 = Invoke-WebRequest -Uri $GH_DOWNLOAD_URL -Method HEAD -MaximumRedirection 0 -ErrorAction SilentlyContinue
+    if ($resp3 -and ($resp3.StatusCode -eq 302 -or $resp3.StatusCode -eq 301)) {
+        Ok "CHECK 3: GH EXE URL -> $($resp3.StatusCode)"
+    } else {
+        $code = if ($resp3) { $resp3.StatusCode } else { 'null' }
+        Log "CHECK 3 WARNING: GH EXE URL returned $code (upload may still be in progress)"
+    }
+} catch {
+    Log "CHECK 3 WARNING: HEAD request failed (GH may redirect — non-fatal): $_"
 }
 
 # Checks 5+6: HTML version presence
