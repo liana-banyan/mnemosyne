@@ -1,7 +1,7 @@
 {
     "name":  "amplify-computer",
     "version":  "0.8.24",
-    "description": "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (SSPL)",
+    "description":  "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (SSPL)",
     "homepage":  "https://lianabanyan.com",
     "private":  true,
     "main":  "dist/main/index.js",
@@ -76,7 +76,7 @@
                   "appId":  "com.lianabanyan.mnemosyne",
                   "productName":  "MnemosyneC",
                   "icon":  "assets/app-icon",
-                  "copyright": "Copyright 2026 Liana Banyan Corporation. All rights reserved. SSPL licensed.",
+                  "copyright":  "Copyright 2026 Liana Banyan Corporation. All rights reserved. SSPL licensed.",
                   "asar":  true,
                   "asarUnpack":  [
                                      "resources/ollama/**",
@@ -240,8 +240,8 @@
                                            ],
                                 "category":  "Office",
                                 "maintainer":  "Liana Banyan Corporation \u003csupport@lianabanyan.com\u003e",
-                                "synopsis": "MnemosyneC - Cooperative AI Peer. Mesh-native knowledge substrate for distributed cooperative intelligence.",
-                                "description": "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (SSPL)"
+                                "synopsis":  "MnemosyneC - Cooperative AI Peer. Mesh-native knowledge substrate for distributed cooperative intelligence.",
+                                "description":  "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (SSPL)"
                             },
                   "deb":  {
                               "packageCategory":  "utils",
