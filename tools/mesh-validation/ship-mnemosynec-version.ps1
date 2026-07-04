@@ -150,6 +150,45 @@ $verJson = @{
 } | ConvertTo-Json -Compress
 Write-NoBOM "$CephasHugoDir\data\version.json" $verJson
 
+# version_trust.json — prepend new version as tier=latest, demote prior latest to stable
+$vtPath = "$CephasHugoDir\data\version_trust.json"
+$vtStatic = "$CephasHugoDir\static\version_trust.json"
+$vtRaw = [System.IO.File]::ReadAllText($vtPath, [System.Text.UTF8Encoding]::new($false)) | ConvertFrom-Json
+# Demote current latest to stable
+foreach ($v in $vtRaw.versions) { if ($v.tier -eq "latest") { $v.tier = "stable" } }
+# Build new entry
+$newVtEntry = [PSCustomObject]@{
+    version         = $NewVersion
+    tier            = "latest"
+    release_date    = (Get-Date -Format 'yyyy-MM-dd')
+    install_reports = 0
+    verified_eblets = 0
+    zero_issue_days = 0
+    open_issues     = 0
+    trust_score     = 1
+    filename        = $EXE_NAME
+    size_bytes      = $exeSize
+    size_display    = "~$([math]::Round($exeSize/1MB,1)) MB"
+    notes           = $ReleaseNotes
+    sha512          = $sha512b64
+}
+# Prepend
+$vtRaw.versions = @($newVtEntry) + $vtRaw.versions
+$vtJson = $vtRaw | ConvertTo-Json -Depth 10
+Write-NoBOM $vtPath $vtJson
+Write-NoBOM $vtStatic $vtJson
+Log "  version_trust.json updated (v$NewVersion prepended as latest, prior demoted to stable)"
+
+# firebase.json — patch BOTH -latest.exe redirect destinations to new version
+$fbPath = "$CephasHugoDir\firebase.json"
+$fbContent = [System.IO.File]::ReadAllText($fbPath, [System.Text.UTF8Encoding]::new($false))
+$prevVersion = $pkg.version  # old version before bump (set in D2)
+$oldLatestDest = "https://github.com/liana-banyan/mnemosyne/releases/download/v$prevVersion/MnemosyneC-Setup-$prevVersion.exe"
+$newLatestDest = "https://github.com/liana-banyan/mnemosyne/releases/download/v$NewVersion/MnemosyneC-Setup-$NewVersion.exe"
+$fbContent = $fbContent.Replace($oldLatestDest, $newLatestDest)
+[System.IO.File]::WriteAllText($fbPath, $fbContent, [System.Text.UTF8Encoding]::new($false))
+Log "  firebase.json -latest.exe destinations updated: v$prevVersion -> v$NewVersion (both hosting targets)"
+
 Ok "Hugo data files updated."
 
 # ─── D5: Hugo build + Firebase deploy ────────────────────────────────────────
