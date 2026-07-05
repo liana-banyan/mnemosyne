@@ -282,7 +282,7 @@ if (Test-Path $sdsEnvPath) {
 # Sharp-8-a: Silent install
 Log "Sharp-8-a: Silent install of $EXE_NAME..."
 $setupExe = "$MnemosyneRepo\release\$EXE_NAME"
-$installProc = Start-Process $setupExe -ArgumentList "/S" -Wait -PassThru
+$installProc = Start-Process $setupExe -ArgumentList "/S /CurrentUser" -Wait -PassThru
 if ($installProc.ExitCode -ne 0) {
     Invoke-Rollback "Sharp-8-a: silent install failed with exit code $($installProc.ExitCode)"
     Err "Sharp-8-a: silent install exit code $($installProc.ExitCode)"
