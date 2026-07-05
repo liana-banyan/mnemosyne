@@ -217,6 +217,7 @@ Deno.serve(async (req) => {
       peer_id: roll.peer_id,
       wan_soccerball_id: roll.s,
       last_seen_at: new Date(nowMs).toISOString(),
+      relay_poller_heartbeat_at: new Date(nowMs).toISOString(),
       tier: presenceTier,
     };
     // K-D6-6-13 Fix A: version — read from top-level field (not from capabilities JSONB)
