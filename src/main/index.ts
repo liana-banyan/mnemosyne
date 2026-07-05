@@ -5734,6 +5734,22 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
 
   async function pollOnce() {
     _relayPollCount++;
+    // K-D6-6-10: sync _relayPollCount to peer_presence every ~30s (every 6 polls × 5s cadence)
+    // The heartbeat_worker sends relay_poller_poll_count:null which never updates the field;
+    // this PATCH from the main thread is the only path that writes the actual count to Supabase.
+    if (_relayPollCount % 6 === 1) {
+      fetch(`${supabaseUrl}/rest/v1/peer_presence?peer_id=eq.${encodeURIComponent(peerId)}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify({ relay_poller_poll_count: _relayPollCount }),
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => { /* non-fatal */ });
+    }
     try {
       const url = `${supabaseUrl}/rest/v1/relay_routes?target_peer_id=eq.${encodeURIComponent(peerId)}&status=eq.pending&select=id,hex_frame,payload_json,session_id`;
       const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
