@@ -6924,7 +6924,7 @@ app.whenReady().then(async () => {
       : null;
     registerPresenceConfig({
       peerId: _presencePeerId,
-      emailHash: _emailHash ?? _presencePeerId,
+      emailHash: _emailHash ?? null,
       wanSoccerballId: _wanSoccerballId,
       relaySessionId: randomUUID().replace(/-/g, ''),
       supabaseUrl: _presenceSupabaseUrl,
