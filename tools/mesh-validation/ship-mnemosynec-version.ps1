@@ -246,9 +246,9 @@ foreach ($url in @("https://mnemosynec.ai/download/", "https://mnemosynec.org/")
     }
 }
 
-# Check 11: git log
+# Check 11: git log (look back -10 to tolerate hot-fix commits landed after the version bump)
 Push-Location $MnemosyneRepo
-$gitLog = git log --oneline -3
+$gitLog = git log --oneline -10
 $tagCheck = git tag -l $RELEASE_TAG
 Pop-Location
 if ($gitLog -match "bump version to $([regex]::Escape($NewVersion))" -and $tagCheck -eq $RELEASE_TAG) {
@@ -277,6 +277,16 @@ if (Test-Path $sdsEnvPath) {
     Get-Content $sdsEnvPath | ForEach-Object {
         if ($_ -match "^([A-Z_]+)=(.+)$") { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process") }
     }
+}
+
+# Capture pre-install key hash for Sharp-8-e
+$keyHashPre = $null
+$privKeyPathPre = "$env:APPDATA\MnemosyneC\keys\peer.ed25519.priv"
+if (Test-Path $privKeyPathPre) {
+    $keyHashPre = (Get-FileHash $privKeyPathPre -Algorithm SHA256).Hash
+    Log "Sharp-8-e pre-install: key file found, SHA256=$keyHashPre"
+} else {
+    Log "Sharp-8-e pre-install: no existing key file (fresh machine or first install)"
 }
 
 # Sharp-8-a: Silent install
@@ -335,6 +345,49 @@ if ($supabaseUrl -and $supabaseKey) {
     Ok "Sharp-8-d: heartbeat detected in peer_presence"
 } else {
     Write-Host "[SKIP] Sharp-8-d: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — skipping heartbeat check" -ForegroundColor Yellow
+}
+
+# Sharp-8-e: peer_id stable across upgrade — verify key file hash unchanged
+$keysDir = "$env:APPDATA\MnemosyneC\keys"
+$privKeyPath = "$keysDir\peer.ed25519.priv"
+if (Test-Path $privKeyPath) {
+    $keyHashPost = (Get-FileHash $privKeyPath -Algorithm SHA256).Hash
+    # $keyHashPre captured before install above (if it existed)
+    if ($keyHashPre -and $keyHashPost) {
+        if ($keyHashPre -eq $keyHashPost) {
+            Ok "Sharp-8-e: peer_id key file UNCHANGED after upgrade (SHA256: $keyHashPost)"
+        } else {
+            Write-Host "[WARN] Sharp-8-e: key file hash CHANGED after install (pre: $keyHashPre / post: $keyHashPost) — D3 persistence may not be working" -ForegroundColor Yellow
+        }
+    } elseif ($keyHashPost) {
+        Ok "Sharp-8-e: key file present post-install (SHA256: $keyHashPost) — no pre-install baseline (fresh machine)"
+    }
+} else {
+    Write-Host "[WARN] Sharp-8-e: key file not found at $privKeyPath post-install" -ForegroundColor Yellow
+}
+
+# Gate 6-10a: relay_poller_poll_count climbs above 0 within 90s
+$pollCountFound = $false
+if ($supabaseUrl -and $supabaseKey) {
+    Log "Gate 6-10a: polling relay_poller_poll_count in peer_presence for 90s..."
+    for ($j = 0; $j -lt 9; $j++) {
+        Start-Sleep 10
+        $cutoff2 = ([datetime]::UtcNow.AddMinutes(-3)).ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $pollUrl = "$supabaseUrl/rest/v1/peer_presence?last_seen_at=gt.$cutoff2&select=peer_id,relay_poller_poll_count&limit=10"
+        try {
+            $pollResp = Invoke-WebRequest -Uri $pollUrl -Headers @{ "apikey" = $supabaseKey; "Authorization" = "Bearer $supabaseKey" } -UseBasicParsing -ErrorAction SilentlyContinue
+            if ($pollResp.Content -match '"relay_poller_poll_count":([1-9][0-9]*)') {
+                $pollCountFound = $true
+                Ok "Gate 6-10a: relay_poller_poll_count > 0 detected (raw: $($pollResp.Content))"
+                break
+            }
+        } catch {}
+    }
+    if (-not $pollCountFound) {
+        Write-Host "[WARN] Gate 6-10a: relay_poller_poll_count stayed at 0 for 90s — relay-poll worker may not be starting" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[SKIP] Gate 6-10a: SUPABASE credentials not available" -ForegroundColor Yellow
 }
 
 # Stop the test instance
