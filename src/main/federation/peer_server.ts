@@ -92,7 +92,7 @@ export function registerPeerServerHooks(hooks: {
 
 export function registerPresenceConfig(config: {
   peerId: string;
-  emailHash: string;
+  emailHash: string | null;
   wanSoccerballId: string;
   relaySessionId: string;
   supabaseUrl: string;
@@ -190,6 +190,8 @@ async function publishPresence(): Promise<void> {
       : 'https://relay.lianabanyan.com/functions/v1';
   const relayBaseFallback = 'https://ruuxzilgmuwddcofqecc.supabase.co/functions/v1';
 
+  console.log(`[D5] publishing presence: version=${app.getVersion()} peer_id=${_peerId?.slice(0, 8)}… machine_label=${identityFields.machine_label}`);
+
   const body = {
     v: 1,
     s: wanSid.slice(0, 32),
@@ -199,9 +201,10 @@ async function publishPresence(): Promise<void> {
     },
     ts: Date.now(),
     peer_id: _peerId,
+    version: app.getVersion(),
     machine_label: identityFields.machine_label,
     lan_addresses: identityFields.lan_addresses,
-    email_hash: identityFields.email_hash ?? _emailHash ?? undefined,
+    email_hash: identityFields.email_hash ?? _emailHash ?? null,
     artifact_server_address: identityFields.artifact_server_address ?? undefined,
     relay_session_id: _relaySessionId ?? undefined,
     capabilities: {
