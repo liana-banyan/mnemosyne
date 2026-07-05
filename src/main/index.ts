@@ -5771,26 +5771,19 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           const plowMaxIter: number = typeof payload.plow_max_iterations === 'number'
             ? (payload.plow_max_iterations as number) : 0;
 
-          // M14 Block 2 R1: plow=none hard-reject — incompatible with v0.5.17+ peers
-          if (plowMaxIter === 0 || (payload.plow_max_iterations !== undefined && payload.plow_max_iterations === null)) {
-            console.warn('[relay-poll] R1 HARD-REJECT: plow_max_iterations=0 received — returning error to orchestrator (plow=none incompatible with v0.5.17+)');
-            await fetch(`${supabaseUrl}/rest/v1/relay_route_replies`, {
-              method: 'POST',
-              headers: { ...headers, 'Prefer': 'return=minimal' },
-              body: JSON.stringify({
-                route_id: route.id,
-                peer_id: peerId,
-                answer_json: { answer: 'ERROR', error_reason: 'plow_none_rejected', message: 'plow_max_iterations=0 is incompatible with v0.5.17+ peers. Use plow=mesh-12-blade (plow_max_iterations >= 4).' },
-                processing_ms: 0,
-              }),
-            });
-            await fetch(`${supabaseUrl}/rest/v1/relay_routes?id=eq.${route.id}`, {
-              method: 'PATCH',
-              headers,
-              body: JSON.stringify({ status: 'answered' }),
-            });
-            continue;
-          }
+          // BP105 K-D6-6-15: BEDROCK MODE RESTORED — the M14 Block 2 R1 hard-reject below
+          // was PERMANENTLY REMOVED. It blocked plow_max_iterations=0/absent as an error,
+          // which broke the Founder-direct Truthstone doctrine (Coffee BP104 §5):
+          //   Layer 1-6 = substrate BEDROCK (single-shot inference, no Plow)
+          //   Layer 7   = Truthstone GATE (test if bedrock answer is correct)
+          //   Layer 8+  = 12-Blade Plow, ESCALATION-ONLY for questions that failed bedrock
+          // plow_max_iterations=0 (or absent) is a LEGITIMATE bedrock-mode request, not an
+          // error condition — it now falls through naturally to the pre-existing baseline
+          // single-shot path (`else` branch below, "Baseline path: single-shot") which
+          // already implements exactly this behavior. No new code path was needed.
+          // Empirical anchor: BP105 T2 batch-1 (2026-07-04) — v0.5.17+ peers were rejecting
+          // every bedrock-mode relay_route with error_reason: 'plow_none_rejected'.
+          // Canon: canon_no_manual_unstick_no_pluto_screwdriver_ship_the_real_fix_from_source_to_hugo_bp105
 
           // BP090 TRIPLE-MAMBA: allotted_timeout_ms for approaching_timeout signal emission
           const allottedTimeoutMs: number = typeof payload.allotted_timeout_ms === 'number'
@@ -5857,12 +5850,25 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 console.log(`[relay-poll] approaching_timeout signal sent: route=${route.id.slice(0, 8)} iter=${iter} variance=${councilVariance.toFixed(3)} elapsed=${Date.now()-startMs}ms`);
               }
 
+              // BP106 K-D6-6-16 (Founder-empirical BP106 chunk-01 · 2026-07-05):
+              // Per-iteration temperature bump forces model diversity across iterations.
+              // Without this, calling the same 3 models with the same prompt each iter
+              // often produces the same council outcome each time (either same convergence
+              // or same 0-parseable-letter bail) — plow_max_iterations became decorative.
+              // Range: iter=1 → 0.6, iter=12 → 1.0 (min .6, max 1.0).
+              const iterTemperature = Math.min(0.6 + (iter - 1) * 0.04, 1.0);
               const memberResults = await Promise.allSettled(
                 COUNCIL_MODELS.map(async (m) => {
                   const r = await fetch('http://localhost:11434/api/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ model: m, prompt, stream: false, keep_alive: '24h' }),
+                    body: JSON.stringify({
+                      model: m,
+                      prompt,
+                      stream: false,
+                      keep_alive: '24h',
+                      options: { temperature: iterTemperature },
+                    }),
                     // D6a: 8-min hard ceiling per ollama call — prevents relay-poll worker hang on frozen model
                     signal: AbortSignal.timeout(480_000),
                   });
@@ -5877,15 +5883,37 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
               for (const res of memberResults) {
                 if (res.status !== 'fulfilled' || !res.value?.text) continue;
                 const t = res.value.text;
-                const lm = t.match(/^\s*([A-J])\b/i)
+                // BP106 K-D6-6-16: added lax bare-A-J fallback so models that produce
+                // prose without a canonical "Answer: X" prefix still contribute a vote.
+                let lm = t.match(/^\s*([A-J])\s*$/i)
+                  || t.match(/^\s*([A-J])\b/i)
                   || t.match(/Answer[:\s]+([A-J])\b/i)
                   || t.match(/\b([A-J])\s*\)/i)
                   || t.match(/\b([A-J])\./i)
                   || t.match(/^\s*([A-J])/im);
-                if (lm) letterVotes.push({ letter: lm[1].toUpperCase(), text: t });
+                if (!lm) {
+                  // Last-resort: last bare A-J letter anywhere in text (often the model's final answer)
+                  const allBare = t.match(/\b([A-J])\b/gi);
+                  if (allBare && allBare.length > 0) {
+                    const lastLetter = allBare[allBare.length - 1]!.toUpperCase();
+                    lm = [lastLetter, lastLetter] as unknown as RegExpMatchArray;
+                  }
+                }
+                if (lm) letterVotes.push({ letter: lm[1]!.toUpperCase(), text: t });
               }
 
-              if (letterVotes.length === 0) break; // no valid responses — stop iterating
+              // BP106 K-D6-6-16 (Founder-empirical BP106 chunk-01 · 2026-07-05):
+              // OLD behavior: `if (letterVotes.length === 0) break;` bailed the whole
+              // loop at iter=1 whenever all 3 models produced prose without a letter —
+              // making plow_max_iterations decorative and defaulting to ABSTAIN. NEW:
+              // record a no-vote iteration receipt, keep councilVariance pinned to 1.0
+              // (no convergence), and CONTINUE to the next iteration so we get another
+              // shot at a valid letter under different temperature.
+              if (letterVotes.length === 0) {
+                councilVariance = 1.0;
+                councilVotesPerIteration.push({ iter, valid: 0, invalid: COUNCIL_MODELS.length, refine: 0 });
+                continue;
+              }
 
               // Plurality vote across judges
               const counts: Record<string, number> = {};
@@ -5893,7 +5921,15 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
               const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
               const topLetter = sorted[0]![0];
               const topCount = sorted[0]![1];
-              councilVariance = 1.0 - (topCount / letterVotes.length);
+              // BP106 K-D6-6-16 (Founder-empirical BP106 chunk-01 · 2026-07-05):
+              // OLD: `councilVariance = 1.0 - (topCount / letterVotes.length);`
+              // computed against the SUBSET that parsed, not the full council. When
+              // 1-of-3 parses a letter with 2-of-3 failing: 1/1 = 1.0 → variance 0.0 →
+              // FALSE convergence at iter=1 with only 33% of the council responding.
+              // Correct: use full council size as denominator. 1-of-3 → variance 0.667
+              // → above threshold → keep iterating. Real convergence still allowed
+              // when 3-of-3 agree (variance 0.0) or 2-of-3 agree (variance 0.333).
+              councilVariance = 1.0 - (topCount / COUNCIL_MODELS.length);
 
               // Use the full response text of a judge that voted for the plurality letter
               answer = letterVotes.find((v) => v.letter === topLetter)?.text ?? letterVotes[0]!.text;
@@ -5909,6 +5945,8 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
               councilVotesPerIteration.push({ iter, valid: validVotes, invalid: invalidVotes, refine: refineVotes });
 
               // Early stop when confidence (1 - variance) >= threshold
+              // NOTE: variance now computed against full council (not the parsed subset)
+              // so this only fires on genuine majority-convergence, not 1-of-3-artifact.
               if (councilVariance <= (1.0 - CONF_THRESHOLD)) break;
             }
             if (isStarChamber) {
