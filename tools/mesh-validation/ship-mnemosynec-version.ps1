@@ -59,6 +59,7 @@ function Invoke-Rollback {
 
 Log "D2: Bumping version to $NewVersion in package.json"
 $pkg = Get-Content "$MnemosyneRepo\package.json" -Raw | ConvertFrom-Json
+$PrevVersion = $pkg.version  # Capture BEFORE bump — used later for firebase.json redirect update
 $pkg.version = $NewVersion
 $pkgJson = $pkg | ConvertTo-Json -Depth 10
 # UTF-8 NO BOM — PowerShell 5.1's Set-Content -Encoding UTF8 adds BOM which breaks vite/PostCSS JSON parsing
@@ -182,12 +183,11 @@ Log "  version_trust.json updated (v$NewVersion prepended as latest, prior demot
 # firebase.json — patch BOTH -latest.exe redirect destinations to new version
 $fbPath = "$CephasHugoDir\firebase.json"
 $fbContent = [System.IO.File]::ReadAllText($fbPath, [System.Text.UTF8Encoding]::new($false))
-$prevVersion = $pkg.version  # old version before bump (set in D2)
-$oldLatestDest = "https://github.com/liana-banyan/mnemosyne/releases/download/v$prevVersion/MnemosyneC-Setup-$prevVersion.exe"
+$oldLatestDest = "https://github.com/liana-banyan/mnemosyne/releases/download/v$PrevVersion/MnemosyneC-Setup-$PrevVersion.exe"
 $newLatestDest = "https://github.com/liana-banyan/mnemosyne/releases/download/v$NewVersion/MnemosyneC-Setup-$NewVersion.exe"
 $fbContent = $fbContent.Replace($oldLatestDest, $newLatestDest)
 [System.IO.File]::WriteAllText($fbPath, $fbContent, [System.Text.UTF8Encoding]::new($false))
-Log "  firebase.json -latest.exe destinations updated: v$prevVersion -> v$NewVersion (both hosting targets)"
+Log "  firebase.json -latest.exe destinations updated: v$PrevVersion -> v$NewVersion (both hosting targets)"
 
 Ok "Hugo data files updated."
 
