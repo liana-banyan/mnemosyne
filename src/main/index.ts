@@ -140,6 +140,11 @@ import { registerDiagnosisIpc } from './diagnosis/diagnosis_ipc';
 import { runCatacombMigrationCheck } from './diagnosis/catacomb_migrator';
 import { startPeerServer, stopPeerServer, getCurrentTier, registerPresenceConfig } from './federation/peer_server';
 
+// BP132 Yoke #21 A1 — mesh revival: relay-answer poller + startup self-diagnostic.
+// Both were fully built but never wired into boot (confirmed: zero call sites in src/).
+import { startRelayAnswerPoller } from './relay_answer';
+import { submitStartupDiagnostic } from './relay_answer/startup_diagnostic';
+
 // SAGA 10 BP045 W1 ? mnemosyne:// + mnemo:// deep-link handler
 import { registerDeepLinkProtocol, handleStartupDeepLink } from './deep-link-handler';
 import type { DeepLinkPayload } from './deep-link-handler';
@@ -5804,7 +5809,17 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
             // BP090 Plow Loop 12 + Minor Council Star Chamber
             // Fires 3 local judges per iteration; plurality-votes for answer letter;
             // iterates until confidence >= 0.75 (variance <= 0.25) or maxIterations reached.
-            const COUNCIL_MODELS = ['gemma4:12b', 'llama3.1:8b', 'mistral:7b'];
+            // BP106 v0.8.29 (Founder-empirical 2026-07-05): all-gemma council.
+            // The pre-v0.8.29 array included llama3.1:8b + mistral:7b which are NOT
+            // installed on the peer fleet (only gemma4:12b is · empirical: ollama list
+            // on M0/M2/M3 shows single gemma4:12b entry). Those 2 calls per iteration
+            // hit 404 model-not-found and were silently excluded from letterVotes,
+            // making the "3-model council" empirically a 1-model council that wasted
+            // 2/3 of the network round-trips. Council diversity now comes from
+            // per-member temperature spread (see memberTemperature below) — 3 samples
+            // of the same model at 3 different temperatures gives real plurality-vote
+            // diversity without needing 3 distinct model files.
+            const COUNCIL_MODELS = ['gemma4:12b', 'gemma4:12b', 'gemma4:12b'];
             const CONF_THRESHOLD = 0.75;
             const APPROACH_THRESHOLD = 0.80; // 80% of allotted timeout triggers signal
 
@@ -5850,15 +5865,18 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 console.log(`[relay-poll] approaching_timeout signal sent: route=${route.id.slice(0, 8)} iter=${iter} variance=${councilVariance.toFixed(3)} elapsed=${Date.now()-startMs}ms`);
               }
 
-              // BP106 K-D6-6-16 (Founder-empirical BP106 chunk-01 · 2026-07-05):
-              // Per-iteration temperature bump forces model diversity across iterations.
-              // Without this, calling the same 3 models with the same prompt each iter
-              // often produces the same council outcome each time (either same convergence
-              // or same 0-parseable-letter bail) — plow_max_iterations became decorative.
-              // Range: iter=1 → 0.6, iter=12 → 1.0 (min .6, max 1.0).
-              const iterTemperature = Math.min(0.6 + (iter - 1) * 0.04, 1.0);
+              // BP106 v0.8.29 (Founder-empirical 2026-07-05): per-council-member temperature
+              // spread. Since all 3 council members are now the same gemma4:12b (v0.8.29
+              // fix above), diversity across the 3 samples comes from temperature spacing
+              // per index (0.15 spacing) plus a per-iteration bump (0.04 spacing).
+              //   iter=1 · [temp 0.60, 0.75, 0.90] → 3 clearly-distinct samples
+              //   iter=4 · [temp 0.72, 0.87, 1.00-clamped] → hot-spread final iter
+              // Empirical rationale: 3 identical gemma4:12b calls at same temp DO produce
+              // slightly-different outputs (ollama re-samples each call) but spread is
+              // narrow. Explicit temperature spread widens the plurality-vote signal.
               const memberResults = await Promise.allSettled(
-                COUNCIL_MODELS.map(async (m) => {
+                COUNCIL_MODELS.map(async (m, idx) => {
+                  const memberTemperature = Math.min(0.6 + (iter - 1) * 0.04 + idx * 0.15, 1.0);
                   const r = await fetch('http://localhost:11434/api/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -5867,7 +5885,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                       prompt,
                       stream: false,
                       keep_alive: '24h',
-                      options: { temperature: iterTemperature },
+                      options: { temperature: memberTemperature },
                     }),
                     // D6a: 8-min hard ceiling per ollama call — prevents relay-poll worker hang on frozen model
                     signal: AbortSignal.timeout(480_000),
@@ -6553,6 +6571,13 @@ app.whenReady().then(async () => {
     console.error('[Startup] Eblet integrity check failed (non-fatal):', e);
   }
 
+  // BP132 Yoke #21 E10: warm the eblet + canonical index on boot (fire-and-forget,
+  // non-blocking) instead of only ever lazily rebuilding on the first Ask. See
+  // mnem_eblet_store.ts warmEbletIndex() for the full rationale.
+  import('./mnem_eblet_store')
+    .then(({ warmEbletIndex }) => warmEbletIndex())
+    .catch((e) => console.error('[Startup] Eblet index warm-up failed (non-fatal):', e));
+
   // Initialize substrate API server (Phase 3: full implementation)
   substrateServer = new SubstrateAPIServer();
   await substrateServer.start();
@@ -6933,16 +6958,12 @@ app.whenReady().then(async () => {
   // Uses fs.watch (chokidar would be more robust but is not in this project's dependencies).
   setupMeshResultsWatcher();
 
-  // v0.4.0 BP083 SEG-1: Start peer HTTP server on port 7474 (SCAFFOLD transport)
-  try {
-    await startPeerServer();
-    console.log('[BP083] Peer server started on port 7474 (SCAFFOLD v0.4.0)');
-  } catch (e) {
-    console.warn('[BP083] Peer server start failed (non-fatal):', e);
-  }
-
   // BP086 I3a: Wire presence config so publishPresence() passes its null-guard
   // BP104 D5: wan_soccerball_id derived from Ed25519 publicKeyHex (D3 keypair)
+  // BP132 Yoke #21 A2: MOVED to run BEFORE startPeerServer() (was after). startPeerServer()'s
+  // .listen() callback fires publishPresence() immediately on the 'listening' event, and that
+  // first call was silently no-op'ing because _peerId/_supabaseUrl (module-local state in
+  // peer_server.ts, set only by registerPresenceConfig) were still unset at that point.
   {
     const { randomUUID, createHash } = require('crypto') as typeof import('crypto');
     const _presencePeerId = getStablePeerId();
@@ -6970,6 +6991,14 @@ app.whenReady().then(async () => {
     console.log('[presence] registered tier=base default, peer=' + _presencePeerId.slice(0, 8));
   }
 
+  // v0.4.0 BP083 SEG-1: Start peer HTTP server on port 7474 (SCAFFOLD transport)
+  try {
+    await startPeerServer();
+    console.log('[BP083] Peer server started on port 7474 (SCAFFOLD v0.4.0)');
+  } catch (e) {
+    console.warn('[BP083] Peer server start failed (non-fatal):', e);
+  }
+
   // BP086 I5c: start relay poll (answers cross-WAN questions from orchestrator)
   {
     const _relayPeerId = getStablePeerId();
@@ -6989,6 +7018,35 @@ app.whenReady().then(async () => {
     startRelayRoutePoll(_relayPeerId);
     // D6c — self-heal watchdog starts 60s after poll loop; monitors poll_count delta
     startRelayPollWatchdog(_relayPeerId);
+
+    // BP132 Yoke #21 A1: startRelayAnswerPoller() was fully built (PID-lock singleton,
+    // exponential backoff, crash-loop guard, liveness watchdog) but never called anywhere
+    // in src/ — confirmed by repo-wide search. This is the WAN answer-side of the mesh:
+    // without it, this peer never answers cross-WAN questions routed to it via Supabase.
+    if (_supabaseUrl && _anonKey) {
+      startRelayAnswerPoller({
+        peerId: _relayPeerId,
+        supabaseUrl: _supabaseUrl,
+        anonKey: _anonKey,
+      });
+      console.log('[BP132 A1] relay-answer poller start requested peer=' + _relayPeerId.slice(0, 8));
+    } else {
+      console.error('[BP132 A1] relay-answer poller NOT started — Supabase URL/anon key unresolved');
+    }
+
+    // BP132 Yoke #21 A1: submitStartupDiagnostic() writes the peer_startup_state row
+    // (relay_answer_poller_started, beacons_lit state, ollama reachability, etc.) but was
+    // also never called anywhere in src/ — confirmed by repo-wide search. Delay 15s so the
+    // relay-answer worker has time to fork + send its 'started' IPC message first, so the
+    // very first row already reflects relay_answer_poller_started=true instead of a false
+    // reported at t=0. Re-submitted every 10 min so Bishop's DB view stays current, not
+    // just a single boot-time snapshot (Truth-Always: state must not go stale silently).
+    setTimeout(() => {
+      submitStartupDiagnostic().catch((e) => console.error('[BP132 A1] startup diagnostic submit failed:', e));
+    }, 15_000);
+    setInterval(() => {
+      submitStartupDiagnostic().catch((e) => console.error('[BP132 A1] startup diagnostic resubmit failed:', e));
+    }, 10 * 60_000);
   }
 
   // BP086 I7c: MIC broadcast listener (auto_update / config_set / fleet_warmup /

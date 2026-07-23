@@ -29,6 +29,14 @@ import {
   DEFAULT_BRAINS,
   type BrainEntry,
 } from './brain_registry/brain_registry';
+// BP132 Yoke #21 C7: user-facing Anthropic API key (separate from the unrelated
+// ApiKeysSettings.tsx Hearth Conjunction subsystem).
+import {
+  resolveAnthropicApiKey,
+  setUserAnthropicKey,
+  hasUserAnthropicKey,
+  clearUserAnthropicKey,
+} from './user_anthropic_key';
 
 const OLLAMA_API_BASE = 'http://127.0.0.1:11434';
 
@@ -81,9 +89,12 @@ async function dispatchViaBrain(
       }
     } else {
       // Flagship (Anthropic) path
-      const apiKey = process.env.ANTHROPIC_API_KEY ?? '';
+      // BP132 Yoke #21 C7: prefer the user's own settings-supplied key over process.env,
+      // so a real install (no LockBox vault, no ANTHROPIC_API_KEY in env) can still use a
+      // flagship brain once the user pastes in their own key via Settings.
+      const apiKey = resolveAnthropicApiKey() ?? '';
       if (!apiKey) {
-        envelope.error = 'ANTHROPIC_API_KEY not set -- cannot dispatch flagship brain';
+        envelope.error = 'No Anthropic API key configured -- add your own key in Settings to use this brain';
       } else {
         // Convert messages: Anthropic API expects role "user"/"assistant", system separate
         const systemMsg = messages.find((m) => m.role === 'system');
@@ -258,6 +269,22 @@ export function registerAiDispatchIPC(): void {
     },
   );
 
+  // ── ai-dispatch:anthropic-key-status / set / clear (BP132 Yoke #21 C7) ───
+  // The raw key is NEVER returned to the renderer -- only a boolean presence flag.
+  ipcMain.handle('ai-dispatch:anthropic-key-status', () => {
+    return { ok: true, hasKey: hasUserAnthropicKey() };
+  });
+
+  ipcMain.handle('ai-dispatch:set-anthropic-key', (_event, rawKey: string) => {
+    if (typeof rawKey !== 'string') return { ok: false, error: 'Invalid key' };
+    return setUserAnthropicKey(rawKey);
+  });
+
+  ipcMain.handle('ai-dispatch:clear-anthropic-key', () => {
+    clearUserAnthropicKey();
+    return { ok: true };
+  });
+
   // ── ai-dispatch:query ────────────────────────────────────────────────────
   // args: { court_member: string; messages: [{role, content}]; model_override?: string }
   // v0.1.57.1: returns { ok: true, streaming: true } immediately; content flows via
@@ -369,6 +396,37 @@ export function registerAiDispatchIPC(): void {
       // Append the original messages from the caller (preserves multi-turn history).
       for (const m of args.messages) {
         chatMessages.push(m);
+      }
+
+      // BP132 Yoke #21 C5: when the active/selected brain is 'flagship' (e.g. Claude),
+      // route through dispatchViaBrain() instead of hardcoding Ollama. This was previously
+      // dead plumbing -- ai-dispatch:query ALWAYS hit `${OLLAMA_API_BASE}/api/chat` below,
+      // even when brain-registry's active brain was a flagship brain (the default
+      // active_brain_id is actually 'claude-sonnet-4-6' -- see brain_registry.ts -- so the
+      // brain-swap UI could report "Claude active" while every Ask silently still ran on
+      // Gemma). systemContent (MEMORY.md + verified eblets + r10v3 substrate, composed
+      // above) is reused as-is so the same eblet context flows into Claude as into Gemma.
+      const activeBrain = args.model_override ? undefined : getActiveBrain();
+      if (activeBrain && activeBrain.kind === 'flagship') {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('ask-token-progress', { coldStart: false, delta: '', assembled: '', flagship: true, brainId: activeBrain.brain_id });
+        }
+        void (async () => {
+          const result = await dispatchViaBrain(activeBrain, chatMessages);
+          sessionInferenceCount++;
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('ask-token-complete', {
+              content: result.content,
+              error: result.error ?? undefined,
+              hotHits: substrateCounters?.hotHits,
+              selfContextLoaded: memoryMdContent.length > 0,
+              brainId: result.brain_id,
+              brainKind: result.kind,
+              flagship: true,
+            });
+          }
+        })();
+        return { ok: true, streaming: true, brainId: activeBrain.brain_id, kind: 'flagship' };
       }
 
       // v0.1.57.1: Abort any in-flight stream before starting a new one (AbortController discipline)

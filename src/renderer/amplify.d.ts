@@ -401,6 +401,10 @@ declare global {
         // v0.1.57.1: token streaming push events
         onAskTokenProgress: (handler: (data: { delta: string; assembled: string; coldStart?: boolean }) => void) => () => void;
         onAskTokenComplete: (handler: (data: { content: string; error?: string; hotHits?: number }) => void) => () => void;
+        // BP132 Yoke #21 C7: user-facing Anthropic API key (never exposes the raw key back out)
+        getAnthropicKeyStatus?: () => Promise<{ ok: boolean; hasKey: boolean }>;
+        setAnthropicKey?: (rawKey: string) => Promise<{ ok: boolean; error?: string }>;
+        clearAnthropicKey?: () => Promise<{ ok: boolean }>;
       };
       // SEG-2 v0.1.57: Test It Out — substrate-warming 5-question workout
       runTestItOut?: () => Promise<{ success: boolean; score?: number; total?: number; error?: string }>;

@@ -14,6 +14,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ModelPullProgress } from './ModelPullProgress';
 // v0.4.1 BP083: Salt Level selector + upgrade suggestion
 import { SaltLevelSelector, type SaltLevel } from './SaltLevelSelector';
+// BP132 Yoke #21 C6: BrainSwapSelector was fully built but orphaned (imported nowhere in
+// src/renderer -- confirmed by repo-wide search). Mounted here, collapsible, rather than
+// repurposing the upgradeSuggestion footer buttons (those are the Ask+Linger/Post-as-Diagnosis
+// Constellation-broadcast feature -- a different concern; relabeling them for brain-swap would
+// be confusing given their existing copy).
+import { BrainSwapSelector } from './BrainSwapSelector';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -193,6 +199,31 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // BP132 Yoke #21 C6: brain-swap panel toggle + live active-brain label. The active brain
+  // is read fresh from disk (brain_registry.json) on load and after each swap so the header
+  // line ("Powered by...") never lies about which model is actually answering.
+  const [showBrainSelector, setShowBrainSelector] = useState(false);
+  const [activeBrainLabel, setActiveBrainLabel] = useState<{ id: string; kind: 'flagship' | 'local' } | null>(null);
+
+  const refreshActiveBrainLabel = useCallback(() => {
+    void (async () => {
+      try {
+        const registry = window.amplify?.brainRegistry;
+        if (!registry) return;
+        const [listRes, activeRes] = await Promise.all([registry.list(), registry.getActive()]);
+        if (activeRes.ok && activeRes.brain_id && listRes.ok && Array.isArray(listRes.brains)) {
+          const active = listRes.brains.find((b: { brain_id: string }) => b.brain_id === activeRes.brain_id);
+          if (active) setActiveBrainLabel({ id: active.brain_id, kind: active.kind });
+        }
+      } catch {
+        // Non-fatal — header falls back to the static "gemma4:12b" copy below.
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    refreshActiveBrainLabel();
+  }, [refreshActiveBrainLabel]);
 
   const showToast = useCallback((msg: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -535,6 +566,33 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
               {selfCtxStatus === 'loaded' ? 'Self-Context ✅' : 'Self-Context ⚠️ missing'}
             </span>
           )}
+          {/* BP132 Yoke #21 C6: Brain-swap toggle -- surfaces + controls which cognitive
+              core actually answers (previously invisible; brain_registry.json defaults
+              to a flagship brain_id even though every Ask silently ran on Gemma before C5). */}
+          <button
+            type="button"
+            onClick={() => {
+              setShowBrainSelector((v) => {
+                if (v) refreshActiveBrainLabel();
+                return !v;
+              });
+            }}
+            title="Choose which cognitive core answers your questions"
+            style={{
+              background: 'none',
+              border: `1px solid ${activeBrainLabel?.kind === 'flagship' ? '#818cf8' : '#334155'}`,
+              borderRadius: 5,
+              color: activeBrainLabel?.kind === 'flagship' ? '#c7d2fe' : '#94a3b8',
+              fontSize: 11,
+              padding: '3px 9px',
+              cursor: 'pointer',
+              fontFamily: 'system-ui, sans-serif',
+              outline: 'none',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            🧠 {activeBrainLabel ? activeBrainLabel.id : 'gemma4:12b'} {showBrainSelector ? '▲' : '▼'}
+          </button>
           {/* v0.1.62: Clear + Save & Clear buttons */}
           <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
             <button
@@ -590,8 +648,15 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
           </div>
         </div>
         <p style={{ margin: '4px 0 0', fontSize: 11, color: '#475569' }}>
-          Powered by gemma4:12b running on your own computer. Private by default.
+          {activeBrainLabel?.kind === 'flagship'
+            ? `Powered by ${activeBrainLabel.id} (cloud flagship brain -- your message leaves this machine).`
+            : 'Powered by gemma4:12b running on your own computer. Private by default.'}
         </p>
+        {showBrainSelector && (
+          <div style={{ marginTop: 8 }}>
+            <BrainSwapSelector />
+          </div>
+        )}
         {/* Toast feedback pill */}
         {toast && (
           <div
