@@ -1,8 +1,8 @@
-version: 0.8.21
+version: 0.8.29
 files:
-  - url: MnemosyneC-Setup-0.8.21.exe
-    sha512: 4HoWuDmY5mJVvggsP+N4pMlskG2orsGvK5Gmla2ukNmPQ/GeLT7iP9H171s871ljpCtwFyi7cySEH4Bwl5NxnA==
-    size: 478912585
-path: MnemosyneC-Setup-0.8.21.exe
-sha512: 4HoWuDmY5mJVvggsP+N4pMlskG2orsGvK5Gmla2ukNmPQ/GeLT7iP9H171s871ljpCtwFyi7cySEH4Bwl5NxnA==
-releaseDate: '2026-07-04T19:18:19.179Z'
+  - url: MnemosyneC-Setup-0.8.29.exe
+    sha512: JXhbkHIGvKBqJS6b7ZrFZR1kJHAb5YXmKe1ZFs5WWJJygKoBMzPwQdOXbKZnNZE4pxrSvFvXVP18Qf2lcPuRxQ==
+    size: 478918505
+path: MnemosyneC-Setup-0.8.29.exe
+sha512: JXhbkHIGvKBqJS6b7ZrFZR1kJHAb5YXmKe1ZFs5WWJJygKoBMzPwQdOXbKZnNZE4pxrSvFvXVP18Qf2lcPuRxQ==
+releaseDate: '2026-07-06T02:57:15.414Z'
