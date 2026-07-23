@@ -125,6 +125,13 @@
       {
         "from": "resources/supabase_public.env",
         "to": "supabase_public.env"
+      },
+      {
+        "from": "resources/eblets_default",
+        "to": "eblets_default",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "publish": {

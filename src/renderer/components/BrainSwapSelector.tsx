@@ -45,6 +45,21 @@ export const BrainSwapSelector: React.FC = () => {
   const [smokeRunning, setSmokeRunning] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // BP132 Yoke #21 C7: user-facing Anthropic API key state (never holds the raw key
+  // after a successful save -- only a presence flag comes back from main).
+  const [hasAnthropicKey, setHasAnthropicKey] = useState(false);
+  const [keyInput, setKeyInput] = useState('');
+  const [keyStatusMsg, setKeyStatusMsg] = useState<string | null>(null);
+  const [keySaving, setKeySaving] = useState(false);
+
+  const refreshKeyStatus = async () => {
+    try {
+      const result = await window.amplify.aiDispatch?.getAnthropicKeyStatus?.();
+      if (result?.ok) setHasAnthropicKey(result.hasKey);
+    } catch {
+      // Non-fatal -- UI just shows "not set" state
+    }
+  };
 
   useEffect(() => {
     void (async () => {
@@ -61,6 +76,7 @@ export const BrainSwapSelector: React.FC = () => {
           setRuntimeBrainId(activeResult.brain_id);
           setSelectedBrainId(activeResult.brain_id);
         }
+        await refreshKeyStatus();
       } catch (err) {
         console.error('[BrainSwapSelector] Load error:', err);
       } finally {
@@ -70,6 +86,36 @@ export const BrainSwapSelector: React.FC = () => {
   }, []);
 
   const selectedBrain = brains.find((b) => b.brain_id === selectedBrainId);
+
+  const handleSaveKey = async () => {
+    if (!keyInput.trim()) return;
+    setKeySaving(true);
+    setKeyStatusMsg(null);
+    try {
+      const result = await window.amplify.aiDispatch?.setAnthropicKey?.(keyInput.trim());
+      if (result?.ok) {
+        setKeyInput('');
+        setKeyStatusMsg('Key saved securely.');
+        await refreshKeyStatus();
+      } else {
+        setKeyStatusMsg(result?.error ?? 'Failed to save key');
+      }
+    } catch (err) {
+      setKeyStatusMsg(String(err));
+    } finally {
+      setKeySaving(false);
+    }
+  };
+
+  const handleClearKey = async () => {
+    try {
+      await window.amplify.aiDispatch?.clearAnthropicKey?.();
+      setKeyStatusMsg('Key removed.');
+      await refreshKeyStatus();
+    } catch (err) {
+      setKeyStatusMsg(String(err));
+    }
+  };
 
   const handleSelect = async (brain_id: string) => {
     setSelectedBrainId(brain_id);
@@ -162,7 +208,51 @@ export const BrainSwapSelector: React.FC = () => {
 
       {swapPending && (
         <div style={styles.swapBanner}>
-          Brain swap will take effect on next session restart.
+          Brain swap takes effect on your next question.
+        </div>
+      )}
+
+      {/* BP132 Yoke #21 C7: user-facing Anthropic API key -- only shown for flagship brains */}
+      {selectedBrain?.vendor === 'anthropic' && (
+        <div style={styles.keyPanel}>
+          <div style={styles.keyPanelHeading}>
+            Anthropic API key
+            {hasAnthropicKey
+              ? <span style={styles.keySetBadge}>configured</span>
+              : <span style={styles.keyUnsetBadge}>not set</span>}
+          </div>
+          <p style={styles.keyPanelSub}>
+            Your key is encrypted at rest on this machine and never leaves it except in
+            direct calls to Anthropic&apos;s API. It is never logged.
+          </p>
+          <div style={styles.keyInputRow}>
+            <input
+              type="password"
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              placeholder="sk-ant-..."
+              style={styles.keyInput}
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              style={keySaving ? styles.testButtonDisabled : styles.testButton}
+              onClick={() => { void handleSaveKey(); }}
+              disabled={keySaving || !keyInput.trim()}
+            >
+              {keySaving ? 'Saving...' : 'Save'}
+            </button>
+            {hasAnthropicKey && (
+              <button
+                type="button"
+                style={styles.clearKeyButton}
+                onClick={() => { void handleClearKey(); }}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          {keyStatusMsg && <div style={styles.keyStatusMsg}>{keyStatusMsg}</div>}
         </div>
       )}
 
@@ -311,5 +401,70 @@ const styles: Record<string, React.CSSProperties> = {
   loadingText: {
     color: '#888aaa',
     fontSize: '13px',
+  },
+  keyPanel: {
+    background: '#12121e',
+    border: '1px solid #2d2d4e',
+    borderRadius: '6px',
+    padding: '10px 12px',
+    marginBottom: '10px',
+  },
+  keyPanelHeading: {
+    fontSize: '12px',
+    fontWeight: 600,
+    color: '#c0c8ff',
+    marginBottom: '4px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  keyPanelSub: {
+    fontSize: '11px',
+    color: '#888aaa',
+    margin: '0 0 8px 0',
+    lineHeight: 1.4,
+  },
+  keySetBadge: {
+    background: '#1e3a1e',
+    color: '#4cde4c',
+    borderRadius: '4px',
+    padding: '2px 6px',
+    fontSize: '10px',
+    fontWeight: 600,
+  },
+  keyUnsetBadge: {
+    background: '#3a2a1e',
+    color: '#deaa4c',
+    borderRadius: '4px',
+    padding: '2px 6px',
+    fontSize: '10px',
+    fontWeight: 600,
+  },
+  keyInputRow: {
+    display: 'flex',
+    gap: '6px',
+  },
+  keyInput: {
+    flex: 1,
+    background: '#0a0a14',
+    color: '#e0e0f0',
+    border: '1px solid #3a3a5e',
+    borderRadius: '4px',
+    padding: '6px 8px',
+    fontSize: '12px',
+  },
+  clearKeyButton: {
+    background: 'none',
+    color: '#de6c6c',
+    border: '1px solid #5a1010',
+    borderRadius: '4px',
+    padding: '7px 10px',
+    fontSize: '12px',
+    cursor: 'pointer',
+  },
+  keyStatusMsg: {
+    marginTop: '6px',
+    fontSize: '11px',
+    color: '#94a3b8',
   },
 };

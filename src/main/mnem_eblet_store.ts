@@ -31,13 +31,97 @@ import { resolve, join, basename } from 'path';
 import { createHash } from 'crypto';
 import { app } from 'electron';
 
-// ─── Eblet store roots ────────────────────────────────────────────────────────
+// ─── Eblet store roots (BP132 Yoke #21 B4 — portability fix) ──────────────────
+//
+// PRIOR BEHAVIOR (broken on any machine but the Founder's dev box): three hardcoded
+// C:\Users\Administrator\... paths. On a stranger's install none of these exist, so
+// queryVerifiedEblets()/queryEbletStore() silently returned [] — eblet context (pulled
+// into every Ask at ai_dispatch_ipc.ts:304-323) was silently absent for every real user.
+//
+// NEW: roots are resolved at call time (not module load, so app.getPath()/isPackaged
+// are always safe to read) from four sources, in priority order:
+//   1. MNEM_EBLET_STORE_ROOTS env override (path.delimiter-separated) — operator escape hatch.
+//   2. Bundled default eblet set shipped with the app (resources/eblets_default, wired into
+//      extraResources in package.json) — resolves via process.resourcesPath when packaged,
+//      or resources/eblets_default relative to the repo when running from source.
+//   3. {userData}/eblets — a portable, per-user, writable root. This is also the target the
+//      Yoke #22 Helm "eblet your own folder" pipeline should write into, so a stranger's own
+//      contributed eblets show up here without any hardcoded path.
+//   4. The original Founder dev-machine absolute paths, kept ONLY as a legacy fallback for
+//      the Founder's own machine. Filtered by existsSync like everything else, so they are
+//      inert (not silently wrong, just absent) on any other install.
+//
+// All candidates are filtered to existsSync() before use. If the resolved list is EMPTY,
+// callers must surface a visible warning (Truth-Always) instead of quietly returning [].
+let _resolvedRootsCache: { roots: string[]; warnedEmpty: boolean } | null = null;
 
-const EBLET_STORE_ROOTS: string[] = [
-  'C:\\Users\\Administrator\\Documents\\Asteroid-ProofVault',
-  'C:\\Users\\Administrator\\Documents\\AntigravityWorkspace\\source_snapshot_readonly\\canon',
-  'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\Asteroid-ProofVault\\canon',
-];
+function bundledDefaultEbletRoot(): string {
+  // Packaged app: resources/eblets_default is placed next to the asar via extraResources.
+  // Dev (unpackaged): fall back to the repo-relative resources/eblets_default folder.
+  const packaged = typeof process !== 'undefined' && (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+    ? join((process as NodeJS.Process & { resourcesPath?: string }).resourcesPath!, 'eblets_default')
+    : null;
+  if (app.isPackaged && packaged) return packaged;
+  return resolve(app.getAppPath(), 'resources', 'eblets_default');
+}
+
+function legacyDevRoots(): string[] {
+  return [
+    'C:\\Users\\Administrator\\Documents\\Asteroid-ProofVault',
+    'C:\\Users\\Administrator\\Documents\\AntigravityWorkspace\\source_snapshot_readonly\\canon',
+    'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\Asteroid-ProofVault\\canon',
+  ];
+}
+
+/** Resolve + cache the live list of eblet store roots that actually exist on this machine. */
+function resolveEbletStoreRoots(): string[] {
+  if (_resolvedRootsCache) return _resolvedRootsCache.roots;
+
+  const candidates: string[] = [];
+
+  const envOverride = process.env.MNEM_EBLET_STORE_ROOTS;
+  if (envOverride) {
+    candidates.push(...envOverride.split(require('path').delimiter).map((p) => p.trim()).filter(Boolean));
+  }
+
+  candidates.push(bundledDefaultEbletRoot());
+  candidates.push(resolve(app.getPath('userData'), 'eblets'));
+  candidates.push(...legacyDevRoots());
+
+  const resolved = candidates.filter((root) => {
+    try { return existsSync(root); } catch { return false; }
+  });
+
+  if (resolved.length === 0) {
+    // Truth-Always: this used to be a silent [] return with no signal anywhere.
+    console.error(
+      `[EbletStore] WARNING: zero eblet store roots resolved on this machine — the substrate ` +
+      `is EMPTY. Every Ask will run with no eblet context. Checked: ${candidates.join(' | ')}. ` +
+      `Set MNEM_EBLET_STORE_ROOTS or place eblets in ${resolve(app.getPath('userData'), 'eblets')}.`
+    );
+    for (const win of require('electron').BrowserWindow.getAllWindows() as import('electron').BrowserWindow[]) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('eblet-store:diagnostic', {
+          kind: 'zero_roots_resolved',
+          message: 'No eblet store found on this machine — Ask will run without substrate context.',
+          checked: candidates,
+          userDataFallback: resolve(app.getPath('userData'), 'eblets'),
+          at: new Date().toISOString(),
+        });
+      }
+    }
+  } else {
+    console.log(`[EbletStore] resolved ${resolved.length} eblet store root(s): ${resolved.join(' | ')}`);
+  }
+
+  _resolvedRootsCache = { roots: resolved, warnedEmpty: resolved.length === 0 };
+  return resolved;
+}
+
+/** Backward-compat accessor — some call sites below iterate this directly. */
+function getEbletStoreRoots(): string[] {
+  return resolveEbletStoreRoots();
+}
 
 // Maximum chars read from each eblet file for scoring and snippet extraction.
 const SCORE_WINDOW = 300;
@@ -134,15 +218,62 @@ let _indexCache: { entries: EbletIndexEntry[]; loadedAt: number } | null = null;
 const INDEX_CACHE_TTL_MS = 60_000; // re-check delta every 60s
 
 /**
- * Return the mtime of the most-recently-modified root directory so we can
- * detect when new eblets have been added without scanning every file.
+ * BP132 Yoke #21 E10 (keep-current / self-index refresh) — fix-forward.
+ *
+ * PRIOR BUG: rootsMaxMtime() only checked the ROOT directory's own mtime. On every
+ * common filesystem, adding/removing a file updates its DIRECT parent directory's
+ * mtime, NOT every ancestor directory above it. Eblets live several subdirectories
+ * deep (state/eblets/CANON/..., state/eblets/BP.../..., etc.), so a brand-new eblet
+ * written two or more levels below a root was invisible to this check forever — the
+ * index would never be flagged stale, and semantic search would keep returning
+ * whatever was cached at first-index time. This is the exact failure mode Yoke #21's
+ * E10 motivation describes: "the correct eblet existed but semantic search returned
+ * month-old results."
+ *
+ * FIX: walk the FULL tree (same traversal as walkEbletStore, but without reading file
+ * contents — just stat() calls) and take the max mtime across every directory AND
+ * file encountered. This is still cheap (no file reads) and correctly detects a
+ * change at any depth.
+ */
+function treeMaxMtime(root: string): number {
+  let max = 0;
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop()!;
+    let entries;
+    try {
+      const dirStat = statSync(dir);
+      if (dirStat.mtimeMs > max) max = dirStat.mtimeMs;
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else {
+        try {
+          const fStat = statSync(full);
+          if (fStat.mtimeMs > max) max = fStat.mtimeMs;
+        } catch { /* skip unreadable */ }
+      }
+    }
+  }
+  return max;
+}
+
+/**
+ * Return the mtime of the most-recently-modified file/directory across every eblet
+ * store root (full-tree scan, not just the root dir itself — see treeMaxMtime above)
+ * so we can detect when new eblets have been added anywhere in the tree.
  */
 function rootsMaxMtime(): number {
   let max = 0;
-  for (const root of EBLET_STORE_ROOTS) {
+  for (const root of getEbletStoreRoots()) {
     if (!existsSync(root)) continue;
     try {
-      const m = statSync(root).mtimeMs;
+      const m = treeMaxMtime(root);
       if (m > max) max = m;
     } catch { /* skip */ }
   }
@@ -197,7 +328,7 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
   // Rebuild: walk all roots
   console.log('[EbletIndex] Rebuilding index…');
   const allPaths: string[] = [];
-  for (const root of EBLET_STORE_ROOTS) {
+  for (const root of getEbletStoreRoots()) {
     if (existsSync(root)) {
       allPaths.push(...walkEbletStore(root));
     }
@@ -233,6 +364,28 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
 /** Invalidate in-memory index cache (e.g. after a new eblet is written). */
 export function invalidateIndexCache(): void {
   _indexCache = null;
+}
+
+/**
+ * BP132 Yoke #21 E10: warm the eblet index at boot instead of waiting for the first
+ * Ask to trigger a lazy rebuild. Two benefits: (1) the first real Ask of a session
+ * isn't slowed down by a cold index build, (2) any change made to the eblet roots
+ * while the app was closed is picked up immediately on the next launch, not on
+ * whichever later moment the user happens to ask a question. Non-fatal by design.
+ */
+export async function warmEbletIndex(): Promise<EbletIndexStats> {
+  try {
+    const entries = await loadOrRebuildIndex();
+    const stats = getEbletIndexStats();
+    console.log(
+      `[EbletIndex] warm-on-boot complete: ${entries.length} entries indexed ` +
+      `(roots=${getEbletStoreRoots().length})`,
+    );
+    return stats;
+  } catch (e) {
+    console.error('[EbletIndex] warm-on-boot failed (non-fatal):', e);
+    return { totalIndexed: 0, byCategory: {}, lastRefreshTimestamp: null };
+  }
 }
 
 // ─── Index stats ──────────────────────────────────────────────────────────────

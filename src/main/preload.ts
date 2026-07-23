@@ -951,6 +951,13 @@ contextBridge.exposeInMainWorld('amplify', {
       ipcRenderer.on('ask-token-complete', h);
       return () => ipcRenderer.removeListener('ask-token-complete', h);
     },
+    // BP132 Yoke #21 C7: user-facing Anthropic API key (never exposes the raw key back out).
+    getAnthropicKeyStatus: (): Promise<{ ok: boolean; hasKey: boolean }> =>
+      ipcRenderer.invoke('ai-dispatch:anthropic-key-status'),
+    setAnthropicKey: (rawKey: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('ai-dispatch:set-anthropic-key', rawKey),
+    clearAnthropicKey: (): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('ai-dispatch:clear-anthropic-key'),
   },
 
   // ── BP087 Brain Registry (Brain Swap) ────────────────────────────────────

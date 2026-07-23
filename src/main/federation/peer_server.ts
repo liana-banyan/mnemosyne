@@ -19,7 +19,7 @@
 import http from 'http';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { app } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { detectHardwareTier, getRecommendedModel, getCachedEffectiveModel } from '../hardware/ram_detector';
 
@@ -72,6 +72,26 @@ let _supabaseUrl: string | null = null;
 
 // Tier returned by wan-relay-publish response ('base' | 'member' | 'unknown')
 let _currentTier: string = 'unknown';
+
+// BP132 Yoke #21 A2: Truth-Always diagnostic event channel — publishPresence() failures
+// used to be a silent console.warn(); the renderer (and any support session) had no
+// visibility at all into a degraded mesh. Broadcast structured failure detail instead.
+export interface PeerServerDiagnosticEvent {
+  kind: 'presence_publish_failed' | 'presence_publish_ok';
+  message: string;
+  httpStatus?: number;
+  httpBody?: string;
+  base?: string;
+  at: string;
+}
+
+function broadcastDiagnosticEvent(event: PeerServerDiagnosticEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('peer-server:diagnostic', event);
+    }
+  }
+}
 
 /** Returns the membership tier last received from the WAN relay publish endpoint. */
 export function getCurrentTier(): string {
@@ -174,7 +194,18 @@ async function publishPresence(): Promise<void> {
   });
 
   const wanSid = identityFields.wan_soccerball_id ?? _wanSoccerballId;
-  if (!wanSid || wanSid.length !== 32) return;
+  if (!wanSid || wanSid.length !== 32) {
+    // BP132 Yoke #21 A3: this guard silently dropped every presence publish when
+    // wan_soccerball_id was missing/malformed — surface it instead of a silent return.
+    const failMsg = `presence publish skipped · wan_soccerball_id invalid (len=${wanSid?.length ?? 0}, expected 32)`;
+    console.error(`[PeerServer] ${failMsg}`);
+    broadcastDiagnosticEvent({
+      kind: 'presence_publish_failed',
+      message: failMsg,
+      at: new Date().toISOString(),
+    });
+    return;
+  }
 
   // MAMBA-beta3: Ed25519 Thorax PKI -- inject public_key_hex into peer capabilities
   let thoraxPublicKeyHex: string | undefined;
@@ -219,7 +250,11 @@ async function publishPresence(): Promise<void> {
   };
 
   const postBody = JSON.stringify(body);
-  const tryPublish = async (base: string): Promise<{ ok: boolean; tier?: string }> => {
+  // BP132 Yoke #21 A2: return HTTP status + response body text on failure so the caller
+  // can log/surface the real reason (edge-function rejection, 4xx validation error, network
+  // failure, etc.) instead of a single opaque boolean. `httpStatus` is undefined only for a
+  // true network-level failure (fetch threw before a response was received).
+  const tryPublish = async (base: string): Promise<{ ok: boolean; tier?: string; httpStatus?: number; httpBody?: string; error?: string }> => {
     try {
       const res = await fetch(`${base}/wan-relay-publish`, {
         method: 'POST',
@@ -227,28 +262,55 @@ async function publishPresence(): Promise<void> {
         body: postBody,
         signal: AbortSignal.timeout(10_000),
       });
-      if (!res.ok) return { ok: false };
+      if (!res.ok) {
+        let bodyText = '';
+        try { bodyText = await res.text(); } catch { /* ignore */ }
+        return { ok: false, httpStatus: res.status, httpBody: bodyText.slice(0, 1000) };
+      }
       try {
         const data = await res.json() as { ok?: boolean; tier?: string; peer_id?: string };
-        return { ok: true, tier: data.tier };
+        return { ok: true, tier: data.tier, httpStatus: res.status };
       } catch {
-        return { ok: true };
+        return { ok: true, httpStatus: res.status };
       }
-    } catch {
-      return { ok: false };
+    } catch (err: unknown) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   };
 
   let result = await tryPublish(relayBase);
+  let attemptedBase = relayBase;
   if (!result.ok) {
     result = await tryPublish(relayBaseFallback);
+    attemptedBase = relayBaseFallback;
   }
 
   if (result.ok) {
     if (result.tier) _currentTier = result.tier;
-    console.log(`[PeerServer] presence published: peer=${_peerId?.slice(0, 8)}… tier=${_currentTier}`);
+    console.log(`[PeerServer] presence published: peer=${_peerId?.slice(0, 8)}… tier=${_currentTier} httpStatus=${result.httpStatus ?? 'n/a'}`);
+    broadcastDiagnosticEvent({
+      kind: 'presence_publish_ok',
+      message: `presence published tier=${_currentTier}`,
+      httpStatus: result.httpStatus,
+      base: attemptedBase,
+      at: new Date().toISOString(),
+    });
   } else {
-    console.warn('[PeerServer] presence publish failed · WAN routing degraded');
+    // BP132 Yoke #21 A2: no more silent console.warn — log the exact HTTP status/body
+    // (or network error) from the wan-relay-publish edge function and emit an IPC event
+    // so the renderer / a support session can see WHY the mesh is degraded, not just THAT.
+    const failMsg = result.httpStatus
+      ? `presence publish failed · base=${attemptedBase} httpStatus=${result.httpStatus} body=${result.httpBody ?? ''}`
+      : `presence publish failed · base=${attemptedBase} network_error=${result.error ?? 'unknown'}`;
+    console.error(`[PeerServer] ${failMsg} · WAN routing degraded`);
+    broadcastDiagnosticEvent({
+      kind: 'presence_publish_failed',
+      message: failMsg,
+      httpStatus: result.httpStatus,
+      httpBody: result.httpBody,
+      base: attemptedBase,
+      at: new Date().toISOString(),
+    });
   }
 }
 

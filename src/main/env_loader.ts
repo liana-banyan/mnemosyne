@@ -16,9 +16,53 @@
 // substrate_api, etc.) reads from process.env at module-load time.
 
 import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { app } from 'electron';
+
+// BP132 Yoke #21 A1 (fix-forward): getEnvLoaderStatus() consumers (startup_diagnostic.ts,
+// diagnostic_mode/index.ts env_loader_status command) referenced this export before it
+// existed here, which broke `tsc -p tsconfig.main.json`. Track loader state as module
+// locals and expose it read-only. BLOOD RULE R16 still applies: only key NAMES and a
+// sha256 hash of the anon key are exposed, never raw values.
+let _loadedFromPath: string | null = null;
+let _loadedNames: string[] = [];
+let _skippedNames: string[] = [];
+let _pathsChecked: string[] = [];
+
+export interface EnvLoaderStatus {
+  supabaseUrl: string;
+  supabaseUrlSource: 'vault' | 'pre-existing-env' | 'unresolved';
+  anonKeySource: 'vault' | 'pre-existing-env' | 'unresolved';
+  anonKeyHash: string | null;
+  loadedFromPath: string | null;
+  loadedKeyNames: string[];
+  skippedKeyNames: string[];
+  pathsChecked: string[];
+}
+
+function resolveKeySource(names: string[]): 'vault' | 'pre-existing-env' | 'unresolved' {
+  if (names.some((n) => _loadedNames.includes(n))) return 'vault';
+  if (names.some((n) => process.env[n])) return 'pre-existing-env';
+  return 'unresolved';
+}
+
+/** Read-only snapshot of what the env loader resolved. Values never included — names/hashes only. */
+export function getEnvLoaderStatus(): EnvLoaderStatus {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  return {
+    supabaseUrl,
+    supabaseUrlSource: resolveKeySource(['SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL']),
+    anonKeySource: resolveKeySource(['SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY']),
+    anonKeyHash: anonKey ? createHash('sha256').update(anonKey).digest('hex').slice(0, 16) : null,
+    loadedFromPath: _loadedFromPath,
+    loadedKeyNames: _loadedNames,
+    skippedKeyNames: _skippedNames,
+    pathsChecked: _pathsChecked,
+  };
+}
 
 function loadWorkingKeysEnv(): void {
   const candidates: string[] = [
@@ -34,6 +78,7 @@ function loadWorkingKeysEnv(): void {
     // 5. User home fallback (~/.lb_substrate/WORKING_KEYS.env)
     resolve(homedir(), '.lb_substrate', 'WORKING_KEYS.env'),
   ].filter((p): p is string => Boolean(p));
+  _pathsChecked = candidates;
 
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
@@ -92,6 +137,9 @@ function loadWorkingKeysEnv(): void {
       (loadedNames.length > 0 ? ` (names: ${loadedNames.join(', ')})` : '') +
       (skippedNames.length > 0 ? ` | skipped ${skippedNames.length} (already set: ${skippedNames.join(', ')})` : '')
     );
+    _loadedFromPath = candidate;
+    _loadedNames = loadedNames;
+    _skippedNames = skippedNames;
     return; // First found vault wins
   }
 
