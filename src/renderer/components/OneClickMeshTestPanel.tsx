@@ -35,6 +35,7 @@ export interface OneClickRunResult {
   outcomes: QuestionOutcome[];
   dispatchMode: string;
   datasetLabel: string;
+  questionSource?: 'full_corpus_live' | 'bundled_subset';
 }
 
 type ProgressEvent =
