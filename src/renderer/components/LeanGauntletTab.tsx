@@ -23,6 +23,10 @@ interface PeerSummary {
   transport: 'lan' | 'wan';
   address?: string;
   phase: string;
+  // BP132 Yoke #22 task 2: grafted from PeerCueCard.tsx's `peer.displayName ?? peerId.slice(0,8)`
+  // pattern — getMeshState() peers carry `displayName` (MnemosynePeer.displayName, shared/federation-protocol.ts)
+  // but this panel's ad-hoc cast previously dropped it on the floor.
+  displayName?: string;
 }
 
 // ─── Lean Federation Panel ───────────────────────────────────────────────────
@@ -32,7 +36,9 @@ type TestMyBoxOverlay = {
   message: string;
 } | null;
 
-function LeanFederationPanel() {
+// BP132 Yoke #22 task 2: exported so the Package Store tab (CleanShell.tsx) can
+// mount this exact panel for its "Scan for Peers" affordance without rebuilding it.
+export function LeanFederationPanel() {
   const [expanded, setExpanded] = useState(true);
   const [scanState, setScanState] = useState<ScanState>('idle');
   const [lanPeers, setLanPeers] = useState<PeerSummary[]>([]);
@@ -113,7 +119,7 @@ function LeanFederationPanel() {
 
     try {
       const state = await window.amplify?.getMeshState?.() as {
-        peers: Array<{ peerId: string; transport: string; address?: string; phase?: string }>;
+        peers: Array<{ peerId: string; transport: string; address?: string; phase?: string; displayName?: string }>;
         relayConnected: boolean;
         ownPeerId: string;
       } | undefined;
@@ -128,6 +134,7 @@ function LeanFederationPanel() {
             transport: p.transport === 'wan' ? 'wan' : 'lan',
             address: p.address,
             phase: p.phase ?? 'discovered',
+            displayName: p.displayName,
           };
           if (entry.transport === 'lan') lan.push(entry);
           else wan.push(entry);
@@ -274,7 +281,8 @@ function LeanFederationPanel() {
                   color: '#94a3b8',
                 }}>
                   <span>{p.transport === 'lan' ? '🔵 LAN' : '🌐 WAN'}</span>
-                  <span style={{ fontFamily: 'monospace' }}>{p.id.slice(0, 12)}</span>
+                  <span style={{ fontWeight: 700, color: '#e2e8f0' }}>{p.displayName ?? p.id.slice(0, 8)}</span>
+                  <span style={{ fontFamily: 'monospace', color: '#475569', fontSize: 10 }}>{p.id.slice(0, 12)}</span>
                   {p.address && <span style={{ color: '#475569' }}>{p.address}</span>}
                   <span style={{
                     fontSize: 10,
