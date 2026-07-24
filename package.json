@@ -132,6 +132,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "resources/mmlu_pro_stub",
+        "to": "mmlu_pro_stub",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "publish": {

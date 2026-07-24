@@ -4660,6 +4660,94 @@ function registerIPCHandlers(): void {
     }
   });
 
+  // BP132 Yoke #22 — Diagnostic Mode UI (Help tab). Local-permission-gated status +
+  // TTL grant/revoke for the BP099-K16 remote-hand poller (6-command READ_ONLY allowlist).
+  safeHandle('diagnostic-mode:get-status', async () => {
+    const mod = await import('./diagnostic_mode');
+    return {
+      pollerStarted: mod.pollerStarted,
+      lastPollAt: mod.pollerLastPollAt,
+      lastError: mod.pollerLastError,
+      permissionActive: mod.isPermissionActive(),
+    };
+  });
+  safeHandle('diagnostic-mode:activate-permission', async (_event, ttlMinutes: number) => {
+    const mod = await import('./diagnostic_mode');
+    const ttl = Math.max(1, Math.min(60, Math.floor(ttlMinutes || 10)));
+    mod.activateLocalPermission(ttl);
+    return { ok: true, ttlMinutes: ttl };
+  });
+  safeHandle('diagnostic-mode:revoke-permission', async () => {
+    const mod = await import('./diagnostic_mode');
+    mod.revokeLocalPermission();
+    return { ok: true };
+  });
+
+  // BP132 Yoke #21 D9 / Yoke #22 one-click staged test — see src/main/mesh_test/one_click_mmlu_pro.ts
+  // for the full Truth-Always scope note (real ground-truth scoring, local dispatch today,
+  // WAN-distributed dispatch is the flagged follow-up).
+  safeHandle('mesh-test:run-one-click', async (_event, config: { ollamaBaseUrl?: string; model?: string }) => {
+    try {
+      const { runOneClickMmluProTest } = await import('./mesh_test/one_click_mmlu_pro');
+      const result = await runOneClickMmluProTest(config ?? {});
+      return { ok: true, result };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  safeHandle('mesh-test:is-active', async () => {
+    const { isOneClickRunActive } = await import('./mesh_test/one_click_mmlu_pro');
+    return { active: isOneClickRunActive() };
+  });
+
+  // BP132 Yoke #22 Addendum A — cue_card_templates read (data-driven CueDeckCardRenderer).
+  // Schema confirmed live via anon-key REST probe (2026-07-23): id, project_id,
+  // initiative_slug, template_type, title, subtitle, body_text, hashtags, background_type,
+  // background_value, accent_color, card_style, qr_position, qr_size, twitter_text,
+  // linkedin_text, facebook_text, is_active, sort_order, created_at, updated_at,
+  // linked_deck_card_id, clicks_per_frame_unlock, total_clicks_for_unlock,
+  // social_unlock_type, user_id. Read-only, anon-key-permitted (RLS allows select).
+  safeHandle('cue-cards:get-template', async (_event, req: { id?: string; initiativeSlug?: string }) => {
+    const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').replace(/\/$/, '');
+    const anonKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
+    if (!supabaseUrl || !anonKey) return { ok: false, error: 'Supabase config not available' };
+    if (!req.id && !req.initiativeSlug) return { ok: false, error: 'id or initiativeSlug is required' };
+    try {
+      const qs = req.id
+        ? `id=eq.${encodeURIComponent(req.id)}`
+        : `initiative_slug=eq.${encodeURIComponent(req.initiativeSlug!)}`;
+      const res = await fetch(
+        `${supabaseUrl}/rest/v1/cue_card_templates?${qs}&limit=1`,
+        { headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` } },
+      );
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+      const rows = await res.json();
+      if (!Array.isArray(rows) || rows.length === 0) return { ok: false, error: 'not_found' };
+      return { ok: true, template: rows[0] };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  // BP132 Yoke #22 Addendum A — Mints an ip_ledger_entries
+  // row (via stampCertifyConnection, which mirrors this file's existing stampCertify
+  // call pattern above) for a new member/peer connection, so the renderer can build
+  // a fresh per-connection QR from the returned entry_id.
+  safeHandle('ip-ledger:stamp-connection', async (_event, req: { peer_id: string; peer_display_name?: string; connection_method: string }) => {
+    try {
+      const { stampCertifyConnection } = await import('./ip_ledger/stamp_certify');
+      const result = await stampCertifyConnection({
+        peer_id: req.peer_id,
+        peer_display_name: req.peer_display_name,
+        connection_method: (req.connection_method as any) ?? 'federation_connect_peer',
+      });
+      return result;
+    } catch (err) {
+      return { ok: false, error: (err as Error).message, entry_id: '', ring_bearer_peer_id: '', payload_hash_hex: '', stamped_at: new Date().toISOString() };
+    }
+  });
+
   safeHandle('ip-ledger:get-entry-proof', async (_event, entryId: string) => {
     try {
       const { getRingBearerIdentity } = await import('./ip_ledger/ring_bearer_keygen');
@@ -7053,6 +7141,20 @@ app.whenReady().then(async () => {
   // health_snapshot / benchmark_run / noop_test)
   {
     startMicBroadcastListener(getStablePeerId(), app.getVersion());
+  }
+
+  // BP132 Yoke #22 (Help tab Diagnostic Mode UI) — startDiagnosticPoller() (BP099-K16,
+  // the 6-command READ_ONLY remote-hand allowlist) was fully built but never called
+  // anywhere in src/, confirmed by repo-wide search (same pattern as Yoke #21 A1's
+  // startRelayAnswerPoller gap). Safe to always start: the poller itself is a no-op
+  // 60s Supabase check-in until a local user explicitly grants a TTL'd permission
+  // window via the new diagnostic-mode:activate-permission IPC below — it does not
+  // execute anything on its own.
+  {
+    import('./diagnostic_mode').then(({ startDiagnosticPoller }) => {
+      startDiagnosticPoller();
+      console.log('[BP132 Yoke22] diagnostic mode poller started (idle until local permission granted)');
+    }).catch((e) => console.error('[BP132 Yoke22] diagnostic poller start failed (non-fatal):', e));
   }
 
   // v0.4.0 BP083 SEG-5 (carried forward v0.4.2): Post-install restart prompt (version-bump detection)

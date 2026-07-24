@@ -17,6 +17,7 @@ import { UpdateToast } from './components/UpdateToast';
 import { UpdateModal } from './components/UpdateModal';
 import { MnemosyneTabView } from './components/MnemosyneTabView';
 import { LeanShell } from './components/LeanShell';
+import { CleanShell } from './components/CleanShell';
 import { AMPLIFYDashboard } from './components/AMPLIFYDashboard';
 import { ClipboardCaptureModal } from './components/ClipboardCaptureModal';
 import { ModelPullDialog } from './components/ModelPullDialog';
@@ -36,6 +37,7 @@ import { canAccessHelm, canAccessAmbassador, canAccessProject } from '../shared/
 type View =
   | 'overlay'
   | 'dashboard'
+  | 'clean-shell'
   | 'hearth-conjunction'
   | 'federation'
   | 'helm'
@@ -45,6 +47,11 @@ type View =
 function getInitialView(): View {
   const hash = window.location.hash;
   if (hash === '#/dashboard') return 'dashboard';
+  // BP132 Yoke #22 — clean 7-tab shell (CleanShell.tsx), reachable for testing at
+  // #/clean-shell without touching the production Lean/Advanced default at
+  // #/dashboard. Not linked from any default-path UI yet — Founder/Bishop opens it
+  // directly by hash while the clean-shell-v0.9 branch is under review.
+  if (hash === '#/clean-shell') return 'clean-shell';
   if (hash === '#/hearth-conjunction') return 'hearth-conjunction';
   if (hash === '#/federation') return 'federation';
   if (hash === '#/helm') return 'helm';
@@ -360,6 +367,26 @@ export default function App() {
             >×</button>
           </div>
         )}
+      </ErrorBoundary>
+    );
+  }
+
+  // BP132 Yoke #22 — CleanShell test route (#/clean-shell). Additive-only: does not
+  // touch the 'dashboard' view above, so the production Lean/Advanced default is
+  // unaffected while this fork is under review.
+  if (view === 'clean-shell') {
+    return (
+      <ErrorBoundary label="Clean Shell (BP132 Yoke #22)">
+        <CleanShell
+          currentMode={mode}
+          onModeChange={handleModeChange}
+          onClose={() => window.close()}
+          authState={authState}
+          onExitToLean={() => { window.location.hash = '#/dashboard'; window.location.reload(); }}
+        />
+        <UpdateToast />
+        <UpdateModal />
+        <ClipboardCaptureModal />
       </ErrorBoundary>
     );
   }
