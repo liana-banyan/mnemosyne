@@ -61,6 +61,18 @@ export interface CanonicalPlowMcConfig {
   specialistKeys?: SpecialistKeys;
 }
 
+/** BP133 Yoke #27: per-voter diagnostic detail, always computed (cheap: just string lengths
+ *  and a status tag) so the trace can always say WHY a voter came back null instead of just
+ *  showing "null" -- Truth-Always per Yoke #27's explicit requirement. Raw response TEXT is
+ *  only included when MNEMO_DEBUG_LOG_PROMPTS=1 (same debug flag as Task 1's outbound-prompt
+ *  logging) to avoid ballooning every persisted receipt with full Ollama output by default. */
+export interface VoterDiagnostic {
+  temperature: number;
+  status: 'empty_response' | 'parsed_ok' | 'parse_failed';
+  responseChars: number;
+  rawResponse?: string; // present only when MNEMO_DEBUG_LOG_PROMPTS=1
+}
+
 export interface CanonicalPlowMcResult {
   questionId: string;
   domain: string;
@@ -70,6 +82,10 @@ export interface CanonicalPlowMcResult {
    *  distinction rather than coercing null to a random/default letter. */
   chosenLetter: string | null;
   voterLetters: (string | null)[];
+  /** BP133 Yoke #27: makes a null voterLetter diagnosable -- was Ollama's response empty (OOM/
+   *  concurrency hypothesis) or non-empty-but-unparseable (format-instruction/prompt-length
+   *  hypothesis)? See runCanonicalPlowMcAnswer's voter loop. */
+  voterDiagnostics: VoterDiagnostic[];
   concordance: ConcordanceClass;
   bmvScore: number;
   gateOutcomes: GateOutcome[];
@@ -185,19 +201,56 @@ export async function runCanonicalPlowMcAnswer(
   // ── MC Three Fates — 3-voter LETTER arbitration (the one stage that cannot be reused
   //    unchanged from the free-text pipeline; everything upstream/downstream of this is
   //    identical machinery to canonical_pipeline.ts) ─────────────────────────
+  // BP133 Yoke #27 Task 27.1 secondary mitigation: hard-trimmed from 5 sources x 400 chars to
+  // 3 x 300. A long facts block prepended before the question can push gemma4:12b to ignore
+  // the trailing "reply with ONLY the single letter" instruction, and every char here adds to
+  // per-question latency (Task 27.2). Not the confirmed root cause (that was the concurrency
+  // bug above), but a real secondary risk called out in the Yoke, cheap to fix at the same time.
   const factsForArbitration = postFurnace.length > 0 ? postFurnace : postMiner.slice(0, 3);
   const factsContext = factsForArbitration
-    .slice(0, 5)
-    .map((c, i) => `[Source ${i + 1} -- ${c.source}]: ${c.content.slice(0, 400)}`)
+    .slice(0, 3)
+    .map((c, i) => `[Source ${i + 1} -- ${c.source}]: ${c.content.slice(0, 300)}`)
     .join('\n\n');
   const arbitrationPrompt = buildMcArbitrationPrompt(factsContext, mcPromptWithSubstrate);
+  const debugPromptLoggingEnabled = process.env.MNEMO_DEBUG_LOG_PROMPTS === '1';
 
-  const voterResponses = await Promise.all(
-    MC_VOTER_TEMPERATURES.map((temp) => callOllama(arbitrationPrompt, ollamaBaseUrl, model, temp)),
-  );
-  const voterLetters = voterResponses.map((r) => (r ? parseLetterLocal(r, choiceCount) : null));
+  // BP133 Yoke #27 Task 27.1: SEQUENTIAL, not Promise.all. Root cause confirmed by Bishop's
+  // read of the first live A/C/B run's plow_trace: 3 CONCURRENT gemma4:12b generations on a
+  // single 6GB-VRAM GPU produced voter_letters:[null,null,null] on every question (specialists
+  // upstream already stagger sequentially via FIREGUARD_STAGGER_MS; this was the one stage that
+  // did not). One gemma4:12b call at a time is exactly what the single-shot WAN path already
+  // proves works on this hardware -- so the 3 voters now run one after another, same as that
+  // proven path, just 3 times at different temperatures.
+  const voterLetters: (string | null)[] = [];
+  const voterDiagnostics: VoterDiagnostic[] = [];
+  for (const temp of MC_VOTER_TEMPERATURES) {
+    const raw = await callOllama(arbitrationPrompt, ollamaBaseUrl, model, temp);
+    if (raw === null || raw.trim().length === 0) {
+      voterLetters.push(null);
+      voterDiagnostics.push({
+        temperature: temp,
+        status: 'empty_response',
+        responseChars: raw?.length ?? 0,
+        ...(debugPromptLoggingEnabled ? { rawResponse: raw ?? '' } : {}),
+      });
+      continue;
+    }
+    const letter = parseLetterLocal(raw, choiceCount);
+    voterLetters.push(letter);
+    voterDiagnostics.push({
+      temperature: temp,
+      status: letter !== null ? 'parsed_ok' : 'parse_failed',
+      responseChars: raw.length,
+      ...(debugPromptLoggingEnabled ? { rawResponse: raw } : {}),
+    });
+  }
   const { concordance, chosenLetter } = computeLetterConcordance(voterLetters);
   onProgress?.('three-fates-mc-done');
+  if (debugPromptLoggingEnabled) {
+    console.log(
+      `[plow_mc_answerer] arbitration prompt (${arbitrationPrompt.length} chars): ${arbitrationPrompt}`,
+    );
+  }
 
   // ── Gates + BMV (same formula as the free-text pipeline for apples-to-apples receipts) ──
   const latencyMs = Date.now() - startMs;
@@ -206,13 +259,21 @@ export async function runCanonicalPlowMcAnswer(
     postFurnace.length, concordance, specialistsUsed.length, latencyMs,
   );
   const gateOutcomes = evaluateGates(postFurnace.length, bmvScore, concordance, latencyMs);
-  const anyGateFailed = gateOutcomes.some((g) => !g.passed);
+  // BP133 Yoke #27 Task 27.2: G4_LAT is recorded (still visible in gateOutcomes/the receipt,
+  // still contributes to the free-text pipeline's shared evaluateGates() output verbatim) but
+  // is advisory-only HERE -- it never by itself triggers an Andon retry. The plow legitimately
+  // takes ~150-220s per question; retrying widened-operators solely because a question was
+  // slow would only make it slower with zero accuracy benefit, and a correct-but-slow answer
+  // must not be treated as a failure to fix. Note: G4_LAT was never the actual cause of
+  // abstention (chosenLetter comes only from voter concordance, not from gates) -- this change
+  // only stops it from wastefully triggering Andon widening on an otherwise-healthy pass.
+  const anyGateFailedExcludingLatency = gateOutcomes.some((g) => g.gate !== 'G4_LAT' && !g.passed);
 
   // ── Andon retry (Condition C only). Condition A/B pass andonEnabled=false and take
   //    whatever this single pass produced, win, lose, or abstain -- per Task 2.2's Truth-
   //    Always requirement, a loss here must be returned honestly, not silently retried away
   //    under conditions the Founder asked to measure as single-pass. ─────────────────────
-  if (anyGateFailed && andonEnabled && andonRetry < MAX_ANDON_RETRIES) {
+  if (anyGateFailedExcludingLatency && andonEnabled && andonRetry < MAX_ANDON_RETRIES) {
     const report = runDetectiveTeam(gateOutcomes, candidatesRaw, postMiner.length, postFurnace.length, effectiveOperators);
     onProgress?.(`andon-trigger:${andonRetry + 1}`);
     if (report.wideningApplied && report.additionalOperators.length > 0) {
@@ -235,13 +296,15 @@ export async function runCanonicalPlowMcAnswer(
   const traceSummary =
     `specialists=[${specialistsUsed.join(',')}] raw=${candidatesRaw} postMiner=${postMiner.length} ` +
     `postFurnace=${postFurnace.length} voters=[${voterLetters.map((l) => l ?? '-').join(',')}] ` +
-    `concordance=${concordance} bmv=${bmvScore} andonRetries=${andonRetry}`;
+    `voterStatus=[${voterDiagnostics.map((v) => v.status).join(',')}] ` +
+    `concordance=${concordance} bmv=${bmvScore} andonRetries=${andonRetry} latencyGateAdvisoryOnly=true`;
 
   return {
     questionId,
     domain,
     chosenLetter,
     voterLetters,
+    voterDiagnostics,
     concordance,
     bmvScore,
     gateOutcomes,
