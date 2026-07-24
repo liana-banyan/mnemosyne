@@ -6003,6 +6003,10 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 andon_retries: plowResult.andonRetries,
                 eblets_written: plowResult.ebletsWritten,
                 voter_letters: plowResult.voterLetters,
+                // BP133 Yoke #27: per-voter diagnosis (empty_response vs parse_failed vs
+                // parsed_ok) so a null voter letter is never just "null" in the receipt --
+                // Truth-Always requirement from the Yoke #27 root-cause investigation.
+                voter_diagnostics: plowResult.voterDiagnostics,
                 latency_ms: plowResult.latencyMs,
                 trace_summary: plowResult.traceSummary,
                 condition: plowAndonEnabled ? 'C_warm_andon' : (substrateEnabled ? 'B_warm_single_pass' : 'A_cold'),
