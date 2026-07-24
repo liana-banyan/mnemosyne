@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { app } from 'electron';
 import { getStablePeerId } from '../federation/peer-discovery';
 import { SIG_HEX_LEN } from '../thorax/sign_verify';
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 
 // ─── Module-level state (consumed by startup_diagnostic + relay_answer_poller_state command) ──
 
@@ -97,8 +98,8 @@ const DIAGNOSTIC_ALLOWLIST: Record<string, () => Promise<string>> = {
 
   peer_presence_self: async () => {
     try {
-      const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-      const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+      const supabaseUrl = getSupabaseUrl();
+      const anonKey = getAnonKey();
       if (!supabaseUrl || !anonKey) return JSON.stringify({ error: 'Supabase not configured' });
       const peerId = getStablePeerId();
       const url = `${supabaseUrl}/rest/v1/peer_presence?peer_id=eq.${encodeURIComponent(peerId)}&limit=1`;
@@ -114,8 +115,8 @@ const DIAGNOSTIC_ALLOWLIST: Record<string, () => Promise<string>> = {
 
   bonfire_lit_self: async () => {
     try {
-      const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-      const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+      const supabaseUrl = getSupabaseUrl();
+      const anonKey = getAnonKey();
       if (!supabaseUrl || !anonKey) return JSON.stringify({ error: 'Supabase not configured' });
       const peerId = getStablePeerId();
       const url = `${supabaseUrl}/rest/v1/bonfire_lit_state?peer_id=eq.${encodeURIComponent(peerId)}&order=created_at.desc&limit=10`;
@@ -261,8 +262,8 @@ let pollerTimer: NodeJS.Timeout | null = null;
 let lastAuditSig: string | undefined = undefined;
 
 async function pollOnce(peerId: string): Promise<void> {
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  const supabaseUrl = getSupabaseUrl();
+  const anonKey = getAnonKey();
   if (!supabaseUrl || !anonKey) {
     pollerLastError = 'Supabase not configured';
     return;

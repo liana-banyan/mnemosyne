@@ -16,11 +16,14 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { getActiveModel } from '../ollama_model/model_picker';
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 
 // ---- Env constants ----------------------------------------------------------
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? '';
+// BP132 Yoke #23 Task 6: resolved via shared helper so a stranger's install (no
+// WORKING_KEYS.env) still authenticates instead of silently sending an empty string.
+const SUPABASE_URL = getSupabaseUrl();
+const SUPABASE_ANON_KEY = getAnonKey();
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
 const OLLAMA_TIMEOUT_MS = 120_000;
 

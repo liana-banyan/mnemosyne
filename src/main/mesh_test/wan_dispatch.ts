@@ -36,6 +36,7 @@
 // the 2026-07-06 rows was found in either this repo or LianaBanyanPlatform).
 
 import { getStablePeerId } from '../federation/peer-discovery';
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 import type { MmluProQuestion } from './one_click_mmlu_pro';
 
 export interface WanPeerInfo {
@@ -69,8 +70,10 @@ interface SupabaseConfig {
 }
 
 function resolveSupabaseConfig(): SupabaseConfig | null {
-  const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
-  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  // BP132 Yoke #23 Task 6: use the shared getAnonKey()/getSupabaseUrl() helpers so WAN
+  // dispatch works on a stranger's install with no WORKING_KEYS.env, not just a dev machine.
+  const url = getSupabaseUrl();
+  const anonKey = getAnonKey();
   if (!url || !anonKey) return null;
   return { url, anonKey };
 }

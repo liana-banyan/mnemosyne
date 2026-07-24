@@ -5,6 +5,8 @@
  * Canon ref: SEG-CL-delta -- 10 base Marks * corroboration_score per contribution
  */
 
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
+
 // ---- Types ------------------------------------------------------------------
 
 export interface AttributionParams {
@@ -20,8 +22,9 @@ export interface AttributionParams {
 
 // ---- Constants --------------------------------------------------------------
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? '';
+// BP132 Yoke #23 Task 6: shared helper so a stranger's install still authenticates.
+const SUPABASE_URL = getSupabaseUrl();
+const SUPABASE_ANON_KEY = getAnonKey();
 const BASE_MARKS = 10;
 
 // ---- Public API -------------------------------------------------------------

@@ -12,6 +12,7 @@
 
 import type { DatabaseConfig } from './substrate_reader';
 import ws from 'ws';
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 
 // ─── Types ────────────────────────────────────────────────────────────────────────
 
@@ -150,8 +151,8 @@ async function buildCoreMicLivePackage(): Promise<CourtPackage> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
-    const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+    const url = getSupabaseUrl();
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
     if (!url || !key) throw new Error('[court_packages] Supabase env vars not set for CORE_MIC_LIVE');
     const supabase = createClient(url, key, { auth: { persistSession: false }, realtime: { transport: ws as unknown as typeof WebSocket } });
     const { data: rows, error } = await supabase

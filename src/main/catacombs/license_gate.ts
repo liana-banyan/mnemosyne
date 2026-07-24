@@ -7,6 +7,8 @@
  * - canon_30_day_50_percent_commercial_license_offer_letter_campaign_ai_companies_sspl_section_13_forcing_function_bp087
  */
 
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
+
 // ---- Types ------------------------------------------------------------------
 
 export type MemberTier =
@@ -26,8 +28,9 @@ export interface AccessResult {
 
 // ---- Constants --------------------------------------------------------------
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? '';
+// BP132 Yoke #23 Task 6: shared helper so a stranger's install still authenticates.
+const SUPABASE_URL = getSupabaseUrl();
+const SUPABASE_ANON_KEY = getAnonKey();
 const OFFER_REF = 'canon_30_day_50_percent_commercial_license_offer';
 
 // ---- Helpers ----------------------------------------------------------------

@@ -16,6 +16,7 @@ import { ipcMain, BrowserWindow, Notification, app } from 'electron';
 import { runQuorumCheck } from './keys_engines/quorum_check';
 import { getCircleMembership } from './keys_engines/circle_membership';
 import { verifySocceriKey } from './keys_engines/key_verifier';
+import { getAnonKey, getSupabaseUrl } from './shared/anon_key';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -293,11 +294,11 @@ export class AutoUpdateManager {
       }
       const peerAddresses = circle.peers.map((p) => p.address);
 
-      const ledgerUrl = `${process.env.SUPABASE_URL}/rest/v1/frontier_reputation_log?update_version=eq.${encodeURIComponent(version)}&select=claimed_hash&order=timestamp.desc&limit=1`;
+      const ledgerUrl = `${getSupabaseUrl()}/rest/v1/frontier_reputation_log?update_version=eq.${encodeURIComponent(version)}&select=claimed_hash&order=timestamp.desc&limit=1`;
       let ledgerHash = '';
       try {
         const ledgerRes = await fetch(ledgerUrl, {
-          headers: { apikey: process.env.SUPABASE_ANON_KEY ?? '' },
+          headers: { apikey: getAnonKey() },
         });
         const rows = await ledgerRes.json() as Array<{ claimed_hash: string }>;
         ledgerHash = rows[0]?.claimed_hash ?? payloadHash;
@@ -310,11 +311,11 @@ export class AutoUpdateManager {
       if (!quorum.passed) {
         const frameId = process.env.LB_FRAME_ID ?? 'unknown';
         await fetch(
-          `${process.env.SUPABASE_URL}/rest/v1/frontier_reputation_log`,
+          `${getSupabaseUrl()}/rest/v1/frontier_reputation_log`,
           {
             method: 'POST',
             headers: {
-              apikey: process.env.SUPABASE_ANON_KEY ?? '',
+              apikey: getAnonKey(),
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({

@@ -21,6 +21,7 @@
 
 import { app } from 'electron';
 import { getStablePeerId } from '../federation/peer-discovery';
+import { getAnonKey as getSharedAnonKey } from '../shared/anon_key';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -28,7 +29,19 @@ const SUPABASE_URL = 'https://ruuxzilgmuwddcofqecc.supabase.co';
 const LB_EDGE_BASE = `${SUPABASE_URL}/functions/v1`;
 const PHANTOM_PREFIX = '49f3e597';
 const HEARTBEAT_MS = 5 * 60 * 1000; // 5 minutes -- stays under wan-relay-publish rate limit
-const CAI_VERSION = '0.8.6'; // BP099 K10 CAI semantic version
+
+// BP133 Yoke #23 Task 7: single version source. This was a hardcoded '0.8.6' that had
+// drifted well behind package.json (0.8.29), so every beacons-lit handshake and status
+// report published a version number that matched nothing else in the build. app.getVersion()
+// reads the packaged app's version (package.json when running from source), which makes
+// package.json the one number to bump per release.
+function getCaiVersion(): string {
+  try {
+    return app.getVersion();
+  } catch {
+    return '0.0.0-unknown';
+  }
+}
 
 // ─── Module State ─────────────────────────────────────────────────────────────
 
@@ -57,13 +70,17 @@ function isPhantomPeer(peerId: string): boolean {
   return peerId.startsWith(PHANTOM_PREFIX);
 }
 
-// SUPABASE_ANON_KEY is the PUBLISHABLE (anon) key — intentionally safe to bundle per Supabase spec.
-// env_loader populates this at runtime from WORKING_KEYS.env; this constant is the shipped fallback
-// for packaged builds where env_loader's vault file may not be present.
-const SUPABASE_ANON_KEY_FALLBACK = 'sb_publishable_2KjyBXCIPaUUPiFL-p0Srg_EQj3d5FM';
-
+// BP132 Yoke #23 Task 6: this module originated the SUPABASE_ANON_KEY_FALLBACK pattern
+// (publishable key, intentionally safe to bundle per Supabase spec -- env_loader populates
+// process.env.SUPABASE_ANON_KEY at runtime from WORKING_KEYS.env when present; the fallback
+// covers packaged builds where that vault file is absent). It has been promoted to
+// ../shared/anon_key.ts so every other Supabase caller in the codebase gets the same
+// stranger-install-safe fallback instead of independently reading process.env and
+// authenticating with an empty string. This local getAnonKey() now just layers the
+// session-scoped _anonKey override (set via enable()'s opts.anonKey) on top of the shared
+// resolver.
 function getAnonKey(): string {
-  return _anonKey ?? process.env.SUPABASE_ANON_KEY ?? SUPABASE_ANON_KEY_FALLBACK;
+  return _anonKey ?? getSharedAnonKey();
 }
 
 async function callHandshake(peerId: string): Promise<void> {
@@ -80,7 +97,7 @@ async function callHandshake(peerId: string): Promise<void> {
     headers['Authorization'] = `Bearer ${_accessToken}`;
   }
 
-  const appVersion = app.isReady() ? app.getVersion() : '0.1.21';
+  const appVersion = getCaiVersion();
 
   const res = await fetch(`${LB_EDGE_BASE}/beacons-lit-handshake`, {
     method: 'POST',
@@ -90,7 +107,7 @@ async function callHandshake(peerId: string): Promise<void> {
       context_type: 'priming',
       sync_status: 'ok',
       app_version: appVersion,
-      cai_version: CAI_VERSION,
+      cai_version: getCaiVersion(),
     }),
   });
 
@@ -158,7 +175,7 @@ export async function enable(): Promise<void> {
     );
   }, HEARTBEAT_MS);
 
-  console.log(`[BeaconsLit] enabled -- peer=${peerId} cai=${CAI_VERSION}`);
+  console.log(`[BeaconsLit] enabled -- peer=${peerId} cai=${getCaiVersion()}`);
 }
 
 /**
@@ -190,7 +207,7 @@ export function getStatus(): BeaconsLitStatus {
     enabled: _enabled,
     initialized: _initialized,
     peer_id: getStablePeerId(),
-    cai_version: CAI_VERSION,
+    cai_version: getCaiVersion(),
     last_handshake_at: _lastHandshakeAt,
     error: _lastError,
   };

@@ -39,6 +39,7 @@ import { SubstrateAPIServer, API_PORT } from './substrate_api';
 import { FederationClient } from './federation_client';
 import { getMoneyPennyURL, getLocalIPs } from './mobile_pwa';
 import { AutoUpdateManager, type UpdateState } from './auto_updater';
+import { getAnonKey, getSupabaseUrl } from './shared/anon_key';
 // M21: Automatic update scheduler (Block 2-6)
 import {
   registerAutoUpdateIPC,
@@ -1537,8 +1538,8 @@ function scheduleAutoPrepareIdle(): void {
 // BP085 — handleMembershipReturn (called from mnemosynec:// deep-link).
 // NEVER logs token value (BP085 BLOOD).
 async function handleMembershipReturn(memberId: string, token: string): Promise<void> {
-  const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = getSupabaseUrl();
+  const supabaseKey = getAnonKey();
 
   const notifyRenderer = (payload: { ok: boolean; member_id?: string; error?: string }) => {
     const wins = [dashboardWindow, hearthConjunctionWindow, overlayWindow];
@@ -2991,8 +2992,8 @@ function registerIPCHandlers(): void {
 
   function startFrontierHeartbeat(accessToken: string, peerId: string): void {
     stopFrontierHeartbeat();
-    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+    const supabaseUrl = getSupabaseUrl();
+    const anonKey = getAnonKey();
     if (!supabaseUrl || !anonKey) return;
     const hbUrl = `${supabaseUrl.replace(/\/$/, '')}/functions/v1/frontier-node-heartbeat`;
     frontierHeartbeatTimer = setInterval(async () => {
@@ -3021,8 +3022,8 @@ function registerIPCHandlers(): void {
   safeHandle('lb:register-frontier-node', async () => {
     const session = getLBSession();
     if (!session) return { ok: false, error: 'LB Account not linked. Link first.' };
-    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+    const supabaseUrl = getSupabaseUrl();
+    const anonKey = getAnonKey();
     if (!supabaseUrl || !anonKey) return { ok: false, error: 'Platform config not available.' };
     try {
       const { getStablePeerId } = await import('./federation/peer-discovery');
@@ -3047,8 +3048,8 @@ function registerIPCHandlers(): void {
     stopFrontierHeartbeat();
     const session = getLBSession();
     if (!session) { _frontierNodeId = null; return { ok: true }; }
-    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+    const supabaseUrl = getSupabaseUrl();
+    const anonKey = getAnonKey();
     if (!supabaseUrl || !anonKey) { _frontierNodeId = null; return { ok: true }; }
     try {
       const { getStablePeerId } = await import('./federation/peer-discovery');
@@ -3205,10 +3206,7 @@ function registerIPCHandlers(): void {
       'https://ruuxzilgmuwddcofqecc.supabase.co'
     ).replace(/\/$/, '');
     const anonKey =
-      process.env.SUPABASE_ANON_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      process.env.SUPABASE_PUBLISHABLE_KEY ||
-      '';
+      getAnonKey();
     if (!anonKey) {
       return { ok: false, error: 'Supabase key not configured' };
     }
@@ -3322,9 +3320,9 @@ function registerIPCHandlers(): void {
     > => {
       const peerId = getStablePeerId();
       const supabaseUrl =
-        process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+        getSupabaseUrl();
       const anonKey =
-        process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+        getAnonKey();
 
       // Cooldown gate — skip silently if Supabase not configured
       if (supabaseUrl && anonKey) {
@@ -3390,9 +3388,9 @@ function registerIPCHandlers(): void {
       { invite_token, source }: { invite_token: string; source: string },
     ): Promise<{ ok: boolean; error?: string }> => {
       const supabaseUrl =
-        process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+        getSupabaseUrl();
       const anonKey =
-        process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+        getAnonKey();
       if (!supabaseUrl || !anonKey) {
         return { ok: false, error: 'no_supabase_config' };
       }
@@ -3603,8 +3601,8 @@ function registerIPCHandlers(): void {
   // Calls Supabase edge function create-membership-checkout ? returns Stripe Checkout URL
   // Renderer then calls shell.openExternal with the returned URL (never exposed here)
   safeHandle('membership:create-checkout', async (_event, autoRenew: boolean) => {
-    const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const supabaseUrl = getSupabaseUrl();
+    const supabaseKey = getAnonKey();
 
     if (!supabaseUrl || !supabaseKey) {
       console.warn('[membership] Supabase URL/key not configured ? falling back to web join page');
@@ -3643,8 +3641,8 @@ function registerIPCHandlers(): void {
 
   // -- membership.verifyStatus (BP078 Scope 2) ----------------------------------
   safeHandle('membership-verify-status', async () => {
-    const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const supabaseUrl = getSupabaseUrl();
+    const supabaseKey = getAnonKey();
 
     if (!supabaseUrl || !supabaseKey) {
       return { ok: false, membership_active: false, error: 'not_configured' };
@@ -4137,7 +4135,7 @@ function registerIPCHandlers(): void {
 
   safeHandle('membership:start-checkout', async (_event: unknown, args: { userJwt?: string } = {}) => {
     const { createMembershipCheckoutSession } = await import('./membership/checkout_session');
-    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+    const supabaseUrl = getSupabaseUrl();
     const result = await createMembershipCheckoutSession(supabaseUrl, args.userJwt ?? '');
     if (result.checkoutUrl) {
       shell.openExternal(result.checkoutUrl).catch(() => {});
@@ -4336,7 +4334,7 @@ function registerIPCHandlers(): void {
     _event,
     payload: { userId: string; reason: string; metadata?: Record<string, unknown> },
   ) => {
-    const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
+    const supabaseUrl = getSupabaseUrl();
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
     if (!supabaseUrl || !serviceRoleKey) {
       console.warn('[feather:earn-black] Supabase credentials not present, skipping durable feather record.');
@@ -4552,8 +4550,8 @@ function registerIPCHandlers(): void {
   // Bishop applies I12 migration before these handlers have live data.
 
   safeHandle('ip-ledger:get-entries', async (_event, ringBearerId: string) => {
-    const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').replace(/\/$/, '');
-    const anonKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
+    const supabaseUrl = getSupabaseUrl();
+    const anonKey = getAnonKey();
     if (!supabaseUrl || !anonKey) return { ok: false, error: 'Supabase config not available', entries: [] };
     try {
       const qs = ringBearerId ? `ring_bearer_id=eq.${encodeURIComponent(ringBearerId)}&` : '';
@@ -4570,8 +4568,8 @@ function registerIPCHandlers(): void {
   });
 
   safeHandle('peer-key:read', async () => {
-    const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').replace(/\/$/, '');
-    const anonKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
+    const supabaseUrl = getSupabaseUrl();
+    const anonKey = getAnonKey();
     const peerId = getStablePeerId();
     if (!supabaseUrl || !anonKey) return { ok: false, error: 'Supabase config not available' };
     try {
@@ -4584,8 +4582,8 @@ function registerIPCHandlers(): void {
   });
 
   safeHandle('peer-key:regenerate', async () => {
-    const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').replace(/\/$/, '');
-    const anonKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
+    const supabaseUrl = getSupabaseUrl();
+    const anonKey = getAnonKey();
     const peerId = getStablePeerId();
     if (!supabaseUrl || !anonKey) return { ok: false, error: 'Supabase config not available' };
     try {
@@ -4642,8 +4640,8 @@ function registerIPCHandlers(): void {
     try {
       const { getRingBearerIdentity } = await import('./ip_ledger/ring_bearer_keygen');
       const identity = getRingBearerIdentity();
-      const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
-      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+      const supabaseUrl = getSupabaseUrl();
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
       if (!supabaseUrl || !supabaseKey) return { ok: false, error: 'Supabase config not available', entries: [] };
       const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
       const sb = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false }, realtime: { transport: ws as unknown as typeof WebSocket } });
@@ -4717,8 +4715,8 @@ function registerIPCHandlers(): void {
   // linked_deck_card_id, clicks_per_frame_unlock, total_clicks_for_unlock,
   // social_unlock_type, user_id. Read-only, anon-key-permitted (RLS allows select).
   safeHandle('cue-cards:get-template', async (_event, req: { id?: string; initiativeSlug?: string }) => {
-    const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').replace(/\/$/, '');
-    const anonKey = process.env.SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
+    const supabaseUrl = getSupabaseUrl();
+    const anonKey = getAnonKey();
     if (!supabaseUrl || !anonKey) return { ok: false, error: 'Supabase config not available' };
     if (!req.id && !req.initiativeSlug) return { ok: false, error: 'id or initiativeSlug is required' };
     try {
@@ -4760,8 +4758,8 @@ function registerIPCHandlers(): void {
     try {
       const { getRingBearerIdentity } = await import('./ip_ledger/ring_bearer_keygen');
       const identity = getRingBearerIdentity();
-      const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
-      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+      const supabaseUrl = getSupabaseUrl();
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
       if (!supabaseUrl || !supabaseKey) return { ok: false, error: 'Supabase config not available' };
       const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
       const sb = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false }, realtime: { transport: ws as unknown as typeof WebSocket } });
@@ -5317,15 +5315,12 @@ function registerIPCHandlers(): void {
 
   function getHelpSupabase(): import('@supabase/supabase-js').SupabaseClient | null {
     if (_helpSupabase) return _helpSupabase;
-    const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+    const url = getSupabaseUrl();
     // Prefer service-role key (bypasses RLS for storage ops); fall back to anon key
     // so Realtime subscriptions work in the packaged Electron app where service-role
     // key is intentionally absent.
     const key =
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_ANON_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      '';
+      process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
     if (!url || !key) {
       console.warn('[help] SUPABASE_URL or Supabase key not set · help pipeline unavailable');
       return null;
@@ -5463,11 +5458,9 @@ function registerIPCHandlers(): void {
     if (_helpPollingStarted) return { ok: true };
     _helpPollingStarted = true;
 
-    const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
+    const supabaseUrl = getSupabaseUrl();
     const supabaseKey =
-      process.env.SUPABASE_ANON_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      '';
+      getAnonKey();
 
     if (!supabaseUrl || !supabaseKey) {
       console.warn('[help-poll] SUPABASE_URL or key not set — help message polling disabled');
@@ -5599,8 +5592,8 @@ function registerIPCHandlers(): void {
 
   safeHandle('mesh:get-activity-summary', async () => {
     try {
-      const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
-      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+      const supabaseUrl = getSupabaseUrl();
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
       if (!supabaseUrl || !supabaseKey) return { status: 'error', error: 'Supabase not configured' };
 
       const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
@@ -5788,15 +5781,9 @@ async function bootZombieFlush(peerId: string, supabaseUrl: string, anonKey: str
 }
 
 function scheduleZombieFlush(peerId: string): void {
-  const supabaseUrl = (
-    process.env.SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    ''
-  ).replace(/\/$/, '');
+  const supabaseUrl = getSupabaseUrl();
   const anonKey =
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    '';
+    getAnonKey();
   if (!supabaseUrl || !anonKey) return;
 
   if (_zombieFlushInterval) clearInterval(_zombieFlushInterval);
@@ -5812,15 +5799,9 @@ let _relayPollInterval: NodeJS.Timeout | null = null;
 // BP086 I5c: relay_routes poll loop — answers questions dispatched by orchestrator
 // Polls every 5s; handles cross-WAN peers without IP-to-IP routing
 function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
-  const supabaseUrl = (
-    process.env.SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    ''
-  ).replace(/\/$/, '');
+  const supabaseUrl = getSupabaseUrl();
   const supabaseKey =
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    '';
+    getAnonKey();
 
   if (!supabaseUrl || !supabaseKey) {
     console.warn('[relay-poll] SUPABASE_URL or SUPABASE_ANON_KEY not set — relay poll disabled');
@@ -6226,15 +6207,9 @@ async function postAck(
   ackType: string,
   resultJson: Record<string, unknown>,
 ): Promise<void> {
-  const supabaseUrl = (
-    process.env.SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    ''
-  ).replace(/\/$/, '');
+  const supabaseUrl = getSupabaseUrl();
   const supabaseKey =
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    '';
+    getAnonKey();
   if (!supabaseUrl || !supabaseKey) return;
 
   await fetch(`${supabaseUrl}/rest/v1/fleet_broadcast_ack`, {
@@ -6264,15 +6239,9 @@ async function postAck(
 }
 
 function startMicBroadcastListener(peerId: string, appVersion: string): void {
-  const supabaseUrl = (
-    process.env.SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    ''
-  ).replace(/\/$/, '');
+  const supabaseUrl = getSupabaseUrl();
   const supabaseKey =
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    '';
+    getAnonKey();
 
   if (!supabaseUrl || !supabaseKey) {
     console.warn('[mic-broadcast] SUPABASE_URL or SUPABASE_ANON_KEY not set — listener disabled');
@@ -7063,7 +7032,7 @@ app.whenReady().then(async () => {
   {
     const { randomUUID, createHash } = require('crypto') as typeof import('crypto');
     const _presencePeerId = getStablePeerId();
-    const _presenceSupabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
+    const _presenceSupabaseUrl = getSupabaseUrl();
     let _wanSoccerballId: string;
     try {
       const { ensureLocalPeerKeypair } = require('./identity/localPeerKeypair') as typeof import('./identity/localPeerKeypair');
@@ -7098,15 +7067,9 @@ app.whenReady().then(async () => {
   // BP086 I5c: start relay poll (answers cross-WAN questions from orchestrator)
   {
     const _relayPeerId = getStablePeerId();
-    const _supabaseUrl = (
-      process.env.SUPABASE_URL ||
-      process.env.NEXT_PUBLIC_SUPABASE_URL ||
-      ''
-    ).replace(/\/$/, '');
+    const _supabaseUrl = getSupabaseUrl();
     const _anonKey =
-      process.env.SUPABASE_ANON_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      '';
+      getAnonKey();
     if (_supabaseUrl && _anonKey) {
       _bootZombieCount = await bootZombieFlush(_relayPeerId, _supabaseUrl, _anonKey);
       scheduleZombieFlush(_relayPeerId);

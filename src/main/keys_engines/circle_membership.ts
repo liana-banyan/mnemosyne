@@ -8,8 +8,11 @@
  * Canon ref: canon_mic_stamped_user_approval_circle_of_influence_reciprocal_trust_bp086
  */
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? '';
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
+
+// BP132 Yoke #23 Task 6: shared helper so a stranger's install still authenticates.
+const SUPABASE_URL = getSupabaseUrl();
+const SUPABASE_ANON_KEY = getAnonKey();
 const DEFAULT_REPUTATION_THRESHOLD = 0.8;
 
 export interface CirclePeer {

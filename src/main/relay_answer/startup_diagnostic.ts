@@ -12,6 +12,7 @@ import * as os from 'node:os';
 import { getEnvLoaderStatus } from '../env_loader';
 import { getStablePeerId } from '../federation/peer-discovery';
 import { OllamaManager } from '../ollama_manager';
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 
 // Singleton OllamaManager for diagnostics -- best-effort, never throws
 const _diagOllama = new OllamaManager();
@@ -62,11 +63,24 @@ function getSelfLanAddresses(): string[] {
   }
 }
 
+// BP132 Yoke #23 Task 6 (found live via boot test): env_loader.ts's resolveKeySource()
+// returns 'vault' | 'pre-existing-env' | 'unresolved', but the submit-peer-startup-state
+// edge function's schema only accepts 'env' | 'fallback' | 'vault' | 'absent' -- confirmed
+// by a real 400 INVALID_URL_SOURCE response when boot-testing with no WORKING_KEYS.env
+// present (the exact stranger-install scenario this yoke targets). 'unresolved' from
+// env_loader always means "the shared getAnonKey()/getSupabaseUrl() bundled fallback was
+// used" in this call site now, since those helpers never return an empty string.
+function toEdgeFunctionKeySource(source: 'vault' | 'pre-existing-env' | 'unresolved'): 'env' | 'fallback' | 'vault' | 'absent' {
+  if (source === 'vault') return 'vault';
+  if (source === 'pre-existing-env') return 'env';
+  return 'fallback';
+}
+
 export async function submitStartupDiagnostic(): Promise<void> {
   try {
     const envStatus = getEnvLoaderStatus();
-    const supabaseUrl = envStatus.supabaseUrl || process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+    const supabaseUrl = envStatus.supabaseUrl || getSupabaseUrl();
+    const anonKey = getAnonKey();
 
     if (!supabaseUrl || !anonKey) {
       console.warn('[startup_diagnostic] Supabase not configured -- skipping diagnostic submission');
@@ -85,9 +99,9 @@ export async function submitStartupDiagnostic(): Promise<void> {
       peer_id: peerId,
       cai_version: app.getVersion(),
       npm_version: process.versions.node,
-      supabase_url_source: envStatus.supabaseUrlSource,
+      supabase_url_source: toEdgeFunctionKeySource(envStatus.supabaseUrlSource),
       supabase_url: supabaseUrl,
-      anon_key_source: envStatus.anonKeySource,
+      anon_key_source: toEdgeFunctionKeySource(envStatus.anonKeySource),
       anon_key_hash: envStatus.anonKeyHash,
       relay_answer_poller_started: pollerState.started,
       relay_answer_poller_heartbeat: pollerState.lastHeartbeat ?? null,
