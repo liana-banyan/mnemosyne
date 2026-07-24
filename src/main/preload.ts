@@ -1223,6 +1223,34 @@ contextBridge.exposeInMainWorld('amplify', {
   ipLedgerGetEntryProof: (entryId: string): Promise<{ ok: boolean; proof?: unknown; error?: string }> =>
     ipcRenderer.invoke('ip-ledger:get-entry-proof', entryId),
 
+  // BP132 Yoke #22 Addendum A — QR-ledger-per-connection
+  ipLedgerStampConnection: (req: { peer_id: string; peer_display_name?: string; connection_method: string }): Promise<{
+    entry_id: string; ring_bearer_peer_id: string; payload_hash_hex: string; stamped_at: string; ok: boolean; error?: string;
+  }> => ipcRenderer.invoke('ip-ledger:stamp-connection', req),
+
+  // BP132 Yoke #22 Addendum A — data-driven Cue Deck card templates
+  cueCardsGetTemplate: (req: { id?: string; initiativeSlug?: string }): Promise<{ ok: boolean; template?: unknown; error?: string }> =>
+    ipcRenderer.invoke('cue-cards:get-template', req),
+
+  // BP132 Yoke #22 — Diagnostic Mode UI (Help tab)
+  diagnosticModeGetStatus: (): Promise<{ pollerStarted: boolean; lastPollAt: string | null; lastError: string | null; permissionActive: boolean }> =>
+    ipcRenderer.invoke('diagnostic-mode:get-status'),
+  diagnosticModeActivatePermission: (ttlMinutes: number): Promise<{ ok: boolean; ttlMinutes: number }> =>
+    ipcRenderer.invoke('diagnostic-mode:activate-permission', ttlMinutes),
+  diagnosticModeRevokePermission: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('diagnostic-mode:revoke-permission'),
+
+  // BP132 Yoke #21 D9 / Yoke #22 one-click staged MMLU-Pro test
+  meshTestRunOneClick: (config: { ollamaBaseUrl?: string; model?: string }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+    ipcRenderer.invoke('mesh-test:run-one-click', config),
+  meshTestIsActive: (): Promise<{ active: boolean }> =>
+    ipcRenderer.invoke('mesh-test:is-active'),
+  onMeshTestProgress: (cb: (payload: unknown) => void): (() => void) => {
+    const handler = (_event: unknown, payload: unknown) => cb(payload);
+    ipcRenderer.on('mesh-test:progress', handler);
+    return () => ipcRenderer.removeListener('mesh-test:progress', handler);
+  },
+
   // SEG-2 v0.1.56 — first-launch progressive auto-pull (gemma4:12b)
   firstLaunchModelPull: {
     check: (modelName: string): Promise<{ exists: boolean; modelName: string }> =>
