@@ -54,6 +54,13 @@ export interface WanPeerAnswer {
   timedOut: boolean;
   processingMs: number | null;
   error?: string;
+  /** BP133 Yoke #24 Task 2: Truth-Always -- which mechanism actually produced answerLetter.
+   *  Undefined only for legacy replies from before this field existed. */
+  answeredBy?: 'plow' | 'minor_council' | 'single_shot';
+  /** BP133 Yoke #24 Task 2.3: the plow's full trace (concordance, BMV, gates, specialists
+   *  used, voter letters, Andon retries) verbatim from the responder, present only when
+   *  answeredBy === 'plow'. This is what makes the persisted receipt auditable. */
+  plowTrace?: Record<string, unknown> | null;
 }
 
 export interface WanQuestionOutcome {
@@ -145,6 +152,10 @@ async function insertRelayRoute(
   sessionId: string,
   ttlSeconds: number,
   substrateEnabled: boolean,
+  // BP133 Yoke #24 Task 2: explicit opt-in fields. Both default false in the caller so an
+  // ordinary substrate-toggle-only run's payload shape is unchanged from Task 1.
+  plowEnabled: boolean,
+  plowAndonEnabled: boolean,
 ): Promise<string | null> {
   const prompt = buildMcPrompt(question);
   // hex_frame is a NOT NULL legacy column (verified via a live dry-run insert 2026-07-23);
@@ -158,6 +169,11 @@ async function insertRelayRoute(
     payload_json: {
       domain: question.category,
       prompt,
+      // BP133 Yoke #24 Task 2: plain question text (no options/instructions) for the plow's
+      // specialist research queries -- separate from `prompt` so specialist adapters search
+      // on the actual question rather than the MC-formatting boilerplate. Ignored by the
+      // single-shot/Minor Council branches, which continue to use `prompt` as before.
+      question_text: question.question,
       question_id: `mmlu-pro-wan-${question.question_id}`,
       wire_format: 'json-legacy',
       choice_count: question.options.length,
@@ -174,6 +190,11 @@ async function insertRelayRoute(
       // cannot inject substrate itself here because the answering model call happens on
       // the PEER's machine against the PEER's own local substrate, not this machine's.
       substrate_enabled: substrateEnabled,
+      // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow as the answering
+      // mechanism, mutually exclusive with plow_max_iterations>0 (Minor Council) in the
+      // responder's branch order -- plowEnabled takes priority when both are somehow set.
+      plow_enabled: plowEnabled,
+      plow_andon_enabled: plowAndonEnabled,
     },
     status: 'pending',
     session_id: sessionId,
@@ -241,6 +262,20 @@ function extractLetter(answerJson: Record<string, unknown> | null): { letter: st
   return { letter: m ? m[1] : null, isAbstain: false };
 }
 
+// BP133 Yoke #24 Task 2: pulls the Truth-Always answered_by/plow_trace fields the responder
+// now writes into every answer_json (see index.ts's startRelayRoutePoll). Tolerant of legacy
+// replies that predate these fields -- answeredBy comes back undefined, not a guess.
+function extractPlowFields(answerJson: Record<string, unknown> | null): {
+  answeredBy: WanPeerAnswer['answeredBy'];
+  plowTrace: Record<string, unknown> | null | undefined;
+} {
+  const answeredByRaw = answerJson?.answered_by;
+  const answeredBy = answeredByRaw === 'plow' || answeredByRaw === 'minor_council' || answeredByRaw === 'single_shot'
+    ? answeredByRaw : undefined;
+  const plowTrace = (answerJson?.plow_trace as Record<string, unknown> | null | undefined) ?? undefined;
+  return { answeredBy, plowTrace };
+}
+
 /**
  * Dispatches a single question to every peer in `peers` in parallel via relay_routes,
  * waits (bounded by perQuestionTimeoutMs) for each peer's relay_route_replies row, and
@@ -256,6 +291,10 @@ export async function dispatchQuestionToWanPeers(
   // BP133 Yoke #24 Task 1: explicit, defaults to false (existing behavior preserved).
   // Threaded into payload_json.substrate_enabled -- see insertRelayRoute above.
   substrateEnabled: boolean = false,
+  // BP133 Yoke #24 Task 2: explicit opt-in, both default false (existing single-shot
+  // behavior preserved for every caller that does not pass these).
+  plowEnabled: boolean = false,
+  plowAndonEnabled: boolean = false,
 ): Promise<WanQuestionOutcome> {
   const correctLetter = question.answer.toUpperCase();
   const cfg = resolveSupabaseConfig();
@@ -275,7 +314,9 @@ export async function dispatchQuestionToWanPeers(
 
   const ttlSeconds = Math.ceil(perQuestionTimeoutMs / 1000) + 60;
   const peerAnswers = await Promise.all(peers.map(async (peer): Promise<WanPeerAnswer> => {
-    const routeId = await insertRelayRoute(cfg, peer.peerId, question, sessionId, ttlSeconds, substrateEnabled);
+    const routeId = await insertRelayRoute(
+      cfg, peer.peerId, question, sessionId, ttlSeconds, substrateEnabled, plowEnabled, plowAndonEnabled,
+    );
     if (!routeId) {
       return {
         peerId: peer.peerId, machineLabel: peer.machineLabel, routeId: null, answerLetter: null,
@@ -291,6 +332,7 @@ export async function dispatchQuestionToWanPeers(
       };
     }
     const { letter, isAbstain } = extractLetter(reply.answerJson);
+    const { answeredBy, plowTrace } = extractPlowFields(reply.answerJson);
     return {
       peerId: peer.peerId,
       machineLabel: peer.machineLabel,
@@ -300,6 +342,8 @@ export async function dispatchQuestionToWanPeers(
       isCorrect: letter !== null && letter === correctLetter,
       timedOut: false,
       processingMs: reply.processingMs,
+      answeredBy,
+      plowTrace,
     };
   }));
 
