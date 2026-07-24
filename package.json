@@ -134,8 +134,8 @@
         ]
       },
       {
-        "from": "resources/mmlu_pro_stub",
-        "to": "mmlu_pro_stub",
+        "from": "resources/mmlu_pro_bundled",
+        "to": "mmlu_pro_bundled",
         "filter": [
           "**/*"
         ]

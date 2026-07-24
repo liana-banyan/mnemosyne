@@ -1,16 +1,37 @@
 // one_click_mmlu_pro.ts — BP132 Yoke #21 D9 / Yoke #22 one-click staged test
 //
+// CORRECTION (2026-07-23, post-Yoke-return): an earlier pass here claimed
+// lb-reproducibility-pack/datasets/mmlu_pro_per_domain/ was EMPTY. That was
+// wrong -- a non-recursive directory check saw 14 domain subfolders and no
+// files at the top level and misreported "empty" instead of recursing. The
+// corpus is real: 13 of 14 domains have a curated questions.json (law is a
+// genuine gap -- META.json claims 1106 questions but no question file exists
+// on disk for that one domain), ~11,000 real curated TIGER-Lab/MMLU-Pro
+// questions total. Root cause was an investigation bug, not a code bug --
+// loadStubQuestions() below never even attempted to read that path; it went
+// straight to a 5-question hand-authored placeholder.
+//
+// FIX: resources/mmlu_pro_bundled/questions.jsonl now ships 130 REAL curated
+// questions (10 evenly-sampled per available domain, generated via
+// scripts/generate_mmlu_pro_bundle.mjs) baked into the app bundle, because
+// the source corpus lives in the sibling LianaBanyanPlatform monorepo
+// (lb-reproducibility-pack/), which will NOT exist on a stranger's machine --
+// a packaged install has no way to reach that path. On this dev machine
+// specifically (where LianaBanyanPlatform happens to be checked out as a
+// sibling folder), loadQuestions() below prefers reading the FULL live
+// corpus directly and falls back to the bundled 130 only when that sibling
+// path isn't present (i.e. always, for anyone other than this Founder
+// checkout layout). Both paths are real curated data; only the bundled path
+// is guaranteed portable.
+//
 // TRUTH-ALWAYS SCOPE NOTE (read before extending):
 // The north star (Yoke #21/#22) asks for N public MMLU-Pro questions dispatched
 // OVER THE WAN MESH with per-arm accuracy shown live. This module delivers a real,
-// honestly-scored MVP of that flow, with one deliberate scope narrowing flagged here:
+// honestly-scored MVP of that flow, with one deliberate scope narrowing still open:
 //
-//   - Questions ARE real MMLU-Pro-format 10-choice multiple choice with ground-truth
-//     answers (bundled from benchmarks/questions/mmlu_pro_sample.jsonl, labeled
-//     "src":"stub" upstream — only 5 questions ship today; the full curated corpus at
-//     lb-reproducibility-pack/datasets/mmlu_pro_per_domain/ is EMPTY on this machine,
-//     confirmed by directory listing 2026-07-23 — populate it via that pack's
-//     setup_datasets.py to unlock a real N-per-domain run).
+//   - Questions ARE real MMLU-Pro curated multiple choice (3-10 options per
+//     question, matching the source dataset's actual shape) with ground-truth
+//     answers -- see the correction above for exactly where they come from.
 //   - Scoring (parsing the model's letter answer, comparing to ground truth,
 //     computing accuracy) IS real — not fabricated.
 //   - Dispatch in THIS version is LOCAL (this peer's Ollama), not yet distributed
@@ -35,7 +56,7 @@
 // `dispatchQuestionLocally` for a real mesh-distributed dispatcher without touching
 // the scoring/progress contract the renderer depends on.
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { app, BrowserWindow } from 'electron';
 
@@ -71,22 +92,26 @@ export interface OneClickRunResult {
   outcomes: OneClickQuestionOutcome[];
   dispatchMode: 'local_ollama';
   datasetLabel: string;
+  questionSource: 'full_corpus_live' | 'bundled_subset';
 }
 
 let running = false;
 
-function resolveStubDatasetPath(): string {
+const PER_DOMAIN_DEFAULT = 10;
+
+function resolveBundledDatasetPath(): string {
   const packaged = typeof process !== 'undefined' && (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
-    ? join((process as NodeJS.Process & { resourcesPath?: string }).resourcesPath!, 'mmlu_pro_stub', 'questions.jsonl')
+    ? join((process as NodeJS.Process & { resourcesPath?: string }).resourcesPath!, 'mmlu_pro_bundled', 'questions.jsonl')
     : null;
   if (app.isPackaged && packaged) return packaged;
-  return resolve(app.getAppPath(), 'resources', 'mmlu_pro_stub', 'questions.jsonl');
+  return resolve(app.getAppPath(), 'resources', 'mmlu_pro_bundled', 'questions.jsonl');
 }
 
-export function loadStubQuestions(): MmluProQuestion[] {
-  const path = resolveStubDatasetPath();
+/** Ships in every install. 130 real curated MMLU-Pro questions, 10 evenly-sampled per domain. */
+export function loadBundledQuestions(): MmluProQuestion[] {
+  const path = resolveBundledDatasetPath();
   if (!existsSync(path)) {
-    console.error(`[one_click_mmlu_pro] stub dataset not found at ${path}`);
+    console.error(`[one_click_mmlu_pro] bundled dataset not found at ${path}`);
     return [];
   }
   try {
@@ -97,9 +122,82 @@ export function loadStubQuestions(): MmluProQuestion[] {
       .filter(Boolean)
       .map((l) => JSON.parse(l) as MmluProQuestion);
   } catch (e) {
-    console.error('[one_click_mmlu_pro] failed to parse stub dataset:', e);
+    console.error('[one_click_mmlu_pro] failed to parse bundled dataset:', e);
     return [];
   }
+}
+
+/**
+ * Dev-machine-only convenience: LianaBanyanPlatform/lb-reproducibility-pack/ lives in a
+ * sibling monorepo folder alongside this repo on the Founder's checkout, NOT inside this
+ * app's own resources -- it will not exist on any other machine (dev or stranger's
+ * packaged install). Returns null whenever that sibling path is absent, which is the
+ * expected/normal case off this one machine.
+ */
+function resolveFullCorpusDir(): string | null {
+  const candidate = resolve(app.getAppPath(), '..', 'LianaBanyanPlatform', 'lb-reproducibility-pack', 'datasets', 'mmlu_pro_per_domain');
+  return existsSync(candidate) ? candidate : null;
+}
+
+function evenlySpacedIndices(length: number, count: number): number[] {
+  if (length <= count) return Array.from({ length }, (_, i) => i);
+  const step = length / count;
+  return Array.from({ length: count }, (_, i) => Math.floor(i * step));
+}
+
+/** Reads the full ~11,000-question live corpus directly when available (see resolveFullCorpusDir). */
+function loadFromFullCorpus(corpusDir: string, perDomain: number): MmluProQuestion[] {
+  const domains: string[] = readdirSync(corpusDir).filter((d: string) => statSync(join(corpusDir, d)).isDirectory());
+  const out: MmluProQuestion[] = [];
+  let qid = 1;
+  for (const domain of domains.sort()) {
+    const qPath = join(corpusDir, domain, 'questions.json');
+    if (!existsSync(qPath)) continue; // e.g. 'law' -- known gap, no question file shipped for that domain
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(qPath, 'utf8'));
+    } catch {
+      continue;
+    }
+    const arr = Array.isArray(parsed) ? parsed : (parsed as { questions?: unknown[] }).questions;
+    if (!Array.isArray(arr) || arr.length === 0) continue;
+    for (const idx of evenlySpacedIndices(arr.length, perDomain)) {
+      const q = arr[idx] as { question: string; options: string[]; correct_answer: string; source_id?: string; source_category?: string };
+      const answerIndex = q.options.indexOf(q.correct_answer);
+      if (answerIndex === -1) continue;
+      out.push({
+        question_id: qid++,
+        question: q.question,
+        options: q.options,
+        answer: letterFromIndex(answerIndex),
+        answer_index: answerIndex,
+        category: q.source_category || domain,
+        src: 'tiger-lab-mmlu-pro-curated-live',
+      });
+    }
+  }
+  return out;
+}
+
+export interface LoadedQuestionSet {
+  questions: MmluProQuestion[];
+  source: 'full_corpus_live' | 'bundled_subset';
+}
+
+export function loadQuestions(perDomain: number = PER_DOMAIN_DEFAULT): LoadedQuestionSet {
+  const fullDir = resolveFullCorpusDir();
+  if (fullDir) {
+    try {
+      const qs = loadFromFullCorpus(fullDir, perDomain);
+      if (qs.length > 0) {
+        console.log(`[one_click_mmlu_pro] using FULL live corpus at ${fullDir} (${qs.length} questions)`);
+        return { questions: qs, source: 'full_corpus_live' };
+      }
+    } catch (e) {
+      console.error('[one_click_mmlu_pro] full corpus read failed, falling back to bundled subset:', e);
+    }
+  }
+  return { questions: loadBundledQuestions(), source: 'bundled_subset' };
 }
 
 function letterFromIndex(i: number): string {
@@ -165,6 +263,7 @@ export function isOneClickRunActive(): boolean {
 export async function runOneClickMmluProTest(config: {
   ollamaBaseUrl?: string;
   model?: string;
+  questionsPerDomain?: number;
 }): Promise<OneClickRunResult> {
   if (running) {
     throw new Error('A one-click test run is already in progress');
@@ -173,7 +272,7 @@ export async function runOneClickMmluProTest(config: {
   const startedAt = new Date().toISOString();
   const ollamaBaseUrl = config.ollamaBaseUrl ?? 'http://127.0.0.1:11434';
   const model = config.model ?? 'gemma3:12b';
-  const questions = loadStubQuestions();
+  const { questions, source } = loadQuestions(config.questionsPerDomain ?? PER_DOMAIN_DEFAULT);
   const outcomes: OneClickQuestionOutcome[] = [];
 
   broadcast('mesh-test:progress', { type: 'start', total: questions.length });
@@ -210,7 +309,10 @@ export async function runOneClickMmluProTest(config: {
     accuracy: scored > 0 ? correct / scored : null,
     outcomes,
     dispatchMode: 'local_ollama',
-    datasetLabel: `${questions.length}-question stub sample (benchmarks/questions/mmlu_pro_sample.jsonl) — NOT the full curated MMLU-Pro corpus`,
+    datasetLabel: source === 'full_corpus_live'
+      ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, evenly sampled live from the full ~11,000-question corpus (dev-machine-only path)`
+      : `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, bundled subset shipped with the app (resources/mmlu_pro_bundled/)`,
+    questionSource: source,
   };
 
   broadcast('mesh-test:progress', { type: 'complete', result });
