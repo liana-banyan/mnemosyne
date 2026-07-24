@@ -1,0 +1,29 @@
+{
+  "generatedAt": "2026-07-24T04:16:20.701Z",
+  "isolatedUserData": "C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\mnemosynec_bp133_proof_1784866580661",
+  "question": "Which of the following would most likely provide examples of mitotic cell divisions?",
+  "domain": "biology",
+  "ON": {
+    "substrateEnabled": true,
+    "contextInjected": true,
+    "ebletCount": 1,
+    "promptChars": 687,
+    "prompt": "Context from substrate (related background, not this exact question):\n[1] In biology, how does mitotic cell division in plant meristem tissue compare to animal cell division? -- Mitosis occurs in the meristematic (actively dividing) zone of plant root and shoot tips, producing two genetically identical diploid daughter cells.\n\nAnswer the following multiple-choice question. Respond with ONLY the letter of the correct option, nothing else.\n\nQuestion: Which of the following would most likely provide examples of mitotic cell divisions?\n\nA. cross section of muscle tissue\nB. longitudinal section of a shoot tip\nC. longitudinal section of a leaf vein\nD. cross section of a fruit\n\nAnswer:",
+    "containsCacheTrapMarker": false
+  },
+  "OFF": {
+    "substrateEnabled": false,
+    "contextInjected": false,
+    "ebletCount": 0,
+    "promptChars": 358,
+    "prompt": "Answer the following multiple-choice question. Respond with ONLY the letter of the correct option, nothing else.\n\nQuestion: Which of the following would most likely provide examples of mitotic cell divisions?\n\nA. cross section of muscle tissue\nB. longitudinal section of a shoot tip\nC. longitudinal section of a leaf vein\nD. cross section of a fruit\n\nAnswer:",
+    "containsCacheTrapMarker": false
+  },
+  "assertions": {
+    "onDiffersFromOff": true,
+    "offEqualsBasePrompt": true,
+    "onContainsTopicalContext": true,
+    "onDoesNotContainExactMatchMarker": true,
+    "offMadeNoEbletCall": true
+  }
+}
