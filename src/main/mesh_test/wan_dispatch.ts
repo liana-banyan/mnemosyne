@@ -87,15 +87,20 @@ function resolveSupabaseConfig(): SupabaseConfig | null {
 
 // Matches this peer's own presence heartbeat cadence (relay poll every 5s, presence
 // patch roughly every 30s -- see index.ts startRelayRoutePoll). A peer_presence row with
-// status='active' but a last_seen_at older than this is treated as stale/gone, not live.
+// state='active' but a last_seen_at older than this is treated as stale/gone, not live.
 const PRESENCE_STALE_MS = 5 * 60 * 1000;
 
 /**
  * Queries peer_presence directly (not the LAN-only constellation_discovery.ts, which is
  * a different, saved-peer-list + UDP-beacon mechanism unrelated to the WAN relay bus).
  * Returns the empty array whenever Supabase is unreachable/unconfigured or genuinely no
- * peer_presence rows are both status='active' and recently seen -- callers must treat an
+ * peer_presence rows are both state='active' and recently seen -- callers must treat an
  * empty result as "no live WAN peers right now", not as an error.
+ *
+ * BP133 Yoke #26: the production table's column is `state`, not `status` -- this query used
+ * to read status=eq.active, which does not exist on peer_presence (HTTP 400,
+ * code 42703). That silently made this function return [] on every single call, so the
+ * in-app one-click WAN test always found zero peers even when peers were live.
  */
 export async function discoverLiveWanPeers(): Promise<WanPeerInfo[]> {
   const cfg = resolveSupabaseConfig();
@@ -103,7 +108,7 @@ export async function discoverLiveWanPeers(): Promise<WanPeerInfo[]> {
   const selfId = getStablePeerId();
   try {
     const res = await fetch(
-      `${cfg.url}/rest/v1/peer_presence?status=eq.active&select=peer_id,machine_label,last_seen_at`,
+      `${cfg.url}/rest/v1/peer_presence?state=eq.active&select=peer_id,machine_label,last_seen_at`,
       {
         headers: { apikey: cfg.anonKey, Authorization: `Bearer ${cfg.anonKey}` },
         signal: AbortSignal.timeout(10_000),

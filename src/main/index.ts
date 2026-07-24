@@ -5622,8 +5622,8 @@ function registerIPCHandlers(): void {
       const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
       const sb = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false } });
 
-      // Get active peers
-      const { data: peers } = await sb.from('peer_presence').select('peer_id, wan_soccerball_id, machine_label, capabilities, last_seen_at, role').eq('status', 'active');
+      // Get active peers. BP133 Yoke #26: peer_presence's column is `state`, not `status`.
+      const { data: peers } = await sb.from('peer_presence').select('peer_id, wan_soccerball_id, machine_label, capabilities, last_seen_at, role').eq('state', 'active');
 
       // Get per-peer marks totals
       const { data: marksData } = await sb.from('peer_marks_log').select('peer_id, marks_earned, completed_at').order('completed_at', { ascending: false }).limit(1000);

@@ -109,10 +109,11 @@ export function FleetHealthPanel() {
     if (!sb) { setError('Supabase unavailable'); return; }
 
     try {
+      // BP133 Yoke #26: peer_presence's column is `state`, not `status`.
       const { data, error: err } = await sb
         .from('peer_presence')
         .select('peer_id, machine_label, last_seen_at, lan_addresses, relay_poller_poll_count, capabilities')
-        .eq('status', 'active')
+        .eq('state', 'active')
         .order('last_seen_at', { ascending: false });
 
       if (err) { setError(err.message); return; }
