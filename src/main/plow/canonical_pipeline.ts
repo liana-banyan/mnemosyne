@@ -144,11 +144,14 @@ export interface CanonicalPlowResult {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const FIREGUARD_STAGGER_MS = 1000;
-const MINER_MIN_WEIGHT = 0.6;
-const MINER_MIN_CONTENT_LEN = 100;
-const MAX_ANDON_RETRIES = 3;
-const OLLAMA_TIMEOUT_MS = 30_000;
+// BP133 Yoke #24 Task 2: exported (not just module-local) so plow_mc_answerer.ts can reuse
+// the exact same tuning constants for the MC-answering variant of this pipeline instead of
+// drifting a second copy out of sync.
+export const FIREGUARD_STAGGER_MS = 1000;
+export const MINER_MIN_WEIGHT = 0.6;
+export const MINER_MIN_CONTENT_LEN = 100;
+export const MAX_ANDON_RETRIES = 3;
+export const OLLAMA_TIMEOUT_MS = 30_000;
 const GREEN_EBLET_THRESHOLD = 5;
 
 const SALADIN_CHALLENGE_PROMPT = (fact: string) =>
@@ -181,11 +184,14 @@ function sha256hex(s: string): string {
   return createHash('sha256').update(s).digest('hex');
 }
 
-function generateQuestionId(question: string, domain: string): string {
+// BP133 Yoke #24 Task 2: exported so plow_mc_answerer.ts's questionId matches this
+// pipeline's own convention (used consistently in Scribe writes and receipts).
+export function generateQuestionId(question: string, domain: string): string {
   return sha256hex(domain + ':' + question).slice(0, 12);
 }
 
-async function callOllama(
+// BP133 Yoke #24 Task 2: exported for plow_mc_answerer.ts's MC-arbitration voter calls.
+export async function callOllama(
   prompt: string,
   ollamaBaseUrl: string,
   model: string,
@@ -213,7 +219,8 @@ async function callOllama(
 
 // ─── BMV computation ──────────────────────────────────────────────────────────
 
-function computeBmvScore(
+// BP133 Yoke #24 Task 2: exported for plow_mc_answerer.ts's MC-answering BMV computation.
+export function computeBmvScore(
   candidatesRaw: number,
   candidatesPostMiner: number,
   candidatesPostFurnace: number,
@@ -282,7 +289,9 @@ function computeConcordance(answers: (string | null)[]): ConcordanceClass {
 
 // ─── Gate evaluator ───────────────────────────────────────────────────────────
 
-function evaluateGates(
+// BP133 Yoke #24 Task 2: exported for plow_mc_answerer.ts's MC-answering gate evaluation
+// (same 4 gates apply; the free-text and MC variants must stay comparable).
+export function evaluateGates(
   candidatesPostFurnace: number,
   bmvScore: number,
   concordance: ConcordanceClass,
@@ -316,7 +325,9 @@ function evaluateGates(
 
 // ─── Saladin (adversarial fence) ──────────────────────────────────────────────
 
-async function runSaladin(
+// BP133 Yoke #24 Task 2: exported so plow_mc_answerer.ts reuses the exact same Adversarial
+// Fence stage rather than a second, potentially-drifting copy.
+export async function runSaladin(
   candidates: CandidateEblet[],
   ollamaBaseUrl: string,
   model: string,
@@ -388,7 +399,9 @@ async function runThreeFates(
 
 // ─── Scribe ────────────────────────────────────────────────────────────────────
 
-async function runScribe(
+// BP133 Yoke #24 Task 2: exported so plow_mc_answerer.ts writes eblets through the exact
+// same Scribe convention (search-key format, provenance tag, sha256) as the free-text pipeline.
+export async function runScribe(
   domain: string,
   question: string,
   questionId: string,
@@ -451,7 +464,9 @@ async function runScribe(
 
 // ─── Detective TEAM ───────────────────────────────────────────────────────────
 
-interface DetectiveReport {
+// BP133 Yoke #24 Task 2: exported so plow_mc_answerer.ts's Andon retry loop (Condition C)
+// reuses the exact same root-cause/widening logic as the free-text pipeline's Andon cord.
+export interface DetectiveReport {
   failedGates: GateId[];
   rootCause: string;
   recommendation: string;
@@ -459,7 +474,7 @@ interface DetectiveReport {
   additionalOperators: SpecialistName[];
 }
 
-function runDetectiveTeam(
+export function runDetectiveTeam(
   gateOutcomes: GateOutcome[],
   candidatesRaw: number,
   candidatesPostMiner: number,
@@ -534,12 +549,22 @@ async function runCanonicalQuestion(
   });
 
   // ── Stage 1: Spider — locate topical eblets in local substrate ────────────
+  // BP133 Yoke #24 finding (R-MECHANISM-VERIFY, 2026-07-24): spiderEblets IS correctly
+  // fetched here, but is never consumed anywhere below -- factsForArbitration (used by Three
+  // Fates in Stage 7) is built ONLY from specialist-sourced CandidateEblet[] (postFurnace /
+  // postMiner). Local substrate therefore has ZERO effect on this free-text pipeline's answer
+  // today, regardless of what verified_eblets.jsonl contains. Not changed here (out of scope:
+  // this Yoke's substrate-toggle correctness gate targets the NEW MC-answering path in
+  // plow_mc_answerer.ts, which wires substrate correctly and explicitly via the same
+  // applySubstrateToggle() used everywhere else in this Yoke) -- flagged to Bishop in the
+  // Yoke-return rather than left for someone to discover as a surprise later.
   let spiderEblets: string[] = [];
   try {
     const { queryVerifiedEbletsTopical } = await import('../mnem_eblet_store');
     const hits = await queryVerifiedEbletsTopical(question, domain, 3);
     spiderEblets = hits.map((e) => `[local:${e.provenance}] ${e.answer?.slice(0, 200) ?? ''}`);
   } catch { /* Spider failing is non-fatal */ }
+  void spiderEblets;
 
   // ── Stage 2: Sprite — retrieve eblets (already done in Spider step) ───────
   // spiderEblets is the Sprite output (already retrieved)
