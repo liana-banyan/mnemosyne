@@ -3,6 +3,16 @@
 // Steps: welcome (WelcomeView) -> try-it -> success -> gauntlet -> first_steps -> app
 // Preserved: askFloorModel elephant test, 3-option fallback, LS_BP067_FIRST_RUN_COMPLETE gate
 // Removed: scroll-crawl animation, Founder voice audio, HEOHO blocking step, forced folder step
+//
+// BP133 Yoke #24 Task 0 (SHIPPING BLOCKER FIX): a real user hit a permanent dead end inside
+// step 'welcome' -> Layer2ProveIt -> screenMode 'confirming' ("Full progress view coming in
+// the next update"), which never called onComplete and had no path back to the tabbed shell
+// (the only escape, LeanModeNudge, renders underneath this component's zIndex:9600 full-screen
+// overlay and is therefore invisible/unclickable). Fix: a persistent, always-rendered "Skip
+// intro" escape hatch (SkipIntroButton below) sits above every single step at zIndex 9700 (above
+// the 9600 overlay) and unconditionally calls handleFinish -> commitFirstRunDone -> onComplete.
+// No future step, however broken or half-built, can trap a user again: this hatch does not
+// depend on that step's own JSX having a working forward path.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GauntletProofStep } from './GauntletProofStep';
@@ -55,6 +65,36 @@ function CheckIcon(): React.ReactElement {
 
 // Shared CSS injected once per mount
 const KEYFRAMES = `@keyframes mnemo-spin { to { transform: rotate(360deg); } }`;
+
+// BP133 Yoke #24 Task 0 -- always-on-top escape hatch, see file header note.
+// zIndex 9700 is deliberately above every step overlay in this file and in WelcomeView.tsx
+// (all of which use 9600), so it can never be visually covered by a step's own content.
+function SkipIntroButton({ onSkip }: { onSkip: () => void }): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onSkip}
+      title="Skip the intro and go straight to the app -- you can revisit this from Settings"
+      style={{
+        position: 'fixed',
+        top: 12,
+        right: 16,
+        zIndex: 9700,
+        background: 'rgba(15,23,42,0.85)',
+        border: '1px solid rgba(100,116,139,0.35)',
+        borderRadius: 6,
+        color: '#94a3b8',
+        fontSize: 11,
+        fontWeight: 600,
+        padding: '5px 12px',
+        cursor: 'pointer',
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+      }}
+    >
+      Skip intro -&gt; go to app
+    </button>
+  );
+}
 
 export function Bp067FirstRunSpine({ onComplete, onAskOnboard }: Bp067FirstRunSpineProps): React.ReactElement | null {
   const [step, setStep] = useState<Step>('welcome');
@@ -285,7 +325,10 @@ export function Bp067FirstRunSpine({ onComplete, onAskOnboard }: Bp067FirstRunSp
 
   if (step === 'welcome') {
     return (
-      <WelcomeView onComplete={handleFinish} />
+      <>
+        <WelcomeView onComplete={handleFinish} />
+        <SkipIntroButton onSkip={handleFinish} />
+      </>
     );
   }
 
@@ -309,6 +352,7 @@ export function Bp067FirstRunSpine({ onComplete, onAskOnboard }: Bp067FirstRunSp
             </p>
           </div>
         </div>
+        <SkipIntroButton onSkip={handleFinish} />
       </>
     );
   }
@@ -317,6 +361,7 @@ export function Bp067FirstRunSpine({ onComplete, onAskOnboard }: Bp067FirstRunSp
 
   if (step === 'success') {
     return (
+      <>
       <div style={overlay}>
         <div style={card}>
           <div style={{ marginBottom: 16 }}>
@@ -350,6 +395,8 @@ export function Bp067FirstRunSpine({ onComplete, onAskOnboard }: Bp067FirstRunSp
           </button>
         </div>
       </div>
+      <SkipIntroButton onSkip={handleFinish} />
+      </>
     );
   }
 
@@ -357,6 +404,7 @@ export function Bp067FirstRunSpine({ onComplete, onAskOnboard }: Bp067FirstRunSp
 
   if (step === 'gauntlet') {
     return (
+      <>
       <GauntletProofStep
         audience="new_user"
         fromFirstRun={true}
@@ -366,6 +414,8 @@ export function Bp067FirstRunSpine({ onComplete, onAskOnboard }: Bp067FirstRunSp
         onJoin={(): void => { goTo('first_steps'); }}
         onKeepUsing={handleAskOnboard}
       />
+      <SkipIntroButton onSkip={handleFinish} />
+      </>
     );
   }
 
@@ -373,11 +423,14 @@ export function Bp067FirstRunSpine({ onComplete, onAskOnboard }: Bp067FirstRunSp
 
   if (step === 'first_steps') {
     return (
+      <>
       <FirstStepsView
         onSelectIntent={() => {}}
         onCheckout={() => {}}
         onRoutePath={handleAskOnboard}
       />
+      <SkipIntroButton onSkip={handleFinish} />
+      </>
     );
   }
 
@@ -498,6 +551,7 @@ export function Bp067FirstRunSpine({ onComplete, onAskOnboard }: Bp067FirstRunSp
             </button>
           </div>
         </div>
+        <SkipIntroButton onSkip={handleFinish} />
       </>
     );
   }
@@ -550,11 +604,29 @@ export function Bp067FirstRunSpine({ onComplete, onAskOnboard }: Bp067FirstRunSp
             </button>
           </div>
         </div>
+        <SkipIntroButton onSkip={handleFinish} />
       </>
     );
   }
 
-  return null;
+  // BP133 Yoke #24 Task 0: unreachable in the current Step union (every declared step is
+  // handled above), but if `step` were ever set to an unrecognised value by future code,
+  // the original `return null` here rendered a BLANK WINDOW -- indistinguishable from a
+  // hang, and with no forward path at all. Truth-Always fallback: never render nothing.
+  return (
+    <div style={overlay}>
+      <div style={card}>
+        <div style={brandLine}>MnemosyneC</div>
+        <h2 style={{ ...heading, fontSize: 16 }}>Something went sideways during setup.</h2>
+        <p style={{ ...body, fontSize: 12 }}>
+          Unrecognised setup step (&quot;{String(step)}&quot;). This is a bug, not something you did.
+        </p>
+        <button type="button" style={primaryBtn} onClick={handleFinish}>
+          Continue to the app
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export default Bp067FirstRunSpine;

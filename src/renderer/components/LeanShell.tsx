@@ -470,9 +470,13 @@ export function LeanShell({ currentMode, onModeChange, onClose, authState }: Lea
       if (data.ollamaHealthy && data.gemmaPresent) {
         const testItOutRunCount = parseInt(localStorage.getItem('mnemo_test_it_out_run_count') ?? '0', 10);
         if (testItOutRunCount >= 1) {
-          const alreadyComplete = localStorage.getItem(LS_ONBOARDING_COMPLETE) === '1';
+          // BP133 Yoke #24 Task 0 fix: this used to write '1', but resolveInitialUiMode()
+          // above only recognises the exact string 'true' as "existing user". The mismatch
+          // meant this auto-flip silently never actually unlocked advanced mode -- the log
+          // line below claimed success while resolveInitialUiMode() kept resolving 'lean'.
+          const alreadyComplete = localStorage.getItem(LS_ONBOARDING_COMPLETE) === 'true';
           if (!alreadyComplete) {
-            localStorage.setItem(LS_ONBOARDING_COMPLETE, '1');
+            localStorage.setItem(LS_ONBOARDING_COMPLETE, 'true');
             console.log('[Onboarding] Auto-flip: conditions met, advanced view unlocked');
             // Trigger re-resolution of UI mode (existing user path → advanced)
             const resolved = resolveInitialUiMode();
