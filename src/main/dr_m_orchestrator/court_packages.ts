@@ -155,10 +155,11 @@ async function buildCoreMicLivePackage(): Promise<CourtPackage> {
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
     if (!url || !key) throw new Error('[court_packages] Supabase env vars not set for CORE_MIC_LIVE');
     const supabase = createClient(url, key, { auth: { persistSession: false }, realtime: { transport: ws as unknown as typeof WebSocket } });
+    // BP133 Yoke #26: peer_presence's column is `state`, not `status`.
     const { data: rows, error } = await supabase
       .from('peer_presence')
       .select('peer_id, capabilities')
-      .eq('status', 'active')
+      .eq('state', 'active')
       .filter('capabilities->>ramTier', 'eq', 'CORE');
     if (error) throw new Error(`peer_presence query error: ${error.message}`);
     const activeCorePeers = (rows ?? []) as Array<{ peer_id: string; capabilities: { ollamaModel?: string; ramTier?: string } | null }>;

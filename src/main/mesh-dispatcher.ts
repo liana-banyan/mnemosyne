@@ -148,10 +148,11 @@ export async function routeTask(task: CooperativeTask): Promise<PeerAssignment[]
   }
 
   const supabase = getSupabaseClient();
+  // BP133 Yoke #26: peer_presence's column is `state`, not `status`.
   const { data: peers, error } = await supabase
     .from('peer_presence')
     .select('*')
-    .eq('status', 'active');
+    .eq('state', 'active');
 
   if (error) throw new Error(`[mesh-dispatcher] peer_presence query error: ${error.message}`);
 
@@ -216,10 +217,11 @@ export async function routeTask(task: CooperativeTask): Promise<PeerAssignment[]
 
 export async function selectMIC(workloadClass: WorkloadClass, currentWaveId: string): Promise<MICAssignment> {
   const supabase = getSupabaseClient();
+  // BP133 Yoke #26: peer_presence's column is `state`, not `status`.
   const { data: peers, error } = await supabase
     .from('peer_presence')
     .select('*')
-    .eq('status', 'active');
+    .eq('state', 'active');
 
   if (error) throw new Error(`[mesh-dispatcher] selectMIC peer query error: ${error.message}`);
 
@@ -308,10 +310,11 @@ export async function runFireGuardHeartbeat(state: FireGuardState): Promise<void
 
 export async function electNewMIC(waveId: string | null): Promise<string | null> {
   const supabase = getSupabaseClient();
+  // BP133 Yoke #26: peer_presence's column is `state`, not `status`.
   const { data: peers, error } = await supabase
     .from('peer_presence')
     .select('*')
-    .eq('status', 'active');
+    .eq('state', 'active');
 
   if (error) {
     console.error('[mesh-dispatcher] electNewMIC query error:', error.message);
@@ -447,10 +450,11 @@ export async function watchHeartbeat(
 export async function checkFireGuardDegraded(): Promise<{ degraded: boolean; activeCount: number }> {
   try {
     const supabase = getSupabaseClient();
+    // BP133 Yoke #26: peer_presence's column is `state`, not `status`.
     const { data: rows } = await supabase
       .from('peer_presence')
       .select('peer_id')
-      .eq('status', 'active')
+      .eq('state', 'active')
       .filter('capabilities->>ramTier', 'eq', 'CORE');
     const activeCount = (rows ?? []).length;
     if (activeCount <= 1) {
