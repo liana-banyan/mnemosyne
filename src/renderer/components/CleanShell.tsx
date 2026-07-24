@@ -12,6 +12,7 @@ import { LeanAskTab } from './LeanAskTab';
 import { LeanHelpTab } from './LeanHelpTab';
 import { GauntletTab } from './GauntletTab';
 import { DiagnosticModeTab } from './DiagnosticModeTab';
+import { MeshTestTerminalTab } from './MeshTestTerminalTab';
 import { CatacombsTab } from './CatacombsTab';
 import { CatacombsContributePanel } from './CatacombsContributePanel';
 import { LeanFederationPanel } from './LeanGauntletTab';
@@ -124,11 +125,11 @@ function pillBtn(active: boolean): React.CSSProperties {
 // which is intentionally dropped from this 7-tab shell — bloat per the Yoke's drop list).
 
 function HelpFaqTab({ authState }: { authState: AuthState | null }) {
-  const [sub, setSub] = useState<'faq' | 'gauntlet' | 'diagnostic'>('faq');
+  const [sub, setSub] = useState<'faq' | 'gauntlet' | 'diagnostic' | 'terminal'>('faq');
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', gap: 4, padding: '10px 16px 0', flexShrink: 0 }}>
-        {(['faq', 'gauntlet', 'diagnostic'] as const).map((id) => (
+        {(['faq', 'gauntlet', 'diagnostic', 'terminal'] as const).map((id) => (
           <button
             key={id}
             onClick={() => setSub(id)}
@@ -140,14 +141,15 @@ function HelpFaqTab({ authState }: { authState: AuthState | null }) {
               borderBottom: sub === id ? '2px solid #6ee7b7' : '2px solid transparent',
             }}
           >
-            {id === 'faq' ? 'FAQ' : id === 'gauntlet' ? 'Gauntlet' : '🩺 Diagnostic Mode'}
+            {id === 'faq' ? 'FAQ' : id === 'gauntlet' ? 'Gauntlet' : id === 'diagnostic' ? '🩺 Diagnostic Mode' : '💻 Terminal'}
           </button>
         ))}
       </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: sub === 'diagnostic' ? 16 : 0 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: sub === 'diagnostic' || sub === 'terminal' ? 16 : 0 }}>
         {sub === 'faq' && <LeanHelpTab />}
         {sub === 'gauntlet' && <GauntletTab authState={authState} />}
         {sub === 'diagnostic' && <DiagnosticModeTab />}
+        {sub === 'terminal' && <MeshTestTerminalTab />}
       </div>
     </div>
   );
