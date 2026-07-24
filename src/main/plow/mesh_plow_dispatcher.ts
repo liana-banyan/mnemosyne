@@ -1,6 +1,22 @@
 /**
  * mesh_plow_dispatcher.ts — BP087 MAMBA-α
  *
+ * KNOWN DRIFT / UNPROVEN (flagged BP132 Yoke #23, 2026-07-23 — not fixed here, out of
+ * scope for that yoke): repo-wide search confirms runPlowOnMesh()/dispatchQuestionToMesh()
+ * below are imported nowhere in src/ -- this module has never actually run end-to-end.
+ * Two concrete bugs found by verifying the REAL relay_route_replies schema live against
+ * production Supabase (anon key read): (1) the reply-polling code below reads
+ * `row.hex_frame` and `row.payload_json`, but the real table has NEITHER column -- only
+ * `answer_json` and `hex_reply` (hex_reply is always null in every real row observed);
+ * extractPeerAnswer() will never receive real data through this path as written.
+ * (2) dispatchQuestionToMesh() requires `config.supabase_service_key` for its
+ * wan-relay-route POST -- a service-role key is not something a real distributed client
+ * app can safely ship to every user's machine. Yoke #23's WAN-distributed one-click test
+ * was built instead against src/main/mesh_test/wan_dispatch.ts, which targets the REAL,
+ * anon-key-only, already-proven relay_routes/relay_route_replies mechanism (verified via
+ * a real historical 2026-07-06 run, session bp106-1q-v0829). This file is left as-is
+ * pending a future decision on whether to repair or retire it.
+ *
  * Plow-on-mesh integration layer. Dispatches a single MMLU-Pro question to one
  * or more peers via wan-relay-route (Supabase relay bus), waits for replies via
  * relay_route_replies, and aggregates responses using Ascending Andon discipline.

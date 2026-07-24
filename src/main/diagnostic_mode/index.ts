@@ -7,11 +7,12 @@
 // Authored: 2026-06-28 -- Knight BP099-K16
 // Migrated to mnemosyne repo: 2026-06-28 -- SEG-MM Novaculi BP099
 
-import { createHash } from 'node:crypto';
+import { createHash, createPublicKey, verify as ed25519Verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { app } from 'electron';
 import { getStablePeerId } from '../federation/peer-discovery';
+import { SIG_HEX_LEN } from '../thorax/sign_verify';
 
 // ─── Module-level state (consumed by startup_diagnostic + relay_answer_poller_state command) ──
 
@@ -160,18 +161,60 @@ const DIAGNOSTIC_ALLOWLIST: Record<string, () => Promise<string>> = {
   },
 };
 
-// ─── Brand stamp verification (stubbed -- env var path ready) ─────────────────
-
-function verifyBrandStampSig(_sig: unknown, _payload: string): boolean {
-  const pubKey = process.env.BRAND_STAMP_PUBLIC_KEY;
-  if (!pubKey) {
-    console.warn('[diagnostic_mode] BRAND_STAMP_PUBLIC_KEY not configured -- verification stubbed PASS');
-    return true;
+// ─── Brand stamp verification (BP132 Yoke #23 Task 4: real, fail-closed) ──────
+//
+// PRIOR BEHAVIOR (Truth-Always violation): this function ALWAYS returned true --
+// stubbed PASS when the key was unset, AND stubbed PASS even when it WAS set (the
+// ed25519 verify itself was never implemented, just a TODO comment). That meant the
+// brand-stamp layer of the remote-diagnostic trust chain was decorative: any row
+// insertable into the command queue that claim-diagnostic-output serves would run,
+// gated only by the local per-user TTL permission grant (still real and still
+// enforced -- see localPermissionActive / isPermissionActive() above -- but that is
+// "did a local human opt in to a diagnostic window", not "did this specific command
+// actually come from Bishop/Founder").
+//
+// FIX: real Ed25519 verification using Node's built-in crypto (no extra dependency),
+// matching this codebase's existing DER/hex convention (see thorax/sign_verify.ts's
+// signFrame/verifyFrame, MAMBA-beta3 BP087) -- SPKI-DER public key as lowercase hex,
+// 128-hex-char (64-byte) raw Ed25519 signature, verified over the exact JSON payload
+// string built at the call site. §4 BLOOD is preserved: the key is read from
+// process.env.BRAND_STAMP_PUBLIC_KEY only, never embedded in source.
+//
+// Fails CLOSED (returns false, command rejected) in every failure mode: key unset,
+// signature missing/malformed, wrong length, or the verify call itself throwing.
+// A security gate must never silently PASS -- if this returns false, pollOnce()
+// above already skips execution of that command and logs it.
+function verifyBrandStampSig(sig: unknown, payload: string): boolean {
+  const pubKeyHex = process.env.BRAND_STAMP_PUBLIC_KEY;
+  if (!pubKeyHex) {
+    console.error(
+      '[diagnostic_mode] BRAND_STAMP_PUBLIC_KEY not configured -- HARD-FAILING all remote ' +
+      'diagnostic commands. This is intentional (Truth-Always): a security gate must never ' +
+      'silently pass when its key material is absent. Set BRAND_STAMP_PUBLIC_KEY to enable ' +
+      'remote diagnostic command verification.',
+    );
+    return false;
   }
-  // TODO: implement ed25519 verify when key is configured
-  // import { verify } from 'noble/ed25519'; verify(sig, payload, pubKey)
-  console.warn('[diagnostic_mode] BRAND_STAMP_PUBLIC_KEY set but ed25519 verify not yet implemented -- stubbed PASS');
-  return true;
+  if (typeof sig !== 'string' || sig.length !== SIG_HEX_LEN) {
+    console.error(
+      `[diagnostic_mode] brand_stamp_sig missing or malformed (expected ${SIG_HEX_LEN} hex ` +
+      `chars, a 64-byte Ed25519 signature) -- rejecting command`,
+    );
+    return false;
+  }
+  try {
+    const pubKey = createPublicKey({
+      key: Buffer.from(pubKeyHex, 'hex'),
+      format: 'der',
+      type: 'spki',
+    });
+    const payloadBuffer = Buffer.from(payload, 'utf8');
+    const sigBuffer = Buffer.from(sig, 'hex');
+    return ed25519Verify(null, payloadBuffer, pubKey, sigBuffer);
+  } catch (e) {
+    console.error('[diagnostic_mode] ed25519 verify threw -- rejecting command (fail closed):', e);
+    return false;
+  }
 }
 
 // ─── Command execution (key-based mode) ──────────────────────────────────────

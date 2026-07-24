@@ -1240,8 +1240,15 @@ contextBridge.exposeInMainWorld('amplify', {
   diagnosticModeRevokePermission: (): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('diagnostic-mode:revoke-permission'),
 
-  // BP132 Yoke #21 D9 / Yoke #22 one-click staged MMLU-Pro test
-  meshTestRunOneClick: (config: { ollamaBaseUrl?: string; model?: string }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+  // BP132 Yoke #21 D9 / Yoke #22 one-click staged MMLU-Pro test / Yoke #23 WAN dispatch
+  meshTestRunOneClick: (config: {
+    ollamaBaseUrl?: string;
+    model?: string;
+    questionsPerDomain?: number;
+    mode?: 'auto' | 'local_ollama' | 'wan_mesh';
+    wanMaxQuestions?: number;
+    wanPerQuestionTimeoutMs?: number;
+  }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
     ipcRenderer.invoke('mesh-test:run-one-click', config),
   meshTestIsActive: (): Promise<{ active: boolean }> =>
     ipcRenderer.invoke('mesh-test:is-active'),
