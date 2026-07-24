@@ -1252,6 +1252,9 @@ contextBridge.exposeInMainWorld('amplify', {
     substrateEnabled?: boolean;
     // BP133 Yoke #24 Task 4: caps total question count for this run (e.g. 3 for a smoke test).
     maxTotalQuestions?: number;
+    // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow (wan_mesh only).
+    plowEnabled?: boolean;
+    plowAndonEnabled?: boolean;
   }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
     ipcRenderer.invoke('mesh-test:run-one-click', config),
   meshTestIsActive: (): Promise<{ active: boolean }> =>
