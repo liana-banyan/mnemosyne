@@ -1248,10 +1248,19 @@ contextBridge.exposeInMainWorld('amplify', {
     mode?: 'auto' | 'local_ollama' | 'wan_mesh';
     wanMaxQuestions?: number;
     wanPerQuestionTimeoutMs?: number;
+    // BP133 Yoke #24 Task 1: single authoritative substrate toggle for this run.
+    substrateEnabled?: boolean;
+    // BP133 Yoke #24 Task 4: caps total question count for this run (e.g. 3 for a smoke test).
+    maxTotalQuestions?: number;
   }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
     ipcRenderer.invoke('mesh-test:run-one-click', config),
   meshTestIsActive: (): Promise<{ active: boolean }> =>
     ipcRenderer.invoke('mesh-test:is-active'),
+  // BP133 Yoke #24 Task 3: Diagnostic terminal `stop` and `peers` typed commands.
+  meshTestStop: (): Promise<{ ok: boolean; wasRunning: boolean }> =>
+    ipcRenderer.invoke('mesh-test:stop'),
+  meshTestListPeers: (): Promise<{ ok: boolean; peers: Array<{ peerId: string; machineLabel: string }> }> =>
+    ipcRenderer.invoke('mesh-test:list-peers'),
   onMeshTestProgress: (cb: (payload: unknown) => void): (() => void) => {
     const handler = (_event: unknown, payload: unknown) => cb(payload);
     ipcRenderer.on('mesh-test:progress', handler);

@@ -52,11 +52,12 @@
 //     been observed by this agent -- flagged explicitly in the Yoke-return, same
 //     pattern as Yoke #21's peer_presence flag.
 
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { app, BrowserWindow } from 'electron';
 import { discoverLiveWanPeers, dispatchQuestionToWanPeers, type WanPeerInfo } from './wan_dispatch';
+import { applySubstrateToggle, isDebugPromptLoggingEnabled, buildOutboundPromptLogLine } from './substrate_toggle';
 
 export interface MmluProQuestion {
   question_id: number;
@@ -83,6 +84,10 @@ export interface OneClickQuestionOutcome {
   machineLabel?: string;
   timedOut?: boolean;
   isAbstain?: boolean;
+  /** BP133 Yoke #24 Task 1: true only when substrate context was actually prepended to the
+   *  prompt sent to the model for this specific question (local_ollama mode only -- for
+   *  wan_mesh outcomes this is decided by the responder and is not echoed back today). */
+  substrateContextInjected?: boolean;
 }
 
 export interface PeerAccuracyBreakdown {
@@ -111,9 +116,28 @@ export interface OneClickRunResult {
   livePeersFound?: number;
   /** Honest failure surface: set when wan_mesh was explicitly requested but no live peers exist. */
   wanError?: string;
+  /** BP133 Yoke #24 Task 1: whether substrate/context injection was requested for this run.
+   *  Surfaced so a result can never be misread as substrate-off when it was on, or vice
+   *  versa -- Truth-Always requirement, same rationale as dispatchMode. */
+  substrateEnabled: boolean;
+  /** BP133 Yoke #24 Task 3: true when the run was stopped early via requestCancel() rather
+   *  than completing all questions -- Truth-Always: a partial run must say so, never be
+   *  presented as if it ran to completion. */
+  cancelled?: boolean;
 }
 
 let running = false;
+let cancelRequested = false;
+
+/** BP133 Yoke #24 Task 3: cooperative cancellation for the Diagnostic terminal's `stop`
+ *  command. Checked between questions (never mid-Ollama-call) in runLocalMode/runWanMode --
+ *  a run stops at the next question boundary, and the result is explicitly marked
+ *  cancelled:true rather than silently truncated. */
+export function requestOneClickCancel(): { ok: boolean; wasRunning: boolean } {
+  const wasRunning = running;
+  cancelRequested = true;
+  return { ok: true, wasRunning };
+}
 
 const PER_DOMAIN_DEFAULT = 10;
 
@@ -237,15 +261,52 @@ function parseLetterFromModelText(text: string, optionCount: number): string | n
   return null;
 }
 
+/** BP133 Yoke #24 Task 1: opt-in outbound-prompt byte logging (MNEMO_DEBUG_LOG_PROMPTS=1).
+ *  Written to {userData}/substrate/debug_outbound_prompts.jsonl. Never logs keys/secrets --
+ *  these prompts are exclusively MMLU-Pro question text + optional topical substrate
+ *  context, both of which are already visible in the app UI. */
+function logOutboundPromptIfEnabled(entry: Parameters<typeof buildOutboundPromptLogLine>[0]): void {
+  if (!isDebugPromptLoggingEnabled()) return;
+  try {
+    const dir = join(app.getPath('userData'), 'substrate');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, 'debug_outbound_prompts.jsonl'), buildOutboundPromptLogLine(entry) + '\n', 'utf8');
+  } catch (e) {
+    console.warn('[one_click_mmlu_pro] debug prompt log write failed (non-fatal):', e);
+  }
+}
+
 async function dispatchQuestionLocally(
   q: MmluProQuestion,
   ollamaBaseUrl: string,
   model: string,
-): Promise<{ rawAnswer: string; latencyMs: number; error?: string }> {
+  substrateEnabled: boolean,
+): Promise<{ rawAnswer: string; latencyMs: number; error?: string; substrateContextInjected: boolean }> {
   const optionsBlock = q.options
     .map((opt, i) => `${letterFromIndex(i)}. ${opt}`)
     .join('\n');
-  const prompt = `Answer the following multiple-choice question. Respond with ONLY the letter of the correct option, nothing else.\n\nQuestion: ${q.question}\n\n${optionsBlock}\n\nAnswer:`;
+  const basePrompt = `Answer the following multiple-choice question. Respond with ONLY the letter of the correct option, nothing else.\n\nQuestion: ${q.question}\n\n${optionsBlock}\n\nAnswer:`;
+
+  // BP133 Yoke #24 Task 1: the ONLY substrate injection site for local-mode dispatch. When
+  // substrateEnabled is false, applySubstrateToggle makes no eblet-store call at all.
+  const { prompt, contextInjected, ebletCount } = await applySubstrateToggle(
+    basePrompt, q.question, q.category, substrateEnabled,
+  );
+
+  logOutboundPromptIfEnabled({
+    ts: new Date().toISOString(),
+    source: 'local_dispatch',
+    mode: 'single_shot',
+    model,
+    substrateEnabled,
+    contextInjected,
+    ebletCount,
+    questionId: q.question_id,
+    domain: q.category,
+    promptChars: prompt.length,
+    prompt,
+  });
+
   const started = Date.now();
   try {
     const res = await fetch(`${ollamaBaseUrl}/api/chat`, {
@@ -260,11 +321,11 @@ async function dispatchQuestionLocally(
       signal: AbortSignal.timeout(45_000),
     });
     const latencyMs = Date.now() - started;
-    if (!res.ok) return { rawAnswer: '', latencyMs, error: `HTTP ${res.status}` };
+    if (!res.ok) return { rawAnswer: '', latencyMs, error: `HTTP ${res.status}`, substrateContextInjected: contextInjected };
     const data = await res.json() as { message?: { content?: string } };
-    return { rawAnswer: data.message?.content ?? '', latencyMs };
+    return { rawAnswer: data.message?.content ?? '', latencyMs, substrateContextInjected: contextInjected };
   } catch (e) {
-    return { rawAnswer: '', latencyMs: Date.now() - started, error: (e as Error).message };
+    return { rawAnswer: '', latencyMs: Date.now() - started, error: (e as Error).message, substrateContextInjected: contextInjected };
   }
 }
 
@@ -294,12 +355,14 @@ async function runLocalMode(
   questions: MmluProQuestion[],
   ollamaBaseUrl: string,
   model: string,
+  substrateEnabled: boolean,
 ): Promise<OneClickQuestionOutcome[]> {
   const outcomes: OneClickQuestionOutcome[] = [];
   for (let i = 0; i < questions.length; i++) {
+    if (cancelRequested) break;
     const q = questions[i];
     broadcast('mesh-test:progress', { type: 'question-start', index: i, total: questions.length, question: q.question, category: q.category });
-    const { rawAnswer, latencyMs, error } = await dispatchQuestionLocally(q, ollamaBaseUrl, model);
+    const { rawAnswer, latencyMs, error, substrateContextInjected } = await dispatchQuestionLocally(q, ollamaBaseUrl, model, substrateEnabled);
     const parsedLetter = error ? null : parseLetterFromModelText(rawAnswer, q.options.length);
     const isCorrect = parsedLetter !== null && parsedLetter === q.answer.toUpperCase();
     const outcome: OneClickQuestionOutcome = {
@@ -312,6 +375,7 @@ async function runLocalMode(
       isCorrect,
       latencyMs,
       error,
+      substrateContextInjected,
     };
     outcomes.push(outcome);
     broadcast('mesh-test:progress', { type: 'question-complete', index: i, total: questions.length, outcome });
@@ -325,18 +389,20 @@ async function runWanMode(
   peers: WanPeerInfo[],
   sessionId: string,
   perQuestionTimeoutMs: number,
+  substrateEnabled: boolean,
 ): Promise<OneClickQuestionOutcome[]> {
   const outcomes: OneClickQuestionOutcome[] = [];
   const totalUnits = questions.length * peers.length;
   let unitIndex = 0;
 
   for (let i = 0; i < questions.length; i++) {
+    if (cancelRequested) break;
     const q = questions[i];
     broadcast('mesh-test:progress', {
       type: 'question-start', index: unitIndex, total: totalUnits, question: q.question, category: q.category,
     });
 
-    const wanOutcome = await dispatchQuestionToWanPeers(q, peers, sessionId, perQuestionTimeoutMs);
+    const wanOutcome = await dispatchQuestionToWanPeers(q, peers, sessionId, perQuestionTimeoutMs, substrateEnabled);
 
     for (const pa of wanOutcome.peerAnswers) {
       const outcome: OneClickQuestionOutcome = {
@@ -396,16 +462,45 @@ export async function runOneClickMmluProTest(config: {
   /** Per-question WAN round-trip timeout, ms. Default 90s -- real observed 2026-07-06 replies
    * took 7-20s for a single-shot bedrock question; 90s gives headroom for a slower/busier peer. */
   wanPerQuestionTimeoutMs?: number;
+  /** BP133 Yoke #24 Task 4: caps the TOTAL question count for this run (after per-domain
+   * sampling, before mode-specific dispatch), regardless of local_ollama or wan_mesh mode.
+   * This is what makes "run a 3-question smoke test" a single explicit number instead of
+   * requiring a DevTools console workaround (F12 dev-tools is unavailable in this build).
+   * When unset, existing behavior is unchanged: local_ollama runs the full sampled set,
+   * wan_mesh downsamples to wanMaxQuestions (default 20). */
+  maxTotalQuestions?: number;
+  /** BP133 Yoke #24 Task 1: single authoritative substrate/context-injection switch for this
+   * run, honored on BOTH local_ollama dispatch (this machine) and wan_mesh dispatch (each
+   * responding peer, via payload_json.substrate_enabled -- see wan_dispatch.ts and
+   * startRelayRoutePoll in index.ts). Defaults to false -- existing behavior (no injection)
+   * is unchanged unless a caller explicitly opts in. See substrate_toggle.ts for the full
+   * correctness-gate rationale (cache-trap analysis, single-injection-site guarantee). */
+  substrateEnabled?: boolean;
 }): Promise<OneClickRunResult> {
   if (running) {
     throw new Error('A one-click test run is already in progress');
   }
   running = true;
+  cancelRequested = false;
   const startedAt = new Date().toISOString();
   const ollamaBaseUrl = config.ollamaBaseUrl ?? 'http://127.0.0.1:11434';
-  const model = config.model ?? 'gemma3:12b';
+  // BP133 Yoke #24 Task 1 fix: the fleet (and every other model reference in this codebase,
+  // including the WAN responder's own baseline/Minor Council calls) runs gemma4:12b. This
+  // default previously read 'gemma3:12b' -- a model string that is not what is installed on
+  // the peer fleet (verified: `ollama list` shows gemma4:12b only, matching startRelayRoutePoll's
+  // own hardcoded 'gemma4:12b' baseline model and AUTO_PREPARE_MODEL in index.ts). Any
+  // local_ollama run that relied on this default silently exercised a fallback/mismatch it
+  // never surfaced as an error, since Ollama returns 404 for an absent model and that HTTP
+  // status was reported as a bare "error" string, not a legible "wrong model" message.
+  const model = config.model ?? 'gemma4:12b';
   const requestedMode = config.mode ?? 'auto';
-  const { questions: allQuestions, source } = loadQuestions(config.questionsPerDomain ?? PER_DOMAIN_DEFAULT);
+  const substrateEnabled = config.substrateEnabled ?? false;
+  const { questions: allQuestionsUncapped, source } = loadQuestions(config.questionsPerDomain ?? PER_DOMAIN_DEFAULT);
+  // BP133 Yoke #24 Task 4: total-question cap, applied uniformly before mode dispatch so a
+  // "3-question smoke test" is one explicit number in both local_ollama and wan_mesh modes.
+  const allQuestions = config.maxTotalQuestions && config.maxTotalQuestions > 0
+    ? downsampleQuestions(allQuestionsUncapped, config.maxTotalQuestions)
+    : allQuestionsUncapped;
 
   let dispatchMode: 'local_ollama' | 'wan_mesh' = 'local_ollama';
   let livePeers: WanPeerInfo[] = [];
@@ -434,6 +529,7 @@ export async function runOneClickMmluProTest(config: {
         questionSource: source,
         livePeersFound: 0,
         wanError,
+        substrateEnabled,
       };
       broadcast('mesh-test:progress', { type: 'complete', result: emptyResult });
       return emptyResult;
@@ -450,21 +546,22 @@ export async function runOneClickMmluProTest(config: {
     sessionId = generateSessionId();
     questions = downsampleQuestions(allQuestions, config.wanMaxQuestions ?? 20);
     broadcast('mesh-test:progress', { type: 'start', total: questions.length * livePeers.length });
-    outcomes = await runWanMode(questions, livePeers, sessionId, config.wanPerQuestionTimeoutMs ?? 90_000);
+    outcomes = await runWanMode(questions, livePeers, sessionId, config.wanPerQuestionTimeoutMs ?? 90_000, substrateEnabled);
   } else {
     broadcast('mesh-test:progress', { type: 'start', total: questions.length });
-    outcomes = await runLocalMode(questions, ollamaBaseUrl, model);
+    outcomes = await runLocalMode(questions, ollamaBaseUrl, model, substrateEnabled);
   }
 
   const scored = outcomes.filter((o) => o.parsedLetter !== null).length;
   const correct = outcomes.filter((o) => o.isCorrect).length;
   const peerBreakdown = dispatchMode === 'wan_mesh' ? computePeerBreakdown(outcomes) : undefined;
 
-  const datasetLabel = dispatchMode === 'wan_mesh'
+  const substrateSuffix = substrateEnabled ? ' [substrate ON]' : ' [substrate OFF]';
+  const datasetLabel = (dispatchMode === 'wan_mesh'
     ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions dispatched to ${livePeers.length} live WAN peer(s) via relay_routes/relay_route_replies (session ${sessionId}) -- ${outcomes.length} total question-peer answers`
     : source === 'full_corpus_live'
       ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, evenly sampled live from the full ~11,000-question corpus (dev-machine-only path)`
-      : `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, bundled subset shipped with the app (resources/mmlu_pro_bundled/)`;
+      : `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, bundled subset shipped with the app (resources/mmlu_pro_bundled/)`) + substrateSuffix;
 
   const result: OneClickRunResult = {
     startedAt,
@@ -479,6 +576,8 @@ export async function runOneClickMmluProTest(config: {
     questionSource: source,
     peerBreakdown,
     livePeersFound: dispatchMode === 'wan_mesh' ? livePeers.length : undefined,
+    substrateEnabled,
+    cancelled: cancelRequested,
   };
 
   broadcast('mesh-test:progress', { type: 'complete', result });

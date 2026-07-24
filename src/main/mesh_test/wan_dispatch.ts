@@ -144,6 +144,7 @@ async function insertRelayRoute(
   question: MmluProQuestion,
   sessionId: string,
   ttlSeconds: number,
+  substrateEnabled: boolean,
 ): Promise<string | null> {
   const prompt = buildMcPrompt(question);
   // hex_frame is a NOT NULL legacy column (verified via a live dry-run insert 2026-07-23);
@@ -168,6 +169,11 @@ async function insertRelayRoute(
       // payload.is_tiebreaker/tiebreaker_model. The peer cannot see or use the answer key.
       correct_answer_letter: question.answer,
       plow_max_iterations: 0, // bedrock/single-shot mode -- fast per-question turnaround
+      // BP133 Yoke #24 Task 1: single authoritative substrate flag, honored by the
+      // responder (index.ts's startRelayRoutePoll -- see substrate_toggle.ts). The asker
+      // cannot inject substrate itself here because the answering model call happens on
+      // the PEER's machine against the PEER's own local substrate, not this machine's.
+      substrate_enabled: substrateEnabled,
     },
     status: 'pending',
     session_id: sessionId,
@@ -247,6 +253,9 @@ export async function dispatchQuestionToWanPeers(
   peers: WanPeerInfo[],
   sessionId: string,
   perQuestionTimeoutMs: number = 90_000,
+  // BP133 Yoke #24 Task 1: explicit, defaults to false (existing behavior preserved).
+  // Threaded into payload_json.substrate_enabled -- see insertRelayRoute above.
+  substrateEnabled: boolean = false,
 ): Promise<WanQuestionOutcome> {
   const correctLetter = question.answer.toUpperCase();
   const cfg = resolveSupabaseConfig();
@@ -266,7 +275,7 @@ export async function dispatchQuestionToWanPeers(
 
   const ttlSeconds = Math.ceil(perQuestionTimeoutMs / 1000) + 60;
   const peerAnswers = await Promise.all(peers.map(async (peer): Promise<WanPeerAnswer> => {
-    const routeId = await insertRelayRoute(cfg, peer.peerId, question, sessionId, ttlSeconds);
+    const routeId = await insertRelayRoute(cfg, peer.peerId, question, sessionId, ttlSeconds, substrateEnabled);
     if (!routeId) {
       return {
         peerId: peer.peerId, machineLabel: peer.machineLabel, routeId: null, answerLetter: null,
