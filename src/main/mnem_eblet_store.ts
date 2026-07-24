@@ -47,9 +47,14 @@ import { app } from 'electron';
 //   3. {userData}/eblets — a portable, per-user, writable root. This is also the target the
 //      Yoke #22 Helm "eblet your own folder" pipeline should write into, so a stranger's own
 //      contributed eblets show up here without any hardcoded path.
-//   4. The original Founder dev-machine absolute paths, kept ONLY as a legacy fallback for
-//      the Founder's own machine. Filtered by existsSync like everything else, so they are
-//      inert (not silently wrong, just absent) on any other install.
+//
+// PORTABILITY CLEANUP (BP132 Yoke #23 Task 3, 2026-07-23): a 4th tier -- legacyDevRoots(),
+// three hardcoded C:\Users\Administrator\... paths kept as a "Founder dev-machine fallback"
+// -- was removed here. It was inert everywhere but the Founder's own machine (filtered by
+// existsSync like everything else), but not portable, and the Founder's own machine is
+// already covered by tiers 1-3 above (MNEM_EBLET_STORE_ROOTS env override, the bundled
+// default set, and {userData}/eblets). No behavior change on any real install; this only
+// removes dead hardcoded-path weight from the codebase per the Yoke #21 B4 portability fix.
 //
 // All candidates are filtered to existsSync() before use. If the resolved list is EMPTY,
 // callers must surface a visible warning (Truth-Always) instead of quietly returning [].
@@ -65,14 +70,6 @@ function bundledDefaultEbletRoot(): string {
   return resolve(app.getAppPath(), 'resources', 'eblets_default');
 }
 
-function legacyDevRoots(): string[] {
-  return [
-    'C:\\Users\\Administrator\\Documents\\Asteroid-ProofVault',
-    'C:\\Users\\Administrator\\Documents\\AntigravityWorkspace\\source_snapshot_readonly\\canon',
-    'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\Asteroid-ProofVault\\canon',
-  ];
-}
-
 /** Resolve + cache the live list of eblet store roots that actually exist on this machine. */
 function resolveEbletStoreRoots(): string[] {
   if (_resolvedRootsCache) return _resolvedRootsCache.roots;
@@ -86,7 +83,6 @@ function resolveEbletStoreRoots(): string[] {
 
   candidates.push(bundledDefaultEbletRoot());
   candidates.push(resolve(app.getPath('userData'), 'eblets'));
-  candidates.push(...legacyDevRoots());
 
   const resolved = candidates.filter((root) => {
     try { return existsSync(root); } catch { return false; }

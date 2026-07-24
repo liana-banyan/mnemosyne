@@ -24,41 +24,39 @@
 // checkout layout). Both paths are real curated data; only the bundled path
 // is guaranteed portable.
 //
-// TRUTH-ALWAYS SCOPE NOTE (read before extending):
-// The north star (Yoke #21/#22) asks for N public MMLU-Pro questions dispatched
-// OVER THE WAN MESH with per-arm accuracy shown live. This module delivers a real,
-// honestly-scored MVP of that flow, with one deliberate scope narrowing still open:
+// WAN-DISTRIBUTED DISPATCH (BP132 Yoke #23, 2026-07-23): the north star -- N public
+// MMLU-Pro questions dispatched OVER THE WAN MESH with per-peer AND aggregate accuracy
+// shown live -- is now wired. See src/main/mesh_test/wan_dispatch.ts for the full
+// R-MECHANISM-VERIFY writeup of how this was built against the REAL, already-proven
+// relay_routes/relay_route_replies mechanism (verified live against production Supabase
+// data, including a real 2026-07-06 run that already produced one honest, correct,
+// cross-peer WAN answer -- this module makes that a repeatable one-click flow instead of
+// a lost ad-hoc script). `local_ollama` is kept as a selectable fallback per the Yoke:
+// it is still the only mode provable without live peers online (peer_presence had 0 rows
+// as of this writing -- WAN mode will honestly report "no live peers" rather than
+// silently falling back when explicitly requested, see mode handling below).
 //
+// TRUTH-ALWAYS SCOPE NOTE (read before extending):
 //   - Questions ARE real MMLU-Pro curated multiple choice (3-10 options per
 //     question, matching the source dataset's actual shape) with ground-truth
 //     answers -- see the correction above for exactly where they come from.
 //   - Scoring (parsing the model's letter answer, comparing to ground truth,
-//     computing accuracy) IS real — not fabricated.
-//   - Dispatch in THIS version is LOCAL (this peer's Ollama), not yet distributed
-//     across WAN mesh peers. The existing mesh dispatch pipelines were evaluated
-//     for reuse and found to be a mismatch for ground-truth multiple-choice scoring:
-//       - mic:start-distributed-plow / mic_dispatcher.ts / canonical_pipeline.ts:
-//         a 9-specialist open-research-then-arbitrate pipeline (Wikipedia/Wikidata/
-//         arXiv/Wolfram/etc.) that reports back eblet-growth counts (PeerPlowResult:
-//         ebletsWritten/quarantined/andonEvents), NOT the model's raw per-question
-//         answer letter. Bolting ground-truth MC scoring onto it means either (a)
-//         extending PeerPlowResult + the peer-side worker to also return raw answers
-//         (real surgery, multi-file), or (b) parsing free-text Three-Fates synthesis
-//         back into a letter (lossy, fragile).
-//       - relay_answer/ (Yoke #21 A1's now-wired WAN answer poller): built for
-//         open-ended Q&A relay, not batch multiple-choice, and has no built-in
-//         answer-key comparison.
-//     Extending one of these for real distributed ground-truth MC scoring is the
-//     single largest open follow-up from this Yoke — flagged explicitly in the
-//     Yoke-return to Bishop, not silently narrowed.
-//
-// This module is intentionally small and self-contained so a future pass can swap
-// `dispatchQuestionLocally` for a real mesh-distributed dispatcher without touching
-// the scoring/progress contract the renderer depends on.
+//     computing accuracy) IS real — not fabricated, in both local and WAN modes.
+//   - WAN mode dispatches each question to every currently-live peer independently
+//     (no consensus voting) so per-peer accuracy is never collapsed into a synthetic
+//     answer; aggregate accuracy is the pooled total across all peer answers.
+//   - Live multi-peer verification is still PENDING Bishop/Founder action: this
+//     environment has no way to have a second real peer online to test against
+//     (peer_presence was 0 rows at last check). The code path is real and was built
+//     against the real, verified schema, but an actual >=2-live-peer run has not
+//     been observed by this agent -- flagged explicitly in the Yoke-return, same
+//     pattern as Yoke #21's peer_presence flag.
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { app, BrowserWindow } from 'electron';
+import { discoverLiveWanPeers, dispatchQuestionToWanPeers, type WanPeerInfo } from './wan_dispatch';
 
 export interface MmluProQuestion {
   question_id: number;
@@ -80,6 +78,20 @@ export interface OneClickQuestionOutcome {
   isCorrect: boolean;
   latencyMs: number;
   error?: string;
+  /** Set only in wan_mesh mode: which peer produced this outcome (one outcome per question-per-peer). */
+  peerId?: string;
+  machineLabel?: string;
+  timedOut?: boolean;
+  isAbstain?: boolean;
+}
+
+export interface PeerAccuracyBreakdown {
+  peerId: string;
+  machineLabel: string;
+  total: number;
+  scored: number;
+  correct: number;
+  accuracy: number | null;
 }
 
 export interface OneClickRunResult {
@@ -90,9 +102,15 @@ export interface OneClickRunResult {
   correct: number;
   accuracy: number | null; // null if scored === 0
   outcomes: OneClickQuestionOutcome[];
-  dispatchMode: 'local_ollama';
+  dispatchMode: 'local_ollama' | 'wan_mesh';
   datasetLabel: string;
   questionSource: 'full_corpus_live' | 'bundled_subset';
+  /** Only present in wan_mesh mode: per-peer accuracy alongside the pooled aggregate above. */
+  peerBreakdown?: PeerAccuracyBreakdown[];
+  /** Only present in wan_mesh mode: how many live peers (peer_presence status=active, recently seen) were found. */
+  livePeersFound?: number;
+  /** Honest failure surface: set when wan_mesh was explicitly requested but no live peers exist. */
+  wanError?: string;
 }
 
 let running = false;
@@ -260,23 +278,24 @@ export function isOneClickRunActive(): boolean {
   return running;
 }
 
-export async function runOneClickMmluProTest(config: {
-  ollamaBaseUrl?: string;
-  model?: string;
-  questionsPerDomain?: number;
-}): Promise<OneClickRunResult> {
-  if (running) {
-    throw new Error('A one-click test run is already in progress');
-  }
-  running = true;
-  const startedAt = new Date().toISOString();
-  const ollamaBaseUrl = config.ollamaBaseUrl ?? 'http://127.0.0.1:11434';
-  const model = config.model ?? 'gemma3:12b';
-  const { questions, source } = loadQuestions(config.questionsPerDomain ?? PER_DOMAIN_DEFAULT);
+function generateSessionId(): string {
+  return 'oneclick_' + randomBytes(6).toString('hex');
+}
+
+/** Downsamples an already-loaded question set evenly for the (much slower) WAN path. */
+function downsampleQuestions(questions: MmluProQuestion[], maxTotal: number): MmluProQuestion[] {
+  if (questions.length <= maxTotal) return questions;
+  const step = questions.length / maxTotal;
+  const indices = Array.from({ length: maxTotal }, (_, i) => Math.floor(i * step));
+  return indices.map((i) => questions[i]!);
+}
+
+async function runLocalMode(
+  questions: MmluProQuestion[],
+  ollamaBaseUrl: string,
+  model: string,
+): Promise<OneClickQuestionOutcome[]> {
   const outcomes: OneClickQuestionOutcome[] = [];
-
-  broadcast('mesh-test:progress', { type: 'start', total: questions.length });
-
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
     broadcast('mesh-test:progress', { type: 'question-start', index: i, total: questions.length, question: q.question, category: q.category });
@@ -297,22 +316,169 @@ export async function runOneClickMmluProTest(config: {
     outcomes.push(outcome);
     broadcast('mesh-test:progress', { type: 'question-complete', index: i, total: questions.length, outcome });
   }
+  return outcomes;
+}
+
+/** Dispatches each question to every live peer in parallel; one outcome per (question, peer). */
+async function runWanMode(
+  questions: MmluProQuestion[],
+  peers: WanPeerInfo[],
+  sessionId: string,
+  perQuestionTimeoutMs: number,
+): Promise<OneClickQuestionOutcome[]> {
+  const outcomes: OneClickQuestionOutcome[] = [];
+  const totalUnits = questions.length * peers.length;
+  let unitIndex = 0;
+
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    broadcast('mesh-test:progress', {
+      type: 'question-start', index: unitIndex, total: totalUnits, question: q.question, category: q.category,
+    });
+
+    const wanOutcome = await dispatchQuestionToWanPeers(q, peers, sessionId, perQuestionTimeoutMs);
+
+    for (const pa of wanOutcome.peerAnswers) {
+      const outcome: OneClickQuestionOutcome = {
+        question_id: q.question_id,
+        question: q.question,
+        category: q.category,
+        modelRawAnswer: pa.answerLetter ?? (pa.isAbstain ? 'ABSTAIN' : ''),
+        parsedLetter: pa.answerLetter,
+        correctLetter: wanOutcome.correctLetter,
+        isCorrect: pa.isCorrect,
+        latencyMs: pa.processingMs ?? perQuestionTimeoutMs,
+        error: pa.error ?? (pa.timedOut ? 'peer did not reply within timeout' : undefined),
+        peerId: pa.peerId,
+        machineLabel: pa.machineLabel,
+        timedOut: pa.timedOut,
+        isAbstain: pa.isAbstain,
+      };
+      outcomes.push(outcome);
+      unitIndex++;
+      broadcast('mesh-test:progress', { type: 'question-complete', index: unitIndex - 1, total: totalUnits, outcome });
+    }
+  }
+  return outcomes;
+}
+
+function computePeerBreakdown(outcomes: OneClickQuestionOutcome[]): PeerAccuracyBreakdown[] {
+  const byPeer = new Map<string, { machineLabel: string; total: number; scored: number; correct: number }>();
+  for (const o of outcomes) {
+    if (!o.peerId) continue;
+    const entry = byPeer.get(o.peerId) ?? { machineLabel: o.machineLabel ?? o.peerId.slice(0, 8), total: 0, scored: 0, correct: 0 };
+    entry.total += 1;
+    if (o.parsedLetter !== null) entry.scored += 1;
+    if (o.isCorrect) entry.correct += 1;
+    byPeer.set(o.peerId, entry);
+  }
+  return Array.from(byPeer.entries()).map(([peerId, e]) => ({
+    peerId,
+    machineLabel: e.machineLabel,
+    total: e.total,
+    scored: e.scored,
+    correct: e.correct,
+    accuracy: e.scored > 0 ? e.correct / e.scored : null,
+  }));
+}
+
+export async function runOneClickMmluProTest(config: {
+  ollamaBaseUrl?: string;
+  model?: string;
+  questionsPerDomain?: number;
+  /** 'auto' (default): use WAN mesh if live peers exist, else local. 'wan_mesh': require live
+   * peers, honestly fail (wanError set, no silent fallback) if none are found. 'local_ollama':
+   * always local, ignoring any live peers. */
+  mode?: 'auto' | 'local_ollama' | 'wan_mesh';
+  /** Caps total question count for wan_mesh mode (each question fans out to every live peer,
+   * so wall-clock scales with questions x peers x per-question round-trip). Default 20. */
+  wanMaxQuestions?: number;
+  /** Per-question WAN round-trip timeout, ms. Default 90s -- real observed 2026-07-06 replies
+   * took 7-20s for a single-shot bedrock question; 90s gives headroom for a slower/busier peer. */
+  wanPerQuestionTimeoutMs?: number;
+}): Promise<OneClickRunResult> {
+  if (running) {
+    throw new Error('A one-click test run is already in progress');
+  }
+  running = true;
+  const startedAt = new Date().toISOString();
+  const ollamaBaseUrl = config.ollamaBaseUrl ?? 'http://127.0.0.1:11434';
+  const model = config.model ?? 'gemma3:12b';
+  const requestedMode = config.mode ?? 'auto';
+  const { questions: allQuestions, source } = loadQuestions(config.questionsPerDomain ?? PER_DOMAIN_DEFAULT);
+
+  let dispatchMode: 'local_ollama' | 'wan_mesh' = 'local_ollama';
+  let livePeers: WanPeerInfo[] = [];
+  let wanError: string | undefined;
+
+  if (requestedMode !== 'local_ollama') {
+    livePeers = await discoverLiveWanPeers();
+    broadcast('mesh-test:progress', { type: 'peers-discovered', count: livePeers.length });
+    if (livePeers.length > 0) {
+      dispatchMode = 'wan_mesh';
+    } else if (requestedMode === 'wan_mesh') {
+      // Truth-Always: explicit WAN request with zero live peers is an honest failure,
+      // not a silent fallback to local -- surface it and stop, per the Yoke #23 constraint.
+      wanError = 'No live WAN peers found (peer_presence has no recently-seen status=active rows besides this machine). Cannot run a WAN-distributed test right now.';
+      running = false;
+      const emptyResult: OneClickRunResult = {
+        startedAt,
+        completedAt: new Date().toISOString(),
+        total: 0,
+        scored: 0,
+        correct: 0,
+        accuracy: null,
+        outcomes: [],
+        dispatchMode: 'wan_mesh',
+        datasetLabel: 'No WAN dispatch attempted -- no live peers',
+        questionSource: source,
+        livePeersFound: 0,
+        wanError,
+      };
+      broadcast('mesh-test:progress', { type: 'complete', result: emptyResult });
+      return emptyResult;
+    }
+    // requestedMode === 'auto' and 0 peers found: fall through to local_ollama silently,
+    // since 'auto' explicitly means "best available mode", not a hard WAN requirement.
+  }
+
+  let questions = allQuestions;
+  let outcomes: OneClickQuestionOutcome[];
+  let sessionId: string | undefined;
+
+  if (dispatchMode === 'wan_mesh') {
+    sessionId = generateSessionId();
+    questions = downsampleQuestions(allQuestions, config.wanMaxQuestions ?? 20);
+    broadcast('mesh-test:progress', { type: 'start', total: questions.length * livePeers.length });
+    outcomes = await runWanMode(questions, livePeers, sessionId, config.wanPerQuestionTimeoutMs ?? 90_000);
+  } else {
+    broadcast('mesh-test:progress', { type: 'start', total: questions.length });
+    outcomes = await runLocalMode(questions, ollamaBaseUrl, model);
+  }
 
   const scored = outcomes.filter((o) => o.parsedLetter !== null).length;
   const correct = outcomes.filter((o) => o.isCorrect).length;
+  const peerBreakdown = dispatchMode === 'wan_mesh' ? computePeerBreakdown(outcomes) : undefined;
+
+  const datasetLabel = dispatchMode === 'wan_mesh'
+    ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions dispatched to ${livePeers.length} live WAN peer(s) via relay_routes/relay_route_replies (session ${sessionId}) -- ${outcomes.length} total question-peer answers`
+    : source === 'full_corpus_live'
+      ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, evenly sampled live from the full ~11,000-question corpus (dev-machine-only path)`
+      : `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, bundled subset shipped with the app (resources/mmlu_pro_bundled/)`;
+
   const result: OneClickRunResult = {
     startedAt,
     completedAt: new Date().toISOString(),
-    total: questions.length,
+    total: outcomes.length,
     scored,
     correct,
     accuracy: scored > 0 ? correct / scored : null,
     outcomes,
-    dispatchMode: 'local_ollama',
-    datasetLabel: source === 'full_corpus_live'
-      ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, evenly sampled live from the full ~11,000-question corpus (dev-machine-only path)`
-      : `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, bundled subset shipped with the app (resources/mmlu_pro_bundled/)`,
+    dispatchMode,
+    datasetLabel,
     questionSource: source,
+    peerBreakdown,
+    livePeersFound: dispatchMode === 'wan_mesh' ? livePeers.length : undefined,
   };
 
   broadcast('mesh-test:progress', { type: 'complete', result });

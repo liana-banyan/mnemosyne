@@ -195,7 +195,9 @@ export function SocialTab(): React.ReactElement {
   const checkMyMathTemplate: CueCardTemplate = {
     ...CHECK_MY_MATH_BASE,
     body_text: meshResult
-      ? `Real result from the One-Click Staged Test: ${meshResult.correct}/${meshResult.scored} correct` +
+      ? `Real result from the One-Click Staged Test (${meshResult.dispatchMode === 'wan_mesh'
+          ? `dispatched across ${meshResult.livePeersFound ?? '?'} live WAN mesh peer(s)`
+          : 'dispatched locally on this machine'}): ${meshResult.correct}/${meshResult.scored} correct` +
         (meshResult.accuracy !== null ? ` (${(meshResult.accuracy * 100).toFixed(0)}%)` : '') +
         `. ${meshResult.datasetLabel}`
       : 'Pending live benchmark result \u2014 run the One-Click Staged Test (Package Store tab) to generate a real, honest number. No placeholder figures are shown here.',

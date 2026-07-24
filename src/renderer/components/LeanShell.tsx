@@ -185,12 +185,14 @@ function TabBar({
   active,
   onSelect,
   onSwitchAdvanced,
+  onOpenCleanShell,
   isMember,
   onMemberCta,
 }: {
   active: LeanTab;
   onSelect: (t: LeanTab) => void;
   onSwitchAdvanced: () => void;
+  onOpenCleanShell: () => void;
   isMember: boolean;
   onMemberCta: () => void;
 }) {
@@ -255,6 +257,27 @@ function TabBar({
           Become a Member · $5/yr
         </button>
       )}
+      {/* BP132 Yoke #23 Task 5 — CleanShell (7-tab preview, clean-shell-v0.9) promoted
+          from hash-only (#/clean-shell) to a real, discoverable link from production. */}
+      <button
+        onClick={onOpenCleanShell}
+        title="Preview the new 7-tab Clean Shell (Package Store, Social, Helm, one-click WAN test)"
+        style={{
+          background: 'none',
+          border: '1px solid #1e3a5c',
+          borderRadius: 4,
+          color: '#6ee7b7',
+          fontSize: 11,
+          padding: '3px 8px',
+          cursor: 'pointer',
+          fontFamily: 'system-ui, sans-serif',
+          outline: 'none',
+          marginRight: 6,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        ✨ Try Clean Shell (preview)
+      </button>
       <button
         onClick={onSwitchAdvanced}
         title="Switch to advanced mode (all tabs)"
@@ -424,6 +447,16 @@ export function LeanShell({ currentMode, onModeChange, onClose, authState }: Lea
     setUiMode('advanced');
   }, []);
 
+  // BP132 Yoke #23 Task 5 — promotes CleanShell from a hash-only test route
+  // (#/clean-shell, App.tsx) to a real, discoverable link from the production shell.
+  // Full reload (matching CleanShell's own onExitToLean pattern) since the two shells
+  // are separate top-level views selected in App.tsx's getInitialView(), not tabs
+  // within one component tree.
+  const openCleanShell = useCallback(() => {
+    window.location.hash = '#/clean-shell';
+    window.location.reload();
+  }, []);
+
   const switchToLean = useCallback(() => {
     localStorage.setItem(LS_UI_MODE, 'lean');
     window.dispatchEvent(new StorageEvent('storage', { key: LS_UI_MODE, newValue: 'lean', storageArea: localStorage }));
@@ -502,6 +535,7 @@ export function LeanShell({ currentMode, onModeChange, onClose, authState }: Lea
         active={activeTab}
         onSelect={setActiveTab}
         onSwitchAdvanced={switchToAdvanced}
+        onOpenCleanShell={openCleanShell}
         isMember={isMember}
         onMemberCta={handleMemberCta}
       />

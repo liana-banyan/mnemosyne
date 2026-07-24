@@ -4683,10 +4683,18 @@ function registerIPCHandlers(): void {
     return { ok: true };
   });
 
-  // BP132 Yoke #21 D9 / Yoke #22 one-click staged test — see src/main/mesh_test/one_click_mmlu_pro.ts
-  // for the full Truth-Always scope note (real ground-truth scoring, local dispatch today,
-  // WAN-distributed dispatch is the flagged follow-up).
-  safeHandle('mesh-test:run-one-click', async (_event, config: { ollamaBaseUrl?: string; model?: string }) => {
+  // BP132 Yoke #21 D9 / Yoke #22 one-click staged test / Yoke #23 WAN dispatch — see
+  // src/main/mesh_test/one_click_mmlu_pro.ts for the full Truth-Always scope note.
+  // mode: 'auto' (default, WAN if live peers exist else local) | 'wan_mesh' (require
+  // live peers, honest failure if none) | 'local_ollama' (always local).
+  safeHandle('mesh-test:run-one-click', async (_event, config: {
+    ollamaBaseUrl?: string;
+    model?: string;
+    questionsPerDomain?: number;
+    mode?: 'auto' | 'local_ollama' | 'wan_mesh';
+    wanMaxQuestions?: number;
+    wanPerQuestionTimeoutMs?: number;
+  }) => {
     try {
       const { runOneClickMmluProTest } = await import('./mesh_test/one_click_mmlu_pro');
       const result = await runOneClickMmluProTest(config ?? {});
