@@ -66,7 +66,9 @@ export function WelcomeView({ onComplete }: WelcomeViewProps): React.ReactElemen
     return <Layer2UseIt onBack={(): void => setDoorwayChosen(null)} onDone={onComplete} />;
   }
   if (doorwayChosen === 'prove-it') {
-    return <Layer2ProveIt onBack={(): void => setDoorwayChosen(null)} />;
+    // BP133 Yoke #24 Task 0: onDone wired so the "confirming" placeholder screen inside
+    // Layer2ProveIt has a real completion path (previously this doorway had none at all).
+    return <Layer2ProveIt onBack={(): void => setDoorwayChosen(null)} onDone={onComplete} />;
   }
 
   // ── Shared styles ──────────────────────────────────────────────────────────

@@ -9,6 +9,12 @@ import { useLifecycleStage } from '../hooks/useLifecycleStage';
 
 export interface Layer2ProveItProps {
   onBack: () => void;
+  /** BP133 Yoke #24 Task 0 -- the 'confirming' screen below this benchmark picker was a
+   *  permanent placeholder ("Full progress view coming in the next update") with no forward
+   *  path; onBack only looped back to the picker, never to the tabbed shell. onDone gives
+   *  this doorway a real completion path, matching Layer2UseIt's onDone. Optional so this
+   *  compiles even if a caller has not been updated yet, but WelcomeView.tsx always passes it. */
+  onDone?: () => void;
 }
 
 type ScreenMode = 'picking' | 'model-selector' | 'pulling-gemma' | 'confirming';
@@ -321,7 +327,7 @@ const S = {
   },
 };
 
-export function Layer2ProveIt({ onBack }: Layer2ProveItProps): React.ReactElement {
+export function Layer2ProveIt({ onBack, onDone }: Layer2ProveItProps): React.ReactElement {
   const { advanceTo } = useLifecycleStage();
   const [screenMode, setScreenMode] = useState<ScreenMode>('picking');
   const [folderPanelOpen, setFolderPanelOpen] = useState(false);
@@ -440,15 +446,26 @@ export function Layer2ProveIt({ onBack }: Layer2ProveItProps): React.ReactElemen
   }, []);
 
   // ── Confirming placeholder ──────────────────────────────────────────────────
+  // BP133 Yoke #24 Task 0: this benchmark run view is not built yet ("Full progress view
+  // coming in the next update" is honest -- it really isn't built). What was missing was a
+  // forward path: previously the ONLY button here was "back to choices", which just
+  // re-entered this same picker, and the app never advanced to the tabbed shell. Both
+  // buttons below are real: "back to choices" still works, and "Continue to app" completes
+  // onboarding via onDone (same completion path Layer2UseIt already uses) so this doorway
+  // is no longer a dead end while the real progress view is being built.
   if (screenMode === 'confirming') {
     return (
       <div style={S.overlay}>
         <div style={S.card}>
           <div style={S.brandLine}>Proof That It Works</div>
           <div style={S.placeholderBox}>
-            Benchmark starting... Full progress view coming in the next update.
+            Benchmark starting... Full progress view coming in the next update. You can
+            continue into the app now and check back on this benchmark from the Diagnosis tab.
           </div>
-          <button type="button" style={S.backLink} onClick={handleBackFromPlaceholder}>
+          <button type="button" style={S.proceedBtn} onClick={onDone}>
+            Continue to app
+          </button>
+          <button type="button" style={{ ...S.backLink, marginTop: 10, display: 'block' }} onClick={handleBackFromPlaceholder}>
             {'< back to choices'}
           </button>
         </div>
