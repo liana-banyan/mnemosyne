@@ -1,14 +1,12 @@
 // PeerCueCard.tsx — SEG-V0153A-P0-PEER-CUE-CARDS BP079
-// Peer card for FederationTab Roster/Mesh view.
+// Peer card for FederationTab Roster/Mesh view + Social tab (BP132 Yoke #22).
 // Inline styles only — no Tailwind, no CSS files. Matches WelcomeCueCard.tsx pattern.
 //
-// ⚠ TRUTH-ALWAYS (SEG-V0153A): No `federation:connect-peer` IPC handler exists.
-//   Searched src/main/index.ts — available federation IPC channels are:
-//     federation:generate-invite · federation:accept-invite · federation:leave-peer · federation:fetch-sid
-//   connectToPeerWithEscalation() in src/main/federation/wan_escalation.ts is NOT wired to IPC.
-//   handleConnectPeer uses window.amplify?.federationAcceptInvite?.(peerId) as a STOPGAP.
-//   A new `federation:connect-peer` IPC handler is REQUIRED to properly connect to
-//   an already-discovered peer without a full invite token flow.
+// BP132 Yoke #22 Addendum A: the stale note this comment used to carry (claiming
+// `federation:connect-peer` did not exist) was checked against current source and
+// found to be OUT OF DATE — the handler + preload exposure (`federationConnectPeer`)
+// already exist (src/main/index.ts ~3473, preload.ts ~457). Callers (FederationTab.tsx)
+// have been fixed to use it instead of the federationAcceptInvite stopgap.
 
 import React, { useState } from 'react';
 import type { MnemosynePeer, PeerPhase } from '../../shared/federation-protocol';

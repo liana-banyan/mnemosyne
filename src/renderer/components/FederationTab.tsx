@@ -129,10 +129,8 @@ function MeshVisualizer({ peers, ownId }: { peers: MnemosynePeer[]; ownId: strin
 
 // ─── Peer Roster ──────────────────────────────────────────────────────────────
 // Renders peers as a flex-wrap card grid using PeerCueCard.
-// ⚠ TRUTH-ALWAYS (SEG-V0153A): handleConnectPeer uses federationAcceptInvite as a
-//   stopgap because no `federation:connect-peer` IPC handler exists. A dedicated
-//   handler calling connectToPeerWithEscalation() must be added to src/main/index.ts
-//   and exposed via preload.ts before this button has full connect semantics.
+// BP132 Yoke #22 Addendum A: `federation:connect-peer` IPC handler + preload
+// exposure already exist (confirmed by source read) — see handleConnectPeer below.
 
 function PeerRoster({ peers, onLeave, onConnect }: {
   peers: MnemosynePeer[];
@@ -903,12 +901,13 @@ export function FederationTab() {
     } catch { /* ignore */ }
   };
 
-  // ⚠ TRUTH-ALWAYS (SEG-V0153A): No `federation:connect-peer` IPC handler exists.
-  // Using federationAcceptInvite as a STOPGAP. A dedicated IPC handler wiring
-  // connectToPeerWithEscalation() is needed in src/main/index.ts + preload.ts.
+  // BP132 Yoke #22 Addendum A: the `federation:connect-peer` IPC handler + preload
+  // exposure (`federationConnectPeer`) were confirmed to ALREADY EXIST (src/main/index.ts
+  // ~3473, preload.ts ~457) — this comment previously claimed otherwise (SEG-V0153A/BP079
+  // era, now stale). The real gap was that this component never called it. Fixed.
   const handleConnectPeer = async (peerId: string) => {
     try {
-      await (window as any).amplify?.federationAcceptInvite?.(peerId);
+      await (window as any).amplify?.federationConnectPeer?.(peerId);
       await loadMesh();
     } catch { /* ignore — visual feedback is handled by PeerCueCard's local state */ }
   };
