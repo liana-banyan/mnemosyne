@@ -60,8 +60,11 @@ function getSupabaseClient() {
   const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const ws = require('ws') as typeof import('ws');
-  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  // BP132 Yoke #23 Task 6: shared helper so a stranger's install still authenticates.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getAnonKey, getSupabaseUrl } = require('./shared/anon_key') as typeof import('./shared/anon_key');
+  const url = getSupabaseUrl();
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
   if (!url || !key) throw new Error('[mesh-dispatcher] Supabase env vars not set');
   return createClient(url, key, {
     auth: { persistSession: false },

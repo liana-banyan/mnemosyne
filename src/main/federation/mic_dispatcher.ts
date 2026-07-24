@@ -23,6 +23,7 @@ import type {
 import { discoverPeers } from './constellation_discovery';
 import { randomBytes, createHash } from 'crypto';
 import { networkInterfaces } from 'os';
+import { getAnonKey } from '../shared/anon_key';
 
 const PEER_SERVER_PORT = 7474;
 
@@ -117,10 +118,8 @@ async function dispatchDomainViaRelay(
     };
   }
 
-  const anonKey =
-    process.env.SUPABASE_ANON_KEY ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-    '';
+  // BP132 Yoke #23 Task 6: shared helper so a stranger's install still authenticates.
+  const anonKey = getAnonKey();
 
   const tryRoute = async (base: string): Promise<Response | null> => {
     try {

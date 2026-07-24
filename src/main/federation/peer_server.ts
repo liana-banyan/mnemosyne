@@ -42,6 +42,7 @@ import {
   getArtifactServerPort,
 } from '../identity/peerIdentityCollector';
 import { getLBSession } from '../lb_auth';
+import { getAnonKey, getAnonKeyHeaders } from '../shared/anon_key';
 
 export const PEER_SERVER_PORT = 7474;
 const PRESENCE_INTERVAL_MS = 60_000;
@@ -256,9 +257,13 @@ async function publishPresence(): Promise<void> {
   // true network-level failure (fetch threw before a response was received).
   const tryPublish = async (base: string): Promise<{ ok: boolean; tier?: string; httpStatus?: number; httpBody?: string; error?: string }> => {
     try {
+      // BP132 Yoke #23 Task 6: this call previously sent NO apikey/Authorization header
+      // at all, which every Supabase edge function with JWT verification enabled (the
+      // default) rejects as 401 UNAUTHORIZED_NO_AUTH_HEADER before the handler even runs.
+      // This is very likely THE reason peer_presence stayed at 0 rows across Yoke #21/#22.
       const res = await fetch(`${base}/wan-relay-publish`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAnonKeyHeaders({ 'Content-Type': 'application/json' }),
         body: postBody,
         signal: AbortSignal.timeout(10_000),
       });
@@ -488,7 +493,7 @@ export function startPeerServer(): void {
           ? process.env.RELAY_BASE
           : 'https://relay.lianabanyan.com/functions/v1';
         const relayBaseFallback = 'https://ruuxzilgmuwddcofqecc.supabase.co/functions/v1';
-        const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+        const supabaseAnonKey = getAnonKey();
         _heartbeatWorker = new Worker(workerPath, {
           workerData: {
             supabaseUrl: _supabaseUrl,

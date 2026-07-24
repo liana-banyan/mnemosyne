@@ -17,6 +17,7 @@ import { createHash, createPrivateKey, sign } from 'node:crypto';
 import ws from 'ws';
 import { getOrCreateKeypair } from '../thorax/ed25519_keypair';
 import { getRingBearerIdentity } from './ring_bearer_keygen';
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 
 export type ContributionType =
   | 'battery_dispatch_submission'
@@ -54,8 +55,8 @@ export interface StampCertifyResult {
 function getSupabaseClient() {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
-  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  const url = getSupabaseUrl();
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
   if (!url || !key) throw new Error('[stamp_certify] Supabase env vars not set');
   return createClient(url, key, { auth: { persistSession: false }, realtime: { transport: ws as unknown as typeof WebSocket } });
 }

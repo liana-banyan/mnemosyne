@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { powerMonitor } from 'electron';
 import ws from 'ws';
 import { getRingBearerIdentity } from './ring_bearer_keygen';
+import { getAnonKey, getAnonKeyHeaders, getSupabaseUrl } from '../shared/anon_key';
 
 const RELAY_BASE = process.env.SUBSTRATE_AWAKENS_RELAY ?? 'https://relay.lianabanyan.com/functions/v1';
 const RELAY_PEER_LIST_TIMEOUT_MS = 8_000;
@@ -27,9 +28,13 @@ async function resolveFirstRelayPeer(localPeerId: string): Promise<string | null
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), RELAY_PEER_LIST_TIMEOUT_MS);
     try {
+      // BP132 Yoke #23 Task 6: this call previously sent no apikey/Authorization header at
+      // all -- same 401 UNAUTHORIZED_NO_AUTH_HEADER bug class found in peer_server.ts's
+      // publishPresence(). An edge function with JWT verification enabled rejects it before
+      // reaching the handler, so peer resolution silently always failed.
       const resp = await fetch(`${RELAY_BASE}/wan-relay-list-peers`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAnonKeyHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ peer_id: localPeerId }),
         signal: controller.signal,
       });
@@ -53,8 +58,8 @@ let diffLoopTimer: ReturnType<typeof setInterval> | null = null;
 function getSupabaseClient() {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
-  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  const url = getSupabaseUrl();
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
   if (!url || !key) throw new Error('[mesh_diff_loop] Supabase env vars not set');
   return createClient(url, key, { auth: { persistSession: false }, realtime: { transport: ws as unknown as typeof WebSocket } });
 }

@@ -13,6 +13,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { getStablePeerId } from './federation/peer-discovery';
+import { getAnonKey, getSupabaseUrl } from './shared/anon_key';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -100,8 +101,8 @@ function clearSession(): void {
 // ─── Supabase helpers (no SDK dependency — uses fetch) ────────────────────────
 
 function getSupabaseConfig(): { url: string; anonKey: string; deviceLinkFnUrl: string } | null {
-  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const url = getSupabaseUrl();
+  const anonKey = getAnonKey();
   if (!url || !anonKey) {
     console.warn('[lb_auth] SUPABASE_URL or SUPABASE_ANON_KEY not set — LB Account link unavailable');
     return null;

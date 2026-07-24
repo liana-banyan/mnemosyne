@@ -8,6 +8,7 @@
 
 import { queryEbletStore } from '../mnem_eblet_store';
 import { SubstrateLocalIndex } from '../substrate_router';
+import { getAnonKey } from '../shared/anon_key';
 
 // ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -25,11 +26,14 @@ const SUPABASE_URL =
   process.env.LB_SUPABASE_URL ??
   'https://ruuxzilgmuwddcofqecc.supabase.co';
 
+// BP132 Yoke #23 Task 6: LB_SUPABASE_ANON_KEY override still takes priority if set, but the
+// final fallback is now the shared bundled publishable key instead of '' -- a stranger's
+// install with none of these env vars set now still authenticates.
 const SUPABASE_ANON_KEY =
   process.env.SUPABASE_ANON_KEY ??
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
   process.env.LB_SUPABASE_ANON_KEY ??
-  '';
+  getAnonKey();
 
 const WAKE_TIMEOUT_MS = 12_000;
 

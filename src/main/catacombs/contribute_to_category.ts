@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { getFolderPath } from './folder_bootstrap';
 import { updateManifest } from './manifest_updater';
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 import { logAttribution } from './attribution_log';
 import { getCircleMembership } from '../keys_engines/circle_membership';
 import { runQuorumCheck } from '../keys_engines/quorum_check';
@@ -46,8 +47,9 @@ interface ScramblerResult {
 
 // ---- Constants --------------------------------------------------------------
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? '';
+// BP132 Yoke #23 Task 6: shared helper so a stranger's install still authenticates.
+const SUPABASE_URL = getSupabaseUrl();
+const SUPABASE_ANON_KEY = getAnonKey();
 
 // ---- Stage helpers ----------------------------------------------------------
 
