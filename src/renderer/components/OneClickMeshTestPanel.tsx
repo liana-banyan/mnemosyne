@@ -30,6 +30,8 @@ interface QuestionOutcome {
   machineLabel?: string;
   timedOut?: boolean;
   isAbstain?: boolean;
+  /** BP133 Yoke #24 Task 2: wan_mesh only -- which mechanism produced this outcome. */
+  answeredBy?: 'plow' | 'minor_council' | 'single_shot';
 }
 
 interface PeerAccuracyBreakdown {
@@ -56,6 +58,8 @@ export interface OneClickRunResult {
   livePeersFound?: number;
   wanError?: string;
   substrateEnabled?: boolean;
+  /** BP133 Yoke #24 Task 2: whether the wan_mesh run requested the 12-Blade Column Plow. */
+  plowEnabled?: boolean;
 }
 
 type DispatchModeChoice = 'auto' | 'wan_mesh' | 'local_ollama';
@@ -87,6 +91,13 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
   // BP133 Yoke #24 Task 1: explicit substrate on/off switch. Defaults to OFF so a run's
   // meaning never changes silently -- the Founder must opt in to substrate-assisted answers.
   const [substrateEnabled, setSubstrateEnabled] = useState(false);
+  // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow (wan_mesh only --
+  // has no effect in local_ollama mode, since the plow answerer runs on the RESPONDING
+  // peer's machine). Off by default: the Founder must opt in, matching substrate's pattern.
+  const [plowEnabled, setPlowEnabled] = useState(false);
+  // Condition C (Andon retry loop) vs Condition B (single pass) -- only meaningful when
+  // plowEnabled is true.
+  const [plowAndonEnabled, setPlowAndonEnabled] = useState(false);
   // BP133 Yoke #24 Task 4: question-count control. QUESTION_COUNT_PRESETS[0] (3) is the
   // one-click smoke test; F12 DevTools is unavailable in this build, so this replaces the
   // only prior way to change question count (a console workaround).
@@ -128,6 +139,8 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
         mode,
         substrateEnabled,
         maxTotalQuestions,
+        plowEnabled,
+        plowAndonEnabled,
       });
       if (!resp?.ok) {
         setErrorMsg(resp?.error ?? 'Test run failed to start');
@@ -138,7 +151,7 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
       setErrorMsg(String(e));
       setState('error');
     }
-  }, [mode, substrateEnabled, maxTotalQuestions]);
+  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled]);
 
   const runningAccuracy = liveOutcomes.length > 0
     ? liveOutcomes.filter((o) => o.isCorrect).length / liveOutcomes.length
@@ -202,6 +215,47 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
           (ON injects related topical eblets into the prompt; OFF sends the bare question, no substrate call is made at all)
         </span>
       </label>
+
+      {/* BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow, WAN mode only.
+          Combined with the substrate toggle above, these two switches select Condition
+          A (plow OFF + substrate OFF = single-shot cold), B (plow ON + substrate ON, single
+          pass), or C (plow ON + substrate ON + Andon loop) from Yoke #24's runnable milestone. */}
+      <label
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
+          fontSize: 12, color: mode === 'local_ollama' ? '#475569' : '#94a3b8',
+          cursor: state === 'running' || mode === 'local_ollama' ? 'default' : 'pointer',
+          fontFamily: 'system-ui, sans-serif',
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={plowEnabled}
+          disabled={state === 'running' || mode === 'local_ollama'}
+          onChange={(e) => setPlowEnabled(e.target.checked)}
+        />
+        12-Blade Column Plow {plowEnabled ? 'ON' : 'OFF'} (WAN only)
+        <span style={{ color: '#475569', fontSize: 10 }}>
+          (ON: the answering peer runs the full specialist-swarm + Miner/Saladin/Furnace pipeline instead of a single Ollama call. Slower, per-question timeout auto-raised to 5min)
+        </span>
+      </label>
+      {plowEnabled && (
+        <label
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, marginLeft: 20,
+            fontSize: 12, color: '#94a3b8', cursor: state === 'running' ? 'default' : 'pointer',
+            fontFamily: 'system-ui, sans-serif',
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={plowAndonEnabled}
+            disabled={state === 'running'}
+            onChange={(e) => setPlowAndonEnabled(e.target.checked)}
+          />
+          Andon retry loop {plowAndonEnabled ? 'ON (Condition C)' : 'OFF (Condition B, single pass)'}
+        </label>
+      )}
 
       {/* BP133 Yoke #24 Task 4: question-count control -- no DevTools console workaround
           needed, F12 dev-tools is unavailable in this build. */}
@@ -271,6 +325,7 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
               <div key={`${o.question_id}-${o.peerId ?? 'local'}-${i}`} style={{ fontSize: 11, color: o.isCorrect ? '#4ade80' : '#f87171', display: 'flex', gap: 8 }}>
                 <span>{o.isCorrect ? '✓' : o.timedOut ? '⏱' : o.isAbstain ? '·' : '✗'}</span>
                 {o.machineLabel && <span style={{ color: '#38bdf8' }}>[{o.machineLabel}]</span>}
+                {o.answeredBy === 'plow' && <span style={{ color: '#facc15' }}>[plow]</span>}
                 <span style={{ color: '#64748b' }}>[{o.category}]</span>
                 <span style={{ color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {o.question}
@@ -303,6 +358,14 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
               <span style={{ color: result.substrateEnabled ? '#6ee7b7' : '#94a3b8', fontWeight: 700 }}>
                 {result.substrateEnabled ? 'ON' : 'OFF'}
               </span>
+              {result.dispatchMode === 'wan_mesh' && (
+                <>
+                  {' · answered by '}
+                  <span style={{ color: result.plowEnabled ? '#facc15' : '#94a3b8', fontWeight: 700 }}>
+                    {result.plowEnabled ? '12-Blade Plow' : 'single-shot'}
+                  </span>
+                </>
+              )}
             </div>
             <div style={{ fontSize: 10, color: '#475569', marginTop: 4, fontStyle: 'italic' }}>
               {result.datasetLabel}
