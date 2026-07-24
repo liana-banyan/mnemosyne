@@ -88,6 +88,11 @@ export interface OneClickQuestionOutcome {
    *  prompt sent to the model for this specific question (local_ollama mode only -- for
    *  wan_mesh outcomes this is decided by the responder and is not echoed back today). */
   substrateContextInjected?: boolean;
+  /** BP133 Yoke #24 Task 2: wan_mesh mode only -- which mechanism produced this outcome. */
+  answeredBy?: 'plow' | 'minor_council' | 'single_shot';
+  /** BP133 Yoke #24 Task 2: wan_mesh + plow mode only -- the plow's full audit trace, present
+   *  only when answeredBy === 'plow'. Persisted verbatim into the Task 2.3 receipt file. */
+  plowTrace?: Record<string, unknown> | null;
 }
 
 export interface PeerAccuracyBreakdown {
@@ -120,6 +125,10 @@ export interface OneClickRunResult {
    *  Surfaced so a result can never be misread as substrate-off when it was on, or vice
    *  versa -- Truth-Always requirement, same rationale as dispatchMode. */
   substrateEnabled: boolean;
+  /** BP133 Yoke #24 Task 2: whether the 12-Blade Column Plow was requested as the wan_mesh
+   *  answering mechanism for this run (false/absent means single-shot, the pre-Task-2
+   *  default). Surfaced so a result can never be misread as plow-answered when it was not. */
+  plowEnabled?: boolean;
   /** BP133 Yoke #24 Task 3: true when the run was stopped early via requestCancel() rather
    *  than completing all questions -- Truth-Always: a partial run must say so, never be
    *  presented as if it ran to completion. */
@@ -242,11 +251,13 @@ export function loadQuestions(perDomain: number = PER_DOMAIN_DEFAULT): LoadedQue
   return { questions: loadBundledQuestions(), source: 'bundled_subset' };
 }
 
-function letterFromIndex(i: number): string {
+// BP133 Yoke #24 Task 2: exported so plow_mc_answerer.ts's MC letter extraction reuses the
+// exact same parsing convention as local/single-shot dispatch, instead of a second copy.
+export function letterFromIndex(i: number): string {
   return String.fromCharCode(65 + i);
 }
 
-function parseLetterFromModelText(text: string, optionCount: number): string | null {
+export function parseLetterFromModelText(text: string, optionCount: number): string | null {
   const validLetters = Array.from({ length: optionCount }, (_, i) => letterFromIndex(i));
   const trimmed = text.trim();
   // Prefer an exact single-letter answer, then "Answer: X" / "(X)" patterns, then
@@ -383,6 +394,37 @@ async function runLocalMode(
   return outcomes;
 }
 
+/** BP133 Yoke #24 Task 2.3: persist a scored, auditable receipt for every plow-answered WAN
+ *  question -- the exact capture the flagship THIRD_PLOW_42Q_BRIDGED_BP093 run never made
+ *  (full process telemetry saved, but no chosen answer, no correctness field, un-scoreable
+ *  forever). Every question this function is called for MUST already have ground truth
+ *  available (asker-side scoring, per Task 2's "remote peer never sees the answer key"
+ *  requirement) -- correctness is computed locally, never trusted from the peer. */
+function persistPlowReceipt(entry: {
+  sessionId: string;
+  questionId: number;
+  domain: string;
+  chosenAnswer: string | null;
+  correctAnswer: string;
+  correct: boolean;
+  substrateEnabled: boolean;
+  plowAndonEnabled: boolean;
+  peerId?: string;
+  machineLabel?: string;
+  plowTrace?: Record<string, unknown> | null;
+}): void {
+  try {
+    const dir = join(app.getPath('userData'), 'plow_receipts');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
+    appendFileSync(join(dir, `${entry.sessionId}.jsonl`), line, 'utf8');
+  } catch (e) {
+    // Non-fatal per Truth-Always -- a receipt-write failure must not silently swallow the
+    // scored outcome from the in-memory result, but it must be visible in logs, not silent.
+    console.error('[one_click_mmlu_pro] plow receipt persistence failed (non-fatal):', e);
+  }
+}
+
 /** Dispatches each question to every live peer in parallel; one outcome per (question, peer). */
 async function runWanMode(
   questions: MmluProQuestion[],
@@ -390,6 +432,8 @@ async function runWanMode(
   sessionId: string,
   perQuestionTimeoutMs: number,
   substrateEnabled: boolean,
+  plowEnabled: boolean,
+  plowAndonEnabled: boolean,
 ): Promise<OneClickQuestionOutcome[]> {
   const outcomes: OneClickQuestionOutcome[] = [];
   const totalUnits = questions.length * peers.length;
@@ -402,7 +446,9 @@ async function runWanMode(
       type: 'question-start', index: unitIndex, total: totalUnits, question: q.question, category: q.category,
     });
 
-    const wanOutcome = await dispatchQuestionToWanPeers(q, peers, sessionId, perQuestionTimeoutMs, substrateEnabled);
+    const wanOutcome = await dispatchQuestionToWanPeers(
+      q, peers, sessionId, perQuestionTimeoutMs, substrateEnabled, plowEnabled, plowAndonEnabled,
+    );
 
     for (const pa of wanOutcome.peerAnswers) {
       const outcome: OneClickQuestionOutcome = {
@@ -419,10 +465,33 @@ async function runWanMode(
         machineLabel: pa.machineLabel,
         timedOut: pa.timedOut,
         isAbstain: pa.isAbstain,
+        answeredBy: pa.answeredBy,
+        plowTrace: pa.plowTrace,
       };
       outcomes.push(outcome);
       unitIndex++;
       broadcast('mesh-test:progress', { type: 'question-complete', index: unitIndex - 1, total: totalUnits, outcome });
+
+      // BP133 Yoke #24 Task 2.3: persist a scored receipt for every plow-answered outcome.
+      // Deliberately scoped to answeredBy === 'plow' rather than every WAN outcome -- this is
+      // the exact capture the Yoke calls out as previously missing, and single-shot/Minor
+      // Council outcomes are already fully captured in the in-memory OneClickRunResult (this
+      // is a one-click UI test, not a headless overnight run at risk of losing that object).
+      if (pa.answeredBy === 'plow') {
+        persistPlowReceipt({
+          sessionId,
+          questionId: q.question_id,
+          domain: q.category,
+          chosenAnswer: pa.answerLetter,
+          correctAnswer: wanOutcome.correctLetter,
+          correct: pa.isCorrect,
+          substrateEnabled,
+          plowAndonEnabled,
+          peerId: pa.peerId,
+          machineLabel: pa.machineLabel,
+          plowTrace: pa.plowTrace,
+        });
+      }
     }
   }
   return outcomes;
@@ -476,6 +545,15 @@ export async function runOneClickMmluProTest(config: {
    * is unchanged unless a caller explicitly opts in. See substrate_toggle.ts for the full
    * correctness-gate rationale (cache-trap analysis, single-injection-site guarantee). */
   substrateEnabled?: boolean;
+  /** BP133 Yoke #24 Task 2: explicit opt-in to answer wan_mesh questions via the 12-Blade
+   * Column Plow instead of single-shot. Ignored (has no effect) in local_ollama mode -- the
+   * plow answerer runs on the RESPONDING peer's machine, so a local-only run has no responder
+   * to invoke it on. Defaults to false; the existing single-shot default is unchanged unless a
+   * caller explicitly opts in. See plow_mc_answerer.ts and index.ts's startRelayRoutePoll. */
+  plowEnabled?: boolean;
+  /** BP133 Yoke #24 Task 2: Condition C (Andon retry) vs Condition B (single pass) when
+   * plowEnabled is true. Ignored when plowEnabled is false. Defaults to false. */
+  plowAndonEnabled?: boolean;
 }): Promise<OneClickRunResult> {
   if (running) {
     throw new Error('A one-click test run is already in progress');
@@ -495,6 +573,8 @@ export async function runOneClickMmluProTest(config: {
   const model = config.model ?? 'gemma4:12b';
   const requestedMode = config.mode ?? 'auto';
   const substrateEnabled = config.substrateEnabled ?? false;
+  const plowEnabled = config.plowEnabled ?? false;
+  const plowAndonEnabled = config.plowAndonEnabled ?? false;
   const { questions: allQuestionsUncapped, source } = loadQuestions(config.questionsPerDomain ?? PER_DOMAIN_DEFAULT);
   // BP133 Yoke #24 Task 4: total-question cap, applied uniformly before mode dispatch so a
   // "3-question smoke test" is one explicit number in both local_ollama and wan_mesh modes.
@@ -530,6 +610,7 @@ export async function runOneClickMmluProTest(config: {
         livePeersFound: 0,
         wanError,
         substrateEnabled,
+        plowEnabled,
       };
       broadcast('mesh-test:progress', { type: 'complete', result: emptyResult });
       return emptyResult;
@@ -546,7 +627,17 @@ export async function runOneClickMmluProTest(config: {
     sessionId = generateSessionId();
     questions = downsampleQuestions(allQuestions, config.wanMaxQuestions ?? 20);
     broadcast('mesh-test:progress', { type: 'start', total: questions.length * livePeers.length });
-    outcomes = await runWanMode(questions, livePeers, sessionId, config.wanPerQuestionTimeoutMs ?? 90_000, substrateEnabled);
+    // BP133 Yoke #24 Task 2 requirement 4: raise the per-question timeout for plow mode. The
+    // pre-existing 90s default was tuned for single-shot; the plow's 9-specialist staggered
+    // swarm alone takes >=8s (FireGuard stagger) before any external API latency, plus
+    // Saladin's serial per-candidate Ollama calls and up to MAX_ANDON_RETRIES full retries in
+    // Condition C. 300s is a defensible default headroom, not a measured ceiling -- still
+    // explicitly overridable via wanPerQuestionTimeoutMs for a caller who has better data.
+    const defaultTimeoutMs = plowEnabled ? 300_000 : 90_000;
+    outcomes = await runWanMode(
+      questions, livePeers, sessionId, config.wanPerQuestionTimeoutMs ?? defaultTimeoutMs,
+      substrateEnabled, plowEnabled, plowAndonEnabled,
+    );
   } else {
     broadcast('mesh-test:progress', { type: 'start', total: questions.length });
     outcomes = await runLocalMode(questions, ollamaBaseUrl, model, substrateEnabled);
@@ -557,11 +648,18 @@ export async function runOneClickMmluProTest(config: {
   const peerBreakdown = dispatchMode === 'wan_mesh' ? computePeerBreakdown(outcomes) : undefined;
 
   const substrateSuffix = substrateEnabled ? ' [substrate ON]' : ' [substrate OFF]';
+  // BP133 Yoke #24 Task 2: label which of A/B/C the run actually was -- Truth-Always, this
+  // string ends up on the result the Founder/Bishop reads first.
+  const conditionSuffix = dispatchMode !== 'wan_mesh'
+    ? ''
+    : !plowEnabled
+      ? ' [single-shot]'
+      : plowAndonEnabled ? ' [plow: Condition C, Andon loop]' : ' [plow: Condition B, single pass]';
   const datasetLabel = (dispatchMode === 'wan_mesh'
     ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions dispatched to ${livePeers.length} live WAN peer(s) via relay_routes/relay_route_replies (session ${sessionId}) -- ${outcomes.length} total question-peer answers`
     : source === 'full_corpus_live'
       ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, evenly sampled live from the full ~11,000-question corpus (dev-machine-only path)`
-      : `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, bundled subset shipped with the app (resources/mmlu_pro_bundled/)`) + substrateSuffix;
+      : `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, bundled subset shipped with the app (resources/mmlu_pro_bundled/)`) + substrateSuffix + conditionSuffix;
 
   const result: OneClickRunResult = {
     startedAt,
@@ -577,6 +675,7 @@ export async function runOneClickMmluProTest(config: {
     peerBreakdown,
     livePeersFound: dispatchMode === 'wan_mesh' ? livePeers.length : undefined,
     substrateEnabled,
+    plowEnabled: dispatchMode === 'wan_mesh' ? plowEnabled : undefined,
     cancelled: cancelRequested,
   };
 
