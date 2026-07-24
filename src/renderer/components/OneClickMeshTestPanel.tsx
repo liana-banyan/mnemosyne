@@ -55,6 +55,7 @@ export interface OneClickRunResult {
   peerBreakdown?: PeerAccuracyBreakdown[];
   livePeersFound?: number;
   wanError?: string;
+  substrateEnabled?: boolean;
 }
 
 type DispatchModeChoice = 'auto' | 'wan_mesh' | 'local_ollama';
@@ -83,6 +84,13 @@ export interface OneClickMeshTestPanelProps {
 export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelProps): React.ReactElement {
   const [state, setState] = useState<'idle' | 'running' | 'complete' | 'error'>('idle');
   const [mode, setMode] = useState<DispatchModeChoice>('auto');
+  // BP133 Yoke #24 Task 1: explicit substrate on/off switch. Defaults to OFF so a run's
+  // meaning never changes silently -- the Founder must opt in to substrate-assisted answers.
+  const [substrateEnabled, setSubstrateEnabled] = useState(false);
+  // BP133 Yoke #24 Task 4: question-count control. QUESTION_COUNT_PRESETS[0] (3) is the
+  // one-click smoke test; F12 DevTools is unavailable in this build, so this replaces the
+  // only prior way to change question count (a console workaround).
+  const [maxTotalQuestions, setMaxTotalQuestions] = useState<number>(20);
   const [total, setTotal] = useState(0);
   const [doneCount, setDoneCount] = useState(0);
   const [peersDiscovered, setPeersDiscovered] = useState<number | null>(null);
@@ -116,7 +124,11 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
     setErrorMsg(null);
     setPeersDiscovered(null);
     try {
-      const resp = await (window as any).amplify?.meshTestRunOneClick?.({ mode });
+      const resp = await (window as any).amplify?.meshTestRunOneClick?.({
+        mode,
+        substrateEnabled,
+        maxTotalQuestions,
+      });
       if (!resp?.ok) {
         setErrorMsg(resp?.error ?? 'Test run failed to start');
         setState('error');
@@ -126,7 +138,7 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
       setErrorMsg(String(e));
       setState('error');
     }
-  }, [mode]);
+  }, [mode, substrateEnabled, maxTotalQuestions]);
 
   const runningAccuracy = liveOutcomes.length > 0
     ? liveOutcomes.filter((o) => o.isCorrect).length / liveOutcomes.length
@@ -168,6 +180,64 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
         {modeButton('auto', 'Auto (WAN if live)')}
         {modeButton('wan_mesh', 'WAN Mesh only')}
         {modeButton('local_ollama', 'Local Ollama only')}
+      </div>
+
+      {/* BP133 Yoke #24 Task 1: explicit substrate on/off switch, honored on both local and
+          WAN dispatch (see src/main/mesh_test/substrate_toggle.ts). Off by default. */}
+      <label
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
+          fontSize: 12, color: '#94a3b8', cursor: state === 'running' ? 'default' : 'pointer',
+          fontFamily: 'system-ui, sans-serif',
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={substrateEnabled}
+          disabled={state === 'running'}
+          onChange={(e) => setSubstrateEnabled(e.target.checked)}
+        />
+        Substrate context {substrateEnabled ? 'ON' : 'OFF'}
+        <span style={{ color: '#475569', fontSize: 10 }}>
+          (ON injects related topical eblets into the prompt; OFF sends the bare question, no substrate call is made at all)
+        </span>
+      </label>
+
+      {/* BP133 Yoke #24 Task 4: question-count control -- no DevTools console workaround
+          needed, F12 dev-tools is unavailable in this build. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+        <span style={{ fontSize: 11, color: '#64748b' }}>Questions:</span>
+        {[3, 10, 20, 50].map((n) => (
+          <button
+            key={n}
+            onClick={() => setMaxTotalQuestions(n)}
+            disabled={state === 'running'}
+            style={{
+              background: maxTotalQuestions === n ? '#10b981' : 'transparent',
+              color: maxTotalQuestions === n ? '#0d1117' : '#94a3b8',
+              border: `1px solid ${maxTotalQuestions === n ? '#10b981' : '#1e2a38'}`,
+              borderRadius: 6, padding: '3px 9px', fontSize: 11, fontWeight: 600,
+              cursor: state === 'running' ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            {n}
+          </button>
+        ))}
+        <input
+          type="number"
+          min={1}
+          max={500}
+          value={maxTotalQuestions}
+          disabled={state === 'running'}
+          onChange={(e) => {
+            const v = parseInt(e.target.value, 10);
+            if (!Number.isNaN(v) && v > 0) setMaxTotalQuestions(v);
+          }}
+          style={{
+            width: 52, background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 6,
+            color: '#e2e8f0', fontSize: 11, padding: '3px 6px', fontFamily: 'system-ui, sans-serif',
+          }}
+        />
       </div>
 
       {state !== 'running' && (
@@ -229,6 +299,10 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
               {result.dispatchMode === 'wan_mesh'
                 ? `dispatched across ${result.livePeersFound ?? '?'} live WAN peer(s)`
                 : result.dispatchMode === 'local_ollama' ? 'dispatched locally on this machine' : result.dispatchMode}
+              {' · substrate '}
+              <span style={{ color: result.substrateEnabled ? '#6ee7b7' : '#94a3b8', fontWeight: 700 }}>
+                {result.substrateEnabled ? 'ON' : 'OFF'}
+              </span>
             </div>
             <div style={{ fontSize: 10, color: '#475569', marginTop: 4, fontStyle: 'italic' }}>
               {result.datasetLabel}
