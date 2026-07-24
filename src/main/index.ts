@@ -36,6 +36,8 @@ import { spawn } from 'child_process';
 import { tmpdir, homedir } from 'os';
 import { ollamaManager } from './ollama_manager';
 import { SubstrateAPIServer, API_PORT } from './substrate_api';
+// BP133 Yoke #24 Task 1: single authoritative substrate toggle for the WAN responder path.
+import { applySubstrateToggle, isDebugPromptLoggingEnabled, buildOutboundPromptLogLine } from './mesh_test/substrate_toggle';
 import { FederationClient } from './federation_client';
 import { getMoneyPennyURL, getLocalIPs } from './mobile_pwa';
 import { AutoUpdateManager, type UpdateState } from './auto_updater';
@@ -4692,6 +4694,10 @@ function registerIPCHandlers(): void {
     mode?: 'auto' | 'local_ollama' | 'wan_mesh';
     wanMaxQuestions?: number;
     wanPerQuestionTimeoutMs?: number;
+    // BP133 Yoke #24 Task 1: single authoritative substrate toggle for this run.
+    substrateEnabled?: boolean;
+    // BP133 Yoke #24 Task 4: caps total question count for this run (e.g. 3 for a smoke test).
+    maxTotalQuestions?: number;
   }) => {
     try {
       const { runOneClickMmluProTest } = await import('./mesh_test/one_click_mmlu_pro');
@@ -4705,6 +4711,20 @@ function registerIPCHandlers(): void {
   safeHandle('mesh-test:is-active', async () => {
     const { isOneClickRunActive } = await import('./mesh_test/one_click_mmlu_pro');
     return { active: isOneClickRunActive() };
+  });
+
+  // BP133 Yoke #24 Task 3: Diagnostic terminal `stop` and `peers` commands. Read-only
+  // (peers) or cooperative-cancel-only (stop) -- neither executes arbitrary input, both are
+  // thin wrappers around functions already used by the one-click test itself.
+  safeHandle('mesh-test:stop', async () => {
+    const { requestOneClickCancel } = await import('./mesh_test/one_click_mmlu_pro');
+    return requestOneClickCancel();
+  });
+
+  safeHandle('mesh-test:list-peers', async () => {
+    const { discoverLiveWanPeers } = await import('./mesh_test/wan_dispatch');
+    const peers = await discoverLiveWanPeers();
+    return { ok: true, peers };
   });
 
   // BP132 Yoke #22 Addendum A — cue_card_templates read (data-driven CueDeckCardRenderer).
@@ -5875,6 +5895,46 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           const tiebreakerModel: string = typeof payload.tiebreaker_model === 'string'
             ? (payload.tiebreaker_model as string) : 'qwen2.5:7b';
 
+          // BP133 Yoke #24 Task 1: single authoritative substrate toggle, responder side.
+          // The asker (wan_dispatch.ts) sets payload.substrate_enabled explicitly; this is
+          // the ONLY place in this function that decides whether substrate context is
+          // fetched, and applySubstrateToggle makes zero eblet-store calls when it is false
+          // -- see substrate_toggle.ts for the full correctness-gate rationale. The SAME
+          // effectivePrompt (not the raw `prompt`) is used below in BOTH the Minor Council
+          // branch and the baseline single-shot branch, so the flag is honored everywhere
+          // this function calls Ollama, not just one of the two paths.
+          const substrateEnabled: boolean = payload.substrate_enabled === true;
+          const domainForSubstrate: string = typeof payload.domain === 'string' ? payload.domain : 'general';
+          const { prompt: effectivePrompt, contextInjected, ebletCount } = await applySubstrateToggle(
+            prompt, prompt, domainForSubstrate, substrateEnabled,
+          );
+          if (isDebugPromptLoggingEnabled()) {
+            try {
+              const debugDir = join(app.getPath('userData'), 'substrate');
+              if (!existsSync(debugDir)) mkdirSync(debugDir, { recursive: true });
+              appendFileSync(
+                join(debugDir, 'debug_outbound_prompts.jsonl'),
+                buildOutboundPromptLogLine({
+                  ts: new Date().toISOString(),
+                  source: 'wan_responder',
+                  routeId: route.id,
+                  sessionId: route.session_id ?? undefined,
+                  mode: plowMaxIter > 0 ? 'minor_council' : 'single_shot',
+                  model: plowMaxIter > 0 ? 'gemma4:12b(x3 council)' : (isTiebreaker ? tiebreakerModel : 'gemma4:12b'),
+                  substrateEnabled,
+                  contextInjected,
+                  ebletCount,
+                  domain: domainForSubstrate,
+                  promptChars: effectivePrompt.length,
+                  prompt: effectivePrompt,
+                }) + '\n',
+                'utf8',
+              );
+            } catch (e) {
+              console.warn('[relay-poll] debug prompt log write failed (non-fatal):', e);
+            }
+          }
+
           let answer: string | null = null;
           let plowIterations = 0;
           let councilVariance = 0;
@@ -5959,7 +6019,8 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                       model: m,
-                      prompt,
+                      // BP133 Yoke #24 Task 1: substrate-gated prompt, not the raw payload prompt.
+                      prompt: effectivePrompt,
                       stream: false,
                       keep_alive: '24h',
                       options: { temperature: memberTemperature },
@@ -6056,7 +6117,8 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
             const ollamaRes = await fetch('http://localhost:11434/api/generate', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model, prompt, stream: false, keep_alive: '24h' }),
+              // BP133 Yoke #24 Task 1: substrate-gated prompt, not the raw payload prompt.
+              body: JSON.stringify({ model, prompt: effectivePrompt, stream: false, keep_alive: '24h' }),
               // D6a: 8-min hard ceiling per ollama call — prevents relay-poll worker hang on frozen model
               signal: AbortSignal.timeout(480_000),
             });
@@ -6096,6 +6158,10 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 escalation_eligible: true,
                 plow_loop_iterations: plowIterations,
                 legacy_null: null,
+                // BP133 Yoke #24 Task 1: Truth-Always -- a result can never be misread as
+                // substrate-on/off or context-injected/not from outside this function.
+                substrate_enabled: substrateEnabled,
+                substrate_context_injected: contextInjected,
               } : {
                 answer,
                 plow_loop_iterations: plowIterations,
@@ -6104,6 +6170,8 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 council_votes_per_iteration: councilVotesPerIteration,
                 approaching_timeout_signal_sent: approachingTimeoutSignalSent,
                 is_star_chamber: isStarChamber,
+                substrate_enabled: substrateEnabled,
+                substrate_context_injected: contextInjected,
               },
               processing_ms: processingMs,
             }),
