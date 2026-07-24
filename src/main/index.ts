@@ -4698,6 +4698,9 @@ function registerIPCHandlers(): void {
     substrateEnabled?: boolean;
     // BP133 Yoke #24 Task 4: caps total question count for this run (e.g. 3 for a smoke test).
     maxTotalQuestions?: number;
+    // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow (wan_mesh only).
+    plowEnabled?: boolean;
+    plowAndonEnabled?: boolean;
   }) => {
     try {
       const { runOneClickMmluProTest } = await import('./mesh_test/one_click_mmlu_pro');
@@ -5908,6 +5911,17 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           const { prompt: effectivePrompt, contextInjected, ebletCount } = await applySubstrateToggle(
             prompt, prompt, domainForSubstrate, substrateEnabled,
           );
+
+          // BP133 Yoke #24 Task 2: explicit opt-in to answer this question via the 12-Blade
+          // Column Plow (plow_mc_answerer.ts) instead of single-shot or Minor Council. Default
+          // is false/absent -- an old or non-plow-aware asker never silently gets plow behavior.
+          // plowAndonEnabled distinguishes Condition B (single pass, no retry) from Condition C
+          // (retry with widened specialists on gate failure) -- both conditions run the SAME
+          // plow machinery, differing only in whether the Andon cord is allowed to fire.
+          const plowEnabled: boolean = payload.plow_enabled === true;
+          const plowAndonEnabled: boolean = payload.plow_andon_enabled === true;
+          const researchQuery: string = typeof payload.question_text === 'string' ? payload.question_text : prompt;
+          const choiceCountForPlow: number = typeof payload.choice_count === 'number' ? payload.choice_count : 10;
           if (isDebugPromptLoggingEnabled()) {
             try {
               const debugDir = join(app.getPath('userData'), 'substrate');
@@ -5919,8 +5933,8 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                   source: 'wan_responder',
                   routeId: route.id,
                   sessionId: route.session_id ?? undefined,
-                  mode: plowMaxIter > 0 ? 'minor_council' : 'single_shot',
-                  model: plowMaxIter > 0 ? 'gemma4:12b(x3 council)' : (isTiebreaker ? tiebreakerModel : 'gemma4:12b'),
+                  mode: plowEnabled ? 'canonical_plow' : plowMaxIter > 0 ? 'minor_council' : 'single_shot',
+                  model: plowEnabled ? 'gemma4:12b(canonical plow)' : plowMaxIter > 0 ? 'gemma4:12b(x3 council)' : (isTiebreaker ? tiebreakerModel : 'gemma4:12b'),
                   substrateEnabled,
                   contextInjected,
                   ebletCount,
@@ -5941,8 +5955,67 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           let approachingTimeoutSignalSent = false;
           // BP093 Phase 3: Minor Council receipt per iteration
           const councilVotesPerIteration: Array<{ iter: number; valid: number; invalid: number; refine: number }> = [];
+          // BP133 Yoke #24 Task 2: 12-Blade Column Plow trace, populated only when plowEnabled.
+          // Surfaced verbatim in answer_json so the asker can persist a scored receipt (Task
+          // 2.3) without needing a second round-trip to reconstruct HOW the answer was reached.
+          let plowTrace: Record<string, unknown> | null = null;
 
-          if (plowMaxIter > 0) {
+          if (plowEnabled) {
+            // BP133 Yoke #24 Task 2: the plow answerer reuses the SAME specialist swarm,
+            // Miner/Saladin/Furnace filters, and Andon/Detective-Team widening cord as
+            // canonical_pipeline.ts's free-text pipeline (see plow_mc_answerer.ts's own header
+            // for why only the final arbitration stage differs). effectivePrompt is passed
+            // through unchanged -- it already carries injected substrate context iff
+            // substrateEnabled is true, via the SAME applySubstrateToggle call used by every
+            // other branch in this function, so Condition A (plow, substrate OFF) is genuinely
+            // cold and Condition B/C (plow, substrate ON) genuinely see the same context a
+            // single-shot substrate-ON run would see.
+            try {
+              const { runCanonicalPlowMcAnswer } = await import('./plow/plow_mc_answerer');
+              const { writeVerifiedEblet } = await import('./mnem_eblet_store');
+              const writeEbletFn = async (eblet: {
+                question: string; answer: string; provenance: string;
+                verified: true; sha256: string; timestamp: number;
+              }): Promise<void> => { await writeVerifiedEblet(eblet); };
+              const plowResult = await runCanonicalPlowMcAnswer(
+                effectivePrompt,
+                researchQuery,
+                {
+                  domain: domainForSubstrate,
+                  ollamaBaseUrl: 'http://127.0.0.1:11434',
+                  model: 'gemma4:12b',
+                  choiceCount: choiceCountForPlow,
+                  andonEnabled: plowAndonEnabled,
+                },
+                writeEbletFn,
+                (stage) => console.log(`[relay-poll] plow-stage route=${route.id.slice(0, 8)}: ${stage}`),
+              );
+              answer = plowResult.chosenLetter; // null = genuine no-answer, handled by abstain logic below
+              plowTrace = {
+                concordance: plowResult.concordance,
+                bmv_score: plowResult.bmvScore,
+                gate_outcomes: plowResult.gateOutcomes,
+                specialists_used: plowResult.specialistsUsed,
+                candidates_raw: plowResult.candidatesRaw,
+                candidates_post_miner: plowResult.candidatesPostMiner,
+                candidates_post_furnace: plowResult.candidatesPostFurnace,
+                andon_triggered: plowResult.andonTriggered,
+                andon_retries: plowResult.andonRetries,
+                eblets_written: plowResult.ebletsWritten,
+                voter_letters: plowResult.voterLetters,
+                latency_ms: plowResult.latencyMs,
+                trace_summary: plowResult.traceSummary,
+                condition: plowAndonEnabled ? 'C_warm_andon' : (substrateEnabled ? 'B_warm_single_pass' : 'A_cold'),
+              };
+              console.log(`[relay-poll] plow-answered route=${route.id.slice(0, 8)} letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
+            } catch (plowErr) {
+              // Truth-Always: a plow crash must surface as an honest abstain, never silently
+              // fall back to single-shot and misreport itself as a plow answer.
+              console.error(`[relay-poll] plow-answerer error route=${route.id.slice(0, 8)}:`, plowErr);
+              answer = null;
+              plowTrace = { error: String(plowErr) };
+            }
+          } else if (plowMaxIter > 0) {
             // BP090 Plow Loop 12 + Minor Council Star Chamber
             // Fires 3 local judges per iteration; plurality-votes for answer letter;
             // iterates until confidence >= 0.75 (variance <= 0.25) or maxIterations reached.
@@ -6136,7 +6209,9 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           // M14 Block 2: structured ABSTAIN when answer is null
           let abstainReason: string | null = null;
           if (answer === null) {
-            if (plowMaxIter > 0 && plowIterations >= plowMaxIter) {
+            if (plowEnabled) {
+              abstainReason = plowTrace?.error ? 'plow_error' : 'plow_discordant_no_majority';
+            } else if (plowMaxIter > 0 && plowIterations >= plowMaxIter) {
               abstainReason = 'max_iterations_reached';
             } else if (plowMaxIter > 0) {
               abstainReason = 'council_did_not_converge';
@@ -6144,6 +6219,12 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
               abstainReason = 'model_empty_response';
             }
           }
+
+          // BP133 Yoke #24 Task 2: Truth-Always requirement -- a result can never be misread
+          // as answered by a different mechanism than it actually was. Surfaced in EVERY
+          // answer_json (success or abstain), all three branches.
+          const answeredBy: 'plow' | 'minor_council' | 'single_shot' =
+            plowEnabled ? 'plow' : plowMaxIter > 0 ? 'minor_council' : 'single_shot';
 
           await fetch(`${supabaseUrl}/rest/v1/relay_route_replies`, {
             method: 'POST',
@@ -6162,6 +6243,8 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 // substrate-on/off or context-injected/not from outside this function.
                 substrate_enabled: substrateEnabled,
                 substrate_context_injected: contextInjected,
+                answered_by: answeredBy,
+                plow_trace: plowTrace,
               } : {
                 answer,
                 plow_loop_iterations: plowIterations,
@@ -6172,6 +6255,8 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 is_star_chamber: isStarChamber,
                 substrate_enabled: substrateEnabled,
                 substrate_context_injected: contextInjected,
+                answered_by: answeredBy,
+                plow_trace: plowTrace,
               },
               processing_ms: processingMs,
             }),
