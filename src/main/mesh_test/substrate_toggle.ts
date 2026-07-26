@@ -54,6 +54,25 @@ export interface PooledSubstrateHit {
   provenance: string;
   /** Which peer this hit came from, for cross-peer provenance in the injected prompt. */
   peerId?: string;
+  /** BP135 Yoke #34 (0.9.7) argument-ledger: additive, optional -- absent on hits pooled from a
+   *  peer running a pre-0.9.7 build, or on eblets written before this Yoke existed. Absent is
+   *  treated identically to 'unverified' (see formatHit() below), never inferred as 'wrong'. */
+  verdict?: 'correct' | 'wrong' | 'unverified';
+  reasoning?: string;
+}
+
+/** BP135 Yoke #34 (0.9.7): shared hit-formatting for both the pooled (federated) and local-only
+ *  substrate branches below. A verdict of 'wrong' is injected ONLY as an explicit avoid-marker
+ *  with its captured reasoning (the METHOD that went wrong, never a bare answer-key letter) --
+ *  never as ordinary authoritative context a voter might mistake for a fact to rely on. Every
+ *  other verdict (including absent/'unverified'/'correct') keeps the pre-0.9.7 plain format. */
+function formatHit(e: { question: string; answer: string; verdict?: 'correct' | 'wrong' | 'unverified'; reasoning?: string; peerId?: string }, i: number): string {
+  const peerTag = e.peerId ? ` (peer ${e.peerId.slice(0, 8)})` : '';
+  if (e.verdict === 'wrong') {
+    const why = e.reasoning ? e.reasoning.slice(0, 300) : e.answer.slice(0, 200);
+    return `[${i + 1}]${peerTag} KNOWN-WRONG (avoid): ${e.question.slice(0, 160)} -- ${why}`;
+  }
+  return `[${i + 1}]${peerTag} ${e.question.slice(0, 160)} -- ${e.answer.slice(0, 200)}`;
 }
 
 /**
@@ -87,7 +106,7 @@ export async function applySubstrateToggle(
   if (pooledHits && pooledHits.length > 0) {
     const pooledBlock = pooledHits
       .slice(0, topK)
-      .map((e, i) => `[${i + 1}]${e.peerId ? ` (peer ${e.peerId.slice(0, 8)})` : ''} ${e.question.slice(0, 160)} -- ${e.answer.slice(0, 200)}`)
+      .map((e, i) => formatHit(e, i))
       .join('\n');
     const prompt = `Context from federated substrate (related background pooled from mesh peers, not this exact question):\n${pooledBlock}\n\n${basePrompt}`;
     return { prompt, contextInjected: true, ebletCount: pooledHits.length };
@@ -101,8 +120,10 @@ export async function applySubstrateToggle(
     if (hits.length === 0) {
       return { prompt: basePrompt, contextInjected: false, ebletCount: 0 };
     }
+    // BP135 Yoke #34 (0.9.7) argument-ledger: hits now carry verdict/reasoning (absent =
+    // 'unverified', same as pre-0.9.7 eblets) -- see formatHit() above for the KNOWN-WRONG rule.
     const contextBlock = hits
-      .map((e, i) => `[${i + 1}] ${e.question.slice(0, 160)} -- ${e.answer.slice(0, 200)}`)
+      .map((e, i) => formatHit(e, i))
       .join('\n');
     const prompt = `Context from substrate (related background, not this exact question):\n${contextBlock}\n\n${basePrompt}`;
     return { prompt, contextInjected: true, ebletCount: hits.length };

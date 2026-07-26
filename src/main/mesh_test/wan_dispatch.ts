@@ -172,6 +172,12 @@ export interface PooledSubstrateHit {
   answer: string;
   provenance: string;
   peerId?: string;
+  /** BP135 Yoke #34 (0.9.7) argument-ledger: additive, optional -- mirrors substrate_toggle.ts's
+   *  PooledSubstrateHit fields (kept deliberately duplicated, not imported, per this file's own
+   *  asymmetric-dependency-direction convention noted above). Absent means 'unverified', same
+   *  treatment as an eblet written before this Yoke existed. */
+  verdict?: 'correct' | 'wrong' | 'unverified';
+  reasoning?: string;
 }
 
 const EBLET_TOPICAL_TIMEOUT_MS = 20_000;
@@ -240,12 +246,18 @@ export async function queryTopicalEbletsFromPeers(
 
       const reply = await pollForReply(cfg, routeId, perPeerTimeoutMs);
       const eblets = (reply?.answerJson?.eblets as
-        Array<{ question: string; answer: string; provenance: string }> | undefined) ?? [];
+        Array<{
+          question: string; answer: string; provenance: string;
+          verdict?: 'correct' | 'wrong' | 'unverified'; reasoning?: string;
+        }> | undefined) ?? [];
       for (const e of eblets) {
         const key = peer.peerId + '::' + e.question.trim().toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        merged.push({ question: e.question, answer: e.answer, provenance: e.provenance, peerId: peer.peerId });
+        merged.push({
+          question: e.question, answer: e.answer, provenance: e.provenance, peerId: peer.peerId,
+          verdict: e.verdict, reasoning: e.reasoning,
+        });
       }
     } catch (err) {
       console.warn(`[wan_dispatch] eblet_topical query to peer=${peer.peerId} failed (non-fatal):`, err);
