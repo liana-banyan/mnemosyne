@@ -117,6 +117,19 @@ export function LeanFederationPanel() {
     setWanPeers([]);
     setConnectStatus(null);
 
+    // BP134 Yoke #30 Task B: zero-config WAN auto-connect. Presence-discovered peers
+    // (shared Supabase peer_presence table, bundled publishable key, no invite-token
+    // exchange) are surfaced + connected automatically on this same user-click gesture,
+    // before reading getMeshState, so a same-cooperative WAN peer (e.g. NJS_3D_FACTORY)
+    // shows up without the user ever pasting/scanning a "Connect Via Invite Token".
+    // Best-effort: a failure here (offline, Supabase unreachable) must not block the
+    // existing LAN/known-WAN scan below.
+    try {
+      await window.amplify?.federationAutoConnectPresence?.();
+    } catch {
+      // Non-fatal: fall through to whatever peers are already known
+    }
+
     try {
       const state = await window.amplify?.getMeshState?.() as {
         peers: Array<{ peerId: string; transport: string; address?: string; phase?: string; displayName?: string }>;
@@ -129,9 +142,19 @@ export function LeanFederationPanel() {
         const lan: PeerSummary[] = [];
         const wan: PeerSummary[] = [];
         for (const p of (state.peers ?? [])) {
+          // BP134 Yoke #30 Task A: PeerTransport is 'lan' | 'wan-relay' (see
+          // shared/federation-protocol.ts) -- there is no 'wan' literal. The previous
+          // `p.transport === 'wan' ? 'wan' : 'lan'` check never matched a relay-connected
+          // peer's real transport value ('wan-relay'), so every relay/foreign-subnet peer
+          // (e.g. NJS_3D_FACTORY, on a different subnet reached via relay) silently fell
+          // into the LAN bucket and "WAN peers" undercounted. Only an explicit 'lan'
+          // transport (real same-subnet UDP discovery, or a presence peer whose
+          // lan_addresses matched our own subnet -- see presence_autoconnect.ts's
+          // sharesLocalSubnet()) is LAN; everything else (relay peers, foreign subnets)
+          // is WAN.
           const entry: PeerSummary = {
             id: p.peerId,
-            transport: p.transport === 'wan' ? 'wan' : 'lan',
+            transport: p.transport === 'lan' ? 'lan' : 'wan',
             address: p.address,
             phase: p.phase ?? 'discovered',
             displayName: p.displayName,

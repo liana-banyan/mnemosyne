@@ -3196,6 +3196,47 @@ function registerIPCHandlers(): void {
     ownPeerId: peerDiscovery ? (() => { const { getStablePeerId: gsp } = require('./federation/peer-discovery'); return gsp(); })() : '',
   }));
 
+  // BP134 Yoke #30 Task B: zero-config WAN auto-connect -- surfaces + connects peers
+  // already present in the shared peer_presence table (bundled publishable key, no
+  // invite-token exchange required to be visible) instead of forcing a manual token
+  // swap for every peer. Fired only from the renderer's existing user-click "Connect to
+  // other machines" / "Refresh Scan" gesture (LeanGauntletTab.tsx handleConnect) -- never
+  // on a timer -- to preserve the "discovery fires only on user click" rule already
+  // documented on that panel (BP081 A1.3). The invite-token flow (CueDeckShareTab.tsx)
+  // remains available as a fallback for peers not yet in presence.
+  safeHandle('federation:auto-connect-presence', async (): Promise<{
+    attempted: number; connected: string[]; error?: string;
+  }> => {
+    if (!peerDiscovery) {
+      return { attempted: 0, connected: [], error: 'peer discovery not initialized' };
+    }
+    const { discoverAndConnectPresencePeers } = await import('./federation/presence_autoconnect');
+    const { collectLanAddresses } = await import('./identity/peerIdentityCollector');
+    const selfPeerId = getStablePeerId();
+    const knownPeerIds = new Set(peerDiscovery.getAllPeers().map((p) => p.peerId));
+    return discoverAndConnectPresencePeers({
+      selfPeerId,
+      hostLanAddresses: collectLanAddresses(),
+      knownPeerIds,
+      registerWANPeer: (peer) => peerDiscovery?.registerWANPeer(peer),
+      sendIdentify: (toPeerId) => {
+        if (relayClient?.isConnected()) {
+          relayClient.sendToPeer(toPeerId, {
+            type: 'identify',
+            peerId: selfPeerId,
+            payload: {
+              peerId: selfPeerId,
+              version: app.getVersion(),
+              pubkeyFingerprint: selfPeerId,
+            },
+            ts: new Date().toISOString(),
+          });
+        }
+      },
+      relayConnected: relayClient?.isConnected() ?? false,
+    });
+  });
+
   safeHandle('get-own-peer-id', () => getStablePeerId());
 
   safeHandle('get-boot-zombie-count', () => ({ count: _bootZombieCount }));

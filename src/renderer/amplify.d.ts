@@ -380,6 +380,8 @@ declare global {
       federationGenerateInvite?: () => Promise<{ token: string; expiresAt: string }>;
       federationAcceptInvite?: (token: string) => Promise<{ success: boolean; peerName?: string; error?: string }>;
       federationLeavePeer?: (peerId: string) => Promise<{ ok: boolean }>;
+      // BP134 Yoke #30 Task B — zero-config WAN auto-connect from peer_presence
+      federationAutoConnectPresence?: () => Promise<{ attempted: number; connected: string[]; error?: string }>;
       // SEG-3 v0.1.55 — COMMUNITY-CONNECT first-launch seed peer handshake
       communityConnectHandshake?: () => Promise<{ success: boolean; peerName?: string; error?: string }>;
       // SEG-2 v0.1.56 — first-launch progressive auto-pull (gemma4:12b)

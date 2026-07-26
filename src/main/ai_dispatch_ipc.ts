@@ -27,6 +27,8 @@ import {
   setActiveBrainId,
   getActiveBrain,
   DEFAULT_BRAINS,
+  syncInstalledOllamaModels,
+  ensureFreeLocalDefaultOnFirstRun,
   type BrainEntry,
 } from './brain_registry/brain_registry';
 // BP132 Yoke #21 C7: user-facing Anthropic API key (separate from the unrelated
@@ -210,6 +212,19 @@ function shouldRunMnemDrt(settings: AiDispatchSettings): boolean {
   return settings.mnem_drt_enabled === true;
 }
 
+// BP134 Task C/D: shared helper -- Ollama-reachable installed model names, or [] if
+// unreachable/errored (non-fatal; callers fall back to the curated registry as-is).
+async function getInstalledOllamaModelsSafe(): Promise<string[]> {
+  try {
+    const status = ollamaManager.getStatus();
+    const reachable = status.running || (await ollamaManager.isReachable());
+    if (!reachable) return [];
+    return await ollamaManager.listModels();
+  } catch {
+    return [];
+  }
+}
+
 export function registerAiDispatchIPC(): void {
   // ── ai-dispatch:list-local-models ────────────────────────────────────────
   ipcMain.handle('ai-dispatch:list-local-models', async () => {
@@ -303,7 +318,13 @@ export function registerAiDispatchIPC(): void {
       const settings = loadSettings();
       // SEG-1 v0.1.56: prefer family-matched Gemma model over hard-coded FLOOR_MODEL.
       const selectedGemmaModel = ollamaManager.getSelectedModel();
-      const model = args.model_override ?? settings.preferred_model ?? selectedGemmaModel ?? FLOOR_MODEL;
+      // BP134 Task C: brain-registry active brain (if 'local') carries the exact installed
+      // Ollama tag the user picked in ASK's model selector (e.g. gemma2:9b) -- honor it so
+      // selecting a model in the picker actually changes which model answers, not just the
+      // label. Computed once here and reused below for the flagship-routing check.
+      const activeBrain = args.model_override ? undefined : getActiveBrain();
+      const activeBrainLocalModel = activeBrain && activeBrain.kind === 'local' ? activeBrain.model_id : undefined;
+      const model = args.model_override ?? activeBrainLocalModel ?? settings.preferred_model ?? selectedGemmaModel ?? FLOOR_MODEL;
 
       const status = ollamaManager.getStatus();
       const reachable = status.running || (await ollamaManager.isReachable());
@@ -311,8 +332,11 @@ export function registerAiDispatchIPC(): void {
         return { ok: false, error: 'Local AI engine not running' };
       }
 
-      // SEG-1 v0.1.56: if no override/preference and no gemma model was found, signal SEG-2.
-      if (!args.model_override && !settings.preferred_model && selectedGemmaModel === null) {
+      // SEG-1 v0.1.56: if no override/preference/active-local-brain and no gemma model was
+      // found, signal SEG-2. BP134 Task C: activeBrainLocalModel (e.g. a non-gemma installed
+      // model explicitly picked in the ASK selector) also counts as "compatible" here --
+      // otherwise picking mistral/qwen would still incorrectly trigger the gemma-pull banner.
+      if (!args.model_override && !activeBrainLocalModel && !settings.preferred_model && selectedGemmaModel === null) {
         return { ok: false, error: 'No compatible model — downloading now…' };
       }
 
@@ -406,7 +430,7 @@ export function registerAiDispatchIPC(): void {
       // brain-swap UI could report "Claude active" while every Ask silently still ran on
       // Gemma). systemContent (MEMORY.md + verified eblets + r10v3 substrate, composed
       // above) is reused as-is so the same eblet context flows into Claude as into Gemma.
-      const activeBrain = args.model_override ? undefined : getActiveBrain();
+      // (activeBrain computed earlier alongside `model` -- reused here, not redeclared.)
       if (activeBrain && activeBrain.kind === 'flagship') {
         if (!event.sender.isDestroyed()) {
           event.sender.send('ask-token-progress', { coldStart: false, delta: '', assembled: '', flagship: true, brainId: activeBrain.brain_id });
@@ -550,22 +574,40 @@ export function registerAiDispatchIPC(): void {
   // ── BP087 Brain Registry IPC ──────────────────────────────────────────────
 
   // brain-registry:list -- returns all brains + active brain id
-  ipcMain.handle('brain-registry:list', () => {
+  // BP134 Task C: merges in any ACTUAL installed Ollama models (e.g. gemma2:9b) that
+  // aren't already in the curated registry, so the ASK model selector (BrainSwapSelector)
+  // never hides a pulled model behind a static allow-list.
+  // BP134 Task D: on a genuine first run (no persisted brain_registry.json yet), also
+  // corrects the default active brain to a free local model instead of a cloud flagship.
+  ipcMain.handle('brain-registry:list', async () => {
     try {
-      const brains = getBrainRegistry();
+      const installedModels = await getInstalledOllamaModelsSafe();
+      if (installedModels.length > 0) {
+        ensureFreeLocalDefaultOnFirstRun(installedModels);
+      }
+      const brains = installedModels.length > 0
+        ? syncInstalledOllamaModels(installedModels)
+        : getBrainRegistry();
       const active_brain_id = getActiveBrainId();
       return { ok: true, brains, active_brain_id };
     } catch (err) {
-      return { ok: false, error: String(err), brains: DEFAULT_BRAINS, active_brain_id: 'claude-sonnet-4-6' };
+      return { ok: false, error: String(err), brains: DEFAULT_BRAINS, active_brain_id: 'gemma4-12b' };
     }
   });
 
   // brain-registry:get-active -- returns active brain id
-  ipcMain.handle('brain-registry:get-active', () => {
+  // BP134 Task D: same first-run free-local-default correction as brain-registry:list,
+  // guarded so it only ever acts once (no-op once brain_registry.json exists on disk) --
+  // needed here too because LeanAskTab calls list() and getActive() concurrently.
+  ipcMain.handle('brain-registry:get-active', async () => {
     try {
+      const installedModels = await getInstalledOllamaModelsSafe();
+      if (installedModels.length > 0) {
+        ensureFreeLocalDefaultOnFirstRun(installedModels);
+      }
       return { ok: true, brain_id: getActiveBrainId() };
     } catch (err) {
-      return { ok: false, error: String(err), brain_id: 'claude-sonnet-4-6' };
+      return { ok: false, error: String(err), brain_id: 'gemma4-12b' };
     }
   });
 
