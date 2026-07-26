@@ -1261,6 +1261,10 @@ contextBridge.exposeInMainWorld('amplify', {
     plowAndonEnabled?: boolean;
     // BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset.
     exactPerCategory?: number;
+    // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (wan_mesh +
+    // substrateEnabled only). Defaults false -- existing per-peer-local-only substrate
+    // behavior is unchanged unless a caller explicitly opts in.
+    federatedSubstrateEnabled?: boolean;
   }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
     ipcRenderer.invoke('mesh-test:run-one-click', config),
   meshTestIsActive: (): Promise<{ active: boolean }> =>

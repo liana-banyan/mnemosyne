@@ -17,6 +17,15 @@
  * a real historical 2026-07-06 run, session bp106-1q-v0829). This file is left as-is
  * pending a future decision on whether to repair or retire it.
  *
+ * RETIRED (BP135 Yoke #34, 2026-07-26): the future decision above is now made. This module
+ * is superseded, not repaired-in-place. Phase 2 of BP135 (Layer A: consensus) ported this
+ * file's plurality-vote/variance/Andon-trigger ALGORITHM (which was always sound) into
+ * src/main/mesh_test/wan_dispatch.ts's computeConsensus() -- the schema/auth bugs described
+ * above are exactly why the port targets wan_dispatch.ts's already-proven, anon-key-only
+ * mechanism instead of fixing dispatchQuestionToMesh() below in place. This file remains
+ * imported nowhere in src/ and should not be wired up or extended further; treat
+ * wan_dispatch.ts + one_click_mmlu_pro.ts as the living WAN-mesh dispatch path.
+ *
  * Plow-on-mesh integration layer. Dispatches a single MMLU-Pro question to one
  * or more peers via wan-relay-route (Supabase relay bus), waits for replies via
  * relay_route_replies, and aggregates responses using Ascending Andon discipline.

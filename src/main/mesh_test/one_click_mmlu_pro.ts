@@ -56,7 +56,7 @@ import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, mkdirS
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { app, BrowserWindow } from 'electron';
-import { discoverLiveWanPeers, dispatchQuestionToWanPeers, type WanPeerInfo } from './wan_dispatch';
+import { discoverLiveWanPeers, dispatchQuestionToWanPeers, type WanPeerInfo, type WanConsensusResult } from './wan_dispatch';
 import { applySubstrateToggle, isDebugPromptLoggingEnabled, buildOutboundPromptLogLine } from './substrate_toggle';
 
 export interface MmluProQuestion {
@@ -93,6 +93,20 @@ export interface OneClickQuestionOutcome {
   /** BP133 Yoke #24 Task 2: wan_mesh + plow mode only -- the plow's full audit trace, present
    *  only when answeredBy === 'plow'. Persisted verbatim into the Task 2.3 receipt file. */
   plowTrace?: Record<string, unknown> | null;
+}
+
+/** BP135 Phase 2 (Layer A: consensus): the mesh's single answer for one question, alongside
+ *  the per-peer OneClickQuestionOutcome rows for that same question -- never a replacement
+ *  for them. Scored locally against the sealed answer key, same as every other outcome here. */
+export interface ConsensusQuestionOutcome {
+  question_id: number;
+  question: string;
+  category: string;
+  correctLetter: string;
+  consensusLetter: string | null;
+  isConsensusCorrect: boolean;
+  confidenceVariance: number;
+  andonTriggered: boolean;
 }
 
 export interface PeerAccuracyBreakdown {
@@ -141,6 +155,16 @@ export interface OneClickRunResult {
    *  version it was scored against. Present only when questionSource === 'bundled_subset'
    *  AND resources/mmlu_pro_bundled/manifest.json exists (BP134-and-later builds). */
   corpusManifestSha256?: string;
+  /** BP135 Phase 2 (Layer A: consensus), wan_mesh mode only -- one entry per question, the
+   *  mesh's single consensus answer alongside (never instead of) peerBreakdown/outcomes. */
+  consensusOutcomes?: ConsensusQuestionOutcome[];
+  /** Aggregate accuracy of the mesh's single consensus answer, wan_mesh mode only. Scored
+   *  over questions where a consensus letter was actually reached; null if none were. */
+  consensusAccuracy?: number | null;
+  /** BP135 Phase 3 (Layer B: federated substrate): whether pooled cross-peer substrate was
+   *  requested for this run. Truth-Always -- same rationale as substrateEnabled/plowEnabled,
+   *  a result can never be misread as pooled when it was per-peer-local-only, or vice versa. */
+  federatedSubstrateEnabled?: boolean;
 }
 
 let running = false;
@@ -488,6 +512,13 @@ function persistPlowReceipt(entry: {
   /** BP134 Yoke #32 Phase F item 3: sha256 of the corpus manifest this question was
    *  sourced from, so the receipt can be verified against the exact corpus version. */
   corpusManifestSha256?: string;
+  /** BP135 Phase 2 (Layer A: consensus): the mesh's answer for this SAME question, alongside
+   *  (never instead of) this individual peer's plow answer -- lets a receipt show both what
+   *  this one peer said and what the mesh-as-one-unit concluded. */
+  consensusLetter?: string | null;
+  consensusCorrect?: boolean;
+  confidenceVariance?: number;
+  andonTriggered?: boolean;
 }): void {
   try {
     const dir = join(app.getPath('userData'), 'plow_receipts');
@@ -511,8 +542,11 @@ async function runWanMode(
   plowEnabled: boolean,
   plowAndonEnabled: boolean,
   corpusManifestSha256?: string,
-): Promise<OneClickQuestionOutcome[]> {
+  // BP135 Phase 3 (Layer B: federated substrate): explicit opt-in, defaults false.
+  federatedSubstrateEnabled: boolean = false,
+): Promise<{ outcomes: OneClickQuestionOutcome[]; consensusOutcomes: ConsensusQuestionOutcome[] }> {
   const outcomes: OneClickQuestionOutcome[] = [];
+  const consensusOutcomes: ConsensusQuestionOutcome[] = [];
   const totalUnits = questions.length * peers.length;
   let unitIndex = 0;
 
@@ -524,8 +558,24 @@ async function runWanMode(
     });
 
     const wanOutcome = await dispatchQuestionToWanPeers(
-      q, peers, sessionId, perQuestionTimeoutMs, substrateEnabled, plowEnabled, plowAndonEnabled,
+      q, peers, sessionId, perQuestionTimeoutMs, substrateEnabled, plowEnabled, plowAndonEnabled, federatedSubstrateEnabled,
     );
+
+    // BP135 Phase 2 (Layer A: consensus): one mesh-as-one-unit outcome per question, scored
+    // locally against the sealed answer key -- alongside, never instead of, the per-peer
+    // outcomes below.
+    const isConsensusCorrect = wanOutcome.consensus.consensusLetter !== null
+      && wanOutcome.consensus.consensusLetter === wanOutcome.correctLetter;
+    consensusOutcomes.push({
+      question_id: q.question_id,
+      question: q.question,
+      category: q.category,
+      correctLetter: wanOutcome.correctLetter,
+      consensusLetter: wanOutcome.consensus.consensusLetter,
+      isConsensusCorrect,
+      confidenceVariance: wanOutcome.consensus.confidenceVariance,
+      andonTriggered: wanOutcome.consensus.andonTriggered,
+    });
 
     for (const pa of wanOutcome.peerAnswers) {
       const outcome: OneClickQuestionOutcome = {
@@ -568,11 +618,15 @@ async function runWanMode(
           machineLabel: pa.machineLabel,
           plowTrace: pa.plowTrace,
           corpusManifestSha256,
+          consensusLetter: wanOutcome.consensus.consensusLetter,
+          consensusCorrect: isConsensusCorrect,
+          confidenceVariance: wanOutcome.consensus.confidenceVariance,
+          andonTriggered: wanOutcome.consensus.andonTriggered,
         });
       }
     }
   }
-  return outcomes;
+  return { outcomes, consensusOutcomes };
 }
 
 function computePeerBreakdown(outcomes: OneClickQuestionOutcome[]): PeerAccuracyBreakdown[] {
@@ -632,6 +686,14 @@ export async function runOneClickMmluProTest(config: {
   /** BP133 Yoke #24 Task 2: Condition C (Andon retry) vs Condition B (single pass) when
    * plowEnabled is true. Ignored when plowEnabled is false. Defaults to false. */
   plowAndonEnabled?: boolean;
+  /** BP135 Phase 3 (Layer B: federated substrate). Ignored (has no effect, no extra
+   * round-trips) unless substrateEnabled is also true AND dispatchMode resolves to wan_mesh --
+   * local_ollama mode has no other peers to pool from. When true, pools topical eblets from
+   * ALL live peers (queryTopicalEbletsFromPeers()) before each question's answer round, so
+   * every peer's answer prompt carries the pooled cross-peer index instead of just its own
+   * local substrate. Defaults to false -- existing per-peer-local-only substrate behavior is
+   * unchanged unless a caller explicitly opts in. See wan_dispatch.ts and substrate_toggle.ts. */
+  federatedSubstrateEnabled?: boolean;
   /** BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset. When set (e.g. 5),
    * OVERRIDES maxTotalQuestions/questionsPerDomain sampling with an exact per-category
    * sample of this many questions from EACH of the 14 canonical categories, sourced from
@@ -659,6 +721,7 @@ export async function runOneClickMmluProTest(config: {
   const substrateEnabled = config.substrateEnabled ?? false;
   const plowEnabled = config.plowEnabled ?? false;
   const plowAndonEnabled = config.plowAndonEnabled ?? false;
+  const federatedSubstrateEnabled = config.federatedSubstrateEnabled ?? false;
   const exactPerCategory = config.exactPerCategory && config.exactPerCategory > 0 ? config.exactPerCategory : undefined;
 
   // BP134 Yoke #32 Phase F item 2: the exact-per-category preset always sources from the
@@ -719,6 +782,7 @@ export async function runOneClickMmluProTest(config: {
 
   let questions = allQuestions;
   let outcomes: OneClickQuestionOutcome[];
+  let consensusOutcomes: ConsensusQuestionOutcome[] | undefined;
   let sessionId: string | undefined;
 
   if (dispatchMode === 'wan_mesh') {
@@ -732,10 +796,12 @@ export async function runOneClickMmluProTest(config: {
     // Condition C. 300s is a defensible default headroom, not a measured ceiling -- still
     // explicitly overridable via wanPerQuestionTimeoutMs for a caller who has better data.
     const defaultTimeoutMs = plowEnabled ? 300_000 : 90_000;
-    outcomes = await runWanMode(
+    const wanResult = await runWanMode(
       questions, livePeers, sessionId, config.wanPerQuestionTimeoutMs ?? defaultTimeoutMs,
-      substrateEnabled, plowEnabled, plowAndonEnabled, corpusManifest?.sha256,
+      substrateEnabled, plowEnabled, plowAndonEnabled, corpusManifest?.sha256, federatedSubstrateEnabled,
     );
+    outcomes = wanResult.outcomes;
+    consensusOutcomes = wanResult.consensusOutcomes;
   } else {
     broadcast('mesh-test:progress', { type: 'start', total: questions.length });
     outcomes = await runLocalMode(questions, ollamaBaseUrl, model, substrateEnabled);
@@ -744,6 +810,11 @@ export async function runOneClickMmluProTest(config: {
   const scored = outcomes.filter((o) => o.parsedLetter !== null).length;
   const correct = outcomes.filter((o) => o.isCorrect).length;
   const peerBreakdown = dispatchMode === 'wan_mesh' ? computePeerBreakdown(outcomes) : undefined;
+  // BP135 Phase 2 (Layer A: consensus): aggregate accuracy of the mesh's single answer per
+  // question, scored only over questions that actually reached a consensus letter.
+  const consensusScored = consensusOutcomes?.filter((c) => c.consensusLetter !== null).length ?? 0;
+  const consensusCorrect = consensusOutcomes?.filter((c) => c.isConsensusCorrect).length ?? 0;
+  const consensusAccuracy = consensusOutcomes ? (consensusScored > 0 ? consensusCorrect / consensusScored : null) : undefined;
 
   const substrateSuffix = substrateEnabled ? ' [substrate ON]' : ' [substrate OFF]';
   // BP133 Yoke #24 Task 2: label which of A/B/C the run actually was -- Truth-Always, this
@@ -777,6 +848,9 @@ export async function runOneClickMmluProTest(config: {
     cancelled: cancelRequested,
     exactPerCategory,
     corpusManifestSha256: corpusManifest?.sha256,
+    consensusOutcomes,
+    consensusAccuracy,
+    federatedSubstrateEnabled: dispatchMode === 'wan_mesh' ? federatedSubstrateEnabled : undefined,
   };
 
   broadcast('mesh-test:progress', { type: 'complete', result });
