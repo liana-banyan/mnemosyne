@@ -44,6 +44,18 @@ export interface SubstrateInjectionResult {
   ebletCount: number;
 }
 
+/** BP135 Phase 3 (Layer B: federated substrate). A topical eblet hit already pooled from one
+ *  or more mesh peers (see wan_dispatch.ts's queryTopicalEbletsFromPeers()), structurally
+ *  compatible with -- but deliberately not importing -- that module's PooledSubstrateHit, so
+ *  this file stays Electron-agnostic and decoupled from the asker-side WAN module. */
+export interface PooledSubstrateHit {
+  question: string;
+  answer: string;
+  provenance: string;
+  /** Which peer this hit came from, for cross-peer provenance in the injected prompt. */
+  peerId?: string;
+}
+
 /**
  * The ONLY substrate-injection entry point for the one-click MMLU-Pro test.
  *
@@ -53,6 +65,13 @@ export interface SubstrateInjectionResult {
  * A flag that still queries the store and just declines to use the result is not an
  * authoritative gate -- it is one that could be broken by a future refactor that forgets
  * to check it before using the fetched context.
+ *
+ * BP135 Phase 3 (Layer B: federated substrate): `pooledHits`, when provided non-empty, is
+ * used INSTEAD OF this machine's own local-only queryVerifiedEbletsTopical() call -- this is
+ * what lets a WAN responder's prompt carry eblets pooled from ALL live mesh peers (see
+ * index.ts's startRelayRoutePoll, which threads payload.pooled_substrate_eblets through here)
+ * rather than just this one peer's own substrate. Still the SAME single injection site and
+ * SAME contextBlock shape -- only the source of the hits differs.
  */
 export async function applySubstrateToggle(
   basePrompt: string,
@@ -60,9 +79,18 @@ export async function applySubstrateToggle(
   domain: string,
   substrateEnabled: boolean,
   topK = 3,
+  pooledHits?: PooledSubstrateHit[],
 ): Promise<SubstrateInjectionResult> {
   if (!substrateEnabled) {
     return { prompt: basePrompt, contextInjected: false, ebletCount: 0 };
+  }
+  if (pooledHits && pooledHits.length > 0) {
+    const pooledBlock = pooledHits
+      .slice(0, topK)
+      .map((e, i) => `[${i + 1}]${e.peerId ? ` (peer ${e.peerId.slice(0, 8)})` : ''} ${e.question.slice(0, 160)} -- ${e.answer.slice(0, 200)}`)
+      .join('\n');
+    const prompt = `Context from federated substrate (related background pooled from mesh peers, not this exact question):\n${pooledBlock}\n\n${basePrompt}`;
+    return { prompt, contextInjected: true, ebletCount: pooledHits.length };
   }
   try {
     // Lazy import: keeps this module Electron-agnostic when substrate is OFF (the common

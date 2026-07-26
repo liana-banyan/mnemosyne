@@ -1,8 +1,8 @@
-version: 0.9.2
+version: 0.9.4
 files:
-  - url: MnemosyneC-Setup-0.9.2.exe
-    sha512: 7bAlYauvirU5WB25bpGKV9fajtBeP2EthAfZDGgorNzCVfP4nEWugdoFBCQElvSD5VDuS23Zo9Lpy05nyQ+P3Q==
-    size: 478992287
-path: MnemosyneC-Setup-0.9.2.exe
-sha512: 7bAlYauvirU5WB25bpGKV9fajtBeP2EthAfZDGgorNzCVfP4nEWugdoFBCQElvSD5VDuS23Zo9Lpy05nyQ+P3Q==
-releaseDate: '2026-07-24T07:02:07.356Z'
+  - url: MnemosyneC-Setup-0.9.4.exe
+    sha512: rpsPbc4hu274WFoe3AgoI7Lh9WE1CeqLS0hxJO+Y4qJmk5yzinLM671CzViYXnzrpEVcIKcvUO2YuXEKFPaOvg==
+    size: 483684940
+path: MnemosyneC-Setup-0.9.4.exe
+sha512: rpsPbc4hu274WFoe3AgoI7Lh9WE1CeqLS0hxJO+Y4qJmk5yzinLM671CzViYXnzrpEVcIKcvUO2YuXEKFPaOvg==
+releaseDate: '2026-07-26T16:38:04.435Z'

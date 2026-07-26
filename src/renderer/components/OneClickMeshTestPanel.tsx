@@ -43,6 +43,20 @@ interface PeerAccuracyBreakdown {
   accuracy: number | null;
 }
 
+/** BP135 Phase 2 (Layer A: consensus): the mesh's single answer for one question, alongside
+ *  (never instead of) the per-peer QuestionOutcome rows for that same question. Mirrors
+ *  ConsensusQuestionOutcome in src/main/mesh_test/one_click_mmlu_pro.ts. */
+interface ConsensusQuestionOutcome {
+  question_id: number;
+  question: string;
+  category: string;
+  correctLetter: string;
+  consensusLetter: string | null;
+  isConsensusCorrect: boolean;
+  confidenceVariance: number;
+  andonTriggered: boolean;
+}
+
 export interface OneClickRunResult {
   startedAt: string;
   completedAt: string;
@@ -66,6 +80,15 @@ export interface OneClickRunResult {
   /** BP134 Yoke #32 Phase F item 3: sha256 of the bundled corpus manifest this run's
    *  questions were sourced from, when available. */
   corpusManifestSha256?: string;
+  /** BP135 Phase 2 (Layer A: consensus), wan_mesh mode only -- one entry per question, the
+   *  mesh's single consensus answer alongside (never instead of) peerBreakdown/outcomes. */
+  consensusOutcomes?: ConsensusQuestionOutcome[];
+  /** Aggregate accuracy of the mesh's single consensus answer, wan_mesh mode only. Scored
+   *  over questions where a consensus letter was actually reached; null if none were. */
+  consensusAccuracy?: number | null;
+  /** BP135 Phase 3 (Layer B: federated substrate): whether pooled cross-peer substrate was
+   *  requested for this run. */
+  federatedSubstrateEnabled?: boolean;
 }
 
 type DispatchModeChoice = 'auto' | 'wan_mesh' | 'local_ollama';
@@ -124,6 +147,12 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
   // Condition C (Andon retry loop) vs Condition B (single pass) -- only meaningful when
   // plowEnabled is true.
   const [plowAndonEnabled, setPlowAndonEnabled] = useState(false);
+  // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (federated
+  // substrate layer). Only meaningful when substrateEnabled is true AND mode is wan_mesh --
+  // ignored server-side otherwise (see one_click_mmlu_pro.ts config.federatedSubstrateEnabled
+  // doc comment). Off by default, same pattern as substrateEnabled/plowEnabled/plowAndonEnabled:
+  // the Founder must opt in, a run's meaning never changes silently.
+  const [federatedSubstrateEnabled, setFederatedSubstrateEnabled] = useState(false);
   // BP133 Yoke #24 Task 4: question-count control. QUESTION_COUNT_PRESETS[0] (3) is the
   // one-click smoke test; F12 DevTools is unavailable in this build, so this replaces the
   // only prior way to change question count (a console workaround).
@@ -174,6 +203,7 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
         plowEnabled,
         plowAndonEnabled,
         exactPerCategory: fullPresetSelected ? 5 : undefined,
+        federatedSubstrateEnabled,
       });
       if (!resp?.ok) {
         setErrorMsg(resp?.error ?? 'Test run failed to start');
@@ -184,7 +214,7 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
       setErrorMsg(String(e));
       setState('error');
     }
-  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, fullPresetSelected]);
+  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, fullPresetSelected, federatedSubstrateEnabled]);
 
   const runningAccuracy = liveOutcomes.length > 0
     ? liveOutcomes.filter((o) => o.isCorrect).length / liveOutcomes.length
@@ -289,6 +319,37 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
           Andon retry loop {plowAndonEnabled ? 'ON (Condition C)' : 'OFF (Condition B, single pass)'}
         </label>
       )}
+
+      {/* BP135 Yoke #34 Phase 5: explicit opt-in to the federated-substrate layer -- pools
+          topical eblets across ALL live peers instead of each peer using only its own local
+          substrate. Only meaningful when substrate is ON and dispatch mode is wan_mesh; greyed
+          out and disabled otherwise (mirrors the plowEnabled/mode gating above). */}
+      {(() => {
+        const federatedGated = state === 'running' || mode !== 'wan_mesh' || !substrateEnabled;
+        return (
+          <label
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
+              fontSize: 12, color: federatedGated ? '#475569' : '#94a3b8',
+              cursor: federatedGated ? 'default' : 'pointer',
+              fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={federatedSubstrateEnabled}
+              disabled={federatedGated}
+              onChange={(e) => { setFederatedSubstrateEnabled(e.target.checked); setFullPresetSelected(false); }}
+            />
+            Federated substrate (pool eblets across peers) {federatedSubstrateEnabled ? 'ON' : 'OFF'}
+            <span style={{ color: '#475569', fontSize: 10 }}>
+              (WAN Mesh + Substrate ON only. ON: pools topical eblets from every live peer into
+              one shared index before each question, instead of each peer using only its own
+              local substrate. Requires all peers on 0.9.5.)
+            </span>
+          </label>
+        );
+      })()}
 
       {/* BP133 Yoke #24 Task 4: question-count control -- no DevTools console workaround
           needed, F12 dev-tools is unavailable in this build. */}
@@ -429,6 +490,14 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
                   </span>
                 </>
               )}
+              {result.dispatchMode === 'wan_mesh' && (
+                <>
+                  {' · federated substrate '}
+                  <span style={{ color: result.federatedSubstrateEnabled ? '#a78bfa' : '#94a3b8', fontWeight: 700 }}>
+                    {result.federatedSubstrateEnabled ? 'ON' : 'OFF'}
+                  </span>
+                </>
+              )}
             </div>
             <div style={{ fontSize: 10, color: '#475569', marginTop: 4, fontStyle: 'italic' }}>
               {result.datasetLabel}
@@ -457,6 +526,44 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
                   </span>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* BP135 Phase 2 (Layer A: consensus): the mesh's single consensus answer, shown
+              ALONGSIDE (never replacing) the per-peer breakdown above -- a wan_mesh run always
+              still shows what each individual peer answered. */}
+          {result.consensusOutcomes && result.consensusOutcomes.length > 0 && (
+            <div style={{
+              background: '#111827', border: '1px solid #3b2d5f', borderRadius: 8,
+              padding: '10px 14px', marginBottom: 8,
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#c4b5fd', marginBottom: 6 }}>
+                Mesh consensus
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#c4b5fd', marginBottom: 6 }}>
+                {result.consensusAccuracy !== null && result.consensusAccuracy !== undefined
+                  ? `${(result.consensusAccuracy * 100).toFixed(0)}% consensus accuracy`
+                  : 'No scored consensus answers'}
+                {' — '}
+                {result.consensusOutcomes.filter((c) => c.isConsensusCorrect).length}/
+                {result.consensusOutcomes.filter((c) => c.consensusLetter !== null).length} correct
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {result.consensusOutcomes.map((c) => (
+                  <div key={c.question_id} style={{ display: 'flex', gap: 8, fontSize: 10, color: '#94a3b8' }}>
+                    <span style={{ color: c.isConsensusCorrect ? '#4ade80' : '#f87171' }}>
+                      {c.isConsensusCorrect ? '✓' : c.consensusLetter === null ? '·' : '✗'}
+                    </span>
+                    <span style={{ color: '#64748b' }}>[{c.category}]</span>
+                    <span>
+                      consensus {c.consensusLetter ?? '—'} (correct {c.correctLetter})
+                    </span>
+                    {c.andonTriggered && (
+                      <span style={{ color: '#facc15', fontWeight: 700 }}>andon triggered</span>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

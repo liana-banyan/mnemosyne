@@ -4748,6 +4748,10 @@ function registerIPCHandlers(): void {
     plowAndonEnabled?: boolean;
     // BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset.
     exactPerCategory?: number;
+    // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (wan_mesh +
+    // substrateEnabled only). Defaults false -- threaded straight through to
+    // runOneClickMmluProTest, same pattern as substrateEnabled/plowEnabled above.
+    federatedSubstrateEnabled?: boolean;
   }) => {
     try {
       const { runOneClickMmluProTest } = await import('./mesh_test/one_click_mmlu_pro');
@@ -5965,6 +5969,47 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
         const startMs = Date.now();
         try {
           const payload = (route.payload_json as Record<string, unknown>) ?? {};
+
+          // BP135 Phase 3 (Layer B: federated substrate). A `query_type:'eblet_topical'`
+          // route is NOT an MMLU-Pro answer request -- it is the asker (see wan_dispatch.ts's
+          // queryTopicalEbletsFromPeers()) asking THIS peer for its own topical eblets so the
+          // asker can pool them across all live peers before the real answer round. Handled
+          // here, first, so it short-circuits the entire plow/single-shot/Minor-Council
+          // machinery below -- that machinery is for answering MC questions, not this.
+          if (payload.query_type === 'eblet_topical') {
+            const topicalQuestion: string = typeof payload.question_text === 'string' ? payload.question_text : '';
+            const topicalDomain: string = typeof payload.domain === 'string' ? payload.domain : 'general';
+            const topicalTopK: number = typeof payload.top_k === 'number' ? (payload.top_k as number) : 3;
+            // Same guard as every other topical caller in this codebase (substrate_toggle.ts,
+            // one_click_mmlu_pro.ts): queryVerifiedEbletsTopical() -- never the exact-match
+            // queryVerifiedEblets() -- so a federated peer can never leak an answer-key hit.
+            const { queryVerifiedEbletsTopical } = await import('./mnem_eblet_store');
+            const hits = await queryVerifiedEbletsTopical(topicalQuestion, topicalDomain, topicalTopK);
+            await fetch(`${supabaseUrl}/rest/v1/relay_route_replies`, {
+              method: 'POST',
+              headers: { ...headers, 'Prefer': 'return=minimal' },
+              body: JSON.stringify({
+                route_id: route.id,
+                peer_id: peerId,
+                answer_json: {
+                  query_type: 'eblet_topical',
+                  eblets: hits.map((e) => ({
+                    question: e.question, answer: e.answer, provenance: e.provenance, timestamp: e.timestamp,
+                  })),
+                  responder_peer_id: peerId,
+                },
+                processing_ms: Date.now() - startMs,
+              }),
+            });
+            await fetch(`${supabaseUrl}/rest/v1/relay_routes?id=eq.${route.id}`, {
+              method: 'PATCH',
+              headers,
+              body: JSON.stringify({ status: 'answered' }),
+            });
+            console.log(`[relay-poll] eblet_topical query answered route=${route.id.slice(0, 8)} hits=${hits.length}`);
+            continue;
+          }
+
           const prompt: string = (payload.prompt as string) || route.hex_frame;
           const plowMaxIter: number = typeof payload.plow_max_iterations === 'number'
             ? (payload.plow_max_iterations as number) : 0;
@@ -6001,8 +6046,16 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           // this function calls Ollama, not just one of the two paths.
           const substrateEnabled: boolean = payload.substrate_enabled === true;
           const domainForSubstrate: string = typeof payload.domain === 'string' ? payload.domain : 'general';
+          // BP135 Phase 3 (Layer B: federated substrate): when the asker has pooled topical
+          // eblets from ALL live peers (see wan_dispatch.ts's queryTopicalEbletsFromPeers()),
+          // they arrive here via payload.pooled_substrate_eblets and take priority over this
+          // peer's own local-only substrate query -- see applySubstrateToggle()'s pooledHits
+          // branch. Absent/empty falls through to the pre-existing local-only behavior.
+          const pooledSubstrateEblets = Array.isArray(payload.pooled_substrate_eblets)
+            ? (payload.pooled_substrate_eblets as Array<{ question: string; answer: string; provenance: string; peerId?: string }>)
+            : undefined;
           const { prompt: effectivePrompt, contextInjected, ebletCount } = await applySubstrateToggle(
-            prompt, prompt, domainForSubstrate, substrateEnabled,
+            prompt, prompt, domainForSubstrate, substrateEnabled, 3, pooledSubstrateEblets,
           );
 
           // BP133 Yoke #24 Task 2: explicit opt-in to answer this question via the 12-Blade
@@ -6184,20 +6237,37 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
               const memberResults = await Promise.allSettled(
                 COUNCIL_MODELS.map(async (m, idx) => {
                   const memberTemperature = Math.min(0.6 + (iter - 1) * 0.04 + idx * 0.15, 1.0);
-                  const r = await fetch('http://localhost:11434/api/generate', {
+                  // BP135 Phase 1: `think` must be a TOP-LEVEL request field (not nested in
+                  // `options`) -- mirrors canonical_pipeline.ts's callOllama() (BP134 Deep RCA).
+                  // Without it, a thinking-capable model (e.g. gemma4:12b) can consume its
+                  // whole generation budget on internal reasoning and return an empty response.
+                  const buildMemberBody = (includeThink: boolean) => ({
+                    model: m,
+                    // BP133 Yoke #24 Task 1: substrate-gated prompt, not the raw payload prompt.
+                    prompt: effectivePrompt,
+                    stream: false,
+                    keep_alive: '24h',
+                    ...(includeThink ? { think: false } : {}),
+                    options: { temperature: memberTemperature },
+                  });
+                  let r = await fetch('http://localhost:11434/api/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      model: m,
-                      // BP133 Yoke #24 Task 1: substrate-gated prompt, not the raw payload prompt.
-                      prompt: effectivePrompt,
-                      stream: false,
-                      keep_alive: '24h',
-                      options: { temperature: memberTemperature },
-                    }),
+                    body: JSON.stringify(buildMemberBody(true)),
                     // D6a: 8-min hard ceiling per ollama call — prevents relay-poll worker hang on frozen model
                     signal: AbortSignal.timeout(480_000),
                   });
+                  if (r.status === 400) {
+                    // BP083 fallback (mirrored from canonical_pipeline.ts callOllama()): this
+                    // peer's Ollama version rejects the top-level `think` field outright --
+                    // retry once without it rather than hard-failing this council member.
+                    r = await fetch('http://localhost:11434/api/generate', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(buildMemberBody(false)),
+                      signal: AbortSignal.timeout(480_000),
+                    });
+                  }
                   if (!r.ok) return { model: m, text: null as string | null };
                   const d = await r.json() as { response?: string };
                   return { model: m, text: d?.response ?? null };
@@ -6284,14 +6354,34 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           } else {
             // Baseline path: single-shot (pre-BP090 behaviour); tiebreaker model override per M14 Block 3
             const model = isTiebreaker ? tiebreakerModel : 'gemma4:12b';
-            const ollamaRes = await fetch('http://localhost:11434/api/generate', {
+            // BP135 Phase 1: `think` must be a TOP-LEVEL request field (not nested in
+            // `options`) -- mirrors canonical_pipeline.ts's callOllama() (BP134 Deep RCA).
+            const buildBaselineBody = (includeThink: boolean) => ({
+              model,
+              // BP133 Yoke #24 Task 1: substrate-gated prompt, not the raw payload prompt.
+              prompt: effectivePrompt,
+              stream: false,
+              keep_alive: '24h',
+              ...(includeThink ? { think: false } : {}),
+            });
+            let ollamaRes = await fetch('http://localhost:11434/api/generate', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              // BP133 Yoke #24 Task 1: substrate-gated prompt, not the raw payload prompt.
-              body: JSON.stringify({ model, prompt: effectivePrompt, stream: false, keep_alive: '24h' }),
+              body: JSON.stringify(buildBaselineBody(true)),
               // D6a: 8-min hard ceiling per ollama call — prevents relay-poll worker hang on frozen model
               signal: AbortSignal.timeout(480_000),
             });
+            if (ollamaRes.status === 400) {
+              // BP083 fallback (mirrored from canonical_pipeline.ts callOllama()): this peer's
+              // Ollama version rejects the top-level `think` field outright -- retry once
+              // without it rather than hard-failing the single-shot baseline answer.
+              ollamaRes = await fetch('http://localhost:11434/api/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(buildBaselineBody(false)),
+                signal: AbortSignal.timeout(480_000),
+              });
+            }
             const ollamaData = ollamaRes.ok ? await ollamaRes.json() as { response?: string } : null;
             answer = ollamaData?.response ?? null;
           }
