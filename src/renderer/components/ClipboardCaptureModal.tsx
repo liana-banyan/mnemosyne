@@ -170,12 +170,28 @@ type SubmitResult =
   | { status: 'success'; eblets: number }
   | { status: 'error'; message: string };
 
+// BP134 Yoke #32 Phase D: same 14-domain + 'other' list TestItOutTab.tsx already uses for the
+// Plow the Field domain picker -- replaces the previous silent hardcoded 'other' with a real
+// user choice. R-MECHANISM-VERIFY note: runAndonReplowLoop() looks the pasted question up
+// verbatim in that domain's SEALED bank (per_domain_q_banks.ts); clipboard-pasted text is
+// virtually never a byte-for-byte bank entry regardless of which domain is selected here, so
+// the concordance path will usually still quarantine with "Question not found in domain bank"
+// (an honest, already-correct error message, not a bug this Yoke introduces or silently
+// papers over) -- this control lets the user's choice at least be recorded/deliberate instead
+// of always being the wrong-by-default 'other', and matters once/if a future Yoke extends
+// concordance to grade non-bank questions.
+const DOMAIN_OPTIONS = [
+  'math', 'physics', 'chemistry', 'biology', 'computer_science', 'engineering',
+  'history', 'philosophy', 'law', 'business', 'economics', 'psychology', 'health', 'other',
+] as const;
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function ClipboardCaptureModal(): React.ReactElement | null {
   const [visible, setVisible] = useState(false);
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState('');
+  const [domain, setDomain] = useState<typeof DOMAIN_OPTIONS[number]>('other');
   const [markVerified, setMarkVerified] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<SubmitResult | null>(null);
@@ -185,6 +201,7 @@ export function ClipboardCaptureModal(): React.ReactElement | null {
     setResult(null);
     setSubmitting(false);
     setMarkVerified(false);
+    setDomain('other');
 
     // Read clipboard via IPC
     let text = '';
@@ -241,8 +258,9 @@ export function ClipboardCaptureModal(): React.ReactElement | null {
           setResult({ status: 'error', message: 'Substrate write failed. Please retry.' });
         }
       } else {
-        // Concordance path: run through Andon plow (grades answer via local model)
-        const res = await window.amplify?.runAndonReplowLoop?.(question.trim(), 'other');
+        // Concordance path: run through Andon plow (grades answer via local model).
+        // BP134 Yoke #32 Phase D: domain now comes from the picker below, not a hardcode.
+        const res = await window.amplify?.runAndonReplowLoop?.(question.trim(), domain);
         if (!res) {
           setResult({ status: 'error', message: 'Plow IPC unavailable — check that MnemosyneC is fully started.' });
         } else if (res.verdict === 'verified') {
@@ -264,7 +282,7 @@ export function ClipboardCaptureModal(): React.ReactElement | null {
     } finally {
       setSubmitting(false);
     }
-  }, [question, answer, markVerified, submitting]);
+  }, [question, answer, domain, markVerified, submitting]);
 
   if (!visible) return null;
 
@@ -333,6 +351,20 @@ export function ClipboardCaptureModal(): React.ReactElement | null {
                 rows={3}
                 disabled={submitting}
               />
+            </div>
+
+            <div>
+              <span style={S.fieldLabel}>Domain</span>
+              <select
+                style={S.textarea as React.CSSProperties}
+                value={domain}
+                onChange={(e) => setDomain(e.target.value as typeof DOMAIN_OPTIONS[number])}
+                disabled={submitting || markVerified}
+              >
+                {DOMAIN_OPTIONS.map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
             </div>
 
             <label style={S.toggleRow}>

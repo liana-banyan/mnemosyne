@@ -75,13 +75,16 @@ function extractSearchTerms(question: string): string {
 
 // ─── 1. Wikipedia ─────────────────────────────────────────────────────────────
 
-export async function fetchWikipedia(question: string, domain: string): Promise<CandidateEblet[]> {
+export async function fetchWikipedia(question: string, domain: string, maxResults = 2): Promise<CandidateEblet[]> {
   const terms = extractSearchTerms(question);
   if (!terms) return [];
 
   try {
-    // Search for the best matching page
-    const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(terms)}&srlimit=2&format=json&origin=*`;
+    // BP134 Yoke #32 Phase C: srlimit is the server-side result count -- raising ONLY the
+    // local slice below without also raising this would be a no-op (Wikipedia never returns
+    // more than srlimit hits to slice from). Both move together, gated by the same maxResults
+    // caller-supplied cap (default 2 preserves today's live A/B/C behavior exactly).
+    const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(terms)}&srlimit=${Math.max(2, maxResults)}&format=json&origin=*`;
     const searchResp = await fetchWithTimeout(searchUrl);
     if (!searchResp.ok) return [];
 
@@ -91,7 +94,7 @@ export async function fetchWikipedia(question: string, domain: string): Promise<
 
     const candidates: CandidateEblet[] = [];
 
-    for (const hit of results.slice(0, 2)) {
+    for (const hit of results.slice(0, maxResults)) {
       try {
         const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(hit.title)}`;
         const summaryResp = await fetchWithTimeout(summaryUrl);
@@ -118,12 +121,15 @@ export async function fetchWikipedia(question: string, domain: string): Promise<
 
 // ─── 2. Wikidata ──────────────────────────────────────────────────────────────
 
-export async function fetchWikidata(question: string, domain: string): Promise<CandidateEblet[]> {
+export async function fetchWikidata(question: string, domain: string, maxResults = 2): Promise<CandidateEblet[]> {
   const terms = extractSearchTerms(question);
   if (!terms) return [];
 
   try {
-    const url = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(terms)}&language=en&limit=3&format=json&origin=*`;
+    // BP134 Yoke #32 Phase C: same request-limit/local-slice pairing as fetchWikipedia above --
+    // the request limit must rise with maxResults or the local slice has nothing extra to take.
+    const requestLimit = Math.max(3, maxResults);
+    const url = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(terms)}&language=en&limit=${requestLimit}&format=json&origin=*`;
     const resp = await fetchWithTimeout(url);
     if (!resp.ok) return [];
 
@@ -132,7 +138,7 @@ export async function fetchWikidata(question: string, domain: string): Promise<C
 
     return results
       .filter((r) => r.description && r.description.length >= 30)
-      .slice(0, 2)
+      .slice(0, maxResults)
       .map((r) => {
         const content = `${r.label ?? ''}: ${r.description ?? ''}`;
         return {
@@ -528,13 +534,17 @@ export interface SpecialistKeys {
   wolframApiKey?: string;
   stackExchangeKey?: string;
   pubmedApiKey?: string;
+  /** BP134 Yoke #32 Phase C: field-sowing deep-harvest override for the two adapters whose
+   *  caps this Yoke raises (wikipedia, wikidata). Undefined -- the live A/B/C button's default
+   *  path -- preserves today's behavior exactly (each adapter's own `= 2` default applies). */
+  maxResultsPerAdapter?: number;
 }
 
 export type SpecialistFn = (q: string, domain: string, keys?: SpecialistKeys) => Promise<CandidateEblet[]>;
 
 export const SPECIALIST_REGISTRY: Record<SpecialistName, SpecialistFn> = {
-  wikipedia:    (q, d) => fetchWikipedia(q, d),
-  wikidata:     (q, d) => fetchWikidata(q, d),
+  wikipedia:    (q, d, k) => fetchWikipedia(q, d, k?.maxResultsPerAdapter),
+  wikidata:     (q, d, k) => fetchWikidata(q, d, k?.maxResultsPerAdapter),
   stackexchange:(q, d, k) => fetchStackExchange(q, d, k?.stackExchangeKey),
   arxiv:        (q, d) => fetchArxiv(q, d),
   wolfram:      (q, d, k) => fetchWolframAlpha(q, d, k?.wolframApiKey),

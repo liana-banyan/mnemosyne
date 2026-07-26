@@ -59,6 +59,13 @@ export interface CanonicalPlowMcConfig {
   /** Condition C only. Condition A/B both pass false -- a single pass, win or lose. */
   andonEnabled: boolean;
   specialistKeys?: SpecialistKeys;
+  /** BP134 Yoke #32 Phase C: field-sowing-only deep-harvest mode. Undefined/false leaves the
+   *  postFurnace cap (6, below) and every adapter cap byte-identical to the live A/B/C button's
+   *  measured behavior -- this flag must never be set by that path. Field-sowing (Phase D) is
+   *  the only intended caller that ever passes deepHarvest:true. */
+  deepHarvest?: boolean;
+  /** Cap for the postFurnace slice when deepHarvest is true. Ignored when deepHarvest is falsy. */
+  maxEbletsPerQuestion?: number;
 }
 
 /** BP133 Yoke #27: per-voter diagnostic detail, always computed (cheap: just string lengths
@@ -169,8 +176,16 @@ export async function runCanonicalPlowMcAnswer(
   widenerOperators: SpecialistName[] = [],
 ): Promise<CanonicalPlowMcResult> {
   const startMs = Date.now();
-  const { domain, ollamaBaseUrl, model, choiceCount, andonEnabled, specialistKeys = {} } = config;
+  const { domain, ollamaBaseUrl, model, choiceCount, andonEnabled, specialistKeys = {}, deepHarvest, maxEbletsPerQuestion } = config;
   const questionId = generateQuestionId(researchQuery, domain);
+
+  // BP134 Yoke #32 Phase C: deepHarvest is opt-in per call (field-sowing only, see config
+  // JSDoc). When false/undefined, effectiveSpecialistKeys is byte-identical to the caller's
+  // specialistKeys object -- no new field is even present -- so the live A/B/C button's
+  // adapter behavior is provably unchanged.
+  const effectiveSpecialistKeys: SpecialistKeys = deepHarvest
+    ? { ...specialistKeys, maxResultsPerAdapter: specialistKeys.maxResultsPerAdapter ?? maxEbletsPerQuestion ?? 8 }
+    : specialistKeys;
 
   const baseOperators = getOperatorsForDomain(domain);
   const effectiveOperators = [...new Set([...baseOperators, ...widenerOperators])];
@@ -185,7 +200,7 @@ export async function runCanonicalPlowMcAnswer(
     onProgress?.(`specialist-fire:${specialistName}`);
     try {
       const fn = SPECIALIST_REGISTRY[specialistName];
-      const candidates = await fn(researchQuery, domain, specialistKeys);
+      const candidates = await fn(researchQuery, domain, effectiveSpecialistKeys);
       allCandidates.push(...candidates);
       specialistsUsed.push(specialistName);
     } catch { /* adapter error -- non-fatal, continue */ }
@@ -199,8 +214,11 @@ export async function runCanonicalPlowMcAnswer(
   onProgress?.('miner-done');
 
   // ── Saladin — Adversarial Fence ────────────────────────────────────────────
+  // BP134 Yoke #32 Phase C: postFurnaceCap defaults to the live button's unchanged 6. Only
+  // field-sowing's deepHarvest:true raises it (to maxEbletsPerQuestion, default 20 if unset).
+  const postFurnaceCap = deepHarvest ? (maxEbletsPerQuestion ?? 20) : 6;
   const { passed: saladinPassed } = await runSaladin(postMiner, ollamaBaseUrl, model);
-  const postFurnace = saladinPassed.sort((a, b) => b.weight - a.weight).slice(0, 6);
+  const postFurnace = saladinPassed.sort((a, b) => b.weight - a.weight).slice(0, postFurnaceCap);
   onProgress?.('furnace-done');
 
   // ── MC Three Fates — 3-voter LETTER arbitration (the one stage that cannot be reused

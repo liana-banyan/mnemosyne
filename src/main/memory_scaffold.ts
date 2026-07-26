@@ -283,7 +283,8 @@ export function registerMemoryScaffoldIPC(): void {
 // Pre-seeds the MnemosyneC substrate with 280 verified context-class eblets at
 // install time so fresh installs have a working substrate on first Plow.
 //
-// Install marker: {userData}/substrate/.starter_chocolates_v0.3.7
+// Install marker: {userData}/substrate/.starter_chocolates_v0.9.4 (bumped BP134 Yoke #32
+// Phase A from v0.3.7 so machines carrying the old broken 0-installed marker re-seed).
 // Idempotent — if marker exists, returns immediately (no double-write on restart).
 
 interface StarterEblet {
@@ -303,7 +304,10 @@ export async function installStarterChocolate(onProgress?: (msg: string) => void
   try {
     const substrateDir = join(app.getPath('userData'), 'substrate');
     const ebletFile = join(substrateDir, 'verified_eblets.jsonl');
-    const markerFile = join(substrateDir, '.starter_chocolates_v0.3.7');
+    // Marker version bumped v0.3.7 -> v0.9.4 (BP134 Yoke #32 Phase A) so machines that
+    // already wrote the (broken, 0-installed) v0.3.7 marker re-seed cleanly instead of
+    // being skipped forever by the idempotent check below.
+    const markerFile = join(substrateDir, '.starter_chocolates_v0.9.4');
 
     // Idempotent check
     if (existsSync(markerFile)) {
@@ -316,9 +320,13 @@ export async function installStarterChocolate(onProgress?: (msg: string) => void
       mkdirSync(substrateDir, { recursive: true });
     }
 
-    // Locate starter_chocolate.jsonl in extraResources or dev path
+    // Locate starter_chocolate.jsonl in extraResources or dev path.
+    // BP134 Yoke #32 Phase A fix: the prior devPath used a 2-hop `../../` which, since
+    // app.getAppPath() already resolves to the repo root when running unpackaged, landed
+    // outside the repo entirely (matching the proven 1-hop pattern in mnem_eblet_store.ts
+    // bundledDefaultEbletRoot(), which resolves resources/eblets_default the same way).
     const packedPath = join(process.resourcesPath ?? '', 'chocolates', 'starter_chocolate.jsonl');
-    const devPath = join(app.getAppPath(), '../../resources/chocolates/starter_chocolate.jsonl');
+    const devPath = join(app.getAppPath(), 'resources', 'chocolates', 'starter_chocolate.jsonl');
     const chocolatePath = existsSync(packedPath) ? packedPath : devPath;
 
     if (!existsSync(chocolatePath)) {
@@ -360,7 +368,7 @@ export async function installStarterChocolate(onProgress?: (msg: string) => void
     }
 
     // Write marker so we never re-install
-    writeFileSync(markerFile, `installed=${installed} ts=${Date.now()} v=0.3.7\n`, 'utf8');
+    writeFileSync(markerFile, `installed=${installed} ts=${Date.now()} v=0.9.4\n`, 'utf8');
 
     const msg = `[StarterChocolate] Installed ${installed} eblets from ${chocolatePath}`;
     console.log(msg);

@@ -1,0 +1,66 @@
+{
+  "version": "0.9.4",
+  "generatedAt": "2026-07-26T16:06:48.611Z",
+  "totalQuestions": 140,
+  "sha256": "9e05309a8c4bd3237fe8df52d1c37374163653893980b8ba2552f1cc5df42938",
+  "categories": [
+    {
+      "category": "biology",
+      "count": 10
+    },
+    {
+      "category": "business",
+      "count": 10
+    },
+    {
+      "category": "chemistry",
+      "count": 10
+    },
+    {
+      "category": "computer_science",
+      "count": 10
+    },
+    {
+      "category": "economics",
+      "count": 10
+    },
+    {
+      "category": "engineering",
+      "count": 10
+    },
+    {
+      "category": "health",
+      "count": 10
+    },
+    {
+      "category": "history",
+      "count": 10
+    },
+    {
+      "category": "law",
+      "count": 10
+    },
+    {
+      "category": "math",
+      "count": 10
+    },
+    {
+      "category": "other",
+      "count": 10
+    },
+    {
+      "category": "philosophy",
+      "count": 10
+    },
+    {
+      "category": "physics",
+      "count": 10
+    },
+    {
+      "category": "psychology",
+      "count": 10
+    }
+  ],
+  "domainsSkippedFromLiveCorpus": [],
+  "lawSource": "live HF datasets-server fetch (BP134 Yoke #32 Phase F) -- see law_fallback_source.json"
+}

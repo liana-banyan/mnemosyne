@@ -142,6 +142,10 @@ import { registerMicIpc } from './federation/mic_ipc';
 import { registerDiagnosisIpc } from './diagnosis/diagnosis_ipc';
 import { runCatacombMigrationCheck } from './diagnosis/catacomb_migrator';
 import { startPeerServer, stopPeerServer, getCurrentTier, registerPresenceConfig } from './federation/peer_server';
+// BP134 Yoke #29 Part 2: this node must run peer_artifact_server so OTHER nodes' mesh-pull
+// (auto_update_scheduler.ts's findNewerPeers/pullAndVerifyFromPeers) has something to reach --
+// the client-side pull code already existed (BP087 Wave 4) but this server was never started.
+import { startPeerArtifactServer } from './keys_engines/peer_artifact_server';
 
 // BP132 Yoke #21 A1 — mesh revival: relay-answer poller + startup self-diagnostic.
 // Both were fully built but never wired into boot (confirmed: zero call sites in src/).
@@ -4742,6 +4746,8 @@ function registerIPCHandlers(): void {
     // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow (wan_mesh only).
     plowEnabled?: boolean;
     plowAndonEnabled?: boolean;
+    // BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset.
+    exactPerCategory?: number;
   }) => {
     try {
       const { runOneClickMmluProTest } = await import('./mesh_test/one_click_mmlu_pro');
@@ -4867,6 +4873,52 @@ function registerIPCHandlers(): void {
     const { runAndonReplowLoop } = await import('./plow/andon_replow');
     return runAndonReplowLoop(question, domain);
   });
+
+  // ── BP134 Yoke #32 Phase D — Field-Sowing Runner IPC ──────────────────────
+  let _fieldSowingCancelToken = { cancelled: false };
+
+  safeHandle('plow:run-field-sowing', async (
+    _event,
+    fsConfig: { domain: string; maxPasses?: number; timeBudgetMs?: number; resume?: boolean },
+  ) => {
+    _fieldSowingCancelToken = { cancelled: false };
+    const { runFieldSowing } = await import('./plow/field_sowing_runner');
+    const broadcastProgress = (data: object) => {
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w.isDestroyed()) w.webContents.send('plow:field-sowing-progress', data);
+      }
+    };
+    try {
+      const result = await runFieldSowing(
+        fsConfig as import('./plow/field_sowing_runner').FieldSowingConfig,
+        (event) => broadcastProgress(event),
+        _fieldSowingCancelToken,
+      );
+      return { ok: true, result };
+    } catch (err) {
+      console.error('[FieldSowing] Fatal error:', err);
+      broadcastProgress({ type: 'error', message: (err as Error).message });
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+    safeHandle('plow:cancel-field-sowing', () => {
+      _fieldSowingCancelToken.cancelled = true;
+      console.log('[FieldSowing] Cancel requested via IPC');
+      return { ok: true };
+    });
+
+    // ── BP134 Yoke #32 Phase G — "improves-over-time" manual refresh ──────────
+    safeHandle('plow:refresh-chocolate-pack', async () => {
+      try {
+        const { consolidateChocolatePackages } = await import('./plow/chocolate_consolidator');
+        const manifest = await consolidateChocolatePackages();
+        return { ok: true, manifest };
+      } catch (err) {
+        console.error('[ChocolateConsolidator] manual refresh failed:', err);
+        return { ok: false, error: (err as Error).message };
+      }
+    });
 
   // ── BP082 v0.2.2 — Founder Substrate Seed (Hypothesis D) ──────────────────
   // Reads all MMLU-Pro questions from bundled resources and writes Founder-attested
@@ -7262,6 +7314,17 @@ app.whenReady().then(async () => {
     console.warn('[BP083] Peer server start failed (non-fatal):', e);
   }
 
+  // BP134 Yoke #29 Part 2: Start peer artifact server on port 47213 -- serves this node's
+  // cached installer bytes + hash to peers so mesh update propagation has a source. Plain
+  // HTTP, no auth (matches the existing SCAFFOLD trust model of startPeerServer() above);
+  // a peer's self-reported hash from this server is never trusted for install decisions --
+  // see mesh_update_propagation.ts's pullAndVerifyFromPeers().
+  try {
+    startPeerArtifactServer();
+  } catch (e) {
+    console.warn('[BP134 Yoke #29] Peer artifact server start failed (non-fatal):', e);
+  }
+
   // BP086 I5c: start relay poll (answers cross-WAN questions from orchestrator)
   {
     const _relayPeerId = getStablePeerId();
@@ -7396,6 +7459,14 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async () => {
+  // BP134 Yoke #32 Phase G — "improves-over-time": fold this session's live plow writes
+  // back into the deduped, versioned Chocolate Pack packages before exit. Time-boxed and
+  // best-effort (consolidateChocolatePackagesOnQuit never throws) so a slow/failed refresh
+  // can never delay or block shutdown.
+  try {
+    const { consolidateChocolatePackagesOnQuit } = await import('./plow/chocolate_consolidator');
+    await consolidateChocolatePackagesOnQuit();
+  } catch { /* non-fatal -- consolidateChocolatePackagesOnQuit already swallows internally */ }
   // v0.4.2: Mark running Plow as interrupted before exit so Resume is offered next launch
   try {
     const { onAppQuit } = await import('./plow/plow_worker_service');

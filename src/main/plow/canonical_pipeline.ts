@@ -130,6 +130,11 @@ export interface CanonicalPlowConfig {
   ollamaBaseUrl?: string;
   model?: string;
   specialistKeys?: SpecialistKeys;
+  /** BP134 Yoke #32 Phase C: field-sowing-only deep-harvest mode -- see the identical field on
+   *  plow_mc_answerer.ts's CanonicalPlowMcConfig for the full rationale. Undefined/false leaves
+   *  the postFurnace cap (6) and every adapter cap byte-identical to today's behavior. */
+  deepHarvest?: boolean;
+  maxEbletsPerQuestion?: number;
 }
 
 export interface CanonicalPlowResult {
@@ -568,6 +573,7 @@ async function runCanonicalQuestion(
   totalQuestions: number,
   andonRetry = 0,
   widenerOperators: SpecialistName[] = [],
+  postFurnaceCap = 6,
 ): Promise<CanonicalPlowQuestionResult> {
 
   const startMs = Date.now();
@@ -663,10 +669,12 @@ async function runCanonicalQuestion(
     postMiner, ollamaBaseUrl, model,
   );
 
-  // Keep only the top-quality survivors (cap at 6 for efficiency)
+  // Keep only the top-quality survivors (cap at 6 for efficiency; BP134 Yoke #32 Phase C
+  // raises this to postFurnaceCap only when field-sowing's deepHarvest passed a higher value --
+  // the live A/B/C button always calls with the default 6, unchanged).
   const saladinePassedSorted = saladinePassedFull
     .sort((a, b) => b.weight - a.weight)
-    .slice(0, 6);
+    .slice(0, postFurnaceCap);
 
   void saladineChallengd; // used only for logging; not needed downstream
 
@@ -756,7 +764,7 @@ async function runCanonicalQuestion(
         operatorList, ollamaBaseUrl, model, specialistKeys,
         writeEbletFn, onProgress,
         domainIndex, totalDomains, questionIndex, totalQuestions,
-        finalRetries, report.additionalOperators,
+        finalRetries, report.additionalOperators, postFurnaceCap,
       );
 
       onProgress({ type: 'andon-recovered', domain, questionIndex, totalQuestions, andonRetry: finalRetries });
@@ -870,6 +878,7 @@ async function runDomainPipeline(
   }) => Promise<void>,
   onProgress: (event: CanonicalPlowProgressEvent) => void,
   cancelToken: { cancelled: boolean },
+  postFurnaceCap = 6,
 ): Promise<CanonicalPlowDomainResult> {
 
   const operators = getOperatorsForDomain(domain);
@@ -900,6 +909,7 @@ async function runDomainPipeline(
         operators, ollamaBaseUrl, model, specialistKeys,
         writeEbletFn, onProgress,
         domainIndex, totalDomains, qi, questions.length,
+        0, [], postFurnaceCap,
       );
 
       questionResults.push(result);
@@ -995,7 +1005,15 @@ export async function runCanonicalPlow(
 
   const ollamaBaseUrl = config.ollamaBaseUrl ?? 'http://127.0.0.1:11434';
   const model = config.model ?? 'gemma4:12b';
-  const specialistKeys = config.specialistKeys ?? {};
+  const rawSpecialistKeys = config.specialistKeys ?? {};
+
+  // BP134 Yoke #32 Phase C: deepHarvest is opt-in per config (field-sowing only). When
+  // false/undefined, specialistKeys/postFurnaceCap are byte-identical to today's live A/B/C
+  // button behavior -- effectiveSpecialistKeys === rawSpecialistKeys object shape, cap stays 6.
+  const specialistKeys: SpecialistKeys = config.deepHarvest
+    ? { ...rawSpecialistKeys, maxResultsPerAdapter: rawSpecialistKeys.maxResultsPerAdapter ?? config.maxEbletsPerQuestion ?? 8 }
+    : rawSpecialistKeys;
+  const postFurnaceCap = config.deepHarvest ? (config.maxEbletsPerQuestion ?? 20) : 6;
 
   const startedAt = Date.now();
   const domainResults: CanonicalPlowDomainResult[] = [];
@@ -1020,7 +1038,7 @@ export async function runCanonicalPlow(
       const result = await runDomainPipeline(
         domain, di, config.domains.length,
         questions, ollamaBaseUrl, model, specialistKeys,
-        writeEbletFn, onProgress, cancelToken,
+        writeEbletFn, onProgress, cancelToken, postFurnaceCap,
       );
       domainResults.push(result);
       totalEbletsWritten += result.totalEbletsWritten;

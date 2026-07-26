@@ -1,6 +1,6 @@
 {
   "name": "amplify-computer",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (SSPL)",
   "homepage": "https://lianabanyan.com",
   "private": true,
@@ -136,6 +136,20 @@
       {
         "from": "resources/mmlu_pro_bundled",
         "to": "mmlu_pro_bundled",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/chocolates",
+        "to": "chocolates",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/mmlu_pro",
+        "to": "mmlu_pro",
         "filter": [
           "**/*"
         ]

@@ -1259,6 +1259,8 @@ contextBridge.exposeInMainWorld('amplify', {
     // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow (wan_mesh only).
     plowEnabled?: boolean;
     plowAndonEnabled?: boolean;
+    // BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset.
+    exactPerCategory?: number;
   }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
     ipcRenderer.invoke('mesh-test:run-one-click', config),
   meshTestIsActive: (): Promise<{ active: boolean }> =>
@@ -1425,6 +1427,29 @@ contextBridge.exposeInMainWorld('amplify', {
     source_category: string;
   }>> =>
     ipcRenderer.invoke('plow:load-domain-bank', domain),
+
+  // ── BP134 Yoke #32 Phase D — Field-Sowing Runner ─────────────────────────
+
+  runFieldSowing: (fsConfig: {
+    domain: string;
+    maxPasses?: number;
+    timeBudgetMs?: number;
+    resume?: boolean;
+  }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+    ipcRenderer.invoke('plow:run-field-sowing', fsConfig),
+
+  cancelFieldSowing: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('plow:cancel-field-sowing'),
+
+  onFieldSowingProgress: (callback: (event: unknown) => void): (() => void) => {
+    const listener = (_e: unknown, data: unknown) => callback(data);
+    ipcRenderer.on('plow:field-sowing-progress', listener);
+    return () => ipcRenderer.removeListener('plow:field-sowing-progress', listener);
+  },
+
+  // ── BP134 Yoke #32 Phase G — "improves-over-time" manual refresh ────────────
+  refreshChocolatePack: (): Promise<{ ok: boolean; manifest?: unknown; error?: string }> =>
+    ipcRenderer.invoke('plow:refresh-chocolate-pack'),
 
   // ── BP082 v0.2.2 — Founder substrate seed ────────────────────────────────
 
@@ -2238,6 +2263,17 @@ declare global {
         source_id: string;
         source_category: string;
       }>>;
+      // BP134 Yoke #32 Phase D — Field-Sowing Runner
+      runFieldSowing?: (fsConfig: {
+        domain: string;
+        maxPasses?: number;
+        timeBudgetMs?: number;
+        resume?: boolean;
+      }) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+      cancelFieldSowing?: () => Promise<{ ok: boolean }>;
+      onFieldSowingProgress?: (callback: (event: unknown) => void) => () => void;
+      // BP134 Yoke #32 Phase G — "improves-over-time" manual refresh
+      refreshChocolatePack?: () => Promise<{ ok: boolean; manifest?: unknown; error?: string }>;
       // BP082 v0.2.2 — Founder substrate seed
       plowSeedFromBank?: () => Promise<{
         ok: boolean;

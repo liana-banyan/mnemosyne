@@ -1,0 +1,10 @@
+{
+  "total_qs": 974,
+  "curation_pass_count": 974,
+  "seal_timestamp": "2026-06-13T05:52:48.108969+00:00",
+  "seal_method": "BP081-Wave-B-structural-check",
+  "source_dataset": "TIGER-Lab/MMLU-Pro",
+  "domain": "engineering",
+  "shortfall": false,
+  "is_stub": false
+}

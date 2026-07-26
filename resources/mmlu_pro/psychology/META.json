@@ -1,0 +1,10 @@
+{
+  "total_qs": 803,
+  "curation_pass_count": 801,
+  "seal_timestamp": "2026-06-13T05:52:48.212603+00:00",
+  "seal_method": "BP081-Wave-B-structural-check",
+  "source_dataset": "TIGER-Lab/MMLU-Pro",
+  "domain": "psychology",
+  "shortfall": false,
+  "is_stub": false
+}
