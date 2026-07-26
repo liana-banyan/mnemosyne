@@ -4,6 +4,11 @@
 // State persists per-session via sessionStorage.
 // Architectural separation maintained — subsystems distinct, UX unified.
 // decay_class: BETWEEN on all new emissions.
+// BP135 YOKE_35 Phase 3: BridgeView's `addMockTasks`/"Load Yoke Tasks" button (fake,
+// hardcoded BridgeMessage rows) is CUT -- "nothing that isn't real." fetchMessages/Refresh
+// (real ct.substrate_address_emit() heartbeat) and DashboardView (real ct.ten_pearl_roundtrip()
+// substrate check) are unchanged and KEEP-REAL. Folded into CleanShell's combined Substrate
+// tab in Phase 4.
 
 import React, { useState, useEffect, useCallback } from 'react';
 
@@ -68,29 +73,6 @@ function BridgeView() {
     }
   }, []);
 
-  const addMockTasks = useCallback(() => {
-    const tasks: BridgeMessage[] = [
-      {
-        id: `task-${Date.now()}-1`,
-        type: 'task',
-        from: 'BISHOP',
-        to: 'KNIGHT',
-        content: 'BP060 W1 Application 002 Step 1 v3 — DELTAS ONLY — execute all 5 deltas',
-        ts: Date.now() - 120_000,
-        pinned: true,
-      },
-      {
-        id: `task-${Date.now()}-2`,
-        type: 'response',
-        from: 'KNIGHT',
-        to: 'BISHOP',
-        content: 'LANDED — DELTA-1/2/3 + UI-7/UI-8 complete — Tier-L composite written',
-        ts: Date.now(),
-      },
-    ];
-    setMessages((prev) => [...tasks, ...prev].slice(0, 100));
-  }, []);
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Bridge toolbar */}
@@ -101,16 +83,6 @@ function BridgeView() {
         <div style={{ flex: 1, fontSize: 10, fontWeight: 700, color: '#6ee7b7' }}>
           Bridge · Live Messages
         </div>
-        <button
-          onClick={addMockTasks}
-          style={{
-            fontSize: 9, padding: '3px 8px', background: 'rgba(110,231,183,0.08)',
-            border: '1px solid rgba(110,231,183,0.25)', borderRadius: 4,
-            color: '#6ee7b7', cursor: 'pointer', fontWeight: 600,
-          }}
-        >
-          Load Yoke Tasks
-        </button>
         <button
           onClick={fetchMessages}
           disabled={loading}
@@ -156,7 +128,7 @@ function BridgeView() {
           }}>
             <div style={{ fontSize: 24 }}>🌉</div>
             <div style={{ fontSize: 10, color: '#475569', textAlign: 'center' }}>
-              No messages yet. Click "Load Yoke Tasks" or "Refresh".
+              No messages yet. Click "Refresh".
             </div>
           </div>
         ) : (

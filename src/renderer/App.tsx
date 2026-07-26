@@ -15,7 +15,11 @@ import { FrameModeIndicator } from './components/FrameModeIndicator';
 import { DashboardCornerAffordance } from './components/DashboardCornerAffordance';
 import { UpdateToast } from './components/UpdateToast';
 import { UpdateModal } from './components/UpdateModal';
+// unrouted BP135 -- see YOKE_35 (Phase 1: CleanShell is now the default 'dashboard' mount below;
+// MnemosyneTabView is no longer reachable from the shipped app. Kept per Rule 66 -- un-route, don't delete.)
 import { MnemosyneTabView } from './components/MnemosyneTabView';
+// unrouted BP135 -- see YOKE_35 (Phase 1: no longer mounted anywhere in App.tsx -- both the
+// 'dashboard' view and the '#/clean-shell' hash now mount CleanShell. Kept per Rule 66.)
 import { LeanShell } from './components/LeanShell';
 import { CleanShell } from './components/CleanShell';
 import { AMPLIFYDashboard } from './components/AMPLIFYDashboard';
@@ -222,11 +226,14 @@ export default function App() {
   const showTrialBanner =
     authState?.status === 'trial_active' || authState?.status === 'trial_expired';
 
-  // SEG-V0151-P0-3TAB-SHELL: LeanShell wraps MnemosyneTabView — decides lean vs advanced internally.
+  // BP135 YOKE_35 Phase 1: CleanShell (the BP132 Yoke #22 fork) is now the DEFAULT front
+  // door for ALL users, replacing both LeanShell's own lean 8-tab UI (new users) and
+  // MnemosyneTabView's 24-tab "advanced" UI (existing users). onExitToLean is intentionally
+  // omitted -- Lean is retired from the default path, not offered as a fallback.
   if (view === 'dashboard') {
     return (
-      <ErrorBoundary label="Lean Shell / MnemosyneC Tab View">
-        <LeanShell
+      <ErrorBoundary label="Clean Shell (BP135 YOKE_35 default)">
+        <CleanShell
           currentMode={mode}
           onModeChange={handleModeChange}
           onClose={() => window.close()}
