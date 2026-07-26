@@ -133,6 +133,14 @@ export interface OneClickRunResult {
    *  than completing all questions -- Truth-Always: a partial run must say so, never be
    *  presented as if it ran to completion. */
   cancelled?: boolean;
+  /** BP134 Yoke #32 Phase F item 2: set to the per-category count when this run used the
+   *  "Full 14x5 MMLU-Pro" exact-sampling preset (or any custom exactPerCategory value). */
+  exactPerCategory?: number;
+  /** BP134 Yoke #32 Phase F item 3: sha256 of the exact bundled corpus file this run's
+   *  questions were sourced from -- lets a receipt be verified against the exact corpus
+   *  version it was scored against. Present only when questionSource === 'bundled_subset'
+   *  AND resources/mmlu_pro_bundled/manifest.json exists (BP134-and-later builds). */
+  corpusManifestSha256?: string;
 }
 
 let running = false;
@@ -150,6 +158,14 @@ export function requestOneClickCancel(): { ok: boolean; wasRunning: boolean } {
 
 const PER_DOMAIN_DEFAULT = 10;
 
+// BP134 Yoke #32 Phase F: the 14 canonical MMLU-Pro domains this app's bundled corpus
+// now covers exactly (10/category, 140 total, law gap fixed -- see generate_mmlu_pro_bundle.mjs).
+// Mirrors per_domain_q_banks.ts ALL_DOMAINS / TestItOutTab & ClipboardCaptureModal DOMAIN_OPTIONS.
+const CANONICAL_CATEGORIES = [
+  'math', 'physics', 'chemistry', 'biology', 'computer_science', 'engineering',
+  'history', 'philosophy', 'law', 'business', 'economics', 'psychology', 'health', 'other',
+];
+
 function resolveBundledDatasetPath(): string {
   const packaged = typeof process !== 'undefined' && (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
     ? join((process as NodeJS.Process & { resourcesPath?: string }).resourcesPath!, 'mmlu_pro_bundled', 'questions.jsonl')
@@ -158,7 +174,64 @@ function resolveBundledDatasetPath(): string {
   return resolve(app.getAppPath(), 'resources', 'mmlu_pro_bundled', 'questions.jsonl');
 }
 
-/** Ships in every install. 130 real curated MMLU-Pro questions, 10 evenly-sampled per domain. */
+function resolveBundledManifestPath(): string {
+  const packaged = typeof process !== 'undefined' && (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+    ? join((process as NodeJS.Process & { resourcesPath?: string }).resourcesPath!, 'mmlu_pro_bundled', 'manifest.json')
+    : null;
+  if (app.isPackaged && packaged) return packaged;
+  return resolve(app.getAppPath(), 'resources', 'mmlu_pro_bundled', 'manifest.json');
+}
+
+export interface BundledCorpusManifest {
+  version: string;
+  generatedAt: string;
+  totalQuestions: number;
+  sha256: string;
+  categories: Array<{ category: string; count: number }>;
+}
+
+/** BP134 Yoke #32 Phase F item 3: read the shipped corpus manifest so a receipt can be
+ *  verified against the exact corpus version it was scored against. Non-fatal -- returns
+ *  null when the manifest is absent (e.g. an older build predating this feature). */
+export function loadBundledCorpusManifest(): BundledCorpusManifest | null {
+  const path = resolveBundledManifestPath();
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as BundledCorpusManifest;
+  } catch (e) {
+    console.warn('[one_click_mmlu_pro] failed to parse bundled corpus manifest:', e);
+    return null;
+  }
+}
+
+/** BP134 Yoke #32 Phase F item 2: exact per-category sampling for the "Full 14x5" preset --
+ *  groups by category (canonical categories first, in canonical order, then any others found)
+ *  and evenly samples exactly `perCategory` from each group (or all of a group when it has
+ *  fewer). Unlike downsampleQuestions() (a single global even-stride cut), this GUARANTEES
+ *  category coverage regardless of how the source array happens to be laid out or grouped. */
+export function sampleExactPerCategory(questions: MmluProQuestion[], perCategory: number): MmluProQuestion[] {
+  const byCategory = new Map<string, MmluProQuestion[]>();
+  for (const q of questions) {
+    const list = byCategory.get(q.category);
+    if (list) list.push(q); else byCategory.set(q.category, [q]);
+  }
+  const orderedCategories = [
+    ...CANONICAL_CATEGORIES.filter((c) => byCategory.has(c)),
+    ...Array.from(byCategory.keys()).filter((c) => !CANONICAL_CATEGORIES.includes(c)).sort(),
+  ];
+  const out: MmluProQuestion[] = [];
+  for (const category of orderedCategories) {
+    const group = byCategory.get(category)!;
+    for (const idx of evenlySpacedIndices(group.length, perCategory)) {
+      out.push(group[idx]!);
+    }
+  }
+  return out;
+}
+
+/** Ships in every install. 140 real curated MMLU-Pro questions, 10 evenly-sampled per domain
+ *  across all 14 canonical categories (BP134 Yoke #32 Phase F: law gap fixed, category names
+ *  normalized -- see generate_mmlu_pro_bundle.mjs header note). */
 export function loadBundledQuestions(): MmluProQuestion[] {
   const path = resolveBundledDatasetPath();
   if (!existsSync(path)) {
@@ -412,6 +485,9 @@ function persistPlowReceipt(entry: {
   peerId?: string;
   machineLabel?: string;
   plowTrace?: Record<string, unknown> | null;
+  /** BP134 Yoke #32 Phase F item 3: sha256 of the corpus manifest this question was
+   *  sourced from, so the receipt can be verified against the exact corpus version. */
+  corpusManifestSha256?: string;
 }): void {
   try {
     const dir = join(app.getPath('userData'), 'plow_receipts');
@@ -434,6 +510,7 @@ async function runWanMode(
   substrateEnabled: boolean,
   plowEnabled: boolean,
   plowAndonEnabled: boolean,
+  corpusManifestSha256?: string,
 ): Promise<OneClickQuestionOutcome[]> {
   const outcomes: OneClickQuestionOutcome[] = [];
   const totalUnits = questions.length * peers.length;
@@ -490,6 +567,7 @@ async function runWanMode(
           peerId: pa.peerId,
           machineLabel: pa.machineLabel,
           plowTrace: pa.plowTrace,
+          corpusManifestSha256,
         });
       }
     }
@@ -554,6 +632,12 @@ export async function runOneClickMmluProTest(config: {
   /** BP133 Yoke #24 Task 2: Condition C (Andon retry) vs Condition B (single pass) when
    * plowEnabled is true. Ignored when plowEnabled is false. Defaults to false. */
   plowAndonEnabled?: boolean;
+  /** BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset. When set (e.g. 5),
+   * OVERRIDES maxTotalQuestions/questionsPerDomain sampling with an exact per-category
+   * sample of this many questions from EACH of the 14 canonical categories, sourced from
+   * the guaranteed-complete bundled corpus (never the dev-machine-only full live corpus,
+   * which still has the law gap) so the preset behaves identically on every machine. */
+  exactPerCategory?: number;
 }): Promise<OneClickRunResult> {
   if (running) {
     throw new Error('A one-click test run is already in progress');
@@ -575,12 +659,26 @@ export async function runOneClickMmluProTest(config: {
   const substrateEnabled = config.substrateEnabled ?? false;
   const plowEnabled = config.plowEnabled ?? false;
   const plowAndonEnabled = config.plowAndonEnabled ?? false;
-  const { questions: allQuestionsUncapped, source } = loadQuestions(config.questionsPerDomain ?? PER_DOMAIN_DEFAULT);
+  const exactPerCategory = config.exactPerCategory && config.exactPerCategory > 0 ? config.exactPerCategory : undefined;
+
+  // BP134 Yoke #32 Phase F item 2: the exact-per-category preset always sources from the
+  // bundled corpus specifically (never full_corpus_live), because that is the ONLY corpus
+  // guaranteed complete across all 14 categories (including the law fix) on every machine --
+  // full_corpus_live still has the upstream law gap on this dev machine (see loadFromFullCorpus).
+  const { questions: allQuestionsUncapped, source } = exactPerCategory
+    ? { questions: loadBundledQuestions(), source: 'bundled_subset' as const }
+    : loadQuestions(config.questionsPerDomain ?? PER_DOMAIN_DEFAULT);
+
   // BP133 Yoke #24 Task 4: total-question cap, applied uniformly before mode dispatch so a
   // "3-question smoke test" is one explicit number in both local_ollama and wan_mesh modes.
-  const allQuestions = config.maxTotalQuestions && config.maxTotalQuestions > 0
-    ? downsampleQuestions(allQuestionsUncapped, config.maxTotalQuestions)
-    : allQuestionsUncapped;
+  // BP134 Phase F item 2: exactPerCategory takes priority over maxTotalQuestions when set.
+  const allQuestions = exactPerCategory
+    ? sampleExactPerCategory(allQuestionsUncapped, exactPerCategory)
+    : config.maxTotalQuestions && config.maxTotalQuestions > 0
+      ? downsampleQuestions(allQuestionsUncapped, config.maxTotalQuestions)
+      : allQuestionsUncapped;
+
+  const corpusManifest = source === 'bundled_subset' ? loadBundledCorpusManifest() : null;
 
   let dispatchMode: 'local_ollama' | 'wan_mesh' = 'local_ollama';
   let livePeers: WanPeerInfo[] = [];
@@ -636,7 +734,7 @@ export async function runOneClickMmluProTest(config: {
     const defaultTimeoutMs = plowEnabled ? 300_000 : 90_000;
     outcomes = await runWanMode(
       questions, livePeers, sessionId, config.wanPerQuestionTimeoutMs ?? defaultTimeoutMs,
-      substrateEnabled, plowEnabled, plowAndonEnabled,
+      substrateEnabled, plowEnabled, plowAndonEnabled, corpusManifest?.sha256,
     );
   } else {
     broadcast('mesh-test:progress', { type: 'start', total: questions.length });
@@ -677,6 +775,8 @@ export async function runOneClickMmluProTest(config: {
     substrateEnabled,
     plowEnabled: dispatchMode === 'wan_mesh' ? plowEnabled : undefined,
     cancelled: cancelRequested,
+    exactPerCategory,
+    corpusManifestSha256: corpusManifest?.sha256,
   };
 
   broadcast('mesh-test:progress', { type: 'complete', result });

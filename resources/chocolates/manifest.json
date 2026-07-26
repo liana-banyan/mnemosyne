@@ -1,0 +1,189 @@
+{
+  "version": "0.9.3",
+  "generatedAt": "2026-07-26T16:00:02.420Z",
+  "totalEblets": 319,
+  "totalSourcesRead": 2,
+  "totalRecordsRead": 353,
+  "totalDuplicatesRemoved": 34,
+  "totalMalformedSkipped": 0,
+  "sources": [
+    {
+      "label": "live_substrate",
+      "path": "C:\\Users\\Administrator\\AppData\\Roaming\\amplify-computer\\substrate\\verified_eblets.jsonl"
+    },
+    {
+      "label": "starter_chocolate_seed",
+      "path": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\chocolates\\starter_chocolate.jsonl"
+    }
+  ],
+  "categories": [
+    {
+      "category": "math",
+      "count": 22,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 2,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "physics",
+      "count": 22,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 2,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "chemistry",
+      "count": 25,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 5,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "biology",
+      "count": 27,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 7,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "computer_science",
+      "count": 22,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 2,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "engineering",
+      "count": 23,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 3,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "history",
+      "count": 21,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 1,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "philosophy",
+      "count": 23,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 3,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "law",
+      "count": 20,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 0,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "business",
+      "count": 26,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 6,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "economics",
+      "count": 21,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 1,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "psychology",
+      "count": 22,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 2,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "health",
+      "count": 23,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 3,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    },
+    {
+      "category": "other",
+      "count": 22,
+      "version": "0.9.3",
+      "generated_at": "2026-07-26T16:00:02.420Z",
+      "source_mix": {
+        "canonical_plow": 2,
+        "starter_chocolate": 20,
+        "plow_field": 0,
+        "other": 0
+      }
+    }
+  ]
+}

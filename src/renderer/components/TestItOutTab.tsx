@@ -379,6 +379,10 @@ export function TestItOutTab(): React.ReactElement {
   const [selfCtxStatus, setSelfCtxStatus] = useState<string>('');
   const [resetConfirm, setResetConfirm] = useState(false);
 
+  // ── BP134 Yoke #32 Phase G — "improves-over-time" Chocolate Pack refresh ───
+  const [chocolateRefreshLoading, setChocolateRefreshLoading] = useState(false);
+  const [chocolateRefreshStatus, setChocolateRefreshStatus] = useState<string>('');
+
   // Load history on mount
   useEffect(() => {
     window.amplify?.getTestItOutHistory?.()
@@ -519,6 +523,28 @@ export function TestItOutTab(): React.ReactElement {
       setSelfCtxLoading(false);
     }
   }, [resetConfirm]);
+
+  // ── BP134 Yoke #32 Phase G — "improves-over-time" Chocolate Pack refresh ───
+  const handleRefreshChocolatePack = useCallback(async () => {
+    setChocolateRefreshLoading(true);
+    setChocolateRefreshStatus('Refreshing Chocolate Pack — reading live substrate + seed, deduping, rebuilding 14 category packages…');
+    try {
+      const res = await window.amplify?.refreshChocolatePack?.();
+      if (res?.ok && res.manifest) {
+        const m = res.manifest as { totalEblets: number; totalDuplicatesRemoved: number; categories: Array<{ count: number }> };
+        setChocolateRefreshStatus(
+          `Refreshed: ${m.totalEblets} unique eblets across ${m.categories.length} categories ` +
+          `(${m.totalDuplicatesRemoved} dupes removed). Saved to userData/chocolates/.`,
+        );
+      } else {
+        setChocolateRefreshStatus(`Refresh failed: ${res?.error ?? 'unknown'}`);
+      }
+    } catch (err) {
+      setChocolateRefreshStatus(`Refresh failed: ${String(err)}`);
+    } finally {
+      setChocolateRefreshLoading(false);
+    }
+  }, []);
 
   // ── BP083 v0.3.8 — GPQA Diamond handlers ─────────────────────────────────
 
@@ -1579,9 +1605,33 @@ export function TestItOutTab(): React.ReactElement {
           </div>
         )}
 
-        <div style={{ fontSize: 11, color: '#334155', marginTop: 8 }}>
-          Install Chocolate Pack → Package Store → Confectionary (coming v0.3.6)
+        {/* BP134 Yoke #32 Phase G — was a static "(coming v0.3.6)" placeholder; now a real
+            manual trigger for the same consolidation that also runs automatically on quit. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' as const }}>
+          <button
+            type="button"
+            style={{
+              padding: '6px 12px', background: 'rgba(250,204,21,0.08)',
+              border: '1px solid rgba(250,204,21,0.3)', borderRadius: 7,
+              color: '#facc15', fontSize: 11, fontWeight: 600,
+              cursor: chocolateRefreshLoading ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit', opacity: chocolateRefreshLoading ? 0.5 : 1,
+            }}
+            disabled={chocolateRefreshLoading}
+            onClick={() => { void handleRefreshChocolatePack(); }}
+          >
+            🍫 {chocolateRefreshLoading ? 'Refreshing…' : 'Refresh Chocolate Pack'}
+          </button>
+          <span style={{ fontSize: 10, color: '#475569' }}>
+            Folds this session's live plow writes back into the 14 deduped, versioned category
+            packages (also runs automatically on quit).
+          </span>
         </div>
+        {chocolateRefreshStatus && (
+          <div style={{ fontSize: 11, color: chocolateRefreshStatus.startsWith('Refresh failed') ? '#f87171' : '#6ee7b7', marginTop: 6 }}>
+            {chocolateRefreshStatus}
+          </div>
+        )}
         {/* v0.4.1 SEG-4: Three salt-layers canonical tagline */}
         <div style={{ fontSize: 11, color: '#475569', marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(100,116,139,0.12)' }}>
           🧂 Three salt-layers: Substrate · Federation · Human.

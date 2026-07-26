@@ -11,6 +11,9 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { app, ipcMain, BrowserWindow, Notification } from 'electron';
+// BP134 Yoke #29 Part 2: node-to-node propagation -- detect a newer peer, pull + verify
+// its installer against THIS SAME canonical manifest fetch's sha256 before ever trusting it.
+import { findNewerPeers, pullAndVerifyFromPeers, seedLocalArtifactCache } from './keys_engines/mesh_update_propagation';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -251,6 +254,23 @@ async function downloadAndVerify(entry: VersionEntry): Promise<void> {
   }
 }
 
+// ─── Mesh (peer-to-peer) promotion helper ─────────────────────────────────────
+
+/**
+ * Promote a mesh-pulled, already hash-verified installer straight to the same
+ * "<version>.exe.ready" convention downloadAndVerify() uses for site downloads, so the
+ * existing installTiming state machine (launch/quit/scheduled/approve) in
+ * checkAndTriggerPendingInstall() treats a peer-sourced update identically to a
+ * site-sourced one -- the user never sees a difference in the install flow, only in
+ * update-history (event: 'mesh_pull_verified' vs 'download_complete').
+ */
+function promoteVerifiedFileToReady(version: string, sourcePath: string): void {
+  if (!fs.existsSync(UPDATES_DIR)) fs.mkdirSync(UPDATES_DIR, { recursive: true });
+  const readyPath = path.join(UPDATES_DIR, `MnemosyneC-Setup-${version}.exe.ready`);
+  fs.copyFileSync(sourcePath, readyPath);
+  notifyPatchReady(version);
+}
+
 // ─── Check and maybe download ─────────────────────────────────────────────────
 
 async function checkAndMaybeDownload(): Promise<void> {
@@ -295,7 +315,39 @@ async function checkAndMaybeDownload(): Promise<void> {
       return; // notification only, no auto-download
     }
 
-    // Proceed with background download
+    // BP134 Yoke #29 Part 2: try the mesh before the site. peers advertising this exact
+    // latestVer, with a live artifact_server_address, are asked for the installer bytes;
+    // pullAndVerifyFromPeers() re-hashes what it actually downloaded (SHA-256) against
+    // latestEntry.sha256 -- the SAME canonical value the site-download path below verifies
+    // against -- and NEVER trusts a peer's own self-reported hash. Any peer whose bytes
+    // don't match is discarded and the next peer (or the site fallback) is tried instead.
+    if (latestEntry.url && latestEntry.sha256) {
+      try {
+        const newerPeers = await findNewerPeers(currentVer);
+        if (newerPeers.length > 0) {
+          appendUpdateHistory({ event: 'mesh_peers_found', version: latestVer, peerCount: newerPeers.length });
+          const meshResult = await pullAndVerifyFromPeers(newerPeers, latestVer, latestEntry.sha256);
+          if (meshResult.ok && meshResult.localPath) {
+            appendUpdateHistory({
+              event: 'mesh_pull_verified',
+              version: latestVer,
+              peerId: meshResult.peerId,
+              sha256: latestEntry.sha256,
+            });
+            promoteVerifiedFileToReady(latestVer, meshResult.localPath);
+            return; // mesh propagation succeeded -- site download skipped entirely
+          }
+          appendUpdateHistory({ event: 'mesh_pull_unavailable', version: latestVer, reason: meshResult.error });
+        }
+      } catch (meshErr) {
+        // Mesh is best-effort -- any failure here (Supabase unreachable, all peers
+        // unreachable, etc.) must never block the site fallback below.
+        console.warn('[auto-update] Mesh propagation attempt failed (falling back to site):', meshErr);
+      }
+    }
+
+    // Proceed with background download from the canonical site (fallback / no verified
+    // peer copy was available)
     if (latestEntry.url && latestEntry.sha256) {
       await downloadAndVerify({
         version: latestVer,
@@ -303,6 +355,10 @@ async function checkAndMaybeDownload(): Promise<void> {
         sha256: latestEntry.sha256,
         signature: latestEntry.signature,
       });
+      // Seed this node's own artifact cache so it can serve latestVer onward to ITS
+      // peers via peer_artifact_server -- this is what makes one site download cascade
+      // across the mesh instead of every node pulling the full installer independently.
+      seedLocalArtifactCache(latestVer, path.join(UPDATES_DIR, `MnemosyneC-Setup-${latestVer}.exe.ready`));
     } else {
       console.warn('[auto-update] version_trust entry missing url or sha256 — skipping download');
     }

@@ -4,7 +4,10 @@
  *
  * Compiled output: dist/main/plow/per_domain_q_banks.js
  * At runtime __dirname = dist/main/plow/
- * Data root:  ../../../lb-reproducibility-pack/datasets/mmlu_pro_per_domain/
+ * Data root (dev fallback): ../../../resources/mmlu_pro/ (vendored from the sibling
+ * LianaBanyanPlatform repo's lb-reproducibility-pack/datasets/mmlu_pro_per_domain/,
+ * BP134 Yoke #32 Phase B — the old path pointed at a directory that never existed
+ * inside this repo).
  */
 
 import * as fs from 'fs';
@@ -85,7 +88,13 @@ function resolveDataRoot(): string {
     console.log('[per_domain_q_banks] DATA_ROOT → packed:', packedPath);
     return packedPath;
   }
-  const devPath = path.join(__dirname, '../../../lb-reproducibility-pack/datasets/mmlu_pro_per_domain');
+  // BP134 Yoke #32 Phase B fix: lb-reproducibility-pack lives in the SIBLING
+  // LianaBanyanPlatform repo, not inside mnemosyne — the old ../../../ climb landed
+  // on a path that can never exist. The sealed banks are now vendored into
+  // mnemosyne/resources/mmlu_pro/ (mirrored by the extraResources entry above),
+  // so the dev fallback resolves the same way the packed path does, just from the
+  // repo root instead of process.resourcesPath.
+  const devPath = path.join(__dirname, '../../../resources/mmlu_pro');
   console.log('[per_domain_q_banks] DATA_ROOT → dev fallback:', devPath);
   return devPath;
 }

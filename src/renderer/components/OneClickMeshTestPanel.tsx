@@ -60,6 +60,12 @@ export interface OneClickRunResult {
   substrateEnabled?: boolean;
   /** BP133 Yoke #24 Task 2: whether the wan_mesh run requested the 12-Blade Column Plow. */
   plowEnabled?: boolean;
+  /** BP134 Yoke #32 Phase F item 2: set when this run used the "Full 14x5 MMLU-Pro"
+   *  exact-per-category sampling preset (value = questions per category). */
+  exactPerCategory?: number;
+  /** BP134 Yoke #32 Phase F item 3: sha256 of the bundled corpus manifest this run's
+   *  questions were sourced from, when available. */
+  corpusManifestSha256?: string;
 }
 
 type DispatchModeChoice = 'auto' | 'wan_mesh' | 'local_ollama';
@@ -78,6 +84,26 @@ export function loadLastMeshTestResult(): OneClickRunResult | null {
     return JSON.parse(raw) as OneClickRunResult;
   } catch {
     return null;
+  }
+}
+
+/** BP134 Yoke #32 Phase F item 4: serialize the full OneClickRunResult (every outcome,
+ *  every persisted plow_trace, the corpus manifest hash) to a downloadable .json file --
+ *  third-party verifiability, so a result can be independently re-checked question by
+ *  question rather than trusting only the on-screen aggregate percentage. */
+export function downloadReceipt(result: OneClickRunResult): void {
+  try {
+    const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mnemo_mesh_test_receipt_${result.startedAt.replace(/[:.]/g, '-')}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error('[OneClickMeshTestPanel] receipt download failed:', e);
   }
 }
 
@@ -102,6 +128,12 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
   // one-click smoke test; F12 DevTools is unavailable in this build, so this replaces the
   // only prior way to change question count (a console workaround).
   const [maxTotalQuestions, setMaxTotalQuestions] = useState<number>(20);
+  // BP134 Yoke #32 Phase F item 2: "Full 14x5 MMLU-Pro" preset -- exact 5-per-category
+  // sampling across all 14 canonical domains (70 total), substrate+plow+andon forced ON.
+  // Cleared by any manual change to the individual toggles/question-count below, since at
+  // that point the run is no longer the untouched preset (Truth-Always: never let a result
+  // silently claim "Full 14x5" when the Founder changed a setting after selecting it).
+  const [fullPresetSelected, setFullPresetSelected] = useState(false);
   const [total, setTotal] = useState(0);
   const [doneCount, setDoneCount] = useState(0);
   const [peersDiscovered, setPeersDiscovered] = useState<number | null>(null);
@@ -141,6 +173,7 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
         maxTotalQuestions,
         plowEnabled,
         plowAndonEnabled,
+        exactPerCategory: fullPresetSelected ? 5 : undefined,
       });
       if (!resp?.ok) {
         setErrorMsg(resp?.error ?? 'Test run failed to start');
@@ -151,7 +184,7 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
       setErrorMsg(String(e));
       setState('error');
     }
-  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled]);
+  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, fullPresetSelected]);
 
   const runningAccuracy = liveOutcomes.length > 0
     ? liveOutcomes.filter((o) => o.isCorrect).length / liveOutcomes.length
@@ -208,7 +241,7 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
           type="checkbox"
           checked={substrateEnabled}
           disabled={state === 'running'}
-          onChange={(e) => setSubstrateEnabled(e.target.checked)}
+          onChange={(e) => { setSubstrateEnabled(e.target.checked); setFullPresetSelected(false); }}
         />
         Substrate context {substrateEnabled ? 'ON' : 'OFF'}
         <span style={{ color: '#475569', fontSize: 10 }}>
@@ -232,7 +265,7 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
           type="checkbox"
           checked={plowEnabled}
           disabled={state === 'running' || mode === 'local_ollama'}
-          onChange={(e) => setPlowEnabled(e.target.checked)}
+          onChange={(e) => { setPlowEnabled(e.target.checked); setFullPresetSelected(false); }}
         />
         12-Blade Column Plow {plowEnabled ? 'ON' : 'OFF'} (WAN only)
         <span style={{ color: '#475569', fontSize: 10 }}>
@@ -251,7 +284,7 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
             type="checkbox"
             checked={plowAndonEnabled}
             disabled={state === 'running'}
-            onChange={(e) => setPlowAndonEnabled(e.target.checked)}
+            onChange={(e) => { setPlowAndonEnabled(e.target.checked); setFullPresetSelected(false); }}
           />
           Andon retry loop {plowAndonEnabled ? 'ON (Condition C)' : 'OFF (Condition B, single pass)'}
         </label>
@@ -259,17 +292,17 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
 
       {/* BP133 Yoke #24 Task 4: question-count control -- no DevTools console workaround
           needed, F12 dev-tools is unavailable in this build. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
         <span style={{ fontSize: 11, color: '#64748b' }}>Questions:</span>
         {[3, 10, 20, 50].map((n) => (
           <button
             key={n}
-            onClick={() => setMaxTotalQuestions(n)}
+            onClick={() => { setMaxTotalQuestions(n); setFullPresetSelected(false); }}
             disabled={state === 'running'}
             style={{
-              background: maxTotalQuestions === n ? '#10b981' : 'transparent',
-              color: maxTotalQuestions === n ? '#0d1117' : '#94a3b8',
-              border: `1px solid ${maxTotalQuestions === n ? '#10b981' : '#1e2a38'}`,
+              background: !fullPresetSelected && maxTotalQuestions === n ? '#10b981' : 'transparent',
+              color: !fullPresetSelected && maxTotalQuestions === n ? '#0d1117' : '#94a3b8',
+              border: `1px solid ${!fullPresetSelected && maxTotalQuestions === n ? '#10b981' : '#1e2a38'}`,
               borderRadius: 6, padding: '3px 9px', fontSize: 11, fontWeight: 600,
               cursor: state === 'running' ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
             }}
@@ -285,13 +318,43 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
           disabled={state === 'running'}
           onChange={(e) => {
             const v = parseInt(e.target.value, 10);
-            if (!Number.isNaN(v) && v > 0) setMaxTotalQuestions(v);
+            if (!Number.isNaN(v) && v > 0) { setMaxTotalQuestions(v); setFullPresetSelected(false); }
           }}
           style={{
             width: 52, background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 6,
             color: '#e2e8f0', fontSize: 11, padding: '3px 6px', fontFamily: 'system-ui, sans-serif',
           }}
         />
+      </div>
+
+      {/* BP134 Yoke #32 Phase F item 2: "Full 14x5 MMLU-Pro" preset -- one click sets
+          substrate+plow+andon ON and exact 5-per-category sampling (70 total, all 14
+          canonical domains guaranteed present, sourced from the fixed bundled corpus). */}
+      <div style={{ marginBottom: 12 }}>
+        <button
+          onClick={() => {
+            setMaxTotalQuestions(70);
+            setSubstrateEnabled(true);
+            setPlowEnabled(true);
+            setPlowAndonEnabled(true);
+            setMode('auto');
+            setFullPresetSelected(true);
+          }}
+          disabled={state === 'running'}
+          style={{
+            background: fullPresetSelected ? '#facc15' : 'transparent',
+            color: fullPresetSelected ? '#0d1117' : '#facc15',
+            border: `1px solid ${fullPresetSelected ? '#facc15' : '#4d3a0a'}`,
+            borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 700,
+            cursor: state === 'running' ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
+          }}
+        >
+          ⚡ 70 — Full 14x5 MMLU-Pro
+        </button>
+        <span style={{ marginLeft: 8, fontSize: 10, color: '#475569' }}>
+          (exactly 5 questions from EACH of the 14 categories, substrate+plow+Andon forced ON --
+          run this AFTER seeding the Chocolate Pack to see "hot" differ from "cold")
+        </span>
       </div>
 
       {state !== 'running' && (
@@ -369,7 +432,13 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
             </div>
             <div style={{ fontSize: 10, color: '#475569', marginTop: 4, fontStyle: 'italic' }}>
               {result.datasetLabel}
+              {result.exactPerCategory && ` · exact ${result.exactPerCategory}/category sampling (Full 14x${result.exactPerCategory})`}
             </div>
+            {result.corpusManifestSha256 && (
+              <div style={{ fontSize: 9, color: '#334155', marginTop: 2, fontFamily: 'monospace' }}>
+                corpus manifest sha256: {result.corpusManifestSha256.slice(0, 16)}...
+              </div>
+            )}
           </div>
 
           {result.peerBreakdown && result.peerBreakdown.length > 0 && (
@@ -391,18 +460,35 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
             </div>
           )}
 
-          {onShareResult && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            {onShareResult && (
+              <button
+                onClick={() => onShareResult(result)}
+                style={{
+                  background: 'none', color: '#6ee7b7', border: '1px solid #1e4038', borderRadius: 6,
+                  padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  fontFamily: 'system-ui, sans-serif',
+                }}
+              >
+                📤 Share your results
+              </button>
+            )}
+
+            {/* BP134 Yoke #32 Phase F item 4: third-party verifiability -- serialize the FULL
+                OneClickRunResult (every outcome, every plow_trace, corpus manifest hash) so
+                anyone can independently re-check the scoring without trusting the on-screen
+                percentage alone. */}
             <button
-              onClick={() => onShareResult(result)}
+              onClick={() => downloadReceipt(result)}
               style={{
-                background: 'none', color: '#6ee7b7', border: '1px solid #1e4038', borderRadius: 6,
+                background: 'none', color: '#93c5fd', border: '1px solid #1e3a5f', borderRadius: 6,
                 padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
                 fontFamily: 'system-ui, sans-serif',
               }}
             >
-              📤 Share your results
+              ⬇ Download receipt (.json)
             </button>
-          )}
+          </div>
         </div>
       )}
 
