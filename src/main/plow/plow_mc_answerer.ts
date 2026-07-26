@@ -33,6 +33,7 @@ import { SPECIALIST_REGISTRY } from './specialist_adapters';
 import { getOperatorsForDomain } from './domain_operator_map';
 import {
   callOllama,
+  computeArgumentConfidence,
   computeBmvScore,
   evaluateGates,
   generateQuestionId,
@@ -66,6 +67,24 @@ export interface CanonicalPlowMcConfig {
   deepHarvest?: boolean;
   /** Cap for the postFurnace slice when deepHarvest is true. Ignored when deepHarvest is falsy. */
   maxEbletsPerQuestion?: number;
+  /** BP135 Yoke #34 Phase (0.9.6): OPT-IN, DEFAULT FALSE. Empirically proven this session --
+   *  gemma4:12b answers engineering/51 WRONG ("J") under the bare-letter voter prompt (the
+   *  entire num_predict budget is spent on the letter itself, no room to reason), but CORRECT
+   *  ("Answer: C") when allowed to show its work with a larger token budget. When false/absent,
+   *  every voter call is BYTE-IDENTICAL to pre-0.9.6 behavior: same prompt, same num_predict
+   *  (256), same parseLetterLocal parsing, no `reasoning` field on voter_diagnostics. When true,
+   *  see buildReasoningVoterPrompt()/parseLetterFromReasoning() below for the full opt-in path. */
+  reasoningMode?: boolean;
+  /** BP135 Yoke #34 (0.9.7) argument-ledger, OPT-IN/OPTIONAL. Ground-truth letter for LOCAL,
+   *  POST-HOC verdict tagging ONLY -- never fed into any prompt or voter call, never seen by
+   *  the model. The only current caller of this whole MC answerer is the mesh-test relay
+   *  responder path (index.ts's startRelayRoutePoll), which already receives
+   *  payload.correct_answer_letter unconditionally on every plow-enabled dispatch (both
+   *  wan_dispatch.ts and run_mesh_together.mjs send it for their OWN local scoring, per those
+   *  files' own doc comments that the responder never previously read it). Presence of this
+   *  field is therefore synonymous with "this is a test/eval run", never a production Ask --
+   *  undefined/null means verdict is always written as 'unverified' (production default). */
+  testModeCorrectAnswerLetter?: string | null;
 }
 
 /** BP133 Yoke #27: per-voter diagnostic detail, always computed (cheap: just string lengths
@@ -83,6 +102,14 @@ export interface VoterDiagnostic {
    *  because the model was unreachable" apart from "non-empty but unparseable". */
   rawPreview: string;
   rawResponse?: string; // full text, present only when MNEMO_DEBUG_LOG_PROMPTS=1
+  /** BP135 Yoke #34 Phase (0.9.6): the voter's FULL working (step-by-step derivation + final
+   *  "Answer: X" line), present ONLY when config.reasoningMode is true -- absent (not empty
+   *  string) in the default bare-letter path so old receipts and this new field never collide.
+   *  Not gated behind MNEMO_DEBUG_LOG_PROMPTS like rawResponse -- reasoning mode is itself an
+   *  explicit opt-in, so its own diagnostic payload is always captured when it runs, per the
+   *  Yoke's "capture the FULL working string" requirement (this is what lets the mesh/arbiter
+   *  and receipts compare reasoning across nodes later). */
+  reasoning?: string;
 }
 
 export interface CanonicalPlowMcResult {
@@ -117,6 +144,12 @@ export interface CanonicalPlowMcResult {
 // ─── MC-specific final-arbitration prompt ────────────────────────────────────
 
 const MC_VOTER_TEMPERATURES = [0.0, 0.2, 0.4];
+// BP135 Yoke #34 Phase (0.9.6): num_predict for a voter call. 256 is the pre-0.9.6 value, used
+// on EVERY call unless reasoningMode is true -- discipline requirement: "do NOT add num_predict
+// to the non-reasoning path" is satisfied by this being the same literal 256 already hardcoded
+// in canonical_pipeline.ts's callOllama default, just named here for the reasoning branch below.
+const MC_VOTER_NUM_PREDICT_DEFAULT = 256;
+const MC_VOTER_NUM_PREDICT_REASONING = 1024;
 
 function buildMcArbitrationPrompt(factsContext: string, mcPromptWithSubstrate: string): string {
   if (factsContext.length === 0) return mcPromptWithSubstrate;
@@ -142,6 +175,52 @@ function parseLetterLocal(text: string, choiceCount: number): string | null {
   const bare = trimmed.match(/\b([A-J])\b/);
   if (bare && validLetters.includes(bare[1].toUpperCase())) return bare[1].toUpperCase();
   return null;
+}
+
+/** BP135 Yoke #34 Phase (0.9.6): reasoning-mode voter prompt. Deliberately does NOT rebuild the
+ *  question/options from scratch (mcPromptWithSubstrate/arbitrationPrompt stay opaque to this
+ *  module, per the file's existing substrate-injection-site convention) -- instead it APPENDS an
+ *  explicit override after the existing bare-letter-instructed prompt, since models reliably
+ *  weight the most recent instruction highest. The override tells the voter to ignore the
+ *  earlier "single letter only" instruction, show its work, and end with a fixed "Answer: X"
+ *  sentinel line that parseLetterFromReasoning() below can find deterministically even inside a
+ *  multi-paragraph derivation. `think` stays false (unchanged in canonical_pipeline.ts's
+ *  callOllama) -- this is a bigger VISIBLE completion budget, not internal chain-of-thought. */
+function buildReasoningVoterPrompt(basePrompt: string, choiceCount: number): string {
+  const lastLetter = letterFromIndexLocal(choiceCount - 1);
+  return `${basePrompt}
+
+---
+OVERRIDE: ignore the "reply with ONLY the single letter" instruction above. Instead, work through this question step by step, showing your calculation or reasoning explicitly. When you have determined the answer, end your response with one final line, and ONLY that line, written in exactly this format: "Answer: X" (X = the correct option letter, A through ${lastLetter}).`;
+}
+
+/** BP135 Yoke #34 Phase (0.9.6): parses the LAST "Answer: X" occurrence in a full reasoning
+ *  derivation (a model may say "the answer choices are A, B, C..." mid-derivation before its
+ *  real final answer -- the first match would be wrong; the sentinel line requested by
+ *  buildReasoningVoterPrompt() is always the LAST one that matters). Falls back to the LAST
+ *  bare A-J token anywhere in the text if no "Answer: X" line parses, per the Yoke's explicit
+ *  fallback requirement. Never used on the default (non-reasoning) path, which keeps using
+ *  parseLetterLocal()'s first-match convention unchanged. */
+function parseLetterFromReasoning(text: string, choiceCount: number): string | null {
+  const validLetters = Array.from({ length: choiceCount }, (_, i) => letterFromIndexLocal(i));
+  const trimmed = text.trim();
+
+  const answerLineRegex = /(?:answer|correct answer)\s*(?:is|:)?\s*\(?([A-J])\)?/gi;
+  let match: RegExpExecArray | null;
+  let lastAnswerLetter: string | null = null;
+  while ((match = answerLineRegex.exec(trimmed)) !== null) {
+    const candidate = match[1]!.toUpperCase();
+    if (validLetters.includes(candidate)) lastAnswerLetter = candidate;
+  }
+  if (lastAnswerLetter) return lastAnswerLetter;
+
+  const bareRegex = /\b([A-J])\b/g;
+  let lastBare: string | null = null;
+  while ((match = bareRegex.exec(trimmed)) !== null) {
+    const candidate = match[1]!.toUpperCase();
+    if (validLetters.includes(candidate)) lastBare = candidate;
+  }
+  return lastBare;
 }
 
 function computeLetterConcordance(letters: (string | null)[]): { concordance: ConcordanceClass; chosenLetter: string | null } {
@@ -176,7 +255,7 @@ export async function runCanonicalPlowMcAnswer(
   widenerOperators: SpecialistName[] = [],
 ): Promise<CanonicalPlowMcResult> {
   const startMs = Date.now();
-  const { domain, ollamaBaseUrl, model, choiceCount, andonEnabled, specialistKeys = {}, deepHarvest, maxEbletsPerQuestion } = config;
+  const { domain, ollamaBaseUrl, model, choiceCount, andonEnabled, specialistKeys = {}, deepHarvest, maxEbletsPerQuestion, reasoningMode = false, testModeCorrectAnswerLetter = null } = config;
   const questionId = generateQuestionId(researchQuery, domain);
 
   // BP134 Yoke #32 Phase C: deepHarvest is opt-in per call (field-sowing only, see config
@@ -244,10 +323,18 @@ export async function runCanonicalPlowMcAnswer(
   // did not). One gemma4:12b call at a time is exactly what the single-shot WAN path already
   // proves works on this hardware -- so the 3 voters now run one after another, same as that
   // proven path, just 3 times at different temperatures.
+  // BP135 Yoke #34 Phase (0.9.6): opt-in reasoning-mode voter prompt/budget/parse. When
+  // reasoningMode is false (the default for every caller that predates this Yoke), voterPrompt
+  // === arbitrationPrompt, numPredictForVoter === 256, and letter parsing uses the original
+  // parseLetterLocal() -- byte-identical to pre-0.9.6 behavior, per the Yoke's explicit
+  // requirement that the default path must be unchanged.
+  const voterPrompt = reasoningMode ? buildReasoningVoterPrompt(arbitrationPrompt, choiceCount) : arbitrationPrompt;
+  const numPredictForVoter = reasoningMode ? MC_VOTER_NUM_PREDICT_REASONING : MC_VOTER_NUM_PREDICT_DEFAULT;
+
   const voterLetters: (string | null)[] = [];
   const voterDiagnostics: VoterDiagnostic[] = [];
   for (const temp of MC_VOTER_TEMPERATURES) {
-    const raw = await callOllama(arbitrationPrompt, ollamaBaseUrl, model, temp);
+    const raw = await callOllama(voterPrompt, ollamaBaseUrl, model, temp, numPredictForVoter);
     if (raw === null || raw.trim().length === 0) {
       voterLetters.push(null);
       voterDiagnostics.push({
@@ -256,10 +343,11 @@ export async function runCanonicalPlowMcAnswer(
         responseChars: raw?.length ?? 0,
         rawPreview: raw ?? '',
         ...(debugPromptLoggingEnabled ? { rawResponse: raw ?? '' } : {}),
+        ...(reasoningMode ? { reasoning: raw ?? '' } : {}),
       });
       continue;
     }
-    const letter = parseLetterLocal(raw, choiceCount);
+    const letter = reasoningMode ? parseLetterFromReasoning(raw, choiceCount) : parseLetterLocal(raw, choiceCount);
     voterLetters.push(letter);
     voterDiagnostics.push({
       temperature: temp,
@@ -267,6 +355,7 @@ export async function runCanonicalPlowMcAnswer(
       responseChars: raw.length,
       rawPreview: raw.slice(0, 200),
       ...(debugPromptLoggingEnabled ? { rawResponse: raw } : {}),
+      ...(reasoningMode ? { reasoning: raw } : {}),
     });
   }
   const { concordance, chosenLetter } = computeLetterConcordance(voterLetters);
@@ -313,9 +402,27 @@ export async function runCanonicalPlowMcAnswer(
   // ── Scribe — write surviving facts to substrate (knowledge growth side-effect; this is
   //    externally-researched FACT content, never the MC answer/letter itself, so it carries
   //    none of Task 1's answer-key-cache risk regardless of substrate on/off for this run) ──
+  // BP135 Yoke #34 (0.9.7) argument-ledger: reasoning is the FULL voter working captured by
+  // 0.9.6 reasoning-mode (joined across voters when more than one produced text), NEVER a bare
+  // answer-key letter -- this is the METHOD/derivation, per the Yoke's explicit requirement.
+  // verdict compares the plow's OWN chosenLetter (already finalized above, by voters that never
+  // saw testModeCorrectAnswerLetter) against that local ground truth ONLY when one was supplied
+  // -- production Asks (no ground truth) always write 'unverified'.
+  const reasoningForLedger = reasoningMode
+    ? voterDiagnostics.map((v) => v.reasoning).filter((r): r is string => !!r).join('\n---\n') || undefined
+    : undefined;
+  const verdictForLedger: 'correct' | 'wrong' | 'unverified' =
+    testModeCorrectAnswerLetter && chosenLetter
+      ? (chosenLetter.toUpperCase() === testModeCorrectAnswerLetter.toUpperCase() ? 'correct' : 'wrong')
+      : 'unverified';
   const { ebletsWritten } = await runScribe(
     domain, researchQuery, questionId, postFurnace, bmvScore, concordance, gateOutcomes,
     andonRetry > 0, andonRetry, writeEbletFn,
+    {
+      reasoning: reasoningForLedger,
+      verdict: verdictForLedger,
+      confidence: computeArgumentConfidence(bmvScore, concordance),
+    },
   );
 
   const traceSummary =

@@ -5995,6 +5995,12 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                   query_type: 'eblet_topical',
                   eblets: hits.map((e) => ({
                     question: e.question, answer: e.answer, provenance: e.provenance, timestamp: e.timestamp,
+                    // BP135 Yoke #34 (0.9.7) argument-ledger: surfaced additively so a federated
+                    // asker can apply the same KNOWN-WRONG treatment as the local-only path
+                    // (substrate_toggle.ts) -- absent on eblets written before 0.9.7, which the
+                    // asker must treat as verdict='unverified' (see readVerdict() convention).
+                    ...(e.verdict !== undefined ? { verdict: e.verdict } : {}),
+                    ...(e.reasoning !== undefined ? { reasoning: e.reasoning } : {}),
                   })),
                   responder_peer_id: peerId,
                 },
@@ -6052,7 +6058,12 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           // peer's own local-only substrate query -- see applySubstrateToggle()'s pooledHits
           // branch. Absent/empty falls through to the pre-existing local-only behavior.
           const pooledSubstrateEblets = Array.isArray(payload.pooled_substrate_eblets)
-            ? (payload.pooled_substrate_eblets as Array<{ question: string; answer: string; provenance: string; peerId?: string }>)
+            ? (payload.pooled_substrate_eblets as Array<{
+                question: string; answer: string; provenance: string; peerId?: string;
+                // BP135 Yoke #34 (0.9.7) argument-ledger: additive, optional -- see eblet_topical
+                // responder above and substrate_toggle.ts's KNOWN-WRONG formatting.
+                verdict?: 'correct' | 'wrong' | 'unverified'; reasoning?: string;
+              }>)
             : undefined;
           const { prompt: effectivePrompt, contextInjected, ebletCount } = await applySubstrateToggle(
             prompt, prompt, domainForSubstrate, substrateEnabled, 3, pooledSubstrateEblets,
@@ -6068,6 +6079,17 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           const plowAndonEnabled: boolean = payload.plow_andon_enabled === true;
           const researchQuery: string = typeof payload.question_text === 'string' ? payload.question_text : prompt;
           const choiceCountForPlow: number = typeof payload.choice_count === 'number' ? payload.choice_count : 10;
+          // BP135 Yoke #34 Phase (0.9.6): opt-in reasoning-mode voter prompt, DEFAULT FALSE --
+          // an asker that predates this field (or never sets it) gets byte-identical bare-letter
+          // voter behavior. See plow_mc_answerer.ts's CanonicalPlowMcConfig.reasoningMode for the
+          // full rationale (gemma4:12b engineering/51 empirical finding this session).
+          const reasoningModeForPlow: boolean = payload.reasoning_mode === true;
+          // BP135 Yoke #34 (0.9.7) argument-ledger: LOCAL, POST-HOC verdict tagging ONLY -- see
+          // plow_mc_answerer.ts's CanonicalPlowMcConfig.testModeCorrectAnswerLetter doc comment.
+          // Never fed into any prompt; only used after the plow's own chosenLetter is finalized,
+          // to tag the eblets THIS run writes to substrate as correct/wrong/unverified.
+          const testModeCorrectAnswerLetterForPlow: string | null =
+            typeof payload.correct_answer_letter === 'string' ? payload.correct_answer_letter : null;
           if (isDebugPromptLoggingEnabled()) {
             try {
               const debugDir = join(app.getPath('userData'), 'substrate');
@@ -6132,6 +6154,8 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                   model: 'gemma4:12b',
                   choiceCount: choiceCountForPlow,
                   andonEnabled: plowAndonEnabled,
+                  reasoningMode: reasoningModeForPlow,
+                  testModeCorrectAnswerLetter: testModeCorrectAnswerLetterForPlow,
                 },
                 writeEbletFn,
                 (stage) => console.log(`[relay-poll] plow-stage route=${route.id.slice(0, 8)}: ${stage}`),
@@ -6156,6 +6180,10 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 latency_ms: plowResult.latencyMs,
                 trace_summary: plowResult.traceSummary,
                 condition: plowAndonEnabled ? 'C_warm_andon' : (substrateEnabled ? 'B_warm_single_pass' : 'A_cold'),
+                // BP135 Yoke #34 Phase (0.9.6): additive field, absent from every receipt written
+                // before this Yoke -- lets a receipt distinguish a reasoning-mode run from a
+                // bare-letter run without inferring it from voter_diagnostics[].reasoning presence.
+                reasoning_mode: reasoningModeForPlow,
               };
               console.log(`[relay-poll] plow-answered route=${route.id.slice(0, 8)} letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
             } catch (plowErr) {

@@ -218,18 +218,25 @@ export function generateQuestionId(question: string, domain: string): string {
 // here as a one-shot fallback: if the top-level `think` field 400s (older Ollama server that
 // predates the think param), retry once without it rather than hard-failing every voter call
 // on that peer.
+//
+// BP135 Yoke #34 Phase (0.9.6): optional `numPredict` param, DEFAULT 256 -- byte-identical to
+// every existing call site that does not pass a 5th argument. The only caller that ever passes
+// a non-default value is plow_mc_answerer.ts's reasoning-mode voter path (raised to ~1024 so a
+// step-by-step derivation fits in the budget instead of being truncated before the model reaches
+// its own "Answer: X" line). The bare-letter default path is untouched.
 export async function callOllama(
   prompt: string,
   ollamaBaseUrl: string,
   model: string,
   temperature: number,
+  numPredict: number = 256,
 ): Promise<string | null> {
   const buildBody = (includeThink: boolean) => ({
     model,
     prompt,
     stream: false,
     ...(includeThink ? { think: false } : {}),
-    options: { temperature, num_predict: 256 },
+    options: { temperature, num_predict: numPredict },
   });
 
   try {
@@ -296,6 +303,20 @@ export function computeBmvScore(
   );
 
   return Math.round(Math.min(100, Math.max(0, bmv)) * 10) / 10;
+}
+
+// ─── Argument-ledger confidence ───────────────────────────────────────────────
+
+// BP135 Yoke #34 (0.9.7): derives a 0-1 confidence signal for a written eblet from the SAME
+// bmvScore/concordance the writing pipeline already computed for gating -- no new inputs
+// required. CONCORDANT gets full weight; PARTIAL/DISCORDANT are scaled down since those runs
+// themselves reflect the voters/specialists disagreeing, independent of any one fact's own
+// merit. Exported so both canonical_pipeline.ts's own Scribe default and plow_mc_answerer.ts's
+// explicit ledgerContext use the identical formula.
+export function computeArgumentConfidence(bmvScore: number, concordance: ConcordanceClass): number {
+  const concordanceWeight = concordance === 'CONCORDANT' ? 1.0 : concordance === 'PARTIAL' ? 0.6 : 0.3;
+  const raw = (bmvScore / 100) * concordanceWeight;
+  return Math.round(Math.min(1, Math.max(0, raw)) * 100) / 100;
 }
 
 // ─── Concordance computation ──────────────────────────────────────────────────
@@ -457,16 +478,48 @@ export async function runScribe(
     verified: true;
     sha256: string;
     timestamp: number;
+    reasoning?: string;
+    verdict?: 'correct' | 'wrong' | 'unverified';
+    confidence?: number;
   }) => Promise<void>,
-): Promise<{ ebletsWritten: number; record: ScriberRecord }> {
+  // BP135 Yoke #34 (0.9.7) argument-ledger, OPTIONAL. When omitted (every pre-0.9.7 call site,
+  // and the free-text pipeline's own two call sites below), verdict defaults to 'unverified'
+  // (no ground-truth letter was ever available to this pipeline) and confidence is auto-derived
+  // from bmvScore/concordance via computeArgumentConfidence() -- still additive vs pre-0.9.7
+  // (which wrote no ledger fields at all), just without an explicit override. Only
+  // plow_mc_answerer.ts's MC answerer currently supplies an explicit ledgerContext (captured
+  // voter reasoning + test-mode verdict against payload.correct_answer_letter).
+  ledgerContext?: { reasoning?: string; verdict?: 'correct' | 'wrong' | 'unverified'; confidence?: number },
+): Promise<{ ebletsWritten: number; ebletsSkippedIrrelevant: number; record: ScriberRecord }> {
   let ebletsWritten = 0;
+  let ebletsSkippedIrrelevant = 0;
   const now = Date.now();
+
+  const effectiveReasoning = ledgerContext?.reasoning;
+  const effectiveVerdict = ledgerContext?.verdict ?? 'unverified';
+  const effectiveConfidence = ledgerContext?.confidence ?? computeArgumentConfidence(bmvScore, concordance);
+
+  // BP135 Yoke #34 (0.9.7): lazy import matches the existing pattern already used for this
+  // module elsewhere (Spider stage below, plow_mc_answerer.ts's own dynamic imports) -- keeps
+  // canonical_pipeline.ts decoupled from mnem_eblet_store.ts at module-load time.
+  const { isQaRelevant } = await import('../mnem_eblet_store');
 
   for (const candidate of candidates) {
     try {
       // Store as substrate eblet: searchable by domain + content keywords
       const searchKey = `${domain} | ${question.slice(0, 80)} | ${candidate.source}`;
       const factContent = candidate.content.slice(0, 600);
+
+      // BP135 Yoke #34 (0.9.7) RELEVANCE GATE AT WRITE: BP135 audit found ~47% of existing
+      // canonical_plow eblets are Q/A-mismatched junk. Skip the write entirely rather than
+      // stamping a mismatched fact as verified=true -- Rule 66 (never rewrite/delete existing
+      // eblets) means correctness has to be enforced going forward at the write gate, not by
+      // cleaning up what is already on disk.
+      if (!isQaRelevant(question, factContent)) {
+        ebletsSkippedIrrelevant++;
+        continue;
+      }
+
       const hash = sha256hex(searchKey + factContent);
 
       await writeEbletFn({
@@ -476,6 +529,9 @@ export async function runScribe(
         verified: true,
         sha256: hash,
         timestamp: now,
+        ...(effectiveReasoning !== undefined ? { reasoning: effectiveReasoning } : {}),
+        verdict: effectiveVerdict,
+        confidence: effectiveConfidence,
       });
 
       ebletsWritten++;
@@ -498,7 +554,7 @@ export async function runScribe(
     timestamp: now,
   };
 
-  return { ebletsWritten, record };
+  return { ebletsWritten, ebletsSkippedIrrelevant, record };
 }
 
 // ─── Detective TEAM ───────────────────────────────────────────────────────────

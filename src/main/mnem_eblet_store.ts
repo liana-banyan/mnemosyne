@@ -545,6 +545,53 @@ export interface VerifiedEbletEntry {
   verified: true;       // Andon: ONLY true entries may be written here
   sha256: string;       // sha256(question + answer)
   timestamp: number;
+  /** BP135 Yoke #34 argument-ledger (0.9.7), OPTIONAL/ADDITIVE. Absent on every eblet written
+   *  before this Yoke -- Rule 66 (never rewrite/delete existing eblets in place) means those
+   *  are never migrated to carry these fields; every reader must treat their absence as
+   *  verdict='unverified' (see readVerdict() below), never as 'correct' or 'wrong' by inference. */
+  /** The voter/derivation working (0.9.6 reasoning-mode text, or a short method note) that
+   *  produced this eblet -- the METHOD, never a bare answer-key letter. */
+  reasoning?: string;
+  /** 'correct'/'wrong' only ever set in a context where a ground-truth answer was available for
+   *  local comparison (e.g. the mesh test's payload.correct_answer_letter) -- production Asks
+   *  have no ground truth to compare against and must write 'unverified'. */
+  verdict?: 'correct' | 'wrong' | 'unverified';
+  /** 0-1, derived from concordance/BMV at write time (see computeArgumentConfidence() in
+   *  canonical_pipeline.ts) -- how much the writing pipeline itself trusted this fact. */
+  confidence?: number;
+}
+
+/** Backward-compat accessor (item 6): every reader that cares about verdict should go through
+ *  this instead of reading entry.verdict directly, so "field absent" and "field explicitly
+ *  unverified" are handled identically without duplicating the ?? fallback at every call site. */
+export function readVerdict(entry: VerifiedEbletEntry): 'correct' | 'wrong' | 'unverified' {
+  return entry.verdict ?? 'unverified';
+}
+
+/** BP135 Yoke #34 (0.9.7): shared Q/A relevance check, used at BOTH write time (before stamping
+ *  a specialist-derived fact as a verified eblet, canonical_pipeline.ts's runScribe) and read
+ *  time (queryVerifiedEbletsTopical below, filtering existing junk WITHOUT deleting it -- Rule
+ *  66). Token-overlap ratio: what fraction of the question's meaningful (stopword-filtered)
+ *  tokens actually appear in the answer text. Deliberately simple/explainable (no external NLP
+ *  dependency) -- reuses the same tokenizeQuestion() convention already used by the verified-
+ *  eblet keyword-scoring paths in this file. */
+export function computeQaRelevance(question: string, answer: string): number {
+  const qTokens = tokenizeQuestion(question);
+  if (qTokens.length === 0) return 0;
+  const aTokens = new Set(tokenizeQuestion(answer));
+  if (aTokens.size === 0) return 0;
+  const overlap = qTokens.filter((t) => aTokens.has(t)).length;
+  return overlap / qTokens.length;
+}
+
+/** Conservative default threshold: this is a coarse gate against wholesale Q/A mismatch (BP135
+ *  audit finding: ~47% of existing canonical_plow eblets are Q/A-mismatched junk), not a
+ *  precision semantic-similarity score -- legitimate answers routinely paraphrase rather than
+ *  repeat the question's exact tokens, so this stays low on purpose. */
+export const QA_RELEVANCE_THRESHOLD = 0.08;
+
+export function isQaRelevant(question: string, answer: string, threshold: number = QA_RELEVANCE_THRESHOLD): boolean {
+  return computeQaRelevance(question, answer) >= threshold;
 }
 
 /**
@@ -697,10 +744,26 @@ export async function queryVerifiedEbletsTopical(
         score += corpus.filter((t) => t === tok).length;
       }
       return { entry: e, score };
-    });
+    })
+    .filter((r) => r.score > 0);
 
-  return scored
-    .filter((r) => r.score > 0)
+  // BP135 Yoke #34 (0.9.7) RELEVANCE FILTER AT READ: per the BP135 audit finding that ~47% of
+  // existing canonical_plow eblets are Q/A-mismatched junk (written before the write-time gate
+  // in canonical_pipeline.ts's runScribe existed), drop any hit whose STORED ANSWER doesn't
+  // actually address the CURRENT question, even though it scored on keyword overlap with the
+  // stored question text. Rule 66: this NEVER deletes/rewrites the underlying eblet -- it is
+  // quarantine-by-non-retrieval only. The same line stays on disk and can still surface for a
+  // different query that legitimately finds it relevant.
+  const relevanceChecked = scored.filter((r) => isQaRelevant(question, r.entry.answer));
+  const droppedForRelevance = scored.length - relevanceChecked.length;
+  if (droppedForRelevance > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEbletsTopical: filtered ${droppedForRelevance} irrelevant ` +
+      `hit(s) for domain=${domain} (Rule 66 quarantine-by-non-retrieval, not deleted)`,
+    );
+  }
+
+  return relevanceChecked
     .sort((a, b) => b.score - a.score || b.entry.timestamp - a.entry.timestamp)
     .slice(0, topK)
     .map((r) => r.entry);
@@ -978,6 +1041,13 @@ export async function writeVerifiedEblet(entry: VerifiedEbletEntry): Promise<str
     verified: true,
     sha256: expectedSha,
     timestamp: entry.timestamp,
+    // BP135 Yoke #34 argument-ledger (0.9.7): additive, omitted entirely (not written as null/
+    // undefined) when the caller doesn't supply them -- keeps every pre-0.9.7 caller's output
+    // byte-identical and keeps old JSONL lines structurally indistinguishable from a 0.9.7 write
+    // that simply chose not to populate these optional fields.
+    ...(entry.reasoning !== undefined ? { reasoning: entry.reasoning } : {}),
+    ...(entry.verdict !== undefined ? { verdict: entry.verdict } : {}),
+    ...(entry.confidence !== undefined ? { confidence: entry.confidence } : {}),
   });
 
   appendFileSync(ebletFile, line + '\n', 'utf-8');
