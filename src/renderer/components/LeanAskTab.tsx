@@ -203,7 +203,11 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
   // is read fresh from disk (brain_registry.json) on load and after each swap so the header
   // line ("Powered by...") never lies about which model is actually answering.
   const [showBrainSelector, setShowBrainSelector] = useState(false);
-  const [activeBrainLabel, setActiveBrainLabel] = useState<{ id: string; kind: 'flagship' | 'local' } | null>(null);
+  // BP134 Task C/D: modelId added -- brain_id is a slug (e.g. "gemma2-9b"); modelId is the
+  // real installed Ollama tag (e.g. "gemma2:9b") that should drive both the header copy and
+  // the Ollama-reachability check below, since the free-local default is no longer hardcoded
+  // to gemma4:12b.
+  const [activeBrainLabel, setActiveBrainLabel] = useState<{ id: string; kind: 'flagship' | 'local'; modelId: string } | null>(null);
 
   const refreshActiveBrainLabel = useCallback(() => {
     void (async () => {
@@ -212,8 +216,9 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
         if (!registry) return;
         const [listRes, activeRes] = await Promise.all([registry.list(), registry.getActive()]);
         if (activeRes.ok && activeRes.brain_id && listRes.ok && Array.isArray(listRes.brains)) {
-          const active = listRes.brains.find((b: { brain_id: string }) => b.brain_id === activeRes.brain_id);
-          if (active) setActiveBrainLabel({ id: active.brain_id, kind: active.kind });
+          const active = listRes.brains.find((b: { brain_id: string }) => b.brain_id === activeRes.brain_id) as
+            { brain_id: string; kind: 'flagship' | 'local'; model_id: string } | undefined;
+          if (active) setActiveBrainLabel({ id: active.brain_id, kind: active.kind, modelId: active.model_id });
         }
       } catch {
         // Non-fatal — header falls back to the static "gemma4:12b" copy below.
@@ -251,7 +256,7 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
       '# MnemosyneC Ask — Saved Conversation',
       '',
       `**Saved:** ${new Date().toLocaleString()}`,
-      `**Model:** ${MODEL}`,
+      `**Model:** ${activeBrainLabel ? activeBrainLabel.modelId : MODEL}`,
       `**Messages:** ${messages.length}`,
       '',
       '---',
@@ -275,7 +280,7 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
     setMessages([]);
     localStorage.removeItem(LS_HISTORY_KEY);
     showToast('Saved to your Downloads folder. Ready for a fresh question.');
-  }, [messages, showToast]);
+  }, [messages, showToast, activeBrainLabel]);
 
   // SEG-2 v0.3.7: self-context status badge — shows whether MEMORY.md loaded last Ask
   const [selfCtxStatus, setSelfCtxStatus] = useState<'unknown' | 'loaded' | 'missing'>('unknown');
@@ -289,10 +294,14 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
   const isColdRef = useRef(false);
   const isStreamingRef = useRef(false);
 
-  const runCheck = useCallback(async () => {
+  // BP134 Task D: check against the ACTIVE local model (activeBrainLabel.modelId once resolved
+  // from brain_registry) rather than the hardcoded MODEL constant. Without this, a box that only
+  // has gemma2:9b pulled (no gemma4:12b) would permanently show the "still setting up / download
+  // now" banner even though a free local model is already answering questions.
+  const runCheck = useCallback(async (modelName: string = MODEL) => {
     setRetrying(true);
     try {
-      const res = await window.amplify?.checkOllamaAndModel?.(MODEL);
+      const res = await window.amplify?.checkOllamaAndModel?.(modelName);
       if (!res) { setCheckFailed(true); setModelMissing(false); setShowPullProgress(false); }
       else if (!res.reachable) { setCheckFailed(true); setModelMissing(false); setShowPullProgress(false); }
       else {
@@ -312,6 +321,14 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
   }, []);
 
   useEffect(() => { runCheck(); }, [runCheck]);
+
+  // BP134 Task D: once the real active local model resolves (may differ from the hardcoded
+  // MODEL constant), re-run the presence check against it instead.
+  useEffect(() => {
+    if (activeBrainLabel && activeBrainLabel.kind === 'local' && activeBrainLabel.modelId && activeBrainLabel.modelId !== MODEL) {
+      void runCheck(activeBrainLabel.modelId);
+    }
+  }, [activeBrainLabel, runCheck]);
 
   // A-3 BP081 v0.1.59.1: Prune error-class messages from history on app version change
   useEffect(() => {
@@ -591,7 +608,7 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
               whiteSpace: 'nowrap',
             }}
           >
-            🧠 {activeBrainLabel ? activeBrainLabel.id : 'gemma4:12b'} {showBrainSelector ? '▲' : '▼'}
+            🧠 {activeBrainLabel ? activeBrainLabel.modelId : MODEL} {showBrainSelector ? '▲' : '▼'}
           </button>
           {/* v0.1.62: Clear + Save & Clear buttons */}
           <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
@@ -650,7 +667,7 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
         <p style={{ margin: '4px 0 0', fontSize: 11, color: '#475569' }}>
           {activeBrainLabel?.kind === 'flagship'
             ? `Powered by ${activeBrainLabel.id} (cloud flagship brain -- your message leaves this machine).`
-            : 'Powered by gemma4:12b running on your own computer. Private by default.'}
+            : `Powered by ${activeBrainLabel ? activeBrainLabel.modelId : MODEL} running on your own computer. Free and private by default.`}
         </p>
         {showBrainSelector && (
           <div style={{ marginTop: 8 }}>

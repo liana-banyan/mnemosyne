@@ -457,6 +457,10 @@ contextBridge.exposeInMainWorld('amplify', {
   federationConnectPeer: (peerId: string, relayUrl?: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('federation:connect-peer', { peerId, relayUrl }),
 
+  // BP134 Yoke #30 Task B — zero-config WAN auto-connect from peer_presence
+  federationAutoConnectPresence: (): Promise<{ attempted: number; connected: string[]; error?: string }> =>
+    ipcRenderer.invoke('federation:auto-connect-presence'),
+
   // SEG-3 v0.1.55 — COMMUNITY-CONNECT first-launch seed peer handshake
   communityConnectHandshake: (): Promise<{ success: boolean; peerName?: string; error?: string }> =>
     ipcRenderer.invoke('community-connect-handshake'),
@@ -1899,6 +1903,8 @@ declare global {
       federationFetchSid?: (dag_id: string, peerId: string) => Promise<{ ok: boolean; node?: unknown; hash_verified: boolean; error?: string }>;
       // SEG-5 v0.1.56 — connect-peer
       federationConnectPeer?: (peerId: string, relayUrl?: string) => Promise<{ success: boolean; error?: string }>;
+      // BP134 Yoke #30 Task B — zero-config WAN auto-connect from peer_presence
+      federationAutoConnectPresence?: () => Promise<{ attempted: number; connected: string[]; error?: string }>;
       // SEG-5 v0.1.56 — silent email stub
       sendSilentEmail?: (args?: unknown) => Promise<{ success: boolean; reason: string }>;
       // SEG-3 v0.1.55 — COMMUNITY-CONNECT first-launch seed peer handshake

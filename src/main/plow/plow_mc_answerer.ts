@@ -70,7 +70,12 @@ export interface VoterDiagnostic {
   temperature: number;
   status: 'empty_response' | 'parsed_ok' | 'parse_failed';
   responseChars: number;
-  rawResponse?: string; // present only when MNEMO_DEBUG_LOG_PROMPTS=1
+  /** BP134: first ~200 chars of the raw model text, always populated (not gated behind the
+   *  debug flag) so future plow traces show WHAT a voter returned instead of just its status
+   *  -- this is what let us tell "empty because thinking ate the budget" apart from "empty
+   *  because the model was unreachable" apart from "non-empty but unparseable". */
+  rawPreview: string;
+  rawResponse?: string; // full text, present only when MNEMO_DEBUG_LOG_PROMPTS=1
 }
 
 export interface CanonicalPlowMcResult {
@@ -231,6 +236,7 @@ export async function runCanonicalPlowMcAnswer(
         temperature: temp,
         status: 'empty_response',
         responseChars: raw?.length ?? 0,
+        rawPreview: raw ?? '',
         ...(debugPromptLoggingEnabled ? { rawResponse: raw ?? '' } : {}),
       });
       continue;
@@ -241,6 +247,7 @@ export async function runCanonicalPlowMcAnswer(
       temperature: temp,
       status: letter !== null ? 'parsed_ok' : 'parse_failed',
       responseChars: raw.length,
+      rawPreview: raw.slice(0, 200),
       ...(debugPromptLoggingEnabled ? { rawResponse: raw } : {}),
     });
   }

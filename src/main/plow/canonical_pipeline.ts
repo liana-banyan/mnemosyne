@@ -191,24 +191,58 @@ export function generateQuestionId(question: string, domain: string): string {
 }
 
 // BP133 Yoke #24 Task 2: exported for plow_mc_answerer.ts's MC-arbitration voter calls.
+//
+// BP134 Deep RCA (live-verified, local smoke test against gemma4:12b via /api/generate):
+// this function was missing `think: false`, and gemma4:12b is a thinking-capable model
+// (Ollama /api/tags reports "capabilities":["completion","tools","thinking","vision"] for
+// it). Without think disabled, the ENTIRE num_predict budget (256) is consumed by internal
+// reasoning tokens and `response` comes back "" with done_reason:"length" -- exactly the
+// voter_diagnostics {status:"empty_response", responseChars:0} signature from the BP134
+// plow trace, after real GPU compute time (matches the reported 60-223s window once
+// downstream requests queue behind an earlier hung generation on a single-GPU host).
+//
+// IMPORTANT: `think` must be a TOP-LEVEL request field, not nested inside `options`.
+// Two sibling files (giant_concordance.ts, diamond_runner.ts) nest `think: false` inside
+// `options` under a v0.3.6 comment claiming it fixes this -- live-verified locally that the
+// nested form is silently ignored by this Ollama server (still empty response,
+// done_reason:"length", eval_count:256); only the top-level field actually works (verified
+// non-empty "B" response, eval_count:2, done_reason:"stop", ~400ms instead of ~17s).
+//
+// A THIRD sibling file (mesh_comparison_runner.ts, BP083) deliberately REMOVED `think` because
+// it "caused HTTP 400 on some Ollama versions" -- that BP083 finding is real and is preserved
+// here as a one-shot fallback: if the top-level `think` field 400s (older Ollama server that
+// predates the think param), retry once without it rather than hard-failing every voter call
+// on that peer.
 export async function callOllama(
   prompt: string,
   ollamaBaseUrl: string,
   model: string,
   temperature: number,
 ): Promise<string | null> {
+  const buildBody = (includeThink: boolean) => ({
+    model,
+    prompt,
+    stream: false,
+    ...(includeThink ? { think: false } : {}),
+    options: { temperature, num_predict: 256 },
+  });
+
   try {
-    const resp = await fetch(`${ollamaBaseUrl}/api/generate`, {
+    let resp = await fetch(`${ollamaBaseUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: false,
-        options: { temperature, num_predict: 256 },
-      }),
+      body: JSON.stringify(buildBody(true)),
       signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
     });
+    if (resp.status === 400) {
+      // BP083 fallback: this peer's Ollama version rejects the `think` field outright.
+      resp = await fetch(`${ollamaBaseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildBody(false)),
+        signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
+      });
+    }
     if (!resp.ok) return null;
     const data = (await resp.json()) as { response?: string };
     return data.response?.trim() ?? null;
