@@ -13,8 +13,34 @@
 // across tabs — see LS_LAST_RESULT below.
 
 import React, { useCallback, useEffect, useState } from 'react';
+import type { AuthState } from '../amplify.d';
 
 export const LS_LAST_RESULT = 'mnemo_last_mesh_test_result';
+
+// BP135 YOKE_35 Phase 3: ported from GauntletTab.tsx (now cut from the shipped Help
+// sub-tabs, see CleanShell.tsx) -- its two real side-effects (marks credit, Pioneer
+// registry) must not silently regress just because the fake stage-sim around them is
+// gone. GauntletTab.tsx itself stays in the tree, unrouted, per Rule 66.
+const LS_FIRST_RUN_MARKS_CREDITED = 'mnemo_gauntlet_stage1_done';
+
+interface PioneerBonusState {
+  visible: boolean;
+  modelName: string;
+  position: number;
+  multiplier: number;
+  label: string;
+}
+
+// Mirrors GauntletTab.tsx's getPioneerPosition() verbatim -- optimistic client-side
+// position estimate; server validates before writing to gauntlet_pioneer_registry.
+function getPioneerPosition(existingCount: number): { position: number; multiplier: number; label: string } {
+  const pos = existingCount + 1;
+  if (pos === 1) return { position: 1, multiplier: 3.0,  label: 'First tested · Named · Permanent attribution · Pioneer #1' };
+  if (pos === 2) return { position: 2, multiplier: 2.0,  label: 'Co-validator · Named · Pioneer #2' };
+  if (pos === 3) return { position: 3, multiplier: 1.5,  label: 'Verifier · Named · Pioneer #3' };
+  if (pos <= 10) return { position: pos, multiplier: 1.2, label: 'Early-adopter · cohort listing' };
+  return { position: pos, multiplier: 1.0, label: 'Standard Gauntlet run' };
+}
 
 interface QuestionOutcome {
   question_id: number;
@@ -132,10 +158,18 @@ export function downloadReceipt(result: OneClickRunResult): void {
 
 export interface OneClickMeshTestPanelProps {
   onShareResult?: (result: OneClickRunResult) => void;
+  /** BP135 YOKE_35 Phase 3: optional -- gates the ported Pioneer Bonus (membership-only,
+   *  same rule as the original GauntletTab.tsx). Omitted callers simply never see it. */
+  authState?: AuthState | null;
 }
 
-export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelProps): React.ReactElement {
+export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMeshTestPanelProps): React.ReactElement {
   const [state, setState] = useState<'idle' | 'running' | 'complete' | 'error'>('idle');
+  const isMember = authState?.status === 'member' || authState?.status === 'trial_active';
+  // BP135 YOKE_35 Phase 3: ported Pioneer Bonus modal state (see PioneerBonusModal below).
+  const [pioneerBonus, setPioneerBonus] = useState<PioneerBonusState>({
+    visible: false, modelName: '', position: 0, multiplier: 1, label: '',
+  });
   const [mode, setMode] = useState<DispatchModeChoice>('auto');
   // BP133 Yoke #24 Task 1: explicit substrate on/off switch. Defaults to OFF so a run's
   // meaning never changes silently -- the Founder must opt in to substrate-assisted answers.
@@ -170,6 +204,49 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
   const [result, setResult] = useState<OneClickRunResult | null>(() => loadLastMeshTestResult());
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // BP135 YOKE_35 Phase 3: the two real side-effects ported from GauntletTab.tsx's
+  // stage-sim loop, now anchored to this panel's own (real) completion event instead of
+  // a fake "Stage 1"/"Stage 3" boundary.
+  const handleRealCompletionSideEffects = useCallback(async () => {
+    // 1) First-ever proof-run marks credit (SAGA 13) -- reuses the exact same one-time
+    // localStorage flag GauntletTab.tsx used, so a user who already earned this via the
+    // old (now-cut) Gauntlet sub-tab is not credited twice.
+    const firstRun = !localStorage.getItem(LS_FIRST_RUN_MARKS_CREDITED);
+    if (firstRun) {
+      localStorage.setItem(LS_FIRST_RUN_MARKS_CREDITED, 'true');
+      window.amplify?.creditFirstInstallMarks?.();
+    }
+
+    // 2) Pioneer Bonus (SAGA 09) -- GauntletTab.tsx keyed this off a `selectedModel`
+    // dropdown value that was never actually wired to any UI (dead code path). This port
+    // keys it off the real active-brain identity instead (window.amplify.brainRegistry.
+    // getActive(), a genuine IPC call, preload.ts:971) rather than fabricate a model
+    // selector that doesn't exist in this panel -- "nothing that isn't real."
+    if (!isMember) return;
+    try {
+      // brainRegistry is a real preload bridge (preload.ts:968-977) not yet declared in
+      // amplify.d.ts -- cast via `(window as any).amplify`, matching this file's existing
+      // pattern for onMeshTestProgress/meshTestRunOneClick above (same underlying drift).
+      const brainResp = await (window as any).amplify?.brainRegistry?.getActive?.();
+      const brainId: string | undefined = brainResp?.ok ? brainResp.brain_id : undefined;
+      if (!brainId) return;
+      const storageKey = `mnemo_pioneer_tested_${brainId}`;
+      const existingCount = parseInt(localStorage.getItem(storageKey) ?? '0', 10);
+      const pioneer = getPioneerPosition(existingCount);
+      if (pioneer.multiplier > 1.0) {
+        setPioneerBonus({
+          visible: true,
+          modelName: brainId,
+          position: pioneer.position,
+          multiplier: pioneer.multiplier,
+          label: pioneer.label,
+        });
+        // Optimistic local record; server validates + writes to gauntlet_pioneer_registry.
+        localStorage.setItem(storageKey, String(existingCount + 1));
+      }
+    } catch { /* non-fatal -- Pioneer Bonus is a bonus, never blocks the real test result */ }
+  }, [isMember]);
+
   useEffect(() => {
     const unsub = (window as any).amplify?.onMeshTestProgress?.((payload: ProgressEvent) => {
       if (payload.type === 'start') {
@@ -186,10 +263,11 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
         setState(payload.result.wanError ? 'error' : 'complete');
         if (payload.result.wanError) setErrorMsg(payload.result.wanError);
         try { localStorage.setItem(LS_LAST_RESULT, JSON.stringify(payload.result)); } catch { /* non-fatal */ }
+        if (!payload.result.wanError) void handleRealCompletionSideEffects();
       }
     });
     return () => unsub?.();
-  }, []);
+  }, [handleRealCompletionSideEffects]);
 
   const handleRun = useCallback(async () => {
     setState('running');
@@ -599,12 +677,85 @@ export function OneClickMeshTestPanel({ onShareResult }: OneClickMeshTestPanelPr
         </div>
       )}
 
+      {/* BP135 YOKE_35 Phase 3: ported Pioneer Bonus modal (see handleRealCompletionSideEffects
+          above). Fires on this panel's own real completion event, membership-gated, keyed to
+          the real active-brain identity -- not the phantom model-dropdown GauntletTab.tsx had. */}
+      {pioneerBonus.visible && (
+        <PioneerBonusModal
+          modelName={pioneerBonus.modelName}
+          position={pioneerBonus.position}
+          multiplier={pioneerBonus.multiplier}
+          label={pioneerBonus.label}
+          onDismiss={() => setPioneerBonus((s) => ({ ...s, visible: false }))}
+        />
+      )}
+
       <div style={{ fontSize: 10, color: '#334155', marginTop: 12, lineHeight: 1.5 }}>
         Scope note: "Auto" picks WAN mesh dispatch when live peers are online (via the
         relay_routes/relay_route_replies bus, Supabase-relayed, never a raw LAN IP) and
         falls back to local Ollama otherwise. Live multi-peer verification of this exact
         flow is still pending Bishop/Founder confirming 2 or more peers online — see
         Yoke #23 Bishop handoff.
+      </div>
+    </div>
+  );
+}
+
+// ─── BP135 YOKE_35 Phase 3: Pioneer Bonus Modal ───────────────────────────────
+// Ported verbatim (styling + copy) from GauntletTab.tsx's PioneerBonusModal, which is
+// now unrouted -- see handleRealCompletionSideEffects above for the wiring change.
+
+function PioneerBonusModal({ modelName, position, multiplier, label, onDismiss }: {
+  modelName: string;
+  position: number;
+  multiplier: number;
+  label: string;
+  onDismiss: () => void;
+}) {
+  const posEmoji = position === 1 ? '🥇' : position === 2 ? '🥈' : position === 3 ? '🥉' : '⭐';
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.75)', zIndex: 9999,
+    }}>
+      <div style={{
+        background: '#0f172a', border: '1px solid rgba(110,231,183,0.4)',
+        borderRadius: 14, padding: '28px 30px', maxWidth: 360, width: '90%', textAlign: 'center',
+        boxShadow: '0 0 48px rgba(110,231,183,0.12)',
+      }}>
+        <div style={{ fontSize: 42, marginBottom: 12 }}>{posEmoji}</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: '#6ee7b7', marginBottom: 6 }}>
+          Pioneer Bonus!
+        </div>
+        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>
+          You are the <strong style={{ color: '#e2e8f0' }}>#{position} tester</strong> of
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', marginBottom: 10 }}>
+          {modelName}
+        </div>
+        <div style={{
+          background: 'rgba(110,231,183,0.08)', border: '1px solid rgba(110,231,183,0.2)',
+          borderRadius: 8, padding: '8px 12px', marginBottom: 14,
+        }}>
+          <div style={{ fontSize: 22, fontWeight: 900, color: '#6ee7b7' }}>{multiplier}×</div>
+          <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>marks multiplier</div>
+        </div>
+        <div style={{ fontSize: 10, color: '#475569', marginBottom: 18, lineHeight: 1.6 }}>
+          {label}<br />
+          Your attribution is permanent in the community Banyan Metric registry.
+          <br />
+          <span style={{ color: '#334155' }}>Server validates · IP Ledger stamp fires · marks credited on confirmation.</span>
+        </div>
+        <button
+          onClick={onDismiss}
+          style={{
+            background: 'rgba(110,231,183,0.12)', border: '1px solid rgba(110,231,183,0.3)',
+            color: '#6ee7b7', borderRadius: 8, padding: '8px 24px',
+            fontSize: 12, fontWeight: 600, cursor: 'pointer', width: '100%',
+          }}
+        >
+          Claim my Pioneer marks →
+        </button>
       </div>
     </div>
   );

@@ -19,8 +19,11 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { FAQCard } from './help/FAQCard';
 import { ConnectDiscordCard } from './help/ConnectDiscordCard';
 import { ConnectRedditCard } from './help/ConnectRedditCard';
-import { ComingSoonCard } from './help/ComingSoonCard';
 import { GuildIncentivesFooter } from './help/GuildIncentivesFooter';
+// unrouted BP135 -- see YOKE_35 Phase 3 (the 3 ComingSoonCard tiles below were honestly-
+// labeled placeholders, but "nothing that isn't real" cuts placeholders too -- see
+// verdict table. ComingSoonCard.tsx itself is untouched, kept per Rule 66.)
+// import { ComingSoonCard } from './help/ComingSoonCard';
 
 const LS_MARKS_KEY = 'mnemo_help_marks_earned';
 
@@ -134,27 +137,10 @@ export function LeanHelpTab() {
         {/* Reddit */}
         <ConnectRedditCard onMarksAccrued={handleMarksAccrued} />
 
-        <div style={s.sectionLabel}>Coming Soon</div>
-
-        {/* Coming Soon tiles — SEG-6 */}
-        <ComingSoonCard
-          icon="🌐"
-          name="Chrome Browser Extension"
-          why="Use ChatGPT, Claude.ai, Gemini, or any AI you already use in your browser · MnemosyneC adds a Save-to-Substrate button to every response. Your Marks accrue as you capture."
-          eta="v0.2.x"
-        />
-        <ComingSoonCard
-          icon="🦅"
-          name="Perplexity (Pawn) Filter"
-          why="Pawn has no MCP. We built the filter as a content-script overlay · same pattern as Discord and Reddit. Capture the answers worth keeping."
-          eta="v0.2.x"
-        />
-        <ComingSoonCard
-          icon="🃏"
-          name="Cue Deck Cards (Advanced)"
-          why="Turn captured eblets into shareable Cue Cards. Move to the Advanced tab when you're ready to publish your knowledge."
-          eta="v0.3.x"
-        />
+        {/* BP135 YOKE_35 Phase 3: "Coming Soon" section (3 ComingSoonCard tiles -- Chrome
+            Extension, Pawn/Perplexity, Cue Deck Cards) CUT. Honestly-labeled placeholders
+            are still placeholders under the hard rule -- see reality-audit verdict table.
+            ComingSoonCard.tsx stays in the tree, unrouted, per Rule 66. */}
 
         {/* BP085 — Membership CTA (hidden for existing members) */}
         {!isMember && (
