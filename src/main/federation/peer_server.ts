@@ -22,9 +22,24 @@ import { join } from 'path';
 import { app, BrowserWindow } from 'electron';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { detectHardwareTier, getRecommendedModel, getCachedEffectiveModel } from '../hardware/ram_detector';
+// BP135 Yoke #35: brain_registry.ts is the store ai-dispatch:query's real Ask handler reads via
+// getActiveBrain() -- "the exact installed Ollama tag the user picked in ASK's model selector"
+// (see ai_dispatch_ipc.ts). index.ts's WAN plow answer paths now honor this SAME store; presence
+// must advertise it too, or peer_presence.capabilities.ollamaModel lies about what this peer
+// actually answers with (broke the model-diversity mesh test's verification).
+import { getActiveBrain, hasPersistedBrainChoice } from '../brain_registry/brain_registry';
 
-/** Returns effective ollama model (honors right-size.json override if set). */
+/** Returns effective ollama model. Prefers the peer's own ASK-selector active local brain
+ * (brain_registry.ts) over hardware-tier auto-detection, since that is the model that will
+ * actually answer -- falls back to the right-size.json override / RAM-tier recommendation
+ * when no local brain has been explicitly selected. hasPersistedBrainChoice() guards against
+ * brain_registry.json's non-hardware-aware baked-in default ('gemma4-12b') being trusted on a
+ * box that has never opened the Ask model picker -- common now that CleanShell un-routed
+ * LeanAskTab/BrainSwapSelector (YOKE_35) -- which would otherwise silently reintroduce the
+ * exact hardcoded-12b bug this fix exists to remove. */
 function getEffectiveOllamaModel(): string | null {
+  const activeBrain = hasPersistedBrainChoice() ? getActiveBrain() : undefined;
+  if (activeBrain?.kind === 'local') return activeBrain.model_id;
   const cached = getCachedEffectiveModel();
   if (cached) return cached.model;
   return getRecommendedModel();

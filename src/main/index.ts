@@ -35,6 +35,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, wat
 import { spawn } from 'child_process';
 import { tmpdir, homedir } from 'os';
 import { ollamaManager } from './ollama_manager';
+// BP135 Yoke #35: same source ai-dispatch:query (the real ASK handler) already honors as the
+// "exact installed Ollama tag the user picked in ASK's model selector" -- see brain_registry.ts's
+// getActiveBrain(). WAN plow answer paths below were hardcoding 'gemma4:12b' instead of reading
+// this, so a box sized/selected for a smaller model still tried to run 12b and blew its timeout.
+import { getActiveBrain, hasPersistedBrainChoice } from './brain_registry/brain_registry';
 import { SubstrateAPIServer, API_PORT } from './substrate_api';
 // BP133 Yoke #24 Task 1: single authoritative substrate toggle for the WAN responder path.
 import { applySubstrateToggle, isDebugPromptLoggingEnabled, buildOutboundPromptLogLine } from './mesh_test/substrate_toggle';
@@ -4247,12 +4252,13 @@ function registerIPCHandlers(): void {
   });
 
   safeHandle('sku-upgrade-to', async (event, tier: string) => {
-    const modelMap: Record<string, string> = {
-      full: 'gemma4:12b',
-      lite: 'gemma4:12b',
-      core: 'gemma4:12b',
-    };
-    const modelName = modelMap[tier];
+    // BP135 Yoke #35: every tier previously hardcoded 'gemma4:12b' here regardless of which
+    // tier the user actually chose -- picking 'lite' or 'core' silently pulled the full 12b
+    // model anyway. Derive from ram_detector.ts's TIER_DEFS (single source of truth for
+    // tier -> recommended-model, already used by hardware:get-tier / SettingsTab) instead of
+    // a second hand-maintained map that can drift out of sync with it.
+    const { getAllTiers } = await import('./hardware/ram_detector');
+    const modelName = getAllTiers().find((t) => t.tier === tier)?.recommendedModel;
     if (!modelName) return { ok: false, error: 'Unknown tier' };
 
     skuPullRunning = false;
@@ -6042,6 +6048,32 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           const tiebreakerModel: string = typeof payload.tiebreaker_model === 'string'
             ? (payload.tiebreaker_model as string) : 'qwen2.5:7b';
 
+          // BP135 Yoke #35: resolve THIS box's actual answer model instead of hardcoding
+          // 'gemma4:12b' everywhere below. Priority: an explicit per-request override
+          // (payload.model -- reserved for a future asker; no current caller sets it) >
+          // this peer's own ASK-selector active local brain (brain_registry.ts -- confirmed
+          // the SAME store ai-dispatch:query's real Ask handler reads via getActiveBrain(),
+          // see that file's activeBrainLocalModel comment) > ollamaManager's auto-detected
+          // best-installed-gemma fallback > the hardcoded floor for boxes with no selection
+          // at all. A 32GB peer whose Ask dropdown is set to gemma2:9b must answer the mesh
+          // plow with gemma2:9b, not silently run 12b, split VRAM, and time out to ABSTAIN.
+          //
+          // hasPersistedBrainChoice() guard: brain_registry.json's DEFAULT_ACTIVE_BRAIN_ID
+          // ('gemma4-12b') is NOT hardware-aware -- it's the naive baked-in default returned
+          // by getActiveBrain() before the user (or ensureFreeLocalDefaultOnFirstRun) has ever
+          // actually persisted a choice. Trusting it unconditionally would silently reintroduce
+          // this exact bug for any box that has never opened the Ask model picker (which, since
+          // CleanShell un-routed LeanAskTab/BrainSwapSelector -- see YOKE_35 -- is now the
+          // common case, not the exception). Only defer to the local brain once a real choice
+          // is on disk; otherwise fall through to the hardware-aware chain below.
+          const activeBrain = hasPersistedBrainChoice() ? getActiveBrain() : undefined;
+          const activeBrainLocalModel = activeBrain?.kind === 'local' ? activeBrain.model_id : undefined;
+          const answerModel: string =
+            (typeof payload.model === 'string' ? (payload.model as string) : undefined) ||
+            activeBrainLocalModel ||
+            ollamaManager.getSelectedModel() ||
+            'gemma4:12b';
+
           // BP133 Yoke #24 Task 1: single authoritative substrate toggle, responder side.
           // The asker (wan_dispatch.ts) sets payload.substrate_enabled explicitly; this is
           // the ONLY place in this function that decides whether substrate context is
@@ -6102,7 +6134,9 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                   routeId: route.id,
                   sessionId: route.session_id ?? undefined,
                   mode: plowEnabled ? 'canonical_plow' : plowMaxIter > 0 ? 'minor_council' : 'single_shot',
-                  model: plowEnabled ? 'gemma4:12b(canonical plow)' : plowMaxIter > 0 ? 'gemma4:12b(x3 council)' : (isTiebreaker ? tiebreakerModel : 'gemma4:12b'),
+                  // BP135 Yoke #35: log the REAL resolved model, not a hardcoded label -- a
+                  // stale 'gemma4:12b' string here would misreport what actually answered.
+                  model: plowEnabled ? `${answerModel}(canonical plow)` : plowMaxIter > 0 ? `${answerModel}(x3 council)` : (isTiebreaker ? tiebreakerModel : answerModel),
                   substrateEnabled,
                   contextInjected,
                   ebletCount,
@@ -6151,7 +6185,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 {
                   domain: domainForSubstrate,
                   ollamaBaseUrl: 'http://127.0.0.1:11434',
-                  model: 'gemma4:12b',
+                  model: answerModel,
                   choiceCount: choiceCountForPlow,
                   andonEnabled: plowAndonEnabled,
                   reasoningMode: reasoningModeForPlow,
@@ -6197,17 +6231,19 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
             // BP090 Plow Loop 12 + Minor Council Star Chamber
             // Fires 3 local judges per iteration; plurality-votes for answer letter;
             // iterates until confidence >= 0.75 (variance <= 0.25) or maxIterations reached.
-            // BP106 v0.8.29 (Founder-empirical 2026-07-05): all-gemma council.
-            // The pre-v0.8.29 array included llama3.1:8b + mistral:7b which are NOT
-            // installed on the peer fleet (only gemma4:12b is · empirical: ollama list
-            // on M0/M2/M3 shows single gemma4:12b entry). Those 2 calls per iteration
-            // hit 404 model-not-found and were silently excluded from letterVotes,
-            // making the "3-model council" empirically a 1-model council that wasted
-            // 2/3 of the network round-trips. Council diversity now comes from
-            // per-member temperature spread (see memberTemperature below) — 3 samples
-            // of the same model at 3 different temperatures gives real plurality-vote
+            // BP106 v0.8.29 (Founder-empirical 2026-07-05): single-model council.
+            // The pre-v0.8.29 array included llama3.1:8b + mistral:7b which were NOT
+            // installed on most of the peer fleet. Those 2 calls per iteration hit
+            // 404 model-not-found and were silently excluded from letterVotes, making
+            // the "3-model council" empirically a 1-model council that wasted 2/3 of
+            // the network round-trips. Council diversity now comes from per-member
+            // temperature spread (see memberTemperature below) — 3 samples of the
+            // same model at 3 different temperatures gives real plurality-vote
             // diversity without needing 3 distinct model files.
-            const COUNCIL_MODELS = ['gemma4:12b', 'gemma4:12b', 'gemma4:12b'];
+            // BP135 Yoke #35: that one model is now answerModel (this box's real
+            // ASK-selector/hardware-sized model), NOT a hardcoded 'gemma4:12b' --
+            // see the answerModel derivation above for the full fallback chain.
+            const COUNCIL_MODELS = [answerModel, answerModel, answerModel];
             const CONF_THRESHOLD = 0.75;
             const APPROACH_THRESHOLD = 0.80; // 80% of allotted timeout triggers signal
 
@@ -6381,7 +6417,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
 
           } else {
             // Baseline path: single-shot (pre-BP090 behaviour); tiebreaker model override per M14 Block 3
-            const model = isTiebreaker ? tiebreakerModel : 'gemma4:12b';
+            const model = isTiebreaker ? tiebreakerModel : answerModel;
             // BP135 Phase 1: `think` must be a TOP-LEVEL request field (not nested in
             // `options`) -- mirrors canonical_pipeline.ts's callOllama() (BP134 Deep RCA).
             const buildBaselineBody = (includeThink: boolean) => ({

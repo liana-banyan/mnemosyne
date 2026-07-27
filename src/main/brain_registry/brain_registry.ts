@@ -211,6 +211,19 @@ function storeFileExists(): boolean {
 }
 
 /**
+ * BP135 Yoke #35: true only if the user (or ensureFreeLocalDefaultOnFirstRun) has ever
+ * actually persisted a brain choice to brain_registry.json. readStore()/getActiveBrain()
+ * silently fall back to DEFAULT_ACTIVE_BRAIN_ID ('gemma4-12b') when the file doesn't exist
+ * yet -- that in-memory default is NOT hardware-aware and must never be treated as "the
+ * peer's real selected model" by presence/plow callers. Those callers should fall through
+ * to their own hardware-aware default (ram_detector.ts) when this returns false, exactly
+ * as if no brain had been registered at all.
+ */
+export function hasPersistedBrainChoice(): boolean {
+  return storeFileExists();
+}
+
+/**
  * BP134 Task D (Founder directive): "make the free version the default."
  * On a genuinely fresh install (no persisted brain_registry.json yet), pick a
  * LOCAL brain as the active default -- preferring an installed gemma-class
