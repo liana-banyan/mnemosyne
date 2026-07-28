@@ -940,9 +940,9 @@ contextBridge.exposeInMainWorld('amplify', {
       ipcRenderer.invoke('ai-dispatch:list-local-models'),
     testConnection: () =>
       ipcRenderer.invoke('ai-dispatch:test-connection'),
-    getSettings: () =>
+    getSettings: (): Promise<{ ok: boolean; settings?: { answer_cache_mode?: boolean; [k: string]: unknown }; error?: string }> =>
       ipcRenderer.invoke('ai-dispatch:get-settings'),
-    saveSettings: (settings: { local_runtime_url?: string }) =>
+    saveSettings: (settings: { local_runtime_url?: string; answer_cache_mode?: boolean; [k: string]: unknown }) =>
       ipcRenderer.invoke('ai-dispatch:save-settings', settings),
     // v0.1.57.1: token streaming events (BP081)
     onAskTokenProgress: (handler: (data: { delta: string; assembled: string; coldStart?: boolean }) => void): (() => void) => {
@@ -950,8 +950,28 @@ contextBridge.exposeInMainWorld('amplify', {
       ipcRenderer.on('ask-token-progress', h);
       return () => ipcRenderer.removeListener('ask-token-progress', h);
     },
-    onAskTokenComplete: (handler: (data: { content: string; error?: string; hotHits?: number }) => void): (() => void) => {
-      const h = (_evt: Electron.IpcRendererEvent, data: { content: string; error?: string; hotHits?: number }) => handler(data);
+    // BP136 Yoke: answer-cache fields added (all optional/additive) -- servedFromSubstrate,
+    // cost_usd, latency_ms, provenance, verified are only present on a served-verbatim hit.
+    onAskTokenComplete: (handler: (data: {
+      content: string;
+      error?: string;
+      hotHits?: number;
+      servedFromSubstrate?: boolean;
+      cost_usd?: number;
+      latency_ms?: number;
+      provenance?: string;
+      verified?: boolean;
+    }) => void): (() => void) => {
+      const h = (_evt: Electron.IpcRendererEvent, data: {
+        content: string;
+        error?: string;
+        hotHits?: number;
+        servedFromSubstrate?: boolean;
+        cost_usd?: number;
+        latency_ms?: number;
+        provenance?: string;
+        verified?: boolean;
+      }) => handler(data);
       ipcRenderer.on('ask-token-complete', h);
       return () => ipcRenderer.removeListener('ask-token-complete', h);
     },
@@ -962,6 +982,21 @@ contextBridge.exposeInMainWorld('amplify', {
       ipcRenderer.invoke('ai-dispatch:set-anthropic-key', rawKey),
     clearAnthropicKey: (): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('ai-dispatch:clear-anthropic-key'),
+    // BP136 Yoke: real, restart-surviving meter for the Prove It panel.
+    getAnswerCacheMeterSummary: (): Promise<{
+      ok: boolean;
+      summary?: {
+        total_queries: number;
+        served_verbatim_count: number;
+        rag_count: number;
+        local_generate_count: number;
+        flagship_count: number;
+        cloud_cost_avoided_usd: number;
+        avg_latency_ms: number;
+        avg_served_verbatim_latency_ms: number;
+      };
+      error?: string;
+    }> => ipcRenderer.invoke('ai-dispatch:answer-cache-meter-summary'),
   },
 
   // ── BP087 Brain Registry (Brain Swap) ────────────────────────────────────
@@ -2084,11 +2119,26 @@ declare global {
         query: (args: { court_member: string; messages: Array<{role: string; content: string}>; model_override?: string }) => Promise<{ ok: boolean; text?: string; model?: string; provider?: string; error?: string; streaming?: boolean }>;
         listLocalModels: () => Promise<{ ok: boolean; models: string[]; error?: string }>;
         testConnection: () => Promise<{ ok: boolean; models: string[]; url: string; error?: string }>;
-        getSettings: () => Promise<{ local_runtime_url: string }>;
-        saveSettings: (settings: { local_runtime_url?: string }) => Promise<{ ok: boolean }>;
+        getSettings: () => Promise<{ ok: boolean; settings?: { answer_cache_mode?: boolean; [k: string]: unknown }; error?: string }>;
+        saveSettings: (settings: { local_runtime_url?: string; answer_cache_mode?: boolean; [k: string]: unknown }) => Promise<{ ok: boolean }>;
         // v0.1.57.1: token streaming events (BP081)
         onAskTokenProgress: (handler: (data: { delta: string; assembled: string; coldStart?: boolean }) => void) => () => void;
-        onAskTokenComplete: (handler: (data: { content: string; error?: string; hotHits?: number }) => void) => () => void;
+        // BP136 Yoke: answer-cache fields added (all optional/additive)
+        onAskTokenComplete: (handler: (data: {
+          content: string; error?: string; hotHits?: number;
+          servedFromSubstrate?: boolean; cost_usd?: number; latency_ms?: number;
+          provenance?: string; verified?: boolean;
+        }) => void) => () => void;
+        // BP136 Yoke: real, restart-surviving meter for the Prove It panel
+        getAnswerCacheMeterSummary?: () => Promise<{
+          ok: boolean;
+          summary?: {
+            total_queries: number; served_verbatim_count: number; rag_count: number;
+            local_generate_count: number; flagship_count: number;
+            cloud_cost_avoided_usd: number; avg_latency_ms: number; avg_served_verbatim_latency_ms: number;
+          };
+          error?: string;
+        }>;
       };
       // Onboarding Prefs (BP065 v0.1.23)
       applyOnboardingPrefs?: (prefs: { displayName?: string; addDesktopShortcut?: boolean; addStartupItem?: boolean; apiKey?: string }) => Promise<{ ok: boolean; results?: Record<string, boolean> }>;

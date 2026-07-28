@@ -4011,8 +4011,13 @@ function registerIPCHandlers(): void {
   /**
    * run-test-it-out — runs 5 random R11 questions through the local Ollama model.
    * Emits 'test-it-out-progress' per question; emits 'test-it-out-complete' when done.
-   * Correct answers (HOT: all hot_required_elements present) are written to the
-   * verified eblet store (substrate-warming). Wrong answers are never written (Andon canon).
+   * BP137 Honest-MMLU-Provenance Yoke: this handler previously wrote the benchmark's OWN
+   * graded answer key (q.canonical_answer) into the verified eblet store whenever the model
+   * happened to answer correctly ("Andon canon: correct answers grow substrate"). That write
+   * has been REMOVED -- see the doc comment at the former write site below for why: a
+   * benchmark that writes its own answer key into the store it can later be topically
+   * queried against is a memory test wearing a lab coat, not an independent knowledge check.
+   * This handler now only scores and reports; it never writes to substrate.
    */
   safeHandle('run-test-it-out', async (event) => {
     const TOTAL = 5;
@@ -4114,24 +4119,15 @@ function registerIPCHandlers(): void {
         event.sender.send('test-it-out-progress', { ...result, total: TOTAL });
       }
 
-      // Andon canon: ONLY write correct answers to substrate
-      if (correct) {
-        try {
-          const { writeVerifiedEblet } = await import('./mnem_eblet_store');
-          const { createHash } = await import('crypto');
-          const sha256 = createHash('sha256').update(q.question + q.canonical_answer).digest('hex');
-          await writeVerifiedEblet({
-            question: q.question,
-            answer: q.canonical_answer,
-            provenance: 'test-it-out',
-            verified: true,
-            sha256,
-            timestamp: Date.now(),
-          });
-        } catch (e) {
-          console.warn('[test-it-out] eblet write failed (non-fatal):', e);
-        }
-      }
+      // BP137 Honest-MMLU-Provenance Yoke -- REMOVED (was: write q.canonical_answer, the
+      // benchmark's own graded answer key, into verified_eblets.jsonl whenever `correct` was
+      // true). That is exactly the FATAL contamination pattern the Founder flagged: the test
+      // writing the answer it is being graded against into the store it can later be served
+      // back from. This is a benchmark run -- it must never contaminate the substrate with
+      // its own answer key, full stop, so the write is deleted rather than merely gated
+      // (Step 1 hard constraint: "you cannot flag-guard 'don't contaminate' behind a flag
+      // that defaults to the contaminated behavior"). Scoring/reporting below is unchanged;
+      // only the substrate side-effect is gone.
     }
 
     // Append run to history file
@@ -4934,75 +4930,35 @@ function registerIPCHandlers(): void {
   // Reads all MMLU-Pro questions from bundled resources and writes Founder-attested
   // seed eblets to verified_eblets.jsonl. Bypasses concordance per Founder-attestation
   // doctrine (BP080 Tower-of-Peace canon). Emits progress events on the main window.
-
-  safeHandle('plow:seed-from-bank', async (event) => {
-    const { loadDomainBank, getDomainList } = await import('./plow/per_domain_q_banks');
-    const { writeVerifiedEblet } = await import('./mnem_eblet_store');
-    const { createHash } = await import('crypto');
-
-    const domains = getDomainList();
-    let total = 0;
-    let written = 0;
-    let skipped = 0;
-    const errors: string[] = [];
-
-    // Count total questions first
-    const allBanks: Array<{ domain: string; questions: import('./plow/per_domain_q_banks').Question[] }> = [];
-    for (const domain of domains) {
-      try {
-        const q = loadDomainBank(domain);
-        allBanks.push({ domain, questions: q });
-        total += q.length;
-      } catch (err) {
-        errors.push(`${domain}: ${(err as Error).message}`);
-      }
-    }
-
-    console.log(`[PlowSeed] Starting Founder seed — total=${total} domains=${allBanks.length}`);
-    const broadcastProgress = (data: object) => {
-      for (const w of BrowserWindow.getAllWindows()) {
-        if (!w.isDestroyed()) w.webContents.send('plow:seed-progress', data);
-      }
+  //
+  // BP137 Honest-MMLU-Provenance Yoke, Step 1: this handler writes q.correct_answer -- the
+  // MMLU-Pro benchmark's OWN graded answer key -- into verified_eblets.jsonl for every bundled
+  // question. That is precisely the contamination pattern this Yoke exists to kill (a benchmark
+  // writing the answer it will later be graded against into the store it can be served back
+  // from), so the write-back is hard-gated below regardless of the prior BP080 doctrine. This
+  // handler is currently UNREACHABLE from the live app (its only caller, SubstrateSeedPanel.tsx,
+  // is mounted only inside TestItOutTab.tsx, which is itself unrouted from CleanShell/App.tsx --
+  // confirmed via grep of every renderer entry point). It is hard-gated anyway, defensively, so
+  // this contamination cannot be silently reintroduced if the panel is ever rewired live.
+  // Preserved as a stub (rather than deleted) so the IPC channel name stays valid for any
+  // in-flight renderer caller; it now reports why it declined instead of writing the answer key.
+  safeHandle('plow:seed-from-bank', async (_event) => {
+    return {
+      ok: false,
+      error: 'plow:seed-from-bank disabled by BP137 Honest-MMLU-Provenance Yoke: this handler '
+        + 'wrote the MMLU-Pro benchmark answer key directly into verified_eblets.jsonl, which is '
+        + 'exactly the contamination pattern the Founder ordered removed. Use the CSIA Spider '
+        + 'swarm (plow) path for substrate-sourced answers instead; the removed write-back is '
+        + 'preserved in git history (pre-BP137) for reference.',
     };
-
-    // Write in batches, emitting progress
-    for (const { domain, questions } of allBanks) {
-      for (const q of questions) {
-        try {
-          const sha256 = createHash('sha256')
-            .update(q.question + q.correct_answer)
-            .digest('hex');
-          await writeVerifiedEblet({
-            question: q.question,
-            answer: q.correct_answer,
-            provenance: `founder_seed:mmlu_pro:${domain}:bp082`,
-            verified: true,
-            sha256,
-            timestamp: Date.now(),
-          });
-          written++;
-        } catch (err) {
-          skipped++;
-          console.warn(`[PlowSeed] skip error for domain=${domain}:`, err);
-        }
-
-        // Emit progress every 50 entries
-        if ((written + skipped) % 50 === 0) {
-          broadcastProgress({
-            written,
-            skipped,
-            total,
-            pct: Math.round(((written + skipped) / total) * 100),
-          });
-        }
-      }
-    }
-
-    console.log(`[PlowSeed] Complete — written=${written} skipped=${skipped} errors=${errors.length}`);
-    broadcastProgress({ written, skipped, total, pct: 100, done: true });
-
-    return { ok: true, written, skipped, total, errors };
   });
+  // BP137 Honest-MMLU-Provenance Yoke, Step 1: the original write-back body (loaded the
+  // bundled MMLU-Pro question banks and wrote each q.correct_answer into verified_eblets.jsonl
+  // as a "founder_seed:mmlu_pro:<domain>:bp082" entry) has been deleted outright, not merely
+  // commented out -- it lives in git history prior to this Yoke for anyone who needs to see the
+  // exact prior contamination. It is not reproduced here because inert dead code that still
+  // contains a full answer-key write-back is itself a re-contamination risk if ever copy-pasted
+  // back into a live path; the disabled stub above is the complete replacement.
 
   // ── BP083 SEG-5 — Reset + Reseed Context-Class eblets ────────────────────
   //
@@ -6218,6 +6174,11 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 // before this Yoke -- lets a receipt distinguish a reasoning-mode run from a
                 // bare-letter run without inferring it from voter_diagnostics[].reasoning presence.
                 reasoning_mode: reasoningModeForPlow,
+                // BP137 Honest-MMLU-Provenance Yoke, Step 2: named-source + verified + hash
+                // receipts for the facts actually shown to the plow's voters -- surfaced here
+                // so the asker-side Prove It UI can render "answered via Wikipedia, verified,
+                // hash X" under this outcome instead of a bare percentage.
+                provenance_receipts: plowResult.provenanceReceipts,
               };
               console.log(`[relay-poll] plow-answered route=${route.id.slice(0, 8)} letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
             } catch (plowErr) {

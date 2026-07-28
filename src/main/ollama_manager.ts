@@ -19,6 +19,21 @@ const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const STARTUP_TIMEOUT_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 2_000;
 
+// BP137 Yoke (semantic match, Step 0): empirically confirmed this session --
+//   Invoke-RestMethod POST http://127.0.0.1:11434/api/embed {model:"gemma4:12b", input:"test"}
+//     -> {"error":"This server does not support embeddings. Start it with `--embeddings`"}
+//   (none of the 3 already-installed models -- llama3.3:70b, llama3.1:8b, gemma4:12b -- are
+//   embedding-specialized; `ollama list`'s `capabilities` field never includes "embedding" for
+//   any of them). After `ollama pull nomic-embed-text` (274 MB, pulled this session), the SAME
+//   running server (no restart, no `--embeddings` flag needed) answers both:
+//     POST /api/embed       {model:"nomic-embed-text", input:"..."}  -> {embeddings:[[768 floats]]}
+//     POST /api/embeddings  {model:"nomic-embed-text", prompt:"..."} -> {embedding:[768 floats]}
+//   real, non-zero, 768-dimension numeric vectors. The server's generic error text is
+//   misleading (it is a MODEL capability gap, not a server-flag gap) -- pulling an embedding
+//   model is the actual and complete fix, confirmed empirically, not assumed.
+const EMBED_MODEL = 'nomic-embed-text';
+const EMBED_TIMEOUT_MS = 8_000;
+
 export interface OllamaStatus {
   running: boolean;
   model: string | null;
@@ -311,6 +326,48 @@ export class OllamaManager {
       return res.ok;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * BP137 Yoke (semantic match, Step 0): fetch a real embedding vector from local Ollama.
+   * Uses the SAME fetch/AbortController/fail-soft pattern as isReachable()/_getVersion() above
+   * -- no new HTTP client, no new dependency. MUST fail-soft: any error (network, model
+   * missing, malformed response) returns null, never throws -- callers (semantic_soccerball_
+   * emit in csia_research.ts) fall back to the existing token-similarity path on null.
+   *
+   * Defaults to EMBED_MODEL ('nomic-embed-text', confirmed working this session -- see the
+   * const's doc comment above for the exact empirical evidence). Caller may override `model`
+   * if a different embedding-capable model is later installed.
+   */
+  async embed(text: string, model: string = EMBED_MODEL): Promise<number[] | null> {
+    if (!text || text.trim().length === 0) return null;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS);
+      const res = await fetch(`${OLLAMA_API_BASE}/api/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, input: text }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.warn(`[OllamaManager] embed: HTTP ${res.status} model=${model} -- ${errText.slice(0, 160)} (fail-soft, returning null)`);
+        return null;
+      }
+
+      const data = await res.json() as { embeddings?: number[][] };
+      const vec = data.embeddings?.[0];
+      if (!Array.isArray(vec) || vec.length === 0 || !vec.every((n) => typeof n === 'number' && Number.isFinite(n))) {
+        console.warn('[OllamaManager] embed: malformed/empty response (fail-soft, returning null)');
+        return null;
+      }
+      return vec;
+    } catch (err) {
+      console.warn(`[OllamaManager] embed: failed for model=${model} (fail-soft, returning null):`, err);
+      return null;
     }
   }
 

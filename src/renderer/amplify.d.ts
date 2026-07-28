@@ -402,11 +402,40 @@ declare global {
         }) => Promise<{ ok: boolean; text?: string; error?: string; model_used?: string; streaming?: boolean }>;
         // v0.1.57.1: token streaming push events
         onAskTokenProgress: (handler: (data: { delta: string; assembled: string; coldStart?: boolean }) => void) => () => void;
-        onAskTokenComplete: (handler: (data: { content: string; error?: string; hotHits?: number }) => void) => () => void;
+        // BP136 Yoke (answer-cache v1): servedFromSubstrate/cost_usd/latency_ms/provenance/
+        // verified are additive/optional -- only present on a served-from-substrate hit.
+        onAskTokenComplete: (handler: (data: {
+          content: string;
+          error?: string;
+          hotHits?: number;
+          servedFromSubstrate?: boolean;
+          cost_usd?: number;
+          latency_ms?: number;
+          provenance?: string;
+          verified?: boolean;
+        }) => void) => () => void;
         // BP132 Yoke #21 C7: user-facing Anthropic API key (never exposes the raw key back out)
         getAnthropicKeyStatus?: () => Promise<{ ok: boolean; hasKey: boolean }>;
         setAnthropicKey?: (rawKey: string) => Promise<{ ok: boolean; error?: string }>;
         clearAnthropicKey?: () => Promise<{ ok: boolean }>;
+        // BP136 Yoke: answer-cache mode flag persistence (DEFAULT OFF -- undefined === off)
+        getSettings?: () => Promise<{ ok: boolean; settings?: { answer_cache_mode?: boolean; [k: string]: unknown }; error?: string }>;
+        saveSettings?: (settings: { answer_cache_mode?: boolean; [k: string]: unknown }) => Promise<{ ok: boolean; error?: string }>;
+        // BP136 Yoke: real, restart-surviving meter for the Prove It panel
+        getAnswerCacheMeterSummary?: () => Promise<{
+          ok: boolean;
+          summary?: {
+            total_queries: number;
+            served_verbatim_count: number;
+            rag_count: number;
+            local_generate_count: number;
+            flagship_count: number;
+            cloud_cost_avoided_usd: number;
+            avg_latency_ms: number;
+            avg_served_verbatim_latency_ms: number;
+          };
+          error?: string;
+        }>;
       };
       // SEG-2 v0.1.57: Test It Out — substrate-warming 5-question workout
       runTestItOut?: () => Promise<{ success: boolean; score?: number; total?: number; error?: string }>;

@@ -28,6 +28,7 @@
 //
 // Rule 66: version, never overwrite -- this is a new file, no supersede needed.
 
+import { createHash } from 'crypto';
 import type { CandidateEblet, SpecialistKeys, SpecialistName } from './specialist_adapters';
 import { SPECIALIST_REGISTRY } from './specialist_adapters';
 import { getOperatorsForDomain } from './domain_operator_map';
@@ -112,6 +113,27 @@ export interface VoterDiagnostic {
   reasoning?: string;
 }
 
+/** BP137 Honest-MMLU-Provenance Yoke, Step 2: the receipt a served answer must carry to be
+ *  countable as "substrate-sourced" -- named authority, whether that fact survived Saladin's
+ *  adversarial fence (verified), and a content hash so the exact fact text is auditable
+ *  without re-fetching the source. Built from the SAME `factsForArbitration` slice the voters
+ *  actually saw (see buildMcArbitrationPrompt() below) -- never fabricated after the fact. */
+export interface ProvenanceReceipt {
+  /** Specialist adapter name, e.g. 'wikipedia', 'arxiv', 'wolfram_alpha' (see
+   *  specialist_adapters.ts's CandidateEblet.source -- one of the 9-adapter roster). */
+  source: string;
+  /** First 16 hex chars of sha256(fact content) -- enough to be a stable, collision-resistant
+   *  fingerprint of the exact text the voters were shown, without ballooning the receipt. */
+  contentHash: string;
+  /** True only when this fact survived runSaladin()'s adversarial-fence challenge (i.e. it is
+   *  drawn from postFurnace, not the unchallenged postMiner fallback). False means the swarm
+   *  found candidates but Saladin never got to pass judgment on them (fallback path) -- still
+   *  independently-sourced, but NOT adversarially verified, and must be labeled as such. */
+  verified: boolean;
+  /** Direct source URL when the adapter provided one (e.g. Wikipedia page, arXiv abstract). */
+  provenanceUrl?: string;
+}
+
 export interface CanonicalPlowMcResult {
   questionId: string;
   domain: string;
@@ -139,6 +161,13 @@ export interface CanonicalPlowMcResult {
   /** Human-readable one-line trace for the persisted receipt (Task 2.3) -- audits HOW the
    *  answer was reached without dumping the full candidate corpus into every receipt row. */
   traceSummary: string;
+  /** BP137 Honest-MMLU-Provenance Yoke, Step 2: one receipt per fact actually shown to the
+   *  3 MC voters (the same slice buildMcArbitrationPrompt() used), so the Prove It UI can
+   *  display "answered via Wikipedia/arXiv/etc, verified, hash X" under this served answer.
+   *  Empty array means the swarm returned nothing usable for this question -- the caller
+   *  must treat that as NOT substrate-sourced (see plow_mc_answerer.ts header + Step 2 spec),
+   *  never silently count chosenLetter as provenance-backed when this is empty. */
+  provenanceReceipts: ProvenanceReceipt[];
 }
 
 // ─── MC-specific final-arbitration prompt ────────────────────────────────────
@@ -313,6 +342,18 @@ export async function runCanonicalPlowMcAnswer(
     .slice(0, 3)
     .map((c, i) => `[Source ${i + 1} -- ${c.source}]: ${c.content.slice(0, 300)}`)
     .join('\n\n');
+  // BP137 Honest-MMLU-Provenance Yoke, Step 2: receipts for the EXACT facts the voters were
+  // shown above (same .slice(0,3) of the same array) -- verified=true only when this slice
+  // came from postFurnace (survived runSaladin's adversarial fence); false when it fell back
+  // to unchallenged postMiner candidates (still independently-sourced, just not adversarially
+  // verified). Empty when factsForArbitration is empty (no usable swarm hit for this question).
+  const arbitrationFactsVerified = postFurnace.length > 0;
+  const provenanceReceipts: ProvenanceReceipt[] = factsForArbitration.slice(0, 3).map((c) => ({
+    source: c.source,
+    contentHash: createHash('sha256').update(c.content).digest('hex').slice(0, 16),
+    verified: arbitrationFactsVerified,
+    ...(c.provenance_url ? { provenanceUrl: c.provenance_url } : {}),
+  }));
   const arbitrationPrompt = buildMcArbitrationPrompt(factsContext, mcPromptWithSubstrate);
   const debugPromptLoggingEnabled = process.env.MNEMO_DEBUG_LOG_PROMPTS === '1';
 
@@ -449,5 +490,6 @@ export async function runCanonicalPlowMcAnswer(
     ebletsWritten,
     latencyMs: Date.now() - startMs,
     traceSummary,
+    provenanceReceipts,
   };
 }

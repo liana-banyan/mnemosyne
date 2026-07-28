@@ -12,13 +12,22 @@
 
 export interface VoterVote {
   voter: number;
-  verdict: 'verified' | 'rejected';
+  // 'abstained' BP-timeout-fix: a voter that timed out or errored before returning any
+  // content. Additive value -- existing 'verified' | 'rejected' producers (extractLetterChoice
+  // callers, runMMLUProConcordance) are unaffected since they never emit it.
+  verdict: 'verified' | 'rejected' | 'abstained';
   confidence: number;
   extractedLetter?: string | null;
 }
 
 export interface ConcordanceResult {
-  verdict: 'verified' | 'rejected' | 'split';
+  // 'inconclusive' BP-timeout-fix: fewer than 2 voters actually responded (the rest
+  // timed out/errored), so there isn't a meaningful 2-of-N content vote to report. This is
+  // NEITHER 'verified' NOR a hard 'rejected' -- callers that gate storage on
+  // `verdict === 'verified'` (runCsiaConcordanceGateAndStore) already treat it as
+  // not-concordant-yet, which lets CSIA recursion retry/widen instead of dropping the
+  // answer on a false content-reject.
+  verdict: 'verified' | 'rejected' | 'split' | 'inconclusive';
   confidence: number;
   votes: VoterVote[];
   error?: string;
@@ -258,29 +267,65 @@ export async function runGiantConcordance(
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model, prompt, stream: false }),
-          signal: AbortSignal.timeout(30_000),
+          // Raised 30s -> 45s (secondary mitigation): 6GB-VRAM hardware runs gemma4:12b slowly
+          // enough that 30s was itself a source of spurious timeouts. The structural fix below
+          // (timeout != reject) is what actually matters; this just reduces how often it fires.
+          signal: AbortSignal.timeout(45_000),
         });
+        if (!response.ok) {
+          // HTTP-level failure (e.g. Ollama up but model not loaded / 5xx) is a transport
+          // problem, not a verdict on the candidate answer's content -- abstain, don't reject.
+          console.error(`[GiantConcordance] Voter ${i + 1} HTTP ${response.status} -- abstaining`);
+          return { voter: i + 1, verdict: 'abstained', confidence: 0 };
+        }
         const data = (await response.json()) as { response?: string };
         const text: string = data.response?.trim().toUpperCase() ?? '';
         const verdict: 'verified' | 'rejected' = text.startsWith('VERIFIED') ? 'verified' : 'rejected';
         const confidence = text.startsWith('VERIFIED') || text.startsWith('REJECTED') ? 0.9 : 0.5;
         return { voter: i + 1, verdict, confidence };
       } catch (err) {
-        console.error(`[GiantConcordance] Voter ${i + 1} error:`, err);
-        return { voter: i + 1, verdict: 'rejected', confidence: 0 };
+        // BP-timeout-fix: this catch fires on AbortSignal.timeout() (name 'TimeoutError' /
+        // 'AbortError') just as readily as on a genuine network failure. Either way, the voter
+        // never actually evaluated the candidate answer's content, so it must NOT be counted as
+        // a content REJECT -- that was the false-reject bug (timeout indistinguishable from a
+        // real "no"). Mark it 'abstained' instead; the verdict logic below only counts voters
+        // that actually responded.
+        const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+        console.error(`[GiantConcordance] Voter ${i + 1} ${isTimeout ? 'TIMEOUT' : 'error'} (abstaining):`, err);
+        return { voter: i + 1, verdict: 'abstained', confidence: 0 };
       }
     }),
   );
 
-  const allFailed = votes.every((v) => v.confidence === 0 && v.verdict === 'rejected');
-  if (allFailed) {
-    console.error('[GiantConcordance] ollama_unreachable — all voters failed with network error');
-    return { verdict: 'rejected', confidence: 0, votes, error: 'ollama_unreachable' };
+  const respondedVotes = votes.filter((v) => v.verdict !== 'abstained');
+  const abstainedCount = votes.length - respondedVotes.length;
+
+  // Honesty firewall: fewer than 2 real responses means there is no meaningful majority to
+  // report either way. Return 'inconclusive' -- never 'verified' (can't fabricate agreement
+  // out of abstentions) and never a hard 'rejected' (a timeout-starved round must not read as
+  // a confident content rejection; callers/recursion treat non-'verified' as "not concordant
+  // yet" and retry/widen instead of dropping the answer).
+  if (respondedVotes.length < 2) {
+    console.error(
+      `[GiantConcordance] inconclusive -- only ${respondedVotes.length}/${votes.length} voter(s) responded ` +
+      `(${abstainedCount} abstained/timed out) ` +
+      `voters=[${votes.map((v) => `${v.voter}:${v.verdict}(${v.confidence})`).join(',')}]`,
+    );
+    return {
+      verdict: 'inconclusive',
+      confidence: 0,
+      votes,
+      error: respondedVotes.length === 0 ? 'ollama_unreachable' : 'insufficient_voters',
+    };
   }
 
-  const verifiedCount = votes.filter((v) => v.verdict === 'verified').length;
-  const avgConfidence = votes.reduce((sum, v) => sum + v.confidence, 0) / votes.length;
+  const verifiedCount = respondedVotes.filter((v) => v.verdict === 'verified').length;
+  const avgConfidence = respondedVotes.reduce((sum, v) => sum + v.confidence, 0) / respondedVotes.length;
 
+  // Same 2-of-N-responded shape as before (was 2-of-3-fixed): with all 3 responding this is
+  // byte-identical to the prior 2-of-3 logic. With only 2 responding (1 abstained) it requires
+  // both to agree -- stricter than 2-of-3's 66%, never looser, so this cannot manufacture a
+  // false 'verified' out of a thinned voter pool.
   let verdict: 'verified' | 'rejected' | 'split';
   if (verifiedCount >= 2) {
     verdict = 'verified';
@@ -292,6 +337,7 @@ export async function runGiantConcordance(
 
   console.log(
     `[GiantConcordance] verdict=${verdict} confidence=${avgConfidence.toFixed(3)} ` +
+    `responded=${respondedVotes.length}/${votes.length} (${abstainedCount} abstained) ` +
     `voters=[${votes.map((v) => `${v.voter}:${v.verdict}(${v.confidence})`).join(',')}]`,
   );
 
