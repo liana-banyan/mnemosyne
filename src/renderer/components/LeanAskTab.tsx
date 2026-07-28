@@ -196,6 +196,9 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
   const [showPullProgress, setShowPullProgress] = useState(false);
   // v0.1.62 BP082: toast state for Clear / Save & Clear feedback
   const [toast, setToast] = useState<string | null>(null);
+  // BP-UX-fix: visible focus affordance for the Ask textarea (no native outline was replacing
+  // the outline:none below, so the field looked "dead" even while focused -- see focus ring fix).
+  const [inputFocused, setInputFocused] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -284,6 +287,9 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
 
   // SEG-2 v0.3.7: self-context status badge — shows whether MEMORY.md loaded last Ask
   const [selfCtxStatus, setSelfCtxStatus] = useState<'unknown' | 'loaded' | 'missing'>('unknown');
+  // BP136 Yoke: answer-cache badge — shows whether the last Ask was served free from the
+  // verified-answer substrate (no model call) vs. generated. Provenance shown on hover.
+  const [lastServedFromSubstrate, setLastServedFromSubstrate] = useState<{ served: boolean; provenance?: string } | null>(null);
 
   // v0.1.57.1 (BP081): streaming state — refs only (no extra React state for per-second ticks)
   const currentAiIdRef = useRef<string | null>(null);
@@ -367,6 +373,15 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // BP-UX-fix: focus the Ask textarea when this tab mounts (both LeanShell and CleanShell
+  // conditionally render <LeanAskTab /> only while the Ask tab is active, so a mount-time
+  // focus here never steals focus from another tab -- it only fires when this one becomes
+  // visible). Previously nothing ever set initial focus, so the field could look inactive
+  // (no caret) until the user happened to click directly inside it.
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
 
   const appendMsg = useCallback((msg: ChatMessage) => {
     setMessages((prev) => {
@@ -481,6 +496,15 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
           setSelfCtxStatus((data as Record<string, unknown>).selfContextLoaded ? 'loaded' : 'missing');
         }
 
+        // BP136 Yoke: answer-cache badge — servedFromSubstrate is only ever present (true or
+        // false) when ANSWER_CACHE_MODE is on; absent entirely when the flag is off, so the
+        // badge simply doesn't render for anyone who hasn't opted in via the Prove It panel.
+        if (typeof data.servedFromSubstrate === 'boolean') {
+          setLastServedFromSubstrate({ served: data.servedFromSubstrate, provenance: data.provenance });
+        } else {
+          setLastServedFromSubstrate(null);
+        }
+
         updateMsgAndSave(id, finalContent);
         clearStream();
         setThinking(false);
@@ -581,6 +605,25 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
               whiteSpace: 'nowrap' as const,
             }}>
               {selfCtxStatus === 'loaded' ? 'Self-Context ✅' : 'Self-Context ⚠️ missing'}
+            </span>
+          )}
+          {/* BP136 Yoke: answer-cache badge — only renders when ANSWER_CACHE_MODE has fired
+              at least once this session (servedFromSubstrate present on the last completion). */}
+          {lastServedFromSubstrate && (
+            <span
+              title={lastServedFromSubstrate.provenance ? `Provenance: ${lastServedFromSubstrate.provenance}` : undefined}
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                padding: '2px 8px',
+                borderRadius: 4,
+                background: lastServedFromSubstrate.served ? 'rgba(16,185,129,0.12)' : 'rgba(148,163,184,0.12)',
+                border: `1px solid ${lastServedFromSubstrate.served ? '#10b981' : '#64748b'}`,
+                color: lastServedFromSubstrate.served ? '#6ee7b7' : '#94a3b8',
+                whiteSpace: 'nowrap' as const,
+              }}
+            >
+              {lastServedFromSubstrate.served ? '🎯 Served Free (from substrate) — $0' : 'Generated'}
             </span>
           )}
           {/* BP132 Yoke #21 C6: Brain-swap toggle -- surfaces + controls which cognitive
@@ -933,20 +976,34 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          onFocus={() => setInputFocused(true)}
+          onBlur={() => setInputFocused(false)}
           placeholder="Type a question and press Enter…"
-          disabled={thinking}
+          // BP-UX-fix (queue-while-busy): the textarea must NEVER be disabled -- the Founder
+          // can always type/paste the next question and edit freely while the current answer
+          // streams back. Only the Send button gates on `thinking` (below); disabling it here
+          // used to lock the whole box for the full 8-15s "Thinking..." window (and on every
+          // boot/clear cycle before the first answer), which is the bug this fixes.
           rows={1}
           style={{
             flex: 1,
             background: '#111827',
-            border: '1px solid #1e2a38',
+            border: `1px solid ${inputFocused ? '#10b981' : '#1e2a38'}`,
             borderRadius: 6,
             color: '#f0fdf4',
+            // BP-UX-fix: explicit caret-color so the blinking text cursor is always visible
+            // against the dark input background, instead of relying on an inherited default.
+            caretColor: '#6ee7b7',
             fontSize: 13,
             padding: '8px 10px',
             resize: 'none',
             fontFamily: 'system-ui, sans-serif',
             outline: 'none',
+            // BP-UX-fix: outline was suppressed with no replacement, so a focused-but-empty
+            // field gave zero visual "this is active" feedback. Replace it with a visible
+            // focus ring (glow) that appears the moment the field is focused, before typing.
+            boxShadow: inputFocused ? '0 0 0 2px rgba(16,185,129,0.35)' : 'none',
+            transition: 'border-color 0.12s, box-shadow 0.12s',
             overflowY: 'auto',
             maxHeight: 100,
             lineHeight: 1.4,

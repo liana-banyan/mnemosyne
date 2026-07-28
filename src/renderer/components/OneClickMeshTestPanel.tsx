@@ -42,6 +42,16 @@ function getPioneerPosition(existingCount: number): { position: number; multipli
   return { position: pos, multiplier: 1.0, label: 'Standard Gauntlet run' };
 }
 
+/** BP137 Honest-MMLU-Provenance Yoke, Step 2: mirrors ProvenanceReceipt in
+ *  src/main/plow/plow_mc_answerer.ts -- one entry per fact actually shown to the plow's
+ *  voters for this question. */
+interface ProvenanceReceipt {
+  source: string;
+  contentHash: string;
+  verified: boolean;
+  provenanceUrl?: string;
+}
+
 interface QuestionOutcome {
   question_id: number;
   question: string;
@@ -58,6 +68,42 @@ interface QuestionOutcome {
   isAbstain?: boolean;
   /** BP133 Yoke #24 Task 2: wan_mesh only -- which mechanism produced this outcome. */
   answeredBy?: 'plow' | 'minor_council' | 'single_shot';
+  /** BP137 Honest-MMLU-Provenance Yoke: mirrors OneClickQuestionOutcome.plowTrace in
+   *  one_click_mmlu_pro.ts -- present only when answeredBy === 'plow'. Only
+   *  provenance_receipts is read directly by this panel; the rest passes through untyped. */
+  plowTrace?: { provenance_receipts?: ProvenanceReceipt[]; [key: string]: unknown } | null;
+}
+
+/** BP137 Honest-MMLU-Provenance Yoke, Step 2: an outcome counts as "substrate-sourced" only
+ *  when it was actually answered via the plow AND carries at least one named-source receipt.
+ *  No receipt -> not counted as sourced, regardless of answeredBy -- Step 2's explicit rule. */
+function isProvenanceSourced(o: QuestionOutcome): boolean {
+  return o.answeredBy === 'plow' && (o.plowTrace?.provenance_receipts?.length ?? 0) > 0;
+}
+
+/** BP137 Honest-MMLU-Provenance Yoke, Step 2: renders the receipt row under a served answer
+ *  ("Wikipedia, verified, hash a1b2c3d4e5f6...") or an explicit "no receipt" note when the
+ *  outcome carries none -- never silently omits the row, since silence would look like an
+ *  unsourced answer is sourced. */
+function ProvenanceReceiptRow({ outcome }: { outcome: QuestionOutcome }): React.ReactElement | null {
+  if (outcome.answeredBy !== 'plow') return null;
+  const receipts = outcome.plowTrace?.provenance_receipts ?? [];
+  if (receipts.length === 0) {
+    return (
+      <div style={{ fontSize: 9, color: '#64748b', marginLeft: 16, fontStyle: 'italic' }}>
+        no provenance receipt -- not counted as substrate-sourced
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginLeft: 16 }}>
+      {receipts.map((r, i) => (
+        <span key={i} style={{ fontSize: 9, color: r.verified ? '#6ee7b7' : '#facc15', fontFamily: 'monospace' }}>
+          [{r.source}{r.verified ? ' verified' : ' unverified'} hash:{r.contentHash.slice(0, 8)}]
+        </span>
+      ))}
+    </div>
+  );
 }
 
 interface PeerAccuracyBreakdown {
@@ -298,6 +344,17 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
     ? liveOutcomes.filter((o) => o.isCorrect).length / liveOutcomes.length
     : null;
 
+  // BP137 Honest-MMLU-Provenance Yoke, Step 2+3: the provenance-backed subset of the
+  // completed result's outcomes -- only outcomes with at least one named-source receipt
+  // count here, per Step 2's explicit "no receipt -> not substrate-sourced" rule. This is
+  // what Step 3 requires as the SINGLE headline number for this benchmark (never the raw
+  // "all outcomes" percentage, which may include un-sourced single-shot/Minor-Council
+  // answers that are pure model recall, not swarm-provenance).
+  const sourcedOutcomes = result ? result.outcomes.filter(isProvenanceSourced) : [];
+  const sourcedScored = sourcedOutcomes.filter((o) => o.parsedLetter !== null).length;
+  const sourcedCorrect = sourcedOutcomes.filter((o) => o.isCorrect).length;
+  const sourcedAccuracy = sourcedScored > 0 ? sourcedCorrect / sourcedScored : null;
+
   const modeButton = (choice: DispatchModeChoice, label: string) => (
     <button
       onClick={() => setMode(choice)}
@@ -323,11 +380,28 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
       fontFamily: 'system-ui, -apple-system, sans-serif',
     }}>
       <div style={{ fontSize: 14, fontWeight: 700, color: '#f0fdf4', marginBottom: 4 }}>
-        🧪 One-Click Staged Test
+        🧪 Sourced-Knowledge Benchmark (MMLU-Pro format, with provenance)
       </div>
-      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10, lineHeight: 1.5 }}>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6, lineHeight: 1.5 }}>
         Runs real MMLU-Pro-format multiple-choice questions (ground truth answers,
         not fabricated) across your live WAN mesh peers and scores every answer live.
+      </div>
+      {/* BP137 Honest-MMLU-Provenance Yoke, Step 3: explicit separation from any reasoning
+          claim -- this benchmark measures whether a named, independent authority (fetched via
+          the CSIA Spider swarm) happens to agree with the answer key, NOT whether the model
+          reasoned its way there. The mesh null result already killed the reasoning claim
+          elsewhere in this app; this label makes sure it is never implicitly resurrected here. */}
+      <div style={{
+        fontSize: 10, color: '#94a3b8', marginBottom: 10, lineHeight: 1.6,
+        background: 'rgba(110,231,183,0.05)', border: '1px solid rgba(110,231,183,0.15)',
+        borderRadius: 6, padding: '6px 10px',
+      }}>
+        This is a <b style={{ color: '#6ee7b7' }}>sourced-knowledge</b> claim, not a reasoning
+        claim: "12-Blade Column Plow" mode (WAN Mesh only, checkbox below) answers by fetching
+        facts from named independent authorities (Wikipedia, arXiv, OpenAlex, PubMed, etc.) and
+        shows a receipt under each answer. Without Plow, the model answers from its own
+        knowledge with no receipt -- those answers are shown but are never counted as
+        substrate-sourced (see the headline below).
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
@@ -524,14 +598,17 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {liveOutcomes.map((o, i) => (
-              <div key={`${o.question_id}-${o.peerId ?? 'local'}-${i}`} style={{ fontSize: 11, color: o.isCorrect ? '#4ade80' : '#f87171', display: 'flex', gap: 8 }}>
-                <span>{o.isCorrect ? '✓' : o.timedOut ? '⏱' : o.isAbstain ? '·' : '✗'}</span>
-                {o.machineLabel && <span style={{ color: '#38bdf8' }}>[{o.machineLabel}]</span>}
-                {o.answeredBy === 'plow' && <span style={{ color: '#facc15' }}>[plow]</span>}
-                <span style={{ color: '#64748b' }}>[{o.category}]</span>
-                <span style={{ color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {o.question}
-                </span>
+              <div key={`${o.question_id}-${o.peerId ?? 'local'}-${i}`}>
+                <div style={{ fontSize: 11, color: o.isCorrect ? '#4ade80' : '#f87171', display: 'flex', gap: 8 }}>
+                  <span>{o.isCorrect ? '✓' : o.timedOut ? '⏱' : o.isAbstain ? '·' : '✗'}</span>
+                  {o.machineLabel && <span style={{ color: '#38bdf8' }}>[{o.machineLabel}]</span>}
+                  {o.answeredBy === 'plow' && <span style={{ color: '#facc15' }}>[plow]</span>}
+                  <span style={{ color: '#64748b' }}>[{o.category}]</span>
+                  <span style={{ color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {o.question}
+                  </span>
+                </div>
+                <ProvenanceReceiptRow outcome={o} />
               </div>
             ))}
           </div>
@@ -548,10 +625,30 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
             background: '#111827', border: '1px solid #1e2d45', borderRadius: 8,
             padding: '10px 14px', marginBottom: 8,
           }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: '#6ee7b7' }}>
-              {result.accuracy !== null ? `${(result.accuracy * 100).toFixed(0)}% accuracy` : 'No scored answers'}
-            </div>
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+            {/* BP137 Honest-MMLU-Provenance Yoke, Step 3: the headline is the
+                PROVENANCE-BACKED number (sourcedAccuracy), never the raw/legacy `result.accuracy`
+                which may include un-sourced single-shot/Minor-Council answers that carry no
+                receipt. When nothing in this run was provenance-sourced (Plow off, or WAN mesh
+                not used, or the swarm returned zero usable facts), the headline says so plainly
+                instead of presenting an unlabeled score that implies a reasoning claim. */}
+            {sourcedAccuracy !== null ? (
+              <div style={{ fontSize: 16, fontWeight: 700, color: '#6ee7b7' }}>
+                {`${(sourcedAccuracy * 100).toFixed(0)}% sourced-knowledge accuracy`}
+                <span style={{ fontSize: 10, color: '#475569', fontWeight: 400, marginLeft: 6 }}>
+                  (provenance-backed, {sourcedCorrect}/{sourcedScored} of {sourcedOutcomes.length} sourced answers)
+                </span>
+              </div>
+            ) : (
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#facc15' }}>
+                Not provenance-sourced this run
+                <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400, marginLeft: 6 }}>
+                  (enable 12-Blade Plow on WAN Mesh for a sourced-knowledge headline)
+                </span>
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>
+              {result.accuracy !== null ? `${(result.accuracy * 100).toFixed(0)}% raw accuracy` : 'no scored answers'}
+              {' (all answers incl. non-sourced fallback -- not substrate-provenance) · '}
               {result.correct}/{result.scored} correct (of {result.total} answers run) ·{' '}
               {result.dispatchMode === 'wan_mesh'
                 ? `dispatched across ${result.livePeersFound ?? '?'} live WAN peer(s)`

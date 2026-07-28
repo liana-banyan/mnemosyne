@@ -30,6 +30,11 @@ import {
 import { resolve, join, basename } from 'path';
 import { createHash } from 'crypto';
 import { app } from 'electron';
+// BP137 Yoke (Semantic Match Durable): additive semantic-code primitive, see
+// semantic_soccerball.ts header for the full honesty-mandate evidence (Ollama embed test
+// results) and fail-soft contract. Does not create an import cycle -- semantic_soccerball.ts
+// only imports ollama_manager.ts.
+import { semantic_soccerball_emit, computeSemanticSimilarity } from './semantic_soccerball';
 
 // ─── Eblet store roots (BP132 Yoke #21 B4 — portability fix) ──────────────────
 //
@@ -559,6 +564,56 @@ export interface VerifiedEbletEntry {
   /** 0-1, derived from concordance/BMV at write time (see computeArgumentConfidence() in
    *  canonical_pipeline.ts) -- how much the writing pipeline itself trusted this fact. */
   confidence?: number;
+  /** BP136 Yoke (answer-cache v1), OPTIONAL/ADDITIVE, forward-compat for the v2 research arm.
+   *  The stored/served unit is a provenanced COMPONENT, not just a bare Q->A pair -- most
+   *  answers are combinations of reusable components (facts/steps) that v2 will fetch from
+   *  MCP-federated authorities. Absent on every eblet written before this Yoke; readers must
+   *  treat absence as 'whole_answer' (the only class v1 ever writes), never infer 'component'. */
+  class?: 'whole_answer' | 'component';
+  /** BP136 Yoke, OPTIONAL/ADDITIVE. Structured provenance for cross-authority corroboration
+   *  (v2/v3) -- deliberately separate from the existing bare-string `provenance` field above
+   *  (which stays untouched for backward compat with every existing reader/writer). */
+  provenanceDetail?: {
+    source: string;
+    method: string;
+    corroboration_sources: string[];
+    hash: string;
+    ts: string;
+  };
+  /** BP136 Yoke v2a (CSIA activation): Truth Integrity Chain (TIC) 5-field schema, referenced
+   *  by the YOKE_V2 spec as `canon_truth_integrity_chain...bp084`. VERIFIED THIS SESSION: no
+   *  file matching that canon doc name, and no code implementing these 5 fields, was found
+   *  anywhere in this repo, the LianaBanyanPlatform workspace, or the Librarian Cathedral
+   *  substrate (search_knowledge + detective_investigate both returned no matching indexed
+   *  content) -- these fields DID NOT EXIST before this Yoke; v1 added only `class` and
+   *  `provenanceDetail` above. OPTIONAL/ADDITIVE, same Rule 66 convention as those two fields:
+   *  absent on every eblet written before this Yoke; readers must treat absence as "no TIC
+   *  data recorded", never infer empty arrays or a "known-nothing" state. */
+  tic?: {
+    /** Facts already corroborated/settled for this question (what the loop currently believes). */
+    known: string[];
+    /** Open theories not yet resolved -- surfaced honestly rather than silently dropped. */
+    theories_open: string[];
+    /** Candidate answers/components explicitly refuted/retracted (Rule 66: never deleted,
+     *  only marked eliminated here). */
+    eliminated: string[];
+    /** Provenance chain: the STORED QUESTIONS of the eblets this fact was derived/corroborated
+     *  from (e.g. Psionic's convergent cluster) -- the "where did this come from" edge. */
+    dependencies_upstream: string[];
+    /** The inverse edge: questions/facts that in turn depend on this one. Populated by a
+     *  future writer when a later fact cites this one as an upstream dependency; absent/empty
+     *  at write time for a brand-new fact, same convention as every other optional field here. */
+    applications_downstream: string[];
+  };
+  /** BP137 Yoke (Semantic Match Durable), OPTIONAL/ADDITIVE. 32-hex-char SimHash code of an
+   *  Ollama embedding of THIS entry's `question` field (see semantic_soccerball_emit() in
+   *  semantic_soccerball.ts) -- structurally the same 32-hex-char shape as the sha256
+   *  Soccerball wire format, but semantic rather than content-addressed. Absent on every eblet
+   *  written before this Yoke, and absent on any write made while semantic_soccerball_mode is
+   *  off or while ollamaManager.embed() was unavailable for that write -- readers must treat
+   *  absence as "no semantic code recorded" and fall back to token-similarity, never infer a
+   *  code or a similarity value. */
+  semanticCode?: string;
 }
 
 /** Backward-compat accessor (item 6): every reader that cares about verdict should go through
@@ -594,6 +649,109 @@ export function isQaRelevant(question: string, answer: string, threshold: number
   return computeQaRelevance(question, answer) >= threshold;
 }
 
+/** BP136 Yoke (answer-cache v1): question<->question similarity, DISTINCT from
+ *  computeQaRelevance() above (which scores question-vs-ANSWER overlap). This scores how
+ *  similar a NEW question is to a STORED question, for the answer-cache serve-verbatim
+ *  decision. Same token-overlap-ratio convention as computeQaRelevance for explainability,
+ *  but symmetric-ish input (two questions rather than a question and its answer). */
+export function computeQuestionSimilarity(questionA: string, questionB: string): number {
+  const tokensA = tokenizeQuestion(questionA);
+  if (tokensA.length === 0) return 0;
+  const tokensBSet = new Set(tokenizeQuestion(questionB));
+  if (tokensBSet.size === 0) return 0;
+  const overlap = tokensA.filter((t) => tokensBSet.has(t)).length;
+  return overlap / tokensA.length;
+}
+
+/** BP136 Yoke v1: minimum question<->question similarity to serve a stored answer VERBATIM
+ *  (skip the model call entirely) when the question is not an exact string match. Set well
+ *  above QA_RELEVANCE_THRESHOLD (0.08) on purpose -- that gate only screens out gross Q/A
+ *  mismatch (topical relevance), while serving verbatim requires the NEW question to be a
+ *  near-restatement of the STORED question, not merely on the same topic. 0.6 means at least
+ *  60% of the new question's meaningful (stopword-filtered) tokens must already appear in the
+ *  stored question -- conservative by design for v1 (semantic/embedding matching is v2; this
+ *  keyword-overlap gate is deliberately strict to avoid serving a wrong-but-similar-looking
+ *  cached answer at $0 with high confidence framing).
+ */
+export const SERVE_VERBATIM_THRESHOLD = 0.6;
+
+/** BP136 Yoke (hotfix, post-Euler-mismatch incident): symmetric variant of
+ *  computeQuestionSimilarity, used ONLY by the SIMILARITY branch of the verbatim-serve gate
+ *  in ai_dispatch_ipc.ts (the EXACT-question-match branch is untouched and stays safe/as-is).
+ *
+ *  Incident: "What's the quadratic formula?" (3 stopword-filtered tokens: "s", "quadratic",
+ *  "formula" -- the "s" is the tokenized remnant of the "'s" contraction) was served the
+ *  starter_chocolate eblet for "What is Euler's formula for complex exponentials?" because
+ *  directional computeQuestionSimilarity(newQuestion, storedQuestion) = overlap / |tokensA|
+ *  only checks what fraction of the NEW question's tokens appear in the STORED question. Two
+ *  of the new question's three tokens ("s" and "formula") happen to occur in Euler's question
+ *  too -- neither is the discriminating word ("quadratic" is absent from Euler's question) --
+ *  giving 2/3 = 0.667, which clears SERVE_VERBATIM_THRESHOLD even though the two questions are
+ *  not restatements of each other. Bolting isQaRelevant(query, storedAnswer) onto this branch
+ *  does not fix it either (verified empirically): the Euler answer literally contains the word
+ *  "formula", so isQaRelevant(query, eulerAnswer) = 0.667 >= 0.08 (passes when it must fail),
+ *  while isQaRelevant(query, quadraticAnswer) = 0 < 0.08 (fails when it must pass -- the
+ *  correct quadratic-formula answer never spells out the word "quadratic" or "formula", it
+ *  just states the formula symbolically). Answer-text token overlap is unreliable in BOTH
+ *  directions for short factual answers, so it is not used as the guard.
+ *
+ *  Fix: require the similarity to hold in BOTH directions (new-question-explained-by-stored
+ *  AND stored-question-explained-by-new), i.e. the two questions must be near-restatements of
+ *  EACH OTHER, not merely share a couple of one-way tokens. min(sim(A,B), sim(B,A)) is never
+ *  larger than the old directional sim(A,B) alone, so this can only make the gate MORE
+ *  conservative -- no case that used to fail the gate can newly pass it.
+ */
+export function computeQuestionSimilaritySymmetric(questionA: string, questionB: string): number {
+  return Math.min(
+    computeQuestionSimilarity(questionA, questionB),
+    computeQuestionSimilarity(questionB, questionA),
+  );
+}
+
+/** BP137 Yoke (Semantic Match Durable): minimum cosine-similarity (approximated via 128-bit
+ *  SimHash Hamming distance, see hammingToSimilarity() in semantic_soccerball.ts) between a
+ *  new query's embedding and a stored question's embedding to serve that stored answer
+ *  VERBATIM. Tuned empirically THIS SESSION with real nomic-embed-text embeddings against the
+ *  live store's own Twain/Rand pair (measured with a throwaway script, both real cosine AND
+ *  this exact SimHash approximation -- see the BP137 report for the full table):
+ *    Highest observed FALSE-POSITIVE risk (frame-collision, different subject):
+ *      "What was Einstein's birthday?"      vs stored "...Mark Twain's Birthday?"  -> simhashSim=0.741
+ *      "What was Mark Twain's birthday?"    vs stored "...Ayn Rand's birthday?"    -> simhashSim=0.596
+ *      stored Twain question                vs stored Rand question                -> simhashSim=0.596
+ *    Lowest observed TRUE-POSITIVE (genuine paraphrase, same subject) worth serving:
+ *      "When was Ayn Rand born?"            vs stored "...Ayn Rand's birthday?"    -> simhashSim=0.893
+ *      "When was Mark Twains' bday?"        vs stored "...Mark Twain's Birthday?"  -> simhashSim=0.904
+ *  0.85 sits in the gap between the worst false-positive (0.741) and the weakest desired true-
+ *  positive (0.893) with margin on both sides. A typo'd "quadratic formula" paraphrase scored
+ *  0.773 (below 0.85) -- an honest UNDER-serve, not a false-serve; ship-safety mandate is
+ *  "under-serve is fine, false-serve is not," so this stays conservative rather than closing
+ *  that gap by lowering further. NOTE (honesty-mandate finding): 128 SimHash bits (the spec's
+ *  required code width) quantizes real cosine similarity coarsely enough that this margin,
+ *  while real, is not huge -- a future increase in bit-count (still additive/optional) would
+ *  sharpen it further; this is disclosed plainly in the BP137 report rather than glossed over. */
+export const SEMANTIC_SERVE_THRESHOLD = 0.85;
+
+/** BP137 Yoke (Semantic Match Durable), STEP 2: scan every entry (not just a token-ranked
+ *  top-K) for the nearest stored question by semantic (SimHash) code, since a semantically
+ *  correct match may share zero discriminating tokens with a token-ranked candidate list.
+ *  Skips entries with no persisted semanticCode (every eblet written before this Yoke, or any
+ *  write made while the mode/embeddings were unavailable) and class:'component' fragments
+ *  (never served verbatim, same rule as the exact-match path in ai_dispatch_ipc.ts). Returns
+ *  null if no entry has a usable semantic code -- callers must fall back to the token path. */
+export function findNearestBySemanticCode(
+  queryCode: string,
+  entries: VerifiedEbletEntry[],
+): { entry: VerifiedEbletEntry; similarity: number } | null {
+  let best: { entry: VerifiedEbletEntry; similarity: number } | null = null;
+  for (const entry of entries) {
+    if (!entry.semanticCode) continue;
+    if (entry.class === 'component') continue;
+    const similarity = computeSemanticSimilarity(queryCode, entry.semanticCode);
+    if (!best || similarity > best.similarity) best = { entry, similarity };
+  }
+  return best;
+}
+
 /**
  * Module-scoped telemetry counters for the HOT retrieve path.
  * Callers (ai_dispatch_ipc) increment these after each queryVerifiedEblets() call.
@@ -601,18 +759,40 @@ export function isQaRelevant(question: string, answer: string, threshold: number
  */
 export const substrateCounters = { hotHits: 0, coldCalls: 0 };
 
+// BP-birthday-collision fix (post-Ayn-Rand-mismatch incident): 'did'/'does'/'do' were the last
+// common English interrogative/auxiliary words missing from this list (what/how/why/when/where/
+// who/is/are/was/were were already covered by the Euler-mismatch Yoke above). Any "What did X
+// do?"/"Does X do Y?"/"Do X and Y..." question template previously let did/does/do inflate
+// token-overlap between two questions that differ only in the discriminating subject noun (the
+// same template-collision class as the quadratic/Euler incident, just a different frame verb).
+// Verified empirically against the live 501-entry verified_eblets.jsonl store: adding these three
+// words changes zero exact-match or genuine-paraphrase outcomes (0 newly-missed, 0 newly-wrong)
+// while closing this residual frame-word gap -- see gadget script results in the BP136 session log.
 const VERIFIED_STOP_WORDS = new Set([
   'the', 'a', 'is', 'what', 'how', 'why', 'when', 'where', 'who', 'of',
   'in', 'on', 'at', 'to', 'for', 'with', 'an', 'and', 'or', 'not', 'be',
-  'are', 'was', 'were',
+  'are', 'was', 'were', 'did', 'does', 'do',
 ]);
 
+// BP136 Yoke (post-Euler-mismatch ranking hotfix, part 2): drop bare single-character tokens.
+// Punctuation is replaced with spaces before splitting, so possessive/contraction apostrophes
+// ("Ohm's", "What's", "isn't") leave behind a lone "s"/"t" fragment with no semantic content.
+// Empirically (against the real 280-entry verified_eblets store) that fragment was enough to
+// falsely clear SERVE_VERBATIM_THRESHOLD once candidate selection started ranking primarily on
+// question<->question similarity: e.g. "What's tort law?" -> tokens [s, tort, law] symmetric-
+// matched "What is Ohm's law?" -> tokens [ohm, s, law] at 2/3 = 0.667 (>= 0.6), a real wrong
+// serve that did not exist under the old Q+A-frequency ranking (which buried the collision
+// behind unrelated corpus-frequency winners). Filtering length<=1 tokens removes the "s"/"t"
+// noise from every token-overlap consumer in this file (question-similarity ranking here AND
+// computeQaRelevance/isQaRelevant) -- verified empirically against all 280 real stored Q/A pairs
+// that this produces ZERO isQaRelevant flips at the existing QA_RELEVANCE_THRESHOLD (0.08), so
+// the write-time verification gate (canonical_pipeline.ts runScribe) is unaffected in practice.
 function tokenizeQuestion(text: string): string[] {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w.length > 0)
+    .filter((w) => w.length > 1)
     .filter((w) => !VERIFIED_STOP_WORDS.has(w));
 }
 
@@ -661,28 +841,80 @@ export async function queryVerifiedEblets(question: string, topK = 3): Promise<V
 
   if (entries.length === 0) return [];
 
-  // Exact match on question text (case-insensitive, trimmed)
+  // Exact match on question text (case-insensitive, trimmed).
+  // BP-component-serve-fix: a component fragment can be stamped with the SAME exact question
+  // text as its parent whole_answer (csia_research.ts writes both under the user's literal
+  // question -- see runCsiaConcordanceGateAndStore ~line 197 vs ~line 222). Gather ALL exact
+  // matches (not just the first) and put non-component entries first, so the verbatim-serve
+  // gate downstream (ai_dispatch_ipc.ts, which reads verifiedHits[0]-equivalent) never inherits
+  // a component purely because of file-write order. RAG callers still see every exact match --
+  // this only reorders, it never drops a hit.
   const qNorm = question.trim().toLowerCase();
-  const exact = entries.find((e) => e.question.trim().toLowerCase() === qNorm);
-  if (exact) return [exact];
+  const exactMatches = entries.filter((e) => e.question.trim().toLowerCase() === qNorm);
+  if (exactMatches.length > 0) {
+    const nonComponent = exactMatches.filter((e) => e.class !== 'component');
+    const component = exactMatches.filter((e) => e.class === 'component');
+    return [...nonComponent, ...component];
+  }
 
   // Keyword fallback
   const qTokens = tokenizeQuestion(question);
   if (qTokens.length === 0) return [];
   const qSet = new Set(qTokens);
 
+  // BP136 Yoke (post-Euler-mismatch ranking hotfix): candidates are now ranked PRIMARILY by
+  // question<->question similarity (computeQuestionSimilaritySymmetric -- same measure the
+  // verbatim-serve gate in ai_dispatch_ipc.ts already uses), not by Q+A token frequency.
+  //
+  // Root cause this closes: the old primary key (legacyScore below) counts token hits across
+  // `e.question + ' ' + e.answer`, so an eblet whose ANSWER happens to restate query words
+  // (e.g. Euler's-formula's answer literally contains the word "formula") could outrank the
+  // actually-matching eblet whose answer is purely symbolic and never spells out the question's
+  // words (e.g. the quadratic-formula eblet's answer is just "x = (-b +/- sqrt(b^2-4ac)) / 2a",
+  // it never writes "quadratic" or "formula"). That made the correct eblet lose the topK=1 slot
+  // entirely, so the symmetric serve gate (which only ever inspects verifiedHits[0]) had nothing
+  // correct left to serve and the query fell through to a full regeneration instead of a $0
+  // verbatim serve. Ranking on question-to-question similarity first fixes the ordering at the
+  // source: the eblet whose QUESTION best restates the query is top-1, independent of how its
+  // answer happens to be phrased.
+  //
+  // legacyScore is kept as a secondary tiebreaker (and as the sole ordering key for the
+  // qSim===0 bucket) so topical/keyword-only RAG context assembly -- queries that don't
+  // restate any stored question but do share vocabulary with a stored answer -- keeps
+  // returning the same kind of loosely-related hits it always did; this change can only
+  // reorder/promote candidates that already had a nonzero legacyScore or qSim, it does not
+  // introduce new candidates and does not touch the exact-match path above.
   const scored = entries.map((e) => {
     const corpus = tokenizeQuestion(e.question + ' ' + e.answer);
-    let score = 0;
+    let legacyScore = 0;
     for (const tok of qSet) {
-      score += corpus.filter((t) => t === tok).length;
+      legacyScore += corpus.filter((t) => t === tok).length;
     }
-    return { entry: e, score };
+    const qSim = computeQuestionSimilaritySymmetric(question, e.question);
+    return { entry: e, qSim, legacyScore };
   });
 
+  // BP-component-serve-fix: class:'component' fragments must never outrank a class:'whole_answer'
+  // (or classless/legacy, treated as whole_answer per the VerifiedEbletEntry.class doc comment)
+  // record purely on legacyScore token density. Inserted directly AFTER qSim (before legacyScore)
+  // because the diagnosed incident is exactly a qSim TIE (1.0 vs 1.0) between a whole_answer and
+  // its own component: csia_research.ts stamps both with the identical question text, so qSim
+  // alone cannot separate them and legacyScore used to decide the tie, favoring whichever answer
+  // text happens to repeat the query's words more densely (e.g. a book-title component's dense
+  // "Ayn"/"Rand" repetition beating the whole_answer's short birthdate). This tiebreaker only
+  // ever fires on a qSim tie -- it cannot demote a component that is a strictly BETTER qSim match
+  // than every whole_answer candidate, so topical RAG-only relevance (queryVerifiedEblets' other
+  // consumer) is unaffected, and it never touches the exact-match path above.
+  const componentRank = (e: VerifiedEbletEntry) => (e.class === 'component' ? 1 : 0);
   return scored
-    .filter((r) => r.score > 0)
-    .sort((a, b) => b.score - a.score || b.entry.timestamp - a.entry.timestamp)
+    .filter((r) => r.qSim > 0 || r.legacyScore > 0)
+    .sort(
+      (a, b) =>
+        b.qSim - a.qSim ||
+        componentRank(a.entry) - componentRank(b.entry) ||
+        b.legacyScore - a.legacyScore ||
+        b.entry.timestamp - a.entry.timestamp,
+    )
     .slice(0, topK)
     .map((r) => r.entry);
 }
@@ -1017,7 +1249,16 @@ export async function runStartupIntegrityCheck(): Promise<StartupIntegrityResult
  *
  * Returns the sha256 of (question + answer) as write confirmation.
  */
-export async function writeVerifiedEblet(entry: VerifiedEbletEntry): Promise<string> {
+export async function writeVerifiedEblet(
+  entry: VerifiedEbletEntry,
+  // BP137 Yoke (Semantic Match Durable), STEP 2: additive, defaults to {} so every existing
+  // call site (v2a/v2b/v2c writes in ai_dispatch_ipc.ts/csia_research.ts, and any future
+  // caller that never heard of this Yoke) is byte-identical -- computeSemanticCode defaults
+  // false, no embed() network call is made, no semanticCode field is written, unless a caller
+  // EXPLICITLY opts in (which ai_dispatch_ipc.ts/csia_research.ts only do when
+  // isSemanticSoccerballModeEnabled(settings) is true).
+  opts: { computeSemanticCode?: boolean } = {},
+): Promise<string> {
   if (!entry.verified) {
     console.error('[EbletStore] Andon violation: attempted write with verified=false — blocked');
     return '';
@@ -1034,6 +1275,20 @@ export async function writeVerifiedEblet(entry: VerifiedEbletEntry): Promise<str
     .update(entry.question + entry.answer)
     .digest('hex');
 
+  // BP137 Yoke (Semantic Match Durable), STEP 2 write side: only ever attempted when the
+  // caller explicitly opted in AND didn't already supply a code. Fails soft to undefined (no
+  // field written) on any embed failure -- semantic_soccerball_emit()/ollamaManager.embed()
+  // never throw, see their own doc comments for the fail-soft contract.
+  let semanticCode = entry.semanticCode;
+  if (semanticCode === undefined && opts.computeSemanticCode) {
+    try {
+      semanticCode = (await semantic_soccerball_emit(entry.question)) ?? undefined;
+    } catch (err) {
+      console.warn('[EbletStore] semantic_soccerball_emit failed at write time (fail-soft, field omitted):', err);
+      semanticCode = undefined;
+    }
+  }
+
   const line = JSON.stringify({
     question: entry.question,
     answer: entry.answer,
@@ -1048,8 +1303,58 @@ export async function writeVerifiedEblet(entry: VerifiedEbletEntry): Promise<str
     ...(entry.reasoning !== undefined ? { reasoning: entry.reasoning } : {}),
     ...(entry.verdict !== undefined ? { verdict: entry.verdict } : {}),
     ...(entry.confidence !== undefined ? { confidence: entry.confidence } : {}),
+    // BP136 Yoke (answer-cache v1 forward-compat schema): `class` always written (defaulted to
+    // 'whole_answer' when the caller doesn't specify) since v1 write-back always produces a
+    // whole-answer unit; `provenanceDetail` stays additive/omitted like the fields above.
+    class: entry.class ?? 'whole_answer',
+    ...(entry.provenanceDetail !== undefined ? { provenanceDetail: entry.provenanceDetail } : {}),
+    // BP136 Yoke v2a (CSIA activation): TIC 5-field schema, additive/omitted like the fields
+    // above -- see the VerifiedEbletEntry.tic doc comment for the honesty-mandate verification
+    // that these fields did not exist anywhere before this Yoke.
+    ...(entry.tic !== undefined ? { tic: entry.tic } : {}),
+    // BP137 Yoke (Semantic Match Durable): additive/omitted exactly like every optional field
+    // above -- see the VerifiedEbletEntry.semanticCode doc comment.
+    ...(semanticCode !== undefined ? { semanticCode } : {}),
   });
 
   appendFileSync(ebletFile, line + '\n', 'utf-8');
   return expectedSha;
+}
+
+/**
+ * BP136 Yoke v2a (CSIA activation): raw listing of every verified eblet in the store, used by
+ * psionic_predictor.ts's zero-LLM graph walk (which needs the FULL set to build eblet<->eblet
+ * edges, unlike queryVerifiedEblets/queryVerifiedEbletsTopical above, which only ever return a
+ * question-scored top-K). Deliberately a NEW function, not a refactor of the three existing
+ * JSONL-parsing call sites above (queryVerifiedEblets, queryVerifiedEbletsTopical, queryStats)
+ * -- Rule 66 / this Yoke's surgical-diff discipline: touching any of those three risks changing
+ * behavior relied on by the production Ask path's v1 cache or the mesh-test scoring paths, so
+ * the parse logic is intentionally duplicated here rather than extracted into a shared helper
+ * those call sites would need to be modified to use.
+ */
+export async function loadAllVerifiedEblets(): Promise<VerifiedEbletEntry[]> {
+  const ebletFile = resolve(app.getPath('userData'), 'substrate', 'verified_eblets.jsonl');
+  if (!existsSync(ebletFile)) return [];
+
+  let raw: string;
+  try {
+    raw = readFileSync(ebletFile, 'utf-8');
+  } catch {
+    return [];
+  }
+
+  const entries: VerifiedEbletEntry[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as Partial<VerifiedEbletEntry>;
+      if (parsed.question && parsed.answer && parsed.sha256 && parsed.verified === true) {
+        entries.push(parsed as VerifiedEbletEntry);
+      }
+    } catch {
+      // skip malformed, consistent with the other readers in this file
+    }
+  }
+  return entries;
 }

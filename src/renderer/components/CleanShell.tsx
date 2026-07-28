@@ -19,6 +19,10 @@ import { CatacombsTab } from './CatacombsTab';
 import { CatacombsContributePanel } from './CatacombsContributePanel';
 import { LeanFederationPanel } from './LeanGauntletTab';
 import { OneClickMeshTestPanel } from './OneClickMeshTestPanel';
+// BP136 Yoke: Prove It panel (answer-cache mode toggle + real meter) -- previously authored
+// (K23) but never mounted anywhere in the shipped shell. Mounted here, toggle-collapsible,
+// alongside OneClickMeshTestPanel (kept as-is, now under an explicit "Diagnostics" label).
+import { ProveItWorksTab } from './standard/ProveItWorksTab';
 import { KitchenTableView } from '../kitchen_table/KitchenTableView';
 import { AtlasView } from '../kitchen_table/AtlasView';
 import { SocialTab } from './SocialTab';
@@ -97,9 +101,11 @@ const TABS: Array<{ id: CleanTab; label: string }> = [
 // LeanGauntletTab's LeanFederationPanel." All three are mounted as-is below;
 // nothing here was rebuilt from scratch.
 
-function PackageStoreTab({ authState }: { authState: AuthState | null }) {
+function PackageStoreTab({ authState, onSwitchTab }: { authState: AuthState | null; onSwitchTab: (tab: CleanTab) => void }) {
   const [showContribute, setShowContribute] = useState(false);
   const [showPeerScan, setShowPeerScan] = useState(false);
+  // BP136 Yoke: Prove It panel toggle (answer-cache mode + real meter)
+  const [showProveIt, setShowProveIt] = useState(false);
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', padding: '16px 20px' }}>
@@ -109,6 +115,9 @@ function PackageStoreTab({ authState }: { authState: AuthState | null }) {
         </button>
         <button onClick={() => setShowContribute((v) => !v)} style={pillBtn(showContribute)}>
           ✎ {showContribute ? 'Hide' : 'Contribute a Package'}
+        </button>
+        <button onClick={() => setShowProveIt((v) => !v)} style={pillBtn(showProveIt)}>
+          🎯 {showProveIt ? 'Hide' : 'Prove It Works'}
         </button>
       </div>
 
@@ -124,6 +133,15 @@ function PackageStoreTab({ authState }: { authState: AuthState | null }) {
         </div>
       )}
 
+      {showProveIt && (
+        <div style={{ marginBottom: 16, border: '1px solid #1e2a38', borderRadius: 8 }}>
+          <ProveItWorksTab onSwitchTab={(tab) => onSwitchTab(tab as CleanTab)} />
+        </div>
+      )}
+
+      <div style={{ marginBottom: 8, fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: 0.5 }}>
+        Diagnostics
+      </div>
       <div style={{ marginBottom: 20 }}>
         <OneClickMeshTestPanel
           authState={authState}
@@ -409,7 +427,7 @@ export function CleanShell({ currentMode, onModeChange, authState, onExitToLean 
       <TabBar active={activeTab} onSelect={setActiveTab} isMember={isMember} onMemberCta={handleMemberCta} onExitToLean={onExitToLean} />
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         {activeTab === 'ask' && <LeanAskTab onSwitchToHome={() => setActiveTab('ask')} />}
-        {activeTab === 'package-store' && <PackageStoreTab authState={authState} />}
+        {activeTab === 'package-store' && <PackageStoreTab authState={authState} onSwitchTab={setActiveTab} />}
         {activeTab === 'substrate' && <CombinedSubstrateTab />}
         {activeTab === 'help' && <HelpFaqTab />}
         {activeTab === 'kitchen-table' && <KitchenTableView />}
