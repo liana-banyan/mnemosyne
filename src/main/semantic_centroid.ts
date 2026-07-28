@@ -32,7 +32,11 @@ export interface CentroidCluster {
    *  code for this cluster (recomputed lazily by canonicalCodeForCluster(), not cached here). */
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
+// BP137 Yoke v2b Stage A.0.1 (semantic relevance gate upgrade): exported (was private to this
+// file) so plow/semantic_relevance_gate.ts can reuse this EXACT formula instead of duplicating
+// it -- see that file's header comment for the reuse rationale. No behavior change to any
+// existing caller in this file (clusterByEmbedding below still calls it the same way).
+export function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0, na = 0, nb = 0;
   const len = Math.min(a.length, b.length);
   for (let i = 0; i < len; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }

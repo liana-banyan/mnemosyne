@@ -17,6 +17,12 @@ import type { AuthState } from '../amplify.d';
 
 export const LS_LAST_RESULT = 'mnemo_last_mesh_test_result';
 
+// BP138 Yoke: one-click HOT/COLD substrate lift -- see runHotColdLiftTest() in
+// src/main/mesh_test/one_click_mmlu_pro.ts for the full design note. Persisted separately
+// from LS_LAST_RESULT so the standalone single-run result and the last lift result never
+// clobber each other.
+export const LS_LAST_LIFT_RESULT = 'mnemo_last_hotcold_lift_result';
+
 // BP135 YOKE_35 Phase 3: ported from GauntletTab.tsx (now cut from the shipped Help
 // sub-tabs, see CleanShell.tsx) -- its two real side-effects (marks credit, Pioneer
 // registry) must not silently regress just because the fake stage-sim around them is
@@ -172,11 +178,52 @@ type ProgressEvent =
   | { type: 'question-complete'; index: number; total: number; outcome: QuestionOutcome }
   | { type: 'complete'; result: OneClickRunResult };
 
+/** BP138 Yoke: mirrors HotColdLiftResult in src/main/mesh_test/one_click_mmlu_pro.ts. */
+export interface HotColdLiftResult {
+  startedAt: string;
+  completedAt: string;
+  cold: OneClickRunResult;
+  hot: OneClickRunResult;
+  coldLabel: string;
+  hotLabel: string;
+  coldAccuracy: number | null;
+  hotAccuracy: number | null;
+  coldScored: number;
+  hotScored: number;
+  coldCorrect: number;
+  hotCorrect: number;
+  n: number;
+  liftPp: number | null;
+  belowMinN: boolean;
+  minMeaningfulN: number;
+  cancelled: boolean;
+}
+
+type HotColdProgressEvent =
+  | { type: 'arm-start'; arm: 'cold' | 'hot'; label: string }
+  | { type: 'arm-complete'; arm: 'cold' | 'hot'; result: OneClickRunResult }
+  | { type: 'start'; total: number }
+  | { type: 'peers-discovered'; count: number }
+  | { type: 'question-start'; index: number; total: number; question: string; category: string }
+  | { type: 'question-complete'; index: number; total: number; outcome: QuestionOutcome }
+  | { type: 'complete'; result: HotColdLiftResult }
+  | { type: 'cancelled'; result: HotColdLiftResult };
+
 export function loadLastMeshTestResult(): OneClickRunResult | null {
   try {
     const raw = localStorage.getItem(LS_LAST_RESULT);
     if (!raw) return null;
     return JSON.parse(raw) as OneClickRunResult;
+  } catch {
+    return null;
+  }
+}
+
+export function loadLastLiftResult(): HotColdLiftResult | null {
+  try {
+    const raw = localStorage.getItem(LS_LAST_LIFT_RESULT);
+    if (!raw) return null;
+    return JSON.parse(raw) as HotColdLiftResult;
   } catch {
     return null;
   }
@@ -227,6 +274,12 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   // Condition C (Andon retry loop) vs Condition B (single pass) -- only meaningful when
   // plowEnabled is true.
   const [plowAndonEnabled, setPlowAndonEnabled] = useState(false);
+  // BP137 Yoke v2b (Research Arm): explicit opt-in, only meaningful when plowEnabled is true.
+  // Bundles Stage A.0 (relevance gate moved upstream of the MC voters -- fixes the Bush/Biden
+  // off-topic-citation failure mode) + Stage A (answer-type classifier + real compute sidecar
+  // for computable questions) together. Off by default, same opt-in pattern as every other
+  // toggle here.
+  const [researchArmMode, setResearchArmMode] = useState(false);
   // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (federated
   // substrate layer). Only meaningful when substrateEnabled is true AND mode is wan_mesh --
   // ignored server-side otherwise (see one_click_mmlu_pro.ts config.federatedSubstrateEnabled
@@ -249,6 +302,21 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   const [liveOutcomes, setLiveOutcomes] = useState<QuestionOutcome[]>([]);
   const [result, setResult] = useState<OneClickRunResult | null>(() => loadLastMeshTestResult());
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // BP138 Yoke: one-click HOT/COLD substrate lift -- separate run/progress/result state
+  // from the standalone single-run state above so the two features never clobber each
+  // other (see LS_LAST_LIFT_RESULT / 'mesh-test:hotcold-progress' channel notes).
+  const [liftState, setLiftState] = useState<'idle' | 'running' | 'complete' | 'error'>('idle');
+  const [liftArm, setLiftArm] = useState<'cold' | 'hot' | null>(null);
+  const [liftDoneCount, setLiftDoneCount] = useState(0);
+  const [liftTotal, setLiftTotal] = useState(0);
+  const [liftPeersDiscovered, setLiftPeersDiscovered] = useState<number | null>(null);
+  const [liftResult, setLiftResult] = useState<HotColdLiftResult | null>(() => loadLastLiftResult());
+  const [liftErrorMsg, setLiftErrorMsg] = useState<string | null>(null);
+
+  // Any run (single-shot or lift) in flight -- gates config controls so both actions can't
+  // race each other and silently produce a confusing mixed-config result.
+  const busy = state === 'running' || liftState === 'running';
 
   // BP135 YOKE_35 Phase 3: the two real side-effects ported from GauntletTab.tsx's
   // stage-sim loop, now anchored to this panel's own (real) completion event instead of
@@ -326,6 +394,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         maxTotalQuestions,
         plowEnabled,
         plowAndonEnabled,
+        researchArmMode,
         exactPerCategory: fullPresetSelected ? 5 : undefined,
         federatedSubstrateEnabled,
       });
@@ -338,7 +407,65 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
       setErrorMsg(String(e));
       setState('error');
     }
-  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, fullPresetSelected, federatedSubstrateEnabled]);
+  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, fullPresetSelected, federatedSubstrateEnabled]);
+
+  // BP138 Yoke: 'mesh-test:hotcold-progress' listener -- a dedicated channel (see
+  // one_click_mmlu_pro.ts's opts.progressChannel) so a lift run's two inner
+  // runOneClickMmluProTest() calls never emit onto 'mesh-test:progress' and disturb the
+  // standalone single-run state/effect above.
+  useEffect(() => {
+    const unsub = (window as any).amplify?.onMeshTestHotColdProgress?.((payload: HotColdProgressEvent) => {
+      if (payload.type === 'arm-start') {
+        setLiftArm(payload.arm);
+        setLiftDoneCount(0);
+        setLiftTotal(0);
+        setLiftPeersDiscovered(null);
+      } else if (payload.type === 'start') {
+        setLiftTotal(payload.total);
+        setLiftDoneCount(0);
+      } else if (payload.type === 'peers-discovered') {
+        setLiftPeersDiscovered(payload.count);
+      } else if (payload.type === 'question-complete') {
+        setLiftDoneCount(payload.index + 1);
+      } else if (payload.type === 'complete' || payload.type === 'cancelled') {
+        setLiftResult(payload.result);
+        setLiftArm(null);
+        setLiftState('complete');
+        try { localStorage.setItem(LS_LAST_LIFT_RESULT, JSON.stringify(payload.result)); } catch { /* non-fatal */ }
+      }
+    });
+    return () => unsub?.();
+  }, []);
+
+  const handleRunLift = useCallback(async () => {
+    setLiftState('running');
+    setLiftErrorMsg(null);
+    setLiftArm(null);
+    setLiftPeersDiscovered(null);
+    try {
+      // Same config shape/values as "Run the Test" above -- this IS the HOT arm's exact
+      // config. The main-process handler runs a COLD arm first with substrate/plow forced
+      // off using this same mode/question-count, then this exact config unmodified as HOT.
+      const resp = await (window as any).amplify?.meshTestRunHotColdLift?.({
+        mode,
+        substrateEnabled,
+        maxTotalQuestions,
+        plowEnabled,
+        plowAndonEnabled,
+        researchArmMode,
+        exactPerCategory: fullPresetSelected ? 5 : undefined,
+        federatedSubstrateEnabled,
+      });
+      if (!resp?.ok) {
+        setLiftErrorMsg(resp?.error ?? 'HOT/COLD lift run failed to start');
+        setLiftState('error');
+      }
+      // Completion is reported via the mesh-test:hotcold-progress 'complete' event above.
+    } catch (e) {
+      setLiftErrorMsg(String(e));
+      setLiftState('error');
+    }
+  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, fullPresetSelected, federatedSubstrateEnabled]);
 
   const runningAccuracy = liveOutcomes.length > 0
     ? liveOutcomes.filter((o) => o.isCorrect).length / liveOutcomes.length
@@ -358,13 +485,13 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   const modeButton = (choice: DispatchModeChoice, label: string) => (
     <button
       onClick={() => setMode(choice)}
-      disabled={state === 'running'}
+      disabled={busy}
       style={{
         background: mode === choice ? '#10b981' : 'transparent',
         color: mode === choice ? '#0d1117' : '#94a3b8',
         border: `1px solid ${mode === choice ? '#10b981' : '#1e2a38'}`,
         borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 600,
-        cursor: state === 'running' ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
+        cursor: busy ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
       }}
     >
       {label}
@@ -415,14 +542,14 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
       <label
         style={{
           display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
-          fontSize: 12, color: '#94a3b8', cursor: state === 'running' ? 'default' : 'pointer',
+          fontSize: 12, color: '#94a3b8', cursor: busy ? 'default' : 'pointer',
           fontFamily: 'system-ui, sans-serif',
         }}
       >
         <input
           type="checkbox"
           checked={substrateEnabled}
-          disabled={state === 'running'}
+          disabled={busy}
           onChange={(e) => { setSubstrateEnabled(e.target.checked); setFullPresetSelected(false); }}
         />
         Substrate context {substrateEnabled ? 'ON' : 'OFF'}
@@ -439,14 +566,14 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         style={{
           display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
           fontSize: 12, color: mode === 'local_ollama' ? '#475569' : '#94a3b8',
-          cursor: state === 'running' || mode === 'local_ollama' ? 'default' : 'pointer',
+          cursor: busy || mode === 'local_ollama' ? 'default' : 'pointer',
           fontFamily: 'system-ui, sans-serif',
         }}
       >
         <input
           type="checkbox"
           checked={plowEnabled}
-          disabled={state === 'running' || mode === 'local_ollama'}
+          disabled={busy || mode === 'local_ollama'}
           onChange={(e) => { setPlowEnabled(e.target.checked); setFullPresetSelected(false); }}
         />
         12-Blade Column Plow {plowEnabled ? 'ON' : 'OFF'} (WAN only)
@@ -458,17 +585,37 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         <label
           style={{
             display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, marginLeft: 20,
-            fontSize: 12, color: '#94a3b8', cursor: state === 'running' ? 'default' : 'pointer',
+            fontSize: 12, color: '#94a3b8', cursor: busy ? 'default' : 'pointer',
             fontFamily: 'system-ui, sans-serif',
           }}
         >
           <input
             type="checkbox"
             checked={plowAndonEnabled}
-            disabled={state === 'running'}
+            disabled={busy}
             onChange={(e) => { setPlowAndonEnabled(e.target.checked); setFullPresetSelected(false); }}
           />
           Andon retry loop {plowAndonEnabled ? 'ON (Condition C)' : 'OFF (Condition B, single pass)'}
+        </label>
+      )}
+      {plowEnabled && (
+        <label
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, marginLeft: 20,
+            fontSize: 12, color: '#94a3b8', cursor: busy ? 'default' : 'pointer',
+            fontFamily: 'system-ui, sans-serif',
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={researchArmMode}
+            disabled={busy}
+            onChange={(e) => { setResearchArmMode(e.target.checked); setFullPresetSelected(false); }}
+          />
+          Research Arm (Stage A.0+A) {researchArmMode ? 'ON' : 'OFF'}
+          <span style={{ color: '#475569', fontSize: 10 }}>
+            (ON: relevance gate moved upstream of the MC voters -- abstains rather than voting on off-topic sources -- plus a classifier + deterministic compute sidecar for computable questions)
+          </span>
         </label>
       )}
 
@@ -477,7 +624,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           substrate. Only meaningful when substrate is ON and dispatch mode is wan_mesh; greyed
           out and disabled otherwise (mirrors the plowEnabled/mode gating above). */}
       {(() => {
-        const federatedGated = state === 'running' || mode !== 'wan_mesh' || !substrateEnabled;
+        const federatedGated = busy || mode !== 'wan_mesh' || !substrateEnabled;
         return (
           <label
             style={{
@@ -511,13 +658,13 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           <button
             key={n}
             onClick={() => { setMaxTotalQuestions(n); setFullPresetSelected(false); }}
-            disabled={state === 'running'}
+            disabled={busy}
             style={{
               background: !fullPresetSelected && maxTotalQuestions === n ? '#10b981' : 'transparent',
               color: !fullPresetSelected && maxTotalQuestions === n ? '#0d1117' : '#94a3b8',
               border: `1px solid ${!fullPresetSelected && maxTotalQuestions === n ? '#10b981' : '#1e2a38'}`,
               borderRadius: 6, padding: '3px 9px', fontSize: 11, fontWeight: 600,
-              cursor: state === 'running' ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
+              cursor: busy ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
             }}
           >
             {n}
@@ -528,7 +675,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           min={1}
           max={500}
           value={maxTotalQuestions}
-          disabled={state === 'running'}
+          disabled={busy}
           onChange={(e) => {
             const v = parseInt(e.target.value, 10);
             if (!Number.isNaN(v) && v > 0) { setMaxTotalQuestions(v); setFullPresetSelected(false); }
@@ -553,13 +700,13 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
             setMode('auto');
             setFullPresetSelected(true);
           }}
-          disabled={state === 'running'}
+          disabled={busy}
           style={{
             background: fullPresetSelected ? '#facc15' : 'transparent',
             color: fullPresetSelected ? '#0d1117' : '#facc15',
             border: `1px solid ${fullPresetSelected ? '#facc15' : '#4d3a0a'}`,
             borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 700,
-            cursor: state === 'running' ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
+            cursor: busy ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
           }}
         >
           ⚡ 70 — Full 14x5 MMLU-Pro
@@ -573,14 +720,111 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
       {state !== 'running' && (
         <button
           onClick={() => void handleRun()}
+          disabled={busy}
           style={{
             background: '#10b981', color: '#fff', border: 'none', borderRadius: 6,
-            padding: '8px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer',
-            fontFamily: 'system-ui, sans-serif',
+            padding: '8px 16px', fontSize: 13, fontWeight: 700,
+            cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1,
+            fontFamily: 'system-ui, sans-serif', marginRight: 8,
           }}
         >
           ▶ Run the Test
         </button>
+      )}
+
+      {/* BP138 Yoke: one-click HOT/COLD substrate lift -- runs the SAME question set/config
+          TWICE (substrate+plow forced off, then exactly what's currently toggled above) and
+          shows COLD/HOT/LIFT/n in one action instead of a human running twice and subtracting
+          by hand. See runHotColdLiftTest() in one_click_mmlu_pro.ts. */}
+      {liftState !== 'running' && (
+        <button
+          onClick={() => void handleRunLift()}
+          disabled={busy}
+          title="Runs the same question set twice: once with substrate+plow OFF (COLD baseline), once with your current toggles above (HOT) -- then shows the lift."
+          style={{
+            background: 'transparent', color: '#facc15', border: '1px solid #4d3a0a', borderRadius: 6,
+            padding: '8px 16px', fontSize: 13, fontWeight: 700,
+            cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1,
+            fontFamily: 'system-ui, sans-serif',
+          }}
+        >
+          🔥❄️ Run HOT/COLD Lift
+        </button>
+      )}
+
+      {liftState === 'running' && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 12, color: '#facc15', animation: 'mnemo-pulse 1.5s ease-in-out infinite' }}>
+            ◌ Running {liftArm === 'cold' ? 'COLD' : liftArm === 'hot' ? 'HOT' : '...'} arm
+            {liftPeersDiscovered !== null && liftPeersDiscovered > 0
+              ? ` — ${liftPeersDiscovered} live peer(s)`
+              : liftPeersDiscovered === 0 ? ' — no live peers, running locally' : ''}
+            {liftTotal > 0 && ` — question ${liftDoneCount}/${liftTotal}`}
+          </div>
+          <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
+            {liftArm === 'cold'
+              ? 'COLD baseline: substrate+plow forced OFF, everything else identical to your current settings'
+              : liftArm === 'hot'
+                ? 'HOT: your current settings above, unmodified'
+                : ''}
+          </div>
+        </div>
+      )}
+
+      {liftState === 'error' && (
+        <div style={{ fontSize: 12, color: '#f87171', marginTop: 8 }}>✗ {liftErrorMsg}</div>
+      )}
+
+      {(liftState === 'complete' || (liftState === 'idle' && liftResult)) && liftResult && (
+        <div style={{
+          marginTop: 12, background: '#111827', border: '1px solid #4d3a0a', borderRadius: 8,
+          padding: '10px 14px',
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#facc15', marginBottom: 6 }}>
+            🔥❄️ HOT/COLD Lift
+          </div>
+          {liftResult.hotScored === 0 && liftResult.cancelled ? (
+            <div style={{ fontSize: 12, color: '#facc15' }}>
+              Stopped during the COLD arm — no HOT run was attempted, no lift to report.
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0' }}>
+                COLD {liftResult.coldAccuracy !== null ? `${(liftResult.coldAccuracy * 100).toFixed(0)}%` : 'n/a'}
+                {' / '}
+                HOT {liftResult.hotAccuracy !== null ? `${(liftResult.hotAccuracy * 100).toFixed(0)}%` : 'n/a'}
+                {' / '}
+                LIFT {liftResult.liftPp !== null
+                  ? `${liftResult.liftPp >= 0 ? '+' : ''}${liftResult.liftPp.toFixed(1)}pp`
+                  : 'n/a'}
+                <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400, marginLeft: 6 }}>
+                  (n={liftResult.n})
+                </span>
+              </div>
+              <div style={{ fontSize: 10, color: '#64748b', marginTop: 5 }}>
+                COLD: <span style={{ color: '#94a3b8' }}>{liftResult.coldLabel}</span>
+                {' — '}{liftResult.coldCorrect}/{liftResult.coldScored} scored correct
+              </div>
+              <div style={{ fontSize: 10, color: '#64748b' }}>
+                HOT: <span style={{ color: '#94a3b8' }}>{liftResult.hotLabel}</span>
+                {' — '}{liftResult.hotCorrect}/{liftResult.hotScored} scored correct
+              </div>
+              {liftResult.cancelled && (
+                <div style={{ fontSize: 10, color: '#facc15', marginTop: 4 }}>
+                  ⚠ HOT arm was stopped early (cancelled) — numbers above reflect only the
+                  questions answered before stop.
+                </div>
+              )}
+              {liftResult.belowMinN && (
+                <div style={{ fontSize: 10, color: '#facc15', marginTop: 4 }}>
+                  ⚠ n={liftResult.n} is below this app's {liftResult.minMeaningfulN}-question
+                  floor for a meaningful lift number — treat this delta as noisy, not
+                  conclusive. Re-run with more questions for a trustworthy result.
+                </div>
+              )}
+            </>
+          )}
+        </div>
       )}
 
       {state === 'running' && (

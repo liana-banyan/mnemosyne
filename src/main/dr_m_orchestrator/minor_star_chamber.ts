@@ -315,3 +315,176 @@ export async function minorCouncil(
     latency_ms: Date.now() - t0,
   };
 }
+
+// ─── BP137 Yoke v2b Stage E: distributed Star Chamber (genuine multi-authority) ──────────────
+//
+// R-MECHANISM-VERIFY: this file was, until this Yoke, imported NOWHERE in src/ (confirmed by
+// direct grep) -- the "council-with-escalation" logic above (minorCouncil/escalateToFlagship)
+// is real but is MODEL-VOTING (N local Ollama instances + a flagship Claude adjudicator via
+// brain_swap.ts's CCI abstraction) -- exactly the mechanism the Stage E spec says already
+// FAILED and must NOT be reintroduced for the distributed don't-know case. So Stage E does NOT
+// call minorCouncil()/escalateToFlagship() above; it reuses ONLY scoreConvergence() (pure,
+// authority-agnostic convergence math -- it has never cared whether a MemberAnswer came from a
+// model or a web search) for a NEW kind of council whose "members" are independent real-world
+// AUTHORITIES (Google via the user's own browser session, Perplexity via the same, a
+// deterministic compute/Wolfram solver) -- adversarial multi-authority adjudication, not
+// multi-model voting. This is what makes minor_star_chamber.ts a genuine REAL HANDLER for the
+// Stage E flow (its adjudication core is now imported and exercised) without resurrecting the
+// failed model-voting pattern.
+//
+// Caller: src/main/plow/star_chamber_dispatch.ts's runStageEDistributedStarChamber(), invoked
+// ONLY from plow_mc_answerer.ts's Stage D exhaustion call site (see that file's
+// `researchArmStarChamber` block) -- i.e. ONLY on a FINAL don't-know, never on a confident
+// answer. See that dispatch file for the actual per-authority fan-out (Google/Perplexity/
+// Wolfram); this module supplies only the adjudication math + result shape.
+
+/** One independent real-world authority's answer to the Star Chamber's question. Distinct from
+ *  `MemberAnswer` above (which is model-council vocabulary: `brain_id`) -- `authority` names a
+ *  genuinely different information source (e.g. 'user_google', 'user_perplexity',
+ *  'wolfram_compute', 'local_arithmetic'), never a model identifier. */
+export interface AuthorityAnswer {
+  authority: string;
+  /** Distilled fact / computed value as text. Empty string means this authority was queried but
+   *  produced nothing usable -- see `verified`. */
+  answer: string;
+  sourceUrl?: string;
+  /** True only when this authority genuinely produced a checkable, non-fabricated result
+   *  (mirrors the "never fake a result" honesty firewall already enforced upstream by
+   *  browser_authority_types.ts's distillExtraction() and compute_sidecar.ts's solvers -- this
+   *  field is never set true here independently of those upstream checks). */
+  verified: boolean;
+  latency_ms: number;
+}
+
+/** Result of adjudicating N independent AuthorityAnswers. `fired: true` always (this type is
+ *  only ever constructed on the Stage E path, which by definition means the distributed Star
+ *  Chamber DID fire -- see plow_mc_answerer.ts's gate for the "only on a final don't-know"
+ *  guarantee upstream of this function). */
+export interface DistributedStarChamberResult {
+  fired: true;
+  /** Every authority slot that was DISPATCHED, even ones that returned nothing usable -- so a
+   *  caller/report can always say "3 peers dispatched: google, perplexity, wolfram" regardless
+   *  of how many actually answered. */
+  peerAuthorities: string[];
+  /** Subset of peerAuthorities that returned a verified, non-empty answer. */
+  answered: AuthorityAnswer[];
+  variance: number;
+  /** Agreement score, 0-1 (== 1 - variance). Named to match the `h_score` column on
+   *  star_chamber_mesh_fires (Bishop-gadgeted schema, BP137). */
+  hScore: number;
+  consensusReached: boolean;
+  /** The served answer -- populated ONLY when consensusReached is true. Never populated on a
+   *  disagreement (honesty firewall: never fabricate a single confident answer when independent
+   *  authorities conflict). */
+  answer: string | null;
+  /** Honest "sources say X vs Y" verdict, populated ONLY when consensusReached is false (or zero
+   *  authorities answered at all). Null when consensus was reached. */
+  disagreementSummary: string | null;
+}
+
+/** Maximum agreement-variance (0-1 scale, same units scoreConvergence() already returns) for the
+ *  distributed authorities to be treated as having reached "authoritative agreement." Looser
+ *  than minorCouncil's model-council thresholds on purpose: independent real-world sources
+ *  (a Google snippet vs. a Perplexity snippet vs. a computed number) are never going to be
+ *  byte-identical the way two temperature-sampled local model completions sometimes are --
+ *  requiring near-zero variance here would make consensus nearly unreachable and push every
+ *  distributed fire into a disagreement verdict regardless of whether the sources actually
+ *  agree in substance. 0.35 was chosen to admit "same fact, different phrasing" while still
+ *  rejecting genuinely conflicting numeric/factual answers (see scoreConvergence's Jaccard
+ *  overlap for prose, exact-value comparison is left to the caller for numeric facts).
+ */
+export const STAR_CHAMBER_CONSENSUS_VARIANCE_THRESHOLD = 0.35;
+
+/**
+ * Adjudicates independent per-authority answers to a single don't-know question. Pure function
+ * (no I/O) -- the actual per-authority network/browser/compute calls happen in the caller
+ * (star_chamber_dispatch.ts); this function only decides what the RESULTS mean. Reuses
+ * scoreConvergence() above verbatim (never duplicated) -- the only difference from the
+ * model-council path is the SHAPE of the input (AuthorityAnswer, mapped to MemberAnswer's shape
+ * with `brain_id` repurposed to carry the authority name) and the threshold used to call it
+ * "agreement" (STAR_CHAMBER_CONSENSUS_VARIANCE_THRESHOLD, above, vs. each Court Package's own
+ * variance_threshold for the model council).
+ *
+ * Honesty firewall: if zero authorities answered, or if they disagree past the threshold, this
+ * NEVER returns a non-null `answer` -- it returns a null answer plus a `disagreementSummary`
+ * naming every authority's own (non-fabricated) answer, so the caller can honestly report
+ * "sources say X vs Y" instead of forcing a guess.
+ */
+export function adjudicateDistributedAuthorities(
+  answers: AuthorityAnswer[],
+): DistributedStarChamberResult {
+  const peerAuthorities = answers.map((a) => a.authority);
+  const respondingAnswers = answers.filter((a) => a.verified && a.answer.trim().length > 0);
+
+  if (respondingAnswers.length === 0) {
+    return {
+      fired: true,
+      peerAuthorities,
+      answered: [],
+      variance: 1.0,
+      hScore: 0,
+      consensusReached: false,
+      answer: null,
+      disagreementSummary:
+        'No authority returned a usable result (honest abstain -- never fabricated). ' +
+        `Dispatched: ${peerAuthorities.join(', ')}.`,
+    };
+  }
+
+  if (respondingAnswers.length === 1) {
+    // A single independent authority is corroboration of exactly one source -- genuinely
+    // different from N>=2 authorities AGREEING. Reported as consensus (variance 0, nothing to
+    // disagree with) but the caller's receipt should show answered.length === 1 so this is never
+    // misread as multi-authority agreement.
+    const only = respondingAnswers[0];
+    return {
+      fired: true,
+      peerAuthorities,
+      answered: respondingAnswers,
+      variance: 0,
+      hScore: 1,
+      consensusReached: true,
+      answer: only.answer,
+      disagreementSummary: null,
+    };
+  }
+
+  const memberShaped: MemberAnswer[] = respondingAnswers.map((a) => ({
+    brain_id: a.authority,
+    answer: a.answer,
+    tokens_used: 0,
+    latency_ms: a.latency_ms,
+  }));
+  const convergence = scoreConvergence(memberShaped);
+  const hScore = Math.max(0, Math.min(1, 1 - convergence.variance));
+  const consensusReached = convergence.variance <= STAR_CHAMBER_CONSENSUS_VARIANCE_THRESHOLD;
+
+  if (consensusReached) {
+    return {
+      fired: true,
+      peerAuthorities,
+      answered: respondingAnswers,
+      variance: convergence.variance,
+      hScore,
+      consensusReached: true,
+      answer: convergence.aggregate,
+      disagreementSummary: null,
+    };
+  }
+
+  const summary =
+    'sources disagree: ' +
+    respondingAnswers
+      .map((a) => `${a.authority} says "${a.answer.slice(0, 100)}"`)
+      .join(' vs ');
+  return {
+    fired: true,
+    peerAuthorities,
+    answered: respondingAnswers,
+    variance: convergence.variance,
+    hScore,
+    consensusReached: false,
+    answer: null,
+    disagreementSummary: summary,
+  };
+}

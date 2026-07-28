@@ -72,6 +72,16 @@ import { uninstallApp } from './hearth_app_builder/install_runner';
 // B83 ? Hearth Conjunction Window
 import { conjunctionRouter } from './hearth/conjunction/conjunction_router';
 import { buildSubstrateContext } from './hearth/embedded_browser/substrate_context_builder';
+// BP137 Yoke v2b Integration-1 Part 2: browser-authority IPC leg. buildBrowserAuthorityQueryUrl
+// is a real (pure, no I/O) import for the navigation-URL builder; the two types are the shared
+// vocabulary both this file and browser_authority_adapter.ts/plow_mc_answerer.ts speak -- see
+// runBrowserAuthorityQueryFromMain() below (near openHearthConjunctionWindow()) for the actual
+// main<->renderer forwarding this Yoke wires.
+import {
+  buildBrowserAuthorityQueryUrl,
+  type BrowserAuthorityQuery,
+  type BrowserAuthorityRawExtraction,
+} from '../shared/plow/browser_authority_types';
 import { querySagaState, recordWaveDispatch, recordWaveComplete } from './hearth/drekaskip_status/drekaskip_bridge';
 import { pollWatchdogStatus, getSubjectHistory } from './hearth/active_substrate/watchdog_bridge';
 import { toggleMonitor, getMetrics, getAllMonitorStates } from './hearth/active_substrate/scribe_monitor';
@@ -1467,6 +1477,132 @@ function openHearthConjunctionWindow(): void {
   registerWindowForAutoUpdate(hearthConjunctionWindow); // M21
 }
 
+// BP137 Yoke v2b Integration-1 Part 2: the real main<->renderer IPC leg
+// browser_authority_adapter.ts's file header names as genuinely ABSENT ("a MAIN-PROCESS caller
+// ... has no IPC path to invoke this renderer-side method yet"). This function is that leg's
+// live implementation.
+//
+// R-MECHANISM-VERIFY / honest scope note: HearthConjunctionWindow.tsx and EmbeddedChrome.tsx are
+// NOT in this Yoke's file-ownership list (only index.ts + preload.ts + plow_mc_answerer.ts's
+// lookup_fact branch are) and are therefore untouched this pass -- HearthConjunctionWindow.tsx
+// still never passes EmbeddedChrome.tsx's onBrowserAuthorityBridgeReady prop, so
+// EmbeddedChrome's OWN runBrowserAuthorityQuery()/pendingBrowserAuthorityRef bridge stays dormant
+// (never announced, never invoked) exactly as it is today. Rather than wait on that separate
+// wiring, this function reaches the SAME live <webview> DOM element a code-path-independent way:
+// hearthConjunctionWindow.webContents.executeJavaScript() -- the exact mechanism this file's own
+// SEG-FIX-3 BP078 preload-smoke-test above already uses to probe window.amplify -- runs a small
+// script directly in that window's page context. The script finds the one <webview> element
+// EmbeddedChrome.tsx renders (document.querySelector('webview'); confirmed by direct read there
+// is exactly one) and drives it through the same navigate -> wait-for-load -> wv.send('browser-
+// authority-run-query', ...) -> wait-for-'browser-authority-extraction-result' sequence
+// EmbeddedChrome.tsx's own dormant runBrowserAuthorityQuery() implements against
+// webview_preload.ts's existing (already-wired) 'browser-authority-run-query' listener -- this
+// function never duplicates THAT DOM-scraping logic, only the plumbing to reach it. Both this
+// function's injected 'ipc-message' listener and EmbeddedChrome's own dormant one can coexist on
+// the same <webview> node without conflict (DOM elements support multiple independent listeners
+// per event; EmbeddedChrome's fires a no-op today because pendingBrowserAuthorityRef.current is
+// always null while its bridge is never announced).
+//
+// HONEST NULL PATHS (never fabricate a result -- this Yoke's honesty-firewall requirement):
+//   1. No hearth window open / destroyed -> resolves null immediately, no executeJavaScript call.
+//   2. Hearth window open but the user is not on the Browser tab -> EmbeddedChrome.tsx (and its
+//      one <webview>) is only mounted when activeTab === 'browser' (HearthConjunctionWindow.tsx),
+//      so the injected script's own querySelector finds nothing and resolves null.
+//   3. <webview> present but extraction genuinely fails or times out (selector miss on Google's/
+//      Perplexity's rendered page, or no reply within BROWSER_AUTHORITY_MAIN_TIMEOUT_MS) -> null.
+//   4. A browser-authority call is already in flight against the one shared webview -> this call
+//      resolves null immediately rather than queuing or clobbering the in-flight call's listeners
+//      (same "out of scope this pass" choice EmbeddedChrome.tsx's own dormant bridge documents).
+// Every one of these is indistinguishable, to the caller, from "browser authority unavailable" --
+// exactly the createNotWiredBridge() contract browser_authority_adapter.ts already documents.
+// NOTE (side effect, stated honestly): a successful call DOES navigate the user's live embedded
+// browser panel to a Google/Perplexity search-results page for the question -- this is the
+// designed behavior (the whole point is driving the user's own logged-in session), not an
+// accidental side effect, but it is visible if the user is looking at that tab when it fires.
+const BROWSER_AUTHORITY_MAIN_TIMEOUT_MS = 20_000;
+const BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS = 1_200;
+let browserAuthorityMainCallInFlight = false;
+
+export async function runBrowserAuthorityQueryFromMain(
+  query: BrowserAuthorityQuery,
+): Promise<BrowserAuthorityRawExtraction | null> {
+  if (!hearthConjunctionWindow || hearthConjunctionWindow.isDestroyed()) {
+    console.warn('[browser-authority-main] no hearth window open -- resolving null (honest, never fabricated).');
+    return null;
+  }
+  if (browserAuthorityMainCallInFlight) {
+    console.warn('[browser-authority-main] a call is already in flight against the shared webview -- resolving null (honest, never queued/clobbered).');
+    return null;
+  }
+
+  const navigateUrl = buildBrowserAuthorityQueryUrl(query);
+  // Executed directly in hearthConjunctionWindow's page context (same mechanism as the
+  // preload-smoke-test above). query.question/query.authority are interpolated via
+  // JSON.stringify below, which produces a safe, quote-escaped JS string literal -- never raw
+  // string concatenation of user-controlled text into the script source.
+  const script = `
+    (function() {
+      return new Promise(function(resolve) {
+        try {
+          var wv = document.querySelector('webview');
+          if (!wv) { resolve(null); return; }
+          var settled = false;
+          var timeoutId = setTimeout(function() {
+            if (settled) return;
+            settled = true;
+            wv.removeEventListener('ipc-message', onMsg);
+            wv.removeEventListener('did-finish-load', onLoad);
+            resolve(null);
+          }, ${BROWSER_AUTHORITY_MAIN_TIMEOUT_MS});
+          function onMsg(e) {
+            if (!e || e.channel !== 'browser-authority-extraction-result') return;
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            wv.removeEventListener('ipc-message', onMsg);
+            wv.removeEventListener('did-finish-load', onLoad);
+            resolve(e.args && e.args[0] ? e.args[0] : null);
+          }
+          function onLoad() {
+            wv.removeEventListener('did-finish-load', onLoad);
+            setTimeout(function() {
+              try {
+                wv.send('browser-authority-run-query', { query: ${JSON.stringify(query.question)}, authority: ${JSON.stringify(query.authority)} });
+              } catch (sendErr) {
+                if (!settled) { settled = true; clearTimeout(timeoutId); resolve(null); }
+              }
+            }, ${BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS});
+          }
+          wv.addEventListener('ipc-message', onMsg);
+          wv.addEventListener('did-finish-load', onLoad);
+          wv.loadURL(${JSON.stringify(navigateUrl)});
+        } catch (err) {
+          resolve(null);
+        }
+      });
+    })()
+  `;
+
+  browserAuthorityMainCallInFlight = true;
+  try {
+    const result = await hearthConjunctionWindow.webContents.executeJavaScript(script);
+    if (!result || typeof result !== 'object') return null;
+    const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null };
+    if (!r.success || !r.snippet || !r.sourceUrl) return null; // honest -- never a partial/fabricated extraction
+    return {
+      snippet: r.snippet,
+      sourceUrl: r.sourceUrl,
+      authority: query.authority,
+      selectorUsed: r.selectorUsed ?? null,
+    };
+  } catch (err) {
+    console.warn('[browser-authority-main] executeJavaScript round trip failed (non-fatal, resolving null):', (err as Error)?.message ?? err);
+    return null;
+  } finally {
+    browserAuthorityMainCallInFlight = false;
+  }
+}
+
 // --- IPC Handlers ------------------------------------------------------------
 
 let skuPullRunning = false;
@@ -2563,6 +2699,22 @@ function registerIPCHandlers(): void {
   // -- Hearth Conjunction Window (B83) -----------------------------------------
 
   ipcMain.on('open-hearth-conjunction', () => openHearthConjunctionWindow());
+
+  // BP137 Yoke v2b Integration-1 Part 2: registered here (this file's one-time IPC-setup block,
+  // guarded by safeHandle against a duplicate-registration throw) rather than literally inside
+  // openHearthConjunctionWindow() -- that function re-runs its full body every time the window is
+  // closed and reopened (see its own early-return-if-already-open guard above), and ipcMain.handle
+  // throws on a second registration for the same channel with no built-in de-dup; safeHandle's
+  // try/catch exists for exactly that reason (see this same function's `const safeHandle = ...`
+  // above). Forwards to runBrowserAuthorityQueryFromMain() (defined next to
+  // openHearthConjunctionWindow() above) for the actual window-forwarding logic; see that
+  // function's header for the full mechanism + honest null-path enumeration. This channel is also
+  // the one preload.ts's new runBrowserAuthorityQuery() contextBridge method invokes, so any
+  // future renderer-side caller (not just plow_mc_answerer.ts's in-process bridge below) reaches
+  // the exact same code path.
+  safeHandle('nexus-browser-authority-run-query', (_event, query: BrowserAuthorityQuery) =>
+    runBrowserAuthorityQueryFromMain(query),
+  );
 
   // BP041 SAGA 3 ? Watch View toggle
   // hideToWatchView: hides the conjunction window while keeping the overlay + substrate alive.
@@ -4748,6 +4900,9 @@ function registerIPCHandlers(): void {
     // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow (wan_mesh only).
     plowEnabled?: boolean;
     plowAndonEnabled?: boolean;
+    // BP137 Yoke v2b (Research Arm): explicit opt-in, ignored unless plowEnabled is also true.
+    // Threaded straight through to runOneClickMmluProTest -- see that function's config JSDoc.
+    researchArmMode?: boolean;
     // BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset.
     exactPerCategory?: number;
     // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (wan_mesh +
@@ -4767,6 +4922,37 @@ function registerIPCHandlers(): void {
   safeHandle('mesh-test:is-active', async () => {
     const { isOneClickRunActive } = await import('./mesh_test/one_click_mmlu_pro');
     return { active: isOneClickRunActive() };
+  });
+
+  // BP138 Yoke: one-click HOT/COLD substrate lift -- runs the SAME question set/config
+  // TWICE (substrate+plow forced off, then the caller's requested config unmodified) and
+  // reports both accuracies + the delta, reusing runOneClickMmluProTest's existing honest
+  // sealed-key scoring path for both arms. See runHotColdLiftTest() in
+  // one_click_mmlu_pro.ts for the full Truth-Always design note. Config shape is identical
+  // to mesh-test:run-one-click above -- it represents the HOT arm exactly as configured
+  // in the panel; the COLD arm's substrate/plow toggles are overridden internally.
+  safeHandle('mesh-test:run-hotcold-lift', async (_event, config: {
+    ollamaBaseUrl?: string;
+    model?: string;
+    questionsPerDomain?: number;
+    mode?: 'auto' | 'local_ollama' | 'wan_mesh';
+    wanMaxQuestions?: number;
+    wanPerQuestionTimeoutMs?: number;
+    substrateEnabled?: boolean;
+    maxTotalQuestions?: number;
+    plowEnabled?: boolean;
+    plowAndonEnabled?: boolean;
+    researchArmMode?: boolean;
+    exactPerCategory?: number;
+    federatedSubstrateEnabled?: boolean;
+  }) => {
+    try {
+      const { runHotColdLiftTest } = await import('./mesh_test/one_click_mmlu_pro');
+      const result = await runHotColdLiftTest(config ?? {});
+      return { ok: true, result };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
   });
 
   // BP133 Yoke #24 Task 3: Diagnostic terminal `stop` and `peers` commands. Read-only
@@ -6065,6 +6251,12 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           // plow machinery, differing only in whether the Andon cord is allowed to fire.
           const plowEnabled: boolean = payload.plow_enabled === true;
           const plowAndonEnabled: boolean = payload.plow_andon_enabled === true;
+          // BP137 Yoke v2b (Research Arm): explicit opt-in, ignored unless plowEnabled is also
+          // true (see the runCanonicalPlowMcAnswer config below). Bundles Stage A.0 (relevance
+          // gate upstream of the MC voters) + Stage A (answer-type classifier + compute
+          // sidecar) behind one wire flag -- default is false/absent, an old or
+          // research-arm-unaware asker never silently gets this behavior.
+          const researchArmModeForPlow: boolean = payload.research_arm_mode === true;
           const researchQuery: string = typeof payload.question_text === 'string' ? payload.question_text : prompt;
           const choiceCountForPlow: number = typeof payload.choice_count === 'number' ? payload.choice_count : 10;
           // BP135 Yoke #34 Phase (0.9.6): opt-in reasoning-mode voter prompt, DEFAULT FALSE --
@@ -6146,6 +6338,38 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                   andonEnabled: plowAndonEnabled,
                   reasoningMode: reasoningModeForPlow,
                   testModeCorrectAnswerLetter: testModeCorrectAnswerLetterForPlow,
+                  // BP137 Yoke v2b (Research Arm): the ONE wire flag (payload.research_arm_mode)
+                  // fans out into all 3 sub-flags together (Stage A.0 + Stage A were built and
+                  // are meant to be exercised together per the Yoke's explicit "build A.0 + A
+                  // together" instruction) -- each sub-flag remains independently gateable in
+                  // CanonicalPlowMcConfig for any future/direct caller that wants only one.
+                  researchArmMode: researchArmModeForPlow,
+                  researchArmRelevanceGate: researchArmModeForPlow,
+                  researchArmComputeSidecar: researchArmModeForPlow,
+                  // BP137 Yoke v2b Integration-1 Part 1: fan the SAME single wire flag into
+                  // Stage D's escalation + Psionic sub-flags too, per this Yoke's explicit
+                  // "D is BUILT but DARK -- fan it in" instruction. Deliberately HOLDING
+                  // researchArmPsionicShortCircuit OFF (never set here) -- see
+                  // plow_mc_answerer.ts's own doc comment on that field for why: escalation +
+                  // the Psionic concur/discord marker should go live this pass, but the $0
+                  // predict-serve short-circuit stays opt-in-only until a clean receipt lands,
+                  // conservative given this session's false-serve history.
+                  researchArmEscalation: researchArmModeForPlow,
+                  researchArmPsionic: researchArmModeForPlow,
+                  // BP137 Yoke v2b Integration-1 Part 2: fans the same single wire flag into
+                  // Stage C's browser-authority sub-flag -- see plow_mc_answerer.ts's lookup_fact
+                  // branch (below this file, in that module) and browser_authority_adapter.ts /
+                  // runBrowserAuthorityQueryFromMain() (this file) for the real IPC leg.
+                  researchArmBrowserAuthority: researchArmModeForPlow,
+                  // BP137 Yoke v2b Stage E: fans the SAME single wire flag into the distributed
+                  // Star Chamber sub-flag -- see plow_mc_answerer.ts's Stage D exhaustion call
+                  // site (fires ONLY on a final don't-know, never a confident answer) and
+                  // star_chamber_dispatch.ts for the actual Google/Perplexity/Wolfram fan-out.
+                  // When payload.research_arm_mode is false/absent (every pre-Stage-E asker,
+                  // including every existing caller of insertRelayRoute), researchArmModeForPlow
+                  // is false, so this is false too -- the Stage E block stays unreachable and
+                  // this responder's behavior is byte-for-byte unchanged from pre-Stage-E.
+                  researchArmStarChamber: researchArmModeForPlow,
                 },
                 writeEbletFn,
                 (stage) => console.log(`[relay-poll] plow-stage route=${route.id.slice(0, 8)}: ${stage}`),
@@ -6179,6 +6403,19 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 // so the asker-side Prove It UI can render "answered via Wikipedia, verified,
                 // hash X" under this outcome instead of a bare percentage.
                 provenance_receipts: plowResult.provenanceReceipts,
+                // BP137 Yoke v2b (Research Arm), OPTIONAL/ADDITIVE -- present only when
+                // researchArmMode was true for this call (undefined -- key omitted from the
+                // persisted JSON -- otherwise, so old receipts and this new field never
+                // collide). See plow_mc_answerer.ts's CanonicalPlowMcResult doc.
+                research_arm_mode: researchArmModeForPlow || undefined,
+                answer_type: plowResult.answerType,
+                compute_sidecar: plowResult.computeSidecar,
+                relevance_gate_abstain: plowResult.relevanceGateAbstain,
+                // BP137 Yoke v2b Stage E, OPTIONAL/ADDITIVE -- present only when the distributed
+                // Star Chamber actually fired for this call (see plow_mc_answerer.ts's
+                // CanonicalPlowMcResult.starChamber doc). Absent (undefined, key present with
+                // undefined value is dropped by JSON.stringify) on every pre-Stage-E receipt.
+                star_chamber: plowResult.starChamber,
               };
               console.log(`[relay-poll] plow-answered route=${route.id.slice(0, 8)} letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
             } catch (plowErr) {

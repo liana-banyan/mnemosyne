@@ -626,6 +626,20 @@ contextBridge.exposeInMainWorld('amplify', {
   getWebviewPreloadPath: (): string =>
     ipcRenderer.sendSync('get-webview-preload-path') as string,
 
+  // ── Browser-authority Nexus IPC leg (BP137 Yoke v2b Integration-1, Part 2) ──
+  // Wraps ipcRenderer.invoke against the 'nexus-browser-authority-run-query' channel index.ts's
+  // registerIPCHandlers() registers (see runBrowserAuthorityQueryFromMain() there for the actual
+  // forward-to-hearth-window mechanism). Resolves null -- never a fabricated extraction -- when
+  // no hearth window is open or the browser tab isn't active; see that function's header for the
+  // full honest-null-path enumeration. plow_mc_answerer.ts's lookup_fact branch is the primary
+  // caller (via a direct in-process function call, not this bridge -- both processes are main),
+  // but this contextBridge method exists so a renderer-side caller could reach the exact same
+  // code path in the future, following the same convention every other sibling method here does.
+  runBrowserAuthorityQuery: (
+    query: import('../shared/plow/browser_authority_types').BrowserAuthorityQuery,
+  ): Promise<import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null> =>
+    ipcRenderer.invoke('nexus-browser-authority-run-query', query),
+
   // ── On-Deck Master-of-Ceremonies (BP037) ──────────────────────────────────
 
   onDeckList: (): Promise<import('./on_deck/on_deck_bridge').OnDeckBridgePayload> =>
@@ -1294,6 +1308,8 @@ contextBridge.exposeInMainWorld('amplify', {
     // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow (wan_mesh only).
     plowEnabled?: boolean;
     plowAndonEnabled?: boolean;
+    // BP137 Yoke v2b (Research Arm): explicit opt-in, ignored unless plowEnabled is also true.
+    researchArmMode?: boolean;
     // BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset.
     exactPerCategory?: number;
     // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (wan_mesh +
@@ -1313,6 +1329,32 @@ contextBridge.exposeInMainWorld('amplify', {
     const handler = (_event: unknown, payload: unknown) => cb(payload);
     ipcRenderer.on('mesh-test:progress', handler);
     return () => ipcRenderer.removeListener('mesh-test:progress', handler);
+  },
+
+  // BP138 Yoke: one-click HOT/COLD substrate lift -- see runHotColdLiftTest() in
+  // src/main/mesh_test/one_click_mmlu_pro.ts. Config shape mirrors meshTestRunOneClick
+  // above (it IS that same config, representing the HOT arm); the main-process handler
+  // runs the COLD arm internally with substrate/plow forced off.
+  meshTestRunHotColdLift: (config: {
+    ollamaBaseUrl?: string;
+    model?: string;
+    questionsPerDomain?: number;
+    mode?: 'auto' | 'local_ollama' | 'wan_mesh';
+    wanMaxQuestions?: number;
+    wanPerQuestionTimeoutMs?: number;
+    substrateEnabled?: boolean;
+    maxTotalQuestions?: number;
+    plowEnabled?: boolean;
+    plowAndonEnabled?: boolean;
+    researchArmMode?: boolean;
+    exactPerCategory?: number;
+    federatedSubstrateEnabled?: boolean;
+  }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
+    ipcRenderer.invoke('mesh-test:run-hotcold-lift', config),
+  onMeshTestHotColdProgress: (cb: (payload: unknown) => void): (() => void) => {
+    const handler = (_event: unknown, payload: unknown) => cb(payload);
+    ipcRenderer.on('mesh-test:hotcold-progress', handler);
+    return () => ipcRenderer.removeListener('mesh-test:hotcold-progress', handler);
   },
 
   // SEG-2 v0.1.56 — first-launch progressive auto-pull (gemma4:12b)
@@ -2020,6 +2062,10 @@ declare global {
       watchdogHistory: (subject: string, window_hours?: number) => Promise<Array<{ ts: string; level: string; message: string }>>;
       // Webview preload path (B83b)
       getWebviewPreloadPath?: () => string;
+      // Browser-authority Nexus IPC leg (BP137 Yoke v2b Integration-1, Part 2)
+      runBrowserAuthorityQuery?: (
+        query: import('../shared/plow/browser_authority_types').BrowserAuthorityQuery,
+      ) => Promise<import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null>;
       // On-Deck Master-of-Ceremonies (BP037)
       onDeckList?: () => Promise<import('./on_deck/on_deck_bridge').OnDeckBridgePayload>;
       // Pantheon — Pixie Dust Mining (BP041 SAGA 1)

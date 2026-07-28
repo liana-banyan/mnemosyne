@@ -145,6 +145,109 @@ function attachEnterInterceptor(): void {
   }, true); // capture phase — before React handlers
 }
 
+// ─── BP137 Yoke v2b Stage C: browser-authority answer extraction ─────────────
+// ADDITIVE ONLY -- everything below this banner is new code reachable ONLY when
+// EmbeddedChrome.tsx's new (also-additive) runBrowserAuthorityQuery() method sends the
+// 'browser-authority-run-query' channel, which it only does when the caller opted in via
+// BP137's researchArmMode + researchArmBrowserAuthority flags (see
+// src/shared/plow/browser_authority_types.ts). No existing listener, selector, or behavior
+// above this line is modified. When the new channel is never sent (every pre-BP137 caller,
+// and every BP137 caller with the flags off), this block never executes.
+//
+// WHY duplicated selectors instead of importing from browser_authority_content_script.ts:
+// following this file's own pre-existing convention at line 60-61 above ("duplicated here for
+// the preload context (no cross-context import)") -- this preload script compiles under
+// tsconfig.main.json while that sibling type file compiles under tsconfig.renderer.json; the
+// two projects do not share a module graph.
+//
+// HONESTY FIREWALL: these selectors are best-effort heuristics against Google's and
+// Perplexity's rendered-page DOM as of BP137 (2026). Third-party page markup changes without
+// notice and is not something this repo controls or can pin -- that is an inherent property of
+// any DOM-scraping approach against a page you do not own, called out here explicitly rather
+// than glossed over. A selector miss is reported as `success: false` with no fabricated
+// snippet/URL, never silently coerced into a fake success.
+
+type BrowserAuthorityName = 'user_google' | 'user_perplexity';
+
+interface BrowserAuthorityRunQueryRequest {
+  query: string;
+  authority: BrowserAuthorityName;
+}
+
+interface BrowserAuthorityExtractionResultMessage {
+  success: boolean;
+  authority: BrowserAuthorityName;
+  snippet: string;
+  sourceUrl: string | null;
+  selectorUsed: string | null;
+}
+
+// Best-effort Google featured-snippet / answer-box selectors, most-specific first.
+const GOOGLE_ANSWER_SELECTORS = [
+  '[data-attrid="wa:/description"]',
+  '[data-attrid*="answer"]',
+  '.hgKElc',
+  '.LGOjhe',
+  '.kno-rdesc span',
+  '.Z0LcW',
+  '.BNeawe.iBp4i.AP7Wnd',
+];
+
+// Best-effort Perplexity answer-container selectors, most-specific first.
+const PERPLEXITY_ANSWER_SELECTORS = [
+  '[data-testid="answer-content"]',
+  'main [class*="answer"]',
+  'main article',
+  'main [class*="prose"]',
+];
+
+function firstNonEmptyTextMatch(selectors: string[]): { text: string; selector: string } | null {
+  for (const sel of selectors) {
+    try {
+      const el = document.querySelector<HTMLElement>(sel);
+      const text = el?.innerText?.trim();
+      if (text && text.length >= 20) return { text, selector: sel };
+    } catch {
+      /* invalid selector or DOM access error -- try the next candidate */
+    }
+  }
+  return null;
+}
+
+function extractBrowserAuthorityAnswer(authority: BrowserAuthorityName): BrowserAuthorityExtractionResultMessage {
+  const selectors = authority === 'user_perplexity' ? PERPLEXITY_ANSWER_SELECTORS : GOOGLE_ANSWER_SELECTORS;
+  const match = firstNonEmptyTextMatch(selectors);
+
+  if (!match) {
+    return { success: false, authority, snippet: '', sourceUrl: null, selectorUsed: null };
+  }
+
+  return {
+    success: true,
+    authority,
+    snippet: match.text.replace(/\s+/g, ' ').trim(),
+    sourceUrl: window.location.href,
+    selectorUsed: match.selector,
+  };
+}
+
+ipcRenderer.on('browser-authority-run-query', (_event, payload: BrowserAuthorityRunQueryRequest) => {
+  logInjectionEvent('browser_authority_run_query_received', {
+    authority: payload.authority,
+    url: window.location.href,
+  });
+
+  const result = extractBrowserAuthorityAnswer(payload.authority);
+
+  logInjectionEvent('browser_authority_extraction_result', {
+    success: result.success,
+    selector_used: result.selectorUsed,
+    url: window.location.href,
+  });
+
+  ipcRenderer.sendToHost('browser-authority-extraction-result', result);
+});
+
 // ─── Watch for navigation (Google Search AI may be SPA) ──────────────────────
 
 function onDOMReady(): void {

@@ -266,7 +266,13 @@ export async function queryTopicalEbletsFromPeers(
   return merged;
 }
 
-async function insertRelayRoute(
+// BP137 Yoke v2b Stage E: exported (was module-private) so star_chamber_dispatch.ts can reuse
+// the SAME proven relay_routes insert primitive for an optional remote-peer delegation leg,
+// instead of duplicating the wire-format/schema knowledge in a second file. Exporting a
+// previously-private function changes zero behavior for every existing caller in this module
+// (dispatchQuestionToWanPeers, below) -- it is purely an added export declaration plus one new
+// trailing optional parameter (default false, see isStarChamber below).
+export async function insertRelayRoute(
   cfg: SupabaseConfig,
   targetPeerId: string,
   question: MmluProQuestion,
@@ -282,6 +288,21 @@ async function insertRelayRoute(
   // payload so its responder's applySubstrateToggle() call uses the pooled index instead of
   // (or as well as) its own local-only query. undefined/empty preserves prior behavior.
   pooledEblets?: PooledSubstrateHit[],
+  // BP137 Yoke v2b (Research Arm): explicit opt-in, defaults false. Ignored by the responder
+  // unless plowEnabled is also true (see index.ts's startRelayRoutePoll + plow_mc_answerer.ts's
+  // researchArmMode doc).
+  researchArmMode: boolean = false,
+  // BP137 Yoke v2b Stage E: explicit opt-in, DEFAULT FALSE. When true, sets `is_star_chamber:
+  // true` in payload_json -- the field index.ts's startRelayRoutePoll already reads
+  // (`payload.is_star_chamber === true`, ~line 6188) and echoes back verbatim in its reply
+  // (~line 6690), but that NO caller before this Yoke ever set true (confirmed by grep: this
+  // was the only call site in the whole repo that constructs payload_json for a relay_routes
+  // insert, and it never included this key at all -- not merely `false`). When false/absent
+  // (every pre-Stage-E call, including dispatchQuestionToWanPeers below, which never passes
+  // this argument), the spread below contributes NOTHING to payload_json -- the emitted JSON
+  // body is byte-identical to pre-Stage-E behavior, not merely "is_star_chamber: false" where
+  // the key was previously absent entirely.
+  isStarChamber: boolean = false,
 ): Promise<string | null> {
   const prompt = buildMcPrompt(question);
   // hex_frame is a NOT NULL legacy column (verified via a live dry-run insert 2026-07-23);
@@ -321,6 +342,11 @@ async function insertRelayRoute(
       // responder's branch order -- plowEnabled takes priority when both are somehow set.
       plow_enabled: plowEnabled,
       plow_andon_enabled: plowAndonEnabled,
+      // BP137 Yoke v2b (Research Arm): explicit opt-in, bundles Stage A.0 (relevance gate
+      // upstream of the MC voters) + Stage A (answer-type classifier + compute sidecar) behind
+      // one wire flag -- see plow_mc_answerer.ts's CanonicalPlowMcConfig for the underlying
+      // independently-gateable sub-flags this expands into on the responder side.
+      research_arm_mode: researchArmMode,
       // BP135 Phase 3 (Layer B: federated substrate): pooled topical eblets from ALL live
       // peers (see queryTopicalEbletsFromPeers()), threaded so THIS peer's responder can
       // inject the pooled index via applySubstrateToggle()'s pooledHits branch instead of
@@ -328,6 +354,10 @@ async function insertRelayRoute(
       // an old responder build sees no new field at all -- matches this file's existing
       // convention of only adding opt-in fields the responder explicitly checks for.
       ...(pooledEblets && pooledEblets.length > 0 ? { pooled_substrate_eblets: pooledEblets } : {}),
+      // BP137 Yoke v2b Stage E: see isStarChamber param doc above -- omitted entirely (not
+      // `false`) unless a Stage E caller explicitly opts in, preserving byte-identical
+      // payload_json for every existing caller.
+      ...(isStarChamber ? { is_star_chamber: true } : {}),
     },
     status: 'pending',
     session_id: sessionId,
@@ -358,7 +388,9 @@ async function insertRelayRoute(
   }
 }
 
-async function pollForReply(
+// BP137 Yoke v2b Stage E: exported (was module-private), same rationale as insertRelayRoute
+// above -- zero behavior change for existing callers, purely an added export declaration.
+export async function pollForReply(
   cfg: SupabaseConfig,
   routeId: string,
   timeoutMs: number,
@@ -515,6 +547,8 @@ export async function dispatchQuestionToWanPeers(
   // BEFORE the answer round, then threads the pooled index into every peer's own question
   // payload (see insertRelayRoute's pooledEblets param above).
   federatedSubstrateEnabled: boolean = false,
+  // BP137 Yoke v2b (Research Arm): explicit opt-in, defaults false. See insertRelayRoute above.
+  researchArmMode: boolean = false,
 ): Promise<WanQuestionOutcome> {
   const correctLetter = question.answer.toUpperCase();
   const cfg = resolveSupabaseConfig();
@@ -542,6 +576,7 @@ export async function dispatchQuestionToWanPeers(
   const peerAnswers = await Promise.all(peers.map(async (peer): Promise<WanPeerAnswer> => {
     const routeId = await insertRelayRoute(
       cfg, peer.peerId, question, sessionId, ttlSeconds, substrateEnabled, plowEnabled, plowAndonEnabled, pooledEblets,
+      researchArmMode,
     );
     if (!routeId) {
       return {

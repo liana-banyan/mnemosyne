@@ -143,6 +143,11 @@ export interface OneClickRunResult {
    *  answering mechanism for this run (false/absent means single-shot, the pre-Task-2
    *  default). Surfaced so a result can never be misread as plow-answered when it was not. */
   plowEnabled?: boolean;
+  /** BP137 Yoke v2b (Research Arm): whether Stage A.0 (relevance gate moved upstream of the MC
+   *  voters) + Stage A (answer-type classifier + compute sidecar) were requested for this run.
+   *  Ignored unless plowEnabled is also true (see plow_mc_answerer.ts's researchArmMode doc).
+   *  false/absent means the pre-Stage-A/A.0 plow behavior, byte-for-byte unchanged. */
+  researchArmMode?: boolean;
   /** BP133 Yoke #24 Task 3: true when the run was stopped early via requestCancel() rather
    *  than completing all questions -- Truth-Always: a partial run must say so, never be
    *  presented as if it ran to completion. */
@@ -464,12 +469,13 @@ async function runLocalMode(
   ollamaBaseUrl: string,
   model: string,
   substrateEnabled: boolean,
+  progressChannel: string,
 ): Promise<OneClickQuestionOutcome[]> {
   const outcomes: OneClickQuestionOutcome[] = [];
   for (let i = 0; i < questions.length; i++) {
     if (cancelRequested) break;
     const q = questions[i];
-    broadcast('mesh-test:progress', { type: 'question-start', index: i, total: questions.length, question: q.question, category: q.category });
+    broadcast(progressChannel, { type: 'question-start', index: i, total: questions.length, question: q.question, category: q.category });
     const { rawAnswer, latencyMs, error, substrateContextInjected } = await dispatchQuestionLocally(q, ollamaBaseUrl, model, substrateEnabled);
     const parsedLetter = error ? null : parseLetterFromModelText(rawAnswer, q.options.length);
     const isCorrect = parsedLetter !== null && parsedLetter === q.answer.toUpperCase();
@@ -486,7 +492,7 @@ async function runLocalMode(
       substrateContextInjected,
     };
     outcomes.push(outcome);
-    broadcast('mesh-test:progress', { type: 'question-complete', index: i, total: questions.length, outcome });
+    broadcast(progressChannel, { type: 'question-complete', index: i, total: questions.length, outcome });
   }
   return outcomes;
 }
@@ -541,9 +547,13 @@ async function runWanMode(
   substrateEnabled: boolean,
   plowEnabled: boolean,
   plowAndonEnabled: boolean,
-  corpusManifestSha256?: string,
+  corpusManifestSha256: string | undefined,
   // BP135 Phase 3 (Layer B: federated substrate): explicit opt-in, defaults false.
-  federatedSubstrateEnabled: boolean = false,
+  federatedSubstrateEnabled: boolean,
+  progressChannel: string,
+  // BP137 Yoke v2b (Research Arm): explicit opt-in, defaults false, ignored unless plowEnabled
+  // is also true. See runOneClickMmluProTest's config JSDoc.
+  researchArmMode: boolean = false,
 ): Promise<{ outcomes: OneClickQuestionOutcome[]; consensusOutcomes: ConsensusQuestionOutcome[] }> {
   const outcomes: OneClickQuestionOutcome[] = [];
   const consensusOutcomes: ConsensusQuestionOutcome[] = [];
@@ -553,12 +563,13 @@ async function runWanMode(
   for (let i = 0; i < questions.length; i++) {
     if (cancelRequested) break;
     const q = questions[i];
-    broadcast('mesh-test:progress', {
+    broadcast(progressChannel, {
       type: 'question-start', index: unitIndex, total: totalUnits, question: q.question, category: q.category,
     });
 
     const wanOutcome = await dispatchQuestionToWanPeers(
       q, peers, sessionId, perQuestionTimeoutMs, substrateEnabled, plowEnabled, plowAndonEnabled, federatedSubstrateEnabled,
+      researchArmMode,
     );
 
     // BP135 Phase 2 (Layer A: consensus): one mesh-as-one-unit outcome per question, scored
@@ -597,7 +608,7 @@ async function runWanMode(
       };
       outcomes.push(outcome);
       unitIndex++;
-      broadcast('mesh-test:progress', { type: 'question-complete', index: unitIndex - 1, total: totalUnits, outcome });
+      broadcast(progressChannel, { type: 'question-complete', index: unitIndex - 1, total: totalUnits, outcome });
 
       // BP133 Yoke #24 Task 2.3: persist a scored receipt for every plow-answered outcome.
       // Deliberately scoped to answeredBy === 'plow' rather than every WAN outcome -- this is
@@ -686,6 +697,14 @@ export async function runOneClickMmluProTest(config: {
   /** BP133 Yoke #24 Task 2: Condition C (Andon retry) vs Condition B (single pass) when
    * plowEnabled is true. Ignored when plowEnabled is false. Defaults to false. */
   plowAndonEnabled?: boolean;
+  /** BP137 Yoke v2b (Research Arm): explicit opt-in, ignored unless plowEnabled is also true.
+   * Threads researchArmMode:true into the plow's config on the RESPONDING peer (see
+   * wan_dispatch.ts's payload_json.research_arm_mode and index.ts's startRelayRoutePoll),
+   * enabling BOTH Stage A.0 (relevance gate moved upstream of the MC voters, fixes the
+   * Bush/Biden off-topic-citation failure mode) and Stage A (answer-type classifier + real
+   * compute sidecar for computable questions) together. Defaults to false -- the pre-Stage-A/A.0
+   * plow behavior is byte-for-byte unchanged unless a caller explicitly opts in. */
+  researchArmMode?: boolean;
   /** BP135 Phase 3 (Layer B: federated substrate). Ignored (has no effect, no extra
    * round-trips) unless substrateEnabled is also true AND dispatchMode resolves to wan_mesh --
    * local_ollama mode has no other peers to pool from. When true, pools topical eblets from
@@ -700,12 +719,22 @@ export async function runOneClickMmluProTest(config: {
    * the guaranteed-complete bundled corpus (never the dev-machine-only full live corpus,
    * which still has the law gap) so the preset behaves identically on every machine. */
   exactPerCategory?: number;
+}, opts?: {
+  /** BP138 Yoke HOT/COLD Lift: overrides the broadcast channel used for this run's
+   *  'mesh-test:progress'-shaped events. Defaults to 'mesh-test:progress' (unchanged
+   *  behavior for every existing caller). runHotColdLiftTest() below passes
+   *  'mesh-test:hotcold-progress' for BOTH its inner arms so the standalone single-run
+   *  panel's own progress listener (bound only to 'mesh-test:progress') is never disturbed
+   *  by a lift run's two nested runs -- Truth-Always: a lift run must not silently mutate
+   *  the single-run UI's last-result state mid-flight. */
+  progressChannel?: string;
 }): Promise<OneClickRunResult> {
   if (running) {
     throw new Error('A one-click test run is already in progress');
   }
   running = true;
   cancelRequested = false;
+  const progressChannel = opts?.progressChannel ?? 'mesh-test:progress';
   const startedAt = new Date().toISOString();
   const ollamaBaseUrl = config.ollamaBaseUrl ?? 'http://127.0.0.1:11434';
   // BP133 Yoke #24 Task 1 fix: the fleet (and every other model reference in this codebase,
@@ -721,6 +750,7 @@ export async function runOneClickMmluProTest(config: {
   const substrateEnabled = config.substrateEnabled ?? false;
   const plowEnabled = config.plowEnabled ?? false;
   const plowAndonEnabled = config.plowAndonEnabled ?? false;
+  const researchArmMode = config.researchArmMode ?? false;
   const federatedSubstrateEnabled = config.federatedSubstrateEnabled ?? false;
   const exactPerCategory = config.exactPerCategory && config.exactPerCategory > 0 ? config.exactPerCategory : undefined;
 
@@ -749,7 +779,7 @@ export async function runOneClickMmluProTest(config: {
 
   if (requestedMode !== 'local_ollama') {
     livePeers = await discoverLiveWanPeers();
-    broadcast('mesh-test:progress', { type: 'peers-discovered', count: livePeers.length });
+    broadcast(progressChannel, { type: 'peers-discovered', count: livePeers.length });
     if (livePeers.length > 0) {
       dispatchMode = 'wan_mesh';
     } else if (requestedMode === 'wan_mesh') {
@@ -773,7 +803,7 @@ export async function runOneClickMmluProTest(config: {
         substrateEnabled,
         plowEnabled,
       };
-      broadcast('mesh-test:progress', { type: 'complete', result: emptyResult });
+      broadcast(progressChannel, { type: 'complete', result: emptyResult });
       return emptyResult;
     }
     // requestedMode === 'auto' and 0 peers found: fall through to local_ollama silently,
@@ -788,7 +818,7 @@ export async function runOneClickMmluProTest(config: {
   if (dispatchMode === 'wan_mesh') {
     sessionId = generateSessionId();
     questions = downsampleQuestions(allQuestions, config.wanMaxQuestions ?? 20);
-    broadcast('mesh-test:progress', { type: 'start', total: questions.length * livePeers.length });
+    broadcast(progressChannel, { type: 'start', total: questions.length * livePeers.length });
     // BP133 Yoke #24 Task 2 requirement 4: raise the per-question timeout for plow mode. The
     // pre-existing 90s default was tuned for single-shot; the plow's 9-specialist staggered
     // swarm alone takes >=8s (FireGuard stagger) before any external API latency, plus
@@ -799,12 +829,13 @@ export async function runOneClickMmluProTest(config: {
     const wanResult = await runWanMode(
       questions, livePeers, sessionId, config.wanPerQuestionTimeoutMs ?? defaultTimeoutMs,
       substrateEnabled, plowEnabled, plowAndonEnabled, corpusManifest?.sha256, federatedSubstrateEnabled,
+      progressChannel, researchArmMode,
     );
     outcomes = wanResult.outcomes;
     consensusOutcomes = wanResult.consensusOutcomes;
   } else {
-    broadcast('mesh-test:progress', { type: 'start', total: questions.length });
-    outcomes = await runLocalMode(questions, ollamaBaseUrl, model, substrateEnabled);
+    broadcast(progressChannel, { type: 'start', total: questions.length });
+    outcomes = await runLocalMode(questions, ollamaBaseUrl, model, substrateEnabled, progressChannel);
   }
 
   const scored = outcomes.filter((o) => o.parsedLetter !== null).length;
@@ -845,6 +876,7 @@ export async function runOneClickMmluProTest(config: {
     livePeersFound: dispatchMode === 'wan_mesh' ? livePeers.length : undefined,
     substrateEnabled,
     plowEnabled: dispatchMode === 'wan_mesh' ? plowEnabled : undefined,
+    researchArmMode: dispatchMode === 'wan_mesh' ? researchArmMode : undefined,
     cancelled: cancelRequested,
     exactPerCategory,
     corpusManifestSha256: corpusManifest?.sha256,
@@ -853,7 +885,221 @@ export async function runOneClickMmluProTest(config: {
     federatedSubstrateEnabled: dispatchMode === 'wan_mesh' ? federatedSubstrateEnabled : undefined,
   };
 
-  broadcast('mesh-test:progress', { type: 'complete', result });
+  broadcast(progressChannel, { type: 'complete', result });
   running = false;
   return result;
+}
+
+// ─── BP138 Yoke: one-click HOT/COLD substrate lift ─────────────────────────────
+//
+// Today the panel reports ONE accuracy % per run -- to see substrate lift a human has to
+// run twice (once with substrate/plow off, once on) and subtract by hand. This adds a
+// single action that runs the SAME question set TWICE back to back, reusing this file's
+// EXISTING honest, sealed-key scoring path (OneClickRunResult.scored/correct/accuracy,
+// computed the identical way for every outcome regardless of mode -- see isCorrect
+// computation in runLocalMode above and dispatchQuestionToWanPeers/wan_dispatch.ts for the
+// WAN equivalent) rather than inventing a second scorer.
+//
+// Honesty design (R-MECHANISM-VERIFY): the ONLY thing that differs between the two calls
+// to runOneClickMmluProTest below is substrateEnabled/plowEnabled/plowAndonEnabled/
+// federatedSubstrateEnabled. dispatchMode (mode), maxTotalQuestions, exactPerCategory,
+// questionsPerDomain, and wanMaxQuestions are held IDENTICAL across both arms, which
+// (given loadQuestions/sampleExactPerCategory/downsampleQuestions above are all pure/
+// deterministic -- evenlySpacedIndices has no randomness, confirmed by reading it) means
+// both arms see EXACTLY the same question set. Varying dispatch mode between arms as well
+// (e.g. forcing COLD to local_ollama while HOT runs wan_mesh) was considered and rejected:
+// it would let a peer-fleet/model difference between arms masquerade as a substrate/plow
+// effect, and it would violate the panel's own pre-existing Condition A/B/C convention
+// (see the plowEnabled checkbox comment above: "plow OFF + substrate OFF = single-shot
+// cold" -- Condition A is already defined codebase-wide as same-mode, substrate+plow off).
+
+/** Judgment call (no pre-existing minimum-n-for-significance convention found anywhere in
+ *  this codebase -- searched mesh_test/, plow/, wrasse_quartermaster.ts, etc.; the closest
+ *  precedent, wrasse_quartermaster.ts's `min_sample_count` default of 3, gates a routing
+ *  trust decision, not a reported accuracy delta, so it isn't reused here). This app's own
+ *  UI already treats its smallest question-count preset (3) as an explicit "one-click smoke
+ *  test" (see MAX_TOTAL_QUESTIONS comment / QUESTION_COUNT_PRESETS in the panel) -- i.e. not
+ *  meant to produce a trustworthy percentage -- and treats 10 as the next real tier. 10 is
+ *  used here as the floor below which a HOT/COLD delta is flagged as noisy rather than
+ *  hidden or silently trusted (Truth-Always: still shown, just labeled). */
+export const HOT_COLD_MIN_MEANINGFUL_N = 10;
+
+export interface HotColdLiftResult {
+  startedAt: string;
+  completedAt: string;
+  /** Full result of the COLD (baseline) arm -- substrate/plow forced off, same dispatch
+   *  mode/question sampling as the HOT arm. */
+  cold: OneClickRunResult;
+  /** Full result of the HOT arm -- exactly the config the caller (the Founder's current
+   *  UI toggle state) requested, unmodified. */
+  hot: OneClickRunResult;
+  /** Human-readable exact config label for each arm, built from the ACTUAL resolved
+   *  dispatchMode/substrate/plow/federated fields on that arm's own result -- never
+   *  invented/generic strings. */
+  coldLabel: string;
+  hotLabel: string;
+  coldAccuracy: number | null;
+  hotAccuracy: number | null;
+  coldScored: number;
+  hotScored: number;
+  coldCorrect: number;
+  hotCorrect: number;
+  /** min(coldScored, hotScored) -- the shared, fair sample size the LIFT headline is
+   *  computed over (comparing two accuracies computed over different denominators would
+   *  itself be a subtle dishonesty; using the smaller of the two avoids that). */
+  n: number;
+  /** (hotAccuracy - coldAccuracy) * 100, in percentage points. Null only when either arm
+   *  scored zero questions (accuracy itself is null). */
+  liftPp: number | null;
+  /** True when n < HOT_COLD_MIN_MEANINGFUL_N -- the UI must say so rather than silently
+   *  showing a noisy delta as if it were conclusive. */
+  belowMinN: boolean;
+  minMeaningfulN: number;
+  /** True when the run was stopped early via requestOneClickCancel() during either arm. */
+  cancelled: boolean;
+}
+
+export type HotColdLiftProgressEvent =
+  | { type: 'arm-start'; arm: 'cold' | 'hot'; label: string }
+  | { type: 'arm-complete'; arm: 'cold' | 'hot'; result: OneClickRunResult }
+  | { type: 'complete'; result: HotColdLiftResult }
+  | { type: 'cancelled'; result: HotColdLiftResult };
+
+/** Builds the same style of human-readable config label the rest of this file already uses
+ *  for datasetLabel's substrateSuffix/conditionSuffix (see runOneClickMmluProTest above) --
+ *  a small formatting helper, not a second copy of any scoring/correctness logic. */
+function describeRunArmConfig(r: {
+  dispatchMode: 'local_ollama' | 'wan_mesh' | 'auto';
+  substrateEnabled: boolean;
+  plowEnabled?: boolean;
+  plowAndonEnabled?: boolean;
+  federatedSubstrateEnabled?: boolean;
+  livePeersFound?: number;
+}): string {
+  const dispatchPart = r.dispatchMode === 'wan_mesh'
+    ? `WAN mesh (${r.livePeersFound ?? '?'} live peer${r.livePeersFound === 1 ? '' : 's'})`
+    : r.dispatchMode === 'auto'
+      ? 'auto (WAN if live, else local-Ollama)'
+      : 'local-Ollama';
+  const substratePart = r.substrateEnabled ? 'substrate ON' : 'no substrate';
+  const plowPart = r.dispatchMode === 'local_ollama'
+    ? 'no plow'
+    : !r.plowEnabled
+      ? 'no plow (single-shot)'
+      : r.plowAndonEnabled ? '12-blade plow + Andon loop' : '12-blade plow, single pass';
+  const federatedPart = r.dispatchMode !== 'local_ollama' && r.federatedSubstrateEnabled ? ', federated substrate ON' : '';
+  return `${dispatchPart}, ${substratePart}, ${plowPart}${federatedPart}`;
+}
+
+let hotColdLiftRunning = false;
+
+export function isHotColdLiftActive(): boolean {
+  return hotColdLiftRunning;
+}
+
+/** BP138 Yoke: runs the exact same question set through runOneClickMmluProTest TWICE --
+ *  once with substrate/plow forced off (COLD baseline), once with the caller's requested
+ *  config unchanged (HOT, "the exact config being proven") -- and reports both accuracies
+ *  plus the delta. `config` here is exactly what a single `runOneClickMmluProTest` call
+ *  would receive; it is treated as the HOT arm's config verbatim. */
+export async function runHotColdLiftTest(
+  config: Parameters<typeof runOneClickMmluProTest>[0],
+): Promise<HotColdLiftResult> {
+  if (running || hotColdLiftRunning) {
+    throw new Error('A one-click test run is already in progress');
+  }
+  hotColdLiftRunning = true;
+  const startedAt = new Date().toISOString();
+  const requestedMode = config.mode ?? 'auto';
+  try {
+    // COLD arm -- Condition A per this panel's own pre-existing convention (see
+    // plowEnabled checkbox comment in OneClickMeshTestPanel.tsx: "plow OFF + substrate
+    // OFF = single-shot cold"). Same mode/question-count/corpus config as HOT below.
+    const coldConfig: typeof config = {
+      ...config,
+      substrateEnabled: false,
+      plowEnabled: false,
+      plowAndonEnabled: false,
+      researchArmMode: false,
+      federatedSubstrateEnabled: false,
+    };
+    broadcast('mesh-test:hotcold-progress', {
+      type: 'arm-start', arm: 'cold',
+      label: describeRunArmConfig({ dispatchMode: requestedMode, substrateEnabled: false }),
+    } satisfies HotColdLiftProgressEvent);
+    const cold = await runOneClickMmluProTest(coldConfig, { progressChannel: 'mesh-test:hotcold-progress' });
+    const coldLabel = describeRunArmConfig(cold);
+    broadcast('mesh-test:hotcold-progress', { type: 'arm-complete', arm: 'cold', result: cold } satisfies HotColdLiftProgressEvent);
+
+    if (cold.cancelled) {
+      // Truth-Always: a stop mid-COLD must not silently continue into a HOT arm the
+      // Founder never asked to run after hitting stop.
+      const partial: HotColdLiftResult = {
+        startedAt,
+        completedAt: new Date().toISOString(),
+        cold,
+        hot: cold,
+        coldLabel,
+        hotLabel: 'not run (cancelled during COLD arm)',
+        coldAccuracy: cold.accuracy,
+        hotAccuracy: null,
+        coldScored: cold.scored,
+        hotScored: 0,
+        coldCorrect: cold.correct,
+        hotCorrect: 0,
+        n: 0,
+        liftPp: null,
+        belowMinN: true,
+        minMeaningfulN: HOT_COLD_MIN_MEANINGFUL_N,
+        cancelled: true,
+      };
+      broadcast('mesh-test:hotcold-progress', { type: 'cancelled', result: partial } satisfies HotColdLiftProgressEvent);
+      return partial;
+    }
+
+    // HOT arm -- the exact config the caller (the Founder's current UI toggle state)
+    // requested, passed through completely unmodified.
+    broadcast('mesh-test:hotcold-progress', {
+      type: 'arm-start', arm: 'hot',
+      label: describeRunArmConfig({
+        dispatchMode: requestedMode,
+        substrateEnabled: config.substrateEnabled ?? false,
+        plowEnabled: config.plowEnabled,
+        plowAndonEnabled: config.plowAndonEnabled,
+        federatedSubstrateEnabled: config.federatedSubstrateEnabled,
+      }),
+    } satisfies HotColdLiftProgressEvent);
+    const hot = await runOneClickMmluProTest(config, { progressChannel: 'mesh-test:hotcold-progress' });
+    const hotLabel = describeRunArmConfig(hot);
+    broadcast('mesh-test:hotcold-progress', { type: 'arm-complete', arm: 'hot', result: hot } satisfies HotColdLiftProgressEvent);
+
+    const n = Math.min(cold.scored, hot.scored);
+    const liftPp = cold.accuracy !== null && hot.accuracy !== null
+      ? (hot.accuracy - cold.accuracy) * 100
+      : null;
+
+    const result: HotColdLiftResult = {
+      startedAt,
+      completedAt: new Date().toISOString(),
+      cold,
+      hot,
+      coldLabel,
+      hotLabel,
+      coldAccuracy: cold.accuracy,
+      hotAccuracy: hot.accuracy,
+      coldScored: cold.scored,
+      hotScored: hot.scored,
+      coldCorrect: cold.correct,
+      hotCorrect: hot.correct,
+      n,
+      liftPp,
+      belowMinN: n < HOT_COLD_MIN_MEANINGFUL_N,
+      minMeaningfulN: HOT_COLD_MIN_MEANINGFUL_N,
+      cancelled: hot.cancelled === true,
+    };
+    broadcast('mesh-test:hotcold-progress', { type: 'complete', result } satisfies HotColdLiftProgressEvent);
+    return result;
+  } finally {
+    hotColdLiftRunning = false;
+  }
 }
