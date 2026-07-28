@@ -1,0 +1,117 @@
+// nexus_authority_settings_store.ts -- BP137 Yoke v2b Stage C ("Chrome-MCP Nexus Authority"),
+// item 2's persistence layer.
+//
+// WHY THIS FILE EXISTS / WHY THIS MECHANISM: per this Yoke's investigation step 1 (search
+// across src/main/** and src/renderer/** for electron-store / userData / settings-IPC /
+// localStorage-via-preload patterns), this repo does NOT have a single unified settings store.
+// Instead it has several coexisting mechanisms depending on what's being persisted:
+//   - Secrets (e.g. src/main/user_anthropic_key.ts): Electron `safeStorage`-encrypted files
+//     under app.getPath('userData'), main-process only -- overkill and wrong tool for a
+//     non-secret UI preference like "which authority answers the lookup arm".
+//   - Structured member-scoped data (e.g. src/main/pantheon/folder_prefs.ts): hand-rolled JSON
+//     read/write against a fixed path under the main process, again main-process only.
+//   - Plain renderer-local UI preferences (e.g. SettingsTab.tsx's own theme/uiMode toggles,
+//     MnemosyneTabView.tsx's LS_DEVELOPER_MODE / LS_ACTIVE_TAB / LS_FOR_TECHIES flags,
+//     LeanShell.tsx's advanced-mode sync comment, OneClickMeshTestPanel.tsx's LS_LAST_RESULT):
+//     plain `localStorage.getItem`/`setItem` with a module-scoped `LS_<NAME>` key constant and
+//     JSON.stringify/parse for structured values. This is by far the most common pattern in
+//     src/renderer -- confirmed by direct grep, dozens of call sites across at least 8 files.
+//
+// The Nexus per-arm authority picker is exactly this third category: a renderer-local UI
+// preference, not a secret, not member-scoped structured data that needs main-process
+// mediation. Per this Yoke's own instructions ("if you found an existing settings-persistence
+// mechanism... use it, following its existing conventions"), this file follows the
+// already-established localStorage + LS_<NAME> convention exactly, rather than inventing a new
+// main-process JSON-file primitive that would also require new IPC plumbing through
+// src/main/preload.ts (a file this Yoke was told to avoid touching -- see
+// src/main/plow/browser_authority_adapter.ts's header for the full accounting of why that
+// file is out of reach this pass).
+//
+// LIMITATION, REPORTED HONESTLY: because this store lives entirely in the renderer's
+// localStorage, main-process code (e.g. a future Stage-4 plow_mc_answerer.ts lookup_fact
+// branch) cannot read it directly -- crossing that boundary needs the same
+// preload.ts-mediated IPC channel this Yoke's browser-authority adapter already documents as
+// deferred. Persisting the picker's choice so it survives an app restart (this Yoke's actual
+// acceptance requirement) works today with zero further wiring; making a MAIN-PROCESS caller
+// aware of the user's choice is the still-open gap, tracked in the same place as the other
+// deferred cross-process legs.
+
+import {
+  DEFAULT_NEXUS_PER_ARM_AUTHORITY,
+  NEXUS_ARM_NAMES,
+  type NexusArmName,
+  type NexusAuthorityName,
+  type NexusPerArmAuthority,
+} from '../../shared/plow/browser_authority_types';
+
+const LS_NEXUS_AUTHORITY_MODE = 'mnemo_nexus_research_arm_mode';
+const LS_NEXUS_AUTHORITY_BROWSER = 'mnemo_nexus_research_arm_browser_authority';
+const LS_NEXUS_PER_ARM = 'mnemo_nexus_per_arm_authority';
+
+/** Everything the Settings UI needs to read/write in one shape. Mirrors the plain-boolean,
+ *  AND-gated convention documented in browser_authority_types.ts's
+ *  BrowserAuthorityAdapterConfig -- these two flags ARE that config's researchArmMode /
+ *  researchArmBrowserAuthority fields, just persisted renderer-side. */
+export interface NexusAuthoritySettingsSnapshot {
+  researchArmMode: boolean;
+  researchArmBrowserAuthority: boolean;
+  perArmAuthority: NexusPerArmAuthority;
+}
+
+function safeParsePerArmAuthority(raw: string | null): NexusPerArmAuthority {
+  if (!raw) return { ...DEFAULT_NEXUS_PER_ARM_AUTHORITY };
+  try {
+    const parsed = JSON.parse(raw) as Partial<Record<NexusArmName, NexusAuthorityName>>;
+    const result: NexusPerArmAuthority = { ...DEFAULT_NEXUS_PER_ARM_AUTHORITY };
+    for (const arm of NEXUS_ARM_NAMES) {
+      const value = parsed[arm];
+      if (value === 'local_free' || value === 'user_google' || value === 'user_perplexity' || value === 'paid_api') {
+        result[arm] = value;
+      }
+    }
+    return result;
+  } catch {
+    return { ...DEFAULT_NEXUS_PER_ARM_AUTHORITY };
+  }
+}
+
+/** Reads the full Nexus authority settings snapshot. Every field falls back to its
+ *  Bishop-prompt-mandated safe default (both flags false, every arm 'local_free') when
+ *  localStorage is empty, unavailable, or holds unparseable data -- never throws. */
+export function loadNexusAuthoritySettings(): NexusAuthoritySettingsSnapshot {
+  try {
+    return {
+      researchArmMode: localStorage.getItem(LS_NEXUS_AUTHORITY_MODE) === 'true',
+      researchArmBrowserAuthority: localStorage.getItem(LS_NEXUS_AUTHORITY_BROWSER) === 'true',
+      perArmAuthority: safeParsePerArmAuthority(localStorage.getItem(LS_NEXUS_PER_ARM)),
+    };
+  } catch {
+    return {
+      researchArmMode: false,
+      researchArmBrowserAuthority: false,
+      perArmAuthority: { ...DEFAULT_NEXUS_PER_ARM_AUTHORITY },
+    };
+  }
+}
+
+export function saveResearchArmMode(enabled: boolean): void {
+  try { localStorage.setItem(LS_NEXUS_AUTHORITY_MODE, String(enabled)); } catch { /* non-fatal */ }
+}
+
+export function saveResearchArmBrowserAuthority(enabled: boolean): void {
+  try { localStorage.setItem(LS_NEXUS_AUTHORITY_BROWSER, String(enabled)); } catch { /* non-fatal */ }
+}
+
+export function savePerArmAuthority(perArm: NexusPerArmAuthority): void {
+  try { localStorage.setItem(LS_NEXUS_PER_ARM, JSON.stringify(perArm)); } catch { /* non-fatal */ }
+}
+
+/** Convenience setter for a single arm, reading-modifying-writing the persisted whole. */
+export function setArmAuthority(arm: NexusArmName, authority: NexusAuthorityName): NexusPerArmAuthority {
+  const current = safeParsePerArmAuthority(
+    (() => { try { return localStorage.getItem(LS_NEXUS_PER_ARM); } catch { return null; } })(),
+  );
+  const next: NexusPerArmAuthority = { ...current, [arm]: authority };
+  savePerArmAuthority(next);
+  return next;
+}

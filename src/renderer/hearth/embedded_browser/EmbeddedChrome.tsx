@@ -10,12 +10,49 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import type { InjectionState } from './substrate_injection_content_script';
 import { DEFAULT_INJECTION_STATE } from './substrate_injection_content_script';
+// BP137 Yoke v2b Stage C ("Chrome-MCP Nexus Authority") -- ADDITIVE. See
+// browser_authority_content_script.ts's header for why the round trip these types describe
+// (ask a question in the user's own logged-in Google/Perplexity session inside THIS webview,
+// read the rendered answer back out, distill to fact+URL) is the missing piece the Bishop
+// audit flagged. Every new symbol imported here is only ever exercised when a consumer of
+// EmbeddedChrome passes the new `onBrowserAuthorityBridgeReady` prop below -- see that prop's
+// doc comment for the byte-unchanged guarantee when it is absent.
+import type {
+  BrowserAuthorityExtractionResultMessage,
+  BrowserAuthorityRunQueryRequest,
+} from './browser_authority_content_script';
+import { BROWSER_AUTHORITY_SETTLE_DELAY_MS, BROWSER_AUTHORITY_TIMEOUT_MS } from './browser_authority_content_script';
+import { buildBrowserAuthorityQueryUrl, type BrowserAuthorityName } from '../../../shared/plow/browser_authority_types';
 
 const GOOGLE_SEARCH_AI_URL = 'https://www.google.com';
+
+// BP137 Yoke v2b Stage C -- the real, working capability EmbeddedChrome hands to whoever
+// mounts it once the webview is ready, IF that caller asked for it via
+// `onBrowserAuthorityBridgeReady`. `runQuery` genuinely navigates this SAME live webview to a
+// Google/Perplexity search-results page for `question`, asks the page-side preload script
+// (webview_preload.ts's additive 'browser-authority-run-query' handler) to scrape an answer,
+// and resolves with whatever it reports -- `success: false` (never a fabricated snippet/URL)
+// when extraction genuinely failed or timed out. This is the actual browser-connection-point
+// mechanism the Bishop audit found ABSENT; see src/main/plow/browser_authority_adapter.ts's
+// header for the separate, still-genuinely-open gap (a main-process caller has no IPC path to
+// invoke this renderer-side method yet).
+export interface BrowserAuthorityRuntimeBridge {
+  runQuery(question: string, authority: BrowserAuthorityName): Promise<BrowserAuthorityExtractionResultMessage>;
+}
 
 interface EmbeddedChromeProps {
   substrateContext: string | null;
   onInjectionResult?: (result: { success: boolean; url: string }) => void;
+  /** BP137 Yoke v2b Stage C, OPTIONAL/ADDITIVE. Undefined (the behavior of every pre-BP137
+   *  caller, e.g. HearthConjunctionWindow.tsx as of this Yoke) means the entire block of new
+   *  code this prop gates -- the bridge-ready effect below, the one-time did-finish-load
+   *  listener inside runBrowserAuthorityQuery, the new 'browser-authority-extraction-result'
+   *  ipc-message branch -- is either never installed or, for the ipc-message branch (which is
+   *  always present in the listener so a stray message can't throw), a guaranteed no-op
+   *  because pendingBrowserAuthorityRef.current is never set without this prop's effect firing
+   *  first. Every existing render path, prop, and exported behavior of this component is
+   *  unchanged whether or not this prop is supplied. */
+  onBrowserAuthorityBridgeReady?: (bridge: BrowserAuthorityRuntimeBridge) => void;
 }
 
 // Extend HTMLElement for Electron <webview> custom element
@@ -32,13 +69,22 @@ interface WebviewElement extends HTMLElement {
   removeEventListener(event: string, handler: EventListenerOrEventListenerObject): void;
 }
 
-export function EmbeddedChrome({ substrateContext, onInjectionResult }: EmbeddedChromeProps) {
+export function EmbeddedChrome({ substrateContext, onInjectionResult, onBrowserAuthorityBridgeReady }: EmbeddedChromeProps) {
   const webviewRef = useRef<WebviewElement | null>(null);
   const [currentUrl, setCurrentUrl] = useState(GOOGLE_SEARCH_AI_URL);
   const [urlInput, setUrlInput] = useState(GOOGLE_SEARCH_AI_URL);
   const [loading, setLoading] = useState(false);
   const [injectionState, setInjectionState] = useState<InjectionState>(DEFAULT_INJECTION_STATE);
   const [webviewReady, setWebviewReady] = useState(false);
+  // BP137 Yoke v2b Stage C -- holds the resolver for whichever runBrowserAuthorityQuery() call
+  // is currently in flight (at most one at a time; a second call while one is pending rejects
+  // immediately rather than silently dropping the first). null whenever no call is pending --
+  // which is always true for every caller that never supplies onBrowserAuthorityBridgeReady.
+  const pendingBrowserAuthorityRef = useRef<{
+    resolve: (result: BrowserAuthorityExtractionResultMessage) => void;
+    timeoutId: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const bridgeAnnouncedRef = useRef(false);
 
   // Preload path: compiled by tsconfig.main.json → dist/main/hearth/embedded_browser/webview_preload.js
   // In dev, __dirname points to src/main; in prod, dist/main — both valid for preload resolution
@@ -88,6 +134,19 @@ export function EmbeddedChrome({ substrateContext, onInjectionResult }: Embedded
         }));
         onInjectionResult?.({ success: result.success, url: result.url });
       }
+      // BP137 Yoke v2b Stage C -- ADDITIVE. Reachable only after a runBrowserAuthorityQuery()
+      // call has set pendingBrowserAuthorityRef (which only happens when a consumer supplied
+      // onBrowserAuthorityBridgeReady and then invoked the bridge it received). If no call is
+      // pending, this branch is a guaranteed no-op -- a stray/duplicate message on this
+      // channel is simply dropped rather than throwing.
+      if (ev.channel === 'browser-authority-extraction-result') {
+        const pending = pendingBrowserAuthorityRef.current;
+        if (pending) {
+          clearTimeout(pending.timeoutId);
+          pendingBrowserAuthorityRef.current = null;
+          pending.resolve(ev.args[0] as BrowserAuthorityExtractionResultMessage);
+        }
+      }
     });
 
     wv.addEventListener('did-navigate', (e) => {
@@ -116,6 +175,70 @@ export function EmbeddedChrome({ substrateContext, onInjectionResult }: Embedded
     const wv = webviewRef.current;
     if (wv) attachWebviewListeners(wv);
   }, [attachWebviewListeners]);
+
+  // BP137 Yoke v2b Stage C -- ADDITIVE. The real, working implementation behind
+  // BrowserAuthorityRuntimeBridge.runQuery. Never called by anything in this file on its own;
+  // it only ever runs when a consumer of EmbeddedChrome received it via
+  // onBrowserAuthorityBridgeReady (below) and chose to invoke it. Resolves with
+  // `success: false` (never a fabricated snippet/URL) on a missing webview, an already-pending
+  // call, or a timeout -- see this function's three early-resolve branches.
+  const runBrowserAuthorityQuery = useCallback((
+    question: string,
+    authority: BrowserAuthorityName,
+  ): Promise<BrowserAuthorityExtractionResultMessage> => {
+    return new Promise((resolve) => {
+      const wv = webviewRef.current;
+      const honestFailure = (): BrowserAuthorityExtractionResultMessage => (
+        { success: false, authority, snippet: '', sourceUrl: null, selectorUsed: null }
+      );
+
+      if (!wv) {
+        resolve(honestFailure());
+        return;
+      }
+      if (pendingBrowserAuthorityRef.current) {
+        // A call is already in flight. Never clobber its resolver (that would silently drop
+        // the first caller's result) -- this second call simply reports its own honest
+        // failure instead of queueing (queueing multiple in-flight browser-authority calls
+        // against one shared webview is out of scope for this pass).
+        resolve(honestFailure());
+        return;
+      }
+
+      const timeoutId = setTimeout(() => {
+        pendingBrowserAuthorityRef.current = null;
+        resolve(honestFailure());
+      }, BROWSER_AUTHORITY_TIMEOUT_MS);
+
+      pendingBrowserAuthorityRef.current = { resolve, timeoutId };
+
+      const onFinishLoad = () => {
+        wv.removeEventListener('did-finish-load', onFinishLoad);
+        // Give the results page's own JS a moment to paint the answer box before asking
+        // webview_preload.ts's extractor to read it -- same "wait for page JS to settle"
+        // rationale already used by this component's substrate-context re-push above.
+        setTimeout(() => {
+          const request: BrowserAuthorityRunQueryRequest = { query: question, authority };
+          wv.send('browser-authority-run-query', request);
+        }, BROWSER_AUTHORITY_SETTLE_DELAY_MS);
+      };
+      wv.addEventListener('did-finish-load', onFinishLoad);
+
+      setLoading(true);
+      wv.loadURL(buildBrowserAuthorityQueryUrl({ question, authority }));
+    });
+  }, []);
+
+  // BP137 Yoke v2b Stage C -- ADDITIVE. Announces the real, working bridge exactly once, the
+  // first time the webview reports ready, and ONLY when a consumer opted in via
+  // onBrowserAuthorityBridgeReady. When that prop is undefined (every pre-BP137 caller), this
+  // effect's body never executes past its first guard clause -- no new state, no new webview
+  // traffic, nothing observably different from this effect not existing at all.
+  useEffect(() => {
+    if (!webviewReady || !onBrowserAuthorityBridgeReady || bridgeAnnouncedRef.current) return;
+    bridgeAnnouncedRef.current = true;
+    onBrowserAuthorityBridgeReady({ runQuery: runBrowserAuthorityQuery });
+  }, [webviewReady, onBrowserAuthorityBridgeReady, runBrowserAuthorityQuery]);
 
   function navigateTo(url: string): void {
     let target = url.trim();

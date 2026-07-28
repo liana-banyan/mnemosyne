@@ -13,6 +13,10 @@ import { SkuUpgradePanel } from './SkuUpgradePanel';
 import { useLifecycleStage } from '../hooks/useLifecycleStage';
 import { ShareMnemosyneC } from './ShareMnemosyneC';
 import { SubstrateAwakensJoinPanel } from './SubstrateAwakensJoinPanel';
+// BP137 Yoke v2b Stage C ("Chrome-MCP Nexus Authority") -- new, self-contained settings
+// section (own state, own persistence via nexus_authority_settings_store.ts). See that
+// component's file header for the full Bishop-audit rationale.
+import { NexusAuthoritySettings } from '../settings/NexusAuthoritySettings';
 
 interface SettingsTabProps {
   authState: AuthState | null;
@@ -1635,6 +1639,9 @@ export function SettingsTab({
 
       {/* M21: Card 1b: Automatic Updates — below App Version */}
       <AutomaticUpdatesSection />
+
+      {/* BP137 Yoke v2b Stage C: Nexus Authority per-arm picker — new section, self-contained */}
+      <NexusAuthoritySettings />
 
       {/* Card 2: AI Capability (SEG-R-2) */}
       <section
