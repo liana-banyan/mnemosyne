@@ -588,6 +588,12 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
         // Honest fallthrough -- not a lookup_fact question, flag_off (shouldn't happen given
         // the outer check, but defense in depth), or the browser authority returned nothing
         // usable. Proceed to the local-Ollama path below exactly as if this block never ran.
+        //
+        // BP139: `lookup.reason` now distinguishes these three cases (see preload.ts's
+        // nexusAskLookupFact contract). Diagnostic-only -- a console.debug breadcrumb, never a
+        // user-facing change -- so future diagnosis of a "no source" answer never has to guess
+        // again whether it was "not lookup_fact" vs "authority genuinely returned nothing".
+        console.debug('[LeanAskTab] nexusAskLookupFact not usable:', lookup?.reason ?? '(no reason field)');
       } catch (err) {
         console.warn('[LeanAskTab] nexusAskLookupFact threw (non-fatal, falling through to local Ollama):', err);
       }

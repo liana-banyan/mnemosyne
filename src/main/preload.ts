@@ -673,7 +673,11 @@ contextBridge.exposeInMainWorld('amplify', {
   nexusAskLookupFact: (question: string): Promise<{
     answerType: 'computable' | 'lookup_fact' | 'reasoning';
     usable: boolean;
-    reason?: 'flag_off';
+    // BP139: additive reason codes so a not-usable result can be told apart -- 'not_lookup_fact'
+    // (classifier said no), 'flag_off' (research-arm flags disabled), or 'authority_empty' (both
+    // authorities were tried and neither returned a usable fact). Diagnostic only; LeanAskTab.tsx's
+    // honest fallthrough-to-local behavior does not change based on which one it is.
+    reason?: 'flag_off' | 'not_lookup_fact' | 'authority_empty';
     fact?: string;
     sourceUrl?: string;
     authority?: 'user_google' | 'user_perplexity';
