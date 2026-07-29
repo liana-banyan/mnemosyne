@@ -20,6 +20,10 @@ import { SaltLevelSelector, type SaltLevel } from './SaltLevelSelector';
 // Constellation-broadcast feature -- a different concern; relabeling them for brain-swap would
 // be confusing given their existing copy).
 import { BrainSwapSelector } from './BrainSwapSelector';
+// BP138 Yoke 0.9.15 FIX 4: reuses the EXISTING Nexus authority settings store (renderer-side
+// localStorage, see that file's own header) to check researchArmMode/researchArmBrowserAuthority
+// -- do not reinvent this check, per the Yoke's explicit instruction.
+import { loadNexusAuthoritySettings } from '../settings/nexus_authority_settings_store';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -30,6 +34,11 @@ interface ChatMessage {
   role: Role;
   content: string;
   ts: number;
+  /** BP138 Yoke 0.9.15 FIX 4: present ONLY when this answer was served via the browser-authority
+   *  raw-fact path (nexusAskLookupFact) instead of the local-Ollama path -- absent (not a fake
+   *  value) on every message the local model answered, so old history entries and this new field
+   *  never collide. Renders a labeled, clickable source link in MsgBubble below. */
+  provenance?: { authority: 'user_google' | 'user_perplexity'; sourceUrl: string };
 }
 
 const LS_HISTORY_KEY = 'mnemo_ask_history';
@@ -121,6 +130,26 @@ function MsgBubble({ msg }: { msg: ChatMessage }) {
       }}>
         {msg.content}
         {msg.content === '' && <span style={{ opacity: 0.4 }}>▌</span>}
+        {/* BP138 Yoke 0.9.15 FIX 4: honest provenance -- only rendered when this specific answer
+            genuinely came from a browser-authority lookup (msg.provenance set at the call site
+            below, never fabricated). Real, clickable sourceUrl from a real page load. */}
+        {msg.provenance && (
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(148,163,184,0.15)', fontSize: 11 }}>
+            <span style={{ color: '#94a3b8' }}>
+              Source: {msg.provenance.authority === 'user_perplexity' ? 'Perplexity' : 'Google'} (your browser session) --{' '}
+            </span>
+            <a
+              href={msg.provenance.sourceUrl}
+              onClick={(e) => {
+                e.preventDefault();
+                window.amplify?.openExternal?.(msg.provenance!.sourceUrl);
+              }}
+              style={{ color: '#6ee7b7', textDecoration: 'underline', cursor: 'pointer', wordBreak: 'break-all' }}
+            >
+              {msg.provenance.sourceUrl}
+            </a>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -521,6 +550,47 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
           }
         }
       });
+    }
+
+    // BP138 Yoke 0.9.15 FIX 4: Research Arm + Browser Session raw-fact path -- FLAG-GUARDED,
+    // ADDITIVE, checked BEFORE the existing local-Ollama call below. When
+    // researchArmMode/researchArmBrowserAuthority are OFF (the default), loadNexusAuthoritySettings()
+    // returns both false, this whole `if` is skipped, and every line from here down runs
+    // EXACTLY as it did before this Yoke -- byte-unchanged for that (default) case, provable by
+    // this single guard.
+    //
+    // When both flags are ON: nexusAskLookupFact() (main process) classifies the question via
+    // the SAME classifyAnswerType() plow_mc_answerer.ts already uses; only a genuine
+    // 'lookup_fact' question ever attempts a browser-authority call. On a real hit, this answers
+    // directly from the user's own logged-in Google/Perplexity session with a visible,
+    // clickable source link (MsgBubble's provenance render above) -- the local-Ollama call below
+    // never fires for that question. On anything else (not lookup_fact, flags say on but the
+    // browser authority genuinely returned nothing usable, or the IPC call itself throws), this
+    // falls through HONESTLY to the exact same local-Ollama path below -- never a fabricated
+    // answer, never a fake source.
+    const nexusSettings = loadNexusAuthoritySettings();
+    if (nexusSettings.researchArmMode && nexusSettings.researchArmBrowserAuthority && window.amplify?.nexusAskLookupFact) {
+      try {
+        const lookup = await window.amplify.nexusAskLookupFact(text);
+        if (lookup?.usable && lookup.fact && lookup.sourceUrl && lookup.authority) {
+          const fact = lookup.fact;
+          const provenance = { authority: lookup.authority, sourceUrl: lookup.sourceUrl };
+          setMessages((prev) => {
+            const next = prev.map((m) => m.id === aiId ? { ...m, content: fact, provenance } : m);
+            saveHistory(next);
+            return next;
+          });
+          clearStream();
+          setThinking(false);
+          textareaRef.current?.focus();
+          return;
+        }
+        // Honest fallthrough -- not a lookup_fact question, flag_off (shouldn't happen given
+        // the outer check, but defense in depth), or the browser authority returned nothing
+        // usable. Proceed to the local-Ollama path below exactly as if this block never ran.
+      } catch (err) {
+        console.warn('[LeanAskTab] nexusAskLookupFact threw (non-fatal, falling through to local Ollama):', err);
+      }
     }
 
     // SEG-1 v0.1.57: route through ai-dispatch:query IPC.

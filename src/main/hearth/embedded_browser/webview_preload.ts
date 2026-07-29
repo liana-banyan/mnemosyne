@@ -13,8 +13,6 @@
 // third-party AI-backed search interface via embedded-browser content-script bridge
 
 import { ipcRenderer } from 'electron';
-import { appendFileSync, mkdirSync } from 'fs';
-import { resolve } from 'path';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -23,23 +21,35 @@ let injectionEnabled = true;
 let injectionCount = 0;
 
 // ─── Logging (injection receipts) ─────────────────────────────────────────────
-
-const LOG_DIR = resolve(
-  process.env.APPDATA || process.env.HOME || '.',
-  'AMPLIFY Computer',
-  'hearth_conjunction',
-);
-
+// BP138 Yoke 0.9.15 FIX 1 (CDP-verified root cause, prior session): this webview's guest
+// context runs under Electron's default sandbox (sandbox: true, Electron 31 default for a
+// <webview> guest page with no webPreferences override disabling it). Node built-ins (fs/path)
+// do NOT exist in a sandboxed context -- the former top-level `import { appendFileSync,
+// mkdirSync } from 'fs'` + `import { resolve } from 'path'` threw at MODULE LOAD time, before
+// ANY listener in this file (including 'browser-authority-run-query' below) ever attached.
+// That is the confirmed root cause of every browser-authority call resolving null.
+//
+// Bishop's explicit, final decision (BP138): the sandbox stays ON. This <webview> holds the
+// user's real logged-in Google/Perplexity session while loading untrusted remote third-party
+// pages -- un-sandboxing it would hand that remote content elevated privilege on that
+// credential surface. `webpreferences="sandbox=no"` must never be added here.
+//
+// Fix: relay every log line to the main process over `ipcRenderer.send` -- ipcRenderer itself
+// IS sandbox-safe (it is a contextBridge-adjacent Electron primitive, not a Node built-in);
+// only fs/path/etc are the problem. The actual mkdirSync/appendFileSync now happens in
+// index.ts's 'embedded-browser-injection-log' handler (main process, unsandboxed), writing to
+// the exact same path this file used to target directly. See that handler's own comment for
+// the main-process half of this relay.
 function logInjectionEvent(event: string, details: Record<string, unknown>): void {
   try {
-    mkdirSync(LOG_DIR, { recursive: true });
-    appendFileSync(
-      resolve(LOG_DIR, 'embedded_browser_injection.jsonl'),
-      JSON.stringify({ ts: new Date().toISOString(), event, ...details }) + '\n',
-      'utf8',
-    );
+    ipcRenderer.send('embedded-browser-injection-log', {
+      ts: new Date().toISOString(),
+      event,
+      ...details,
+    });
   } catch {
-    /* non-fatal */
+    /* non-fatal -- logging must never break the real feature (same fail-soft contract the old
+       in-webview try/catch already had) */
   }
 }
 

@@ -282,6 +282,16 @@ declare global {
         enabled: boolean;
         statuses: Array<{ authority: 'user_google' | 'user_perplexity'; signedIn: boolean; reason: string; checkedAt: string }>;
       }>;
+      // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point.
+      nexusAskLookupFact?: (question: string) => Promise<{
+        answerType: 'computable' | 'lookup_fact' | 'reasoning';
+        usable: boolean;
+        reason?: 'flag_off';
+        fact?: string;
+        sourceUrl?: string;
+        authority?: 'user_google' | 'user_perplexity';
+        confidence?: number;
+      }>;
       // On-Deck Master-of-Ceremonies (BP037)
       onDeckList?: () => Promise<{
         sequential: OnDeckItem[];

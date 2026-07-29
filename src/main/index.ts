@@ -30,7 +30,7 @@ import {
   Notification,
   clipboard,
 } from 'electron';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, watch as fsWatch, readdirSync, cpSync } from 'fs';
 import { spawn } from 'child_process';
 import { tmpdir, homedir } from 'os';
@@ -82,6 +82,15 @@ import {
   type BrowserAuthorityQuery,
   type BrowserAuthorityRawExtraction,
 } from '../shared/plow/browser_authority_types';
+// BP138 Yoke 0.9.15 FIX 4: Ask-tab wiring. classifyAnswerType is the SAME existing classifier
+// plow_mc_answerer.ts's Stage F2 already uses (answer_type_classifier.ts, pure/dependency-free
+// -- no import cycle risk). getRawBrowserAuthorityFact/BrowserAuthorityBridge are FIX 3's new
+// additive primitive (browser_authority_adapter.ts, which itself has zero imports of this file,
+// so this is a safe static import, not a dynamic one -- unlike plow_mc_answerer.ts's own
+// dynamic `await import('../index')`, which exists only because THIS file dynamically imports
+// plow_mc_answerer.ts elsewhere, a cycle that does not exist for browser_authority_adapter.ts).
+import { classifyAnswerType } from './plow/answer_type_classifier';
+import { getRawBrowserAuthorityFact, type BrowserAuthorityBridge } from './plow/browser_authority_adapter';
 // BP137 Yoke 0.9.12 Stage F1 ("persistent, always-on, logged-in browser authority") --
 // ADDITIVE. See nexus_authority_persistent_session.ts's own header for the full mechanism.
 // runBrowserAuthorityQueryFromMain() below is repointed to target ensureNexusAuthoritySession()'s
@@ -1549,7 +1558,17 @@ function openHearthConjunctionWindow(): void {
 // works with ZERO visible Browser tab / Hearth Conjunction window open. hearthConjunctionWindow
 // itself, and everything else in openHearthConjunctionWindow() above, is completely untouched.
 const BROWSER_AUTHORITY_MAIN_TIMEOUT_MS = 20_000;
-const BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS = 1_200;
+// BP138 Yoke 0.9.15 FIX 2: raised from 1200ms -- live CDP verification (prior session) showed
+// Google's/Perplexity's answer DOM can still be populating client-side JS at 1200ms post-load
+// on a real network, producing a spurious selector-miss. 2500ms is cheap insurance relative to
+// the 20s overall timeout above, and is paired with ONE retry-scrape (BROWSER_AUTHORITY_RETRY_
+// DELAY_MS below) rather than a single-shot extraction attempt.
+const BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS = 2_500;
+// BP138 Yoke 0.9.15 FIX 2: additive retry-scrape wait. When the first extraction attempt
+// reports success:false (selector miss / page not fully settled), the script below re-sends
+// 'browser-authority-run-query' to the SAME already-loaded page once, after this extra wait,
+// before giving up -- still well inside BROWSER_AUTHORITY_MAIN_TIMEOUT_MS's 20s budget.
+const BROWSER_AUTHORITY_RETRY_DELAY_MS = 1_500;
 let browserAuthorityMainCallInFlight = false;
 
 export async function runBrowserAuthorityQueryFromMain(
@@ -1588,6 +1607,7 @@ export async function runBrowserAuthorityQueryFromMain(
           var wv = document.querySelector('webview');
           if (!wv) { resolve(null); return; }
           var settled = false;
+          var retried = false;
           var timeoutId = setTimeout(function() {
             if (settled) return;
             settled = true;
@@ -1598,11 +1618,37 @@ export async function runBrowserAuthorityQueryFromMain(
           function onMsg(e) {
             if (!e || e.channel !== 'browser-authority-extraction-result') return;
             if (settled) return;
+            var payload = e.args && e.args[0] ? e.args[0] : null;
+            // BP138 Yoke 0.9.15 FIX 2: on a genuine hit, resolve immediately. On a miss, retry
+            // ONCE after BROWSER_AUTHORITY_RETRY_DELAY_MS (the page is already loaded -- this
+            // just re-runs the DOM query, no navigation) before giving up honestly.
+            if (payload && payload.success) {
+              settled = true;
+              clearTimeout(timeoutId);
+              wv.removeEventListener('ipc-message', onMsg);
+              wv.removeEventListener('did-finish-load', onLoad);
+              resolve(payload);
+              return;
+            }
+            if (!retried) {
+              retried = true;
+              setTimeout(function() {
+                if (settled) return;
+                try {
+                  wv.send('browser-authority-run-query', { query: ${JSON.stringify(query.question)}, authority: ${JSON.stringify(query.authority)} });
+                } catch (retryErr) {
+                  /* non-fatal -- the outer timeoutId still fires and resolves null if this throws */
+                }
+              }, ${BROWSER_AUTHORITY_RETRY_DELAY_MS});
+              return; // wait for the retry's own onMsg (or the outer timeout), don't resolve yet
+            }
+            // Second attempt also missed -- resolve honestly with whatever the retry reported
+            // (success:false, no fabricated snippet/URL), never a silently-swallowed result.
             settled = true;
             clearTimeout(timeoutId);
             wv.removeEventListener('ipc-message', onMsg);
             wv.removeEventListener('did-finish-load', onLoad);
-            resolve(e.args && e.args[0] ? e.args[0] : null);
+            resolve(payload);
           }
           function onLoad() {
             wv.removeEventListener('did-finish-load', onLoad);
@@ -2756,6 +2802,79 @@ function registerIPCHandlers(): void {
   safeHandle('nexus-browser-authority-run-query', (_event, query: BrowserAuthorityQuery) =>
     runBrowserAuthorityQueryFromMain(query),
   );
+
+  // BP138 Yoke 0.9.15 FIX 1 -- main-process side of webview_preload.ts's IPC-relay logging.
+  // That file's guest context is sandboxed (Electron 31 default) and can no longer touch
+  // fs/path directly -- see its own header for the full CDP-verified root-cause writeup. This
+  // handler does the actual mkdirSync/appendFileSync, writing to the SAME path the old
+  // in-webview fs code targeted (%APPDATA%\AMPLIFY Computer\hearth_conjunction\
+  // embedded_browser_injection.jsonl). ipcMain.on (not safeHandle/ipcMain.handle) because the
+  // preload uses fire-and-forget ipcRenderer.send, not ipcRenderer.invoke -- there is no reply
+  // to send back. Deliberately fail-soft: a logging failure here must never crash main or
+  // surface back to the sandboxed webview in any way that could be mistaken for a real feature
+  // failure (same contract webview_preload.ts's own try/catch already documents).
+  ipcMain.on('embedded-browser-injection-log', (_event, payload: Record<string, unknown>) => {
+    try {
+      const logDir = resolve(
+        process.env.APPDATA || process.env.HOME || '.',
+        'AMPLIFY Computer',
+        'hearth_conjunction',
+      );
+      mkdirSync(logDir, { recursive: true });
+      appendFileSync(
+        resolve(logDir, 'embedded_browser_injection.jsonl'),
+        JSON.stringify(payload) + '\n',
+        'utf8',
+      );
+    } catch {
+      /* non-fatal -- see webview_preload.ts's logInjectionEvent for the matching fail-soft contract */
+    }
+  });
+
+  // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point. Renderer-side
+  // (LeanAskTab.tsx) already checked nexus_authority_settings_store.ts's own
+  // researchArmMode/researchArmBrowserAuthority flags before ever calling this; this handler
+  // independently re-checks isNexusAuthorityFlagEnabled() (the main-process mirror) as its own
+  // gate -- same defense-in-depth convention Stage F3's mesh-synergy block already documents
+  // ("does NOT bypass the real safety gate"). Classification reuses classifyAnswerType()
+  // directly (the SAME function Stage F2 calls, not a duplicate) -- only 'lookup_fact' ever
+  // attempts a browser-authority call; 'computable'/'reasoning' return usable:false immediately,
+  // no webview/network side effect at all. Tries user_google then user_perplexity (same
+  // google-first order Stage F2 already uses) and returns the FIRST usable hit -- never both,
+  // never fabricated, never a partial result. Every non-hit path (flag off, not a lookup_fact,
+  // both authorities returned nothing) resolves { usable: false }, which LeanAskTab.tsx's caller
+  // treats as "fall through to the existing local-Ollama path", never a thrown error.
+  safeHandle('nexus-ask-lookup-fact', async (_event, { question }: { question: string }) => {
+    const trimmed = typeof question === 'string' ? question.trim() : '';
+    const answerType = classifyAnswerType(trimmed);
+    if (answerType !== 'lookup_fact') {
+      return { answerType, usable: false as const };
+    }
+    if (!isNexusAuthorityFlagEnabled()) {
+      return { answerType, usable: false as const, reason: 'flag_off' as const };
+    }
+    const bridge: BrowserAuthorityBridge = {
+      async runQueryInUserBrowser(query) {
+        return runBrowserAuthorityQueryFromMain(query);
+      },
+    };
+    const authorities: Array<'user_google' | 'user_perplexity'> = ['user_google', 'user_perplexity'];
+    for (const authority of authorities) {
+      try {
+        const fact = await getRawBrowserAuthorityFact(
+          trimmed,
+          { researchArmMode: true, researchArmBrowserAuthority: true, preferredAuthority: authority },
+          bridge,
+        );
+        if (fact) {
+          return { answerType, usable: true as const, ...fact };
+        }
+      } catch (err) {
+        console.warn(`[nexus-ask-lookup-fact] ${authority} lookup threw (non-fatal, honest null):`, err);
+      }
+    }
+    return { answerType, usable: false as const };
+  });
 
   // BP137 0.9.12 Stage F1 (build item 3, Settings "Authorities" panel wire): four new,
   // additive-only IPC channels. See nexus_authority_persistent_session.ts's header for the full

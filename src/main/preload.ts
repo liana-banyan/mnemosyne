@@ -665,6 +665,21 @@ contextBridge.exposeInMainWorld('amplify', {
     statuses: Array<{ authority: 'user_google' | 'user_perplexity'; signedIn: boolean; reason: string; checkedAt: string }>;
   }> => ipcRenderer.invoke('nexus-authority-check-signin-status'),
 
+  // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point. Wraps
+  // 'nexus-ask-lookup-fact' (index.ts's registerIPCHandlers(), registered alongside the other
+  // nexus-authority-* channels above). See that handler's own comment for the full mechanism;
+  // LeanAskTab.tsx is the caller (flag-gated by nexus_authority_settings_store.ts's own
+  // researchArmMode/researchArmBrowserAuthority check BEFORE ever invoking this).
+  nexusAskLookupFact: (question: string): Promise<{
+    answerType: 'computable' | 'lookup_fact' | 'reasoning';
+    usable: boolean;
+    reason?: 'flag_off';
+    fact?: string;
+    sourceUrl?: string;
+    authority?: 'user_google' | 'user_perplexity';
+    confidence?: number;
+  }> => ipcRenderer.invoke('nexus-ask-lookup-fact', { question }),
+
   // ── On-Deck Master-of-Ceremonies (BP037) ──────────────────────────────────
 
   onDeckList: (): Promise<import('./on_deck/on_deck_bridge').OnDeckBridgePayload> =>
@@ -2110,6 +2125,16 @@ declare global {
       checkNexusAuthoritySignInStatus?: () => Promise<{
         enabled: boolean;
         statuses: Array<{ authority: 'user_google' | 'user_perplexity'; signedIn: boolean; reason: string; checkedAt: string }>;
+      }>;
+      // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point.
+      nexusAskLookupFact?: (question: string) => Promise<{
+        answerType: 'computable' | 'lookup_fact' | 'reasoning';
+        usable: boolean;
+        reason?: 'flag_off';
+        fact?: string;
+        sourceUrl?: string;
+        authority?: 'user_google' | 'user_perplexity';
+        confidence?: number;
       }>;
       // On-Deck Master-of-Ceremonies (BP037)
       onDeckList?: () => Promise<import('./on_deck/on_deck_bridge').OnDeckBridgePayload>;
