@@ -215,7 +215,16 @@ const S = {
 
 // ---- Component --------------------------------------------------------------
 
-export function CatacombsTab() {
+export interface CatacombsTabProps {
+  /** BP138 Yoke 0.9.14: optional -- fires with the real summed eblet_count across all 16
+   *  loaded manifests every time loadManifests() completes. Additive only; every existing
+   *  caller (old CleanShell's <CatacombsTab /> with no props) is unaffected -- this lets the
+   *  new Library tab show a real "eblets in your library" count without re-fetching the same
+   *  catacombs:get-manifest IPC calls a second time. */
+  onManifestsLoaded?: (totalEblets: number) => void;
+}
+
+export function CatacombsTab({ onManifestsLoaded }: CatacombsTabProps = {}) {
   const [manifests, setManifests] = useState<ManifestMap>(new Map());
   const [loadingManifests, setLoadingManifests] = useState(true);
   const [manifestError, setManifestError] = useState<string | null>(null);
@@ -248,12 +257,17 @@ export function CatacombsTab() {
         }
       }
       setManifests(map);
+      if (onManifestsLoaded) {
+        let total = 0;
+        for (const m of map.values()) total += m.eblet_count ?? 0;
+        onManifestsLoaded(total);
+      }
     } catch (err) {
       setManifestError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoadingManifests(false);
     }
-  }, []);
+  }, [onManifestsLoaded]);
 
   useEffect(() => {
     void loadManifests();

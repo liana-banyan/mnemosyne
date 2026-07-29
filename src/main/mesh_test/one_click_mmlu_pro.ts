@@ -56,7 +56,7 @@ import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, mkdirS
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { app, BrowserWindow } from 'electron';
-import { discoverLiveWanPeers, dispatchQuestionToWanPeers, type WanPeerInfo, type WanConsensusResult } from './wan_dispatch';
+import { discoverLiveWanPeers, dispatchQuestionToWanPeers, type WanPeerInfo, type WanConsensusResult, type MeshSynergyPooledResult } from './wan_dispatch';
 import { applySubstrateToggle, isDebugPromptLoggingEnabled, buildOutboundPromptLogLine } from './substrate_toggle';
 
 export interface MmluProQuestion {
@@ -107,6 +107,17 @@ export interface ConsensusQuestionOutcome {
   isConsensusCorrect: boolean;
   confidenceVariance: number;
   andonTriggered: boolean;
+  /** BP137 Yoke v2b Stage F3 (mesh synergy), OPTIONAL/ADDITIVE. Present only when this run's
+   *  researchArmMeshSynergy was true -- the pooled cross-peer-DIFFERENT-authority adjudication
+   *  for this SAME question, alongside (never instead of) the identical-full-plow `consensus`
+   *  fields above. See wan_dispatch.ts's MeshSynergyPooledResult. Absent for every
+   *  pre-Stage-F3 run, and also whenever zero peers had a usable assigned-authority answer to
+   *  pool for this specific question. */
+  meshSynergyPooled?: MeshSynergyPooledResult;
+  /** Locally-scored correctness of meshSynergyPooled.pooledLetter against the sealed answer
+   *  key -- same treatment as isConsensusCorrect above. Undefined whenever meshSynergyPooled
+   *  is absent or its pooledLetter is null (no consensus reached / nothing to score). */
+  isMeshSynergyCorrect?: boolean;
 }
 
 export interface PeerAccuracyBreakdown {
@@ -148,6 +159,14 @@ export interface OneClickRunResult {
    *  Ignored unless plowEnabled is also true (see plow_mc_answerer.ts's researchArmMode doc).
    *  false/absent means the pre-Stage-A/A.0 plow behavior, byte-for-byte unchanged. */
   researchArmMode?: boolean;
+  /** BP137 Yoke v2b Stage F3 (mesh synergy): whether the asker's dispatch loop distributed
+   *  DIFFERENT authorities across live peers for the SAME question this run (round-robin
+   *  user_google/user_perplexity/swarm), instead of every peer redundantly running the
+   *  identical full plow. Ignored unless plowEnabled and dispatchMode==='wan_mesh' (needs 2+
+   *  live peers to genuinely exercise -- see consensusOutcomes[].meshSynergyPooled for the
+   *  per-question pooled result). false/absent means the pre-Stage-F3 behavior, byte-for-byte
+   *  unchanged. */
+  researchArmMeshSynergy?: boolean;
   /** BP133 Yoke #24 Task 3: true when the run was stopped early via requestCancel() rather
    *  than completing all questions -- Truth-Always: a partial run must say so, never be
    *  presented as if it ran to completion. */
@@ -554,6 +573,10 @@ async function runWanMode(
   // BP137 Yoke v2b (Research Arm): explicit opt-in, defaults false, ignored unless plowEnabled
   // is also true. See runOneClickMmluProTest's config JSDoc.
   researchArmMode: boolean = false,
+  // BP137 Yoke v2b Stage F3 (mesh synergy): explicit opt-in, defaults false, ignored unless
+  // plowEnabled and researchArmMode are also true (see runOneClickMmluProTest's own AND-gate).
+  // See runOneClickMmluProTest's config JSDoc.
+  researchArmMeshSynergy: boolean = false,
 ): Promise<{ outcomes: OneClickQuestionOutcome[]; consensusOutcomes: ConsensusQuestionOutcome[] }> {
   const outcomes: OneClickQuestionOutcome[] = [];
   const consensusOutcomes: ConsensusQuestionOutcome[] = [];
@@ -569,7 +592,7 @@ async function runWanMode(
 
     const wanOutcome = await dispatchQuestionToWanPeers(
       q, peers, sessionId, perQuestionTimeoutMs, substrateEnabled, plowEnabled, plowAndonEnabled, federatedSubstrateEnabled,
-      researchArmMode,
+      researchArmMode, researchArmMeshSynergy,
     );
 
     // BP135 Phase 2 (Layer A: consensus): one mesh-as-one-unit outcome per question, scored
@@ -577,6 +600,13 @@ async function runWanMode(
     // outcomes below.
     const isConsensusCorrect = wanOutcome.consensus.consensusLetter !== null
       && wanOutcome.consensus.consensusLetter === wanOutcome.correctLetter;
+    // BP137 Yoke v2b Stage F3 (mesh synergy): scored locally against the SAME sealed answer
+    // key, same honest-scoring doctrine as isConsensusCorrect above -- undefined (not false)
+    // whenever there is no pooledLetter to score, so a receipt never misreads "no consensus"
+    // as "scored wrong".
+    const isMeshSynergyCorrect = wanOutcome.meshSynergyPooled?.pooledLetter != null
+      ? wanOutcome.meshSynergyPooled.pooledLetter === wanOutcome.correctLetter
+      : undefined;
     consensusOutcomes.push({
       question_id: q.question_id,
       question: q.question,
@@ -586,6 +616,8 @@ async function runWanMode(
       isConsensusCorrect,
       confidenceVariance: wanOutcome.consensus.confidenceVariance,
       andonTriggered: wanOutcome.consensus.andonTriggered,
+      ...(wanOutcome.meshSynergyPooled ? { meshSynergyPooled: wanOutcome.meshSynergyPooled } : {}),
+      ...(isMeshSynergyCorrect !== undefined ? { isMeshSynergyCorrect } : {}),
     });
 
     for (const pa of wanOutcome.peerAnswers) {
@@ -705,6 +737,20 @@ export async function runOneClickMmluProTest(config: {
    * compute sidecar for computable questions) together. Defaults to false -- the pre-Stage-A/A.0
    * plow behavior is byte-for-byte unchanged unless a caller explicitly opts in. */
   researchArmMode?: boolean;
+  /** BP137 Yoke v2b Stage F3 (mesh synergy): explicit opt-in, AND-gated with researchArmMode
+   * (both must be true, and plowEnabled must also be true -- the responder's
+   * researchArmMeshSynergy sub-flag lives on CanonicalPlowMcConfig, which only the plow path
+   * reads) -- ignored (has no effect, wan_dispatch.ts never assigns/pools authorities) unless
+   * dispatchMode resolves to wan_mesh AND plowEnabled is true. When true, distributes DIFFERENT
+   * authorities across live peers for the SAME question (round-robin
+   * user_google/user_perplexity/swarm -- see wan_dispatch.ts's assignMeshSynergyAuthority())
+   * instead of every peer redundantly running the identical full plow, then pools the answers
+   * via computeMeshSynergyAdjudication(). Needs 2+ live peers to genuinely exercise (a 1-peer
+   * mesh still assigns that one peer 'user_google' and pools a 1-authority "consensus" of
+   * itself -- honest but not synergy). Defaults to false -- the pre-Stage-F3 behavior (every
+   * peer runs the identical full plow) is byte-for-byte unchanged unless a caller explicitly
+   * opts in. */
+  researchArmMeshSynergy?: boolean;
   /** BP135 Phase 3 (Layer B: federated substrate). Ignored (has no effect, no extra
    * round-trips) unless substrateEnabled is also true AND dispatchMode resolves to wan_mesh --
    * local_ollama mode has no other peers to pool from. When true, pools topical eblets from
@@ -751,6 +797,12 @@ export async function runOneClickMmluProTest(config: {
   const plowEnabled = config.plowEnabled ?? false;
   const plowAndonEnabled = config.plowAndonEnabled ?? false;
   const researchArmMode = config.researchArmMode ?? false;
+  // BP137 Yoke v2b Stage F3 (mesh synergy): AND-gated with researchArmMode at this call-config
+  // level too, matching the "researchArmMeshSynergy (AND researchArmMode)" sibling-flag
+  // convention used everywhere else in this Yoke -- a caller that sets researchArmMeshSynergy
+  // true but researchArmMode false (or omitted) gets researchArmMeshSynergy effectively false,
+  // never a half-enabled state.
+  const researchArmMeshSynergy = (config.researchArmMeshSynergy ?? false) && researchArmMode;
   const federatedSubstrateEnabled = config.federatedSubstrateEnabled ?? false;
   const exactPerCategory = config.exactPerCategory && config.exactPerCategory > 0 ? config.exactPerCategory : undefined;
 
@@ -829,7 +881,7 @@ export async function runOneClickMmluProTest(config: {
     const wanResult = await runWanMode(
       questions, livePeers, sessionId, config.wanPerQuestionTimeoutMs ?? defaultTimeoutMs,
       substrateEnabled, plowEnabled, plowAndonEnabled, corpusManifest?.sha256, federatedSubstrateEnabled,
-      progressChannel, researchArmMode,
+      progressChannel, researchArmMode, researchArmMeshSynergy,
     );
     outcomes = wanResult.outcomes;
     consensusOutcomes = wanResult.consensusOutcomes;
@@ -877,6 +929,7 @@ export async function runOneClickMmluProTest(config: {
     substrateEnabled,
     plowEnabled: dispatchMode === 'wan_mesh' ? plowEnabled : undefined,
     researchArmMode: dispatchMode === 'wan_mesh' ? researchArmMode : undefined,
+    researchArmMeshSynergy: dispatchMode === 'wan_mesh' ? researchArmMeshSynergy : undefined,
     cancelled: cancelRequested,
     exactPerCategory,
     corpusManifestSha256: corpusManifest?.sha256,
@@ -1021,6 +1074,7 @@ export async function runHotColdLiftTest(
       plowEnabled: false,
       plowAndonEnabled: false,
       researchArmMode: false,
+      researchArmMeshSynergy: false,
       federatedSubstrateEnabled: false,
     };
     broadcast('mesh-test:hotcold-progress', {

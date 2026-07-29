@@ -38,6 +38,13 @@
 import { getStablePeerId } from '../federation/peer-discovery';
 import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 import type { MmluProQuestion } from './one_click_mmlu_pro';
+// BP137 Yoke v2b Stage F3 (mesh synergy): promotes adjudicateDistributedAuthorities() from
+// Star-Chamber-only use (star_chamber_dispatch.ts's runStageEDistributedStarChamber) to this
+// NORMAL cross-peer mesh path too, per the Stage F3 spec's explicit "promote it" instruction --
+// reused verbatim (pure function, no I/O), never duplicated. See computeMeshSynergyAdjudication()
+// below for the one adaptation needed (MC letters, not prose facts) and why it is done via
+// input-encoding rather than touching that shared function.
+import { adjudicateDistributedAuthorities, type AuthorityAnswer } from '../dr_m_orchestrator/minor_star_chamber';
 
 export interface WanPeerInfo {
   peerId: string;
@@ -61,6 +68,14 @@ export interface WanPeerAnswer {
    *  used, voter letters, Andon retries) verbatim from the responder, present only when
    *  answeredBy === 'plow'. This is what makes the persisted receipt auditable. */
   plowTrace?: Record<string, unknown> | null;
+  /** BP137 Yoke v2b Stage F3 (mesh synergy), OPTIONAL/ADDITIVE. Present only when THIS
+   *  dispatch's researchArmMeshSynergy was true -- the authority-role the ASKER's own
+   *  round-robin loop assigned this peer for this question (see assignMeshSynergyAuthority()
+   *  below). This is asker-side ground truth (computed here, before dispatch, never trusted
+   *  from the peer's reply) -- kept alongside (never instead of) the peer's own echoed
+   *  plowTrace.mesh_synergy_assigned receipt, so a caller can cross-check what was ASKED for
+   *  against what the peer says it actually DID. Absent for every pre-Stage-F3 dispatch. */
+  assignedAuthority?: 'user_google' | 'user_perplexity' | 'swarm';
 }
 
 // BP135 Phase 2 (Layer A: consensus). See computeConsensus() below for the full design note.
@@ -80,6 +95,42 @@ export interface WanQuestionOutcome {
    *  from peerAnswers (see computeConsensus()). Always present, even for a 1-peer outcome
    *  (degenerate case: consensusLetter mirrors that one peer's answer, variance is 0). */
   consensus: WanConsensusResult;
+  /** BP137 Yoke v2b Stage F3 (mesh synergy), OPTIONAL/ADDITIVE. Present ONLY when this
+   *  dispatch's researchArmMeshSynergy was true -- the pooled cross-peer adjudication over
+   *  DIFFERENT per-peer authorities (never the same-answer voting `consensus` field above,
+   *  which is computed from peers that each ran the IDENTICAL full plow). See
+   *  computeMeshSynergyAdjudication() below. Absent for every pre-Stage-F3 dispatch, and also
+   *  absent when zero peers had a usable answer to pool (nothing to adjudicate). */
+  meshSynergyPooled?: MeshSynergyPooledResult;
+}
+
+/** BP137 Yoke v2b Stage F3 (mesh synergy): the pooled result of adjudicating this question's
+ *  per-peer, per-assigned-authority answers. Truthful per-peer provenance chain (requirement 4
+ *  of the Stage F3 spec): `perPeerChain` names which peer, which authority it was assigned,
+ *  what letter it returned (or null), and the real source URL when the peer's answer was
+ *  browser-sourced (threaded through from that peer's own plowTrace.provenance_receipts, never
+ *  fabricated here). */
+export interface MeshSynergyPooledResult {
+  perPeerChain: Array<{
+    peerId: string;
+    machineLabel: string;
+    assignedAuthority: 'user_google' | 'user_perplexity' | 'swarm';
+    answerLetter: string | null;
+    sourceUrl?: string;
+  }>;
+  peerAuthorities: string[];
+  answeredAuthorities: string[];
+  consensusReached: boolean;
+  hScore: number;
+  confidenceVariance: number;
+  /** The pooled MC letter the distinct authorities agreed on -- populated ONLY when
+   *  consensusReached is true. Never populated on disagreement (honesty firewall, same
+   *  doctrine as star_chamber_dispatch.ts's DistributedStarChamberResult.answer). */
+  pooledLetter: string | null;
+  /** Honest "peer X (assigned Y) said A vs peer Z (assigned W) said B" verdict, populated ONLY
+   *  when consensusReached is false (or zero peers answered at all). Null when consensus was
+   *  reached. */
+  disagreementSummary: string | null;
 }
 
 interface SupabaseConfig {
@@ -266,6 +317,120 @@ export async function queryTopicalEbletsFromPeers(
   return merged;
 }
 
+// ─── BP137 Yoke v2b Stage F3: mesh synergy -- round-robin authority assignment ──────────────
+//
+// Today every live peer runs the IDENTICAL full plow on the same question -- 2 peers = 2
+// redundant copies of the same lookup, not synergy. This makes the ASKER assign each live peer
+// a DIFFERENT authority-role for the SAME question, round-robin, so N peers cover N distinct
+// authorities instead of duplicating one.
+
+/** The exact 3-role cycle the Stage F3 spec names explicitly: peer 0 -> its own browser
+ *  Google, peer 1 -> its own browser Perplexity, peer 2 (if present) -> compute + encyclopedia
+ *  swarm (the existing default full-swarm path). A 4th+ peer wraps back around ('round-robin'),
+ *  matching this constant's own name -- there is no 4th genuinely-different LOCAL authority
+ *  this build wires (dispatchStarChamberQuestionToPeer's remote-peer-authority delegation leg
+ *  in star_chamber_dispatch.ts is a separate, not-yet-exercised-live capability, out of scope
+ *  for this cycle), so cycling back to 'user_google' is the honest choice over inventing a 4th
+ *  role that does not exist. */
+export const MESH_SYNERGY_AUTHORITY_ROLES = ['user_google', 'user_perplexity', 'swarm'] as const;
+
+/** Pure, deterministic, zero-I/O -- given this peer's 0-based index among the live peers being
+ *  dispatched to FOR THIS QUESTION, returns which authority-role the asker assigns it. Exported
+ *  standalone (not inlined into dispatchQuestionToWanPeers below) specifically so it is
+ *  independently verifiable without needing a live network/peer/Supabase round trip -- see the
+ *  Stage F3 Yoke-return's diagnostic verification of this exact function. */
+export function assignMeshSynergyAuthority(peerIndex: number): 'user_google' | 'user_perplexity' | 'swarm' {
+  return MESH_SYNERGY_AUTHORITY_ROLES[peerIndex % MESH_SYNERGY_AUTHORITY_ROLES.length];
+}
+
+/** BP137 Yoke v2b Stage F3: scoreConvergence() (dr_m_orchestrator/minor_star_chamber.ts, called
+ *  internally by adjudicateDistributedAuthorities()) tokenizes its word-overlap Jaccard
+ *  fallback on `\W+` and DROPS tokens of length <=2 -- a bare MC letter ("A") always collapses
+ *  to an EMPTY token set, so two peers with genuinely DIFFERENT letters would score
+ *  jaccard(emptySet,emptySet)=1 (that function's own explicit "union===0 ? 1" convention for
+ *  "nothing to compare, call it agreement") -- a FALSE 100% overlap / 0 variance that would
+ *  misreport a real N-way letter disagreement as consensus. (This fallback is only reached when
+ *  scoreConvergence's EARLIER exact-text majority/unanimity branch does NOT already resolve the
+ *  case -- i.e. only for genuine "every peer answered a different letter" total disagreement,
+ *  exactly the case honesty most requires getting right.) Padding each letter into a single
+ *  underscore-joined token (`_` is a `\w` character, so `\W+` never splits it) long enough to
+ *  clear the length>2 filter sidesteps this WITHOUT touching scoreConvergence/
+ *  adjudicateDistributedAuthorities themselves (reused verbatim, per Stage E's own "pure
+ *  function, do not fork" doctrine) -- any real per-letter majority or full unanimity is still
+ *  caught by scoreConvergence's EARLIER exact-match branch before this encoding matters at all;
+ *  it only changes the outcome for the genuine all-different-letters case, where it now
+ *  correctly reports full disagreement instead of a fabricated consensus. */
+function encodeMcLetterForAdjudication(letter: string): string {
+  return `mc_answer_letter_${letter.toLowerCase()}`;
+}
+
+function decodeMcLetterFromAdjudication(encoded: string): string | null {
+  const m = encoded.match(/^mc_answer_letter_([a-j])$/i);
+  return m ? m[1]!.toUpperCase() : null;
+}
+
+/** BP137 Yoke v2b Stage F3, build item 3: promotes adjudicateDistributedAuthorities()
+ *  (dr_m_orchestrator/minor_star_chamber.ts, Stage E) from Star-Chamber-only use to this normal
+ *  cross-peer mesh path. Pure function (no I/O) -- takes the per-peer answers this question's
+ *  WAN dispatch already collected and pools them; the caller (dispatchQuestionToWanPeers below)
+ *  decides whether to invoke this at all (only when researchArmMeshSynergy was true for this
+ *  dispatch). A peer with no assignedAuthority (mesh synergy was off, or this peer predates
+ *  Stage F3) is excluded from the pool entirely -- it is not silently coerced into 'swarm'. */
+export function computeMeshSynergyAdjudication(peerAnswers: WanPeerAnswer[]): MeshSynergyPooledResult | null {
+  const assigned = peerAnswers.filter((pa): pa is WanPeerAnswer & { assignedAuthority: 'user_google' | 'user_perplexity' | 'swarm' } =>
+    pa.assignedAuthority !== undefined);
+  if (assigned.length === 0) return null;
+
+  const perPeerChain = assigned.map((pa) => {
+    const provenanceReceipts = pa.plowTrace?.provenance_receipts as
+      Array<{ source?: string; provenanceUrl?: string }> | undefined;
+    const sourceUrl = Array.isArray(provenanceReceipts)
+      ? provenanceReceipts.find((r) => typeof r.source === 'string' && r.source.startsWith('mesh_synergy:'))?.provenanceUrl
+      : undefined;
+    return {
+      peerId: pa.peerId,
+      machineLabel: pa.machineLabel,
+      assignedAuthority: pa.assignedAuthority,
+      answerLetter: pa.answerLetter,
+      ...(sourceUrl ? { sourceUrl } : {}),
+    };
+  });
+
+  const authorityAnswers: AuthorityAnswer[] = assigned.map((pa) => ({
+    // Truthful per-peer chain: "which authority, which peer" folded into one name, so two
+    // peers independently assigned the SAME role (e.g. peer 3 wrapping back to 'user_google')
+    // are never conflated into a single authority slot.
+    authority: `${pa.assignedAuthority}@peer:${pa.peerId.slice(0, 8)}`,
+    answer: pa.answerLetter ? encodeMcLetterForAdjudication(pa.answerLetter) : '',
+    verified: pa.answerLetter !== null && !pa.isAbstain && !pa.timedOut,
+    latency_ms: pa.processingMs ?? 0,
+  }));
+
+  const adjudication = adjudicateDistributedAuthorities(authorityAnswers);
+  const pooledLetter = adjudication.consensusReached && adjudication.answer
+    ? decodeMcLetterFromAdjudication(adjudication.answer)
+    : null;
+
+  return {
+    perPeerChain,
+    peerAuthorities: adjudication.peerAuthorities,
+    answeredAuthorities: adjudication.answered.map((a) => a.authority),
+    consensusReached: adjudication.consensusReached,
+    hScore: adjudication.hScore,
+    confidenceVariance: adjudication.variance,
+    pooledLetter,
+    // disagreementSummary is built from the SAME encoded answers adjudicateDistributedAuthorities
+    // already produced (never re-derived/guessed) -- decode each authority's own encoded letter
+    // back out for a human-readable summary instead of leaking the internal mc_answer_letter_
+    // encoding into a receipt a human/Bishop will read.
+    disagreementSummary: adjudication.disagreementSummary
+      ? assigned
+          .map((pa) => `${pa.assignedAuthority}@${pa.machineLabel} says "${pa.answerLetter ?? 'no answer'}"`)
+          .join(' vs ')
+      : null,
+  };
+}
+
 // BP137 Yoke v2b Stage E: exported (was module-private) so star_chamber_dispatch.ts can reuse
 // the SAME proven relay_routes insert primitive for an optional remote-peer delegation leg,
 // instead of duplicating the wire-format/schema knowledge in a second file. Exporting a
@@ -303,6 +468,19 @@ export async function insertRelayRoute(
   // body is byte-identical to pre-Stage-E behavior, not merely "is_star_chamber: false" where
   // the key was previously absent entirely.
   isStarChamber: boolean = false,
+  // BP137 Yoke v2b Stage F3 (mesh synergy): explicit opt-in, DEFAULT FALSE. When true, sets
+  // `research_arm_mesh_synergy: true` in payload_json -- see index.ts's responder read of
+  // `payload.research_arm_mesh_synergy`. When false/absent (every pre-Stage-F3 call, including
+  // dispatchQuestionToWanPeers below when its own researchArmMeshSynergy is false), the spread
+  // below contributes NOTHING to payload_json, matching isStarChamber's own established
+  // omit-not-false convention (see that param's doc comment above).
+  researchArmMeshSynergy: boolean = false,
+  // BP137 Yoke v2b Stage F3: which authority (if any) the asker's round-robin loop assigned
+  // THIS peer for THIS question (see assignMeshSynergyAuthority() above). Omitted from
+  // payload_json entirely (not merely absent-as-undefined) unless BOTH this is set AND
+  // researchArmMeshSynergy is true -- an old/mesh-synergy-unaware responder build must never
+  // see this key at all, matching every other opt-in-only field in this payload.
+  assignedAuthority?: 'user_google' | 'user_perplexity' | 'swarm',
 ): Promise<string | null> {
   const prompt = buildMcPrompt(question);
   // hex_frame is a NOT NULL legacy column (verified via a live dry-run insert 2026-07-23);
@@ -358,6 +536,13 @@ export async function insertRelayRoute(
       // `false`) unless a Stage E caller explicitly opts in, preserving byte-identical
       // payload_json for every existing caller.
       ...(isStarChamber ? { is_star_chamber: true } : {}),
+      // BP137 Yoke v2b Stage F3 (mesh synergy): see researchArmMeshSynergy/assignedAuthority
+      // param docs above -- both omitted entirely (not `false`/`undefined`) unless a Stage F3
+      // caller explicitly opts in, preserving byte-identical payload_json for every existing
+      // caller (dispatchStarChamberQuestionToPeer above, and dispatchQuestionToWanPeers's own
+      // pre-Stage-F3 call shape).
+      ...(researchArmMeshSynergy ? { research_arm_mesh_synergy: true } : {}),
+      ...(assignedAuthority ? { assigned_authority: assignedAuthority } : {}),
     },
     status: 'pending',
     session_id: sessionId,
@@ -549,6 +734,17 @@ export async function dispatchQuestionToWanPeers(
   federatedSubstrateEnabled: boolean = false,
   // BP137 Yoke v2b (Research Arm): explicit opt-in, defaults false. See insertRelayRoute above.
   researchArmMode: boolean = false,
+  // BP137 Yoke v2b Stage F3 (mesh synergy): explicit opt-in, defaults false. When true, each
+  // peer in `peers` is assigned a DIFFERENT authority-role round-robin (see
+  // assignMeshSynergyAuthority above) instead of every peer redundantly running the identical
+  // full plow, and the peers' answers are pooled via computeMeshSynergyAdjudication() (Stage E's
+  // adjudicateDistributedAuthorities, promoted to this normal path) into the returned
+  // WanQuestionOutcome.meshSynergyPooled. When false/absent (every pre-Stage-F3 caller,
+  // including every existing call to this function), no peer is ever assigned an authority,
+  // no `assigned_authority`/`research_arm_mesh_synergy` key is ever added to any payload_json
+  // (see insertRelayRoute's own conditional-spread), and meshSynergyPooled stays absent from
+  // the returned outcome -- this function's behavior for that case is byte-for-byte unchanged.
+  researchArmMeshSynergy: boolean = false,
 ): Promise<WanQuestionOutcome> {
   const correctLetter = question.answer.toUpperCase();
   const cfg = resolveSupabaseConfig();
@@ -573,16 +769,23 @@ export async function dispatchQuestionToWanPeers(
     : undefined;
 
   const ttlSeconds = Math.ceil(perQuestionTimeoutMs / 1000) + 60;
-  const peerAnswers = await Promise.all(peers.map(async (peer): Promise<WanPeerAnswer> => {
+  const peerAnswers = await Promise.all(peers.map(async (peer, peerIndex): Promise<WanPeerAnswer> => {
+    // BP137 Yoke v2b Stage F3: round-robin assignment computed PER QUESTION, PER PEER-SLOT --
+    // peer 0 always gets 'user_google' for every question in this run, matching the spec's
+    // literal "peer 0 -> Google, peer 1 -> Perplexity, peer 2 -> swarm" example. Undefined
+    // (not merely 'swarm') when researchArmMeshSynergy is off, so insertRelayRoute's own
+    // conditional spread never adds the field at all -- see that function's doc.
+    const assignedAuthority = researchArmMeshSynergy ? assignMeshSynergyAuthority(peerIndex) : undefined;
     const routeId = await insertRelayRoute(
       cfg, peer.peerId, question, sessionId, ttlSeconds, substrateEnabled, plowEnabled, plowAndonEnabled, pooledEblets,
-      researchArmMode,
+      researchArmMode, false, researchArmMeshSynergy, assignedAuthority,
     );
     if (!routeId) {
       return {
         peerId: peer.peerId, machineLabel: peer.machineLabel, routeId: null, answerLetter: null,
         isAbstain: false, isCorrect: false, timedOut: false, processingMs: null,
         error: 'relay_routes insert failed',
+        ...(assignedAuthority ? { assignedAuthority } : {}),
       };
     }
     const reply = await pollForReply(cfg, routeId, perQuestionTimeoutMs);
@@ -590,6 +793,7 @@ export async function dispatchQuestionToWanPeers(
       return {
         peerId: peer.peerId, machineLabel: peer.machineLabel, routeId, answerLetter: null,
         isAbstain: false, isCorrect: false, timedOut: true, processingMs: null,
+        ...(assignedAuthority ? { assignedAuthority } : {}),
       };
     }
     const { letter, isAbstain } = extractLetter(reply.answerJson);
@@ -605,8 +809,18 @@ export async function dispatchQuestionToWanPeers(
       processingMs: reply.processingMs,
       answeredBy,
       plowTrace,
+      ...(assignedAuthority ? { assignedAuthority } : {}),
     };
   }));
+
+  // BP137 Yoke v2b Stage F3, build item 3: pool + adjudicate the per-peer, per-assigned-
+  // authority answers. Only attempted when this dispatch actually opted into mesh synergy --
+  // computeMeshSynergyAdjudication() itself also degrades to null gracefully if, for any
+  // reason, zero peerAnswers ended up with an assignedAuthority (e.g. all peers failed before
+  // routeId was even created), so this is defense-in-depth, not the only guard.
+  const meshSynergyPooled = researchArmMeshSynergy
+    ? computeMeshSynergyAdjudication(peerAnswers) ?? undefined
+    : undefined;
 
   return {
     question_id: question.question_id,
@@ -615,5 +829,6 @@ export async function dispatchQuestionToWanPeers(
     correctLetter,
     peerAnswers,
     consensus: computeConsensus(peerAnswers),
+    ...(meshSynergyPooled ? { meshSynergyPooled } : {}),
   };
 }

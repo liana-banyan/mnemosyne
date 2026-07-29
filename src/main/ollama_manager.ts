@@ -371,6 +371,51 @@ export class OllamaManager {
     }
   }
 
+  /**
+   * BP138 Yoke 0.9.13 F4 item 4: self-heal check for the embedding model, called once at
+   * boot (fire-and-forget, NEVER awaited by the caller -- see index.ts's call site). Without
+   * nomic-embed-text installed, embed() above fails soft (returns null) on every call, which
+   * silently degrades semantic_relevance_gate.ts's relevance gate to plain token-overlap for
+   * that peer with no visible signal to the Founder -- exactly the "silently falling back"
+   * failure mode this Yoke closes. Honest (always logs which branch it took) and non-blocking
+   * (this method resolves quickly; the actual pull, if needed, is NOT awaited internally
+   * either -- it runs in the background and boot never waits on a ~274MB download).
+   */
+  ensureEmbeddingModel(): void {
+    void (async () => {
+      try {
+        const reachable = await this.isReachable();
+        if (!reachable) {
+          console.log('[OllamaManager] embedding self-heal: Ollama not reachable yet, skipping check this boot (non-fatal).');
+          return;
+        }
+        const hasEmbedModel = await this.hasModel(EMBED_MODEL);
+        if (hasEmbedModel) {
+          console.log(`[OllamaManager] embedding self-heal: ${EMBED_MODEL} already installed -- semantic relevance gate has real embeddings.`);
+          return;
+        }
+        console.warn(
+          `[OllamaManager] embedding self-heal: ${EMBED_MODEL} NOT installed -- semantic relevance ` +
+          `gate will silently fall back to token-overlap until this pulls. Pulling in the ` +
+          `background now (does not block boot)...`,
+        );
+        // Fire-and-forget: boot must never hang on a ~274MB download. pullModel() already
+        // fails soft internally for HTTP/parse errors; this catch covers the fetch/setup path.
+        this.pullModel(EMBED_MODEL, (progress) => {
+          if (progress.phase === 'success') {
+            console.log(`[OllamaManager] embedding self-heal: ${EMBED_MODEL} pull complete -- real embeddings now available.`);
+          } else if (progress.phase === 'error') {
+            console.warn(`[OllamaManager] embedding self-heal: ${EMBED_MODEL} pull reported an error -- ${progress.error ?? progress.status} (will keep falling back to token-overlap).`);
+          }
+        }).catch((err) => {
+          console.warn(`[OllamaManager] embedding self-heal: ${EMBED_MODEL} pull failed (non-fatal, falling back to token-overlap):`, err);
+        });
+      } catch (err) {
+        console.warn('[OllamaManager] embedding self-heal: check failed unexpectedly (non-fatal):', err);
+      }
+    })();
+  }
+
   private async _getVersion(): Promise<string> {
     try {
       const res = await fetch(`${OLLAMA_API_BASE}/api/version`);

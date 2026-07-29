@@ -225,6 +225,34 @@ export interface CanonicalPlowMcConfig {
    *  each of the 3 fanned-out "peers" queries a DIFFERENT independent real-world authority
    *  (Google/browser, Perplexity/browser, Wolfram/compute), never another local or flagship LLM. */
   researchArmStarChamber?: boolean;
+  /** BP137 Yoke v2b Stage F3 (mesh synergy), OPT-IN/DEFAULT FALSE, independent AND-gate on top
+   *  of researchArmMode (both must be true) -- same convention as every other researchArm*
+   *  sub-flag above. Makes the MESH itself synergistic: instead of every live peer redundantly
+   *  running the identical full plow on the same question, the ASKER (one_click_mmlu_pro.ts /
+   *  wan_dispatch.ts's dispatch loop) assigns each live peer a DIFFERENT authority-role for the
+   *  same question (round-robin: user_google / user_perplexity / swarm) and pools the answers
+   *  via adjudicateDistributedAuthorities (dr_m_orchestrator/minor_star_chamber.ts, promoted
+   *  from Star-Chamber-only use to this normal cross-peer path too -- see wan_dispatch.ts's
+   *  dispatchQuestionToWanPeers). When either researchArmMode or this flag is false/absent
+   *  (every caller that predates Stage F3, including every existing wan_dispatch.ts payload),
+   *  meshSynergyOn below is false and the one call site it gates is unreachable -- this
+   *  function's chosenLetter/concordance/every other field stays byte-for-byte identical to
+   *  pre-Stage-F3 behavior, provable by that single guard. */
+  researchArmMeshSynergy?: boolean;
+  /** BP137 Yoke v2b Stage F3, OPTIONAL/ADDITIVE. Present only when the asker's mesh-synergy
+   *  dispatch loop assigned THIS peer a specific authority-role for THIS question (see
+   *  wan_dispatch.ts's round-robin assignment, fed in via index.ts's responder-side
+   *  `payload.assigned_authority` read). 'user_google' / 'user_perplexity' route this call
+   *  through ONLY that one browser-authority lookup (see the meshSynergyOn block below) --
+   *  the 9-specialist swarm/voters/Andon/Escalation/Star-Chamber machinery never runs for that
+   *  call, so this peer contributes ONLY its assigned slice, per the Founder's "each peer
+   *  contributes only its assigned slice" mesh-synergy directive. 'swarm' (or absent) means
+   *  "run the existing full swarm+voter pipeline exactly as today" -- byte-identical to every
+   *  pre-Stage-F3 caller. Never present on the wire payload at all when researchArmMeshSynergy
+   *  is off (see wan_dispatch.ts's conditional-spread convention, matching every other
+   *  opt-in-only payload field in that file), so an old/mesh-synergy-unaware peer never even
+   *  sees this field. */
+  assignedAuthority?: 'user_google' | 'user_perplexity' | 'swarm';
 }
 
 /** BP133 Yoke #27: per-voter diagnostic detail, always computed (cheap: just string lengths
@@ -378,6 +406,18 @@ export interface CanonicalPlowMcResult {
     meshFireRecorded: boolean;
     meshFireId?: string;
   };
+  /** BP137 Yoke v2b Stage F3 (mesh synergy), OPTIONAL/ADDITIVE. Present ONLY when
+   *  researchArmMode && researchArmMeshSynergy were both true for this call AND
+   *  config.assignedAuthority was set -- absent on every pre-Stage-F3 call and on every call
+   *  where the asker did not opt this peer into mesh-synergy dispatch. Truthful per-peer
+   *  provenance receipt: 'user_google'/'user_perplexity' means this peer answered from ONLY
+   *  that one authority (see the meshSynergyOn short-circuit below); 'swarm' means this peer
+   *  ran the ordinary full pipeline (present here purely as an additive receipt annotation --
+   *  it does not alter chosenLetter/concordance/gateOutcomes/any pre-existing field in any way,
+   *  same non-mutating-receipt doctrine as psionicConcurred/browserAuthorityCorroboration
+   *  above). This is what lets the asker's pooled adjudication show "which peer, which
+   *  authority" for every contributor, per the Stage F3 truthful-provenance requirement. */
+  meshSynergyAssigned?: 'user_google' | 'user_perplexity' | 'swarm';
 }
 
 // ─── MC-specific final-arbitration prompt ────────────────────────────────────
@@ -805,6 +845,125 @@ export async function runCanonicalPlowMcAnswer(
   // return) so a receipt can always show what the classifier decided even when compute never ran
   // or fell through -- see each return site below.
   let classifiedAnswerType: AnswerType | undefined;
+
+  // ── BP137 Yoke v2b Stage F3: mesh-synergy assigned-authority short-circuit ─────────────────
+  // OPT-IN via researchArmMode && researchArmMeshSynergy, both default false/absent -- see
+  // CanonicalPlowMcConfig.researchArmMeshSynergy's own doc comment. meshSynergyOn is declared
+  // here (byte-identical AND-gate pattern to computeSidecarOn/browserAuthorityOn/psionicOn just
+  // above) so it is provably the ONE guard this whole block depends on.
+  //
+  // PLACEMENT (R-MECHANISM-VERIFY): this sits BEFORE Psionic and BEFORE the swarm -- earlier
+  // than Stage F2's browser-authority-first block below -- because an assigned single-authority
+  // peer must contribute ONLY that authority's slice for this question (Founder's explicit
+  // "each peer contributes only its assigned slice" mesh-synergy directive). It must not also
+  // burn Psionic/swarm/compute cycles answering the same question a second, redundant way.
+  //
+  // GATING: unreachable whenever meshSynergyOn is false, OR config.assignedAuthority is
+  // absent, OR config.assignedAuthority === 'swarm' -- in every one of those cases this `if`
+  // is skipped entirely and every line below (Psionic through the swarm/voter/Escalation/
+  // Star-Chamber machinery) runs completely unchanged. This is the literal, provable
+  // "assigned 'swarm' (or flag off) behaves exactly like today" requirement from the Stage F3
+  // spec: a peer assigned 'swarm' takes NO different code path than a peer that never heard of
+  // mesh synergy at all.
+  const meshSynergyOn = !!(config.researchArmMode && config.researchArmMeshSynergy);
+  const assignedAuthority = config.assignedAuthority;
+  if (meshSynergyOn && assignedAuthority && assignedAuthority !== 'swarm') {
+    onProgress?.(`mesh-synergy-assigned:${assignedAuthority}`);
+    console.log(
+      `[plow_mc_answerer] Stage F3 mesh-synergy: this peer was assigned authority=` +
+      `${assignedAuthority} for this question -- skipping the full swarm, using ONLY that ` +
+      `authority's slice.`,
+    );
+    // REAL bridge (not createNotWiredBridge()): reaches index.ts's
+    // runBrowserAuthorityQueryFromMain() via a dynamic import -- same dynamic-import rationale
+    // as Stage F2's own bridge above (index.ts already dynamically imports THIS module, so a
+    // static top-level import in this direction would be a circular top-level require).
+    const meshSynergyBridge: BrowserAuthorityBridge = {
+      async runQueryInUserBrowser(query) {
+        try {
+          const mainModule = await import('../index');
+          return await mainModule.runBrowserAuthorityQueryFromMain(query);
+        } catch (err) {
+          console.warn('[plow_mc_answerer] Stage F3 mesh-synergy bridge call failed (non-fatal, honest null):', err);
+          return null;
+        }
+      },
+    };
+    let meshSynergyResult: BrowserAuthorityLookupResult | null = null;
+    try {
+      // Force researchArmBrowserAuthority:true for THIS call only -- being assigned a browser
+      // authority role by the asker's mesh-synergy dispatch IS the intent-to-use-browser-
+      // authority signal; requiring a caller to ALSO separately flip researchArmBrowserAuthority
+      // on top of researchArmMeshSynergy would be a redundant third gate the Stage F3 spec never
+      // asks for. This does NOT bypass the real safety gate: runBrowserAuthorityQueryFromMain()
+      // (index.ts) still independently checks the human's own persisted Settings > Authorities
+      // toggle (ensureNexusAuthoritySession()'s isNexusAuthorityBrowserEnabled(), a GLOBAL flag
+      // fully independent of this per-call config object) plus a live sign-in probe before ever
+      // touching a real browser session -- see that function's own "HONEST NULL PATHS" doc.
+      meshSynergyResult = await runBrowserAuthorityLookup(
+        researchQuery,
+        { ...config, researchArmBrowserAuthority: true, preferredAuthority: assignedAuthority },
+        meshSynergyBridge,
+      );
+    } catch (err) {
+      console.warn(`[plow_mc_answerer] Stage F3 mesh-synergy ${assignedAuthority} lookup threw (non-fatal, honest null):`, err);
+      meshSynergyResult = null;
+    }
+    const meshSynergyOptions = parseOptionsFromPrompt(mcPromptWithSubstrate);
+    const meshSynergyMatch = meshSynergyResult
+      ? matchFreeTextAnswerToOption(meshSynergyResult.fact, meshSynergyOptions)
+      : null;
+    const meshSynergyLatencyMs = Date.now() - startMs;
+    const meshSynergyChosenLetter = meshSynergyMatch?.letter ?? null;
+    // Honesty firewall: a lookup that returned nothing usable, or returned a fact that matched
+    // no MC option, is a genuine NO-ANSWER for this peer's assigned slice -- never guessed,
+    // never silently defaulted to a letter. DISCORDANT (not a fabricated CONCORDANT) mirrors
+    // how the rest of this file treats "swarm found nothing usable" (see the relevance-gate /
+    // compute-fallthrough abstains above).
+    const meshSynergyConcordance: ConcordanceClass = meshSynergyChosenLetter ? 'CONCORDANT' : 'DISCORDANT';
+    const meshSynergyBmv = computeBmvScore(0, 0, 0, 0, meshSynergyConcordance, 0, meshSynergyLatencyMs);
+    const meshSynergyTraceSummary =
+      `meshSynergyAssignedAuthority=${assignedAuthority} resultFound=${meshSynergyResult ? 'yes' : 'no'} ` +
+      `matchedOption=${meshSynergyChosenLetter ?? 'none'} matchScore=${meshSynergyMatch?.score.toFixed(2) ?? '0.00'} ` +
+      `sourceUrl=${meshSynergyResult?.sourceUrl ?? 'n/a'} andonRetries=${andonRetry}`;
+    console.log(
+      `[plow_mc_answerer] Stage F3 mesh-synergy RESOLVED authority=${assignedAuthority} ` +
+      `chosenLetter=${meshSynergyChosenLetter ?? 'NONE'} at t=${meshSynergyLatencyMs}ms -- swarm never fired.`,
+    );
+    return {
+      questionId,
+      domain,
+      chosenLetter: meshSynergyChosenLetter,
+      voterLetters: [meshSynergyChosenLetter],
+      voterDiagnostics: [{
+        temperature: 0,
+        status: meshSynergyResult ? 'parsed_ok' : 'empty_response',
+        responseChars: meshSynergyResult?.fact.length ?? 0,
+        rawPreview: `mesh-synergy assigned=${assignedAuthority}: ${(meshSynergyResult?.fact ?? '(no usable result)').slice(0, 200)}`,
+      }],
+      concordance: meshSynergyConcordance,
+      bmvScore: meshSynergyBmv,
+      // Swarm never ran on this path -- 0 candidates/0 specialists is the HONEST count, this
+      // peer's whole point is to contribute ONE authority's slice, not the swarm's.
+      gateOutcomes: evaluateGates(0, meshSynergyBmv, meshSynergyConcordance, meshSynergyLatencyMs),
+      specialistsUsed: [],
+      candidatesRaw: 0,
+      candidatesPostMiner: 0,
+      candidatesPostFurnace: 0,
+      andonTriggered: andonRetry > 0,
+      andonRetries: andonRetry,
+      ebletsWritten: 0,
+      latencyMs: meshSynergyLatencyMs,
+      traceSummary: meshSynergyTraceSummary,
+      provenanceReceipts: meshSynergyResult ? [{
+        source: `mesh_synergy:${assignedAuthority}`,
+        contentHash: createHash('sha256').update(meshSynergyResult.fact).digest('hex').slice(0, 16),
+        verified: meshSynergyResult.verified,
+        ...(meshSynergyResult.sourceUrl ? { provenanceUrl: meshSynergyResult.sourceUrl } : {}),
+      }] : [],
+      meshSynergyAssigned: assignedAuthority,
+    };
+  }
 
   // ── BP137 Yoke v2b Stage D.1: Psionic zero-LLM accelerator ────────────────────────────────
   // OPT-IN via researchArmMode && researchArmPsionic, both default false/absent. When either is
@@ -1726,5 +1885,13 @@ export async function runCanonicalPlowMcAnswer(
     ...(psionicDiscorded ? { psionicDiscorded } : {}),
     ...(starChamberReceipt ? { starChamber: starChamberReceipt } : {}),
     ...(browserAuthorityAttempted ? { browserAuthorityCorroboration } : {}),
+    // BP137 Yoke v2b Stage F3: purely additive receipt annotation -- present only when this
+    // peer was genuinely opted into mesh-synergy dispatch (never mutates chosenLetter/
+    // concordance/gateOutcomes/anything above; see meshSynergyAssigned's own doc comment on
+    // CanonicalPlowMcResult). Only reached with assignedAuthority==='swarm' (the
+    // 'user_google'/'user_perplexity' cases already returned early, above) -- i.e. this line
+    // only ever contributes `meshSynergyAssigned: 'swarm'` to the receipt, truthfully recording
+    // that this peer ran the ordinary full pipeline for its mesh-synergy slot.
+    ...(meshSynergyOn && assignedAuthority ? { meshSynergyAssigned: assignedAuthority } : {}),
   };
 }

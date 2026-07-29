@@ -4974,6 +4974,10 @@ function registerIPCHandlers(): void {
     // BP137 Yoke v2b (Research Arm): explicit opt-in, ignored unless plowEnabled is also true.
     // Threaded straight through to runOneClickMmluProTest -- see that function's config JSDoc.
     researchArmMode?: boolean;
+    // BP138 Yoke 0.9.13 F3: explicit opt-in to mesh-synergy dispatch, ignored unless
+    // plowEnabled + researchArmMode are also true. Threaded straight through to
+    // runOneClickMmluProTest -- see that function's researchArmMeshSynergy JSDoc.
+    researchArmMeshSynergy?: boolean;
     // BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset.
     exactPerCategory?: number;
     // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (wan_mesh +
@@ -5014,6 +5018,9 @@ function registerIPCHandlers(): void {
     plowEnabled?: boolean;
     plowAndonEnabled?: boolean;
     researchArmMode?: boolean;
+    // BP138 Yoke 0.9.13 F3: see mesh-test:run-one-click's researchArmMeshSynergy doc above --
+    // identical config shape, HOT-arm value.
+    researchArmMeshSynergy?: boolean;
     exactPerCategory?: number;
     federatedSubstrateEnabled?: boolean;
   }) => {
@@ -6341,6 +6348,25 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           // to tag the eblets THIS run writes to substrate as correct/wrong/unverified.
           const testModeCorrectAnswerLetterForPlow: string | null =
             typeof payload.correct_answer_letter === 'string' ? payload.correct_answer_letter : null;
+          // BP137 Yoke v2b Stage F3 (mesh synergy): its OWN wire flag, deliberately NOT fanned
+          // in from payload.research_arm_mode the way researchArmBrowserAuthority/
+          // researchArmStarChamber above are -- mesh-synergy dispatch is an ASKER-side decision
+          // (does this question's live-peer count justify distributing authorities across
+          // peers?) genuinely independent of whether research_arm_mode is on for the swarm
+          // itself, so an asker must opt in explicitly. Absent/false on every pre-Stage-F3
+          // payload (every existing wan_dispatch.ts call), matching this field's own
+          // conditional-spread convention there.
+          const researchArmMeshSynergyForPlow: boolean = payload.research_arm_mesh_synergy === true;
+          // BP137 Yoke v2b Stage F3: which authority (if any) the asker's round-robin dispatch
+          // loop assigned THIS peer for THIS question. Validated against the exact 3-value
+          // vocabulary wan_dispatch.ts's assignment emits -- an unrecognized/malformed value
+          // (e.g. a future asker sending something new this build doesn't understand) degrades
+          // to undefined (treated identically to "no assignment", i.e. run the full plow), never
+          // a crash or a guessed authority.
+          const assignedAuthorityForPlow: 'user_google' | 'user_perplexity' | 'swarm' | undefined =
+            payload.assigned_authority === 'user_google' || payload.assigned_authority === 'user_perplexity' || payload.assigned_authority === 'swarm'
+              ? payload.assigned_authority
+              : undefined;
           if (isDebugPromptLoggingEnabled()) {
             try {
               const debugDir = join(app.getPath('userData'), 'substrate');
@@ -6441,6 +6467,18 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                   // is false, so this is false too -- the Stage E block stays unreachable and
                   // this responder's behavior is byte-for-byte unchanged from pre-Stage-E.
                   researchArmStarChamber: researchArmModeForPlow,
+                  // BP137 Yoke v2b Stage F3 (mesh synergy): its own independent wire flag (see
+                  // researchArmMeshSynergyForPlow's own doc comment above for why this is NOT
+                  // fanned in from payload.research_arm_mode like every sibling flag above) --
+                  // AND-gated with researchArmMode inside plow_mc_answerer.ts itself (same
+                  // convention as every other researchArm* sub-flag), so this responder's
+                  // behavior is unaffected unless BOTH payload.research_arm_mode AND
+                  // payload.research_arm_mesh_synergy are true. assignedAuthority is spread in
+                  // ONLY when present -- an old/mesh-synergy-unaware asker's payload never has
+                  // this key, so this call's config object is byte-identical to every
+                  // pre-Stage-F3 call for that case.
+                  researchArmMeshSynergy: researchArmMeshSynergyForPlow,
+                  ...(assignedAuthorityForPlow ? { assignedAuthority: assignedAuthorityForPlow } : {}),
                 },
                 writeEbletFn,
                 (stage) => console.log(`[relay-poll] plow-stage route=${route.id.slice(0, 8)}: ${stage}`),
@@ -6487,6 +6525,13 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 // CanonicalPlowMcResult.starChamber doc). Absent (undefined, key present with
                 // undefined value is dropped by JSON.stringify) on every pre-Stage-E receipt.
                 star_chamber: plowResult.starChamber,
+                // BP137 Yoke v2b Stage F3, OPTIONAL/ADDITIVE -- present only when this peer was
+                // genuinely opted into mesh-synergy dispatch for this question (see
+                // plow_mc_answerer.ts's CanonicalPlowMcResult.meshSynergyAssigned doc). Absent
+                // (undefined -- key dropped by JSON.stringify) on every pre-Stage-F3 receipt.
+                // This is what lets the ASKER's pooled adjudication (wan_dispatch.ts) show
+                // "which peer, which authority" truthfully for every contributor.
+                mesh_synergy_assigned: plowResult.meshSynergyAssigned,
               };
               console.log(`[relay-poll] plow-answered route=${route.id.slice(0, 8)} letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
             } catch (plowErr) {
@@ -7342,6 +7387,11 @@ app.whenReady().then(async () => {
   // SEG-V0148-P2: capture resolved path + branch after init() completes
   _capturedOllamaPath = ollamaManager.getResolvedBinaryPath();
   _capturedOllamaBranch = ollamaManager.getResolvedBranch();
+
+  // BP138 Yoke 0.9.13 F4 item 4: nomic-embed-text self-heal check. Deliberately NOT awaited --
+  // ensureEmbeddingModel() is internally fire-and-forget (fires its own background pull when
+  // needed and returns immediately), so this line never adds boot latency, let alone hangs it.
+  ollamaManager.ensureEmbeddingModel();
 
   // SEG-V0148-P0-SKU-MODEL: promote to full-tier model if sku_tier.json says 'full'
   {
