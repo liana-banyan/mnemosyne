@@ -790,11 +790,11 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           ) : (
             <>
               <div style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0' }}>
-                COLD {liftResult.coldAccuracy !== null ? `${(liftResult.coldAccuracy * 100).toFixed(0)}%` : 'n/a'}
+                COLD {liftResult.coldAccuracy != null ? `${(liftResult.coldAccuracy * 100).toFixed(0)}%` : 'n/a'}
                 {' / '}
-                HOT {liftResult.hotAccuracy !== null ? `${(liftResult.hotAccuracy * 100).toFixed(0)}%` : 'n/a'}
+                HOT {liftResult.hotAccuracy != null ? `${(liftResult.hotAccuracy * 100).toFixed(0)}%` : 'n/a'}
                 {' / '}
-                LIFT {liftResult.liftPp !== null
+                LIFT {liftResult.liftPp != null
                   ? `${liftResult.liftPp >= 0 ? '+' : ''}${liftResult.liftPp.toFixed(1)}pp`
                   : 'n/a'}
                 <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400, marginLeft: 6 }}>

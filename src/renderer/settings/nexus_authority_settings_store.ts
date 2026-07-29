@@ -94,12 +94,35 @@ export function loadNexusAuthoritySettings(): NexusAuthoritySettingsSnapshot {
   }
 }
 
+// BP137 0.9.12 Stage F1 -- ADDITIVE. Mirrors both flags into the main process (a small JSON file
+// under userData; see nexus_authority_persistent_session.ts's header for why) every time either
+// toggle changes here, so the persistent-session module's flag gate is never blind to a
+// same-session change. Fire-and-forget: `window.amplify?.setNexusAuthorityBrowserFlags` is
+// optional-chained, so this is a guaranteed no-op (never throws, never blocks the localStorage
+// write above) on any build that predates Stage F1's preload.ts addition. This function has no
+// effect on this file's pre-existing localStorage read/write behavior -- it only ever ADDS a
+// side effect, never changes what loadNexusAuthoritySettings() reads back.
+function pushFlagsToMainProcessMirror(researchArmMode: boolean, researchArmBrowserAuthority: boolean): void {
+  try {
+    const amplify = (window as unknown as {
+      amplify?: { setNexusAuthorityBrowserFlags?: (mode: boolean, browserAuthority: boolean) => Promise<unknown> };
+    }).amplify;
+    amplify?.setNexusAuthorityBrowserFlags?.(researchArmMode, researchArmBrowserAuthority)?.catch?.(() => { /* non-fatal */ });
+  } catch { /* non-fatal -- localStorage remains the renderer's own source of truth regardless */ }
+}
+
+function readBooleanFlag(key: string): boolean {
+  try { return localStorage.getItem(key) === 'true'; } catch { return false; }
+}
+
 export function saveResearchArmMode(enabled: boolean): void {
   try { localStorage.setItem(LS_NEXUS_AUTHORITY_MODE, String(enabled)); } catch { /* non-fatal */ }
+  pushFlagsToMainProcessMirror(enabled, readBooleanFlag(LS_NEXUS_AUTHORITY_BROWSER));
 }
 
 export function saveResearchArmBrowserAuthority(enabled: boolean): void {
   try { localStorage.setItem(LS_NEXUS_AUTHORITY_BROWSER, String(enabled)); } catch { /* non-fatal */ }
+  pushFlagsToMainProcessMirror(readBooleanFlag(LS_NEXUS_AUTHORITY_MODE), enabled);
 }
 
 export function savePerArmAuthority(perArm: NexusPerArmAuthority): void {

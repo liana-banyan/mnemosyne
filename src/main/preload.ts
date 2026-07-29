@@ -640,6 +640,31 @@ contextBridge.exposeInMainWorld('amplify', {
   ): Promise<import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null> =>
     ipcRenderer.invoke('nexus-browser-authority-run-query', query),
 
+  // ── Nexus Authority persistent session (BP137 0.9.12 Stage F1) ─────────────
+  // Thin wraps around the four IPC channels index.ts's registerIPCHandlers() registers next to
+  // 'nexus-browser-authority-run-query' above -- see nexus_authority_persistent_session.ts's
+  // header for the real mechanism. Used by the Settings "Authorities" panel
+  // (NexusAuthoritySignInPanel.tsx) and by the persistent session's own inline embedder-page
+  // script (its "Done -- hide" button calls hideNexusAuthoritySession() directly).
+  setNexusAuthorityBrowserFlags: (
+    researchArmMode: boolean,
+    researchArmBrowserAuthority: boolean,
+  ): Promise<{ ok: boolean; enabled: boolean }> =>
+    ipcRenderer.invoke('nexus-authority-set-flags', { researchArmMode, researchArmBrowserAuthority }),
+
+  openNexusAuthoritySignIn: (
+    authority: 'user_google' | 'user_perplexity',
+  ): Promise<{ ok: boolean; reason: string | null }> =>
+    ipcRenderer.invoke('nexus-authority-open-signin', { authority }),
+
+  hideNexusAuthoritySession: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('nexus-authority-hide-signin'),
+
+  checkNexusAuthoritySignInStatus: (): Promise<{
+    enabled: boolean;
+    statuses: Array<{ authority: 'user_google' | 'user_perplexity'; signedIn: boolean; reason: string; checkedAt: string }>;
+  }> => ipcRenderer.invoke('nexus-authority-check-signin-status'),
+
   // ── On-Deck Master-of-Ceremonies (BP037) ──────────────────────────────────
 
   onDeckList: (): Promise<import('./on_deck/on_deck_bridge').OnDeckBridgePayload> =>
@@ -2066,6 +2091,19 @@ declare global {
       runBrowserAuthorityQuery?: (
         query: import('../shared/plow/browser_authority_types').BrowserAuthorityQuery,
       ) => Promise<import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null>;
+      // Nexus Authority persistent session (BP137 0.9.12 Stage F1)
+      setNexusAuthorityBrowserFlags?: (
+        researchArmMode: boolean,
+        researchArmBrowserAuthority: boolean,
+      ) => Promise<{ ok: boolean; enabled: boolean }>;
+      openNexusAuthoritySignIn?: (
+        authority: 'user_google' | 'user_perplexity',
+      ) => Promise<{ ok: boolean; reason: string | null }>;
+      hideNexusAuthoritySession?: () => Promise<{ ok: boolean }>;
+      checkNexusAuthoritySignInStatus?: () => Promise<{
+        enabled: boolean;
+        statuses: Array<{ authority: 'user_google' | 'user_perplexity'; signedIn: boolean; reason: string; checkedAt: string }>;
+      }>;
       // On-Deck Master-of-Ceremonies (BP037)
       onDeckList?: () => Promise<import('./on_deck/on_deck_bridge').OnDeckBridgePayload>;
       // Pantheon — Pixie Dust Mining (BP041 SAGA 1)

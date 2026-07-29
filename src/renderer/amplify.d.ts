@@ -265,6 +265,23 @@ declare global {
       watchdogHistory: (subject: string, window_hours?: number) => Promise<Array<{ ts: string; level: string; message: string }>>;
       // Webview preload path (B83b)
       getWebviewPreloadPath?: () => string;
+      // Browser-authority Nexus IPC leg (BP137 Yoke v2b Integration-1, Part 2)
+      runBrowserAuthorityQuery?: (
+        query: import('../shared/plow/browser_authority_types').BrowserAuthorityQuery,
+      ) => Promise<import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null>;
+      // Nexus Authority persistent session (BP137 0.9.12 Stage F1)
+      setNexusAuthorityBrowserFlags?: (
+        researchArmMode: boolean,
+        researchArmBrowserAuthority: boolean,
+      ) => Promise<{ ok: boolean; enabled: boolean }>;
+      openNexusAuthoritySignIn?: (
+        authority: 'user_google' | 'user_perplexity',
+      ) => Promise<{ ok: boolean; reason: string | null }>;
+      hideNexusAuthoritySession?: () => Promise<{ ok: boolean }>;
+      checkNexusAuthoritySignInStatus?: () => Promise<{
+        enabled: boolean;
+        statuses: Array<{ authority: 'user_google' | 'user_perplexity'; signedIn: boolean; reason: string; checkedAt: string }>;
+      }>;
       // On-Deck Master-of-Ceremonies (BP037)
       onDeckList?: () => Promise<{
         sequential: OnDeckItem[];

@@ -82,6 +82,21 @@ import {
   type BrowserAuthorityQuery,
   type BrowserAuthorityRawExtraction,
 } from '../shared/plow/browser_authority_types';
+// BP137 Yoke 0.9.12 Stage F1 ("persistent, always-on, logged-in browser authority") --
+// ADDITIVE. See nexus_authority_persistent_session.ts's own header for the full mechanism.
+// runBrowserAuthorityQueryFromMain() below is repointed to target ensureNexusAuthoritySession()'s
+// hidden, always-alive window instead of hearthConjunctionWindow (Stage F1 build item 2); the
+// four new nexus-authority-* IPC handlers in registerIPCHandlers() below are the Settings
+// "Authorities" panel's wire (build item 3).
+import {
+  ensureNexusAuthoritySession,
+  hideNexusAuthoritySession,
+  isNexusAuthorityFlagEnabled,
+  probeAllNexusAuthorityStatuses,
+  probeNexusAuthoritySignInStatus,
+  setNexusAuthorityBrowserFlags,
+  showNexusAuthoritySessionForSignIn,
+} from './plow/nexus_authority_persistent_session';
 import { querySagaState, recordWaveDispatch, recordWaveComplete } from './hearth/drekaskip_status/drekaskip_bridge';
 import { pollWatchdogStatus, getSubjectHistory } from './hearth/active_substrate/watchdog_bridge';
 import { toggleMonitor, getMetrics, getAllMonitorStates } from './hearth/active_substrate/scribe_monitor';
@@ -1504,21 +1519,35 @@ function openHearthConjunctionWindow(): void {
 // always null while its bridge is never announced).
 //
 // HONEST NULL PATHS (never fabricate a result -- this Yoke's honesty-firewall requirement):
-//   1. No hearth window open / destroyed -> resolves null immediately, no executeJavaScript call.
-//   2. Hearth window open but the user is not on the Browser tab -> EmbeddedChrome.tsx (and its
-//      one <webview>) is only mounted when activeTab === 'browser' (HearthConjunctionWindow.tsx),
-//      so the injected script's own querySelector finds nothing and resolves null.
+//   1. researchArmBrowserAuthority flag off (or its AND-gated researchArmMode partner) ->
+//      ensureNexusAuthoritySession() returns null immediately, no BrowserWindow/session-
+//      partition ever touched, no executeJavaScript call -- see build item 1's flag-gate.
+//   2. Persistent session window exists but its <webview> hasn't loaded yet / genuinely errors
+//      -> the injected script's own querySelector/timeout paths resolve null exactly as before.
 //   3. <webview> present but extraction genuinely fails or times out (selector miss on Google's/
 //      Perplexity's rendered page, or no reply within BROWSER_AUTHORITY_MAIN_TIMEOUT_MS) -> null.
 //   4. A browser-authority call is already in flight against the one shared webview -> this call
 //      resolves null immediately rather than queuing or clobbering the in-flight call's listeners
 //      (same "out of scope this pass" choice EmbeddedChrome.tsx's own dormant bridge documents).
+//   5. BP137 0.9.12 Stage F1 build item 4 (honesty firewall): the requested authority is not
+//      signed in (per probeNexusAuthoritySignInStatus()'s cheap DOM marker probe) -> null,
+//      WITHOUT ever attempting the scrape against a logged-out/lower-quality session.
 // Every one of these is indistinguishable, to the caller, from "browser authority unavailable" --
 // exactly the createNotWiredBridge() contract browser_authority_adapter.ts already documents.
-// NOTE (side effect, stated honestly): a successful call DOES navigate the user's live embedded
-// browser panel to a Google/Perplexity search-results page for the question -- this is the
+// NOTE (side effect, stated honestly): a successful call DOES navigate the persistent session's
+// live webview to a Google/Perplexity search-results page for the question -- this is the
 // designed behavior (the whole point is driving the user's own logged-in session), not an
-// accidental side effect, but it is visible if the user is looking at that tab when it fires.
+// accidental side effect. As of Stage F1 this surface is a HIDDEN window by default (build item
+// 1), so this navigation is normally invisible; it is only visible if the human has the
+// Settings "Authorities" sign-in window open at the same moment a lookup fires.
+//
+// BP137 0.9.12 Stage F1 REPOINT (build item 2): this function used to target
+// hearthConjunctionWindow (the visible Hearth Conjunction window's embedded <webview>), which
+// only existed while a human had that window open with the Browser tab active -- the exact gap
+// 0.9.11's live mesh receipt measured (0 of 20 browser-authority attempts fired headlessly).
+// It now targets ensureNexusAuthoritySession()'s always-alive hidden window instead, so this
+// works with ZERO visible Browser tab / Hearth Conjunction window open. hearthConjunctionWindow
+// itself, and everything else in openHearthConjunctionWindow() above, is completely untouched.
 const BROWSER_AUTHORITY_MAIN_TIMEOUT_MS = 20_000;
 const BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS = 1_200;
 let browserAuthorityMainCallInFlight = false;
@@ -1526,8 +1555,9 @@ let browserAuthorityMainCallInFlight = false;
 export async function runBrowserAuthorityQueryFromMain(
   query: BrowserAuthorityQuery,
 ): Promise<BrowserAuthorityRawExtraction | null> {
-  if (!hearthConjunctionWindow || hearthConjunctionWindow.isDestroyed()) {
-    console.warn('[browser-authority-main] no hearth window open -- resolving null (honest, never fabricated).');
+  const nexusWindow = ensureNexusAuthoritySession();
+  if (!nexusWindow) {
+    console.warn('[browser-authority-main] persistent nexus-authority session unavailable (flag off, or window could not be created) -- resolving null (honest, never fabricated).');
     return null;
   }
   if (browserAuthorityMainCallInFlight) {
@@ -1535,11 +1565,22 @@ export async function runBrowserAuthorityQueryFromMain(
     return null;
   }
 
+  // Stage F1 build item 4 -- honesty firewall: never attempt a query against an authority that
+  // isn't actually signed in (never silently degrade to a logged-out result while implying full
+  // authority). A real, non-fabricated "not signed in" is reported as null here, same as every
+  // other honest-null path this function already documents above.
+  const signInStatus = await probeNexusAuthoritySignInStatus(query.authority);
+  if (!signInStatus.signedIn) {
+    console.warn(`[browser-authority-main] ${query.authority} is not signed in (${signInStatus.reason}) -- resolving null (honest, never fabricated/degraded).`);
+    return null;
+  }
+
   const navigateUrl = buildBrowserAuthorityQueryUrl(query);
-  // Executed directly in hearthConjunctionWindow's page context (same mechanism as the
-  // preload-smoke-test above). query.question/query.authority are interpolated via
-  // JSON.stringify below, which produces a safe, quote-escaped JS string literal -- never raw
-  // string concatenation of user-controlled text into the script source.
+  // Executed directly in the persistent nexus-authority window's page context (same mechanism
+  // as the preload-smoke-test above, just against a different window instance).
+  // query.question/query.authority are interpolated via JSON.stringify below, which produces a
+  // safe, quote-escaped JS string literal -- never raw string concatenation of user-controlled
+  // text into the script source.
   const script = `
     (function() {
       return new Promise(function(resolve) {
@@ -1585,7 +1626,7 @@ export async function runBrowserAuthorityQueryFromMain(
 
   browserAuthorityMainCallInFlight = true;
   try {
-    const result = await hearthConjunctionWindow.webContents.executeJavaScript(script);
+    const result = await nexusWindow.webContents.executeJavaScript(script);
     if (!result || typeof result !== 'object') return null;
     const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null };
     if (!r.success || !r.snippet || !r.sourceUrl) return null; // honest -- never a partial/fabricated extraction
@@ -2715,6 +2756,36 @@ function registerIPCHandlers(): void {
   safeHandle('nexus-browser-authority-run-query', (_event, query: BrowserAuthorityQuery) =>
     runBrowserAuthorityQueryFromMain(query),
   );
+
+  // BP137 0.9.12 Stage F1 (build item 3, Settings "Authorities" panel wire): four new,
+  // additive-only IPC channels. See nexus_authority_persistent_session.ts's header for the full
+  // mechanism -- every one of these is a thin forward to that module's own flag-gated,
+  // honesty-firewalled functions, no new logic lives in this file's handlers themselves.
+  safeHandle(
+    'nexus-authority-set-flags',
+    (_event, { researchArmMode, researchArmBrowserAuthority }: { researchArmMode: boolean; researchArmBrowserAuthority: boolean }) => {
+      setNexusAuthorityBrowserFlags(!!researchArmMode, !!researchArmBrowserAuthority);
+      // Idempotent: creates the persistent session immediately if the flags just turned on
+      // (no app restart required); no-ops (returns null internally) if they're off.
+      ensureNexusAuthoritySession();
+      return { ok: true, enabled: isNexusAuthorityFlagEnabled() };
+    },
+  );
+
+  safeHandle('nexus-authority-open-signin', (_event, { authority }: { authority: 'user_google' | 'user_perplexity' }) => {
+    const opened = showNexusAuthoritySessionForSignIn(authority);
+    return { ok: opened, reason: opened ? null : 'flag_off_or_unavailable' };
+  });
+
+  safeHandle('nexus-authority-hide-signin', () => {
+    hideNexusAuthoritySession();
+    return { ok: true };
+  });
+
+  safeHandle('nexus-authority-check-signin-status', async () => {
+    const statuses = await probeAllNexusAuthorityStatuses();
+    return { enabled: isNexusAuthorityFlagEnabled(), statuses };
+  });
 
   // BP041 SAGA 3 ? Watch View toggle
   // hideToWatchView: hides the conjunction window while keeping the overlay + substrate alive.
@@ -7438,6 +7509,14 @@ app.whenReady().then(async () => {
   // SAGA-1 BP055: Dashboard is the default boot surface; overlay never auto-creates.
   createTray();
   registerIPCHandlers();
+
+  // BP137 0.9.12 Stage F1 build item 1: warm the persistent nexus-authority session at app
+  // lifetime start, NOT tied to any tab's open/close lifecycle. ensureNexusAuthoritySession()
+  // is its own flag gate -- when researchArmMode + researchArmBrowserAuthority aren't both on
+  // (the default), this is a single cheap file-read that returns null; no BrowserWindow, no
+  // `persist:nexus-authority` session partition, and no other new side effect occurs. See
+  // nexus_authority_persistent_session.ts's header for the full flag-mirror mechanism.
+  ensureNexusAuthoritySession();
 
   // SAGA 10 BP045 W1 ? Register mnemosyne:// + mnemo:// deep-link protocols (BP065)
   registerDeepLinkProtocol(
