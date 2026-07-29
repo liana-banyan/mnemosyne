@@ -146,3 +146,70 @@ export async function runBrowserAuthorityLookup(
 
   return distillExtraction(raw, trimmedQuestion);
 }
+
+// ─── BP138 Yoke 0.9.15 FIX 3: raw fact+source primitive (no MC match required) ────────────────
+//
+// WHY THIS EXISTS (R-MECHANISM-VERIFY): plow_mc_answerer.ts's Stage F2 (around its "browser-
+// authority-first routing" block) and Stage F3 (its "mesh-synergy" block) are the only two
+// callers of runBrowserAuthorityLookup() above, and BOTH force the result through
+// matchFreeTextAnswerToOption(...) to land on an MC letter -- there was NO path anywhere in
+// this repo that returned a distilled fact+sourceUrl as a standalone answer for an OPEN-ENDED
+// (non-multiple-choice) question. An open-ended Ask-tab question could therefore never resolve
+// via the browser authority even with perfect DOM extraction working, because the only exposed
+// contract required an MC option list to match against.
+//
+// This function is that missing primitive. It is a thin, additive wrapper around
+// runBrowserAuthorityLookup() above -- it duplicates none of that function's flag-gating,
+// bridge-calling, or distillation logic, it only reshapes the same BrowserAuthorityLookupResult
+// into a standalone-fact contract with no MC awareness at all.
+//
+// FUTURE USE (named with this in mind, per the BP138 Yoke prompt): the BP138 decompose-and-
+// eliminate engine will need to ask "is option X true?" as a per-option foundation-fact check --
+// a raw fact+source lookup, never an MC-letter vote. This is exactly that primitive's contract,
+// available now for FIX 4's Ask-tab wiring (src/main/index.ts's 'nexus-ask-lookup-fact' handler)
+// and reusable later by that engine with zero changes needed here.
+//
+// NOT wired into Stage F2/F3's existing call sites (plow_mc_answerer.ts is left byte-unchanged
+// by this Yoke) -- see this Yoke's final report for the explicit reasoning: Stage F2/F3's
+// "MC-matching behavior must not change at all" requirement is trivially, provably satisfied by
+// never touching those call sites, rather than risking a refactor of already-working code under
+// this Yoke's time budget. A future pass MAY have Stage F2/F3 call this function internally
+// (to stop duplicating the runBrowserAuthorityLookup call) and layer matchFreeTextAnswerToOption
+// on top of its output -- this function's shape already supports that without modification.
+export interface RawBrowserAuthorityFact {
+  /** The distilled FACT text -- same value as BrowserAuthorityLookupResult.fact, never the
+   *  vendor's full prose response (see distillExtraction()'s MAX_FACT_CHARS cap). */
+  fact: string;
+  /** Genuinely extracted source URL. Never a placeholder -- see runBrowserAuthorityLookup()'s
+   *  own honesty-firewall doc; this function returns null (not a fake URL) when that one does. */
+  sourceUrl: string;
+  authority: BrowserAuthorityName;
+  /** Coarse confidence signal derived from BrowserAuthorityLookupResult.verified (a real,
+   *  non-empty scraped snippet of substantive length) -- NOT a model-calibrated probability.
+   *  0.8 when verified, 0.4 when a fact was returned but didn't clear that bar. Callers that
+   *  need a stricter bar should additionally check `verified` semantics via the wrapped
+   *  BrowserAuthorityLookupResult (not exposed here to keep this primitive's shape minimal). */
+  confidence: number;
+}
+
+/**
+ * Returns a standalone `{ fact, sourceUrl, authority, confidence }` for ANY question -- multiple
+ * choice or open-ended -- without requiring or attempting an MC-option match. Never fabricates:
+ * returns null in every case runBrowserAuthorityLookup() does (flag off, empty question, or the
+ * underlying browser-authority call itself returned nothing usable).
+ */
+export async function getRawBrowserAuthorityFact(
+  question: string,
+  config: BrowserAuthorityAdapterConfig,
+  bridge: BrowserAuthorityBridge,
+): Promise<RawBrowserAuthorityFact | null> {
+  const result = await runBrowserAuthorityLookup(question, config, bridge);
+  if (!result) return null;
+
+  return {
+    fact: result.fact,
+    sourceUrl: result.sourceUrl,
+    authority: result.authority,
+    confidence: result.verified ? 0.8 : 0.4,
+  };
+}
