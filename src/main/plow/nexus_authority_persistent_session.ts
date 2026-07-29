@@ -132,12 +132,12 @@ function buildEmbedderHtml(): string {
 <head>
 <meta charset="utf-8">
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; background: #0f0f1a; font-family: -apple-system, "Segoe UI", Arial, sans-serif; }
-  #bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: #1a1a2e; border-bottom: 1px solid #2d3748; box-sizing: border-box; height: 38px; }
+  html, body { margin: 0; padding: 0; height: 100%; display: flex; flex-direction: column; background: #0f0f1a; font-family: -apple-system, "Segoe UI", Arial, sans-serif; }
+  #bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: #1a1a2e; border-bottom: 1px solid #2d3748; box-sizing: border-box; height: 38px; flex: 0 0 auto; }
   button { background: #2d3748; color: #e2e8f0; border: 1px solid #4a5568; border-radius: 4px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
   button:hover { background: #374151; }
   #status { color: #94a3b8; font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
-  #wvwrap { position: absolute; top: 38px; left: 0; right: 0; bottom: 0; }
+  #wvwrap { flex: 1 1 auto; position: relative; overflow: hidden; }
   webview { width: 100%; height: 100%; display: block; }
 </style>
 </head>
@@ -279,9 +279,21 @@ const GOOGLE_SIGNED_IN_MARKERS = [
 // signed in remains UNVERIFIED pending a human completing the interactive login this Yoke's own
 // acceptance bar requires -- see this file's SIGN_IN_CONTROL_MARKERS override below for the
 // honesty-firewall safety net that additionally guards against a future false positive here.
+// 0.9.14 -- broadened OR-match candidate set (keeps the original 2, adds 7 more) to reduce the
+// false-negative risk of a HARD GATE marker list: a miss here blocks Perplexity for every query.
+// Honesty note: only the original 2 markers above carry the BP137 0.9.12 logged-out-page
+// absence verification; the 7 additions below are defensive candidates NOT yet live-verified
+// against an actual signed-in Perplexity DOM -- pending that one live-verify pass.
 const PERPLEXITY_SIGNED_IN_MARKERS = [
   '[data-testid="user-account-menu"]',
   'button[aria-label*="Account" i]',
+  '[data-testid="user-avatar"]',
+  'img[alt*="avatar" i]',
+  'a[href="/account"]',
+  'a[href^="/settings"]',
+  '[class*="workspace" i][class*="switcher" i]',
+  '[data-testid*="pro" i]',
+  'button[aria-label*="workspace" i]',
 ];
 
 // Defense-in-depth for the honesty firewall: a page that is still showing an explicit sign-in
