@@ -118,11 +118,13 @@ function readBooleanFlag(key: string): boolean {
 export function saveResearchArmMode(enabled: boolean): void {
   try { localStorage.setItem(LS_NEXUS_AUTHORITY_MODE, String(enabled)); } catch { /* non-fatal */ }
   pushFlagsToMainProcessMirror(enabled, readBooleanFlag(LS_NEXUS_AUTHORITY_BROWSER));
+  window.dispatchEvent(new Event('nexus-authority-settings-changed'));
 }
 
 export function saveResearchArmBrowserAuthority(enabled: boolean): void {
   try { localStorage.setItem(LS_NEXUS_AUTHORITY_BROWSER, String(enabled)); } catch { /* non-fatal */ }
   pushFlagsToMainProcessMirror(readBooleanFlag(LS_NEXUS_AUTHORITY_MODE), enabled);
+  window.dispatchEvent(new Event('nexus-authority-settings-changed'));
 }
 
 export function savePerArmAuthority(perArm: NexusPerArmAuthority): void {

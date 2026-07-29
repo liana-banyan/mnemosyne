@@ -43,9 +43,14 @@ export function NexusAuthoritySignInPanel() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const snapshot = loadNexusAuthoritySettings();
-    setFlagsEnabled(snapshot.researchArmMode && snapshot.researchArmBrowserAuthority);
+    const refresh = () => {
+      const snapshot = loadNexusAuthoritySettings();
+      setFlagsEnabled(snapshot.researchArmMode && snapshot.researchArmBrowserAuthority);
+    };
+    refresh();
     setLoaded(true);
+    window.addEventListener('nexus-authority-settings-changed', refresh);
+    return () => window.removeEventListener('nexus-authority-settings-changed', refresh);
   }, []);
 
   const handleOpenSignIn = useCallback(async (authority: AuthorityKey) => {
