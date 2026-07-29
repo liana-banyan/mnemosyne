@@ -17,6 +17,7 @@ import { SubstrateAwakensJoinPanel } from './SubstrateAwakensJoinPanel';
 // section (own state, own persistence via nexus_authority_settings_store.ts). See that
 // component's file header for the full Bishop-audit rationale.
 import { NexusAuthoritySettings } from '../settings/NexusAuthoritySettings';
+import { NexusAuthoritySignInPanel } from '../settings/NexusAuthoritySignInPanel';
 
 interface SettingsTabProps {
   authState: AuthState | null;
@@ -1642,6 +1643,9 @@ export function SettingsTab({
 
       {/* BP137 Yoke v2b Stage C: Nexus Authority per-arm picker — new section, self-contained */}
       <NexusAuthoritySettings />
+
+      {/* BP137 0.9.12 Stage F1: Authorities (Nexus) sign-in panel — new section, self-contained */}
+      <NexusAuthoritySignInPanel />
 
       {/* Card 2: AI Capability (SEG-R-2) */}
       <section

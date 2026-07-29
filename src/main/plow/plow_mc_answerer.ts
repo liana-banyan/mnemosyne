@@ -194,7 +194,19 @@ export interface CanonicalPlowMcConfig {
    *  single `browserAuthorityOn` guard at its one call site below -- and this function stays
    *  byte-for-byte unchanged for that (default) case. Structurally compatible with
    *  browser_authority_types.ts's BrowserAuthorityAdapterConfig (same two field names/types),
-   *  so this config object can be passed there directly with no adapter/mapping layer. */
+   *  so this config object can be passed there directly with no adapter/mapping layer.
+   *
+   *  BP137 Yoke v2b Stage F2 (this Yoke): Integration-1 above called the browser authority
+   *  AFTER the specialist swarm had already fired, and only for ONE authority
+   *  (config.preferredAuthority ?? 'user_google'), then short-circuited past the voters
+   *  entirely on a match. Stage F2 moves the call earlier (before the swarm's first fetch,
+   *  see "Stage F2: browser-authority-FIRST routing" near the top of
+   *  runCanonicalPlowMcAnswer), queries BOTH user_google AND user_perplexity sequentially, and
+   *  -- on a match -- injects the result(s) as the TOP-priority fact(s) ahead of the (demoted,
+   *  never dropped) encyclopedia facts, feeding them into the SAME existing MC voter pipeline
+   *  instead of bypassing it (see "Stage F2 build item 2" injection block, right after the
+   *  relevance gate). This flag's semantics (AND-gated with researchArmMode, unreachable/
+   *  byte-unchanged when false) are otherwise unchanged. */
   researchArmBrowserAuthority?: boolean;
   /** BP137 Yoke v2b Stage E, OPT-IN/DEFAULT FALSE, independent AND-gate on top of
    *  researchArmMode (both must be true) -- same convention as every other researchArm* sub-flag
@@ -308,6 +320,15 @@ export interface CanonicalPlowMcResult {
   /** BP137 Yoke v2b Stage A.0, OPTIONAL/ADDITIVE. True only when researchArmRelevanceGate fired
    *  an abstain (swarm found candidates, none passed isQaRelevant). Absent otherwise. */
   relevanceGateAbstain?: boolean;
+  /** BP137 Yoke v2b Stage F2, OPTIONAL/ADDITIVE. Present only when the early browser-authority-
+   *  first block actually attempted a lookup for this question (classified 'lookup_fact' AND
+   *  browserAuthorityOn) -- absent otherwise, so old receipts and this new field never collide.
+   *  'agree'/'disagree' only when BOTH Google and Perplexity returned a matched fact; 'single_*'
+   *  when exactly one did; 'none' when both returned null (honest not-signed-in/no-answer, see
+   *  build item 4) or neither matched an MC option. Never a fabricated blended verdict -- see
+   *  this file's Stage F2 injection block for why disagreement is left to the existing
+   *  concordance/DISCORDANT machinery rather than merged here. */
+  browserAuthorityCorroboration?: 'agree' | 'disagree' | 'single_google' | 'single_perplexity' | 'none';
   /** BP137 Yoke v2b Stage D, extra requirement, OPTIONAL/ADDITIVE. True only when the new
    *  compute-fallthrough-no-facts abstain fired (classified computable, compute sidecar
    *  attempted and failed/no-match, AND zero facts were available for the voters -- whether
@@ -874,6 +895,117 @@ export async function runCanonicalPlowMcAnswer(
     }
   }
 
+  // ── BP137 Yoke v2b Stage F2: browser-authority-FIRST routing for fact-shaped questions ────
+  // WHY HERE (R-MECHANISM-VERIFY): the prior pass (Integration-1/Stage C, see the receipt-only
+  // remnant comment near componentFactsList below) called the browser authority AFTER the
+  // 9-specialist swarm had already fired its network calls -- confirmed by direct read: that
+  // call site lived inside the `if (computeSidecarOn || browserAuthorityOn)` block below,
+  // itself positioned AFTER the swarm loop a few lines down. The Founder's explicit F2
+  // directive is "ask Google FIRST" -- so this block sits HERE, before the swarm loop's first
+  // specialist fetch, and is fully awaited (sequential, not fire-and-forget) before any code
+  // below it runs. This is the literal, provable "no swarm network call fires before the
+  // browser-authority calls resolve" guarantee build item 1 asks for.
+  //
+  // Classification is intentionally duplicated (cheap, pure, zero I/O -- see
+  // answer_type_classifier.ts) rather than sharing state with the `classifiedAnswerType`
+  // variable assigned later below: that variable is only set inside the `if (computeSidecarOn
+  // || browserAuthorityOn)` block further down (unchanged from Integration-1 -- the one and
+  // only site that populates CanonicalPlowMcResult.answerType, so every existing return path's
+  // reference to classifiedAnswerType stays untouched by this Stage). Calling
+  // classifyAnswerType() a second time here has ZERO behavioral difference (deterministic,
+  // side-effect-free) and keeps this block fully self-contained.
+  //
+  // GATING: this whole block is `if (browserAuthorityOn)` -- browserAuthorityOn is already
+  // `!!(config.researchArmMode && config.researchArmBrowserAuthority)` (declared above,
+  // unchanged). When either is false/absent (every caller that predates this Yoke, including
+  // every existing computeSidecarOn-only or plain swarm+voter caller), this entire block is
+  // unreachable and browserGoogleResult/browserPerplexityResult/browserAuthorityCorroboration
+  // stay at their initial null/'none' values -- which the injection block further below (right
+  // after the relevance gate) treats as "nothing to inject", making the rest of this function
+  // byte-for-byte unchanged for the flag-off case. This is build item 4's "zero behavior change
+  // on the fallback path" requirement, provable by inspection.
+  let browserGoogleResult: BrowserAuthorityLookupResult | null = null;
+  let browserPerplexityResult: BrowserAuthorityLookupResult | null = null;
+  let browserGoogleMatch: { letter: string; score: number } | null = null;
+  let browserPerplexityMatch: { letter: string; score: number } | null = null;
+  let browserAuthorityAttempted = false;
+  let browserAuthorityCorroboration: 'agree' | 'disagree' | 'single_google' | 'single_perplexity' | 'none' = 'none';
+  if (browserAuthorityOn) {
+    const earlyAnswerTypeForBrowserAuthority = classifyAnswerType(researchQuery);
+    if (earlyAnswerTypeForBrowserAuthority === 'lookup_fact') {
+      browserAuthorityAttempted = true;
+      onProgress?.('browser-authority-lookup-first');
+      console.log(`[plow_mc_answerer] Stage F2 seq=1 browser-authority-first: firing BEFORE swarm at t=${Date.now() - startMs}ms.`);
+      // REAL bridge (not createNotWiredBridge()): reaches index.ts's
+      // runBrowserAuthorityQueryFromMain() via a dynamic import -- same dynamic-import
+      // rationale as Integration-1's own bridge (index.ts already dynamically imports THIS
+      // module, so a static top-level import in this direction would be a circular require).
+      const browserBridge: BrowserAuthorityBridge = {
+        async runQueryInUserBrowser(query) {
+          try {
+            const mainModule = await import('../index');
+            return await mainModule.runBrowserAuthorityQueryFromMain(query);
+          } catch (err) {
+            console.warn('[plow_mc_answerer] Stage F2 browser-authority bridge call failed (non-fatal, honest null):', err);
+            return null;
+          }
+        },
+      };
+      // Sequential, not Promise.all: runBrowserAuthorityQueryFromMain() (index.ts) guards a
+      // single shared <webview> with browserAuthorityMainCallInFlight -- a concurrent second
+      // call would resolve null immediately rather than genuinely querying Perplexity, per
+      // that function's own documented "already in flight" honest-null path. This also happens
+      // to match the F2 spec's own "sequential-first is the safer/clearer read" note.
+      try {
+        browserGoogleResult = await runBrowserAuthorityLookup(
+          researchQuery, { ...config, preferredAuthority: 'user_google' }, browserBridge,
+        );
+      } catch (err) {
+        console.warn('[plow_mc_answerer] Stage F2 google lookup threw (non-fatal, honest null):', err);
+        browserGoogleResult = null;
+      }
+      try {
+        browserPerplexityResult = await runBrowserAuthorityLookup(
+          researchQuery, { ...config, preferredAuthority: 'user_perplexity' }, browserBridge,
+        );
+      } catch (err) {
+        console.warn('[plow_mc_answerer] Stage F2 perplexity lookup threw (non-fatal, honest null):', err);
+        browserPerplexityResult = null;
+      }
+      console.log(
+        `[plow_mc_answerer] Stage F2 seq=2 browser-authority-first RESOLVED at t=${Date.now() - startMs}ms ` +
+        `(google=${browserGoogleResult ? 'fact' : 'null'} perplexity=${browserPerplexityResult ? 'fact' : 'null'}) ` +
+        `-- swarm has NOT fired yet.`,
+      );
+
+      const mcOptionsForBrowserAuthority = parseOptionsFromPrompt(mcPromptWithSubstrate);
+      browserGoogleMatch = browserGoogleResult
+        ? matchFreeTextAnswerToOption(browserGoogleResult.fact, mcOptionsForBrowserAuthority)
+        : null;
+      browserPerplexityMatch = browserPerplexityResult
+        ? matchFreeTextAnswerToOption(browserPerplexityResult.fact, mcOptionsForBrowserAuthority)
+        : null;
+
+      // Build item 3 -- corroboration bookkeeping ONLY (never a fabricated blended answer): both
+      // matched facts (when present) are injected as SEPARATE candidates below, and the
+      // pre-existing 3-voter concordance/DISCORDANT machinery is what actually decides the
+      // outcome when they disagree -- this marker is purely informational/trace.
+      if (browserGoogleMatch && browserPerplexityMatch) {
+        browserAuthorityCorroboration = browserGoogleMatch.letter === browserPerplexityMatch.letter ? 'agree' : 'disagree';
+      } else if (browserGoogleMatch) {
+        browserAuthorityCorroboration = 'single_google';
+      } else if (browserPerplexityMatch) {
+        browserAuthorityCorroboration = 'single_perplexity';
+      } else {
+        browserAuthorityCorroboration = 'none';
+      }
+      console.log(
+        `[plow_mc_answerer] Stage F2 browser-authority-first corroboration=${browserAuthorityCorroboration} ` +
+        `googleMatch=${browserGoogleMatch?.letter ?? 'null'} perplexityMatch=${browserPerplexityMatch?.letter ?? 'null'}.`,
+      );
+    }
+  }
+
   // BP134 Yoke #32 Phase C: deepHarvest is opt-in per call (field-sowing only, see config
   // JSDoc). When false/undefined, effectiveSpecialistKeys is byte-identical to the caller's
   // specialistKeys object -- no new field is even present -- so the live A/B/C button's
@@ -1008,6 +1140,57 @@ export async function runCanonicalPlowMcAnswer(
       factsForArbitration = factsForArbitrationUnfiltered.filter((c) => isQaRelevant(researchQuery, c.content));
     }
   }
+
+  // ── BP137 Yoke v2b Stage F2 build item 2: browser-authority fact(s) as the TOP-priority
+  //    component(s), encyclopedia-swarm facts demoted (never dropped) to the remaining slot(s)
+  //    ─────────────────────────────────────────────────────────────────────────────────────────
+  // Deliberately placed AFTER the relevance gate above (never fed through isQaRelevant/semantic
+  // similarity itself) -- a genuinely scraped Google/Perplexity answer to THIS EXACT question is
+  // definitionally on-topic; running it back through a relevance filter tuned for encyclopedia
+  // extracts would only risk a false negative on the one fact this Stage exists to surface.
+  // Prepending (spread at the front) is what makes it TOP: componentFactsList and
+  // provenanceReceipts below both `.slice(0, 3)` from the FRONT of factsForArbitration, so a
+  // browser fact injected here is always the first thing the voters see and the first receipt
+  // in the list -- literally "TOP provenance component" (build item 2). Encyclopedia facts
+  // already sitting in factsForArbitration are pushed to the remaining slot(s), not spliced out
+  // -- "demoted to supporting/fallback evidence... never dropped entirely" (build item 2/4).
+  // browserFactCandidateSet (referenced later, at the provenanceReceipts map) lets that later
+  // code mark ONLY these candidates verified:true + a real provenanceUrl, without touching the
+  // pre-existing arbitrationFactsVerified logic for encyclopedia candidates.
+  //
+  // When browserAuthorityOn is false/absent, or the question isn't lookup_fact, or both
+  // authorities returned null/unmatched (the honest not-signed-in/no-answer case, build item
+  // 4), browserGoogleMatch/browserPerplexityMatch are both null, browserFactCandidates stays
+  // [], and factsForArbitration is left as the EXACT SAME reference the relevance gate above
+  // produced -- byte-identical to pre-F2 behavior for every one of those cases.
+  const browserFactCandidates: CandidateEblet[] = [];
+  if (browserGoogleMatch && browserGoogleResult) {
+    browserFactCandidates.push({
+      source: 'user_google',
+      content: browserGoogleResult.fact,
+      weight: 1,
+      sid: createHash('sha256').update(`user_google:${browserGoogleResult.fact}`).digest('hex').slice(0, 16),
+      provenance_url: browserGoogleResult.sourceUrl,
+    });
+  }
+  if (browserPerplexityMatch && browserPerplexityResult) {
+    browserFactCandidates.push({
+      source: 'user_perplexity',
+      content: browserPerplexityResult.fact,
+      weight: 1,
+      sid: createHash('sha256').update(`user_perplexity:${browserPerplexityResult.fact}`).digest('hex').slice(0, 16),
+      provenance_url: browserPerplexityResult.sourceUrl,
+    });
+  }
+  const browserFactCandidateSet = new Set<CandidateEblet>(browserFactCandidates);
+  if (browserFactCandidates.length > 0) {
+    factsForArbitration = [...browserFactCandidates, ...factsForArbitration];
+    console.log(
+      `[plow_mc_answerer] Stage F2 seq=3 browser fact(s) injected as TOP provenance ` +
+      `(count=${browserFactCandidates.length}, corroboration=${browserAuthorityCorroboration}) ` +
+      `at t=${Date.now() - startMs}ms -- swarm already ran above; encyclopedia facts demoted, not dropped.`,
+    );
+  }
   // Appended to trace strings below only when the gate actually ran (relevanceGateMethod is
   // null, not a string, when relevanceGateOn is false) -- flag-off traces are byte-unchanged.
   const relevanceGateMethodTrace = relevanceGateMethod ? ` relevanceGateMethod=${relevanceGateMethod}` : '';
@@ -1124,95 +1307,16 @@ export async function runCanonicalPlowMcAnswer(
       // Never guess.
     }
 
-    // ── BP137 Yoke v2b Integration-1 (Stage C wiring): lookup_fact -> browser authority ──────
-    // Gated on browserAuthorityOn (== researchArmMode && researchArmBrowserAuthority, both
-    // default false/absent) AND answerType === 'lookup_fact' -- unreachable for every caller
-    // that predates this Integration-1 pass, and mutually exclusive with the computable branch
-    // above (a question is classified exactly one of computable/lookup_fact/reasoning). Reuses
-    // Stage A.3's positioning choice (after the swarm already ran, before the fallthrough-
-    // abstain checks below) for consistency with the computable branch, not a new architectural
-    // decision -- see this block's own trade-off note below.
-    if (browserAuthorityOn && answerType === 'lookup_fact') {
-      onProgress?.('browser-authority-lookup');
-      // REAL bridge (not createNotWiredBridge()): reaches index.ts's
-      // runBrowserAuthorityQueryFromMain() via a dynamic import. Dynamic (not static) because
-      // index.ts already dynamically imports THIS module (see index.ts's plow-enabled branch,
-      // `await import('./plow/plow_mc_answerer')`) -- a static top-level import in this
-      // direction would be a circular require. This only ever executes mid-request, well after
-      // index.ts's own module-level code has finished running, so Node's require cache returns
-      // the fully-initialized module every time -- safe, and the only place in this file that
-      // needs this pattern.
-      const bridge: BrowserAuthorityBridge = {
-        async runQueryInUserBrowser(query) {
-          try {
-            const mainModule = await import('../index');
-            return await mainModule.runBrowserAuthorityQueryFromMain(query);
-          } catch (err) {
-            console.warn('[plow_mc_answerer] browser-authority bridge call failed (non-fatal, honest null):', err);
-            return null;
-          }
-        },
-      };
-      let lookupResult: BrowserAuthorityLookupResult | null = null;
-      try {
-        lookupResult = await runBrowserAuthorityLookup(researchQuery, config, bridge);
-      } catch (err) {
-        console.warn('[plow_mc_answerer] runBrowserAuthorityLookup threw (non-fatal, falling through to swarm):', err);
-        lookupResult = null;
-      }
-      if (lookupResult) {
-        const mcOptions = parseOptionsFromPrompt(mcPromptWithSubstrate);
-        const matched = matchFreeTextAnswerToOption(lookupResult.fact, mcOptions);
-        if (matched) {
-          onProgress?.(`browser-authority-matched:${lookupResult.authority}`);
-          const browserLatencyMs = Date.now() - startMs;
-          const browserConcordance: ConcordanceClass = 'CONCORDANT';
-          const browserBmv = computeBmvScore(1, 1, 1, 0, browserConcordance, 1, browserLatencyMs);
-          const browserReceipt: ProvenanceReceipt = {
-            source: `browser_authority:${lookupResult.authority}`,
-            contentHash: createHash('sha256').update(lookupResult.fact).digest('hex').slice(0, 16),
-            verified: lookupResult.verified,
-            provenanceUrl: lookupResult.sourceUrl,
-          };
-          const traceSummary =
-            `researchArmBrowserAuthority=true answerType=lookup_fact authority=${lookupResult.authority} ` +
-            `sourceUrl=${lookupResult.sourceUrl} matchedOption=${matched.letter}(score=${matched.score.toFixed(2)}) ` +
-            `bmv=${browserBmv} andonRetries=${andonRetry}${relevanceGateMethodTrace}`;
-          // Same honest-swarm-counts rationale as the compute-sidecar receipt above: the swarm
-          // ran unconditionally before this block, so specialistsUsed/candidatesRaw/etc. are the
-          // REAL counts for this question, even though its facts went unused on this return path.
-          return {
-            questionId,
-            domain,
-            chosenLetter: matched.letter,
-            voterLetters: [matched.letter, matched.letter, matched.letter],
-            voterDiagnostics: [{
-              temperature: 0,
-              status: 'parsed_ok',
-              responseChars: lookupResult.fact.length,
-              rawPreview: `browser authority (${lookupResult.authority}): ${lookupResult.fact.slice(0, 200)}`,
-            }],
-            concordance: browserConcordance,
-            bmvScore: browserBmv,
-            gateOutcomes: evaluateGates(postFurnace.length, browserBmv, browserConcordance, browserLatencyMs),
-            specialistsUsed,
-            candidatesRaw,
-            candidatesPostMiner: postMiner.length,
-            candidatesPostFurnace: postFurnace.length,
-            andonTriggered: andonRetry > 0,
-            andonRetries: andonRetry,
-            ebletsWritten: 0,
-            latencyMs: browserLatencyMs,
-            traceSummary,
-            provenanceReceipts: [browserReceipt],
-            answerType,
-          };
-        }
-      }
-      // Bridge unavailable (no hearth window / not on the browser tab / extraction failed) or no
-      // option matched within tolerance -- fall through to the unchanged swarm+voter path below.
-      // Never guess.
-    }
+    // BP137 Yoke v2b Stage F2: the lookup_fact -> browser-authority routing that used to live
+    // here (Integration-1/Stage C) now happens BEFORE the swarm loop far above (see "Stage F2:
+    // browser-authority-FIRST routing"), queries BOTH user_google AND user_perplexity, and
+    // injects the result(s) into factsForArbitration (see "Stage F2 build item 2" above, right
+    // after the relevance gate) instead of short-circuiting this function with its own early
+    // return -- see those two blocks' comments for the full rationale (feed into the existing
+    // MC voter pipeline as the primary fact, rather than bypass it). `answerType` here still
+    // legitimately reaches 'lookup_fact' for a fact-shaped question with browserAuthorityOn
+    // false (browser routing never ran, browserFactCandidates stayed empty above) -- that case
+    // still falls through to the unchanged swarm+voter path below exactly as it always has.
   }
 
   // ── Extra requirement (Stage D, Bishop/Founder verbal refinement this session): compute-
@@ -1344,7 +1448,16 @@ export async function runCanonicalPlowMcAnswer(
   const provenanceReceipts: ProvenanceReceipt[] = factsForArbitration.slice(0, 3).map((c) => ({
     source: c.source,
     contentHash: createHash('sha256').update(c.content).digest('hex').slice(0, 16),
-    verified: arbitrationFactsVerified,
+    // BP137 Yoke v2b Stage F2 build item 5: a browser-sourced candidate (source exactly
+    // 'user_google'/'user_perplexity', tracked by OBJECT REFERENCE in browserFactCandidateSet,
+    // never by re-matching the source string) is always verified:true -- it is a real,
+    // genuinely scraped extraction (see distillExtraction()'s own verified bit upstream),
+    // independent of whether THIS question's encyclopedia swarm happened to survive Saladin.
+    // Every other candidate keeps the pre-existing arbitrationFactsVerified (postFurnace-
+    // survival) rule, byte-unchanged from pre-F2 behavior -- browserFactCandidateSet is always
+    // empty when browserAuthorityOn is false/absent or no browser fact matched, so `.has(c)` is
+    // always false and this ternary always takes the pre-existing branch for that case.
+    verified: browserFactCandidateSet.has(c) ? true : arbitrationFactsVerified,
     ...(c.provenance_url ? { provenanceUrl: c.provenance_url } : {}),
   }));
   const arbitrationPrompt = buildMcArbitrationPrompt(factsContext, mcPromptWithSubstrate);
@@ -1574,12 +1687,20 @@ export async function runCanonicalPlowMcAnswer(
   );
 
   const psionicMarkerTrace = psionicConcurred ? ' psionicConcurred=true' : psionicDiscorded ? ' psionicDiscorded=true' : '';
+  // BP137 Yoke v2b Stage F2: only appended when the early browser-authority-first block
+  // actually attempted a lookup (classified 'lookup_fact' AND browserAuthorityOn) -- empty
+  // string, byte-unchanged trace, for every other case.
+  const browserAuthorityTrace = browserAuthorityAttempted
+    ? ` browserAuthorityFirst=true corroboration=${browserAuthorityCorroboration} ` +
+      `googleFact=${browserGoogleResult ? 'yes' : 'no'} perplexityFact=${browserPerplexityResult ? 'yes' : 'no'} ` +
+      `injectedAsTopFacts=${browserFactCandidates.length}`
+    : '';
   const traceSummary =
     `specialists=[${specialistsUsed.join(',')}] raw=${candidatesRaw} postMiner=${postMiner.length} ` +
     `postFurnace=${postFurnace.length} voters=[${voterLetters.map((l) => l ?? '-').join(',')}] ` +
     `voterStatus=[${voterDiagnostics.map((v) => v.status).join(',')}] ` +
     `concordance=${concordance} bmv=${bmvScore} andonRetries=${andonRetry} latencyGateAdvisoryOnly=true` +
-    `${relevanceGateMethodTrace}${psionicMarkerTrace}`;
+    `${relevanceGateMethodTrace}${psionicMarkerTrace}${browserAuthorityTrace}`;
 
   return {
     questionId,
@@ -1604,5 +1725,6 @@ export async function runCanonicalPlowMcAnswer(
     ...(psionicConcurred ? { psionicConcurred } : {}),
     ...(psionicDiscorded ? { psionicDiscorded } : {}),
     ...(starChamberReceipt ? { starChamber: starChamberReceipt } : {}),
+    ...(browserAuthorityAttempted ? { browserAuthorityCorroboration } : {}),
   };
 }
