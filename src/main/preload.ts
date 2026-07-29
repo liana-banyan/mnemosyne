@@ -1335,6 +1335,10 @@ contextBridge.exposeInMainWorld('amplify', {
     plowAndonEnabled?: boolean;
     // BP137 Yoke v2b (Research Arm): explicit opt-in, ignored unless plowEnabled is also true.
     researchArmMode?: boolean;
+    // BP138 Yoke 0.9.13 F3: explicit opt-in to mesh-synergy dispatch, ignored unless
+    // plowEnabled + researchArmMode are also true (see one_click_mmlu_pro.ts's
+    // researchArmMeshSynergy doc comment for the exact AND-gate).
+    researchArmMeshSynergy?: boolean;
     // BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset.
     exactPerCategory?: number;
     // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (wan_mesh +
@@ -1372,6 +1376,9 @@ contextBridge.exposeInMainWorld('amplify', {
     plowEnabled?: boolean;
     plowAndonEnabled?: boolean;
     researchArmMode?: boolean;
+    // BP138 Yoke 0.9.13 F3: see meshTestRunOneClick's researchArmMeshSynergy doc above --
+    // identical config shape, HOT-arm value.
+    researchArmMeshSynergy?: boolean;
     exactPerCategory?: number;
     federatedSubstrateEnabled?: boolean;
   }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>

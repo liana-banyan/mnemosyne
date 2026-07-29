@@ -30,6 +30,12 @@ function computeLocalHash(version: string): string | null {
   return createHash('sha512').update(bytes).digest('hex');
 }
 
+// BP138 Yoke 0.9.13 F4 item 3: how many additional ports to try (47214, 47215, ...) before
+// giving up. A second Frame instance on the SAME machine is the only realistic collision case
+// (mesh peers are separate machines with their own :47213) -- a handful of sequential ports is
+// plenty of headroom without scanning indefinitely.
+const MAX_PORT_RETRIES = 5;
+
 export function startPeerArtifactServer(): void {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? '/';
@@ -72,7 +78,38 @@ export function startPeerArtifactServer(): void {
     res.end('Not found');
   });
 
-  server.listen(PEER_ARTIFACT_PORT, () => {
-    console.log(`[PeerArtifactServer] Listening on port ${PEER_ARTIFACT_PORT} (Frame: ${FRAME_ID})`);
-  });
+  // BP138 Yoke 0.9.13 F4 item 3: server.listen()'s EADDRINUSE fires asynchronously as an
+  // 'error' EVENT on the server object -- it is NOT thrown synchronously, so the try/catch
+  // around startPeerArtifactServer() at the index.ts call site never caught it. An unhandled
+  // 'error' event on a Node EventEmitter is a fatal uncaught exception that crashed the whole
+  // main process the moment a second MnemosyneC instance ran on the same machine (both bind
+  // :47213). Fix: attach the 'error' handler BEFORE calling listen(), and on EADDRINUSE retry
+  // sequentially on the next port up to MAX_PORT_RETRIES times; any other listen error, or
+  // exhausting all retries, logs a clear warning and gives up -- this server is a nice-to-have
+  // (serves this node's cached installer bytes to mesh peers) and must NEVER be allowed to take
+  // the app down with it.
+  const attemptListen = (port: number, retriesLeft: number): void => {
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE' && retriesLeft > 0) {
+        const nextPort = port + 1;
+        console.warn(`[PeerArtifactServer] Port ${port} in use (another instance running?) -- trying ${nextPort}`);
+        attemptListen(nextPort, retriesLeft - 1);
+        return;
+      }
+      if (err.code === 'EADDRINUSE') {
+        console.warn(
+          `[PeerArtifactServer] All ports ${PEER_ARTIFACT_PORT}-${port} in use -- ` +
+          `giving up (non-fatal). This node will not serve cached installer bytes to mesh ` +
+          `peers this session; mesh update propagation still works via each OTHER live peer.`,
+        );
+        return;
+      }
+      console.warn('[PeerArtifactServer] Failed to start (non-fatal):', err);
+    });
+    server.listen(port, () => {
+      console.log(`[PeerArtifactServer] Listening on port ${port} (Frame: ${FRAME_ID})`);
+    });
+  };
+
+  attemptListen(PEER_ARTIFACT_PORT, MAX_PORT_RETRIES);
 }

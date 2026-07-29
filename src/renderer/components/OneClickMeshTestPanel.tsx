@@ -249,6 +249,225 @@ export function downloadReceipt(result: OneClickRunResult): void {
   }
 }
 
+// ─── BP138 Yoke 0.9.14: shared results/receipt view ───────────────────────────
+// Extracted verbatim from this panel's own completed-result JSX so the new Proof tab (Phase 1
+// of the nav-reorg) can show the same aggregate + receipt without a second, independently
+// drifting copy of this block -- Power/Diagnostics (this panel, unmodified below) and Proof
+// both render exactly this component, fed by the same persisted OneClickRunResult.
+
+export interface MeshTestResultSummaryProps {
+  result: OneClickRunResult;
+  onShareResult?: (result: OneClickRunResult) => void;
+  /** BP138 Yoke 0.9.14: Proof tab passes true to additionally render a collapsible
+   *  per-question list (each question + its provenance receipt row) -- this is the "how this
+   *  answer was assembled" detail the Proof tab asks for, built entirely from data already
+   *  present on `result.outcomes` (no new IPC, no fabricated numbers). Power/Diagnostics's
+   *  own inline use of this component (below) omits this flag, matching its pre-existing
+   *  on-screen output exactly. */
+  showPerQuestionDetail?: boolean;
+}
+
+export function MeshTestResultSummary({ result, onShareResult, showPerQuestionDetail }: MeshTestResultSummaryProps): React.ReactElement {
+  // BP137 Honest-MMLU-Provenance Yoke, Step 2+3: the provenance-backed subset of this result's
+  // outcomes -- only outcomes with at least one named-source receipt count here, per Step 2's
+  // explicit "no receipt -> not substrate-sourced" rule. This is the SINGLE headline number for
+  // this benchmark (never the raw "all outcomes" percentage, which may include un-sourced
+  // single-shot/Minor-Council answers that are pure model recall, not swarm-provenance).
+  const sourcedOutcomes = result.outcomes.filter(isProvenanceSourced);
+  const sourcedScored = sourcedOutcomes.filter((o) => o.parsedLetter !== null).length;
+  const sourcedCorrect = sourcedOutcomes.filter((o) => o.isCorrect).length;
+  const sourcedAccuracy = sourcedScored > 0 ? sourcedCorrect / sourcedScored : null;
+  const [detailOpen, setDetailOpen] = useState(false);
+
+  return (
+    <div>
+      <div style={{
+        background: '#111827', border: '1px solid #1e2d45', borderRadius: 8,
+        padding: '10px 14px', marginBottom: 8,
+      }}>
+        {sourcedAccuracy !== null ? (
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#6ee7b7' }}>
+            {`${(sourcedAccuracy * 100).toFixed(0)}% sourced-knowledge accuracy`}
+            <span style={{ fontSize: 10, color: '#475569', fontWeight: 400, marginLeft: 6 }}>
+              (provenance-backed, {sourcedCorrect}/{sourcedScored} of {sourcedOutcomes.length} sourced answers)
+            </span>
+          </div>
+        ) : (
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#facc15' }}>
+            Not provenance-sourced this run
+            <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400, marginLeft: 6 }}>
+              (enable 12-Blade Plow on WAN Mesh for a sourced-knowledge headline)
+            </span>
+          </div>
+        )}
+        <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>
+          {result.accuracy !== null ? `${(result.accuracy * 100).toFixed(0)}% raw accuracy` : 'no scored answers'}
+          {' (all answers incl. non-sourced fallback -- not substrate-provenance) · '}
+          {result.correct}/{result.scored} correct (of {result.total} answers run) ·{' '}
+          {result.dispatchMode === 'wan_mesh'
+            ? `dispatched across ${result.livePeersFound ?? '?'} live WAN peer(s)`
+            : result.dispatchMode === 'local_ollama' ? 'dispatched locally on this machine' : result.dispatchMode}
+          {' · substrate '}
+          <span style={{ color: result.substrateEnabled ? '#6ee7b7' : '#94a3b8', fontWeight: 700 }}>
+            {result.substrateEnabled ? 'ON' : 'OFF'}
+          </span>
+          {result.dispatchMode === 'wan_mesh' && (
+            <>
+              {' · answered by '}
+              <span style={{ color: result.plowEnabled ? '#facc15' : '#94a3b8', fontWeight: 700 }}>
+                {result.plowEnabled ? '12-Blade Plow' : 'single-shot'}
+              </span>
+            </>
+          )}
+          {result.dispatchMode === 'wan_mesh' && (
+            <>
+              {' · federated substrate '}
+              <span style={{ color: result.federatedSubstrateEnabled ? '#a78bfa' : '#94a3b8', fontWeight: 700 }}>
+                {result.federatedSubstrateEnabled ? 'ON' : 'OFF'}
+              </span>
+            </>
+          )}
+        </div>
+        <div style={{ fontSize: 10, color: '#475569', marginTop: 4, fontStyle: 'italic' }}>
+          {result.datasetLabel}
+          {result.exactPerCategory && ` · exact ${result.exactPerCategory}/category sampling (Full 14x${result.exactPerCategory})`}
+        </div>
+        {result.corpusManifestSha256 && (
+          <div style={{ fontSize: 9, color: '#334155', marginTop: 2, fontFamily: 'monospace' }}>
+            corpus manifest sha256: {result.corpusManifestSha256.slice(0, 16)}...
+          </div>
+        )}
+      </div>
+
+      {result.peerBreakdown && result.peerBreakdown.length > 0 && (
+        <div style={{
+          background: '#111827', border: '1px solid #1e2d45', borderRadius: 8,
+          padding: '10px 14px', marginBottom: 8,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', marginBottom: 6 }}>
+            Per-peer accuracy
+          </div>
+          {result.peerBreakdown.map((p) => (
+            <div key={p.peerId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#cbd5e1', padding: '2px 0' }}>
+              <span style={{ color: '#38bdf8' }}>{p.machineLabel}</span>
+              <span>
+                {p.accuracy !== null ? `${(p.accuracy * 100).toFixed(0)}%` : 'unscored'} ({p.correct}/{p.scored} of {p.total})
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* BP135 Phase 2 (Layer A: consensus): the mesh's single consensus answer, shown
+          ALONGSIDE (never replacing) the per-peer breakdown above -- a wan_mesh run always
+          still shows what each individual peer answered. */}
+      {result.consensusOutcomes && result.consensusOutcomes.length > 0 && (
+        <div style={{
+          background: '#111827', border: '1px solid #3b2d5f', borderRadius: 8,
+          padding: '10px 14px', marginBottom: 8,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#c4b5fd', marginBottom: 6 }}>
+            Mesh consensus
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#c4b5fd', marginBottom: 6 }}>
+            {result.consensusAccuracy !== null && result.consensusAccuracy !== undefined
+              ? `${(result.consensusAccuracy * 100).toFixed(0)}% consensus accuracy`
+              : 'No scored consensus answers'}
+            {' — '}
+            {result.consensusOutcomes.filter((c) => c.isConsensusCorrect).length}/
+            {result.consensusOutcomes.filter((c) => c.consensusLetter !== null).length} correct
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {result.consensusOutcomes.map((c) => (
+              <div key={c.question_id} style={{ display: 'flex', gap: 8, fontSize: 10, color: '#94a3b8' }}>
+                <span style={{ color: c.isConsensusCorrect ? '#4ade80' : '#f87171' }}>
+                  {c.isConsensusCorrect ? '✓' : c.consensusLetter === null ? '·' : '✗'}
+                </span>
+                <span style={{ color: '#64748b' }}>[{c.category}]</span>
+                <span>
+                  consensus {c.consensusLetter ?? '—'} (correct {c.correctLetter})
+                </span>
+                {c.andonTriggered && (
+                  <span style={{ color: '#facc15', fontWeight: 700 }}>andon triggered</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* BP138 Yoke 0.9.14: Proof tab's "how this answer was assembled" detail -- one row per
+          question, reusing the exact same ProvenanceReceiptRow this panel already shows during
+          a live run. Collapsed by default since a 70-question run would otherwise dump a wall
+          of text into the Proof tab. */}
+      {showPerQuestionDetail && result.outcomes.length > 0 && (
+        <div style={{
+          background: '#111827', border: '1px solid #1e2d45', borderRadius: 8,
+          padding: '10px 14px', marginBottom: 8,
+        }}>
+          <button
+            onClick={() => setDetailOpen((v) => !v)}
+            style={{
+              background: 'none', border: 'none', color: '#94a3b8', fontSize: 11, fontWeight: 700,
+              cursor: 'pointer', fontFamily: 'system-ui, sans-serif', padding: 0,
+            }}
+          >
+            {detailOpen ? '▼' : '▶'} How this answer was assembled -- {result.outcomes.length} question(s)
+          </button>
+          {detailOpen && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+              {result.outcomes.map((o, i) => (
+                <div key={`${o.question_id}-${o.peerId ?? 'local'}-${i}`}>
+                  <div style={{ fontSize: 11, color: o.isCorrect ? '#4ade80' : '#f87171', display: 'flex', gap: 8 }}>
+                    <span>{o.isCorrect ? '✓' : o.timedOut ? '⏱' : o.isAbstain ? '·' : '✗'}</span>
+                    {o.machineLabel && <span style={{ color: '#38bdf8' }}>[{o.machineLabel}]</span>}
+                    {o.answeredBy === 'plow' && <span style={{ color: '#facc15' }}>[plow]</span>}
+                    <span style={{ color: '#64748b' }}>[{o.category}]</span>
+                    <span style={{ color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {o.question}
+                    </span>
+                  </div>
+                  <ProvenanceReceiptRow outcome={o} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        {onShareResult && (
+          <button
+            onClick={() => onShareResult(result)}
+            style={{
+              background: 'none', color: '#6ee7b7', border: '1px solid #1e4038', borderRadius: 6,
+              padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            📤 Share your results
+          </button>
+        )}
+
+        {/* BP134 Yoke #32 Phase F item 4: third-party verifiability -- serialize the FULL
+            OneClickRunResult (every outcome, every plow_trace, corpus manifest hash) so
+            anyone can independently re-check the scoring without trusting the on-screen
+            percentage alone. */}
+        <button
+          onClick={() => downloadReceipt(result)}
+          style={{
+            background: 'none', color: '#93c5fd', border: '1px solid #1e3a5f', borderRadius: 6,
+            padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            fontFamily: 'system-ui, sans-serif',
+          }}
+        >
+          ⬇ Download receipt (.json)
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export interface OneClickMeshTestPanelProps {
   onShareResult?: (result: OneClickRunResult) => void;
   /** BP135 YOKE_35 Phase 3: optional -- gates the ported Pioneer Bonus (membership-only,
@@ -280,6 +499,13 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   // for computable questions) together. Off by default, same opt-in pattern as every other
   // toggle here.
   const [researchArmMode, setResearchArmMode] = useState(false);
+  // BP138 Yoke 0.9.13 F3: explicit opt-in to mesh-synergy dispatch (asker's round-robin
+  // distribution of DIFFERENT authorities -- user_google/user_perplexity/swarm -- across live
+  // peers for the SAME question, instead of every peer redundantly running the identical full
+  // plow). Only meaningful when plowEnabled + researchArmMode are also true AND mode is
+  // wan_mesh with 2+ live peers (see one_click_mmlu_pro.ts's researchArmMeshSynergy doc comment
+  // for the exact AND-gate). Off by default, same opt-in pattern as every toggle above.
+  const [researchArmMeshSynergy, setResearchArmMeshSynergy] = useState(false);
   // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (federated
   // substrate layer). Only meaningful when substrateEnabled is true AND mode is wan_mesh --
   // ignored server-side otherwise (see one_click_mmlu_pro.ts config.federatedSubstrateEnabled
@@ -395,6 +621,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         plowEnabled,
         plowAndonEnabled,
         researchArmMode,
+        researchArmMeshSynergy,
         exactPerCategory: fullPresetSelected ? 5 : undefined,
         federatedSubstrateEnabled,
       });
@@ -407,7 +634,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
       setErrorMsg(String(e));
       setState('error');
     }
-  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, fullPresetSelected, federatedSubstrateEnabled]);
+  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, researchArmMeshSynergy, fullPresetSelected, federatedSubstrateEnabled]);
 
   // BP138 Yoke: 'mesh-test:hotcold-progress' listener -- a dedicated channel (see
   // one_click_mmlu_pro.ts's opts.progressChannel) so a lift run's two inner
@@ -453,6 +680,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         plowEnabled,
         plowAndonEnabled,
         researchArmMode,
+        researchArmMeshSynergy,
         exactPerCategory: fullPresetSelected ? 5 : undefined,
         federatedSubstrateEnabled,
       });
@@ -465,22 +693,11 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
       setLiftErrorMsg(String(e));
       setLiftState('error');
     }
-  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, fullPresetSelected, federatedSubstrateEnabled]);
+  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, researchArmMeshSynergy, fullPresetSelected, federatedSubstrateEnabled]);
 
   const runningAccuracy = liveOutcomes.length > 0
     ? liveOutcomes.filter((o) => o.isCorrect).length / liveOutcomes.length
     : null;
-
-  // BP137 Honest-MMLU-Provenance Yoke, Step 2+3: the provenance-backed subset of the
-  // completed result's outcomes -- only outcomes with at least one named-source receipt
-  // count here, per Step 2's explicit "no receipt -> not substrate-sourced" rule. This is
-  // what Step 3 requires as the SINGLE headline number for this benchmark (never the raw
-  // "all outcomes" percentage, which may include un-sourced single-shot/Minor-Council
-  // answers that are pure model recall, not swarm-provenance).
-  const sourcedOutcomes = result ? result.outcomes.filter(isProvenanceSourced) : [];
-  const sourcedScored = sourcedOutcomes.filter((o) => o.parsedLetter !== null).length;
-  const sourcedCorrect = sourcedOutcomes.filter((o) => o.isCorrect).length;
-  const sourcedAccuracy = sourcedScored > 0 ? sourcedCorrect / sourcedScored : null;
 
   const modeButton = (choice: DispatchModeChoice, label: string) => (
     <button
@@ -618,6 +835,39 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           </span>
         </label>
       )}
+      {/* BP138 Yoke 0.9.13 F3: Mesh Synergy checkbox -- mirrors the Research Arm checkbox
+          immediately above. Gated WAN-mesh + plow + research-arm-only: this is an asker-side
+          decision about distributing DIFFERENT authorities across live peers for the SAME
+          question, which only makes sense with 2+ live WAN peers actually dispatched to.
+          Rendering follows the same plowEnabled-nested pattern as researchArmMode above;
+          additionally greyed out/disabled (never hidden) when mode isn't wan_mesh or
+          researchArmMode is off, same convention as the federated-substrate gating below. */}
+      {plowEnabled && researchArmMode && (() => {
+        const meshSynergyGated = busy || mode !== 'wan_mesh';
+        return (
+          <label
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, marginLeft: 20,
+              fontSize: 12, color: meshSynergyGated ? '#475569' : '#94a3b8',
+              cursor: meshSynergyGated ? 'default' : 'pointer',
+              fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={researchArmMeshSynergy}
+              disabled={meshSynergyGated}
+              onChange={(e) => { setResearchArmMeshSynergy(e.target.checked); setFullPresetSelected(false); }}
+            />
+            Mesh Synergy {researchArmMeshSynergy ? 'ON' : 'OFF'} (requires 2+ peers)
+            <span style={{ color: '#475569', fontSize: 10 }}>
+              (ON: distributes DIFFERENT authorities -- Google/Perplexity/swarm -- round-robin
+              across live WAN peers for the SAME question, then pools their answers, instead of
+              every peer redundantly running the identical full plow. WAN Mesh mode only.)
+            </span>
+          </label>
+        );
+      })()}
 
       {/* BP135 Yoke #34 Phase 5: explicit opt-in to the federated-substrate layer -- pools
           topical eblets across ALL live peers instead of each peer using only its own local
@@ -863,158 +1113,13 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         <div style={{ fontSize: 12, color: '#f87171', marginTop: 8 }}>✗ {errorMsg}</div>
       )}
 
+      {/* BP138 Yoke 0.9.14: the completed-result summary is now the shared MeshTestResultSummary
+          component (defined below, exported) instead of inline JSX here -- the Proof tab reuses
+          the SAME component (fed by the same persisted LS_LAST_RESULT) so the aggregate/receipt
+          view never has two independently-maintained copies of this JSX. */}
       {(state === 'complete' || (state === 'idle' && result)) && result && (
         <div style={{ marginTop: state === 'complete' ? 12 : 0 }}>
-          <div style={{
-            background: '#111827', border: '1px solid #1e2d45', borderRadius: 8,
-            padding: '10px 14px', marginBottom: 8,
-          }}>
-            {/* BP137 Honest-MMLU-Provenance Yoke, Step 3: the headline is the
-                PROVENANCE-BACKED number (sourcedAccuracy), never the raw/legacy `result.accuracy`
-                which may include un-sourced single-shot/Minor-Council answers that carry no
-                receipt. When nothing in this run was provenance-sourced (Plow off, or WAN mesh
-                not used, or the swarm returned zero usable facts), the headline says so plainly
-                instead of presenting an unlabeled score that implies a reasoning claim. */}
-            {sourcedAccuracy !== null ? (
-              <div style={{ fontSize: 16, fontWeight: 700, color: '#6ee7b7' }}>
-                {`${(sourcedAccuracy * 100).toFixed(0)}% sourced-knowledge accuracy`}
-                <span style={{ fontSize: 10, color: '#475569', fontWeight: 400, marginLeft: 6 }}>
-                  (provenance-backed, {sourcedCorrect}/{sourcedScored} of {sourcedOutcomes.length} sourced answers)
-                </span>
-              </div>
-            ) : (
-              <div style={{ fontSize: 14, fontWeight: 700, color: '#facc15' }}>
-                Not provenance-sourced this run
-                <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400, marginLeft: 6 }}>
-                  (enable 12-Blade Plow on WAN Mesh for a sourced-knowledge headline)
-                </span>
-              </div>
-            )}
-            <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>
-              {result.accuracy !== null ? `${(result.accuracy * 100).toFixed(0)}% raw accuracy` : 'no scored answers'}
-              {' (all answers incl. non-sourced fallback -- not substrate-provenance) · '}
-              {result.correct}/{result.scored} correct (of {result.total} answers run) ·{' '}
-              {result.dispatchMode === 'wan_mesh'
-                ? `dispatched across ${result.livePeersFound ?? '?'} live WAN peer(s)`
-                : result.dispatchMode === 'local_ollama' ? 'dispatched locally on this machine' : result.dispatchMode}
-              {' · substrate '}
-              <span style={{ color: result.substrateEnabled ? '#6ee7b7' : '#94a3b8', fontWeight: 700 }}>
-                {result.substrateEnabled ? 'ON' : 'OFF'}
-              </span>
-              {result.dispatchMode === 'wan_mesh' && (
-                <>
-                  {' · answered by '}
-                  <span style={{ color: result.plowEnabled ? '#facc15' : '#94a3b8', fontWeight: 700 }}>
-                    {result.plowEnabled ? '12-Blade Plow' : 'single-shot'}
-                  </span>
-                </>
-              )}
-              {result.dispatchMode === 'wan_mesh' && (
-                <>
-                  {' · federated substrate '}
-                  <span style={{ color: result.federatedSubstrateEnabled ? '#a78bfa' : '#94a3b8', fontWeight: 700 }}>
-                    {result.federatedSubstrateEnabled ? 'ON' : 'OFF'}
-                  </span>
-                </>
-              )}
-            </div>
-            <div style={{ fontSize: 10, color: '#475569', marginTop: 4, fontStyle: 'italic' }}>
-              {result.datasetLabel}
-              {result.exactPerCategory && ` · exact ${result.exactPerCategory}/category sampling (Full 14x${result.exactPerCategory})`}
-            </div>
-            {result.corpusManifestSha256 && (
-              <div style={{ fontSize: 9, color: '#334155', marginTop: 2, fontFamily: 'monospace' }}>
-                corpus manifest sha256: {result.corpusManifestSha256.slice(0, 16)}...
-              </div>
-            )}
-          </div>
-
-          {result.peerBreakdown && result.peerBreakdown.length > 0 && (
-            <div style={{
-              background: '#111827', border: '1px solid #1e2d45', borderRadius: 8,
-              padding: '10px 14px', marginBottom: 8,
-            }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', marginBottom: 6 }}>
-                Per-peer accuracy
-              </div>
-              {result.peerBreakdown.map((p) => (
-                <div key={p.peerId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#cbd5e1', padding: '2px 0' }}>
-                  <span style={{ color: '#38bdf8' }}>{p.machineLabel}</span>
-                  <span>
-                    {p.accuracy !== null ? `${(p.accuracy * 100).toFixed(0)}%` : 'unscored'} ({p.correct}/{p.scored} of {p.total})
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* BP135 Phase 2 (Layer A: consensus): the mesh's single consensus answer, shown
-              ALONGSIDE (never replacing) the per-peer breakdown above -- a wan_mesh run always
-              still shows what each individual peer answered. */}
-          {result.consensusOutcomes && result.consensusOutcomes.length > 0 && (
-            <div style={{
-              background: '#111827', border: '1px solid #3b2d5f', borderRadius: 8,
-              padding: '10px 14px', marginBottom: 8,
-            }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#c4b5fd', marginBottom: 6 }}>
-                Mesh consensus
-              </div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: '#c4b5fd', marginBottom: 6 }}>
-                {result.consensusAccuracy !== null && result.consensusAccuracy !== undefined
-                  ? `${(result.consensusAccuracy * 100).toFixed(0)}% consensus accuracy`
-                  : 'No scored consensus answers'}
-                {' — '}
-                {result.consensusOutcomes.filter((c) => c.isConsensusCorrect).length}/
-                {result.consensusOutcomes.filter((c) => c.consensusLetter !== null).length} correct
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                {result.consensusOutcomes.map((c) => (
-                  <div key={c.question_id} style={{ display: 'flex', gap: 8, fontSize: 10, color: '#94a3b8' }}>
-                    <span style={{ color: c.isConsensusCorrect ? '#4ade80' : '#f87171' }}>
-                      {c.isConsensusCorrect ? '✓' : c.consensusLetter === null ? '·' : '✗'}
-                    </span>
-                    <span style={{ color: '#64748b' }}>[{c.category}]</span>
-                    <span>
-                      consensus {c.consensusLetter ?? '—'} (correct {c.correctLetter})
-                    </span>
-                    {c.andonTriggered && (
-                      <span style={{ color: '#facc15', fontWeight: 700 }}>andon triggered</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: 8 }}>
-            {onShareResult && (
-              <button
-                onClick={() => onShareResult(result)}
-                style={{
-                  background: 'none', color: '#6ee7b7', border: '1px solid #1e4038', borderRadius: 6,
-                  padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                  fontFamily: 'system-ui, sans-serif',
-                }}
-              >
-                📤 Share your results
-              </button>
-            )}
-
-            {/* BP134 Yoke #32 Phase F item 4: third-party verifiability -- serialize the FULL
-                OneClickRunResult (every outcome, every plow_trace, corpus manifest hash) so
-                anyone can independently re-check the scoring without trusting the on-screen
-                percentage alone. */}
-            <button
-              onClick={() => downloadReceipt(result)}
-              style={{
-                background: 'none', color: '#93c5fd', border: '1px solid #1e3a5f', borderRadius: 6,
-                padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                fontFamily: 'system-ui, sans-serif',
-              }}
-            >
-              ⬇ Download receipt (.json)
-            </button>
-          </div>
+          <MeshTestResultSummary result={result} onShareResult={onShareResult} />
         </div>
       )}
 

@@ -22,6 +22,10 @@ import { MnemosyneTabView } from './components/MnemosyneTabView';
 // 'dashboard' view and the '#/clean-shell' hash now mount CleanShell. Kept per Rule 66.)
 import { LeanShell } from './components/LeanShell';
 import { CleanShell } from './components/CleanShell';
+// BP138 Yoke 0.9.14 — new 5-tab Compass nav (Ask/Proof/Library/Social/More), reachable for
+// testing at #/compass. Sibling to CleanShell.tsx; does not touch it or either of its two
+// existing mount points ('dashboard' / 'clean-shell') below.
+import { CompassShell } from './components/CompassShell';
 import { AMPLIFYDashboard } from './components/AMPLIFYDashboard';
 import { ClipboardCaptureModal } from './components/ClipboardCaptureModal';
 import { ModelPullDialog } from './components/ModelPullDialog';
@@ -42,6 +46,7 @@ type View =
   | 'overlay'
   | 'dashboard'
   | 'clean-shell'
+  | 'compass'
   | 'hearth-conjunction'
   | 'federation'
   | 'helm'
@@ -56,6 +61,11 @@ function getInitialView(): View {
   // #/dashboard. Not linked from any default-path UI yet — Founder/Bishop opens it
   // directly by hash while the clean-shell-v0.9 branch is under review.
   if (hash === '#/clean-shell') return 'clean-shell';
+  // BP138 Yoke 0.9.14 — new 5-tab Compass nav (Ask/Proof/Library/Social/More), reachable for
+  // testing at #/compass. Not linked from any default-path UI yet — Founder/Bishop opens it
+  // directly by hash while the nav-reorg is under review. Additive-only: does not change the
+  // #/dashboard or #/clean-shell resolution above.
+  if (hash === '#/compass') return 'compass';
   if (hash === '#/hearth-conjunction') return 'hearth-conjunction';
   if (hash === '#/federation') return 'federation';
   if (hash === '#/helm') return 'helm';
@@ -108,8 +118,6 @@ export default function App() {
   );
   // v0.4.0 BP083 SEG-5: post-install restart prompt state
   const [restartPrompt, setRestartPrompt] = useState<{ version: string; message: string } | null>(null);
-  // v0.4.2 BP083 SEG-3.5: lifecycle diagnostic banner
-  const [lifecycleBanner, setLifecycleBanner] = useState<string | null>(null);
   // v0.4.2 BP083 SEG-5: Plow resume modal
   const [plowResumeData, setPlowResumeData] = useState<Record<string, unknown> | null>(null);
 
@@ -143,32 +151,6 @@ export default function App() {
     window.amplify.onPlowResumePrompt?.((data) => {
       setPlowResumeData(data);
     });
-
-    // v0.4.2 BP083 SEG-3.5: Lifecycle diagnostic banner
-    // Check if onboarding is stuck (stage A/B/C, last-modified > 24h ago)
-    try {
-      const stage = localStorage.getItem('mnemosynec_lifecycle_stage');
-      const onboardingComplete = localStorage.getItem('mnemosynec_onboarding_complete');
-      const tsRaw = localStorage.getItem('mnemosynec_lifecycle_stage_ts');
-      // Ensure ts is set on first-write so age computation is valid
-      if (stage && !tsRaw) {
-        localStorage.setItem('mnemosynec_lifecycle_stage_ts', Date.now().toString());
-      }
-      if (stage && !onboardingComplete && ['A', 'B', 'C'].includes(stage)) {
-        const tsMs = tsRaw ? parseInt(tsRaw, 10) : null;
-        // Guard: null/NaN ts means fresh install — ageMs stays 0, never false-positives
-        const ageMs = (tsMs !== null && !isNaN(tsMs)) ? (Date.now() - tsMs) : 0;
-        const ageDays = ageMs / (1000 * 60 * 60 * 24);
-        const isGenuinelyStuck = ageDays > 14 && tsMs !== null;
-        if (isGenuinelyStuck) {
-          // Auto-advance: offer Reset (genuinely stuck 14+ days — not fresh install)
-          setLifecycleBanner(`reset-offer:${stage}`);
-        } else if (ageDays > 1) {
-          // Diagnostic banner: visible reminder (> 24h stuck)
-          setLifecycleBanner(`stuck:${stage}`);
-        }
-      }
-    } catch { /* non-fatal */ }
 
     // First-launch model check deferred to BP067 Bp067FirstRunSpine (setupPrivateAI)
 
@@ -330,50 +312,21 @@ export default function App() {
             </div>
           </div>
         )}
-        {/* v0.4.2 BP083 SEG-3.5: Lifecycle diagnostic banner */}
-        {lifecycleBanner && (
-          <div style={{
-            position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)',
-            background: lifecycleBanner.startsWith('reset-offer') ? '#854d0e' : '#1e3a5f',
-            border: `1px solid ${lifecycleBanner.startsWith('reset-offer') ? '#fbbf24' : '#3b82f6'}`,
-            borderRadius: 10, padding: '10px 20px', zIndex: 9997,
-            display: 'flex', alignItems: 'center', gap: 14, maxWidth: 520,
-            boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
-          }}>
-            <span style={{ fontSize: 12, color: '#e2e8f0', flex: 1 }}>
-              {lifecycleBanner.startsWith('reset-offer')
-                ? `MnemosyneC setup has been stuck for 14+ days. Reset onboarding to continue.`
-                : `MnemosyneC didn't finish setting up · click here to continue.`}
-            </span>
-            <button
-              onClick={() => {
-                if (lifecycleBanner.startsWith('reset-offer')) {
-                  // Option B: no confirm() gate — user committed intent by clicking;
-                  // confirm() is silently rejected in security-hardened Electron builds
-                  localStorage.removeItem('mnemosynec_lifecycle_stage');
-                  localStorage.removeItem('mnemosynec_onboarding_complete');
-                  localStorage.removeItem('mnemosynec_lifecycle_stage_ts');
-                  localStorage.removeItem('mnemosyne-bp067-first-run-complete');
-                  window.location.reload();
-                } else {
-                  localStorage.setItem('mnemosyne-bp067-first-run-complete', 'false');
-                  window.location.reload();
-                }
-              }}
-              style={{
-                background: lifecycleBanner.startsWith('reset-offer') ? '#fbbf24' : '#3b82f6',
-                color: '#0a0f1a', border: 'none', borderRadius: 6,
-                padding: '5px 14px', cursor: 'pointer', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
-              }}
-            >
-              {lifecycleBanner.startsWith('reset-offer') ? 'Reset Onboarding' : 'Continue Setup'}
-            </button>
-            <button
-              onClick={() => setLifecycleBanner(null)}
-              style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 16, padding: '0 4px' }}
-            >×</button>
-          </div>
-        )}
+        {/* BP138 Yoke 0.9.13 F4 item 2: the v0.4.2 BP083 SEG-3.5 "Lifecycle diagnostic banner"
+            ("MnemosyneC didn't finish setting up · click here to continue.", blue #1e3a5f/
+            #3b82f6) was removed from here. Root cause: it read mnemosynec_lifecycle_stage,
+            which only ever advances past 'A'/'B'/'C' via WelcomeView.tsx/Layer2ProveIt.tsx/
+            Layer2UseIt.tsx/MnemosyneTabView.tsx (advanceTo('B'/'C'/'D')) -- but BP135 YOKE_35
+            Phase 1 made CleanShell (mounted above) the sole default front door and left that
+            entire advancing chain unrouted (see the MnemosyneTabView import comment at the top
+            of this file). Any install whose localStorage still carried a pre-YOKE_35 'A'/'B'/'C'
+            stage value (or any CleanShell-only user who never had a reason to touch that dead
+            code path) could NEVER satisfy this banner's completion condition -- it was a
+            permanent false positive, not an honest signal, for every user of the current front
+            door. Removed rather than patched with a new "is CleanShell onboarding done" heuristic
+            we cannot actually verify (Truth-Always: don't fabricate a replacement status). If
+            CleanShell grows its own real onboarding-completion signal later, wire a fresh banner
+            off of that -- do not resurrect mnemosynec_lifecycle_stage for it. */}
       </ErrorBoundary>
     );
   }
@@ -385,6 +338,27 @@ export default function App() {
     return (
       <ErrorBoundary label="Clean Shell (BP132 Yoke #22)">
         <CleanShell
+          currentMode={mode}
+          onModeChange={handleModeChange}
+          onClose={() => window.close()}
+          authState={authState}
+          onExitToLean={() => { window.location.hash = '#/dashboard'; window.location.reload(); }}
+        />
+        <UpdateToast />
+        <UpdateModal />
+        <ClipboardCaptureModal />
+      </ErrorBoundary>
+    );
+  }
+
+  // BP138 Yoke 0.9.14 — Compass nav test route (#/compass). Additive-only, mirrors the
+  // '#/clean-shell' block above exactly: does not touch 'dashboard' or 'clean-shell', so
+  // neither the production Lean/Advanced default nor the clean-shell fork under review is
+  // affected while this nav-reorg is under review.
+  if (view === 'compass') {
+    return (
+      <ErrorBoundary label="Compass Shell (BP138 Yoke 0.9.14)">
+        <CompassShell
           currentMode={mode}
           onModeChange={handleModeChange}
           onClose={() => window.close()}
