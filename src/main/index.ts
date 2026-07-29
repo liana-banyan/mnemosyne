@@ -1569,38 +1569,47 @@ const BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS = 2_500;
 // 'browser-authority-run-query' to the SAME already-loaded page once, after this extra wait,
 // before giving up -- still well inside BROWSER_AUTHORITY_MAIN_TIMEOUT_MS's 20s budget.
 const BROWSER_AUTHORITY_RETRY_DELAY_MS = 1_500;
-let browserAuthorityMainCallInFlight = false;
+// BP139: module-level chain used to SERIALIZE concurrent runBrowserAuthorityQueryFromMain() calls
+// against the one shared webview, instead of the prior single-flight-drop behavior (a second call
+// arriving while the first was still running used to resolve null immediately -- see this
+// function's header comment below for the full root-cause). Every link chained onto this promise
+// is itself bounded by BROWSER_AUTHORITY_MAIN_TIMEOUT_MS (20s, enforced inside runOnce() below),
+// so no single hung call can deadlock the queue forever: each link always settles within that
+// bound and the chain always advances to the next queued caller.
+let browserAuthorityInFlightChain: Promise<unknown> = Promise.resolve();
 
+// BP139 root-cause (prior SEG diagnosis, verdict c): the old `browserAuthorityMainCallInFlight`
+// boolean guard made a second/third concurrent call resolve null IMMEDIATELY instead of waiting
+// its turn, silently dropping legitimate lookups (observed live: 3 rapid-fire Ask-tab questions,
+// the 3rd got no source while the first two -- which didn't overlap another in-flight call -- did).
+// Fix: queue instead of drop. See browserAuthorityInFlightChain above.
 export async function runBrowserAuthorityQueryFromMain(
   query: BrowserAuthorityQuery,
 ): Promise<BrowserAuthorityRawExtraction | null> {
-  const nexusWindow = ensureNexusAuthoritySession();
-  if (!nexusWindow) {
-    console.warn('[browser-authority-main] persistent nexus-authority session unavailable (flag off, or window could not be created) -- resolving null (honest, never fabricated).');
-    return null;
-  }
-  if (browserAuthorityMainCallInFlight) {
-    console.warn('[browser-authority-main] a call is already in flight against the shared webview -- resolving null (honest, never queued/clobbered).');
-    return null;
-  }
+  const runOnce = async (): Promise<BrowserAuthorityRawExtraction | null> => {
+    const nexusWindow = ensureNexusAuthoritySession();
+    if (!nexusWindow) {
+      console.warn('[browser-authority-main] persistent nexus-authority session unavailable (flag off, or window could not be created) -- resolving null (honest, never fabricated).');
+      return null;
+    }
 
-  // Stage F1 build item 4 -- honesty firewall: never attempt a query against an authority that
-  // isn't actually signed in (never silently degrade to a logged-out result while implying full
-  // authority). A real, non-fabricated "not signed in" is reported as null here, same as every
-  // other honest-null path this function already documents above.
-  const signInStatus = await probeNexusAuthoritySignInStatus(query.authority);
-  if (!signInStatus.signedIn) {
-    console.warn(`[browser-authority-main] ${query.authority} is not signed in (${signInStatus.reason}) -- resolving null (honest, never fabricated/degraded).`);
-    return null;
-  }
+    // Stage F1 build item 4 -- honesty firewall: never attempt a query against an authority that
+    // isn't actually signed in (never silently degrade to a logged-out result while implying full
+    // authority). A real, non-fabricated "not signed in" is reported as null here, same as every
+    // other honest-null path this function already documents above.
+    const signInStatus = await probeNexusAuthoritySignInStatus(query.authority);
+    if (!signInStatus.signedIn) {
+      console.warn(`[browser-authority-main] ${query.authority} is not signed in (${signInStatus.reason}) -- resolving null (honest, never fabricated/degraded).`);
+      return null;
+    }
 
-  const navigateUrl = buildBrowserAuthorityQueryUrl(query);
-  // Executed directly in the persistent nexus-authority window's page context (same mechanism
-  // as the preload-smoke-test above, just against a different window instance).
-  // query.question/query.authority are interpolated via JSON.stringify below, which produces a
-  // safe, quote-escaped JS string literal -- never raw string concatenation of user-controlled
-  // text into the script source.
-  const script = `
+    const navigateUrl = buildBrowserAuthorityQueryUrl(query);
+    // Executed directly in the persistent nexus-authority window's page context (same mechanism
+    // as the preload-smoke-test above, just against a different window instance).
+    // query.question/query.authority are interpolated via JSON.stringify below, which produces a
+    // safe, quote-escaped JS string literal -- never raw string concatenation of user-controlled
+    // text into the script source.
+    const script = `
     (function() {
       return new Promise(function(resolve) {
         try {
@@ -1670,24 +1679,37 @@ export async function runBrowserAuthorityQueryFromMain(
     })()
   `;
 
-  browserAuthorityMainCallInFlight = true;
-  try {
-    const result = await nexusWindow.webContents.executeJavaScript(script);
-    if (!result || typeof result !== 'object') return null;
-    const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null };
-    if (!r.success || !r.snippet || !r.sourceUrl) return null; // honest -- never a partial/fabricated extraction
-    return {
-      snippet: r.snippet,
-      sourceUrl: r.sourceUrl,
-      authority: query.authority,
-      selectorUsed: r.selectorUsed ?? null,
-    };
-  } catch (err) {
-    console.warn('[browser-authority-main] executeJavaScript round trip failed (non-fatal, resolving null):', (err as Error)?.message ?? err);
-    return null;
-  } finally {
-    browserAuthorityMainCallInFlight = false;
-  }
+    try {
+      const result = await nexusWindow.webContents.executeJavaScript(script);
+      if (!result || typeof result !== 'object') return null;
+      const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null };
+      if (!r.success || !r.snippet || !r.sourceUrl) return null; // honest -- never a partial/fabricated extraction
+      return {
+        snippet: r.snippet,
+        sourceUrl: r.sourceUrl,
+        authority: query.authority,
+        selectorUsed: r.selectorUsed ?? null,
+      };
+    } catch (err) {
+      console.warn('[browser-authority-main] executeJavaScript round trip failed (non-fatal, resolving null):', (err as Error)?.message ?? err);
+      return null;
+    }
+  };
+
+  // BP139 serialize fix: chain this call onto whatever is currently in flight instead of
+  // dropping it. `.then(runOnce, runOnce)` runs runOnce() once the previous link SETTLES
+  // (whether it resolved OR rejected), so one failing/timed-out call can never poison or stall
+  // the queue for later callers. `thisCall` is what THIS caller awaits (its real value/
+  // rejection); `browserAuthorityInFlightChain` is updated to a version that swallows this
+  // call's outcome via `.then(() => undefined, () => undefined)` purely so the NEXT queued call
+  // still fires even if this one throws. Single-query behavior is unchanged: with nothing else
+  // in flight, browserAuthorityInFlightChain is already-resolved, so runOnce() runs on the very
+  // next microtask, same as a direct call. No deadlock risk: runOnce()'s own body is bounded by
+  // BROWSER_AUTHORITY_MAIN_TIMEOUT_MS (20s) inside the script's own setTimeout/resolve(null), so
+  // every link settles within that bound and the chain always advances.
+  const thisCall = browserAuthorityInFlightChain.then(runOnce, runOnce);
+  browserAuthorityInFlightChain = thisCall.then(() => undefined, () => undefined);
+  return thisCall;
 }
 
 // --- IPC Handlers ------------------------------------------------------------
@@ -2848,7 +2870,11 @@ function registerIPCHandlers(): void {
     const trimmed = typeof question === 'string' ? question.trim() : '';
     const answerType = classifyAnswerType(trimmed);
     if (answerType !== 'lookup_fact') {
-      return { answerType, usable: false as const };
+      // BP139: distinct reason code so future diagnosis never has to guess again whether a
+      // no-source answer was "not lookup_fact" vs "authority returned nothing" (previously both
+      // looked identical to the caller -- see this handler's own header comment). Additive only;
+      // LeanAskTab.tsx's honest fallthrough behavior is unchanged either way.
+      return { answerType, usable: false as const, reason: 'not_lookup_fact' as const };
     }
     if (!isNexusAuthorityFlagEnabled()) {
       return { answerType, usable: false as const, reason: 'flag_off' as const };
@@ -2873,7 +2899,10 @@ function registerIPCHandlers(): void {
         console.warn(`[nexus-ask-lookup-fact] ${authority} lookup threw (non-fatal, honest null):`, err);
       }
     }
-    return { answerType, usable: false as const };
+    // BP139: both authorities were tried and neither returned a usable fact -- distinct from the
+    // 'not_lookup_fact' and 'flag_off' reasons above so a future diagnosis can tell "genuinely
+    // asked the authority and got nothing" apart from "never asked at all".
+    return { answerType, usable: false as const, reason: 'authority_empty' as const };
   });
 
   // BP137 0.9.12 Stage F1 (build item 3, Settings "Authorities" panel wire): four new,

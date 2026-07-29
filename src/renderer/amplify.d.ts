@@ -286,7 +286,9 @@ declare global {
       nexusAskLookupFact?: (question: string) => Promise<{
         answerType: 'computable' | 'lookup_fact' | 'reasoning';
         usable: boolean;
-        reason?: 'flag_off';
+        // BP139: additive reason codes ('not_lookup_fact' | 'flag_off' | 'authority_empty') --
+        // see preload.ts's nexusAskLookupFact for the full contract. Diagnostic only.
+        reason?: 'flag_off' | 'not_lookup_fact' | 'authority_empty';
         fact?: string;
         sourceUrl?: string;
         authority?: 'user_google' | 'user_perplexity';
