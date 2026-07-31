@@ -897,6 +897,48 @@ const cbStyles = {
   },
 };
 
+// ─── BP1xx Pawn Authority List Phase 1: renderer-side authority registry mirror ────
+// Mirrors src/main/plow/specialist_adapters.ts's SPECIALIST_METADATA (name/tier/domains/
+// costNote) + isAuthorityEnabled()'s default-by-tier resolution (standard=on, premium=off,
+// explicit override always wins). The renderer cannot import that main-process module across
+// the Electron boundary (src/main and src/renderer are separate build targets -- see
+// vite.renderer.config.ts, which roots at ./src/renderer and only aliases src/renderer +
+// src/shared) and there is no existing IPC that exposes this metadata to the renderer, so this
+// is a deliberate, small, read-only mirror for settings display only -- purely descriptive, adds
+// zero runtime dispatch behavior. If specialist_adapters.ts's SPECIALIST_METADATA ever changes
+// tier/costNote for an existing name, or SpecialistName grows a 14th entry, update this list to
+// match; nothing enforces the two staying in sync automatically.
+type AuthorityTier = 'standard' | 'premium';
+
+interface AuthoritySourceInfo {
+  key: string; // matches a SpecialistName in specialist_adapters.ts
+  label: string;
+  tier: AuthorityTier;
+  domains: string[];
+  costNote: string;
+}
+
+const AUTHORITY_SOURCES: AuthoritySourceInfo[] = [
+  { key: 'wikipedia',     label: 'Wikipedia',      tier: 'standard', domains: ['general', 'history', 'philosophy', 'law', 'business', 'economics', 'other'], costNote: 'Free, no key required.' },
+  { key: 'wikidata',      label: 'Wikidata',       tier: 'standard', domains: ['general', 'history', 'philosophy', 'law', 'business', 'economics', 'other'], costNote: 'Free, no key required.' },
+  { key: 'stackexchange', label: 'StackExchange',  tier: 'standard', domains: ['computer_science', 'math', 'engineering', 'physics', 'business', 'economics'], costNote: 'Free without key; optional key raises the daily quota.' },
+  { key: 'arxiv',         label: 'arXiv',          tier: 'standard', domains: ['math', 'physics', 'computer_science', 'engineering', 'biology', 'psychology'], costNote: 'Free, no key, no enforced rate limit.' },
+  { key: 'openalex',      label: 'OpenAlex',       tier: 'standard', domains: ['general', 'biology', 'health', 'psychology'], costNote: 'Free, no key; mailto param opts into the polite pool.' },
+  { key: 'nist',          label: 'NIST',           tier: 'standard', domains: ['physics', 'chemistry', 'engineering'], costNote: 'Free, no key required.' },
+  { key: 'pubmed',        label: 'PubMed',         tier: 'standard', domains: ['biology', 'chemistry', 'psychology', 'health'], costNote: 'Free without key; optional NCBI API key raises the rate limit.' },
+  { key: 'commoncrawl',   label: 'Common Crawl',   tier: 'standard', domains: ['general'], costNote: 'Free, no key; DuckDuckGo fallback also free/no key.' },
+  { key: 'europepmc',     label: 'Europe PMC',     tier: 'standard', domains: ['biology', 'health', 'chemistry'], costNote: 'Free, no key required (Europe PMC REST API).' },
+  { key: 'openfda',       label: 'openFDA',        tier: 'standard', domains: ['health'], costNote: 'Free, no key required (FDA-issued key only raises the rate limit).' },
+  { key: 'medlineplus',   label: 'MedlinePlus',    tier: 'standard', domains: ['health'], costNote: 'Free, no key required (NLM Web Search Service).' },
+  { key: 'crossref',      label: 'Crossref',       tier: 'standard', domains: ['general', 'history', 'philosophy', 'law', 'business', 'economics', 'psychology', 'biology', 'health', 'math', 'physics', 'chemistry', 'computer_science', 'engineering', 'other'], costNote: 'Free, no key; mailto param opts into the Crossref polite pool.' },
+  { key: 'wolfram',       label: 'Wolfram Alpha',  tier: 'premium',  domains: ['math', 'physics', 'chemistry', 'engineering'], costNote: 'Requires a Wolfram Alpha AppID (free-tier signup exists); no-op with no key.' },
+];
+
+/** Mirrors isAuthorityEnabled()'s default-by-tier rule: standard=on, premium=off. */
+function authorityDefaultEnabled(tier: AuthorityTier): boolean {
+  return tier === 'standard';
+}
+
 // ─── BP077 Mnem-DRT Settings ──────────────────────────────────────────────────
 
 type Sku = 'nano' | 'core' | 'lite' | 'full';
@@ -905,12 +947,10 @@ type EbletQuota = '10mb' | '100mb' | '1gb' | 'unlimited';
 interface MnemDrtSettings {
   sku: Sku;
   mnem_drt_enabled: boolean;
-  mnem_drt_specialists: {
-    wikipedia: boolean;
-    wikidata: boolean;
-    arxiv: boolean;
-    wolfram: boolean;
-  };
+  /** Keyed by SpecialistName (see specialist_adapters.ts). A key absent from this map falls
+   *  back to authorityDefaultEnabled(tier) -- mirrors isAuthorityEnabled()'s override-wins,
+   *  else-tier-default resolution on the main side. */
+  mnem_drt_specialists: Record<string, boolean>;
   filtration_pipeline_enabled: boolean;
   eblet_store_quota: EbletQuota;
   federation_exchange_enabled: boolean;
@@ -919,7 +959,7 @@ interface MnemDrtSettings {
 const DEFAULT_MNEM_DRT: MnemDrtSettings = {
   sku: 'core',
   mnem_drt_enabled: false,
-  mnem_drt_specialists: { wikipedia: false, wikidata: false, arxiv: false, wolfram: false },
+  mnem_drt_specialists: {},
   filtration_pipeline_enabled: false,
   eblet_store_quota: '100mb',
   federation_exchange_enabled: false,
@@ -946,7 +986,17 @@ function saveMnemDrt(s: MnemDrtSettings): void {
 
 async function persistMnemDrtToBackend(s: MnemDrtSettings): Promise<void> {
   try {
-    await (window as any).amplify?.saveAiDispatchSettings?.({
+    // BP1xx Pawn Authority List Phase 1 UI fix: the previous call here targeted
+    // `amplify.saveAiDispatchSettings`, which is not exposed anywhere in preload.ts (the real
+    // channel is `amplify.aiDispatch.saveSettings`, see src/main/preload.ts's `aiDispatch`
+    // bridge object, wired to the `ai-dispatch:save-settings` IPC handler in
+    // src/main/ai_dispatch_ipc.ts). Under optional chaining that silently no-op'd every call --
+    // mnem_drt_specialists (including every existing wikipedia/wikidata/arxiv/wolfram toggle)
+    // was NEVER actually reaching ai_dispatch_settings.json, only localStorage. Fixed to call
+    // the real, already-existing bridge method so isAuthorityEnabled()'s override-read
+    // (readAuthorityEnableOverridesFromSettings() in specialist_adapters.ts) actually sees user
+    // toggles. Local storage remains the renderer's own source of truth for UI state either way.
+    await (window as any).amplify?.aiDispatch?.saveSettings?.({
       sku: s.sku,
       mnem_drt_enabled: s.mnem_drt_enabled,
       mnem_drt_specialists: s.mnem_drt_specialists,
@@ -969,7 +1019,7 @@ function MnemDrtPanel() {
     void persistMnemDrtToBackend(next);
   }
 
-  function updateSpecialist(key: keyof MnemDrtSettings['mnem_drt_specialists'], val: boolean) {
+  function updateSpecialist(key: string, val: boolean) {
     update({ mnem_drt_specialists: { ...drt.mnem_drt_specialists, [key]: val } });
   }
 
@@ -1051,29 +1101,72 @@ function MnemDrtPanel() {
       )}
 
       {/* Source specialists (shown when Mnem-DRT is active and not NANO) */}
+      {/* BP1xx Pawn Authority List Phase 1 UI: data-driven over ALL 13 SpecialistName sources
+          (was a hardcoded 4-entry list), grouped Standard (Free, on by default) vs Premium
+          (Paid, off by default) per Founder directive -- every source gets a toggle, paid
+          sources default OFF and opt-in. Initial checked state mirrors
+          isAuthorityEnabled()'s resolution: explicit mnem_drt_specialists[key] override wins,
+          else authorityDefaultEnabled(tier) (standard=true, premium=false). */}
       {!isNano && (isFull || drt.mnem_drt_enabled) && (
         <div style={s.card}>
           <div style={s.label}>Source specialists</div>
-          {([
-            { key: 'wikipedia' as const, label: 'Wikipedia',     note: ''                       },
-            { key: 'wikidata'  as const, label: 'Wikidata',      note: ''                       },
-            { key: 'arxiv'     as const, label: 'arXiv',         note: ''                       },
-            { key: 'wolfram'   as const, label: 'Wolfram Alpha', note: '(requires API key)'     },
-          ]).map(({ key, label, note }) => (
-            <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={isFull && key === 'wikipedia' ? true : drt.mnem_drt_specialists[key]}
-                disabled={isFull && key === 'wikipedia'}
-                onChange={(e) => updateSpecialist(key, e.target.checked)}
-                style={{ width: 13, height: 13, accentColor: '#6ee7b7', cursor: 'pointer' } as React.CSSProperties}
-              />
-              <span style={{ fontSize: 10, color: '#94a3b8' }}>
-                {label}{note ? <span style={{ fontSize: 9, color: '#475569', marginLeft: 4 }}>{note}</span> : null}
-              </span>
-            </label>
-          ))}
-          <div style={{ fontSize: 9, color: '#334155', marginTop: 4, fontStyle: 'italic' as const }}>
+          <div style={{ fontSize: 9, color: '#64748b', marginBottom: 8, lineHeight: 1.5 }}>
+            Standard sources are free and on by default. Premium sources require a paid or
+            keyed credential and are off by default -- opt in below.
+          </div>
+
+          <div style={{ fontSize: 9, fontWeight: 700, color: '#6ee7b7', marginBottom: 4, letterSpacing: 0.4 }}>
+            STANDARD (FREE) -- ON BY DEFAULT
+          </div>
+          {AUTHORITY_SOURCES.filter((src) => src.tier === 'standard').map((src) => {
+            const forceOn = isFull && src.key === 'wikipedia';
+            const checked = forceOn
+              ? true
+              : (drt.mnem_drt_specialists[src.key] ?? authorityDefaultEnabled(src.tier));
+            return (
+              <label
+                key={src.key}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 6, cursor: forceOn ? 'default' : 'pointer' }}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={forceOn}
+                  onChange={(e) => updateSpecialist(src.key, e.target.checked)}
+                  style={{ width: 13, height: 13, marginTop: 1, accentColor: '#6ee7b7', cursor: forceOn ? 'default' : 'pointer' } as React.CSSProperties}
+                />
+                <span style={{ fontSize: 10, color: '#94a3b8' }}>
+                  {src.label}
+                  {forceOn ? <span style={{ fontSize: 9, color: '#475569', marginLeft: 4 }}>(always on for FULL)</span> : null}
+                  <span style={{ display: 'block', fontSize: 9, color: '#475569' }}>{src.domains.join(', ')}</span>
+                </span>
+              </label>
+            );
+          })}
+
+          <div style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', marginTop: 10, marginBottom: 4, letterSpacing: 0.4 }}>
+            PREMIUM (PAID) -- OPT IN
+          </div>
+          {AUTHORITY_SOURCES.filter((src) => src.tier === 'premium').map((src) => {
+            const checked = drt.mnem_drt_specialists[src.key] ?? authorityDefaultEnabled(src.tier);
+            return (
+              <label key={src.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 6, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(e) => updateSpecialist(src.key, e.target.checked)}
+                  style={{ width: 13, height: 13, marginTop: 1, accentColor: '#fbbf24', cursor: 'pointer' } as React.CSSProperties}
+                />
+                <span style={{ fontSize: 10, color: '#94a3b8' }}>
+                  {src.label} <span style={{ fontSize: 9, color: '#fbbf24', marginLeft: 4, fontWeight: 700 }}>PAID</span>
+                  <span style={{ display: 'block', fontSize: 9, color: '#475569' }}>{src.domains.join(', ')}</span>
+                  <span style={{ display: 'block', fontSize: 9, color: '#64748b', fontStyle: 'italic' as const }}>{src.costNote}</span>
+                </span>
+              </label>
+            );
+          })}
+
+          <div style={{ fontSize: 9, color: '#334155', marginTop: 8, fontStyle: 'italic' as const }}>
             W1 scope: specialist network calls are stubs -- full bridge lands in Week 1 build.
           </div>
         </div>
