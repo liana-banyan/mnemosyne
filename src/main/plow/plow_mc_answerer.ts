@@ -410,8 +410,17 @@ export interface CanonicalPlowMcResult {
     | 'single_google'
     | 'single_perplexity'
     | 'single_wolfram'
+    | 'single_specialist_swarm'
     | 'adjudicated'
     | 'none';
+  /** BP1xx Authority-Ensemble-swarm-fold-in, OPTIONAL/ADDITIVE. Present only when
+   *  researchArmAuthorityEnsemble was on for this call. True when the browser/Wolfram authority
+   *  panel was NOT already a confident 2+ agreement and the specialist swarm (Miner -> Furnace
+   *  -> 3-voters) fired as an extra corroborating candidate; false when 2+ browser/Wolfram
+   *  authorities agreed immediately and the swarm never fired (the cheap fast path). Lets the
+   *  Founder verify from the receipt alone that the swarm stayed skipped on agreement and fired
+   *  only on the uncertain branch. */
+  authorityEnsembleSwarmFired?: boolean;
   /** BP137 Yoke v2b Stage D, extra requirement, OPTIONAL/ADDITIVE. True only when the new
    *  compute-fallthrough-no-facts abstain fired (classified computable, compute sidecar
    *  attempted and failed/no-match, AND zero facts were available for the voters -- whether
@@ -713,23 +722,38 @@ function resolveAuthorityLetterMatch(
 // genuine multi-authority vote: query every free authority available for this answerType, WITH
 // the MC options embedded so each one states its own letter + reasoning + source, then
 // corroborate:
-//   - 2+ authorities agree on a letter -> accept immediately (highest confidence, 'agree').
-//   - exactly 1 authority answered -> accept it ('single_google'/'single_perplexity'/
-//     'single_wolfram'), same honesty bar as the pre-ensemble single-authority accept.
-//   - 2+ authorities answered and ALL disagree -> ONE extra Perplexity ADJUDICATION call (never
-//     more than one, never fired on agreement) -- the judge sees every candidate's letter +
-//     reasoning and is asked to state which is actually correct ('adjudicated').
-//   - nobody answered, or the judge also can't resolve a letter -> 'none'/'disagree', honest
-//     fall-through (the caller falls to decompose-as-fallback, then the existing swarm+voter
-//     path -- see Stage F2's own call site below).
-// Every accepted candidate carries a real sourceUrl: Perplexity/Google via distillExtraction's
-// own non-negotiable non-null-sourceUrl requirement (browser_authority_types.ts), Wolfram via a
-// reproducible wolframalpha.com query URL. This is the HONESTY firewall (BR-007): a letter is
-// NEVER accepted without a genuinely sourced authority behind it, and this engine never reads
-// the sealed answer key.
+//   - 2+ browser/Wolfram authorities agree on a letter -> accept immediately, swarm NEVER fires
+//     (highest confidence, fastest, cheapest, 'agree'). Unchanged from the original ensemble.
+//   - otherwise (0 or 1 browser/Wolfram authority answered, or 2+ answered and ALL disagree) --
+//     the browser panel is UNCERTAIN, so the existing 13-source specialist swarm (Miner ->
+//     Saladin/Furnace -> 3-voter arbitration, see runSpecialistSwarmConsensus() just below,
+//     REUSING that machinery, never a second swarm implementation) fires as ONE MORE
+//     corroborating candidate, labeled authority:'specialist_swarm', but ONLY counts as a
+//     candidate when it reached a genuine CONCORDANT 3-voter consensus (never a DISCORDANT/
+//     partial/guessed swarm vote). The full candidate set (browser/Wolfram + swarm) is then
+//     re-corroborated:
+//       - adding the swarm creates a 2+ agreement -> accept, 'agree' (now cross-validated).
+//       - exactly 1 candidate total (browser-only or swarm-only) -> accept it
+//         ('single_google'/'single_perplexity'/'single_wolfram'/'single_specialist_swarm'), same
+//         honesty bar as the pre-ensemble single-authority accept.
+//       - 2+ candidates still ALL disagree (swarm included) -> ONE extra Perplexity ADJUDICATION
+//         call (never more than one, never fired on agreement) -- the judge sees every
+//         candidate's letter + reasoning (including the swarm's) and is asked to state which is
+//         actually correct ('adjudicated').
+//       - nobody answered at all (browser AND swarm both empty/inconclusive), or the judge also
+//         can't resolve a letter -> 'none'/'disagree', honest fall-through.
+// Every browser/Wolfram candidate carries a real sourceUrl: Perplexity/Google via
+// distillExtraction's own non-negotiable non-null-sourceUrl requirement
+// (browser_authority_types.ts), Wolfram via a reproducible wolframalpha.com query URL. The
+// specialist_swarm candidate carries a non-web internal provenance marker instead (it is not a
+// single fetchable page -- its "source" is the swarm's own independently-fired 13-adapter panel
+// + Saladin's adversarial fence + 3-voter arbitration, an equally real but differently-shaped
+// verification). This is the HONESTY firewall (BR-007): a letter is NEVER accepted without a
+// genuinely corroborated authority (sourced browser/Wolfram fact OR a real CONCORDANT swarm
+// vote) behind it, and this engine never reads the sealed answer key.
 
 export interface AuthorityEnsembleCandidate {
-  authority: 'user_google' | 'user_perplexity' | 'wolfram_alpha' | 'user_perplexity_judge';
+  authority: 'user_google' | 'user_perplexity' | 'wolfram_alpha' | 'user_perplexity_judge' | 'specialist_swarm';
   letter: string;
   reasoning: string;
   sourceUrl: string;
@@ -738,10 +762,31 @@ export interface AuthorityEnsembleCandidate {
 
 export interface AuthorityEnsembleOutcome {
   chosenLetter: string | null;
-  corroboration: 'agree' | 'disagree' | 'single_google' | 'single_perplexity' | 'single_wolfram' | 'adjudicated' | 'none';
+  corroboration:
+    | 'agree' | 'disagree' | 'single_google' | 'single_perplexity' | 'single_wolfram'
+    | 'single_specialist_swarm' | 'adjudicated' | 'none';
   candidates: AuthorityEnsembleCandidate[];
   acceptedCandidates: AuthorityEnsembleCandidate[];
   adjudicationAttempted: boolean;
+  /** True only when the browser/Wolfram panel was NOT already a confident 2+ agreement, so the
+   *  specialist swarm (Miner -> Furnace -> 3-voters) fired as an extra corroborating candidate.
+   *  False on the fast agree-immediately path -- this is the field that proves the swarm stays
+   *  skipped (cheap) whenever the browser authorities already agreed. */
+  swarmFired: boolean;
+  /** Populated ONLY when swarmFired is true -- the swarm's real specialist/candidate counts and
+   *  voter detail, regardless of whether its letter ended up counting as a candidate (a
+   *  DISCORDANT swarm result still fills this in for trace visibility, per "record the swarm as
+   *  a labeled candidate... so the trace shows it participated" -- see the honesty note above on
+   *  why a non-CONCORDANT swarm result never becomes an actual voting candidate). */
+  swarmReceipt?: {
+    specialistsUsed: string[];
+    candidatesRaw: number;
+    candidatesPostMiner: number;
+    candidatesPostFurnace: number;
+    voterLetters: (string | null)[];
+    voterDiagnostics: VoterDiagnostic[];
+    concordance: ConcordanceClass;
+  };
 }
 
 /** Judge prompt for the ONE extra Perplexity call fired only when the ensemble's authorities
@@ -768,6 +813,134 @@ function buildAdjudicationPromptText(
   );
 }
 
+/** BP1xx Authority-Ensemble-swarm-fold-in: reuses the EXACT same specialist-swarm-to-voter
+ *  machinery the main (post-ensemble) swarm+voter block further down in
+ *  runCanonicalPlowMcAnswer() uses -- SPECIALIST_REGISTRY's staggered firing,
+ *  BACKUP_ADAPTER_REGISTRY widening, the Miner weight/length filter, runSaladin's adversarial
+ *  Furnace, buildMcArbitrationPrompt, the 3-temperature voter loop via callOllama, and
+ *  computeLetterConcordance -- NOT a new swarm, a second call site for the same functions. Called
+ *  ONLY from runAuthorityEnsemble's uncertain branch (single/disagree/none), so this only ever
+ *  fires when the browser/Wolfram authority panel is NOT already a confident 2+ agreement.
+ *  Deliberately narrower than the main pipeline's inline block: no relevance gate, no compute
+ *  sidecar, no browser-fact injection -- those are separate opt-in Stages of the primary path;
+ *  this helper's one job is "what would the specialist swarm's own consensus letter be", to feed
+ *  the ensemble corroboration as one more candidate. Returns chosenLetter: null whenever the
+ *  voters end up anything other than CONCORDANT, or every voter came back empty/unparseable --
+ *  never a guessed letter (BR-007). */
+async function runSpecialistSwarmConsensus(params: {
+  researchQuery: string;
+  domain: string;
+  mcPromptWithSubstrate: string;
+  config: CanonicalPlowMcConfig;
+  widenerOperators: SpecialistName[];
+  widenerBackupOperators: BackupSpecialistName[];
+  onProgress?: (stage: string) => void;
+  log: (msg: string) => void;
+}): Promise<{
+  chosenLetter: string | null;
+  concordance: ConcordanceClass;
+  voterLetters: (string | null)[];
+  voterDiagnostics: VoterDiagnostic[];
+  specialistsUsed: string[];
+  candidatesRaw: number;
+  candidatesPostMiner: number;
+  candidatesPostFurnace: number;
+}> {
+  const { researchQuery, domain, mcPromptWithSubstrate, config, widenerOperators, widenerBackupOperators, onProgress, log } = params;
+  const { ollamaBaseUrl, model, choiceCount, specialistKeys = {}, deepHarvest, maxEbletsPerQuestion, reasoningMode = false } = config;
+
+  const effectiveSpecialistKeys: SpecialistKeys = deepHarvest
+    ? { ...specialistKeys, maxResultsPerAdapter: specialistKeys.maxResultsPerAdapter ?? maxEbletsPerQuestion ?? 8 }
+    : specialistKeys;
+  const baseOperators = getOperatorsForDomain(domain);
+  const effectiveOperators = [...new Set([...baseOperators, ...widenerOperators])];
+  const effectiveBackupOperators = [...new Set(widenerBackupOperators)];
+
+  // ── same 9(+widened)-specialist staggered swarm as the main pipeline ─────────────────────
+  const allCandidates: CandidateEblet[] = [];
+  const specialistsUsed: string[] = [];
+  for (let i = 0; i < effectiveOperators.length; i++) {
+    const specialistName = effectiveOperators[i];
+    if (!specialistName) continue;
+    if (i > 0) await new Promise<void>((resolve) => setTimeout(resolve, FIREGUARD_STAGGER_MS));
+    onProgress?.(`ensemble-swarm-fire:${specialistName}`);
+    try {
+      const fn = SPECIALIST_REGISTRY[specialistName];
+      const found = await fn(researchQuery, domain, effectiveSpecialistKeys);
+      allCandidates.push(...found);
+      specialistsUsed.push(specialistName);
+    } catch { /* adapter error -- non-fatal, continue */ }
+  }
+  for (const backupName of effectiveBackupOperators) {
+    const fn = BACKUP_ADAPTER_REGISTRY[backupName];
+    if (!fn) continue;
+    onProgress?.(`ensemble-swarm-fire:${backupName}`);
+    try {
+      const found = await fn(researchQuery);
+      allCandidates.push(...found);
+      specialistsUsed.push(backupName);
+    } catch { /* adapter error -- non-fatal, continue */ }
+  }
+  const candidatesRaw = allCandidates.length;
+
+  // ── Miner + Saladin/Furnace, same constants/functions as the main pipeline ───────────────
+  const postMiner = allCandidates.filter(
+    (c) => c.weight >= MINER_MIN_WEIGHT && c.content.length >= MINER_MIN_CONTENT_LEN,
+  );
+  const postFurnaceCap = deepHarvest ? (maxEbletsPerQuestion ?? 20) : 6;
+  const { passed: saladinPassed } = await runSaladin(postMiner, ollamaBaseUrl, model);
+  const postFurnace = saladinPassed.sort((a, b) => b.weight - a.weight).slice(0, postFurnaceCap);
+
+  const factsForArbitration = postFurnace.length > 0 ? postFurnace : postMiner.slice(0, 3);
+  if (factsForArbitration.length === 0) {
+    log('ensemble-swarm: zero candidates survived Miner/Furnace -- no facts for voters, honest no-letter');
+    return {
+      chosenLetter: null, concordance: 'DISCORDANT', voterLetters: [], voterDiagnostics: [],
+      specialistsUsed, candidatesRaw, candidatesPostMiner: postMiner.length, candidatesPostFurnace: postFurnace.length,
+    };
+  }
+
+  // ── same 3-voter MC arbitration as the main pipeline ──────────────────────────────────────
+  const factsContext = factsForArbitration
+    .slice(0, 3)
+    .map((c, i) => `[Source ${i + 1} -- ${c.source}]: ${c.content.slice(0, 300)}`)
+    .join('\n\n');
+  const arbitrationPrompt = buildMcArbitrationPrompt(factsContext, mcPromptWithSubstrate);
+  const voterPrompt = reasoningMode ? buildReasoningVoterPrompt(arbitrationPrompt, choiceCount) : arbitrationPrompt;
+  const numPredictForVoter = reasoningMode ? MC_VOTER_NUM_PREDICT_REASONING : MC_VOTER_NUM_PREDICT_DEFAULT;
+
+  const voterLetters: (string | null)[] = [];
+  const voterDiagnostics: VoterDiagnostic[] = [];
+  for (const temp of MC_VOTER_TEMPERATURES) {
+    const raw = await callOllama(voterPrompt, ollamaBaseUrl, model, temp, numPredictForVoter);
+    if (raw === null || raw.trim().length === 0) {
+      voterLetters.push(null);
+      voterDiagnostics.push({ temperature: temp, status: 'empty_response', responseChars: raw?.length ?? 0, rawPreview: raw ?? '' });
+      continue;
+    }
+    const letter = reasoningMode ? parseLetterFromReasoning(raw, choiceCount) : parseLetterLocal(raw, choiceCount);
+    voterLetters.push(letter);
+    voterDiagnostics.push({
+      temperature: temp,
+      status: letter !== null ? 'parsed_ok' : 'parse_failed',
+      responseChars: raw.length,
+      rawPreview: raw.slice(0, 200),
+    });
+  }
+  const { concordance, chosenLetter } = computeLetterConcordance(voterLetters);
+  onProgress?.(`ensemble-swarm-done:${chosenLetter ?? 'none'}`);
+  log(
+    `ensemble-swarm voters=[${voterLetters.join(',')}] concordance=${concordance} ` +
+    `chosenLetter=${chosenLetter ?? 'none'} specialists=[${specialistsUsed.join(',')}] ` +
+    `raw=${candidatesRaw} postMiner=${postMiner.length} postFurnace=${postFurnace.length}`,
+  );
+
+  return {
+    chosenLetter, concordance, voterLetters, voterDiagnostics,
+    specialistsUsed, candidatesRaw, candidatesPostMiner: postMiner.length, candidatesPostFurnace: postFurnace.length,
+  };
+}
+
 /** Runs the full ensemble for one question: queries every free authority available for
  *  `answerType`, resolves each via resolveAuthorityLetterMatch (Wolfram via a direct computed-
  *  value match against the options instead, since it never returns free text), and corroborates
@@ -775,7 +948,10 @@ function buildAdjudicationPromptText(
  *  runBrowserAuthorityQueryFromMain() (index.ts) guards a single shared <webview>, the same
  *  discipline every other browser-authority call site in this file already follows. Never
  *  throws: every per-authority call is individually try/caught, a failure just means that
- *  authority contributes no candidate (honest, not fatal). */
+ *  authority contributes no candidate (honest, not fatal). When the browser/Wolfram panel is NOT
+ *  already a confident 2+ agreement, fires runSpecialistSwarmConsensus() (above) as ONE MORE
+ *  corroborating candidate before making its final accept/adjudicate/abstain decision -- see the
+ *  section header comment above buildAdjudicationPromptText for the full corroboration policy. */
 async function runAuthorityEnsemble(params: {
   researchQuery: string;
   mcOptions: McOption[];
@@ -783,9 +959,17 @@ async function runAuthorityEnsemble(params: {
   config: CanonicalPlowMcConfig;
   bridge: BrowserAuthorityBridge;
   answerType: AnswerType;
+  domain: string;
+  mcPromptWithSubstrate: string;
+  widenerOperators: SpecialistName[];
+  widenerBackupOperators: BackupSpecialistName[];
+  onProgress?: (stage: string) => void;
   log: (msg: string) => void;
 }): Promise<AuthorityEnsembleOutcome> {
-  const { researchQuery, mcOptions, mcOptionTexts, config, bridge, answerType, log } = params;
+  const {
+    researchQuery, mcOptions, mcOptionTexts, config, bridge, answerType,
+    domain, mcPromptWithSubstrate, widenerOperators, widenerBackupOperators, onProgress, log,
+  } = params;
   const candidates: AuthorityEnsembleCandidate[] = [];
 
   // ── Perplexity, WITH options embedded (unchanged mechanism from the legacy path) ──────────
@@ -855,21 +1039,87 @@ async function runAuthorityEnsemble(params: {
     }
   }
 
+  // ── FAST PATH: 2+ browser/Wolfram candidates already agree -- accept immediately, swarm never
+  //    fires. This is the ONLY case that skips the swarm (highest confidence, cheapest). ────────
+  if (candidates.length >= 2) {
+    const byLetterFast = new Map<string, AuthorityEnsembleCandidate[]>();
+    for (const c of candidates) {
+      const arr = byLetterFast.get(c.letter) ?? [];
+      arr.push(c);
+      byLetterFast.set(c.letter, arr);
+    }
+    const agreeingGroupFast = [...byLetterFast.values()].find((group) => group.length >= 2);
+    if (agreeingGroupFast) {
+      log(`browser/wolfram authorities already agree on ${agreeingGroupFast[0]!.letter} -- swarm skipped (fast path).`);
+      return {
+        chosenLetter: agreeingGroupFast[0]!.letter, corroboration: 'agree', candidates,
+        acceptedCandidates: agreeingGroupFast, adjudicationAttempted: false, swarmFired: false,
+      };
+    }
+  }
+
+  // ── UNCERTAIN: 0 browser/Wolfram candidates, exactly 1, or 2+ that all disagree. Fold the
+  //    existing specialist swarm in as ONE MORE corroborating candidate before deciding. ─────────
+  log(
+    `browser/wolfram authorities uncertain (candidates=[${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}]) ` +
+    `-- firing the specialist swarm as one more candidate.`,
+  );
+  let swarmReceipt: AuthorityEnsembleOutcome['swarmReceipt'];
+  try {
+    const swarmResult = await runSpecialistSwarmConsensus({
+      researchQuery, domain, mcPromptWithSubstrate, config, widenerOperators, widenerBackupOperators, onProgress, log,
+    });
+    swarmReceipt = {
+      specialistsUsed: swarmResult.specialistsUsed,
+      candidatesRaw: swarmResult.candidatesRaw,
+      candidatesPostMiner: swarmResult.candidatesPostMiner,
+      candidatesPostFurnace: swarmResult.candidatesPostFurnace,
+      voterLetters: swarmResult.voterLetters,
+      voterDiagnostics: swarmResult.voterDiagnostics,
+      concordance: swarmResult.concordance,
+    };
+    // HONESTY (BR-007, non-negotiable): the swarm's letter counts as a real candidate ONLY when
+    // its own 3 voters reached a genuine CONCORDANT consensus -- a DISCORDANT/PARTIAL/no-letter
+    // swarm result contributes NOTHING to the vote below (swarmReceipt above still records it
+    // for trace visibility -- "the trace shows it participated" -- but it never becomes a
+    // guessed/fabricated candidate).
+    if (swarmResult.chosenLetter && swarmResult.concordance === 'CONCORDANT') {
+      candidates.push({
+        authority: 'specialist_swarm',
+        letter: swarmResult.chosenLetter,
+        reasoning:
+          `specialist swarm consensus (${swarmResult.specialistsUsed.length} specialists: ` +
+          `[${swarmResult.specialistsUsed.join(',')}], voters=[${swarmResult.voterLetters.join(',')}], ` +
+          `concordance=${swarmResult.concordance}).`,
+        sourceUrl: 'specialist-swarm-internal-consensus',
+        method: 'specialist_swarm_vote',
+      });
+    }
+    log(`swarm=${swarmResult.chosenLetter ? `${swarmResult.chosenLetter}(${swarmResult.concordance})` : `no-letter(${swarmResult.concordance})`}`);
+  } catch (err) {
+    log(`specialist swarm threw (non-fatal): ${err}`);
+  }
+
   if (candidates.length === 0) {
-    return { chosenLetter: null, corroboration: 'none', candidates, acceptedCandidates: [], adjudicationAttempted: false };
+    // Nobody -- browser, Wolfram, or swarm -- answered. Honest 'none'.
+    return { chosenLetter: null, corroboration: 'none', candidates, acceptedCandidates: [], adjudicationAttempted: false, swarmFired: true, swarmReceipt };
   }
 
   if (candidates.length === 1) {
+    // Exactly one real candidate total: either the browser/Wolfram panel had exactly one and the
+    // swarm added nothing (unchanged honest single-authority behavior), or the browser panel had
+    // nothing and the swarm alone reached a CONCORDANT consensus.
     const only = candidates[0]!;
     const corroboration: AuthorityEnsembleOutcome['corroboration'] =
       only.authority === 'user_google' ? 'single_google'
         : only.authority === 'user_perplexity' ? 'single_perplexity'
-          : 'single_wolfram';
-    return { chosenLetter: only.letter, corroboration, candidates, acceptedCandidates: [only], adjudicationAttempted: false };
+          : only.authority === 'wolfram_alpha' ? 'single_wolfram'
+            : 'single_specialist_swarm';
+    return { chosenLetter: only.letter, corroboration, candidates, acceptedCandidates: [only], adjudicationAttempted: false, swarmFired: true, swarmReceipt };
   }
 
-  // 2+ candidates: group by letter, look for a 2+ agreement -- highest confidence, accepted
-  // immediately, no adjudication needed.
+  // 2+ candidates (now possibly including the swarm) -- re-check for a 2+ agreement. Adding the
+  // swarm's letter can turn a prior disagreement into a cross-validated accept.
   const byLetter = new Map<string, AuthorityEnsembleCandidate[]>();
   for (const c of candidates) {
     const arr = byLetter.get(c.letter) ?? [];
@@ -878,12 +1128,17 @@ async function runAuthorityEnsemble(params: {
   }
   const agreeingGroup = [...byLetter.values()].find((group) => group.length >= 2);
   if (agreeingGroup) {
-    return { chosenLetter: agreeingGroup[0]!.letter, corroboration: 'agree', candidates, acceptedCandidates: agreeingGroup, adjudicationAttempted: false };
+    log(
+      `swarm-augmented agreement on ${agreeingGroup[0]!.letter} ` +
+      `(candidates=[${agreeingGroup.map((c) => c.authority).join(',')}]) -- cross-validated, accepted.`,
+    );
+    return { chosenLetter: agreeingGroup[0]!.letter, corroboration: 'agree', candidates, acceptedCandidates: agreeingGroup, adjudicationAttempted: false, swarmFired: true, swarmReceipt };
   }
 
-  // Every candidate disagrees -- ADJUDICATE with ONE extra Perplexity call, never more than one,
-  // fired only here (on genuine disagreement). "If anyone found it, the judge recognizes it."
-  log(`disagreement among ${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ')} -- firing adjudication`);
+  // Still all disagree even with the swarm folded in -- ADJUDICATE with ONE extra Perplexity
+  // call, never more than one, over the FULL candidate set (browser/Wolfram + swarm).
+  // "If anyone found it, the judge recognizes it."
+  log(`disagreement persists among ${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ')} (swarm included) -- firing adjudication`);
   try {
     const judgePrompt = buildAdjudicationPromptText(researchQuery, mcOptions, candidates);
     const judgeResult = await runBrowserAuthorityLookup(
@@ -902,6 +1157,8 @@ async function runAuthorityEnsemble(params: {
         candidates,
         acceptedCandidates: [judgeCandidate],
         adjudicationAttempted: true,
+        swarmFired: true,
+        swarmReceipt,
       };
     }
     log('adjudication returned no resolvable letter -- honest fall-through');
@@ -909,7 +1166,7 @@ async function runAuthorityEnsemble(params: {
     log(`adjudication threw (non-fatal): ${err}`);
   }
 
-  return { chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [], adjudicationAttempted: true };
+  return { chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [], adjudicationAttempted: true, swarmFired: true, swarmReceipt };
 }
 
 // ─── WIRE-THE-LOOP fix: writeback + replication for EVERY solved answer ────────────────────
@@ -1635,6 +1892,15 @@ export async function runCanonicalPlowMcAnswer(
   let browserPerplexityMatch: { letter: string; score: number } | null = null;
   let browserAuthorityAttempted = false;
   let browserAuthorityCorroboration: CanonicalPlowMcResult['browserAuthorityCorroboration'] = 'none';
+  // BP1xx Authority-Ensemble-swarm-fold-in: captured OUTSIDE the `if (authorityEnsembleOn)`
+  // block below so the fall-through path (right before the specialist-swarm loop further down)
+  // can tell whether the ensemble already fired the swarm as a corroborating candidate -- if so,
+  // that same swarm must NOT fire a second time; re-running it would double the network/model
+  // cost for a question the ensemble already tried its best on, defeating the "stays cheap"
+  // requirement. Stays false/undefined for every case where the ensemble is off or never reached
+  // the uncertain branch (2+ authorities agreed immediately).
+  let ensembleSwarmAlreadyFired = false;
+  let ensembleSwarmReceipt: AuthorityEnsembleOutcome['swarmReceipt'];
   // WIRE-THE-LOOP fix part 5 (compute/reasoning routing): earlyAnswerTypeForBrowserAuthority is
   // read once here (was already computed inside the old lookup_fact-only branch) so both the
   // lookup and the widened compute/reasoning gate below share one classification call.
@@ -1690,14 +1956,21 @@ export async function runCanonicalPlowMcAnswer(
           // unconditional `earlyAnswerTypeForBrowserAuthority = classifyAnswerType(...)` assignment
           // above -- always set by this point.
           answerType: earlyAnswerTypeForBrowserAuthority!,
+          domain,
+          mcPromptWithSubstrate,
+          widenerOperators,
+          widenerBackupOperators,
+          onProgress,
           log: (msg) => console.log(`[plow_mc_answerer] Stage F2 ensemble ${msg}`),
         });
         browserAuthorityCorroboration = ensembleOutcome.corroboration;
+        ensembleSwarmAlreadyFired = ensembleOutcome.swarmFired;
+        ensembleSwarmReceipt = ensembleOutcome.swarmReceipt;
         console.log(
           `[plow_mc_answerer] Stage F2 ensemble RESOLVED at t=${Date.now() - startMs}ms ` +
-          `corroboration=${ensembleOutcome.corroboration} ` +
+          `corroboration=${ensembleOutcome.corroboration} swarmFired=${ensembleOutcome.swarmFired} ` +
           `candidates=[${ensembleOutcome.candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}] ` +
-          `chosen=${ensembleOutcome.chosenLetter ?? 'NONE'} -- swarm has NOT fired yet.`,
+          `chosen=${ensembleOutcome.chosenLetter ?? 'NONE'}.`,
         );
         if (ensembleOutcome.chosenLetter && ensembleOutcome.acceptedCandidates.length > 0) {
           const primary = ensembleOutcome.acceptedCandidates[0]!;
@@ -1705,10 +1978,24 @@ export async function runCanonicalPlowMcAnswer(
           onProgress?.(`browser-authority-accepted:${ensembleOutcome.chosenLetter}`);
           const acceptLatencyMs = Date.now() - startMs;
           // HONESTY (build item 4): CONCORDANT here ALWAYS means "backed by at least one real
-          // sourced authority with a provenance URL" -- see runAuthorityEnsemble's own header
-          // doc; there is no code path to this branch with an unsourced acceptedCandidate.
+          // sourced authority with a provenance URL, OR a specialist_swarm candidate that itself
+          // only exists because its own 3 voters reached a genuine CONCORDANT consensus" -- see
+          // runAuthorityEnsemble's own header doc; there is no code path to this branch with a
+          // fabricated/guessed acceptedCandidate.
           const acceptConcordance: ConcordanceClass = 'CONCORDANT';
-          const acceptBmv = computeBmvScore(0, 0, 0, 0, acceptConcordance, 0, acceptLatencyMs);
+          // BP1xx: when the swarm fired (uncertain branch), report its REAL specialist/candidate
+          // counts instead of the honest-zero the old always-short-circuit branch used -- the
+          // swarm genuinely ran, so 0s here would be dishonest bookkeeping even though it never
+          // reached this line's own separate accept path before.
+          const swarmReceiptForAccept = ensembleOutcome.swarmReceipt;
+          const acceptSpecialistsUsed = swarmReceiptForAccept?.specialistsUsed ?? [];
+          const acceptCandidatesRaw = swarmReceiptForAccept?.candidatesRaw ?? 0;
+          const acceptCandidatesPostMiner = swarmReceiptForAccept?.candidatesPostMiner ?? 0;
+          const acceptCandidatesPostFurnace = swarmReceiptForAccept?.candidatesPostFurnace ?? 0;
+          const acceptBmv = computeBmvScore(
+            acceptCandidatesRaw, acceptCandidatesPostMiner, acceptCandidatesPostFurnace,
+            acceptCandidatesPostFurnace, acceptConcordance, acceptSpecialistsUsed.length, acceptLatencyMs,
+          );
           try {
             await writeAndReplicateSolvedAnswer({
               researchQuery,
@@ -1726,27 +2013,33 @@ export async function runCanonicalPlowMcAnswer(
             questionId,
             domain,
             chosenLetter: ensembleOutcome.chosenLetter,
-            voterLetters: [ensembleOutcome.chosenLetter],
-            voterDiagnostics: ensembleOutcome.acceptedCandidates.map((c) => ({
-              temperature: 0,
-              status: 'parsed_ok' as const,
-              responseChars: c.reasoning.length,
-              rawPreview: `${c.authority} (${c.method}): ${c.reasoning.slice(0, 200)}`,
-            })),
+            // Swarm's own voter letters are folded in (when it fired) alongside the accepted
+            // browser/Wolfram/judge candidates -- one diagnostic entry per real vote actually
+            // cast for this question, not a single synthetic entry per accepted authority.
+            voterLetters: [ensembleOutcome.chosenLetter, ...(swarmReceiptForAccept?.voterLetters ?? [])],
+            voterDiagnostics: [
+              ...ensembleOutcome.acceptedCandidates.map((c) => ({
+                temperature: 0,
+                status: 'parsed_ok' as const,
+                responseChars: c.reasoning.length,
+                rawPreview: `${c.authority} (${c.method}): ${c.reasoning.slice(0, 200)}`,
+              })),
+              ...(swarmReceiptForAccept?.voterDiagnostics ?? []),
+            ],
             concordance: acceptConcordance,
             bmvScore: acceptBmv,
-            gateOutcomes: evaluateGates(0, acceptBmv, acceptConcordance, acceptLatencyMs),
-            specialistsUsed: [],
-            candidatesRaw: 0,
-            candidatesPostMiner: 0,
-            candidatesPostFurnace: 0,
+            gateOutcomes: evaluateGates(acceptCandidatesPostFurnace, acceptBmv, acceptConcordance, acceptLatencyMs),
+            specialistsUsed: acceptSpecialistsUsed,
+            candidatesRaw: acceptCandidatesRaw,
+            candidatesPostMiner: acceptCandidatesPostMiner,
+            candidatesPostFurnace: acceptCandidatesPostFurnace,
             andonTriggered: andonRetry > 0,
             andonRetries: andonRetry,
             ebletsWritten: 1,
             latencyMs: acceptLatencyMs,
             traceSummary:
               `authorityEnsembleAccepted=true corroboration=${ensembleOutcome.corroboration} ` +
-              `matchedOption=${ensembleOutcome.chosenLetter} ` +
+              `matchedOption=${ensembleOutcome.chosenLetter} swarmFired=${ensembleOutcome.swarmFired} ` +
               `sources=[${ensembleOutcome.acceptedCandidates.map((c) => c.authority).join(',')}] ` +
               `allCandidates=[${ensembleOutcome.candidates.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
               `adjudicationAttempted=${ensembleOutcome.adjudicationAttempted} andonRetries=${andonRetry}`,
@@ -1758,12 +2051,15 @@ export async function runCanonicalPlowMcAnswer(
             })),
             answerType: earlyAnswerTypeForBrowserAuthority,
             browserAuthorityCorroboration,
+            authorityEnsembleSwarmFired: ensembleOutcome.swarmFired,
           };
         }
-        // ensembleOutcome.chosenLetter is null -- 'none' (nobody answered) or 'disagree' (the
-        // adjudication judge also failed to resolve a letter). Honest fall-through: falls to
-        // the decompose fallback (if deferred, see the call site right after this block) and
-        // then the existing swarm+voter path, same as every other Stage F2 no-answer case.
+        // ensembleOutcome.chosenLetter is null -- 'none' (nobody, including the swarm, answered)
+        // or 'disagree' (the adjudication judge also failed to resolve a letter). Honest
+        // fall-through: falls to the decompose fallback (if deferred, see the call site right
+        // after this block). The specialist-swarm loop further below is SKIPPED when
+        // ensembleSwarmAlreadyFired is true (see that guard) so a question the ensemble already
+        // gave the swarm a shot at never fires it a second, redundant time.
       } else {
         // ── LEGACY (pre-ensemble) Stage F2 logic, byte-for-byte unchanged ──────────────────
         // Sequential, not Promise.all: runBrowserAuthorityQueryFromMain() (index.ts) guards a
@@ -1925,33 +2221,52 @@ export async function runCanonicalPlowMcAnswer(
   // ── 9 Specialists in parallel staggered swarm (FireGuard 1.0s stagger) ────
   const allCandidates: CandidateEblet[] = [];
   const specialistsUsed: string[] = [];
-  for (let i = 0; i < effectiveOperators.length; i++) {
-    const specialistName = effectiveOperators[i];
-    if (!specialistName) continue;
-    if (i > 0) await new Promise<void>((resolve) => setTimeout(resolve, FIREGUARD_STAGGER_MS));
-    onProgress?.(`specialist-fire:${specialistName}`);
-    try {
-      const fn = SPECIALIST_REGISTRY[specialistName];
-      const candidates = await fn(researchQuery, domain, effectiveSpecialistKeys);
-      allCandidates.push(...candidates);
-      specialistsUsed.push(specialistName);
-    } catch { /* adapter error -- non-fatal, continue */ }
-  }
-  // BP137 Yoke v2b Stage D.3: NEW-tier widening beyond the 9-adapter SPECIALIST_REGISTRY pool.
-  // BackupAdapterFn's signature (domain_operator_map.ts:227) is `(question) => Promise<
-  // CandidateEblet[]>` -- deliberately narrower than SPECIALIST_REGISTRY's `(question, domain,
-  // specialistKeys)` -- so this is its own small loop rather than folded into the swarm loop
-  // above (bridging the signature difference with a loop, not a mismatched-args call). Only
-  // ever non-empty when attemptEscalationWidenAndRetry() below recursed with backup names.
-  for (const backupName of effectiveBackupOperators) {
-    const fn = BACKUP_ADAPTER_REGISTRY[backupName];
-    if (!fn) continue;
-    onProgress?.(`specialist-fire:${backupName}`);
-    try {
-      const candidates = await fn(researchQuery);
-      allCandidates.push(...candidates);
-      specialistsUsed.push(backupName);
-    } catch { /* adapter error -- non-fatal, continue */ }
+  // BP1xx Authority-Ensemble-swarm-fold-in: when the ensemble above already fired this EXACT
+  // swarm (Miner->Furnace->3-voters via runSpecialistSwarmConsensus) as a corroborating candidate
+  // and still fell through without an accepted letter, firing it AGAIN here would double the
+  // 13-adapter network cost for a question already conclusively uncertain -- defeats the
+  // Founder's "stays cheap" requirement. Skip the (expensive) specialist fetch loop in that case;
+  // allCandidates/specialistsUsed stay [], and every existing downstream stage (Miner/Furnace on
+  // an empty set, compute sidecar with empty componentFacts, the pre-existing compute-fallthrough
+  // -no-facts / relevance-gate abstains, or -- worst case -- the voters arbitrating a bare-question
+  // prompt) already handles a "swarm found nothing" empty allCandidates honestly; none of that
+  // logic needed duplicating.
+  if (ensembleSwarmAlreadyFired) {
+    console.log(
+      `[plow_mc_answerer] specialist swarm SKIPPED here -- already fired inside the authority ` +
+      `ensemble for this question (swarmConcordance=${ensembleSwarmReceipt?.concordance ?? 'unknown'} ` +
+      `specialists=[${(ensembleSwarmReceipt?.specialistsUsed ?? []).join(',')}]); not re-firing ` +
+      `(cheap-by-design).`,
+    );
+  } else {
+    for (let i = 0; i < effectiveOperators.length; i++) {
+      const specialistName = effectiveOperators[i];
+      if (!specialistName) continue;
+      if (i > 0) await new Promise<void>((resolve) => setTimeout(resolve, FIREGUARD_STAGGER_MS));
+      onProgress?.(`specialist-fire:${specialistName}`);
+      try {
+        const fnCandidates = SPECIALIST_REGISTRY[specialistName];
+        const candidates = await fnCandidates(researchQuery, domain, effectiveSpecialistKeys);
+        allCandidates.push(...candidates);
+        specialistsUsed.push(specialistName);
+      } catch { /* adapter error -- non-fatal, continue */ }
+    }
+    // BP137 Yoke v2b Stage D.3: NEW-tier widening beyond the 9-adapter SPECIALIST_REGISTRY pool.
+    // BackupAdapterFn's signature (domain_operator_map.ts:227) is `(question) => Promise<
+    // CandidateEblet[]>` -- deliberately narrower than SPECIALIST_REGISTRY's `(question, domain,
+    // specialistKeys)` -- so this is its own small loop rather than folded into the swarm loop
+    // above (bridging the signature difference with a loop, not a mismatched-args call). Only
+    // ever non-empty when attemptEscalationWidenAndRetry() below recursed with backup names.
+    for (const backupName of effectiveBackupOperators) {
+      const fn = BACKUP_ADAPTER_REGISTRY[backupName];
+      if (!fn) continue;
+      onProgress?.(`specialist-fire:${backupName}`);
+      try {
+        const candidates = await fn(researchQuery);
+        allCandidates.push(...candidates);
+        specialistsUsed.push(backupName);
+      } catch { /* adapter error -- non-fatal, continue */ }
+    }
   }
   const candidatesRaw = allCandidates.length;
 
