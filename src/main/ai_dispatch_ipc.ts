@@ -222,6 +222,15 @@ interface AiDispatchSettings {
    *  and csia_mode -- this flag only ever matters if answer_cache_mode is also on (there is no
    *  serve-gate at all to enhance otherwise). */
   semantic_soccerball_mode?: boolean;
+  /** BP139 Concordance Gate, OPT-IN/DEFAULT 'lenient'. Tunable acceptance bar for
+   *  runAuthorityEnsemble's lone-candidate accept path (plow_mc_answerer.ts, NO-COMPUTE/
+   *  conceptual questions only -- never the deterministic-compute override). Read by
+   *  specialist_adapters.ts's readConcordanceStrictnessFromSettings(), the SAME settings-read
+   *  hook convention as mnem_drt_specialists above. undefined/'lenient' -> byte-identical to
+   *  pre-gate behavior (a single accepted authority is accepted); 'require_two' -> a lone
+   *  candidate is rejected (honest abstain) unless >=2 agree; 'require_majority' -> a lone
+   *  candidate is rejected unless a strict majority of respondents agree. */
+  concordance_strictness?: 'lenient' | 'require_two' | 'require_majority';
 }
 
 /** BP136 Yoke: resolves the answer-cache mode flag from settings, with an env-var override
@@ -372,6 +381,8 @@ export function registerAiDispatchIPC(): void {
       if (incoming.csia_mode !== undefined) updated.csia_mode = incoming.csia_mode;
       // BP136 Yoke v2b (CSIA research arm): additive, mirrors the csia_mode line above.
       if (incoming.csia_research !== undefined) updated.csia_research = incoming.csia_research;
+      // BP139 Concordance Gate: additive, mirrors the csia_research line above.
+      if (incoming.concordance_strictness !== undefined) updated.concordance_strictness = incoming.concordance_strictness;
       try {
         saveSettings(updated);
         return { ok: true };
