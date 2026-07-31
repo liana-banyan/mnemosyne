@@ -1141,27 +1141,74 @@ async function runSpecialistSwarmConsensus(params: {
 }
 
 /**
- * Honest not-wired placeholder for the three BP139 browser-LLM authorities (ChatGPT/Gemini/
- * Claude). Mirrors browser_authority_adapter.ts's createNotWiredBridge() convention exactly:
- * NEVER fabricates a fact/sourceUrl, NEVER throws (a thrown error could be mistaken for a
- * transient network failure rather than "not built yet"), always resolves null with a labeled
- * console note. This is the ONLY thing standing between "the enable gate resolved true for this
- * authority" and "a real answer comes back" -- swapping this function's body for a real
- * per-vendor browser bridge call (once buildBrowserAuthorityQueryUrl/webview_preload.ts grow
- * chatgpt.com/gemini.google.com/claude.ai support) is the ONLY change a future pass needs here;
- * every gate/sequencing/candidate-injection line around this call site is already correct and
- * needs no further change. See this build's own report for the exact per-vendor wiring recipe.
+ * Honest not-wired placeholder, now for the REMAINING two not-yet-wired BP139 browser-LLM
+ * authorities (ChatGPT/Gemini only -- user_claude has a real bridge as of this build pass, see
+ * queryClaudeBrowserAuthority below). Mirrors browser_authority_adapter.ts's
+ * createNotWiredBridge() convention exactly: NEVER fabricates a fact/sourceUrl, NEVER throws (a
+ * thrown error could be mistaken for a transient network failure rather than "not built yet"),
+ * always resolves null with a labeled console note. This is the ONLY thing standing between "the
+ * enable gate resolved true for this authority" and "a real answer comes back" for
+ * user_chatgpt/user_gemini -- swapping this function's body for a real per-vendor browser bridge
+ * call (once buildBrowserAuthorityQueryUrl/webview_preload.ts grow chatgpt.com/gemini.google.com
+ * interactive support, following the exact pattern claude.ai's own wiring this pass used) is the
+ * ONLY change a future pass needs here; every gate/sequencing/candidate-injection line around
+ * this call site is already correct and needs no further change. See this build's own report for
+ * the exact per-vendor wiring recipe.
  */
 async function queryBrowserLlmAuthorityNotWired(
   authority: BrowserLlmAuthorityName,
   _question: string,
 ): Promise<{ fact: string; sourceUrl: string } | null> {
   console.warn(
-    `[plow_mc_answerer] ${authority} is ENABLED (premium opt-in confirmed) but has no live ` +
+    `[plow_mc_answerer] ${authority} is ENABLED (opt-in confirmed) but has no live ` +
     'browser-scraping bridge wired this pass -- see BROWSER_LLM_AUTHORITY_METADATA/' +
     'queryBrowserLlmAuthorityNotWired doc comments. Returning null, never a fabricated result.',
   );
   return null;
+}
+
+/**
+ * WIRED (this build pass): user_claude's real interactive browser bridge. Unlike
+ * queryBrowserLlmAuthorityNotWired above (still the honest placeholder for user_chatgpt/
+ * user_gemini, which have no live driver yet), this function reaches the SAME
+ * runBrowserAuthorityLookup/BrowserAuthorityBridge plumbing user_google/user_perplexity already
+ * use elsewhere in this file (see the Perplexity/Google block right above this ensemble's
+ * browser-LLM loop) -- passing `preferredAuthority: 'user_claude'` routes through
+ * index.ts's runBrowserAuthorityQueryFromMain() to the INTERACTIVE type->submit->wait->scrape
+ * flow (webview_preload.ts's 'browser-authority-run-interactive-query' handler,
+ * isInteractiveBrowserAuthority() in browser_authority_types.ts), instead of the static
+ * query-URL DOM-scrape user_google/user_perplexity use.
+ *
+ * `researchArmMode`/`researchArmBrowserAuthority` are force-enabled INSIDE this call's own config
+ * object (not read from CanonicalPlowMcConfig / global settings) because reaching this function
+ * at all already required the SEPARATE, stricter BP139 premium/opt-in gate
+ * (isBrowserLlmAuthorityEnabled('user_claude', ...)) to resolve true at this loop's call site --
+ * that gate is user_claude's real, user-facing on/off switch; the two booleans here are only
+ * satisfying runBrowserAuthorityLookup's own internal "was this reached deliberately" plumbing
+ * check, not a second independent enablement path a user could flip on its own.
+ *
+ * Never fabricates: returns null in every case runBrowserAuthorityLookup/
+ * runInteractiveBrowserAuthorityQuery do -- not signed in to claude.ai, composer not found,
+ * typing/submit failed, or the streamed reply never stabilized before its own timeout. Bridge
+ * failures are caught and logged non-fatally by this loop's own try/catch at the call site below,
+ * exactly like every other authority in this ensemble.
+ */
+async function queryClaudeBrowserAuthority(
+  question: string,
+  mcOptionTexts: string[],
+  bridge: BrowserAuthorityBridge,
+): Promise<{ fact: string; sourceUrl: string } | null> {
+  const result = await runBrowserAuthorityLookup(
+    question,
+    {
+      researchArmMode: true,
+      researchArmBrowserAuthority: true,
+      preferredAuthority: 'user_claude',
+      ...(mcOptionTexts.length > 0 ? { mcOptions: mcOptionTexts } : {}),
+    },
+    bridge,
+  );
+  return result ? { fact: result.fact, sourceUrl: result.sourceUrl } : null;
 }
 
 /** Runs the full ensemble for one question: queries every free authority available for
@@ -1246,22 +1293,26 @@ async function runAuthorityEnsemble(params: {
   // own doc comment for why that is provable by inspection, not just by today's data.
   //
   // WIRING STATUS (honest, never fabricated -- same convention as browser_authority_adapter.ts's
-  // own createNotWiredBridge()): even when a user explicitly enables one of these three, no live
-  // DOM-scraping bridge exists yet for chatgpt.com/gemini.google.com/claude.ai in this pass (that
-  // would require extending the closed BrowserAuthorityName union, buildBrowserAuthorityQueryUrl,
-  // and webview_preload.ts's per-vendor ANSWER_SELECTORS -- all outside this change's authorized
-  // file set). queryBrowserLlmAuthorityNotWired() below is the honest placeholder: it always
-  // resolves null and logs exactly why, so enabling one of these toggles today safely does
-  // nothing (never a fabricated candidate) until a future pass wires the real per-vendor bridge.
+  // own createNotWiredBridge()): user_claude has a REAL interactive bridge as of this build pass
+  // (queryClaudeBrowserAuthority above, routed through the SAME `bridge` this loop's caller
+  // already threads through for user_google/user_perplexity). user_chatgpt/user_gemini still have
+  // no live DOM-scraping bridge (that would require an interactive driver for chatgpt.com/
+  // gemini.google.com analogous to claude.ai's this pass -- out of scope this pass per the build
+  // prompt's explicit "leave chatgpt/gemini as stubs" instruction) -- queryBrowserLlmAuthorityNotWired()
+  // remains their honest placeholder: always resolves null and logs exactly why, so enabling
+  // either of those two toggles today safely does nothing (never a fabricated candidate) until a
+  // future pass wires their own real per-vendor bridge.
   const browserLlmOverrides = readBrowserLlmAuthorityEnableOverridesFromSettings();
   const browserLlmNames: BrowserLlmAuthorityName[] = ['user_chatgpt', 'user_gemini', 'user_claude'];
   for (const llmName of browserLlmNames) {
     if (!isBrowserLlmAuthorityEnabled(llmName, browserLlmOverrides)) {
-      log(`${llmName}=skipped (disabled, premium default-off -- see BROWSER_LLM_AUTHORITY_METADATA)`);
+      log(`${llmName}=skipped (disabled, opt-in default-off -- see BROWSER_LLM_AUTHORITY_METADATA)`);
       continue;
     }
     try {
-      const llmResult = await queryBrowserLlmAuthorityNotWired(llmName, researchQuery);
+      const llmResult = llmName === 'user_claude'
+        ? await queryClaudeBrowserAuthority(researchQuery, mcOptionTexts, bridge)
+        : await queryBrowserLlmAuthorityNotWired(llmName, researchQuery);
       const resolved = llmResult ? resolveAuthorityLetterMatch(llmResult.fact, mcOptions) : null;
       if (resolved && llmResult) {
         candidates.push({
@@ -1269,7 +1320,7 @@ async function runAuthorityEnsemble(params: {
           sourceUrl: llmResult.sourceUrl, method: resolved.method,
         });
       }
-      log(`${llmName}=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter (enabled, not-yet-wired)'}`);
+      log(`${llmName}=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter (enabled, ' + (llmName === 'user_claude' ? 'wired-but-no-result' : 'not-yet-wired') + ')'}`);
     } catch (err) {
       log(`${llmName} threw (non-fatal): ${err}`);
     }

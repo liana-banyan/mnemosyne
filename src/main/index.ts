@@ -77,8 +77,18 @@ import { buildSubstrateContext } from './hearth/embedded_browser/substrate_conte
 // vocabulary both this file and browser_authority_adapter.ts/plow_mc_answerer.ts speak -- see
 // runBrowserAuthorityQueryFromMain() below (near openHearthConjunctionWindow()) for the actual
 // main<->renderer forwarding this Yoke wires.
+// (this build pass) isInteractiveBrowserAuthority/buildMcAwareQueryText added: the claude.ai/new
+// interactive driver (see runInteractiveBrowserAuthorityQuery below, near
+// runBrowserAuthorityQueryFromMain) needs to (a) know which authorities require the type->submit
+// ->wait->scrape sequence instead of a plain query-URL navigation, and (b) build the same
+// options-aware prompt text user_perplexity already sends via its URL, but for claude.ai send it
+// as the COMPOSER payload instead (claude.ai has no query-URL form at all -- see
+// buildBrowserAuthorityQueryUrl's own user_claude branch, which always returns the fixed
+// https://claude.ai/new landing URL regardless of question/options).
 import {
   buildBrowserAuthorityQueryUrl,
+  buildMcAwareQueryText,
+  isInteractiveBrowserAuthority,
   type BrowserAuthorityQuery,
   type BrowserAuthorityRawExtraction,
 } from '../shared/plow/browser_authority_types';
@@ -1569,6 +1579,17 @@ const BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS = 2_500;
 // 'browser-authority-run-query' to the SAME already-loaded page once, after this extra wait,
 // before giving up -- still well inside BROWSER_AUTHORITY_MAIN_TIMEOUT_MS's 20s budget.
 const BROWSER_AUTHORITY_RETRY_DELAY_MS = 1_500;
+// (this build pass) claude.ai/new streams its reply -- a real answer can easily take longer than
+// the 20s BROWSER_AUTHORITY_MAIN_TIMEOUT_MS budget above (which was sized for a near-instant
+// static DOM scrape of an already-rendered Google/Perplexity results page). This is a SEPARATE,
+// longer budget used ONLY for isInteractiveBrowserAuthority() authorities -- it does not change
+// BROWSER_AUTHORITY_MAIN_TIMEOUT_MS's value or meaning for user_google/user_perplexity at all.
+const BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS = 90_000;
+// Extra settle delay after did-finish-load before the composer is even looked up -- claude.ai's
+// own client-side app shell needs a moment to mount past the raw HTML load event, same rationale
+// as BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS above but tuned separately since this is a different
+// (heavier, client-rendered) page than a search-results page.
+const BROWSER_AUTHORITY_INTERACTIVE_LOAD_SETTLE_DELAY_MS = 2_000;
 // BP139: module-level chain used to SERIALIZE concurrent runBrowserAuthorityQueryFromMain() calls
 // against the one shared webview, instead of the prior single-flight-drop behavior (a second call
 // arriving while the first was still running used to resolve null immediately -- see this
@@ -1583,6 +1604,101 @@ let browserAuthorityInFlightChain: Promise<unknown> = Promise.resolve();
 // its turn, silently dropping legitimate lookups (observed live: 3 rapid-fire Ask-tab questions,
 // the 3rd got no source while the first two -- which didn't overlap another in-flight call -- did).
 // Fix: queue instead of drop. See browserAuthorityInFlightChain above.
+// (this build pass) claude.ai/new interactive driver -- the type->submit->wait-for-stream->
+// scrape leg GOAL/STEP 3 of this pass adds. Reaches the SAME shared <webview> element the static
+// script above drives (document.querySelector('webview') inside the persistent nexus-authority
+// window's page context), but instead of the single quick 'browser-authority-run-query' round
+// trip, it navigates to the fixed https://claude.ai/new landing page and sends
+// 'browser-authority-run-interactive-query' -- webview_preload.ts's new handler for that channel
+// does the actual composer-typing/submit/stream-completion-detection/scrape entirely inside the
+// guest page (see that file's own header for the full mechanism and its selector list).
+//
+// HONEST NULL PATHS (same firewall as the static path above -- never fabricate a result):
+//   1. No <webview> element found in the persistent window's page -> null.
+//   2. Navigation to claude.ai/new never fires 'did-finish-load' within
+//      BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS -> null (composer never even looked up).
+//   3. Composer not found, typing failed, or submit failed (webview_preload.ts's own honesty
+//      checks) -> the 'browser-authority-interactive-result' message itself carries
+//      success:false/no snippet, which this function passes through as null.
+//   4. Assistant reply never stabilizes / times out with zero text observed -> success:false from
+//      the same source, -> null here.
+// A genuinely scraped, non-empty reply is the ONLY path that reaches a real
+// BrowserAuthorityRawExtraction return below.
+async function runInteractiveBrowserAuthorityQuery(
+  nexusWindow: BrowserWindow,
+  query: BrowserAuthorityQuery,
+): Promise<BrowserAuthorityRawExtraction | null> {
+  const navigateUrl = buildBrowserAuthorityQueryUrl(query); // fixed https://claude.ai/new for user_claude
+  // The question (with its MC options, if any) travels as the COMPOSER payload, not the URL --
+  // buildMcAwareQueryText is the SAME pure formatter user_perplexity's query-URL path already
+  // uses (browser_authority_types.ts), just applied to the interactive payload instead of a URL
+  // component here.
+  const promptText =
+    query.mcOptions && query.mcOptions.length > 0
+      ? buildMcAwareQueryText(query.question, query.mcOptions)
+      : query.question;
+
+  const script = `
+    (function() {
+      return new Promise(function(resolve) {
+        try {
+          var wv = document.querySelector('webview');
+          if (!wv) { resolve(null); return; }
+          var settled = false;
+          var timeoutId = setTimeout(function() {
+            if (settled) return;
+            settled = true;
+            wv.removeEventListener('ipc-message', onMsg);
+            wv.removeEventListener('did-finish-load', onLoad);
+            resolve(null);
+          }, ${BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS});
+          function onMsg(e) {
+            if (!e || e.channel !== 'browser-authority-interactive-result') return;
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            wv.removeEventListener('ipc-message', onMsg);
+            wv.removeEventListener('did-finish-load', onLoad);
+            var payload = e.args && e.args[0] ? e.args[0] : null;
+            resolve(payload); // honest pass-through -- success:false/no-snippet included verbatim
+          }
+          function onLoad() {
+            wv.removeEventListener('did-finish-load', onLoad);
+            setTimeout(function() {
+              try {
+                wv.send('browser-authority-run-interactive-query', { query: ${JSON.stringify(promptText)}, authority: ${JSON.stringify(query.authority)} });
+              } catch (sendErr) {
+                if (!settled) { settled = true; clearTimeout(timeoutId); resolve(null); }
+              }
+            }, ${BROWSER_AUTHORITY_INTERACTIVE_LOAD_SETTLE_DELAY_MS});
+          }
+          wv.addEventListener('ipc-message', onMsg);
+          wv.addEventListener('did-finish-load', onLoad);
+          wv.loadURL(${JSON.stringify(navigateUrl)});
+        } catch (err) {
+          resolve(null);
+        }
+      });
+    })()
+  `;
+
+  try {
+    const result = await nexusWindow.webContents.executeJavaScript(script);
+    if (!result || typeof result !== 'object') return null;
+    const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null };
+    if (!r.success || !r.snippet || !r.sourceUrl) return null; // honest -- never a partial/fabricated extraction
+    return {
+      snippet: r.snippet,
+      sourceUrl: r.sourceUrl,
+      authority: query.authority,
+      selectorUsed: r.selectorUsed ?? null,
+    };
+  } catch (err) {
+    console.warn('[browser-authority-main] claude.ai interactive executeJavaScript round trip failed (non-fatal, resolving null):', (err as Error)?.message ?? err);
+    return null;
+  }
+}
+
 export async function runBrowserAuthorityQueryFromMain(
   query: BrowserAuthorityQuery,
 ): Promise<BrowserAuthorityRawExtraction | null> {
@@ -1606,6 +1722,15 @@ export async function runBrowserAuthorityQueryFromMain(
     const signInStatus = await probeNexusAuthoritySignInStatus(query.authority);
     if (!signInStatus.signedIn) {
       console.warn(`[browser-authority-main] ${query.authority} sign-in probe returned not-signed-in (${signInStatus.reason}) -- proceeding anyway; the query's own extraction is the real arbiter (BP139: probe is advisory, false-negatives confirmed live).`);
+    }
+
+    // (this build pass) claude.ai/new has no query-URL form -- route interactive authorities to
+    // their own navigate->type->submit->wait->scrape script instead of the static single-shot
+    // DOM-query script below. Every HONEST NULL PATH documented above this function (flag off,
+    // window unavailable, in-flight serialization) already ran before this point and applies
+    // identically to both branches; only the on-page mechanism differs from here down.
+    if (isInteractiveBrowserAuthority(query.authority)) {
+      return await runInteractiveBrowserAuthorityQuery(nexusWindow, query);
     }
 
     const navigateUrl = buildBrowserAuthorityQueryUrl(query);
@@ -2932,6 +3057,44 @@ function registerIPCHandlers(): void {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[plow:run-answer-coroner] failed:', msg);
+      return { ok: false, error: msg };
+    }
+  });
+
+  // BP139 Founder Yoke: Answer Coroner over the CURRENT run's own outcomes -- classifies the
+  // QuestionOutcome[] the renderer already has in memory/localStorage from the benchmark run
+  // the Founder just did, instead of the 500-row Supabase relay_route_replies dump above. No
+  // network call; synchronous classification via the same classifyCore(...) the WAN path uses
+  // (see answer_coroner.ts's classifyLocalOutcome/runAnswerCoronerOnLocalOutcomes).
+  safeHandle('plow:run-answer-coroner-local', async (_event, opts: {
+    outcomes: Array<{
+      question_id: number;
+      question: string;
+      category: string;
+      correctLetter: string;
+      parsedLetter: string | null;
+      isCorrect: boolean;
+      isAbstain?: boolean;
+      answeredBy?: string | null;
+      peerId?: string | null;
+      machineLabel?: string | null;
+      latencyMs?: number | null;
+      plowTrace?: Record<string, unknown> | null;
+    }>;
+  }) => {
+    try {
+      const { runAnswerCoronerOnLocalOutcomes } = await import('./plow/answer_coroner');
+      const roundup = runAnswerCoronerOnLocalOutcomes(opts.outcomes ?? [], {
+        onProgress: (msg) => {
+          for (const w of BrowserWindow.getAllWindows()) {
+            if (!w.isDestroyed()) w.webContents.send('plow:coroner-progress', { msg });
+          }
+        },
+      });
+      return { ok: true, roundup };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[plow:run-answer-coroner-local] failed:', msg);
       return { ok: false, error: msg };
     }
   });

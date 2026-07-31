@@ -177,7 +177,7 @@ function attachEnterInterceptor(): void {
 // than glossed over. A selector miss is reported as `success: false` with no fabricated
 // snippet/URL, never silently coerced into a fake success.
 
-type BrowserAuthorityName = 'user_google' | 'user_perplexity';
+type BrowserAuthorityName = 'user_google' | 'user_perplexity' | 'user_claude';
 
 interface BrowserAuthorityRunQueryRequest {
   query: string;
@@ -256,6 +256,289 @@ ipcRenderer.on('browser-authority-run-query', (_event, payload: BrowserAuthority
   });
 
   ipcRenderer.sendToHost('browser-authority-extraction-result', result);
+});
+
+// ─── (this build pass) claude.ai/new interactive browser authority ──────────────────────────
+// ADDITIVE ONLY, same "unreachable unless the new channel is sent" guarantee as the static
+// extraction block above. claude.ai/new has NO query-URL form (unlike Google/Perplexity's
+// search?q= URLs) -- the caller (index.ts's runBrowserAuthorityQueryFromMain, gated by
+// browser_authority_types.ts's isInteractiveBrowserAuthority()) navigates here to a fixed
+// 'https://claude.ai/new' landing page and then sends 'browser-authority-run-interactive-query'
+// instead of the static 'browser-authority-run-query' above. This handler does the actual
+// type -> submit -> wait-for-stream-completion -> scrape sequence entirely inside this guest
+// page context.
+//
+// HONESTY FIREWALL (same bar as the static extraction above): every selector below is a
+// best-effort heuristic against claude.ai's rendered DOM as of this build pass -- UNVERIFIED
+// against a real logged-in session (no live credentials available to this build). A composer
+// miss, a submit miss, or a scrape miss is reported as `success: false` with no fabricated
+// snippet/URL; there is no code path in this block that invents a placeholder answer.
+
+interface BrowserAuthorityRunInteractiveQueryRequest {
+  query: string;
+  authority: BrowserAuthorityName;
+}
+
+interface BrowserAuthorityInteractiveResultMessage {
+  success: boolean;
+  authority: BrowserAuthorityName;
+  snippet: string;
+  sourceUrl: string | null;
+  selectorUsed: string | null;
+}
+
+// Best-effort composer selectors, most-specific first. claude.ai's composer is a ProseMirror
+// contenteditable div; the plain `div[contenteditable="true"]` catch-all is last-resort in case
+// the editor library or its class name changes.
+const CLAUDE_COMPOSER_SELECTORS = [
+  'div[contenteditable="true"].ProseMirror',
+  'div[aria-label="Write your prompt to Claude"]',
+  'fieldset div[contenteditable="true"]',
+  'div[contenteditable="true"][role="textbox"]',
+  'div[contenteditable="true"]',
+];
+
+// Best-effort send-button selectors, most-specific first. Clicking the real button is preferred
+// over simulating an Enter keypress because a composer's onKeyDown handler may special-case
+// Enter (e.g. newline-vs-submit logic) in ways a synthetic KeyboardEvent cannot reliably trigger.
+const CLAUDE_SEND_BUTTON_SELECTORS = [
+  'button[aria-label="Send Message"]',
+  'button[aria-label="Send message"]',
+  'button[data-testid="send-button"]',
+  'fieldset button[type="submit"]',
+];
+
+// Presence of ANY of these means the assistant turn is still streaming. Checked every poll tick
+// so completion-detection never fires on a page that merely LOOKS finished mid-stream.
+const CLAUDE_STOP_BUTTON_SELECTORS = [
+  'button[aria-label="Stop Response"]',
+  'button[aria-label="Stop response"]',
+  'button[data-testid="stop-button"]',
+];
+
+// Best-effort assistant-message-container selectors, most-specific first. Unlike Google/
+// Perplexity's single-answer-box scrape, claude.ai renders a whole conversation thread -- this
+// module always takes the LAST matching element (the most recent assistant turn), never the
+// first, via lastNonEmptyTextMatch below.
+const CLAUDE_ASSISTANT_MESSAGE_SELECTORS = [
+  '[data-testid="conversation-turn"] .font-claude-message',
+  '.font-claude-message',
+  '[data-testid="conversation-turn"]',
+  'main [data-is-streaming]',
+];
+
+function lastNonEmptyTextMatch(selectors: string[]): { text: string; selector: string } | null {
+  for (const sel of selectors) {
+    try {
+      const matches = document.querySelectorAll<HTMLElement>(sel);
+      if (matches.length === 0) continue;
+      const el = matches[matches.length - 1];
+      const text = el?.innerText?.trim();
+      if (text && text.length >= 1) return { text, selector: sel };
+    } catch {
+      /* invalid selector or DOM access error -- try the next candidate */
+    }
+  }
+  return null;
+}
+
+function findFirstMatch(selectors: string[]): HTMLElement | null {
+  for (const sel of selectors) {
+    try {
+      const el = document.querySelector<HTMLElement>(sel);
+      if (el) return el;
+    } catch {
+      /* invalid selector -- try the next candidate */
+    }
+  }
+  return null;
+}
+
+function isClaudeStillStreaming(): boolean {
+  return findFirstMatch(CLAUDE_STOP_BUTTON_SELECTORS) !== null;
+}
+
+/** Sets `text` into a composer element and dispatches the input events real typing would
+ *  produce. Tries document.execCommand('insertText', ...) FIRST for a contentEditable element
+ *  (the standard resilient way to feed text into a rich-text editor like ProseMirror -- it fires
+ *  the editor's own 'beforeinput'/'input' pipeline, unlike a raw innerText assignment, which many
+ *  such editors silently ignore or fail to pick up into their internal document model). Falls
+ *  back to the direct-assignment + dispatchEvent('input') technique this file's own pre-existing
+ *  injectContext() (line ~89 above) already uses for a plain contentEditable/textarea, for parity
+ *  with that already-working convention. Returns false (never throws) on any DOM access failure
+ *  -- a false here is reported as success:false upstream, never a fabricated result. */
+function setComposerText(el: HTMLElement, text: string): boolean {
+  try {
+    el.focus();
+    if (el.isContentEditable) {
+      // Clear any existing content first (a fresh https://claude.ai/new load should already be
+      // empty, but this is defensive against a reused/navigated-back composer).
+      const selectAllOk = document.execCommand('selectAll', false, undefined);
+      if (selectAllOk) document.execCommand('delete', false, undefined);
+      const inserted = document.execCommand('insertText', false, text);
+      if (!inserted) {
+        // execCommand unsupported/failed -- fall back to direct DOM mutation + synthetic input
+        // event (same technique injectContext() above already uses for a plain contentEditable).
+        el.innerText = text;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      return true;
+    }
+    if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+      const nativeValueSetter = Object.getOwnPropertyDescriptor(
+        el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      nativeValueSetter?.call(el, text);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/** Submits the composer: prefers clicking a real send button (most reliable against a React
+ *  app's own submit handler); falls back to a synthetic Enter keydown/keypress/keyup on the
+ *  composer element (bubbles:true, same dispatch pattern attachEnterInterceptor() above already
+ *  uses successfully against Google's search box) when no send button is found or it's disabled.
+ *  Returns which method fired, for logging only -- never throws. */
+function submitComposer(composerEl: HTMLElement): 'button' | 'enter-key' | 'failed' {
+  try {
+    const sendButton = findFirstMatch(CLAUDE_SEND_BUTTON_SELECTORS);
+    if (sendButton && !(sendButton as HTMLButtonElement).disabled) {
+      sendButton.click();
+      return 'button';
+    }
+    const enterInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    composerEl.dispatchEvent(new KeyboardEvent('keydown', enterInit));
+    composerEl.dispatchEvent(new KeyboardEvent('keypress', enterInit));
+    composerEl.dispatchEvent(new KeyboardEvent('keyup', enterInit));
+    return 'enter-key';
+  } catch {
+    return 'failed';
+  }
+}
+
+const CLAUDE_INTERACTIVE_POLL_MS = 700;
+// Wall-clock budget for the WHOLE type->submit->stream->scrape sequence, enforced inside this
+// handler itself (index.ts's own runBrowserAuthorityQueryFromMain has a SEPARATE, longer outer
+// timeout around the whole round trip -- this inner budget just makes sure this handler always
+// eventually reports back rather than polling forever on a page that never finishes streaming).
+const CLAUDE_INTERACTIVE_MAX_WAIT_MS = 75_000;
+// How many consecutive no-change poll ticks (with no stop-button visible) are required before
+// completion is declared when NO streaming indicator was ever observed (fast answer, or the
+// stop-button selector missed it) -- see the stableAndDone comment below for the full logic.
+const CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED = 3; // 3 * 700ms = 2.1s of no growth
+
+function runClaudeInteractiveQuery(promptText: string): void {
+  const reportFailure = () => {
+    ipcRenderer.sendToHost('browser-authority-interactive-result', {
+      success: false, authority: 'user_claude', snippet: '', sourceUrl: null, selectorUsed: null,
+    } as BrowserAuthorityInteractiveResultMessage);
+  };
+
+  const composer = findFirstMatch(CLAUDE_COMPOSER_SELECTORS);
+  if (!composer) {
+    logInjectionEvent('claude_interactive_composer_not_found', { url: window.location.href });
+    reportFailure();
+    return;
+  }
+
+  const typed = setComposerText(composer, promptText);
+  logInjectionEvent('claude_interactive_typed', { ok: typed, url: window.location.href });
+  if (!typed) {
+    reportFailure();
+    return;
+  }
+
+  // A short settle delay before submit -- mirrors the settle-delay convention
+  // runBrowserAuthorityQueryFromMain (index.ts) already uses after did-finish-load, giving the
+  // editor's own React state a moment to catch up with the just-dispatched input event before
+  // the submit handler reads it.
+  setTimeout(() => {
+    const submitMethod = submitComposer(composer);
+    logInjectionEvent('claude_interactive_submitted', { method: submitMethod, url: window.location.href });
+    if (submitMethod === 'failed') {
+      reportFailure();
+      return;
+    }
+
+    let ticksSinceChange = 0;
+    let lastText = '';
+    let hasSeenStreaming = false;
+    let lastSelector: string | null = null;
+    const startedAt = Date.now();
+
+    const finish = (success: boolean) => {
+      clearInterval(pollHandle);
+      logInjectionEvent('claude_interactive_result', {
+        success, textLength: lastText.length, sawStreaming: hasSeenStreaming, url: window.location.href,
+      });
+      ipcRenderer.sendToHost('browser-authority-interactive-result', {
+        success,
+        authority: 'user_claude',
+        snippet: success ? lastText.replace(/\s+/g, ' ').trim() : '',
+        sourceUrl: success ? window.location.href : null,
+        selectorUsed: success ? lastSelector : null,
+      } as BrowserAuthorityInteractiveResultMessage);
+    };
+
+    const pollHandle = setInterval(() => {
+      const streaming = isClaudeStillStreaming();
+      if (streaming) hasSeenStreaming = true;
+
+      const match = lastNonEmptyTextMatch(CLAUDE_ASSISTANT_MESSAGE_SELECTORS);
+      const currentText = match?.text ?? '';
+      if (match) lastSelector = match.selector;
+
+      if (currentText.length > 0 && currentText === lastText) {
+        ticksSinceChange++;
+      } else {
+        ticksSinceChange = 0;
+        lastText = currentText;
+      }
+
+      // Completion is declared when: (a) we've seen the stop-button appear at some earlier tick
+      // and it is now gone (strong, fast signal -- naturally requires at least one repeated
+      // no-change reading first, since ticksSinceChange only increments on a REPEATED value), OR
+      // (b) the text has held steady for CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED consecutive
+      // ticks even though no streaming indicator was ever observed (fallback for a fast answer
+      // or a stop-button selector miss).
+      const stableAndDone =
+        currentText.length > 0 && !streaming &&
+        (hasSeenStreaming ? ticksSinceChange >= 1 : ticksSinceChange >= CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED);
+
+      if (stableAndDone) {
+        finish(true);
+        return;
+      }
+
+      if (Date.now() - startedAt > CLAUDE_INTERACTIVE_MAX_WAIT_MS) {
+        // Timed out -- report honestly with whatever text (if any) was last observed. Empty
+        // lastText reports success:false (no fabricated snippet); a non-empty-but-possibly-
+        // still-growing lastText is reported success:true as a best-effort partial, but is never
+        // silently upgraded to "verified" upstream (distillExtraction's own length-based
+        // `verified` heuristic in browser_authority_types.ts is the only thing that judges that).
+        finish(currentText.length > 0);
+      }
+    }, CLAUDE_INTERACTIVE_POLL_MS);
+  }, 400);
+}
+
+ipcRenderer.on('browser-authority-run-interactive-query', (_event, payload: BrowserAuthorityRunInteractiveQueryRequest) => {
+  logInjectionEvent('claude_interactive_query_received', { authority: payload.authority, url: window.location.href });
+  if (payload.authority !== 'user_claude') {
+    // Only claude.ai is wired to the interactive path this build pass -- any other authority
+    // arriving on this channel is a caller bug, not a scrape failure; report honestly rather
+    // than attempting Claude-specific selectors against an unrelated vendor's page.
+    ipcRenderer.sendToHost('browser-authority-interactive-result', {
+      success: false, authority: payload.authority, snippet: '', sourceUrl: null, selectorUsed: null,
+    } as BrowserAuthorityInteractiveResultMessage);
+    return;
+  }
+  runClaudeInteractiveQuery(payload.query);
 });
 
 // ─── Watch for navigation (Google Search AI may be SPA) ──────────────────────

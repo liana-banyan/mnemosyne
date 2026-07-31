@@ -149,6 +149,7 @@ function buildEmbedderHtml(): string {
   <div id="bar">
     <button id="btn-google" title="Navigate the persistent session to Google sign-in">Google</button>
     <button id="btn-perplexity" title="Navigate the persistent session to Perplexity">Perplexity</button>
+    <button id="btn-claude" title="Navigate the persistent session to claude.ai/new sign-in">Claude</button>
     <span id="status">Nexus Authority -- persistent session (persist:nexus-authority)</span>
     <button id="btn-done" title="Hide this window (the session stays alive in the background)">Done -- hide</button>
   </div>
@@ -163,6 +164,9 @@ function buildEmbedderHtml(): string {
     });
     document.getElementById('btn-perplexity').addEventListener('click', function () {
       wv.loadURL('https://www.perplexity.ai/');
+    });
+    document.getElementById('btn-claude').addEventListener('click', function () {
+      wv.loadURL('https://claude.ai/new');
     });
     document.getElementById('btn-done').addEventListener('click', function () {
       if (window.amplify && window.amplify.hideNexusAuthoritySession) {
@@ -234,7 +238,10 @@ export function showNexusAuthoritySessionForSignIn(authority: BrowserAuthorityNa
   const win = ensureNexusAuthoritySession();
   if (!win) return false;
 
-  const url = authority === 'user_perplexity' ? 'https://www.perplexity.ai/' : 'https://accounts.google.com/';
+  const url =
+    authority === 'user_perplexity' ? 'https://www.perplexity.ai/'
+      : authority === 'user_claude' ? 'https://claude.ai/new'
+        : 'https://accounts.google.com/';
   win.webContents.executeJavaScript(`
     (function () {
       try {
@@ -300,6 +307,23 @@ const PERPLEXITY_SIGNED_IN_MARKERS = [
   'button[aria-label*="workspace" i]',
 ];
 
+// (this build pass) claude.ai/new markers -- NONE of these are live-verified against a real
+// signed-in claude.ai session (same honesty caveat as the 7 defensive Perplexity additions
+// above): best-effort candidates covering (a) the composer itself only ever renders once past
+// any login wall, (b) a user/account affordance in the nav, (c) the conversation-history sidebar
+// (also login-gated). The SIGN_IN_CONTROL_TEXT_PATTERN override below still applies FIRST, so a
+// page that still shows a visible "Log in"/"Sign in" control can never be reported signedIn:true
+// even if one of these matches (e.g. a marketing element outside the authed app shell).
+const CLAUDE_SIGNED_IN_MARKERS = [
+  'div[contenteditable="true"].ProseMirror',
+  'div[aria-label="Write your prompt to Claude"]',
+  'button[data-testid="user-menu-button"]',
+  '[data-testid="chat-menu-trigger"]',
+  'nav button[aria-haspopup="menu"]',
+  'a[href="/chats"]',
+  'button[aria-label*="Account" i]',
+];
+
 // Defense-in-depth for the honesty firewall: a page that is still showing an explicit sign-in
 // control (any element whose visible text matches /log ?in|sign ?in/i) can never be reported
 // signedIn:true, REGARDLESS of whether a positive marker above also happens to match -- this is
@@ -309,7 +333,10 @@ const PERPLEXITY_SIGNED_IN_MARKERS = [
 const SIGN_IN_CONTROL_TEXT_PATTERN = 'log ?in|sign ?in';
 
 function buildSignInProbeScript(authority: BrowserAuthorityName): string {
-  const markers = authority === 'user_perplexity' ? PERPLEXITY_SIGNED_IN_MARKERS : GOOGLE_SIGNED_IN_MARKERS;
+  const markers =
+    authority === 'user_perplexity' ? PERPLEXITY_SIGNED_IN_MARKERS
+      : authority === 'user_claude' ? CLAUDE_SIGNED_IN_MARKERS
+        : GOOGLE_SIGNED_IN_MARKERS;
   return `
     (function () {
       try {
@@ -356,7 +383,10 @@ export async function probeNexusAuthoritySignInStatus(
     return { authority, signedIn: false, reason: 'flag_off_or_unavailable', checkedAt };
   }
 
-  const url = authority === 'user_perplexity' ? 'https://www.perplexity.ai/' : 'https://www.google.com/';
+  const url =
+    authority === 'user_perplexity' ? 'https://www.perplexity.ai/'
+      : authority === 'user_claude' ? 'https://claude.ai/new'
+        : 'https://www.google.com/';
   const probeScript = buildSignInProbeScript(authority);
 
   const script = `
@@ -421,9 +451,14 @@ export async function probeAllNexusAuthorityStatuses(): Promise<NexusAuthoritySi
     return [
       { authority: 'user_google', signedIn: false, reason: 'flag_off_or_unavailable', checkedAt },
       { authority: 'user_perplexity', signedIn: false, reason: 'flag_off_or_unavailable', checkedAt },
+      { authority: 'user_claude', signedIn: false, reason: 'flag_off_or_unavailable', checkedAt },
     ];
   }
   const google = await probeNexusAuthoritySignInStatus('user_google');
   const perplexity = await probeNexusAuthoritySignInStatus('user_perplexity');
-  return [google, perplexity];
+  // (this build pass) claude.ai/new added, same sequential-share-one-webview discipline as
+  // google/perplexity above (the three authorities share ONE <webview>, so a concurrent probe
+  // would race the same navigation).
+  const claude = await probeNexusAuthoritySignInStatus('user_claude');
+  return [google, perplexity, claude];
 }
