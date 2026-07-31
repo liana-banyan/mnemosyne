@@ -957,6 +957,11 @@ function authorityDefaultEnabled(tier: AuthorityTier): boolean {
 
 type Sku = 'nano' | 'core' | 'lite' | 'full';
 type EbletQuota = '10mb' | '100mb' | '1gb' | 'unlimited';
+// BP139 Concordance Gate: mirrors ConcordanceStrictness in
+// src/main/plow/specialist_adapters.ts (kept as an independent literal union here, not a
+// cross-layer import, same convention every other renderer-side setting type on this page
+// already uses -- e.g. Sku/EbletQuota above are not imported from main either).
+type ConcordanceStrictness = 'lenient' | 'require_two' | 'require_majority';
 
 interface MnemDrtSettings {
   sku: Sku;
@@ -968,6 +973,12 @@ interface MnemDrtSettings {
   filtration_pipeline_enabled: boolean;
   eblet_store_quota: EbletQuota;
   federation_exchange_enabled: boolean;
+  /** BP139 Concordance Gate. DEFAULT 'lenient' -- byte-identical to pre-gate behavior (a lone
+   *  authority answer on a conceptual/NO-COMPUTE question is accepted outright). Stricter modes
+   *  require real corroboration before such an answer is trusted; see
+   *  CanonicalPlowMcConfig.concordanceStrictness (plow_mc_answerer.ts) for the full resolution
+   *  this setting drives. Never applied to computable/deterministic-compute questions. */
+  concordance_strictness: ConcordanceStrictness;
 }
 
 const DEFAULT_MNEM_DRT: MnemDrtSettings = {
@@ -977,6 +988,7 @@ const DEFAULT_MNEM_DRT: MnemDrtSettings = {
   filtration_pipeline_enabled: false,
   eblet_store_quota: '100mb',
   federation_exchange_enabled: false,
+  concordance_strictness: 'lenient',
 };
 
 const EBLET_QUOTA_OPTIONS: Array<{ id: EbletQuota; label: string }> = [
@@ -984,6 +996,12 @@ const EBLET_QUOTA_OPTIONS: Array<{ id: EbletQuota; label: string }> = [
   { id: '100mb',     label: '100 MB'    },
   { id: '1gb',       label: '1 GB'      },
   { id: 'unlimited', label: 'Unlimited' },
+];
+
+const CONCORDANCE_STRICTNESS_OPTIONS: Array<{ id: ConcordanceStrictness; label: string }> = [
+  { id: 'lenient',         label: 'Lenient (default)' },
+  { id: 'require_two',     label: 'Require 2 to agree' },
+  { id: 'require_majority', label: 'Require majority' },
 ];
 
 function loadMnemDrt(): MnemDrtSettings {
@@ -1017,6 +1035,10 @@ async function persistMnemDrtToBackend(s: MnemDrtSettings): Promise<void> {
       filtration_pipeline_enabled: s.filtration_pipeline_enabled,
       eblet_store_quota: s.eblet_store_quota,
       federation_exchange_enabled: s.federation_exchange_enabled,
+      // BP139 Concordance Gate: additive, mirrors the fields above -- reaches
+      // ai_dispatch_settings.json's `concordance_strictness` key via the SAME already-wired
+      // ai-dispatch:save-settings IPC round-trip (src/main/ai_dispatch_ipc.ts).
+      concordance_strictness: s.concordance_strictness,
     });
   } catch {
     // IPC channel may not be wired yet -- local storage is source of truth for now
@@ -1233,6 +1255,28 @@ function MnemDrtPanel() {
         </div>
         <div style={{ fontSize: 9, color: '#475569', marginTop: 4, lineHeight: 1.5 }}>
           Maximum local disk space for your sovereign eblet knowledge base.
+        </div>
+      </div>
+
+      {/* BP139 Concordance Gate */}
+      <div style={s.card}>
+        <div style={s.label}>Concordance strictness</div>
+        <div style={s.toggleRow}>
+          {CONCORDANCE_STRICTNESS_OPTIONS.map((opt) => (
+            <button
+              key={opt.id}
+              onClick={() => update({ concordance_strictness: opt.id })}
+              style={{ ...s.chip, ...(drt.concordance_strictness === opt.id ? s.chipActive : {}) }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 9, color: '#475569', marginTop: 4, lineHeight: 1.5 }}>
+          For conceptual/knowledge questions (never math or unit calculations), how many
+          independent sources must agree before an answer is trusted. Lenient accepts a single
+          source, matching today's default. Require 2 / Require majority ask for real
+          corroboration first, and honestly abstain rather than accept an uncorroborated answer.
         </div>
       </div>
 

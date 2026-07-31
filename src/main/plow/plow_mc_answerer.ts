@@ -40,6 +40,10 @@ import {
   isBrowserLlmAuthorityEnabled,
   readBrowserLlmAuthorityEnableOverridesFromSettings,
 } from './specialist_adapters';
+// BP139 Concordance Gate: user-tunable acceptance bar for a lone (uncorroborated) authority
+// candidate on NO-COMPUTE questions -- see specialist_adapters.ts's own "BP139 Concordance Gate"
+// section header, and resolveConcordanceAcceptance below, for the full design/honesty rationale.
+import { type ConcordanceStrictness, readConcordanceStrictnessFromSettings } from './specialist_adapters';
 import { getOperatorsForDomain } from './domain_operator_map';
 // BP137 Yoke v2b Stage D.3: the backup-adapter registry (real-but-thin adapters + several
 // literal no-op stubs, see the widenBeyondDetectivePool() header below for the live-verified
@@ -305,6 +309,33 @@ export interface CanonicalPlowMcConfig {
    *  signed-in browser session (Google/Perplexity) or a free-tier Wolfram key, matching the
    *  Founder's "cheaper" requirement -- the one extra adjudication call fires ONLY on disagreement. */
   researchArmAuthorityEnsemble?: boolean;
+  /** BP139 Concordance Gate, OPT-IN/DEFAULT UNDEFINED (treated as 'lenient'). Founder canon
+   *  ("I want to tune it"): runAuthorityEnsemble's single-candidate accept path (the
+   *  `candidates.length === 1` branch) currently accepts ANY lone authority/swarm answer
+   *  outright for a NO-COMPUTE (answerType !== 'computable') question, with zero corroboration
+   *  -- the Founder's identified root cause of the bias/CSS/geography misses (one uncorroborated
+   *  source answered, and its letter was trusted without a second opinion). This field lets a
+   *  caller/user require real corroboration before that lone answer is accepted:
+   *    - undefined/'lenient' (DEFAULT): byte-identical to pre-gate behavior -- a single accepted
+   *      candidate is accepted, exactly as today. Explicit hard requirement: NO regression.
+   *    - 'require_two': a lone candidate on a NO-COMPUTE question is REJECTED (honest abstain,
+   *      falls through to the existing 'none'/disagree handling) unless >=2 candidates agree.
+   *    - 'require_majority': a lone candidate is REJECTED unless a strict majority of the
+   *      candidates that returned a letter agree (see resolveConcordanceAcceptance below for the
+   *      exact pure decision, including why a single respondent can never satisfy either
+   *      stricter mode -- there is nothing to have a majority OF with just one voice).
+   *  NEVER applied to a deterministic-compute result: resolveConcordanceAcceptance always
+   *  returns true when answerType === 'computable', so the density/units-aware compute override
+   *  (resolveDeterministicComputeOverride, fired by this function's caller immediately after the
+   *  ensemble returns) keeps its unconditional chance to win the math regardless of strictness --
+   *  this gate only ever touches the AUTHORITY-ensemble's acceptance of CONCEPTUAL answers.
+   *  Explicit config value wins; when absent, runAuthorityEnsemble falls back to
+   *  readConcordanceStrictnessFromSettings() (ai_dispatch_settings.json's `concordance_strictness`
+   *  key, same settings-read-hook convention as researchArmAuthorityEnsemble's sibling browser-LLM
+   *  overrides above), so a caller that never sets this field still gets the user's live app
+   *  setting, and a caller that DOES set it (e.g. a unit test, or a mesh-test benchmark that must
+   *  pin behavior regardless of the local machine's settings file) is never overridden by it. */
+  concordanceStrictness?: ConcordanceStrictness;
   /** BP138 Yoke Phase 3, OPTIONAL/ADDITIVE. Present only when the WAN-mesh asker dispatched
    *  this question in option-fan-out mode and assigned THIS peer one specific answer option
    *  to verify (e.g. 'C'). When set AND researchArmOptionFanOut is true, this peer verifies
@@ -478,7 +509,13 @@ export interface CanonicalPlowMcResult {
     // corresponding authority is explicitly enabled (default off, see BROWSER_LLM_AUTHORITY_METADATA).
     | 'single_chatgpt'
     | 'single_gemini'
-    | 'single_claude';
+    | 'single_claude'
+    // BP139 Concordance Gate: mirrors AuthorityEnsembleOutcome['corroboration']'s own
+    // 'lone_rejected_by_strictness' addition -- only reachable when researchArmAuthorityEnsemble
+    // is on AND concordanceStrictness is 'require_two'/'require_majority' AND exactly one
+    // candidate answered a NO-COMPUTE question. See CanonicalPlowMcConfig.concordanceStrictness
+    // and resolveConcordanceAcceptance for the full design.
+    | 'lone_rejected_by_strictness';
   /** BP1xx Authority-Ensemble-swarm-fold-in, OPTIONAL/ADDITIVE. Present only when
    *  researchArmAuthorityEnsemble was on for this call. True when the browser/Wolfram authority
    *  panel was NOT already a confident 2+ agreement and the specialist swarm (Miner -> Furnace
@@ -864,7 +901,13 @@ export interface AuthorityEnsembleOutcome {
     | 'agree' | 'disagree' | 'single_google' | 'single_perplexity' | 'single_wolfram'
     | 'single_specialist_swarm' | 'adjudicated' | 'none'
     // BP139 browser-LLM authorities: same "exactly one real candidate total" label convention.
-    | 'single_chatgpt' | 'single_gemini' | 'single_claude';
+    | 'single_chatgpt' | 'single_gemini' | 'single_claude'
+    // BP139 Concordance Gate: a lone candidate existed (the single_* labels above would have
+    // applied) but concordanceStrictness ('require_two'/'require_majority') rejected it for
+    // lacking corroboration on a NO-COMPUTE question -- honest, distinct from 'none' (nobody
+    // answered at all). See resolveConcordanceAcceptance's call site for the one place this is
+    // ever set.
+    | 'lone_rejected_by_strictness';
   candidates: AuthorityEnsembleCandidate[];
   acceptedCandidates: AuthorityEnsembleCandidate[];
   adjudicationAttempted: boolean;
@@ -887,6 +930,58 @@ export interface AuthorityEnsembleOutcome {
     voterDiagnostics: VoterDiagnostic[];
     concordance: ConcordanceClass;
   };
+}
+
+/** BP139 CONCORDANCE GATE -- pure decision function, zero I/O, fully unit-testable in isolation
+ *  (see the Founder-directed compiled proof script for exactly this). This is the ONE place that
+ *  decides whether an ensemble candidate group should be accepted, given the caller's
+ *  concordanceStrictness setting. Extracted as a standalone pure helper (rather than inlined at
+ *  the single call site below) specifically so it can be exercised with plain
+ *  AuthorityEnsembleOutcome-shaped inputs, no browser/Ollama/network dependency, per the Founder's
+ *  "extract into a small pure helper and test that" instruction.
+ *
+ *  Truth table (this IS the full spec -- every case is one line):
+ *    - answerType === 'computable'            -> ALWAYS true. Corroboration count is NEVER the
+ *      authority for a computable question -- the deterministic units-aware compute override
+ *      (resolveDeterministicComputeOverride, fired by this function's one caller immediately
+ *      after the ensemble returns a chosenLetter) is that authority, and it must keep its
+ *      unconditional chance to win the math regardless of strictness. This is the "never apply
+ *      this gate to a deterministic-compute result" requirement, satisfied structurally: if this
+ *      always returns true for computable, the gate can never turn a computable ensemble letter
+ *      into a rejection, so the override call downstream always still gets to run exactly as it
+ *      does today.
+ *    - strictness === 'lenient' (default, including undefined treated as 'lenient' by the caller)
+ *      -> ALWAYS true. This is the byte-identical-to-today path -- the gate is a complete no-op.
+ *    - strictness === 'require_two' -> true iff agreeingCandidates >= 2. A lone candidate
+ *      (totalCandidates === 1, agreeingCandidates === 1) is always false here: 1 is never >= 2.
+ *    - strictness === 'require_majority' -> true iff totalCandidates >= 2 AND agreeingCandidates
+ *      is a STRICT majority (> half) of totalCandidates. The `totalCandidates >= 2` guard exists
+ *      because "1 out of 1" is arithmetically > half (1 > 0.5) yet represents ZERO corroboration
+ *      -- a single respondent can never itself satisfy a majority requirement, so this is
+ *      explicit rather than relying on the arithmetic alone (which would wrongly accept a lone
+ *      candidate under 'require_majority').
+ *  Both non-lenient modes therefore agree on the one case this build's single call site actually
+ *  exercises (totalCandidates===1, agreeingCandidates===1 -> false, honest reject) -- they only
+ *  diverge for larger candidate pools (e.g. 2 agreeing out of 4 total: require_two accepts,
+ *  require_majority does not), which is why both are kept as distinct, independently meaningful
+ *  settings even though today's one call site cannot yet exercise that divergence. */
+export function resolveConcordanceAcceptance(params: {
+  answerType: AnswerType;
+  strictness: ConcordanceStrictness;
+  /** Total number of real candidates in the group under consideration (e.g. candidates.length
+   *  at the lone-candidate call site -- always 1 there). */
+  totalCandidates: number;
+  /** Size of the largest same-letter agreeing subgroup (e.g. 1 at the lone-candidate call site,
+   *  since the sole candidate trivially "agrees" with itself). */
+  agreeingCandidates: number;
+}): boolean {
+  const { answerType, strictness, totalCandidates, agreeingCandidates } = params;
+  if (answerType === 'computable') return true;
+  if (strictness === 'require_two') return agreeingCandidates >= 2;
+  if (strictness === 'require_majority') {
+    return totalCandidates >= 2 && agreeingCandidates > totalCandidates / 2;
+  }
+  return true; // 'lenient' (and any unrecognized/legacy value) -- no-op, today's exact behavior.
 }
 
 /** Judge prompt for the ONE extra Perplexity call fired only when the ensemble's authorities
@@ -1286,6 +1381,31 @@ async function runAuthorityEnsemble(params: {
               : only.authority === 'user_gemini' ? 'single_gemini'
                 : only.authority === 'user_claude' ? 'single_claude'
                   : 'single_specialist_swarm';
+    // BP139 CONCORDANCE GATE (Founder canon: "I want to tune it"). Explicit config value wins;
+    // absent that, falls back to the live ai_dispatch_settings.json reading (same "read once per
+    // ensemble call" convention as browserLlmOverrides above) -- see CanonicalPlowMcConfig.
+    // concordanceStrictness's own doc comment for the full override-vs-settings contract.
+    const concordanceStrictness: ConcordanceStrictness =
+      config.concordanceStrictness ?? readConcordanceStrictnessFromSettings();
+    const loneAccepted = resolveConcordanceAcceptance({
+      answerType, strictness: concordanceStrictness, totalCandidates: candidates.length, agreeingCandidates: 1,
+    });
+    if (!loneAccepted) {
+      // Honest abstain: somebody DID answer (the trace still shows `candidates`), but
+      // concordanceStrictness requires more than one voice before a NO-COMPUTE answer is trusted,
+      // and only one voice spoke here. Never accepted, never fabricated -- falls through exactly
+      // like the 'none'/'disagree' paths below (this function's caller only accepts on a
+      // truthy chosenLetter, see runAuthorityEnsemble's call site).
+      log(
+        `lone candidate ${only.authority}:${only.letter} REJECTED by concordanceStrictness=` +
+        `${concordanceStrictness} (answerType=${answerType}, NO-COMPUTE gate) -- honest abstain, ` +
+        `no second corroborating source.`,
+      );
+      return {
+        chosenLetter: null, corroboration: 'lone_rejected_by_strictness', candidates,
+        acceptedCandidates: [], adjudicationAttempted: false, swarmFired: true, swarmReceipt,
+      };
+    }
     return { chosenLetter: only.letter, corroboration, candidates, acceptedCandidates: [only], adjudicationAttempted: false, swarmFired: true, swarmReceipt };
   }
 

@@ -1148,3 +1148,48 @@ export function readBrowserLlmAuthorityEnableOverridesFromSettings(): BrowserLlm
     return {};
   }
 }
+
+// ─── BP139 Concordance Gate (Founder canon: "I want to tune it") ───────────────────────────
+//
+// Founder directive: a lone uncorroborated authority answer for a conceptual/NO-COMPUTE question
+// (bias, Critical Security Studies, geography, etc.) is the root cause of several misses --
+// runAuthorityEnsemble's own single-candidate accept path (plow_mc_answerer.ts) takes exactly
+// one Google/Perplexity/browser-LLM/specialist-swarm answer and accepts it outright, with no
+// corroboration at all. concordanceStrictness is the user-tunable knob that lets the Founder
+// require real corroboration before that lone answer is accepted. DEFAULT ('lenient') MUST
+// reproduce today's exact behavior -- see resolveConcordanceAcceptance in plow_mc_answerer.ts,
+// the pure decision function this setting feeds, for the byte-identical-default proof.
+export type ConcordanceStrictness = 'lenient' | 'require_two' | 'require_majority';
+
+const CONCORDANCE_STRICTNESS_VALUES: ConcordanceStrictness[] = ['lenient', 'require_two', 'require_majority'];
+
+/**
+ * Settings-read hook, main-process only, same "read once, resolve per-call, fail-closed-to-
+ * default" convention as readAuthorityEnableOverridesFromSettings()/
+ * readBrowserLlmAuthorityEnableOverridesFromSettings() above -- reads the SAME
+ * ai_dispatch_settings.json (userData dir) under a new top-level `concordance_strictness` key
+ * (mirrors the existing `answer_cache_mode`/`csia_mode`/`csia_research` flat-key convention in
+ * ai_dispatch_ipc.ts's AiDispatchSettings). Any failure (no Electron app, missing file, bad
+ * JSON, or a value outside the 3-member union) yields 'lenient' -- the safe, behavior-preserving
+ * default -- never a throw and never a guessed stricter mode.
+ */
+export function readConcordanceStrictnessFromSettings(): ConcordanceStrictness {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { app } = require('electron') as typeof import('electron');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { readFileSync, existsSync } = require('fs') as typeof import('fs');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { join } = require('path') as typeof import('path');
+    const p = join(app.getPath('userData'), 'ai_dispatch_settings.json');
+    if (!existsSync(p)) return 'lenient';
+    const parsed = JSON.parse(readFileSync(p, 'utf-8')) as { concordance_strictness?: string };
+    const raw = parsed?.concordance_strictness;
+    if (raw && (CONCORDANCE_STRICTNESS_VALUES as string[]).includes(raw)) {
+      return raw as ConcordanceStrictness;
+    }
+    return 'lenient';
+  } catch {
+    return 'lenient';
+  }
+}
