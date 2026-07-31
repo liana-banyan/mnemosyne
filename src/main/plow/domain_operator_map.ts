@@ -19,19 +19,32 @@
  */
 
 import type { SpecialistName } from './specialist_adapters';
+import {
+  isAuthorityEnabled,
+  readAuthorityEnableOverridesFromSettings,
+  type AuthorityEnableOverrides,
+} from './specialist_adapters';
 
 export type Domain =
   | 'math' | 'physics' | 'chemistry' | 'biology' | 'computer_science' | 'engineering'
   | 'history' | 'philosophy' | 'law' | 'business' | 'economics' | 'psychology'
   | 'health' | 'other';
 
-const BASE_OPERATORS: SpecialistName[] = ['wikipedia', 'wikidata', 'openalex', 'commoncrawl'];
+// BP1xx Pawn Authority List Phase 1: `crossref` is added to BASE_OPERATORS (fires for
+// every domain) rather than to each domain row individually -- it is scholarly
+// metadata "for all domains" per SPECIALIST_METADATA.crossref.domains (Founder brief),
+// and BASE_OPERATORS is exactly the existing "fires everywhere" mechanism this roster
+// already uses for wikipedia/wikidata/openalex/commoncrawl. Additive only.
+const BASE_OPERATORS: SpecialistName[] = ['wikipedia', 'wikidata', 'openalex', 'commoncrawl', 'crossref'];
 
 export const DOMAIN_OPERATOR_MAP: Record<Domain, SpecialistName[]> = {
   math:             [...BASE_OPERATORS, 'stackexchange', 'arxiv', 'wolfram'],
   physics:          [...BASE_OPERATORS, 'stackexchange', 'arxiv', 'wolfram', 'nist'],
-  chemistry:        [...BASE_OPERATORS, 'pubmed', 'wolfram', 'nist'],
-  biology:          [...BASE_OPERATORS, 'pubmed', 'arxiv'],
+  // BP1xx Phase 1: europepmc/openfda/medlineplus added to chemistry/biology/health
+  // (the Founder brief's "medical/health/biology/chemistry domains" group; there is
+  // no separate `medical` Domain value here, `health` is that bucket).
+  chemistry:        [...BASE_OPERATORS, 'pubmed', 'wolfram', 'nist', 'europepmc', 'openfda', 'medlineplus'],
+  biology:          [...BASE_OPERATORS, 'pubmed', 'arxiv', 'europepmc', 'openfda', 'medlineplus'],
   computer_science: [...BASE_OPERATORS, 'stackexchange', 'arxiv'],
   engineering:      [...BASE_OPERATORS, 'stackexchange', 'arxiv', 'wolfram', 'nist'],
   history:          [...BASE_OPERATORS],
@@ -40,7 +53,7 @@ export const DOMAIN_OPERATOR_MAP: Record<Domain, SpecialistName[]> = {
   business:         [...BASE_OPERATORS, 'stackexchange'],
   economics:        [...BASE_OPERATORS, 'stackexchange'],
   psychology:       [...BASE_OPERATORS, 'pubmed', 'arxiv'],
-  health:           [...BASE_OPERATORS, 'pubmed', 'arxiv'],
+  health:           [...BASE_OPERATORS, 'pubmed', 'arxiv', 'europepmc', 'openfda', 'medlineplus'],
   other:            [...BASE_OPERATORS],
 };
 
@@ -75,11 +88,27 @@ export const DOMAIN_BACKUP_MAP: Partial<Record<Domain, BackupSpecialistName[]>> 
 };
 
 /**
- * Get the primary operator list for a domain (normalized to known domains).
- * Falls back to BASE_OPERATORS for unknown domain strings.
+ * Get the primary operator list for a domain (normalized to known domains),
+ * FILTERED to only the specialists that are currently enabled (BP139 Phase 2 gate).
+ *
+ * `overrides` is optional and exists purely for testability / explicit callers --
+ * when omitted (every existing call site: canonical_pipeline.ts, plow_mc_answerer.ts
+ * x2), it falls back to readAuthorityEnableOverridesFromSettings() (the real on-disk
+ * user settings), so this is a signature-compatible, zero-call-site-change gate: the
+ * function name and shape callers already use now also enforces "consult a source
+ * ONLY if enabled" for them, automatically.
+ *
+ * A disabled specialist is simply absent from the returned list -- the caller's
+ * staggered-fire loop never invokes it, so a disabled source is a silent no-op
+ * (never an error), exactly like an enabled adapter that itself returns [].
+ *
+ * Falls back to BASE_OPERATORS for unknown domain strings (same as before, now
+ * also filtered).
  */
-export function getOperatorsForDomain(domain: string): SpecialistName[] {
-  return DOMAIN_OPERATOR_MAP[domain as Domain] ?? BASE_OPERATORS;
+export function getOperatorsForDomain(domain: string, overrides?: AuthorityEnableOverrides): SpecialistName[] {
+  const roster = DOMAIN_OPERATOR_MAP[domain as Domain] ?? BASE_OPERATORS;
+  const effectiveOverrides = overrides ?? readAuthorityEnableOverridesFromSettings();
+  return roster.filter((name) => isAuthorityEnabled(name, effectiveOverrides));
 }
 
 /**

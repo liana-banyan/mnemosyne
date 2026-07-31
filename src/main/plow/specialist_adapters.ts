@@ -796,3 +796,67 @@ export const SPECIALIST_METADATA: Record<SpecialistName, SpecialistMetadata> = {
   medlineplus:   { tier: 'standard', domains: ['health'], costNote: 'Free, no key required (NLM Web Search Service, XML response).' },
   crossref:      { tier: 'standard', domains: ['general', 'history', 'philosophy', 'law', 'business', 'economics', 'psychology', 'biology', 'health', 'math', 'physics', 'chemistry', 'computer_science', 'engineering', 'other'], costNote: 'Free, no key; mailto param opts into the Crossref polite pool.' },
 };
+
+// ─── Authority enable/disable resolution (BP139 Phase 2) ───────────────────────
+// Founder directive (canon BP139): every source has a user toggle; STANDARD sources
+// default ON; PREMIUM/paid sources default OFF and opt-in; the plow consults a
+// source ONLY if enabled.
+//
+// isAuthorityEnabled() is the pure resolver (no I/O, fully unit-testable): an
+// explicit user override always wins; absent that, the default is tier-driven
+// (standard -> true, premium -> false). Today only `wolfram` is premium, so this
+// is the only specialist whose default flips; every other pre-existing specialist
+// (all tier: 'standard') keeps firing exactly as before.
+//
+// readAuthorityEnableOverridesFromSettings() is the settings-READ hook. It does not
+// invent a new settings file: it reads the SAME ai_dispatch_settings.json that
+// ai_dispatch_ipc.ts's loadSettings()/saveSettings() already own (userData dir),
+// under the SAME `mnem_drt_specialists` key SettingsTab.tsx already writes to for
+// 4 of the 13 names (wikipedia/wikidata/arxiv/wolfram). Because the file is plain
+// JSON (no runtime schema enforcement), reading it here as
+// Partial<Record<SpecialistName, boolean>> already supports overrides for all 13
+// names the moment something writes them -- no settings-file/shape change needed.
+//
+// TODO (renderer toggle UI): src/renderer/components/SettingsTab.tsx (~lines
+// 908-1066, the `mnem_drt_specialists` block + updateSpecialist()/checkbox JSX)
+// only renders checkboxes for wikipedia/wikidata/arxiv/wolfram today. Extending
+// that same UI section to the other 9 SpecialistName keys (europepmc, openfda,
+// medlineplus, crossref, stackexchange, nist, pubmed, commoncrawl, openalex) --
+// still writing into the same `mnem_drt_specialists` object via the existing
+// ai-dispatch:save-settings IPC round-trip -- is the only remaining wiring for a
+// user to flip these from the app. Not built here; out of this build's scope.
+
+export type AuthorityEnableOverrides = Partial<Record<SpecialistName, boolean>>;
+
+/** Pure resolver: explicit override wins, else default-by-tier (standard=on, premium=off). */
+export function isAuthorityEnabled(name: SpecialistName, overrides?: AuthorityEnableOverrides): boolean {
+  const override = overrides?.[name];
+  if (override !== undefined) return override;
+  return SPECIALIST_METADATA[name].tier === 'standard';
+}
+
+/**
+ * Settings-read hook (main-process only). Reads ai_dispatch_settings.json's
+ * `mnem_drt_specialists` object from userData and returns it as
+ * AuthorityEnableOverrides. Electron/fs/path are require()'d lazily inside the
+ * function body (not at module scope) so this file stays importable from a plain
+ * Node context -- e.g. a compiled-output smoke test run outside Electron -- without
+ * throwing at import time. Any failure (no Electron app, missing file, bad JSON)
+ * yields {} (i.e. every specialist falls back to its tier default), never a throw.
+ */
+export function readAuthorityEnableOverridesFromSettings(): AuthorityEnableOverrides {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { app } = require('electron') as typeof import('electron');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { readFileSync, existsSync } = require('fs') as typeof import('fs');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { join } = require('path') as typeof import('path');
+    const p = join(app.getPath('userData'), 'ai_dispatch_settings.json');
+    if (!existsSync(p)) return {};
+    const parsed = JSON.parse(readFileSync(p, 'utf-8')) as { mnem_drt_specialists?: AuthorityEnableOverrides };
+    return parsed?.mnem_drt_specialists ?? {};
+  } catch {
+    return {};
+  }
+}
