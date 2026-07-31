@@ -1358,6 +1358,9 @@ contextBridge.exposeInMainWorld('amplify', {
     // plowEnabled + researchArmMode are also true (see one_click_mmlu_pro.ts's
     // researchArmMeshSynergy doc comment for the exact AND-gate).
     researchArmMeshSynergy?: boolean;
+    // BP138 Yoke Phase 2: explicit opt-in to the Decompose-and-Eliminate engine, ignored unless
+    // plowEnabled + researchArmMode are also true (AND-gate in one_click_mmlu_pro.ts).
+    researchArmDecompose?: boolean;
     // BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset.
     exactPerCategory?: number;
     // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (wan_mesh +
@@ -1650,6 +1653,23 @@ contextBridge.exposeInMainWorld('amplify', {
     const handler = (_: unknown, data: Record<string, unknown>) => callback(data);
     ipcRenderer.on('plow:benchmark-progress', handler);
     return () => ipcRenderer.removeListener('plow:benchmark-progress', handler);
+  },
+
+  // BP138 Yoke Phase 1: Answer Coroner IPC
+  runAnswerCoroner: (opts: {
+    sessionFilter?: string;
+    limit?: number;
+  }): Promise<{
+    ok: boolean;
+    roundup?: unknown;
+    error?: string;
+  }> => ipcRenderer.invoke('plow:run-answer-coroner', opts),
+
+  // Coroner progress events (streamed from the coroner run)
+  onCoronerProgress: (callback: (msg: string) => void): (() => void) => {
+    const handler = (_: unknown, data: { msg: string }) => callback(data.msg);
+    ipcRenderer.on('plow:coroner-progress', handler);
+    return () => ipcRenderer.removeListener('plow:coroner-progress', handler);
   },
 
   // ── BP082 v0.3.1 — 3-condition Mesh Comparison ───────────────────────────

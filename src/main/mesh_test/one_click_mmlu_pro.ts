@@ -56,7 +56,7 @@ import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, mkdirS
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { app, BrowserWindow } from 'electron';
-import { discoverLiveWanPeers, dispatchQuestionToWanPeers, type WanPeerInfo, type WanConsensusResult, type MeshSynergyPooledResult } from './wan_dispatch';
+import { discoverLiveWanPeers, dispatchQuestionToWanPeers, dispatchOptionFanOutToWanPeers, type WanPeerInfo, type WanConsensusResult, type MeshSynergyPooledResult, type OptionFanOutOutcome } from './wan_dispatch';
 import { applySubstrateToggle, isDebugPromptLoggingEnabled, buildOutboundPromptLogLine } from './substrate_toggle';
 
 export interface MmluProQuestion {
@@ -150,14 +150,20 @@ export interface OneClickRunResult {
    *  Surfaced so a result can never be misread as substrate-off when it was on, or vice
    *  versa -- Truth-Always requirement, same rationale as dispatchMode. */
   substrateEnabled: boolean;
-  /** BP133 Yoke #24 Task 2: whether the 12-Blade Column Plow was requested as the wan_mesh
-   *  answering mechanism for this run (false/absent means single-shot, the pre-Task-2
-   *  default). Surfaced so a result can never be misread as plow-answered when it was not. */
+  /** BP133 Yoke #24 Task 2: whether the 12-Blade Column Plow was requested as the answering
+   *  mechanism for this run (false/absent means single-shot, the pre-Task-2 default). Surfaced
+   *  so a result can never be misread as plow-answered when it was not. WIRE-THE-LOOP fix
+   *  (single-box local plow): meaningful in BOTH wan_mesh (answered on the responding peer)
+   *  AND local_ollama mode (answered on THIS machine via answerQuestionLocallyViaPlow in
+   *  one_click_mmlu_pro.ts) -- no longer wan_mesh-only. */
   plowEnabled?: boolean;
   /** BP137 Yoke v2b (Research Arm): whether Stage A.0 (relevance gate moved upstream of the MC
    *  voters) + Stage A (answer-type classifier + compute sidecar) were requested for this run.
    *  Ignored unless plowEnabled is also true (see plow_mc_answerer.ts's researchArmMode doc).
-   *  false/absent means the pre-Stage-A/A.0 plow behavior, byte-for-byte unchanged. */
+   *  false/absent means the pre-Stage-A/A.0 plow behavior, byte-for-byte unchanged.
+   *  WIRE-THE-LOOP fix: like plowEnabled above, meaningful in both wan_mesh and local_ollama
+   *  mode now -- Stage F2's browser-authority sub-flag is fanned in from this same flag and
+   *  reaches THIS machine's own runBrowserAuthorityQueryFromMain when running locally. */
   researchArmMode?: boolean;
   /** BP137 Yoke v2b Stage F3 (mesh synergy): whether the asker's dispatch loop distributed
    *  DIFFERENT authorities across live peers for the SAME question this run (round-robin
@@ -189,6 +195,13 @@ export interface OneClickRunResult {
    *  requested for this run. Truth-Always -- same rationale as substrateEnabled/plowEnabled,
    *  a result can never be misread as pooled when it was per-peer-local-only, or vice versa. */
   federatedSubstrateEnabled?: boolean;
+  /** WIRE-THE-LOOP fix part 4 (Phase-3 fan-out): wan_dispatch.ts's dispatchOptionFanOutToWanPeers
+   *  was fully built (per-option foundation-fact verification, one option per peer) but never
+   *  called from anywhere -- confirmed exported-but-uncalled. Wired here, additively, alongside
+   *  (never instead of) the existing per-question dispatchQuestionToWanPeers outcome above.
+   *  Present only in wan_mesh mode when researchArmDecompose && peers.length >= 2 -- absent
+   *  (not empty array) otherwise, so a byte-unchanged flag-off run has no new field at all. */
+  optionFanOutOutcomes?: OptionFanOutOutcome[];
 }
 
 let running = false;
@@ -414,8 +427,12 @@ async function dispatchQuestionLocally(
   model: string,
   substrateEnabled: boolean,
 ): Promise<{ rawAnswer: string; latencyMs: number; error?: string; substrateContextInjected: boolean }> {
+  // BP139 FIX: options MUST render as "A) opt" (close-paren), NOT "A. opt" (period) -- the plow's
+  // parseOptionsFromPrompt (compute_sidecar.ts) matches ONLY /^([A-J])\)\s*(.+)$/, so a period
+  // produced options=0, the browser authority got the bare question, and the letter match came
+  // back null. The WAN path already uses "A)"; this aligns both local paths.
   const optionsBlock = q.options
-    .map((opt, i) => `${letterFromIndex(i)}. ${opt}`)
+    .map((opt, i) => `${letterFromIndex(i)}) ${opt}`)
     .join('\n');
   const basePrompt = `Answer the following multiple-choice question. Respond with ONLY the letter of the correct option, nothing else.\n\nQuestion: ${q.question}\n\n${optionsBlock}\n\nAnswer:`;
 
@@ -483,18 +500,146 @@ function downsampleQuestions(questions: MmluProQuestion[], maxTotal: number): Mm
   return indices.map((i) => questions[i]!);
 }
 
+/** WIRE-THE-LOOP fix (single-box local plow, M0 goal): answers ONE question by invoking the
+ *  SAME shared entrypoint the WAN relay-route responder uses -- plow_mc_answerer.ts's
+ *  callCanonicalPlowMcAnswererForMeshTest() (see that function's own doc comment for the full
+ *  "one shared call site" rationale) -- running entirely on THIS machine: no relay_routes
+ *  insert, no Supabase round-trip, no responding peer involved at all. Browser authority
+ *  (Stage F2) reaches this same machine's own runBrowserAuthorityQueryFromMain (index.ts) via
+ *  the SAME dynamic-import bridge plow_mc_answerer.ts already uses for the WAN responder --
+ *  that bridge only needs to run inside the Electron main process, which is exactly where this
+ *  function (and runLocalMode, its only caller) already executes. Dynamic import here mirrors
+ *  index.ts's own `await import('./plow/plow_mc_answerer')` pattern, avoiding a static
+ *  top-level circular require with index.ts (which dynamically imports this whole module).
+ *
+ *  researchArmMeshSynergy is deliberately NEVER threaded through from here -- mesh synergy
+ *  round-robins DIFFERENT authorities across 2+ live WAN peers; a single local machine has no
+ *  second peer to synergize with. Per the goal's explicit "leave it inert locally, do not
+ *  error" instruction, this call always passes researchArmMeshSynergy:false, so a Founder who
+ *  left that WAN-only checkbox on in a prior session gets the ordinary full local plow, never a
+ *  crash and never a silently degraded single-authority answer. */
+async function answerQuestionLocallyViaPlow(
+  q: MmluProQuestion,
+  ollamaBaseUrl: string,
+  model: string,
+  substrateEnabled: boolean,
+  plowAndonEnabled: boolean,
+  researchArmMode: boolean,
+  researchArmDecompose: boolean,
+  sessionId: string | undefined,
+  corpusManifestSha256: string | undefined,
+): Promise<OneClickQuestionOutcome> {
+  // BP139 FIX: options MUST render as "A) opt" (close-paren), NOT "A. opt" (period) -- the plow's
+  // parseOptionsFromPrompt (compute_sidecar.ts) matches ONLY /^([A-J])\)\s*(.+)$/, so a period
+  // produced options=0, the browser authority got the bare question, and the letter match came
+  // back null. The WAN path already uses "A)"; this aligns both local paths.
+  const optionsBlock = q.options
+    .map((opt, i) => `${letterFromIndex(i)}) ${opt}`)
+    .join('\n');
+  const basePrompt = `Answer the following multiple-choice question. Respond with ONLY the letter of the correct option, nothing else.\n\nQuestion: ${q.question}\n\n${optionsBlock}\n\nAnswer:`;
+
+  // Same single authoritative substrate injection site as dispatchQuestionLocally's single-shot
+  // path above -- Condition A (plow, substrate OFF) is genuinely cold, Condition B/C (plow,
+  // substrate ON) genuinely see the same context a single-shot substrate-ON run would see.
+  const { prompt: effectivePrompt, contextInjected } = await applySubstrateToggle(
+    basePrompt, q.question, q.category, substrateEnabled,
+  );
+
+  const started = Date.now();
+  const { callCanonicalPlowMcAnswererForMeshTest } = await import('../plow/plow_mc_answerer');
+  const callResult = await callCanonicalPlowMcAnswererForMeshTest({
+    effectivePrompt,
+    researchQuery: q.question,
+    domain: q.category,
+    ollamaBaseUrl,
+    model,
+    choiceCount: q.options.length,
+    substrateEnabled,
+    plowAndonEnabled,
+    reasoningMode: false,
+    // Asker-side bookkeeping only, same doctrine as wan_dispatch.ts's insertRelayRoute
+    // correct_answer_letter field -- never fed into any prompt or seen by a voter, only used
+    // AFTER the plow's own chosenLetter is finalized to tag the eblets this run writes.
+    testModeCorrectAnswerLetter: q.answer,
+    researchArmMode,
+    researchArmMeshSynergy: false,
+    researchArmDecompose,
+    logLabel: `oneclick-local q=${q.question_id}`,
+  });
+  const latencyMs = Date.now() - started;
+  const correctLetter = q.answer.toUpperCase();
+  const isCorrect = callResult.answer !== null && callResult.answer === correctLetter;
+
+  // BP133 Yoke #24 Task 2.3 parity: local-plow outcomes now get the same persisted, auditable
+  // receipt the WAN path has always written for answeredBy==='plow' outcomes -- only when a
+  // sessionId was actually generated for this run (see runOneClickMmluProTest's local branch).
+  if (sessionId) {
+    persistPlowReceipt({
+      sessionId,
+      questionId: q.question_id,
+      domain: q.category,
+      chosenAnswer: callResult.answer,
+      correctAnswer: correctLetter,
+      correct: isCorrect,
+      substrateEnabled,
+      plowAndonEnabled,
+      plowTrace: callResult.plowTrace,
+      corpusManifestSha256,
+    });
+  }
+
+  return {
+    question_id: q.question_id,
+    question: q.question,
+    category: q.category,
+    modelRawAnswer: callResult.answer ?? 'ABSTAIN',
+    parsedLetter: callResult.answer,
+    correctLetter,
+    isCorrect,
+    latencyMs,
+    substrateContextInjected: contextInjected,
+    answeredBy: 'plow',
+    plowTrace: callResult.plowTrace,
+    isAbstain: callResult.answer === null,
+  };
+}
+
 async function runLocalMode(
   questions: MmluProQuestion[],
   ollamaBaseUrl: string,
   model: string,
   substrateEnabled: boolean,
   progressChannel: string,
+  // WIRE-THE-LOOP fix (single-box local plow, M0 goal): when plowOptions.plowEnabled is false
+  // (every pre-existing caller/config), this whole branch is unreachable and the loop body
+  // below is byte-for-byte unchanged from the pre-fix single-shot Ollama call -- see the
+  // `if (plowOptions.plowEnabled)` guard immediately inside the loop.
+  plowOptions: {
+    plowEnabled: boolean;
+    plowAndonEnabled: boolean;
+    researchArmMode: boolean;
+    researchArmDecompose: boolean;
+    sessionId?: string;
+    corpusManifestSha256?: string;
+  } = { plowEnabled: false, plowAndonEnabled: false, researchArmMode: false, researchArmDecompose: false },
 ): Promise<OneClickQuestionOutcome[]> {
   const outcomes: OneClickQuestionOutcome[] = [];
+  const { plowEnabled, plowAndonEnabled, researchArmMode, researchArmDecompose, sessionId, corpusManifestSha256 } = plowOptions;
   for (let i = 0; i < questions.length; i++) {
     if (cancelRequested) break;
     const q = questions[i];
     broadcast(progressChannel, { type: 'question-start', index: i, total: questions.length, question: q.question, category: q.category });
+
+    if (plowEnabled) {
+      const outcome = await answerQuestionLocallyViaPlow(
+        q, ollamaBaseUrl, model, substrateEnabled, plowAndonEnabled, researchArmMode,
+        researchArmDecompose, sessionId, corpusManifestSha256,
+      );
+      outcomes.push(outcome);
+      broadcast(progressChannel, { type: 'question-complete', index: i, total: questions.length, outcome });
+      continue;
+    }
+
     const { rawAnswer, latencyMs, error, substrateContextInjected } = await dispatchQuestionLocally(q, ollamaBaseUrl, model, substrateEnabled);
     const parsedLetter = error ? null : parseLetterFromModelText(rawAnswer, q.options.length);
     const isCorrect = parsedLetter !== null && parsedLetter === q.answer.toUpperCase();
@@ -577,9 +722,18 @@ async function runWanMode(
   // plowEnabled and researchArmMode are also true (see runOneClickMmluProTest's own AND-gate).
   // See runOneClickMmluProTest's config JSDoc.
   researchArmMeshSynergy: boolean = false,
-): Promise<{ outcomes: OneClickQuestionOutcome[]; consensusOutcomes: ConsensusQuestionOutcome[] }> {
+  // BP138 Yoke Phase 2: decompose-and-eliminate engine opt-in, defaults false.
+  researchArmDecompose: boolean = false,
+): Promise<{ outcomes: OneClickQuestionOutcome[]; consensusOutcomes: ConsensusQuestionOutcome[]; optionFanOutOutcomes: OptionFanOutOutcome[] }> {
   const outcomes: OneClickQuestionOutcome[] = [];
   const consensusOutcomes: ConsensusQuestionOutcome[] = [];
+  // WIRE-THE-LOOP fix part 4 (Phase-3 fan-out): additive, gated on researchArmDecompose &&
+  // peers.length >= 2 (checked per-question below, inside the loop, matching
+  // dispatchOptionFanOutToWanPeers()'s own `peers.length < 2` honest-null guard). When
+  // researchArmDecompose is false (every pre-existing caller), this array stays empty and the
+  // function's other behavior -- the existing dispatchQuestionToWanPeers call, outcomes,
+  // consensusOutcomes -- is completely byte-unchanged.
+  const optionFanOutOutcomes: OptionFanOutOutcome[] = [];
   const totalUnits = questions.length * peers.length;
   let unitIndex = 0;
 
@@ -592,8 +746,31 @@ async function runWanMode(
 
     const wanOutcome = await dispatchQuestionToWanPeers(
       q, peers, sessionId, perQuestionTimeoutMs, substrateEnabled, plowEnabled, plowAndonEnabled, federatedSubstrateEnabled,
-      researchArmMode, researchArmMeshSynergy,
+      researchArmMode, researchArmMeshSynergy, researchArmDecompose,
     );
+
+    // WIRE-THE-LOOP fix part 4 (Phase-3 fan-out): runs ADDITIONALLY alongside the existing
+    // per-question dispatch above -- never replaces wanOutcome/the scored per-peer answer path.
+    // Gated on researchArmDecompose && peers.length >= 2 (dispatchOptionFanOutToWanPeers itself
+    // also honestly no-ops below 2 peers; the length check here just avoids the wasted relay-
+    // route round trips when it would). Individually try/caught -- a fan-out failure must never
+    // affect the primary scored outcome for this question.
+    if (researchArmDecompose && peers.length >= 2 && !cancelRequested) {
+      try {
+        const fanOutOutcome = await dispatchOptionFanOutToWanPeers(q, peers, `${sessionId}-fanout`, perQuestionTimeoutMs);
+        if (fanOutOutcome) {
+          optionFanOutOutcomes.push(fanOutOutcome);
+          console.log(
+            `[one_click_mmlu_pro] Phase-3 option fan-out q=${q.question_id} ` +
+            `chosenLetter=${fanOutOutcome.eliminationResult.chosenLetter ?? 'ABSTAIN'} ` +
+            `correct=${fanOutOutcome.correctLetter} ` +
+            `killed=[${fanOutOutcome.eliminationResult.killedOptions.join(',')}]`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[one_click_mmlu_pro] Phase-3 option fan-out failed for q=${q.question_id} (non-fatal):`, err);
+      }
+    }
 
     // BP135 Phase 2 (Layer A: consensus): one mesh-as-one-unit outcome per question, scored
     // locally against the sealed answer key -- alongside, never instead of, the per-peer
@@ -669,7 +846,7 @@ async function runWanMode(
       }
     }
   }
-  return { outcomes, consensusOutcomes };
+  return { outcomes, consensusOutcomes, optionFanOutOutcomes };
 }
 
 function computePeerBreakdown(outcomes: OneClickQuestionOutcome[]): PeerAccuracyBreakdown[] {
@@ -720,22 +897,28 @@ export async function runOneClickMmluProTest(config: {
    * is unchanged unless a caller explicitly opts in. See substrate_toggle.ts for the full
    * correctness-gate rationale (cache-trap analysis, single-injection-site guarantee). */
   substrateEnabled?: boolean;
-  /** BP133 Yoke #24 Task 2: explicit opt-in to answer wan_mesh questions via the 12-Blade
-   * Column Plow instead of single-shot. Ignored (has no effect) in local_ollama mode -- the
-   * plow answerer runs on the RESPONDING peer's machine, so a local-only run has no responder
-   * to invoke it on. Defaults to false; the existing single-shot default is unchanged unless a
-   * caller explicitly opts in. See plow_mc_answerer.ts and index.ts's startRelayRoutePoll. */
+  /** BP133 Yoke #24 Task 2: explicit opt-in to answer questions via the 12-Blade Column Plow
+   * instead of single-shot. WIRE-THE-LOOP fix (single-box local plow, M0 goal): NO LONGER
+   * wan_mesh-only -- in wan_mesh mode the plow answerer runs on the RESPONDING peer's machine
+   * (index.ts's startRelayRoutePoll); in local_ollama mode it now runs on THIS machine (see
+   * runLocalMode/answerQuestionLocallyViaPlow in this file), invoking the SAME shared entrypoint
+   * (plow_mc_answerer.ts's callCanonicalPlowMcAnswererForMeshTest) either way. Defaults to
+   * false; the existing single-shot default is unchanged unless a caller explicitly opts in. */
   plowEnabled?: boolean;
   /** BP133 Yoke #24 Task 2: Condition C (Andon retry) vs Condition B (single pass) when
-   * plowEnabled is true. Ignored when plowEnabled is false. Defaults to false. */
+   * plowEnabled is true. Ignored when plowEnabled is false. Defaults to false. Honored in both
+   * wan_mesh and local_ollama mode (see plowEnabled's own doc comment above). */
   plowAndonEnabled?: boolean;
   /** BP137 Yoke v2b (Research Arm): explicit opt-in, ignored unless plowEnabled is also true.
-   * Threads researchArmMode:true into the plow's config on the RESPONDING peer (see
-   * wan_dispatch.ts's payload_json.research_arm_mode and index.ts's startRelayRoutePoll),
-   * enabling BOTH Stage A.0 (relevance gate moved upstream of the MC voters, fixes the
-   * Bush/Biden off-topic-citation failure mode) and Stage A (answer-type classifier + real
-   * compute sidecar for computable questions) together. Defaults to false -- the pre-Stage-A/A.0
-   * plow behavior is byte-for-byte unchanged unless a caller explicitly opts in. */
+   * Threads researchArmMode:true into the plow's config -- on the RESPONDING peer in wan_mesh
+   * mode (see wan_dispatch.ts's payload_json.research_arm_mode and index.ts's
+   * startRelayRoutePoll), or on THIS machine in local_ollama mode (WIRE-THE-LOOP fix -- see
+   * answerQuestionLocallyViaPlow in this file) -- enabling BOTH Stage A.0 (relevance gate moved
+   * upstream of the MC voters, fixes the Bush/Biden off-topic-citation failure mode) and Stage A
+   * (answer-type classifier + real compute sidecar for computable questions) together, PLUS
+   * Stage F2 browser authority (reaches THIS machine's own runBrowserAuthorityQueryFromMain when
+   * running locally). Defaults to false -- the pre-Stage-A/A.0 plow behavior is byte-for-byte
+   * unchanged unless a caller explicitly opts in. */
   researchArmMode?: boolean;
   /** BP137 Yoke v2b Stage F3 (mesh synergy): explicit opt-in, AND-gated with researchArmMode
    * (both must be true, and plowEnabled must also be true -- the responder's
@@ -751,6 +934,16 @@ export async function runOneClickMmluProTest(config: {
    * peer runs the identical full plow) is byte-for-byte unchanged unless a caller explicitly
    * opts in. */
   researchArmMeshSynergy?: boolean;
+  /** BP138 Yoke Phase 2: explicit opt-in, AND-gated with researchArmMode. Enables the
+   * Decompose-and-Eliminate engine (plow_mc_decompose.ts) on whichever machine actually answers
+   * the question -- the RESPONDING peer in wan_mesh mode, or THIS machine in local_ollama mode
+   * (WIRE-THE-LOOP fix -- see answerQuestionLocallyViaPlow in this file; no WAN peers required,
+   * unlike researchArmMeshSynergy/the Phase-3 option-fan-out below). It breaks the question into
+   * per-option foundation-fact queries, runs each through the browser authority, and eliminates
+   * options whose atoms verify false. Defaults to false -- all pre-Phase-2 behavior is
+   * byte-for-byte unchanged unless a caller opts in. Meaningful whenever plowEnabled +
+   * researchArmMode are both true, in either dispatch mode. */
+  researchArmDecompose?: boolean;
   /** BP135 Phase 3 (Layer B: federated substrate). Ignored (has no effect, no extra
    * round-trips) unless substrateEnabled is also true AND dispatchMode resolves to wan_mesh --
    * local_ollama mode has no other peers to pool from. When true, pools topical eblets from
@@ -803,6 +996,8 @@ export async function runOneClickMmluProTest(config: {
   // true but researchArmMode false (or omitted) gets researchArmMeshSynergy effectively false,
   // never a half-enabled state.
   const researchArmMeshSynergy = (config.researchArmMeshSynergy ?? false) && researchArmMode;
+  // BP138 Yoke Phase 2: AND-gated with researchArmMode, matching the sibling flag convention.
+  const researchArmDecompose = (config.researchArmDecompose ?? false) && researchArmMode;
   const federatedSubstrateEnabled = config.federatedSubstrateEnabled ?? false;
   const exactPerCategory = config.exactPerCategory && config.exactPerCategory > 0 ? config.exactPerCategory : undefined;
 
@@ -865,6 +1060,7 @@ export async function runOneClickMmluProTest(config: {
   let questions = allQuestions;
   let outcomes: OneClickQuestionOutcome[];
   let consensusOutcomes: ConsensusQuestionOutcome[] | undefined;
+  let optionFanOutOutcomes: OptionFanOutOutcome[] | undefined;
   let sessionId: string | undefined;
 
   if (dispatchMode === 'wan_mesh') {
@@ -881,13 +1077,23 @@ export async function runOneClickMmluProTest(config: {
     const wanResult = await runWanMode(
       questions, livePeers, sessionId, config.wanPerQuestionTimeoutMs ?? defaultTimeoutMs,
       substrateEnabled, plowEnabled, plowAndonEnabled, corpusManifest?.sha256, federatedSubstrateEnabled,
-      progressChannel, researchArmMode, researchArmMeshSynergy,
+      progressChannel, researchArmMode, researchArmMeshSynergy, researchArmDecompose,
     );
     outcomes = wanResult.outcomes;
     consensusOutcomes = wanResult.consensusOutcomes;
+    optionFanOutOutcomes = wanResult.optionFanOutOutcomes;
   } else {
     broadcast(progressChannel, { type: 'start', total: questions.length });
-    outcomes = await runLocalMode(questions, ollamaBaseUrl, model, substrateEnabled, progressChannel);
+    // WIRE-THE-LOOP fix (single-box local plow, M0 goal): a sessionId is only generated when
+    // plowEnabled, matching the WAN branch's own "sessionId exists only to group a run's
+    // persisted plow receipts" convention -- a plain single-shot local run (the pre-fix
+    // default, still the byte-identical behavior when plowEnabled is false) writes no receipts
+    // and needs no sessionId, exactly as before this fix.
+    if (plowEnabled) sessionId = generateSessionId();
+    outcomes = await runLocalMode(questions, ollamaBaseUrl, model, substrateEnabled, progressChannel, {
+      plowEnabled, plowAndonEnabled, researchArmMode, researchArmDecompose,
+      sessionId, corpusManifestSha256: corpusManifest?.sha256,
+    });
   }
 
   const scored = outcomes.filter((o) => o.parsedLetter !== null).length;
@@ -901,12 +1107,15 @@ export async function runOneClickMmluProTest(config: {
 
   const substrateSuffix = substrateEnabled ? ' [substrate ON]' : ' [substrate OFF]';
   // BP133 Yoke #24 Task 2: label which of A/B/C the run actually was -- Truth-Always, this
-  // string ends up on the result the Founder/Bishop reads first.
-  const conditionSuffix = dispatchMode !== 'wan_mesh'
-    ? ''
-    : !plowEnabled
-      ? ' [single-shot]'
-      : plowAndonEnabled ? ' [plow: Condition C, Andon loop]' : ' [plow: Condition B, single pass]';
+  // string ends up on the result the Founder/Bishop reads first. WIRE-THE-LOOP fix: plowEnabled
+  // is now meaningful in local_ollama mode too (see runLocalMode/answerQuestionLocallyViaPlow
+  // above), so this label is keyed off plowEnabled itself rather than dispatchMode -- a
+  // local_ollama run with plowEnabled false (every pre-fix caller/config) still gets '' here,
+  // byte-identical to before this fix; a wan_mesh run with plowEnabled false still gets
+  // ' [single-shot]', also unchanged.
+  const conditionSuffix = plowEnabled
+    ? (plowAndonEnabled ? ' [plow: Condition C, Andon loop]' : ' [plow: Condition B, single pass]')
+    : (dispatchMode === 'wan_mesh' ? ' [single-shot]' : '');
   const datasetLabel = (dispatchMode === 'wan_mesh'
     ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions dispatched to ${livePeers.length} live WAN peer(s) via relay_routes/relay_route_replies (session ${sessionId}) -- ${outcomes.length} total question-peer answers`
     : source === 'full_corpus_live'
@@ -927,8 +1136,14 @@ export async function runOneClickMmluProTest(config: {
     peerBreakdown,
     livePeersFound: dispatchMode === 'wan_mesh' ? livePeers.length : undefined,
     substrateEnabled,
-    plowEnabled: dispatchMode === 'wan_mesh' ? plowEnabled : undefined,
-    researchArmMode: dispatchMode === 'wan_mesh' ? researchArmMode : undefined,
+    // WIRE-THE-LOOP fix: plowEnabled/researchArmMode are now real, run-affecting flags in
+    // local_ollama mode too (see runLocalMode above) -- surfaced unconditionally rather than
+    // only for wan_mesh, so a local full-plow run's result honestly reports what actually ran.
+    // researchArmMeshSynergy stays wan_mesh-gated: it is genuinely inert locally (needs 2+
+    // live peers, see answerQuestionLocallyViaPlow's own doc comment), so reporting it as
+    // undefined for local_ollama is the honest "not applicable here" signal, not an omission.
+    plowEnabled,
+    researchArmMode,
     researchArmMeshSynergy: dispatchMode === 'wan_mesh' ? researchArmMeshSynergy : undefined,
     cancelled: cancelRequested,
     exactPerCategory,
@@ -936,6 +1151,7 @@ export async function runOneClickMmluProTest(config: {
     consensusOutcomes,
     consensusAccuracy,
     federatedSubstrateEnabled: dispatchMode === 'wan_mesh' ? federatedSubstrateEnabled : undefined,
+    ...(optionFanOutOutcomes && optionFanOutOutcomes.length > 0 ? { optionFanOutOutcomes } : {}),
   };
 
   broadcast(progressChannel, { type: 'complete', result });

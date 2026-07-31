@@ -208,18 +208,20 @@ export default function App() {
   const showTrialBanner =
     authState?.status === 'trial_active' || authState?.status === 'trial_expired';
 
-  // BP135 YOKE_35 Phase 1: CleanShell (the BP132 Yoke #22 fork) is now the DEFAULT front
-  // door for ALL users, replacing both LeanShell's own lean 8-tab UI (new users) and
-  // MnemosyneTabView's 24-tab "advanced" UI (existing users). onExitToLean is intentionally
-  // omitted -- Lean is retired from the default path, not offered as a fallback.
+  // BP139 Yoke 0.9.15: CompassShell (the BP138 Yoke 0.9.14 5-tab Ask/Proof/Library/Social/More
+  // nav) is now the DEFAULT front door for ALL users, replacing CleanShell (the BP135 YOKE_35
+  // default). CleanShell is NOT deleted -- it stays fully reachable at '#/clean-shell' (Rule 66:
+  // un-route, don't delete) and onExitToLean below wires the Compass "<- Lean" button straight to
+  // that existing route as the reversible escape hatch back to the old 13-tab shell.
   if (view === 'dashboard') {
     return (
-      <ErrorBoundary label="Clean Shell (BP135 YOKE_35 default)">
-        <CleanShell
+      <ErrorBoundary label="Compass Shell (BP139 Yoke 0.9.15 default)">
+        <CompassShell
           currentMode={mode}
           onModeChange={handleModeChange}
           onClose={() => window.close()}
           authState={authState}
+          onExitToLean={() => { window.location.hash = '#/clean-shell'; window.location.reload(); }}
         />
         {/* BP083 v0.3.2: update UI must mount in dashboard window (was overlay-only) */}
         <UpdateToast />

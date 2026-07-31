@@ -132,13 +132,17 @@ function buildEmbedderHtml(): string {
 <head>
 <meta charset="utf-8">
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; display: flex; flex-direction: column; background: #0f0f1a; font-family: -apple-system, "Segoe UI", Arial, sans-serif; }
-  #bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: #1a1a2e; border-bottom: 1px solid #2d3748; box-sizing: border-box; height: 38px; flex: 0 0 auto; }
+  html, body { margin: 0; padding: 0; height: 100vh; width: 100vw; display: flex; flex-direction: column; background: #0f0f1a; font-family: -apple-system, "Segoe UI", Arial, sans-serif; overflow: hidden; }
+  #bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: #1a1a2e; border-bottom: 1px solid #2d3748; box-sizing: border-box; height: 38px; flex: 0 0 38px; }
   button { background: #2d3748; color: #e2e8f0; border: 1px solid #4a5568; border-radius: 4px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
   button:hover { background: #374151; }
   #status { color: #94a3b8; font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
-  #wvwrap { flex: 1 1 auto; position: relative; overflow: hidden; }
-  webview { width: 100%; height: 100%; display: block; }
+  /* min-height:0 lets this flex child actually grow to fill; without it a flex item defaults to
+     min-height:auto and the webview collapses to a fraction of the window (the 0.9.14 sliver). */
+  #wvwrap { flex: 1 1 auto; position: relative; overflow: hidden; min-height: 0; }
+  /* Absolute inset:0 sizes the webview to #wvwrap's real box regardless of the webview's
+     unreliable percentage-height resolution -- this is the actual sliver root cause. */
+  webview { position: absolute; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; display: flex; }
 </style>
 </head>
 <body>

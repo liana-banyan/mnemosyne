@@ -121,6 +121,14 @@ export type BrowserAuthorityName = 'user_google' | 'user_perplexity';
 export interface BrowserAuthorityQuery {
   question: string;
   authority: BrowserAuthorityName;
+  /** WIRE-THE-LOOP fix (BP139-follow, honesty gate): when present, the MC option texts
+   *  ("A) ...", "B) ...", ...) for THIS question. buildBrowserAuthorityQueryUrl() below embeds
+   *  these into the navigation query for authorities that can actually reason over them
+   *  (user_perplexity) so the vendor page itself picks a letter and states its reasoning +
+   *  source, instead of the caller having to token-match a bare lookup snippet against option
+   *  text that the snippet was never asked about. Absent/empty = byte-identical bare-question
+   *  behavior (every pre-existing caller). */
+  mcOptions?: string[];
 }
 
 /**
@@ -186,6 +194,10 @@ export interface BrowserAuthorityAdapterConfig {
    *  given question. Defaults to 'user_google' when absent (see isBrowserAuthorityEnabled /
    *  runBrowserAuthorityLookup below). */
   preferredAuthority?: BrowserAuthorityName;
+  /** WIRE-THE-LOOP fix: threaded through to BrowserAuthorityQuery.mcOptions (see that field's
+   *  doc comment). Absent/empty = byte-identical bare-question behavior for every pre-existing
+   *  caller (nothing in this repo set this field before this fix). */
+  mcOptions?: string[];
 }
 
 /**
@@ -203,9 +215,34 @@ export function isBrowserAuthorityEnabled(config: BrowserAuthorityAdapterConfig)
 const GOOGLE_SEARCH_BASE = 'https://www.google.com/search?q=';
 const PERPLEXITY_SEARCH_BASE = 'https://www.perplexity.ai/search?q=';
 
+/** WIRE-THE-LOOP fix: builds the enriched prompt text sent to an authority that can genuinely
+ *  reason over a multiple-choice option list (Perplexity's search box accepts a full natural-
+ *  language prompt, not just keywords -- unlike Google, which degrades to a keyword search for
+ *  anything this long). Pure string function, no I/O. Deliberately asks for the letter FIRST
+ *  ("Answer: <letter>") so extractChosenLetterFromAuthorityText() in plow_mc_answerer.ts can
+ *  find it with a simple anchored regex instead of guessing from prose. Never used for
+ *  user_google (Google is the LOOKUP authority per the Founder's design -- a bare fact search,
+ *  not a reasoning prompt; see buildBrowserAuthorityQueryUrl()'s own branch below). */
+export function buildMcAwareQueryText(question: string, mcOptions: string[]): string {
+  const optionLines = mcOptions.join('\n');
+  return (
+    `${question.trim()}\n\nOptions:\n${optionLines}\n\n` +
+    `Which option is correct? Reply starting with "Answer: <letter>" then a one-sentence reason.`
+  );
+}
+
 /** Builds the literal navigation URL for a browser-authority query. Pure string function --
- *  the actual `webviewRef.current.loadURL(...)` call happens in EmbeddedChrome.tsx, never here. */
+ *  the actual `webviewRef.current.loadURL(...)` call happens in EmbeddedChrome.tsx, never here.
+ *  WIRE-THE-LOOP fix: when query.mcOptions is present AND the authority is user_perplexity, the
+ *  navigated query is the options-aware prompt (buildMcAwareQueryText above) instead of the bare
+ *  question -- this is the "send the question WITH ITS OPTIONS to the authority" fix. Every
+ *  other case (mcOptions absent, or authority === 'user_google') is byte-identical to the
+ *  pre-existing bare-question behavior -- Google stays the plain LOOKUP authority. */
 export function buildBrowserAuthorityQueryUrl(query: BrowserAuthorityQuery): string {
+  if (query.authority === 'user_perplexity' && query.mcOptions && query.mcOptions.length > 0) {
+    const encoded = encodeURIComponent(buildMcAwareQueryText(query.question, query.mcOptions));
+    return `${PERPLEXITY_SEARCH_BASE}${encoded}`;
+  }
   const encoded = encodeURIComponent(query.question.trim());
   return query.authority === 'user_perplexity'
     ? `${PERPLEXITY_SEARCH_BASE}${encoded}`

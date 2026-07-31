@@ -481,6 +481,10 @@ export async function insertRelayRoute(
   // researchArmMeshSynergy is true -- an old/mesh-synergy-unaware responder build must never
   // see this key at all, matching every other opt-in-only field in this payload.
   assignedAuthority?: 'user_google' | 'user_perplexity' | 'swarm',
+  // BP138 Yoke Phase 2: explicit opt-in, DEFAULT FALSE. Fans research_arm_decompose into
+  // payload_json -- omitted entirely when false, preserving byte-identical payload for every
+  // existing caller. The responder (index.ts) reads this and passes it to plow_mc_answerer.ts.
+  researchArmDecompose: boolean = false,
 ): Promise<string | null> {
   const prompt = buildMcPrompt(question);
   // hex_frame is a NOT NULL legacy column (verified via a live dry-run insert 2026-07-23);
@@ -543,6 +547,9 @@ export async function insertRelayRoute(
       // pre-Stage-F3 call shape).
       ...(researchArmMeshSynergy ? { research_arm_mesh_synergy: true } : {}),
       ...(assignedAuthority ? { assigned_authority: assignedAuthority } : {}),
+      // BP138 Yoke Phase 2: decompose-and-eliminate engine opt-in wire flag. Omitted entirely
+      // (not `false`) unless the asker opts in -- old/unaware responders see no new field.
+      ...(researchArmDecompose ? { research_arm_decompose: true } : {}),
     },
     status: 'pending',
     session_id: sessionId,
@@ -740,11 +747,10 @@ export async function dispatchQuestionToWanPeers(
   // full plow, and the peers' answers are pooled via computeMeshSynergyAdjudication() (Stage E's
   // adjudicateDistributedAuthorities, promoted to this normal path) into the returned
   // WanQuestionOutcome.meshSynergyPooled. When false/absent (every pre-Stage-F3 caller,
-  // including every existing call to this function), no peer is ever assigned an authority,
-  // no `assigned_authority`/`research_arm_mesh_synergy` key is ever added to any payload_json
-  // (see insertRelayRoute's own conditional-spread), and meshSynergyPooled stays absent from
-  // the returned outcome -- this function's behavior for that case is byte-for-byte unchanged.
   researchArmMeshSynergy: boolean = false,
+  // BP138 Yoke Phase 2: explicit opt-in, defaults false. Forwards research_arm_decompose into
+  // each peer's insertRelayRoute payload so the responder activates the decompose engine.
+  researchArmDecompose: boolean = false,
 ): Promise<WanQuestionOutcome> {
   const correctLetter = question.answer.toUpperCase();
   const cfg = resolveSupabaseConfig();
@@ -778,7 +784,7 @@ export async function dispatchQuestionToWanPeers(
     const assignedAuthority = researchArmMeshSynergy ? assignMeshSynergyAuthority(peerIndex) : undefined;
     const routeId = await insertRelayRoute(
       cfg, peer.peerId, question, sessionId, ttlSeconds, substrateEnabled, plowEnabled, plowAndonEnabled, pooledEblets,
-      researchArmMode, false, researchArmMeshSynergy, assignedAuthority,
+      researchArmMode, false, researchArmMeshSynergy, assignedAuthority, researchArmDecompose,
     );
     if (!routeId) {
       return {
@@ -830,5 +836,194 @@ export async function dispatchQuestionToWanPeers(
     peerAnswers,
     consensus: computeConsensus(peerAnswers),
     ...(meshSynergyPooled ? { meshSynergyPooled } : {}),
+  };
+}
+
+// ─── BP138 Yoke Phase 3: Option-Fan-Out Dispatch ─────────────────────────────
+// Redesigned mesh synergy: instead of ONE authority per peer for the WHOLE question,
+// distribute ONE OPTION (its foundation-fact check) PER PEER -- the fleet becomes a
+// parallel minesweeper. Results pool back and the asker runs elimination.
+// Flag-guarded: only invoked explicitly; dispatchQuestionToWanPeers is byte-unchanged.
+
+export interface OptionFanOutPeerResult {
+  peerId: string;
+  machineLabel: string;
+  assignedOption: string;
+  verdict: 'kill' | 'keep' | 'unresolved' | null;
+  fact?: string;
+  sourceUrl?: string;
+  timedOut: boolean;
+  processingMs: number | null;
+}
+
+export interface OptionFanOutOutcome {
+  question_id: number;
+  question: string;
+  category: string;
+  correctLetter: string;
+  peerResults: OptionFanOutPeerResult[];
+  eliminationResult: {
+    chosenLetter: string | null;
+    survivorOptions: string[];
+    killedOptions: string[];
+    abstainReason?: string;
+  };
+}
+
+/**
+ * Dispatches EACH option's foundation-fact verification to a DIFFERENT peer in parallel.
+ * Each peer receives `assigned_option` + `research_arm_option_fan_out: true` and returns
+ * `option_verdict` instead of a full MC answer. The asker pools all verdicts and applies
+ * the same elimination logic as Phase 2: 1 survivor = deterministic answer.
+ *
+ * GATING: only runs when called explicitly. WAN mesh + 2+ peers required (caller-enforced).
+ * Returns null when the Supabase config is unavailable.
+ */
+export async function dispatchOptionFanOutToWanPeers(
+  question: MmluProQuestion,
+  peers: WanPeerInfo[],
+  sessionId: string,
+  perOptionTimeoutMs: number = 90_000,
+): Promise<OptionFanOutOutcome | null> {
+  const cfg = resolveSupabaseConfig();
+  if (!cfg) return null;
+  if (peers.length < 2) return null;
+
+  const correctLetter = question.answer.toUpperCase();
+  const optionLetters = question.options.map((_, i) => String.fromCharCode('A'.charCodeAt(0) + i));
+  const ttlSeconds = Math.ceil(perOptionTimeoutMs / 1000) + 60;
+
+  const peerResults = await Promise.all(
+    optionLetters.map(async (optionLetter, optionIdx): Promise<OptionFanOutPeerResult> => {
+      const peer = peers[optionIdx % peers.length];
+      const anonKey = cfg.anonKey;
+      const supabaseUrl = cfg.url;
+
+      const hexFrame = Buffer.from(question.question, 'utf8').toString('base64');
+      const body = {
+        target_peer_id: peer.peerId,
+        hex_frame: hexFrame,
+        payload_json: {
+          domain: question.category,
+          question_text: question.question,
+          question_id: `mmlu-pro-fanout-${question.question_id}-${optionLetter}`,
+          options: question.options,
+          wire_format: 'json-legacy',
+          assigned_option: optionLetter,
+          research_arm_option_fan_out: true,
+          batch_purpose: `optfanout_${sessionId}`,
+        },
+        status: 'pending',
+        session_id: `${sessionId}-opt${optionLetter}`,
+        ttl_seconds: ttlSeconds,
+        wire_format: 'json-legacy',
+      };
+
+      let routeId: string | null = null;
+      try {
+        const res = await fetch(`${supabaseUrl}/rest/v1/relay_routes`, {
+          method: 'POST',
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${anonKey}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=representation',
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (res.ok) {
+          const rows = (await res.json()) as Array<{ id: string }>;
+          routeId = rows[0]?.id ?? null;
+        }
+      } catch {
+        // insert failed -- non-fatal
+      }
+
+      if (!routeId) {
+        return {
+          peerId: peer.peerId, machineLabel: peer.machineLabel,
+          assignedOption: optionLetter, verdict: null,
+          timedOut: false, processingMs: null,
+        };
+      }
+
+      const reply = await pollForReply(cfg, routeId, perOptionTimeoutMs);
+      if (!reply) {
+        return {
+          peerId: peer.peerId, machineLabel: peer.machineLabel,
+          assignedOption: optionLetter, verdict: null,
+          timedOut: true, processingMs: null,
+        };
+      }
+
+      const replyJson = reply.answerJson;
+      const optionVerdictRaw = replyJson?.option_verdict as Record<string, unknown> | null | undefined;
+      const verdict = optionVerdictRaw?.verdict === 'kill' ? 'kill'
+        : optionVerdictRaw?.verdict === 'keep' ? 'keep'
+        : optionVerdictRaw?.verdict === 'unresolved' ? 'unresolved'
+        : null;
+      const fact = typeof optionVerdictRaw?.fact === 'string' ? optionVerdictRaw.fact as string : undefined;
+      const sourceUrl = typeof optionVerdictRaw?.sourceUrl === 'string' ? optionVerdictRaw.sourceUrl as string : undefined;
+
+      return {
+        peerId: peer.peerId,
+        machineLabel: peer.machineLabel,
+        assignedOption: optionLetter,
+        verdict,
+        ...(fact ? { fact } : {}),
+        ...(sourceUrl ? { sourceUrl } : {}),
+        timedOut: false,
+        processingMs: reply.processingMs,
+      };
+    }),
+  );
+
+  const killedOptions: string[] = peerResults
+    .filter((r) => r.verdict === 'kill')
+    .map((r) => r.assignedOption);
+  const killedSet = new Set(killedOptions);
+  const survivorOptions: string[] = optionLetters.filter((l) => !killedSet.has(l));
+
+  let chosenLetter: string | null = null;
+  let abstainReason: string | undefined;
+
+  const anyVerdictReturned = peerResults.some((r) => r.verdict !== null);
+  if (!anyVerdictReturned) {
+    abstainReason = 'authority-empty';
+  } else if (survivorOptions.length === 0) {
+    abstainReason = 'no-survivors';
+  } else if (survivorOptions.length === 1) {
+    chosenLetter = survivorOptions[0];
+  } else {
+    // WIRE-THE-LOOP fix (honesty invariant, same class of bug as plow_mc_decompose.ts's
+    // tactic1TieBreak() -- see that function's own doc comment): the previous implementation
+    // scored bare keyword overlap and initialized bestScore to -1, so the FIRST survivor's
+    // score of 0 already beat -1 and always won, even with zero sourced basis -- a disguised
+    // full-confidence guess for every multi-survivor tie. The only honest way to pick among
+    // >1 survivors is a genuine sourced distinction: exactly one survivor whose assigned peer
+    // returned verdict==='keep' backed by a real sourceUrl (an independently verified-true
+    // foundation fact, not a keyword coincidence). Zero or more than one such survivor = no
+    // honest basis to pick -- abstain rather than guess.
+    const sourcedKeepSurvivors = survivorOptions.filter((letter) => {
+      const peerResult = peerResults.find((r) => r.assignedOption === letter);
+      return peerResult?.verdict === 'keep' && !!peerResult.sourceUrl;
+    });
+    chosenLetter = sourcedKeepSurvivors.length === 1 ? sourcedKeepSurvivors[0] : null;
+    if (!chosenLetter) abstainReason = 'tie-break-inconclusive';
+  }
+
+  return {
+    question_id: question.question_id,
+    question: question.question,
+    category: question.category,
+    correctLetter,
+    peerResults,
+    eliminationResult: {
+      chosenLetter,
+      survivorOptions,
+      killedOptions,
+      ...(abstainReason ? { abstainReason } : {}),
+    },
   };
 }

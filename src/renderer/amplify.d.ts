@@ -294,6 +294,26 @@ declare global {
         authority?: 'user_google' | 'user_perplexity';
         confidence?: number;
       }>;
+      // BP138 Yoke Phase 1: Answer Coroner IPC
+      runAnswerCoroner?: (opts: {
+        sessionFilter?: string;
+        limit?: number;
+      }) => Promise<{
+        ok: boolean;
+        roundup?: {
+          runAt: string;
+          totalRecords: number;
+          correctableWrongs: number;
+          honestAbstains: number;
+          wrongTotal: number;
+          rightTotal: number;
+          abstainTotal: number;
+          byClass: Record<string, unknown[]>;
+          prioritizedFixList: Array<{ answerClass: string; count: number; exemplars: unknown[] }>;
+        };
+        error?: string;
+      }>;
+      onCoronerProgress?: (callback: (msg: string) => void) => (() => void);
       // On-Deck Master-of-Ceremonies (BP037)
       onDeckList?: () => Promise<{
         sequential: OnDeckItem[];
@@ -409,6 +429,10 @@ declare global {
       federationGenerateInvite?: () => Promise<{ token: string; expiresAt: string }>;
       federationAcceptInvite?: (token: string) => Promise<{ success: boolean; peerName?: string; error?: string }>;
       federationLeavePeer?: (peerId: string) => Promise<{ ok: boolean }>;
+      // BP139 Yoke 0.9.15 -- MIC (Machine In Charge) saved-peer removal, confirmed against
+      // src/main/preload.ts (~L1825, mic:remove-peer IPC). Used by LeanGauntletTab.tsx's
+      // "x Forget" control on the Connect to Other Machines peer list.
+      micRemovePeer?: (peerId: string) => Promise<{ ok: boolean }>;
       // BP134 Yoke #30 Task B — zero-config WAN auto-connect from peer_presence
       federationAutoConnectPresence?: () => Promise<{ attempted: number; connected: string[]; error?: string }>;
       // SEG-3 v0.1.55 — COMMUNITY-CONNECT first-launch seed peer handshake

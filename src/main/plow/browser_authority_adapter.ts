@@ -139,7 +139,14 @@ export async function runBrowserAuthorityLookup(
   if (!trimmedQuestion) return null;
 
   const authority: BrowserAuthorityName = config.preferredAuthority ?? 'user_google';
-  const query: BrowserAuthorityQuery = { question: trimmedQuestion, authority };
+  // WIRE-THE-LOOP fix: pass mcOptions through unmodified when the caller supplied any -- see
+  // BrowserAuthorityQuery.mcOptions / buildBrowserAuthorityQueryUrl()'s doc comments for the
+  // full mechanism. Absent/empty on every pre-existing caller, so this is additive-only.
+  const query: BrowserAuthorityQuery = {
+    question: trimmedQuestion,
+    authority,
+    ...(config.mcOptions && config.mcOptions.length > 0 ? { mcOptions: config.mcOptions } : {}),
+  };
 
   const raw = await bridge.runQueryInUserBrowser(query);
   if (!raw) return null;
