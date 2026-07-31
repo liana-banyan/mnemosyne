@@ -1,5 +1,5 @@
 /**
- * specialist_adapters.ts — BP083 v0.3.4 · 9 External Specialist API Adapters
+ * specialist_adapters.ts — BP1xx Pawn Authority List Phase 1 · 13 External Specialist API Adapters
  *
  * Implements the Founder-Invented 14-Domain Looping Methodology external data layer.
  * Each adapter: accepts question text + domain → returns CandidateEblet[].
@@ -15,6 +15,13 @@
  *   7. NIST         — webbook.nist.gov (chem/phys) + nvlpubs.nist.gov
  *   8. PubMed       — eutils.ncbi.nlm.nih.gov/entrez/eutils
  *   9. Common Crawl — index.commoncrawl.org CDX
+ *  10. Europe PMC   — www.ebi.ac.uk/europepmc/webservices/rest  (BP1xx Phase 1, no key)
+ *  11. openFDA      — api.fda.gov/drug/label.json  (BP1xx Phase 1, no key)
+ *  12. MedlinePlus  — wsearch.nlm.nih.gov/ws/query  (BP1xx Phase 1, no key, XML)
+ *  13. Crossref     — api.crossref.org/works  (BP1xx Phase 1, no key, polite pool)
+ *
+ * SPECIALIST_METADATA (below the registry) carries the Phase 1 Standard/Premium
+ * tier + domain-affinity + cost seed for the Pawn authority list. Descriptive only.
  *
  * Weight scale: 0.0–1.0 (Miner threshold: >= 0.6).
  * Content length: Miner threshold >= 100 chars.
@@ -524,11 +531,208 @@ export async function fetchCommonCrawl(question: string, domain: string): Promis
   } catch { return []; }
 }
 
+// ─── 10. Europe PMC ───────────────────────────────────────────────────────────
+// BP1xx Pawn Authority List Phase 1: no-key REST adapter, medicine/biology.
+// Probed live 2026-07-31: https://www.ebi.ac.uk/europepmc/webservices/rest/search
+// with resultType=core returns resultList.result[] items carrying abstractText
+// (HTML-tagged, e.g. <h4>Background</h4>...) -- resultType=lite (the endpoint
+// default) omits abstractText entirely, so core is required for usable content.
+
+export async function fetchEuropePMC(question: string, domain: string, maxResults = 2): Promise<CandidateEblet[]> {
+  const terms = extractSearchTerms(question);
+  if (!terms) return [];
+
+  try {
+    const url = `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(terms)}&format=json&resultType=core&pageSize=${Math.max(3, maxResults)}`;
+    const resp = await fetchWithTimeout(url);
+    if (!resp.ok) return [];
+
+    const data = await resp.json() as {
+      resultList?: { result?: Array<{ title?: string; abstractText?: string; doi?: string; pmid?: string }> };
+    };
+    const results = data?.resultList?.result ?? [];
+    if (results.length === 0) return [];
+
+    const candidates: CandidateEblet[] = [];
+    for (const r of results.slice(0, maxResults)) {
+      const title = r.title ?? '';
+      const abstract = (r.abstractText ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      const content = (abstract ? `${title}: ${abstract}` : title).slice(0, 800);
+      if (content.length < 100) continue;
+
+      candidates.push({
+        source: 'europepmc',
+        content,
+        weight: 0.83,
+        sid: stableId('europepmc', content),
+        provenance_url: r.doi ? `https://doi.org/${r.doi}` : (r.pmid ? `https://europepmc.org/article/MED/${r.pmid}` : undefined),
+        domain,
+      });
+    }
+
+    return candidates;
+  } catch { return []; }
+}
+
+// ─── 11. openFDA ──────────────────────────────────────────────────────────────
+// BP1xx Pawn Authority List Phase 1: no-key REST adapter, drug/device safety.
+// Probed live 2026-07-31: https://api.fda.gov/drug/label.json works with no key
+// (the FDA-issued key only raises the rate limit). results[] items carry SPL
+// label sections (indications_and_usage[], warnings_and_cautions[],
+// boxed_warning[]) plus an openfda{} sub-object with brand_name/generic_name.
+
+export async function fetchOpenFDA(question: string, domain: string, maxResults = 2): Promise<CandidateEblet[]> {
+  const terms = extractSearchTerms(question);
+  if (!terms) return [];
+
+  try {
+    const url = `https://api.fda.gov/drug/label.json?search=${encodeURIComponent(terms)}&limit=${Math.max(3, maxResults)}`;
+    const resp = await fetchWithTimeout(url);
+    if (!resp.ok) return [];
+
+    const data = await resp.json() as {
+      results?: Array<{
+        openfda?: { brand_name?: string[]; generic_name?: string[] };
+        indications_and_usage?: string[];
+        warnings_and_cautions?: string[];
+        boxed_warning?: string[];
+        set_id?: string;
+      }>;
+    };
+    const results = data?.results ?? [];
+    if (results.length === 0) return [];
+
+    const candidates: CandidateEblet[] = [];
+    for (const r of results.slice(0, maxResults)) {
+      const name = r.openfda?.brand_name?.[0] ?? r.openfda?.generic_name?.[0] ?? '';
+      const body = (r.indications_and_usage?.[0] ?? r.warnings_and_cautions?.[0] ?? r.boxed_warning?.[0] ?? '').trim();
+      if (!body) continue;
+
+      const content = `${name ? name + ': ' : ''}${body}`.slice(0, 800);
+      if (content.length < 100) continue;
+
+      candidates.push({
+        source: 'openfda',
+        content,
+        weight: 0.80,
+        sid: stableId('openfda', content),
+        provenance_url: r.set_id ? `https://api.fda.gov/drug/label.json?search=set_id:${r.set_id}` : undefined,
+        domain,
+      });
+    }
+
+    return candidates;
+  } catch { return []; }
+}
+
+// ─── 12. MedlinePlus ──────────────────────────────────────────────────────────
+// BP1xx Pawn Authority List Phase 1: no-key REST adapter, health.
+// Probed live 2026-07-31: https://wsearch.nlm.nih.gov/ws/query?db=healthTopics
+// returns XML (not JSON) -- <document url="..."><content name="title">...
+// </content><content name="FullSummary">...</content></document> per hit, with
+// HTML-entity-escaped inner markup (e.g. &lt;span class="qt0"&gt;) that must be
+// decoded before tag-stripping.
+
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+export async function fetchMedlinePlus(question: string, domain: string, maxResults = 2): Promise<CandidateEblet[]> {
+  const terms = extractSearchTerms(question);
+  if (!terms) return [];
+
+  try {
+    const url = `https://wsearch.nlm.nih.gov/ws/query?db=healthTopics&term=${encodeURIComponent(terms)}&retmax=${Math.max(3, maxResults)}`;
+    const resp = await fetchWithTimeout(url);
+    if (!resp.ok) return [];
+
+    const xml = await resp.text();
+    const candidates: CandidateEblet[] = [];
+    const docMatches = xml.matchAll(/<document[^>]*url="([^"]*)"[^>]*>([\s\S]*?)<\/document>/g);
+
+    for (const match of docMatches) {
+      const docUrl = match[1];
+      const body = match[2];
+      const titleMatch = /<content name="title">([\s\S]*?)<\/content>/.exec(body);
+      const summaryMatch = /<content name="FullSummary">([\s\S]*?)<\/content>/.exec(body);
+
+      const title = decodeXmlEntities(titleMatch?.[1] ?? '').replace(/<[^>]+>/g, '').trim();
+      const summary = decodeXmlEntities(summaryMatch?.[1] ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!summary || summary.length < 60) continue;
+
+      const content = `${title}: ${summary}`.slice(0, 800);
+      if (content.length < 100) continue;
+
+      candidates.push({
+        source: 'medlineplus',
+        content,
+        weight: 0.78,
+        sid: stableId('medlineplus', content),
+        provenance_url: docUrl,
+        domain,
+      });
+
+      if (candidates.length >= maxResults) break;
+    }
+
+    return candidates;
+  } catch { return []; }
+}
+
+// ─── 13. Crossref ─────────────────────────────────────────────────────────────
+// BP1xx Pawn Authority List Phase 1: no-key REST adapter, scholarly metadata
+// across all domains. Probed live 2026-07-31: https://api.crossref.org/works
+// with mailto= (polite pool, still no key/auth) returns message.items[] with
+// title[]/container-title[]/abstract (JATS-tagged, often absent)/DOI/URL.
+
+export async function fetchCrossref(question: string, domain: string, maxResults = 2): Promise<CandidateEblet[]> {
+  const terms = extractSearchTerms(question);
+  if (!terms) return [];
+
+  try {
+    const url = `https://api.crossref.org/works?query=${encodeURIComponent(terms)}&rows=${Math.max(3, maxResults)}&mailto=Social@lianabanyan.com`;
+    const resp = await fetchWithTimeout(url);
+    if (!resp.ok) return [];
+
+    const data = await resp.json() as {
+      message?: { items?: Array<{ title?: string[]; 'container-title'?: string[]; abstract?: string; DOI?: string; URL?: string }> };
+    };
+    const items = data?.message?.items ?? [];
+    if (items.length === 0) return [];
+
+    const candidates: CandidateEblet[] = [];
+    for (const item of items.slice(0, maxResults)) {
+      const title = item.title?.[0] ?? '';
+      const container = item['container-title']?.[0] ?? '';
+      const abstract = (item.abstract ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      const content = (abstract ? `${title}: ${abstract}` : (container ? `${title} (${container})` : title)).slice(0, 800);
+      if (content.length < 100) continue;
+
+      candidates.push({
+        source: 'crossref',
+        content,
+        weight: 0.75,
+        sid: stableId('crossref', content),
+        provenance_url: item.DOI ? `https://doi.org/${item.DOI}` : item.URL,
+        domain,
+      });
+    }
+
+    return candidates;
+  } catch { return []; }
+}
+
 // ─── Exported adapter registry ─────────────────────────────────────────────────
 
 export type SpecialistName =
   | 'wikipedia' | 'wikidata' | 'stackexchange' | 'arxiv'
-  | 'wolfram' | 'openalex' | 'nist' | 'pubmed' | 'commoncrawl';
+  | 'wolfram' | 'openalex' | 'nist' | 'pubmed' | 'commoncrawl'
+  | 'europepmc' | 'openfda' | 'medlineplus' | 'crossref';
 
 export interface SpecialistKeys {
   wolframApiKey?: string;
@@ -552,4 +756,43 @@ export const SPECIALIST_REGISTRY: Record<SpecialistName, SpecialistFn> = {
   nist:         (q, d) => fetchNIST(q, d),
   pubmed:       (q, d, k) => fetchPubMed(q, d, k?.pubmedApiKey),
   commoncrawl:  (q, d) => fetchCommonCrawl(q, d),
+  europepmc:    (q, d, k) => fetchEuropePMC(q, d, k?.maxResultsPerAdapter),
+  openfda:      (q, d, k) => fetchOpenFDA(q, d, k?.maxResultsPerAdapter),
+  medlineplus:  (q, d, k) => fetchMedlinePlus(q, d, k?.maxResultsPerAdapter),
+  crossref:     (q, d, k) => fetchCrossref(q, d, k?.maxResultsPerAdapter),
+};
+
+// ─── Tier metadata (Phase 1 seed of the Standard/Premium authority registry) ───
+// BP1xx Pawn Authority List Phase 1: additive-only classification layer over
+// SPECIALIST_REGISTRY. Purely descriptive -- no caller reads this yet, so adding
+// it changes zero runtime dispatch behavior. "premium" here means the adapter is
+// a no-op without a paid/keyed credential (only wolfram, today); adapters that
+// merely accept an OPTIONAL key for a higher rate limit (stackexchange, pubmed)
+// are still "standard" since they return real candidates with zero keys configured.
+// Membership-orthogonal: this Standard/Premium split classifies external data-source
+// API keys, not LB membership tiers -- $5/year membership unchanged, pricing identical
+// for all members; no member-facing cost is introduced or implied by this map.
+
+export type SpecialistTier = 'standard' | 'premium';
+
+export interface SpecialistMetadata {
+  tier: SpecialistTier;
+  domains: string[];
+  costNote: string;
+}
+
+export const SPECIALIST_METADATA: Record<SpecialistName, SpecialistMetadata> = {
+  wikipedia:     { tier: 'standard', domains: ['general', 'history', 'philosophy', 'law', 'business', 'economics', 'other'], costNote: 'Free, no key required.' },
+  wikidata:      { tier: 'standard', domains: ['general', 'history', 'philosophy', 'law', 'business', 'economics', 'other'], costNote: 'Free, no key required.' },
+  stackexchange: { tier: 'standard', domains: ['computer_science', 'math', 'engineering', 'physics', 'business', 'economics'], costNote: 'Free without key; optional key raises the daily quota.' },
+  arxiv:         { tier: 'standard', domains: ['math', 'physics', 'computer_science', 'engineering', 'biology', 'psychology'], costNote: 'Free, no key, no enforced rate limit.' },
+  wolfram:       { tier: 'premium', domains: ['math', 'physics', 'chemistry', 'engineering'], costNote: 'Requires a Wolfram Alpha AppID (free-tier signup exists); no-op with no key.' },
+  openalex:      { tier: 'standard', domains: ['general', 'biology', 'health', 'psychology'], costNote: 'Free, no key; mailto param opts into the polite pool.' },
+  nist:          { tier: 'standard', domains: ['physics', 'chemistry', 'engineering'], costNote: 'Free, no key required.' },
+  pubmed:        { tier: 'standard', domains: ['biology', 'chemistry', 'psychology', 'health'], costNote: 'Free without key; optional NCBI API key raises the rate limit.' },
+  commoncrawl:   { tier: 'standard', domains: ['general'], costNote: 'Free, no key; DuckDuckGo fallback also free/no key.' },
+  europepmc:     { tier: 'standard', domains: ['biology', 'health', 'chemistry'], costNote: 'Free, no key required (Europe PMC REST API).' },
+  openfda:       { tier: 'standard', domains: ['health'], costNote: 'Free, no key required (openFDA public API; FDA-issued key only raises rate limit).' },
+  medlineplus:   { tier: 'standard', domains: ['health'], costNote: 'Free, no key required (NLM Web Search Service, XML response).' },
+  crossref:      { tier: 'standard', domains: ['general', 'history', 'philosophy', 'law', 'business', 'economics', 'psychology', 'biology', 'health', 'math', 'physics', 'chemistry', 'computer_science', 'engineering', 'other'], costNote: 'Free, no key; mailto param opts into the Crossref polite pool.' },
 };
