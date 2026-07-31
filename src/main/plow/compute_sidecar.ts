@@ -402,6 +402,22 @@ async function computeViaWolframAlpha(
   }
 }
 
+// BP139 Authority Ensemble: Wolfram-ONLY entry point (no local-arithmetic/model-expression
+// tiers) -- used by plow_mc_answerer.ts's authority ensemble to add a genuine Wolfram Alpha
+// candidate to the compute ensemble without conflating it with the local_arithmetic tier (which
+// already has its own place in the existing Stage A.3 compute-sidecar fallback further down the
+// plow). Returns null (never fabricates) when Wolfram has no short answer for this question, per
+// computeViaWolframAlpha's own honesty contract above -- callers must skip this candidate
+// silently on null, same "if not available, skip silently" contract as every other tier here.
+export async function computeViaWolframOnly(
+  question: string,
+  appId: string,
+): Promise<ComputeSidecarResult | null> {
+  const result = await computeViaWolframAlpha(question, appId);
+  if (!result) return null;
+  return { value: result.value, expression: question, method: 'wolfram_compute' };
+}
+
 export interface ComputeAnswerOptions {
   /** Independent of specialistKeys.wolframApiKey -- see this file's header for why. */
   wolframAppId?: string;

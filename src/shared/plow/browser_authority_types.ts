@@ -129,6 +129,13 @@ export interface BrowserAuthorityQuery {
    *  text that the snippet was never asked about. Absent/empty = byte-identical bare-question
    *  behavior (every pre-existing caller). */
   mcOptions?: string[];
+  /** BP139 Authority Ensemble (plow_mc_answerer.ts researchArmAuthorityEnsemble), OPT-IN/
+   *  ADDITIVE: when true AND authority is 'user_google' AND mcOptions is present, embeds the MC
+   *  options into the Google query too (same buildMcAwareQueryText mechanism user_perplexity
+   *  already used) instead of Google's pre-ensemble bare-question-only search. Absent/false on
+   *  every pre-ensemble caller (Stage F2's legacy path, Stage F3 mesh-synergy) -- byte-identical
+   *  Google-bare-search behavior for all of them. See buildBrowserAuthorityQueryUrl below. */
+  embedOptionsForGoogle?: boolean;
 }
 
 /**
@@ -198,6 +205,10 @@ export interface BrowserAuthorityAdapterConfig {
    *  doc comment). Absent/empty = byte-identical bare-question behavior for every pre-existing
    *  caller (nothing in this repo set this field before this fix). */
   mcOptions?: string[];
+  /** BP139 Authority Ensemble: threaded through to BrowserAuthorityQuery.embedOptionsForGoogle
+   *  (see that field's doc comment). Absent/false = byte-identical Google-bare-search behavior
+   *  for every pre-ensemble caller. */
+  embedOptionsForGoogle?: boolean;
 }
 
 /**
@@ -220,9 +231,12 @@ const PERPLEXITY_SEARCH_BASE = 'https://www.perplexity.ai/search?q=';
  *  language prompt, not just keywords -- unlike Google, which degrades to a keyword search for
  *  anything this long). Pure string function, no I/O. Deliberately asks for the letter FIRST
  *  ("Answer: <letter>") so extractChosenLetterFromAuthorityText() in plow_mc_answerer.ts can
- *  find it with a simple anchored regex instead of guessing from prose. Never used for
- *  user_google (Google is the LOOKUP authority per the Founder's design -- a bare fact search,
- *  not a reasoning prompt; see buildBrowserAuthorityQueryUrl()'s own branch below). */
+ *  find it with a simple anchored regex instead of guessing from prose.
+ *  BP139 Authority Ensemble: previously never used for user_google ("Google is the LOOKUP
+ *  authority... a bare fact search, not a reasoning prompt"). The ensemble's explicit ask is
+ *  "query Google WITH the MC options too" (Founder mandate) -- see BrowserAuthorityQuery.
+ *  embedOptionsForGoogle below, this function's OWN behavior is unchanged either way (still a
+ *  pure question+options formatter; the caller decides which authorities it's used for). */
 export function buildMcAwareQueryText(question: string, mcOptions: string[]): string {
   const optionLines = mcOptions.join('\n');
   return (
@@ -235,13 +249,20 @@ export function buildMcAwareQueryText(question: string, mcOptions: string[]): st
  *  the actual `webviewRef.current.loadURL(...)` call happens in EmbeddedChrome.tsx, never here.
  *  WIRE-THE-LOOP fix: when query.mcOptions is present AND the authority is user_perplexity, the
  *  navigated query is the options-aware prompt (buildMcAwareQueryText above) instead of the bare
- *  question -- this is the "send the question WITH ITS OPTIONS to the authority" fix. Every
- *  other case (mcOptions absent, or authority === 'user_google') is byte-identical to the
- *  pre-existing bare-question behavior -- Google stays the plain LOOKUP authority. */
+ *  question -- this is the "send the question WITH ITS OPTIONS to the authority" fix.
+ *  BP139 Authority Ensemble: the SAME options-aware prompt now also fires for user_google, but
+ *  ONLY when the caller explicitly sets query.embedOptionsForGoogle -- every pre-ensemble caller
+ *  (Stage F2 legacy path, Stage F3 mesh-synergy) never sets that field, so this stays
+ *  byte-identical bare-question behavior for them. */
 export function buildBrowserAuthorityQueryUrl(query: BrowserAuthorityQuery): string {
-  if (query.authority === 'user_perplexity' && query.mcOptions && query.mcOptions.length > 0) {
-    const encoded = encodeURIComponent(buildMcAwareQueryText(query.question, query.mcOptions));
-    return `${PERPLEXITY_SEARCH_BASE}${encoded}`;
+  const hasOptions = !!(query.mcOptions && query.mcOptions.length > 0);
+  const wantsOptionsAwareQuery =
+    hasOptions && (query.authority === 'user_perplexity' || (query.authority === 'user_google' && query.embedOptionsForGoogle === true));
+  if (wantsOptionsAwareQuery) {
+    const encoded = encodeURIComponent(buildMcAwareQueryText(query.question, query.mcOptions!));
+    return query.authority === 'user_perplexity'
+      ? `${PERPLEXITY_SEARCH_BASE}${encoded}`
+      : `${GOOGLE_SEARCH_BASE}${encoded}`;
   }
   const encoded = encodeURIComponent(query.question.trim());
   return query.authority === 'user_perplexity'

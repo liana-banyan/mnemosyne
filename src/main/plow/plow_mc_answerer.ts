@@ -67,7 +67,7 @@ import {
 import { isQaRelevant, writeVerifiedEblet } from '../mnem_eblet_store';
 // BP137 Yoke v2b Stage A: answer-type classifier + compute sidecar, both new/additive this Yoke.
 import { classifyAnswerType, type AnswerType } from './answer_type_classifier';
-import { computeAnswer, parseOptionsFromPrompt, matchValueToOption, extractNumber, type ComputeSidecarResult, type McOption } from './compute_sidecar';
+import { computeAnswer, computeViaWolframOnly, parseOptionsFromPrompt, matchValueToOption, extractNumber, type ComputeSidecarResult, type McOption } from './compute_sidecar';
 // BP137 Yoke v2b Stage A.0.1: semantic-cosine upgrade to the relevance TEST used inside the
 // gate below (the gating FLAG and abstain logic are unchanged -- see semantic_relevance_gate.ts
 // header for the full reuse rationale). ollamaManager imported directly (same module already
@@ -262,6 +262,30 @@ export interface CanonicalPlowMcConfig {
    *  must BOTH be true; when either is off the engine is unreachable and this function's
    *  behavior is byte-for-byte identical to pre-Phase-2. */
   researchArmDecompose?: boolean;
+  /** BP139 Authority Ensemble, OPT-IN/DEFAULT FALSE, independent AND-gate on top of
+   *  researchArmMode AND researchArmBrowserAuthority (all three must be true, matching the
+   *  convention every researchArm* sub-flag uses above). Founder mandate: "if ANY free authority
+   *  can find the answer, we find it" -- replaces Stage F2's old "Perplexity is queried with MC
+   *  options, Google only gets a bare lookup and its result is never used to pick a letter"
+   *  behavior with a genuine ensemble: BOTH Perplexity and Google are queried WITH the MC
+   *  options embedded (see BrowserAuthorityQuery.embedOptionsForGoogle), and -- for computable
+   *  questions -- Wolfram Alpha joins too when WOLFRAM_APP_ID is set (skipped silently
+   *  otherwise). Two or more authorities agreeing on a letter = 'agree' (highest confidence,
+   *  accepted immediately). Exactly one authority answering = 'single_<authority>' (accepted).
+   *  Authorities disagreeing = 'disagree' -> ONE extra Perplexity ADJUDICATION call (question +
+   *  options + every candidate letter/reasoning, asked to state which is correct) ->
+   *  'adjudicated' on a resolved judge letter. No authority answering, or a disagreement the
+   *  judge also can't resolve = 'none' -- honest fall-through (see researchArmDecompose above:
+   *  decompose-and-eliminate becomes a FALLBACK, attempted only after this ensemble produced no
+   *  sourced letter, for computable/reasoning questions -- see deferDecomposeToEnsembleFallback
+   *  at this flag's one call site). When researchArmMode, researchArmBrowserAuthority, or this
+   *  flag is false/absent (every caller that predates this Yoke), authorityEnsembleOn is false
+   *  and Stage F2 runs its EXACT pre-existing "Perplexity preferred, Google bookkeeping-only"
+   *  logic unchanged -- provable by the single `authorityEnsembleOn` guard at Stage F2's one
+   *  branch point below. Never a paid API call: every authority here is the user's own free
+   *  signed-in browser session (Google/Perplexity) or a free-tier Wolfram key, matching the
+   *  Founder's "cheaper" requirement -- the one extra adjudication call fires ONLY on disagreement. */
+  researchArmAuthorityEnsemble?: boolean;
   /** BP138 Yoke Phase 3, OPTIONAL/ADDITIVE. Present only when the WAN-mesh asker dispatched
    *  this question in option-fan-out mode and assigned THIS peer one specific answer option
    *  to verify (e.g. 'C'). When set AND researchArmOptionFanOut is true, this peer verifies
@@ -374,8 +398,20 @@ export interface CanonicalPlowMcResult {
    *  when exactly one did; 'none' when both returned null (honest not-signed-in/no-answer, see
    *  build item 4) or neither matched an MC option. Never a fabricated blended verdict -- see
    *  this file's Stage F2 injection block for why disagreement is left to the existing
-   *  concordance/DISCORDANT machinery rather than merged here. */
-  browserAuthorityCorroboration?: 'agree' | 'disagree' | 'single_google' | 'single_perplexity' | 'none';
+   *  concordance/DISCORDANT machinery rather than merged here (legacy, non-ensemble path only).
+   *  BP139 Authority Ensemble additions: 'single_wolfram' (Wolfram Alpha was the sole authority
+   *  to answer, computable questions only) and 'adjudicated' (2+ authorities disagreed, the
+   *  one-extra-Perplexity-call judge resolved it) -- both ONLY reachable when
+   *  researchArmAuthorityEnsemble is on, see that flag's own doc comment for the full ensemble
+   *  design. 'agree' under the ensemble means 2+ (not necessarily both) authorities concurred. */
+  browserAuthorityCorroboration?:
+    | 'agree'
+    | 'disagree'
+    | 'single_google'
+    | 'single_perplexity'
+    | 'single_wolfram'
+    | 'adjudicated'
+    | 'none';
   /** BP137 Yoke v2b Stage D, extra requirement, OPTIONAL/ADDITIVE. True only when the new
    *  compute-fallthrough-no-facts abstain fired (classified computable, compute sidecar
    *  attempted and failed/no-match, AND zero facts were available for the voters -- whether
@@ -667,6 +703,213 @@ function resolveAuthorityLetterMatch(
   const fallback = matchFreeTextAnswerToOption(answerText, options);
   if (fallback) return { ...fallback, method: 'token_or_numeric_match' };
   return null;
+}
+
+// ─── BP139 Authority Ensemble: Google + Perplexity (+ Wolfram for computable), corroborated ──
+//
+// Founder mandate: "if ANY free authority can find the answer, we find it. Cheaper." Replaces
+// Stage F2's old "Perplexity preferred, Google bookkeeping-only" behavior (see
+// browserAuthorityCorroboration's pre-ensemble doc comment on CanonicalPlowMcResult) with a
+// genuine multi-authority vote: query every free authority available for this answerType, WITH
+// the MC options embedded so each one states its own letter + reasoning + source, then
+// corroborate:
+//   - 2+ authorities agree on a letter -> accept immediately (highest confidence, 'agree').
+//   - exactly 1 authority answered -> accept it ('single_google'/'single_perplexity'/
+//     'single_wolfram'), same honesty bar as the pre-ensemble single-authority accept.
+//   - 2+ authorities answered and ALL disagree -> ONE extra Perplexity ADJUDICATION call (never
+//     more than one, never fired on agreement) -- the judge sees every candidate's letter +
+//     reasoning and is asked to state which is actually correct ('adjudicated').
+//   - nobody answered, or the judge also can't resolve a letter -> 'none'/'disagree', honest
+//     fall-through (the caller falls to decompose-as-fallback, then the existing swarm+voter
+//     path -- see Stage F2's own call site below).
+// Every accepted candidate carries a real sourceUrl: Perplexity/Google via distillExtraction's
+// own non-negotiable non-null-sourceUrl requirement (browser_authority_types.ts), Wolfram via a
+// reproducible wolframalpha.com query URL. This is the HONESTY firewall (BR-007): a letter is
+// NEVER accepted without a genuinely sourced authority behind it, and this engine never reads
+// the sealed answer key.
+
+export interface AuthorityEnsembleCandidate {
+  authority: 'user_google' | 'user_perplexity' | 'wolfram_alpha' | 'user_perplexity_judge';
+  letter: string;
+  reasoning: string;
+  sourceUrl: string;
+  method: string;
+}
+
+export interface AuthorityEnsembleOutcome {
+  chosenLetter: string | null;
+  corroboration: 'agree' | 'disagree' | 'single_google' | 'single_perplexity' | 'single_wolfram' | 'adjudicated' | 'none';
+  candidates: AuthorityEnsembleCandidate[];
+  acceptedCandidates: AuthorityEnsembleCandidate[];
+  adjudicationAttempted: boolean;
+}
+
+/** Judge prompt for the ONE extra Perplexity call fired only when the ensemble's authorities
+ *  disagree -- "if anyone found it, the judge recognizes it" per the Founder's design. Asks for
+ *  the letter FIRST (same "Answer: <letter>" sentinel resolveAuthorityLetterMatch's explicit
+ *  extractor already looks for) so the judge's own pick is unambiguous, never guessed from
+ *  prose. Passed as the bare `question` to runBrowserAuthorityLookup (no mcOptions field) so
+ *  buildBrowserAuthorityQueryUrl's bare-question branch sends this text VERBATIM -- it already
+ *  contains the full question, options, and candidate breakdown, so it needs no further
+ *  wrapping by buildMcAwareQueryText. */
+function buildAdjudicationPromptText(
+  question: string,
+  options: McOption[],
+  candidates: AuthorityEnsembleCandidate[],
+): string {
+  const optionLines = options.map((o) => `${o.letter}) ${o.text}`).join('\n');
+  const candidateLines = candidates
+    .map((c) => `- ${c.authority} says ${c.letter}: ${c.reasoning.slice(0, 200)}`)
+    .join('\n');
+  return (
+    `${question.trim()}\n\nOptions:\n${optionLines}\n\n` +
+    `Independent research assistants disagree on the answer to this question:\n${candidateLines}\n\n` +
+    `Which option is actually correct? Reply starting with "Answer: <letter>" then a one-sentence reason.`
+  );
+}
+
+/** Runs the full ensemble for one question: queries every free authority available for
+ *  `answerType`, resolves each via resolveAuthorityLetterMatch (Wolfram via a direct computed-
+ *  value match against the options instead, since it never returns free text), and corroborates
+ *  per this section's own header doc. Sequential throughout (never Promise.all) --
+ *  runBrowserAuthorityQueryFromMain() (index.ts) guards a single shared <webview>, the same
+ *  discipline every other browser-authority call site in this file already follows. Never
+ *  throws: every per-authority call is individually try/caught, a failure just means that
+ *  authority contributes no candidate (honest, not fatal). */
+async function runAuthorityEnsemble(params: {
+  researchQuery: string;
+  mcOptions: McOption[];
+  mcOptionTexts: string[];
+  config: CanonicalPlowMcConfig;
+  bridge: BrowserAuthorityBridge;
+  answerType: AnswerType;
+  log: (msg: string) => void;
+}): Promise<AuthorityEnsembleOutcome> {
+  const { researchQuery, mcOptions, mcOptionTexts, config, bridge, answerType, log } = params;
+  const candidates: AuthorityEnsembleCandidate[] = [];
+
+  // ── Perplexity, WITH options embedded (unchanged mechanism from the legacy path) ──────────
+  try {
+    const perplexityResult = await runBrowserAuthorityLookup(
+      researchQuery, { ...config, preferredAuthority: 'user_perplexity', mcOptions: mcOptionTexts }, bridge,
+    );
+    const resolved = perplexityResult ? resolveAuthorityLetterMatch(perplexityResult.fact, mcOptions) : null;
+    if (resolved && perplexityResult) {
+      candidates.push({
+        authority: 'user_perplexity', letter: resolved.letter, reasoning: perplexityResult.fact,
+        sourceUrl: perplexityResult.sourceUrl, method: resolved.method,
+      });
+    }
+    log(`perplexity=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter'}`);
+  } catch (err) {
+    log(`perplexity threw (non-fatal): ${err}`);
+  }
+
+  // ── Google, NOW ALSO with options embedded (BP139 fix -- was bare-question-only before) ───
+  try {
+    const googleResult = await runBrowserAuthorityLookup(
+      researchQuery,
+      { ...config, preferredAuthority: 'user_google', mcOptions: mcOptionTexts, embedOptionsForGoogle: true },
+      bridge,
+    );
+    const resolved = googleResult ? resolveAuthorityLetterMatch(googleResult.fact, mcOptions) : null;
+    if (resolved && googleResult) {
+      candidates.push({
+        authority: 'user_google', letter: resolved.letter, reasoning: googleResult.fact,
+        sourceUrl: googleResult.sourceUrl, method: resolved.method,
+      });
+    }
+    log(`google=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter'}`);
+  } catch (err) {
+    log(`google threw (non-fatal): ${err}`);
+  }
+
+  // ── Wolfram Alpha, computable questions only, ONLY when a free-tier appid is configured ───
+  // "If a Wolfram authority is available, include it in the compute ensemble; if not, skip
+  // silently" -- process.env.WOLFRAM_APP_ID is the SAME env var compute_sidecar.ts's Stage A.3
+  // tier already reads (verified absent in this dev environment) -- absence here is silent, not
+  // an error, matching that tier's own "fails closed" contract.
+  if (answerType === 'computable') {
+    const wolframAppId = process.env.WOLFRAM_APP_ID;
+    if (wolframAppId) {
+      try {
+        const wolframResult = await computeViaWolframOnly(researchQuery, wolframAppId);
+        if (wolframResult) {
+          const matched = matchValueToOption(wolframResult.value, mcOptions);
+          if (matched) {
+            candidates.push({
+              authority: 'wolfram_alpha',
+              letter: matched.letter,
+              reasoning: `Wolfram Alpha computed ${wolframResult.value} (matched option value ${matched.optionValue}).`,
+              sourceUrl: `https://www.wolframalpha.com/input?i=${encodeURIComponent(researchQuery)}`,
+              method: 'wolfram_compute',
+            });
+          }
+        }
+        log(`wolfram=${wolframResult ? `value=${wolframResult.value}` : 'no-result'}`);
+      } catch (err) {
+        log(`wolfram threw (non-fatal): ${err}`);
+      }
+    } else {
+      log('wolfram=skipped (no WOLFRAM_APP_ID)');
+    }
+  }
+
+  if (candidates.length === 0) {
+    return { chosenLetter: null, corroboration: 'none', candidates, acceptedCandidates: [], adjudicationAttempted: false };
+  }
+
+  if (candidates.length === 1) {
+    const only = candidates[0]!;
+    const corroboration: AuthorityEnsembleOutcome['corroboration'] =
+      only.authority === 'user_google' ? 'single_google'
+        : only.authority === 'user_perplexity' ? 'single_perplexity'
+          : 'single_wolfram';
+    return { chosenLetter: only.letter, corroboration, candidates, acceptedCandidates: [only], adjudicationAttempted: false };
+  }
+
+  // 2+ candidates: group by letter, look for a 2+ agreement -- highest confidence, accepted
+  // immediately, no adjudication needed.
+  const byLetter = new Map<string, AuthorityEnsembleCandidate[]>();
+  for (const c of candidates) {
+    const arr = byLetter.get(c.letter) ?? [];
+    arr.push(c);
+    byLetter.set(c.letter, arr);
+  }
+  const agreeingGroup = [...byLetter.values()].find((group) => group.length >= 2);
+  if (agreeingGroup) {
+    return { chosenLetter: agreeingGroup[0]!.letter, corroboration: 'agree', candidates, acceptedCandidates: agreeingGroup, adjudicationAttempted: false };
+  }
+
+  // Every candidate disagrees -- ADJUDICATE with ONE extra Perplexity call, never more than one,
+  // fired only here (on genuine disagreement). "If anyone found it, the judge recognizes it."
+  log(`disagreement among ${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ')} -- firing adjudication`);
+  try {
+    const judgePrompt = buildAdjudicationPromptText(researchQuery, mcOptions, candidates);
+    const judgeResult = await runBrowserAuthorityLookup(
+      judgePrompt, { ...config, preferredAuthority: 'user_perplexity' }, bridge,
+    );
+    const judgeResolved = judgeResult ? resolveAuthorityLetterMatch(judgeResult.fact, mcOptions) : null;
+    if (judgeResolved && judgeResult) {
+      const judgeCandidate: AuthorityEnsembleCandidate = {
+        authority: 'user_perplexity_judge', letter: judgeResolved.letter, reasoning: judgeResult.fact,
+        sourceUrl: judgeResult.sourceUrl, method: judgeResolved.method,
+      };
+      log(`adjudicated=${judgeCandidate.letter}(${judgeCandidate.method})`);
+      return {
+        chosenLetter: judgeCandidate.letter,
+        corroboration: 'adjudicated',
+        candidates,
+        acceptedCandidates: [judgeCandidate],
+        adjudicationAttempted: true,
+      };
+    }
+    log('adjudication returned no resolvable letter -- honest fall-through');
+  } catch (err) {
+    log(`adjudication threw (non-fatal): ${err}`);
+  }
+
+  return { chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [], adjudicationAttempted: true };
 }
 
 // ─── WIRE-THE-LOOP fix: writeback + replication for EVERY solved answer ────────────────────
@@ -1139,8 +1382,18 @@ export async function runCanonicalPlowMcAnswer(
   // that the engine can provide a deterministic answer before any network specialist fires.
   // If the engine returns null (authority-empty / all-unresolved / decompose-failed), execution
   // falls through to the EXISTING plow pipeline unchanged -- this is the honest escalation path.
+  //
+  // BP139 Authority Ensemble REORDERING: the body below is byte-identical to the pre-Yoke
+  // inline block, just wrapped in a closure (attemptDecomposeAndEliminate) so it can be invoked
+  // from TWO call sites instead of one -- see deferDecomposeToEnsembleFallback just below. The
+  // Founder's mandate ("route compute to the authority, not decompose-eliminate") means a
+  // computable/reasoning question, when researchArmAuthorityEnsemble is also on, must NOT run
+  // decompose here; it runs decompose only as a FALLBACK after Stage F2's ensemble produced no
+  // sourced letter (see the second call site right after Stage F2, below). Every other case
+  // (ensemble off, or this question is lookup_fact) calls it HERE, at this exact pre-Yoke
+  // position -- unchanged ordering, unchanged behavior.
   const decomposeOn = !!(config.researchArmMode && config.researchArmDecompose);
-  if (decomposeOn) {
+  const attemptDecomposeAndEliminate = async (): Promise<CanonicalPlowMcResult | null> => {
     try {
       const { runDecomposeAndEliminate } = await import('./plow_mc_decompose');
       const { runBrowserAuthorityQueryFromMain } = await import('../index');
@@ -1236,10 +1489,26 @@ export async function runCanonicalPlowMcAnswer(
       }
       // decomposeResult is null OR chosenLetter is null (honest ABSTAIN / authority-empty):
       // fall through to existing Psionic/browser-authority/swarm pipeline unchanged.
+      return null;
     } catch (err) {
       // Non-fatal -- fall through to existing plow
       console.warn('[plow_mc_answerer] Phase 2 decompose threw (non-fatal, falling through):', err);
+      return null;
     }
+  };
+  // BP139 Authority Ensemble: authorityEnsembleOn is the three-way AND (researchArmMode +
+  // researchArmBrowserAuthority + researchArmAuthorityEnsemble) -- see that flag's own doc
+  // comment on CanonicalPlowMcConfig. earlyAnswerTypeForOrdering is a SECOND (cheap, pure,
+  // deterministic, zero-I/O) classifyAnswerType() call, used ONLY to decide decompose's ordering
+  // before Stage F2 runs its own (also duplicate, also harmless) classification below -- both
+  // calls always agree, see answer_type_classifier.ts's own determinism guarantee.
+  const authorityEnsembleOn = !!(config.researchArmMode && config.researchArmBrowserAuthority && config.researchArmAuthorityEnsemble);
+  const earlyAnswerTypeForOrdering = authorityEnsembleOn ? classifyAnswerType(researchQuery) : undefined;
+  const deferDecomposeToEnsembleFallback =
+    authorityEnsembleOn && (earlyAnswerTypeForOrdering === 'computable' || earlyAnswerTypeForOrdering === 'reasoning');
+  if (decomposeOn && !deferDecomposeToEnsembleFallback) {
+    const decomposeEarlyResult = await attemptDecomposeAndEliminate();
+    if (decomposeEarlyResult) return decomposeEarlyResult;
   }
 
   // ── BP137 Yoke v2b Stage D.1: Psionic zero-LLM accelerator ────────────────────────────────
@@ -1365,7 +1634,7 @@ export async function runCanonicalPlowMcAnswer(
   let browserGoogleMatch: { letter: string; score: number } | null = null;
   let browserPerplexityMatch: { letter: string; score: number } | null = null;
   let browserAuthorityAttempted = false;
-  let browserAuthorityCorroboration: 'agree' | 'disagree' | 'single_google' | 'single_perplexity' | 'none' = 'none';
+  let browserAuthorityCorroboration: CanonicalPlowMcResult['browserAuthorityCorroboration'] = 'none';
   // WIRE-THE-LOOP fix part 5 (compute/reasoning routing): earlyAnswerTypeForBrowserAuthority is
   // read once here (was already computed inside the old lookup_fact-only branch) so both the
   // lookup and the widened compute/reasoning gate below share one classification call.
@@ -1405,133 +1674,237 @@ export async function runCanonicalPlowMcAnswer(
       // that a token-overlap matcher then has to guess against.
       const mcOptionsForBrowserAuthority = parseOptionsFromPrompt(mcPromptWithSubstrate);
       const mcOptionTextsForQuery = mcOptionsForBrowserAuthority.map((o) => `${o.letter}) ${o.text}`);
-      // Sequential, not Promise.all: runBrowserAuthorityQueryFromMain() (index.ts) guards a
-      // single shared <webview> with browserAuthorityMainCallInFlight -- a concurrent second
-      // call would resolve null immediately rather than genuinely querying Perplexity, per
-      // that function's own documented "already in flight" honest-null path. This also happens
-      // to match the F2 spec's own "sequential-first is the safer/clearer read" note.
-      if (isLookupType) {
+
+      // BP139 Authority Ensemble branch point: authorityEnsembleOn (computed above, before the
+      // decompose block) is the ONLY thing that decides which of the two mutually-exclusive
+      // paths below runs. false/absent (every pre-Yoke caller) takes the ELSE branch, which is
+      // the EXACT pre-ensemble logic, byte-for-byte unchanged from before this Yoke.
+      if (authorityEnsembleOn) {
+        const ensembleOutcome = await runAuthorityEnsemble({
+          researchQuery,
+          mcOptions: mcOptionsForBrowserAuthority,
+          mcOptionTexts: mcOptionTextsForQuery,
+          config,
+          bridge: browserBridge,
+          // Non-null: this branch only runs inside `if (browserAuthorityOn)`, right after the
+          // unconditional `earlyAnswerTypeForBrowserAuthority = classifyAnswerType(...)` assignment
+          // above -- always set by this point.
+          answerType: earlyAnswerTypeForBrowserAuthority!,
+          log: (msg) => console.log(`[plow_mc_answerer] Stage F2 ensemble ${msg}`),
+        });
+        browserAuthorityCorroboration = ensembleOutcome.corroboration;
+        console.log(
+          `[plow_mc_answerer] Stage F2 ensemble RESOLVED at t=${Date.now() - startMs}ms ` +
+          `corroboration=${ensembleOutcome.corroboration} ` +
+          `candidates=[${ensembleOutcome.candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}] ` +
+          `chosen=${ensembleOutcome.chosenLetter ?? 'NONE'} -- swarm has NOT fired yet.`,
+        );
+        if (ensembleOutcome.chosenLetter && ensembleOutcome.acceptedCandidates.length > 0) {
+          const primary = ensembleOutcome.acceptedCandidates[0]!;
+          const acceptedOptionText = mcOptionsForBrowserAuthority.find((o) => o.letter === ensembleOutcome.chosenLetter)?.text ?? '';
+          onProgress?.(`browser-authority-accepted:${ensembleOutcome.chosenLetter}`);
+          const acceptLatencyMs = Date.now() - startMs;
+          // HONESTY (build item 4): CONCORDANT here ALWAYS means "backed by at least one real
+          // sourced authority with a provenance URL" -- see runAuthorityEnsemble's own header
+          // doc; there is no code path to this branch with an unsourced acceptedCandidate.
+          const acceptConcordance: ConcordanceClass = 'CONCORDANT';
+          const acceptBmv = computeBmvScore(0, 0, 0, 0, acceptConcordance, 0, acceptLatencyMs);
+          try {
+            await writeAndReplicateSolvedAnswer({
+              researchQuery,
+              domain,
+              chosenLetter: ensembleOutcome.chosenLetter,
+              optionText: acceptedOptionText,
+              reasoning: ensembleOutcome.acceptedCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | '),
+              sourceUrl: primary.sourceUrl,
+              authority: primary.authority,
+            });
+          } catch (err) {
+            console.warn('[plow_mc_answerer] ensemble-accepted writeback/replicate failed (non-fatal):', err);
+          }
+          return {
+            questionId,
+            domain,
+            chosenLetter: ensembleOutcome.chosenLetter,
+            voterLetters: [ensembleOutcome.chosenLetter],
+            voterDiagnostics: ensembleOutcome.acceptedCandidates.map((c) => ({
+              temperature: 0,
+              status: 'parsed_ok' as const,
+              responseChars: c.reasoning.length,
+              rawPreview: `${c.authority} (${c.method}): ${c.reasoning.slice(0, 200)}`,
+            })),
+            concordance: acceptConcordance,
+            bmvScore: acceptBmv,
+            gateOutcomes: evaluateGates(0, acceptBmv, acceptConcordance, acceptLatencyMs),
+            specialistsUsed: [],
+            candidatesRaw: 0,
+            candidatesPostMiner: 0,
+            candidatesPostFurnace: 0,
+            andonTriggered: andonRetry > 0,
+            andonRetries: andonRetry,
+            ebletsWritten: 1,
+            latencyMs: acceptLatencyMs,
+            traceSummary:
+              `authorityEnsembleAccepted=true corroboration=${ensembleOutcome.corroboration} ` +
+              `matchedOption=${ensembleOutcome.chosenLetter} ` +
+              `sources=[${ensembleOutcome.acceptedCandidates.map((c) => c.authority).join(',')}] ` +
+              `allCandidates=[${ensembleOutcome.candidates.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
+              `adjudicationAttempted=${ensembleOutcome.adjudicationAttempted} andonRetries=${andonRetry}`,
+            provenanceReceipts: ensembleOutcome.acceptedCandidates.map((c) => ({
+              source: c.authority,
+              contentHash: createHash('sha256').update(c.reasoning).digest('hex').slice(0, 16),
+              verified: true,
+              provenanceUrl: c.sourceUrl,
+            })),
+            answerType: earlyAnswerTypeForBrowserAuthority,
+            browserAuthorityCorroboration,
+          };
+        }
+        // ensembleOutcome.chosenLetter is null -- 'none' (nobody answered) or 'disagree' (the
+        // adjudication judge also failed to resolve a letter). Honest fall-through: falls to
+        // the decompose fallback (if deferred, see the call site right after this block) and
+        // then the existing swarm+voter path, same as every other Stage F2 no-answer case.
+      } else {
+        // ── LEGACY (pre-ensemble) Stage F2 logic, byte-for-byte unchanged ──────────────────
+        // Sequential, not Promise.all: runBrowserAuthorityQueryFromMain() (index.ts) guards a
+        // single shared <webview> with browserAuthorityMainCallInFlight -- a concurrent second
+        // call would resolve null immediately rather than genuinely querying Perplexity, per
+        // that function's own documented "already in flight" honest-null path. This also happens
+        // to match the F2 spec's own "sequential-first is the safer/clearer read" note.
+        if (isLookupType) {
+          try {
+            browserGoogleResult = await runBrowserAuthorityLookup(
+              researchQuery, { ...config, preferredAuthority: 'user_google' }, browserBridge,
+            );
+          } catch (err) {
+            console.warn('[plow_mc_answerer] Stage F2 google lookup threw (non-fatal, honest null):', err);
+            browserGoogleResult = null;
+          }
+        }
         try {
-          browserGoogleResult = await runBrowserAuthorityLookup(
-            researchQuery, { ...config, preferredAuthority: 'user_google' }, browserBridge,
+          browserPerplexityResult = await runBrowserAuthorityLookup(
+            researchQuery, { ...config, preferredAuthority: 'user_perplexity', mcOptions: mcOptionTextsForQuery }, browserBridge,
           );
         } catch (err) {
-          console.warn('[plow_mc_answerer] Stage F2 google lookup threw (non-fatal, honest null):', err);
-          browserGoogleResult = null;
+          console.warn('[plow_mc_answerer] Stage F2 perplexity lookup threw (non-fatal, honest null):', err);
+          browserPerplexityResult = null;
         }
-      }
-      try {
-        browserPerplexityResult = await runBrowserAuthorityLookup(
-          researchQuery, { ...config, preferredAuthority: 'user_perplexity', mcOptions: mcOptionTextsForQuery }, browserBridge,
+        console.log(
+          `[plow_mc_answerer] Stage F2 seq=2 browser-authority-first RESOLVED at t=${Date.now() - startMs}ms ` +
+          `(google=${browserGoogleResult ? 'fact' : 'null'} perplexity=${browserPerplexityResult ? 'fact' : 'null'}) ` +
+          `-- swarm has NOT fired yet.`,
         );
-      } catch (err) {
-        console.warn('[plow_mc_answerer] Stage F2 perplexity lookup threw (non-fatal, honest null):', err);
-        browserPerplexityResult = null;
-      }
-      console.log(
-        `[plow_mc_answerer] Stage F2 seq=2 browser-authority-first RESOLVED at t=${Date.now() - startMs}ms ` +
-        `(google=${browserGoogleResult ? 'fact' : 'null'} perplexity=${browserPerplexityResult ? 'fact' : 'null'}) ` +
-        `-- swarm has NOT fired yet.`,
-      );
 
-      // WIRE-THE-LOOP fix part 1: explicit-letter-first, token/numeric-match fallback -- see
-      // resolveAuthorityLetterMatch()'s own doc comment for why this replaces the bare
-      // matchFreeTextAnswerToOption() call that was silently discarding real sourced answers.
-      const googleResolved = browserGoogleResult
-        ? resolveAuthorityLetterMatch(browserGoogleResult.fact, mcOptionsForBrowserAuthority)
-        : null;
-      const perplexityResolved = browserPerplexityResult
-        ? resolveAuthorityLetterMatch(browserPerplexityResult.fact, mcOptionsForBrowserAuthority)
-        : null;
-      browserGoogleMatch = googleResolved ? { letter: googleResolved.letter, score: googleResolved.score } : null;
-      browserPerplexityMatch = perplexityResolved ? { letter: perplexityResolved.letter, score: perplexityResolved.score } : null;
+        // WIRE-THE-LOOP fix part 1: explicit-letter-first, token/numeric-match fallback -- see
+        // resolveAuthorityLetterMatch()'s own doc comment for why this replaces the bare
+        // matchFreeTextAnswerToOption() call that was silently discarding real sourced answers.
+        const googleResolved = browserGoogleResult
+          ? resolveAuthorityLetterMatch(browserGoogleResult.fact, mcOptionsForBrowserAuthority)
+          : null;
+        const perplexityResolved = browserPerplexityResult
+          ? resolveAuthorityLetterMatch(browserPerplexityResult.fact, mcOptionsForBrowserAuthority)
+          : null;
+        browserGoogleMatch = googleResolved ? { letter: googleResolved.letter, score: googleResolved.score } : null;
+        browserPerplexityMatch = perplexityResolved ? { letter: perplexityResolved.letter, score: perplexityResolved.score } : null;
 
-      // Build item 3 -- corroboration bookkeeping ONLY (never a fabricated blended answer): both
-      // matched facts (when present) are injected as SEPARATE candidates below, and the
-      // pre-existing 3-voter concordance/DISCORDANT machinery is what actually decides the
-      // outcome when they disagree -- this marker is purely informational/trace.
-      if (browserGoogleMatch && browserPerplexityMatch) {
-        browserAuthorityCorroboration = browserGoogleMatch.letter === browserPerplexityMatch.letter ? 'agree' : 'disagree';
-      } else if (browserGoogleMatch) {
-        browserAuthorityCorroboration = 'single_google';
-      } else if (browserPerplexityMatch) {
-        browserAuthorityCorroboration = 'single_perplexity';
-      } else {
-        browserAuthorityCorroboration = 'none';
-      }
-      console.log(
-        `[plow_mc_answerer] Stage F2 browser-authority-first corroboration=${browserAuthorityCorroboration} ` +
-        `googleMatch=${browserGoogleMatch?.letter ?? 'null'}(${googleResolved?.method ?? '-'}) ` +
-        `perplexityMatch=${browserPerplexityMatch?.letter ?? 'null'}(${perplexityResolved?.method ?? '-'}).`,
-      );
+        // Build item 3 -- corroboration bookkeeping ONLY (never a fabricated blended answer): both
+        // matched facts (when present) are injected as SEPARATE candidates below, and the
+        // pre-existing 3-voter concordance/DISCORDANT machinery is what actually decides the
+        // outcome when they disagree -- this marker is purely informational/trace.
+        if (browserGoogleMatch && browserPerplexityMatch) {
+          browserAuthorityCorroboration = browserGoogleMatch.letter === browserPerplexityMatch.letter ? 'agree' : 'disagree';
+        } else if (browserGoogleMatch) {
+          browserAuthorityCorroboration = 'single_google';
+        } else if (browserPerplexityMatch) {
+          browserAuthorityCorroboration = 'single_perplexity';
+        } else {
+          browserAuthorityCorroboration = 'none';
+        }
+        console.log(
+          `[plow_mc_answerer] Stage F2 browser-authority-first corroboration=${browserAuthorityCorroboration} ` +
+          `googleMatch=${browserGoogleMatch?.letter ?? 'null'}(${googleResolved?.method ?? '-'}) ` +
+          `perplexityMatch=${browserPerplexityMatch?.letter ?? 'null'}(${perplexityResolved?.method ?? '-'}).`,
+        );
 
-      // ── WIRE-THE-LOOP fix part 1: NEVER abstain when the authority actually answered ──────
-      // This is the Founder-mandated short-circuit: a real resultFound=yes answer with a
-      // resolvable letter is ACCEPTED immediately -- it does not need to survive the swarm's
-      // 3-voter arbitration to count (the old behavior: inject as a candidate, hope the voters
-      // pick up on it, silently abstain when the relevance gate or DISCORDANT voters threw it
-      // away downstream). Prefer Perplexity's resolution when both fired and disagree -- it was
-      // asked to reason over the actual options; a corroborating Google agreement is logged via
-      // browserAuthorityCorroboration either way, never silently dropped.
-      const acceptedResolution = perplexityResolved ?? googleResolved;
-      const acceptedResult = perplexityResolved ? browserPerplexityResult : browserGoogleResult;
-      const acceptedAuthorityName = perplexityResolved ? 'user_perplexity' : 'user_google';
-      if (acceptedResolution && acceptedResult) {
-        const acceptedOptionText = mcOptionsForBrowserAuthority.find((o) => o.letter === acceptedResolution.letter)?.text ?? '';
-        onProgress?.(`browser-authority-accepted:${acceptedResolution.letter}`);
-        const acceptLatencyMs = Date.now() - startMs;
-        const acceptConcordance: ConcordanceClass = 'CONCORDANT';
-        const acceptBmv = computeBmvScore(0, 0, 0, 0, acceptConcordance, 0, acceptLatencyMs);
-        try {
-          await writeAndReplicateSolvedAnswer({
-            researchQuery,
+        // ── WIRE-THE-LOOP fix part 1: NEVER abstain when the authority actually answered ──────
+        // This is the Founder-mandated short-circuit: a real resultFound=yes answer with a
+        // resolvable letter is ACCEPTED immediately -- it does not need to survive the swarm's
+        // 3-voter arbitration to count (the old behavior: inject as a candidate, hope the voters
+        // pick up on it, silently abstain when the relevance gate or DISCORDANT voters threw it
+        // away downstream). Prefer Perplexity's resolution when both fired and disagree -- it was
+        // asked to reason over the actual options; a corroborating Google agreement is logged via
+        // browserAuthorityCorroboration either way, never silently dropped.
+        const acceptedResolution = perplexityResolved ?? googleResolved;
+        const acceptedResult = perplexityResolved ? browserPerplexityResult : browserGoogleResult;
+        const acceptedAuthorityName = perplexityResolved ? 'user_perplexity' : 'user_google';
+        if (acceptedResolution && acceptedResult) {
+          const acceptedOptionText = mcOptionsForBrowserAuthority.find((o) => o.letter === acceptedResolution.letter)?.text ?? '';
+          onProgress?.(`browser-authority-accepted:${acceptedResolution.letter}`);
+          const acceptLatencyMs = Date.now() - startMs;
+          const acceptConcordance: ConcordanceClass = 'CONCORDANT';
+          const acceptBmv = computeBmvScore(0, 0, 0, 0, acceptConcordance, 0, acceptLatencyMs);
+          try {
+            await writeAndReplicateSolvedAnswer({
+              researchQuery,
+              domain,
+              chosenLetter: acceptedResolution.letter,
+              optionText: acceptedOptionText,
+              reasoning: acceptedResult.fact,
+              sourceUrl: acceptedResult.sourceUrl,
+              authority: acceptedAuthorityName,
+            });
+          } catch (err) {
+            console.warn('[plow_mc_answerer] browser-authority-accepted writeback/replicate failed (non-fatal):', err);
+          }
+          return {
+            questionId,
             domain,
             chosenLetter: acceptedResolution.letter,
-            optionText: acceptedOptionText,
-            reasoning: acceptedResult.fact,
-            sourceUrl: acceptedResult.sourceUrl,
-            authority: acceptedAuthorityName,
-          });
-        } catch (err) {
-          console.warn('[plow_mc_answerer] browser-authority-accepted writeback/replicate failed (non-fatal):', err);
+            voterLetters: [acceptedResolution.letter],
+            voterDiagnostics: [{
+              temperature: 0,
+              status: 'parsed_ok',
+              responseChars: acceptedResult.fact.length,
+              rawPreview: `${acceptedAuthorityName} (${acceptedResolution.method}): ${acceptedResult.fact.slice(0, 200)}`,
+            }],
+            concordance: acceptConcordance,
+            bmvScore: acceptBmv,
+            gateOutcomes: evaluateGates(0, acceptBmv, acceptConcordance, acceptLatencyMs),
+            specialistsUsed: [],
+            candidatesRaw: 0,
+            candidatesPostMiner: 0,
+            candidatesPostFurnace: 0,
+            andonTriggered: andonRetry > 0,
+            andonRetries: andonRetry,
+            ebletsWritten: 1,
+            latencyMs: acceptLatencyMs,
+            traceSummary:
+              `browserAuthorityAccepted=true authority=${acceptedAuthorityName} method=${acceptedResolution.method} ` +
+              `matchedOption=${acceptedResolution.letter} matchScore=${acceptedResolution.score.toFixed(2)} ` +
+              `corroboration=${browserAuthorityCorroboration} andonRetries=${andonRetry}`,
+            provenanceReceipts: [{
+              source: acceptedAuthorityName,
+              contentHash: createHash('sha256').update(acceptedResult.fact).digest('hex').slice(0, 16),
+              verified: acceptedResult.verified,
+              ...(acceptedResult.sourceUrl ? { provenanceUrl: acceptedResult.sourceUrl } : {}),
+            }],
+            answerType: earlyAnswerTypeForBrowserAuthority,
+            browserAuthorityCorroboration,
+          };
         }
-        return {
-          questionId,
-          domain,
-          chosenLetter: acceptedResolution.letter,
-          voterLetters: [acceptedResolution.letter],
-          voterDiagnostics: [{
-            temperature: 0,
-            status: 'parsed_ok',
-            responseChars: acceptedResult.fact.length,
-            rawPreview: `${acceptedAuthorityName} (${acceptedResolution.method}): ${acceptedResult.fact.slice(0, 200)}`,
-          }],
-          concordance: acceptConcordance,
-          bmvScore: acceptBmv,
-          gateOutcomes: evaluateGates(0, acceptBmv, acceptConcordance, acceptLatencyMs),
-          specialistsUsed: [],
-          candidatesRaw: 0,
-          candidatesPostMiner: 0,
-          candidatesPostFurnace: 0,
-          andonTriggered: andonRetry > 0,
-          andonRetries: andonRetry,
-          ebletsWritten: 1,
-          latencyMs: acceptLatencyMs,
-          traceSummary:
-            `browserAuthorityAccepted=true authority=${acceptedAuthorityName} method=${acceptedResolution.method} ` +
-            `matchedOption=${acceptedResolution.letter} matchScore=${acceptedResolution.score.toFixed(2)} ` +
-            `corroboration=${browserAuthorityCorroboration} andonRetries=${andonRetry}`,
-          provenanceReceipts: [{
-            source: acceptedAuthorityName,
-            contentHash: createHash('sha256').update(acceptedResult.fact).digest('hex').slice(0, 16),
-            verified: acceptedResult.verified,
-            ...(acceptedResult.sourceUrl ? { provenanceUrl: acceptedResult.sourceUrl } : {}),
-          }],
-          answerType: earlyAnswerTypeForBrowserAuthority,
-          browserAuthorityCorroboration,
-        };
       }
     }
+  }
+
+  // BP139 Authority Ensemble fallback: decompose-and-eliminate, attempted HERE (after Stage F2)
+  // ONLY when it was deferred above (computable/reasoning + ensemble on) AND the ensemble just
+  // fell through without returning (no sourced letter) -- "keep decompose ONLY as a last-resort
+  // fallback when the ensemble produced no sourced letter" per the Founder's mandate. Every
+  // other case already resolved decompose at its original pre-Psionic/pre-F2 position above (or
+  // never runs decompose at all, when researchArmDecompose is off).
+  if (deferDecomposeToEnsembleFallback && decomposeOn) {
+    const decomposeFallbackResult = await attemptDecomposeAndEliminate();
+    if (decomposeFallbackResult) return decomposeFallbackResult;
   }
 
   // BP134 Yoke #32 Phase C: deepHarvest is opt-in per call (field-sowing only, see config
@@ -2376,6 +2749,15 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
         researchArmEscalation: researchArmMode,
         researchArmPsionic: researchArmMode,
         researchArmBrowserAuthority: researchArmMode,
+        // BP139 Authority Ensemble: fanned in alongside its sibling researchArm* sub-flags
+        // above -- the ONE shared mesh-test call site (this function), used by both the WAN
+        // relay-route responder and one_click_mmlu_pro.ts's local-mode benchmark path, so a
+        // Founder benchmark run with researchArmMode:true automatically exercises the new
+        // Google+Perplexity(+Wolfram) corroborated ensemble, matching every other sub-flag's
+        // existing fan-out convention here. A direct runCanonicalPlowMcAnswer() caller that
+        // builds its own CanonicalPlowMcConfig (bypassing this helper) still defaults this flag
+        // to false/absent -- byte-identical for them.
+        researchArmAuthorityEnsemble: researchArmMode,
         researchArmStarChamber: researchArmMode,
         researchArmMeshSynergy,
         ...(assignedAuthority ? { assignedAuthority } : {}),

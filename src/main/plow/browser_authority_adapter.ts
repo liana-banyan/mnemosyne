@@ -146,6 +146,9 @@ export async function runBrowserAuthorityLookup(
     question: trimmedQuestion,
     authority,
     ...(config.mcOptions && config.mcOptions.length > 0 ? { mcOptions: config.mcOptions } : {}),
+    // BP139 Authority Ensemble: threaded through unmodified -- absent/false on every
+    // pre-ensemble caller, see BrowserAuthorityQuery.embedOptionsForGoogle's own doc comment.
+    ...(config.embedOptionsForGoogle ? { embedOptionsForGoogle: true } : {}),
   };
 
   const raw = await bridge.runQueryInUserBrowser(query);
