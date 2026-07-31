@@ -91,6 +91,10 @@ import { solveDensityProblem } from './plow_mc_density_solver';
 // for the full rationale (the double-star Kepler's-third-law benchmark miss) -- tried only after
 // tiers (i)-(iv) have already returned null. Never duplicates or modifies those four tiers.
 import { solvePhysicsRelationProblem } from './plow_mc_physics_solver';
+// BP-AIRCRAFT-SOLVER: a SIXTH, independent deterministic compute tier -- see that file's header
+// for the full rationale (the airplane lift/drag/takeoff-power benchmark wobble) -- tried only
+// after tiers (i)-(v) have already returned null. Never duplicates or modifies those five tiers.
+import { solveAircraftLiftDragProblem } from './plow_mc_aircraft_solver';
 // BP137 Yoke v2b Stage A.0.1: semantic-cosine upgrade to the relevance TEST used inside the
 // gate below (the gating FLAG and abstain logic are unchanged -- see semantic_relevance_gate.ts
 // header for the full reuse rationale). ollamaManager imported directly (same module already
@@ -1505,10 +1509,12 @@ export interface DeterministicComputeCandidate {
   sourceExpression: string;
   source: string;
   /** Tier tag, one of 'unit_aware' | 'bare_value' | 'schedule_amortization' | 'density' |
-   *  'physics_kepler' -- see the five tiers documented above (tier (v), physics_kepler, added
-   *  subsequently -- see plow_mc_physics_solver.ts). Deliberately `string` (not a narrow literal
-   *  union) so this type can represent the result of any of the independently-typed underlying
-   *  tiers without forcing them into a shared method-name vocabulary they don't actually share. */
+   *  'physics_kepler' | 'aircraft_lift_drag' -- see the six tiers documented above (tier (v),
+   *  physics_kepler, and tier (vi), aircraft_lift_drag, added subsequently -- see
+   *  plow_mc_physics_solver.ts and plow_mc_aircraft_solver.ts). Deliberately `string` (not a
+   *  narrow literal union) so this type can represent the result of any of the independently-typed
+   *  underlying tiers without forcing them into a shared method-name vocabulary they don't
+   *  actually share. */
   method: string;
 }
 export async function resolveDeterministicComputeOverride(
@@ -1679,6 +1685,35 @@ export async function resolveDeterministicComputeOverride(
       }
     } catch (err) {
       console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: solvePhysicsRelationProblem threw (non-fatal, ensemble letter kept):', err);
+    }
+  }
+
+  // Tier (vi): the aircraft lift/drag/takeoff-power solver -- a SIXTH, independent deterministic
+  // compute tier for the "angle of attack + power required for takeoff" word problem structurally
+  // out of reach of tiers (i)-(v): the question states five separate givens (weight, wing area,
+  // takeoff speed, air density, two linear coefficient relations) and asks for a value reached
+  // only by solving a linear equation for alpha first, never a single contiguous unit-bearing
+  // chain (tier (i)'s requirement), and tier (v) is narrowly gated to the double-star Kepler case
+  // (see plow_mc_aircraft_solver.ts's header for the full worked example). Synchronous, no I/O, no
+  // model call. Tried last, only after tiers (i)-(v) above returned null; derives strictly from
+  // the question text + options, never from `reasoningTexts`.
+  if (!deterministicOverride) {
+    try {
+      const aircraft = solveAircraftLiftDragProblem(researchQueryForTiers, mcOptions);
+      if (aircraft) {
+        deterministicOverride = {
+          letter: aircraft.letter,
+          optionValue: aircraft.optionValue,
+          optionUnit: null,
+          computedValue: aircraft.value,
+          computedUnit: null,
+          sourceExpression: aircraft.trace,
+          source: 'aircraft_solver',
+          method: 'aircraft_lift_drag',
+        };
+      }
+    } catch (err) {
+      console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: solveAircraftLiftDragProblem threw (non-fatal, ensemble letter kept):', err);
     }
   }
 
