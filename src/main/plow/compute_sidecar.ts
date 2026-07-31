@@ -86,7 +86,14 @@ export function parseOptionsFromPrompt(prompt: string): McOption[] {
  *  leading minus sign. Returns null when no number is present. */
 export function extractNumber(text: string): number | null {
   const cleaned = text.replace(/,/g, '');
-  const m = cleaned.match(/-?\$?\d+(?:\.\d+)?%?/);
+  // BUG (BP1xx leading-dot-decimal miss): MMLU-Pro option text sometimes omits the leading zero
+  // ("`.60 g/cc`" instead of "`0.60 g/cc`"). The old digit-first pattern (`\d+(?:\.\d+)?`) cannot
+  // match at the leading `.`, so the regex engine slid forward and matched the bare "60" --
+  // silently dropping the decimal point and turning 0.60 into 60 (a 100x error). The added
+  // `|\.\d+` alternative matches a dot-led decimal as a whole token when no leading digit is
+  // present; the original digit-first alternative is tried first and unchanged, so every
+  // already-working format (123, 1,234.5, 0.60, $100, 50%) still matches exactly as before.
+  const m = cleaned.match(/-?\$?(?:\d+(?:\.\d+)?|\.\d+)%?/);
   if (!m) return null;
   const raw = m[0].replace(/[$%]/g, '');
   const n = parseFloat(raw);
@@ -254,8 +261,18 @@ export function extractUnitExpression(question: string): string | null {
 // both spellings; the no-space requirement (digit must directly touch the letters, no `\s*`)
 // keeps this from swallowing an unrelated adjacent number ("5 kg 3 times" still tokenizes as
 // "5 kg" only -- "3" is not glued to "kg").
+// BUG (BP1xx leading-dot-decimal miss): same root cause as extractNumber's leading-digit gap
+// above, applied consistently here since this constant duplicates that number-shape assumption
+// in its own capture group. Density-style MMLU-Pro options are frequently written without a
+// leading zero ("`.60 g/cc`", "`.70 g/cc`"): the old group 1 (`\d[\d,]*(?:\.\d+)?`) cannot match
+// at a leading `.`, so the scan slid forward and captured "60" alone (dropping the decimal point
+// entirely, a 100x error) with "g/cc" still captured correctly as the unit -- a correctly
+// computed 0.60 g/cc could then never match option text stated as ".60 g/cc". The added
+// `|\.\d+` alternative lets a dot-led decimal match as one whole numeric token; the digit-first
+// alternative is tried first and is byte-identical to the old pattern, so every already-working
+// numeric shape (123, 1,234.5, 0.60, 600) still matches exactly as before.
 const QUANTITY_TOKEN_RE =
-  /(-?\$?\d[\d,]*(?:\.\d+)?)\s*((?:%|°|[A-Za-z]+(?:\^-?\d+|\d+)?)(?:\s*[/*]\s*[A-Za-z]+(?:\^-?\d+|\d+)?)*)?/g;
+  /(-?\$?(?:\d[\d,]*(?:\.\d+)?|\.\d+))\s*((?:%|°|[A-Za-z]+(?:\^-?\d+|\d+)?)(?:\s*[/*]\s*[A-Za-z]+(?:\^-?\d+|\d+)?)*)?/g;
 
 /** Scans free text (an authority's/swarm's stated reasoning, or a short MC option string) for
  *  unit-bearing quantities and returns the LAST one that parses cleanly through mathjs -- "final

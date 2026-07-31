@@ -64,10 +64,15 @@ import {
 // for the full writeEbletFn-vs-writeVerifiedEblet investigation. Same import convention as
 // csia_research.ts:38's `import { writeVerifiedEblet, isQaRelevant } from './mnem_eblet_store'`,
 // just one directory deeper (`../` instead of `./`).
-import { isQaRelevant, writeVerifiedEblet } from '../mnem_eblet_store';
+import { isQaRelevant, writeVerifiedEblet, queryVerifiedEblets, computeHonestVerification } from '../mnem_eblet_store';
 // BP137 Yoke v2b Stage A: answer-type classifier + compute sidecar, both new/additive this Yoke.
 import { classifyAnswerType, type AnswerType } from './answer_type_classifier';
 import { computeAnswer, computeViaWolframOnly, parseOptionsFromPrompt, matchValueToOption, extractNumber, computeUnitAwareMatch, type ComputeSidecarResult, type McOption, type UnitAwareComputeResult } from './compute_sidecar';
+// BP-SCHEDULE-SOLVER: a THIRD, independent deterministic compute tier -- see that file's header
+// for the full rationale -- tried only after computeAnswer()/computeUnitAwareMatch() have both
+// already returned null/no-match (see the call site inside `if (answerType === 'computable')`
+// below). Never duplicates or modifies those two tiers.
+import { solveScheduleProblem } from './plow_mc_schedule_solver';
 // BP137 Yoke v2b Stage A.0.1: semantic-cosine upgrade to the relevance TEST used inside the
 // gate below (the gating FLAG and abstain logic are unchanged -- see semantic_relevance_gate.ts
 // header for the full reuse rationale). ollamaManager imported directly (same module already
@@ -296,6 +301,32 @@ export interface CanonicalPlowMcConfig {
    *  the option-fan-out mesh mode: when assignedOption is present and this flag is true, this
    *  peer verifies only its assigned option instead of answering the full question. */
   researchArmOptionFanOut?: boolean;
+  /** PRODUCTION eblet read-back, NEW/OPT-IN, DEFAULT FALSE/UNDEFINED. Canon (Founder-ratified):
+   *  recall is the PRODUCTION reward -- once a question has been genuinely, honestly verified,
+   *  a later ask of the EXACT SAME question should not re-burn the swarm/voters/Andon/Escalation
+   *  machinery. Independent of every researchArm* sub-flag above (no AND-gate on
+   *  researchArmMode) -- this is its own standalone opt-in, checked ONCE at the very top of
+   *  runCanonicalPlowMcAnswer, before Stage F3/Psionic/F2/ensemble/swarm ever run.
+   *
+   *  HARD-OFF ON THE SCORED PATH: callCanonicalPlowMcAnswererForMeshTest -- the ONE call site
+   *  shared by every scored/benchmark run (index.ts's WAN relay-poll responder AND
+   *  one_click_mmlu_pro.ts's local-mode benchmark) -- builds its CanonicalPlowMcConfig from
+   *  named literal fields only and explicitly passes `productionReadbackEnabled: false`.
+   *  PlowMcAnswererCallParams (that function's own params interface) does not expose this field
+   *  at all, so no caller reaching runCanonicalPlowMcAnswer through that helper can ever set it
+   *  true, structurally -- not just by convention. A direct caller of this function that bypasses
+   *  that helper still defaults to false/absent/undefined, matching every other opt-in flag's
+   *  fail-closed convention in this file. Canon: scoring must always RE-DERIVE, never replay the
+   *  answer key.
+   *
+   *  SAFETY: a stored eblet's cosmetic `verified` field is NEVER trusted alone when deciding
+   *  whether to recall it -- the live substrate carries legacy rows stamped verified:true from
+   *  before the BP131 honesty fix (including lone single_authority/user_perplexity guesses).
+   *  The read-back path re-derives verification at READ time via the SAME computeHonestVerification()
+   *  the write path uses (mnem_eblet_store.ts) -- deterministic_compute / genuine 2+-source
+   *  concordant / coroner_verified only; everything else (including "no corroboration field at
+   *  all", the legacy-row shape) fails CLOSED and is never recalled. */
+  productionReadbackEnabled?: boolean;
 }
 
 /** BP133 Yoke #27: per-voter diagnostic detail, always computed (cheap: just string lengths
@@ -394,7 +425,11 @@ export interface CanonicalPlowMcResult {
     // of this field (which only ever produced the original three tags) is unaffected. Because
     // this field's type is derived directly from UnitAwareComputeResult['method'], adding
     // 'bare_value_match' to that union type (compute_sidecar.ts) required no edit here.
-    method: ComputeSidecarResult['method'] | UnitAwareComputeResult['method'];
+    // BP-SCHEDULE-SOLVER: 'schedule_amortization' added as a third, independent additive tag --
+    // see plow_mc_schedule_solver.ts's ScheduleSolverResult.provenance
+    // ('deterministic_compute:schedule_amortization') for the full string this short tag is
+    // extracted from at the call site below.
+    method: ComputeSidecarResult['method'] | UnitAwareComputeResult['method'] | 'schedule_amortization';
     expression: string;
     value: number;
     matchedOptionValue: number;
@@ -509,7 +544,13 @@ export interface CanonicalPlowMcResult {
    *  fires. */
   authorityEnsembleDeterministicOverride?: {
     ensembleLetter: string;
-    method: UnitAwareComputeResult['method'];
+    // BP-DETERMINISTIC-OVERRIDE-3TIER: widened from UnitAwareComputeResult['method'] to `string`
+    // -- resolveDeterministicComputeOverride() now reports one of three TIER tags
+    // ('unit_aware' | 'bare_value' | 'schedule_amortization'), not just computeUnitAwareMatch's
+    // own narrower internal method union, since the override can now also fire via
+    // computeAnswer()+matchValueToOption() or solveScheduleProblem(). See
+    // DeterministicComputeCandidate (defined just above resolveDeterministicComputeOverride).
+    method: string;
     expression: string;
     computedValue: number;
     computedUnit: string | null;
@@ -1213,30 +1254,157 @@ async function runAuthorityEnsemble(params: {
 // before the compute-sidecar block is ever reached, so the flubbed answer wins.
 //
 // This function is the fix's pure decision core: given the letter the ensemble already chose and
-// the reasoning text it was chosen from, it runs the SAME deterministic compute against that
-// reasoning (which is now available -- the authority has already produced it) and reports whether
-// the deterministic letter should override the ensemble's. Exported and factored out of the
-// Stage F2 call site specifically so it can be exercised in isolation by a focused test without
-// having to fake the whole browser-authority/swarm ensemble.
+// the reasoning text it was chosen from, it runs the SAME deterministic compute tiers the
+// downstream compute-sidecar block uses against that reasoning (which is now available -- the
+// authority has already produced it) and reports whether a deterministic letter should override
+// the ensemble's. Exported and factored out of the Stage F2 call site specifically so it can be
+// exercised in isolation by a focused test without having to fake the whole browser-authority/
+// swarm ensemble.
 //
-// Synchronous, no I/O, no model call -- delegates entirely to computeUnitAwareMatch's own
-// "exactly one option matches" honesty gate (already proven to abstain on 0/2+/dimensionally-
-// incompatible matches). This can therefore only ever REPLACE one checked letter with another
-// checked letter; it never fabricates one. Any throw from computeUnitAwareMatch is caught and
-// treated as "no override" (honest fall-through, ensemble's letter kept), never propagated.
-export function resolveDeterministicComputeOverride(
+// BP-DETERMINISTIC-OVERRIDE-3TIER: originally this ran ONLY computeUnitAwareMatch, so a
+// computable question whose correct method was actually computeAnswer()+matchValueToOption() (a
+// bare-number compute, no units involved) or the loan/repayment schedule solver never got a
+// chance to override the ensemble -- those two tiers only ever lived in the compute-sidecar block
+// far downstream, reached only when the ensemble's early return above never fired (e.g. the
+// Scaccio loan question: the ensemble accepted a Perplexity/Google letter that resolved wrong,
+// and neither tier 2 nor tier 3 was ever consulted). Widened to run the SAME three tiers, in the
+// SAME order, the compute-sidecar block already uses:
+//   (i)   computeUnitAwareMatch            -- unit-bearing quantity, synchronous
+//   (ii)  computeAnswer + matchValueToOption -- bare-number expression/model/Wolfram compute
+//   (iii) solveScheduleProblem              -- loan/repayment amortization schedule, synchronous
+// Each tier is tried ONLY after the previous one returned null -- first single-confident-option
+// match wins, never guesses (every tier keeps its own existing "exactly one option qualifies"
+// honesty gate unchanged). Tier (ii) is the only async one (may call ollama/Wolfram), which is
+// why this function itself is now async -- callers must await it. Any tier throwing is caught and
+// treated as "this tier found nothing" (falls through to the next tier / honest ensemble
+// fall-through), never propagated.
+export interface DeterministicComputeCandidate {
+  letter: string;
+  optionValue: number;
+  optionUnit: string | null;
+  computedValue: number;
+  computedUnit: string | null;
+  sourceExpression: string;
+  source: string;
+  /** Tier tag, one of 'unit_aware' | 'bare_value' | 'schedule_amortization' -- see the three
+   *  tiers documented above. Deliberately `string` (not a narrow literal union) so this type can
+   *  represent the result of any of the three independently-typed underlying tiers without
+   *  forcing them into a shared method-name vocabulary they don't actually share. */
+  method: string;
+}
+export async function resolveDeterministicComputeOverride(
   researchQuery: string,
   mcOptions: McOption[],
   ensembleChosenLetter: string,
   reasoningTexts: string[],
-): { finalLetter: string; overrideFired: boolean; deterministicOverride: UnitAwareComputeResult | null } {
-  let deterministicOverride: UnitAwareComputeResult | null = null;
+  computeOpts: { ollamaBaseUrl?: string; model?: string; wolframAppId?: string } = {},
+): Promise<{ finalLetter: string; overrideFired: boolean; deterministicOverride: DeterministicComputeCandidate | null }> {
+  let deterministicOverride: DeterministicComputeCandidate | null = null;
+
+  // BP-DETERMINISTIC-OVERRIDE-DEGLUE: real MMLU-Pro question text sometimes ships with a
+  // trigger keyword glued directly onto the preceding word with zero whitespace -- e.g. the
+  // canonical Scaccio loan question's REAL text (verified against
+  // resources/mmlu_pro/business/questions_raw.json this Yoke) is
+  // "Mr.Scaccioborrows $100 from his credit union and agrees to pay back $20 a month with
+  // interest of 1% per month on the unpaid balance..." -- "Scaccio" and "borrows" glued with no
+  // space, an upstream dataset artifact, not something this app produced. Tier (iii)'s
+  // plow_mc_schedule_solver.ts (PRESERVED UNCHANGED this Yoke) intentionally gates its whole
+  // parse on `\b(borrows?|borrowed|loan|owes?)\b` -- a deliberate, conservative "never guess"
+  // word-boundary requirement -- but a JS `\b` is a transition between a word char and a
+  // non-word char, so it never fires inside "Scaccioborrows" (both neighboring chars are word
+  // chars). The result: solveScheduleProblem() returns an honest null on the REAL Scaccio text
+  // even though every other piece of loan structure (principal/payment/rate/period) is fully
+  // present and unambiguous a few characters later in the very same sentence -- confirmed via
+  // the decisive experiment (resolveDeterministicComputeOverride returned
+  // {overrideFired:false, deterministicOverride:null} against the real parsed options until this
+  // fix). Rather than loosening that solver's own regex (out of scope -- the file is preserved),
+  // this call site inserts back the ONE missing space, and ONLY directly in front of one of that
+  // solver's own trigger words, and ONLY when it is glued to a preceding lowercase letter with
+  // zero whitespace. This can only ever CREATE a word boundary the solver's gate needs to even
+  // begin considering the question -- a false-positive glue-split still has to separately clear
+  // principal/payment/rate/matching-period/single-option-tolerance, all far more specific -- so
+  // this never invents or changes any number, it only repairs one missing space. Applied to a
+  // local copy fed to all three tiers (never mutates the caller's researchQuery/reasoning), so a
+  // question with no such glue is byte-for-byte unaffected (the replace is a no-op).
+  const researchQueryForTiers = researchQuery.replace(
+    /([a-z])(borrows|borrowed|owes|owe|loans|loan)\b/gi,
+    '$1 $2',
+  );
+
+  // Tier (i): units-aware compute. Synchronous, no I/O.
   try {
-    deterministicOverride = computeUnitAwareMatch(researchQuery, mcOptions, { componentFacts: reasoningTexts });
+    const unitAware = computeUnitAwareMatch(researchQueryForTiers, mcOptions, { componentFacts: reasoningTexts });
+    if (unitAware) {
+      deterministicOverride = {
+        letter: unitAware.letter,
+        optionValue: unitAware.optionValue,
+        optionUnit: unitAware.optionUnit,
+        computedValue: unitAware.computedValue,
+        computedUnit: unitAware.computedUnit,
+        sourceExpression: unitAware.sourceExpression,
+        source: unitAware.source,
+        method: 'unit_aware',
+      };
+    }
   } catch (err) {
-    console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: computeUnitAwareMatch threw (non-fatal, ensemble letter kept):', err);
-    deterministicOverride = null;
+    console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: computeUnitAwareMatch threw (non-fatal, next tier tried):', err);
   }
+
+  // Tier (ii): the pre-existing unit-UNAWARE compute_sidecar pair (computeAnswer +
+  // matchValueToOption) -- the SAME two functions the downstream compute-sidecar block already
+  // uses, tried here only after tier (i) found nothing.
+  if (!deterministicOverride) {
+    try {
+      const computed = await computeAnswer(researchQueryForTiers, {
+        wolframAppId: computeOpts.wolframAppId,
+        ollamaBaseUrl: computeOpts.ollamaBaseUrl,
+        model: computeOpts.model,
+        componentFacts: reasoningTexts,
+      });
+      if (computed) {
+        const matched = matchValueToOption(computed.value, mcOptions);
+        if (matched) {
+          deterministicOverride = {
+            letter: matched.letter,
+            optionValue: matched.optionValue,
+            optionUnit: null,
+            computedValue: computed.value,
+            computedUnit: null,
+            sourceExpression: computed.expression,
+            source: 'question_expression',
+            method: 'bare_value',
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: computeAnswer threw (non-fatal, next tier tried):', err);
+    }
+  }
+
+  // Tier (iii): the schedule-amortization solver -- a THIRD, independent deterministic compute
+  // tier for loan/repayment word problems structurally out of reach of (i)/(ii) (see
+  // plow_mc_schedule_solver.ts's header for the worked Scaccio example). Synchronous, no I/O.
+  // Tried last, only after both tiers above returned null.
+  if (!deterministicOverride) {
+    try {
+      const scheduled = solveScheduleProblem(researchQueryForTiers, mcOptions);
+      if (scheduled) {
+        deterministicOverride = {
+          letter: scheduled.letter,
+          optionValue: scheduled.optionValue,
+          optionUnit: null,
+          computedValue: scheduled.value,
+          computedUnit: null,
+          sourceExpression: scheduled.provenance,
+          source: 'schedule_solver',
+          method: 'schedule_amortization',
+        };
+      }
+    } catch (err) {
+      console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: solveScheduleProblem threw (non-fatal, ensemble letter kept):', err);
+    }
+  }
+
   const overrideFired = !!deterministicOverride && deterministicOverride.letter !== ensembleChosenLetter;
   const finalLetter = deterministicOverride ? deterministicOverride.letter : ensembleChosenLetter;
   return { finalLetter, overrideFired, deterministicOverride };
@@ -1259,6 +1427,15 @@ async function writeAndReplicateSolvedAnswer(params: {
   reasoning: string;
   sourceUrl?: string;
   authority: string;
+  // BP131 honesty fix: caller-supplied hint about WHY this answer is being offered, forwarded
+  // verbatim to writeVerifiedEblet()'s own `corroboration` field -- computeHonestVerification()
+  // (mnem_eblet_store.ts) is the single place that turns this into verified:true/false, this
+  // function no longer decides it locally. Omitted (undefined) at a call site fails CLOSED to
+  // verified:false/verdict:'unverified' -- e.g. a lone single_google/single_perplexity accept,
+  // which is exactly the "Scaccio E) $106.00 wrong answer stored as verified:true" bug class
+  // this Yoke closes. Only pass 'concordant'/'deterministic_compute' where the caller can show
+  // genuine 2+-source agreement or a deterministic-compute result.
+  corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute';
 }): Promise<void> {
   const now = Date.now();
   try {
@@ -1266,12 +1443,17 @@ async function writeAndReplicateSolvedAnswer(params: {
       question: params.researchQuery,
       answer: `${params.chosenLetter}) ${params.optionText}`,
       provenance: `plow_mc_answerer:solved:${params.authority}${params.sourceUrl ? ':' + params.sourceUrl : ''}`,
-      verified: true,
+      // BP131 honesty fix: this literal is now advisory only -- writeVerifiedEblet() re-derives
+      // the real verified/verdict pair via computeHonestVerification() from `provenance` and
+      // `corroboration` below, so it can never again disagree with the verdict written alongside
+      // it (the old bug: this was hardcoded `true` while `verdict` right below was honestly
+      // 'unverified' in the very same object literal).
+      verified: false,
       sha256: '',
       timestamp: now,
       class: 'whole_answer',
       reasoning: params.reasoning,
-      verdict: 'unverified',
+      corroboration: params.corroboration,
     });
   } catch (err) {
     console.warn('[plow_mc_answerer] writeAndReplicateSolvedAnswer: local eblet write failed (non-fatal):', err);
@@ -1321,7 +1503,13 @@ async function writeAndReplicateSolvedAnswer(params: {
 // bookkeeping field, nothing else depends on it.
 async function writeComputeMethodEblet(params: {
   researchQuery: string;
-  result: UnitAwareComputeResult;
+  // BP-DETERMINISTIC-OVERRIDE-3TIER: widened from UnitAwareComputeResult to
+  // DeterministicComputeCandidate (a structural superset-compatible shape -- every existing
+  // UnitAwareComputeResult caller, e.g. the compute-sidecar block's own `unitAware` result,
+  // still satisfies it unchanged) so the override call site can also report a tier-(ii)/tier-
+  // (iii) result through this same writer without forcing them into UnitAwareComputeResult's
+  // narrower method/source literal unions, which they don't share.
+  result: DeterministicComputeCandidate;
 }): Promise<boolean> {
   const { researchQuery, result } = params;
   try {
@@ -1340,12 +1528,17 @@ async function writeComputeMethodEblet(params: {
         `-> ${result.computedValue}${result.computedUnit ? ' ' + result.computedUnit : ''} -> matched ` +
         `option ${result.letter} (${result.optionValue}${result.optionUnit ? ' ' + result.optionUnit : ''}).`,
       provenance: `plow_mc_answerer:compute_method:${result.method}:${Date.now()}`,
+      // BP131 honesty fix: this write genuinely IS deterministic compute (computeUnitAwareMatch
+      // already proved "exactly one option matches" before this function is ever called) -- the
+      // literal below is advisory only (see writeAndReplicateSolvedAnswer's own doc comment for
+      // why); `corroboration: 'deterministic_compute'` is what actually earns this write its
+      // honest verified:true/verdict:'verified' via computeHonestVerification().
       verified: true,
       sha256: '',
       timestamp: Date.now(),
       class: 'component',
       reasoning: `question="${researchQuery.slice(0, 200)}" expr="${result.sourceExpression.slice(0, 200)}"`,
-      verdict: 'unverified',
+      corroboration: 'deterministic_compute',
     });
     return true;
   } catch (err) {
@@ -1581,6 +1774,88 @@ export async function runCanonicalPlowMcAnswer(
   const { domain, ollamaBaseUrl, model, choiceCount, andonEnabled, specialistKeys = {}, deepHarvest, maxEbletsPerQuestion, reasoningMode = false, testModeCorrectAnswerLetter = null } = config;
   const questionId = generateQuestionId(researchQuery, domain);
 
+  // ── PRODUCTION eblet read-back: deterministic recall of a previously-verified answer ────────
+  // NEW, OPT-IN via config.productionReadbackEnabled (see that field's own doc comment on
+  // CanonicalPlowMcConfig for the full hard-off-on-scoring guarantee + honesty-safety rationale).
+  // Checked FIRST, before Stage F3/Psionic/F2/ensemble/swarm ever run -- a genuine recall must
+  // never burn a single specialist/voter/Ollama call. Default false/undefined: this whole block
+  // is unreachable and byte-for-byte skipped for every pre-existing caller/config.
+  if (config.productionReadbackEnabled === true) {
+    try {
+      const readbackHits = await queryVerifiedEblets(researchQuery, 3);
+      const qNormForReadback = researchQuery.trim().toLowerCase();
+      // queryVerifiedEblets() already reorders exact-question-text matches with non-component
+      // entries first (see that function's own doc comment) -- this still explicitly re-checks
+      // BOTH exact-match and class here rather than trusting hits[0] blindly: a topical/keyword
+      // fallback hit (no exact match at all) must never be recalled as this question's own
+      // answer, and a class:'component' fragment (a reusable METHOD note, not a whole answer)
+      // must never be read back as a chosen letter either.
+      const readbackExact = readbackHits.find(
+        (e) => e.question.trim().toLowerCase() === qNormForReadback && e.class !== 'component',
+      );
+      if (readbackExact) {
+        // CRITICAL SAFETY: never trust the stored `verified` flag alone -- legacy rows carry a
+        // cosmetic verified:true from before the BP131 honesty fix. Re-derive at READ time via
+        // the SAME computeHonestVerification() the write path uses; an entry with no qualifying
+        // corroboration/provenance signal (including a bare single_authority/user_perplexity
+        // legacy row, or one simply missing the fields needed to prove honest verification)
+        // fails CLOSED here exactly as it does at write time, and is never recalled.
+        const { verified: readbackHonestVerified } = computeHonestVerification(readbackExact);
+        if (readbackHonestVerified) {
+          const readbackOptions = parseOptionsFromPrompt(mcPromptWithSubstrate);
+          const readbackMatch = resolveAuthorityLetterMatch(readbackExact.answer, readbackOptions);
+          if (readbackMatch) {
+            const readbackLatencyMs = Date.now() - startMs;
+            const readbackConcordance: ConcordanceClass = 'CONCORDANT';
+            const readbackBmv = computeBmvScore(0, 0, 0, 0, readbackConcordance, 0, readbackLatencyMs);
+            onProgress?.('production-readback-hit');
+            console.log(
+              `[plow_mc_answerer] PRODUCTION READBACK hit: recalled letter=${readbackMatch.letter} ` +
+              `from original provenance="${readbackExact.provenance}" -- swarm never fired.`,
+            );
+            return {
+              questionId,
+              domain,
+              chosenLetter: readbackMatch.letter,
+              voterLetters: [readbackMatch.letter],
+              voterDiagnostics: [{
+                temperature: 0,
+                status: 'parsed_ok',
+                responseChars: readbackExact.answer.length,
+                rawPreview: `substrate_readback: ${readbackExact.answer.slice(0, 200)}`,
+              }],
+              concordance: readbackConcordance,
+              bmvScore: readbackBmv,
+              // Swarm/voters/Andon never ran on this path -- 0 candidates/0 specialists is the
+              // HONEST count; this is a recall of an already-verified answer, not a fresh solve.
+              gateOutcomes: evaluateGates(0, readbackBmv, readbackConcordance, readbackLatencyMs),
+              specialistsUsed: [],
+              candidatesRaw: 0,
+              candidatesPostMiner: 0,
+              candidatesPostFurnace: 0,
+              andonTriggered: false,
+              andonRetries: andonRetry,
+              ebletsWritten: 0,
+              latencyMs: readbackLatencyMs,
+              traceSummary:
+                `substrate_readback:${readbackExact.provenance} chosenLetter=${readbackMatch.letter} ` +
+                `matchScore=${readbackMatch.score.toFixed(2)} andonRetries=${andonRetry}`,
+              provenanceReceipts: [{
+                source: `substrate_readback:${readbackExact.provenance}`,
+                contentHash: (readbackExact.sha256 || createHash('sha256').update(readbackExact.question + readbackExact.answer).digest('hex')).slice(0, 16),
+                verified: true,
+              }],
+            };
+          }
+        }
+      }
+    } catch (err) {
+      // Truth-Always: a read-back failure must fall through to the normal derivation path,
+      // never silently fabricate a recall or crash the whole answer attempt.
+      console.warn('[plow_mc_answerer] production readback lookup failed (non-fatal, falling through to full derivation):', err);
+    }
+  }
+
   // ── BP137 Yoke v2b Stage A / A.2 / A.3: answer-type classifier + compute sidecar ──────────
   // OPT-IN via researchArmMode && researchArmComputeSidecar, both default false/absent. When
   // either is off, computeSidecarOn is false and neither classifyAnswerType nor computeAnswer is
@@ -1696,6 +1971,10 @@ export async function runCanonicalPlowMcAnswer(
           reasoning: meshSynergyResult.fact,
           sourceUrl: meshSynergyResult.sourceUrl,
           authority: assignedAuthority,
+          // BP131 honesty fix: exactly one peer/authority (assignedAuthority) was ever queried
+          // for this slice -- a lone accept, not 2+-source agreement -- so this must NOT earn
+          // verified:true (see writeAndReplicateSolvedAnswer's own doc comment).
+          corroboration: 'single_authority',
         });
       } catch (err) {
         console.warn('[plow_mc_answerer] mesh-synergy writeback/replicate failed (non-fatal):', err);
@@ -1828,6 +2107,10 @@ export async function runCanonicalPlowMcAnswer(
               reasoning: decomposeResult.traceSummary,
               sourceUrl: decomposeSourceUrl,
               authority: 'decompose-and-eliminate',
+              // BP131 honesty fix: a sourced elimination/verified-true-foundation basis is a real
+              // finding, but it is still ONE method's own single-threaded reasoning, not 2+
+              // independent authorities agreeing -- honestly single_authority, not concordant.
+              corroboration: 'single_authority',
             });
           } catch (err) {
             console.warn('[plow_mc_answerer] decompose writeback/replicate failed (non-fatal):', err);
@@ -2112,7 +2395,7 @@ export async function runCanonicalPlowMcAnswer(
         // null) on 0/2+/dimensionally-incompatible matches -- that exact-one-option gate is
         // reused unchanged here, so this can only ever REPLACE one checked letter with another
         // checked letter, never fabricate one.
-        let deterministicOverride: UnitAwareComputeResult | null = null;
+        let deterministicOverride: DeterministicComputeCandidate | null = null;
         let overrideFired = false;
         // finalChosenLetter is truthy iff ensembleOutcome.chosenLetter was truthy (the decision
         // call below is only ever made when that held) -- the accept condition further below is
@@ -2136,8 +2419,16 @@ export async function runCanonicalPlowMcAnswer(
             ...ensembleOutcome.acceptedCandidates.map((c) => c.reasoning),
             ...(ensembleOutcome.swarmReceipt?.voterDiagnostics.map((v) => v.rawPreview) ?? []),
           ];
-          const decision = resolveDeterministicComputeOverride(
+          // BP-DETERMINISTIC-OVERRIDE-3TIER: now awaited -- tier (ii) inside
+          // resolveDeterministicComputeOverride (computeAnswer) is async (may call ollama/
+          // Wolfram). ollamaBaseUrl/model are the SAME config values already destructured at
+          // this function's top (unchanged dependency, no new config surface); wolframAppId
+          // mirrors the SAME process.env.WOLFRAM_APP_ID the downstream compute-sidecar block's
+          // own computeAnswer() call already reads independently of specialistKeys (see that
+          // call site's own comment).
+          const decision = await resolveDeterministicComputeOverride(
             researchQuery, mcOptionsForBrowserAuthority, ensembleOutcome.chosenLetter, overrideReasoningTexts,
+            { ollamaBaseUrl, model, wolframAppId: process.env.WOLFRAM_APP_ID },
           );
           deterministicOverride = decision.deterministicOverride;
           overrideFired = decision.overrideFired;
@@ -2207,6 +2498,15 @@ export async function runCanonicalPlowMcAnswer(
                 : ensembleOutcome.acceptedCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | '),
               sourceUrl: overrideFired ? undefined : primary.sourceUrl,
               authority: overrideFired && deterministicOverride ? `deterministic_compute:${deterministicOverride.method}` : primary.authority,
+              // BP131 honesty fix: a real calculator override earns deterministic_compute; an
+              // ensemble 'agree' (2 independent authorities matched the same letter) earns
+              // concordant; every other ensembleOutcome.corroboration value here ('single_google'/
+              // 'single_perplexity'/'single_wolfram'/'single_specialist_swarm'/'adjudicated') is a
+              // lone accept (adjudication is a single tie-breaking judge call, not 2+ agreement)
+              // and must NOT earn verified:true.
+              corroboration: overrideFired && deterministicOverride
+                ? 'deterministic_compute'
+                : ensembleOutcome.corroboration === 'agree' ? 'concordant' : 'single_authority',
             });
           } catch (err) {
             console.warn('[plow_mc_answerer] ensemble-accepted writeback/replicate failed (non-fatal):', err);
@@ -2381,6 +2681,14 @@ export async function runCanonicalPlowMcAnswer(
               reasoning: acceptedResult.fact,
               sourceUrl: acceptedResult.sourceUrl,
               authority: acceptedAuthorityName,
+              // BP131 honesty fix: browserAuthorityCorroboration is already computed above --
+              // 'agree' means BOTH Google and Perplexity independently matched the same letter
+              // (genuine 2-source concordance); 'single_google'/'single_perplexity'/'disagree'/
+              // 'none' all mean only one authority's match is actually being accepted here
+              // (Perplexity's resolution wins on disagreement, per the comment above) -- a lone
+              // accept, not concordance. This exact branch (a lone single_perplexity accept
+              // written as verified:true) is the empirically-observed bug this Yoke fixes.
+              corroboration: browserAuthorityCorroboration === 'agree' ? 'concordant' : 'single_authority',
             });
           } catch (err) {
             console.warn('[plow_mc_answerer] browser-authority-accepted writeback/replicate failed (non-fatal):', err);
@@ -2828,6 +3136,73 @@ export async function runCanonicalPlowMcAnswer(
       // Cannot compute, or computed value matched no option within tolerance -- fall through
       // to the unchanged swarm+voter path below (relevance-gate abstain check, then voters).
       // Never guess.
+
+      // BP-SCHEDULE-SOLVER: a THIRD, independent deterministic compute tier, tried ONLY after
+      // both computeUnitAwareMatch() above and computeAnswer()+matchValueToOption just above
+      // have already returned null/no-match. Solves loan/repayment "word problems" that are
+      // structurally out of reach for a single-expression compute engine -- a fixed periodic
+      // payment against a balance that accrues interest each period and terminates in a
+      // smaller final payment (the Founder's canonical Mr. Scaccio case: computes $103.11,
+      // matches an MC option stated as "$103.00" via the wide-enough max($0.50, 1%) tolerance --
+      // see plow_mc_schedule_solver.ts's header for the full worked example). Synchronous, no
+      // I/O, no model call -- reuses mcOptionsForUnits already parsed above. Never guesses: see
+      // that file's parseLoanStructure/matchToSingleOption docs for the exact-one-option honesty
+      // gate this tier uses, identical in spirit to every other compute tier in this file.
+      const scheduleResult = solveScheduleProblem(researchQuery, mcOptionsForUnits);
+      if (scheduleResult) {
+        onProgress?.(`compute-sidecar:schedule_amortization`);
+        const scheduleLatencyMs = Date.now() - startMs;
+        const scheduleConcordance: ConcordanceClass = 'CONCORDANT';
+        const scheduleBmv = computeBmvScore(1, 1, 1, 0, scheduleConcordance, 1, scheduleLatencyMs);
+        const scheduleReceipt: ProvenanceReceipt = {
+          source: `computed:schedule_amortization`,
+          contentHash: createHash('sha256')
+            .update(`${scheduleResult.provenance}=${scheduleResult.value}`)
+            .digest('hex')
+            .slice(0, 16),
+          verified: true,
+        };
+        const scheduleTraceSummary =
+          `researchArmComputeSidecar=true answerType=computable method=schedule_amortization ` +
+          `value=${scheduleResult.value} matchedOption=${scheduleResult.letter} ` +
+          `componentFactsUsed=${componentFactsList.length} bmv=${scheduleBmv} andonRetries=${andonRetry}` +
+          `${relevanceGateMethodTrace} trace=${scheduleResult.trace}`;
+        return {
+          questionId,
+          domain,
+          chosenLetter: scheduleResult.letter,
+          voterLetters: [scheduleResult.letter, scheduleResult.letter, scheduleResult.letter],
+          voterDiagnostics: [{
+            temperature: 0,
+            status: 'parsed_ok',
+            responseChars: scheduleResult.trace.length,
+            rawPreview: `schedule-solver compute (schedule_amortization): ${scheduleResult.trace.slice(0, 300)}`,
+          }],
+          concordance: scheduleConcordance,
+          bmvScore: scheduleBmv,
+          gateOutcomes: evaluateGates(postFurnace.length, scheduleBmv, scheduleConcordance, scheduleLatencyMs),
+          specialistsUsed,
+          candidatesRaw,
+          candidatesPostMiner: postMiner.length,
+          candidatesPostFurnace: postFurnace.length,
+          andonTriggered: andonRetry > 0,
+          andonRetries: andonRetry,
+          ebletsWritten: 0,
+          latencyMs: scheduleLatencyMs,
+          traceSummary: scheduleTraceSummary,
+          provenanceReceipts: [scheduleReceipt],
+          answerType,
+          computeSidecar: {
+            method: 'schedule_amortization',
+            expression: scheduleResult.provenance,
+            value: scheduleResult.value,
+            matchedOptionValue: scheduleResult.optionValue,
+          },
+        };
+      }
+      // Schedule solver found no confident loan structure, or a structure that didn't converge,
+      // or converged but matched zero/2+ options -- fall through UNCHANGED to the pre-existing
+      // swarm+voter path below, exactly like every other compute tier's null case. Never guess.
     }
 
     // BP137 Yoke v2b Stage F2: the lookup_fact -> browser-authority routing that used to live
@@ -3384,6 +3759,14 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
         researchArmMeshSynergy,
         ...(assignedAuthority ? { assignedAuthority } : {}),
         ...(researchArmDecompose ? { researchArmDecompose: true } : {}),
+        // PRODUCTION READBACK HARD-OFF: this is THE single shared call site for every scored/
+        // benchmark run (index.ts's WAN relay-poll responder AND one_click_mmlu_pro.ts's
+        // local-mode benchmark both go through here, never a second copy). Explicit `false`
+        // (not merely "absent") so a scored run can never recall/replay a previously-verified
+        // answer-key letter -- scoring must always re-derive. PlowMcAnswererCallParams (this
+        // function's own params interface) does not expose a productionReadbackEnabled field at
+        // all, so there is structurally no way for a caller of this helper to override this.
+        productionReadbackEnabled: false,
       },
       writeEbletFn,
       (stage) => console.log(`[${logLabel}] plow-stage: ${stage}`),
