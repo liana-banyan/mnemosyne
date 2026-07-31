@@ -30,7 +30,16 @@
 
 import { createHash } from 'crypto';
 import type { CandidateEblet, SpecialistKeys, SpecialistName } from './specialist_adapters';
-import { SPECIALIST_REGISTRY } from './specialist_adapters';
+import { SPECIALIST_REGISTRY, isAuthorityEnabled, readAuthorityEnableOverridesFromSettings } from './specialist_adapters';
+// BP139 browser-LLM authorities (ChatGPT/Gemini/Claude): PREMIUM, default-OFF, opt-in-only
+// second opinions -- see specialist_adapters.ts's own "Browser-LLM PREMIUM authorities" section
+// header for why these are a small parallel type family rather than SpecialistName entries.
+import {
+  type BrowserLlmAuthorityName,
+  BROWSER_LLM_AUTHORITY_METADATA,
+  isBrowserLlmAuthorityEnabled,
+  readBrowserLlmAuthorityEnableOverridesFromSettings,
+} from './specialist_adapters';
 import { getOperatorsForDomain } from './domain_operator_map';
 // BP137 Yoke v2b Stage D.3: the backup-adapter registry (real-but-thin adapters + several
 // literal no-op stubs, see the widenBeyondDetectivePool() header below for the live-verified
@@ -463,7 +472,13 @@ export interface CanonicalPlowMcResult {
     | 'single_wolfram'
     | 'single_specialist_swarm'
     | 'adjudicated'
-    | 'none';
+    | 'none'
+    // BP139 browser-LLM authorities (ChatGPT/Gemini/Claude): same "exactly one real candidate
+    // total" label convention as single_wolfram/single_google above. Only reachable when the
+    // corresponding authority is explicitly enabled (default off, see BROWSER_LLM_AUTHORITY_METADATA).
+    | 'single_chatgpt'
+    | 'single_gemini'
+    | 'single_claude';
   /** BP1xx Authority-Ensemble-swarm-fold-in, OPTIONAL/ADDITIVE. Present only when
    *  researchArmAuthorityEnsemble was on for this call. True when the browser/Wolfram authority
    *  panel was NOT already a confident 2+ agreement and the specialist swarm (Miner -> Furnace
@@ -831,7 +846,12 @@ function resolveAuthorityLetterMatch(
 // vote) behind it, and this engine never reads the sealed answer key.
 
 export interface AuthorityEnsembleCandidate {
-  authority: 'user_google' | 'user_perplexity' | 'wolfram_alpha' | 'user_perplexity_judge' | 'specialist_swarm';
+  authority:
+    | 'user_google' | 'user_perplexity' | 'wolfram_alpha' | 'user_perplexity_judge' | 'specialist_swarm'
+    // BP139 browser-LLM authorities (PREMIUM, opt-in only -- see the gate at their call site
+    // inside runAuthorityEnsemble below): general second opinions for conceptual/knowledge
+    // questions the Perplexity/Google/specialist-swarm panel alone can miss.
+    | 'user_chatgpt' | 'user_gemini' | 'user_claude';
   letter: string;
   reasoning: string;
   sourceUrl: string;
@@ -842,7 +862,9 @@ export interface AuthorityEnsembleOutcome {
   chosenLetter: string | null;
   corroboration:
     | 'agree' | 'disagree' | 'single_google' | 'single_perplexity' | 'single_wolfram'
-    | 'single_specialist_swarm' | 'adjudicated' | 'none';
+    | 'single_specialist_swarm' | 'adjudicated' | 'none'
+    // BP139 browser-LLM authorities: same "exactly one real candidate total" label convention.
+    | 'single_chatgpt' | 'single_gemini' | 'single_claude';
   candidates: AuthorityEnsembleCandidate[];
   acceptedCandidates: AuthorityEnsembleCandidate[];
   adjudicationAttempted: boolean;
@@ -1019,6 +1041,30 @@ async function runSpecialistSwarmConsensus(params: {
   };
 }
 
+/**
+ * Honest not-wired placeholder for the three BP139 browser-LLM authorities (ChatGPT/Gemini/
+ * Claude). Mirrors browser_authority_adapter.ts's createNotWiredBridge() convention exactly:
+ * NEVER fabricates a fact/sourceUrl, NEVER throws (a thrown error could be mistaken for a
+ * transient network failure rather than "not built yet"), always resolves null with a labeled
+ * console note. This is the ONLY thing standing between "the enable gate resolved true for this
+ * authority" and "a real answer comes back" -- swapping this function's body for a real
+ * per-vendor browser bridge call (once buildBrowserAuthorityQueryUrl/webview_preload.ts grow
+ * chatgpt.com/gemini.google.com/claude.ai support) is the ONLY change a future pass needs here;
+ * every gate/sequencing/candidate-injection line around this call site is already correct and
+ * needs no further change. See this build's own report for the exact per-vendor wiring recipe.
+ */
+async function queryBrowserLlmAuthorityNotWired(
+  authority: BrowserLlmAuthorityName,
+  _question: string,
+): Promise<{ fact: string; sourceUrl: string } | null> {
+  console.warn(
+    `[plow_mc_answerer] ${authority} is ENABLED (premium opt-in confirmed) but has no live ` +
+    'browser-scraping bridge wired this pass -- see BROWSER_LLM_AUTHORITY_METADATA/' +
+    'queryBrowserLlmAuthorityNotWired doc comments. Returning null, never a fabricated result.',
+  );
+  return null;
+}
+
 /** Runs the full ensemble for one question: queries every free authority available for
  *  `answerType`, resolves each via resolveAuthorityLetterMatch (Wolfram via a direct computed-
  *  value match against the options instead, since it never returns free text), and corroborates
@@ -1084,6 +1130,50 @@ async function runAuthorityEnsemble(params: {
     log(`google=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter'}`);
   } catch (err) {
     log(`google threw (non-fatal): ${err}`);
+  }
+
+  // ── BP139 browser-LLM authorities (ChatGPT/Gemini/Claude): PREMIUM, default-OFF, opt-in-only
+  //    general second opinions -- fix the conceptual/knowledge questions (bias, Critical
+  //    Security Studies, geography, etc.) a Perplexity-monoculture panel can miss. ────────────
+  //
+  // GATE (checked FIRST, before anything else, for EVERY authority in the loop): fires ONLY
+  // when isBrowserLlmAuthorityEnabled() resolves true for that specific name -- overrides are
+  // read ONCE per ensemble call (not per-authority) via readBrowserLlmAuthorityEnableOverridesFromSettings(),
+  // the exact same "read once, resolve per-name" shape getOperatorsForDomain() already uses for
+  // isAuthorityEnabled(). A disabled browser-LLM is skipped with a one-line log, no network/
+  // webview/IPC side effect of any kind -- byte-identical to this loop not existing at all for
+  // that name. Since every entry in BROWSER_LLM_AUTHORITY_METADATA is tier:'premium', the
+  // default (no override present) is ALWAYS "disabled" -- see isBrowserLlmAuthorityEnabled()'s
+  // own doc comment for why that is provable by inspection, not just by today's data.
+  //
+  // WIRING STATUS (honest, never fabricated -- same convention as browser_authority_adapter.ts's
+  // own createNotWiredBridge()): even when a user explicitly enables one of these three, no live
+  // DOM-scraping bridge exists yet for chatgpt.com/gemini.google.com/claude.ai in this pass (that
+  // would require extending the closed BrowserAuthorityName union, buildBrowserAuthorityQueryUrl,
+  // and webview_preload.ts's per-vendor ANSWER_SELECTORS -- all outside this change's authorized
+  // file set). queryBrowserLlmAuthorityNotWired() below is the honest placeholder: it always
+  // resolves null and logs exactly why, so enabling one of these toggles today safely does
+  // nothing (never a fabricated candidate) until a future pass wires the real per-vendor bridge.
+  const browserLlmOverrides = readBrowserLlmAuthorityEnableOverridesFromSettings();
+  const browserLlmNames: BrowserLlmAuthorityName[] = ['user_chatgpt', 'user_gemini', 'user_claude'];
+  for (const llmName of browserLlmNames) {
+    if (!isBrowserLlmAuthorityEnabled(llmName, browserLlmOverrides)) {
+      log(`${llmName}=skipped (disabled, premium default-off -- see BROWSER_LLM_AUTHORITY_METADATA)`);
+      continue;
+    }
+    try {
+      const llmResult = await queryBrowserLlmAuthorityNotWired(llmName, researchQuery);
+      const resolved = llmResult ? resolveAuthorityLetterMatch(llmResult.fact, mcOptions) : null;
+      if (resolved && llmResult) {
+        candidates.push({
+          authority: llmName, letter: resolved.letter, reasoning: llmResult.fact,
+          sourceUrl: llmResult.sourceUrl, method: resolved.method,
+        });
+      }
+      log(`${llmName}=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter (enabled, not-yet-wired)'}`);
+    } catch (err) {
+      log(`${llmName} threw (non-fatal): ${err}`);
+    }
   }
 
   // ── Wolfram Alpha, computable questions only, ONLY when a free-tier appid is configured ───
@@ -1192,7 +1282,10 @@ async function runAuthorityEnsemble(params: {
       only.authority === 'user_google' ? 'single_google'
         : only.authority === 'user_perplexity' ? 'single_perplexity'
           : only.authority === 'wolfram_alpha' ? 'single_wolfram'
-            : 'single_specialist_swarm';
+            : only.authority === 'user_chatgpt' ? 'single_chatgpt'
+              : only.authority === 'user_gemini' ? 'single_gemini'
+                : only.authority === 'user_claude' ? 'single_claude'
+                  : 'single_specialist_swarm';
     return { chosenLetter: only.letter, corroboration, candidates, acceptedCandidates: [only], adjudicationAttempted: false, swarmFired: true, swarmReceipt };
   }
 
@@ -1765,7 +1858,31 @@ async function attemptEscalationWidenAndRetry(
   const newBackupOperators = (Object.keys(BACKUP_ADAPTER_REGISTRY) as BackupSpecialistName[]).filter(
     (b) => !SKIP_BACKUP_ADAPTERS.has(b) && !p.effectiveBackupOperators.includes(b),
   );
-  const newSpecialistOperators = report.additionalOperators;
+  // BP139 gate-closure fix: runDetectiveTeam's rootCause->additionalOperators table
+  // (canonical_pipeline.ts) can suggest a PREMIUM, default-off specialist (e.g. 'wolfram' for a
+  // math_dead_end rootCause) with no awareness of isAuthorityEnabled()'s tier gate -- confirmed
+  // by direct read: additionalOperators is a hardcoded per-rootCause name list, never filtered
+  // through the enable resolver. Without this filter, a disabled premium source could get added
+  // to widenerOperators here and then fire unconditionally at its actual dispatch site
+  // (SPECIALIST_REGISTRY[specialistName] in both runSpecialistSwarmConsensus and the main
+  // pipeline's own swarm loop index effectiveOperators with no per-item enable check of its
+  // own) -- i.e. the escalation-widen retry path bypassing the same gate getOperatorsForDomain()
+  // already enforces for the BASE roster. Filtering additionalOperators through the identical
+  // isAuthorityEnabled() resolver here closes that gap at its one true source (this is also
+  // where BP139's new browser-LLM authorities are STRUCTURALLY immune to this exact gap: they
+  // are not SpecialistName values at all, so they can never appear in report.additionalOperators
+  // in the first place -- see specialist_adapters.ts's "Browser-LLM PREMIUM authorities" header).
+  const specialistEnableOverrides = readAuthorityEnableOverridesFromSettings();
+  const newSpecialistOperators = report.additionalOperators.filter((op) =>
+    isAuthorityEnabled(op, specialistEnableOverrides),
+  );
+  const suppressedByGate = report.additionalOperators.filter((op) => !newSpecialistOperators.includes(op));
+  if (suppressedByGate.length > 0) {
+    console.log(
+      `[plow_mc_answerer] Stage D escalation-widen: suppressed disabled premium operator(s) ` +
+      `[${suppressedByGate.join(',')}] from widening (gate closed, BP139) -- never dispatched.`,
+    );
+  }
 
   p.onProgress?.(`escalation-trigger:${p.triggerReason}:${p.andonRetry + 1}`);
 
@@ -3513,10 +3630,21 @@ export async function runCanonicalPlowMcAnswer(
   if (anyGateFailedExcludingLatency && andonEnabled && andonRetry < MAX_ANDON_RETRIES) {
     const report = runDetectiveTeam(gateOutcomes, candidatesRaw, postMiner.length, postFurnace.length, effectiveOperators);
     onProgress?.(`andon-trigger:${andonRetry + 1}`);
-    if (report.wideningApplied && report.additionalOperators.length > 0) {
+    // BP139 gate-closure fix (same rationale as attemptEscalationWidenAndRetry's own comment
+    // above): report.additionalOperators is a hardcoded per-rootCause suggestion list with no
+    // awareness of isAuthorityEnabled()'s premium tier gate (e.g. a math_dead_end rootCause can
+    // suggest 'wolfram', which is tier:'premium'/default-off). Filter through the SAME resolver
+    // getOperatorsForDomain() already uses for the base roster before this Condition-C retry
+    // ever widens with it -- a disabled premium specialist can no longer reach effectiveOperators
+    // via THIS recursive call site either.
+    const andonEnableOverrides = readAuthorityEnableOverridesFromSettings();
+    const andonAllowedAdditional = report.additionalOperators.filter((op) =>
+      isAuthorityEnabled(op, andonEnableOverrides),
+    );
+    if (report.wideningApplied && andonAllowedAdditional.length > 0) {
       return runCanonicalPlowMcAnswer(
         mcPromptWithSubstrate, researchQuery, config, writeEbletFn, onProgress,
-        andonRetry + 1, report.additionalOperators,
+        andonRetry + 1, andonAllowedAdditional,
       );
     }
     onProgress?.('andon-exhausted');

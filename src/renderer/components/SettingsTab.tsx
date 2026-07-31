@@ -932,6 +932,16 @@ const AUTHORITY_SOURCES: AuthoritySourceInfo[] = [
   { key: 'medlineplus',   label: 'MedlinePlus',    tier: 'standard', domains: ['health'], costNote: 'Free, no key required (NLM Web Search Service).' },
   { key: 'crossref',      label: 'Crossref',       tier: 'standard', domains: ['general', 'history', 'philosophy', 'law', 'business', 'economics', 'psychology', 'biology', 'health', 'math', 'physics', 'chemistry', 'computer_science', 'engineering', 'other'], costNote: 'Free, no key; mailto param opts into the Crossref polite pool.' },
   { key: 'wolfram',       label: 'Wolfram Alpha',  tier: 'premium',  domains: ['math', 'physics', 'chemistry', 'engineering'], costNote: 'Requires a Wolfram Alpha AppID (free-tier signup exists); no-op with no key.' },
+  // BP139 browser-LLM authorities: general second-opinion authorities (mirrors
+  // src/main/plow/specialist_adapters.ts's BROWSER_LLM_AUTHORITY_METADATA -- keep both in sync).
+  // Keys match BrowserLlmAuthorityName, NOT SpecialistName (these are not REST specialist
+  // adapters) -- they reuse this SAME mnem_drt_specialists Record<string, boolean> purely as a
+  // generic string-keyed enable-override map, which is all isBrowserLlmAuthorityEnabled() /
+  // readBrowserLlmAuthorityEnableOverridesFromSettings() ever needed from it. PREMIUM/PAID,
+  // default OFF -- fires only once the user explicitly checks the box below.
+  { key: 'user_chatgpt',  label: 'ChatGPT (browser)', tier: 'premium', domains: ['all'], costNote: 'Uses your own logged-in ChatGPT session (ChatGPT Plus or equivalent). Never a metered OpenAI API key.' },
+  { key: 'user_gemini',   label: 'Gemini (browser)',  tier: 'premium', domains: ['all'], costNote: 'Uses your own logged-in Gemini session (Gemini Advanced or equivalent). Never a metered Google AI API key.' },
+  { key: 'user_claude',   label: 'Claude (browser)',  tier: 'premium', domains: ['all'], costNote: 'Uses your own logged-in Claude.ai session (Claude Pro or equivalent). Never the metered Anthropic API.' },
 ];
 
 /** Mirrors isAuthorityEnabled()'s default-by-tier rule: standard=on, premium=off. */
