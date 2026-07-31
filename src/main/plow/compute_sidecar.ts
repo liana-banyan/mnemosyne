@@ -53,6 +53,7 @@
 // pre-existing swarm+voter path, byte-for-byte unchanged -- "if it cannot compute, do not guess"
 // per the Yoke prompt verbatim.
 
+import { create, all, type Unit } from 'mathjs';
 import { callOllama } from './canonical_pipeline';
 
 export interface ComputeSidecarResult {
@@ -112,6 +113,345 @@ export function matchValueToOption(
     }
   }
   return best ? { letter: best.letter, optionValue: best.optionValue } : null;
+}
+
+// --- BP-COMPUTE-UNITS: units-aware value->option matching (mathjs) -----------------------------
+//
+// WHY THIS EXISTS (Founder "times tables" insight): matchValueToOption() above is unit-UNAWARE --
+// it compares bare numeric tokens. That is exactly the gap that loses questions like "density of
+// a block of wood, 750 kg, 25 cm x 0.10 m x 50.0 m": the correct computed quantity is
+// 600 kg/m^3, but the MC options are stated in g/cc (0.60 g/cc). matchValueToOption(600, options)
+// finds no option near 600 and abstains -- not wrong, but not smart enough to see that 600 kg/m^3
+// and 0.60 g/cc are the SAME quantity in different units. mathjs (already a well-maintained,
+// widely-used library; verified present at package.json:55 -- "mathjs": "^15.2.0" -- after this
+// Yoke added it) supplies real unit algebra (parsing, dimensional-compatibility checks, and
+// conversion) so this file never has to hand-roll a fragile unit-conversion table.
+//
+// Empirically verified against the installed mathjs (15.2.0) in this repo, this Yoke, via a
+// throwaway Node script (deleted after use, per instructions -- not committed):
+//   math.evaluate('750 kg / (25 cm * 0.10 m * 50.0 m)') -> Unit "600 kg / m^3"
+//   thatUnit.to('g/cc').toNumber('g/cc') -> 0.6
+//   math.evaluate('600 kg/m^3').to('g/mol')  -> throws "Units do not match" (dimensional
+//     mismatch correctly rejected, never silently forced)
+// Two API details this code depends on (both confirmed empirically, not from memory of the
+// mathjs docs, since exact behavior varies by version):
+//   1. Unit#toNumber() with NO argument returns the value in mathjs's internal SI-derived base
+//      representation (e.g. 6, not 600, for "600 kg/m^3") -- every call in this file passes an
+//      EXPLICIT target-unit string, never a bare `.toNumber()`.
+//   2. Unit#to(unit) requires a "valueless" unit (a bare unit specifier, not a Unit carrying its
+//      own numeric value) -- pass a unit STRING (`optionQuantity.unit.formatUnits()`), never the
+//      option's own valued Unit object directly (that throws "Cannot convert to a unit with a
+//      value").
+
+const math = create(all, {});
+
+export interface Quantity {
+  value: number;
+  /** A mathjs Unit instance when the quantity carries a unit (e.g. "600 kg/m^3"); null for a
+   *  bare/unitless number, in which case callers fall back to plain numeric comparison --
+   *  identical discipline to matchValueToOption above. */
+  unit: Unit | null;
+}
+
+/** Validate-then-evaluate, same "no non-arithmetic character reaches an evaluator" discipline as
+ *  evaluateSandboxedFunction() below -- mathjs's own expression parser is not a raw eval(), but
+ *  this repo's existing convention (and simple defense in depth) is to whitelist BEFORE handing
+ *  text to any evaluator, so this file keeps doing that here too. Allows letters (unit names),
+ *  the handful of unit-symbol punctuation marks mathjs unit names use (degree, ohm, micro), and
+ *  the same arithmetic characters ARITHMETIC_WHITELIST_RE already allows. */
+const UNIT_EXPR_WHITELIST_RE = /^[\d+\-*/^().%\s A-Za-z°µΩ]+$/;
+
+/** English short-words that ARE, empirically (verified this Yoke against the installed mathjs),
+ *  also valid mathjs unit symbols -- "5 in", "5 at", "5 as" all parse successfully as inches /
+ *  technical-atmospheres / attoseconds. Excluded as a UNIT token (not as a plain number) to cut
+ *  false-positive quantity extraction from ordinary prose ("... increase in the ...", "evaluated
+ *  at 5 ..."); legitimate single-letter physics units used constantly in MMLU-Pro prose (g, m, s,
+ *  N, W, A, T, C, F, h) are deliberately NOT excluded. This is a precision guard only -- even an
+ *  unfiltered false-positive quantity is harmless downstream because matchQuantityToOption's
+ *  strict "exactly one option qualifies" gate almost never coincidentally matches a stray parse. */
+const AMBIGUOUS_ENGLISH_UNIT_WORDS = new Set(['in', 'at', 'as']);
+
+/** Unwraps a mathjs evaluate() result into a Quantity, honestly (never guesses at a shape it
+ *  doesn't recognize -- e.g. a Matrix/Complex/BigNumber result from a stray expression returns
+ *  null here so the caller falls through rather than mishandling it). */
+function unwrapMathResult(result: unknown): Quantity | null {
+  if (typeof result === 'number') {
+    return Number.isFinite(result) ? { value: result, unit: null } : null;
+  }
+  if (result instanceof math.Unit) {
+    // No target unit yet -- `.toNumber()` here is only used as a finiteness/sanity probe (see
+    // this file's header re: bare toNumber() returning the SI-derived internal value, not a
+    // meaningful display value); real comparisons downstream always pass an explicit unit.
+    const probe = result.toNumber();
+    return Number.isFinite(probe) ? { value: probe, unit: result } : null;
+  }
+  return null;
+}
+
+/** Evaluates a self-contained arithmetic expression that may carry units (e.g.
+ *  "750 kg / (25 cm * 0.10 m * 50.0 m)"), via mathjs, when such an expression is cleanly present
+ *  as a literal substring (goal spec path (b): "evaluating an extracted expression via mathjs
+ *  when one is cleanly present"). Returns null (never throws, never guesses) on any parse/
+ *  evaluation failure or non-numeric/non-Unit result. */
+export function evaluateUnitExpression(expr: string): Quantity | null {
+  const s = expr.trim();
+  if (s.length === 0 || s.length > 200) return null;
+  if (!UNIT_EXPR_WHITELIST_RE.test(s)) return null;
+  try {
+    return unwrapMathResult(math.evaluate(s));
+  } catch {
+    return null;
+  }
+}
+
+/** Normalizes the common word-problem dimension-list idiom ("25 cm x 0.10 m x 50.0 m") to
+ *  explicit multiplication before expression extraction. Only touches a standalone lowercase 'x'
+ *  or '×' sitting directly between a number/unit token and a following digit (lookahead requires
+ *  a digit next), so ordinary words containing 'x' ("x-ray", "next", "Xerox") are never touched --
+ *  the preceding-group pattern anchors on a digit, so 'x' only fires right after a number or a
+ *  short unit-word immediately after a number. */
+function normalizeDimensionMultiply(text: string): string {
+  return text.replace(/(\d(?:\.\d+)?\s*[A-Za-z]*)\s*[x×]\s*(?=\d)/g, '$1 * ');
+}
+
+const UNIT_NUM_TOKEN =
+  '-?\\(?-?\\d+(?:\\.\\d+)?\\)?(?:\\s*[A-Za-z]+(?:\\^-?\\d+)?(?:\\s*/\\s*[A-Za-z]+(?:\\^-?\\d+)?)*)?';
+const UNIT_EXPR_CHAIN_RE = new RegExp(
+  `${UNIT_NUM_TOKEN}(?:\\s*[+\\-*/]\\s*${UNIT_NUM_TOKEN})+`,
+  'g',
+);
+
+/** Extracts the longest unit-bearing arithmetic chain from `question` -- the units-aware sibling
+ *  of extractArithmeticExpression() above. Deliberately requires at least one operator AND at
+ *  least one unit letter in the match (a pure-number chain is that function's job, not this
+ *  one) -- most MMLU-Pro word problems still won't have a literal "mass / volume"-shaped
+ *  substring (the FORMULA is nowhere in the prose, only the raw quantities are), so this
+ *  correctly returns null for them; it only fires when the question itself already spells out
+ *  the arithmetic (e.g. a dimension list joined by "x", or a reasoning/fact string that already
+ *  wrote the calculation out). */
+export function extractUnitExpression(question: string): string | null {
+  const normalized = normalizeDimensionMultiply(question);
+  let best: string | null = null;
+  UNIT_EXPR_CHAIN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = UNIT_EXPR_CHAIN_RE.exec(normalized)) !== null) {
+    const candidate = m[0].trim();
+    if (!/[A-Za-z]/.test(candidate)) continue; // no unit anywhere -- leave to extractArithmeticExpression
+    if (!best || candidate.length > best.length) best = candidate;
+  }
+  return best;
+}
+
+// BUG 2 FIX (BP1xx density-unit-miss diagnosis): the unit-component alternatives originally
+// required an explicit caret before an exponent digit (`kg/m^3` parsed, `kg/m3` did not -- the
+// bare trailing "3" fell OFF the unit token entirely, leaving a dimensionally-wrong "kg/m" that
+// can never match a g/cc-style option). "m3"/"cm3"/"ft2" (caret-less exponent, letter directly
+// touching a trailing digit, no space) is extremely common shorthand in plain-text model output
+// where superscript/caret notation isn't used -- empirically verified against the installed
+// mathjs (15.2.0) that IT already parses "kg/m3" as cubic-meter-denominated kg (dimensionally
+// identical to "kg/m^3") when given the clean text directly; the miss was purely this file's OWN
+// tokenizer dropping the exponent digit before mathjs ever saw it. `(?:\^-?\d+|\d+)?` admits
+// both spellings; the no-space requirement (digit must directly touch the letters, no `\s*`)
+// keeps this from swallowing an unrelated adjacent number ("5 kg 3 times" still tokenizes as
+// "5 kg" only -- "3" is not glued to "kg").
+const QUANTITY_TOKEN_RE =
+  /(-?\$?\d[\d,]*(?:\.\d+)?)\s*((?:%|°|[A-Za-z]+(?:\^-?\d+|\d+)?)(?:\s*[/*]\s*[A-Za-z]+(?:\^-?\d+|\d+)?)*)?/g;
+
+/** Scans free text (an authority's/swarm's stated reasoning, or a short MC option string) for
+ *  unit-bearing quantities and returns the LAST one that parses cleanly through mathjs -- "final
+ *  stated result" convention (a worked derivation states intermediate quantities first and the
+ *  answer last, e.g. "... = 750 kg / (25 cm x 0.10 m x 50.0 m) ... = 600 kg/m^3."). Goal spec
+ *  path (a): "extracting the final 'value unit' from the authority's/swarm's reasoning". Returns
+ *  null when no unit-bearing quantity parses -- bare numbers are extractNumber()'s job, not this
+ *  function's; callers needing a unitless fallback should try extractNumber() separately (see
+ *  parseOptionQuantity below for that composition). */
+export function extractQuantityFromText(text: string): Quantity | null {
+  let best: Quantity | null = null;
+  QUANTITY_TOKEN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = QUANTITY_TOKEN_RE.exec(text)) !== null) {
+    const numRaw = (m[1] ?? '').replace(/,/g, '').replace(/\$/g, '');
+    const unitRaw = m[2]?.trim();
+    if (!unitRaw) continue;
+    if (AMBIGUOUS_ENGLISH_UNIT_WORDS.has(unitRaw.toLowerCase())) continue;
+    const combined = `${numRaw} ${unitRaw}`;
+    if (!UNIT_EXPR_WHITELIST_RE.test(combined)) continue;
+    try {
+      const q = unwrapMathResult(math.evaluate(combined));
+      if (q && q.unit) best = q; // keep scanning -- LAST valid unit-bearing quantity wins
+    } catch {
+      continue;
+    }
+  }
+  return best;
+}
+
+/** Composition used for MC option text specifically: try the unit-bearing extractor first (an
+ *  option like "0.60 g/cc"), fall back to the pre-existing bare-number extractNumber() (an
+ *  option like "600" with no unit at all) so unit-aware matching degrades gracefully to the old
+ *  numeric-only behavior per option, rather than an all-or-nothing switch across the whole
+ *  option set. */
+function parseOptionQuantity(text: string): Quantity | null {
+  const withUnit = extractQuantityFromText(text);
+  if (withUnit) return withUnit;
+  const n = extractNumber(text);
+  return n === null ? null : { value: n, unit: null };
+}
+
+/** Units-aware sibling of matchValueToOption() above. For each option, parses its own value +
+ *  unit and, when both the computed quantity and the option carry a unit, converts the computed
+ *  quantity INTO the option's unit via mathjs (handling cross-unit matching, e.g. compute in
+ *  kg/m^3 while options are stated in g/cc) before comparing within `relTolerance`. Dimensional
+ *  mismatches (e.g. a mass-per-volume computed value against a mass-per-mole option) are treated
+ *  as "this option doesn't qualify," never forced.
+ *
+ *  HONESTY (non-negotiable, same bar as matchValueToOption): accepted ONLY when EXACTLY ONE
+ *  option qualifies within tolerance. Unlike matchValueToOption (which picks the single closest
+ *  option among however many clear the tolerance band), this function requires the qualifying
+ *  set to have size exactly 1 -- zero qualifiers is an honest "can't map it," and two-or-more
+ *  qualifiers is an honest "ambiguous, don't force one" -- both return null so the caller falls
+ *  through rather than guessing. */
+export function matchQuantityToOption(
+  computed: Quantity,
+  options: McOption[],
+  relTolerance = 0.02,
+): { letter: string; optionValue: number; optionUnit: string | null } | null {
+  const qualifying: Array<{ letter: string; optionValue: number; optionUnit: string | null }> = [];
+  for (const opt of options) {
+    const optQ = parseOptionQuantity(opt.text);
+    if (!optQ) continue;
+
+    let compareValue: number;
+    let optionOwnValue: number;
+    let optionUnitLabel: string | null;
+
+    if (computed.unit && optQ.unit) {
+      const targetUnitStr = optQ.unit.formatUnits();
+      let converted: Unit;
+      try {
+        converted = computed.unit.to(targetUnitStr);
+      } catch {
+        continue; // dimensionally incompatible -- never force a cross-dimension match
+      }
+      compareValue = converted.toNumber(targetUnitStr);
+      optionOwnValue = optQ.unit.toNumber(targetUnitStr);
+      optionUnitLabel = targetUnitStr;
+    } else if (!computed.unit && !optQ.unit) {
+      compareValue = computed.value;
+      optionOwnValue = optQ.value;
+      optionUnitLabel = null;
+    } else {
+      continue; // one side carries a unit, the other doesn't -- ambiguous, skip rather than guess
+    }
+
+    const tolerance = Math.max(Math.abs(optionOwnValue) * relTolerance, 1e-9);
+    if (Math.abs(compareValue - optionOwnValue) <= tolerance) {
+      qualifying.push({ letter: opt.letter, optionValue: optionOwnValue, optionUnit: optionUnitLabel });
+    }
+  }
+  return qualifying.length === 1 ? qualifying[0]! : null;
+}
+
+// --- BP-COMPUTE-BARE: bare-number (unit-less) extraction + matching ----------------------------
+//
+// WHY THIS EXISTS (Founder Scaccio case, real miss): extractQuantityFromText/computeUnitAwareMatch
+// above only catch UNIT-bearing quantities (kg/m^3, g/cc, etc.) -- they are blind to bare numeric
+// answers with no physical unit at all: money ("$103.11"), counts, percentages, plain numbers.
+// "Mr. Scaccio borrows $100, pays back $20/month with 1% monthly interest on the unpaid balance.
+// How much does he pay?" is exactly this shape: the authority reasons its way to "$103.11 total"
+// but states the wrong letter, and extractQuantityFromText requires a mathjs unit token so
+// "$103.11" (currency, no mathjs unit) is skipped -- nothing ever matches. This section is the
+// bare-number sibling, tried ONLY after both unit-aware paths in computeUnitAwareMatch return
+// null, so a genuinely unit-bearing question is never short-circuited by a coincidental
+// bare-number hit.
+
+/** Number-then-framing-word ("$103.11 in total", "20 altogether") and framing-word-then-number
+ *  ("total of $103.11", "the answer is 20", "he pays 20", "so 20", "therefore 20") shapes both
+ *  occur in worked reasoning prose; both are tried so whichever order the authority happened to
+ *  write in is caught.
+ *
+ *  BUG 1 REGRESSION FIX (tightened precision over recall, per Founder spec): a bare "=" was
+ *  REMOVED as a standalone framing trigger. The orbital-period miss (question_id 118 in the real
+ *  008 receipt) was caused exactly by this: the reasoning contained the FORMULA
+ *  "T = 2 pi (d/2)^3 / (G(2M))" -- the old `=` alternative matched the "=" in "T =" and grabbed
+ *  the very next bare digit ("2", a coefficient mid-derivation) as if it were the stated final
+ *  answer, which then flipped a correct swarm letter to a wrong one via matchValueToOption. A
+ *  literal "=" sign is exactly as common inside an intermediate formula as inside a genuine final
+ *  answer, so it is not a safe signal on its own. "= X total" style final answers are still
+ *  caught -- they clear BARE_NUMBER_THEN_FRAME_RE's own suffix-framing check regardless of
+ *  whatever precedes the number (e.g. "... = $103.11 in total"). "so"/"therefore" were ADDED as
+ *  framing words (word-bounded, so they don't match inside "also"/"reasonable" etc.) per the
+ *  Founder's explicit tightened-framing list. A leading `\b` keeps "total"/"answer"/"result" from
+ *  matching as a substring of an unrelated longer word (e.g. "subtotal"). */
+const BARE_NUMBER_THEN_FRAME_RE =
+  /(-?\$?\d[\d,]*(?:\.\d+)?%?)\s+(?:in\s+total|total|altogether|overall)\b/gi;
+const BARE_FRAME_THEN_NUMBER_RE =
+  /\b(?:total(?:\s+of)?|answer(?:\s+is)?|answer\s*:|result(?:\s+is)?|result\s*:|pays?|owes?|equals?|therefore|so)\s*:?\s*(-?\$?\d[\d,]*(?:\.\d+)?%?)/gi;
+
+/** BUG 1 REGRESSION FIX, second layer: even a framed match is rejected when the matched number
+ *  sits directly against formula/expression punctuation -- an operator, an exponent/pi/summation
+ *  symbol, or a formula function name (sin/cos/sqrt/etc) immediately before or after it (within a
+ *  short window, ignoring intervening whitespace). This is deliberately independent of which
+ *  framing word matched: "so 2 pi r" or "= 2 * (x+1)" must never fire even if a framing keyword
+ *  happens to sit nearby, because the number itself is still visibly mid-expression, not a
+ *  standalone concluding value. Defense in depth on top of the `=`-removal above, not a
+ *  replacement for it. */
+const FORMULA_CONTEXT_WINDOW = 16;
+const FORMULA_ADJACENT_CHAR_RE = /[+\-*/^=πΠ𝜋√∑∫]/;
+const FORMULA_WORD_RE = /\b(?:sin|cos|tan|log|ln|sqrt|exp|pi)\b/i;
+
+function isFormulaAdjacent(text: string, numStart: number, numLen: number): boolean {
+  const numEnd = numStart + numLen;
+  const before = text.slice(Math.max(0, numStart - FORMULA_CONTEXT_WINDOW), numStart);
+  const after = text.slice(numEnd, numEnd + FORMULA_CONTEXT_WINDOW);
+  const lastBeforeChar = before.replace(/\s+$/, '').slice(-1);
+  const firstAfterChar = after.replace(/^\s+/, '').slice(0, 1);
+  if (lastBeforeChar && FORMULA_ADJACENT_CHAR_RE.test(lastBeforeChar)) return true;
+  if (firstAfterChar && FORMULA_ADJACENT_CHAR_RE.test(firstAfterChar)) return true;
+  if (FORMULA_WORD_RE.test(before) || FORMULA_WORD_RE.test(after)) return true;
+  return false;
+}
+
+/** Pulls the final/most-salient bare numeric value out of free text (an authority's reasoning, a
+ *  swarm voter's raw preview, etc.) -- unit-unaware sibling of extractQuantityFromText above.
+ *  Fires ONLY when a value is explicitly framed as the answer/total ("... $103.11 in total ...",
+ *  "the answer is 20", "total of $5.00", "so $20", "therefore 20") AND that value is not sitting
+ *  directly against formula/expression punctuation (see isFormulaAdjacent above), in TEXT-
+ *  POSITION order (last qualifying framed mention wins -- same "final stated result" convention
+ *  extractQuantityFromText already uses).
+ *
+ *  BUG 1 REGRESSION FIX: the old unframed "last bare numeric token anywhere in the text" fallback
+ *  has been REMOVED ENTIRELY. It was the single biggest source of false overrides -- any stray
+ *  number anywhere in a worked derivation (a coefficient, an intermediate value, a formula
+ *  constant) could get picked up as if it were the final answer. Per the honesty bar this whole
+ *  file operates under (a false override is strictly worse than no override), an unframed number
+ *  is no longer trusted at all: no framing keyword anywhere in the text means this function
+ *  returns null and the caller falls through to the ensemble/swarm letter untouched, never a
+ *  guess. Reuses extractNumber's own cleaning/parsing (leading $, thousands commas, %, leading
+ *  minus) on every captured token -- never a second independent numeric parser. */
+export function extractBareValueFromText(text: string): number | null {
+  const framed: Array<{ index: number; value: number }> = [];
+
+  BARE_NUMBER_THEN_FRAME_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = BARE_NUMBER_THEN_FRAME_RE.exec(text)) !== null) {
+    const numStart = m.index;
+    const numLen = (m[1] as string).length;
+    if (isFormulaAdjacent(text, numStart, numLen)) continue;
+    const n = extractNumber(m[1] as string);
+    if (n !== null) framed.push({ index: m.index, value: n });
+  }
+  BARE_FRAME_THEN_NUMBER_RE.lastIndex = 0;
+  while ((m = BARE_FRAME_THEN_NUMBER_RE.exec(text)) !== null) {
+    const numLen = (m[1] as string).length;
+    const numStart = m.index + m[0].length - numLen;
+    if (isFormulaAdjacent(text, numStart, numLen)) continue;
+    const n = extractNumber(m[1] as string);
+    if (n !== null) framed.push({ index: m.index, value: n });
+  }
+  if (framed.length === 0) return null; // no unambiguous final-answer framing -- honest null, never a guess
+  framed.sort((a, b) => a.index - b.index);
+  return framed[framed.length - 1]!.value;
 }
 
 // --- Local sandboxed arithmetic evaluator (two independent implementations, must agree) -------
@@ -463,5 +803,114 @@ export async function computeAnswer(
       return { value: result.value, expression: researchQuery, method: 'wolfram_compute' };
     }
   }
+  return null;
+}
+
+// --- BP-COMPUTE-UNITS: top-level units-aware orchestration -------------------------------------
+
+export interface UnitAwareComputeResult {
+  letter: string;
+  optionValue: number;
+  optionUnit: string | null;
+  computedValue: number;
+  /** mathjs's own canonical rendering of the computed quantity's unit (e.g. "kg / m^3"), or null
+   *  for a unitless computed value. */
+  computedUnit: string | null;
+  /** The literal expression (path (b)) or reasoning/fact snippet (path (a)) the quantity was
+   *  pulled from -- carried through so the caller can eblet the method with a real example. */
+  sourceExpression: string;
+  source: 'question_expression' | 'reasoning_fact';
+  method: 'unit_expression' | 'unit_reasoning_extraction' | 'bare_value_match';
+}
+
+/** Top-level units-aware entry point. Synchronous and pure (no I/O, no model call) -- all three
+ *  paths it tries are deterministic local computation, tried IN ORDER, each only attempted after
+ *  the previous one returns null:
+ *   (b) FIRST: is a unit-bearing arithmetic expression cleanly present in the question text
+ *       itself (e.g. a dimension list "25 cm x 0.10 m x 50.0 m")? Extract + evaluate via mathjs.
+ *   (a) THEN: does any supplied `componentFacts` string (the SAME post-relevance-gate swarm/
+ *       authority fact snippets plow_mc_answerer.ts already threads into computeAnswer's
+ *       `componentFacts`, see ComputeAnswerOptions.componentFacts) state a unit-bearing final
+ *       quantity (e.g. "... = 600 kg/m^3")? Extract the LAST such quantity per fact.
+ *   (c) FINALLY (BP-COMPUTE-BARE, Founder Scaccio case): does any `componentFacts` string state a
+ *       BARE numeric answer with no physical unit at all (money, counts, percentages, plain
+ *       numbers -- e.g. "... about $103.11 in total ...")? extractBareValueFromText() pulls the
+ *       most-salient bare number; matched via matchQuantityToOption's own unitless-vs-unitless
+ *       branch (unit: null on both sides), the SAME tolerance + exact-one-option gate as (a)/(b).
+ *       Tried LAST specifically so a genuinely unit-bearing question is never short-circuited by a
+ *       coincidental bare-number hit -- (b) and (a) always get first crack at it.
+ *  Every path's candidate quantity is matched against the options via matchQuantityToOption --
+ *  the SAME strict "exactly one option qualifies" honesty gate for all three. Returns null (never
+ *  guesses) when no path produces an unambiguous match; callers should fall through to
+ *  computeAnswer()/matchValueToOption's existing unit-UNAWARE path unchanged, exactly as before
+ *  this function existed. */
+export function computeUnitAwareMatch(
+  researchQuery: string,
+  mcOptions: McOption[],
+  opts: { componentFacts?: string[] } = {},
+): UnitAwareComputeResult | null {
+  const expr = extractUnitExpression(researchQuery);
+  if (expr) {
+    const q = evaluateUnitExpression(expr);
+    if (q) {
+      const matched = matchQuantityToOption(q, mcOptions);
+      if (matched) {
+        return {
+          letter: matched.letter,
+          optionValue: matched.optionValue,
+          optionUnit: matched.optionUnit,
+          computedValue: q.value,
+          computedUnit: q.unit ? q.unit.formatUnits() : null,
+          sourceExpression: expr,
+          source: 'question_expression',
+          method: 'unit_expression',
+        };
+      }
+    }
+  }
+
+  for (const fact of opts.componentFacts ?? []) {
+    const q = extractQuantityFromText(fact);
+    if (!q || !q.unit) continue; // unit-bearing only -- a unitless fact adds nothing matchValueToOption didn't already have
+    const matched = matchQuantityToOption(q, mcOptions);
+    if (matched) {
+      return {
+        letter: matched.letter,
+        optionValue: matched.optionValue,
+        optionUnit: matched.optionUnit,
+        computedValue: q.value,
+        computedUnit: q.unit.formatUnits(),
+        sourceExpression: fact,
+        source: 'reasoning_fact',
+        method: 'unit_reasoning_extraction',
+      };
+    }
+  }
+
+  // (c) BARE-NUMBER fallback (BP-COMPUTE-BARE, Founder Scaccio case) -- see
+  // extractBareValueFromText's header comment. Tried LAST, only after both unit-aware paths above
+  // return null, so a question that DOES carry units is never short-circuited by a coincidental
+  // bare-number hit. Matched via matchQuantityToOption's OWN unitless-vs-unitless branch
+  // (computed.unit === null && optQ.unit === null) -- the SAME tolerance + exact-one-option
+  // honesty gate the unit-aware paths above already use (0/2+ qualifying options -> null, never
+  // forced); this is not a weaker/parallel gate, it is the identical one, reused unchanged.
+  for (const fact of opts.componentFacts ?? []) {
+    const bareValue = extractBareValueFromText(fact);
+    if (bareValue === null) continue;
+    const matched = matchQuantityToOption({ value: bareValue, unit: null }, mcOptions);
+    if (matched) {
+      return {
+        letter: matched.letter,
+        optionValue: matched.optionValue,
+        optionUnit: matched.optionUnit,
+        computedValue: bareValue,
+        computedUnit: null,
+        sourceExpression: fact,
+        source: 'reasoning_fact',
+        method: 'bare_value_match',
+      };
+    }
+  }
+
   return null;
 }
