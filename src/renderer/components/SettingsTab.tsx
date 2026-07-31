@@ -931,6 +931,10 @@ const AUTHORITY_SOURCES: AuthoritySourceInfo[] = [
   { key: 'openfda',       label: 'openFDA',        tier: 'standard', domains: ['health'], costNote: 'Free, no key required (FDA-issued key only raises the rate limit).' },
   { key: 'medlineplus',   label: 'MedlinePlus',    tier: 'standard', domains: ['health'], costNote: 'Free, no key required (NLM Web Search Service).' },
   { key: 'crossref',      label: 'Crossref',       tier: 'standard', domains: ['general', 'history', 'philosophy', 'law', 'business', 'economics', 'psychology', 'biology', 'health', 'math', 'physics', 'chemistry', 'computer_science', 'engineering', 'other'], costNote: 'Free, no key; mailto param opts into the Crossref polite pool.' },
+  // BP1xx Pawn Authority List Phase 2 (mirrors specialist_adapters.ts SPECIALIST_METADATA).
+  { key: 'clinicaltrials',  label: 'ClinicalTrials.gov', tier: 'standard', domains: ['health'], costNote: 'Free, no key required (ClinicalTrials.gov API v2; classic v1 API retired).' },
+  { key: 'worldbank',       label: 'World Bank Indicators', tier: 'standard', domains: ['economics', 'business'], costNote: 'Free, no key required (curated keyword-to-indicator lookup, not full-text search).' },
+  { key: 'semanticscholar', label: 'Semantic Scholar', tier: 'standard', domains: ['computer_science', 'economics', 'philosophy', 'law', 'biology', 'math', 'physics', 'chemistry', 'engineering', 'psychology', 'health', 'business', 'history'], costNote: 'Free without key; keyless calls share a lower rate limit than a registered API key.' },
   { key: 'wolfram',       label: 'Wolfram Alpha',  tier: 'premium',  domains: ['math', 'physics', 'chemistry', 'engineering'], costNote: 'Requires a Wolfram Alpha AppID (free-tier signup exists); no-op with no key.' },
   // BP139 browser-LLM authorities: general second-opinion authorities (mirrors
   // src/main/plow/specialist_adapters.ts's BROWSER_LLM_AUTHORITY_METADATA -- keep both in sync).

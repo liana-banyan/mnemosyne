@@ -727,12 +727,205 @@ export async function fetchCrossref(question: string, domain: string, maxResults
   } catch { return []; }
 }
 
+// ─── 14. ClinicalTrials.gov ───────────────────────────────────────────────────
+// BP1xx Pawn Authority List Phase 2: no-key REST adapter, medicine/health.
+// Probed live 2026-07-31: https://clinicaltrials.gov/api/v2/studies?query.term=...
+// (v2 API -- the classic v1 /api/query API was retired) returns HTTP 200 with
+// studies[] items carrying protocolSection.identificationModule.{nctId,briefTitle},
+// .descriptionModule.briefSummary, .statusModule.overallStatus,
+// .conditionsModule.conditions[].
+
+export async function fetchClinicalTrials(question: string, domain: string, maxResults = 2): Promise<CandidateEblet[]> {
+  const terms = extractSearchTerms(question);
+  if (!terms) return [];
+
+  try {
+    const url = `https://clinicaltrials.gov/api/v2/studies?query.term=${encodeURIComponent(terms)}&pageSize=${Math.max(3, maxResults)}`;
+    const resp = await fetchWithTimeout(url);
+    if (!resp.ok) return [];
+
+    const data = await resp.json() as {
+      studies?: Array<{
+        protocolSection?: {
+          identificationModule?: { nctId?: string; briefTitle?: string };
+          descriptionModule?: { briefSummary?: string };
+          statusModule?: { overallStatus?: string };
+          conditionsModule?: { conditions?: string[] };
+        };
+      }>;
+    };
+    const studies = data?.studies ?? [];
+    if (studies.length === 0) return [];
+
+    const candidates: CandidateEblet[] = [];
+    for (const s of studies.slice(0, maxResults)) {
+      const ps = s.protocolSection;
+      const nctId = ps?.identificationModule?.nctId;
+      const title = ps?.identificationModule?.briefTitle ?? '';
+      const summary = (ps?.descriptionModule?.briefSummary ?? '').replace(/\s+/g, ' ').trim();
+      const status = ps?.statusModule?.overallStatus ?? '';
+      const conditions = (ps?.conditionsModule?.conditions ?? []).join(', ');
+
+      const body = summary || conditions;
+      if (!body) continue;
+      const content = `${title}${status ? ` (${status})` : ''}: ${body}`.slice(0, 800);
+      if (content.length < 100) continue;
+
+      candidates.push({
+        source: 'clinicaltrials',
+        content,
+        weight: 0.80,
+        sid: stableId('clinicaltrials', content),
+        provenance_url: nctId ? `https://clinicaltrials.gov/study/${nctId}` : undefined,
+        domain,
+      });
+    }
+
+    return candidates;
+  } catch { return []; }
+}
+
+// ─── 15. World Bank Indicators ────────────────────────────────────────────────
+// BP1xx Pawn Authority List Phase 2: no-key REST adapter, economics/business.
+// Probed live 2026-07-31: https://api.worldbank.org/v2/country/WLD/indicator/<code>
+// ?format=json&mrv=1 returns HTTP 200 with a [meta, rows[]] tuple; rows[0] carries
+// {indicator:{id,value}, country:{id,value}, countryiso3code, date, value}. The
+// World Bank Indicators API has no free-text search over indicator content (only
+// exact indicator codes / dataset browsing), so this adapter maps a curated set of
+// common economics keywords found in the question to a known indicator code
+// (defaulting to the World aggregate, most-recent-value via mrv=1) instead of
+// attempting arbitrary full-text search. Returns [] (honest no-op) when no
+// keyword in the question matches the curated table.
+
+const WORLD_BANK_INDICATORS: Array<{ keywords: string[]; code: string; label: string }> = [
+  { keywords: ['gdp', 'gross domestic product'], code: 'NY.GDP.MKTP.CD', label: 'GDP (current US$)' },
+  { keywords: ['inflation', 'consumer price', 'cpi'], code: 'FP.CPI.TOTL.ZG', label: 'Inflation, consumer prices (annual %)' },
+  { keywords: ['unemployment'], code: 'SL.UEM.TOTL.ZS', label: 'Unemployment, total (% of total labor force)' },
+  { keywords: ['population'], code: 'SP.POP.TOTL', label: 'Population, total' },
+  { keywords: ['life expectancy'], code: 'SP.DYN.LE00.IN', label: 'Life expectancy at birth, total (years)' },
+  { keywords: ['export'], code: 'NE.EXP.GNFS.CD', label: 'Exports of goods and services (current US$)' },
+  { keywords: ['import'], code: 'NE.IMP.GNFS.CD', label: 'Imports of goods and services (current US$)' },
+  { keywords: ['government debt', 'national debt', 'public debt'], code: 'GC.DOD.TOTL.GD.ZS', label: 'Central government debt, total (% of GDP)' },
+  { keywords: ['poverty'], code: 'SI.POV.DDAY', label: 'Poverty headcount ratio at $2.15 a day (% of population)' },
+  { keywords: ['interest rate'], code: 'FR.INR.RINR', label: 'Real interest rate (%)' },
+  { keywords: ['trade'], code: 'NE.TRD.GNFS.ZS', label: 'Trade (% of GDP)' },
+  { keywords: ['foreign direct investment', 'fdi'], code: 'BX.KLT.DINV.WD.GD.ZS', label: 'Foreign direct investment, net inflows (% of GDP)' },
+];
+
+const WORLD_BANK_COUNTRIES: Array<{ keywords: string[]; code: string; name: string }> = [
+  { keywords: ['united states', 'u.s.', 'usa', 'america'], code: 'US', name: 'United States' },
+  { keywords: ['china'], code: 'CN', name: 'China' },
+  { keywords: ['india'], code: 'IN', name: 'India' },
+  { keywords: ['japan'], code: 'JP', name: 'Japan' },
+  { keywords: ['germany'], code: 'DE', name: 'Germany' },
+  { keywords: ['united kingdom', 'britain', 'u.k.'], code: 'GB', name: 'United Kingdom' },
+  { keywords: ['world'], code: 'WLD', name: 'World' },
+];
+
+export async function fetchWorldBank(question: string, domain: string): Promise<CandidateEblet[]> {
+  const qLower = question.toLowerCase();
+  const indicator = WORLD_BANK_INDICATORS.find((i) => i.keywords.some((k) => qLower.includes(k)));
+  if (!indicator) return [];
+
+  const country = WORLD_BANK_COUNTRIES.find((c) => c.keywords.some((k) => qLower.includes(k)))
+    ?? { keywords: [], code: 'WLD', name: 'World' };
+
+  try {
+    const url = `https://api.worldbank.org/v2/country/${country.code}/indicator/${indicator.code}?format=json&mrv=1`;
+    const resp = await fetchWithTimeout(url);
+    if (!resp.ok) return [];
+
+    const data = await resp.json() as unknown as [unknown, Array<{ value?: number | null; date?: string; country?: { value?: string } }> | null];
+    const rows = data?.[1] ?? [];
+    const row = rows[0];
+    if (!row || row.value === null || row.value === undefined) return [];
+
+    const countryName = row.country?.value ?? country.name;
+    const content = `${indicator.label} — ${countryName}, ${row.date}: ${row.value} (World Bank Indicators, World Development Indicators source).`.slice(0, 500);
+    if (content.length < 100) return [];
+
+    return [{
+      source: 'worldbank',
+      content,
+      weight: 0.78,
+      sid: stableId('worldbank', content),
+      provenance_url: `https://data.worldbank.org/indicator/${indicator.code}?locations=${country.code}`,
+      domain,
+    }];
+  } catch { return []; }
+}
+
+// ─── 16. Semantic Scholar Graph API ────────────────────────────────────────────
+// BP1xx Pawn Authority List Phase 2: keyless REST adapter (works without a key at
+// a lower shared rate limit), broad multi-disciplinary scholarly coverage.
+// Probed live 2026-07-31: https://api.semanticscholar.org/graph/v1/paper/search
+// ?query=...&fields=title,abstract,url -- first burst attempt returned HTTP 429
+// (shared keyless quota), retry after backoff returned HTTP 200 with
+// { data: [{ paperId, title, abstract, url }] }. A 429 is treated the same as any
+// other non-ok response here (silent []); the plow's staggered per-question
+// dispatch already spaces adapter calls, and no key is available to raise the quota.
+
+export async function fetchSemanticScholar(question: string, domain: string, maxResults = 2): Promise<CandidateEblet[]> {
+  const terms = extractSearchTerms(question);
+  if (!terms) return [];
+
+  try {
+    const url = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(terms)}&limit=${Math.max(3, maxResults)}&fields=title,abstract,url`;
+    const resp = await fetchWithTimeout(url);
+    if (!resp.ok) return [];
+
+    const data = await resp.json() as { data?: Array<{ title?: string; abstract?: string; url?: string }> };
+    const results = data?.data ?? [];
+    if (results.length === 0) return [];
+
+    const candidates: CandidateEblet[] = [];
+    for (const r of results.slice(0, maxResults)) {
+      const title = r.title ?? '';
+      const abstract = (r.abstract ?? '').replace(/\s+/g, ' ').trim();
+      const content = (abstract ? `${title}: ${abstract}` : title).slice(0, 800);
+      if (content.length < 100) continue;
+
+      candidates.push({
+        source: 'semanticscholar',
+        content,
+        weight: 0.78,
+        sid: stableId('semanticscholar', content),
+        provenance_url: r.url,
+        domain,
+      });
+    }
+
+    return candidates;
+  } catch { return []; }
+}
+
+// ─── DEFERRED: OECD Data Explorer (SDMX) ───────────────────────────────────────
+// BP1xx Pawn Authority List Phase 2: probed live 2026-07-31 --
+// https://sdmx.oecd.org/public/rest/data/OECD.SDD.NAD,DSD_NAMAIN1@DF_QNA,1.0/all
+// ?startPeriod=2023&dimensionAtObservation=AllDimensions&format=jsondata returns
+// HTTP 200, but the SDMX-JSON "data cube" keys observations by a composite,
+// colon-joined index string (e.g. "0:1:4:0:0:1:0:13:0:0:1:0:0:0") against a
+// 14-dimension observation structure (FREQ, ADJUSTMENT, REF_AREA, SECTOR,
+// COUNTERPART_SECTOR, TRANSACTION, INSTR_ASSET, ACTIVITY, EXPENDITURE,
+// UNIT_MEASURE, PRICE_BASE, TRANSFORMATION, TABLE_IDENTIFIER, TIME_PERIOD) whose
+// per-dimension code lists must be separately resolved from the DSD/dataflow
+// structure query before a single numeric observation can be decoded. There is
+// no keyword/full-text query surface that maps a natural-language question to a
+// specific dataflow + 14-tuple of dimension codes -- every dataflow needs its own
+// hand-built dimension map. Per the build brief ("if a clean query is hard,
+// DEFER it honestly rather than shipping a non-returning adapter"), OECD is
+// deferred here: no fetchOECD function, no SpecialistName entry, no roster wiring.
+// A future build could hand-curate a small number of (dataflow, dimension-tuple)
+// pairs for specific well-known series (e.g. quarterly GDP growth per country)
+// the same way WORLD_BANK_INDICATORS above curates World Bank indicator codes.
+
 // ─── Exported adapter registry ─────────────────────────────────────────────────
 
 export type SpecialistName =
   | 'wikipedia' | 'wikidata' | 'stackexchange' | 'arxiv'
   | 'wolfram' | 'openalex' | 'nist' | 'pubmed' | 'commoncrawl'
-  | 'europepmc' | 'openfda' | 'medlineplus' | 'crossref';
+  | 'europepmc' | 'openfda' | 'medlineplus' | 'crossref'
+  | 'clinicaltrials' | 'worldbank' | 'semanticscholar';
 
 export interface SpecialistKeys {
   wolframApiKey?: string;
@@ -760,6 +953,9 @@ export const SPECIALIST_REGISTRY: Record<SpecialistName, SpecialistFn> = {
   openfda:      (q, d, k) => fetchOpenFDA(q, d, k?.maxResultsPerAdapter),
   medlineplus:  (q, d, k) => fetchMedlinePlus(q, d, k?.maxResultsPerAdapter),
   crossref:     (q, d, k) => fetchCrossref(q, d, k?.maxResultsPerAdapter),
+  clinicaltrials:  (q, d, k) => fetchClinicalTrials(q, d, k?.maxResultsPerAdapter),
+  worldbank:       (q, d) => fetchWorldBank(q, d),
+  semanticscholar: (q, d, k) => fetchSemanticScholar(q, d, k?.maxResultsPerAdapter),
 };
 
 // ─── Tier metadata (Phase 1 seed of the Standard/Premium authority registry) ───
@@ -795,6 +991,9 @@ export const SPECIALIST_METADATA: Record<SpecialistName, SpecialistMetadata> = {
   openfda:       { tier: 'standard', domains: ['health'], costNote: 'Free, no key required (openFDA public API; FDA-issued key only raises rate limit).' },
   medlineplus:   { tier: 'standard', domains: ['health'], costNote: 'Free, no key required (NLM Web Search Service, XML response).' },
   crossref:      { tier: 'standard', domains: ['general', 'history', 'philosophy', 'law', 'business', 'economics', 'psychology', 'biology', 'health', 'math', 'physics', 'chemistry', 'computer_science', 'engineering', 'other'], costNote: 'Free, no key; mailto param opts into the Crossref polite pool.' },
+  clinicaltrials:  { tier: 'standard', domains: ['health'], costNote: 'Free, no key required (ClinicalTrials.gov API v2; the classic v1 API was retired).' },
+  worldbank:       { tier: 'standard', domains: ['economics', 'business'], costNote: 'Free, no key required (World Bank Indicators API; curated keyword-to-indicator lookup, not full-text search).' },
+  semanticscholar: { tier: 'standard', domains: ['computer_science', 'economics', 'philosophy', 'law', 'biology', 'math', 'physics', 'chemistry', 'engineering', 'psychology', 'health', 'business', 'history'], costNote: 'Free without key; keyless calls share a lower rate limit (observed HTTP 429 under burst, recovers on backoff).' },
 };
 
 // ─── Authority enable/disable resolution (BP139 Phase 2) ───────────────────────
