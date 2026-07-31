@@ -1593,14 +1593,19 @@ export async function runBrowserAuthorityQueryFromMain(
       return null;
     }
 
-    // Stage F1 build item 4 -- honesty firewall: never attempt a query against an authority that
-    // isn't actually signed in (never silently degrade to a logged-out result while implying full
-    // authority). A real, non-fabricated "not signed in" is reported as null here, same as every
-    // other honest-null path this function already documents above.
+    // BP139 FIX: the marker-based sign-in probe produces FALSE NEGATIVES, confirmed live -- the
+    // Proof panel showed "Not signed in: Perplexity (no-marker-found)" while the SAME authority
+    // returned a real, sourced answer ("The Berlin Wall fell in 1989", perplexity.ai/search/...)
+    // seconds later. The probe navigates the shared webview and checks fragile, timing-sensitive
+    // DOM markers, so gating the query on it silently DROPPED real signed-in queries (this was the
+    // 2-of-5 benchmark inconsistency). The query's own extraction is the honest arbiter: a real
+    // logged-in result page yields a real extracted answer (used); a logged-out/empty page yields
+    // no extraction and returns null at the end of this function anyway. So the probe is now
+    // ADVISORY (logged for diagnosis, never blocking) -- no fabrication risk, since only a genuine
+    // extracted answer is ever returned.
     const signInStatus = await probeNexusAuthoritySignInStatus(query.authority);
     if (!signInStatus.signedIn) {
-      console.warn(`[browser-authority-main] ${query.authority} is not signed in (${signInStatus.reason}) -- resolving null (honest, never fabricated/degraded).`);
-      return null;
+      console.warn(`[browser-authority-main] ${query.authority} sign-in probe returned not-signed-in (${signInStatus.reason}) -- proceeding anyway; the query's own extraction is the real arbiter (BP139: probe is advisory, false-negatives confirmed live).`);
     }
 
     const navigateUrl = buildBrowserAuthorityQueryUrl(query);
@@ -2903,6 +2908,32 @@ function registerIPCHandlers(): void {
     // 'not_lookup_fact' and 'flag_off' reasons above so a future diagnosis can tell "genuinely
     // asked the authority and got nothing" apart from "never asked at all".
     return { answerType, usable: false as const, reason: 'authority_empty' as const };
+  });
+
+  // BP138 Yoke Phase 1: Answer Coroner IPC handler -- queries Supabase for benchmark answer
+  // history and returns a classified roundup. Additive-only; never touches the operational
+  // Coroner Scribe. Safe to call from the benchmark modal or the terminal runner.
+  safeHandle('plow:run-answer-coroner', async (_event, opts: {
+    sessionFilter?: string;
+    limit?: number;
+  }) => {
+    try {
+      const { runAnswerCoroner } = await import('./plow/answer_coroner');
+      const roundup = await runAnswerCoroner({
+        sessionFilter: opts.sessionFilter,
+        limit: opts.limit ?? 500,
+        onProgress: (msg) => {
+          for (const w of BrowserWindow.getAllWindows()) {
+            if (!w.isDestroyed()) w.webContents.send('plow:coroner-progress', { msg });
+          }
+        },
+      });
+      return { ok: true, roundup };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[plow:run-answer-coroner] failed:', msg);
+      return { ok: false, error: msg };
+    }
   });
 
   // BP137 0.9.12 Stage F1 (build item 3, Settings "Authorities" panel wire): four new,
@@ -5116,7 +5147,9 @@ function registerIPCHandlers(): void {
     substrateEnabled?: boolean;
     // BP133 Yoke #24 Task 4: caps total question count for this run (e.g. 3 for a smoke test).
     maxTotalQuestions?: number;
-    // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow (wan_mesh only).
+    // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow. WIRE-THE-LOOP fix
+    // (single-box local plow): no longer wan_mesh-only -- see one_click_mmlu_pro.ts's
+    // plowEnabled config doc for the local_ollama path.
     plowEnabled?: boolean;
     plowAndonEnabled?: boolean;
     // BP137 Yoke v2b (Research Arm): explicit opt-in, ignored unless plowEnabled is also true.
@@ -5126,6 +5159,10 @@ function registerIPCHandlers(): void {
     // plowEnabled + researchArmMode are also true. Threaded straight through to
     // runOneClickMmluProTest -- see that function's researchArmMeshSynergy JSDoc.
     researchArmMeshSynergy?: boolean;
+    // BP138 Yoke Phase 2: explicit opt-in to the Decompose-and-Eliminate engine, ignored unless
+    // plowEnabled + researchArmMode are also true (AND-gate applied in one_click_mmlu_pro.ts).
+    // Threaded straight through to runOneClickMmluProTest -- see researchArmDecompose JSDoc.
+    researchArmDecompose?: boolean;
     // BP134 Yoke #32 Phase F item 2: the "Full 14x5 MMLU-Pro" preset.
     exactPerCategory?: number;
     // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (wan_mesh +
@@ -6390,6 +6427,70 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
             continue;
           }
 
+          // BP138 Yoke Phase 3: option-fan-out verification mode.
+          // When the asker dispatched this question with `assigned_option` (a specific MC letter)
+          // AND `research_arm_option_fan_out: true`, this peer verifies ONLY that option's
+          // foundation fact instead of running the full plow. Returns `option_verdict` in
+          // answer_json so the asker can pool verdicts and apply elimination logic.
+          // GATING: unreachable when either field is absent/off -- byte-identical behavior for
+          // every pre-Phase-3 relay route.
+          const assignedOptionForFanOut: string | null =
+            typeof payload.assigned_option === 'string' ? (payload.assigned_option as string).toUpperCase() : null;
+          const optionFanOutEnabled: boolean = payload.research_arm_option_fan_out === true;
+          if (assignedOptionForFanOut && optionFanOutEnabled && isNexusAuthorityFlagEnabled()) {
+            try {
+              const { verifyAssignedOption } = await import('./plow/plow_mc_decompose');
+              const questionText: string = typeof payload.question_text === 'string' ? payload.question_text as string : '';
+              const questionOptions: string[] = Array.isArray(payload.options)
+                ? (payload.options as unknown[]).map((o) => String(o))
+                : [];
+              const optionIdx = assignedOptionForFanOut.charCodeAt(0) - 'A'.charCodeAt(0);
+              const optionText = optionIdx >= 0 && optionIdx < questionOptions.length
+                ? questionOptions[optionIdx]
+                : assignedOptionForFanOut;
+              const fanOutBridge: import('./plow/browser_authority_adapter').BrowserAuthorityBridge = {
+                async runQueryInUserBrowser(query) {
+                  try { return await runBrowserAuthorityQueryFromMain(query); } catch { return null; }
+                },
+              };
+              const verdictResult = await verifyAssignedOption({
+                question: questionText,
+                assignedOption: assignedOptionForFanOut,
+                optionText,
+                ollamaBaseUrl: 'http://127.0.0.1:11434',
+                model: 'gemma4:12b',
+                bridge: fanOutBridge,
+                config: { researchArmMode: true, researchArmBrowserAuthority: true },
+                onProgress: (msg) => console.log(`[relay-poll] option-fanout route=${route.id.slice(0, 8)}: ${msg}`),
+              });
+              const processingMs = Date.now() - startMs;
+              await fetch(`${supabaseUrl}/rest/v1/relay_route_replies`, {
+                method: 'POST',
+                headers: { ...headers, 'Prefer': 'return=minimal' },
+                body: JSON.stringify({
+                  route_id: route.id,
+                  peer_id: peerId,
+                  answer_json: {
+                    query_type: 'option_verdict',
+                    option_verdict: verdictResult,
+                    peer_id: peerId,
+                  },
+                  processing_ms: processingMs,
+                }),
+              });
+              await fetch(`${supabaseUrl}/rest/v1/relay_routes?id=eq.${route.id}`, {
+                method: 'PATCH',
+                headers,
+                body: JSON.stringify({ status: 'answered' }),
+              });
+              console.log(`[relay-poll] option-fanout answered route=${route.id.slice(0, 8)} option=${assignedOptionForFanOut} verdict=${verdictResult.verdict}`);
+              continue;
+            } catch (err) {
+              // Non-fatal -- fall through to normal plow path for this route
+              console.warn('[relay-poll] option-fanout threw (non-fatal, falling through to plow):', err);
+            }
+          }
+
           const prompt: string = (payload.prompt as string) || route.hex_frame;
           const plowMaxIter: number = typeof payload.plow_max_iterations === 'number'
             ? (payload.plow_max_iterations as number) : 0;
@@ -6496,6 +6597,9 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           // to tag the eblets THIS run writes to substrate as correct/wrong/unverified.
           const testModeCorrectAnswerLetterForPlow: string | null =
             typeof payload.correct_answer_letter === 'string' ? payload.correct_answer_letter : null;
+          // BP138 Yoke Phase 2: decompose-and-eliminate engine wire flag. Absent/false on every
+          // pre-Phase-2 payload -- defaults to false so old askers never silently get this behavior.
+          const researchArmDecomposeForPlow: boolean = payload.research_arm_decompose === true;
           // BP137 Yoke v2b Stage F3 (mesh synergy): its OWN wire flag, deliberately NOT fanned
           // in from payload.research_arm_mode the way researchArmBrowserAuthority/
           // researchArmStarChamber above are -- mesh-synergy dispatch is an ASKER-side decision
@@ -6565,130 +6669,35 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
             // other branch in this function, so Condition A (plow, substrate OFF) is genuinely
             // cold and Condition B/C (plow, substrate ON) genuinely see the same context a
             // single-shot substrate-ON run would see.
-            try {
-              const { runCanonicalPlowMcAnswer } = await import('./plow/plow_mc_answerer');
-              const { writeVerifiedEblet } = await import('./mnem_eblet_store');
-              const writeEbletFn = async (eblet: {
-                question: string; answer: string; provenance: string;
-                verified: true; sha256: string; timestamp: number;
-              }): Promise<void> => { await writeVerifiedEblet(eblet); };
-              const plowResult = await runCanonicalPlowMcAnswer(
-                effectivePrompt,
-                researchQuery,
-                {
-                  domain: domainForSubstrate,
-                  ollamaBaseUrl: 'http://127.0.0.1:11434',
-                  model: answerModel,
-                  choiceCount: choiceCountForPlow,
-                  andonEnabled: plowAndonEnabled,
-                  reasoningMode: reasoningModeForPlow,
-                  testModeCorrectAnswerLetter: testModeCorrectAnswerLetterForPlow,
-                  // BP137 Yoke v2b (Research Arm): the ONE wire flag (payload.research_arm_mode)
-                  // fans out into all 3 sub-flags together (Stage A.0 + Stage A were built and
-                  // are meant to be exercised together per the Yoke's explicit "build A.0 + A
-                  // together" instruction) -- each sub-flag remains independently gateable in
-                  // CanonicalPlowMcConfig for any future/direct caller that wants only one.
-                  researchArmMode: researchArmModeForPlow,
-                  researchArmRelevanceGate: researchArmModeForPlow,
-                  researchArmComputeSidecar: researchArmModeForPlow,
-                  // BP137 Yoke v2b Integration-1 Part 1: fan the SAME single wire flag into
-                  // Stage D's escalation + Psionic sub-flags too, per this Yoke's explicit
-                  // "D is BUILT but DARK -- fan it in" instruction. Deliberately HOLDING
-                  // researchArmPsionicShortCircuit OFF (never set here) -- see
-                  // plow_mc_answerer.ts's own doc comment on that field for why: escalation +
-                  // the Psionic concur/discord marker should go live this pass, but the $0
-                  // predict-serve short-circuit stays opt-in-only until a clean receipt lands,
-                  // conservative given this session's false-serve history.
-                  researchArmEscalation: researchArmModeForPlow,
-                  researchArmPsionic: researchArmModeForPlow,
-                  // BP137 Yoke v2b Integration-1 Part 2: fans the same single wire flag into
-                  // Stage C's browser-authority sub-flag -- see plow_mc_answerer.ts's lookup_fact
-                  // branch (below this file, in that module) and browser_authority_adapter.ts /
-                  // runBrowserAuthorityQueryFromMain() (this file) for the real IPC leg.
-                  researchArmBrowserAuthority: researchArmModeForPlow,
-                  // BP137 Yoke v2b Stage E: fans the SAME single wire flag into the distributed
-                  // Star Chamber sub-flag -- see plow_mc_answerer.ts's Stage D exhaustion call
-                  // site (fires ONLY on a final don't-know, never a confident answer) and
-                  // star_chamber_dispatch.ts for the actual Google/Perplexity/Wolfram fan-out.
-                  // When payload.research_arm_mode is false/absent (every pre-Stage-E asker,
-                  // including every existing caller of insertRelayRoute), researchArmModeForPlow
-                  // is false, so this is false too -- the Stage E block stays unreachable and
-                  // this responder's behavior is byte-for-byte unchanged from pre-Stage-E.
-                  researchArmStarChamber: researchArmModeForPlow,
-                  // BP137 Yoke v2b Stage F3 (mesh synergy): its own independent wire flag (see
-                  // researchArmMeshSynergyForPlow's own doc comment above for why this is NOT
-                  // fanned in from payload.research_arm_mode like every sibling flag above) --
-                  // AND-gated with researchArmMode inside plow_mc_answerer.ts itself (same
-                  // convention as every other researchArm* sub-flag), so this responder's
-                  // behavior is unaffected unless BOTH payload.research_arm_mode AND
-                  // payload.research_arm_mesh_synergy are true. assignedAuthority is spread in
-                  // ONLY when present -- an old/mesh-synergy-unaware asker's payload never has
-                  // this key, so this call's config object is byte-identical to every
-                  // pre-Stage-F3 call for that case.
-                  researchArmMeshSynergy: researchArmMeshSynergyForPlow,
-                  ...(assignedAuthorityForPlow ? { assignedAuthority: assignedAuthorityForPlow } : {}),
-                },
-                writeEbletFn,
-                (stage) => console.log(`[relay-poll] plow-stage route=${route.id.slice(0, 8)}: ${stage}`),
-              );
-              answer = plowResult.chosenLetter; // null = genuine no-answer, handled by abstain logic below
-              plowTrace = {
-                concordance: plowResult.concordance,
-                bmv_score: plowResult.bmvScore,
-                gate_outcomes: plowResult.gateOutcomes,
-                specialists_used: plowResult.specialistsUsed,
-                candidates_raw: plowResult.candidatesRaw,
-                candidates_post_miner: plowResult.candidatesPostMiner,
-                candidates_post_furnace: plowResult.candidatesPostFurnace,
-                andon_triggered: plowResult.andonTriggered,
-                andon_retries: plowResult.andonRetries,
-                eblets_written: plowResult.ebletsWritten,
-                voter_letters: plowResult.voterLetters,
-                // BP133 Yoke #27: per-voter diagnosis (empty_response vs parse_failed vs
-                // parsed_ok) so a null voter letter is never just "null" in the receipt --
-                // Truth-Always requirement from the Yoke #27 root-cause investigation.
-                voter_diagnostics: plowResult.voterDiagnostics,
-                latency_ms: plowResult.latencyMs,
-                trace_summary: plowResult.traceSummary,
-                condition: plowAndonEnabled ? 'C_warm_andon' : (substrateEnabled ? 'B_warm_single_pass' : 'A_cold'),
-                // BP135 Yoke #34 Phase (0.9.6): additive field, absent from every receipt written
-                // before this Yoke -- lets a receipt distinguish a reasoning-mode run from a
-                // bare-letter run without inferring it from voter_diagnostics[].reasoning presence.
-                reasoning_mode: reasoningModeForPlow,
-                // BP137 Honest-MMLU-Provenance Yoke, Step 2: named-source + verified + hash
-                // receipts for the facts actually shown to the plow's voters -- surfaced here
-                // so the asker-side Prove It UI can render "answered via Wikipedia, verified,
-                // hash X" under this outcome instead of a bare percentage.
-                provenance_receipts: plowResult.provenanceReceipts,
-                // BP137 Yoke v2b (Research Arm), OPTIONAL/ADDITIVE -- present only when
-                // researchArmMode was true for this call (undefined -- key omitted from the
-                // persisted JSON -- otherwise, so old receipts and this new field never
-                // collide). See plow_mc_answerer.ts's CanonicalPlowMcResult doc.
-                research_arm_mode: researchArmModeForPlow || undefined,
-                answer_type: plowResult.answerType,
-                compute_sidecar: plowResult.computeSidecar,
-                relevance_gate_abstain: plowResult.relevanceGateAbstain,
-                // BP137 Yoke v2b Stage E, OPTIONAL/ADDITIVE -- present only when the distributed
-                // Star Chamber actually fired for this call (see plow_mc_answerer.ts's
-                // CanonicalPlowMcResult.starChamber doc). Absent (undefined, key present with
-                // undefined value is dropped by JSON.stringify) on every pre-Stage-E receipt.
-                star_chamber: plowResult.starChamber,
-                // BP137 Yoke v2b Stage F3, OPTIONAL/ADDITIVE -- present only when this peer was
-                // genuinely opted into mesh-synergy dispatch for this question (see
-                // plow_mc_answerer.ts's CanonicalPlowMcResult.meshSynergyAssigned doc). Absent
-                // (undefined -- key dropped by JSON.stringify) on every pre-Stage-F3 receipt.
-                // This is what lets the ASKER's pooled adjudication (wan_dispatch.ts) show
-                // "which peer, which authority" truthfully for every contributor.
-                mesh_synergy_assigned: plowResult.meshSynergyAssigned,
-              };
-              console.log(`[relay-poll] plow-answered route=${route.id.slice(0, 8)} letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
-            } catch (plowErr) {
-              // Truth-Always: a plow crash must surface as an honest abstain, never silently
-              // fall back to single-shot and misreport itself as a plow answer.
-              console.error(`[relay-poll] plow-answerer error route=${route.id.slice(0, 8)}:`, plowErr);
-              answer = null;
-              plowTrace = { error: String(plowErr) };
-            }
+            //
+            // WIRE-THE-LOOP fix (single-box local plow): the config-construction +
+            // result-to-plowTrace mapping that used to live inline here was extracted verbatim
+            // into plow_mc_answerer.ts's callCanonicalPlowMcAnswererForMeshTest(), so this WAN
+            // responder and one_click_mmlu_pro.ts's new local-mode full-plow path (runLocalMode)
+            // share exactly ONE call site into runCanonicalPlowMcAnswer -- never two
+            // independently-drifting copies. Every field passed below is byte-identical in
+            // meaning to the pre-extraction inline call (see that function's own doc comment for
+            // the full per-field rationale, condensed there to avoid duplicating documentation).
+            const { callCanonicalPlowMcAnswererForMeshTest } = await import('./plow/plow_mc_answerer');
+            const callResult = await callCanonicalPlowMcAnswererForMeshTest({
+              effectivePrompt,
+              researchQuery,
+              domain: domainForSubstrate,
+              ollamaBaseUrl: 'http://127.0.0.1:11434',
+              model: answerModel,
+              choiceCount: choiceCountForPlow,
+              substrateEnabled,
+              plowAndonEnabled,
+              reasoningMode: reasoningModeForPlow,
+              testModeCorrectAnswerLetter: testModeCorrectAnswerLetterForPlow,
+              researchArmMode: researchArmModeForPlow,
+              researchArmMeshSynergy: researchArmMeshSynergyForPlow,
+              ...(assignedAuthorityForPlow ? { assignedAuthority: assignedAuthorityForPlow } : {}),
+              researchArmDecompose: researchArmDecomposeForPlow,
+              logLabel: `relay-poll route=${route.id.slice(0, 8)}`,
+            });
+            answer = callResult.answer; // null = genuine no-answer, handled by abstain logic below
+            plowTrace = callResult.plowTrace;
           } else if (plowMaxIter > 0) {
             // BP090 Plow Loop 12 + Minor Council Star Chamber
             // Fires 3 local judges per iteration; plurality-votes for answer letter;

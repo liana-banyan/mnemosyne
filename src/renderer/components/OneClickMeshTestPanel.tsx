@@ -296,7 +296,7 @@ export function MeshTestResultSummary({ result, onShareResult, showPerQuestionDe
           <div style={{ fontSize: 14, fontWeight: 700, color: '#facc15' }}>
             Not provenance-sourced this run
             <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400, marginLeft: 6 }}>
-              (enable 12-Blade Plow on WAN Mesh for a sourced-knowledge headline)
+              (enable 12-Blade Plow, Local or WAN Mesh, for a sourced-knowledge headline)
             </span>
           </div>
         )}
@@ -311,7 +311,10 @@ export function MeshTestResultSummary({ result, onShareResult, showPerQuestionDe
           <span style={{ color: result.substrateEnabled ? '#6ee7b7' : '#94a3b8', fontWeight: 700 }}>
             {result.substrateEnabled ? 'ON' : 'OFF'}
           </span>
-          {result.dispatchMode === 'wan_mesh' && (
+          {/* WIRE-THE-LOOP fix (single-box local plow): plowEnabled is now meaningful in
+              local_ollama results too (see one_click_mmlu_pro.ts), so this label shows for
+              either dispatch mode, not just wan_mesh. */}
+          {(result.dispatchMode === 'wan_mesh' || result.plowEnabled) && (
             <>
               {' · answered by '}
               <span style={{ color: result.plowEnabled ? '#facc15' : '#94a3b8', fontWeight: 700 }}>
@@ -506,6 +509,10 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   // wan_mesh with 2+ live peers (see one_click_mmlu_pro.ts's researchArmMeshSynergy doc comment
   // for the exact AND-gate). Off by default, same opt-in pattern as every toggle above.
   const [researchArmMeshSynergy, setResearchArmMeshSynergy] = useState(false);
+  // BP138 Yoke Phase 2: explicit opt-in to the Decompose-and-Eliminate engine. AND-gated with
+  // researchArmMode at the back-end (one_click_mmlu_pro.ts). Only meaningful in wan_mesh +
+  // plowEnabled + researchArmMode. Off by default -- all pre-Phase-2 behavior unchanged.
+  const [researchArmDecompose, setResearchArmDecompose] = useState(false);
   // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (federated
   // substrate layer). Only meaningful when substrateEnabled is true AND mode is wan_mesh --
   // ignored server-side otherwise (see one_click_mmlu_pro.ts config.federatedSubstrateEnabled
@@ -540,7 +547,12 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   const [liftResult, setLiftResult] = useState<HotColdLiftResult | null>(() => loadLastLiftResult());
   const [liftErrorMsg, setLiftErrorMsg] = useState<string | null>(null);
 
-  // Any run (single-shot or lift) in flight -- gates config controls so both actions can't
+  // BP138 Phase 1 Answer Coroner state
+  const [coronerState, setCoronerState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [coronerLog, setCoronerLog] = useState<string[]>([]);
+  const [coronerRoundup, setCoronerRoundup] = useState<Record<string, unknown> | null>(null);
+  const [coronerError, setCoronerError] = useState<string | null>(null);
+  // gates config controls so both actions can't
   // race each other and silently produce a confusing mixed-config result.
   const busy = state === 'running' || liftState === 'running';
 
@@ -622,6 +634,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         plowAndonEnabled,
         researchArmMode,
         researchArmMeshSynergy,
+        researchArmDecompose,
         exactPerCategory: fullPresetSelected ? 5 : undefined,
         federatedSubstrateEnabled,
       });
@@ -634,7 +647,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
       setErrorMsg(String(e));
       setState('error');
     }
-  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, researchArmMeshSynergy, fullPresetSelected, federatedSubstrateEnabled]);
+  }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, researchArmMeshSynergy, researchArmDecompose, fullPresetSelected, federatedSubstrateEnabled]);
 
   // BP138 Yoke: 'mesh-test:hotcold-progress' listener -- a dedicated channel (see
   // one_click_mmlu_pro.ts's opts.progressChannel) so a lift run's two inner
@@ -695,6 +708,33 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
     }
   }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, researchArmMeshSynergy, fullPresetSelected, federatedSubstrateEnabled]);
 
+  // BP138 Phase 1: Answer Coroner -- run autopsy over existing benchmark data in Supabase.
+  const handleRunCoroner = useCallback(async () => {
+    setCoronerState('running');
+    setCoronerLog([]);
+    setCoronerRoundup(null);
+    setCoronerError(null);
+    // subscribe to progress messages
+    const unsub = (window as any).amplify?.onCoronerProgress?.((msg: string) => {
+      setCoronerLog((prev) => [...prev.slice(-199), msg]);
+    });
+    try {
+      const resp = await (window as any).amplify?.runAnswerCoroner?.({ limit: 500 });
+      if (resp?.ok) {
+        setCoronerRoundup(resp.roundup as Record<string, unknown>);
+        setCoronerState('done');
+      } else {
+        setCoronerError(resp?.error ?? 'Coroner failed');
+        setCoronerState('error');
+      }
+    } catch (e) {
+      setCoronerError(String(e));
+      setCoronerState('error');
+    } finally {
+      unsub?.();
+    }
+  }, []);
+
   const runningAccuracy = liveOutcomes.length > 0
     ? liveOutcomes.filter((o) => o.isCorrect).length / liveOutcomes.length
     : null;
@@ -741,18 +781,31 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         borderRadius: 6, padding: '6px 10px',
       }}>
         This is a <b style={{ color: '#6ee7b7' }}>sourced-knowledge</b> claim, not a reasoning
-        claim: "12-Blade Column Plow" mode (WAN Mesh only, checkbox below) answers by fetching
-        facts from named independent authorities (Wikipedia, arXiv, OpenAlex, PubMed, etc.) and
-        shows a receipt under each answer. Without Plow, the model answers from its own
-        knowledge with no receipt -- those answers are shown but are never counted as
-        substrate-sourced (see the headline below).
+        claim: "12-Blade Column Plow" mode (checkbox below, works in Local or WAN Mesh) answers
+        by fetching facts from named independent authorities (Wikipedia, arXiv, OpenAlex,
+        PubMed, browser-authority Google/Perplexity, etc.) and shows a receipt under each
+        answer. Without Plow, the model answers from its own knowledge with no receipt -- those
+        answers are shown but are never counted as substrate-sourced (see the headline below).
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
         {modeButton('auto', 'Auto (WAN if live)')}
         {modeButton('wan_mesh', 'WAN Mesh only')}
-        {modeButton('local_ollama', 'Local Ollama only')}
+        {modeButton('local_ollama', 'Local -- full plow (this machine)')}
       </div>
+      {/* WIRE-THE-LOOP fix (single-box local plow, M0 goal): Local mode now runs the SAME
+          Plow / Research Arm / Browser Authority / Decompose pipeline as WAN mesh, entirely on
+          this machine (this machine's own signed-in Perplexity/Google via browser authority,
+          no WAN peers needed) -- see one_click_mmlu_pro.ts's answerQuestionLocallyViaPlow. Mesh
+          Synergy and federated substrate remain WAN-only (they need 2+ live peers by
+          definition) and stay greyed out below when this mode is selected. */}
+      {mode === 'local_ollama' && (
+        <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, marginTop: -6 }}>
+          Local mode now runs the full plow (Research Arm, Browser Authority, Decompose) on this
+          machine using your own signed-in Perplexity + Google sessions -- no WAN peers required.
+          Mesh Synergy and federated substrate stay WAN-only below.
+        </div>
+      )}
 
       {/* BP133 Yoke #24 Task 1: explicit substrate on/off switch, honored on both local and
           WAN dispatch (see src/main/mesh_test/substrate_toggle.ts). Off by default. */}
@@ -775,27 +828,32 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         </span>
       </label>
 
-      {/* BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow, WAN mode only.
-          Combined with the substrate toggle above, these two switches select Condition
-          A (plow OFF + substrate OFF = single-shot cold), B (plow ON + substrate ON, single
-          pass), or C (plow ON + substrate ON + Andon loop) from Yoke #24's runnable milestone. */}
+      {/* BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow. Combined with the
+          substrate toggle above, these two switches select Condition A (plow OFF + substrate
+          OFF = single-shot cold), B (plow ON + substrate ON, single pass), or C (plow ON +
+          substrate ON + Andon loop) from Yoke #24's runnable milestone. WIRE-THE-LOOP fix
+          (single-box local plow, M0 goal): no longer WAN-only -- in local_ollama mode this
+          machine runs the full plow itself instead of a single Ollama call (see
+          one_click_mmlu_pro.ts's answerQuestionLocallyViaPlow). */}
       <label
         style={{
           display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
-          fontSize: 12, color: mode === 'local_ollama' ? '#475569' : '#94a3b8',
-          cursor: busy || mode === 'local_ollama' ? 'default' : 'pointer',
+          fontSize: 12, color: '#94a3b8',
+          cursor: busy ? 'default' : 'pointer',
           fontFamily: 'system-ui, sans-serif',
         }}
       >
         <input
           type="checkbox"
           checked={plowEnabled}
-          disabled={busy || mode === 'local_ollama'}
+          disabled={busy}
           onChange={(e) => { setPlowEnabled(e.target.checked); setFullPresetSelected(false); }}
         />
-        12-Blade Column Plow {plowEnabled ? 'ON' : 'OFF'} (WAN only)
+        12-Blade Column Plow {plowEnabled ? 'ON' : 'OFF'}
         <span style={{ color: '#475569', fontSize: 10 }}>
-          (ON: the answering peer runs the full specialist-swarm + Miner/Saladin/Furnace pipeline instead of a single Ollama call. Slower, per-question timeout auto-raised to 5min)
+          (ON: the answering machine -- this machine in Local mode, the responding peer in WAN
+          Mesh mode -- runs the full specialist-swarm + Miner/Saladin/Furnace pipeline instead of
+          a single Ollama call. Slower; WAN Mesh per-question timeout auto-raised to 5min)
         </span>
       </label>
       {plowEnabled && (
@@ -868,6 +926,38 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           </label>
         );
       })()}
+
+      {/* BP138 Yoke Phase 2: Decompose-and-Eliminate engine checkbox. Nested under
+          plowEnabled + researchArmMode. WIRE-THE-LOOP fix (single-box local plow, M0 goal):
+          no longer WAN-mesh-gated -- the decompose engine (plow_mc_decompose.ts) needs no WAN
+          peer at all, it runs on whichever machine answers the question (this machine in Local
+          mode, via browser authority reaching this machine's own signed-in sessions). Only
+          `busy` disables it now; unlike Mesh Synergy (which genuinely needs 2+ peers), this
+          toggle is fully functional in every dispatch mode. */}
+      {plowEnabled && researchArmMode && (
+        <label
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, marginLeft: 20,
+            fontSize: 12, color: busy ? '#475569' : '#94a3b8',
+            cursor: busy ? 'default' : 'pointer',
+            fontFamily: 'system-ui, sans-serif',
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={researchArmDecompose}
+            disabled={busy}
+            onChange={(e) => { setResearchArmDecompose(e.target.checked); setFullPresetSelected(false); }}
+          />
+          Decompose+Eliminate {researchArmDecompose ? 'ON' : 'OFF'}
+          <span style={{ color: '#475569', fontSize: 10 }}>
+            (ON: breaks each option into an atomic foundation-fact query, verifies it via
+            browser authority, and eliminates options whose fact verifies false -- deterministic
+            conclude or honest abstain. Requires Plow + Research Arm; works in both Local and WAN
+            Mesh mode. BP138 Phase 2.)
+          </span>
+        </label>
+      )}
 
       {/* BP135 Yoke #34 Phase 5: explicit opt-in to the federated-substrate layer -- pools
           topical eblets across ALL live peers instead of each peer using only its own local
@@ -1140,8 +1230,105 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         Scope note: "Auto" picks WAN mesh dispatch when live peers are online (via the
         relay_routes/relay_route_replies bus, Supabase-relayed, never a raw LAN IP) and
         falls back to local Ollama otherwise. Live multi-peer verification of this exact
-        flow is still pending Bishop/Founder confirming 2 or more peers online — see
+        flow is still pending Bishop/Founder confirming 2 or more peers online -- see
         Yoke #23 Bishop handoff.
+      </div>
+
+      {/* BP138 Phase 1 -- Answer Coroner autopsy panel */}
+      <div style={{ marginTop: 18, borderTop: '1px solid #1e2a38', paddingTop: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 8 }}>
+          Answer Coroner (BP138 Phase 1) -- autopsy over existing benchmark data
+        </div>
+        <button
+          onClick={() => void handleRunCoroner()}
+          disabled={coronerState === 'running' || busy}
+          style={{
+            background: coronerState === 'running' ? '#1e2a38' : '#0f766e',
+            color: '#e2e8f0', border: 'none', borderRadius: 6,
+            padding: '5px 14px', fontSize: 11, fontWeight: 600,
+            cursor: (coronerState === 'running' || busy) ? 'default' : 'pointer',
+            fontFamily: 'system-ui, sans-serif', marginBottom: 8,
+          }}
+        >
+          {coronerState === 'running' ? 'Running autopsy...' : 'Run Answer Coroner'}
+        </button>
+        {coronerState === 'running' && coronerLog.length > 0 && (
+          <div style={{
+            background: '#0a0f17', border: '1px solid #1e2a38', borderRadius: 6,
+            padding: '6px 10px', maxHeight: 100, overflowY: 'auto',
+            fontSize: 10, color: '#64748b', fontFamily: 'monospace', marginBottom: 8,
+          }}>
+            {coronerLog.slice(-10).map((msg, i) => <div key={i}>{msg}</div>)}
+          </div>
+        )}
+        {coronerError && (
+          <div style={{ fontSize: 11, color: '#f87171', marginBottom: 8 }}>Error: {coronerError}</div>
+        )}
+        {coronerRoundup && (() => {
+          // Real CoronerRoundup shape (answer_coroner.ts / amplify.d.ts runAnswerCoroner) --
+          // NOT totalAnalyzed/classCounts/baselineSession, which never existed on this type.
+          const r = coronerRoundup as {
+            totalRecords?: number;
+            correctableWrongs?: number;
+            honestAbstains?: number;
+            byClass?: Record<string, unknown[]>;
+            prioritizedFixList?: Array<{
+              answerClass: string;
+              count: number;
+              exemplars?: Array<{ question?: string; answeredLetter?: string | null; sealedLetter?: string | null }>;
+            }>;
+          };
+          return (
+            <div style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.7 }}>
+              <div style={{ marginBottom: 4 }}>
+                <span style={{ color: '#f0fdf4', fontWeight: 700 }}>Analyzed:</span> {r.totalRecords ?? '?'} answers
+              </div>
+              <div style={{ display: 'flex', gap: 18, marginBottom: 8 }}>
+                <div>
+                  <span style={{ color: '#f87171', fontWeight: 700 }}>Correctable wrongs:</span>{' '}
+                  <span style={{ fontSize: 14, fontWeight: 800, color: '#fca5a5' }}>{r.correctableWrongs ?? '?'}</span>
+                  <span style={{ color: '#475569', fontSize: 9 }}> -- drive to 0</span>
+                </div>
+                <div>
+                  <span style={{ color: '#6ee7b7', fontWeight: 700 }}>Honest abstains:</span>{' '}
+                  <span style={{ fontSize: 14, fontWeight: 800, color: '#a7f3d0' }}>{r.honestAbstains ?? '?'}</span>
+                  <span style={{ color: '#475569', fontSize: 9 }}> -- leave honest</span>
+                </div>
+              </div>
+              {r.byClass && (
+                <div style={{ marginBottom: 6 }}>
+                  <span style={{ color: '#cbd5e1' }}>Class breakdown: </span>
+                  {Object.entries(r.byClass).map(([cls, records]) => (
+                    <span key={cls} style={{ marginRight: 8 }}>
+                      <span style={{ color: '#64748b' }}>{cls}: </span>
+                      <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{records.length}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {r.prioritizedFixList && r.prioritizedFixList.length > 0 && (
+                <div>
+                  <div style={{ color: '#cbd5e1', marginBottom: 2 }}>Prioritized fix list:</div>
+                  {r.prioritizedFixList.slice(0, 5).map((item, i) => (
+                    <div key={i} style={{ marginLeft: 8, fontSize: 10, color: '#94a3b8' }}>
+                      {i + 1}. {item.answerClass} ({item.count})
+                      {item.exemplars && item.exemplars.length > 0 && (
+                        <div style={{ marginLeft: 12, color: '#475569' }}>
+                          {item.exemplars.slice(0, 3).map((ex, j) => (
+                            <div key={j}>
+                              -- {(ex.question ?? '').slice(0, 80)}
+                              {' '}[answered: {ex.answeredLetter ?? '?'}, correct: {ex.sealedLetter ?? '?'}]
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

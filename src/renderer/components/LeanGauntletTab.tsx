@@ -178,6 +178,25 @@ export function LeanFederationPanel() {
     setScanState('done');
   }, [scanState]);
 
+  // BP139 Yoke 0.9.15: "x Forget" control for a stale peer row. Wired to the confirmed
+  // mic:remove-peer IPC (preload micRemovePeer(peerId): Promise<{ok:boolean}>, src/main/preload.ts
+  // ~L1825) via window.amplify.micRemovePeer. That IPC clears the peer from the saved
+  // ConstellationPeer store (src/main/federation/constellation_discovery.ts, used by the MIC
+  // distributed-plow feature) -- a different registry from the live peerDiscovery.getAllPeers()
+  // source that getMeshState() reads for this panel's lanPeers/wanPeers. So a forgotten peer is
+  // dropped from THIS list immediately (local state filter below), but if it is still online and
+  // reachable it can be rediscovered by a later "Refresh Scan" -- forgetting stops MIC from
+  // treating it as a known distributed-plow node, it is not a network-level block.
+  const handleForgetPeer = useCallback(async (peerId: string) => {
+    try {
+      await window.amplify?.micRemovePeer?.(peerId);
+    } catch {
+      // Non-fatal: still drop it from the visible list below
+    }
+    setLanPeers((prev) => prev.filter((p) => p.id !== peerId));
+    setWanPeers((prev) => prev.filter((p) => p.id !== peerId));
+  }, []);
+
   const peerIdDisplay = ownId ? ownId.slice(0, 16) : '—';
   const totalPeers = lanPeers.length + wanPeers.length;
 
@@ -314,6 +333,25 @@ export function LeanFederationPanel() {
                     background: '#22c55e22',
                     color: '#22c55e',
                   }}>{p.phase}</span>
+                  <span style={{ flex: 1 }} />
+                  <button
+                    onClick={() => handleForgetPeer(p.id)}
+                    title="Forget this peer"
+                    style={{
+                      background: 'none',
+                      border: '1px solid #2a1a1a',
+                      borderRadius: 4,
+                      color: '#64748b',
+                      fontSize: 10,
+                      padding: '1px 6px',
+                      cursor: 'pointer',
+                      fontFamily: 'system-ui, sans-serif',
+                      outline: 'none',
+                      flexShrink: 0,
+                    }}
+                  >
+                    ✕ Forget
+                  </button>
                 </div>
               ))}
             </div>

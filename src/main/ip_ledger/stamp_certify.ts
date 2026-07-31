@@ -13,7 +13,7 @@
  *   keypair.private_key_hex — DER pkcs8 Ed25519 private key as hex
  */
 
-import { createHash, createPrivateKey, sign } from 'node:crypto';
+import { createHash, createPrivateKey, sign, randomUUID } from 'node:crypto';
 import ws from 'ws';
 import { getOrCreateKeypair } from '../thorax/ed25519_keypair';
 import { getRingBearerIdentity } from './ring_bearer_keygen';
@@ -33,7 +33,12 @@ export type ContributionType =
   // The real, callable, reusable pattern is THIS file's stampCertify(), which
   // writes to ip_ledger_entries (a different table from `ip_ledger`). Mirrored
   // that instead — see stampCertifyConnection() below.
-  | 'member_connection';
+  | 'member_connection'
+  // WIRE-THE-LOOP fix (collective-learning replication): a plow_mc_answerer.ts /
+  // plow_mc_decompose.ts solved answer (sourced fact + reasoning + sourceUrl + authority),
+  // stamped so mesh_diff_loop.ts's existing 15-minute Merkle-diff sweep actually has rows to
+  // find and replicate to peers -- see plow_mc_answerer.ts's writeAndReplicateSolvedAnswer().
+  | 'plow_mc_answer_solved';
 
 export interface StampCertifyParams {
   contribution_type: ContributionType;
@@ -88,9 +93,17 @@ export async function stampCertify(params: StampCertifyParams): Promise<StampCer
   const supabase = getSupabaseClient();
   const stamped_at = new Date().toISOString();
 
-  const { data, error } = await supabase
+  // BP139 FIX: entry_id is generated client-side and we do NOT read the row back
+  // (no .select().single() = return=minimal). ip_ledger_entries has an anon INSERT policy but NO
+  // anon SELECT policy, so reading the inserted row back (PostgREST's default return=representation)
+  // failed RLS with "new row violates row-level security policy" and silently dropped EVERY
+  // replication write (the collective-learning share-back never persisted). A client-generated
+  // entry_id lets the receipt still carry a real id without needing a read-back / anon SELECT.
+  const entry_id = randomUUID();
+  const { error } = await supabase
     .from('ip_ledger_entries')
     .insert({
+      entry_id,
       ring_bearer_peer_id: identity.peer_id,
       contribution_type:   params.contribution_type,
       payload_hash:        `\\x${payloadHashHex}`,
@@ -98,9 +111,7 @@ export async function stampCertify(params: StampCertifyParams): Promise<StampCer
       stamped_at,
       signature_ed25519:   `\\x${signatureHex}`,
       mesh_replicated:     false,
-    })
-    .select('entry_id')
-    .single();
+    });
 
   if (error) {
     console.error('[stamp_certify] insert failed:', error.message);
@@ -114,7 +125,7 @@ export async function stampCertify(params: StampCertifyParams): Promise<StampCer
     };
   }
 
-  const entryId = (data as { entry_id: string } | null)?.entry_id ?? '';
+  const entryId = entry_id;
   console.log(`[stamp_certify] stamped entry_id=${entryId} type=${params.contribution_type}`);
 
   return {

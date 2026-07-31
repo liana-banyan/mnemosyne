@@ -253,6 +253,25 @@ export interface CanonicalPlowMcConfig {
    *  opt-in-only payload field in that file), so an old/mesh-synergy-unaware peer never even
    *  sees this field. */
   assignedAuthority?: 'user_google' | 'user_perplexity' | 'swarm';
+  /** BP138 Yoke Phase 2, OPT-IN/DEFAULT FALSE. Enables the Decompose-and-Eliminate engine
+   *  (plow_mc_decompose.ts) BEFORE the full swarm runs. The engine breaks the question into
+   *  per-option FOUNDATION FACTS, verifies each via browser authority, and eliminates options
+   *  whose foundation fact is falsified by a real source. 1 survivor = deterministic answer.
+   *  >1 survivors = Tactic 1 tie-break. 0 survivors / authority-empty = honest ABSTAIN and
+   *  fall-through to the existing plow (never guess). researchArmMode AND researchArmDecompose
+   *  must BOTH be true; when either is off the engine is unreachable and this function's
+   *  behavior is byte-for-byte identical to pre-Phase-2. */
+  researchArmDecompose?: boolean;
+  /** BP138 Yoke Phase 3, OPTIONAL/ADDITIVE. Present only when the WAN-mesh asker dispatched
+   *  this question in option-fan-out mode and assigned THIS peer one specific answer option
+   *  to verify (e.g. 'C'). When set AND researchArmOptionFanOut is true, this peer verifies
+   *  ONLY that option's foundation fact and returns an option_verdict receipt -- the full
+   *  swarm/voter pipeline does NOT run. Absent/undefined = normal full-plow behavior. */
+  assignedOption?: string;
+  /** BP138 Yoke Phase 3 flag, OPT-IN/DEFAULT FALSE. AND-gated with researchArmMode. Enables
+   *  the option-fan-out mesh mode: when assignedOption is present and this flag is true, this
+   *  peer verifies only its assigned option instead of answering the full question. */
+  researchArmOptionFanOut?: boolean;
 }
 
 /** BP133 Yoke #27: per-voter diagnostic detail, always computed (cheap: just string lengths
@@ -594,6 +613,125 @@ function matchFreeTextAnswerToOption(
   return { letter: top.letter, score: top.score };
 }
 
+// ─── WIRE-THE-LOOP fix (Founder mandate): "authority picks the option" ─────────────────────
+//
+// THE BUG (DB-confirmed, Founder brief): matchFreeTextAnswerToOption() above is a bare
+// token-overlap heuristic between the authority's distilled FACT snippet and each option's OWN
+// wording. For a plain Google lookup snippet that never saw the option list, the snippet's
+// wording routinely shares near-zero tokens with the option text even when the snippet is the
+// correct answer in different words -- matchScore=0.00, matchedOption=none, honest-looking but
+// actually a discarded correct answer. Real sourced answers were being thrown away.
+//
+// THE FIX: buildBrowserAuthorityQueryUrl() (browser_authority_types.ts) now sends Perplexity the
+// question WITH its options embedded, asking it to reply "Answer: <letter>" first. This function
+// is the extraction half -- an EXPLICIT-LETTER reader, tried BEFORE the token-overlap fallback.
+// It only fires on a genuinely stated letter (the vendor's own pick), never a guess: an
+// unanchored/ambiguous response returns null, same honest-null contract as
+// matchFreeTextAnswerToOption. Google's plain lookup snippets (no options in the query, per
+// buildBrowserAuthorityQueryUrl's user_google branch) will almost never contain this pattern by
+// chance, so this stays a no-op there -- Google answers keep falling through to the existing
+// token-overlap fallback (matchFreeTextAnswerToOption), unchanged.
+function extractChosenLetterFromAuthorityText(
+  answerText: string,
+  options: McOption[],
+): { letter: string; score: number } | null {
+  const validLetters = new Set(options.map((o) => o.letter.toUpperCase()));
+  const patterns: RegExp[] = [
+    /\banswer\s*[:\-]?\s*\(?([A-J])\)?\b/i,
+    /\bcorrect (?:option|answer|choice) is\s*\(?([A-J])\)?\b/i,
+    /^\s*\(?([A-J])\)[\s.:\-]/, // leading "(B) ..." / "B) ..." / "B. ..."
+    /\boption\s+\(?([A-J])\)?\s+is (?:correct|right)\b/i,
+  ];
+  for (const re of patterns) {
+    const m = answerText.match(re);
+    const letter = m?.[1]?.toUpperCase();
+    if (letter && validLetters.has(letter)) {
+      return { letter, score: 1 };
+    }
+  }
+  return null;
+}
+
+/**
+ * Tries the explicit-letter reader first (the authority stating its own pick), falling back to
+ * the token-overlap/numeric matcher only when no explicit letter was found -- "fall back to the
+ * local matcher only if the authority declines" per the Founder's design. Never returns a match
+ * neither function would have honestly returned on its own.
+ */
+function resolveAuthorityLetterMatch(
+  answerText: string,
+  options: McOption[],
+): { letter: string; score: number; method: 'explicit_letter' | 'token_or_numeric_match' } | null {
+  const explicit = extractChosenLetterFromAuthorityText(answerText, options);
+  if (explicit) return { ...explicit, method: 'explicit_letter' };
+  const fallback = matchFreeTextAnswerToOption(answerText, options);
+  if (fallback) return { ...fallback, method: 'token_or_numeric_match' };
+  return null;
+}
+
+// ─── WIRE-THE-LOOP fix: writeback + replication for EVERY solved answer ────────────────────
+//
+// Founder mandate parts 2+3: on every solved answer, write {question, answer, reasoning,
+// sourceUrl, authority} back to the local substrate (so future questions can serve it, $0,
+// zero network) AND stamp it into ip_ledger_entries (mesh_replicated:false) so the EXISTING
+// mesh_diff_loop.ts 15-minute Merkle-diff sweep (previously starved -- "no unreplicated
+// entries" -- because nothing solved by the plow ever landed in that table) actually has rows
+// to find and push to peers. Both writes are individually try/caught and fully non-fatal: a
+// failed write here must never turn a correct answer into an error for the caller.
+async function writeAndReplicateSolvedAnswer(params: {
+  researchQuery: string;
+  domain: string;
+  chosenLetter: string;
+  optionText: string;
+  reasoning: string;
+  sourceUrl?: string;
+  authority: string;
+}): Promise<void> {
+  const now = Date.now();
+  try {
+    await writeVerifiedEblet({
+      question: params.researchQuery,
+      answer: `${params.chosenLetter}) ${params.optionText}`,
+      provenance: `plow_mc_answerer:solved:${params.authority}${params.sourceUrl ? ':' + params.sourceUrl : ''}`,
+      verified: true,
+      sha256: '',
+      timestamp: now,
+      class: 'whole_answer',
+      reasoning: params.reasoning,
+      verdict: 'unverified',
+    });
+  } catch (err) {
+    console.warn('[plow_mc_answerer] writeAndReplicateSolvedAnswer: local eblet write failed (non-fatal):', err);
+  }
+  try {
+    // Dynamic import (same convention this file already uses for cross-module main-process
+    // calls, e.g. `await import('../index')` above) -- keeps this module decoupled from the
+    // ip_ledger subsystem at load time and avoids any import-cycle risk.
+    const { stampCertify } = await import('../ip_ledger/stamp_certify');
+    const result = await stampCertify({
+      contribution_type: 'plow_mc_answer_solved',
+      payload: JSON.stringify({
+        question: params.researchQuery,
+        domain: params.domain,
+        chosenLetter: params.chosenLetter,
+        answer: params.optionText,
+        reasoning: params.reasoning,
+        sourceUrl: params.sourceUrl ?? null,
+        authority: params.authority,
+        solvedAt: now,
+      }),
+      payload_url: params.sourceUrl,
+    });
+    if (!result.ok) {
+      console.warn('[plow_mc_answerer] writeAndReplicateSolvedAnswer: replication stamp reported not-ok (non-fatal):', result.error);
+    } else {
+      console.log(`[plow_mc_answerer] writeAndReplicateSolvedAnswer: replicated entry_id=${result.entry_id}`);
+    }
+  } catch (err) {
+    console.warn('[plow_mc_answerer] writeAndReplicateSolvedAnswer: replication stamp threw (non-fatal):', err);
+  }
+}
+
 // ─── BP137 Yoke v2b Stage D.4: per-round +/- eblet ledger writes ────────────────────────────
 
 /** BP137 Yoke v2b Stage D.4: reference pattern is csia_research.ts's runCsiaConcordanceGateAnd
@@ -890,6 +1028,14 @@ export async function runCanonicalPlowMcAnswer(
       },
     };
     let meshSynergyResult: BrowserAuthorityLookupResult | null = null;
+    const meshSynergyOptions = parseOptionsFromPrompt(mcPromptWithSubstrate);
+    // WIRE-THE-LOOP fix part 1: this is THE exact trace shape (resultFound=yes / matchScore=0.00
+    // / matchedOption=none) the Founder's bug report quoted -- a mesh-synergy peer assigned
+    // user_perplexity got a bare-question lookup with no options in the query, then the old
+    // bare matchFreeTextAnswerToOption() call below silently discarded a genuinely correct
+    // sourced answer as DISCORDANT. Fix: embed the MC options into the Perplexity query (same
+    // mcOptions mechanism as Stage F2) so it states its own pick, and read that first.
+    const meshSynergyOptionTexts = meshSynergyOptions.map((o) => `${o.letter}) ${o.text}`);
     try {
       // Force researchArmBrowserAuthority:true for THIS call only -- being assigned a browser
       // authority role by the asker's mesh-synergy dispatch IS the intent-to-use-browser-
@@ -902,19 +1048,37 @@ export async function runCanonicalPlowMcAnswer(
       // touching a real browser session -- see that function's own "HONEST NULL PATHS" doc.
       meshSynergyResult = await runBrowserAuthorityLookup(
         researchQuery,
-        { ...config, researchArmBrowserAuthority: true, preferredAuthority: assignedAuthority },
+        { ...config, researchArmBrowserAuthority: true, preferredAuthority: assignedAuthority, mcOptions: meshSynergyOptionTexts },
         meshSynergyBridge,
       );
     } catch (err) {
       console.warn(`[plow_mc_answerer] Stage F3 mesh-synergy ${assignedAuthority} lookup threw (non-fatal, honest null):`, err);
       meshSynergyResult = null;
     }
-    const meshSynergyOptions = parseOptionsFromPrompt(mcPromptWithSubstrate);
-    const meshSynergyMatch = meshSynergyResult
-      ? matchFreeTextAnswerToOption(meshSynergyResult.fact, meshSynergyOptions)
+    const meshSynergyResolved = meshSynergyResult
+      ? resolveAuthorityLetterMatch(meshSynergyResult.fact, meshSynergyOptions)
       : null;
+    const meshSynergyMatch = meshSynergyResolved;
     const meshSynergyLatencyMs = Date.now() - startMs;
     const meshSynergyChosenLetter = meshSynergyMatch?.letter ?? null;
+    // WIRE-THE-LOOP fix parts 2+3: a genuinely resolved mesh-synergy slice is a solved answer --
+    // write it back + replicate it, same as every other solved-answer path in this file.
+    if (meshSynergyChosenLetter && meshSynergyResult) {
+      const meshSynergyOptionText = meshSynergyOptions.find((o) => o.letter === meshSynergyChosenLetter)?.text ?? '';
+      try {
+        await writeAndReplicateSolvedAnswer({
+          researchQuery,
+          domain,
+          chosenLetter: meshSynergyChosenLetter,
+          optionText: meshSynergyOptionText,
+          reasoning: meshSynergyResult.fact,
+          sourceUrl: meshSynergyResult.sourceUrl,
+          authority: assignedAuthority,
+        });
+      } catch (err) {
+        console.warn('[plow_mc_answerer] mesh-synergy writeback/replicate failed (non-fatal):', err);
+      }
+    }
     // Honesty firewall: a lookup that returned nothing usable, or returned a fact that matched
     // no MC option, is a genuine NO-ANSWER for this peer's assigned slice -- never guessed,
     // never silently defaulted to a letter. DISCORDANT (not a fabricated CONCORDANT) mirrors
@@ -963,6 +1127,119 @@ export async function runCanonicalPlowMcAnswer(
       }] : [],
       meshSynergyAssigned: assignedAuthority,
     };
+  }
+
+  // ── BP138 Yoke Phase 2: Decompose-and-Eliminate engine ──────────────────────
+  // OPT-IN via researchArmMode && researchArmDecompose, both default false/absent. When either
+  // is off, decomposeOn is false and runDecomposeAndEliminate is NEVER imported -- provable by
+  // the single guard below. Every caller that predates this Phase sees zero behavioral change
+  // (same byte-identical code path through Psionic/browser-authority/swarm/voters as before).
+  //
+  // PLACEMENT: after mesh-synergy (which already returns early) and before Psionic/F2/swarm so
+  // that the engine can provide a deterministic answer before any network specialist fires.
+  // If the engine returns null (authority-empty / all-unresolved / decompose-failed), execution
+  // falls through to the EXISTING plow pipeline unchanged -- this is the honest escalation path.
+  const decomposeOn = !!(config.researchArmMode && config.researchArmDecompose);
+  if (decomposeOn) {
+    try {
+      const { runDecomposeAndEliminate } = await import('./plow_mc_decompose');
+      const { runBrowserAuthorityQueryFromMain } = await import('../index');
+      const decomposeBridge: BrowserAuthorityBridge = {
+        async runQueryInUserBrowser(query) {
+          try { return await runBrowserAuthorityQueryFromMain(query); } catch { return null; }
+        },
+      };
+      const decomposeResult = await runDecomposeAndEliminate({
+        questionId,
+        question: researchQuery,
+        options: parseOptionsFromPrompt(mcPromptWithSubstrate).map((o) => o.text),
+        ollamaBaseUrl: config.ollamaBaseUrl ?? 'http://127.0.0.1:11434',
+        model: config.model,
+        bridge: decomposeBridge,
+        config: {
+          researchArmMode: true,
+          researchArmDecompose: true,
+          researchArmBrowserAuthority: true,
+        },
+        onProgress,
+      });
+      if (decomposeResult && decomposeResult.chosenLetter !== null) {
+        // Deterministic answer from decompose -- build a CanonicalPlowMcResult receipt
+        onProgress?.(`decompose-conclusion:${decomposeResult.chosenLetter}`);
+        const decomposeLatencyMs = decomposeResult.latencyMs;
+        // BP138 Fix A honesty invariant: only a genuinely sourced basis earns CONCORDANT --
+        // 'sole-survivor-elimination' (every other option falsified by a real sourced fact) or
+        // 'verified-true-fact' (the surviving option's own foundation fact was independently
+        // verified-true). Any other/absent basis alongside a non-null chosenLetter would be an
+        // undisclosed pick and must NOT be reported at full confidence -- demote to PARTIAL so
+        // downstream BMV/gates treat it as less certain. The per-option `tactic` field on each
+        // receipt is left untouched either way for audit.
+        const decomposeHasSourcedBasis =
+          decomposeResult.basis === 'sole-survivor-elimination' ||
+          decomposeResult.basis === 'verified-true-fact';
+        const decomposeConcordance: ConcordanceClass = decomposeHasSourcedBasis ? 'CONCORDANT' : 'PARTIAL';
+        const decomposeBmv = computeBmvScore(0, 0, 0, 0, decomposeConcordance, 0, decomposeLatencyMs);
+        // WIRE-THE-LOOP fix parts 2+3: this is a genuinely SOLVED answer (sourced elimination or
+        // a verified-true foundation fact) -- write it back + replicate it. Only on the sourced-
+        // basis branch (never the undisclosed-basis PARTIAL demotion) -- an unsourced pick must
+        // never be taught to the mesh as if it were a confirmed fact.
+        if (decomposeHasSourcedBasis) {
+          const decomposeSourceUrl = decomposeResult.receipts.find((r) => r.option === decomposeResult.chosenLetter && r.sourceUrl)?.sourceUrl
+            ?? decomposeResult.receipts.find((r) => r.sourceUrl)?.sourceUrl;
+          const decomposeOptionText = decomposeResult.receipts.find((r) => r.option === decomposeResult.chosenLetter)?.optionText ?? '';
+          try {
+            await writeAndReplicateSolvedAnswer({
+              researchQuery,
+              domain,
+              chosenLetter: decomposeResult.chosenLetter,
+              optionText: decomposeOptionText,
+              reasoning: decomposeResult.traceSummary,
+              sourceUrl: decomposeSourceUrl,
+              authority: 'decompose-and-eliminate',
+            });
+          } catch (err) {
+            console.warn('[plow_mc_answerer] decompose writeback/replicate failed (non-fatal):', err);
+          }
+        }
+        return {
+          questionId,
+          domain,
+          chosenLetter: decomposeResult.chosenLetter,
+          voterLetters: [decomposeResult.chosenLetter],
+          voterDiagnostics: [{
+            temperature: 0,
+            status: 'parsed_ok',
+            responseChars: decomposeResult.traceSummary.length,
+            rawPreview: `decompose-and-eliminate: ${decomposeResult.traceSummary.slice(0, 200)}`,
+          }],
+          concordance: decomposeConcordance,
+          bmvScore: decomposeBmv,
+          gateOutcomes: evaluateGates(0, decomposeBmv, decomposeConcordance, decomposeLatencyMs),
+          specialistsUsed: [],
+          candidatesRaw: 0,
+          candidatesPostMiner: 0,
+          candidatesPostFurnace: 0,
+          andonTriggered: false,
+          andonRetries: 0,
+          ebletsWritten: 0,
+          latencyMs: decomposeLatencyMs,
+          traceSummary: decomposeResult.traceSummary,
+          provenanceReceipts: decomposeResult.receipts
+            .filter((r) => r.verdict === 'kill' && r.sourceUrl)
+            .map((r) => ({
+              source: `decompose-eliminate:${r.option}@${r.sourceUrl!.slice(0, 60)}`,
+              contentHash: createHash('sha256').update(r.fact ?? r.foundationQuery).digest('hex').slice(0, 16),
+              verified: true,
+              ...(r.sourceUrl ? { provenanceUrl: r.sourceUrl } : {}),
+            })),
+        };
+      }
+      // decomposeResult is null OR chosenLetter is null (honest ABSTAIN / authority-empty):
+      // fall through to existing Psionic/browser-authority/swarm pipeline unchanged.
+    } catch (err) {
+      // Non-fatal -- fall through to existing plow
+      console.warn('[plow_mc_answerer] Phase 2 decompose threw (non-fatal, falling through):', err);
+    }
   }
 
   // ── BP137 Yoke v2b Stage D.1: Psionic zero-LLM accelerator ────────────────────────────────
@@ -1089,12 +1366,24 @@ export async function runCanonicalPlowMcAnswer(
   let browserPerplexityMatch: { letter: string; score: number } | null = null;
   let browserAuthorityAttempted = false;
   let browserAuthorityCorroboration: 'agree' | 'disagree' | 'single_google' | 'single_perplexity' | 'none' = 'none';
+  // WIRE-THE-LOOP fix part 5 (compute/reasoning routing): earlyAnswerTypeForBrowserAuthority is
+  // read once here (was already computed inside the old lookup_fact-only branch) so both the
+  // lookup and the widened compute/reasoning gate below share one classification call.
+  let earlyAnswerTypeForBrowserAuthority: AnswerType | undefined;
   if (browserAuthorityOn) {
-    const earlyAnswerTypeForBrowserAuthority = classifyAnswerType(researchQuery);
-    if (earlyAnswerTypeForBrowserAuthority === 'lookup_fact') {
+    earlyAnswerTypeForBrowserAuthority = classifyAnswerType(researchQuery);
+    // WIRE-THE-LOOP fix part 5: a computable/reasoning question (e.g. the density calc -- 750
+    // kg / (0.25m x 0.10m x 50.0m) = 600 kg/m3) must route to Perplexity (which reasons AND
+    // computes), never to Google/the wikipedia-style specialist swarm, which cannot solve it.
+    // isLookupType keeps Google in play ONLY for genuine lookup_fact questions (its existing,
+    // unchanged role); isComputeOrReasoningType is the NEW gate that fires Perplexity-only for
+    // the other two answer types -- Google is never called on this branch.
+    const isLookupType = earlyAnswerTypeForBrowserAuthority === 'lookup_fact';
+    const isComputeOrReasoningType = earlyAnswerTypeForBrowserAuthority === 'computable' || earlyAnswerTypeForBrowserAuthority === 'reasoning';
+    if (isLookupType || isComputeOrReasoningType) {
       browserAuthorityAttempted = true;
       onProgress?.('browser-authority-lookup-first');
-      console.log(`[plow_mc_answerer] Stage F2 seq=1 browser-authority-first: firing BEFORE swarm at t=${Date.now() - startMs}ms.`);
+      console.log(`[plow_mc_answerer] Stage F2 seq=1 browser-authority-first: firing BEFORE swarm at t=${Date.now() - startMs}ms (answerType=${earlyAnswerTypeForBrowserAuthority}).`);
       // REAL bridge (not createNotWiredBridge()): reaches index.ts's
       // runBrowserAuthorityQueryFromMain() via a dynamic import -- same dynamic-import
       // rationale as Integration-1's own bridge (index.ts already dynamically imports THIS
@@ -1110,22 +1399,30 @@ export async function runCanonicalPlowMcAnswer(
           }
         },
       };
+      // WIRE-THE-LOOP fix part 1: the MC options this question actually has, embedded into
+      // Perplexity's prompt (buildMcAwareQueryText, via BrowserAuthorityAdapterConfig.mcOptions)
+      // so IT picks a letter and states its reasoning + source, instead of a bare lookup snippet
+      // that a token-overlap matcher then has to guess against.
+      const mcOptionsForBrowserAuthority = parseOptionsFromPrompt(mcPromptWithSubstrate);
+      const mcOptionTextsForQuery = mcOptionsForBrowserAuthority.map((o) => `${o.letter}) ${o.text}`);
       // Sequential, not Promise.all: runBrowserAuthorityQueryFromMain() (index.ts) guards a
       // single shared <webview> with browserAuthorityMainCallInFlight -- a concurrent second
       // call would resolve null immediately rather than genuinely querying Perplexity, per
       // that function's own documented "already in flight" honest-null path. This also happens
       // to match the F2 spec's own "sequential-first is the safer/clearer read" note.
-      try {
-        browserGoogleResult = await runBrowserAuthorityLookup(
-          researchQuery, { ...config, preferredAuthority: 'user_google' }, browserBridge,
-        );
-      } catch (err) {
-        console.warn('[plow_mc_answerer] Stage F2 google lookup threw (non-fatal, honest null):', err);
-        browserGoogleResult = null;
+      if (isLookupType) {
+        try {
+          browserGoogleResult = await runBrowserAuthorityLookup(
+            researchQuery, { ...config, preferredAuthority: 'user_google' }, browserBridge,
+          );
+        } catch (err) {
+          console.warn('[plow_mc_answerer] Stage F2 google lookup threw (non-fatal, honest null):', err);
+          browserGoogleResult = null;
+        }
       }
       try {
         browserPerplexityResult = await runBrowserAuthorityLookup(
-          researchQuery, { ...config, preferredAuthority: 'user_perplexity' }, browserBridge,
+          researchQuery, { ...config, preferredAuthority: 'user_perplexity', mcOptions: mcOptionTextsForQuery }, browserBridge,
         );
       } catch (err) {
         console.warn('[plow_mc_answerer] Stage F2 perplexity lookup threw (non-fatal, honest null):', err);
@@ -1137,13 +1434,17 @@ export async function runCanonicalPlowMcAnswer(
         `-- swarm has NOT fired yet.`,
       );
 
-      const mcOptionsForBrowserAuthority = parseOptionsFromPrompt(mcPromptWithSubstrate);
-      browserGoogleMatch = browserGoogleResult
-        ? matchFreeTextAnswerToOption(browserGoogleResult.fact, mcOptionsForBrowserAuthority)
+      // WIRE-THE-LOOP fix part 1: explicit-letter-first, token/numeric-match fallback -- see
+      // resolveAuthorityLetterMatch()'s own doc comment for why this replaces the bare
+      // matchFreeTextAnswerToOption() call that was silently discarding real sourced answers.
+      const googleResolved = browserGoogleResult
+        ? resolveAuthorityLetterMatch(browserGoogleResult.fact, mcOptionsForBrowserAuthority)
         : null;
-      browserPerplexityMatch = browserPerplexityResult
-        ? matchFreeTextAnswerToOption(browserPerplexityResult.fact, mcOptionsForBrowserAuthority)
+      const perplexityResolved = browserPerplexityResult
+        ? resolveAuthorityLetterMatch(browserPerplexityResult.fact, mcOptionsForBrowserAuthority)
         : null;
+      browserGoogleMatch = googleResolved ? { letter: googleResolved.letter, score: googleResolved.score } : null;
+      browserPerplexityMatch = perplexityResolved ? { letter: perplexityResolved.letter, score: perplexityResolved.score } : null;
 
       // Build item 3 -- corroboration bookkeeping ONLY (never a fabricated blended answer): both
       // matched facts (when present) are injected as SEPARATE candidates below, and the
@@ -1160,8 +1461,76 @@ export async function runCanonicalPlowMcAnswer(
       }
       console.log(
         `[plow_mc_answerer] Stage F2 browser-authority-first corroboration=${browserAuthorityCorroboration} ` +
-        `googleMatch=${browserGoogleMatch?.letter ?? 'null'} perplexityMatch=${browserPerplexityMatch?.letter ?? 'null'}.`,
+        `googleMatch=${browserGoogleMatch?.letter ?? 'null'}(${googleResolved?.method ?? '-'}) ` +
+        `perplexityMatch=${browserPerplexityMatch?.letter ?? 'null'}(${perplexityResolved?.method ?? '-'}).`,
       );
+
+      // ── WIRE-THE-LOOP fix part 1: NEVER abstain when the authority actually answered ──────
+      // This is the Founder-mandated short-circuit: a real resultFound=yes answer with a
+      // resolvable letter is ACCEPTED immediately -- it does not need to survive the swarm's
+      // 3-voter arbitration to count (the old behavior: inject as a candidate, hope the voters
+      // pick up on it, silently abstain when the relevance gate or DISCORDANT voters threw it
+      // away downstream). Prefer Perplexity's resolution when both fired and disagree -- it was
+      // asked to reason over the actual options; a corroborating Google agreement is logged via
+      // browserAuthorityCorroboration either way, never silently dropped.
+      const acceptedResolution = perplexityResolved ?? googleResolved;
+      const acceptedResult = perplexityResolved ? browserPerplexityResult : browserGoogleResult;
+      const acceptedAuthorityName = perplexityResolved ? 'user_perplexity' : 'user_google';
+      if (acceptedResolution && acceptedResult) {
+        const acceptedOptionText = mcOptionsForBrowserAuthority.find((o) => o.letter === acceptedResolution.letter)?.text ?? '';
+        onProgress?.(`browser-authority-accepted:${acceptedResolution.letter}`);
+        const acceptLatencyMs = Date.now() - startMs;
+        const acceptConcordance: ConcordanceClass = 'CONCORDANT';
+        const acceptBmv = computeBmvScore(0, 0, 0, 0, acceptConcordance, 0, acceptLatencyMs);
+        try {
+          await writeAndReplicateSolvedAnswer({
+            researchQuery,
+            domain,
+            chosenLetter: acceptedResolution.letter,
+            optionText: acceptedOptionText,
+            reasoning: acceptedResult.fact,
+            sourceUrl: acceptedResult.sourceUrl,
+            authority: acceptedAuthorityName,
+          });
+        } catch (err) {
+          console.warn('[plow_mc_answerer] browser-authority-accepted writeback/replicate failed (non-fatal):', err);
+        }
+        return {
+          questionId,
+          domain,
+          chosenLetter: acceptedResolution.letter,
+          voterLetters: [acceptedResolution.letter],
+          voterDiagnostics: [{
+            temperature: 0,
+            status: 'parsed_ok',
+            responseChars: acceptedResult.fact.length,
+            rawPreview: `${acceptedAuthorityName} (${acceptedResolution.method}): ${acceptedResult.fact.slice(0, 200)}`,
+          }],
+          concordance: acceptConcordance,
+          bmvScore: acceptBmv,
+          gateOutcomes: evaluateGates(0, acceptBmv, acceptConcordance, acceptLatencyMs),
+          specialistsUsed: [],
+          candidatesRaw: 0,
+          candidatesPostMiner: 0,
+          candidatesPostFurnace: 0,
+          andonTriggered: andonRetry > 0,
+          andonRetries: andonRetry,
+          ebletsWritten: 1,
+          latencyMs: acceptLatencyMs,
+          traceSummary:
+            `browserAuthorityAccepted=true authority=${acceptedAuthorityName} method=${acceptedResolution.method} ` +
+            `matchedOption=${acceptedResolution.letter} matchScore=${acceptedResolution.score.toFixed(2)} ` +
+            `corroboration=${browserAuthorityCorroboration} andonRetries=${andonRetry}`,
+          provenanceReceipts: [{
+            source: acceptedAuthorityName,
+            contentHash: createHash('sha256').update(acceptedResult.fact).digest('hex').slice(0, 16),
+            verified: acceptedResult.verified,
+            ...(acceptedResult.sourceUrl ? { provenanceUrl: acceptedResult.sourceUrl } : {}),
+          }],
+          answerType: earlyAnswerTypeForBrowserAuthority,
+          browserAuthorityCorroboration,
+        };
+      }
     }
   }
 
@@ -1845,6 +2214,29 @@ export async function runCanonicalPlowMcAnswer(
     },
   );
 
+  // WIRE-THE-LOOP fix parts 2+3: the swarm+voter path's own genuinely-solved answer (CONCORDANT,
+  // a real chosenLetter, at least one fact actually shown to the voters) also gets written back
+  // + replicated -- runScribe above writes per-candidate COMPONENT facts (unchanged, pre-existing
+  // behavior), this is the missing WHOLE-ANSWER write for this path, same as the browser-
+  // authority short-circuit and decompose-and-eliminate paths above.
+  if (concordance === 'CONCORDANT' && chosenLetter && factsForArbitration.length > 0) {
+    const solvedOptionText = parseOptionsFromPrompt(mcPromptWithSubstrate).find((o) => o.letter === chosenLetter)?.text ?? '';
+    const sourcedCandidate = factsForArbitration.find((c) => !!c.provenance_url) ?? factsForArbitration[0];
+    try {
+      await writeAndReplicateSolvedAnswer({
+        researchQuery,
+        domain,
+        chosenLetter,
+        optionText: solvedOptionText,
+        reasoning: reasoningForLedger ?? sourcedCandidate.content,
+        sourceUrl: sourcedCandidate.provenance_url,
+        authority: sourcedCandidate.source,
+      });
+    } catch (err) {
+      console.warn('[plow_mc_answerer] swarm-voter writeback/replicate failed (non-fatal):', err);
+    }
+  }
+
   const psionicMarkerTrace = psionicConcurred ? ' psionicConcurred=true' : psionicDiscorded ? ' psionicDiscorded=true' : '';
   // BP137 Yoke v2b Stage F2: only appended when the early browser-authority-first block
   // actually attempted a lookup (classified 'lookup_fact' AND browserAuthorityOn) -- empty
@@ -1894,4 +2286,136 @@ export async function runCanonicalPlowMcAnswer(
     // that this peer ran the ordinary full pipeline for its mesh-synergy slot.
     ...(meshSynergyOn && assignedAuthority ? { meshSynergyAssigned: assignedAuthority } : {}),
   };
+}
+
+// ─── WIRE-THE-LOOP fix (single-box local plow, M0 goal) ──────────────────────────────────────
+//
+// index.ts's startRelayRoutePoll() (the WAN relay-route responder) had ONE inline call site
+// that builds a CanonicalPlowMcConfig from the research-arm flag set and turns the resulting
+// CanonicalPlowMcResult into a persistable plowTrace object. one_click_mmlu_pro.ts's new
+// "Local -- full plow on THIS machine" mode (runLocalMode, plowEnabled branch) needs the
+// EXACT same call -- not a second, independently-typed-out copy that can silently drift from
+// the WAN responder's version over time. This function is that call site, extracted verbatim
+// (same field-for-field config construction, same plowTrace key-for-key mapping) so BOTH
+// callers -- index.ts's responder (rewired to call this, see that file's own comment at its
+// call site) and one_click_mmlu_pro.ts's runLocalMode -- share exactly one place that invokes
+// runCanonicalPlowMcAnswer for a mesh-test MC question. Every field below is byte-identical in
+// meaning to the pre-extraction inline block; only the per-field "why" comments were condensed
+// (the full rationale for each researchArm* sub-flag fan-in still lives on CanonicalPlowMcConfig
+// itself, above, and is not repeated here to avoid duplicating documentation two places).
+
+export interface PlowMcAnswererCallParams {
+  /** Already substrate-gated (applySubstrateToggle already ran, or substrate was off) --
+   *  passed straight to runCanonicalPlowMcAnswer as mcPromptWithSubstrate, exactly like the
+   *  pre-extraction inline call. */
+  effectivePrompt: string;
+  researchQuery: string;
+  domain: string;
+  ollamaBaseUrl: string;
+  model: string;
+  choiceCount: number;
+  /** Used only for the plowTrace.condition label (A_cold / B_warm_single_pass / C_warm_andon),
+   *  matching the pre-extraction inline call's own condition derivation. */
+  substrateEnabled: boolean;
+  plowAndonEnabled: boolean;
+  reasoningMode: boolean;
+  testModeCorrectAnswerLetter: string | null;
+  researchArmMode: boolean;
+  researchArmMeshSynergy: boolean;
+  assignedAuthority?: 'user_google' | 'user_perplexity' | 'swarm';
+  researchArmDecompose: boolean;
+  /** Short label prepended to every console.log line for this call, e.g.
+   *  'relay-poll route=abcd1234' (index.ts) or 'oneclick-local q=42' (one_click_mmlu_pro.ts) --
+   *  lets a terminal watcher tell which caller/question a given plow-stage line belongs to.
+   *  Purely cosmetic, changes no behavior. */
+  logLabel: string;
+}
+
+export interface PlowMcAnswererCallResult {
+  /** null = genuine no-answer (DISCORDANT or all-voters-empty, or a plow crash) -- the caller
+   *  must preserve this distinction rather than coercing null to a guessed letter, same
+   *  Truth-Always doctrine as CanonicalPlowMcResult.chosenLetter itself. */
+  answer: string | null;
+  plowTrace: Record<string, unknown>;
+}
+
+/** THE single call site for "answer this MC question via the 12-Blade Column Plow" shared by
+ *  the WAN relay-route responder and the local-mode full-plow path. See the module note above
+ *  for why this exists -- reuse this, do not re-type another inline call to
+ *  runCanonicalPlowMcAnswer elsewhere. */
+export async function callCanonicalPlowMcAnswererForMeshTest(
+  params: PlowMcAnswererCallParams,
+): Promise<PlowMcAnswererCallResult> {
+  const {
+    effectivePrompt, researchQuery, domain, ollamaBaseUrl, model, choiceCount,
+    substrateEnabled, plowAndonEnabled, reasoningMode, testModeCorrectAnswerLetter,
+    researchArmMode, researchArmMeshSynergy, assignedAuthority, researchArmDecompose, logLabel,
+  } = params;
+  try {
+    const writeEbletFn = async (eblet: {
+      question: string; answer: string; provenance: string;
+      verified: true; sha256: string; timestamp: number;
+    }): Promise<void> => { await writeVerifiedEblet(eblet); };
+    const plowResult = await runCanonicalPlowMcAnswer(
+      effectivePrompt,
+      researchQuery,
+      {
+        domain,
+        ollamaBaseUrl,
+        model,
+        choiceCount,
+        andonEnabled: plowAndonEnabled,
+        reasoningMode,
+        testModeCorrectAnswerLetter,
+        // BP137 Yoke v2b (Research Arm): the ONE flag fans out into all sub-flags together --
+        // see CanonicalPlowMcConfig's own per-field doc comments above for the full rationale
+        // of each (unchanged from the pre-extraction inline call).
+        researchArmMode,
+        researchArmRelevanceGate: researchArmMode,
+        researchArmComputeSidecar: researchArmMode,
+        researchArmEscalation: researchArmMode,
+        researchArmPsionic: researchArmMode,
+        researchArmBrowserAuthority: researchArmMode,
+        researchArmStarChamber: researchArmMode,
+        researchArmMeshSynergy,
+        ...(assignedAuthority ? { assignedAuthority } : {}),
+        ...(researchArmDecompose ? { researchArmDecompose: true } : {}),
+      },
+      writeEbletFn,
+      (stage) => console.log(`[${logLabel}] plow-stage: ${stage}`),
+    );
+    const answer = plowResult.chosenLetter; // null = genuine no-answer, handled by abstain logic below
+    const plowTrace: Record<string, unknown> = {
+      concordance: plowResult.concordance,
+      bmv_score: plowResult.bmvScore,
+      gate_outcomes: plowResult.gateOutcomes,
+      specialists_used: plowResult.specialistsUsed,
+      candidates_raw: plowResult.candidatesRaw,
+      candidates_post_miner: plowResult.candidatesPostMiner,
+      candidates_post_furnace: plowResult.candidatesPostFurnace,
+      andon_triggered: plowResult.andonTriggered,
+      andon_retries: plowResult.andonRetries,
+      eblets_written: plowResult.ebletsWritten,
+      voter_letters: plowResult.voterLetters,
+      voter_diagnostics: plowResult.voterDiagnostics,
+      latency_ms: plowResult.latencyMs,
+      trace_summary: plowResult.traceSummary,
+      condition: plowAndonEnabled ? 'C_warm_andon' : (substrateEnabled ? 'B_warm_single_pass' : 'A_cold'),
+      reasoning_mode: reasoningMode,
+      provenance_receipts: plowResult.provenanceReceipts,
+      research_arm_mode: researchArmMode || undefined,
+      answer_type: plowResult.answerType,
+      compute_sidecar: plowResult.computeSidecar,
+      relevance_gate_abstain: plowResult.relevanceGateAbstain,
+      star_chamber: plowResult.starChamber,
+      mesh_synergy_assigned: plowResult.meshSynergyAssigned,
+    };
+    console.log(`[${logLabel}] plow-answered letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
+    return { answer, plowTrace };
+  } catch (plowErr) {
+    // Truth-Always: a plow crash must surface as an honest abstain, never silently fall back
+    // to single-shot and misreport itself as a plow answer.
+    console.error(`[${logLabel}] plow-answerer error:`, plowErr);
+    return { answer: null, plowTrace: { error: String(plowErr) } };
+  }
 }

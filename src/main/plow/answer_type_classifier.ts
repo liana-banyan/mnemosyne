@@ -32,13 +32,13 @@ const COMPUTABLE_PATTERNS: RegExp[] = [
   /\bcalculate\b/i,
   /\bcompute\b/i,
   /\bhow (much|many)\b/i,
-  /\bwhat (?:is|are|was|were) the (value|result|sum|product|difference|quotient|total|proceeds|balance|rate|ph|ka|kb|entropy|enthalpy|dipole|charge|energy|force|velocity|pressure|volume|molarity|concentration|probability|percentage|average|mean|median)\b/i,
+  /\bwhat (?:is|are|was|were) (?:the|its|their|his|her) (value|result|sum|product|difference|quotient|total|proceeds|balance|rate|ph|ka|kb|entropy|enthalpy|dipole|charge|energy|force|velocity|pressure|volume|molarity|concentration|probability|percentage|average|mean|median|density|mass|speed|distance|frequency|wavelength|current|resistance|voltage|acceleration|momentum|torque|power|area|perimeter|radius|diameter|length|width|height|weight|cost|price|profit|revenue|ratio|index|yield|half-life|period|amplitude)\b/i,
   /\bfind the\b/i,
   /\bsolve for\b/i,
   /\bestimate\b/i,
   /\bwhat percentage\b/i,
   /\d+\s*[+\-*/^]\s*\d+/, // a literal arithmetic expression fragment
-  /\b(discount|proceeds|reserves?|deposits?|interest rate|present value|future value|dipole moment|partial charge|change in entropy)\b.*\d/i,
+  /\b(discount|proceeds|reserves?|deposits?|interest rate|present value|future value|dipole moment|partial charge|change in entropy|density)\b.*\d/i,
 ];
 
 const LOOKUP_PATTERNS: RegExp[] = [
