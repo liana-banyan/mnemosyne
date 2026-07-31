@@ -57,7 +57,7 @@ export interface PooledSubstrateHit {
   /** BP135 Yoke #34 (0.9.7) argument-ledger: additive, optional -- absent on hits pooled from a
    *  peer running a pre-0.9.7 build, or on eblets written before this Yoke existed. Absent is
    *  treated identically to 'unverified' (see formatHit() below), never inferred as 'wrong'. */
-  verdict?: 'correct' | 'wrong' | 'unverified';
+  verdict?: 'correct' | 'wrong' | 'verified' | 'unverified';
   reasoning?: string;
 }
 
@@ -65,8 +65,10 @@ export interface PooledSubstrateHit {
  *  substrate branches below. A verdict of 'wrong' is injected ONLY as an explicit avoid-marker
  *  with its captured reasoning (the METHOD that went wrong, never a bare answer-key letter) --
  *  never as ordinary authoritative context a voter might mistake for a fact to rely on. Every
- *  other verdict (including absent/'unverified'/'correct') keeps the pre-0.9.7 plain format. */
-function formatHit(e: { question: string; answer: string; verdict?: 'correct' | 'wrong' | 'unverified'; reasoning?: string; peerId?: string }, i: number): string {
+ *  other verdict (including absent/'unverified'/'correct'/'verified' -- 'verified' added BP131
+ *  honesty fix, when writeVerifiedEblet's own verified/verdict pair is honestly synthesized
+ *  rather than a ground-truth grade) keeps the pre-0.9.7 plain format. */
+function formatHit(e: { question: string; answer: string; verdict?: 'correct' | 'wrong' | 'verified' | 'unverified'; reasoning?: string; peerId?: string }, i: number): string {
   const peerTag = e.peerId ? ` (peer ${e.peerId.slice(0, 8)})` : '';
   if (e.verdict === 'wrong') {
     const why = e.reasoning ? e.reasoning.slice(0, 300) : e.answer.slice(0, 200);

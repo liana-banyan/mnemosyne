@@ -547,7 +547,16 @@ export interface VerifiedEbletEntry {
   question: string;
   answer: string;
   provenance: string;   // format: spider:<name>:<session> | sprite:<id>:<session>
-  verified: true;       // Andon: ONLY true entries may be written here
+  /** BP131 honesty fix: widened from a literal `true` to `boolean`. The old literal type FORCED
+   *  every caller to write `verified: true` just to satisfy the compiler, even callers with zero
+   *  genuine verification signal (a lone uncorroborated authority guess) -- that is the exact
+   *  root cause of the "100% verified:true, 0% verdict:'verified'" integrity violation this Yoke
+   *  fixes (see writeVerifiedEblet()'s honesty gate below). Whatever the caller supplies here is
+   *  now advisory only -- writeVerifiedEblet() RE-DERIVES the persisted `verified`/`verdict` pair
+   *  from `provenance`/`corroboration` via computeHonestVerification(), never trusting this field
+   *  verbatim. Kept on the interface (rather than dropped) so existing callers stay source-
+   *  compatible without edits. */
+  verified: boolean;
   sha256: string;       // sha256(question + answer)
   timestamp: number;
   /** BP135 Yoke #34 argument-ledger (0.9.7), OPTIONAL/ADDITIVE. Absent on every eblet written
@@ -560,7 +569,18 @@ export interface VerifiedEbletEntry {
   /** 'correct'/'wrong' only ever set in a context where a ground-truth answer was available for
    *  local comparison (e.g. the mesh test's payload.correct_answer_letter) -- production Asks
    *  have no ground truth to compare against and must write 'unverified'. */
-  verdict?: 'correct' | 'wrong' | 'unverified';
+  verdict?: 'correct' | 'wrong' | 'verified' | 'unverified';
+  /** BP131 honesty fix, ADDITIVE/OPTIONAL. Caller-supplied hint about WHY this answer is being
+   *  offered as verified, consumed by computeHonestVerification() at write time (see below) --
+   *  never trusted blindly, only used to select among the three legitimate accept classes:
+   *  'concordant' (2+ independent authorities/voters genuinely agreed -- an ensemble CONCORDANT
+   *  accept, NOT a single_* accept), 'deterministic_compute' (a calculator/solver proved the
+   *  answer, no LLM/authority guess involved), 'coroner_verified' (answer_coroner.ts explicitly
+   *  ratified this as verified). 'single_authority' and 'coroner_unverified' are also accepted
+   *  values so a caller can be explicit about a NON-qualifying signal (lone uncorroborated
+   *  authority, or an explicit Coroner rejection) rather than leaving the field absent -- both
+   *  resolve to the same honest verified:false/verdict:'unverified' outcome as leaving it unset. */
+  corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute' | 'coroner_verified' | 'coroner_unverified';
   /** 0-1, derived from concordance/BMV at write time (see computeArgumentConfidence() in
    *  canonical_pipeline.ts) -- how much the writing pipeline itself trusted this fact. */
   confidence?: number;
@@ -619,7 +639,7 @@ export interface VerifiedEbletEntry {
 /** Backward-compat accessor (item 6): every reader that cares about verdict should go through
  *  this instead of reading entry.verdict directly, so "field absent" and "field explicitly
  *  unverified" are handled identically without duplicating the ?? fallback at every call site. */
-export function readVerdict(entry: VerifiedEbletEntry): 'correct' | 'wrong' | 'unverified' {
+export function readVerdict(entry: VerifiedEbletEntry): 'correct' | 'wrong' | 'verified' | 'unverified' {
   return entry.verdict ?? 'unverified';
 }
 
@@ -1157,8 +1177,10 @@ export interface StartupIntegrityResult {
 }
 
 /**
- * Run on app startup: scan verified_eblets.jsonl, quarantine malformed or
- * unverified lines, rewrite clean file atomically.
+ * Run on app startup: scan verified_eblets.jsonl, quarantine STRUCTURALLY MALFORMED lines
+ * (missing question/answer/sha256/timestamp), rewrite clean file atomically.
+ * BP131 honesty fix: no longer quarantines an honest verified:false/verdict:'unverified' line --
+ * see the verified!==true branch below for why that would delete legitimate data.
  * Non-fatal: always returns a result even if checks partially fail.
  */
 export async function runStartupIntegrityCheck(): Promise<StartupIntegrityResult> {
@@ -1203,11 +1225,25 @@ export async function runStartupIntegrityCheck(): Promise<StartupIntegrityResult
       continue;
     }
 
-    if (parsed.verified !== true) {
-      result.verifiedFalseLines++;
+    // BP131 honesty fix: this used to quarantine (delete from the live store) every line where
+    // verified !== true. That was fine back when verified:true was the ONLY value any writer
+    // could produce (a literal-`true`-typed field) -- verified:false could only mean corruption.
+    // Now that writeVerifiedEblet() honestly writes verified:false/verdict:'unverified' for a
+    // real (but uncorroborated) solved-answer write, verified:false is an INTENDED, legitimate
+    // state, not corruption -- quarantining it on every app startup would silently delete the
+    // very "honest false" records this Yoke exists to produce, violating the "provenance/sha256/
+    // source must survive regardless of verdict" requirement. Quarantine is now reserved for
+    // STRUCTURALLY malformed lines only (missing a required field); an honest verified:false
+    // survivor is counted (verifiedFalseLines, kept for telemetry/back-compat naming) but kept.
+    const structurallyValid = !!(parsed.question && parsed.answer && parsed.sha256 && parsed.timestamp);
+    if (!structurallyValid) {
+      result.malformedLines++;
       result.quarantined++;
       quarantineLines.push(trimmed);
       continue;
+    }
+    if (parsed.verified !== true) {
+      result.verifiedFalseLines++;
     }
 
     cleanLines.push(trimmed);
@@ -1241,11 +1277,89 @@ export async function runStartupIntegrityCheck(): Promise<StartupIntegrityResult
 }
 
 /**
- * Append a plow-accepted, specialist-verified Q&A eblet to the persistent store.
+ * BP131 honesty fix: the SINGLE centralized predicate that decides whether a write to
+ * verified_eblets.jsonl may honestly carry `verified:true`/`verdict:'verified'`.
+ *
+ * Root cause this closes: VerifiedEbletEntry.verified used to be typed as the literal `true`,
+ * which structurally FORCED every one of this file's ~20 call sites (plow_mc_answerer.ts,
+ * ai_dispatch_ipc.ts, csia_research.ts, etc.) to write `verified: true` just to satisfy the
+ * compiler -- including call sites with zero genuine verification signal, e.g.
+ * plow_mc_answerer.ts's writeAndReplicateSolvedAnswer(), which writes `verified: true` (a
+ * lone accepted browser-authority letter, sometimes a SINGLE uncorroborated single_perplexity
+ * accept) alongside an honestly-set `verdict: 'unverified'` in the SAME object literal. That
+ * contradiction (verified:true + verdict:'unverified' in one write) is the exact shape
+ * empirically observed across the live 662-row substrate (100% verified:true, 0% verdict:
+ * 'verified', 139 explicit verdict:'unverified' -- e.g. the Scaccio "E) $106.00" wrong answer
+ * stored wearing verified:true). writeVerifiedEblet() now calls this helper and OVERRIDES
+ * whatever the caller passed for `verified`/`verdict`, so the two fields can never again
+ * disagree and `verified:true` can never again mean "an LLM/authority guessed once."
+ *
+ * Accept classes (verified:true, verdict:'verified') -- exactly three, matching Founder-ratified
+ * BP131 build spec:
+ *   1. Deterministic-compute provenance: `provenance` contains 'deterministic_compute' or
+ *      'schedule_amortization' (a calculator/solver proved the answer, no LLM guess involved),
+ *      OR the caller explicitly passes `corroboration: 'deterministic_compute'`.
+ *   2. Genuine multi-source concordance: caller passes `corroboration: 'concordant'` (2+
+ *      independent authorities/voters actually agreed -- an ensemble CONCORDANT accept, never a
+ *      single_* accept).
+ *   3. Explicit Coroner ratification: caller passes `corroboration: 'coroner_verified'`
+ *      (answer_coroner.ts's own verified verdict).
+ * Reject class (verified:false, verdict:'unverified') -- the default/fail-closed outcome for
+ * everything else, INCLUDING a lone single_google/single_perplexity/single_wolfram accept, an
+ * explicit `corroboration: 'single_authority'` or `'coroner_unverified'`, or no corroboration
+ * signal supplied at all. Fail-closed by design: absence of a qualifying signal must never be
+ * silently upgraded to verified:true.
+ *
+ * ORTHOGONAL AXIS carve-out: `verdict` also carries a second, pre-existing, unrelated meaning --
+ * 'correct'/'wrong' ground-truth grading against a TEST'S OWN answer key (mesh-test/benchmark
+ * mode only, e.g. plow_mc_answerer.ts's verdictForLedger comparing the plow's chosenLetter to
+ * testModeCorrectAnswerLetter). That is a real, already-truthful signal -- substrate_toggle.ts's
+ * formatHit() reads verdict==='wrong' to inject a live "KNOWN-WRONG (avoid)" marker for future
+ * voters, a genuine in-use feature. It must not be clobbered by this predicate: if the caller
+ * supplies `verdict: 'correct'` or `'wrong'`, that value is preserved VERBATIM (never
+ * overwritten to 'verified'/'unverified') -- `verified` is still independently computed from
+ * corroboration/provenance as above, since "matched the test's answer key" and "was externally
+ * corroborated" are different claims (a lucky single-authority guess that happens to match the
+ * key is still not verified). The one invariant that must always hold is the task's actual
+ * concern -- verified:true never paired with an honestly-unconfirmed verdict; 'correct'/'wrong'
+ * are grading outcomes, not "unconfirmed", so this carve-out cannot reintroduce that bug.
+ */
+export function computeHonestVerification(
+  entry: Pick<VerifiedEbletEntry, 'provenance' | 'corroboration' | 'verdict'>,
+): { verified: boolean; verdict: 'correct' | 'wrong' | 'verified' | 'unverified' } {
+  const provenance = entry.provenance ?? '';
+  const deterministicByProvenance =
+    provenance.includes('deterministic_compute') || provenance.includes('schedule_amortization');
+
+  const accepted =
+    entry.corroboration === 'coroner_verified' ||
+    entry.corroboration === 'concordant' ||
+    entry.corroboration === 'deterministic_compute' ||
+    // coroner_unverified is an explicit REJECTION and must win over a provenance-string match --
+    // checked first via the ternary ordering below, not here.
+    (entry.corroboration !== 'coroner_unverified' && deterministicByProvenance);
+
+  const verified = entry.corroboration === 'coroner_unverified' ? false : accepted;
+
+  // Ground-truth grading carve-out (see doc comment above): preserve a real 'correct'/'wrong'
+  // grade verbatim; only ever synthesize 'verified'/'unverified' when the caller did NOT supply
+  // one of those two ground-truth values.
+  if (entry.verdict === 'correct' || entry.verdict === 'wrong') {
+    return { verified, verdict: entry.verdict };
+  }
+  return { verified, verdict: verified ? 'verified' : 'unverified' };
+}
+
+/**
+ * Append a plow-accepted eblet to the persistent store.
  *
  * Store location: {userData}/substrate/verified_eblets.jsonl (append-only JSONL).
- * Andon discipline: the `verified: true` field is structurally required; callers that
- * cannot supply it (e.g., unverified Ollama raw output) must NOT call this function.
+ * BP131 honesty fix: this is NO LONGER an Andon gate that blocks non-verified writes -- every
+ * solved-answer/component write is persisted regardless of verification status (provenance +
+ * sha256 + source must survive for origin tracing regardless of verdict), but the persisted
+ * `verified`/`verdict` pair is ALWAYS re-derived here via computeHonestVerification(), never
+ * taken verbatim from the caller. See that function's doc comment for the full root-cause
+ * writeup and the three legitimate accept classes.
  *
  * Returns the sha256 of (question + answer) as write confirmation.
  */
@@ -1259,9 +1373,17 @@ export async function writeVerifiedEblet(
   // isSemanticSoccerballModeEnabled(settings) is true).
   opts: { computeSemanticCode?: boolean } = {},
 ): Promise<string> {
-  if (!entry.verified) {
-    console.error('[EbletStore] Andon violation: attempted write with verified=false — blocked');
-    return '';
+  // BP131 honesty fix: `verified`/`verdict` are ALWAYS re-derived here, never taken verbatim
+  // from `entry` -- see computeHonestVerification()'s doc comment above for why the caller-
+  // supplied values can never be trusted as the source of truth. This is no longer a blocking
+  // Andon gate: a genuinely-unverified write (verified:false honestly) is NOT an error and is
+  // NOT rejected -- provenance/sha256/source must survive regardless of verdict so origin
+  // tracing and future reconciliation stay possible. (TODO(liana-marks):
+  // mintMarkForVerifiedContribution(peerId, entryId) -- Bishop wires DB side -- fires below,
+  // only on the genuinely-verified branch, once a peerId/entryId plumbing exists.)
+  const { verified: honestVerified, verdict: honestVerdict } = computeHonestVerification(entry);
+  if (honestVerified) {
+    // TODO(liana-marks): mintMarkForVerifiedContribution(peerId, entryId) -- Bishop wires DB side
   }
 
   const ebletDir = resolve(app.getPath('userData'), 'substrate');
@@ -1293,7 +1415,13 @@ export async function writeVerifiedEblet(
     question: entry.question,
     answer: entry.answer,
     provenance: entry.provenance,
-    verified: true,
+    // BP131 honesty fix: was a hardcoded `true` literal regardless of how the entry was actually
+    // derived -- that hardcode (paired with callers separately writing an honest
+    // `verdict: 'unverified'` in the same object literal, e.g. plow_mc_answerer.ts's
+    // writeAndReplicateSolvedAnswer) is the root cause of the 100%-verified:true/0%-verdict:
+    // 'verified' integrity violation this Yoke fixes. Now sourced from computeHonestVerification()
+    // so it can never disagree with `verdict` below.
+    verified: honestVerified,
     sha256: expectedSha,
     timestamp: entry.timestamp,
     // BP135 Yoke #34 argument-ledger (0.9.7): additive, omitted entirely (not written as null/
@@ -1301,7 +1429,9 @@ export async function writeVerifiedEblet(
     // byte-identical and keeps old JSONL lines structurally indistinguishable from a 0.9.7 write
     // that simply chose not to populate these optional fields.
     ...(entry.reasoning !== undefined ? { reasoning: entry.reasoning } : {}),
-    ...(entry.verdict !== undefined ? { verdict: entry.verdict } : {}),
+    // BP131 honesty fix: ALWAYS written now (never passed through from `entry.verdict` verbatim)
+    // so `verified`+`verdict` can never disagree -- see computeHonestVerification() above.
+    verdict: honestVerdict,
     ...(entry.confidence !== undefined ? { confidence: entry.confidence } : {}),
     // BP136 Yoke (answer-cache v1 forward-compat schema): `class` always written (defaulted to
     // 'whole_answer' when the caller doesn't specify) since v1 write-back always produces a
