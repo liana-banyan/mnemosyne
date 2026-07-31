@@ -67,7 +67,7 @@ import {
 import { isQaRelevant, writeVerifiedEblet } from '../mnem_eblet_store';
 // BP137 Yoke v2b Stage A: answer-type classifier + compute sidecar, both new/additive this Yoke.
 import { classifyAnswerType, type AnswerType } from './answer_type_classifier';
-import { computeAnswer, computeViaWolframOnly, parseOptionsFromPrompt, matchValueToOption, extractNumber, type ComputeSidecarResult, type McOption } from './compute_sidecar';
+import { computeAnswer, computeViaWolframOnly, parseOptionsFromPrompt, matchValueToOption, extractNumber, computeUnitAwareMatch, type ComputeSidecarResult, type McOption, type UnitAwareComputeResult } from './compute_sidecar';
 // BP137 Yoke v2b Stage A.0.1: semantic-cosine upgrade to the relevance TEST used inside the
 // gate below (the gating FLAG and abstain logic are unchanged -- see semantic_relevance_gate.ts
 // header for the full reuse rationale). ollamaManager imported directly (same module already
@@ -387,7 +387,18 @@ export interface CanonicalPlowMcResult {
    *  produced a verified value AND it matched an MC option (i.e. only on the early-return
    *  compute path below). Absent whenever the question fell through to the swarm+voter path,
    *  whether because it was not classified computable, or because compute/option-match failed. */
-  computeSidecar?: { method: ComputeSidecarResult['method']; expression: string; value: number; matchedOptionValue: number };
+  computeSidecar?: {
+    // BP-COMPUTE-UNITS / BP-COMPUTE-BARE: widened to admit UnitAwareComputeResult's own method
+    // tags ('unit_expression' | 'unit_reasoning_extraction' | 'bare_value_match') alongside the
+    // pre-existing ComputeSidecarResult tags -- additive union, every pre-existing writer/reader
+    // of this field (which only ever produced the original three tags) is unaffected. Because
+    // this field's type is derived directly from UnitAwareComputeResult['method'], adding
+    // 'bare_value_match' to that union type (compute_sidecar.ts) required no edit here.
+    method: ComputeSidecarResult['method'] | UnitAwareComputeResult['method'];
+    expression: string;
+    value: number;
+    matchedOptionValue: number;
+  };
   /** BP137 Yoke v2b Stage A.0, OPTIONAL/ADDITIVE. True only when researchArmRelevanceGate fired
    *  an abstain (swarm found candidates, none passed isQaRelevant). Absent otherwise. */
   relevanceGateAbstain?: boolean;
@@ -482,6 +493,27 @@ export interface CanonicalPlowMcResult {
    *  above). This is what lets the asker's pooled adjudication show "which peer, which
    *  authority" for every contributor, per the Stage F3 truthful-provenance requirement. */
   meshSynergyAssigned?: 'user_google' | 'user_perplexity' | 'swarm';
+  /** BP1xx Deterministic-Compute-Override ("let the calculator win the math"), OPTIONAL/
+   *  ADDITIVE. Present ONLY when researchArmAuthorityEnsemble was on, the question classified
+   *  'computable', the ensemble already accepted/was about to return a letter for it, AND
+   *  computeUnitAwareMatch -- run against the accepted candidate's own reasoning text (plus the
+   *  swarm's voter previews when it fired) -- found a real, exact-one-option unit-aware match.
+   *  chosenLetter above is ALWAYS the deterministic letter in this case (ensembleLetter records
+   *  what the ensemble had originally picked, for comparison -- chosenLetter === ensembleLetter
+   *  means the compute corroborated the ensemble rather than overriding it; they differ exactly
+   *  when a real override happened). Absent whenever the check never fires (not computable,
+   *  ensemble had no letter) or computeUnitAwareMatch abstained/found nothing (kept the
+   *  ensemble's original letter unchanged). Same honesty gate as the compute-sidecar's own
+   *  UnitAwareComputeResult: never a guess, only a checked "exactly one option matches"
+   *  computation. See runAuthorityEnsemble's Stage F2 accept-path call site for where this
+   *  fires. */
+  authorityEnsembleDeterministicOverride?: {
+    ensembleLetter: string;
+    method: UnitAwareComputeResult['method'];
+    expression: string;
+    computedValue: number;
+    computedUnit: string | null;
+  };
 }
 
 // ─── MC-specific final-arbitration prompt ────────────────────────────────────
@@ -1169,6 +1201,47 @@ async function runAuthorityEnsemble(params: {
   return { chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [], adjudicationAttempted: true, swarmFired: true, swarmReceipt };
 }
 
+// ─── BP1xx Deterministic-Compute-Override ("let the calculator win the math") ──────────────
+//
+// THE BUG this exists to fix: for a computable question, the deterministic units-aware compute
+// (computeUnitAwareMatch, compute_sidecar.ts) already PROVES it can solve the density case
+// standalone (600 kg/m^3 -> 0.60 g/cc -> option C) -- but in the real flow it never got a chance
+// to run, because it only ever lived in the compute-sidecar block far downstream of
+// runAuthorityEnsemble's own accept/return (Stage F2). For a computable question the ensemble
+// accepts first (an LLM/browser authority can flub unit arithmetic -- reason its way to the right
+// number yet state the wrong letter when the MC options are in a different unit) and RETURNS
+// before the compute-sidecar block is ever reached, so the flubbed answer wins.
+//
+// This function is the fix's pure decision core: given the letter the ensemble already chose and
+// the reasoning text it was chosen from, it runs the SAME deterministic compute against that
+// reasoning (which is now available -- the authority has already produced it) and reports whether
+// the deterministic letter should override the ensemble's. Exported and factored out of the
+// Stage F2 call site specifically so it can be exercised in isolation by a focused test without
+// having to fake the whole browser-authority/swarm ensemble.
+//
+// Synchronous, no I/O, no model call -- delegates entirely to computeUnitAwareMatch's own
+// "exactly one option matches" honesty gate (already proven to abstain on 0/2+/dimensionally-
+// incompatible matches). This can therefore only ever REPLACE one checked letter with another
+// checked letter; it never fabricates one. Any throw from computeUnitAwareMatch is caught and
+// treated as "no override" (honest fall-through, ensemble's letter kept), never propagated.
+export function resolveDeterministicComputeOverride(
+  researchQuery: string,
+  mcOptions: McOption[],
+  ensembleChosenLetter: string,
+  reasoningTexts: string[],
+): { finalLetter: string; overrideFired: boolean; deterministicOverride: UnitAwareComputeResult | null } {
+  let deterministicOverride: UnitAwareComputeResult | null = null;
+  try {
+    deterministicOverride = computeUnitAwareMatch(researchQuery, mcOptions, { componentFacts: reasoningTexts });
+  } catch (err) {
+    console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: computeUnitAwareMatch threw (non-fatal, ensemble letter kept):', err);
+    deterministicOverride = null;
+  }
+  const overrideFired = !!deterministicOverride && deterministicOverride.letter !== ensembleChosenLetter;
+  const finalLetter = deterministicOverride ? deterministicOverride.letter : ensembleChosenLetter;
+  return { finalLetter, overrideFired, deterministicOverride };
+}
+
 // ─── WIRE-THE-LOOP fix: writeback + replication for EVERY solved answer ────────────────────
 //
 // Founder mandate parts 2+3: on every solved answer, write {question, answer, reasoning,
@@ -1229,6 +1302,55 @@ async function writeAndReplicateSolvedAnswer(params: {
     }
   } catch (err) {
     console.warn('[plow_mc_answerer] writeAndReplicateSolvedAnswer: replication stamp threw (non-fatal):', err);
+  }
+}
+
+// ─── BP-COMPUTE-UNITS: eblet the METHOD, not just the answer ────────────────────────────────
+//
+// Founder mandate (BUILD step 3): "Eblet the method... a question-class signature, the formula,
+// and the unit handling -- via the same writeVerifiedEblet path already used." This writes a
+// class:'component' eblet on every successful units-aware compute match, distinct from
+// writeAndReplicateSolvedAnswer's whole_answer write above (that one records THIS question's own
+// answer letter; this one records the reusable METHOD -- "density = mass / volume, unit-
+// normalized: convert the computed quantity into the option's own unit via mathjs, then compare"
+// -- so a future question in the same class is "known like times tables" rather than re-derived
+// from scratch). Uses a fixed non-servable question sentinel per method-kind (same convention as
+// writeRoundEblets' '[component:non-servable]' above) so this can never collide with a future
+// real serve/exact-match. Fully non-fatal: a failed write here must never affect the caller's
+// returned answer -- returns whether the write succeeded purely for the caller's ebletsWritten
+// bookkeeping field, nothing else depends on it.
+async function writeComputeMethodEblet(params: {
+  researchQuery: string;
+  result: UnitAwareComputeResult;
+}): Promise<boolean> {
+  const { researchQuery, result } = params;
+  try {
+    const classSignature =
+      result.computedUnit && result.optionUnit
+        ? `unit-normalized compute: ${result.computedUnit} -> ${result.optionUnit}`
+        : 'unit-normalized compute (unitless)';
+    await writeVerifiedEblet({
+      question: `[method:compute-units-aware:${result.method}]`,
+      answer:
+        `Method: obtain a quantity WITH ITS UNIT (source=${result.source} -- either an expression ` +
+        `cleanly present in the question, or the final "value unit" stated in the authority/swarm's ` +
+        `reasoning), then convert it into each MC option's OWN unit via mathjs and compare within ` +
+        `tolerance -- accept only when exactly one option matches, never a bare numeric guess. ` +
+        `Class signature: ${classSignature}. Worked example this write: "${result.sourceExpression}" ` +
+        `-> ${result.computedValue}${result.computedUnit ? ' ' + result.computedUnit : ''} -> matched ` +
+        `option ${result.letter} (${result.optionValue}${result.optionUnit ? ' ' + result.optionUnit : ''}).`,
+      provenance: `plow_mc_answerer:compute_method:${result.method}:${Date.now()}`,
+      verified: true,
+      sha256: '',
+      timestamp: Date.now(),
+      class: 'component',
+      reasoning: `question="${researchQuery.slice(0, 200)}" expr="${result.sourceExpression.slice(0, 200)}"`,
+      verdict: 'unverified',
+    });
+    return true;
+  } catch (err) {
+    console.warn('[plow_mc_answerer] writeComputeMethodEblet failed (non-fatal):', err);
+    return false;
   }
 }
 
@@ -1972,10 +2094,72 @@ export async function runCanonicalPlowMcAnswer(
           `candidates=[${ensembleOutcome.candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}] ` +
           `chosen=${ensembleOutcome.chosenLetter ?? 'NONE'}.`,
         );
-        if (ensembleOutcome.chosenLetter && ensembleOutcome.acceptedCandidates.length > 0) {
+        // ── BP1xx Deterministic-Compute-Override ("let the calculator win the math") ──────────
+        // For a computable question the ensemble above just settled on a letter from an LLM/
+        // browser authority (or the swarm) -- but that authority can flub unit arithmetic (the
+        // density case: reasons its way to "600 kg/m^3" yet states the WRONG letter because the
+        // MC options are stated in g/cc). The deterministic units-aware compute
+        // (computeUnitAwareMatch, compute_sidecar.ts) already proves it can solve that case
+        // standalone; the bug was that it only ever lived in the compute-sidecar block far
+        // downstream of this accept/return, so it never got a chance to run. Firing it HERE --
+        // against the reasoning text the ensemble already has -- lets it run AFTER the authority
+        // has produced reasoning but BEFORE the ensemble's letter is finalized/returned. Gated on
+        // the SAME researchArmAuthorityEnsemble flag as the rest of this branch (we are already
+        // inside `if (authorityEnsembleOn)`) -- off = unchanged, byte-for-byte. Only fires for
+        // 'computable' (this whole branch is under isComputeOrReasoningType/isLookupType, but the
+        // extra `=== 'computable'` check keeps 'reasoning' and lookup_fact questions untouched,
+        // exactly per spec). Honesty: computeUnitAwareMatch itself already abstains (returns
+        // null) on 0/2+/dimensionally-incompatible matches -- that exact-one-option gate is
+        // reused unchanged here, so this can only ever REPLACE one checked letter with another
+        // checked letter, never fabricate one.
+        let deterministicOverride: UnitAwareComputeResult | null = null;
+        let overrideFired = false;
+        // finalChosenLetter is truthy iff ensembleOutcome.chosenLetter was truthy (the decision
+        // call below is only ever made when that held) -- the accept condition further below is
+        // unchanged in shape.
+        let finalChosenLetter = ensembleOutcome.chosenLetter;
+        if (ensembleOutcome.chosenLetter && earlyAnswerTypeForBrowserAuthority === 'computable') {
+          // The accepted candidate(s)' own reasoning text is the primary source (e.g.
+          // Perplexity's fact text stating "... = 600 kg/m^3 ..."); when the swarm fired, its
+          // voters' raw previews are folded in too as extra candidate quantity sources -- same
+          // "componentFacts" contract computeUnitAwareMatch already accepts for the downstream
+          // compute-sidecar call site at ~Stage A.3.
+          // BP139 fix: feed ALL candidates' reasoning, not just the accepted one. On the
+          // adjudication path the accepted candidate is the JUDGE, whose "the answer is X" text
+          // does not restate the computed quantity ("600 kg/m^3") -- that value lives in the
+          // ORIGINAL candidate (Perplexity) reasoning in ensembleOutcome.candidates. Feeding only
+          // acceptedCandidates meant the override never saw the number and could not fire (density
+          // kept missing via the judge's wrong letter). candidates first (where the worked value
+          // lives), then accepted (the judge, in case it restates), then swarm voters.
+          const overrideReasoningTexts = [
+            ...ensembleOutcome.candidates.map((c) => c.reasoning),
+            ...ensembleOutcome.acceptedCandidates.map((c) => c.reasoning),
+            ...(ensembleOutcome.swarmReceipt?.voterDiagnostics.map((v) => v.rawPreview) ?? []),
+          ];
+          const decision = resolveDeterministicComputeOverride(
+            researchQuery, mcOptionsForBrowserAuthority, ensembleOutcome.chosenLetter, overrideReasoningTexts,
+          );
+          deterministicOverride = decision.deterministicOverride;
+          overrideFired = decision.overrideFired;
+          finalChosenLetter = decision.finalLetter;
+          if (overrideFired && deterministicOverride) {
+            console.log(
+              `[plow_mc_answerer] Stage F2 DETERMINISTIC OVERRIDE: ensemble picked ` +
+              `${ensembleOutcome.chosenLetter}, deterministic compute (${deterministicOverride.method}, ` +
+              `${deterministicOverride.computedValue}${deterministicOverride.computedUnit ? ' ' + deterministicOverride.computedUnit : ''}) ` +
+              `says ${deterministicOverride.letter} -- calculator wins the math, overriding.`,
+            );
+          } else if (deterministicOverride) {
+            console.log(
+              `[plow_mc_answerer] Stage F2 deterministic compute (${deterministicOverride.method}) corroborates ` +
+              `the ensemble's own letter ${ensembleOutcome.chosenLetter} -- no override needed.`,
+            );
+          }
+        }
+        if (finalChosenLetter && ensembleOutcome.acceptedCandidates.length > 0) {
           const primary = ensembleOutcome.acceptedCandidates[0]!;
-          const acceptedOptionText = mcOptionsForBrowserAuthority.find((o) => o.letter === ensembleOutcome.chosenLetter)?.text ?? '';
-          onProgress?.(`browser-authority-accepted:${ensembleOutcome.chosenLetter}`);
+          const acceptedOptionText = mcOptionsForBrowserAuthority.find((o) => o.letter === finalChosenLetter)?.text ?? '';
+          onProgress?.(`browser-authority-accepted:${finalChosenLetter}`);
           const acceptLatencyMs = Date.now() - startMs;
           // HONESTY (build item 4): CONCORDANT here ALWAYS means "backed by at least one real
           // sourced authority with a provenance URL, OR a specialist_swarm candidate that itself
@@ -1996,15 +2180,33 @@ export async function runCanonicalPlowMcAnswer(
             acceptCandidatesRaw, acceptCandidatesPostMiner, acceptCandidatesPostFurnace,
             acceptCandidatesPostFurnace, acceptConcordance, acceptSpecialistsUsed.length, acceptLatencyMs,
           );
+          // When the deterministic compute overrode the ensemble's letter, the eblet writeback
+          // must say so honestly -- "solved by user_perplexity" would be a lie once the calculator
+          // has replaced that letter. writeComputeMethodEblet (the SAME writer the downstream
+          // compute-sidecar block already uses) records the worked units-aware method separately;
+          // this writeback's own authority/reasoning/sourceUrl reflect the deterministic source
+          // whenever overrideFired, and the original authority/reasoning otherwise (unchanged).
+          let overrideEbletWritten = false;
+          if (overrideFired && deterministicOverride) {
+            overrideEbletWritten = await writeComputeMethodEblet({ researchQuery, result: deterministicOverride });
+          }
           try {
             await writeAndReplicateSolvedAnswer({
               researchQuery,
               domain,
-              chosenLetter: ensembleOutcome.chosenLetter,
+              chosenLetter: finalChosenLetter,
               optionText: acceptedOptionText,
-              reasoning: ensembleOutcome.acceptedCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | '),
-              sourceUrl: primary.sourceUrl,
-              authority: primary.authority,
+              reasoning: overrideFired && deterministicOverride
+                ? `deterministic-compute-override (${deterministicOverride.method}): ` +
+                  `${deterministicOverride.sourceExpression} -> ${deterministicOverride.computedValue}` +
+                  `${deterministicOverride.computedUnit ? ' ' + deterministicOverride.computedUnit : ''} ` +
+                  `-> matched option ${deterministicOverride.letter}; ensemble had originally picked ` +
+                  `${ensembleOutcome.chosenLetter} via [${ensembleOutcome.acceptedCandidates.map((c) => c.authority).join(',')}] ` +
+                  `-- overridden. Original reasoning: ` +
+                  ensembleOutcome.acceptedCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | ')
+                : ensembleOutcome.acceptedCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | '),
+              sourceUrl: overrideFired ? undefined : primary.sourceUrl,
+              authority: overrideFired && deterministicOverride ? `deterministic_compute:${deterministicOverride.method}` : primary.authority,
             });
           } catch (err) {
             console.warn('[plow_mc_answerer] ensemble-accepted writeback/replicate failed (non-fatal):', err);
@@ -2012,11 +2214,11 @@ export async function runCanonicalPlowMcAnswer(
           return {
             questionId,
             domain,
-            chosenLetter: ensembleOutcome.chosenLetter,
+            chosenLetter: finalChosenLetter,
             // Swarm's own voter letters are folded in (when it fired) alongside the accepted
             // browser/Wolfram/judge candidates -- one diagnostic entry per real vote actually
             // cast for this question, not a single synthetic entry per accepted authority.
-            voterLetters: [ensembleOutcome.chosenLetter, ...(swarmReceiptForAccept?.voterLetters ?? [])],
+            voterLetters: [finalChosenLetter, ...(swarmReceiptForAccept?.voterLetters ?? [])],
             voterDiagnostics: [
               ...ensembleOutcome.acceptedCandidates.map((c) => ({
                 temperature: 0,
@@ -2025,6 +2227,15 @@ export async function runCanonicalPlowMcAnswer(
                 rawPreview: `${c.authority} (${c.method}): ${c.reasoning.slice(0, 200)}`,
               })),
               ...(swarmReceiptForAccept?.voterDiagnostics ?? []),
+              ...(overrideFired && deterministicOverride ? [{
+                temperature: 0,
+                status: 'parsed_ok' as const,
+                responseChars: deterministicOverride.sourceExpression.length,
+                rawPreview:
+                  `deterministic-compute-override (${deterministicOverride.method}): ` +
+                  `${deterministicOverride.sourceExpression} -> ${deterministicOverride.computedValue}` +
+                  `${deterministicOverride.computedUnit ? ' ' + deterministicOverride.computedUnit : ''}`,
+              }] : []),
             ],
             concordance: acceptConcordance,
             bmvScore: acceptBmv,
@@ -2035,23 +2246,45 @@ export async function runCanonicalPlowMcAnswer(
             candidatesPostFurnace: acceptCandidatesPostFurnace,
             andonTriggered: andonRetry > 0,
             andonRetries: andonRetry,
-            ebletsWritten: 1,
+            ebletsWritten: 1 + (overrideEbletWritten ? 1 : 0),
             latencyMs: acceptLatencyMs,
             traceSummary:
               `authorityEnsembleAccepted=true corroboration=${ensembleOutcome.corroboration} ` +
-              `matchedOption=${ensembleOutcome.chosenLetter} swarmFired=${ensembleOutcome.swarmFired} ` +
+              `matchedOption=${finalChosenLetter} swarmFired=${ensembleOutcome.swarmFired} ` +
               `sources=[${ensembleOutcome.acceptedCandidates.map((c) => c.authority).join(',')}] ` +
               `allCandidates=[${ensembleOutcome.candidates.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
-              `adjudicationAttempted=${ensembleOutcome.adjudicationAttempted} andonRetries=${andonRetry}`,
-            provenanceReceipts: ensembleOutcome.acceptedCandidates.map((c) => ({
-              source: c.authority,
-              contentHash: createHash('sha256').update(c.reasoning).digest('hex').slice(0, 16),
-              verified: true,
-              provenanceUrl: c.sourceUrl,
-            })),
+              `adjudicationAttempted=${ensembleOutcome.adjudicationAttempted} andonRetries=${andonRetry}` +
+              (overrideFired && deterministicOverride
+                ? ` deterministicComputeOverride=true ensembleLetter=${ensembleOutcome.chosenLetter} ` +
+                  `computeMethod=${deterministicOverride.method}`
+                : ''),
+            provenanceReceipts: overrideFired && deterministicOverride
+              ? [{
+                  source: `computed:${deterministicOverride.method}`,
+                  contentHash: createHash('sha256')
+                    .update(`${deterministicOverride.sourceExpression}=${deterministicOverride.computedValue}${deterministicOverride.computedUnit ?? ''}`)
+                    .digest('hex')
+                    .slice(0, 16),
+                  verified: true,
+                }]
+              : ensembleOutcome.acceptedCandidates.map((c) => ({
+                  source: c.authority,
+                  contentHash: createHash('sha256').update(c.reasoning).digest('hex').slice(0, 16),
+                  verified: true,
+                  provenanceUrl: c.sourceUrl,
+                })),
             answerType: earlyAnswerTypeForBrowserAuthority,
             browserAuthorityCorroboration,
             authorityEnsembleSwarmFired: ensembleOutcome.swarmFired,
+            ...(deterministicOverride ? {
+              authorityEnsembleDeterministicOverride: {
+                ensembleLetter: ensembleOutcome.chosenLetter!,
+                method: deterministicOverride.method,
+                expression: deterministicOverride.sourceExpression,
+                computedValue: deterministicOverride.computedValue,
+                computedUnit: deterministicOverride.computedUnit,
+              },
+            } : {}),
           };
         }
         // ensembleOutcome.chosenLetter is null -- 'none' (nobody, including the swarm, answered)
@@ -2441,6 +2674,80 @@ export async function runCanonicalPlowMcAnswer(
     const answerType = classifyAnswerType(researchQuery);
     classifiedAnswerType = answerType;
     if (answerType === 'computable') {
+      // BP-COMPUTE-UNITS: units-aware attempt FIRST, before the existing unit-UNAWARE
+      // computeAnswer()+matchValueToOption tiers below. Synchronous, no I/O, no model call --
+      // strictly more informed than a bare-number match because it can resolve a question whose
+      // computed quantity and its MC options are stated in DIFFERENT but convertible units (the
+      // Founder's "times tables" density example: compute lands on 600 kg/m^3, the options are
+      // stated in g/cc -- matchValueToOption(600, options) finds nothing near 600 and honestly
+      // abstains; computeUnitAwareMatch converts 600 kg/m^3 -> 0.60 g/cc via mathjs and matches
+      // option C). Reuses mcOptionsForUnits/componentFactsList already built above. Falls through
+      // to the unchanged computeAnswer()+matchValueToOption path on any null (no unit-bearing
+      // quantity found, or found but ambiguous/dimensionally-incompatible against every option --
+      // see compute_sidecar.ts's matchQuantityToOption doc comment for the exact-one-option
+      // honesty gate) -- never guesses, identical discipline to every other tier here.
+      const mcOptionsForUnits = parseOptionsFromPrompt(mcPromptWithSubstrate);
+      const unitAware = computeUnitAwareMatch(researchQuery, mcOptionsForUnits, {
+        componentFacts: componentFactsList,
+      });
+      if (unitAware) {
+        onProgress?.(`compute-sidecar:${unitAware.method}`);
+        const unitEbletWritten = await writeComputeMethodEblet({ researchQuery, result: unitAware });
+        const unitLatencyMs = Date.now() - startMs;
+        const unitConcordance: ConcordanceClass = 'CONCORDANT';
+        const unitBmv = computeBmvScore(1, 1, 1, 0, unitConcordance, 1, unitLatencyMs);
+        const unitReceipt: ProvenanceReceipt = {
+          source: `computed:${unitAware.method}`,
+          contentHash: createHash('sha256')
+            .update(`${unitAware.sourceExpression}=${unitAware.computedValue}${unitAware.computedUnit ?? ''}`)
+            .digest('hex')
+            .slice(0, 16),
+          verified: true,
+        };
+        const unitTraceSummary =
+          `researchArmComputeSidecar=true answerType=computable method=${unitAware.method} ` +
+          `unitAware=true computedValue=${unitAware.computedValue}${unitAware.computedUnit ? ' ' + unitAware.computedUnit : ''} ` +
+          `matchedOption=${unitAware.letter}(${unitAware.optionValue}${unitAware.optionUnit ? ' ' + unitAware.optionUnit : ''}) ` +
+          `source=${unitAware.source} componentFactsUsed=${componentFactsList.length} bmv=${unitBmv} andonRetries=${andonRetry}` +
+          `${relevanceGateMethodTrace}`;
+        return {
+          questionId,
+          domain,
+          chosenLetter: unitAware.letter,
+          voterLetters: [unitAware.letter, unitAware.letter, unitAware.letter],
+          voterDiagnostics: [{
+            temperature: 0,
+            status: 'parsed_ok',
+            responseChars: unitAware.sourceExpression.length,
+            rawPreview:
+              `units-aware compute (${unitAware.method}): ${unitAware.sourceExpression} -> ` +
+              `${unitAware.computedValue}${unitAware.computedUnit ? ' ' + unitAware.computedUnit : ''}`,
+          }],
+          concordance: unitConcordance,
+          bmvScore: unitBmv,
+          gateOutcomes: evaluateGates(postFurnace.length, unitBmv, unitConcordance, unitLatencyMs),
+          specialistsUsed,
+          candidatesRaw,
+          candidatesPostMiner: postMiner.length,
+          candidatesPostFurnace: postFurnace.length,
+          andonTriggered: andonRetry > 0,
+          andonRetries: andonRetry,
+          ebletsWritten: unitEbletWritten ? 1 : 0,
+          latencyMs: unitLatencyMs,
+          traceSummary: unitTraceSummary,
+          provenanceReceipts: [unitReceipt],
+          answerType,
+          computeSidecar: {
+            method: unitAware.method,
+            expression: unitAware.sourceExpression,
+            value: unitAware.computedValue,
+            matchedOptionValue: unitAware.optionValue,
+          },
+        };
+      }
+      // Units-aware attempt found nothing unambiguous -- fall through to the pre-existing
+      // unit-UNAWARE compute tiers below, byte-for-byte unchanged.
+      //
       // BP137 Yoke v2b Stage A: process.env.WOLFRAM_APP_ID is INDEPENDENT of
       // config.specialistKeys.wolframApiKey -- the Stage 0 audit confirmed index.ts's MC
       // benchmark responder (index.ts:6168-6180) never populates specialistKeys at all, so that
