@@ -115,7 +115,25 @@ export const DEFAULT_NEXUS_PER_ARM_AUTHORITY: NexusPerArmAuthority = {
 
 // ─── Browser-authority adapter types (item 1) ────────────────────────────────────────────────
 
-export type BrowserAuthorityName = 'user_google' | 'user_perplexity';
+// (this build pass) 'user_claude' added: wires plow_mc_answerer.ts's premium
+// BrowserLlmAuthorityName 'user_claude' stub to a REAL driver -- unlike user_google/
+// user_perplexity (a static query-URL DOM scrape), claude.ai/new has no query-URL form; it
+// requires INTERACTIVE driving (navigate -> type into the composer -> submit -> wait for the
+// streamed reply to finish -> scrape the final assistant message). See
+// isInteractiveBrowserAuthority() below for the single switch every caller checks to know which
+// of the two mechanisms applies, and webview_preload.ts's 'browser-authority-run-interactive-
+// query' handler for the actual type+submit+wait+scrape implementation.
+export type BrowserAuthorityName = 'user_google' | 'user_perplexity' | 'user_claude';
+
+/** True for authorities that cannot be reached via a plain navigable query URL and instead need
+ *  the composer-type + submit + wait-for-stream-completion + scrape sequence. Every caller that
+ *  branches on "URL-query vs interactive" (index.ts's runBrowserAuthorityQueryFromMain,
+ *  buildBrowserAuthorityQueryUrl below) must use this single function rather than re-deriving the
+ *  distinction inline, so adding a future interactive vendor (chatgpt.com, gemini.google.com) is
+ *  a one-line change here instead of a hunt across call sites. */
+export function isInteractiveBrowserAuthority(name: BrowserAuthorityName): boolean {
+  return name === 'user_claude';
+}
 
 /** What the caller wants answered, and which of the user's own logged-in sessions to use. */
 export interface BrowserAuthorityQuery {
@@ -225,6 +243,11 @@ export function isBrowserAuthorityEnabled(config: BrowserAuthorityAdapterConfig)
 
 const GOOGLE_SEARCH_BASE = 'https://www.google.com/search?q=';
 const PERPLEXITY_SEARCH_BASE = 'https://www.perplexity.ai/search?q=';
+/** claude.ai has no query-URL form -- the question travels via the interactive composer-type
+ *  payload (built by the caller from query.question/query.mcOptions via buildMcAwareQueryText
+ *  below when options are present), never via the navigation URL itself. This is always the
+ *  literal navigation target for a 'user_claude' query, regardless of question/mcOptions. */
+const CLAUDE_NEW_CHAT_URL = 'https://claude.ai/new';
 
 /** WIRE-THE-LOOP fix: builds the enriched prompt text sent to an authority that can genuinely
  *  reason over a multiple-choice option list (Perplexity's search box accepts a full natural-
@@ -255,6 +278,13 @@ export function buildMcAwareQueryText(question: string, mcOptions: string[]): st
  *  (Stage F2 legacy path, Stage F3 mesh-synergy) never sets that field, so this stays
  *  byte-identical bare-question behavior for them. */
 export function buildBrowserAuthorityQueryUrl(query: BrowserAuthorityQuery): string {
+  // (this build pass) user_claude is interactive (see isInteractiveBrowserAuthority above): there
+  // is no query-URL form for claude.ai/new, so this always returns the same fixed landing URL
+  // regardless of query.question/mcOptions -- the caller (index.ts's
+  // runBrowserAuthorityQueryFromMain) detects isInteractiveBrowserAuthority(query.authority) and
+  // drives the composer interactively instead of relying on this URL to encode the question.
+  if (query.authority === 'user_claude') return CLAUDE_NEW_CHAT_URL;
+
   const hasOptions = !!(query.mcOptions && query.mcOptions.length > 0);
   const wantsOptionsAwareQuery =
     hasOptions && (query.authority === 'user_perplexity' || (query.authority === 'user_google' && query.embedOptionsForGoogle === true));

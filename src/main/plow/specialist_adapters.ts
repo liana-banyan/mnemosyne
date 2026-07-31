@@ -1060,13 +1060,17 @@ export function readAuthorityEnableOverridesFromSettings(): AuthorityEnableOverr
   }
 }
 
-// ─── Browser-LLM PREMIUM authorities (BP139 Founder canon, ChatGPT/Gemini/Claude) ──────────────
+// ─── Browser-LLM authorities (BP139 Founder canon, ChatGPT/Gemini/Claude) ──────────────────────
 // Founder directive (BP139, non-negotiable): ChatGPT/Gemini/Claude are general "second opinion"
 // authorities reachable ONLY by driving the user's own already-logged-in browser session for
 // each vendor (same $0-to-Liana-Banyan mechanism user_google/user_perplexity already use -- see
 // src/shared/plow/browser_authority_types.ts + src/main/plow/browser_authority_adapter.ts).
-// They are PREMIUM/PAID (the user's own ChatGPT Plus / Gemini Advanced / Claude Pro
-// subscription) and therefore MUST default OFF, firing ONLY when the user explicitly opts in.
+// ChatGPT/Gemini are PREMIUM/PAID (the user's own ChatGPT Plus / Gemini Advanced subscription).
+// Claude (this build pass) is wired against the user's FREE, logged-in claude.ai/new web UI --
+// see its BROWSER_LLM_AUTHORITY_METADATA entry's tier:'free' + costNote below -- rate-limited by
+// claude.ai's own free-tier caps rather than billed. All three MUST default OFF regardless of
+// tier, firing ONLY when the user explicitly opts in (see isBrowserLlmAuthorityEnabled below for
+// why "free" never implies "default-on").
 //
 // Deliberately NOT added to SpecialistName/SPECIALIST_REGISTRY above: that registry's shape is
 // `(question, domain, specialistKeys) => Promise<CandidateEblet[]>`, a synchronous-fetch REST
@@ -1082,8 +1086,18 @@ export function readAuthorityEnableOverridesFromSettings(): AuthorityEnableOverr
 
 export type BrowserLlmAuthorityName = 'user_chatgpt' | 'user_gemini' | 'user_claude';
 
+// (this build pass) tier widened from the literal 'premium' to 'premium' | 'free': user_claude
+// now has a REAL live bridge (see plow_mc_answerer.ts's queryClaudeBrowserAuthority and
+// webview_preload.ts's interactive handler) and runs against the user's FREE claude.ai plan --
+// calling it "premium" would misrepresent it as a paid-subscription feature it no longer is.
+// user_chatgpt/user_gemini remain 'premium' (no live bridge yet this pass; still described
+// against a paid ChatGPT Plus/Gemini Advanced subscription in their own costNote below, since
+// that is genuinely what a future wiring pass for THEM would use). Widening this union does NOT
+// change the default-off guarantee below: isBrowserLlmAuthorityEnabled()'s only true-by-default
+// branch checks for the literal 'standard', which neither 'premium' nor 'free' ever is -- so
+// user_claude stays exactly as default-OFF/opt-in-only as it was under 'premium'.
 export interface BrowserLlmAuthorityMetadata {
-  tier: 'premium';
+  tier: 'premium' | 'free';
   /** ['all'] -- these are general-purpose second opinions, not domain-specific like wolfram. */
   domains: string[];
   costNote: string;
@@ -1093,27 +1107,35 @@ export const BROWSER_LLM_AUTHORITY_METADATA: Record<BrowserLlmAuthorityName, Bro
   user_chatgpt: {
     tier: 'premium',
     domains: ['all'],
-    costNote: 'Uses your own logged-in ChatGPT session (ChatGPT Plus or equivalent) via the embedded browser. Never a metered OpenAI API key.',
+    costNote: 'Uses your own logged-in ChatGPT session (ChatGPT Plus or equivalent) via the embedded browser. Never a metered OpenAI API key. NOT YET WIRED this pass -- enabling this toggle safely does nothing (see queryBrowserLlmAuthorityNotWired in plow_mc_answerer.ts).',
   },
   user_gemini: {
     tier: 'premium',
     domains: ['all'],
-    costNote: 'Uses your own logged-in Gemini session (Gemini Advanced or equivalent) via the embedded browser. Never a metered Google AI API key.',
+    costNote: 'Uses your own logged-in Gemini session (Gemini Advanced or equivalent) via the embedded browser. Never a metered Google AI API key. NOT YET WIRED this pass -- enabling this toggle safely does nothing (see queryBrowserLlmAuthorityNotWired in plow_mc_answerer.ts).',
   },
   user_claude: {
-    tier: 'premium',
+    // (this build pass) relabeled premium -> free: wired against claude.ai's FREE, logged-in
+    // web UI (claude.ai/new on the free plan), not a paid Claude Pro subscription and never the
+    // metered Anthropic API (ai-providers/anthropic-client.ts is a separate, unrelated path and
+    // is never used here). Still opt-in/default-OFF (see isBrowserLlmAuthorityEnabled below) --
+    // "free" describes cost, not default-on-ness -- because the free plan is rate-limited and an
+    // always-on second opinion could burn the user's daily/hourly message quota unexpectedly.
+    tier: 'free',
     domains: ['all'],
-    costNote: 'Uses your own logged-in Claude.ai session (Claude Pro or equivalent) via the embedded browser. Never the metered Anthropic API (ai-providers/anthropic-client.ts is a separate, unrelated path and is never used here).',
+    costNote: 'Uses your own logged-in claude.ai session (free plan; Claude Pro also works if you have it) via MnemosyneC\'s own embedded nexus browser -- an interactive type/submit/wait/scrape flow, not the metered Anthropic API. Rate-limited by claude.ai\'s own free-tier message caps; opt-in only because a shared free-plan quota should never be spent without you explicitly turning it on.',
   },
 };
 
 export type BrowserLlmAuthorityEnableOverrides = Partial<Record<BrowserLlmAuthorityName, boolean>>;
 
 /** Pure resolver, same override-wins-else-tier-default contract as isAuthorityEnabled() above.
- *  Every entry in BROWSER_LLM_AUTHORITY_METADATA is tier:'premium', so the tier-default branch
- *  is ALWAYS false here -- there is no code path in this function that can return true without
- *  an explicit `overrides[name] === true`. This is the "default OFF, opt-in only" guarantee for
- *  every browser-LLM authority, provable by inspection of this one function. */
+ *  Neither 'premium' nor 'free' (the only two BROWSER_LLM_AUTHORITY_METADATA tiers as of this
+ *  build pass) is ever 'standard', so the tier-default branch is ALWAYS false here -- there is no
+ *  code path in this function that can return true without an explicit `overrides[name] ===
+ *  true`. This is the "default OFF, opt-in only" guarantee for every browser-LLM authority
+ *  (including user_claude after its free-tier relabel above), provable by inspection of this one
+ *  function. */
 export function isBrowserLlmAuthorityEnabled(
   name: BrowserLlmAuthorityName,
   overrides?: BrowserLlmAuthorityEnableOverrides,
