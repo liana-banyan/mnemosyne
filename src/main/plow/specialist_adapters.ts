@@ -860,3 +860,92 @@ export function readAuthorityEnableOverridesFromSettings(): AuthorityEnableOverr
     return {};
   }
 }
+
+// ─── Browser-LLM PREMIUM authorities (BP139 Founder canon, ChatGPT/Gemini/Claude) ──────────────
+// Founder directive (BP139, non-negotiable): ChatGPT/Gemini/Claude are general "second opinion"
+// authorities reachable ONLY by driving the user's own already-logged-in browser session for
+// each vendor (same $0-to-Liana-Banyan mechanism user_google/user_perplexity already use -- see
+// src/shared/plow/browser_authority_types.ts + src/main/plow/browser_authority_adapter.ts).
+// They are PREMIUM/PAID (the user's own ChatGPT Plus / Gemini Advanced / Claude Pro
+// subscription) and therefore MUST default OFF, firing ONLY when the user explicitly opts in.
+//
+// Deliberately NOT added to SpecialistName/SPECIALIST_REGISTRY above: that registry's shape is
+// `(question, domain, specialistKeys) => Promise<CandidateEblet[]>`, a synchronous-fetch REST
+// adapter contract. Browser-LLM authorities are not REST fetches (no API key can substitute for
+// "drive the user's logged-in browser tab") -- forcing them into SPECIALIST_REGISTRY would mean
+// fabricating a fetch function that does not actually do what its neighbors do. This is its own
+// small, parallel type/metadata/resolver family, structurally isolated from SPECIALIST_REGISTRY
+// dispatch (see plow_mc_answerer.ts's runAuthorityEnsemble for the actual gated call sites) --
+// which also means these three names can never appear in the SpecialistName-typed
+// widenerOperators/effectiveOperators/report.additionalOperators plumbing at all, so the Andon
+// escalation-widen retry path (attemptEscalationWidenAndRetry) is structurally incapable of
+// ever firing one of these premium authorities, gate or no gate.
+
+export type BrowserLlmAuthorityName = 'user_chatgpt' | 'user_gemini' | 'user_claude';
+
+export interface BrowserLlmAuthorityMetadata {
+  tier: 'premium';
+  /** ['all'] -- these are general-purpose second opinions, not domain-specific like wolfram. */
+  domains: string[];
+  costNote: string;
+}
+
+export const BROWSER_LLM_AUTHORITY_METADATA: Record<BrowserLlmAuthorityName, BrowserLlmAuthorityMetadata> = {
+  user_chatgpt: {
+    tier: 'premium',
+    domains: ['all'],
+    costNote: 'Uses your own logged-in ChatGPT session (ChatGPT Plus or equivalent) via the embedded browser. Never a metered OpenAI API key.',
+  },
+  user_gemini: {
+    tier: 'premium',
+    domains: ['all'],
+    costNote: 'Uses your own logged-in Gemini session (Gemini Advanced or equivalent) via the embedded browser. Never a metered Google AI API key.',
+  },
+  user_claude: {
+    tier: 'premium',
+    domains: ['all'],
+    costNote: 'Uses your own logged-in Claude.ai session (Claude Pro or equivalent) via the embedded browser. Never the metered Anthropic API (ai-providers/anthropic-client.ts is a separate, unrelated path and is never used here).',
+  },
+};
+
+export type BrowserLlmAuthorityEnableOverrides = Partial<Record<BrowserLlmAuthorityName, boolean>>;
+
+/** Pure resolver, same override-wins-else-tier-default contract as isAuthorityEnabled() above.
+ *  Every entry in BROWSER_LLM_AUTHORITY_METADATA is tier:'premium', so the tier-default branch
+ *  is ALWAYS false here -- there is no code path in this function that can return true without
+ *  an explicit `overrides[name] === true`. This is the "default OFF, opt-in only" guarantee for
+ *  every browser-LLM authority, provable by inspection of this one function. */
+export function isBrowserLlmAuthorityEnabled(
+  name: BrowserLlmAuthorityName,
+  overrides?: BrowserLlmAuthorityEnableOverrides,
+): boolean {
+  const override = overrides?.[name];
+  if (override !== undefined) return override;
+  return (BROWSER_LLM_AUTHORITY_METADATA[name].tier as string) === 'standard'; // always false today
+}
+
+/**
+ * Settings-read hook, main-process only. Reads the SAME ai_dispatch_settings.json /
+ * mnem_drt_specialists object readAuthorityEnableOverridesFromSettings() already reads (no new
+ * file, no new IPC channel) -- the renderer's SettingsTab.tsx AUTHORITY_SOURCES list writes
+ * PREMIUM rows into this same `Record<string, boolean>` keyed by `src.key`, and since the file is
+ * plain untyped JSON, adding 'user_chatgpt'/'user_gemini'/'user_claude' keys there is read here
+ * without any schema change. Any failure (no Electron app, missing file, bad JSON) yields {}
+ * (every browser-LLM authority falls back to its always-false tier default), never a throw.
+ */
+export function readBrowserLlmAuthorityEnableOverridesFromSettings(): BrowserLlmAuthorityEnableOverrides {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { app } = require('electron') as typeof import('electron');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { readFileSync, existsSync } = require('fs') as typeof import('fs');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { join } = require('path') as typeof import('path');
+    const p = join(app.getPath('userData'), 'ai_dispatch_settings.json');
+    if (!existsSync(p)) return {};
+    const parsed = JSON.parse(readFileSync(p, 'utf-8')) as { mnem_drt_specialists?: BrowserLlmAuthorityEnableOverrides };
+    return parsed?.mnem_drt_specialists ?? {};
+  } catch {
+    return {};
+  }
+}
