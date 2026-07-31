@@ -73,6 +73,7 @@ import { computeAnswer, computeViaWolframOnly, parseOptionsFromPrompt, matchValu
 // already returned null/no-match (see the call site inside `if (answerType === 'computable')`
 // below). Never duplicates or modifies those two tiers.
 import { solveScheduleProblem } from './plow_mc_schedule_solver';
+import { solveDensityProblem } from './plow_mc_density_solver';
 // BP137 Yoke v2b Stage A.0.1: semantic-cosine upgrade to the relevance TEST used inside the
 // gate below (the gating FLAG and abstain logic are unchanged -- see semantic_relevance_gate.ts
 // header for the full reuse rationale). ollamaManager imported directly (same module already
@@ -1286,10 +1287,11 @@ export interface DeterministicComputeCandidate {
   computedUnit: string | null;
   sourceExpression: string;
   source: string;
-  /** Tier tag, one of 'unit_aware' | 'bare_value' | 'schedule_amortization' -- see the three
-   *  tiers documented above. Deliberately `string` (not a narrow literal union) so this type can
-   *  represent the result of any of the three independently-typed underlying tiers without
-   *  forcing them into a shared method-name vocabulary they don't actually share. */
+  /** Tier tag, one of 'unit_aware' | 'bare_value' | 'schedule_amortization' | 'density' -- see the
+   *  four tiers documented above (tier (iv), density, added subsequently -- see
+   *  plow_mc_density_solver.ts). Deliberately `string` (not a narrow literal union) so this type
+   *  can represent the result of any of the independently-typed underlying tiers without forcing
+   *  them into a shared method-name vocabulary they don't actually share. */
   method: string;
 }
 export async function resolveDeterministicComputeOverride(
@@ -1402,6 +1404,35 @@ export async function resolveDeterministicComputeOverride(
       }
     } catch (err) {
       console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: solveScheduleProblem threw (non-fatal, ensemble letter kept):', err);
+    }
+  }
+
+  // Tier (iv): the mass/dimensions density solver -- a FOURTH, independent deterministic compute
+  // tier for "density of a block ... weighs X ... dimensions A x B x C" word problems structurally
+  // out of reach of tiers (i)-(iii): computeUnitAwareMatch's chain extractor only picks up a
+  // unit-bearing expression that is already CONTIGUOUS in the question text, but this question
+  // shape states the mass and the dimension product as two separate clauses (see
+  // plow_mc_density_solver.ts's header for the full worked example and the real-dataset "kgand"
+  // glue it repairs). Synchronous, no I/O, no model call. Tried last, only after tiers (i)-(iii)
+  // above returned null; derives strictly from the question text + options, never from
+  // `reasoningTexts`.
+  if (!deterministicOverride) {
+    try {
+      const density = solveDensityProblem(researchQueryForTiers, mcOptions);
+      if (density) {
+        deterministicOverride = {
+          letter: density.letter,
+          optionValue: density.optionValue,
+          optionUnit: null,
+          computedValue: density.value,
+          computedUnit: null,
+          sourceExpression: density.trace,
+          source: 'density_solver',
+          method: 'density',
+        };
+      }
+    } catch (err) {
+      console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: solveDensityProblem threw (non-fatal, ensemble letter kept):', err);
     }
   }
 
