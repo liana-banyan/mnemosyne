@@ -37,23 +37,28 @@ export type Domain =
 // already uses for wikipedia/wikidata/openalex/commoncrawl. Additive only.
 const BASE_OPERATORS: SpecialistName[] = ['wikipedia', 'wikidata', 'openalex', 'commoncrawl', 'crossref'];
 
+// BP1xx Pawn Authority List Phase 2: clinicaltrials (health), worldbank
+// (economics/business), semanticscholar (broad multi-disciplinary scholarly set)
+// added below per-domain, mirroring SPECIALIST_METADATA's domains for each in
+// specialist_adapters.ts. OECD SDMX was probed and DEFERRED (see specialist_adapters.ts
+// comment above "DEFERRED: OECD Data Explorer (SDMX)") -- no roster entry exists for it.
 export const DOMAIN_OPERATOR_MAP: Record<Domain, SpecialistName[]> = {
-  math:             [...BASE_OPERATORS, 'stackexchange', 'arxiv', 'wolfram'],
-  physics:          [...BASE_OPERATORS, 'stackexchange', 'arxiv', 'wolfram', 'nist'],
+  math:             [...BASE_OPERATORS, 'stackexchange', 'arxiv', 'wolfram', 'semanticscholar'],
+  physics:          [...BASE_OPERATORS, 'stackexchange', 'arxiv', 'wolfram', 'nist', 'semanticscholar'],
   // BP1xx Phase 1: europepmc/openfda/medlineplus added to chemistry/biology/health
   // (the Founder brief's "medical/health/biology/chemistry domains" group; there is
   // no separate `medical` Domain value here, `health` is that bucket).
-  chemistry:        [...BASE_OPERATORS, 'pubmed', 'wolfram', 'nist', 'europepmc', 'openfda', 'medlineplus'],
-  biology:          [...BASE_OPERATORS, 'pubmed', 'arxiv', 'europepmc', 'openfda', 'medlineplus'],
-  computer_science: [...BASE_OPERATORS, 'stackexchange', 'arxiv'],
-  engineering:      [...BASE_OPERATORS, 'stackexchange', 'arxiv', 'wolfram', 'nist'],
-  history:          [...BASE_OPERATORS],
-  philosophy:       [...BASE_OPERATORS],
-  law:              [...BASE_OPERATORS],
-  business:         [...BASE_OPERATORS, 'stackexchange'],
-  economics:        [...BASE_OPERATORS, 'stackexchange'],
-  psychology:       [...BASE_OPERATORS, 'pubmed', 'arxiv'],
-  health:           [...BASE_OPERATORS, 'pubmed', 'arxiv', 'europepmc', 'openfda', 'medlineplus'],
+  chemistry:        [...BASE_OPERATORS, 'pubmed', 'wolfram', 'nist', 'europepmc', 'openfda', 'medlineplus', 'semanticscholar'],
+  biology:          [...BASE_OPERATORS, 'pubmed', 'arxiv', 'europepmc', 'openfda', 'medlineplus', 'semanticscholar'],
+  computer_science: [...BASE_OPERATORS, 'stackexchange', 'arxiv', 'semanticscholar'],
+  engineering:      [...BASE_OPERATORS, 'stackexchange', 'arxiv', 'wolfram', 'nist', 'semanticscholar'],
+  history:          [...BASE_OPERATORS, 'semanticscholar'],
+  philosophy:       [...BASE_OPERATORS, 'semanticscholar'],
+  law:              [...BASE_OPERATORS, 'semanticscholar'],
+  business:         [...BASE_OPERATORS, 'stackexchange', 'worldbank', 'semanticscholar'],
+  economics:        [...BASE_OPERATORS, 'stackexchange', 'worldbank', 'semanticscholar'],
+  psychology:       [...BASE_OPERATORS, 'pubmed', 'arxiv', 'semanticscholar'],
+  health:           [...BASE_OPERATORS, 'pubmed', 'arxiv', 'europepmc', 'openfda', 'medlineplus', 'clinicaltrials', 'semanticscholar'],
   other:            [...BASE_OPERATORS],
 };
 
