@@ -332,6 +332,25 @@ const CLAUDE_ASSISTANT_MESSAGE_SELECTORS = [
   'main [data-is-streaming]',
 ];
 
+// (this fix pass) RESILIENT TEXT FALLBACK, tier (b): claude.ai's DOM has drifted enough that
+// CLAUDE_ASSISTANT_MESSAGE_SELECTORS above now reliably matches nothing (3 identical live runs:
+// composer_found -> typed -> submitted -> streaming_detected -> textLength:0 for the whole poll
+// -> empty_scrape, even though the URL becoming claude.ai/chat/<id> proves Claude DID answer).
+// This broad, deliberately over-inclusive set only needs to CONTAIN the answer text -- it feeds
+// downstream letter-matching, not a strict DOM contract -- so casting a wide net here is fine as
+// long as findBroadFallbackMatch below filters out the echoed user prompt and trivial text.
+const CLAUDE_FALLBACK_MESSAGE_SELECTORS = [
+  '[data-testid*="message"]',
+  '[class*="message"]',
+  '[class*="claude"]',
+  '[class*="prose"]',
+  '[class*="markdown"]',
+];
+
+// Minimum text length for a candidate extraction to be considered "substantial" rather than
+// trivial/empty noise, per the fix-pass spec (">~15 chars, not equal to the prompt").
+const RESILIENT_TEXT_MIN_LENGTH = 15;
+
 function lastNonEmptyTextMatch(selectors: string[]): { text: string; selector: string } | null {
   for (const sel of selectors) {
     try {
@@ -345,6 +364,158 @@ function lastNonEmptyTextMatch(selectors: string[]): { text: string; selector: s
     }
   }
   return null;
+}
+
+/** True when `text` IS (or merely echoes the start of) the prompt we just submitted -- guards
+ *  every fallback tier below against re-scraping the user's own just-typed question back out of
+ *  a container that happens to wrap both turns (e.g. a loose `[class*="message"]` match). Never
+ *  throws; whitespace/case-insensitive so minor DOM formatting differences don't defeat it. */
+function isEchoedPrompt(text: string, promptText: string): boolean {
+  const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+  const t = normalize(text);
+  const p = normalize(promptText);
+  if (!p) return false;
+  return t === p || t.startsWith(p);
+}
+
+/** RESILIENT TEXT FALLBACK, tier (b): walks CLAUDE_FALLBACK_MESSAGE_SELECTORS' combined match
+ *  set from the END of DOM order backwards (the conversation thread appends at the bottom, so
+ *  this naturally favors the most recent turn, matching this module's existing "always take the
+ *  last matching element" convention -- see the header comment above
+ *  CLAUDE_ASSISTANT_MESSAGE_SELECTORS). Returns the first candidate that clears the
+ *  substantial-text bar and is not the echoed user prompt; null if nothing qualifies. Never
+ *  throws -- a selector-parse failure just means an empty combined query, handled by the
+ *  try/catch below. */
+function findBroadFallbackMatch(promptText: string): { text: string; selector: string } | null {
+  try {
+    const combinedSelector = CLAUDE_FALLBACK_MESSAGE_SELECTORS.join(',');
+    const matches = Array.from(document.querySelectorAll<HTMLElement>(combinedSelector));
+    for (let i = matches.length - 1; i >= 0; i--) {
+      const el = matches[i];
+      const text = el?.innerText?.trim() ?? '';
+      if (text.length < RESILIENT_TEXT_MIN_LENGTH || isEchoedPrompt(text, promptText)) continue;
+      let matchedSelector = 'broad-fallback';
+      for (const sel of CLAUDE_FALLBACK_MESSAGE_SELECTORS) {
+        try {
+          if (el.matches(sel)) {
+            matchedSelector = sel;
+            break;
+          }
+        } catch {
+          /* invalid selector -- keep the generic label */
+        }
+      }
+      return { text, selector: matchedSelector };
+    }
+  } catch {
+    /* invalid combined selector or DOM access error */
+  }
+  return null;
+}
+
+/** RESILIENT TEXT FALLBACK, tier (c) -- final fallback: reads `main`'s (or `document.body`'s)
+ *  innerText with known chrome (composer, send button, nav/aside/header) stripped out of a clone
+ *  first, then takes the TAIL after the last occurrence of the submitted prompt text (so the
+ *  echoed question itself is excluded from what's returned). If the prompt text can't be located
+ *  verbatim (e.g. the editor reformatted whitespace), falls back to the full stripped text --
+ *  over-inclusive is acceptable per the fix-pass spec since this only needs to CONTAIN the
+ *  answer. Returns null if the result doesn't clear the substantial-text bar or is itself just
+ *  the echoed prompt. Never throws. */
+function findMainRegionTailFallback(promptText: string): { text: string; selector: string } | null {
+  try {
+    const root = document.querySelector('main') ?? document.body;
+    if (!root) return null;
+    const clone = root.cloneNode(true) as HTMLElement;
+    const stripSelectors = ['nav', 'aside', 'header', ...CLAUDE_COMPOSER_SELECTORS, ...CLAUDE_SEND_BUTTON_SELECTORS];
+    for (const sel of stripSelectors) {
+      try {
+        clone.querySelectorAll(sel).forEach((n) => n.remove());
+      } catch {
+        /* invalid selector -- skip stripping it */
+      }
+    }
+    const fullText = clone.innerText?.trim() ?? '';
+    if (!fullText) return null;
+    const normalizedPrompt = promptText.trim();
+    let tail = fullText;
+    if (normalizedPrompt) {
+      const idx = fullText.lastIndexOf(normalizedPrompt);
+      if (idx >= 0) tail = fullText.slice(idx + normalizedPrompt.length).trim();
+    }
+    if (tail.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(tail, promptText)) {
+      return { text: tail, selector: 'main-tail-fallback' };
+    }
+  } catch {
+    /* DOM access error */
+  }
+  return null;
+}
+
+/** RESILIENT TEXT FALLBACK entry point: tries the existing specific selectors first (unchanged
+ *  behavior, tier (a)), then the broad-container fallback (tier (b)), then the main-region tail
+ *  fallback (tier (c)) -- returns the FIRST tier that yields non-trivial (>= 15 char), non-
+ *  echoed-prompt text. Never fabricates: returns null (not a placeholder string) when every tier
+ *  comes up empty, exactly like the pre-fix lastNonEmptyTextMatch-only path did. */
+function getResilientAssistantText(promptText: string): { text: string; selector: string } | null {
+  const specific = lastNonEmptyTextMatch(CLAUDE_ASSISTANT_MESSAGE_SELECTORS);
+  if (specific && specific.text.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(specific.text, promptText)) {
+    return specific;
+  }
+  const broad = findBroadFallbackMatch(promptText);
+  if (broad) return broad;
+  const tail = findMainRegionTailFallback(promptText);
+  if (tail) return tail;
+  return null;
+}
+
+// (this fix pass) DOM-SNAPSHOT DIAGNOSTIC: captured right before an empty_scrape is declared, so
+// the Founder's console shows the REAL answer-element shape from the failing run instead of just
+// "textLength:0". Bounded to the last ~6 elements (in DOM order under `main`/body) with
+// textLength > 20, each field truncated so total payload stays well under the ~2-3KB cap this
+// fix pass specifies. Never throws -- any failure here just yields an empty array, and the
+// empty_scrape log below still fires either way (diagnostics must never block the real feature).
+const DOM_SNAPSHOT_MAX_ELEMENTS = 6;
+const DOM_SNAPSHOT_CLASSNAME_MAX = 120;
+const DOM_SNAPSHOT_TEXTHEAD_MAX = 80;
+const DOM_SNAPSHOT_BYTE_BUDGET = 3000;
+
+function captureDomSnapshot(): Array<Record<string, unknown>> {
+  try {
+    const root = document.querySelector('main') ?? document.body;
+    if (!root) return [];
+    const all = Array.from(root.querySelectorAll<HTMLElement>('*'));
+    const candidates: Array<{ el: HTMLElement; textLen: number }> = [];
+    for (const el of all) {
+      const text = el.innerText?.trim() ?? '';
+      if (text.length > 20) candidates.push({ el, textLen: text.length });
+    }
+    const lastFew = candidates.slice(-DOM_SNAPSHOT_MAX_ELEMENTS);
+    let snapshot = lastFew.map(({ el, textLen }) => {
+      const dataTestid: Record<string, string> = {};
+      for (const attr of Array.from(el.attributes)) {
+        if (attr.name.startsWith('data-testid')) dataTestid[attr.name] = attr.value.slice(0, 60);
+      }
+      const text = el.innerText?.trim() ?? '';
+      const className = typeof el.className === 'string' ? el.className : '';
+      return {
+        tag: el.tagName.toLowerCase(),
+        id: el.id || '',
+        className: className.slice(0, DOM_SNAPSHOT_CLASSNAME_MAX),
+        dataTestid,
+        textLen,
+        textHead: text.slice(0, DOM_SNAPSHOT_TEXTHEAD_MAX),
+      };
+    });
+    // Belt-and-suspenders size cap: the per-field truncation above should already keep this well
+    // under budget, but if attribute-heavy elements still push it over, progressively drop the
+    // oldest (earliest-DOM-order) entries rather than truncate JSON mid-string.
+    while (snapshot.length > 1 && JSON.stringify(snapshot).length > DOM_SNAPSHOT_BYTE_BUDGET) {
+      snapshot = snapshot.slice(1);
+    }
+    return snapshot;
+  } catch {
+    return [];
+  }
 }
 
 function findFirstMatch(selectors: string[]): HTMLElement | null {
@@ -568,6 +739,11 @@ function runClaudeInteractiveQuery(promptText: string): void {
           logInjectionEvent('claude_interactive_stream_complete', { textLength: lastText.length, url: window.location.href });
           logInjectionEvent('claude_interactive_scraped', { length: lastText.length, url: window.location.href });
         } else {
+          // (this fix pass) FIX 2: capture a bounded DOM snapshot right before declaring the
+          // empty scrape, so the next run's console shows the REAL answer-element shape instead
+          // of just "textLength:0" -- see captureDomSnapshot's header comment above.
+          const domSnapshot = captureDomSnapshot();
+          logInjectionEvent('claude_interactive_dom_snapshot', { elements: domSnapshot, url: window.location.href });
           logInjectionEvent('claude_interactive_empty_scrape', { sawStreaming: hasSeenStreaming, url: window.location.href });
         }
         logInjectionEvent('claude_interactive_result', {
@@ -591,7 +767,12 @@ function runClaudeInteractiveQuery(promptText: string): void {
           logInjectionEvent('claude_interactive_streaming_detected', { url: window.location.href });
         }
 
-        const match = lastNonEmptyTextMatch(CLAUDE_ASSISTANT_MESSAGE_SELECTORS);
+        // (this fix pass) FIX 1: completion detection now keys off the RESILIENT text (tiers
+        // a/b/c above), not just the specific CLAUDE_ASSISTANT_MESSAGE_SELECTORS -- those
+        // selectors alone were confirmed (3 identical live runs) to match nothing on claude.ai's
+        // current DOM even while streaming was correctly detected, so `currentText` here used to
+        // stay empty for the whole poll no matter how long we waited.
+        const match = getResilientAssistantText(promptText);
         const currentText = match?.text ?? '';
         if (match) lastSelector = match.selector;
 
