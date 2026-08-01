@@ -1,0 +1,92 @@
+KN-BP141-3 Stage 3: The Gom Jabbar Test
+
+New file C:\Users\Administrator\Documents\mnemosyne\src\main\plow\plow_gom_jabbar.ts.
+Encodes the Founder's Gom Jabbar procedure (G1-G5) -- not a harder question about
+the answer, a test of whether anything stands behind the answer.
+
+HONEST GAP CLOSED (R-MECHANISM-VERIFY, checked before writing anything): the
+ticket instructed reusing an existing SymPy invocation path if one exists.
+Verified this Yoke against the real file: C:\Users\Administrator\Documents\mnemosyne\src\main\plow\compute_sidecar.ts's
+own arithmetic (evaluateArithmeticVerified) is two independently-implemented
+JAVASCRIPT evaluators (a hand-rolled recursive-descent parser and a
+whitelisted Function() evaluator) -- neither is SymPy. Grepped the full
+src/main tree for sympy|python: two pre-existing `spawn('python', [...])`
+call sites exist (C:\Users\Administrator\Documents\mnemosyne\src\main\index.ts:4553,
+a mesh-test condition script; C:\Users\Administrator\Documents\mnemosyne\src\main\catacombs\contribute_to_category.ts:148,
+a catacombs staging script) but neither does numeric evaluation or SymPy of
+any kind. No SymPy bridge exists anywhere in this repo. Confirmed python
+3.13.14 and sympy 1.14.0 are actually installed on this machine before
+building one. Per the ticket's own contingency instruction ("make the most
+reasonable judgment call... proceed, and flag the deviation"), this commit
+adds ONE new, narrow subprocess bridge (runSympyArithmetic /
+runSympyMultiplication), reusing the repo's existing `spawn('python', [...])`
+CONVENTION (not code -- neither existing call site is arithmetic-shaped) for
+consistency with house style.
+
+G1 DERIVED-QUANTITY RECONCILIATION (reconcileDerivedQuantity): takes two
+SEPARATELY sourced factors and a THIRD, independently-sourced check value;
+multiplies the two factors via SymPy only (never a local JS fallback -- a
+silent fallback would defeat G2's own stated purpose, so a SymPy subprocess
+failure returns an honest INCONCLUSIVE result, never a guessed product), then
+compares the SymPy-computed product to the check value within relative
+tolerance.
+
+G2 WE DO THE ARITHMETIC (runSympyArithmetic, runSympyMultiplication): spawns
+`python -c "from sympy import sympify, N; print(N(sympify('<expr>')))"`,
+validate-then-evaluate whitelisted before the expression ever reaches the
+subprocess argv (SYMPY_EXPR_WHITELIST_RE), same discipline compute_sidecar.ts
+already applies to its own JS evaluators. Never lets the tested source
+compute its own check -- only ever consumes caller-supplied finite numbers.
+
+G3 ONE-SIDED BOUND (evaluateOneSidedBound): accumulates claims' own lower
+bounds in order, stops the instant the running total exceeds a known ceiling
+-- reports exactly which claim triggered the overshoot, tallies no further
+claims past that point. Detects overshoot only; never certifies the claims
+are true when no overshoot occurs.
+
+G4 INDISTINGUISHABLE FROM A NORMAL QUERY (buildIndistinguishableQuery,
+verifyNoProbeFraming): mechanical template substitution with no added
+wrapper text, plus a short curated linter for probe-revealing marker phrases
+("gom jabbar", "this is a probe", "benchmark question", etc.) that a caller
+can run against a fully-built query before it goes out. Documented as a
+defense-in-depth checklist, not a claim to catch every conceivable framing
+tell a sophisticated source might notice.
+
+G5 FAILURE STRIKES THE VOTE (tallyVotesStrikingFailures): an inadmissible
+source's vote contributes ZERO to the tally -- excluded entirely, never
+counted at a discounted/partial weight, per the Founder's own framing ("a
+discounted echo is still an echo in the tally").
+
+VERIFIED, requirement (e): Stage 3 G1 end to end on qid 98 (other/source_id
+5723, "Which of the following world regions is NOT considered one of the
+world's most densely populated regions?"), scratchpad/verify_kn_bp141_3_stage3_g1_gom_jabbar.js.
+Real facts, real independently-sourced check value, real multiplication via
+a real local SymPy subprocess (not hand-computed anywhere in the path):
+  Factor A (density): 21.4 people/km^2 (South America, same figure already
+    cited independently in this repo's Stage 0 vetting empirical-basis
+    comment for this exact question)
+  Factor B (land area): 17,840,000 km^2 (South America, standard published
+    figure)
+  Independent check value (population, sourced separately from the two
+    factors above): 382,000,000
+  SymPy sanity check first: runSympyMultiplication(6, 7) -> {value: 42,
+    raw: "42.0000000000000"} -- subprocess bridge confirmed live.
+  Real reconciliation: computedProduct = 381,776,000 (via SymPy), relative
+    difference from the independent check value = 0.0586% (well inside the
+    5% tolerance) -- G1 PASS.
+  Negative control (fabricated area factor, 9,000,000 km^2 instead of the
+    real 17,840,000 km^2): computedProduct = 192,600,000, relative
+    difference = 49.581% -- G1 FAIL, exactly as the gate should behave when
+    a factor is wrong. No threshold was widened to force either result;
+    both are the real script output verbatim.
+
+No false-negative-rate measurement applies to this file the way Stage 1's
+R1/R2/R3 were measured: G1/G3/G5 are consistency/admissibility CHECKS on
+caller-supplied facts and votes, not text-pattern option-eliminators with a
+firing count over the MC dataset, and G2/G4 are mechanism/formatting helpers
+with no elimination behavior of their own to measure.
+
+Builds on Stage 2 (commit c07d3d2e) -- no code dependency (Stage 3 does not
+call plow_mc_elimination_cascade.ts, plow_mc_elimination_chart.ts, or
+plow_mc_question_vetting.ts), same file-family and ONE WRITER sequencing
+only.
