@@ -67,17 +67,69 @@ export interface McOption {
   text: string;
 }
 
-/** Extracts "A) text" / "B) text" ... lines from the exact prompt shape
- *  wan_dispatch.ts:158-161's buildMcPrompt() produces (verified file:line this Yoke): letter,
- *  close-paren, space, option text to end of line. Works whether or not substrate context was
- *  prepended above it (applySubstrateToggle only ever prepends text before this block, never
- *  rewrites it). */
+/** Extracts "A) text" / "B) text" ... options from the exact prompt shape
+ *  wan_dispatch.ts's buildMcPrompt() produces (verified file:line this Yoke): letter,
+ *  close-paren, space, option text -- which is NOT necessarily confined to one line. Works whether
+ *  or not substrate context was prepended above it (applySubstrateToggle only ever prepends text
+ *  before this block, never rewrites it).
+ *
+ *  BP141 MULTI-LINE OPTION TRUNCATION FIX (the pseudocode-solver abstain, root-caused here rather
+ *  than in the solver). The old body was a single `/^([A-J])\)\s*(.+)$/gm` sweep. JavaScript's `.`
+ *  does not match `\n`, so an option whose text spans multiple lines was silently cut down to its
+ *  FIRST LINE and every continuation line was dropped on the floor (no error, no warning -- a
+ *  SILENT GATE in the Coffee's own sense). buildMcPrompt joins options with `\n`, so a multi-line
+ *  option's continuation lines sit in the block carrying no `X)` prefix of their own and were
+ *  simply never matched by anything.
+ *
+ *  Empirically proven this Yoke against the REAL compiled dist and the REAL dataset entry
+ *  (mmlu_pro_per_domain\computer_science\questions.json, source_id 10442 -- the AP-CSP list-merge
+ *  question): 4 of its 8 options are multi-statement code segments, and they lost 94 / 64 / 94 /
+ *  112 characters each. The correct answer C ("Combine, then Sort, then RemoveDup1icates") was
+ *  reduced to just "newList <- Combine (listl, list2)", making it byte-identical in meaning to the
+ *  wrong option A -- so solvePseudocodeTraceProblem found ZERO options matching the worked
+ *  example's expected output and honestly abstained. Its gate and its arithmetic were right all
+ *  along; it was handed mutilated inputs. Against the untruncated options the very same compiled
+ *  solver selects C, the dataset's own key.
+ *
+ *  This truncation was never solver-specific: EVERY consumer of this function saw the mutilated
+ *  text, including plow_mc_answerer.ts's `mcOptionTexts`, i.e. the option list actually shown to
+ *  Perplexity / Claude / ChatGPT / Gemini, and `resolveAuthorityLetterMatch`'s text matching.
+ *
+ *  THE FIX, deliberately narrow: locate each `^([A-J])\)` header, then take that option's text as
+ *  everything from the header to the start of the NEXT header. The final option ends at the first
+ *  BLANK line after it (buildMcPrompt separates the options block from its trailer with `\n\n`,
+ *  while multi-line option bodies use single newlines throughout), or at end-of-string when there
+ *  is no blank line left. A single-line option is byte-for-byte unaffected: its "everything up to
+ *  the next header" IS the remainder of its own line, and the same `.trim()` is applied as before.
+ *  Nothing is invented and nothing new is discarded -- previously-lost characters are restored. */
 export function parseOptionsFromPrompt(prompt: string): McOption[] {
+  const headerRe = /^([A-J])\)[ \t]*/gm;
+  const headers: Array<{ letter: string; bodyStart: number; headerStart: number }> = [];
+  let hm: RegExpExecArray | null;
+  while ((hm = headerRe.exec(prompt)) !== null) {
+    headers.push({
+      letter: hm[1] as string,
+      headerStart: hm.index,
+      bodyStart: hm.index + hm[0].length,
+    });
+  }
+
   const options: McOption[] = [];
-  const re = /^([A-J])\)\s*(.+)$/gm;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(prompt)) !== null) {
-    options.push({ letter: m[1] as string, text: (m[2] as string).trim() });
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i] as { letter: string; bodyStart: number; headerStart: number };
+    const next = headers[i + 1];
+    let end: number;
+    if (next) {
+      end = next.headerStart;
+    } else {
+      // Last option: stop at the first blank line (the options block's own terminator in
+      // buildMcPrompt), else run to the end of the prompt.
+      const blank = prompt.slice(h.bodyStart).search(/\r?\n[ \t]*\r?\n/);
+      end = blank === -1 ? prompt.length : h.bodyStart + blank;
+    }
+    const text = prompt.slice(h.bodyStart, end).trim();
+    if (text.length === 0) continue; // an empty option body is not an option -- same as before
+    options.push({ letter: h.letter, text });
   }
   return options;
 }
