@@ -99,32 +99,33 @@ interface RelayRouteReplyRow {
 }
 
 // ─── Classification logic ────────────────────────────────────────────────────
+//
+// BP139 Founder Yoke: split into a shared classifyCore(...) plus two thin adapters --
+// classifyRecord (Supabase relay_routes/relay_route_replies rows, the WAN-history path) and
+// classifyLocalOutcome (the renderer's own in-memory/persisted QuestionOutcome[] from the run
+// the Founder just did). One classifier, no drift between "WAN history autopsy" and
+// "just-ran benchmark autopsy" -- see runAnswerCoronerOnLocalOutcomes below.
 
-function classifyRecord(
-  route: RelayRouteRow,
-  reply: RelayRouteReplyRow,
-): CoronerRecord {
-  const payload = route.payload_json ?? {};
-  const answerJson = reply.answer_json ?? {};
+function classifyCore(params: {
+  routeId: string;
+  peerId: string;
+  sessionId: string | null;
+  domain: string;
+  question: string;
+  sealedLetter: string | null;
+  answeredLetter: string | null;
+  isAbstain: boolean;
+  isCorrect: boolean;
+  plowTrace: Record<string, unknown>;
+  abstainReason: string | null;
+  answeredBy: string | null;
+  processingMs: number | null;
+}): CoronerRecord {
+  const {
+    routeId, peerId, sessionId, domain, question, sealedLetter, answeredLetter,
+    isAbstain, isCorrect, plowTrace, abstainReason, answeredBy, processingMs,
+  } = params;
 
-  const domain = typeof payload.domain === 'string' ? payload.domain : 'unknown';
-  const question = typeof payload.question_text === 'string'
-    ? payload.question_text
-    : typeof payload.prompt === 'string' ? payload.prompt.slice(0, 200) : '';
-  const sealedLetter = typeof payload.correct_answer_letter === 'string'
-    ? payload.correct_answer_letter.toUpperCase().trim()
-    : null;
-
-  const answeredLetter = typeof answerJson.answer === 'string'
-    ? (answerJson.answer === 'ABSTAIN' ? null : answerJson.answer.toUpperCase().trim())
-    : null;
-
-  const isAbstain = answerJson.answer === 'ABSTAIN' || answeredLetter === null;
-  const isCorrect = !isAbstain && sealedLetter !== null && answeredLetter === sealedLetter;
-
-  const plowTrace = (answerJson.plow_trace ?? {}) as Record<string, unknown>;
-  const abstainReason = typeof answerJson.abstain_reason === 'string' ? answerJson.abstain_reason : null;
-  const answeredBy = typeof answerJson.answered_by === 'string' ? answerJson.answered_by : null;
   const browserCorroboration = typeof plowTrace.browserAuthorityCorroboration === 'string'
     ? plowTrace.browserAuthorityCorroboration
     : null;
@@ -216,9 +217,9 @@ function classifyRecord(
   }
 
   return {
-    routeId: route.id,
-    peerId: reply.peer_id,
-    sessionId: route.session_id,
+    routeId,
+    peerId,
+    sessionId,
     domain,
     question: question.slice(0, 300),
     sealedLetter,
@@ -232,11 +233,205 @@ function classifyRecord(
     browserAuthorityCorroboration: browserCorroboration,
     concordance,
     candidatesPostFurnace,
-    processingMs: reply.processing_ms ?? null,
+    processingMs,
   };
 }
 
-// ─── Main coroner function ───────────────────────────────────────────────────
+/** Supabase relay_routes/relay_route_replies row pair -> CoronerRecord (WAN-history path). */
+function classifyRecord(
+  route: RelayRouteRow,
+  reply: RelayRouteReplyRow,
+): CoronerRecord {
+  const payload = route.payload_json ?? {};
+  const answerJson = reply.answer_json ?? {};
+
+  const domain = typeof payload.domain === 'string' ? payload.domain : 'unknown';
+  const question = typeof payload.question_text === 'string'
+    ? payload.question_text
+    : typeof payload.prompt === 'string' ? payload.prompt.slice(0, 200) : '';
+  const sealedLetter = typeof payload.correct_answer_letter === 'string'
+    ? payload.correct_answer_letter.toUpperCase().trim()
+    : null;
+
+  const answeredLetter = typeof answerJson.answer === 'string'
+    ? (answerJson.answer === 'ABSTAIN' ? null : answerJson.answer.toUpperCase().trim())
+    : null;
+
+  const isAbstain = answerJson.answer === 'ABSTAIN' || answeredLetter === null;
+  const isCorrect = !isAbstain && sealedLetter !== null && answeredLetter === sealedLetter;
+
+  const plowTrace = (answerJson.plow_trace ?? {}) as Record<string, unknown>;
+  const abstainReason = typeof answerJson.abstain_reason === 'string' ? answerJson.abstain_reason : null;
+  const answeredBy = typeof answerJson.answered_by === 'string' ? answerJson.answered_by : null;
+
+  return classifyCore({
+    routeId: route.id,
+    peerId: reply.peer_id,
+    sessionId: route.session_id,
+    domain,
+    question,
+    sealedLetter,
+    answeredLetter,
+    isAbstain,
+    isCorrect,
+    plowTrace,
+    abstainReason,
+    answeredBy,
+    processingMs: reply.processing_ms ?? null,
+  });
+}
+
+// ─── Local-run classification (BP139 Founder Yoke) ───────────────────────────
+//
+// Classifies the CURRENT benchmark run's own QuestionOutcome[] -- the data already sitting in
+// the renderer's memory/localStorage from the run the Founder just did -- instead of requiring
+// a round-trip through Supabase relay_routes/relay_route_replies (the 500-row WAN dump).
+// Reuses classifyCore verbatim, so a "current run" autopsy and a "WAN history" autopsy can never
+// silently drift into two different definitions of correctable-wrong / honest-abstain.
+
+export interface LocalCoronerOutcomeInput {
+  question_id: number;
+  question: string;
+  category: string;
+  correctLetter: string;
+  parsedLetter: string | null;
+  isCorrect: boolean;
+  isAbstain?: boolean;
+  answeredBy?: string | null;
+  peerId?: string | null;
+  machineLabel?: string | null;
+  latencyMs?: number | null;
+  plowTrace?: Record<string, unknown> | null;
+}
+
+/** One QuestionOutcome (renderer shape, OneClickMeshTestPanel.tsx) -> CoronerRecord. */
+export function classifyLocalOutcome(o: LocalCoronerOutcomeInput): CoronerRecord {
+  const sealedLetter = o.correctLetter ? o.correctLetter.toUpperCase().trim() : null;
+  const isAbstain = !!o.isAbstain || o.parsedLetter === null;
+  const answeredLetter = isAbstain ? null : (o.parsedLetter ? o.parsedLetter.toUpperCase().trim() : null);
+  const isCorrect = !isAbstain && sealedLetter !== null && answeredLetter === sealedLetter;
+
+  return classifyCore({
+    routeId: `local-${o.question_id}`,
+    peerId: o.peerId ?? o.machineLabel ?? 'local',
+    sessionId: null,
+    domain: o.category || 'unknown',
+    question: o.question,
+    sealedLetter,
+    answeredLetter,
+    isAbstain,
+    isCorrect,
+    // No abstain_reason field exists on the local run's outcomes (only the WAN wire format
+    // populates it) -- classifyCore's own traceSummary-pattern fallback (relevanceGateAbstain=
+    // true / computeFallthroughAbstain=true) still classifies honest vs over-conservative
+    // abstains correctly when plowTrace carries a traceSummary; a bare single-shot/minor_council
+    // abstain with no plowTrace at all falls to the same "honest-abstain" default the WAN path
+    // already uses for that case.
+    plowTrace: (o.plowTrace ?? {}) as Record<string, unknown>,
+    abstainReason: null,
+    answeredBy: o.answeredBy ?? null,
+    processingMs: o.latencyMs ?? null,
+  });
+}
+
+/** Shared aggregation: CoronerRecord[] -> CoronerRoundup. Used by both the Supabase/WAN path
+ *  and the local-outcomes path so the byClass/correctableWrongs/prioritizedFixList math is
+ *  computed exactly once. */
+function buildRoundupFromRecords(records: CoronerRecord[]): CoronerRoundup {
+  const byClass: Record<string, CoronerRecord[]> = {};
+  let correctableWrongs = 0;
+  let honestAbstains = 0;
+  let wrongTotal = 0;
+  let rightTotal = 0;
+  let abstainTotal = 0;
+
+  for (const rec of records) {
+    const cls = rec.answerClass;
+    if (!byClass[cls]) byClass[cls] = [];
+    byClass[cls].push(rec);
+
+    if (rec.outcome === 'wrong') {
+      wrongTotal++;
+      if (rec.correctable) correctableWrongs++;
+    } else if (rec.outcome === 'right') {
+      rightTotal++;
+    } else {
+      abstainTotal++;
+      if (!rec.correctable) honestAbstains++;
+    }
+  }
+
+  const correctableClasses: WrongClass[] = [
+    'authority-empty',
+    'matched-wrong-option',
+    'plow-discordant',
+    'substrate-gap',
+    'compute-wrong',
+    'bad-decomposition',
+  ];
+  const overConservativeClass: AbstainClass = 'over-conservative-abstain';
+
+  const prioritizedFixList: FixItem[] = [
+    ...correctableClasses,
+    overConservativeClass,
+  ]
+    .map((cls) => ({
+      answerClass: cls,
+      count: byClass[cls]?.length ?? 0,
+      exemplars: (byClass[cls] ?? []).slice(0, 3),
+    }))
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    runAt: new Date().toISOString(),
+    totalRecords: records.length,
+    correctableWrongs,
+    honestAbstains,
+    wrongTotal,
+    rightTotal,
+    abstainTotal,
+    byClass,
+    prioritizedFixList,
+  };
+}
+
+/** Classifies the CURRENT run's outcomes (in-memory/persisted, no network call) and returns
+ *  the SAME CoronerRoundup shape runAnswerCoroner returns -- the renderer's existing roundup
+ *  display JSX needs no branching to show either source. Synchronous (no fetch), but kept
+ *  as a plain function (not async) is fine to `await` from a caller either way. */
+export function runAnswerCoronerOnLocalOutcomes(
+  outcomes: LocalCoronerOutcomeInput[],
+  opts: { onProgress?: (msg: string) => void } = {},
+): CoronerRoundup {
+  const log = (msg: string) => {
+    console.log(`[coroner:local] ${msg}`);
+    opts.onProgress?.(msg);
+  };
+
+  log(`classifying ${outcomes.length} outcome(s) from the current run...`);
+  const records = outcomes.map(classifyLocalOutcome);
+  const roundup = buildRoundupFromRecords(records);
+
+  log('');
+  log('╔══════════════════════════════════════════════════════════════');
+  log('║  ANSWER CORONER ROUNDUP (current run)');
+  log(`║  ${records.length} records`);
+  log('╠══════════════════════════════════════════════════════════════');
+  if (records.length > 0) {
+    log(`║  RIGHT:   ${roundup.rightTotal.toString().padStart(4)}   (${((roundup.rightTotal / records.length) * 100).toFixed(1)}%)`);
+    log(`║  WRONG:   ${roundup.wrongTotal.toString().padStart(4)}   (${((roundup.wrongTotal / records.length) * 100).toFixed(1)}%)`);
+    log(`║  ABSTAIN: ${roundup.abstainTotal.toString().padStart(4)}   (${((roundup.abstainTotal / records.length) * 100).toFixed(1)}%)`);
+  }
+  log('╠══════════════════════════════════════════════════════════════');
+  log(`║  HEADLINE 1 -- CORRECTABLE WRONGS: ${roundup.correctableWrongs}`);
+  log(`║  HEADLINE 2 -- HONEST ABSTAINS:    ${roundup.honestAbstains}  (leave honest -- not a failure)`);
+  log('╚══════════════════════════════════════════════════════════════');
+
+  return roundup;
+}
+
+// ─── Main coroner function (Supabase/WAN-history path) ───────────────────────
 
 export async function runAnswerCoroner(opts: {
   supabaseUrl?: string;
@@ -328,64 +523,9 @@ export async function runAnswerCoroner(opts: {
 
   log(`classified ${records.length} records`);
 
-  // Build class buckets
-  const byClass: Record<string, CoronerRecord[]> = {};
-  let correctableWrongs = 0;
-  let honestAbstains = 0;
-  let wrongTotal = 0;
-  let rightTotal = 0;
-  let abstainTotal = 0;
-
-  for (const rec of records) {
-    const cls = rec.answerClass;
-    if (!byClass[cls]) byClass[cls] = [];
-    byClass[cls].push(rec);
-
-    if (rec.outcome === 'wrong') {
-      wrongTotal++;
-      if (rec.correctable) correctableWrongs++;
-    } else if (rec.outcome === 'right') {
-      rightTotal++;
-    } else {
-      abstainTotal++;
-      if (!rec.correctable) honestAbstains++;
-    }
-  }
-
-  // Prioritized fix list: only correctable classes, sorted by count desc
-  const correctableClasses: WrongClass[] = [
-    'authority-empty',
-    'matched-wrong-option',
-    'plow-discordant',
-    'substrate-gap',
-    'compute-wrong',
-    'bad-decomposition',
-  ];
-  const overConservativeClass: AbstainClass = 'over-conservative-abstain';
-
-  const prioritizedFixList: FixItem[] = [
-    ...correctableClasses,
-    overConservativeClass,
-  ]
-    .map((cls) => ({
-      answerClass: cls,
-      count: byClass[cls]?.length ?? 0,
-      exemplars: (byClass[cls] ?? []).slice(0, 3),
-    }))
-    .filter((item) => item.count > 0)
-    .sort((a, b) => b.count - a.count);
-
-  const roundup: CoronerRoundup = {
-    runAt: new Date().toISOString(),
-    totalRecords: records.length,
-    correctableWrongs,
-    honestAbstains,
-    wrongTotal,
-    rightTotal,
-    abstainTotal,
-    byClass,
-    prioritizedFixList,
-  };
+  // BP139: shared aggregation (byClass/correctableWrongs/prioritizedFixList) -- same helper
+  // runAnswerCoronerOnLocalOutcomes uses, so the two paths can never silently diverge.
+  const roundup = buildRoundupFromRecords(records);
 
   // Print a human-readable summary to the terminal (satisfies Phase 4 "live visible" requirement)
   log('');
@@ -393,15 +533,15 @@ export async function runAnswerCoroner(opts: {
   log('║  ANSWER CORONER ROUNDUP');
   log(`║  ${records.length} records  |  ${routes.length} routes  |  ${allReplies.length} replies`);
   log('╠══════════════════════════════════════════════════════════════');
-  log(`║  RIGHT:   ${rightTotal.toString().padStart(4)}   (${((rightTotal / records.length) * 100).toFixed(1)}%)`);
-  log(`║  WRONG:   ${wrongTotal.toString().padStart(4)}   (${((wrongTotal / records.length) * 100).toFixed(1)}%)`);
-  log(`║  ABSTAIN: ${abstainTotal.toString().padStart(4)}   (${((abstainTotal / records.length) * 100).toFixed(1)}%)`);
+  log(`║  RIGHT:   ${roundup.rightTotal.toString().padStart(4)}   (${((roundup.rightTotal / records.length) * 100).toFixed(1)}%)`);
+  log(`║  WRONG:   ${roundup.wrongTotal.toString().padStart(4)}   (${((roundup.wrongTotal / records.length) * 100).toFixed(1)}%)`);
+  log(`║  ABSTAIN: ${roundup.abstainTotal.toString().padStart(4)}   (${((roundup.abstainTotal / records.length) * 100).toFixed(1)}%)`);
   log('╠══════════════════════════════════════════════════════════════');
-  log(`║  HEADLINE 1 -- CORRECTABLE WRONGS: ${correctableWrongs}`);
-  log(`║  HEADLINE 2 -- HONEST ABSTAINS:    ${honestAbstains}  (leave honest -- not a failure)`);
+  log(`║  HEADLINE 1 -- CORRECTABLE WRONGS: ${roundup.correctableWrongs}`);
+  log(`║  HEADLINE 2 -- HONEST ABSTAINS:    ${roundup.honestAbstains}  (leave honest -- not a failure)`);
   log('╠══════════════════════════════════════════════════════════════');
   log('║  PRIORITIZED FIX LIST (correctable classes):');
-  for (const item of prioritizedFixList) {
+  for (const item of roundup.prioritizedFixList) {
     log(`║    [${item.count.toString().padStart(3)}] ${item.answerClass}`);
     for (const ex of item.exemplars) {
       log(`║        exemplar: q="${ex.question.slice(0, 60)}..." sealed=${ex.sealedLetter} got=${ex.answeredLetter ?? 'ABSTAIN'}`);

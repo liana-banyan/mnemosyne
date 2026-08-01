@@ -285,6 +285,11 @@ interface BrowserAuthorityInteractiveResultMessage {
   snippet: string;
   sourceUrl: string | null;
   selectorUsed: string | null;
+  // (this fix pass) optional, diagnostics-only -- never load-bearing for success/failure, which is
+  // still decided purely by `success`/`snippet`/`sourceUrl` above. Lets index.ts's console-visible
+  // fail log (STEP 3) say WHY a null came back (not_signed_in / composer_not_found_timeout / etc.)
+  // instead of just "no result".
+  reason?: string;
 }
 
 // Best-effort composer selectors, most-specific first. claude.ai's composer is a ProseMirror
@@ -422,109 +427,211 @@ function submitComposer(composerEl: HTMLElement): 'button' | 'enter-key' | 'fail
 }
 
 const CLAUDE_INTERACTIVE_POLL_MS = 700;
-// Wall-clock budget for the WHOLE type->submit->stream->scrape sequence, enforced inside this
-// handler itself (index.ts's own runBrowserAuthorityQueryFromMain has a SEPARATE, longer outer
-// timeout around the whole round trip -- this inner budget just makes sure this handler always
-// eventually reports back rather than polling forever on a page that never finishes streaming).
-const CLAUDE_INTERACTIVE_MAX_WAIT_MS = 75_000;
+// (this fix pass) FAST-FAIL ROOT CAUSE FIX: a live run showed one question taking 123s because
+// this reply-stream poll loop burned its FULL prior 75_000ms budget on a page where the composer
+// selector's last-resort catch-all (`div[contenteditable="true"]`) matched something OTHER than
+// the real composer (e.g. a login-wall page has no real composer, but the catch-all can still
+// hit an unrelated contenteditable node), typed/submitted into it, then polled for a reply that
+// could never arrive. Cut from 75_000 -> 18_000: paired with the NEW composer-find fast-fail below
+// (CLAUDE_COMPOSER_FIND_MAX_WAIT_MS) and index.ts's shortened BROWSER_AUTHORITY_INTERACTIVE_
+// TIMEOUT_MS (90_000 -> 25_000), the worst-case total interactive round trip is now ~2s (main's
+// load-settle) + 3s (composer find) + 0.4s (submit settle) + 18s (this poll) = ~23.4s, comfortably
+// under the new 25s outer cap, instead of the old ~92s worst case.
+const CLAUDE_INTERACTIVE_MAX_WAIT_MS = 18_000;
 // How many consecutive no-change poll ticks (with no stop-button visible) are required before
 // completion is declared when NO streaming indicator was ever observed (fast answer, or the
 // stop-button selector missed it) -- see the stableAndDone comment below for the full logic.
 const CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED = 3; // 3 * 700ms = 2.1s of no growth
 
+// (this fix pass) Composer fast-fail: how long to POLL for the composer to appear before giving
+// up, instead of the prior single synchronous querySelector check. Polling (rather than one shot)
+// gives a slow-mounting claude.ai app shell a fair chance; capping at ~3s (well inside the "~3-4
+// seconds" fast-fail window) means a page that will NEVER have a composer (login wall, dead page,
+// selector drift) is reported back almost immediately instead of falling through to the 18s reply
+// poll above with no real composer typed into.
+const CLAUDE_COMPOSER_FIND_POLL_MS = 400;
+const CLAUDE_COMPOSER_FIND_MAX_WAIT_MS = 3_000;
+
+// (this fix pass) Best-effort sign-in-wall markers. Presence of ANY of these (or a /login URL)
+// while the composer is absent is reported as reason:'not_signed_in' rather than a generic
+// composer-not-found timeout, so the Founder's console tells the difference between "claude.ai's
+// DOM changed" and "this session isn't logged in" without guessing.
+const CLAUDE_SIGNIN_MARKER_SELECTORS = [
+  'a[href*="/login"]',
+  'button[data-testid="login-button"]',
+  'input[name="email"]',
+  'input[type="password"]',
+];
+
+function isClaudeLoginWall(): boolean {
+  try {
+    if (/\/login(?:[/?]|$)/i.test(window.location.href)) return true;
+    for (const sel of CLAUDE_SIGNIN_MARKER_SELECTORS) {
+      try {
+        if (document.querySelector(sel)) return true;
+      } catch {
+        /* invalid selector -- try the next candidate */
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/** Polls for the composer up to CLAUDE_COMPOSER_FIND_MAX_WAIT_MS. Calls onFound as soon as a
+ *  composer selector matches; calls onNotFound(reason) as soon as either (a) a login-wall marker
+ *  is detected (immediate, does not wait out the full window) or (b) the window elapses with no
+ *  composer and no login-wall marker seen ('composer_not_found_timeout'). Never throws. */
+function findComposerFast(
+  onFound: (composer: HTMLElement) => void,
+  onNotFound: (reason: string) => void,
+): void {
+  const startedAt = Date.now();
+  const tick = () => {
+    const composer = findFirstMatch(CLAUDE_COMPOSER_SELECTORS);
+    if (composer) {
+      onFound(composer);
+      return;
+    }
+    if (isClaudeLoginWall()) {
+      onNotFound('not_signed_in');
+      return;
+    }
+    if (Date.now() - startedAt >= CLAUDE_COMPOSER_FIND_MAX_WAIT_MS) {
+      onNotFound('composer_not_found_timeout');
+      return;
+    }
+    setTimeout(tick, CLAUDE_COMPOSER_FIND_POLL_MS);
+  };
+  tick();
+}
+
 function runClaudeInteractiveQuery(promptText: string): void {
-  const reportFailure = () => {
+  const reportFailure = (reason?: string) => {
     ipcRenderer.sendToHost('browser-authority-interactive-result', {
       success: false, authority: 'user_claude', snippet: '', sourceUrl: null, selectorUsed: null,
+      ...(reason ? { reason } : {}),
     } as BrowserAuthorityInteractiveResultMessage);
   };
 
-  const composer = findFirstMatch(CLAUDE_COMPOSER_SELECTORS);
-  if (!composer) {
-    logInjectionEvent('claude_interactive_composer_not_found', { url: window.location.href });
-    reportFailure();
-    return;
-  }
+  // (this fix pass) STEP 2 fast-fail: composer lookup is now a bounded poll (findComposerFast),
+  // not a single synchronous check -- see that function's header for why (gives a slow-mounting
+  // app shell a fair ~3s chance, but never falls through to the 18s reply-poll budget on a page
+  // that has no real composer at all).
+  findComposerFast(
+    (composer) => {
+      logInjectionEvent('claude_interactive_composer_found', { url: window.location.href });
+      proceedWithComposer(composer);
+    },
+    (reason) => {
+      logInjectionEvent(
+        reason === 'not_signed_in' ? 'claude_interactive_not_signed_in' : 'claude_interactive_composer_not_found',
+        { reason, url: window.location.href },
+      );
+      reportFailure(reason);
+    },
+  );
 
-  const typed = setComposerText(composer, promptText);
-  logInjectionEvent('claude_interactive_typed', { ok: typed, url: window.location.href });
-  if (!typed) {
-    reportFailure();
-    return;
-  }
-
-  // A short settle delay before submit -- mirrors the settle-delay convention
-  // runBrowserAuthorityQueryFromMain (index.ts) already uses after did-finish-load, giving the
-  // editor's own React state a moment to catch up with the just-dispatched input event before
-  // the submit handler reads it.
-  setTimeout(() => {
-    const submitMethod = submitComposer(composer);
-    logInjectionEvent('claude_interactive_submitted', { method: submitMethod, url: window.location.href });
-    if (submitMethod === 'failed') {
-      reportFailure();
+  function proceedWithComposer(composer: HTMLElement): void {
+    const typed = setComposerText(composer, promptText);
+    logInjectionEvent('claude_interactive_typed', { ok: typed, url: window.location.href });
+    if (!typed) {
+      reportFailure('type_failed');
       return;
     }
 
-    let ticksSinceChange = 0;
-    let lastText = '';
-    let hasSeenStreaming = false;
-    let lastSelector: string | null = null;
-    const startedAt = Date.now();
-
-    const finish = (success: boolean) => {
-      clearInterval(pollHandle);
-      logInjectionEvent('claude_interactive_result', {
-        success, textLength: lastText.length, sawStreaming: hasSeenStreaming, url: window.location.href,
-      });
-      ipcRenderer.sendToHost('browser-authority-interactive-result', {
-        success,
-        authority: 'user_claude',
-        snippet: success ? lastText.replace(/\s+/g, ' ').trim() : '',
-        sourceUrl: success ? window.location.href : null,
-        selectorUsed: success ? lastSelector : null,
-      } as BrowserAuthorityInteractiveResultMessage);
-    };
-
-    const pollHandle = setInterval(() => {
-      const streaming = isClaudeStillStreaming();
-      if (streaming) hasSeenStreaming = true;
-
-      const match = lastNonEmptyTextMatch(CLAUDE_ASSISTANT_MESSAGE_SELECTORS);
-      const currentText = match?.text ?? '';
-      if (match) lastSelector = match.selector;
-
-      if (currentText.length > 0 && currentText === lastText) {
-        ticksSinceChange++;
-      } else {
-        ticksSinceChange = 0;
-        lastText = currentText;
-      }
-
-      // Completion is declared when: (a) we've seen the stop-button appear at some earlier tick
-      // and it is now gone (strong, fast signal -- naturally requires at least one repeated
-      // no-change reading first, since ticksSinceChange only increments on a REPEATED value), OR
-      // (b) the text has held steady for CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED consecutive
-      // ticks even though no streaming indicator was ever observed (fallback for a fast answer
-      // or a stop-button selector miss).
-      const stableAndDone =
-        currentText.length > 0 && !streaming &&
-        (hasSeenStreaming ? ticksSinceChange >= 1 : ticksSinceChange >= CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED);
-
-      if (stableAndDone) {
-        finish(true);
+    // A short settle delay before submit -- mirrors the settle-delay convention
+    // runBrowserAuthorityQueryFromMain (index.ts) already uses after did-finish-load, giving the
+    // editor's own React state a moment to catch up with the just-dispatched input event before
+    // the submit handler reads it.
+    setTimeout(() => {
+      const submitMethod = submitComposer(composer);
+      logInjectionEvent('claude_interactive_submitted', { method: submitMethod, url: window.location.href });
+      if (submitMethod === 'failed') {
+        reportFailure('submit_failed');
         return;
       }
 
-      if (Date.now() - startedAt > CLAUDE_INTERACTIVE_MAX_WAIT_MS) {
-        // Timed out -- report honestly with whatever text (if any) was last observed. Empty
-        // lastText reports success:false (no fabricated snippet); a non-empty-but-possibly-
-        // still-growing lastText is reported success:true as a best-effort partial, but is never
-        // silently upgraded to "verified" upstream (distillExtraction's own length-based
-        // `verified` heuristic in browser_authority_types.ts is the only thing that judges that).
-        finish(currentText.length > 0);
-      }
-    }, CLAUDE_INTERACTIVE_POLL_MS);
-  }, 400);
+      let ticksSinceChange = 0;
+      let lastText = '';
+      let hasSeenStreaming = false;
+      let loggedStreamingDetected = false;
+      let lastSelector: string | null = null;
+      const startedAt = Date.now();
+
+      const finish = (success: boolean) => {
+        clearInterval(pollHandle);
+        // (this fix pass) STEP 3 diagnostics: distinct stage lines for the two ways this can end,
+        // in addition to the existing summary line below (kept for the jsonl-file consumer).
+        if (success) {
+          logInjectionEvent('claude_interactive_stream_complete', { textLength: lastText.length, url: window.location.href });
+          logInjectionEvent('claude_interactive_scraped', { length: lastText.length, url: window.location.href });
+        } else {
+          logInjectionEvent('claude_interactive_empty_scrape', { sawStreaming: hasSeenStreaming, url: window.location.href });
+        }
+        logInjectionEvent('claude_interactive_result', {
+          success, textLength: lastText.length, sawStreaming: hasSeenStreaming, url: window.location.href,
+        });
+        ipcRenderer.sendToHost('browser-authority-interactive-result', {
+          success,
+          authority: 'user_claude',
+          snippet: success ? lastText.replace(/\s+/g, ' ').trim() : '',
+          sourceUrl: success ? window.location.href : null,
+          selectorUsed: success ? lastSelector : null,
+          ...(success ? {} : { reason: 'stream_timeout_or_empty' }),
+        } as BrowserAuthorityInteractiveResultMessage);
+      };
+
+      const pollHandle = setInterval(() => {
+        const streaming = isClaudeStillStreaming();
+        if (streaming) hasSeenStreaming = true;
+        if (streaming && !loggedStreamingDetected) {
+          loggedStreamingDetected = true;
+          logInjectionEvent('claude_interactive_streaming_detected', { url: window.location.href });
+        }
+
+        const match = lastNonEmptyTextMatch(CLAUDE_ASSISTANT_MESSAGE_SELECTORS);
+        const currentText = match?.text ?? '';
+        if (match) lastSelector = match.selector;
+
+        if (currentText.length > 0 && currentText === lastText) {
+          ticksSinceChange++;
+        } else {
+          ticksSinceChange = 0;
+          lastText = currentText;
+        }
+
+        // Completion is declared when: (a) we've seen the stop-button appear at some earlier tick
+        // and it is now gone (strong, fast signal -- naturally requires at least one repeated
+        // no-change reading first, since ticksSinceChange only increments on a REPEATED value), OR
+        // (b) the text has held steady for CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED consecutive
+        // ticks even though no streaming indicator was ever observed (fallback for a fast answer
+        // or a stop-button selector miss). Either way this returns AS SOON AS stability is
+        // detected -- it never waits out the rest of the poll budget once the answer is done.
+        const stableAndDone =
+          currentText.length > 0 && !streaming &&
+          (hasSeenStreaming ? ticksSinceChange >= 1 : ticksSinceChange >= CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED);
+
+        if (stableAndDone) {
+          finish(true);
+          return;
+        }
+
+        if (Date.now() - startedAt > CLAUDE_INTERACTIVE_MAX_WAIT_MS) {
+          // Timed out -- report honestly with whatever text (if any) was last observed. Empty
+          // lastText reports success:false (no fabricated snippet); a non-empty-but-possibly-
+          // still-growing lastText is reported success:true as a best-effort partial, but is never
+          // silently upgraded to "verified" upstream (distillExtraction's own length-based
+          // `verified` heuristic in browser_authority_types.ts is the only thing that judges that).
+          logInjectionEvent('claude_interactive_timeout', {
+            elapsedMs: Date.now() - startedAt, textLength: currentText.length, url: window.location.href,
+          });
+          finish(currentText.length > 0);
+        }
+      }, CLAUDE_INTERACTIVE_POLL_MS);
+    }, 400);
+  }
 }
 
 ipcRenderer.on('browser-authority-run-interactive-query', (_event, payload: BrowserAuthorityRunInteractiveQueryRequest) => {

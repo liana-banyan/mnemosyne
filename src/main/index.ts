@@ -1584,7 +1584,19 @@ const BROWSER_AUTHORITY_RETRY_DELAY_MS = 1_500;
 // static DOM scrape of an already-rendered Google/Perplexity results page). This is a SEPARATE,
 // longer budget used ONLY for isInteractiveBrowserAuthority() authorities -- it does not change
 // BROWSER_AUTHORITY_MAIN_TIMEOUT_MS's value or meaning for user_google/user_perplexity at all.
-const BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS = 90_000;
+//
+// (this fix pass) FAST-FAIL ROOT CAUSE FIX: a live run showed ONE question taking 123s because
+// this budget was 90_000ms and webview_preload.ts's inner reply-poll budget was 75_000ms -- a page
+// where the composer catch-all selector matched something other than the real composer (e.g. a
+// login wall) would type/submit into the wrong element and then poll for a reply that could never
+// arrive, burning nearly the full 90s before honestly reporting null. Cut 90_000 -> 25_000, paired
+// with webview_preload.ts's new composer-find fast-fail (~3s) and shortened reply-poll budget
+// (75_000 -> 18_000ms): worst-case total is now ~2s (load-settle below) + 3s (composer find) +
+// 0.4s (submit settle) + 18s (reply poll) = ~23.4s of INNER budget, so this 25s OUTER cap is a
+// safety net around that, not the expected duration -- a composer-not-found or not-signed-in page
+// now reports back in ~2-5s, and a genuinely completed answer returns as soon as it stabilizes,
+// not after the budget is exhausted.
+const BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS = 25_000;
 // Extra settle delay after did-finish-load before the composer is even looked up -- claude.ai's
 // own client-side app shell needs a moment to mount past the raw HTML load event, same rationale
 // as BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS above but tuned separately since this is a different
@@ -1638,19 +1650,25 @@ async function runInteractiveBrowserAuthorityQuery(
       ? buildMcAwareQueryText(query.question, query.mcOptions)
       : query.question;
 
+  // (this fix pass) STEP 3 diagnostics: every resolve() below now carries a `reason` string
+  // instead of a bare `null`, so the catch below can print WHY the outer script gave up (no
+  // webview found / navigation never loaded / send failed / outer timeout) with the SAME
+  // `claude_interactive:` prefix webview_preload.ts's own stage logs use, in the console stream
+  // this main process actually writes to (not the guest webview's own devtools console, which
+  // this outer script does NOT run in -- it runs in nexusWindow's page context).
   const script = `
     (function() {
       return new Promise(function(resolve) {
         try {
           var wv = document.querySelector('webview');
-          if (!wv) { resolve(null); return; }
+          if (!wv) { resolve({ success: false, reason: 'no_webview_element' }); return; }
           var settled = false;
           var timeoutId = setTimeout(function() {
             if (settled) return;
             settled = true;
             wv.removeEventListener('ipc-message', onMsg);
             wv.removeEventListener('did-finish-load', onLoad);
-            resolve(null);
+            resolve({ success: false, reason: 'outer_script_timeout' });
           }, ${BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS});
           function onMsg(e) {
             if (!e || e.channel !== 'browser-authority-interactive-result') return;
@@ -1660,7 +1678,7 @@ async function runInteractiveBrowserAuthorityQuery(
             wv.removeEventListener('ipc-message', onMsg);
             wv.removeEventListener('did-finish-load', onLoad);
             var payload = e.args && e.args[0] ? e.args[0] : null;
-            resolve(payload); // honest pass-through -- success:false/no-snippet included verbatim
+            resolve(payload || { success: false, reason: 'empty_ipc_payload' }); // honest pass-through
           }
           function onLoad() {
             wv.removeEventListener('did-finish-load', onLoad);
@@ -1668,7 +1686,7 @@ async function runInteractiveBrowserAuthorityQuery(
               try {
                 wv.send('browser-authority-run-interactive-query', { query: ${JSON.stringify(promptText)}, authority: ${JSON.stringify(query.authority)} });
               } catch (sendErr) {
-                if (!settled) { settled = true; clearTimeout(timeoutId); resolve(null); }
+                if (!settled) { settled = true; clearTimeout(timeoutId); resolve({ success: false, reason: 'webview_send_failed' }); }
               }
             }, ${BROWSER_AUTHORITY_INTERACTIVE_LOAD_SETTLE_DELAY_MS});
           }
@@ -1676,7 +1694,7 @@ async function runInteractiveBrowserAuthorityQuery(
           wv.addEventListener('did-finish-load', onLoad);
           wv.loadURL(${JSON.stringify(navigateUrl)});
         } catch (err) {
-          resolve(null);
+          resolve({ success: false, reason: 'outer_script_exception' });
         }
       });
     })()
@@ -1684,9 +1702,19 @@ async function runInteractiveBrowserAuthorityQuery(
 
   try {
     const result = await nexusWindow.webContents.executeJavaScript(script);
-    if (!result || typeof result !== 'object') return null;
-    const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null };
-    if (!r.success || !r.snippet || !r.sourceUrl) return null; // honest -- never a partial/fabricated extraction
+    if (!result || typeof result !== 'object') {
+      console.log('claude_interactive: main-null-result (executeJavaScript returned no object)');
+      return null;
+    }
+    const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null; reason?: string };
+    if (!r.success || !r.snippet || !r.sourceUrl) {
+      // honest -- never a partial/fabricated extraction; log WHY so the next run's console tells
+      // us exactly which stage failed (composer_not_found_timeout / not_signed_in / outer_script_
+      // timeout / stream_timeout_or_empty / etc.)
+      console.log(`claude_interactive: main-fail reason=${r.reason ?? 'no_reason_reported'}`);
+      return null;
+    }
+    console.log(`claude_interactive: main-success scraped-len=${r.snippet.length}`);
     return {
       snippet: r.snippet,
       sourceUrl: r.sourceUrl,
@@ -1694,7 +1722,7 @@ async function runInteractiveBrowserAuthorityQuery(
       selectorUsed: r.selectorUsed ?? null,
     };
   } catch (err) {
-    console.warn('[browser-authority-main] claude.ai interactive executeJavaScript round trip failed (non-fatal, resolving null):', (err as Error)?.message ?? err);
+    console.warn('claude_interactive: main-exception (non-fatal, resolving null):', (err as Error)?.message ?? err);
     return null;
   }
 }
@@ -2981,6 +3009,24 @@ function registerIPCHandlers(): void {
     } catch {
       /* non-fatal -- see webview_preload.ts's logInjectionEvent for the matching fail-soft contract */
     }
+    // (this fix pass) STEP 3 diagnostics: the claude_interactive_* events webview_preload.ts's
+    // runClaudeInteractiveQuery now emits at every stage (composer-found/not-found/typed/
+    // submitted/streaming-detected/stream-complete/scraped/empty-scrape/timeout) are relayed here
+    // over the SAME fire-and-forget channel every other logInjectionEvent call already uses --
+    // this is the only place they can reach this (unsandboxed) main process. Print them to the
+    // console with the SAME `claude_interactive:` prefix the main-side logs above use, so the
+    // Founder's terminal shows one continuous, ordered stage-by-stage trace instead of only the
+    // jsonl file. Never let a malformed/oversized payload break the fail-soft contract above.
+    try {
+      const event = payload?.event;
+      if (typeof event === 'string' && event.startsWith('claude_interactive')) {
+        const { event: _e, ts: _ts, ...details } = payload;
+        const stage = event.replace(/^claude_interactive_?/, '') || '(unnamed)';
+        console.log(`claude_interactive: ${stage}`, details);
+      }
+    } catch {
+      /* diagnostics must never break the real feature -- same fail-soft contract as above */
+    }
   });
 
   // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point. Renderer-side
@@ -3114,7 +3160,7 @@ function registerIPCHandlers(): void {
     },
   );
 
-  safeHandle('nexus-authority-open-signin', (_event, { authority }: { authority: 'user_google' | 'user_perplexity' }) => {
+  safeHandle('nexus-authority-open-signin', (_event, { authority }: { authority: 'user_google' | 'user_perplexity' | 'user_claude' }) => {
     const opened = showNexusAuthoritySessionForSignIn(authority);
     return { ok: opened, reason: opened ? null : 'flag_off_or_unavailable' };
   });

@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { loadNexusAuthoritySettings } from './nexus_authority_settings_store';
 
-type AuthorityKey = 'user_google' | 'user_perplexity';
+type AuthorityKey = 'user_google' | 'user_perplexity' | 'user_claude';
 
 interface AuthorityRowState {
   status: 'unknown' | 'checking' | 'signed_in' | 'not_signed_in';
@@ -28,6 +28,7 @@ interface AuthorityRowState {
 const AUTHORITY_LABELS: Record<AuthorityKey, string> = {
   user_google: 'Google',
   user_perplexity: 'Perplexity',
+  user_claude: 'Claude',
 };
 
 const INITIAL_ROW_STATE: AuthorityRowState = { status: 'unknown', reason: null };
@@ -38,6 +39,7 @@ export function NexusAuthoritySignInPanel() {
   const [rows, setRows] = useState<Record<AuthorityKey, AuthorityRowState>>({
     user_google: INITIAL_ROW_STATE,
     user_perplexity: INITIAL_ROW_STATE,
+    user_claude: INITIAL_ROW_STATE,
   });
   const [sessionOpen, setSessionOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -84,6 +86,7 @@ export function NexusAuthoritySignInPanel() {
     setRows((prev) => ({
       user_google: { ...prev.user_google, status: 'checking' },
       user_perplexity: { ...prev.user_perplexity, status: 'checking' },
+      user_claude: { ...prev.user_claude, status: 'checking' },
     }));
     try {
       const result = await window.amplify?.checkNexusAuthoritySignInStatus?.();
@@ -92,6 +95,7 @@ export function NexusAuthoritySignInPanel() {
         const next: Record<AuthorityKey, AuthorityRowState> = {
           user_google: INITIAL_ROW_STATE,
           user_perplexity: INITIAL_ROW_STATE,
+          user_claude: INITIAL_ROW_STATE,
         };
         for (const s of result.statuses) {
           // Never fabricate "signed in" -- the probe's own honest boolean is the ONLY thing
@@ -105,6 +109,7 @@ export function NexusAuthoritySignInPanel() {
       setRows({
         user_google: { status: 'not_signed_in', reason: 'probe_call_failed' },
         user_perplexity: { status: 'not_signed_in', reason: 'probe_call_failed' },
+        user_claude: { status: 'not_signed_in', reason: 'probe_call_failed' },
       });
     } finally {
       setBusy(false);
@@ -120,7 +125,7 @@ export function NexusAuthoritySignInPanel() {
       <div style={s.sectionHeader}>Authorities (Nexus sign-in)</div>
       <div style={s.card}>
         <div style={s.introText}>
-          Sign into your own Google and Perplexity accounts once, in a window that opens
+          Sign into your own Google, Perplexity, and Claude accounts once, in a window that opens
           visibly for this purpose only -- the app never sees your password, and every lookup
           afterward runs against YOUR logged-in session, at your own $0 quota.
         </div>
@@ -133,7 +138,7 @@ export function NexusAuthoritySignInPanel() {
         )}
 
         <div style={{ ...s.armList, opacity: flagsEnabled ? 1 : 0.45 }}>
-          {(['user_google', 'user_perplexity'] as AuthorityKey[]).map((authority) => {
+          {(['user_google', 'user_perplexity', 'user_claude'] as AuthorityKey[]).map((authority) => {
             const row = rows[authority];
             const pillLabel =
               row.status === 'checking' ? 'Checking…' :

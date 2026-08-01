@@ -552,9 +552,71 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   const [coronerLog, setCoronerLog] = useState<string[]>([]);
   const [coronerRoundup, setCoronerRoundup] = useState<Record<string, unknown> | null>(null);
   const [coronerError, setCoronerError] = useState<string | null>(null);
+  // BP139 Founder Yoke: which data the roundup on screen was actually computed from -- 'wan'
+  // (the 500-row Supabase relay_route_replies dump) or 'local' (the CURRENT run's own
+  // outcomes, no network call). Never left ambiguous in the UI which one the Founder is
+  // looking at.
+  const [coronerSource, setCoronerSource] = useState<'wan' | 'local' | null>(null);
   // gates config controls so both actions can't
   // race each other and silently produce a confusing mixed-config result.
   const busy = state === 'running' || liftState === 'running';
+
+  // BP139 Founder Yoke: "the benchmark results must NOT disappear when a run finishes."
+  // result/loadLastMeshTestResult already hydrate from localStorage on mount (persists across
+  // tab switches/reloads); this is the explicit "Clear results" action -- only this empties
+  // the view, matching "I want to keep seeing them ... until it is replaced or I clear it."
+  const [loadedReceiptName, setLoadedReceiptName] = useState<string | null>(null);
+
+  const handleClearResults = useCallback(() => {
+    setResult(null);
+    setLiveOutcomes([]);
+    setState('idle');
+    setTotal(0);
+    setDoneCount(0);
+    setPeersDiscovered(null);
+    setErrorMsg(null);
+    setLoadedReceiptName(null);
+    setCoronerRoundup(null);
+    setCoronerSource(null);
+    setCoronerError(null);
+    setCoronerState('idle');
+    try { localStorage.removeItem(LS_LAST_RESULT); } catch { /* non-fatal */ }
+  }, []);
+
+  // BP139 Founder Yoke: load a previously downloaded receipt (.json, from downloadReceipt()
+  // above) and show its results + breakdown, same view as a live run. Deliberately does NOT
+  // overwrite LS_LAST_RESULT -- that key is shared with ProofTab.tsx and the Social "Check My
+  // Math" card, and a manually loaded historical receipt must never silently masquerade as
+  // this machine's actual last real run there. loadedReceiptName labels the view instead.
+  const handleLoadReceiptFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file next time
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result)) as OneClickRunResult;
+        if (!parsed || !Array.isArray(parsed.outcomes)) {
+          setErrorMsg(`"${file.name}" does not look like a mesh-test receipt (.json) -- missing outcomes[].`);
+          setState('error');
+          return;
+        }
+        setResult(parsed);
+        setLiveOutcomes([]);
+        setState('idle');
+        setErrorMsg(null);
+        setLoadedReceiptName(file.name);
+        setCoronerRoundup(null);
+        setCoronerSource(null);
+        setCoronerError(null);
+      } catch (err) {
+        setErrorMsg(`Failed to parse "${file.name}": ${String(err)}`);
+        setState('error');
+      }
+    };
+    reader.onerror = () => setErrorMsg(`Failed to read "${file.name}"`);
+    reader.readAsText(file);
+  }, []);
 
   // BP135 YOKE_35 Phase 3: the two real side-effects ported from GauntletTab.tsx's
   // stage-sim loop, now anchored to this panel's own (real) completion event instead of
@@ -602,9 +664,19 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   useEffect(() => {
     const unsub = (window as any).amplify?.onMeshTestProgress?.((payload: ProgressEvent) => {
       if (payload.type === 'start') {
+        // BP139 Founder Yoke: a NEW run starting is the one implicit "replaced" condition
+        // (per Founder ask: keep seeing results "until it is replaced or I clear it") -- the
+        // stale result/loaded-receipt/coroner roundup on screen belongs to the PREVIOUS run
+        // and must not be shown alongside the new one's growing live feed.
         setTotal(payload.total);
         setDoneCount(0);
         setLiveOutcomes([]);
+        setResult(null);
+        setLoadedReceiptName(null);
+        setCoronerRoundup(null);
+        setCoronerSource(null);
+        setCoronerError(null);
+        setCoronerState('idle');
       } else if (payload.type === 'peers-discovered') {
         setPeersDiscovered(payload.count);
       } else if (payload.type === 'question-complete') {
@@ -708,12 +780,14 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
     }
   }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, researchArmMeshSynergy, fullPresetSelected, federatedSubstrateEnabled]);
 
-  // BP138 Phase 1: Answer Coroner -- run autopsy over existing benchmark data in Supabase.
+  // BP138 Phase 1: Answer Coroner -- run autopsy over existing benchmark data in Supabase
+  // (the 500-row WAN relay_route_replies dump, across ALL peers/sessions ever recorded).
   const handleRunCoroner = useCallback(async () => {
     setCoronerState('running');
     setCoronerLog([]);
     setCoronerRoundup(null);
     setCoronerError(null);
+    setCoronerSource('wan');
     // subscribe to progress messages
     const unsub = (window as any).amplify?.onCoronerProgress?.((msg: string) => {
       setCoronerLog((prev) => [...prev.slice(-199), msg]);
@@ -735,9 +809,67 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
     }
   }, []);
 
+  // BP139 Founder Yoke: Answer Coroner over the CURRENT run's own outcomes -- the benchmark
+  // the Founder JUST ran (or a loaded receipt), not the old 500-row WAN dump. No network call;
+  // classifies result.outcomes (falls back to liveOutcomes if a run is still in flight) via
+  // the same classifyCore(...) the WAN path uses (answer_coroner.ts), so the classification
+  // rules are identical, only the data source differs.
+  const handleRunCoronerLocal = useCallback(async () => {
+    const outcomes = (result?.outcomes && result.outcomes.length > 0) ? result.outcomes : liveOutcomes;
+    if (!outcomes || outcomes.length === 0) {
+      setCoronerError('No run outcomes to classify yet -- run the test (or load a receipt) first.');
+      setCoronerState('error');
+      setCoronerSource('local');
+      return;
+    }
+    setCoronerState('running');
+    setCoronerLog([]);
+    setCoronerRoundup(null);
+    setCoronerError(null);
+    setCoronerSource('local');
+    const unsub = (window as any).amplify?.onCoronerProgress?.((msg: string) => {
+      setCoronerLog((prev) => [...prev.slice(-199), msg]);
+    });
+    try {
+      const resp = await (window as any).amplify?.runAnswerCoronerOnLocalOutcomes?.({
+        outcomes: outcomes.map((o) => ({
+          question_id: o.question_id,
+          question: o.question,
+          category: o.category,
+          correctLetter: o.correctLetter,
+          parsedLetter: o.parsedLetter,
+          isCorrect: o.isCorrect,
+          isAbstain: o.isAbstain,
+          answeredBy: o.answeredBy ?? null,
+          peerId: o.peerId ?? null,
+          machineLabel: o.machineLabel ?? null,
+          latencyMs: o.latencyMs ?? null,
+          plowTrace: o.plowTrace ?? null,
+        })),
+      });
+      if (resp?.ok) {
+        setCoronerRoundup(resp.roundup as Record<string, unknown>);
+        setCoronerState('done');
+      } else {
+        setCoronerError(resp?.error ?? 'Coroner failed');
+        setCoronerState('error');
+      }
+    } catch (e) {
+      setCoronerError(String(e));
+      setCoronerState('error');
+    } finally {
+      unsub?.();
+    }
+  }, [result, liveOutcomes]);
+
   const runningAccuracy = liveOutcomes.length > 0
     ? liveOutcomes.filter((o) => o.isCorrect).length / liveOutcomes.length
     : null;
+
+  // BP139 Founder Yoke: the per-question feed to render -- growing liveOutcomes while a run is
+  // in flight, otherwise the persisted/loaded result's own outcomes (falls back to liveOutcomes
+  // so a still-classifying error state right after a run doesn't blank the list).
+  const displayOutcomes = state === 'running' ? liveOutcomes : (result?.outcomes ?? liveOutcomes);
 
   const modeButton = (choice: DispatchModeChoice, label: string) => (
     <button
@@ -1168,34 +1300,64 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
       )}
 
       {state === 'running' && (
-        <div>
-          <div style={{ fontSize: 12, color: '#6ee7b7', marginBottom: 8, animation: 'mnemo-pulse 1.5s ease-in-out infinite' }}>
-            ◌ {peersDiscovered !== null && peersDiscovered > 0
-              ? `${peersDiscovered} live peer(s) — `
-              : peersDiscovered === 0 ? 'no live peers — running locally — ' : ''}
-            Question {doneCount}/{total || '?'}
-            {runningAccuracy !== null && (
-              <span style={{ marginLeft: 10, color: '#94a3b8' }}>
-                running accuracy: {(runningAccuracy * 100).toFixed(0)}%
-              </span>
-            )}
+        <div style={{ fontSize: 12, color: '#6ee7b7', marginBottom: 8, animation: 'mnemo-pulse 1.5s ease-in-out infinite' }}>
+          ◌ {peersDiscovered !== null && peersDiscovered > 0
+            ? `${peersDiscovered} live peer(s) — `
+            : peersDiscovered === 0 ? 'no live peers — running locally — ' : ''}
+          Question {doneCount}/{total || '?'}
+          {runningAccuracy !== null && (
+            <span style={{ marginLeft: 10, color: '#94a3b8' }}>
+              running accuracy: {(runningAccuracy * 100).toFixed(0)}%
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* BP139 Founder Yoke ("I don't want seeing all the questions to disappear ... until it
+          is replaced or I clear it"): this header + the per-question list below it stay on
+          screen after the run completes -- no longer hidden behind `state === 'running'`.
+          Cleared only by a NEW run starting (see the progress-listener's 'start' handler
+          above) or the explicit "Clear results" button. */}
+      {state !== 'running' && result && (
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          marginBottom: 8, flexWrap: 'wrap' as const, gap: 6,
+        }}>
+          <div style={{ fontSize: 11, color: '#64748b' }}>
+            {loadedReceiptName
+              ? <>📄 Loaded receipt: <span style={{ color: '#94a3b8' }}>{loadedReceiptName}</span></>
+              : <>Last run finished {new Date(result.completedAt).toLocaleString()} — stays visible until a new run starts or you clear it.</>}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {liveOutcomes.map((o, i) => (
-              <div key={`${o.question_id}-${o.peerId ?? 'local'}-${i}`}>
-                <div style={{ fontSize: 11, color: o.isCorrect ? '#4ade80' : '#f87171', display: 'flex', gap: 8 }}>
-                  <span>{o.isCorrect ? '✓' : o.timedOut ? '⏱' : o.isAbstain ? '·' : '✗'}</span>
-                  {o.machineLabel && <span style={{ color: '#38bdf8' }}>[{o.machineLabel}]</span>}
-                  {o.answeredBy === 'plow' && <span style={{ color: '#facc15' }}>[plow]</span>}
-                  <span style={{ color: '#64748b' }}>[{o.category}]</span>
-                  <span style={{ color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {o.question}
-                  </span>
-                </div>
-                <ProvenanceReceiptRow outcome={o} />
+          <button
+            onClick={handleClearResults}
+            disabled={busy}
+            style={{
+              background: 'none', color: '#f87171', border: '1px solid #4b1f1f', borderRadius: 6,
+              padding: '3px 10px', fontSize: 10, fontWeight: 600,
+              cursor: busy ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            🗑 Clear results
+          </button>
+        </div>
+      )}
+
+      {displayOutcomes.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: state === 'running' ? 0 : 10 }}>
+          {displayOutcomes.map((o, i) => (
+            <div key={`${o.question_id}-${o.peerId ?? 'local'}-${i}`}>
+              <div style={{ fontSize: 11, color: o.isCorrect ? '#4ade80' : '#f87171', display: 'flex', gap: 8 }}>
+                <span>{o.isCorrect ? '✓' : o.timedOut ? '⏱' : o.isAbstain ? '·' : '✗'}</span>
+                {o.machineLabel && <span style={{ color: '#38bdf8' }}>[{o.machineLabel}]</span>}
+                {o.answeredBy === 'plow' && <span style={{ color: '#facc15' }}>[plow]</span>}
+                <span style={{ color: '#64748b' }}>[{o.category}]</span>
+                <span style={{ color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {o.question}
+                </span>
               </div>
-            ))}
-          </div>
+              <ProvenanceReceiptRow outcome={o} />
+            </div>
+          ))}
         </div>
       )}
 
@@ -1203,15 +1365,37 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         <div style={{ fontSize: 12, color: '#f87171', marginTop: 8 }}>✗ {errorMsg}</div>
       )}
 
-      {/* BP138 Yoke 0.9.14: the completed-result summary is now the shared MeshTestResultSummary
-          component (defined below, exported) instead of inline JSX here -- the Proof tab reuses
-          the SAME component (fed by the same persisted LS_LAST_RESULT) so the aggregate/receipt
-          view never has two independently-maintained copies of this JSX. */}
-      {(state === 'complete' || (state === 'idle' && result)) && result && (
-        <div style={{ marginTop: state === 'complete' ? 12 : 0 }}>
+      {/* BP138 Yoke 0.9.14: the completed-result summary is the shared MeshTestResultSummary
+          component (defined below, exported) -- the Proof tab reuses the SAME component (fed by
+          the same persisted LS_LAST_RESULT) so the aggregate/receipt view never has two
+          independently-maintained copies of this JSX. Per-question detail is already rendered
+          by the persistent list above, so showPerQuestionDetail is deliberately omitted here
+          (avoids showing the same per-question rows twice in this panel). */}
+      {result && (
+        <div style={{ marginTop: 4 }}>
           <MeshTestResultSummary result={result} onShareResult={onShareResult} />
         </div>
       )}
+
+      {/* BP139 Founder Yoke: load a previously downloaded receipt (.json, from downloadReceipt()
+          above) and view its results + breakdown the same way as a live run. Reads the file
+          locally in the renderer -- no IPC, no network call. */}
+      <div style={{ marginTop: 10 }}>
+        <label style={{
+          display: 'inline-block', fontSize: 11, color: '#93c5fd', border: '1px solid #1e3a5f',
+          borderRadius: 6, padding: '6px 12px', cursor: busy ? 'default' : 'pointer',
+          fontFamily: 'system-ui, sans-serif', opacity: busy ? 0.6 : 1,
+        }}>
+          📂 Load a receipt (.json)
+          <input
+            type="file"
+            accept="application/json,.json"
+            onChange={handleLoadReceiptFile}
+            disabled={busy}
+            style={{ display: 'none' }}
+          />
+        </label>
+      </div>
 
       {/* BP135 YOKE_35 Phase 3: ported Pioneer Bonus modal (see handleRealCompletionSideEffects
           above). Fires on this panel's own real completion event, membership-gated, keyed to
@@ -1234,24 +1418,44 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         Yoke #23 Bishop handoff.
       </div>
 
-      {/* BP138 Phase 1 -- Answer Coroner autopsy panel */}
+      {/* BP138 Phase 1 / BP139 -- Answer Coroner autopsy panel */}
       <div style={{ marginTop: 18, borderTop: '1px solid #1e2a38', paddingTop: 14 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 8 }}>
-          Answer Coroner (BP138 Phase 1) -- autopsy over existing benchmark data
+          Answer Coroner -- autopsy, real classifier, no fabricated numbers
         </div>
-        <button
-          onClick={() => void handleRunCoroner()}
-          disabled={coronerState === 'running' || busy}
-          style={{
-            background: coronerState === 'running' ? '#1e2a38' : '#0f766e',
-            color: '#e2e8f0', border: 'none', borderRadius: 6,
-            padding: '5px 14px', fontSize: 11, fontWeight: 600,
-            cursor: (coronerState === 'running' || busy) ? 'default' : 'pointer',
-            fontFamily: 'system-ui, sans-serif', marginBottom: 8,
-          }}
-        >
-          {coronerState === 'running' ? 'Running autopsy...' : 'Run Answer Coroner'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' as const, marginBottom: 8 }}>
+          {/* BP139 Founder Yoke: classifies the run currently shown above (the run the Founder
+              JUST did, or a loaded receipt) -- no network call, no dependency on WAN history. */}
+          <button
+            onClick={() => void handleRunCoronerLocal()}
+            disabled={coronerState === 'running' || busy || displayOutcomes.length === 0}
+            title={displayOutcomes.length === 0 ? 'Run the test (or load a receipt) first' : 'Classify the outcomes shown above -- no network call'}
+            style={{
+              background: coronerState === 'running' ? '#1e2a38' : '#6d28d9',
+              color: '#f5f3ff', border: 'none', borderRadius: 6,
+              padding: '5px 14px', fontSize: 11, fontWeight: 700,
+              cursor: (coronerState === 'running' || busy || displayOutcomes.length === 0) ? 'default' : 'pointer',
+              opacity: displayOutcomes.length === 0 ? 0.5 : 1,
+              fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            {coronerState === 'running' && coronerSource === 'local' ? 'Classifying...' : `Run Coroner on this run (${displayOutcomes.length})`}
+          </button>
+          <button
+            onClick={() => void handleRunCoroner()}
+            disabled={coronerState === 'running' || busy}
+            title="Classifies up to 500 rows of ALL WAN benchmark history in Supabase, across every session ever recorded on this account -- not just the run shown above"
+            style={{
+              background: coronerState === 'running' ? '#1e2a38' : '#0f766e',
+              color: '#e2e8f0', border: 'none', borderRadius: 6,
+              padding: '5px 14px', fontSize: 11, fontWeight: 600,
+              cursor: (coronerState === 'running' || busy) ? 'default' : 'pointer',
+              fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            {coronerState === 'running' && coronerSource === 'wan' ? 'Running autopsy...' : 'Run Coroner on WAN history (500-row)'}
+          </button>
+        </div>
         {coronerState === 'running' && coronerLog.length > 0 && (
           <div style={{
             background: '#0a0f17', border: '1px solid #1e2a38', borderRadius: 6,
@@ -1281,6 +1485,12 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           return (
             <div style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.7 }}>
               <div style={{ marginBottom: 4 }}>
+                <span style={{
+                  fontSize: 9, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: 0.5,
+                  color: coronerSource === 'local' ? '#c4b5fd' : '#6ee7b7', marginRight: 8,
+                }}>
+                  {coronerSource === 'local' ? 'source: this run' : 'source: WAN history (500-row)'}
+                </span>
                 <span style={{ color: '#f0fdf4', fontWeight: 700 }}>Analyzed:</span> {r.totalRecords ?? '?'} answers
               </div>
               <div style={{ display: 'flex', gap: 18, marginBottom: 8 }}>

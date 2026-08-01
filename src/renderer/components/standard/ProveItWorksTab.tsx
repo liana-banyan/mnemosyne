@@ -5,6 +5,12 @@
 // BP139: extended with Authority Proof Panel -- sign-in status + live test query + result.
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+// BP1xx Browser Authority enable-toggle unification (this build pass): reuse the SAME
+// mnem_drt_specialists load/save/persist path SettingsTab.tsx's MnemDrtPanel already uses
+// (localStorage 'mnemo_mnem_drt' mirror + amplify.aiDispatch.saveSettings round-trip to
+// ai_dispatch_settings.json) rather than inventing a second, possibly-diverging persistence
+// path. See SettingsTab.tsx's own export comment above these three for the rationale.
+import { loadMnemDrt, saveMnemDrt, persistMnemDrtToBackend } from '../SettingsTab';
 
 export interface ProveItWorksTabProps {
   onFirstComplete?: () => void;
@@ -18,7 +24,7 @@ type AuthorityCheckState = 'idle' | 'checking' | 'done' | 'error';
 type AuthorityTestState = 'idle' | 'running' | 'done' | 'error';
 
 interface AuthoritySignInRow {
-  authority: 'user_google' | 'user_perplexity';
+  authority: 'user_google' | 'user_perplexity' | 'user_claude';
   signedIn: boolean;
   reason: string;
   checkedAt: string;
@@ -37,6 +43,7 @@ interface AuthorityTestResult {
 const AUTHORITY_LABELS: Record<string, string> = {
   user_google: 'Google',
   user_perplexity: 'Perplexity',
+  user_claude: 'Claude',
 };
 
 const REASON_EXPLANATIONS: Record<string, string> = {
@@ -91,6 +98,15 @@ export function ProveItWorksTab(props: ProveItWorksTabProps) {
   const [testError, setTestError] = useState<string | null>(null);
   const testQuestionRef = useRef(testQuestion);
 
+  // BP1xx Browser Authority enable-toggle unification: mirrors the SAME
+  // mnem_drt_specialists Record<string, boolean> SettingsTab.tsx's MnemDrtPanel reads/writes,
+  // keyed by 'user_google' | 'user_perplexity' | 'user_claude' (BrowserLlmAuthorityName). Loaded
+  // once from the localStorage mirror on mount -- same read path loadMnemDrt() always uses, no
+  // new source of truth.
+  const [authorityEnabled, setAuthorityEnabled] = useState<Record<string, boolean>>(
+    () => loadMnemDrt().mnem_drt_specialists,
+  );
+
   const refreshMeter = useCallback(async () => {
     setLoadingMeter(true);
     try {
@@ -138,6 +154,25 @@ export function ProveItWorksTab(props: ProveItWorksTabProps) {
     } catch (e) {
       setTestError(String(e));
       setTestState('error');
+    }
+  }, []);
+
+  // BP1xx Browser Authority enable-toggle unification: "the toggle IS the login trigger"
+  // (Founder BP1xx). Writes mnem_drt_specialists[authority] through the SAME
+  // load-current/merge/save/persist sequence SettingsTab.tsx's updateSpecialist() uses --
+  // reading loadMnemDrt() fresh (not the closed-over `drt` this file doesn't have) so this never
+  // clobbers other specialist keys (wikipedia/wolfram/etc.) that MnemDrtPanel may have already
+  // saved. When switching ON while not currently signed in, also opens the SAME nexus sign-in
+  // window NexusAuthoritySignInPanel.tsx's own "Sign in to X" button opens
+  // (window.amplify.openNexusAuthoritySignIn) -- toggle-on doubles as the login trigger.
+  const toggleAuthorityEnabled = useCallback((authority: 'user_google' | 'user_perplexity' | 'user_claude', nextVal: boolean, signedIn: boolean) => {
+    const current = loadMnemDrt();
+    const next = { ...current, mnem_drt_specialists: { ...current.mnem_drt_specialists, [authority]: nextVal } };
+    saveMnemDrt(next);
+    void persistMnemDrtToBackend(next);
+    setAuthorityEnabled(next.mnem_drt_specialists);
+    if (nextVal && !signedIn) {
+      void window.amplify?.openNexusAuthoritySignIn?.(authority);
     }
   }, []);
 
@@ -390,31 +425,60 @@ export function ProveItWorksTab(props: ProveItWorksTabProps) {
           </div>
         )}
 
-        {/* Sign-in status rows */}
+        {/* Sign-in status rows -- BP1xx: each row is now also an enable toggle (the toggle IS
+            the login trigger: switching ON while not signed in opens the nexus sign-in window). */}
         {signInStatuses && signInStatuses.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 12 }}>
-            {signInStatuses.map((s) => (
-              <div key={s.authority} style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                padding: '4px 8px', borderRadius: 4,
-                background: s.signedIn ? 'rgba(110,231,183,0.06)' : 'rgba(148,163,184,0.06)',
-                border: `1px solid ${s.signedIn ? 'rgba(110,231,183,0.25)' : 'rgba(148,163,184,0.2)'}`,
-                fontSize: 11,
-              }}>
-                <span style={{
-                  fontWeight: 700,
-                  color: s.signedIn ? '#6ee7b7' : '#94a3b8',
+            {signInStatuses.map((s) => {
+              const enabled = authorityEnabled[s.authority] ?? false;
+              return (
+                <div key={s.authority} style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '4px 8px', borderRadius: 4,
+                  background: s.signedIn ? 'rgba(110,231,183,0.06)' : 'rgba(148,163,184,0.06)',
+                  border: `1px solid ${s.signedIn ? 'rgba(110,231,183,0.25)' : 'rgba(148,163,184,0.2)'}`,
+                  fontSize: 11,
                 }}>
-                  {s.signedIn ? 'Signed in' : 'Not signed in'}
-                </span>
-                <span style={{ color: '#64748b' }}>{AUTHORITY_LABELS[s.authority] ?? s.authority}</span>
-                {!s.signedIn && s.reason && (
-                  <span style={{ color: '#475569', fontSize: 10 }}>{s.reason}</span>
-                )}
-              </div>
-            ))}
+                  <span style={{
+                    fontWeight: 700,
+                    color: s.signedIn ? '#6ee7b7' : '#94a3b8',
+                  }}>
+                    {s.signedIn ? 'Signed in' : 'Not signed in'}
+                  </span>
+                  <span style={{ color: '#64748b' }}>{AUTHORITY_LABELS[s.authority] ?? s.authority}</span>
+                  {!s.signedIn && s.reason && (
+                    <span style={{ color: '#475569', fontSize: 10 }}>{s.reason}</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => toggleAuthorityEnabled(s.authority, !enabled, s.signedIn)}
+                    title={
+                      enabled
+                        ? `Disable ${AUTHORITY_LABELS[s.authority] ?? s.authority} as an authority`
+                        : s.signedIn
+                          ? `Enable ${AUTHORITY_LABELS[s.authority] ?? s.authority} as an authority`
+                          : `Enable ${AUTHORITY_LABELS[s.authority] ?? s.authority} and sign in`
+                    }
+                    style={{
+                      marginLeft: 'auto', flexShrink: 0,
+                      padding: '3px 10px', borderRadius: 4,
+                      background: enabled ? 'rgba(100,200,150,0.15)' : 'rgba(148,163,184,0.1)',
+                      border: `1px solid ${enabled ? 'rgba(100,200,150,0.5)' : 'rgba(148,163,184,0.3)'}`,
+                      color: enabled ? '#8bc8a0' : '#94a3b8',
+                      fontSize: 10, fontWeight: 700, cursor: 'pointer', minWidth: 40,
+                    }}
+                  >
+                    {enabled ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
+        <div style={{ fontSize: 10, color: '#64748b', marginTop: -6, marginBottom: 10, lineHeight: 1.5 }}>
+          Off by default. Switching an authority ON while it is not signed in also opens its
+          sign-in window.
+        </div>
         {authorityCheckState === 'error' && (
           <div style={{ fontSize: 11, color: '#f87171', marginBottom: 8 }}>
             Could not probe authority status -- app may be starting up.
