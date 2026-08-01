@@ -652,8 +652,11 @@ contextBridge.exposeInMainWorld('amplify', {
   ): Promise<{ ok: boolean; enabled: boolean }> =>
     ipcRenderer.invoke('nexus-authority-set-flags', { researchArmMode, researchArmBrowserAuthority }),
 
+  // BP140-K4: widened to import['...'].BrowserAuthorityName (now 5 members: user_google/
+  // user_perplexity/user_claude/user_chatgpt/user_gemini) instead of a hand-copied 3-member
+  // literal union, so this signature can never silently drift from the shared source of truth.
   openNexusAuthoritySignIn: (
-    authority: 'user_google' | 'user_perplexity' | 'user_claude',
+    authority: import('../shared/plow/browser_authority_types').BrowserAuthorityName,
   ): Promise<{ ok: boolean; reason: string | null }> =>
     ipcRenderer.invoke('nexus-authority-open-signin', { authority }),
 
@@ -662,7 +665,7 @@ contextBridge.exposeInMainWorld('amplify', {
 
   checkNexusAuthoritySignInStatus: (): Promise<{
     enabled: boolean;
-    statuses: Array<{ authority: 'user_google' | 'user_perplexity' | 'user_claude'; signedIn: boolean; reason: string; checkedAt: string }>;
+    statuses: Array<{ authority: import('../shared/plow/browser_authority_types').BrowserAuthorityName; signedIn: boolean; reason: string; checkedAt: string }>;
   }> => ipcRenderer.invoke('nexus-authority-check-signin-status'),
 
   // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point. Wraps
@@ -1367,6 +1370,11 @@ contextBridge.exposeInMainWorld('amplify', {
     // substrateEnabled only). Defaults false -- existing per-peer-local-only substrate
     // behavior is unchanged unless a caller explicitly opts in.
     federatedSubstrateEnabled?: boolean;
+    // BP140-K6: explicit subset scoping -- when provided (non-empty), the run is restricted to
+    // exactly these question_id values (exact string match). Powers OneClickMeshTestPanel.tsx's
+    // "Re-run misses (N)" and manual "Run subset" actions. Absent/empty -> zero effect, byte-
+    // identical to every pre-existing caller (MeshTestTerminalTab.tsx's `run` command included).
+    questionIds?: string[];
   }): Promise<{ ok: boolean; result?: unknown; error?: string }> =>
     ipcRenderer.invoke('mesh-test:run-one-click', config),
   meshTestIsActive: (): Promise<{ active: boolean }> =>

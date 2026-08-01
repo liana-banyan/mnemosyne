@@ -1090,12 +1090,14 @@ export type BrowserLlmAuthorityName = 'user_chatgpt' | 'user_gemini' | 'user_cla
 // now has a REAL live bridge (see plow_mc_answerer.ts's queryClaudeBrowserAuthority and
 // webview_preload.ts's interactive handler) and runs against the user's FREE claude.ai plan --
 // calling it "premium" would misrepresent it as a paid-subscription feature it no longer is.
-// user_chatgpt/user_gemini remain 'premium' (no live bridge yet this pass; still described
-// against a paid ChatGPT Plus/Gemini Advanced subscription in their own costNote below, since
-// that is genuinely what a future wiring pass for THEM would use). Widening this union does NOT
-// change the default-off guarantee below: isBrowserLlmAuthorityEnabled()'s only true-by-default
-// branch checks for the literal 'standard', which neither 'premium' nor 'free' ever is -- so
-// user_claude stays exactly as default-OFF/opt-in-only as it was under 'premium'.
+// BP140-K4: user_chatgpt/user_gemini relabeled 'premium' -> 'free' too, same rationale --
+// both now have REAL live bridges (queryChatGptBrowserAuthority/queryGeminiBrowserAuthority,
+// plow_mc_answerer.ts) against chatgpt.com's/gemini.google.com's FREE, logged-in web UIs, never a
+// paid ChatGPT Plus/Gemini Advanced subscription and never a metered OpenAI/Google AI API key.
+// Widening this union does NOT change the default-off guarantee below: isBrowserLlmAuthorityEnabled()'s
+// only true-by-default branch checks for the literal 'standard', which neither 'premium' nor
+// 'free' ever is -- so all three authorities stay exactly as default-OFF/opt-in-only as they
+// were under 'premium'.
 export interface BrowserLlmAuthorityMetadata {
   tier: 'premium' | 'free';
   /** ['all'] -- these are general-purpose second opinions, not domain-specific like wolfram. */
@@ -1104,15 +1106,23 @@ export interface BrowserLlmAuthorityMetadata {
 }
 
 export const BROWSER_LLM_AUTHORITY_METADATA: Record<BrowserLlmAuthorityName, BrowserLlmAuthorityMetadata> = {
+  // BP140-K4: WIRED. Free, rate-limited: uses chatgpt.com's own logged-in free web UI via
+  // MnemosyneC's embedded nexus browser -- an interactive type/submit/wait/scrape flow
+  // (webview_preload.ts's CHATGPT_DRIVER_CONFIG), never the metered OpenAI API and never a
+  // ChatGPT Plus subscription requirement. Still opt-in only (see isBrowserLlmAuthorityEnabled
+  // below) -- a shared free-tier quota should never be spent without the user explicitly
+  // turning it on.
   user_chatgpt: {
-    tier: 'premium',
+    tier: 'free',
     domains: ['all'],
-    costNote: 'Uses your own logged-in ChatGPT session (ChatGPT Plus or equivalent) via the embedded browser. Never a metered OpenAI API key. NOT YET WIRED this pass -- enabling this toggle safely does nothing (see queryBrowserLlmAuthorityNotWired in plow_mc_answerer.ts).',
+    costNote: "Uses your own logged-in chatgpt.com session (free plan; ChatGPT Plus also works if you have it) via MnemosyneC's own embedded nexus browser -- an interactive type/submit/wait/scrape flow, not the metered OpenAI API.",
   },
+  // BP140-K4: WIRED. Same free/opt-in contract as user_chatgpt above, against
+  // gemini.google.com's own logged-in free web UI (webview_preload.ts's GEMINI_DRIVER_CONFIG).
   user_gemini: {
-    tier: 'premium',
+    tier: 'free',
     domains: ['all'],
-    costNote: 'Uses your own logged-in Gemini session (Gemini Advanced or equivalent) via the embedded browser. Never a metered Google AI API key. NOT YET WIRED this pass -- enabling this toggle safely does nothing (see queryBrowserLlmAuthorityNotWired in plow_mc_answerer.ts).',
+    costNote: "Uses your own logged-in gemini.google.com session (free plan; Gemini Advanced also works if you have it) via MnemosyneC's own embedded nexus browser -- an interactive type/submit/wait/scrape flow, not the metered Google AI API.",
   },
   user_claude: {
     // (this build pass) relabeled premium -> free: wired against claude.ai's FREE, logged-in

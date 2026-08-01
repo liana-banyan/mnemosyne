@@ -59,6 +59,8 @@ import {
   logGatewayRequest as passiveSurveillanceLog,
   startGapDetectionScheduler as startSurveillanceGapDetection,
 } from './passive_surveillance_emit';
+// BP140-K3 — Homework background worker (idle + AC-power gated, $0 local-Ollama-only).
+import { startHomeworkLoop } from './homework/homework_runner';
 import { SubstrateLocalIndex, SubstrateRouter, type FrameMode } from './substrate_router';
 import { TelemetryStore, type RoutingSource } from './telemetry_store';
 import { getMobileHTML, getManifestJSON, getServiceWorker, getIconSVG } from './mobile_pwa';
@@ -314,6 +316,12 @@ export class SubstrateAPIServer {
 
     // BP044 W1 — Passive-Surveillance gap-detection scheduler (15-minute interval)
     startSurveillanceGapDetection();
+
+    // BP140-K3 — Homework: idle-time/AC-power/$0-Ollama-only background substrate worker.
+    // Always started (mirrors the other boot-time loops above) — OFF by default and a no-op
+    // every tick until the user opts in via the homework_enabled setting (see
+    // homework_runner.ts's isHomeworkEnabled() gate, checked first on every sweep).
+    startHomeworkLoop();
 
     this.server = createServer((req, res) => this._handleRequest(req, res));
     return new Promise((resolve, reject) => {

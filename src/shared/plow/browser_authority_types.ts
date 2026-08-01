@@ -123,16 +123,27 @@ export const DEFAULT_NEXUS_PER_ARM_AUTHORITY: NexusPerArmAuthority = {
 // isInteractiveBrowserAuthority() below for the single switch every caller checks to know which
 // of the two mechanisms applies, and webview_preload.ts's 'browser-authority-run-interactive-
 // query' handler for the actual type+submit+wait+scrape implementation.
-export type BrowserAuthorityName = 'user_google' | 'user_perplexity' | 'user_claude';
+//
+// BP140-K4: 'user_chatgpt' | 'user_gemini' added -- the exact one-line change this file's own
+// prior comment predicted ("adding a future interactive vendor... is a one-line change here").
+// Both are wired against chatgpt.com and gemini.google.com's FREE, logged-in web UIs via
+// MnemosyneC's own embedded nexus webview, mirroring claude.ai's interactive driver shape
+// exactly (webview_preload.ts's per-vendor selector configs + generic interactive-query runner).
+// NEVER a metered API, NEVER an API key, NEVER the paid Chrome extension path -- same "own
+// logged-in session, own quota, $0" contract as every other browser authority in this file.
+export type BrowserAuthorityName = 'user_google' | 'user_perplexity' | 'user_claude' | 'user_chatgpt' | 'user_gemini';
 
 /** True for authorities that cannot be reached via a plain navigable query URL and instead need
  *  the composer-type + submit + wait-for-stream-completion + scrape sequence. Every caller that
  *  branches on "URL-query vs interactive" (index.ts's runBrowserAuthorityQueryFromMain,
  *  buildBrowserAuthorityQueryUrl below) must use this single function rather than re-deriving the
  *  distinction inline, so adding a future interactive vendor (chatgpt.com, gemini.google.com) is
- *  a one-line change here instead of a hunt across call sites. */
+ *  a one-line change here instead of a hunt across call sites.
+ *  BP140-K4: chatgpt.com/gemini.google.com added -- both are interactive-only exactly like
+ *  claude.ai/new (no query-URL form either vendor supports for a fresh, unauthenticated-friendly
+ *  navigation). */
 export function isInteractiveBrowserAuthority(name: BrowserAuthorityName): boolean {
-  return name === 'user_claude';
+  return name === 'user_claude' || name === 'user_chatgpt' || name === 'user_gemini';
 }
 
 /** What the caller wants answered, and which of the user's own logged-in sessions to use. */
@@ -248,6 +259,13 @@ const PERPLEXITY_SEARCH_BASE = 'https://www.perplexity.ai/search?q=';
  *  below when options are present), never via the navigation URL itself. This is always the
  *  literal navigation target for a 'user_claude' query, regardless of question/mcOptions. */
 const CLAUDE_NEW_CHAT_URL = 'https://claude.ai/new';
+/** BP140-K4: same "no query-URL form, question travels via the composer" contract as
+ *  CLAUDE_NEW_CHAT_URL above, for chatgpt.com's fresh-conversation landing page. */
+const CHATGPT_NEW_CHAT_URL = 'https://chatgpt.com/';
+/** BP140-K4: same contract as CLAUDE_NEW_CHAT_URL above, for gemini.google.com's app landing
+ *  page (the '/app' path is Gemini's own logged-in chat surface, mirroring bard.google.com's
+ *  legacy-domain redirect target). */
+const GEMINI_NEW_CHAT_URL = 'https://gemini.google.com/app';
 
 /** WIRE-THE-LOOP fix: builds the enriched prompt text sent to an authority that can genuinely
  *  reason over a multiple-choice option list (Perplexity's search box accepts a full natural-
@@ -284,6 +302,10 @@ export function buildBrowserAuthorityQueryUrl(query: BrowserAuthorityQuery): str
   // runBrowserAuthorityQueryFromMain) detects isInteractiveBrowserAuthority(query.authority) and
   // drives the composer interactively instead of relying on this URL to encode the question.
   if (query.authority === 'user_claude') return CLAUDE_NEW_CHAT_URL;
+  // BP140-K4: chatgpt.com/gemini.google.com are interactive-only exactly like claude.ai/new --
+  // same fixed-landing-URL contract, question travels via the composer, never the navigation URL.
+  if (query.authority === 'user_chatgpt') return CHATGPT_NEW_CHAT_URL;
+  if (query.authority === 'user_gemini') return GEMINI_NEW_CHAT_URL;
 
   const hasOptions = !!(query.mcOptions && query.mcOptions.length > 0);
   const wantsOptionsAwareQuery =

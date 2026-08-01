@@ -949,11 +949,16 @@ const AUTHORITY_SOURCES: AuthoritySourceInfo[] = [
   // Keys match BrowserLlmAuthorityName, NOT SpecialistName (these are not REST specialist
   // adapters) -- they reuse this SAME mnem_drt_specialists Record<string, boolean> purely as a
   // generic string-keyed enable-override map, which is all isBrowserLlmAuthorityEnabled() /
-  // readBrowserLlmAuthorityEnableOverridesFromSettings() ever needed from it. ChatGPT/Gemini
-  // remain PREMIUM/PAID stubs (no live bridge yet). ALL THREE default OFF regardless of tier --
-  // fires only once the user explicitly opts in below (see authorityDefaultEnabled()).
-  { key: 'user_chatgpt',  label: 'ChatGPT (browser)', tier: 'premium', domains: ['all'], costNote: 'Uses your own logged-in ChatGPT session (ChatGPT Plus or equivalent). Never a metered OpenAI API key.' },
-  { key: 'user_gemini',   label: 'Gemini (browser)',  tier: 'premium', domains: ['all'], costNote: 'Uses your own logged-in Gemini session (Gemini Advanced or equivalent). Never a metered Google AI API key.' },
+  // readBrowserLlmAuthorityEnableOverridesFromSettings() ever needed from it.
+  // BP140-K4: ChatGPT/Gemini are now WIRED (queryChatGptBrowserAuthority/
+  // queryGeminiBrowserAuthority in plow_mc_answerer.ts, driven through webview_preload.ts's
+  // generic interactive driver) and relabeled premium -> free, same rationale as user_claude's
+  // own relabel below -- both run against chatgpt.com's/gemini.google.com's FREE, logged-in web
+  // UIs, never a metered API key and never a paid-subscription requirement. ALL THREE default
+  // OFF regardless of tier -- fires only once the user explicitly opts in below (see
+  // authorityDefaultEnabled()).
+  { key: 'user_chatgpt',  label: 'ChatGPT (browser)', tier: 'free', domains: ['all'], costNote: "Free, rate-limited: uses your own logged-in chatgpt.com session (free plan; ChatGPT Plus also works if you have it) via the embedded nexus browser. Not the metered OpenAI API." },
+  { key: 'user_gemini',   label: 'Gemini (browser)',  tier: 'free', domains: ['all'], costNote: "Free, rate-limited: uses your own logged-in gemini.google.com session (free plan; Gemini Advanced also works if you have it) via the embedded nexus browser. Not the metered Google AI API." },
   // (this build pass) relabeled premium -> free: mirrors specialist_adapters.ts's
   // BROWSER_LLM_AUTHORITY_METADATA.user_claude, which was widened from 'premium' to 'free' now
   // that it has a real live bridge (queryClaudeBrowserAuthority) running against the user's FREE,
@@ -1339,6 +1344,116 @@ function MnemDrtPanel() {
   );
 }
 
+// ─── BP140-K3 — Homework: idle-time, AC-power, $0 local-Ollama-only background worker ────────
+// Master toggle + idle-threshold picker. Round-trips through the SAME
+// ai-dispatch:get-settings / ai-dispatch:save-settings IPC pair ProveItWorksTab.tsx's Answer
+// Cache toggle uses (ai_dispatch_ipc.ts's homework_enabled / homework_idle_threshold_seconds
+// fields) — no new IPC channel needed. OFF by default: getSettings() omits the field entirely
+// on every settings file written before this Yoke, so `=== true` below is the honest default.
+function HomeworkPanel() {
+  const [enabled, setEnabled] = React.useState(false);
+  const [idleMinutes, setIdleMinutes] = React.useState(5);
+  const [loaded, setLoaded] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const s = styles;
+
+  React.useEffect(() => {
+    void (async () => {
+      try {
+        const res = await window.amplify?.aiDispatch?.getSettings?.();
+        const settings = res?.settings as
+          | { homework_enabled?: boolean; homework_idle_threshold_seconds?: number }
+          | undefined;
+        if (res?.ok && settings) {
+          setEnabled(settings.homework_enabled === true);
+          const secs = settings.homework_idle_threshold_seconds;
+          if (typeof secs === 'number' && secs > 0) setIdleMinutes(Math.round(secs / 60));
+        }
+      } catch {
+        // non-fatal -- defaults to OFF/5min, which matches the real defaults
+      }
+      setLoaded(true);
+    })();
+  }, []);
+
+  const toggleEnabled = React.useCallback(async () => {
+    const next = !enabled;
+    setSaving(true);
+    setEnabled(next);
+    try {
+      await window.amplify?.aiDispatch?.saveSettings?.({ homework_enabled: next });
+    } catch {
+      // non-fatal -- UI stays optimistic; next getSettings() read reconciles
+    }
+    setSaving(false);
+  }, [enabled]);
+
+  const updateIdleMinutes = React.useCallback(async (minutes: number) => {
+    setIdleMinutes(minutes);
+    try {
+      await window.amplify?.aiDispatch?.saveSettings?.({ homework_idle_threshold_seconds: minutes * 60 });
+    } catch {
+      // non-fatal -- UI stays optimistic
+    }
+  }, []);
+
+  return (
+    <section style={s.section}>
+      <div style={s.sectionHeader}>🎒 Homework (free background work)</div>
+      <div style={{ fontSize: 9, color: '#475569', marginBottom: 6, lineHeight: 1.5 }}>
+        When your computer is idle and plugged into AC power, MnemosyneC can do small substrate
+        chores -- like cataloging an archive file into your Vault -- for free on your local AI
+        model. Never the paid cloud. Never while you're asking a question or running a test.
+      </div>
+
+      <div style={s.card}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0', marginBottom: 3 }}>
+              Enable Homework
+            </div>
+            <div style={{ fontSize: 9, color: '#64748b', lineHeight: 1.6 }}>
+              Off by default. Runs one job at a time, only on AC power, only after {idleMinutes}{' '}
+              idle minute{idleMinutes === 1 ? '' : 's'}.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void toggleEnabled()}
+            disabled={saving || !loaded}
+            style={{
+              ...s.chip,
+              minWidth: 44,
+              ...(enabled ? { ...s.chipActive } : {}),
+              cursor: saving ? 'wait' : 'pointer',
+            }}
+          >
+            {enabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      </div>
+
+      {enabled && (
+        <div style={{ ...s.card, marginTop: 8 }}>
+          <div style={s.label}>Idle threshold before Homework starts</div>
+          <div style={s.toggleRow}>
+            {[5, 10, 15, 30].map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => void updateIdleMinutes(m)}
+                style={{ ...s.chip, ...(idleMinutes === m ? s.chipActive : {}) }}
+              >
+                {m} min
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 const MODEL_OPTIONS: Array<{ id: ModelAssignment; label: string; desc: string }> = [
   { id: 'ollama_local', label: 'Ollama (local)',      desc: 'Free · runs on your hardware · no API key needed' },
   { id: 'anthropic_cloud', label: 'Anthropic (cloud)', desc: 'Claude family · requires API key' },
@@ -1570,6 +1685,7 @@ export function SettingsTab({
     { key: 'ai-model',       label: 'AI Model Assignment',    keywords: ['ai model', 'ollama', 'bishop', 'knight', 'pawn', 'rook', 'orchestrator', 'builder', 'researcher', 'primary assistant'] },
     { key: 'hardware-tier',  label: 'Hardware Tier & Plow Model', keywords: ['hardware', 'ram', 'plow model', 'gemma2', 'qwen', 'lightweight', 'standard', 'premium', 'heavy', 'model select'] },
     { key: 'mnem-drt',       label: 'Memory Depth Tier',      keywords: ['mnem', 'drt', 'retrieval', 'specialist', 'wikipedia', 'wikidata', 'arxiv', 'wolfram', 'memory depth'] },
+    { key: 'homework',       label: 'Homework (free background work)', keywords: ['homework', 'idle', 'background', 'free', 'ollama', 'battery', 'ac power', 'forage'] },
     { key: 'advanced',       label: 'Advanced',               keywords: ['devtools', 'developer tools', 'debugging', 'remote-debugging', 'advanced', 'inspect', 'diagnostic'] },
     { key: 'appearance',     label: 'Appearance',             keywords: ['appearance', 'theme', 'dark', 'light', 'zoom', 'interface zoom', 'scale'] },
     { key: 'substrate',      label: 'Substrate Mode',         keywords: ['substrate', 'mode', 'burst', 'normal', 'fallback'] },
@@ -2114,6 +2230,14 @@ export function SettingsTab({
         id="settings-section-mnem-drt"
       >
         <MnemDrtPanel />
+      </div>
+
+      {/* BP140-K3 — Homework: idle-time/AC-power/$0-Ollama-only background worker toggle */}
+      <div
+        ref={setSectionRef('homework') as React.RefCallback<HTMLDivElement>}
+        id="settings-section-homework"
+      >
+        <HomeworkPanel />
       </div>
 
       {/* Advanced collapsible -- collapsed by default (SEG-R-5, SEG-R-6, SEG-R-7) */}

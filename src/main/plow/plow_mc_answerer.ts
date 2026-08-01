@@ -77,7 +77,12 @@ import {
 // for the full writeEbletFn-vs-writeVerifiedEblet investigation. Same import convention as
 // csia_research.ts:38's `import { writeVerifiedEblet, isQaRelevant } from './mnem_eblet_store'`,
 // just one directory deeper (`../` instead of `./`).
-import { isQaRelevant, writeVerifiedEblet, queryVerifiedEblets, computeHonestVerification } from '../mnem_eblet_store';
+import { isQaRelevant, writeVerifiedEblet, queryVerifiedEblets, computeHonestVerification, loadAllVerifiedEblets } from '../mnem_eblet_store';
+// BP141 (this Yoke): mints a reusable FORMULA/TOOL eblet (class:'component') from a deterministic-
+// compute success -- a NEW, independent write alongside the existing writeComputeMethodEblet()
+// below, not a replacement for it. See formula_eblet_mint.ts's header for the full leak-safety
+// argument (it reads ONLY `.method` off the compute result, never the question/expression/value).
+import { mintFormulaEbletFromCompute } from './formula_eblet_mint';
 // BP137 Yoke v2b Stage A: answer-type classifier + compute sidecar, both new/additive this Yoke.
 import { classifyAnswerType, type AnswerType } from './answer_type_classifier';
 import { computeAnswer, computeViaWolframOnly, parseOptionsFromPrompt, matchValueToOption, extractNumber, computeUnitAwareMatch, type ComputeSidecarResult, type McOption, type UnitAwareComputeResult } from './compute_sidecar';
@@ -91,6 +96,11 @@ import { solveDensityProblem } from './plow_mc_density_solver';
 // for the full rationale (the double-star Kepler's-third-law benchmark miss) -- tried only after
 // tiers (i)-(iv) have already returned null. Never duplicates or modifies those four tiers.
 import { solvePhysicsRelationProblem } from './plow_mc_physics_solver';
+// BP-PSEUDOCODE-TRACE-SOLVER: a SEVENTH, independent deterministic compute tier -- see that file's
+// header for the full rationale (the AP-CSP "which code segment produces this output" question
+// class, decided today by a vote+adjudicator that picked the wrong letter live) -- tried only after
+// tiers (i)-(vi) have already returned null. Never duplicates or modifies those six tiers.
+import { solvePseudocodeTraceProblem } from './plow_mc_pseudocode_trace_solver';
 // BP-AIRCRAFT-SOLVER: a SIXTH, independent deterministic compute tier -- see that file's header
 // for the full rationale (the airplane lift/drag/takeoff-power benchmark wobble) -- tried only
 // after tiers (i)-(v) have already returned null. Never duplicates or modifies those five tiers.
@@ -523,7 +533,16 @@ export interface CanonicalPlowMcResult {
     // BP1xx DETERMINISTIC-OVERRIDE-HOIST: mirrors AuthorityEnsembleOutcome['corroboration']'s own
     // 'deterministic_compute_override' addition -- the calculator answered before any authority
     // agreement was even evaluated. See runAuthorityEnsemble's pre-branch check.
-    | 'deterministic_compute_override';
+    | 'deterministic_compute_override'
+    // BP140 PSEUDOCODE-TRACE-ANSWER-TYPE-BYPASS: mirrors AuthorityEnsembleOutcome['corroboration']'s
+    // own 'deterministic_compute' member. Set when a named solver PROVED the answer from the
+    // question's own text before any authority was consulted -- specifically the pseudocode-trace
+    // solver, which must run regardless of classifyAnswerType's verdict (a code-trace question
+    // carries no numbers, so the classifier labels it 'reasoning' and would otherwise skip the
+    // entire deterministic chain -- the silent-gate defect documented in the BP140 borrowed-
+    // authority canon). Distinct from 'deterministic_compute_override' above, which is the
+    // computable-path hoist.
+    | 'deterministic_compute';
   /** BP1xx Authority-Ensemble-swarm-fold-in, OPTIONAL/ADDITIVE. Present only when
    *  researchArmAuthorityEnsemble was on for this call. True when the browser/Wolfram authority
    *  panel was NOT already a confident 2+ agreement and the specialist swarm (Miner -> Furnace
@@ -532,6 +551,36 @@ export interface CanonicalPlowMcResult {
    *  Founder verify from the receipt alone that the swarm stayed skipped on agreement and fired
    *  only on the uncertain branch. */
   authorityEnsembleSwarmFired?: boolean;
+  /** BP1xx STRUCTURED-CORROBORATOR GATE, OPTIONAL/ADDITIVE. Mirrors
+   *  AuthorityEnsembleOutcome.structuredCorroborator -- see that field's own doc comment for the
+   *  full Q85 rationale and the STRUCTURED/LLM-class/AMBIGUOUS authority classification. Present
+   *  ONLY when this call's accepted answer came from an ensemble 'agree' verdict (present, not
+   *  merely truthy, so `false` here is a real, meaningful "LLM-only concordance, de-confidence
+   *  this" signal rather than absence). true = the accepted agreeing group had a non-LLM
+   *  structured member (wolfram_alpha or a genuinely CONCORDANT specialist_swarm). false = every
+   *  agreeing candidate was LLM-class (user_perplexity/user_google/user_chatgpt/user_gemini/
+   *  user_claude) and the specialist swarm, fired specifically to try to corroborate it, either
+   *  disagreed (in which case the accept never happens -- adjudication runs instead) or yielded
+   *  nothing usable. Never causes an abstain by itself -- coverage is protected; this only ever
+   *  de-confidences an accept that still happens. Absent on every other corroboration value
+   *  (single_*, adjudicated, deterministic_compute_override, none, disagree,
+   *  lone_rejected_by_strictness) and on every pre-this-Yoke call. */
+  structuredCorroborator?: boolean;
+  /** BP141 INDEPENDENCE-AWARE CORROBORATION FLAG, OPTIONAL/ADDITIVE. Mirrors
+   *  AuthorityEnsembleOutcome.independentCorroboration -- see that field's own doc comment for
+   *  the full rationale. Present only alongside an ensemble 'agree' accept (same presence gate as
+   *  structuredCorroborator above); additive signal only, never changes chosenLetter/concordance/
+   *  gateOutcomes/any accept-reject decision. */
+  independentCorroboration?: boolean;
+  /** BP140 Yoke (Eblet-Learning Substrate / Liana Cycle), OPTIONAL/ADDITIVE. The full ensemble
+   *  candidate set (winner AND every losing candidate), carried through so the Coroner -- the
+   *  only place ground truth is actually available -- can persist a factVerdict-tagged eblet for
+   *  EVERY candidate, not just the accepted letter. See answer_coroner.ts's deriveFactVerdict()/
+   *  persistEnsembleCandidateFactVerdicts(). Present only on the authorityEnsembleOn accepted-
+   *  candidate return path (mirrors authorityEnsembleSwarmFired's own presence gate); absent on
+   *  every other return path (legacy non-ensemble browser-authority accept, mesh-synergy,
+   *  decompose, swarm-only) and on every pre-BP140 receipt. */
+  ensembleCandidates?: AuthorityEnsembleCandidate[];
   /** BP137 Yoke v2b Stage D, extra requirement, OPTIONAL/ADDITIVE. True only when the new
    *  compute-fallthrough-no-facts abstain fired (classified computable, compute sidecar
    *  attempted and failed/no-match, AND zero facts were available for the voters -- whether
@@ -902,8 +951,31 @@ export interface AuthorityEnsembleCandidate {
     // PATH block) fabricates ONLY to carry the calculator's own letter/reasoning/method through
     // the exact same acceptedCandidates shape the rest of this file's accept path already
     // expects -- never a guessed/authority-sourced answer, always backed by a real
-    // DeterministicComputeCandidate.
-    | 'deterministic_compute';
+    // DeterministicComputeCandidate whose `source` is 'question_expression' (or one of the
+    // question-only named-solver tags) -- see 'deterministic_compute_reasoning_fact' below for
+    // the sibling tag used when `source` is 'reasoning_fact'.
+    | 'deterministic_compute'
+    // BP-COMPUTE-HONEST-DEMOTE (superseded by BP-ECHO-NO-VOTE below -- kept here as a historical/
+    // vestigial tag, see that note): the pre-branch hoist check (runAuthorityEnsemble, right
+    // before the FAST PATH block) can find a DeterministicComputeCandidate whose
+    // `source === 'reasoning_fact'` (compute_sidecar.ts's paths (a)/(c): the quantity was
+    // extracted from an authority's own reasoning/fact text, not a literal expression in the
+    // question). That result IS a real, checked unit-conversion/tolerance-match -- it is not a
+    // guess -- but it has NO independent grounding of its own (it is a derived restatement of
+    // whichever authority's text it was pulled from), so it may no longer pre-branch-override the
+    // ensemble.
+    // BP-ECHO-NO-VOTE (this pass): BP-COMPUTE-HONEST-DEMOTE originally pushed this result into
+    // `candidates` as an "ordinary" candidate under THIS tag so it could still compete on 2+
+    // agreement -- but because it always shares the letter of the authority its quantity was
+    // extracted FROM, that let the same voice count twice toward "agree" (live receipt:
+    // candidates ended up [user_perplexity, deterministic_compute_reasoning_fact], an echo read as
+    // corroboration). It is NO LONGER ever pushed into `candidates` at all -- see
+    // AuthorityEnsembleOutcome.reasoningFactComputeReceipt for where it is recorded instead (a
+    // non-voting receipt/annotation only). This authority tag is kept in the union purely as a
+    // historical/documentary marker (nothing in this file constructs a candidate under it any
+    // more) -- safe to remove in a future pass once Bishop confirms nothing downstream still
+    // switches on it.
+    | 'deterministic_compute_reasoning_fact';
   letter: string;
   reasoning: string;
   sourceUrl: string;
@@ -928,7 +1000,15 @@ export interface AuthorityEnsembleOutcome {
     // check, right before the FAST PATH block. Distinct from every label above because none of
     // them apply: no authority-agreement question was ever even asked. Only reachable for
     // answerType==='computable'.
-    | 'deterministic_compute_override';
+    | 'deterministic_compute_override'
+    // BP-PSEUDOCODE-TRACE-ANSWER-TYPE-BYPASS: the pseudocode-trace solver proved a letter by
+    // EXECUTING the question's own procedures against its own worked example, BEFORE even the
+    // Perplexity/Google/browser-LLM calls at the top of this function ran -- reachable for ANY
+    // answerType (that is the whole point of this bypass: the solver's own gate is strict enough
+    // to be its own classifier). Distinct from 'deterministic_compute_override' (which only ever
+    // fires for answerType==='computable', after Wolfram but before the agree/disagree branching)
+    // even though both are calculator-proved: this one runs earlier still, and unconditionally.
+    | 'deterministic_compute';
   candidates: AuthorityEnsembleCandidate[];
   acceptedCandidates: AuthorityEnsembleCandidate[];
   adjudicationAttempted: boolean;
@@ -938,6 +1018,30 @@ export interface AuthorityEnsembleOutcome {
    *  post-branch override path, without recomputing the six tiers a second time. Undefined for
    *  every other corroboration value. */
   deterministicOverride?: DeterministicComputeCandidate | null;
+  /** BP-ECHO-NO-VOTE receipt/annotation, OPTIONAL/ADDITIVE. Populated ONLY when the pre-branch
+   *  hoist check (right before the FAST PATH block below) found a DeterministicComputeCandidate
+   *  whose `source === 'reasoning_fact'` -- a real, checked compute, but one whose input quantity
+   *  was extracted from an authority's OWN reasoning/fact text rather than the question itself
+   *  (see 'deterministic_compute_reasoning_fact' on AuthorityEnsembleCandidate's `authority` union
+   *  for the full rationale). PRIOR behavior (BP-COMPUTE-HONEST-DEMOTE) pushed this into
+   *  `candidates` as an ordinary voting entry -- but that entry is a DERIVED RESTATEMENT of
+   *  whichever authority's text it was pulled from, so it always shares that authority's letter,
+   *  and letting it into `candidates` meant the same voice silently counted twice toward a 2+
+   *  "agree" (live receipt: candidates==[user_perplexity, deterministic_compute_reasoning_fact],
+   *  the second derived FROM the first -- the ensemble read it as independent corroboration when
+   *  it was an echo). THIS field is the fix: the reasoning_fact compute result is recorded HERE
+   *  (never pushed into `candidates`, so it can never enter concordance/agreement/adjudication
+   *  counting, and STRUCTURED_AUTHORITIES/hasStructuredCorroborator never see it either), purely
+   *  so the Coroner/trace can still see a compute ran and what it produced. See the log line at
+   *  its one push-site (runAuthorityEnsemble, right after the pre-branch hoist check) for the
+   *  human-readable equivalent of this same receipt. */
+  reasoningFactComputeReceipt?: {
+    letter: string;
+    method: string;
+    sourceExpression: string;
+    computedValue: number;
+    computedUnit: string | null;
+  };
   /** True only when the browser/Wolfram panel was NOT already a confident 2+ agreement, so the
    *  specialist swarm (Miner -> Furnace -> 3-voters) fired as an extra corroborating candidate.
    *  False on the fast agree-immediately path -- this is the field that proves the swarm stays
@@ -957,6 +1061,89 @@ export interface AuthorityEnsembleOutcome {
     voterDiagnostics: VoterDiagnostic[];
     concordance: ConcordanceClass;
   };
+  /** BP1xx STRUCTURED-CORROBORATOR GATE, OPTIONAL/ADDITIVE. Populated ONLY when
+   *  corroboration === 'agree' (the two authority-ensemble accept sites that finalize an
+   *  'agree' verdict -- the fast path, before the swarm ever fires, and the swarm-augmented
+   *  path further down). Absent for every other corroboration value (single_*, adjudicated,
+   *  deterministic_compute_override, none, disagree, lone_rejected_by_strictness) -- those are
+   *  either already structurally distinct from the failure mode this gate targets, or are not
+   *  an "agreement" at all.
+   *
+   *  THE PROBLEM (empirical, live 90% mesh run, question Q85): user_perplexity and user_claude
+   *  BOTH agreed on the wrong letter with NO structured (non-LLM) cross-check behind either of
+   *  them -- it landed in the thin-evidence branch where no deterministic compute fired and the
+   *  specialist swarm never got a chance (the fast path already accepted on "2 sources agree").
+   *  Two confidently-wrong LLM opinions concurring is not corroboration; it is the SAME failure
+   *  mode wearing a second face. Naive concordance ("N sources agree -> accept") cannot catch
+   *  two LLMs that are wrong together.
+   *
+   *  true  = the accepted agreeing group contains at least one STRUCTURED (non-LLM) source --
+   *          wolfram_alpha, or a specialist_swarm candidate (which by construction only ever
+   *          enters `candidates` after its own 3 voters reached a genuine CONCORDANT consensus,
+   *          see the HONESTY note at the swarm's push site above) -- OR the specialist swarm was
+   *          fired specifically as this gate's required corroborator and it concurred.
+   *  false = every member of the accepted agreeing group is LLM-class (user_perplexity,
+   *          user_google, user_chatgpt, user_gemini, user_claude, user_perplexity_judge) -- an
+   *          LLM-only concordance. This still gets ACCEPTED (coverage is protected, never an
+   *          abstain purely for this reason) but is de-confidenced: the caller/Coroner/Liana
+   *          Cycle should treat it as weaker evidence than a structurally-backed accept.
+   *
+   *  Authority classification for this gate (Bishop-reviewed, see this build's own report for
+   *  the full rationale):
+   *    STRUCTURED (sufficient on its own): wolfram_alpha, specialist_swarm-when-CONCORDANT,
+   *      deterministic_compute (the pre-branch hoist override -- never reaches an 'agree' return
+   *      at all, listed here only for completeness of the STRUCTURED_AUTHORITIES set below).
+   *    LLM-class (opinion, no structured backing): user_perplexity, user_claude, user_chatgpt,
+   *      user_gemini, user_perplexity_judge.
+   *    AMBIGUOUS, treated as NOT sufficient (i.e. folded into the LLM-class bucket for this
+   *      gate): user_google. It is an LLM-summarized search result, not a deterministic
+   *      computation or a genuinely independent structured system -- and empirically 0/3 in the
+   *      sample this gate was designed against. Flagged here explicitly for Bishop to revisit;
+   *      see STRUCTURED_AUTHORITIES below for the one place this classification is encoded. */
+  structuredCorroborator?: boolean;
+  /** BP141 INDEPENDENCE-AWARE CORROBORATION FLAG, OPTIONAL/ADDITIVE, additive signal only -- does
+   *  not alter accept/reject/abstain behavior anywhere. Populated ONLY alongside
+   *  corroboration === 'agree' (the same two call sites that set structuredCorroborator above:
+   *  the fast path, before the swarm ever fires, and the swarm-augmented path further down).
+   *  true  = each agreeing candidate reached its letter with its own evidence -- a real sourced
+   *          browser/Wolfram fetch, or a specialist_swarm candidate that (per the BP141
+   *          echo-abstention fix at the swarm's push site above) only ever enters `candidates`
+   *          when its own voters arbitrated over genuinely Furnace-verified facts
+   *          (candidatesPostFurnace > 0).
+   *  false = the only agreement is between LLM-class opinions with no structured, independently-
+   *          grounded member behind any of them -- includes the case this flag exists to name:
+   *          an LLM-class source agreeing with a specialist_swarm result that reached its letter
+   *          WITHOUT its own grounding (echoing rather than corroborating). That specific swarm
+   *          shape can no longer reach `candidates` at all after the BP141 push-site fix, so in
+   *          practice this collapses to hasStructuredCorroborator's own value today -- kept as a
+   *          separate, explicitly-named field (rather than reusing structuredCorroborator) because
+   *          the Coroner's classifyCore (answer_coroner.ts) reads plowTrace keys by exact camelCase
+   *          name with no fallback, and this is the name that signal is meant to be read under. */
+  independentCorroboration?: boolean;
+}
+
+/** BP1xx STRUCTURED-CORROBORATOR GATE: the ONE place that encodes "which authorities count as a
+ *  non-LLM structured corroborator" -- see AuthorityEnsembleOutcome.structuredCorroborator's own
+ *  doc comment above for the full classification rationale (incl. user_google as AMBIGUOUS,
+ *  folded into "not sufficient" here). A specialist_swarm entry is only ever present in
+ *  `candidates` when its own 3 voters already reached a genuine CONCORDANT consensus (see the
+ *  HONESTY note at its push site in runAuthorityEnsemble), so its mere presence here is always
+ *  honest structured backing, never a guess. deterministic_compute is included for completeness
+ *  (it never actually reaches an 'agree'-corroboration return -- it always short-circuits via its
+ *  own earlier, separate return -- but a future caller of this helper should not have to
+ *  rediscover that). */
+// 'deterministic_compute_reasoning_fact' is deliberately ABSENT from this set -- see that
+// authority tag's own doc comment on AuthorityEnsembleCandidate above. As of BP-ECHO-NO-VOTE this
+// tag is never even constructed as a `candidates` entry any more (the compute result it used to
+// describe is now carried only via AuthorityEnsembleOutcome.reasoningFactComputeReceipt, outside
+// `candidates` entirely), so this exclusion is now belt-and-suspenders / defense-in-depth rather
+// than the operative guard -- kept so hasStructuredCorroborator() stays honest even if a future
+// change ever reintroduces a candidate under this tag.
+const STRUCTURED_AUTHORITIES = new Set<AuthorityEnsembleCandidate['authority']>([
+  'wolfram_alpha', 'specialist_swarm', 'deterministic_compute',
+]);
+function hasStructuredCorroborator(group: AuthorityEnsembleCandidate[]): boolean {
+  return group.some((c) => STRUCTURED_AUTHORITIES.has(c.authority));
 }
 
 /** BP139 CONCORDANCE GATE -- pure decision function, zero I/O, fully unit-testable in isolation
@@ -1164,19 +1351,15 @@ async function runSpecialistSwarmConsensus(params: {
 }
 
 /**
- * Honest not-wired placeholder, now for the REMAINING two not-yet-wired BP139 browser-LLM
- * authorities (ChatGPT/Gemini only -- user_claude has a real bridge as of this build pass, see
- * queryClaudeBrowserAuthority below). Mirrors browser_authority_adapter.ts's
- * createNotWiredBridge() convention exactly: NEVER fabricates a fact/sourceUrl, NEVER throws (a
- * thrown error could be mistaken for a transient network failure rather than "not built yet"),
- * always resolves null with a labeled console note. This is the ONLY thing standing between "the
- * enable gate resolved true for this authority" and "a real answer comes back" for
- * user_chatgpt/user_gemini -- swapping this function's body for a real per-vendor browser bridge
- * call (once buildBrowserAuthorityQueryUrl/webview_preload.ts grow chatgpt.com/gemini.google.com
- * interactive support, following the exact pattern claude.ai's own wiring this pass used) is the
- * ONLY change a future pass needs here; every gate/sequencing/candidate-injection line around
- * this call site is already correct and needs no further change. See this build's own report for
- * the exact per-vendor wiring recipe.
+ * (retained for reference / future authorities) Honest not-wired placeholder. As of BP140-K4,
+ * NO current BrowserLlmAuthorityName reaches this function anymore -- user_claude has had a real
+ * bridge since the prior build pass (queryClaudeBrowserAuthority below), and user_chatgpt/
+ * user_gemini now have their own real bridges too (queryChatGptBrowserAuthority/
+ * queryGeminiBrowserAuthority below, wired through webview_preload.ts's new generic interactive
+ * driver). Left in place, unexported and now uncalled by runAuthorityEnsemble's loop, as the
+ * honest fallback shape a FUTURE fourth browser-LLM authority should copy on day one (mirrors
+ * browser_authority_adapter.ts's createNotWiredBridge() convention exactly: NEVER fabricates a
+ * fact/sourceUrl, NEVER throws, always resolves null with a labeled console note).
  */
 async function queryBrowserLlmAuthorityNotWired(
   authority: BrowserLlmAuthorityName,
@@ -1234,6 +1417,62 @@ async function queryClaudeBrowserAuthority(
   return result ? { fact: result.fact, sourceUrl: result.sourceUrl } : null;
 }
 
+/**
+ * BP140-K4 WIRED: user_chatgpt's real interactive browser bridge. Byte-for-byte the same shape
+ * as queryClaudeBrowserAuthority above, just with `preferredAuthority: 'user_chatgpt'` --
+ * routes through index.ts's runBrowserAuthorityQueryFromMain() ->
+ * isInteractiveBrowserAuthority('user_chatgpt') (now true, browser_authority_types.ts) ->
+ * webview_preload.ts's generic interactive driver (runGenericInteractiveQuery +
+ * CHATGPT_DRIVER_CONFIG) instead of the Claude-specific hand-written driver. Same
+ * "researchArmMode/researchArmBrowserAuthority force-enabled inside this call's own config
+ * object" rationale as queryClaudeBrowserAuthority's own doc comment -- reaching this function at
+ * all already required the separate, stricter isBrowserLlmAuthorityEnabled('user_chatgpt', ...)
+ * gate at this loop's call site to resolve true. Never fabricates: returns null in every case
+ * runBrowserAuthorityLookup/the interactive driver do (not signed in to chatgpt.com, composer not
+ * found, typing/submit failed, or the streamed reply never stabilized before its own timeout).
+ */
+async function queryChatGptBrowserAuthority(
+  question: string,
+  mcOptionTexts: string[],
+  bridge: BrowserAuthorityBridge,
+): Promise<{ fact: string; sourceUrl: string } | null> {
+  const result = await runBrowserAuthorityLookup(
+    question,
+    {
+      researchArmMode: true,
+      researchArmBrowserAuthority: true,
+      preferredAuthority: 'user_chatgpt',
+      ...(mcOptionTexts.length > 0 ? { mcOptions: mcOptionTexts } : {}),
+    },
+    bridge,
+  );
+  return result ? { fact: result.fact, sourceUrl: result.sourceUrl } : null;
+}
+
+/**
+ * BP140-K4 WIRED: user_gemini's real interactive browser bridge. Same shape as
+ * queryChatGptBrowserAuthority above, `preferredAuthority: 'user_gemini'` routes through
+ * webview_preload.ts's GEMINI_DRIVER_CONFIG instead. Never fabricates, same honest-null
+ * contract as every other browser-authority bridge in this file.
+ */
+async function queryGeminiBrowserAuthority(
+  question: string,
+  mcOptionTexts: string[],
+  bridge: BrowserAuthorityBridge,
+): Promise<{ fact: string; sourceUrl: string } | null> {
+  const result = await runBrowserAuthorityLookup(
+    question,
+    {
+      researchArmMode: true,
+      researchArmBrowserAuthority: true,
+      preferredAuthority: 'user_gemini',
+      ...(mcOptionTexts.length > 0 ? { mcOptions: mcOptionTexts } : {}),
+    },
+    bridge,
+  );
+  return result ? { fact: result.fact, sourceUrl: result.sourceUrl } : null;
+}
+
 /** Runs the full ensemble for one question: queries every free authority available for
  *  `answerType`, resolves each via resolveAuthorityLetterMatch (Wolfram via a direct computed-
  *  value match against the options instead, since it never returns free text), and corroborates
@@ -1264,6 +1503,67 @@ async function runAuthorityEnsemble(params: {
     domain, mcPromptWithSubstrate, widenerOperators, widenerBackupOperators, onProgress, log,
   } = params;
   const candidates: AuthorityEnsembleCandidate[] = [];
+  // BP-ECHO-NO-VOTE: set ONLY inside the pre-branch hoist check below (det.source === 'reasoning_fact'
+  // case) -- see AuthorityEnsembleOutcome.reasoningFactComputeReceipt's own doc comment for why
+  // this is threaded through every return below INSTEAD OF being pushed into `candidates`.
+  let reasoningFactComputeReceipt: AuthorityEnsembleOutcome['reasoningFactComputeReceipt'];
+
+  // ── BP-PSEUDOCODE-TRACE-ANSWER-TYPE-BYPASS (root cause fix, run 028 receipt): the pseudocode-
+  // trace solver (plow_mc_pseudocode_trace_solver.ts) is a registered tier INSIDE
+  // resolveDeterministicComputeOverride below, but that function is only ever called from this
+  // file when `answerType === 'computable'` (see the two gated call sites: the pre-branch hoist
+  // just below this block, and the post-branch Stage F2 site in the caller). The AP-CSP "which
+  // code segment produces newList" question class this solver targets contains no numbers at
+  // all, so answer_type_classifier.ts files it as 'reasoning', not 'computable' -- the entire
+  // deterministic-compute chain (including this solver) is skipped, the question goes to a vote,
+  // and a conflicted adjudicator can pick the wrong letter even when the swarm already had the
+  // right one (live receipt: candidates [user_perplexity:A, user_claude:A, specialist_swarm:C],
+  // correct answer C, adjudicator picked A).
+  //
+  // FIX: this solver's own gate (ASK_RE + PROCEDURE_TABLE_RE + WORKED_EXAMPLE_RE + exact-procedure-
+  // set + "every option parses and EXACTLY ONE evaluates to the worked example's own stated
+  // output") is strict enough to BE its own classifier -- it is pure/synchronous, derives strictly
+  // from `researchQuery` + `mcOptions` (never from any authority's reasoning), and cannot produce
+  // a wrong answer on a non-matching question (any missing/ambiguous/multi-match piece is an
+  // honest null). So it is invoked here, UNCONDITIONALLY on answerType, before ANY authority is
+  // even consulted (before Perplexity/Google/browser-LLM below) -- a proved answer short-circuits
+  // the whole ensemble; a null falls through to the EXISTING branching, byte-for-byte unchanged.
+  // Never widens the solver's own gate, never touches the answer-type classifier itself.
+  try {
+    const pseudocodeTrace = solvePseudocodeTraceProblem(researchQuery, mcOptions);
+    if (pseudocodeTrace) {
+      log(
+        `pseudocode_trace PROVED answer ${pseudocodeTrace.letter} by executing the question's own ` +
+        `procedures -- ensemble not consulted (answerType=${answerType}, ${pseudocodeTrace.trace}).`,
+      );
+      return {
+        chosenLetter: pseudocodeTrace.letter,
+        corroboration: 'deterministic_compute',
+        candidates,
+        acceptedCandidates: [{
+          authority: 'deterministic_compute',
+          letter: pseudocodeTrace.letter,
+          reasoning: pseudocodeTrace.trace,
+          sourceUrl: '',
+          method: 'pseudocode_trace',
+        }],
+        adjudicationAttempted: false,
+        swarmFired: false,
+        deterministicOverride: {
+          letter: pseudocodeTrace.letter,
+          optionValue: NaN,
+          optionUnit: null,
+          computedValue: NaN,
+          computedUnit: null,
+          sourceExpression: pseudocodeTrace.trace,
+          source: 'question_expression',
+          method: 'pseudocode_trace',
+        },
+      };
+    }
+  } catch (err) {
+    log(`pseudocode_trace threw (non-fatal, ensemble continues normally): ${err}`);
+  }
 
   // ── Perplexity, WITH options embedded (unchanged mechanism from the legacy path) ──────────
   try {
@@ -1316,15 +1616,16 @@ async function runAuthorityEnsemble(params: {
   // own doc comment for why that is provable by inspection, not just by today's data.
   //
   // WIRING STATUS (honest, never fabricated -- same convention as browser_authority_adapter.ts's
-  // own createNotWiredBridge()): user_claude has a REAL interactive bridge as of this build pass
-  // (queryClaudeBrowserAuthority above, routed through the SAME `bridge` this loop's caller
-  // already threads through for user_google/user_perplexity). user_chatgpt/user_gemini still have
-  // no live DOM-scraping bridge (that would require an interactive driver for chatgpt.com/
-  // gemini.google.com analogous to claude.ai's this pass -- out of scope this pass per the build
-  // prompt's explicit "leave chatgpt/gemini as stubs" instruction) -- queryBrowserLlmAuthorityNotWired()
-  // remains their honest placeholder: always resolves null and logs exactly why, so enabling
-  // either of those two toggles today safely does nothing (never a fabricated candidate) until a
-  // future pass wires their own real per-vendor bridge.
+  // own createNotWiredBridge()): BP140-K4 -- ALL THREE browser-LLM authorities now have a REAL
+  // interactive bridge (queryClaudeBrowserAuthority / queryChatGptBrowserAuthority /
+  // queryGeminiBrowserAuthority above, each routed through the SAME `bridge` this loop's caller
+  // already threads through for user_google/user_perplexity, and each reaching its own per-vendor
+  // selector config in webview_preload.ts's generic interactive driver). Every one of these still
+  // requires isBrowserLlmAuthorityEnabled() to resolve true for that specific name (see that
+  // function's own doc comment for why every entry's tier defaults to disabled) -- wiring a real
+  // bridge here does NOT change the opt-in default-off gate at all, it only changes what happens
+  // AFTER a user has explicitly opted in. queryBrowserLlmAuthorityNotWired() is no longer called
+  // by this loop (kept, unexported, as the honest-placeholder template for a future 4th vendor).
   const browserLlmOverrides = readBrowserLlmAuthorityEnableOverridesFromSettings();
   const browserLlmNames: BrowserLlmAuthorityName[] = ['user_chatgpt', 'user_gemini', 'user_claude'];
   for (const llmName of browserLlmNames) {
@@ -1335,7 +1636,9 @@ async function runAuthorityEnsemble(params: {
     try {
       const llmResult = llmName === 'user_claude'
         ? await queryClaudeBrowserAuthority(researchQuery, mcOptionTexts, bridge)
-        : await queryBrowserLlmAuthorityNotWired(llmName, researchQuery);
+        : llmName === 'user_chatgpt'
+          ? await queryChatGptBrowserAuthority(researchQuery, mcOptionTexts, bridge)
+          : await queryGeminiBrowserAuthority(researchQuery, mcOptionTexts, bridge);
       const resolved = llmResult ? resolveAuthorityLetterMatch(llmResult.fact, mcOptions) : null;
       if (resolved && llmResult) {
         candidates.push({
@@ -1343,7 +1646,7 @@ async function runAuthorityEnsemble(params: {
           sourceUrl: llmResult.sourceUrl, method: resolved.method,
         });
       }
-      log(`${llmName}=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter (enabled, ' + (llmName === 'user_claude' ? 'wired-but-no-result' : 'not-yet-wired') + ')'}`);
+      log(`${llmName}=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter (enabled, wired-but-no-result)'}`);
     } catch (err) {
       log(`${llmName} threw (non-fatal): ${err}`);
     }
@@ -1419,26 +1722,76 @@ async function runAuthorityEnsemble(params: {
     );
     if (hoistDecision.deterministicOverride) {
       const det = hoistDecision.deterministicOverride;
+      // BP-COMPUTE-HONEST-DEMOTE (the actual fix, see this Yoke's build report): the pre-branch
+      // override above only genuinely deserves its "the calculator answered before any vote"
+      // status when the quantity it computed came from `source === 'question_expression'` --
+      // either a literal expression in the QUESTION text (compute_sidecar.ts path (b)), or one of
+      // the four named solvers (schedule/density/physics_kepler/aircraft_lift_drag), which by
+      // their own doc comments derive strictly from the question text + options, NEVER from
+      // `reasoningTexts` (confirmed by direct read this Yoke -- see resolveDeterministicComputeOverride
+      // tiers (iii)-(vi) above). Those tiers all report a `source` value that is NEVER the literal
+      // string 'reasoning_fact' (tier (ii)'s computeAnswer+matchValueToOption hardcodes
+      // 'question_expression'; the four solvers report their own solver-name tags). ONLY tier (i)
+      // (computeUnitAwareMatch) can report `source: 'reasoning_fact'` -- paths (a)/(c), a quantity
+      // pulled out of an authority's own reasoning/fact text (`hoistReasoningTexts` above, i.e.
+      // `candidates.map(c => c.reasoning)`) rather than the question itself. That value is a real,
+      // checked (exactly-one-option-matches) computation -- not a guess -- but it is a DERIVED
+      // RESTATEMENT of whichever authority it was extracted from, with no independent grounding of
+      // its own, so it must never again be allowed to short-circuit the ensemble before any vote
+      // is even evaluated (the live density-question bug this Yoke closes: the calculator
+      // silently re-stated user_perplexity's own wrong number as a pre-branch "deterministic"
+      // verdict, discarding user_claude's correct C).
+      if (det.source !== 'reasoning_fact') {
+        log(
+          `deterministic compute override fired PRE-BRANCH (${det.method}: ${det.sourceExpression} -> ` +
+          `${det.computedValue}${det.computedUnit ? ' ' + det.computedUnit : ''}) -> ${det.letter} -- ` +
+          `skipping agree/disagree/adjudicate/single-source branching entirely (candidates so far: ` +
+          `[${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}]).`,
+        );
+        return {
+          chosenLetter: det.letter,
+          corroboration: 'deterministic_compute_override',
+          candidates,
+          acceptedCandidates: [{
+            authority: 'deterministic_compute',
+            letter: det.letter,
+            reasoning: `${det.method}: ${det.sourceExpression} -> ${det.computedValue}${det.computedUnit ? ' ' + det.computedUnit : ''}`,
+            sourceUrl: '',
+            method: det.method,
+          }],
+          adjudicationAttempted: false,
+          swarmFired: false,
+          deterministicOverride: det,
+        };
+      }
+      // BP-ECHO-NO-VOTE: source === 'reasoning_fact' -- a real, checked compute, but its input
+      // quantity was extracted from an authority's OWN reasoning/fact text (`hoistReasoningTexts`,
+      // i.e. `candidates.map(c => c.reasoning)`), so it is a DERIVED RESTATEMENT of whichever
+      // authority it was pulled from, not independent evidence. PRIOR behavior here (BP-COMPUTE-
+      // HONEST-DEMOTE) pushed this into `candidates` as an "ordinary" voting entry -- but because
+      // it always shares the letter of the authority it was extracted from, that let the SAME
+      // voice count twice toward a 2+ "agree" (live receipt: candidates ended up
+      // [user_perplexity, deterministic_compute_reasoning_fact], the second derived FROM the
+      // first -- an echo counted as corroboration). FIX: record it in `reasoningFactComputeReceipt`
+      // ONLY (see that field's own doc comment on AuthorityEnsembleOutcome) -- it never enters
+      // `candidates`, so it can never participate in the byLetter/agreeingGroup grouping, the
+      // fast-path 2+ check, hasStructuredCorroborator/STRUCTURED_AUTHORITIES, or adjudication's
+      // candidate set below. It is still fully visible as a receipt (this log line + the returned
+      // field) so the Coroner can see a compute ran and what it produced -- it just can no longer
+      // cast a vote.
       log(
-        `deterministic compute override fired PRE-BRANCH (${det.method}: ${det.sourceExpression} -> ` +
-        `${det.computedValue}${det.computedUnit ? ' ' + det.computedUnit : ''}) -> ${det.letter} -- ` +
-        `skipping agree/disagree/adjudicate/single-source branching entirely (candidates so far: ` +
-        `[${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}]).`,
+        `deterministic compute ran PRE-BRANCH (${det.method}: ${det.sourceExpression} -> ` +
+        `${det.computedValue}${det.computedUnit ? ' ' + det.computedUnit : ''}) -> ${det.letter} but ` +
+        `source=reasoning_fact (extracted from an authority's own reasoning text, not the question -- ` +
+        `no independent grounding) -- recorded as a receipt ONLY, NOT pushed into the voting candidate ` +
+        `list (candidates so far, unaffected: [${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}]).`,
       );
-      return {
-        chosenLetter: det.letter,
-        corroboration: 'deterministic_compute_override',
-        candidates,
-        acceptedCandidates: [{
-          authority: 'deterministic_compute',
-          letter: det.letter,
-          reasoning: `${det.method}: ${det.sourceExpression} -> ${det.computedValue}${det.computedUnit ? ' ' + det.computedUnit : ''}`,
-          sourceUrl: '',
-          method: det.method,
-        }],
-        adjudicationAttempted: false,
-        swarmFired: false,
-        deterministicOverride: det,
+      reasoningFactComputeReceipt = {
+        letter: det.letter,
+        method: det.method,
+        sourceExpression: det.sourceExpression,
+        computedValue: det.computedValue,
+        computedUnit: det.computedUnit,
       };
     }
   }
@@ -1454,21 +1807,51 @@ async function runAuthorityEnsemble(params: {
     }
     const agreeingGroupFast = [...byLetterFast.values()].find((group) => group.length >= 2);
     if (agreeingGroupFast) {
-      log(`browser/wolfram authorities already agree on ${agreeingGroupFast[0]!.letter} -- swarm skipped (fast path).`);
-      return {
-        chosenLetter: agreeingGroupFast[0]!.letter, corroboration: 'agree', candidates,
-        acceptedCandidates: agreeingGroupFast, adjudicationAttempted: false, swarmFired: false,
-      };
+      if (hasStructuredCorroborator(agreeingGroupFast)) {
+        log(`browser/wolfram authorities already agree on ${agreeingGroupFast[0]!.letter} (structurally corroborated) -- swarm skipped (fast path).`);
+        return {
+          chosenLetter: agreeingGroupFast[0]!.letter, corroboration: 'agree', candidates,
+          acceptedCandidates: agreeingGroupFast, adjudicationAttempted: false, swarmFired: false,
+          structuredCorroborator: true,
+          // BP141: fast path only reaches here when hasStructuredCorroborator already found a
+          // structured member (wolfram_alpha -- the swarm has not fired yet at this point) among
+          // the agreeing group, so each agreeing candidate has its own independent evidence.
+          independentCorroboration: true,
+        };
+      }
+      // BP1xx STRUCTURED-CORROBORATOR GATE ("Q85"): every agreeing candidate here is LLM-class
+      // (opinion, no structured backing behind either of them) -- e.g. user_perplexity and
+      // user_claude both confidently wrong together, with no deterministic compute and no
+      // specialist swarm ever consulted. Naive concordance cannot catch that. Do NOT fast-path
+      // accept: decline the fast path and fall through into the uncertain branch immediately
+      // below, which fires the specialist swarm (the required non-LLM structured corroborator)
+      // as one more candidate before any accept/adjudicate decision is made. Coverage is never
+      // dropped here -- this only ever delays the accept by one extra swarm call, never turns it
+      // into an abstain.
+      log(
+        `browser authorities agree on ${agreeingGroupFast[0]!.letter} but EVERY agreeing candidate ` +
+        `is LLM-class (${agreeingGroupFast.map((c) => c.authority).join(',')}) -- fast path DECLINED, ` +
+        `firing the specialist swarm as the required structured corroborator before accepting.`,
+      );
     }
   }
 
-  // ── UNCERTAIN: 0 browser/Wolfram candidates, exactly 1, or 2+ that all disagree. Fold the
-  //    existing specialist swarm in as ONE MORE corroborating candidate before deciding. ─────────
+  // ── UNCERTAIN: 0 browser/Wolfram candidates, exactly 1, 2+ that all disagree, OR (BP1xx
+  //    STRUCTURED-CORROBORATOR GATE) 2+ that agree but EVERY agreeing candidate is LLM-class
+  //    (the fast path above declined for that reason). Fold the existing specialist swarm in as
+  //    ONE MORE corroborating candidate before deciding. ─────────────────────────────────────
   log(
     `browser/wolfram authorities uncertain (candidates=[${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}]) ` +
     `-- firing the specialist swarm as one more candidate.`,
   );
   let swarmReceipt: AuthorityEnsembleOutcome['swarmReceipt'];
+  // BP1xx STRUCTURED-CORROBORATOR GATE: hoisted out of the try block below (unlike swarmReceipt,
+  // which is a receipt object copied field-by-field) so the swarm-augmented agreement check
+  // further down can tell "did the structured corroborator we just fired actively DISAGREE with
+  // an LLM-only agreeing group" apart from "it simply yielded nothing usable" -- see that check's
+  // own comment for why the two cases route differently (adjudicate vs accept-but-flag).
+  let swarmChosenLetterForGate: string | null = null;
+  let swarmConcordanceForGate: ConcordanceClass | null = null;
   try {
     const swarmResult = await runSpecialistSwarmConsensus({
       researchQuery, domain, mcPromptWithSubstrate, config, widenerOperators, widenerBackupOperators, onProgress, log,
@@ -1482,22 +1865,54 @@ async function runAuthorityEnsemble(params: {
       voterDiagnostics: swarmResult.voterDiagnostics,
       concordance: swarmResult.concordance,
     };
+    swarmChosenLetterForGate = swarmResult.chosenLetter;
+    swarmConcordanceForGate = swarmResult.concordance;
     // HONESTY (BR-007, non-negotiable): the swarm's letter counts as a real candidate ONLY when
     // its own 3 voters reached a genuine CONCORDANT consensus -- a DISCORDANT/PARTIAL/no-letter
     // swarm result contributes NOTHING to the vote below (swarmReceipt above still records it
     // for trace visibility -- "the trace shows it participated" -- but it never becomes a
     // guessed/fabricated candidate).
-    if (swarmResult.chosenLetter && swarmResult.concordance === 'CONCORDANT') {
+    //
+    // BP141 ECHO-ABSTENTION FIX (narrow, evidence-based -- see runSpecialistSwarmConsensus's own
+    // `factsForArbitration = postFurnace.length > 0 ? postFurnace : postMiner.slice(0, 3)` line):
+    // when NOTHING survived Furnace/Saladin's adversarial fence (candidatesPostFurnace === 0),
+    // that function does not return early -- it falls back to arbitrating over raw, unverified
+    // postMiner facts, and the 3 voters can still land on a CONCORDANT letter with ZERO
+    // Furnace-verified grounding behind it. That is precisely the G1_FACT gate's own "no verified
+    // facts" condition (see evaluateGates in canonical_pipeline.ts: G1_FACT passes iff
+    // candidatesPostFurnace > 0). A CONCORDANT vote in that state is not corroboration -- it is
+    // the voters echoing whatever letter they already lean toward (proven live: run 18mnemo, the
+    // swarm never fired at all on this question, specialists_used empty, Furnace found no
+    // verified facts; run 19mnemo, same question, the swarm returned a letter matching
+    // perplexity's wrong answer with no grounding behind it). Requiring
+    // candidatesPostFurnace > 0 here is the ONE added condition: it only ever downgrades an
+    // already-CONCORDANT, already-no-grounding swarm result to "does not count as a candidate" --
+    // it never forces an abstain on a swarm result that DOES have grounding, and never touches
+    // any other candidate (browser/Wolfram/deterministic) or any other branch in this file. This
+    // is deliberately narrower than YOKE #27/BP133 (which forced abstention broadly on any null
+    // voter letter, causing over-abstention across the board) -- this condition fires only on the
+    // provable zero-grounding state, never as a default and never on ambiguity.
+    if (
+      swarmResult.chosenLetter
+      && swarmResult.concordance === 'CONCORDANT'
+      && swarmResult.candidatesPostFurnace > 0
+    ) {
       candidates.push({
         authority: 'specialist_swarm',
         letter: swarmResult.chosenLetter,
         reasoning:
           `specialist swarm consensus (${swarmResult.specialistsUsed.length} specialists: ` +
           `[${swarmResult.specialistsUsed.join(',')}], voters=[${swarmResult.voterLetters.join(',')}], ` +
-          `concordance=${swarmResult.concordance}).`,
+          `concordance=${swarmResult.concordance}, postFurnace=${swarmResult.candidatesPostFurnace}).`,
         sourceUrl: 'specialist-swarm-internal-consensus',
         method: 'specialist_swarm_vote',
       });
+    } else if (swarmResult.chosenLetter && swarmResult.concordance === 'CONCORDANT') {
+      log(
+        `[plow_mc_answerer] specialist_swarm ABSTAINS (no verified grounding: postFurnace=0, ` +
+        `arbitrated over ${swarmResult.candidatesPostMiner} unverified postMiner fallback fact(s)) ` +
+        `-- letter ${swarmResult.chosenLetter} not counted as corroboration.`,
+      );
     }
     log(`swarm=${swarmResult.chosenLetter ? `${swarmResult.chosenLetter}(${swarmResult.concordance})` : `no-letter(${swarmResult.concordance})`}`);
   } catch (err) {
@@ -1506,7 +1921,7 @@ async function runAuthorityEnsemble(params: {
 
   if (candidates.length === 0) {
     // Nobody -- browser, Wolfram, or swarm -- answered. Honest 'none'.
-    return { chosenLetter: null, corroboration: 'none', candidates, acceptedCandidates: [], adjudicationAttempted: false, swarmFired: true, swarmReceipt };
+    return { chosenLetter: null, corroboration: 'none', candidates, acceptedCandidates: [], adjudicationAttempted: false, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt };
   }
 
   if (candidates.length === 1) {
@@ -1514,6 +1929,12 @@ async function runAuthorityEnsemble(params: {
     // swarm added nothing (unchanged honest single-authority behavior), or the browser panel had
     // nothing and the swarm alone reached a CONCORDANT consensus.
     const only = candidates[0]!;
+    // BP-ECHO-NO-VOTE (supersedes the old BP-COMPUTE-HONEST-DEMOTE note that used to live here): a
+    // 'deterministic_compute_reasoning_fact' candidate is NEVER pushed into `candidates` at all any
+    // more (see reasoningFactComputeReceipt's own doc comment on AuthorityEnsembleOutcome, and its
+    // one push-site in the pre-branch hoist above) -- it can no longer reach this branch, or any
+    // other candidate-counting branch below, under any circumstance. It is carried separately, only
+    // through the `reasoningFactComputeReceipt` field threaded into every return in this function.
     const corroboration: AuthorityEnsembleOutcome['corroboration'] =
       only.authority === 'user_google' ? 'single_google'
         : only.authority === 'user_perplexity' ? 'single_perplexity'
@@ -1544,10 +1965,10 @@ async function runAuthorityEnsemble(params: {
       );
       return {
         chosenLetter: null, corroboration: 'lone_rejected_by_strictness', candidates,
-        acceptedCandidates: [], adjudicationAttempted: false, swarmFired: true, swarmReceipt,
+        acceptedCandidates: [], adjudicationAttempted: false, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt,
       };
     }
-    return { chosenLetter: only.letter, corroboration, candidates, acceptedCandidates: [only], adjudicationAttempted: false, swarmFired: true, swarmReceipt };
+    return { chosenLetter: only.letter, corroboration, candidates, acceptedCandidates: [only], adjudicationAttempted: false, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt };
   }
 
   // 2+ candidates (now possibly including the swarm) -- re-check for a 2+ agreement. Adding the
@@ -1560,11 +1981,43 @@ async function runAuthorityEnsemble(params: {
   }
   const agreeingGroup = [...byLetter.values()].find((group) => group.length >= 2);
   if (agreeingGroup) {
+    const groupHasStructured = hasStructuredCorroborator(agreeingGroup);
+    // BP1xx STRUCTURED-CORROBORATOR GATE: if the agreeing group is still all LLM-class (no
+    // wolfram_alpha/specialist_swarm among them -- e.g. the swarm fired but landed on a
+    // DIFFERENT letter, or on the SAME letter but non-CONCORDANT so it never became a candidate
+    // at all, see the HONESTY push-site note above), and the swarm we just fired actually reached
+    // its own genuine CONCORDANT consensus on a letter that DIFFERS from this group's -- that is
+    // a real structured dissent, not silence. Do not accept: fall through to the adjudication
+    // block below (over the full candidate set, swarm dissent included) exactly like any other
+    // persisting disagreement.
+    const swarmStructurallyDisagrees =
+      !groupHasStructured
+      && swarmChosenLetterForGate !== null
+      && swarmConcordanceForGate === 'CONCORDANT'
+      && swarmChosenLetterForGate !== agreeingGroup[0]!.letter;
+    if (!swarmStructurallyDisagrees) {
+      log(
+        `swarm-augmented agreement on ${agreeingGroup[0]!.letter} ` +
+        `(candidates=[${agreeingGroup.map((c) => c.authority).join(',')}]) -- ` +
+        `${groupHasStructured ? 'structurally corroborated' : 'LLM-ONLY concordance (swarm yielded nothing usable to corroborate or contest it)'}, accepted.`,
+      );
+      return {
+        chosenLetter: agreeingGroup[0]!.letter, corroboration: 'agree', candidates,
+        acceptedCandidates: agreeingGroup, adjudicationAttempted: false, swarmFired: true, swarmReceipt,
+        reasoningFactComputeReceipt,
+        structuredCorroborator: groupHasStructured,
+        // BP141: mirrors groupHasStructured here -- a specialist_swarm member can only be part of
+        // `agreeingGroup` when it survived the BP141 echo-abstention push-site check (genuine
+        // Furnace-verified grounding), so "has a structured member" and "each agreeing member has
+        // its own independent evidence" are the same test at this call site.
+        independentCorroboration: groupHasStructured,
+      };
+    }
     log(
-      `swarm-augmented agreement on ${agreeingGroup[0]!.letter} ` +
-      `(candidates=[${agreeingGroup.map((c) => c.authority).join(',')}]) -- cross-validated, accepted.`,
+      `swarm STRUCTURALLY DISAGREES with LLM-only agreement on ${agreeingGroup[0]!.letter} ` +
+      `(swarm reached CONCORDANT consensus on ${swarmChosenLetterForGate} instead) -- ` +
+      `declining the accept, routing to adjudication over the full candidate set.`,
     );
-    return { chosenLetter: agreeingGroup[0]!.letter, corroboration: 'agree', candidates, acceptedCandidates: agreeingGroup, adjudicationAttempted: false, swarmFired: true, swarmReceipt };
   }
 
   // Still all disagree even with the swarm folded in -- ADJUDICATE with ONE extra Perplexity
@@ -1591,6 +2044,7 @@ async function runAuthorityEnsemble(params: {
         adjudicationAttempted: true,
         swarmFired: true,
         swarmReceipt,
+        reasoningFactComputeReceipt,
       };
     }
     log('adjudication returned no resolvable letter -- honest fall-through');
@@ -1598,7 +2052,7 @@ async function runAuthorityEnsemble(params: {
     log(`adjudication threw (non-fatal): ${err}`);
   }
 
-  return { chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [], adjudicationAttempted: true, swarmFired: true, swarmReceipt };
+  return { chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [], adjudicationAttempted: true, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt };
 }
 
 // ─── BP1xx Deterministic-Compute-Override ("let the calculator win the math") ──────────────
@@ -1693,9 +2147,41 @@ export async function resolveDeterministicComputeOverride(
     '$1 $2',
   );
 
-  // Tier (i): units-aware compute. Synchronous, no I/O.
+  // BP-SPECIFIC-BEFORE-GENERIC (this pass, Bishop-directed fix): the SEVEN tiers below are no
+  // longer tried in their historical add-order. THE BUG this closes: computeUnitAwareMatch
+  // (compute_sidecar.ts) is not just "tier (i), a unit-bearing quantity" -- internally it tries
+  // THREE paths in order: (b) a unit-bearing expression literally contiguous in the QUESTION text,
+  // then (a) a unit-bearing quantity pulled out of an authority's own REASONING/FACT text
+  // (`componentFacts`, i.e. `reasoningTexts` below), then (c) a bare unitless number pulled out of
+  // that SAME reasoning text. Paths (a)/(c) are GENERIC reasoning-text extraction -- they can
+  // return a real, checked (exactly-one-option) match built from whatever an authority's reasoning
+  // happened to state, which is exactly the failure mode the four named solvers (schedule/density/
+  // physics_kepler/aircraft_lift_drag) exist to route AROUND. Because the old code called
+  // computeUnitAwareMatch WITH componentFacts as literally the first thing tried, and a non-null
+  // result short-circuits every `if (!deterministicOverride)` tier below it, paths (a)/(c) could
+  // (and empirically did, live receipts this pass: density chose B via unit_aware instead of C via
+  // density; aircraft chose G via unit_aware instead of E via aircraft_lift_drag, both tracking
+  // user_perplexity's own letter) preempt the named solvers before they ever ran, even though the
+  // named solvers derive strictly from the question text and WOULD have matched correctly given
+  // the chance (verified this pass by direct read of solveDensityProblem/solveAircraftLiftDragProblem's
+  // own gates against the two failing questions' real text). Checked git history (git log -S on
+  // this function): the order was purely accretive -- computeUnitAwareMatch (with componentFacts
+  // from day one) was added first, then bare_value/schedule/density/physics/aircraft were each
+  // bolted on AFTER, always gated `if (!deterministicOverride)` i.e. "only if everything before me
+  // failed" -- never a deliberate "generic reasoning-extraction must win first" design decision.
+  // FIX: split computeUnitAwareMatch's call into TWO separate call sites -- tier (i), here, called
+  // WITHOUT componentFacts (so only path (b), the genuine question-expression path, can fire), and
+  // a NEW tier (vii) at the very end (after the four named solvers), called WITH componentFacts, so
+  // paths (a)/(c) -- the generic reasoning-text extraction -- become the LAST resort, reached only
+  // when no specific solver and no question-expression parse matched anything. No named solver's
+  // own computation changes at all -- only the order attempted and this short-circuit behavior.
+  //
+  // Tier (i): units-aware compute, QUESTION TEXT ONLY (path (b) -- a unit-bearing expression
+  // literally contiguous in the question). Synchronous, no I/O. Deliberately NOT passed
+  // componentFacts here -- see the reasoning-extraction last-resort tier (vii) at the bottom of
+  // this function for where an authority's reasoning text gets its own, now-demoted, chance.
   try {
-    const unitAware = computeUnitAwareMatch(researchQueryForTiers, mcOptions, { componentFacts: reasoningTexts });
+    const unitAware = computeUnitAwareMatch(researchQueryForTiers, mcOptions, {});
     if (unitAware) {
       deterministicOverride = {
         letter: unitAware.letter,
@@ -1709,12 +2195,15 @@ export async function resolveDeterministicComputeOverride(
       };
     }
   } catch (err) {
-    console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: computeUnitAwareMatch threw (non-fatal, next tier tried):', err);
+    console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: computeUnitAwareMatch (question-only) threw (non-fatal, next tier tried):', err);
   }
 
   // Tier (ii): the pre-existing unit-UNAWARE compute_sidecar pair (computeAnswer +
   // matchValueToOption) -- the SAME two functions the downstream compute-sidecar block already
-  // uses, tried here only after tier (i) found nothing.
+  // uses, tried here only after tier (i) found nothing. Always reports `source: 'question_expression'`
+  // (compute_sidecar.ts hardcodes this -- confirmed by direct read), so it belongs alongside tier
+  // (i)'s question-expression path, ahead of the four named solvers, unchanged from its historical
+  // position.
   if (!deterministicOverride) {
     try {
       const computed = await computeAnswer(researchQueryForTiers, {
@@ -1854,6 +2343,83 @@ export async function resolveDeterministicComputeOverride(
     }
   }
 
+  // Tier (vii): the pseudocode-trace solver -- a SEVENTH, independent deterministic compute tier
+  // for "which of the following code segments will correctly create newList?" word problems
+  // structurally out of reach of tiers (i)-(vi): the question defines named procedures by their
+  // EXPLANATIONS (not a formula) and gives a worked example; the only way to know which option is
+  // correct is to actually EXECUTE each candidate code segment against the worked example's own
+  // inputs and compare to its own stated output -- there is no unit-bearing chain, no bare
+  // arithmetic expression, no loan schedule, no mass/dimensions density, and no physics relation
+  // anywhere in the text for tiers (i)-(vi) to find (see plow_mc_pseudocode_trace_solver.ts's
+  // header for the full worked example, including the real question's OCR corruption -- garbled
+  // "list1"/"list2" spellings and a missing closing quote -- and how it is tolerated). Synchronous,
+  // no I/O, no model call. Tried last of the named solvers, only after tiers (i)-(vi) above
+  // returned null; derives strictly from the question text + options, never from `reasoningTexts`.
+  if (!deterministicOverride) {
+    try {
+      const pseudocode = solvePseudocodeTraceProblem(researchQueryForTiers, mcOptions);
+      if (pseudocode) {
+        deterministicOverride = {
+          letter: pseudocode.letter,
+          // DeterministicComputeCandidate's optionValue/computedValue are typed `number` because
+          // every other tier compares a SCALAR quantity; this solver compares LISTS instead, so
+          // there is no honest scalar to report here. NaN is the deliberate sentinel (never a
+          // fabricated 0 or count) -- every consumer of these two fields downstream only ever
+          // string-interpolates or hashes them (confirmed by direct read this pass: no arithmetic
+          // is ever performed on computedValue/optionValue), so NaN renders as the literal text
+          // "NaN" in logs/receipts rather than crashing or silently implying a real number. The
+          // actual list data (list1/list2/expected/matched option's evaluated result) lives in
+          // `sourceExpression` (== pseudocode.trace) below, which every receipt path also carries.
+          optionValue: NaN,
+          optionUnit: null,
+          computedValue: NaN,
+          computedUnit: null,
+          sourceExpression: pseudocode.trace,
+          source: 'question_expression',
+          method: 'pseudocode_trace',
+        };
+      }
+    } catch (err) {
+      console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: solvePseudocodeTraceProblem threw (non-fatal, ensemble letter kept):', err);
+    }
+  }
+
+  // Tier (viii) -- LAST RESORT, generic reasoning-text extraction: computeUnitAwareMatch's paths
+  // (a)/(c) (a unit-bearing or bare-numeric quantity pulled out of an authority's OWN reasoning/
+  // fact text, `reasoningTexts`, rather than the question itself). See this function's
+  // BP-SPECIFIC-BEFORE-GENERIC header above for the full rationale -- this is deliberately the
+  // VERY LAST thing tried, only after tier (i)'s question-only unit expression, tier (ii)'s
+  // question-expression bare-value compute, AND all five named solvers (schedule/density/
+  // physics_kepler/aircraft_lift_drag/pseudocode_trace) have all already returned null. Re-invokes
+  // computeUnitAwareMatch WITH componentFacts this time -- its own path (b) gets re-tried
+  // internally too (harmless: tier (i) above already established it returns null for this
+  // question, re-checking it costs one cheap regex pass and changes nothing), then paths (a)/(c)
+  // get their turn. A non-null result here always carries `source: 'reasoning_fact'` (the only way
+  // paths (a)/(c) resolve) -- the caller (runAuthorityEnsemble's pre-branch hoist, and the
+  // post-branch Stage F2 site) already demotes/declines a reasoning_fact result's power to
+  // silently decide or override an answer (see BP-ECHO-NO-VOTE / BP-COMPUTE-DEMOTE-SITE-2), so
+  // this tier existing at all is purely "still give the honest last-resort check a chance," never
+  // a path back to the preemption bug this reorder fixes.
+  if (!deterministicOverride) {
+    try {
+      const unitAwareFromReasoning = computeUnitAwareMatch(researchQueryForTiers, mcOptions, { componentFacts: reasoningTexts });
+      if (unitAwareFromReasoning) {
+        deterministicOverride = {
+          letter: unitAwareFromReasoning.letter,
+          optionValue: unitAwareFromReasoning.optionValue,
+          optionUnit: unitAwareFromReasoning.optionUnit,
+          computedValue: unitAwareFromReasoning.computedValue,
+          computedUnit: unitAwareFromReasoning.computedUnit,
+          sourceExpression: unitAwareFromReasoning.sourceExpression,
+          source: unitAwareFromReasoning.source,
+          method: 'unit_aware',
+        };
+      }
+    } catch (err) {
+      console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: computeUnitAwareMatch (reasoning-extraction last resort) threw (non-fatal):', err);
+    }
+  }
+
   const overrideFired = !!deterministicOverride && deterministicOverride.letter !== ensembleChosenLetter;
   const finalLetter = deterministicOverride ? deterministicOverride.letter : ensembleChosenLetter;
   return { finalLetter, overrideFired, deterministicOverride };
@@ -1884,7 +2450,13 @@ async function writeAndReplicateSolvedAnswer(params: {
   // which is exactly the "Scaccio E) $106.00 wrong answer stored as verified:true" bug class
   // this Yoke closes. Only pass 'concordant'/'deterministic_compute' where the caller can show
   // genuine 2+-source agreement or a deterministic-compute result.
-  corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute';
+  // BP-COMPUTE-HONEST-DEMOTE addition: 'authority_extracted_compute' -- a real, checked
+  // unit-conversion/tolerance-match ran (never a guess), but its input quantity was extracted
+  // from an authority's own reasoning/fact text (compute_sidecar.ts `source: 'reasoning_fact'`),
+  // not a literal expression in the question -- see mnem_eblet_store.ts's
+  // computeHonestVerification(), which deliberately does NOT grant this value verified:true the
+  // way 'deterministic_compute' does (no independent grounding).
+  corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute' | 'authority_extracted_compute';
 }): Promise<void> {
   const now = Date.now();
   try {
@@ -1950,7 +2522,23 @@ async function writeAndReplicateSolvedAnswer(params: {
 // real serve/exact-match. Fully non-fatal: a failed write here must never affect the caller's
 // returned answer -- returns whether the write succeeded purely for the caller's ebletsWritten
 // bookkeeping field, nothing else depends on it.
+// BP-CONTAMINATION-FIX (this pass, Bishop-verified defect): process-lifetime cache of
+// `plow_mc_answerer:compute_method:<method>` provenance prefixes already confirmed present in
+// the store, same convention as formula_eblet_mint.ts's mintedOrCheckedMethods -- avoids
+// re-scanning the whole verified_eblets.jsonl on every single compute success within one long
+// benchmark run. Deliberately NOT persisted/shared across processes; a cold-started process
+// re-checks the store once per method the first time it sees that method.
+const computeMethodEbletCheckedProvenance = new Set<string>();
+
 async function writeComputeMethodEblet(params: {
+  // BP-CONTAMINATION-FIX: researchQuery is still accepted (byte-compatible call-site signature,
+  // both existing call sites pass { researchQuery, result }) but is DELIBERATELY NEVER read
+  // below any more -- see the root-cause writeup at this function's git-blamed prior version:
+  // this field used to be sliced into the persisted `reasoning`, which is exactly what turned a
+  // reusable-tool eblet into a leaked answer key (the live benchmark question text paired with
+  // an explicit answer letter). class:'component' is the class eligible for injection during
+  // scored runs (tools ON, answer-keys OFF) -- nothing question-specific may ever reach the
+  // fields written to the store from this function again.
   researchQuery: string;
   // BP-DETERMINISTIC-OVERRIDE-3TIER: widened from UnitAwareComputeResult to
   // DeterministicComputeCandidate (a structural superset-compatible shape -- every existing
@@ -1960,35 +2548,74 @@ async function writeComputeMethodEblet(params: {
   // narrower method/source literal unions, which they don't share.
   result: DeterministicComputeCandidate;
 }): Promise<boolean> {
-  const { researchQuery, result } = params;
+  const { result } = params;
   try {
     const classSignature =
       result.computedUnit && result.optionUnit
         ? `unit-normalized compute: ${result.computedUnit} -> ${result.optionUnit}`
         : 'unit-normalized compute (unitless)';
+    // BP-CONTAMINATION-FIX: provenance no longer carries a Date.now() suffix (the prior write
+    // minted a brand-new record on every single call, no dedup, which is also what made the 28
+    // contaminated records pile up in the first place) -- dedupable by method, same as
+    // formula_eblet_mint.ts's `${PROVENANCE_PREFIX}${method}` convention.
+    const provenance = `plow_mc_answerer:compute_method:${result.method}`;
+
+    // Dedup check, same pattern as formula_eblet_mint.ts's mintFormulaEbletFromCompute(): one
+    // component eblet per method, not per question -- otherwise a benchmark run of hundreds of
+    // density questions would mint hundreds of byte-identical method records.
+    if (computeMethodEbletCheckedProvenance.has(provenance)) {
+      return true;
+    }
+    const existing = await loadAllVerifiedEblets();
+    const alreadyWritten = existing.some(
+      (e) => e.class === 'component' && typeof e.provenance === 'string' && e.provenance.startsWith(provenance),
+    );
+    if (alreadyWritten) {
+      computeMethodEbletCheckedProvenance.add(provenance);
+      return true;
+    }
+
     await writeVerifiedEblet({
       question: `[method:compute-units-aware:${result.method}]`,
+      // BP-CONTAMINATION-FIX: the prior "Worked example this write" clause (sourceExpression,
+      // computedValue, and -- worst of all -- `matched option ${result.letter}`) is REMOVED
+      // entirely. Everything below is a general, question-independent method description: no
+      // question text, no computed values, no option letter.
       answer:
         `Method: obtain a quantity WITH ITS UNIT (source=${result.source} -- either an expression ` +
         `cleanly present in the question, or the final "value unit" stated in the authority/swarm's ` +
         `reasoning), then convert it into each MC option's OWN unit via mathjs and compare within ` +
         `tolerance -- accept only when exactly one option matches, never a bare numeric guess. ` +
-        `Class signature: ${classSignature}. Worked example this write: "${result.sourceExpression}" ` +
-        `-> ${result.computedValue}${result.computedUnit ? ' ' + result.computedUnit : ''} -> matched ` +
-        `option ${result.letter} (${result.optionValue}${result.optionUnit ? ' ' + result.optionUnit : ''}).`,
-      provenance: `plow_mc_answerer:compute_method:${result.method}:${Date.now()}`,
+        `Class signature: ${classSignature}.`,
+      provenance,
       // BP131 honesty fix: this write genuinely IS deterministic compute (computeUnitAwareMatch
       // already proved "exactly one option matches" before this function is ever called) -- the
       // literal below is advisory only (see writeAndReplicateSolvedAnswer's own doc comment for
-      // why); `corroboration: 'deterministic_compute'` is what actually earns this write its
-      // honest verified:true/verdict:'verified' via computeHonestVerification().
+      // why); `corroboration` below is what actually earns this write its honest
+      // verified:true/verdict:'verified' via computeHonestVerification().
+      // BP-COMPUTE-HONEST-DEMOTE: `corroboration: 'deterministic_compute'` is only honest when
+      // `result.source === 'question_expression'` -- the quantity came from a literal expression
+      // in the QUESTION itself (or one of the four named solvers, which are equally
+      // question-only). When `result.source === 'reasoning_fact'` (compute_sidecar.ts paths
+      // (a)/(c): the quantity was extracted from an authority's own reasoning/fact text), the
+      // unit-conversion/tolerance-match still genuinely ran -- it is not a guess -- but it has no
+      // independent grounding of its own, so it earns the distinct, honest
+      // 'authority_extracted_compute' label instead, which computeHonestVerification()
+      // deliberately does NOT treat as a verified accept class.
       verified: true,
       sha256: '',
       timestamp: Date.now(),
       class: 'component',
-      reasoning: `question="${researchQuery.slice(0, 200)}" expr="${result.sourceExpression.slice(0, 200)}"`,
-      corroboration: 'deterministic_compute',
+      // BP-CONTAMINATION-FIX: no more `question="${researchQuery...}"` -- that was the leak.
+      // `result.source` is a short generic tag ('question_expression' | 'reasoning_fact', see
+      // compute_sidecar.ts), never raw question text, so this stays method-general.
+      reasoning:
+        `General derivation note: identify the quantity's source (source=${result.source}), unit-` +
+        `convert it into each option's own unit, and accept only a single tolerance-matching ` +
+        `option. Class signature: ${classSignature}.`,
+      corroboration: result.source === 'reasoning_fact' ? 'authority_extracted_compute' : 'deterministic_compute',
     });
+    computeMethodEbletCheckedProvenance.add(provenance);
     return true;
   } catch (err) {
     console.warn('[plow_mc_answerer] writeComputeMethodEblet failed (non-fatal):', err);
@@ -2922,20 +3549,63 @@ export async function runCanonicalPlowMcAnswer(
           deterministicOverride = decision.deterministicOverride;
           overrideFired = decision.overrideFired;
           finalChosenLetter = decision.finalLetter;
-          if (overrideFired && deterministicOverride) {
+          // BP-COMPUTE-DEMOTE-SITE-2 (Bishop-ratified, same rule as the pre-branch hoist site):
+          // this POST-branch override can still carry `source === 'reasoning_fact'` here (the
+          // quantity was extracted from an authority's own reasoning text, not the question or a
+          // named solver) -- unlike the non-reasoning_fact sources (question_expression /
+          // schedule_solver / density_solver / physics_solver / aircraft_solver), which are the
+          // genuine deterministic floor and keep their veto UNCHANGED below, a reasoning_fact
+          // result has no independent grounding and must not be allowed to overturn a settled
+          // ensemble consensus. Declined here BEFORE the finalChosenLetter it would otherwise have
+          // produced (decision.finalLetter) is allowed to stick, by reverting finalChosenLetter to
+          // the ensemble's own letter and forcing overrideFired false -- every downstream field
+          // gated on `overrideFired && deterministicOverride` (the eblet writeback's
+          // reasoning/authority/sourceUrl/corroboration, traceSummary, provenanceReceipts) then
+          // honestly falls back to its own no-override path, i.e. the ensemble's genuine
+          // accepted-candidate authority/reasoning/sourceUrl, exactly as if no compute had run.
+          // `deterministicOverride` itself is left populated (not nulled) so nothing downstream
+          // that merely reads its fields (none do outside the overrideFired-gated branches today)
+          // is surprised by a null -- the compute's own result is still visible right here in this
+          // log line, it simply loses its veto.
+          if (overrideFired && deterministicOverride && deterministicOverride.source === 'reasoning_fact') {
+            console.log(
+              `[plow_mc_answerer] authority_extracted_compute declined to override settled ` +
+              `ensemble answer ${ensembleOutcome.chosenLetter} (source=reasoning_fact, no ` +
+              `independent grounding) -- ensemble result stands.`,
+            );
+            finalChosenLetter = ensembleOutcome.chosenLetter;
+            overrideFired = false;
+          } else if (overrideFired && deterministicOverride) {
             console.log(
               `[plow_mc_answerer] Stage F2 DETERMINISTIC OVERRIDE: ensemble picked ` +
               `${ensembleOutcome.chosenLetter}, deterministic compute (${deterministicOverride.method}, ` +
+              `source=${deterministicOverride.source}, ` +
               `${deterministicOverride.computedValue}${deterministicOverride.computedUnit ? ' ' + deterministicOverride.computedUnit : ''}) ` +
               `says ${deterministicOverride.letter} -- calculator wins the math, overriding.`,
             );
           } else if (deterministicOverride) {
             console.log(
-              `[plow_mc_answerer] Stage F2 deterministic compute (${deterministicOverride.method}) corroborates ` +
-              `the ensemble's own letter ${ensembleOutcome.chosenLetter} -- no override needed.`,
+              `[plow_mc_answerer] Stage F2 deterministic compute (${deterministicOverride.method}, ` +
+              `source=${deterministicOverride.source}) corroborates the ensemble's own letter ` +
+              `${ensembleOutcome.chosenLetter} -- no override needed.`,
             );
           }
         }
+        // BP-COMPUTE-HONEST-DEMOTE: the ONE place this override's honesty label is decided,
+        // reused for both the `authority` provenance string and the `corroboration` field below
+        // (writeAndReplicateSolvedAnswer / writeComputeMethodEblet / mintFormulaEbletFromCompute
+        // all read `deterministicOverride.source`/`.method` directly, so they self-adjust; this
+        // const only covers the two string literals built inline at this call site). Neither the
+        // pre-branch hoist path (ensembleOutcome.corroboration === 'deterministic_compute_override')
+        // nor the post-branch override above can reach `overrideFired && deterministicOverride`
+        // with source==='reasoning_fact' any more (BP-COMPUTE-DEMOTE-SITE-2 declines it before
+        // overrideFired is ever set true for that case) -- so this const can still evaluate true
+        // for a reasoning_fact result, but every consumer below is itself gated on
+        // `overrideFired && deterministicOverride`, which is false in that case, so the label is
+        // computed but never actually used to describe an override that didn't happen.
+        const overrideIsAuthorityExtracted = !!deterministicOverride && deterministicOverride.source === 'reasoning_fact';
+        const overrideComputeLabel: 'deterministic_compute' | 'authority_extracted_compute' =
+          overrideIsAuthorityExtracted ? 'authority_extracted_compute' : 'deterministic_compute';
         if (finalChosenLetter && ensembleOutcome.acceptedCandidates.length > 0) {
           const primary = ensembleOutcome.acceptedCandidates[0]!;
           const acceptedOptionText = mcOptionsForBrowserAuthority.find((o) => o.letter === finalChosenLetter)?.text ?? '';
@@ -2969,6 +3639,9 @@ export async function runCanonicalPlowMcAnswer(
           let overrideEbletWritten = false;
           if (overrideFired && deterministicOverride) {
             overrideEbletWritten = await writeComputeMethodEblet({ researchQuery, result: deterministicOverride });
+            // BP141 (this Yoke): additionally shelve the reusable formula/tool for this method
+            // (dedup'd, one per method) -- independent of, and never blocking, the write above.
+            await mintFormulaEbletFromCompute(deterministicOverride);
           }
           try {
             await writeAndReplicateSolvedAnswer({
@@ -2998,15 +3671,26 @@ export async function runCanonicalPlowMcAnswer(
                     ensembleOutcome.acceptedCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | ')
                 : ensembleOutcome.acceptedCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | '),
               sourceUrl: overrideFired ? undefined : primary.sourceUrl,
-              authority: overrideFired && deterministicOverride ? `deterministic_compute:${deterministicOverride.method}` : primary.authority,
+              // BP-COMPUTE-HONEST-DEMOTE: `overrideComputeLabel` is 'authority_extracted_compute'
+              // (never 'deterministic_compute') whenever `deterministicOverride.source ===
+              // 'reasoning_fact'` -- see that const's own doc comment just above. This keeps the
+              // PROVENANCE string itself free of the literal substring 'deterministic_compute' in
+              // that case, which matters: mnem_eblet_store.ts's computeHonestVerification() also
+              // grants verified:true on `provenance.includes('deterministic_compute')` alone, so a
+              // mislabeled authority string here would silently defeat the corroboration fix below.
+              authority: overrideFired && deterministicOverride ? `${overrideComputeLabel}:${deterministicOverride.method}` : primary.authority,
               // BP131 honesty fix: a real calculator override earns deterministic_compute; an
               // ensemble 'agree' (2 independent authorities matched the same letter) earns
               // concordant; every other ensembleOutcome.corroboration value here ('single_google'/
               // 'single_perplexity'/'single_wolfram'/'single_specialist_swarm'/'adjudicated') is a
               // lone accept (adjudication is a single tie-breaking judge call, not 2+ agreement)
               // and must NOT earn verified:true.
+              // BP-COMPUTE-HONEST-DEMOTE: overrideComputeLabel downgrades this to
+              // 'authority_extracted_compute' when the override's source has no independent
+              // grounding (see the const's own doc comment above) -- computeHonestVerification()
+              // does not treat that label as a verified accept class.
               corroboration: overrideFired && deterministicOverride
-                ? 'deterministic_compute'
+                ? overrideComputeLabel
                 : ensembleOutcome.corroboration === 'agree' ? 'concordant' : 'single_authority',
             });
           } catch (err) {
@@ -3057,16 +3741,21 @@ export async function runCanonicalPlowMcAnswer(
               `adjudicationAttempted=${ensembleOutcome.adjudicationAttempted} andonRetries=${andonRetry}` +
               (overrideFired && deterministicOverride
                 ? ` deterministicComputeOverride=true ensembleLetter=${ensembleOutcome.chosenLetter} ` +
-                  `computeMethod=${deterministicOverride.method}`
+                  `computeMethod=${deterministicOverride.method} computeSource=${deterministicOverride.source} ` +
+                  `computeLabel=${overrideComputeLabel}`
                 : ''),
+            // BP-COMPUTE-HONEST-DEMOTE: `verified: !overrideIsAuthorityExtracted` -- a
+            // reasoning_fact-sourced override ran a real, checked computation (not a guess), but
+            // it has no independent grounding of its own (see overrideComputeLabel's own doc
+            // comment above), so this receipt must not claim `verified: true` for it either.
             provenanceReceipts: overrideFired && deterministicOverride
               ? [{
-                  source: `computed:${deterministicOverride.method}`,
+                  source: `${overrideComputeLabel}:${deterministicOverride.method}`,
                   contentHash: createHash('sha256')
                     .update(`${deterministicOverride.sourceExpression}=${deterministicOverride.computedValue}${deterministicOverride.computedUnit ?? ''}`)
                     .digest('hex')
                     .slice(0, 16),
-                  verified: true,
+                  verified: !overrideIsAuthorityExtracted,
                 }]
               : ensembleOutcome.acceptedCandidates.map((c) => ({
                   source: c.authority,
@@ -3077,6 +3766,11 @@ export async function runCanonicalPlowMcAnswer(
             answerType: earlyAnswerTypeForBrowserAuthority,
             browserAuthorityCorroboration,
             authorityEnsembleSwarmFired: ensembleOutcome.swarmFired,
+            structuredCorroborator: ensembleOutcome.structuredCorroborator,
+            independentCorroboration: ensembleOutcome.independentCorroboration,
+            // BP140 Yoke: the full candidate set (winner AND losers), for the Coroner's
+            // per-candidate factVerdict persist -- see CanonicalPlowMcResult.ensembleCandidates.
+            ensembleCandidates: ensembleOutcome.candidates,
             ...(deterministicOverride ? {
               authorityEnsembleDeterministicOverride: {
                 ensembleLetter: ensembleOutcome.chosenLetter!,
@@ -3502,16 +4196,25 @@ export async function runCanonicalPlowMcAnswer(
       if (unitAware) {
         onProgress?.(`compute-sidecar:${unitAware.method}`);
         const unitEbletWritten = await writeComputeMethodEblet({ researchQuery, result: unitAware });
+        // BP141 (this Yoke): additionally shelve the reusable formula/tool for this method
+        // (dedup'd, one per method) -- independent of, and never blocking, the write above.
+        await mintFormulaEbletFromCompute(unitAware);
         const unitLatencyMs = Date.now() - startMs;
         const unitConcordance: ConcordanceClass = 'CONCORDANT';
         const unitBmv = computeBmvScore(1, 1, 1, 0, unitConcordance, 1, unitLatencyMs);
+        // BP-COMPUTE-HONEST-DEMOTE: this legacy (non-ensemble, Stage A.3) compute-sidecar path
+        // still returns `unitAware.letter` directly on any match, regardless of source -- that
+        // early-return behavior is UNCHANGED this pass (out of scope, flagged for Bishop below).
+        // The one thing fixed here is the receipt's own `verified` claim: a reasoning_fact-sourced
+        // match (unitAware.source, see compute_sidecar.ts paths (a)/(c)) is a real, checked
+        // computation but has no independent grounding, so it must not claim `verified: true`.
         const unitReceipt: ProvenanceReceipt = {
-          source: `computed:${unitAware.method}`,
+          source: `${unitAware.source === 'reasoning_fact' ? 'authority_extracted_compute' : 'deterministic_compute'}:${unitAware.method}`,
           contentHash: createHash('sha256')
             .update(`${unitAware.sourceExpression}=${unitAware.computedValue}${unitAware.computedUnit ?? ''}`)
             .digest('hex')
             .slice(0, 16),
-          verified: true,
+          verified: unitAware.source !== 'reasoning_fact',
         };
         const unitTraceSummary =
           `researchArmComputeSidecar=true answerType=computable method=${unitAware.method} ` +
@@ -4291,7 +4994,14 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
       specialists_used: plowResult.specialistsUsed,
       candidates_raw: plowResult.candidatesRaw,
       candidates_post_miner: plowResult.candidatesPostMiner,
-      candidates_post_furnace: plowResult.candidatesPostFurnace,
+      // BP140 Coroner-classification fix: this key and compute_sidecar below were written in
+      // snake_case, but classifyCore (answer_coroner.ts) reads them camelCase with NO fallback --
+      // so substrate-hit / compute / substrate-gap / compute-wrong answerClasses were structurally
+      // unreachable since 0.9.16 (commit 3922fe88), silently mislabeling those misses as
+      // plow-majority / plow-discordant and corrupting the Coroner's prioritizedFixList. Renamed to
+      // camelCase to match the reader; verified no other consumer reads these two keys in snake_case.
+      // (provenance_receipts DELIBERATELY stays snake_case -- OneClickMeshTestPanel.tsx + wan_dispatch.ts depend on that casing.)
+      candidatesPostFurnace: plowResult.candidatesPostFurnace,
       andon_triggered: plowResult.andonTriggered,
       andon_retries: plowResult.andonRetries,
       eblets_written: plowResult.ebletsWritten,
@@ -4304,10 +5014,45 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
       provenance_receipts: plowResult.provenanceReceipts,
       research_arm_mode: researchArmMode || undefined,
       answer_type: plowResult.answerType,
-      compute_sidecar: plowResult.computeSidecar,
+      computeSidecar: plowResult.computeSidecar,
       relevance_gate_abstain: plowResult.relevanceGateAbstain,
       star_chamber: plowResult.starChamber,
       mesh_synergy_assigned: plowResult.meshSynergyAssigned,
+      // BP140 Yoke (Eblet-Learning Substrate / Liana Cycle): additive, undefined on every
+      // pre-BP140 caller and every non-ensemble-accept return path (see
+      // CanonicalPlowMcResult.ensembleCandidates doc comment). This is the ONE seam that carries
+      // the full ensemble candidate set through to the Coroner (answer_coroner.ts), which is the
+      // only place ground truth is available to derive a per-candidate factVerdict.
+      ensemble_candidates: plowResult.ensembleCandidates,
+      // BP140 Yoke bugfix-in-passing: this key was previously MISSING from this object entirely,
+      // even though answer_coroner.ts's classifyCore has always read
+      // `plowTrace.browserAuthorityCorroboration` (camelCase, unlike every other key here which
+      // was snake_case -- that sibling mismatch, candidatesPostFurnace/computeSidecar, is now
+      // fixed above this same session) to fill CoronerRecord.browserAuthorityCorroboration. Without this key, the
+      // local-run Coroner path's disagreement/'adjudicated' signal -- which
+      // persistEnsembleCandidateFactVerdicts needs to ever emit an 'O' (conflicting) factVerdict
+      // -- always read back as null/'none', silently. Adding it here (camelCase, matching what
+      // classifyCore already reads) is required for the O verdict to be reachable at all; every
+      // other consumer of this plowTrace object either already ignored this absent key or gains
+      // a previously-missing signal, never loses one.
+      browserAuthorityCorroboration: plowResult.browserAuthorityCorroboration,
+      // BP1xx STRUCTURED-CORROBORATOR GATE: camelCase, matching browserAuthorityCorroboration's
+      // own casing convention immediately above (this is the key classifyCore/the Coroner would
+      // read as `plowTrace.structuredCorroborator` were it wired to consume it -- see this
+      // build's own report for the open question of whether classifyCore should be updated in a
+      // follow-up pass to fold `structuredCorroborator === false` into its answerClass logic,
+      // e.g. de-confidencing 'sourced-fact'/'plow-majority' on a wrong-but-LLM-only-concordant
+      // accept). Present only when plowResult.structuredCorroborator is present (see that field's
+      // own doc comment for exactly when).
+      structuredCorroborator: plowResult.structuredCorroborator,
+      // BP141 INDEPENDENCE-AWARE CORROBORATION FLAG: camelCase, same not-yet-consumed-by-
+      // classifyCore convention as structuredCorroborator immediately above -- classifyCore
+      // (answer_coroner.ts) is deliberately left unmodified this pass; this key is present in
+      // plowTrace so a future pass can read `plowTrace.independentCorroboration` the same way it
+      // already reads `plowTrace.browserAuthorityCorroboration`/`plowTrace.candidatesPostFurnace`
+      // (camelCase, no snake_case fallback). Present only when plowResult.independentCorroboration
+      // is present (see AuthorityEnsembleOutcome.independentCorroboration's own doc comment).
+      independentCorroboration: plowResult.independentCorroboration,
     };
     console.log(`[${logLabel}] plow-answered letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
     return { answer, plowTrace };

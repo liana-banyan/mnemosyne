@@ -274,13 +274,15 @@ declare global {
         researchArmMode: boolean,
         researchArmBrowserAuthority: boolean,
       ) => Promise<{ ok: boolean; enabled: boolean }>;
+      // BP140-K4: widened to the shared BrowserAuthorityName (5 members) instead of a
+      // hand-copied 3-member literal union -- see preload.ts's matching comment.
       openNexusAuthoritySignIn?: (
-        authority: 'user_google' | 'user_perplexity' | 'user_claude',
+        authority: import('../shared/plow/browser_authority_types').BrowserAuthorityName,
       ) => Promise<{ ok: boolean; reason: string | null }>;
       hideNexusAuthoritySession?: () => Promise<{ ok: boolean }>;
       checkNexusAuthoritySignInStatus?: () => Promise<{
         enabled: boolean;
-        statuses: Array<{ authority: 'user_google' | 'user_perplexity' | 'user_claude'; signedIn: boolean; reason: string; checkedAt: string }>;
+        statuses: Array<{ authority: import('../shared/plow/browser_authority_types').BrowserAuthorityName; signedIn: boolean; reason: string; checkedAt: string }>;
       }>;
       // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point.
       nexusAskLookupFact?: (question: string) => Promise<{

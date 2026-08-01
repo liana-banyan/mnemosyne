@@ -23,6 +23,14 @@ export const LS_LAST_RESULT = 'mnemo_last_mesh_test_result';
 // clobber each other.
 export const LS_LAST_LIFT_RESULT = 'mnemo_last_hotcold_lift_result';
 
+// BP140-K6 REQUIREMENT 4 (honest subset receipts): a subset run's receipt is persisted under
+// this SEPARATE key -- NEVER LS_LAST_RESULT. LS_LAST_RESULT is read independently by the
+// Social tab's "Check My Math" card and by ProofTab.tsx as "the most recent full benchmark
+// score"; a 4/5 "Re-run misses" subset score written there would silently masquerade as a
+// full-benchmark result the next time either of those surfaces loads. See the
+// 'mesh-test:progress' 'complete' handler below for the isSubsetRun branch that enforces this.
+export const LS_LAST_SUBSET_RESULT = 'mnemo_last_mesh_test_subset_result';
+
 // BP135 YOKE_35 Phase 3: ported from GauntletTab.tsx (now cut from the shipped Help
 // sub-tabs, see CleanShell.tsx) -- its two real side-effects (marks credit, Pioneer
 // registry) must not silently regress just because the fake stage-sim around them is
@@ -167,6 +175,17 @@ export interface OneClickRunResult {
   /** BP135 Phase 3 (Layer B: federated substrate): whether pooled cross-peer substrate was
    *  requested for this run. */
   federatedSubstrateEnabled?: boolean;
+  /** BP140-K6 REQUIREMENT 4 (honest subset receipts): mirrors OneClickRunResult.isSubsetRun in
+   *  src/main/mesh_test/one_click_mmlu_pro.ts -- true when this run was scoped to an explicit
+   *  question_id subset ("Re-run misses" / manual "Run subset") rather than the normal
+   *  full/sampled dataset. Always present on results produced by this Yoke; optional here only
+   *  because older persisted/loaded receipts (pre-BP140-K6) never had this field. */
+  isSubsetRun?: boolean;
+  /** Present only when isSubsetRun is true -- the exact question_id list that was run. */
+  subsetQuestionIds?: string[];
+  /** Present only when isSubsetRun is true -- how many questions existed in the full dataset
+   *  this subset was drawn from (the M in "N of M questions"). */
+  subsetOfTotal?: number;
 }
 
 type DispatchModeChoice = 'auto' | 'wan_mesh' | 'local_ollama';
@@ -229,6 +248,19 @@ export function loadLastLiftResult(): HotColdLiftResult | null {
   }
 }
 
+/** BP140-K6 REQUIREMENT 4: the subset-run equivalent of loadLastMeshTestResult() above --
+ *  reads from the SEPARATE LS_LAST_SUBSET_RESULT key so a subset receipt is never confused
+ *  with (or read in place of) the last full-run receipt. */
+export function loadLastSubsetResult(): OneClickRunResult | null {
+  try {
+    const raw = localStorage.getItem(LS_LAST_SUBSET_RESULT);
+    if (!raw) return null;
+    return JSON.parse(raw) as OneClickRunResult;
+  } catch {
+    return null;
+  }
+}
+
 /** BP134 Yoke #32 Phase F item 4: serialize the full OneClickRunResult (every outcome,
  *  every persisted plow_trace, the corpus manifest hash) to a downloadable .json file --
  *  third-party verifiability, so a result can be independently re-checked question by
@@ -285,6 +317,18 @@ export function MeshTestResultSummary({ result, onShareResult, showPerQuestionDe
         background: '#111827', border: '1px solid #1e2d45', borderRadius: 8,
         padding: '10px 14px', marginBottom: 8,
       }}>
+        {/* BP140-K6 REQUIREMENT 4 (honest subset receipts): unmissable, top-of-card label --
+            a subset score (e.g. 4/5) must never be visually mistakable for a full-benchmark
+            score. Rendered BEFORE the accuracy headline so it's the first thing seen. */}
+        {result.isSubsetRun && (
+          <div style={{
+            display: 'inline-block', fontSize: 11, fontWeight: 800, color: '#0d1117',
+            background: '#facc15', borderRadius: 4, padding: '3px 9px', marginBottom: 8,
+            letterSpacing: 0.4, textTransform: 'uppercase' as const,
+          }}>
+            ⚠ Subset run ({result.total} of {result.subsetOfTotal ?? '?'} questions)
+          </div>
+        )}
         {sourcedAccuracy !== null ? (
           <div style={{ fontSize: 16, fontWeight: 700, color: '#6ee7b7' }}>
             {`${(sourcedAccuracy * 100).toFixed(0)}% sourced-knowledge accuracy`}
@@ -536,6 +580,10 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   const [result, setResult] = useState<OneClickRunResult | null>(() => loadLastMeshTestResult());
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // BP140-K6 REQUIREMENT 3: manual subset input -- comma-separated question IDs or 1-based
+  // positions into the currently-displayed outcome list (e.g. "6, 13, 14, 15, 16").
+  const [subsetInput, setSubsetInput] = useState('');
+
   // BP138 Yoke: one-click HOT/COLD substrate lift -- separate run/progress/result state
   // from the standalone single-run state above so the two features never clobber each
   // other (see LS_LAST_LIFT_RESULT / 'mesh-test:hotcold-progress' channel notes).
@@ -686,8 +734,20 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         setResult(payload.result);
         setState(payload.result.wanError ? 'error' : 'complete');
         if (payload.result.wanError) setErrorMsg(payload.result.wanError);
-        try { localStorage.setItem(LS_LAST_RESULT, JSON.stringify(payload.result)); } catch { /* non-fatal */ }
-        if (!payload.result.wanError) void handleRealCompletionSideEffects();
+        // BP140-K6 REQUIREMENT 4 (honest subset receipts): a subset run's receipt is persisted
+        // under LS_LAST_SUBSET_RESULT, NEVER LS_LAST_RESULT -- the latter is read independently
+        // by the Social tab's "Check My Math" card and ProofTab.tsx as "the most recent FULL
+        // benchmark score"; writing a subset score there would silently contaminate both.
+        try {
+          if (payload.result.isSubsetRun) {
+            localStorage.setItem(LS_LAST_SUBSET_RESULT, JSON.stringify(payload.result));
+          } else {
+            localStorage.setItem(LS_LAST_RESULT, JSON.stringify(payload.result));
+          }
+        } catch { /* non-fatal */ }
+        // Marks-credit / Pioneer Bonus side effects are for a genuine benchmark run -- a
+        // partial "re-run misses"/"run subset" pass must not double-fire either one.
+        if (!payload.result.wanError && !payload.result.isSubsetRun) void handleRealCompletionSideEffects();
       }
     });
     return () => unsub?.();
@@ -720,6 +780,81 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
       setState('error');
     }
   }, [mode, substrateEnabled, maxTotalQuestions, plowEnabled, plowAndonEnabled, researchArmMode, researchArmMeshSynergy, researchArmDecompose, fullPresetSelected, federatedSubstrateEnabled]);
+
+  // BP140-K6 REQUIREMENT 1/2/3: fires a run scoped to an EXACT question_id set via the SAME
+  // IPC channel (meshTestRunOneClick) as handleRun above, with questionIds populated. Reuses
+  // the panel's current mode/substrate/plow toggles (the config a Founder is actively looking
+  // at) but deliberately omits maxTotalQuestions/exactPerCategory -- the main-process runner
+  // gives an explicit questionIds list priority over both (see one_click_mmlu_pro.ts's
+  // questionIds JSDoc), so passing them here would be dead weight, not a real override.
+  const handleRunSubset = useCallback(async (questionIds: string[]) => {
+    if (questionIds.length === 0) return;
+    setState('running');
+    setErrorMsg(null);
+    setPeersDiscovered(null);
+    try {
+      const resp = await (window as any).amplify?.meshTestRunOneClick?.({
+        mode,
+        substrateEnabled,
+        plowEnabled,
+        plowAndonEnabled,
+        researchArmMode,
+        researchArmMeshSynergy,
+        researchArmDecompose,
+        federatedSubstrateEnabled,
+        questionIds,
+      });
+      if (!resp?.ok) {
+        setErrorMsg(resp?.error ?? 'Subset run failed to start');
+        setState('error');
+      }
+      // Completion is reported via the mesh-test:progress 'complete' event above -- same as
+      // handleRun, except payload.result.isSubsetRun routes it to LS_LAST_SUBSET_RESULT there.
+    } catch (e) {
+      setErrorMsg(String(e));
+      setState('error');
+    }
+  }, [mode, substrateEnabled, plowEnabled, plowAndonEnabled, researchArmMode, researchArmMeshSynergy, researchArmDecompose, federatedSubstrateEnabled]);
+
+  // BP140-K6 REQUIREMENT 2: "Re-run misses (N)" -- collects question_id from every outcome in
+  // the CURRENTLY DISPLAYED result where isCorrect === false, then fires handleRunSubset with
+  // exactly that set.
+  const handleRerunMisses = useCallback(() => {
+    const missedIds = (result?.outcomes ?? [])
+      .filter((o) => o.isCorrect === false)
+      .map((o) => String(o.question_id));
+    void handleRunSubset(missedIds);
+  }, [result, handleRunSubset]);
+
+  // BP140-K6 REQUIREMENT 3: parses the manual subset input -- comma-separated question IDs OR
+  // 1-based positions. A token is treated as a position (resolved against the outcome list
+  // currently on screen -- the same "dataset" the Founder is looking at, result.outcomes,
+  // falling back to the still-growing liveOutcomes mid-run) when it is ALL digits (no letters/
+  // punctuation); otherwise it's treated as a literal question_id string verbatim. Whitespace
+  // around commas is stripped. Positions with no matching outcome (out of range) are silently
+  // dropped -- an honest "resolved N of M tokens" outcome, matching filterQuestionsByIds'
+  // own dataset-side exact-match-or-drop convention in one_click_mmlu_pro.ts.
+  const parseSubsetInput = useCallback((raw: string): string[] => {
+    const sourceOutcomes = result?.outcomes ?? liveOutcomes;
+    const ids: string[] = [];
+    for (const rawToken of raw.split(',')) {
+      const token = rawToken.trim();
+      if (!token) continue;
+      if (/^\d+$/.test(token)) {
+        const position = parseInt(token, 10);
+        const outcome = sourceOutcomes[position - 1];
+        if (outcome) ids.push(String(outcome.question_id));
+      } else {
+        ids.push(token);
+      }
+    }
+    return ids;
+  }, [result, liveOutcomes]);
+
+  const handleRunSubsetClick = useCallback(() => {
+    const ids = parseSubsetInput(subsetInput);
+    void handleRunSubset(ids);
+  }, [subsetInput, parseSubsetInput, handleRunSubset]);
 
   // BP138 Yoke: 'mesh-test:hotcold-progress' listener -- a dedicated channel (see
   // one_click_mmlu_pro.ts's opts.progressChannel) so a lift run's two inner
@@ -1338,6 +1473,58 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
             }}
           >
             🗑 Clear results
+          </button>
+        </div>
+      )}
+
+      {/* BP140-K6 REQUIREMENT 2/3: "Re-run misses (N)" + manual subset input/button. Only
+          shown once there's a completed result to draw a subset from -- resolving positions
+          or collecting misses needs an outcome list to work against. */}
+      {state !== 'running' && result && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' as const,
+        }}>
+          {result.outcomes.filter((o) => o.isCorrect === false).length > 0 && (
+            <button
+              onClick={() => void handleRerunMisses()}
+              disabled={busy}
+              title="Re-runs only the questions this result got wrong, via the same IPC channel, scoped by question_id -- never a full re-run."
+              style={{
+                background: 'transparent', color: '#fca5a5', border: '1px solid #4b1f1f', borderRadius: 6,
+                padding: '5px 12px', fontSize: 11, fontWeight: 700,
+                cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1,
+                fontFamily: 'system-ui, sans-serif',
+              }}
+            >
+              ↻ Re-run misses ({result.outcomes.filter((o) => o.isCorrect === false).length})
+            </button>
+          )}
+          <input
+            type="text"
+            value={subsetInput}
+            disabled={busy}
+            onChange={(e) => setSubsetInput(e.target.value)}
+            placeholder="e.g. 6, 13, 14, 15, 16"
+            title="Comma-separated question IDs or 1-based positions in the list below. Pure-digit tokens resolve to a position; anything else is treated as a literal question_id."
+            style={{
+              flex: '1 1 220px', minWidth: 160, background: '#0d1117', border: '1px solid #1e2a38',
+              borderRadius: 6, color: '#e2e8f0', fontSize: 11, padding: '5px 8px',
+              fontFamily: 'system-ui, sans-serif',
+            }}
+          />
+          <button
+            onClick={handleRunSubsetClick}
+            disabled={busy || subsetInput.trim().length === 0}
+            title="Runs exactly the parsed subset of question IDs/positions above, via the same IPC channel."
+            style={{
+              background: 'transparent', color: '#93c5fd', border: '1px solid #1e3a5f', borderRadius: 6,
+              padding: '5px 12px', fontSize: 11, fontWeight: 700,
+              cursor: (busy || subsetInput.trim().length === 0) ? 'default' : 'pointer',
+              opacity: (busy || subsetInput.trim().length === 0) ? 0.6 : 1,
+              fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            ▶ Run subset
           </button>
         </div>
       )}

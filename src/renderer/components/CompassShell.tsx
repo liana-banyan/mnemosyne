@@ -231,7 +231,7 @@ export function CompassShell({ currentMode, onModeChange, authState, onExitToLea
       <TabBar active={activeTab} onSelect={setActiveTab} isMember={isMember} onMemberCta={handleMemberCta} onExitToLean={onExitToLean} />
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         {activeTab === 'ask' && <AskHomeTab onNavigate={handleNavigate} />}
-        {activeTab === 'proof' && <ProofTab onNavigate={handleNavigate} />}
+        {activeTab === 'proof' && <ProofTab onNavigate={handleNavigate} authState={authState} />}
         {activeTab === 'library' && <LibraryTab />}
         {activeTab === 'social' && <SocialCompassTab />}
         {activeTab === 'more' && (

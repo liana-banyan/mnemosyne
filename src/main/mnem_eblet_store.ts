@@ -579,8 +579,17 @@ export interface VerifiedEbletEntry {
    *  ratified this as verified). 'single_authority' and 'coroner_unverified' are also accepted
    *  values so a caller can be explicit about a NON-qualifying signal (lone uncorroborated
    *  authority, or an explicit Coroner rejection) rather than leaving the field absent -- both
-   *  resolve to the same honest verified:false/verdict:'unverified' outcome as leaving it unset. */
-  corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute' | 'coroner_verified' | 'coroner_unverified';
+   *  resolve to the same honest verified:false/verdict:'unverified' outcome as leaving it unset.
+   *  BP-COMPUTE-HONEST-DEMOTE addition: 'authority_extracted_compute' -- a real, checked
+   *  unit-conversion/tolerance-match ran (never a guess), but the quantity it converted was
+   *  extracted from an authority/LLM's own reasoning or fact text (compute_sidecar.ts
+   *  UnitAwareComputeResult's `source: 'reasoning_fact'`, paths (a)/(c)) rather than a literal
+   *  expression present in the question itself (path (b), which alone still earns
+   *  'deterministic_compute'). Deliberately NOT one of computeHonestVerification()'s three accept
+   *  classes below -- it has no independent grounding of its own (it is a derived restatement of
+   *  another candidate's claim), so it resolves to the same honest verified:false/verdict:
+   *  'unverified' outcome as 'single_authority'. */
+  corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute' | 'authority_extracted_compute' | 'coroner_verified' | 'coroner_unverified';
   /** 0-1, derived from concordance/BMV at write time (see computeArgumentConfidence() in
    *  canonical_pipeline.ts) -- how much the writing pipeline itself trusted this fact. */
   confidence?: number;
@@ -634,6 +643,30 @@ export interface VerifiedEbletEntry {
    *  absence as "no semantic code recorded" and fall back to token-similarity, never infer a
    *  code or a similarity value. */
   semanticCode?: string;
+  /** BP140 Yoke (Eblet-Learning Substrate / Liana Cycle), OPTIONAL/ADDITIVE. The RGBY fact-verdict
+   *  color taxonomy coined in canon_eblet_fact_verdict_color_taxonomy_rgby_bp139 -- a SUPERSET of,
+   *  not a replacement for, the 4-value `verdict` field above (which stays the honest write-time
+   *  signal). Where `verdict` is derived at write time from provenance/corroboration alone,
+   *  `factVerdict` is derived at CORONER time when ground truth is known, so it can distinguish
+   *  outcomes `verdict` structurally cannot. Letter-labeled (not just colored) for colorblind
+   *  readers per the dataviz-accessibility rule:
+   *    G = right        (Coroner outcome 'right' / deterministic-compute / concordant-verified)
+   *    R = wrong        (Coroner outcome 'wrong' vs ground truth)
+   *    B = undetermined (answered-but-unverified, or an abstain with no ground truth yet -- go-LOOK)
+   *    Y = unknowable   (no fact of the matter / genuinely unanswerable -- distinct from B)
+   *    O = conflicting  (authorities actively disagreed: ensembleOutcome.corroboration==='disagree'
+   *                      -- a go-INVESTIGATE signal, has no source in the Coroner's single-letter view)
+   *  Absent on every eblet written before this Yoke and on every non-scored production Ask (no
+   *  ground truth) -- readers MUST treat absence as "no RGBY verdict recorded" and fall back to
+   *  readVerdict(), never infer a color. Persisted for EVERY ensemble candidate (winner AND losers),
+   *  not just the accepted letter -- that is the whole point: keep the reasoning we paid for. */
+  factVerdict?: 'G' | 'R' | 'B' | 'Y' | 'O';
+  /** BP140 Yoke, OPTIONAL/ADDITIVE. Not a color -- an attribute on a G that is true-NOW but expires
+   *  ('current population', 'latest version'). `flag:true` tells the Liana Cycle to re-verify on the
+   *  next pass instead of trusting a Green that may have quietly rotted; `checkedAt` is the ISO-8601
+   *  UTC instant the fact was last confirmed. Absent means "not marked volatile" -- never infer
+   *  staleness from absence. */
+  volatileDated?: { flag: boolean; checkedAt: string };
 }
 
 /** Backward-compat accessor (item 6): every reader that cares about verdict should go through
@@ -667,6 +700,43 @@ export const QA_RELEVANCE_THRESHOLD = 0.08;
 
 export function isQaRelevant(question: string, answer: string, threshold: number = QA_RELEVANCE_THRESHOLD): boolean {
   return computeQaRelevance(question, answer) >= threshold;
+}
+
+/** BP-CONTAMINATION-QUARANTINE (this pass, Bishop-verified defect in plow_mc_answerer.ts's
+ *  writeComputeMethodEblet, fixed the same pass this predicate ships in): 28 pre-existing
+ *  class:'component' records in the live substrate leaked BOTH the live benchmark question text
+ *  AND an explicit answer letter inside `reasoning` -- an answer key wearing a reusable-tool
+ *  eblet's class. class:'component' is the class eligible for injection during scored runs
+ *  (tools ON, answer-keys OFF) -- if one of these had ever been injected, a voter would be
+ *  handed the question's own answer letter disguised as a "method", silently invalidating the
+ *  score (memorization, not derivation).
+ *
+ *  Rule 66 / vault-sacrosanct forbid deleting or rewriting existing substrate records, so this is
+ *  quarantine BY NON-RETRIEVAL ONLY -- same pattern as the isQaRelevant relevance filter inside
+ *  queryVerifiedEbletsTopical below (BP135 Yoke #34): the record stays on disk, byte-identical,
+ *  forever; every retrieval path that can surface a class:'component' eblet must run this
+ *  predicate and drop a match, never mutate the file.
+ *
+ *  Shape of a contaminated record (both conditions required, so this can never false-positive on
+ *  a legitimate general tool eblet):
+ *    - provenance starts with 'plow_mc_answerer:compute_method:' -- the exact writer that leaked.
+ *      formula_eblet_mint.ts's clean 'deterministic_compute:formula:' records do NOT match this
+ *      prefix, so they can never be caught here.
+ *    - reasoning contains the literal substring 'question="' -- the exact leak marker the old
+ *      writer emitted (`reasoning: \`question="${researchQuery...}"\``). The FIXED writer (this
+ *      same pass) never emits that substring in any field, so no new write can ever match this
+ *      predicate -- it exists purely to quarantine the 28 legacy records already on disk. */
+const CONTAMINATED_COMPUTE_METHOD_PROVENANCE_PREFIX = 'plow_mc_answerer:compute_method:';
+
+export function isContaminatedComputeMethodEblet(
+  entry: Pick<VerifiedEbletEntry, 'provenance' | 'reasoning'>,
+): boolean {
+  const provenance = entry.provenance ?? '';
+  const reasoning = entry.reasoning ?? '';
+  return (
+    provenance.startsWith(CONTAMINATED_COMPUTE_METHOD_PROVENANCE_PREFIX) &&
+    reasoning.includes('question="')
+  );
 }
 
 /** BP136 Yoke (answer-cache v1): question<->question similarity, DISTINCT from
@@ -845,18 +915,30 @@ export async function queryVerifiedEblets(question: string, topK = 3): Promise<V
     return [];
   }
 
-  const entries: VerifiedEbletEntry[] = [];
+  const rawEntries: VerifiedEbletEntry[] = [];
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
       const parsed = JSON.parse(trimmed) as Partial<VerifiedEbletEntry>;
       if (parsed.question && parsed.answer && parsed.sha256 && parsed.verified === true) {
-        entries.push(parsed as VerifiedEbletEntry);
+        rawEntries.push(parsed as VerifiedEbletEntry);
       }
     } catch {
       console.warn('[SubstrateHOT] Malformed verified_eblets line skipped:', trimmed.slice(0, 80));
     }
+  }
+
+  // BP-CONTAMINATION-QUARANTINE: drop (never delete/rewrite -- Rule 66) any class:'component'
+  // record from plow_mc_answerer.ts's legacy writeComputeMethodEblet() that leaked a question +
+  // answer letter into `reasoning`. See isContaminatedComputeMethodEblet()'s doc comment above.
+  const entries = rawEntries.filter((e) => !isContaminatedComputeMethodEblet(e));
+  const quarantinedCount = rawEntries.length - entries.length;
+  if (quarantinedCount > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEblets: excluded ${quarantinedCount} contaminated ` +
+      `compute-method component eblet(s) from retrieval (Rule 66 quarantine-by-non-retrieval, not deleted)`,
+    );
   }
 
   if (entries.length === 0) return [];
@@ -965,16 +1047,33 @@ export async function queryVerifiedEbletsTopical(
     return [];
   }
 
-  const entries: VerifiedEbletEntry[] = [];
+  const rawEntries: VerifiedEbletEntry[] = [];
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
       const parsed = JSON.parse(trimmed) as Partial<VerifiedEbletEntry>;
       if (parsed.question && parsed.answer && parsed.sha256 && parsed.verified === true) {
-        entries.push(parsed as VerifiedEbletEntry);
+        rawEntries.push(parsed as VerifiedEbletEntry);
       }
     } catch { /* skip malformed */ }
+  }
+
+  // BP-CONTAMINATION-QUARANTINE: this is the scored-run (tools ON, answer-keys OFF) injection
+  // path -- see this function's own docstring ("BP083 SEG-2/3: Use this function ... in B/C
+  // conditions"). Drop (never delete/rewrite -- Rule 66) any class:'component' record from
+  // plow_mc_answerer.ts's legacy writeComputeMethodEblet() that leaked a question + answer
+  // letter into `reasoning`; injecting one of these during a scored run would be handing a
+  // voter the current question's own answer key disguised as a reusable tool. See
+  // isContaminatedComputeMethodEblet()'s doc comment above for the exact match shape.
+  const entries = rawEntries.filter((e) => !isContaminatedComputeMethodEblet(e));
+  const quarantinedComputeMethodCount = rawEntries.length - entries.length;
+  if (quarantinedComputeMethodCount > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEbletsTopical: excluded ${quarantinedComputeMethodCount} ` +
+      `contaminated compute-method component eblet(s) from retrieval for domain=${domain} ` +
+      `(Rule 66 quarantine-by-non-retrieval, not deleted)`,
+    );
   }
 
   if (entries.length === 0) return [];
@@ -1308,7 +1407,13 @@ export async function runStartupIntegrityCheck(): Promise<StartupIntegrityResult
  * everything else, INCLUDING a lone single_google/single_perplexity/single_wolfram accept, an
  * explicit `corroboration: 'single_authority'` or `'coroner_unverified'`, or no corroboration
  * signal supplied at all. Fail-closed by design: absence of a qualifying signal must never be
- * silently upgraded to verified:true.
+ * silently upgraded to verified:true. BP-COMPUTE-HONEST-DEMOTE: `corroboration:
+ * 'authority_extracted_compute'` also falls into this reject class, deliberately -- it is a real
+ * checked computation with no independent grounding (see that literal's own doc comment above),
+ * so callers must ALSO make sure `provenance` never contains the literal substring
+ * 'deterministic_compute' for such a write (the `deterministicByProvenance` check just below is a
+ * second, independent way to reach `accepted`, and would otherwise silently re-grant verified:true
+ * regardless of this corroboration value).
  *
  * ORTHOGONAL AXIS carve-out: `verdict` also carries a second, pre-existing, unrelated meaning --
  * 'correct'/'wrong' ground-truth grading against a TEST'S OWN answer key (mesh-test/benchmark
@@ -1445,6 +1550,14 @@ export async function writeVerifiedEblet(
     // BP137 Yoke (Semantic Match Durable): additive/omitted exactly like every optional field
     // above -- see the VerifiedEbletEntry.semanticCode doc comment.
     ...(semanticCode !== undefined ? { semanticCode } : {}),
+    // BP140 Yoke (Eblet-Learning Substrate / Liana Cycle): additive/omitted exactly like every
+    // optional field above -- see VerifiedEbletEntry.factVerdict/volatileDated doc comments.
+    // Passed through VERBATIM (unlike verified/verdict above, factVerdict is never re-derived
+    // here -- it is only ever meaningful when a caller supplies it with real Coroner-time ground
+    // truth behind it via deriveFactVerdict() in answer_coroner.ts; this writer has no ground
+    // truth of its own to check it against).
+    ...(entry.factVerdict !== undefined ? { factVerdict: entry.factVerdict } : {}),
+    ...(entry.volatileDated !== undefined ? { volatileDated: entry.volatileDated } : {}),
   });
 
   appendFileSync(ebletFile, line + '\n', 'utf-8');
