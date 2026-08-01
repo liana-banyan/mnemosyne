@@ -1621,6 +1621,129 @@ export function isRgbyLedgerWrite(entry: Pick<VerifiedEbletEntry, 'provenance'>)
   return (entry.provenance ?? '').startsWith(RGBY_LEDGER_WRITE_PROVENANCE_PREFIX);
 }
 
+/** KN-BP141-6 FIX B (dedupe on write, with multiplicity preserved). Bishop-measured against the
+ *  live substrate: distinct Q+A pairs vs. total rows showed 74% duplication (measured this ticket
+ *  as part of the same file; see this ticket's own verification numbers for the current figures),
+ *  333 questions carrying exactly one distinct answer, 34 carrying 2+ (genuine conflicting
+ *  claims), worst case 11 stored rows collapsing to 6 mutually exclusive answers for one density
+ *  question.
+ *
+ *  DEDUPE KEY: sha256(question + '\0' + answer) -- deliberately DISTINCT from the `sha256` field
+ *  already persisted on every VerifiedEbletEntry (that field is sha256(question+answer), NO
+ *  separator, and is left completely unchanged here for backward compatibility with every
+ *  existing reader/writer that already depends on its exact formula as "write confirmation" and
+ *  as the content-address readers compare against). Two different hashes for two different jobs:
+ *  the persisted `sha256` field identifies WHAT was written; this dedupeKey identifies WHETHER a
+ *  (question, answer) pair has already been recorded, independent of provenance/reasoning/
+ *  timestamp/etc, so two different authorities independently landing on the identical letter for
+ *  the identical question collapse to the same key (this is exactly the shape the 1,327-row
+ *  redundancy measurement counted). The NUL separator guards against a theoretical
+ *  concatenation collision between two different (question, answer) splits that happen to share
+ *  the same combined string with no separator (belt-and-suspenders; not observed as a real
+ *  incident in this substrate, but free to add and explicitly requested by the ticket). */
+export function computeDedupeKey(question: string, answer: string): string {
+  return createHash('sha256').update(question + '\0' + answer).digest('hex');
+}
+
+/** KN-BP141-6 FIX B write-time half: scans `filePath` (whichever file the current write is about
+ *  to land in -- verified_eblets.jsonl OR the KN-BP141-5 FIX 3 sibling rgby_ledger.jsonl,
+ *  dedupe is applied per-destination-file, not cross-file) for any EXISTING row whose own
+ *  (question, answer) pair hashes to the same dedupeKey. Read-only; never mutates the file it
+ *  scans. Malformed lines and lines missing question/answer are skipped, consistent with every
+ *  other reader in this file. */
+function fileHasDedupeKeyCollision(filePath: string, dedupeKey: string): boolean {
+  if (!existsSync(filePath)) return false;
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, 'utf-8');
+  } catch {
+    return false;
+  }
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let parsed: Partial<VerifiedEbletEntry> | null = null;
+    try {
+      parsed = JSON.parse(trimmed) as Partial<VerifiedEbletEntry>;
+    } catch {
+      continue;
+    }
+    if (!parsed.question || parsed.answer === undefined) continue;
+    if (computeDedupeKey(parsed.question, parsed.answer) === dedupeKey) return true;
+  }
+  return false;
+}
+
+/** KN-BP141-6 FIX B read-side half: "READ-side collapse" per the ticket's own phrasing. Groups
+ *  `entries` by computeDedupeKey(question, answer) and returns ONE CollapsedVerifiedEbletEntry
+ *  per distinct (question, answer) pair, with `encounterCount` = the number of PHYSICAL rows that
+ *  share that key (multiplicity preserved as a count, never discarded) and `lastSeen`/`firstSeen`
+ *  = the max/min timestamp among them. `representative` is the single physical row with the
+ *  latest timestamp (the most-recently-reaffirmed version of this fact), used for reasoning/
+ *  provenance/factVerdict/etc. display -- the OTHER physical rows sharing the key are NOT
+ *  discarded from disk (Rule 66), only folded into this one logical view for callers that want
+ *  the collapsed shape.
+ *
+ *  Rule 66 / never-rewrite discipline: this is a PURE function over an already-loaded array --
+ *  it never reads or writes any file itself, and produces a new in-memory view only. No existing
+ *  row is touched. Distinct questions that carry 2+ DIFFERENT answers are NEVER collapsed into
+ *  each other by this function -- the dedupe key includes the answer, so conflicting claims
+ *  ("B" vs "F" for the same question) always land in separate CollapsedVerifiedEbletEntry groups,
+ *  each with its own encounterCount; this is what preserves genuine disagreement as signal
+ *  instead of erasing it (see this ticket's verification (c)).
+ *
+ *  Deliberately NOT wired into queryVerifiedEblets/queryVerifiedEbletsTopical's existing return
+ *  shape in this commit -- those functions' callers (ai_dispatch_ipc.ts etc.) expect
+ *  VerifiedEbletEntry[], not a collapsed shape, and changing that return contract is a separate,
+ *  larger change this ticket does not ask for. This function is exported as a standalone utility,
+ *  callable by any future caller (or a verification script) that wants the collapsed view. */
+export interface CollapsedVerifiedEbletEntry {
+  question: string;
+  answer: string;
+  dedupeKey: string;
+  encounterCount: number;
+  firstSeen: number;
+  lastSeen: number;
+  representative: VerifiedEbletEntry;
+}
+
+export function collapseVerifiedEbletsByAnswer(entries: VerifiedEbletEntry[]): CollapsedVerifiedEbletEntry[] {
+  const groups = new Map<string, VerifiedEbletEntry[]>();
+  for (const e of entries) {
+    const key = computeDedupeKey(e.question, e.answer);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.push(e);
+    } else {
+      groups.set(key, [e]);
+    }
+  }
+
+  const collapsed: CollapsedVerifiedEbletEntry[] = [];
+  for (const [dedupeKey, group] of groups) {
+    let firstSeen = group[0].timestamp;
+    let lastSeen = group[0].timestamp;
+    let representative = group[0];
+    for (const g of group) {
+      if (g.timestamp < firstSeen) firstSeen = g.timestamp;
+      if (g.timestamp > lastSeen) {
+        lastSeen = g.timestamp;
+        representative = g;
+      }
+    }
+    collapsed.push({
+      question: representative.question,
+      answer: representative.answer,
+      dedupeKey,
+      encounterCount: group.length,
+      firstSeen,
+      lastSeen,
+      representative,
+    });
+  }
+  return collapsed;
+}
+
 /**
  * Append a plow-accepted eblet to the persistent store.
  *
@@ -1685,6 +1808,23 @@ export async function writeVerifiedEblet(
   const expectedSha = createHash('sha256')
     .update(entry.question + entry.answer)
     .digest('hex');
+
+  // KN-BP141-6 FIX B: dedupe on write. "On collision, do NOT append" -- if `ebletFile` (the
+  // exact destination this write is already routed to, post-FIX-3) already contains a row whose
+  // own (question, answer) hashes to the same dedupeKey, skip the append entirely; no new row is
+  // written, no existing row is touched. `expectedSha` above is a pure function of
+  // (question, answer) alone, so it is IDENTICAL for the new call and every existing colliding
+  // row -- the "write confirmation" return value is correct whether or not a new line is
+  // actually appended, no special-casing needed for the return path.
+  const dedupeKey = computeDedupeKey(entry.question, entry.answer);
+  if (fileHasDedupeKeyCollision(ebletFile, dedupeKey)) {
+    console.log(
+      `[EbletStore] writeVerifiedEblet: deduped write (KN-BP141-6 FIX B) -- (question, answer) ` +
+      `already present in ${ebletFile}, not appending a duplicate row. Multiplicity is preserved ` +
+      `via read-side collapse (collapseVerifiedEbletsByAnswer), not by re-appending the same fact.`,
+    );
+    return expectedSha;
+  }
 
   // BP137 Yoke (Semantic Match Durable), STEP 2 write side: only ever attempted when the
   // caller explicitly opted in AND didn't already supply a code. Fails soft to undefined (no
