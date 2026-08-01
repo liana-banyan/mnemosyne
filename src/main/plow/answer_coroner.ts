@@ -12,10 +12,16 @@
 // the answering peer).
 //
 // HEADLINE NUMBERS (never conflate):
-//   correctable-wrongs: authority-empty + matched-wrong-option + plow-discordant + etc. (drive to 0)
+//   correctable-wrongs: authority-empty + coverage-gap + ungrounded-adjudication + plow-discordant
+//                       + etc. (drive to 0)
 //   honest-abstains:    atom genuinely unverifiable -- CORRECT behavior, NOT a failure
 //   no-response:        question was never actually attempted (transport timeout/error) --
 //                        NOT a correctness verdict at all, and NOT an abstain. See BP141 Yoke.
+//   contested-key:      wrong via the STRONGEST acceptance path (structuredCorroborator AND
+//                       independentCorroboration AND unanimous voters) -- a contested sealed key,
+//                       NOT a fixable engine defect. Never fold into correctable-wrongs; driving
+//                       this to 0 trains the engine to distrust its own best signal. See BP141
+//                       Yoke Task 5.
 //
 // Rule 66: version, never overwrite -- this is a new file, no supersede needed.
 
@@ -25,7 +31,16 @@ import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 
 export type WrongClass =
   | 'authority-empty'       // authority was assigned (answered_by includes browser), resultFound=no
-  | 'matched-wrong-option'  // browser authority ran but mapped to wrong MC choice
+  // BP141 Yoke Task 5c: 'matched-wrong-option' (browser authority ran but mapped to wrong MC
+  // choice) is SUPERSEDED -- it lumped three unrelated failure modes into one undifferentiated
+  // bucket. Split below into 'coverage-gap' / 'ungrounded-adjudication' (both still correctable),
+  // and the separate 'contested-key' class (see ContestedKeyClass below, deliberately NOT a
+  // WrongClass member -- excluded from correctableWrongs/prioritizedFixList by design, per 5a).
+  | 'coverage-gap'            // browser authority ran, had real grounding (candidatesPostFurnace>0),
+                              // but still landed on the wrong MC choice -- a genuine, fixable miss.
+  | 'ungrounded-adjudication' // browser authority adjudicated/accepted a pick with ZERO grounded
+                              // facts behind it (candidatesPostFurnace falsy) -- must be de-
+                              // confidenced; this is a materially weaker acceptance than coverage-gap.
   | 'plow-discordant'       // no voter majority (concordance=DISCORDANT), fell to abstain or guessed
   | 'substrate-gap'         // swarm ran, zero candidates survived miner+furnace
   | 'compute-wrong'         // compute sidecar ran and returned the wrong letter
@@ -55,7 +70,19 @@ export type RightClass =
 // isNoResponse branch (checked before isAbstain) and CoronerRoundup.noResponseTotal.
 export type NoResponseClass = 'no-response';
 
-export type AnswerClass = WrongClass | AbstainClass | RightClass | NoResponseClass;
+// BP141 Yoke Task 5a: a class distinct from BOTH WrongClass and the rest of AnswerClass -- an
+// answer that IS factually wrong (disagrees with the sealed key) but arrived via the STRONGEST
+// available acceptance path (structuredCorroborator=true AND independentCorroboration=true AND
+// unanimous voter_letters). Deliberately excluded from WrongClass/correctableClasses so it can
+// never be folded into correctableWrongs or the prioritizedFixList -- see CoronerRoundup's
+// contestedKeyTotal doc comment. Driving this count to 0 would train the engine to be wrong more
+// confidently (it would have to start distrusting its OWN best corroboration signal), which is a
+// materially different failure than a genuinely fixable miss. Empirical receipts: 029 and
+// Mini30Also, question_id 92 -- voter_letters all "B", corroboration "agree",
+// structuredCorroborator/independentCorroboration both true, yet the sealed key disagrees.
+export type ContestedKeyClass = 'contested-key';
+
+export type AnswerClass = WrongClass | AbstainClass | RightClass | NoResponseClass | ContestedKeyClass;
 
 // ─── Record / roundup types ─────────────────────────────────────────────────
 
@@ -96,6 +123,13 @@ export interface CoronerRoundup {
   // folded into correctableWrongs or honestAbstains. A run that never asked half its questions
   // must never be misread as a run that honestly declined to answer.
   noResponseTotal: number;
+  // BP141 Yoke Task 5a: HEADLINE 4 -- answers that ARE wrong (still counted in wrongTotal, since
+  // that is an honest correctness tally) but arrived via the strongest acceptance path and must
+  // never be conflated with a genuinely fixable miss. Its own dedicated total, same pattern as
+  // noResponseTotal above: never folded into correctableWrongs, never appears in
+  // prioritizedFixList (see buildRoundupFromRecords' correctableClasses list, which deliberately
+  // omits ContestedKeyClass).
+  contestedKeyTotal: number;
   wrongTotal: number;
   rightTotal: number;
   abstainTotal: number;
@@ -182,6 +216,23 @@ function classifyCore(params: {
   // classifyRecord's `answerJson.plow_trace ?? {}` and classifyLocalOutcome's `o.plowTrace ?? {}`)
   // so an empty-keys check here reliably means "no plow ran", regardless of which caller.
   const hasPlowTrace = Object.keys(plowTrace).length > 0;
+  // BP141 Yoke Task 5b: read the two BP141 corroboration-strength flags plow_mc_answerer.ts
+  // already writes into plowTrace (camelCase, no snake_case fallback -- same convention as
+  // browserAuthorityCorroboration/candidatesPostFurnace above). Both are `undefined` on every
+  // acceptance path that is not a fully-corroborated `corroboration==='agree'` accept -- e.g. an
+  // 'adjudicated' pick (qid 98) never sets either, which is exactly the signal 5c uses to tell it
+  // apart from qid 92's fully-corroborated 'agree' accept.
+  const structuredCorroborator = plowTrace.structuredCorroborator === true;
+  const independentCorroboration = plowTrace.independentCorroboration === true;
+  // BP141 Yoke Task 5a: plow_mc_answerer.ts writes this key snake_case only (`voter_letters:
+  // plowResult.voterLetters` -- no camelCase variant is ever written to plowTrace), unlike every
+  // other field this file reads camelCase-only. Defensive parse: anything not an array of
+  // strings/nulls degrades to [] rather than throwing on a malformed/pre-BP141 receipt.
+  const voterLetters: (string | null)[] = Array.isArray(plowTrace.voter_letters)
+    ? (plowTrace.voter_letters as unknown[]).map((v) => (typeof v === 'string' ? v : null))
+    : [];
+  const nonNullVoters = voterLetters.filter((v): v is string => v !== null);
+  const isUnanimousVote = nonNullVoters.length > 0 && nonNullVoters.every((v) => v === nonNullVoters[0]);
 
   let outcome: 'right' | 'wrong' | 'abstain' | 'no-response';
   let correctable: boolean;
@@ -263,8 +314,25 @@ function classifyCore(params: {
     } else if (plowTrace.computeSidecar !== undefined && plowTrace.computeSidecar !== null) {
       answerClass = 'compute-wrong';
     } else if (browserCorroboration !== null && browserCorroboration !== 'none') {
-      // Browser ran and matched something, but it was wrong
-      answerClass = 'matched-wrong-option';
+      // Browser ran and matched something, but it was wrong. BP141 Yoke Task 5c: this used to be
+      // one undifferentiated 'matched-wrong-option' bucket covering three unrelated failures --
+      // split by what actually happened, checked in this order:
+      if (structuredCorroborator && independentCorroboration && isUnanimousVote) {
+        // BP141 Yoke Task 5a: the STRONGEST acceptance path (fully-corroborated 'agree' accept,
+        // unanimous voters) still landed on the wrong letter -- a contested sealed key, not a
+        // fixable engine defect. Empirical: qid 92, 029 + Mini30Also receipts.
+        answerClass = 'contested-key';
+        correctable = false; // deliberately excluded from correctableWrongs -- see 5a doc comment
+      } else if (!candidatesPostFurnace) {
+        // BP141 Yoke Task 5b: an authority pick (adjudicated or otherwise) accepted over ZERO
+        // grounded facts (candidatesPostFurnace is 0 or absent) -- must be de-confidenced, never
+        // read the same as qid 92's fully-corroborated accept above. Empirical: qid 98.
+        answerClass = 'ungrounded-adjudication';
+      } else {
+        // Real grounding existed (candidatesPostFurnace>0) yet the authority pipeline still
+        // picked wrong -- a genuine, fixable coverage gap. Empirical: qid 85 (Mini30Also receipt).
+        answerClass = 'coverage-gap';
+      }
     } else if (browserCorroboration === 'none' || (traceSummary.includes('browserAuthority') && !browserCorroboration)) {
       // Browser authority was attempted but returned nothing
       answerClass = 'authority-empty';
@@ -604,6 +672,7 @@ function buildRoundupFromRecords(records: CoronerRecord[], runConfig?: RunConfig
   let correctableWrongs = 0;
   let honestAbstains = 0;
   let noResponseTotal = 0;
+  let contestedKeyTotal = 0;
   let wrongTotal = 0;
   let rightTotal = 0;
   let abstainTotal = 0;
@@ -612,6 +681,15 @@ function buildRoundupFromRecords(records: CoronerRecord[], runConfig?: RunConfig
     const cls = rec.answerClass;
     if (!byClass[cls]) byClass[cls] = [];
     byClass[cls].push(rec);
+
+    // BP141 Yoke Task 5a: contested-key is checked independently of the outcome switch below --
+    // it IS outcome==='wrong' (an honest correctness tally: the answer really does disagree with
+    // the sealed key), so it still counts toward wrongTotal, but it must ALSO get its own
+    // dedicated headline total here, and (via rec.correctable===false, set in classifyCore) it is
+    // structurally excluded from correctableWrongs by the `if (rec.correctable)` check below.
+    if (cls === 'contested-key') {
+      contestedKeyTotal++;
+    }
 
     if (rec.outcome === 'no-response') {
       // BP141 Yoke Task 4b: its own bucket -- never folded into wrongTotal/correctableWrongs
@@ -630,7 +708,11 @@ function buildRoundupFromRecords(records: CoronerRecord[], runConfig?: RunConfig
 
   const correctableClasses: WrongClass[] = [
     'authority-empty',
-    'matched-wrong-option',
+    // BP141 Yoke Task 5c: 'matched-wrong-option' superseded -- split into its two still-
+    // correctable failure modes. ('contested-key' is deliberately NOT a WrongClass member and
+    // deliberately NOT listed here -- see ContestedKeyClass's own doc comment.)
+    'coverage-gap',
+    'ungrounded-adjudication',
     'plow-discordant',
     'substrate-gap',
     'compute-wrong',
@@ -660,6 +742,7 @@ function buildRoundupFromRecords(records: CoronerRecord[], runConfig?: RunConfig
     correctableWrongs,
     honestAbstains,
     noResponseTotal,
+    contestedKeyTotal,
     wrongTotal,
     rightTotal,
     abstainTotal,
@@ -745,6 +828,7 @@ export async function runAnswerCoronerOnLocalOutcomes(
   log(`║  HEADLINE 1 -- CORRECTABLE WRONGS: ${roundup.correctableWrongs}`);
   log(`║  HEADLINE 2 -- HONEST ABSTAINS:    ${roundup.honestAbstains}  (leave honest -- not a failure)`);
   log(`║  HEADLINE 3 -- NO-RESPONSE:        ${roundup.noResponseTotal}  (unattempted -- never asked/answered, not an abstain)`);
+  log(`║  HEADLINE 4 -- CONTESTED-KEY:      ${roundup.contestedKeyTotal}  (wrong via strongest acceptance path -- do NOT drive to 0 by distrust)`);
   log('╚══════════════════════════════════════════════════════════════');
 
   return roundup;
@@ -796,6 +880,7 @@ export async function runAnswerCoroner(opts: {
       correctableWrongs: 0,
       honestAbstains: 0,
       noResponseTotal: 0,
+      contestedKeyTotal: 0,
       wrongTotal: 0,
       rightTotal: 0,
       abstainTotal: 0,
@@ -863,6 +948,7 @@ export async function runAnswerCoroner(opts: {
   log(`║  HEADLINE 1 -- CORRECTABLE WRONGS: ${roundup.correctableWrongs}`);
   log(`║  HEADLINE 2 -- HONEST ABSTAINS:    ${roundup.honestAbstains}  (leave honest -- not a failure)`);
   log(`║  HEADLINE 3 -- NO-RESPONSE:        ${roundup.noResponseTotal}  (unattempted -- never asked/answered, not an abstain)`);
+  log(`║  HEADLINE 4 -- CONTESTED-KEY:      ${roundup.contestedKeyTotal}  (wrong via strongest acceptance path -- do NOT drive to 0 by distrust)`);
   log('╠══════════════════════════════════════════════════════════════');
   log('║  PRIORITIZED FIX LIST (correctable classes):');
   for (const item of roundup.prioritizedFixList) {
