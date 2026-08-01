@@ -105,6 +105,13 @@ import { solvePseudocodeTraceProblem } from './plow_mc_pseudocode_trace_solver';
 // for the full rationale (the airplane lift/drag/takeoff-power benchmark wobble) -- tried only
 // after tiers (i)-(v) have already returned null. Never duplicates or modifies those five tiers.
 import { solveAircraftLiftDragProblem } from './plow_mc_aircraft_solver';
+// BP141-1: an EIGHTH, independent deterministic compute tier -- see that file's header for the
+// full rationale (run 029, question_id 98: "which world region is NOT considered one of the
+// world's most densely populated regions?") -- tried only after tiers (i)-(vii) have already
+// returned null. Never duplicates or modifies those seven tiers. GroundedFactEblet imported
+// alongside it: the caller (this file) is the one place that reads the live substrate and filters
+// to genuinely Fact-typed entries -- the solver itself never touches the filesystem.
+import { solveSetMembershipProblem, type GroundedFactEblet } from './plow_mc_set_membership_solver';
 // BP137 Yoke v2b Stage A.0.1: semantic-cosine upgrade to the relevance TEST used inside the
 // gate below (the gating FLAG and abstain logic are unchanged -- see semantic_relevance_gate.ts
 // header for the full reuse rationale). ollamaManager imported directly (same module already
@@ -572,6 +579,15 @@ export interface CanonicalPlowMcResult {
    *  structuredCorroborator above); additive signal only, never changes chosenLetter/concordance/
    *  gateOutcomes/any accept-reject decision. */
   independentCorroboration?: boolean;
+  /** BP141-1 SINGLE-SOURCE-NO-GROUNDING GATE, OPTIONAL/ADDITIVE. Mirrors
+   *  AuthorityEnsembleOutcome.singleSourceUngroundedAccept -- see that field's own doc comment for
+   *  the full run-029/question_id-98 rationale. Present only alongside a lone-candidate accept
+   *  (single_google/single_perplexity/single_wolfram/single_chatgpt/single_gemini/single_claude/
+   *  single_specialist_swarm), same "present, not merely truthy" convention as
+   *  structuredCorroborator above so `false` here is a real, meaningful "this one voice DID have
+   *  some grounding" signal rather than plain absence. Never changes chosenLetter/concordance/
+   *  gateOutcomes/any accept-reject decision -- de-confidences visibly, never silently. */
+  singleSourceUngroundedAccept?: boolean;
   /** BP140 Yoke (Eblet-Learning Substrate / Liana Cycle), OPTIONAL/ADDITIVE. The full ensemble
    *  candidate set (winner AND every losing candidate), carried through so the Coroner -- the
    *  only place ground truth is actually available -- can persist a factVerdict-tagged eblet for
@@ -1120,6 +1136,37 @@ export interface AuthorityEnsembleOutcome {
    *          the Coroner's classifyCore (answer_coroner.ts) reads plowTrace keys by exact camelCase
    *          name with no fallback, and this is the name that signal is meant to be read under. */
   independentCorroboration?: boolean;
+  /** BP141-1 SINGLE-SOURCE-NO-GROUNDING GATE (Task 3, run 029 receipt, question_id 98), OPTIONAL/
+   *  ADDITIVE. Populated ONLY at the exactly-one-candidate accept site (corroboration one of
+   *  single_google/single_perplexity/single_wolfram/single_chatgpt/single_gemini/single_claude/
+   *  single_specialist_swarm) -- absent for every other corroboration value, same presence-gate
+   *  convention as structuredCorroborator (which is instead gated on corroboration==='agree').
+   *
+   *  THE PROBLEM (empirical, run 029, question_id 98): sources=[user_perplexity],
+   *  allCandidates=[user_perplexity:G], candidatesPostFurnace=0, adjudicationAttempted=false -- a
+   *  single unverified LLM opinion, with the specialist swarm having already fired (per the
+   *  UNCERTAIN branch above) and found ZERO Furnace-verified grounding, was accepted at full
+   *  confidence anyway (concordanceStrictness defaults to 'lenient', which always accepts a lone
+   *  candidate -- see resolveConcordanceAcceptance's own truth table). That gate decides WHETHER a
+   *  lone candidate is accepted at all; it was never designed to also decide HOW MUCH confidence
+   *  that accept deserves.
+   *
+   *  true  = the accepted lone candidate is LLM-class (not itself a structured authority per
+   *          hasStructuredCorroborator) AND the specialist swarm (already fired as part of the
+   *          UNCERTAIN branch, regardless of whether its own letter became a candidate) found ZERO
+   *          Furnace-verified grounding (candidatesPostFurnace === 0, or no swarmReceipt was ever
+   *          produced) -- the exact run-029 q98 shape. Never causes an abstain or a letter change by
+   *          itself (coverage stays protected, the letter is never silently altered) -- it exists
+   *          purely so the trace can carry an honest "this rests on one unverified voice with zero
+   *          grounding" signal forward to plowTrace/the Coroner, composing with (never duplicating)
+   *          the existing concordanceStrictness accept/reject decision and the existing
+   *          hasStructuredCorroborator/candidatesPostFurnace signals it is built from.
+   *  false = the lone candidate IS itself a structured authority (wolfram_alpha, or a
+   *          specialist_swarm candidate that by construction only ever reaches `candidates` with
+   *          its own Furnace-verified grounding behind it), OR the swarm found real Furnace-verified
+   *          facts anyway even though it did not itself become the accepted candidate -- either way,
+   *          the accepted letter is not resting on bare unverified opinion alone. */
+  singleSourceUngroundedAccept?: boolean;
 }
 
 /** BP1xx STRUCTURED-CORROBORATOR GATE: the ONE place that encodes "which authorities count as a
@@ -1473,6 +1520,33 @@ async function queryGeminiBrowserAuthority(
   return result ? { fact: result.fact, sourceUrl: result.sourceUrl } : null;
 }
 
+/** BP141-1: reads GROUNDED Fact eblets straight from the live substrate (via the SAME
+ *  loadAllVerifiedEblets() reader every other consumer of verified_eblets.jsonl already uses) --
+ *  never invented, never a search-result echo. Filters to entries whose provenance carries the
+ *  EXACT `vault_export:fact:` prefix vault_eblet_export.ts's buildExportRecord() stamps on a
+ *  curated, human-ratified Fact-typed Vault eblet (`type: fact` frontmatter) -- see that file's own
+ *  CLASS GATE for the full allow-list. An ordinary `component`/`whole_answer`-class eblet (a plain
+ *  LLM-answered Q&A pair, or a curated Tool/reasoning fragment) NEVER qualifies here, by design:
+ *  this is the ONE filter plow_mc_set_membership_solver.ts's own GATE 2 depends on to guarantee it
+ *  is never handed a search-result echo dressed up as a "fact." Returns [] (never throws) when the
+ *  substrate file is empty/missing or nothing qualifies -- an empty return is exactly what makes
+ *  the set-membership solver honestly abstain on every question today (0 Fact-typed eblets
+ *  currently exist in the live substrate, per vault_eblet_export.ts's own dry-run report). */
+async function loadGroundedSetMembershipFacts(): Promise<GroundedFactEblet[]> {
+  try {
+    const all = await loadAllVerifiedEblets();
+    return all
+      .filter((e) => typeof e.provenance === 'string' && e.provenance.startsWith('vault_export:fact:'))
+      .map((e) => ({ title: e.question, body: e.answer }));
+  } catch (err) {
+    console.warn(
+      '[plow_mc_answerer] loadGroundedSetMembershipFacts: substrate read failed (non-fatal, ' +
+      'solver will see zero facts -- honest abstain):', err,
+    );
+    return [];
+  }
+}
+
 /** Runs the full ensemble for one question: queries every free authority available for
  *  `answerType`, resolves each via resolveAuthorityLetterMatch (Wolfram via a direct computed-
  *  value match against the options instead, since it never returns free text), and corroborates
@@ -1563,6 +1637,65 @@ async function runAuthorityEnsemble(params: {
     }
   } catch (err) {
     log(`pseudocode_trace threw (non-fatal, ensemble continues normally): ${err}`);
+  }
+
+  // ── BP141-1 SET-MEMBERSHIP-ANSWER-TYPE-BYPASS (run 029 receipt, question_id 98): mirrors the
+  // pseudocode-trace bypass immediately above -- "which of the following X is/is NOT
+  // considered/a member of/one of/included in/part of <SET>" carries no numbers at all, so
+  // answer_type_classifier.ts files it 'reasoning', not 'computable', and the entire
+  // deterministic-compute chain (including this solver, ALSO registered as a tier inside
+  // resolveDeterministicComputeOverride below) would otherwise never even be consulted -- the
+  // question goes straight to a vote, and a single unverified LLM authority (run 029: lone
+  // user_perplexity, candidatesPostFurnace=0) can decide it at face value.
+  //
+  // THE FIX applied here is the same one BP-PSEUDOCODE-TRACE-ANSWER-TYPE-BYPASS already
+  // established: this solver's own GATE (ASK_RE + a GROUNDED Fact eblet actually present in the
+  // live substrate + every option resolving + exactly one option satisfying the asked polarity) is
+  // strict enough to BE its own classifier -- it is pure/synchronous given its inputs, derives
+  // strictly from `researchQuery` + `mcOptions` + the live substrate's own curated Fact eblets
+  // (NEVER from any authority's reasoning, NEVER from a search-result echo), and cannot produce a
+  // wrong answer on a non-matching question (any missing/ambiguous/multi-match/ungrounded piece is
+  // an honest null). So it is invoked here, UNCONDITIONALLY on answerType, before ANY authority is
+  // even consulted -- a proved answer short-circuits the whole ensemble; a null (the expected
+  // outcome on TODAY's substrate -- zero Fact-typed eblets exist yet, see
+  // loadGroundedSetMembershipFacts()'s own doc comment) falls through to the EXISTING branching,
+  // byte-for-byte unchanged. Never widens the solver's own gate, never touches the answer-type
+  // classifier itself.
+  try {
+    const groundedFactsForSetMembership = await loadGroundedSetMembershipFacts();
+    const setMembership = solveSetMembershipProblem(researchQuery, mcOptions, groundedFactsForSetMembership);
+    if (setMembership) {
+      log(
+        `set_membership PROVED answer ${setMembership.letter} against a grounded Fact eblet in the ` +
+        `live substrate -- ensemble not consulted (answerType=${answerType}, ${setMembership.trace}).`,
+      );
+      return {
+        chosenLetter: setMembership.letter,
+        corroboration: 'deterministic_compute',
+        candidates,
+        acceptedCandidates: [{
+          authority: 'deterministic_compute',
+          letter: setMembership.letter,
+          reasoning: setMembership.trace,
+          sourceUrl: '',
+          method: 'set_membership',
+        }],
+        adjudicationAttempted: false,
+        swarmFired: false,
+        deterministicOverride: {
+          letter: setMembership.letter,
+          optionValue: NaN,
+          optionUnit: null,
+          computedValue: NaN,
+          computedUnit: null,
+          sourceExpression: setMembership.trace,
+          source: 'question_expression',
+          method: 'set_membership',
+        },
+      };
+    }
+  } catch (err) {
+    log(`set_membership threw (non-fatal, ensemble continues normally): ${err}`);
   }
 
   // ── Perplexity, WITH options embedded (unchanged mechanism from the legacy path) ──────────
@@ -1943,6 +2076,23 @@ async function runAuthorityEnsemble(params: {
               : only.authority === 'user_gemini' ? 'single_gemini'
                 : only.authority === 'user_claude' ? 'single_claude'
                   : 'single_specialist_swarm';
+    // BP141-1 SINGLE-SOURCE-NO-GROUNDING GATE (Task 3, run 029 receipt, question_id 98): composes
+    // with (never duplicates) the BP139 concordanceStrictness gate immediately below -- that gate
+    // decides WHETHER a lone candidate is accepted at all (governed by the Founder-tunable
+    // concordanceStrictness setting, default 'lenient' == always accept); THIS flag decides nothing
+    // about accept/reject -- it only records, for the Coroner's benefit, whether an accepted lone
+    // candidate had ANY independent backing at all. Composed from two signals already computed
+    // elsewhere in this same function scope, never re-derived: hasStructuredCorroborator (the SAME
+    // STRUCTURED_AUTHORITIES classification the 2+-candidate 'agree' path already uses above)
+    // applied to this single candidate, and swarmReceipt.candidatesPostFurnace (the SAME
+    // specialist-swarm grounding count the BP141 echo-abstention push-site check above already
+    // reads). The swarm has ALWAYS already fired by this point (see the UNCERTAIN block above,
+    // unconditional whenever candidates.length is 0/1/disagreeing), so swarmReceipt is populated
+    // here except in the rare case its own try/catch threw before assignment -- treated as zero
+    // grounding, fail-closed, never fail-open. See AuthorityEnsembleOutcome.singleSourceUngroundedAccept's
+    // own doc comment for the full true/false meaning.
+    const singleSourceUngroundedAccept =
+      !hasStructuredCorroborator([only]) && (swarmReceipt?.candidatesPostFurnace ?? 0) === 0;
     // BP139 CONCORDANCE GATE (Founder canon: "I want to tune it"). Explicit config value wins;
     // absent that, falls back to the live ai_dispatch_settings.json reading (same "read once per
     // ensemble call" convention as browserLlmOverrides above) -- see CanonicalPlowMcConfig.
@@ -1968,7 +2118,16 @@ async function runAuthorityEnsemble(params: {
         acceptedCandidates: [], adjudicationAttempted: false, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt,
       };
     }
-    return { chosenLetter: only.letter, corroboration, candidates, acceptedCandidates: [only], adjudicationAttempted: false, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt };
+    log(
+      `lone candidate ${only.authority}:${only.letter} ACCEPTED (concordanceStrictness=` +
+      `${concordanceStrictness}) -- singleSourceUngroundedAccept=${singleSourceUngroundedAccept} ` +
+      `(candidatesPostFurnace=${swarmReceipt?.candidatesPostFurnace ?? 0}).`,
+    );
+    return {
+      chosenLetter: only.letter, corroboration, candidates, acceptedCandidates: [only],
+      adjudicationAttempted: false, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt,
+      singleSourceUngroundedAccept,
+    };
   }
 
   // 2+ candidates (now possibly including the swarm) -- re-check for a 2+ agreement. Adding the
@@ -2381,6 +2540,51 @@ export async function resolveDeterministicComputeOverride(
       }
     } catch (err) {
       console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: solvePseudocodeTraceProblem threw (non-fatal, ensemble letter kept):', err);
+    }
+  }
+
+  // Tier (set-membership, BP141-1) -- an EIGHTH independent deterministic compute tier for "which
+  // of the following is/is NOT a member of a named canonical set" questions
+  // (plow_mc_set_membership_solver.ts; run 029, question_id 98: "which world region is NOT
+  // considered one of the world's most densely populated regions?"). Structurally out of reach of
+  // tiers (i)-(vii): there is no arithmetic, no unit-bearing chain, no loan schedule, no
+  // mass/dimensions density, no physics relation, and no code to execute anywhere in the question --
+  // the only honest way to answer it is to already know the canonical enumerated set, which this
+  // tier only ever accepts from a GROUNDED Fact eblet already present in the live substrate (never
+  // a search-result echo, never invented -- see that solver's own header for the full discipline).
+  // Registered here (ALSO reachable via the unconditional BP141-1 bypass at the top of
+  // runAuthorityEnsemble, mirroring pseudocode_trace's own dual placement) so a
+  // `computable`-classified question that also happens to match this solver's gate is covered too.
+  // Involves ONE substrate read (loadGroundedSetMembershipFacts) -- the one deliberate exception to
+  // every other tier's "no I/O" contract, unavoidable since this tier's entire reason to exist is
+  // checking the live substrate. Tried last of the named solvers, only after tiers (i)-(vii) above
+  // returned null; STRICTLY BEFORE the generic reasoning-text extraction tier below
+  // (BP-SPECIFIC-BEFORE-GENERIC discipline: a specific solver's own strict gate must always get
+  // first refusal ahead of the generic "read a number/entity out of an authority's reasoning text"
+  // fallback).
+  if (!deterministicOverride) {
+    try {
+      const groundedFactsForSetMembership = await loadGroundedSetMembershipFacts();
+      const setMembership = solveSetMembershipProblem(researchQueryForTiers, mcOptions, groundedFactsForSetMembership);
+      if (setMembership) {
+        deterministicOverride = {
+          letter: setMembership.letter,
+          // Mirrors solvePseudocodeTraceProblem's own NaN-sentinel convention just above: this
+          // solver compares a MEMBERSHIP VERDICT, not a scalar, so there is no honest numeric
+          // optionValue/computedValue to report here. The actual verdict data (set title, polarity,
+          // member list, every option's resolved status) lives in `sourceExpression` (==
+          // setMembership.trace) below, which every receipt path already carries.
+          optionValue: NaN,
+          optionUnit: null,
+          computedValue: NaN,
+          computedUnit: null,
+          sourceExpression: setMembership.trace,
+          source: 'question_expression',
+          method: 'set_membership',
+        };
+      }
+    } catch (err) {
+      console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: solveSetMembershipProblem threw (non-fatal, ensemble letter kept):', err);
     }
   }
 
@@ -3768,6 +3972,7 @@ export async function runCanonicalPlowMcAnswer(
             authorityEnsembleSwarmFired: ensembleOutcome.swarmFired,
             structuredCorroborator: ensembleOutcome.structuredCorroborator,
             independentCorroboration: ensembleOutcome.independentCorroboration,
+            singleSourceUngroundedAccept: ensembleOutcome.singleSourceUngroundedAccept,
             // BP140 Yoke: the full candidate set (winner AND losers), for the Coroner's
             // per-candidate factVerdict persist -- see CanonicalPlowMcResult.ensembleCandidates.
             ensembleCandidates: ensembleOutcome.candidates,
@@ -5053,6 +5258,15 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
       // (camelCase, no snake_case fallback). Present only when plowResult.independentCorroboration
       // is present (see AuthorityEnsembleOutcome.independentCorroboration's own doc comment).
       independentCorroboration: plowResult.independentCorroboration,
+      // BP141-1 SINGLE-SOURCE-NO-GROUNDING GATE (Task 3, run 029 receipt, question_id 98):
+      // camelCase, same not-yet-consumed-by-classifyCore convention as structuredCorroborator/
+      // independentCorroboration immediately above -- present only when
+      // plowResult.singleSourceUngroundedAccept is present (a lone-candidate accept). true means
+      // the accepted letter rests on one unverified LLM-class voice with zero post-Furnace
+      // grounding behind it (see AuthorityEnsembleOutcome.singleSourceUngroundedAccept's own doc
+      // comment for the full rationale) -- the letter itself is never changed by this flag; it
+      // exists purely so the Coroner can see and de-confidence a thin-evidence accept.
+      singleSourceUngroundedAccept: plowResult.singleSourceUngroundedAccept,
     };
     console.log(`[${logLabel}] plow-answered letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
     return { answer, plowTrace };
