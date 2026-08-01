@@ -1594,10 +1594,46 @@ export function computeHonestVerification(
   return { verified, verdict: verified ? 'verified' : 'unverified' };
 }
 
+/** KN-BP141-5 FIX 3 (separate the ledger from the answering pool). answer_coroner.ts's
+ *  persistEnsembleCandidateFactVerdicts (NOT touched by this ticket) calls writeVerifiedEblet
+ *  below with provenance `answer_coroner:ensemble_candidate:${candidate.authority}` for EVERY
+ *  ensemble candidate, winner and losers alike -- the RGBY ledger the per-capability Banyan
+ *  Metric needs. Ledger-writing and answering-pool-writing are two jobs that used to share one
+ *  file (verified_eblets.jsonl), and that sharing is the root cause this ticket's WHY section
+ *  identifies: a faithful log of wrong answers sat in the SAME pool retrieval reads as context.
+ *
+ *  This prefix check is deliberately the mirror image of isAnswerKeyShapedEblet's own design
+ *  choice: FIX 1/2 (read-side quarantine) are explicitly shape-based, NOT provenance-based,
+ *  because a retrieval-time filter must catch this shape from any writer, known or future. FIX 3
+ *  is write-side ROUTING, and here provenance is exactly the right signal: this file already
+ *  knows, by construction, that answer_coroner.ts is the ONLY writer of this specific provenance
+ *  family, so routing on it is precise (no shape-based false-positive risk at write time) and
+ *  keeps the RGBY-ledger-vs-answering-pool split legible by provenance alone, independent of
+ *  whatever shape a given candidate's answer/question happen to have.
+ *
+ *  Rule 66: existing answer_coroner:ensemble_candidate rows already on disk in
+ *  verified_eblets.jsonl are NOT moved, rewritten, or deleted by this fix -- they stay exactly
+ *  where they are, byte-identical, and stay quarantined by non-retrieval per FIX 1 and FIX 2
+ *  above. Only NEW writes matching this prefix are routed to the sibling ledger file below. */
+const RGBY_LEDGER_WRITE_PROVENANCE_PREFIX = 'answer_coroner:ensemble_candidate';
+
+export function isRgbyLedgerWrite(entry: Pick<VerifiedEbletEntry, 'provenance'>): boolean {
+  return (entry.provenance ?? '').startsWith(RGBY_LEDGER_WRITE_PROVENANCE_PREFIX);
+}
+
 /**
  * Append a plow-accepted eblet to the persistent store.
  *
- * Store location: {userData}/substrate/verified_eblets.jsonl (append-only JSONL).
+ * Store location: {userData}/substrate/verified_eblets.jsonl (append-only JSONL) for ordinary
+ * writes. KN-BP141-5 FIX 3: an ensemble-candidate RGBY-ledger write (provenance prefix
+ * 'answer_coroner:ensemble_candidate', see isRgbyLedgerWrite() above) is routed instead to the
+ * SIBLING file {userData}/substrate/rgby_ledger.jsonl -- same directory, same append-only JSONL
+ * shape, same computeHonestVerification()/sha256 derivation below, just a different destination
+ * file that the answering retrieval path (queryVerifiedEblets/queryVerifiedEbletsTopical) never
+ * reads. The Coroner's all-candidate persist keeps writing every candidate, winners and losers,
+ * with reasoning intact -- nothing about WHAT is written or HOW it is derived changes, only WHERE
+ * it lands.
+ *
  * BP131 honesty fix: this is NO LONGER an Andon gate that blocks non-verified writes -- every
  * solved-answer/component write is persisted regardless of verification status (provenance +
  * sha256 + source must survive for origin tracing regardless of verdict), but the persisted
@@ -1631,7 +1667,16 @@ export async function writeVerifiedEblet(
   }
 
   const ebletDir = resolve(app.getPath('userData'), 'substrate');
-  const ebletFile = resolve(ebletDir, 'verified_eblets.jsonl');
+  // KN-BP141-5 FIX 3: route ensemble-candidate RGBY-ledger writes to a sibling file the
+  // answering retrieval path never reads -- see isRgbyLedgerWrite()'s doc comment above.
+  const routeToRgbyLedger = isRgbyLedgerWrite(entry);
+  const ebletFile = resolve(ebletDir, routeToRgbyLedger ? 'rgby_ledger.jsonl' : 'verified_eblets.jsonl');
+  if (routeToRgbyLedger) {
+    console.log(
+      `[EbletStore] writeVerifiedEblet: routed provenance='${entry.provenance}' to sibling RGBY ` +
+      `ledger ${ebletFile} (KN-BP141-5 FIX 3, not the answering pool)`,
+    );
+  }
 
   if (!existsSync(ebletDir)) {
     mkdirSync(ebletDir, { recursive: true });
