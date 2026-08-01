@@ -739,6 +739,64 @@ export function isContaminatedComputeMethodEblet(
   );
 }
 
+/** KN-BP141-5 FIX 1 (retrieval-side contamination: the answer-key pool). Bishop-measured against
+ *  the LIVE substrate (C:\Users\Administrator\AppData\Roaming\amplify-computer\substrate\
+ *  verified_eblets.jsonl, 1,671 records at measurement time, growing): 694 records carry
+ *  provenance 'answer_coroner:ensemble_candidate' -- the RGBY ledger, written correctly by the
+ *  Coroner's all-candidate persist (see answer_coroner.ts's persistEnsembleCandidateFactVerdicts,
+ *  NOT modified by this ticket). Of those 694, `answer` is a bare option letter in 694/694 and the
+ *  question text is benchmark-shaped in 407/694. isContaminatedComputeMethodEblet() above is a
+ *  PROVENANCE-PREFIX patch for 28 specific legacy plow_mc_answerer:compute_method: rows -- its own
+ *  prefix check never matches 'answer_coroner:ensemble_candidate:...', so all 694 sail through it
+ *  untouched (proven this ticket by running the real compiled predicate over the real file: 0
+ *  caught). isContaminatedComputeMethodEblet is a patch for those 28 rows, not a general rule.
+ *
+ *  THIS predicate is SHAPE-based, not provenance-based -- deliberately, per the ticket's own
+ *  instruction: "provenance must not appear in this predicate at all." A record that LOOKS like an
+ *  answer key (a bare MC option letter for `answer`, paired with a benchmark-shaped `question`) is
+ *  an answer key regardless of who wrote it -- the same shape written by a different, future,
+ *  not-yet-invented writer must be caught here too, without this file needing to learn that
+ *  writer's provenance string first.
+ *
+ *  Two independent conditions, BOTH required:
+ *    1. `answer` is a bare MC option letter: either just the letter with optional trailing
+ *       punctuation ("B", "B)", "B.", "B:"), or an explicit "answer: B" framing.
+ *    2. `question` is benchmark-shaped: longer than 60 chars AND (contains a literal "?" OR
+ *       matches a curated MC-stem phrase, e.g. "which of the following" / "what is").
+ *
+ *  MEASURED THIS TICKET against the real live substrate (scratchpad/verify_kn_bp141_5_*.js):
+ *  407 of the 694 ensemble_candidate rows clear BOTH conditions (matches the WHY section's own
+ *  pre-measured 407/694 figure exactly). The remaining 287 have a bare-letter answer but a
+ *  question that is fill-in-the-blank/imperative-shaped ("_____ is an important element...",
+ *  "Calculate the density of...", "Indicate whether...") with no "?" and no curated stem phrase --
+ *  an HONEST gap in this shape predicate, not a bug: those 287 rows are not caught by FIX 1 alone
+ *  (FIX 2's factVerdict gate, and FIX 3's write-time routing, are the other two independent layers
+ *  that also apply to them; see this ticket's own report for the combined effect).
+ *
+ *  Rule 66 / vault-sacrosanct: quarantine BY NON-RETRIEVAL ONLY, exactly like
+ *  isContaminatedComputeMethodEblet's own convention -- the record stays on disk, byte-identical,
+ *  forever; every retrieval path that can surface it must run this predicate and drop a match,
+ *  never mutate the file. */
+const BARE_LETTER_ANSWER_RE = /^\s*[A-J]\s*[).:]?\s*$/;
+const FRAMED_LETTER_ANSWER_RE = /^\s*answer\s*[:=]?\s*[A-J]\b/i;
+const BENCHMARK_STEM_PHRASE_RE = /\b(which of the following|what is|what are|what was|what were)\b/i;
+const BENCHMARK_QUESTION_MIN_LENGTH = 60;
+
+function isBareOptionLetterAnswer(answer: string): boolean {
+  return BARE_LETTER_ANSWER_RE.test(answer) || FRAMED_LETTER_ANSWER_RE.test(answer);
+}
+
+function isBenchmarkShapedQuestion(question: string): boolean {
+  if (question.length <= BENCHMARK_QUESTION_MIN_LENGTH) return false;
+  return question.includes('?') || BENCHMARK_STEM_PHRASE_RE.test(question);
+}
+
+export function isAnswerKeyShapedEblet(
+  entry: Pick<VerifiedEbletEntry, 'answer' | 'question'>,
+): boolean {
+  return isBareOptionLetterAnswer(entry.answer ?? '') && isBenchmarkShapedQuestion(entry.question ?? '');
+}
+
 /** BP136 Yoke (answer-cache v1): question<->question similarity, DISTINCT from
  *  computeQaRelevance() above (which scores question-vs-ANSWER overlap). This scores how
  *  similar a NEW question is to a STORED question, for the answer-cache serve-verbatim
@@ -932,12 +990,23 @@ export async function queryVerifiedEblets(question: string, topK = 3): Promise<V
   // BP-CONTAMINATION-QUARANTINE: drop (never delete/rewrite -- Rule 66) any class:'component'
   // record from plow_mc_answerer.ts's legacy writeComputeMethodEblet() that leaked a question +
   // answer letter into `reasoning`. See isContaminatedComputeMethodEblet()'s doc comment above.
-  const entries = rawEntries.filter((e) => !isContaminatedComputeMethodEblet(e));
-  const quarantinedCount = rawEntries.length - entries.length;
+  const afterComputeMethodQuarantine = rawEntries.filter((e) => !isContaminatedComputeMethodEblet(e));
+  const quarantinedCount = rawEntries.length - afterComputeMethodQuarantine.length;
   if (quarantinedCount > 0) {
     console.log(
       `[EbletStore] queryVerifiedEblets: excluded ${quarantinedCount} contaminated ` +
       `compute-method component eblet(s) from retrieval (Rule 66 quarantine-by-non-retrieval, not deleted)`,
+    );
+  }
+
+  // KN-BP141-5 FIX 1: shape-based answer-key quarantine, independent of the provenance-prefix
+  // check above -- see isAnswerKeyShapedEblet()'s doc comment for the full empirical basis.
+  const entries = afterComputeMethodQuarantine.filter((e) => !isAnswerKeyShapedEblet(e));
+  const answerKeyShapedQuarantinedCount = afterComputeMethodQuarantine.length - entries.length;
+  if (answerKeyShapedQuarantinedCount > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEblets: excluded ${answerKeyShapedQuarantinedCount} answer-key-shaped ` +
+      `eblet(s) from retrieval (KN-BP141-5 FIX 1, Rule 66 quarantine-by-non-retrieval, not deleted)`,
     );
   }
 
@@ -1066,13 +1135,27 @@ export async function queryVerifiedEbletsTopical(
   // letter into `reasoning`; injecting one of these during a scored run would be handing a
   // voter the current question's own answer key disguised as a reusable tool. See
   // isContaminatedComputeMethodEblet()'s doc comment above for the exact match shape.
-  const entries = rawEntries.filter((e) => !isContaminatedComputeMethodEblet(e));
-  const quarantinedComputeMethodCount = rawEntries.length - entries.length;
+  const afterComputeMethodQuarantine = rawEntries.filter((e) => !isContaminatedComputeMethodEblet(e));
+  const quarantinedComputeMethodCount = rawEntries.length - afterComputeMethodQuarantine.length;
   if (quarantinedComputeMethodCount > 0) {
     console.log(
       `[EbletStore] queryVerifiedEbletsTopical: excluded ${quarantinedComputeMethodCount} ` +
       `contaminated compute-method component eblet(s) from retrieval for domain=${domain} ` +
       `(Rule 66 quarantine-by-non-retrieval, not deleted)`,
+    );
+  }
+
+  // KN-BP141-5 FIX 1: shape-based answer-key quarantine, independent of the provenance-prefix
+  // check above -- see isAnswerKeyShapedEblet()'s doc comment for the full empirical basis. This
+  // is exactly the retrieval path (mesh-test B/C conditions, tools ON, answer-keys OFF) the
+  // ticket's WHY section describes the loop leaking through.
+  const entries = afterComputeMethodQuarantine.filter((e) => !isAnswerKeyShapedEblet(e));
+  const answerKeyShapedQuarantinedCount = afterComputeMethodQuarantine.length - entries.length;
+  if (answerKeyShapedQuarantinedCount > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEbletsTopical: excluded ${answerKeyShapedQuarantinedCount} ` +
+      `answer-key-shaped eblet(s) from retrieval for domain=${domain} (KN-BP141-5 FIX 1, Rule 66 ` +
+      `quarantine-by-non-retrieval, not deleted)`,
     );
   }
 
