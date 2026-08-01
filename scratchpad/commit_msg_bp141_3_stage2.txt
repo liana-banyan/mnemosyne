@@ -1,0 +1,93 @@
+KN-BP141-3 Stage 2: Elimination Cascade with Bidirectional Consistency
+
+New file C:\Users\Administrator\Documents\mnemosyne\src\main\plow\plow_mc_elimination_cascade.ts.
+Encodes the Founder's five-stage elimination procedure (C1-C5) as pure,
+synchronous helpers. This module never queries a model, browser, or any
+external source itself -- exactly like solveNoConsensusFromScatter's own
+IndependentSourceVote convention in plow_mc_no_consensus_solver.ts, it only
+ever consumes caller-supplied rankings/votes and applies the Founder's own
+consistency/acceptance math to them. The actual dispatch of a most-to-least
+or least-to-most ranking QUERY to a live source, and the pipeline wiring that
+would let C1-C5 decide a live answer inside plow_mc_answerer.ts, does not
+exist yet -- documented as an honest gap below, same convention as the Cake
+Method's own "live mesh-peer transport not wired" gap already in that file.
+
+C1 ASK THE INVERSE (detectNegationQuestion, buildInverseQueryFraming):
+detects an explicit NOT/EXCEPT polarity qualifier in a stem (narrow regex,
+requires the negation to sit directly on a copula/modal verb, not merely
+"not" occurring anywhere in the prose) and builds the mechanical, reversible
+complement framing a caller can query instead, to sidestep the
+negation-blindness that trips models on NOT/EXCEPT questions (191 in the
+dataset per the ticket).
+
+C2 JAR METHOD (orderEliminationBlocksByCertainty): pure sort of
+caller-supplied elimination blocks, descending certainty first, descending
+block size as tiebreaker -- "softballs out before marbles". Does not itself
+decide whether to apply any block, only the order to consider them in.
+
+C3 CAKE CUT HALF, ALTERNATING (generateCakeCutAlternatingSplits): pure split-
+plan generator over the currently-surviving option letters -- pass 1 asks
+about the first half, pass 2 asks about the second half (direction
+inverted), pass 3 is a control pass re-including the first half alongside
+the second half to catch a source flip-flopping on an option it had just
+claimed was eliminable.
+
+C4 BIDIRECTIONAL CONSISTENCY (checkBidirectionalConsistency,
+runBidirectionalConsistencyGate) -- the strongest gate in this file. Requires
+a source's own least-to-most ranking to be the EXACT element-wise reverse of
+its own most-to-least ranking (same letters, same count, reversed order, not
+merely the same set). Reports every mismatched position by index, never a
+bare true/false, so a failure is inspectable. runBidirectionalConsistencyGate
+partitions sources into admissible/inadmissible and never averages or
+discounts a failure -- an inconsistent source's ranking is excluded entirely,
+per the ticket's own "FAILURE = that source's ranking is inadmissible".
+
+C5 TERMINATE ON THE NUMBER (determineRequiredPrecision,
+evaluateSignificantFigureAccept): the significant-figures accept condition.
+Required precision is derived from the option set's OWN spacing (half the
+smallest gap between any two distinct sorted option values), never from a
+fixed arbitrary tolerance. Accepts a computed value only when it lands
+closer to one option than the required precision AND the winning margin over
+the second-nearest option also clears that same precision -- never demanding
+more digits than the option set's own discrimination requires, never forcing
+an accept when the computed value sits ambiguously between two options.
+
+VERIFIED, requirement (d): Stage 2 C4 on the real qid 98 option set (other/
+source_id 5723, "Which of the following world regions is NOT considered one
+of the world's most densely populated regions?", real correct_answer =
+South America = letter A), scratchpad/verify_kn_bp141_3_stage2_c4_bidirectional.js.
+Three local Ollama models (llama3.3:70b, llama3.1:8b, gemma4:12b) each queried
+TWICE with fresh, independent /api/generate calls -- once for a most-to-least
+density ranking, once for a least-to-most ranking of the same 9 real options
+-- and the two raw rankings run through the real compiled
+checkBidirectionalConsistency. Real result, no tidying:
+
+  llama3.3:70b: FAIL -- mostToLeast=[B,E,D,C,A,F,H,I,G], leastToMost=[G,I,H,A,F,C,E,D,B],
+    expected=[G,I,H,F,A,C,D,E,B]; mismatches at positions 3,4,6,7 (A/F swapped,
+    D/E swapped relative to the expected exact reverse).
+  llama3.1:8b: FAIL -- mostToLeast=[B,D,E,F,C,A,H,G,I], leastToMost=[G,I,H,C,F,A,E,D,B],
+    expected=[I,G,H,A,C,F,E,D,B]; mismatches at positions 0,1,3,4,5.
+  gemma4:12b: FAIL -- mostToLeast=[B,E,D,C,F,A,H,I,G], leastToMost=[I,H,G,F,C,A,D,E,B],
+    expected=[G,I,H,A,F,C,D,E,B]; mismatches at positions 0,1,2,3,4.
+
+Totals: 0 PASS / 3 FAIL / 0 ERROR out of 3 sources queried. Universal fail,
+reported exactly as measured -- no threshold widened, no source's result
+smoothed over or excluded from the report. Per the Founder's own framing this
+means none of the three local sources' rankings on this question are
+admissible under C4; all three would be excluded from a live cascade's vote
+on qid 98 if this gate were wired in today.
+
+No false-negative-rate measurement was run for Stage 2 the way Stage 1's
+R1/R2/R3 were measured, because C1-C3 and C5 are not option-eliminating
+RULES in that sense (C1/C3 are query-framing/ordering helpers that decide
+nothing on their own; C5 is a terminal accept/abstain condition gated on
+computed-value margins, not a text-pattern eliminator with a firing count
+over the dataset). C4 is a per-SOURCE ranking-admissibility filter, not an
+option eliminator either -- its correctness is properly measured by the real
+end-to-end pass/fail test above (requirement (d)), which is a more faithful
+measurement of what C4 actually gates than a dataset-wide false-negative
+sweep would be.
+
+Builds on Stage 1 (commit bf690da6) -- no code dependency (Stage 2 does not
+call plow_mc_elimination_chart.ts or plow_mc_question_vetting.ts), same
+file-family and ONE WRITER sequencing only.
