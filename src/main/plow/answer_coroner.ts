@@ -84,6 +84,17 @@ export type ContestedKeyClass = 'contested-key';
 
 export type AnswerClass = WrongClass | AbstainClass | RightClass | NoResponseClass | ContestedKeyClass;
 
+// BP141 Yoke Task 6b: one gate line (G1_FACT/G2_CONC/G3_BMV/G4_LAT) as reported on the card --
+// `passed: null` means N/A (the gate does not apply to this answer's acceptance mechanism), never
+// FAILED. See CoronerRecord.gateOutcomes doc comment for why this de-confidencing transform
+// exists and lives here rather than in plow_mc_answerer.ts's evaluateGates (which has no ground-
+// truth-aware reason to know this proof will later be scored correct/wrong by the Coroner).
+export interface GateOutcomeForCard {
+  gate: string;
+  passed: boolean | null;
+  detail: string;
+}
+
 // ─── Record / roundup types ─────────────────────────────────────────────────
 
 export interface CoronerRecord {
@@ -106,6 +117,21 @@ export interface CoronerRecord {
   concordance: string | null;
   candidatesPostFurnace: number | null;
   processingMs: number | null;
+  // BP141 Yoke Task 6a: which NAMED solver (schedule / density / physics / aircraft /
+  // pseudocode_trace / set_membership / etc.) produced a 'deterministic_compute' proof --
+  // null on every other answerClass. Parsed from voter_diagnostics[0].rawPreview's
+  // "deterministic_compute (<solver>)" prefix (see plow_mc_answerer.ts's own voter_diagnostics
+  // writer for that literal format) rather than guessed, so an unrecognized future solver name
+  // still surfaces honestly instead of silently reading as some other solver.
+  deterministicSolverName: string | null;
+  // BP141 Yoke Task 6b: G1_FACT/G3_BMV re-derived for the card when this answer is a
+  // deterministic_compute proof -- both gates measure corroboration BREADTH (multiple
+  // independent voters/facts), which a proof correctly and legitimately lacks (a proof does not
+  // need voters to be correct). The raw plowTrace.gate_outcomes FAILED reading for those two
+  // gates is de-confidenced to N/A here so a deterministic proof can never look weaker on the
+  // card than an adjudicated guess on the same run. null when the receipt carries no
+  // plowTrace.gate_outcomes at all (e.g. no plow ran, or a pre-BP138 receipt).
+  gateOutcomes: GateOutcomeForCard[] | null;
 }
 
 export interface FixItem {
@@ -233,6 +259,56 @@ function classifyCore(params: {
     : [];
   const nonNullVoters = voterLetters.filter((v): v is string => v !== null);
   const isUnanimousVote = nonNullVoters.length > 0 && nonNullVoters.every((v) => v === nonNullVoters[0]);
+  // BP141 Yoke Task 6a: the named-solver path (schedule / density / physics / aircraft /
+  // pseudocode_trace / set_membership, per KN-BP141-1 commit cf493779, and any future named
+  // solver) sets browserAuthorityCorroboration to the literal string 'deterministic_compute'
+  // while leaving plowTrace.computeSidecar undefined -- a structurally different acceptance
+  // mechanism from both the units-aware computeSidecar tier AND the browser-authority-ensemble
+  // 'agree'/'adjudicated' tiers this file already distinguishes. Checked before the isCorrect/
+  // isWrong branches below decide between 'sourced-fact'/'compute'/etc. Empirical receipt:
+  // Mini029Run question_id 33, corroboration=deterministic_compute, sources=[deterministic_compute].
+  const isDeterministicCompute = browserCorroboration === 'deterministic_compute';
+  // BP141 Yoke Task 6a: plow_mc_answerer.ts's voter_diagnostics writer for every named-solver
+  // return prefixes rawPreview with the literal `"deterministic_compute (<solver>)"` (e.g.
+  // "deterministic_compute (pseudocode_trace): pseudocode_trace: list1=..."). Parsed rather than
+  // hardcoded so a future named solver's name surfaces on the card without a code change here.
+  // null (never guessed) when the receipt has no voter_diagnostics or the prefix does not match.
+  let deterministicSolverName: string | null = null;
+  if (isDeterministicCompute && Array.isArray(plowTrace.voter_diagnostics)) {
+    for (const diag of plowTrace.voter_diagnostics as unknown[]) {
+      const rawPreview = typeof (diag as Record<string, unknown>)?.rawPreview === 'string'
+        ? (diag as Record<string, unknown>).rawPreview as string
+        : '';
+      const match = rawPreview.match(/^deterministic_compute \(([^)]+)\)/);
+      if (match) {
+        deterministicSolverName = match[1];
+        break;
+      }
+    }
+  }
+  // BP141 Yoke Task 6b: G1_FACT ("no verified facts") and G3_BMV (corroboration breadth) both
+  // legitimately read FAILED on a deterministic proof -- a proof needs no independent voters or
+  // Furnace-surviving facts to be correct, that is the whole point of computing it deterministically.
+  // Re-derive those two gate lines to N/A (passed: null) rather than FAILED for the card, so a
+  // deterministic proof never reads as weaker than an adjudicated guess on the same run. G2_CONC/
+  // G4_LAT are untouched -- concordance and latency are meaningful for a compute answer too.
+  const rawGateOutcomes = Array.isArray(plowTrace.gate_outcomes) ? plowTrace.gate_outcomes as unknown[] : [];
+  const gateOutcomes: GateOutcomeForCard[] | null = rawGateOutcomes.length > 0
+    ? rawGateOutcomes.map((g) => {
+        const rec = (g ?? {}) as Record<string, unknown>;
+        const gate = typeof rec.gate === 'string' ? rec.gate : 'unknown';
+        const passed = typeof rec.passed === 'boolean' ? rec.passed : null;
+        const detail = typeof rec.detail === 'string' ? rec.detail : '';
+        if (isDeterministicCompute && passed === false && (gate === 'G1_FACT' || gate === 'G3_BMV')) {
+          return {
+            gate,
+            passed: null,
+            detail: `N/A -- deterministic proof does not require corroboration breadth (raw: ${detail})`,
+          };
+        }
+        return { gate, passed, detail };
+      })
+    : null;
 
   let outcome: 'right' | 'wrong' | 'abstain' | 'no-response';
   let correctable: boolean;
@@ -286,8 +362,14 @@ function classifyCore(params: {
   } else if (isCorrect) {
     outcome = 'right';
     correctable = false;
-    // Determine what carried it
-    if (browserCorroboration && browserCorroboration !== 'none') {
+    // Determine what carried it. BP141 Yoke Task 6a: isDeterministicCompute checked BEFORE the
+    // 'sourced-fact' browser-corroboration branch -- a non-null browserAuthorityCorroboration of
+    // literal 'deterministic_compute' was previously falling through to 'sourced-fact' below,
+    // making the 'compute' class structurally unreachable for every named-solver answer. Reuses
+    // the existing 'compute' RightClass (see its own doc comment) rather than inventing a new one.
+    if (isDeterministicCompute) {
+      answerClass = 'compute';
+    } else if (browserCorroboration && browserCorroboration !== 'none') {
       answerClass = 'sourced-fact';
     } else if (plowTrace.computeSidecar !== undefined && plowTrace.computeSidecar !== null) {
       answerClass = 'compute';
@@ -311,6 +393,14 @@ function classifyCore(params: {
     const wasDecompose = traceSummary.includes('strategy=decompose-and-eliminate');
     if (wasDecompose) {
       answerClass = 'bad-decomposition';
+    } else if (isDeterministicCompute) {
+      // BP141 Yoke Task 6a (wrong-side symmetry): same reachability fix as the isCorrect branch
+      // above -- a named-solver proof that turned out wrong is a real solver defect
+      // (compute-wrong), never the browser-authority-ensemble's 'coverage-gap'/'contested-key'/
+      // 'ungrounded-adjudication' split below (those checks assume a browser-authority accept,
+      // not a deterministic proof, and would otherwise misread this as e.g. 'ungrounded-
+      // adjudication' purely because a compute answer naturally has candidatesPostFurnace=0).
+      answerClass = 'compute-wrong';
     } else if (plowTrace.computeSidecar !== undefined && plowTrace.computeSidecar !== null) {
       answerClass = 'compute-wrong';
     } else if (browserCorroboration !== null && browserCorroboration !== 'none') {
@@ -368,6 +458,8 @@ function classifyCore(params: {
     concordance,
     candidatesPostFurnace,
     processingMs,
+    deterministicSolverName,
+    gateOutcomes,
   };
 }
 
