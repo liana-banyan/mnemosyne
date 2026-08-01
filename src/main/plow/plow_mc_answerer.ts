@@ -119,6 +119,19 @@ import { solveAircraftLiftDragProblem } from './plow_mc_aircraft_solver';
 // alongside it: the caller (this file) is the one place that reads the live substrate and filters
 // to genuinely Fact-typed entries -- the solver itself never touches the filesystem.
 import { solveSetMembershipProblem, type GroundedFactEblet } from './plow_mc_set_membership_solver';
+// KN-BP141-3 Stage 0 + Stage 1 wiring: question vetting (V1/V2/V3) and the semantic elimination
+// chart (R1/R2/R3) both run BEFORE any solver tier below, purely on questionText+options, no I/O,
+// no model call. Neither ever changes a letter -- vetQuestion emits advisory flags only, and
+// runEliminationChart's own R1/R2/R3 were all measured (per this ticket's own MANDATORY
+// false-negative-rate discipline, see scratchpad/commit_msg_bp141_3_stage1.txt) at false-negative
+// rates far over the ~2% threshold (R1 33.333%, R2 17.647%, R3 0.000% but N=1, statistically
+// insignificant) -- so none of the three rules is wired here as a hard eliminator. Both are
+// attached to resolveDeterministicComputeOverride's own return value as `advisorySignals`
+// (additive field, every pre-existing caller that destructures only finalLetter/overrideFired/
+// deterministicOverride is byte-for-byte unaffected) for a future receipt/weighting consumer,
+// never used inside this file to decide or override `deterministicOverride`/`finalLetter` itself.
+import { vetQuestion, type QuestionVettingFlags } from './plow_mc_question_vetting';
+import { runEliminationChart, type EliminationChartResult } from './plow_mc_elimination_chart';
 // BP137 Yoke v2b Stage A.0.1: semantic-cosine upgrade to the relevance TEST used inside the
 // gate below (the gating FLAG and abstain logic are unchanged -- see semantic_relevance_gate.ts
 // header for the full reuse rationale). ollamaManager imported directly (same module already
@@ -2939,7 +2952,17 @@ export async function resolveDeterministicComputeOverride(
   // empty array and returns null, same as any other tier's "missing piece" honest abstain). See
   // plow_mc_no_consensus_solver.ts's header for the full gate this feeds.
   independentSources: IndependentSourceVote[] = [],
-): Promise<{ finalLetter: string; overrideFired: boolean; deterministicOverride: DeterministicComputeCandidate | null }> {
+): Promise<{
+  finalLetter: string;
+  overrideFired: boolean;
+  deterministicOverride: DeterministicComputeCandidate | null;
+  // KN-BP141-3: OPTIONAL/ADDITIVE, same "byte-identical for every pre-existing caller" contract as
+  // `independentSources` above -- every existing call site that destructures only
+  // finalLetter/overrideFired/deterministicOverride is unaffected. Populated unconditionally below
+  // (Stage 0/1 never throw uncaught -- see the try/catch immediately after researchQueryForTiers),
+  // never influences finalLetter/overrideFired/deterministicOverride itself.
+  advisorySignals: { vettingFlags: QuestionVettingFlags | null; eliminationChart: EliminationChartResult | null };
+}> {
   let deterministicOverride: DeterministicComputeCandidate | null = null;
 
   // BP-DETERMINISTIC-OVERRIDE-DEGLUE: real MMLU-Pro question text sometimes ships with a
@@ -2971,6 +2994,32 @@ export async function resolveDeterministicComputeOverride(
     /([a-z])(borrows|borrowed|owes|owe|loans|loan)\b/gi,
     '$1 $2',
   );
+
+  // KN-BP141-3 Stage 0 (question vetting, V1/V2/V3) + Stage 1 (semantic elimination chart,
+  // R1/R2/R3) -- runs BEFORE every tier below, exactly per Stage 0's own "runs BEFORE any solver"
+  // requirement. Both are pure/synchronous/no-I/O (see each module's own header); wrapped in a
+  // non-fatal try/catch, matching every other tier's own error-handling convention in this
+  // function, so a crash in either can never break the pre-existing override pipeline. NEITHER
+  // touches `deterministicOverride` -- Stage 0 never answers by its own contract, and Stage 1's
+  // three rules are ADVISORY ONLY in this commit (all three measured over the real 10,956-question
+  // dataset at false-negative rates far over the ~2% threshold that would permit a hard gate; see
+  // scratchpad/commit_msg_bp141_3_stage1.txt for the exact per-rule rates). Both results are
+  // reported out via the new `advisorySignals` return field for a future receipt/weighting
+  // consumer to use, never acted on here.
+  let stage0VettingFlags: QuestionVettingFlags | null = null;
+  let stage1EliminationChart: EliminationChartResult | null = null;
+  try {
+    stage0VettingFlags = vetQuestion(researchQueryForTiers, mcOptions);
+    stage1EliminationChart = runEliminationChart(researchQueryForTiers, mcOptions);
+    if (stage0VettingFlags.registerConflict || stage0VettingFlags.scaleMismatch || stage0VettingFlags.paraphraseCollisions.length > 0) {
+      console.log(`[plow_mc_answerer] KN-BP141-3 Stage 0 advisory flags (never changes a letter): ${JSON.stringify(stage0VettingFlags)}`);
+    }
+    if (stage1EliminationChart.survivors.length < mcOptions.length) {
+      console.log(`[plow_mc_answerer] KN-BP141-3 Stage 1 advisory elimination chart (ADVISORY ONLY, not a hard gate): survivors=[${stage1EliminationChart.survivors.join(',')}] eliminationsByRule=${JSON.stringify(stage1EliminationChart.eliminationsByRule)}`);
+    }
+  } catch (err) {
+    console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: KN-BP141-3 Stage 0/Stage 1 threw (non-fatal, advisory only, override pipeline unaffected):', err);
+  }
 
   // BP-SPECIFIC-BEFORE-GENERIC (this pass, Bishop-directed fix): the SEVEN tiers below are no
   // longer tried in their historical add-order. THE BUG this closes: computeUnitAwareMatch
@@ -3332,7 +3381,12 @@ export async function resolveDeterministicComputeOverride(
 
   const overrideFired = !!deterministicOverride && deterministicOverride.letter !== ensembleChosenLetter;
   const finalLetter = deterministicOverride ? deterministicOverride.letter : ensembleChosenLetter;
-  return { finalLetter, overrideFired, deterministicOverride };
+  return {
+    finalLetter,
+    overrideFired,
+    deterministicOverride,
+    advisorySignals: { vettingFlags: stage0VettingFlags, eliminationChart: stage1EliminationChart },
+  };
 }
 
 // ─── WIRE-THE-LOOP fix: writeback + replication for EVERY solved answer ────────────────────

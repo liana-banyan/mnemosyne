@@ -1,0 +1,85 @@
+KN-BP141-3 Wiring: Stage 0 + Stage 1 advisory signals into resolveDeterministicComputeOverride
+
+Modified C:\Users\Administrator\Documents\mnemosyne\src\main\plow\plow_mc_answerer.ts
+(56 insertions, 2 deletions). Wires Stage 0 (plow_mc_question_vetting.ts,
+commit d20628a2) and Stage 1 (plow_mc_elimination_chart.ts, commit bf690da6)
+into the real production tiered-override function, resolveDeterministicComputeOverride().
+
+WHAT CHANGED:
+1. New imports (vetQuestion, QuestionVettingFlags, runEliminationChart,
+   EliminationChartResult) alongside the existing solveSetMembershipProblem
+   import.
+2. resolveDeterministicComputeOverride's return type gained one new OPTIONAL/
+   ADDITIVE field, `advisorySignals: { vettingFlags, eliminationChart }` --
+   every pre-existing caller (both real call sites in this file, the
+   pre-branch hoist around line 2433 and the post-branch site around line
+   4462) destructures only finalLetter/overrideFired/deterministicOverride
+   by name and is therefore byte-for-byte unaffected; neither call site
+   needed to change.
+3. Immediately after `researchQueryForTiers` is computed (BEFORE tier (i),
+   matching Stage 0's own "runs BEFORE any solver" requirement), the function
+   now calls vetQuestion() and runEliminationChart() once, wrapped in a
+   non-fatal try/catch matching every other tier's own error-handling
+   convention in this function. Neither call touches `deterministicOverride`:
+   Stage 0 never answers by its own contract (vetting emits flags, never a
+   letter), and Stage 1's R1/R2/R3 remain ADVISORY ONLY per Stage 1's own
+   commit -- all three rules were measured over the real 10,956-question
+   dataset at false-negative rates far over the ~2% threshold that would
+   permit shipping as a hard eliminator (R1 33.333%, R2 17.647%, R3 0.000%
+   but N=1, statistically insignificant sample). Results are logged (console.log)
+   when non-empty/non-trivial, for visibility, and returned via
+   `advisorySignals` for a future receipt/weighting consumer -- never acted
+   on inside this file.
+
+VERIFIED end to end through the ACTUAL wired production entry point (not just
+Stage 0/1's own isolated smoketest_stage0.js/smoketest_stage1.js, which only
+proved the modules correct in isolation), scratchpad/verify_kn_bp141_3_wiring_advisory_signals.js,
+real math/source_id 8230, called with a fabricated sentinel
+`ensembleChosenLetter='Z'` (not a real option) to make any accidental
+behavior change obvious:
+  finalLetter: "Z" (unchanged -- sentinel survived, proving the wiring never
+    touches the override pipeline)
+  overrideFired: false
+  deterministicOverride: null
+  advisorySignals.vettingFlags.registerConflict: {intro: "E", expert: "J"}
+    -- matches Stage 0's own V1 empirical basis exactly, now reachable
+    through the real wired path.
+  advisorySignals.eliminationChart.survivors: [A, E, J], eliminationsByRule
+    {R1: [C,D,F,I], R2: [G,H], R3: [B]} -- matches Stage 1's own anchor-case
+    result exactly, now reachable through the real wired path.
+All three checks (survivors, registerConflict, pipeline-untouched) PASS,
+verbatim script output, no tidying.
+
+DEFERRED, explicitly, per the ticket's own allowance ("you are not
+necessarily required to modify the Coroner itself unless the ticket implies
+it... note in your commit message whether Coroner wiring was needed or
+deferred"):
+  - answer_coroner.ts wiring: Coroner's own CoronerRecord/LocalCoronerOutcomeInput
+    shape (C:\Users\Administrator\Documents\mnemosyne\src\main\plow\answer_coroner.ts)
+    classifies ANSWER OUTCOMES (verified/unverified/error), not pre-answer
+    question-level advisory flags -- there is no existing field for "this
+    question triggered a register conflict" in that shape, and inventing one
+    now would be scope creep beyond "wire the three (four) new modules into
+    plow_mc_answerer.ts." Deferred to a future ticket that actually needs the
+    Coroner to consume these flags.
+  - Stage 2 (plow_mc_elimination_cascade.ts, commit c07d3d2e) and Stage 3
+    (plow_gom_jabbar.ts, commit 4896e2be): NOT imported into plow_mc_answerer.ts
+    in this commit. Both files' own header comments already document the
+    real reason: neither stage's own mechanism (C1-C5's most-to-least/
+    least-to-most ranking queries; G1's separately-sourced-factor queries) has
+    a live multi-turn dispatch harness anywhere in this repo to actually feed
+    it real query-response data inside this synchronous, single-pass tiered
+    function -- resolveDeterministicComputeOverride's nine existing tiers all
+    derive from questionText+options+reasoningTexts+independentSources
+    already in hand, never from a NEW live round-trip query the function
+    itself would have to originate and await. Building that dispatch harness
+    is out of scope for this ticket (it does not exist for ANY tier today,
+    not just these two) and importing the modules' pure functions without a
+    real call site to feed them would be decorative, not genuine wiring --
+    reported here as an honest gap, not fabricated. Both modules remain
+    fully unit-verified against real data (Stage 2 requirement (d), Stage 3
+    requirement (e)) and ready to wire in once a live-dispatch harness exists.
+
+Builds on Stage 3 (commit 4896e2be) -- this is the deferred wiring commit
+Stage 1's own commit message (scratchpad/commit_msg_bp141_3_stage1.txt)
+explicitly promised once Stage 2/Stage 3 also existed.
