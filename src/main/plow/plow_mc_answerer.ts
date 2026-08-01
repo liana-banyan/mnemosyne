@@ -588,6 +588,26 @@ export interface CanonicalPlowMcResult {
    *  some grounding" signal rather than plain absence. Never changes chosenLetter/concordance/
    *  gateOutcomes/any accept-reject decision -- de-confidences visibly, never silently. */
   singleSourceUngroundedAccept?: boolean;
+  /** BP141-2 THE CAKE METHOD -- mirrors AuthorityEnsembleOutcome's own field of the same name, see
+   *  that interface's doc comment for the full rationale. Present only alongside a Cake-method run
+   *  (the ensemble's authorities disagreed even with the swarm folded in). */
+  cakeMethodUsed?: boolean;
+  cutModels?: string[];
+  cutDerivations?: string[];
+  distinctDerivationCount?: number;
+  cutScatter?: number;
+  pickConvergence?: number;
+  cakeQuadrant?: string;
+  anonymizedOrderSeed?: number;
+  cakeSelfPreferenceAudit?: {
+    pickerKey: string;
+    derivationPath: string;
+    ownLetter: string | null;
+    pickedOwnLetterWithSelfPresent: boolean | null;
+    pickedSameLetterWithSelfAbsent: boolean | null;
+  }[];
+  cakeCuts?: { pickerKey: string; derivationPath: string; letter: string }[];
+  cakePicks?: { pickerKey: string; derivationPath: string; pickedLetter: string | null }[];
   /** BP140 Yoke (Eblet-Learning Substrate / Liana Cycle), OPTIONAL/ADDITIVE. The full ensemble
    *  candidate set (winner AND every losing candidate), carried through so the Coroner -- the
    *  only place ground truth is actually available -- can persist a factVerdict-tagged eblet for
@@ -991,11 +1011,304 @@ export interface AuthorityEnsembleCandidate {
     // historical/documentary marker (nothing in this file constructs a candidate under it any
     // more) -- safe to remove in a future pass once Bishop confirms nothing downstream still
     // switches on it.
-    | 'deterministic_compute_reasoning_fact';
+    | 'deterministic_compute_reasoning_fact'
+    // BP141-2 THE CAKE METHOD (N-Cut/N-Pick), Founder-directed, supersedes the single-Perplexity-
+    // judge 'user_perplexity_judge' adjudication path below. This tag marks the SYNTHESIZED outcome
+    // of the plurality-of-picks vote -- never a single authority's own answer, so it must never be
+    // confused with (or substituted for) 'user_perplexity_judge', which specifically means "the one
+    // extra Perplexity call was the judge" (no longer true: N participants cut AND pick now, see
+    // runCakeMethodDisagreementResolution()). Kept as its own additive union member (Rule 66) rather
+    // than repurposing an existing tag.
+    | 'cake_pick_plurality';
   letter: string;
   reasoning: string;
   sourceUrl: string;
   method: string;
+}
+
+// ─── BP141-2 THE CAKE METHOD (N-Cut/N-Pick) -- Founder-directed, BP141 ──────────────────────────
+//
+// Supersedes the old single-Perplexity-judge adjudication path (buildAdjudicationPromptText,
+// removed below) that fired when the ensemble's authorities disagreed even after the swarm was
+// folded in. The judge in that path was often a DISPUTANT itself (it had already cast one of the
+// disagreeing votes) and then adjudicated its own dispute with the candidate pool sitting right in
+// its own prompt -- never genuinely blind. THE CAKE METHOD: one cuts, the other picks --
+// generalized here to N participants (N=1 is the degenerate single-machine case).
+//
+// A6 (ALL CUT): every available participant answers with NO candidate pool visible. In today's
+// single-machine deployment this is realized two ways: (1) the EXISTING browser/Wolfram/swarm
+// candidates gathered earlier in runAuthorityEnsemble already satisfy this -- each answered the
+// bare question with no candidate pool in its prompt, so they are reused as cuts rather than
+// re-asked; (2) the local orchestrator (this box's own Ollama model) casts its OWN cut(s), one per
+// assigned derivation route (see A13/assignCakeRoutesRoundRobin below).
+//
+// A9 (REVISED, BP141-2 Founder Correction -- supersedes the first amendment's distinct-MODEL-count
+// design in full): the independence unit for Task B is the DERIVATION PATH, not the model and not
+// the machine. resolveCakeDerivationPath()/resolveCakeModelIdentity() below are the ONE place that
+// maps an existing AuthorityEnsembleCandidate onto its derivation path + model identity, from the
+// harness's own bookkeeping -- NEVER by asking the model what produced it.
+//
+// A10 (REVISED): "VARIANCE IS NOT INDEPENDENCE." A calculator is an instrument, not a witness -- the
+// SAME model reaching an answer via genuinely different routes (a deterministic solver vs. a
+// browser retrieval vs. a from-first-principles reasoning pass) IS independent evidence; the SAME
+// model/prompt/path sampled N times is sampling variance and must never inflate the independence
+// count. See plow_mc_no_consensus_solver.ts (Task B) for the gate this feeds.
+//
+// A2/A8 (fresh context, no provenance leakage): the CHOOSE/pick prompt is built ONLY from
+// anonymized "Source 1".."Source N" labels + a normalized one-line rationale (never the raw
+// authority name, never the cut prompt or its raw response verbatim) -- assertCakeChoosePromptIsBlind()
+// below is the runtime, programmatic proof of this, not just a comment.
+//
+// A13 (mesh route diversity): assignCakeRoutesRoundRobin() is the real, pure, testable allocation
+// function A13 calls for. HONEST GAP, reported explicitly (never fabricated, same convention as
+// browser_authority_adapter.ts's own createNotWiredBridge()): the live MESH-PEER transport leg
+// (dispatching a differently-routed cut to each of N>=2 live peers over wan_dispatch.ts) is NOT
+// wired this pass -- no live peer is reachable/verifiable in this sandbox, and shipping an untested
+// mesh integration would violate this ticket's own real-compiled-dist/real-data verification
+// standard. This function stays deterministic/seeded (never Math.random()) so a future mesh caller
+// can reuse it unchanged for real per-peer allocation once that transport leg lands -- today it is
+// exercised for the single-machine case only ("with 1 machine, run the routes sequentially in one
+// box", per A13's own text).
+
+/** The DERIVATION PATH string vocabulary -- see A9(REVISED)'s doc comment above. Not a closed enum
+ *  (kept as a plain string) because deterministic-solver-tagged paths are formatted as
+ *  `deterministic_solver:<name>` for an open-ended, growing set of named solvers. */
+export type CakeDerivationPath = string;
+
+/** One CUT vote in the Cake Method's anonymization pool -- either an existing
+ *  AuthorityEnsembleCandidate (browser/Wolfram/swarm, reused, not re-asked) or a fresh local-
+ *  orchestrator cut (see runCakeMethodDisagreementResolution). `pickerKey` is the harness-internal
+ *  identity used ONLY for self-removal in the blindness audit (A4) -- it is NEVER placed into any
+ *  prompt text sent to a model; see buildCakeChoosePromptText/assertCakeChoosePromptIsBlind. */
+export interface CakeCutCandidate {
+  pickerKey: string;
+  derivationPath: CakeDerivationPath;
+  modelIdentity: string;
+  letter: string;
+  reasoning: string;
+}
+
+/** A9 (REVISED): the ONE place that maps an existing ensemble candidate onto its derivation path,
+ *  from the harness's own bookkeeping -- NEVER by asking the model. Each browser vendor is its own
+ *  distinct route (a different retrieval/reasoning mechanism), 'swarm' is the internal 13-adapter
+ *  consensus (one route regardless of its own internal voter count -- see runSpecialistSwarmConsensus,
+ *  those 3 voters are NOT separately counted here, they already collapsed to one CONCORDANT swarm
+ *  candidate before reaching this file's `candidates` array), and a named deterministic solver is
+ *  its own route (a calculator is an instrument, not a witness -- see A10). */
+export function resolveCakeDerivationPath(candidate: AuthorityEnsembleCandidate): CakeDerivationPath {
+  switch (candidate.authority) {
+    case 'user_perplexity': return 'browser:user_perplexity';
+    case 'user_google': return 'browser:user_google';
+    case 'user_claude': return 'browser:user_claude';
+    case 'user_chatgpt': return 'browser:user_chatgpt';
+    case 'user_gemini': return 'browser:user_gemini';
+    case 'wolfram_alpha': return 'deterministic_solver:wolfram_compute';
+    case 'specialist_swarm': return 'swarm';
+    case 'deterministic_compute': return `deterministic_solver:${candidate.method}`;
+    // Legacy/synthesized tags -- should never actually appear in a CUT pool (the judge tag predates
+    // Cake, the plurality tag is Cake's own OUTPUT, not an input cut), but mapped honestly rather
+    // than left to fall through to 'unknown:' if a future caller ever passes one in.
+    case 'user_perplexity_judge': return 'browser:user_perplexity';
+    case 'cake_pick_plurality': return 'cake_pick_plurality';
+    default: return `unknown:${candidate.authority}`;
+  }
+}
+
+/** A9's model-identity sibling -- kept (per the Founder Correction's explicit "model identity is
+ *  still recorded... but it is NOT the independence unit anymore") purely as an informational trace
+ *  field, never consulted by Task B's gate. */
+export function resolveCakeModelIdentity(candidate: AuthorityEnsembleCandidate): string {
+  switch (candidate.authority) {
+    case 'user_perplexity': case 'user_perplexity_judge': return 'perplexity';
+    case 'user_google': return 'google_search';
+    case 'user_claude': return 'claude';
+    case 'user_chatgpt': return 'chatgpt';
+    case 'user_gemini': return 'gemini';
+    case 'wolfram_alpha': return 'wolfram_alpha';
+    case 'specialist_swarm': return 'specialist_swarm_internal';
+    case 'deterministic_compute': return `deterministic_solver:${candidate.method}`;
+    default: return candidate.authority;
+  }
+}
+
+/** Deterministic seed derived from the question text (A3/A5) -- so a receipt's shuffle/labeling is
+ *  reproducible from the question alone, never from Math.random(). Pure/synchronous. */
+export function computeAnonymizedOrderSeed(questionText: string): number {
+  const digest = createHash('sha256').update(questionText.trim()).digest('hex');
+  return parseInt(digest.slice(0, 8), 16);
+}
+
+function hashStringToUint32(s: string): number {
+  const digest = createHash('sha256').update(s).digest('hex');
+  return parseInt(digest.slice(0, 8), 16);
+}
+
+/** mulberry32 -- small, fast, deterministic PRNG. Not cryptographic (does not need to be); only
+ *  needs to be reproducible from a given 32-bit seed, which createHash-derived seeds provide. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return function rng() {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** A3/A7 Shuffle: order seeded by a deterministic hash of the question text (`seed`), COMBINED with
+ *  this specific picker's own identity (`pickerKey`) so each picker sees its own permutation
+ *  ("per-picker-shuffled", A7) -- no picker's own candidate is pinned to a fixed slot across
+ *  different questions OR across different pickers on the SAME question. Pure, reproducible. */
+export function shuffleCakePoolForPicker<T>(pool: T[], seed: number, pickerKey: string): T[] {
+  const pickerSeed = (seed ^ hashStringToUint32(pickerKey)) >>> 0;
+  const rng = mulberry32(pickerSeed);
+  const arr = pool.slice();
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = arr[i]!; arr[i] = arr[j]!; arr[j] = tmp;
+  }
+  return arr;
+}
+
+/** A3 Normalize prose: strips a candidate's reasoning down to its first clause (up to the first
+ *  sentence-ending punctuation), collapsing whitespace, hard-truncated as a backstop. This is a
+ *  REAL transformation, not a cosmetic label -- but it is NOT a style-transfer / paraphrase pass
+ *  (this codebase has no cheap way to do that without another model call), so a determined model
+ *  MAY still detect stylistic tells in the surviving clause on some questions. That limitation is
+ *  reported honestly in this build's verification, not papered over -- see the blindness audit
+ *  (A4/cakeSelfPreferenceAudit) for the empirical measurement of whether this is good enough. */
+export function normalizeCakeRationale(reasoning: string, maxLen = 160): string {
+  const collapsed = reasoning.replace(/\s+/g, ' ').trim();
+  // Too short to usefully clip further, and this short a fragment carries no more information
+  // than the letter the anonymized pool already displays next to it -- not a meaningful A2 leak.
+  const TRIVIAL_LEN = 24;
+  if (collapsed.length <= TRIVIAL_LEN) return collapsed;
+
+  const sentenceMatch = collapsed.match(/^[^.!?\n]+[.!?]/);
+  const clause = sentenceMatch ? sentenceMatch[0].trim() : null;
+  // Only trust a sentence match that stops STRICTLY BEFORE the end of the raw text -- i.e. it
+  // actually dropped a second sentence or trailing content. When the only punctuation in the
+  // whole response sits at the very last character (a single already-terse sentence, or a
+  // formatted one-liner like the specialist swarm's "...postFurnace=1)."), sentenceMatch swallows
+  // the ENTIRE string and would return it byte-identical to the raw cut response -- which
+  // assertCakeChoosePromptIsBlind (correctly) treats as a verbatim leak of the cut's own response
+  // into the pick prompt (A2). Live-verified against run 030's own receipt (question_id 92,
+  // specialist_swarm candidate: 150 raw chars, single terminal period, no other punctuation).
+  if (clause && clause.length < collapsed.length) {
+    return clause.length > maxLen ? `${clause.slice(0, maxLen - 1).trim()}...` : clause;
+  }
+  // No usable interior sentence boundary (no punctuation at all, or punctuation only at the very
+  // last character). Force a proportional, visibly-shorter clip so the output can never be
+  // byte-identical to (or a whole-string match of) the raw reasoning it was derived from.
+  const target = Math.min(maxLen - 1, Math.floor(collapsed.length * 0.6));
+  const clipTo = Math.max(TRIVIAL_LEN, target);
+  return `${collapsed.slice(0, clipTo).trim()}...`;
+}
+
+/** A2/A3 CHOOSE prompt -- built ONLY from anonymized "Source K" labels + a normalized rationale.
+ *  NEVER contains any provenance string (see assertCakeChoosePromptIsBlind, the programmatic proof
+ *  this file's own header requires) and NEVER contains the raw, un-normalized reasoning text of any
+ *  cut, so it cannot be the same request twice for two different pickers even though the underlying
+ *  evidence pool is the same -- each picker's own per-picker shuffle (A7) also reorders the labels. */
+export function buildCakeChoosePromptText(
+  question: string,
+  options: McOption[],
+  anonymizedPool: { label: string; letter: string; rationale: string }[],
+): string {
+  const optionLines = options.map((o) => `${o.letter}) ${o.text}`).join('\n');
+  const sourceLines = anonymizedPool.map((s) => `- ${s.label} says ${s.letter}: ${s.rationale}`).join('\n');
+  return (
+    `${question.trim()}\n\nOptions:\n${optionLines}\n\n` +
+    `Several independent, anonymized research sources disagree on the answer to this question:\n${sourceLines}\n\n` +
+    `Which option is actually correct? Reply starting with "Answer: <letter>" then a one-sentence reason.`
+  );
+}
+
+const CAKE_PROVENANCE_MARKERS = [
+  'user_perplexity', 'user_google', 'user_claude', 'user_chatgpt', 'user_gemini',
+  'wolfram_alpha', 'specialist_swarm', 'deterministic_compute', 'local_orchestrator', 'ollama',
+];
+
+/** A2/A8's PROGRAMMATIC assertion, not just a comment: throws if the choose prompt leaks a
+ *  provenance string (A3 anonymize requirement) OR contains the verbatim cut prompt/response text
+ *  of any cut (A2 fresh-context requirement). Called before EVERY pick call, for EVERY picker
+ *  (including the orchestrator's own pick, per A8's explicit "assert programmatically... including
+ *  for itself"). A thrown error here is a genuine mechanism failure, never caught-and-ignored by its
+ *  caller -- see runCakeMethodDisagreementResolution's call sites. */
+export function assertCakeChoosePromptIsBlind(choosePrompt: string, cutTextsToExclude: string[]): void {
+  const lower = choosePrompt.toLowerCase();
+  for (const marker of CAKE_PROVENANCE_MARKERS) {
+    if (lower.includes(marker.toLowerCase())) {
+      throw new Error(
+        `CAKE METHOD BLINDING VIOLATION (A3): choose prompt contains provenance marker "${marker}" -- ` +
+        'the blind is cosmetic, not real.',
+      );
+    }
+  }
+  for (const cutText of cutTextsToExclude) {
+    if (cutText && cutText.length > 0 && choosePrompt.includes(cutText)) {
+      throw new Error(
+        'CAKE METHOD BLINDING VIOLATION (A2): choose prompt contains a cut prompt/response verbatim ' +
+        'as a substring -- A2 requires a genuinely fresh context, "forget what you said" is not enough.',
+      );
+    }
+  }
+}
+
+/** A7: the final letter is the PLURALITY of picks. Ties fall through to abstain -- NEVER to
+ *  whichever picker answered first (no positional/temporal tie-break of any kind). Pure. */
+export function tallyCakePicksWithAbstain(
+  pickedLetters: (string | null)[],
+): { chosenLetter: string | null; pickConvergence: number } {
+  const counts = new Map<string, number>();
+  for (const l of pickedLetters) {
+    if (!l) continue;
+    counts.set(l, (counts.get(l) ?? 0) + 1);
+  }
+  if (counts.size === 0) return { chosenLetter: null, pickConvergence: 0 };
+  let maxCount = 0;
+  for (const c of counts.values()) maxCount = Math.max(maxCount, c);
+  const leaders = [...counts.entries()].filter(([, c]) => c === maxCount);
+  return { chosenLetter: leaders.length === 1 ? leaders[0]![0] : null, pickConvergence: counts.size };
+}
+
+/** A12: the cross-signal trace. cutScatter = distinct letters among the CUTS (before picking);
+ *  pickConvergence = distinct letters among the PICKS (after picking). Pure. */
+export function resolveCakeQuadrant(cutScatter: number, pickConvergence: number, pickCount: number): string {
+  if (pickCount === 0) return 'no_picks_available';
+  if (cutScatter <= 1) return 'no_real_cut_disagreement';
+  if (pickConvergence === 1) return 'scatter_resolved_by_pick';
+  return 'scatter_persists_after_pick';
+}
+
+/** A13: the mesh-diversity route allocator -- see this section's own header for the honest
+ *  single-machine-only scope of this pass. Deterministic/seeded (never Math.random()) so it stays
+ *  reproducible AND directly reusable, unchanged, by a future real mesh caller. */
+export const CAKE_LOCAL_ROUTE_POOL: CakeDerivationPath[] = [
+  'local_orchestrator:retrieval_first',
+  'local_orchestrator:reasoning_first',
+];
+export function assignCakeRoutesRoundRobin(
+  participantCount: number,
+  questionRoundIndex: number,
+  routePool: CakeDerivationPath[] = CAKE_LOCAL_ROUTE_POOL,
+): CakeDerivationPath[] {
+  if (participantCount <= 0 || routePool.length === 0) return [];
+  if (participantCount >= routePool.length) return routePool.slice();
+  const start = ((questionRoundIndex % routePool.length) + routePool.length) % routePool.length;
+  const out: CakeDerivationPath[] = [];
+  for (let i = 0; i < participantCount; i++) out.push(routePool[(start + i) % routePool.length]!);
+  return out;
+}
+
+/** Local-orchestrator CUT prompt (A6) -- deliberately carries NO candidate pool, mirroring exactly
+ *  what the existing browser/Wolfram/swarm cuts already did before this file ever saw them. */
+function buildCakeCutPromptText(question: string, options: McOption[], route: CakeDerivationPath): string {
+  const optionLines = options.map((o) => `${o.letter}) ${o.text}`).join('\n');
+  const framing = route === 'local_orchestrator:reasoning_first'
+    ? 'Without assuming any external facts, reason step by step from first principles or by process of elimination, then commit to one answer.'
+    : 'Recall any facts you already know that are directly relevant to this question, list them briefly, then commit to one answer.';
+  return `${question.trim()}\n\nOptions:\n${optionLines}\n\n${framing}\n\nReply starting with "Answer: <letter>" then a one-sentence reason.`;
 }
 
 export interface AuthorityEnsembleOutcome {
@@ -1167,6 +1480,59 @@ export interface AuthorityEnsembleOutcome {
    *          facts anyway even though it did not itself become the accepted candidate -- either way,
    *          the accepted letter is not resting on bare unverified opinion alone. */
   singleSourceUngroundedAccept?: boolean;
+  /** BP141-2 THE CAKE METHOD, OPTIONAL/ADDITIVE. True only when the N-Cut/N-Pick mechanism
+   *  (runCakeMethodDisagreementResolution) actually ran for this question -- i.e. the ensemble's
+   *  authorities still disagreed even with the swarm folded in. Absent on every accept path that
+   *  never reached disagreement ('agree', any 'single_' source, or a deterministic-compute accept).
+   *  Present alongside corroboration==='adjudicated' or 'disagree' (a Cake run that could not resolve a plurality
+   *  still sets this true -- "we ran the mechanism honestly and it abstained" is a different
+   *  signal than "we never ran it"). */
+  cakeMethodUsed?: boolean;
+  /** A9 (REVISED): model identity per CUT, harness-recorded (resolveCakeModelIdentity), in the
+   *  same order as cutDerivations below. Informational only -- NOT the independence unit (see
+   *  cutDerivations/distinctDerivationCount). */
+  cutModels?: string[];
+  /** A9 (REVISED): DERIVATION PATH per CUT, harness-recorded (resolveCakeDerivationPath /
+   *  local-orchestrator route tag) -- THIS is the independence unit Task B's no-consensus solver
+   *  gates on, per A10 (REVISED): "VARIANCE IS NOT INDEPENDENCE." */
+  cutDerivations?: string[];
+  /** A10 (REVISED): count of DISTINCT entries in cutDerivations. Task B's gate requires >= 3;
+   *  below that, Task B must abstain regardless of letter scatter. */
+  distinctDerivationCount?: number;
+  /** A12: distinct LETTERS among the CUTS (before picking). */
+  cutScatter?: number;
+  /** A12: distinct LETTERS among the PICKS (after picking, A7's plurality tally input). */
+  pickConvergence?: number;
+  /** A12: the resulting quadrant label from resolveCakeQuadrant(cutScatter, pickConvergence,
+   *  pickCount) -- 'scatter_resolved_by_pick' | 'scatter_persists_after_pick' |
+   *  'no_real_cut_disagreement' | 'no_picks_available'. */
+  cakeQuadrant?: string;
+  /** A3/A5: the deterministic seed (computeAnonymizedOrderSeed(researchQuery)) used to build every
+   *  picker's own per-picker shuffle this run -- present so a receipt can be independently
+   *  re-derived/audited, never a secret. */
+  anonymizedOrderSeed?: number;
+  /** A4 blindness audit, amended (first amendment) to report PER PARTICIPANT rather than only in
+   *  aggregate -- one picker favoring its own cut is the exact failure this whole mechanism exists
+   *  to prevent, and an aggregate number can hide that. Populated ONLY when cakeMethodUsed is true.
+   *  `pickedOwnLetterWithSelfPresent`/`pickedSameLetterWithSelfAbsent` are null when this picker had
+   *  no own cut in the pool to test (should not normally occur for a picker who also cut). A rate
+   *  at or near 100% true for pickedOwnLetterWithSelfPresent, across many real runs, is the mechanism
+   *  LEAKING -- see this build's own verification report for the honest empirical measurement, never
+   *  claimed as passing without it. */
+  cakeSelfPreferenceAudit?: {
+    pickerKey: string;
+    derivationPath: CakeDerivationPath;
+    ownLetter: string | null;
+    pickedOwnLetterWithSelfPresent: boolean | null;
+    pickedSameLetterWithSelfAbsent: boolean | null;
+  }[];
+  /** Verification-addition (BP141-2 Founder Correction): "report cut agreement broken down BY
+   *  derivation path, so we can see whether two routes that agree did so independently or because
+   *  they collapsed onto the same underlying retrieval" -- and, symmetrically, WHO picked WHAT, so
+   *  the same breakdown is possible for the pick phase. Every real cut and every real pick this run,
+   *  with its derivation path attached. */
+  cakeCuts?: { pickerKey: string; derivationPath: CakeDerivationPath; letter: string }[];
+  cakePicks?: { pickerKey: string; derivationPath: CakeDerivationPath; pickedLetter: string | null }[];
 }
 
 /** BP1xx STRUCTURED-CORROBORATOR GATE: the ONE place that encodes "which authorities count as a
@@ -1245,28 +1611,228 @@ export function resolveConcordanceAcceptance(params: {
   return true; // 'lenient' (and any unrecognized/legacy value) -- no-op, today's exact behavior.
 }
 
-/** Judge prompt for the ONE extra Perplexity call fired only when the ensemble's authorities
- *  disagree -- "if anyone found it, the judge recognizes it" per the Founder's design. Asks for
- *  the letter FIRST (same "Answer: <letter>" sentinel resolveAuthorityLetterMatch's explicit
- *  extractor already looks for) so the judge's own pick is unambiguous, never guessed from
- *  prose. Passed as the bare `question` to runBrowserAuthorityLookup (no mcOptions field) so
- *  buildBrowserAuthorityQueryUrl's bare-question branch sends this text VERBATIM -- it already
- *  contains the full question, options, and candidate breakdown, so it needs no further
- *  wrapping by buildMcAwareQueryText. */
-function buildAdjudicationPromptText(
-  question: string,
-  options: McOption[],
-  candidates: AuthorityEnsembleCandidate[],
-): string {
-  const optionLines = options.map((o) => `${o.letter}) ${o.text}`).join('\n');
-  const candidateLines = candidates
-    .map((c) => `- ${c.authority} says ${c.letter}: ${c.reasoning.slice(0, 200)}`)
-    .join('\n');
-  return (
-    `${question.trim()}\n\nOptions:\n${optionLines}\n\n` +
-    `Independent research assistants disagree on the answer to this question:\n${candidateLines}\n\n` +
-    `Which option is actually correct? Reply starting with "Answer: <letter>" then a one-sentence reason.`
+/** BP141-2 THE CAKE METHOD's live orchestrator -- replaces the old single-Perplexity-judge
+ *  adjudication call entirely (buildAdjudicationPromptText, removed). Called ONLY from
+ *  runAuthorityEnsemble's disagreement branch (the swarm has already been folded in and the
+ *  authorities STILL disagree). Implements A6-A13 for the single-machine case:
+ *
+ *  A6 (ALL CUT): `candidates` (already gathered by the caller with no candidate pool in any of
+ *  their prompts) are reused as cuts, plus a fresh local-orchestrator cut per assigned route
+ *  (assignCakeRoutesRoundRobin -- on 1 machine this returns the full route pool, run sequentially,
+ *  per A13's own "with 1 machine, run the routes sequentially in one box").
+ *
+ *  A7 (ALL PICK): every reachable picker (Perplexity always attempted; Claude/ChatGPT/Gemini if
+ *  opt-in enabled; the local orchestrator) receives the SAME anonymized pool, in ITS OWN
+ *  per-picker shuffle, in a fresh context (a brand-new runBrowserAuthorityLookup/callOllama call
+ *  that never contains the cut exchange). Final letter is the plurality; ties abstain (A7).
+ *
+ *  A8 (orchestrator is mechanical): the orchestrator (this function) collects/anonymizes/
+ *  distributes/tallies and ALSO participates as a cutter+picker like everyone else -- its own pick
+ *  call is asserted blind exactly like every other picker's (assertCakeChoosePromptIsBlind), no
+ *  special-cased leniency for "itself".
+ *
+ *  A4 (blindness audit, amended to per-participant): for every picker whose own cut is present in
+ *  the pool, ALSO fires a second, fresh-context pick call against the SAME pool with that picker's
+ *  own cut removed, and records whether the picked letter changed. This doubles the pick-phase
+ *  network cost but is what makes cakeSelfPreferenceRate auditable per REAL run, not just at
+ *  build time (A4's explicit requirement).
+ *
+ *  A11 (phase-independent timeouts): CUT and PICK are structurally separate try/catch'd steps per
+ *  participant -- a participant whose PICK call fails/throws still keeps its already-recorded CUT
+ *  (it simply contributes no vote to the tally), never voiding the question. */
+export async function runCakeMethodDisagreementResolution(params: {
+  researchQuery: string;
+  mcOptions: McOption[];
+  candidates: AuthorityEnsembleCandidate[];
+  config: CanonicalPlowMcConfig;
+  bridge: BrowserAuthorityBridge;
+  browserLlmOverrides: ReturnType<typeof readBrowserLlmAuthorityEnableOverridesFromSettings>;
+  log: (msg: string) => void;
+}): Promise<{
+  chosenLetter: string | null;
+  acceptedCandidate: AuthorityEnsembleCandidate | null;
+  cakeMethodUsed: true;
+  cutModels: string[];
+  cutDerivations: string[];
+  distinctDerivationCount: number;
+  cutScatter: number;
+  pickConvergence: number;
+  cakeQuadrant: string;
+  anonymizedOrderSeed: number;
+  cakeSelfPreferenceAudit: AuthorityEnsembleOutcome['cakeSelfPreferenceAudit'];
+  cakeCuts: AuthorityEnsembleOutcome['cakeCuts'];
+  cakePicks: AuthorityEnsembleOutcome['cakePicks'];
+}> {
+  const { researchQuery, mcOptions, candidates, config, bridge, browserLlmOverrides, log } = params;
+  const seed = computeAnonymizedOrderSeed(researchQuery);
+
+  // ── A6: build the CUT pool -- reuse existing cuts, add the local orchestrator's own ─────────
+  const cutPool: CakeCutCandidate[] = candidates.map((c) => ({
+    pickerKey: c.authority,
+    derivationPath: resolveCakeDerivationPath(c),
+    modelIdentity: resolveCakeModelIdentity(c),
+    letter: c.letter,
+    reasoning: c.reasoning,
+  }));
+  const cutTranscripts: string[] = candidates.map((c) => c.reasoning);
+  const localRoutes = assignCakeRoutesRoundRobin(CAKE_LOCAL_ROUTE_POOL.length, seed);
+  for (const route of localRoutes) {
+    try {
+      const cutPrompt = buildCakeCutPromptText(researchQuery, mcOptions, route);
+      const raw = await callOllama(cutPrompt, config.ollamaBaseUrl, config.model, 0);
+      cutTranscripts.push(cutPrompt, raw ?? '');
+      const resolved = raw ? resolveAuthorityLetterMatch(raw, mcOptions) : null;
+      if (resolved && raw) {
+        cutPool.push({
+          pickerKey: `local_orchestrator:${route}`,
+          derivationPath: route,
+          modelIdentity: config.model,
+          letter: resolved.letter,
+          reasoning: raw,
+        });
+      }
+      log(`cake-cut ${route}=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter'}`);
+    } catch (err) {
+      log(`cake-cut ${route} threw (non-fatal, cut skipped): ${err}`);
+    }
+  }
+
+  const cutModels = cutPool.map((c) => c.modelIdentity);
+  const cutDerivations = cutPool.map((c) => c.derivationPath);
+  const distinctDerivationCount = new Set(cutDerivations).size;
+  const cutScatter = new Set(cutPool.map((c) => c.letter)).size;
+  const cakeCuts = cutPool.map((c) => ({ pickerKey: c.pickerKey, derivationPath: c.derivationPath, letter: c.letter }));
+
+  // ── A3: anonymize + normalize (labels/order assigned per-picker below, never fixed here) ────
+  const poolForChoose = cutPool.map((c) => ({
+    pickerKey: c.pickerKey,
+    letter: c.letter,
+    rationale: normalizeCakeRationale(c.reasoning),
+  }));
+  function ownsCut(cutPickerKey: string, pickerRootKey: string): boolean {
+    return cutPickerKey === pickerRootKey || cutPickerKey.startsWith(`${pickerRootKey}:`);
+  }
+  function buildLabeledPool(pool: typeof poolForChoose, pickerKey: string, suffix: string) {
+    const shuffled = shuffleCakePoolForPicker(pool, seed, `${pickerKey}${suffix}`);
+    return shuffled.map((c, i) => ({ label: `Source ${i + 1}`, letter: c.letter, rationale: c.rationale }));
+  }
+
+  // ── A7: pickers -- every reachable, promptable participant. Google/Wolfram/swarm are CUT-only
+  //    (no natural single-turn conversational "pick" interface), same as the pre-Cake judge was
+  //    always Perplexity, never Google. ─────────────────────────────────────────────────────────
+  type Picker = { pickerKey: string; derivationPath: CakeDerivationPath; askPick: (p: string) => Promise<string | null> };
+  const pickers: Picker[] = [
+    {
+      pickerKey: 'user_perplexity',
+      derivationPath: 'browser:user_perplexity',
+      askPick: async (p) => {
+        const r = await runBrowserAuthorityLookup(p, { ...config, preferredAuthority: 'user_perplexity' }, bridge);
+        return r ? r.fact : null;
+      },
+    },
+  ];
+  const llmPickerNames: BrowserLlmAuthorityName[] = ['user_claude', 'user_chatgpt', 'user_gemini'];
+  for (const llmName of llmPickerNames) {
+    if (!isBrowserLlmAuthorityEnabled(llmName, browserLlmOverrides)) continue;
+    pickers.push({
+      pickerKey: llmName,
+      derivationPath: `browser:${llmName}`,
+      askPick: async (p) => {
+        const r = await runBrowserAuthorityLookup(
+          p, { researchArmMode: true, researchArmBrowserAuthority: true, preferredAuthority: llmName }, bridge,
+        );
+        return r ? r.fact : null;
+      },
+    });
+  }
+  pickers.push({
+    pickerKey: 'local_orchestrator',
+    derivationPath: 'local_orchestrator:pick',
+    askPick: async (p) => callOllama(p, config.ollamaBaseUrl, config.model, 0),
+  });
+
+  const picks: { pickerKey: string; derivationPath: CakeDerivationPath; pickedLetter: string | null }[] = [];
+  const cakeSelfPreferenceAudit: NonNullable<AuthorityEnsembleOutcome['cakeSelfPreferenceAudit']> = [];
+
+  for (const picker of pickers) {
+    try {
+      // A2/A8 fresh-context pick, full pool.
+      const labeledFull = buildLabeledPool(poolForChoose, picker.pickerKey, '::pick');
+      const choosePromptFull = buildCakeChoosePromptText(researchQuery, mcOptions, labeledFull);
+      assertCakeChoosePromptIsBlind(choosePromptFull, cutTranscripts);
+      const responseFull = await picker.askPick(choosePromptFull);
+      const resolvedFull = responseFull ? resolveAuthorityLetterMatch(responseFull, mcOptions) : null;
+      picks.push({ pickerKey: picker.pickerKey, derivationPath: picker.derivationPath, pickedLetter: resolvedFull?.letter ?? null });
+      log(`cake-pick ${picker.pickerKey}=${resolvedFull ? resolvedFull.letter : 'no-letter'}`);
+
+      // A4 blindness audit -- fresh-context pick, own cut(s) removed, for THIS picker only.
+      const poolWithoutSelf = poolForChoose.filter((c) => !ownsCut(c.pickerKey, picker.pickerKey));
+      const ownCut = cutPool.find((c) => ownsCut(c.pickerKey, picker.pickerKey));
+      if (ownCut && poolWithoutSelf.length !== poolForChoose.length) {
+        const labeledNoSelf = buildLabeledPool(poolWithoutSelf, picker.pickerKey, '::audit_no_self');
+        const choosePromptNoSelf = buildCakeChoosePromptText(researchQuery, mcOptions, labeledNoSelf);
+        assertCakeChoosePromptIsBlind(choosePromptNoSelf, cutTranscripts);
+        const responseNoSelf = await picker.askPick(choosePromptNoSelf);
+        const resolvedNoSelf = responseNoSelf ? resolveAuthorityLetterMatch(responseNoSelf, mcOptions) : null;
+        cakeSelfPreferenceAudit.push({
+          pickerKey: picker.pickerKey,
+          derivationPath: picker.derivationPath,
+          ownLetter: ownCut.letter,
+          pickedOwnLetterWithSelfPresent: resolvedFull ? resolvedFull.letter === ownCut.letter : null,
+          pickedSameLetterWithSelfAbsent: resolvedNoSelf ? resolvedNoSelf.letter === ownCut.letter : null,
+        });
+      } else {
+        cakeSelfPreferenceAudit.push({
+          pickerKey: picker.pickerKey,
+          derivationPath: picker.derivationPath,
+          ownLetter: null,
+          pickedOwnLetterWithSelfPresent: null,
+          pickedSameLetterWithSelfAbsent: null,
+        });
+      }
+    } catch (err) {
+      // A11: this picker's PICK failed/threw -- it keeps its already-recorded CUT (still in
+      // cutPool/cakeCuts above), it simply contributes no vote to the tally below.
+      log(`cake-pick ${picker.pickerKey} threw (non-fatal, pick skipped, cut retained): ${err}`);
+    }
+  }
+
+  const { chosenLetter, pickConvergence } = tallyCakePicksWithAbstain(picks.map((p) => p.pickedLetter));
+  const cakeQuadrant = resolveCakeQuadrant(cutScatter, pickConvergence, picks.length);
+  log(
+    `cake-method result: chosenLetter=${chosenLetter ?? 'ABSTAIN'} cutScatter=${cutScatter} ` +
+    `pickConvergence=${pickConvergence} distinctDerivationCount=${distinctDerivationCount} quadrant=${cakeQuadrant}`,
   );
+
+  const acceptedCandidate: AuthorityEnsembleCandidate | null = chosenLetter
+    ? {
+        authority: 'cake_pick_plurality',
+        letter: chosenLetter,
+        reasoning:
+          `Cake Method plurality pick ${chosenLetter} across ${picks.length} picker(s) ` +
+          `[${picks.map((p) => `${p.pickerKey}:${p.pickedLetter ?? 'abstain'}`).join(', ')}], ` +
+          `derived from ${cutPool.length} independent cut(s) ` +
+          `[${cutPool.map((c) => `${c.pickerKey}:${c.letter}(${c.derivationPath})`).join(', ')}].`,
+        sourceUrl: '',
+        method: 'cake_method_plurality',
+      }
+    : null;
+
+  return {
+    chosenLetter,
+    acceptedCandidate,
+    cakeMethodUsed: true,
+    cutModels,
+    cutDerivations,
+    distinctDerivationCount,
+    cutScatter,
+    pickConvergence,
+    cakeQuadrant,
+    anonymizedOrderSeed: seed,
+    cakeSelfPreferenceAudit,
+    cakeCuts,
+    cakePicks: picks,
+  };
 }
 
 /** BP1xx Authority-Ensemble-swarm-fold-in: reuses the EXACT same specialist-swarm-to-voter
@@ -2179,36 +2745,56 @@ async function runAuthorityEnsemble(params: {
     );
   }
 
-  // Still all disagree even with the swarm folded in -- ADJUDICATE with ONE extra Perplexity
-  // call, never more than one, over the FULL candidate set (browser/Wolfram + swarm).
-  // "If anyone found it, the judge recognizes it."
-  log(`disagreement persists among ${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ')} (swarm included) -- firing adjudication`);
+  // Still all disagree even with the swarm folded in -- BP141-2 THE CAKE METHOD (N-Cut/N-Pick)
+  // resolves it: every reachable participant cuts (blind, no candidate pool) AND picks (blind,
+  // anonymized+shuffled+normalized pool, fresh context) -- never a single disputant judging its
+  // own dispute. See runCakeMethodDisagreementResolution's own doc comment for A6-A13.
+  log(`disagreement persists among ${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ')} (swarm included) -- firing THE CAKE METHOD`);
   try {
-    const judgePrompt = buildAdjudicationPromptText(researchQuery, mcOptions, candidates);
-    const judgeResult = await runBrowserAuthorityLookup(
-      judgePrompt, { ...config, preferredAuthority: 'user_perplexity' }, bridge,
-    );
-    const judgeResolved = judgeResult ? resolveAuthorityLetterMatch(judgeResult.fact, mcOptions) : null;
-    if (judgeResolved && judgeResult) {
-      const judgeCandidate: AuthorityEnsembleCandidate = {
-        authority: 'user_perplexity_judge', letter: judgeResolved.letter, reasoning: judgeResult.fact,
-        sourceUrl: judgeResult.sourceUrl, method: judgeResolved.method,
-      };
-      log(`adjudicated=${judgeCandidate.letter}(${judgeCandidate.method})`);
+    const cake = await runCakeMethodDisagreementResolution({
+      researchQuery, mcOptions, candidates, config, bridge, browserLlmOverrides, log,
+    });
+    if (cake.chosenLetter && cake.acceptedCandidate) {
       return {
-        chosenLetter: judgeCandidate.letter,
+        chosenLetter: cake.chosenLetter,
         corroboration: 'adjudicated',
         candidates,
-        acceptedCandidates: [judgeCandidate],
+        acceptedCandidates: [cake.acceptedCandidate],
         adjudicationAttempted: true,
         swarmFired: true,
         swarmReceipt,
         reasoningFactComputeReceipt,
+        cakeMethodUsed: cake.cakeMethodUsed,
+        cutModels: cake.cutModels,
+        cutDerivations: cake.cutDerivations,
+        distinctDerivationCount: cake.distinctDerivationCount,
+        cutScatter: cake.cutScatter,
+        pickConvergence: cake.pickConvergence,
+        cakeQuadrant: cake.cakeQuadrant,
+        anonymizedOrderSeed: cake.anonymizedOrderSeed,
+        cakeSelfPreferenceAudit: cake.cakeSelfPreferenceAudit,
+        cakeCuts: cake.cakeCuts,
+        cakePicks: cake.cakePicks,
       };
     }
-    log('adjudication returned no resolvable letter -- honest fall-through');
+    log('cake method resolved no plurality letter -- honest fall-through (abstain)');
+    return {
+      chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [],
+      adjudicationAttempted: true, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt,
+      cakeMethodUsed: cake.cakeMethodUsed,
+      cutModels: cake.cutModels,
+      cutDerivations: cake.cutDerivations,
+      distinctDerivationCount: cake.distinctDerivationCount,
+      cutScatter: cake.cutScatter,
+      pickConvergence: cake.pickConvergence,
+      cakeQuadrant: cake.cakeQuadrant,
+      anonymizedOrderSeed: cake.anonymizedOrderSeed,
+      cakeSelfPreferenceAudit: cake.cakeSelfPreferenceAudit,
+      cakeCuts: cake.cakeCuts,
+      cakePicks: cake.cakePicks,
+    };
   } catch (err) {
-    log(`adjudication threw (non-fatal): ${err}`);
+    log(`cake method threw (non-fatal): ${err}`);
   }
 
   return { chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [], adjudicationAttempted: true, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt };
@@ -3973,6 +4559,19 @@ export async function runCanonicalPlowMcAnswer(
             structuredCorroborator: ensembleOutcome.structuredCorroborator,
             independentCorroboration: ensembleOutcome.independentCorroboration,
             singleSourceUngroundedAccept: ensembleOutcome.singleSourceUngroundedAccept,
+            // BP141-2 THE CAKE METHOD: mirrors ensembleOutcome's own fields of the same name --
+            // present only when the disagreement branch actually ran the Cake mechanism.
+            cakeMethodUsed: ensembleOutcome.cakeMethodUsed,
+            cutModels: ensembleOutcome.cutModels,
+            cutDerivations: ensembleOutcome.cutDerivations,
+            distinctDerivationCount: ensembleOutcome.distinctDerivationCount,
+            cutScatter: ensembleOutcome.cutScatter,
+            pickConvergence: ensembleOutcome.pickConvergence,
+            cakeQuadrant: ensembleOutcome.cakeQuadrant,
+            anonymizedOrderSeed: ensembleOutcome.anonymizedOrderSeed,
+            cakeSelfPreferenceAudit: ensembleOutcome.cakeSelfPreferenceAudit,
+            cakeCuts: ensembleOutcome.cakeCuts,
+            cakePicks: ensembleOutcome.cakePicks,
             // BP140 Yoke: the full candidate set (winner AND losers), for the Coroner's
             // per-candidate factVerdict persist -- see CanonicalPlowMcResult.ensembleCandidates.
             ensembleCandidates: ensembleOutcome.candidates,
@@ -5267,6 +5866,22 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
       // comment for the full rationale) -- the letter itself is never changed by this flag; it
       // exists purely so the Coroner can see and de-confidence a thin-evidence accept.
       singleSourceUngroundedAccept: plowResult.singleSourceUngroundedAccept,
+      // BP141-2 THE CAKE METHOD (N-Cut/N-Pick), same not-yet-consumed-by-classifyCore convention
+      // as structuredCorroborator/independentCorroboration above -- present only when
+      // plowResult.cakeMethodUsed is true (the ensemble's authorities disagreed even with the
+      // swarm folded in, and the Cake mechanism ran to resolve it). See
+      // AuthorityEnsembleOutcome's own doc comments (A6-A13) for the full field-by-field rationale.
+      cakeMethodUsed: plowResult.cakeMethodUsed,
+      cutModels: plowResult.cutModels,
+      cutDerivations: plowResult.cutDerivations,
+      distinctDerivationCount: plowResult.distinctDerivationCount,
+      cutScatter: plowResult.cutScatter,
+      pickConvergence: plowResult.pickConvergence,
+      cakeQuadrant: plowResult.cakeQuadrant,
+      anonymizedOrderSeed: plowResult.anonymizedOrderSeed,
+      cakeSelfPreferenceAudit: plowResult.cakeSelfPreferenceAudit,
+      cakeCuts: plowResult.cakeCuts,
+      cakePicks: plowResult.cakePicks,
     };
     console.log(`[${logLabel}] plow-answered letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
     return { answer, plowTrace };
