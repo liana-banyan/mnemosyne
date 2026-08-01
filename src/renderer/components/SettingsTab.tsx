@@ -908,7 +908,15 @@ const cbStyles = {
 // zero runtime dispatch behavior. If specialist_adapters.ts's SPECIALIST_METADATA ever changes
 // tier/costNote for an existing name, or SpecialistName grows a 14th entry, update this list to
 // match; nothing enforces the two staying in sync automatically.
-type AuthorityTier = 'standard' | 'premium';
+// (this build pass) widened 'standard' | 'premium' -> add 'free': mirrors
+// specialist_adapters.ts's BROWSER_LLM_AUTHORITY_METADATA widening user_claude's tier from
+// 'premium' to 'free' (it now runs against the user's FREE, rate-limited claude.ai/new web
+// session via the embedded nexus browser, never the metered Anthropic API -- see that file's
+// BrowserLlmAuthorityMetadata comment for the full rationale). 'free' is cost-only, NOT
+// default-on: authorityDefaultEnabled() below only returns true for the literal 'standard', so a
+// 'free' row still defaults OFF/opt-in, same as 'premium' -- widening this union does not change
+// that guarantee.
+type AuthorityTier = 'standard' | 'premium' | 'free';
 
 interface AuthoritySourceInfo {
   key: string; // matches a SpecialistName in specialist_adapters.ts
@@ -941,11 +949,18 @@ const AUTHORITY_SOURCES: AuthoritySourceInfo[] = [
   // Keys match BrowserLlmAuthorityName, NOT SpecialistName (these are not REST specialist
   // adapters) -- they reuse this SAME mnem_drt_specialists Record<string, boolean> purely as a
   // generic string-keyed enable-override map, which is all isBrowserLlmAuthorityEnabled() /
-  // readBrowserLlmAuthorityEnableOverridesFromSettings() ever needed from it. PREMIUM/PAID,
-  // default OFF -- fires only once the user explicitly checks the box below.
+  // readBrowserLlmAuthorityEnableOverridesFromSettings() ever needed from it. ChatGPT/Gemini
+  // remain PREMIUM/PAID stubs (no live bridge yet). ALL THREE default OFF regardless of tier --
+  // fires only once the user explicitly opts in below (see authorityDefaultEnabled()).
   { key: 'user_chatgpt',  label: 'ChatGPT (browser)', tier: 'premium', domains: ['all'], costNote: 'Uses your own logged-in ChatGPT session (ChatGPT Plus or equivalent). Never a metered OpenAI API key.' },
   { key: 'user_gemini',   label: 'Gemini (browser)',  tier: 'premium', domains: ['all'], costNote: 'Uses your own logged-in Gemini session (Gemini Advanced or equivalent). Never a metered Google AI API key.' },
-  { key: 'user_claude',   label: 'Claude (browser)',  tier: 'premium', domains: ['all'], costNote: 'Uses your own logged-in Claude.ai session (Claude Pro or equivalent). Never the metered Anthropic API.' },
+  // (this build pass) relabeled premium -> free: mirrors specialist_adapters.ts's
+  // BROWSER_LLM_AUTHORITY_METADATA.user_claude, which was widened from 'premium' to 'free' now
+  // that it has a real live bridge (queryClaudeBrowserAuthority) running against the user's FREE,
+  // rate-limited claude.ai/new web session -- never the paid Claude Pro tier and never the
+  // metered Anthropic API. Still default OFF/opt-in (authorityDefaultEnabled() only returns true
+  // for 'standard'); "free" describes cost, not default-on-ness.
+  { key: 'user_claude',   label: 'Claude (browser)',  tier: 'free', domains: ['all'], costNote: 'Free, rate-limited: uses your own logged-in claude.ai session (free plan; Claude Pro also works if you have it) via the embedded nexus browser. Not the paid Anthropic API.' },
 ];
 
 /** Mirrors isAuthorityEnabled()'s default-by-tier rule: standard=on, premium=off. */
@@ -963,7 +978,10 @@ type EbletQuota = '10mb' | '100mb' | '1gb' | 'unlimited';
 // already uses -- e.g. Sku/EbletQuota above are not imported from main either).
 type ConcordanceStrictness = 'lenient' | 'require_two' | 'require_majority';
 
-interface MnemDrtSettings {
+// Exported (this build pass) so ProveItWorksTab.tsx's Browser Authority enable-toggles can reuse
+// the SAME load/save/persist path as this file's own MnemDrtPanel instead of inventing a second,
+// possibly-diverging one -- see that file's Browser Authority section for the call sites.
+export interface MnemDrtSettings {
   sku: Sku;
   mnem_drt_enabled: boolean;
   /** Keyed by SpecialistName (see specialist_adapters.ts). A key absent from this map falls
@@ -1004,7 +1022,7 @@ const CONCORDANCE_STRICTNESS_OPTIONS: Array<{ id: ConcordanceStrictness; label: 
   { id: 'require_majority', label: 'Require majority' },
 ];
 
-function loadMnemDrt(): MnemDrtSettings {
+export function loadMnemDrt(): MnemDrtSettings {
   try {
     const raw = localStorage.getItem('mnemo_mnem_drt');
     if (raw) return { ...DEFAULT_MNEM_DRT, ...JSON.parse(raw) };
@@ -1012,11 +1030,11 @@ function loadMnemDrt(): MnemDrtSettings {
   return { ...DEFAULT_MNEM_DRT };
 }
 
-function saveMnemDrt(s: MnemDrtSettings): void {
+export function saveMnemDrt(s: MnemDrtSettings): void {
   localStorage.setItem('mnemo_mnem_drt', JSON.stringify(s));
 }
 
-async function persistMnemDrtToBackend(s: MnemDrtSettings): Promise<void> {
+export async function persistMnemDrtToBackend(s: MnemDrtSettings): Promise<void> {
   try {
     // BP1xx Pawn Authority List Phase 1 UI fix: the previous call here targeted
     // `amplify.saveAiDispatchSettings`, which is not exposed anywhere in preload.ts (the real
@@ -1154,7 +1172,12 @@ function MnemDrtPanel() {
           <div style={{ fontSize: 9, fontWeight: 700, color: '#6ee7b7', marginBottom: 4, letterSpacing: 0.4 }}>
             STANDARD (FREE) -- ON BY DEFAULT
           </div>
-          {AUTHORITY_SOURCES.filter((src) => src.tier === 'standard').map((src) => {
+          {/* 'free' (currently just user_claude) renders in this STANDARD group per Founder
+              directive -- it's cost-free, just like the entries above -- but still defaults OFF
+              (authorityDefaultEnabled() only ever returns true for 'standard'), so it gets its
+              own "(opt-in)" annotation below rather than silently claiming "on by default" like
+              the section header above it. */}
+          {AUTHORITY_SOURCES.filter((src) => src.tier === 'standard' || src.tier === 'free').map((src) => {
             const forceOn = isFull && src.key === 'wikipedia';
             const checked = forceOn
               ? true
@@ -1174,7 +1197,9 @@ function MnemDrtPanel() {
                 <span style={{ fontSize: 10, color: '#94a3b8' }}>
                   {src.label}
                   {forceOn ? <span style={{ fontSize: 9, color: '#475569', marginLeft: 4 }}>(always on for FULL)</span> : null}
+                  {!forceOn && src.tier === 'free' ? <span style={{ fontSize: 9, color: '#475569', marginLeft: 4 }}>(opt-in -- off by default)</span> : null}
                   <span style={{ display: 'block', fontSize: 9, color: '#475569' }}>{src.domains.join(', ')}</span>
+                  {src.tier === 'free' ? <span style={{ display: 'block', fontSize: 9, color: '#64748b', fontStyle: 'italic' as const }}>{src.costNote}</span> : null}
                 </span>
               </label>
             );

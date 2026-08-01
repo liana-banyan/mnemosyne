@@ -275,12 +275,12 @@ declare global {
         researchArmBrowserAuthority: boolean,
       ) => Promise<{ ok: boolean; enabled: boolean }>;
       openNexusAuthoritySignIn?: (
-        authority: 'user_google' | 'user_perplexity',
+        authority: 'user_google' | 'user_perplexity' | 'user_claude',
       ) => Promise<{ ok: boolean; reason: string | null }>;
       hideNexusAuthoritySession?: () => Promise<{ ok: boolean }>;
       checkNexusAuthoritySignInStatus?: () => Promise<{
         enabled: boolean;
-        statuses: Array<{ authority: 'user_google' | 'user_perplexity'; signedIn: boolean; reason: string; checkedAt: string }>;
+        statuses: Array<{ authority: 'user_google' | 'user_perplexity' | 'user_claude'; signedIn: boolean; reason: string; checkedAt: string }>;
       }>;
       // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point.
       nexusAskLookupFact?: (question: string) => Promise<{
@@ -314,6 +314,38 @@ declare global {
         error?: string;
       }>;
       onCoronerProgress?: (callback: (msg: string) => void) => (() => void);
+      // BP139 Founder Yoke: Answer Coroner over the CURRENT run's own outcomes (no network
+      // call). See src/main/plow/answer_coroner.ts's LocalCoronerOutcomeInput.
+      runAnswerCoronerOnLocalOutcomes?: (opts: {
+        outcomes: Array<{
+          question_id: number;
+          question: string;
+          category: string;
+          correctLetter: string;
+          parsedLetter: string | null;
+          isCorrect: boolean;
+          isAbstain?: boolean;
+          answeredBy?: string | null;
+          peerId?: string | null;
+          machineLabel?: string | null;
+          latencyMs?: number | null;
+          plowTrace?: Record<string, unknown> | null;
+        }>;
+      }) => Promise<{
+        ok: boolean;
+        roundup?: {
+          runAt: string;
+          totalRecords: number;
+          correctableWrongs: number;
+          honestAbstains: number;
+          wrongTotal: number;
+          rightTotal: number;
+          abstainTotal: number;
+          byClass: Record<string, unknown[]>;
+          prioritizedFixList: Array<{ answerClass: string; count: number; exemplars: unknown[] }>;
+        };
+        error?: string;
+      }>;
       // On-Deck Master-of-Ceremonies (BP037)
       onDeckList?: () => Promise<{
         sequential: OnDeckItem[];

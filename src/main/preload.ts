@@ -653,7 +653,7 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.invoke('nexus-authority-set-flags', { researchArmMode, researchArmBrowserAuthority }),
 
   openNexusAuthoritySignIn: (
-    authority: 'user_google' | 'user_perplexity',
+    authority: 'user_google' | 'user_perplexity' | 'user_claude',
   ): Promise<{ ok: boolean; reason: string | null }> =>
     ipcRenderer.invoke('nexus-authority-open-signin', { authority }),
 
@@ -662,7 +662,7 @@ contextBridge.exposeInMainWorld('amplify', {
 
   checkNexusAuthoritySignInStatus: (): Promise<{
     enabled: boolean;
-    statuses: Array<{ authority: 'user_google' | 'user_perplexity'; signedIn: boolean; reason: string; checkedAt: string }>;
+    statuses: Array<{ authority: 'user_google' | 'user_perplexity' | 'user_claude'; signedIn: boolean; reason: string; checkedAt: string }>;
   }> => ipcRenderer.invoke('nexus-authority-check-signin-status'),
 
   // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point. Wraps
@@ -1672,6 +1672,30 @@ contextBridge.exposeInMainWorld('amplify', {
     return () => ipcRenderer.removeListener('plow:coroner-progress', handler);
   },
 
+  // BP139 Founder Yoke: Answer Coroner over the CURRENT run's own outcomes (no network call --
+  // classifies the QuestionOutcome[] already held by the renderer). See
+  // src/main/plow/answer_coroner.ts's runAnswerCoronerOnLocalOutcomes.
+  runAnswerCoronerOnLocalOutcomes: (opts: {
+    outcomes: Array<{
+      question_id: number;
+      question: string;
+      category: string;
+      correctLetter: string;
+      parsedLetter: string | null;
+      isCorrect: boolean;
+      isAbstain?: boolean;
+      answeredBy?: string | null;
+      peerId?: string | null;
+      machineLabel?: string | null;
+      latencyMs?: number | null;
+      plowTrace?: Record<string, unknown> | null;
+    }>;
+  }): Promise<{
+    ok: boolean;
+    roundup?: unknown;
+    error?: string;
+  }> => ipcRenderer.invoke('plow:run-answer-coroner-local', opts),
+
   // ── BP082 v0.3.1 — 3-condition Mesh Comparison ───────────────────────────
 
   runMeshComparison: (config: {
@@ -2143,12 +2167,12 @@ declare global {
         researchArmBrowserAuthority: boolean,
       ) => Promise<{ ok: boolean; enabled: boolean }>;
       openNexusAuthoritySignIn?: (
-        authority: 'user_google' | 'user_perplexity',
+        authority: 'user_google' | 'user_perplexity' | 'user_claude',
       ) => Promise<{ ok: boolean; reason: string | null }>;
       hideNexusAuthoritySession?: () => Promise<{ ok: boolean }>;
       checkNexusAuthoritySignInStatus?: () => Promise<{
         enabled: boolean;
-        statuses: Array<{ authority: 'user_google' | 'user_perplexity'; signedIn: boolean; reason: string; checkedAt: string }>;
+        statuses: Array<{ authority: 'user_google' | 'user_perplexity' | 'user_claude'; signedIn: boolean; reason: string; checkedAt: string }>;
       }>;
       // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point.
       nexusAskLookupFact?: (question: string) => Promise<{
