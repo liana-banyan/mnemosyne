@@ -18,7 +18,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { loadNexusAuthoritySettings } from './nexus_authority_settings_store';
 
-type AuthorityKey = 'user_google' | 'user_perplexity' | 'user_claude';
+// BP140-K4: widened from 3 to 5 members (chatgpt/gemini added). Kept as an independent literal
+// union here rather than a cross-layer import of the shared BrowserAuthorityName -- same
+// convention this file's own header note already documents for every renderer-side setting type
+// on this page (no cross-Electron-boundary import).
+type AuthorityKey = 'user_google' | 'user_perplexity' | 'user_claude' | 'user_chatgpt' | 'user_gemini';
 
 interface AuthorityRowState {
   status: 'unknown' | 'checking' | 'signed_in' | 'not_signed_in';
@@ -29,6 +33,8 @@ const AUTHORITY_LABELS: Record<AuthorityKey, string> = {
   user_google: 'Google',
   user_perplexity: 'Perplexity',
   user_claude: 'Claude',
+  user_chatgpt: 'ChatGPT',
+  user_gemini: 'Gemini',
 };
 
 const INITIAL_ROW_STATE: AuthorityRowState = { status: 'unknown', reason: null };
@@ -40,6 +46,8 @@ export function NexusAuthoritySignInPanel() {
     user_google: INITIAL_ROW_STATE,
     user_perplexity: INITIAL_ROW_STATE,
     user_claude: INITIAL_ROW_STATE,
+    user_chatgpt: INITIAL_ROW_STATE,
+    user_gemini: INITIAL_ROW_STATE,
   });
   const [sessionOpen, setSessionOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -87,6 +95,8 @@ export function NexusAuthoritySignInPanel() {
       user_google: { ...prev.user_google, status: 'checking' },
       user_perplexity: { ...prev.user_perplexity, status: 'checking' },
       user_claude: { ...prev.user_claude, status: 'checking' },
+      user_chatgpt: { ...prev.user_chatgpt, status: 'checking' },
+      user_gemini: { ...prev.user_gemini, status: 'checking' },
     }));
     try {
       const result = await window.amplify?.checkNexusAuthoritySignInStatus?.();
@@ -96,12 +106,14 @@ export function NexusAuthoritySignInPanel() {
           user_google: INITIAL_ROW_STATE,
           user_perplexity: INITIAL_ROW_STATE,
           user_claude: INITIAL_ROW_STATE,
+          user_chatgpt: INITIAL_ROW_STATE,
+          user_gemini: INITIAL_ROW_STATE,
         };
         for (const s of result.statuses) {
           // Never fabricate "signed in" -- the probe's own honest boolean is the ONLY thing
           // that can set status to 'signed_in'; every other outcome (including a malformed or
           // missing entry) falls through to 'not_signed_in'.
-          next[s.authority] = { status: s.signedIn ? 'signed_in' : 'not_signed_in', reason: s.reason };
+          next[s.authority as AuthorityKey] = { status: s.signedIn ? 'signed_in' : 'not_signed_in', reason: s.reason };
         }
         setRows(next);
       }
@@ -110,6 +122,8 @@ export function NexusAuthoritySignInPanel() {
         user_google: { status: 'not_signed_in', reason: 'probe_call_failed' },
         user_perplexity: { status: 'not_signed_in', reason: 'probe_call_failed' },
         user_claude: { status: 'not_signed_in', reason: 'probe_call_failed' },
+        user_chatgpt: { status: 'not_signed_in', reason: 'probe_call_failed' },
+        user_gemini: { status: 'not_signed_in', reason: 'probe_call_failed' },
       });
     } finally {
       setBusy(false);
@@ -125,9 +139,9 @@ export function NexusAuthoritySignInPanel() {
       <div style={s.sectionHeader}>Authorities (Nexus sign-in)</div>
       <div style={s.card}>
         <div style={s.introText}>
-          Sign into your own Google, Perplexity, and Claude accounts once, in a window that opens
-          visibly for this purpose only -- the app never sees your password, and every lookup
-          afterward runs against YOUR logged-in session, at your own $0 quota.
+          Sign into your own Google, Perplexity, Claude, ChatGPT, and Gemini accounts once, in a
+          window that opens visibly for this purpose only -- the app never sees your password,
+          and every lookup afterward runs against YOUR logged-in session, at your own $0 quota.
         </div>
 
         {!flagsEnabled && (
@@ -138,7 +152,7 @@ export function NexusAuthoritySignInPanel() {
         )}
 
         <div style={{ ...s.armList, opacity: flagsEnabled ? 1 : 0.45 }}>
-          {(['user_google', 'user_perplexity', 'user_claude'] as AuthorityKey[]).map((authority) => {
+          {(['user_google', 'user_perplexity', 'user_claude', 'user_chatgpt', 'user_gemini'] as AuthorityKey[]).map((authority) => {
             const row = rows[authority];
             const pillLabel =
               row.status === 'checking' ? 'Checking…' :

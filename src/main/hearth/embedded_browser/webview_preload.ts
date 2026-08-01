@@ -177,7 +177,9 @@ function attachEnterInterceptor(): void {
 // than glossed over. A selector miss is reported as `success: false` with no fabricated
 // snippet/URL, never silently coerced into a fake success.
 
-type BrowserAuthorityName = 'user_google' | 'user_perplexity' | 'user_claude';
+// BP140-K4: 'user_chatgpt' | 'user_gemini' added -- both wired below via the generic interactive
+// driver (runGenericInteractiveQuery), mirroring claude.ai's own hand-written driver shape.
+type BrowserAuthorityName = 'user_google' | 'user_perplexity' | 'user_claude' | 'user_chatgpt' | 'user_gemini';
 
 interface BrowserAuthorityRunQueryRequest {
   query: string;
@@ -815,18 +817,454 @@ function runClaudeInteractiveQuery(promptText: string): void {
   }
 }
 
-ipcRenderer.on('browser-authority-run-interactive-query', (_event, payload: BrowserAuthorityRunInteractiveQueryRequest) => {
-  logInjectionEvent('claude_interactive_query_received', { authority: payload.authority, url: window.location.href });
-  if (payload.authority !== 'user_claude') {
-    // Only claude.ai is wired to the interactive path this build pass -- any other authority
-    // arriving on this channel is a caller bug, not a scrape failure; report honestly rather
-    // than attempting Claude-specific selectors against an unrelated vendor's page.
+// ─── BP140-K4: generic interactive browser-authority driver (ChatGPT / Gemini) ──────────────
+// ADDITIVE ONLY, same "unreachable unless the new channel is sent" guarantee as every block
+// above. Mirrors claude.ai's own hand-written driver (runClaudeInteractiveQuery and its
+// CLAUDE_*-prefixed helpers above) EXACTLY in shape -- composer find -> type -> submit -> poll
+// for stream completion -> resilient tier a/b/c scrape -> bounded dom_snapshot on empty scrape
+// -> honest result. Factored into one generic runner parameterized by a small per-vendor
+// selector config instead of two more ~250-line hand-copies of the Claude block, so a selector
+// fix for one vendor can never accidentally be applied to the other and the lifecycle logic
+// itself only has to be correct in one place. This does NOT touch or reuse a single line of the
+// CLAUDE_* constants/functions above -- claude.ai's own driver is completely untouched by this
+// addition; it only reuses the vendor-agnostic shared helpers (findFirstMatch,
+// lastNonEmptyTextMatch, isEchoedPrompt, setComposerText, captureDomSnapshot,
+// RESILIENT_TEXT_MIN_LENGTH, CLAUDE_INTERACTIVE_*_MS budgets, CLAUDE_COMPOSER_FIND_*_MS budgets)
+// that already carried no vendor-specific selector inside them.
+//
+// HONESTY FIREWALL (same bar as every block above): every selector below is a best-effort
+// heuristic against chatgpt.com's / gemini.google.com's rendered DOM as of this build pass,
+// researched from public DOM-selector references (chatgpt.com's `data-message-author-role`
+// attribute and `#prompt-textarea` id are documented as stable across multiple redesigns;
+// Gemini's Quill-based `.ql-editor` composer and `model-response`/`message-content` custom
+// elements are documented as more stable than its obfuscated Angular class names) --
+// UNVERIFIED against a real logged-in session (no live ChatGPT/Gemini credentials available to
+// this build pass). A composer miss, a submit miss, or a scrape miss is reported as
+// `success: false` with no fabricated snippet/URL; there is no code path in this block that
+// invents a placeholder answer. On an empty scrape, the SAME captureDomSnapshot() diagnostic the
+// Claude block already uses (fully vendor-agnostic, no change needed) fires so the real answer
+// DOM prints for the next selector-pinning pass.
+
+interface InteractiveAuthorityDriverConfig {
+  authority: 'user_chatgpt' | 'user_gemini';
+  /** Log-event prefix per the BP140-K4 spec: 'chatgpt_interactive' / 'gemini_interactive'. */
+  logPrefix: string;
+  composerSelectors: string[];
+  sendButtonSelectors: string[];
+  /** Presence of ANY of these means the assistant turn is still streaming (mirrors
+   *  CLAUDE_STOP_BUTTON_SELECTORS' role exactly). */
+  streamingIndicatorSelectors: string[];
+  /** Tier (a): most-specific assistant-message selectors, tried first. */
+  assistantMessageSelectorsTierA: string[];
+  /** Tier (b)/(c): broader containers, mirrors CLAUDE_FALLBACK_MESSAGE_SELECTORS' role. */
+  fallbackMessageSelectorsTierB: string[];
+  /** Best-effort sign-in-wall markers, mirrors CLAUDE_SIGNIN_MARKER_SELECTORS' role. */
+  signInMarkerSelectors: string[];
+  /** Regex tested against window.location.href; a match means "still on a login page". */
+  signInUrlPattern: RegExp;
+}
+
+// ChatGPT selectors -- tier a: [data-message-author-role="assistant"] is OpenAI's own stable
+// data attribute (documented stable across multiple redesigns); #prompt-textarea is the
+// documented-stable composer id (a contenteditable div, not a real <textarea>, despite the id).
+const CHATGPT_COMPOSER_SELECTORS = [
+  '#prompt-textarea',
+  'div.ProseMirror[contenteditable="true"]',
+  'div[contenteditable="true"][data-placeholder]',
+  'div[contenteditable="true"][role="textbox"]',
+  'div[contenteditable="true"]',
+];
+
+const CHATGPT_SEND_BUTTON_SELECTORS = [
+  'button[data-testid="send-button"]',
+  'button[aria-label*="Send" i]',
+  'form button[type="submit"]',
+];
+
+const CHATGPT_STOP_BUTTON_SELECTORS = [
+  'button[data-testid="stop-button"]',
+  'button[aria-label*="Stop" i]',
+];
+
+const CHATGPT_ASSISTANT_MESSAGE_SELECTORS_TIER_A = [
+  '[data-message-author-role="assistant"] .markdown',
+  '[data-message-author-role="assistant"] .prose',
+  '[data-message-author-role="assistant"]',
+];
+
+// Tier (b)/(c): broader containers -- only needs to CONTAIN the answer text, same
+// over-inclusive-is-fine contract as CLAUDE_FALLBACK_MESSAGE_SELECTORS.
+const CHATGPT_FALLBACK_MESSAGE_SELECTORS_TIER_B = [
+  '.agent-turn',
+  'div.markdown',
+  'div.prose',
+  '[class*="markdown"]',
+  '[class*="message"]',
+];
+
+const CHATGPT_SIGNIN_MARKER_SELECTORS = [
+  'a[href*="/auth/login"]',
+  'button[data-testid="login-button"]',
+  'input[name="username"]',
+  'input[type="password"]',
+];
+
+const CHATGPT_DRIVER_CONFIG: InteractiveAuthorityDriverConfig = {
+  authority: 'user_chatgpt',
+  logPrefix: 'chatgpt_interactive',
+  composerSelectors: CHATGPT_COMPOSER_SELECTORS,
+  sendButtonSelectors: CHATGPT_SEND_BUTTON_SELECTORS,
+  streamingIndicatorSelectors: CHATGPT_STOP_BUTTON_SELECTORS,
+  assistantMessageSelectorsTierA: CHATGPT_ASSISTANT_MESSAGE_SELECTORS_TIER_A,
+  fallbackMessageSelectorsTierB: CHATGPT_FALLBACK_MESSAGE_SELECTORS_TIER_B,
+  signInMarkerSelectors: CHATGPT_SIGNIN_MARKER_SELECTORS,
+  signInUrlPattern: /\/auth\/login(?:[/?]|$)/i,
+};
+
+// Gemini selectors -- tier a: `model-response`/`message-content` are Gemini's own custom
+// web-component tags (documented more stable than its Angular-obfuscated class names). Composer
+// is a Quill-based rich-textarea; `.ql-editor` is the documented-stable inner contenteditable.
+const GEMINI_COMPOSER_SELECTORS = [
+  'rich-textarea .ql-editor',
+  '.ql-editor[contenteditable="true"]',
+  '[aria-label="Enter a prompt here"]',
+  'div[contenteditable="true"][role="textbox"]',
+  'div[contenteditable="true"]',
+];
+
+const GEMINI_SEND_BUTTON_SELECTORS = [
+  'button.send-button[aria-label="Send message"]',
+  'button.send-button',
+  'button[aria-label="Send message"]',
+  'button[aria-label*="Send" i]',
+];
+
+const GEMINI_STOP_BUTTON_SELECTORS = [
+  'button[aria-label="Stop response"]',
+  'button[aria-label*="Stop" i]',
+];
+
+const GEMINI_ASSISTANT_MESSAGE_SELECTORS_TIER_A = [
+  'model-response message-content .markdown',
+  'model-response .markdown',
+  'message-content[data-response] .markdown',
+  'message-content',
+];
+
+// Tier (b)/(c): broader containers, same over-inclusive-is-fine contract as above.
+const GEMINI_FALLBACK_MESSAGE_SELECTORS_TIER_B = [
+  '.response-container',
+  '[data-role="model"]',
+  '.model-response-text',
+  '[class*="response-content"]',
+  '.response',
+];
+
+const GEMINI_SIGNIN_MARKER_SELECTORS = [
+  'a[href*="accounts.google.com/ServiceLogin"]',
+  'a[href*="accounts.google.com/signin"]',
+  'input[type="email"]',
+  'input[type="password"]',
+];
+
+const GEMINI_DRIVER_CONFIG: InteractiveAuthorityDriverConfig = {
+  authority: 'user_gemini',
+  logPrefix: 'gemini_interactive',
+  composerSelectors: GEMINI_COMPOSER_SELECTORS,
+  sendButtonSelectors: GEMINI_SEND_BUTTON_SELECTORS,
+  streamingIndicatorSelectors: GEMINI_STOP_BUTTON_SELECTORS,
+  assistantMessageSelectorsTierA: GEMINI_ASSISTANT_MESSAGE_SELECTORS_TIER_A,
+  fallbackMessageSelectorsTierB: GEMINI_FALLBACK_MESSAGE_SELECTORS_TIER_B,
+  signInMarkerSelectors: GEMINI_SIGNIN_MARKER_SELECTORS,
+  signInUrlPattern: /accounts\.google\.com\/(ServiceLogin|signin)/i,
+};
+
+function isGenericLoginWall(config: InteractiveAuthorityDriverConfig): boolean {
+  try {
+    if (config.signInUrlPattern.test(window.location.href)) return true;
+    for (const sel of config.signInMarkerSelectors) {
+      try {
+        if (document.querySelector(sel)) return true;
+      } catch {
+        /* invalid selector -- try the next candidate */
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/** Parameterized twin of findComposerFast above. */
+function findComposerFastGeneric(
+  config: InteractiveAuthorityDriverConfig,
+  onFound: (composer: HTMLElement) => void,
+  onNotFound: (reason: string) => void,
+): void {
+  const startedAt = Date.now();
+  const tick = () => {
+    const composer = findFirstMatch(config.composerSelectors);
+    if (composer) {
+      onFound(composer);
+      return;
+    }
+    if (isGenericLoginWall(config)) {
+      onNotFound('not_signed_in');
+      return;
+    }
+    if (Date.now() - startedAt >= CLAUDE_COMPOSER_FIND_MAX_WAIT_MS) {
+      onNotFound('composer_not_found_timeout');
+      return;
+    }
+    setTimeout(tick, CLAUDE_COMPOSER_FIND_POLL_MS);
+  };
+  tick();
+}
+
+function isGenericStillStreaming(config: InteractiveAuthorityDriverConfig): boolean {
+  return findFirstMatch(config.streamingIndicatorSelectors) !== null;
+}
+
+/** Parameterized twin of findBroadFallbackMatch above (tier b). */
+function findBroadFallbackMatchGeneric(
+  selectors: string[],
+  promptText: string,
+): { text: string; selector: string } | null {
+  try {
+    const combinedSelector = selectors.join(',');
+    const matches = Array.from(document.querySelectorAll<HTMLElement>(combinedSelector));
+    for (let i = matches.length - 1; i >= 0; i--) {
+      const el = matches[i];
+      const text = el?.innerText?.trim() ?? '';
+      if (text.length < RESILIENT_TEXT_MIN_LENGTH || isEchoedPrompt(text, promptText)) continue;
+      let matchedSelector = 'broad-fallback';
+      for (const sel of selectors) {
+        try {
+          if (el.matches(sel)) {
+            matchedSelector = sel;
+            break;
+          }
+        } catch {
+          /* invalid selector -- keep the generic label */
+        }
+      }
+      return { text, selector: matchedSelector };
+    }
+  } catch {
+    /* invalid combined selector or DOM access error */
+  }
+  return null;
+}
+
+/** Parameterized twin of findMainRegionTailFallback above (tier c). */
+function findMainRegionTailFallbackGeneric(
+  config: InteractiveAuthorityDriverConfig,
+  promptText: string,
+): { text: string; selector: string } | null {
+  try {
+    const root = document.querySelector('main') ?? document.body;
+    if (!root) return null;
+    const clone = root.cloneNode(true) as HTMLElement;
+    const stripSelectors = ['nav', 'aside', 'header', ...config.composerSelectors, ...config.sendButtonSelectors];
+    for (const sel of stripSelectors) {
+      try {
+        clone.querySelectorAll(sel).forEach((n) => n.remove());
+      } catch {
+        /* invalid selector -- skip stripping it */
+      }
+    }
+    const fullText = clone.innerText?.trim() ?? '';
+    if (!fullText) return null;
+    const normalizedPrompt = promptText.trim();
+    let tail = fullText;
+    if (normalizedPrompt) {
+      const idx = fullText.lastIndexOf(normalizedPrompt);
+      if (idx >= 0) tail = fullText.slice(idx + normalizedPrompt.length).trim();
+    }
+    if (tail.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(tail, promptText)) {
+      return { text: tail, selector: 'main-tail-fallback' };
+    }
+  } catch {
+    /* DOM access error */
+  }
+  return null;
+}
+
+/** Parameterized twin of getResilientAssistantText above: tier a (specific) -> tier b (broad)
+ *  -> tier c (main-region tail). */
+function getResilientAssistantTextGeneric(
+  config: InteractiveAuthorityDriverConfig,
+  promptText: string,
+): { text: string; selector: string } | null {
+  const specific = lastNonEmptyTextMatch(config.assistantMessageSelectorsTierA);
+  if (specific && specific.text.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(specific.text, promptText)) {
+    return specific;
+  }
+  const broad = findBroadFallbackMatchGeneric(config.fallbackMessageSelectorsTierB, promptText);
+  if (broad) return broad;
+  const tail = findMainRegionTailFallbackGeneric(config, promptText);
+  if (tail) return tail;
+  return null;
+}
+
+/** Parameterized twin of submitComposer above. */
+function submitComposerGeneric(composerEl: HTMLElement, sendButtonSelectors: string[]): 'button' | 'enter-key' | 'failed' {
+  try {
+    const sendButton = findFirstMatch(sendButtonSelectors);
+    if (sendButton && !(sendButton as HTMLButtonElement).disabled) {
+      sendButton.click();
+      return 'button';
+    }
+    const enterInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    composerEl.dispatchEvent(new KeyboardEvent('keydown', enterInit));
+    composerEl.dispatchEvent(new KeyboardEvent('keypress', enterInit));
+    composerEl.dispatchEvent(new KeyboardEvent('keyup', enterInit));
+    return 'enter-key';
+  } catch {
+    return 'failed';
+  }
+}
+
+/** The generic interactive lifecycle runner: composer find, type, submit, poll for stream
+ *  completion, resilient scrape, honest result. Mirrors runClaudeInteractiveQuery's own
+ *  structure and timing constants exactly (same CLAUDE_INTERACTIVE_ and CLAUDE_COMPOSER_FIND_
+ *  budgets, deliberately NOT re-derived per vendor, since the fast-fail rationale documented
+ *  above those constants is itself vendor-agnostic: a short composer-find window plus a bounded
+ *  reply-poll window). Emits the exact 6 lifecycle events this build pass's spec requires
+ *  (query_received is logged by the dispatcher below before this runs), each prefixed with
+ *  config.logPrefix -- 'chatgpt_interactive_...' or 'gemini_interactive_...'. */
+function runGenericInteractiveQuery(config: InteractiveAuthorityDriverConfig, promptText: string): void {
+  const reportFailure = (reason?: string) => {
     ipcRenderer.sendToHost('browser-authority-interactive-result', {
-      success: false, authority: payload.authority, snippet: '', sourceUrl: null, selectorUsed: null,
+      success: false, authority: config.authority, snippet: '', sourceUrl: null, selectorUsed: null,
+      ...(reason ? { reason } : {}),
     } as BrowserAuthorityInteractiveResultMessage);
+  };
+
+  findComposerFastGeneric(
+    config,
+    (composer) => {
+      logInjectionEvent(`${config.logPrefix}_composer_found`, { url: window.location.href });
+      proceedWithComposer(composer);
+    },
+    (reason) => {
+      logInjectionEvent(
+        reason === 'not_signed_in' ? `${config.logPrefix}_not_signed_in` : `${config.logPrefix}_composer_not_found`,
+        { reason, url: window.location.href },
+      );
+      reportFailure(reason);
+    },
+  );
+
+  function proceedWithComposer(composer: HTMLElement): void {
+    const typed = setComposerText(composer, promptText);
+    logInjectionEvent(`${config.logPrefix}_typed`, { ok: typed, url: window.location.href });
+    if (!typed) {
+      reportFailure('type_failed');
+      return;
+    }
+
+    setTimeout(() => {
+      const submitMethod = submitComposerGeneric(composer, config.sendButtonSelectors);
+      logInjectionEvent(`${config.logPrefix}_submitted`, { method: submitMethod, url: window.location.href });
+      if (submitMethod === 'failed') {
+        reportFailure('submit_failed');
+        return;
+      }
+
+      let ticksSinceChange = 0;
+      let lastText = '';
+      let hasSeenStreaming = false;
+      let loggedStreamingDetected = false;
+      let lastSelector: string | null = null;
+      const startedAt = Date.now();
+
+      const finish = (success: boolean) => {
+        clearInterval(pollHandle);
+        if (success) {
+          logInjectionEvent(`${config.logPrefix}_stream_complete`, { textLength: lastText.length, url: window.location.href });
+          logInjectionEvent(`${config.logPrefix}_scraped`, { length: lastText.length, url: window.location.href });
+        } else {
+          const domSnapshot = captureDomSnapshot();
+          logInjectionEvent(`${config.logPrefix}_dom_snapshot`, { elements: domSnapshot, url: window.location.href });
+          logInjectionEvent(`${config.logPrefix}_empty_scrape`, { sawStreaming: hasSeenStreaming, url: window.location.href });
+        }
+        logInjectionEvent(`${config.logPrefix}_result`, {
+          success, textLength: lastText.length, sawStreaming: hasSeenStreaming, url: window.location.href,
+        });
+        ipcRenderer.sendToHost('browser-authority-interactive-result', {
+          success,
+          authority: config.authority,
+          snippet: success ? lastText.replace(/\s+/g, ' ').trim() : '',
+          sourceUrl: success ? window.location.href : null,
+          selectorUsed: success ? lastSelector : null,
+          ...(success ? {} : { reason: 'stream_timeout_or_empty' }),
+        } as BrowserAuthorityInteractiveResultMessage);
+      };
+
+      const pollHandle = setInterval(() => {
+        const streaming = isGenericStillStreaming(config);
+        if (streaming) hasSeenStreaming = true;
+        if (streaming && !loggedStreamingDetected) {
+          loggedStreamingDetected = true;
+          logInjectionEvent(`${config.logPrefix}_streaming_detected`, { url: window.location.href });
+        }
+
+        const match = getResilientAssistantTextGeneric(config, promptText);
+        const currentText = match?.text ?? '';
+        if (match) lastSelector = match.selector;
+
+        if (currentText.length > 0 && currentText === lastText) {
+          ticksSinceChange++;
+        } else {
+          ticksSinceChange = 0;
+          lastText = currentText;
+        }
+
+        const stableAndDone =
+          currentText.length > 0 && !streaming &&
+          (hasSeenStreaming ? ticksSinceChange >= 1 : ticksSinceChange >= CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED);
+
+        if (stableAndDone) {
+          finish(true);
+          return;
+        }
+
+        if (Date.now() - startedAt > CLAUDE_INTERACTIVE_MAX_WAIT_MS) {
+          logInjectionEvent(`${config.logPrefix}_timeout`, {
+            elapsedMs: Date.now() - startedAt, textLength: currentText.length, url: window.location.href,
+          });
+          finish(currentText.length > 0);
+        }
+      }, CLAUDE_INTERACTIVE_POLL_MS);
+    }, 400);
+  }
+}
+
+ipcRenderer.on('browser-authority-run-interactive-query', (_event, payload: BrowserAuthorityRunInteractiveQueryRequest) => {
+  // BP140-K4: dispatch by authority. user_claude keeps its own hand-written driver, byte-
+  // unchanged; user_chatgpt/user_gemini route to the new generic driver above; any other
+  // authority arriving on this channel is a caller bug, not a scrape failure -- reported
+  // honestly rather than attempting the wrong vendor's selectors against an unrelated page.
+  if (payload.authority === 'user_claude') {
+    logInjectionEvent('claude_interactive_query_received', { authority: payload.authority, url: window.location.href });
+    runClaudeInteractiveQuery(payload.query);
     return;
   }
-  runClaudeInteractiveQuery(payload.query);
+  if (payload.authority === 'user_chatgpt') {
+    logInjectionEvent('chatgpt_interactive_query_received', { authority: payload.authority, url: window.location.href });
+    runGenericInteractiveQuery(CHATGPT_DRIVER_CONFIG, payload.query);
+    return;
+  }
+  if (payload.authority === 'user_gemini') {
+    logInjectionEvent('gemini_interactive_query_received', { authority: payload.authority, url: window.location.href });
+    runGenericInteractiveQuery(GEMINI_DRIVER_CONFIG, payload.query);
+    return;
+  }
+  logInjectionEvent('interactive_query_unsupported_authority', { authority: payload.authority, url: window.location.href });
+  ipcRenderer.sendToHost('browser-authority-interactive-result', {
+    success: false, authority: payload.authority, snippet: '', sourceUrl: null, selectorUsed: null,
+  } as BrowserAuthorityInteractiveResultMessage);
 });
 
 // ─── Watch for navigation (Google Search AI may be SPA) ──────────────────────

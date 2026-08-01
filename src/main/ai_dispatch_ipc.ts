@@ -66,6 +66,9 @@ import {
   ensureFreeLocalDefaultOnFirstRun,
   type BrainEntry,
 } from './brain_registry/brain_registry';
+// BP140-K3: Homework busy-guard — see homework_busy_gate.ts header for why this is a
+// self-expiring heartbeat window rather than a plain latched boolean.
+import { markAppBusy, clearAppBusy } from './homework/homework_busy_gate';
 // BP132 Yoke #21 C7: user-facing Anthropic API key (separate from the unrelated
 // ApiKeysSettings.tsx Hearth Conjunction subsystem).
 import {
@@ -231,6 +234,15 @@ interface AiDispatchSettings {
    *  candidate is rejected (honest abstain) unless >=2 agree; 'require_majority' -> a lone
    *  candidate is rejected unless a strict majority of respondents agree. */
   concordance_strictness?: 'lenient' | 'require_two' | 'require_majority';
+  /** BP140-K3 Homework: master on/off for the idle-time, AC-power, $0-Ollama-only background
+   *  worker (homework_runner.ts). DEFAULTS OFF (undefined === off) -- with it off, the loop's
+   *  sweep is a no-op every tick and no queued job is ever touched. Read directly out of this
+   *  same settings file by homework_runner.ts (see that file's own settings-read helper) rather
+   *  than via an export from this module, mirroring mesh_diff_loop.ts's self-contained style. */
+  homework_enabled?: boolean;
+  /** BP140-K3 Homework: seconds of Electron powerMonitor.getSystemIdleTime() required before a
+   *  homework job is allowed to start. DEFAULTS to 300 (5 minutes) when unset. */
+  homework_idle_threshold_seconds?: number;
 }
 
 /** BP136 Yoke: resolves the answer-cache mode flag from settings, with an env-var override
@@ -383,6 +395,9 @@ export function registerAiDispatchIPC(): void {
       if (incoming.csia_research !== undefined) updated.csia_research = incoming.csia_research;
       // BP139 Concordance Gate: additive, mirrors the csia_research line above.
       if (incoming.concordance_strictness !== undefined) updated.concordance_strictness = incoming.concordance_strictness;
+      // BP140-K3 Homework: additive, mirrors the csia_research line above.
+      if (incoming.homework_enabled !== undefined) updated.homework_enabled = incoming.homework_enabled;
+      if (incoming.homework_idle_threshold_seconds !== undefined) updated.homework_idle_threshold_seconds = incoming.homework_idle_threshold_seconds;
       try {
         saveSettings(updated);
         return { ok: true };
@@ -423,6 +438,10 @@ export function registerAiDispatchIPC(): void {
         model_override?: string;
       },
     ) => {
+      // BP140-K3: assert app-busy for the Homework background loop's Gate 3 (never contend
+      // with the user's live Ask for the shared Ollama daemon). Renewed again at every
+      // streamed token below; cleared at each of this handler's completion points.
+      markAppBusy();
       // BP136 Yoke: query-start timestamp for the meter's latency_ms across every routing
       // branch (served_verbatim / rag / local_generate / flagship).
       const tQueryStart = Date.now();
@@ -440,6 +459,7 @@ export function registerAiDispatchIPC(): void {
       const status = ollamaManager.getStatus();
       const reachable = status.running || (await ollamaManager.isReachable());
       if (!reachable) {
+        clearAppBusy();
         return { ok: false, error: 'Local AI engine not running' };
       }
 
@@ -448,6 +468,7 @@ export function registerAiDispatchIPC(): void {
       // model explicitly picked in the ASK selector) also counts as "compatible" here --
       // otherwise picking mistral/qwen would still incorrectly trigger the gemma-pull banner.
       if (!args.model_override && !activeBrainLocalModel && !settings.preferred_model && selectedGemmaModel === null) {
+        clearAppBusy();
         return { ok: false, error: 'No compatible model — downloading now…' };
       }
 
@@ -602,6 +623,7 @@ export function registerAiDispatchIPC(): void {
               verified: topVerifiedHit.verified,
             });
           }
+          clearAppBusy();
           return { ok: true, streaming: true, servedFromSubstrate: true };
         } else if (isSemanticSoccerballModeEnabled(settings)) {
           // BP137 Yoke (Semantic Match Durable), STEP 2 READ side: additive embedding-based
@@ -680,6 +702,7 @@ export function registerAiDispatchIPC(): void {
                   verified: nearest.entry.verified,
                 });
               }
+              clearAppBusy();
               return { ok: true, streaming: true, servedFromSubstrate: true };
             }
           } else {
@@ -816,6 +839,7 @@ export function registerAiDispatchIPC(): void {
                 verified: true,
               });
             }
+            clearAppBusy();
             return { ok: true, streaming: true, servedFromSubstrate: true, csiaFastPath: true };
           }
         } else {
@@ -1054,7 +1078,7 @@ export function registerAiDispatchIPC(): void {
               ...(csiaContextVerdict ? { csiaContext: csiaContextVerdict } : {}),
             });
           }
-        })();
+        })().finally(() => clearAppBusy());
         return { ok: true, streaming: true, brainId: activeBrain.brain_id, kind: 'flagship' };
       }
 
@@ -1121,6 +1145,7 @@ export function registerAiDispatchIPC(): void {
                 const parsed = JSON.parse(line) as { message?: { content?: string }; done?: boolean };
                 if (parsed.message?.content) {
                   assembled += parsed.message.content;
+                  markAppBusy(); // BP140-K3: renew the busy window on every streamed token
                   if (!event.sender.isDestroyed()) {
                     event.sender.send('ask-token-progress', { delta: parsed.message.content, assembled });
                   }
@@ -1281,7 +1306,7 @@ export function registerAiDispatchIPC(): void {
             });
           }
         }
-      })();
+      })().finally(() => clearAppBusy());
 
       return { ok: true, streaming: true };
     },

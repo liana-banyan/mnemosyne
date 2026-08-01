@@ -89,6 +89,7 @@ import {
   buildBrowserAuthorityQueryUrl,
   buildMcAwareQueryText,
   isInteractiveBrowserAuthority,
+  type BrowserAuthorityName,
   type BrowserAuthorityQuery,
   type BrowserAuthorityRawExtraction,
 } from '../shared/plow/browser_authority_types';
@@ -1640,7 +1641,7 @@ async function runInteractiveBrowserAuthorityQuery(
   nexusWindow: BrowserWindow,
   query: BrowserAuthorityQuery,
 ): Promise<BrowserAuthorityRawExtraction | null> {
-  const navigateUrl = buildBrowserAuthorityQueryUrl(query); // fixed https://claude.ai/new for user_claude
+  const navigateUrl = buildBrowserAuthorityQueryUrl(query); // fixed landing URL for interactive authorities
   // The question (with its MC options, if any) travels as the COMPOSER payload, not the URL --
   // buildMcAwareQueryText is the SAME pure formatter user_perplexity's query-URL path already
   // uses (browser_authority_types.ts), just applied to the interactive payload instead of a URL
@@ -1650,12 +1651,21 @@ async function runInteractiveBrowserAuthorityQuery(
       ? buildMcAwareQueryText(query.question, query.mcOptions)
       : query.question;
 
+  // BP140-K4: this main-process log prefix must track whichever interactive authority is
+  // actually running, not a hardcoded 'claude_interactive' -- ChatGPT/Gemini now share this same
+  // outer script, and their own console evidence must read 'chatgpt_interactive:'/
+  // 'gemini_interactive:' per this build's spec, not a misleading 'claude_interactive:' label.
+  const logPrefix =
+    query.authority === 'user_chatgpt' ? 'chatgpt_interactive'
+      : query.authority === 'user_gemini' ? 'gemini_interactive'
+        : 'claude_interactive';
+
   // (this fix pass) STEP 3 diagnostics: every resolve() below now carries a `reason` string
   // instead of a bare `null`, so the catch below can print WHY the outer script gave up (no
   // webview found / navigation never loaded / send failed / outer timeout) with the SAME
-  // `claude_interactive:` prefix webview_preload.ts's own stage logs use, in the console stream
-  // this main process actually writes to (not the guest webview's own devtools console, which
-  // this outer script does NOT run in -- it runs in nexusWindow's page context).
+  // `${logPrefix}:` prefix webview_preload.ts's own stage logs use, in the console stream this
+  // main process actually writes to (not the guest webview's own devtools console, which this
+  // outer script does NOT run in -- it runs in nexusWindow's page context).
   const script = `
     (function() {
       return new Promise(function(resolve) {
@@ -1703,7 +1713,7 @@ async function runInteractiveBrowserAuthorityQuery(
   try {
     const result = await nexusWindow.webContents.executeJavaScript(script);
     if (!result || typeof result !== 'object') {
-      console.log('claude_interactive: main-null-result (executeJavaScript returned no object)');
+      console.log(`${logPrefix}: main-null-result (executeJavaScript returned no object)`);
       return null;
     }
     const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null; reason?: string };
@@ -1711,10 +1721,10 @@ async function runInteractiveBrowserAuthorityQuery(
       // honest -- never a partial/fabricated extraction; log WHY so the next run's console tells
       // us exactly which stage failed (composer_not_found_timeout / not_signed_in / outer_script_
       // timeout / stream_timeout_or_empty / etc.)
-      console.log(`claude_interactive: main-fail reason=${r.reason ?? 'no_reason_reported'}`);
+      console.log(`${logPrefix}: main-fail reason=${r.reason ?? 'no_reason_reported'}`);
       return null;
     }
-    console.log(`claude_interactive: main-success scraped-len=${r.snippet.length}`);
+    console.log(`${logPrefix}: main-success scraped-len=${r.snippet.length}`);
     return {
       snippet: r.snippet,
       sourceUrl: r.sourceUrl,
@@ -1722,7 +1732,7 @@ async function runInteractiveBrowserAuthorityQuery(
       selectorUsed: r.selectorUsed ?? null,
     };
   } catch (err) {
-    console.warn('claude_interactive: main-exception (non-fatal, resolving null):', (err as Error)?.message ?? err);
+    console.warn(`${logPrefix}: main-exception (non-fatal, resolving null):`, (err as Error)?.message ?? err);
     return null;
   }
 }
@@ -3130,7 +3140,10 @@ function registerIPCHandlers(): void {
   }) => {
     try {
       const { runAnswerCoronerOnLocalOutcomes } = await import('./plow/answer_coroner');
-      const roundup = runAnswerCoronerOnLocalOutcomes(opts.outcomes ?? [], {
+      // BP140 Yoke: runAnswerCoronerOnLocalOutcomes is now genuinely async (it persists a
+      // factVerdict-tagged eblet per ensemble candidate as it classifies) -- must be awaited so
+      // `roundup` below is the real CoronerRoundup, not an unresolved Promise sent over IPC.
+      const roundup = await runAnswerCoronerOnLocalOutcomes(opts.outcomes ?? [], {
         onProgress: (msg) => {
           for (const w of BrowserWindow.getAllWindows()) {
             if (!w.isDestroyed()) w.webContents.send('plow:coroner-progress', { msg });
@@ -3160,7 +3173,7 @@ function registerIPCHandlers(): void {
     },
   );
 
-  safeHandle('nexus-authority-open-signin', (_event, { authority }: { authority: 'user_google' | 'user_perplexity' | 'user_claude' }) => {
+  safeHandle('nexus-authority-open-signin', (_event, { authority }: { authority: BrowserAuthorityName }) => {
     const opened = showNexusAuthoritySessionForSignIn(authority);
     return { ok: opened, reason: opened ? null : 'flag_off_or_unavailable' };
   });
@@ -5378,6 +5391,11 @@ function registerIPCHandlers(): void {
     // substrateEnabled only). Defaults false -- threaded straight through to
     // runOneClickMmluProTest, same pattern as substrateEnabled/plowEnabled above.
     federatedSubstrateEnabled?: boolean;
+    // BP140-K6: explicit subset scoping ("Re-run misses" / manual "Run subset" in
+    // OneClickMeshTestPanel.tsx). Threaded straight through to runOneClickMmluProTest --
+    // see that function's questionIds JSDoc for the full priority-over-sampling rationale.
+    // Absent/empty has ZERO effect on any pre-existing caller.
+    questionIds?: string[];
   }) => {
     try {
       const { runOneClickMmluProTest } = await import('./mesh_test/one_click_mmlu_pro');
@@ -8323,6 +8341,12 @@ app.on('before-quit', async () => {
   try {
     const { stopMeshDiffLoop } = await import('./ip_ledger/mesh_diff_loop');
     stopMeshDiffLoop();
+  } catch { /* non-fatal */ }
+  // BP140-K3 — Stop Homework idle-time background loop on Quit (same close-keeps-alive /
+  // quit-exits semantic as the mesh diff loop above — clears its setInterval cleanly).
+  try {
+    const { stopHomeworkLoop } = await import('./homework/homework_runner');
+    stopHomeworkLoop();
   } catch { /* non-fatal */ }
   stopOverlayWatchdog();
   if (connectivityTimer) clearInterval(connectivityTimer);

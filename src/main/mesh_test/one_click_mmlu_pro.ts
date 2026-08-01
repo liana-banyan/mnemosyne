@@ -202,6 +202,20 @@ export interface OneClickRunResult {
    *  Present only in wan_mesh mode when researchArmDecompose && peers.length >= 2 -- absent
    *  (not empty array) otherwise, so a byte-unchanged flag-off run has no new field at all. */
   optionFanOutOutcomes?: OptionFanOutOutcome[];
+  /** BP140-K6 REQUIREMENT 4 (honest subset receipts): true when this run was scoped to an
+   *  explicit config.questionIds subset rather than the normal full/sampled dataset. ALWAYS
+   *  present (true or false) -- never omitted, so a consumer never needs an `=== undefined`
+   *  fallback to distinguish "full run" from "subset run". A subset result must never be
+   *  mistakable for (or silently overwrite) a full-run receipt -- see downloadReceipt/
+   *  LS_LAST_RESULT handling in OneClickMeshTestPanel.tsx, which stores subset results under
+   *  a distinct localStorage key for exactly this reason. */
+  isSubsetRun: boolean;
+  /** Present only when isSubsetRun is true -- the exact question_id list that was requested
+   *  for this run (as strings, matching config.questionIds verbatim). */
+  subsetQuestionIds?: string[];
+  /** Present only when isSubsetRun is true -- how many questions existed in the full
+   *  (unsampled) dataset this subset was drawn from -- the M in "N of M questions". */
+  subsetOfTotal?: number;
 }
 
 let running = false;
@@ -490,6 +504,20 @@ export function isOneClickRunActive(): boolean {
 
 function generateSessionId(): string {
   return 'oneclick_' + randomBytes(6).toString('hex');
+}
+
+/** BP140-K6: exact-match subset filter -- keeps only questions whose question_id (coerced to
+ *  string, since MmluProQuestion.question_id is numeric but the IPC/UI-facing questionIds
+ *  list is string[] so it can also carry non-numeric literal IDs from other corpora) matches
+ *  one of the requested IDs. Preserves the SOURCE dataset's own ordering (not the requested
+ *  ID list's order) -- this is a filter, not a reorder, matching downsampleQuestions'/
+ *  sampleExactPerCategory's own "keep dataset order" convention. Silently drops any requested
+ *  ID with no matching question (an honest empty/partial result -- see runOneClickMmluProTest's
+ *  subsetOfTotal/subsetQuestionIds fields, which report exactly what was requested vs. what the
+ *  dataset actually had). */
+function filterQuestionsByIds(questions: MmluProQuestion[], questionIds: string[]): MmluProQuestion[] {
+  const idSet = new Set(questionIds.map((id) => String(id).trim()).filter(Boolean));
+  return questions.filter((q) => idSet.has(String(q.question_id)));
 }
 
 /** Downsamples an already-loaded question set evenly for the (much slower) WAN path. */
@@ -958,6 +986,18 @@ export async function runOneClickMmluProTest(config: {
    * the guaranteed-complete bundled corpus (never the dev-machine-only full live corpus,
    * which still has the law gap) so the preset behaves identically on every machine. */
   exactPerCategory?: number;
+  /** BP140-K6: explicit subset scoping -- when provided (non-empty), this run is restricted
+   * to EXACTLY these question IDs (exact string match against MmluProQuestion.question_id,
+   * see filterQuestionsByIds below), sourced from the SAME dataset loadQuestions()/
+   * loadBundledQuestions() would otherwise load. Takes priority over exactPerCategory and
+   * maxTotalQuestions -- both are ignored when questionIds is set, since an explicit ID list
+   * is a stronger, more specific request than either sampling strategy. When absent/empty,
+   * this parameter has ZERO effect: behavior is byte-for-byte identical to every pre-existing
+   * caller (the untouched exactPerCategory/maxTotalQuestions/full-sample path below). Used by
+   * OneClickMeshTestPanel.tsx's "Re-run misses" and manual "Run subset" actions -- see
+   * REQUIREMENT 4 (honest subset receipts): a run scoped this way is marked isSubsetRun:true
+   * on the result and must never be mistaken for (or silently overwrite) a full-run receipt. */
+  questionIds?: string[];
 }, opts?: {
   /** BP138 Yoke HOT/COLD Lift: overrides the broadcast channel used for this run's
    *  'mesh-test:progress'-shaped events. Defaults to 'mesh-test:progress' (unchanged
@@ -1000,23 +1040,44 @@ export async function runOneClickMmluProTest(config: {
   const researchArmDecompose = (config.researchArmDecompose ?? false) && researchArmMode;
   const federatedSubstrateEnabled = config.federatedSubstrateEnabled ?? false;
   const exactPerCategory = config.exactPerCategory && config.exactPerCategory > 0 ? config.exactPerCategory : undefined;
+  // BP140-K6: normalize once up-front. Empty/absent -> undefined, so every `if (requestedQuestionIds)`
+  // check below reads as a clean boolean with no separate `.length > 0` re-check needed.
+  const requestedQuestionIds = config.questionIds && config.questionIds.length > 0
+    ? config.questionIds.map((id) => String(id).trim()).filter(Boolean)
+    : undefined;
 
   // BP134 Yoke #32 Phase F item 2: the exact-per-category preset always sources from the
   // bundled corpus specifically (never full_corpus_live), because that is the ONLY corpus
   // guaranteed complete across all 14 categories (including the law fix) on every machine --
   // full_corpus_live still has the upstream law gap on this dev machine (see loadFromFullCorpus).
-  const { questions: allQuestionsUncapped, source } = exactPerCategory
+  // BP140-K6: a questionIds subset request is NOT routed through the exactPerCategory-forced
+  // bundled path -- it needs the SAME dataset (full_corpus_live or bundled_subset, whichever
+  // loadQuestions() would otherwise resolve) that produced the question_ids being re-run, so
+  // IDs from a prior full/normal run still resolve correctly.
+  const { questions: allQuestionsUncapped, source } = exactPerCategory && !requestedQuestionIds
     ? { questions: loadBundledQuestions(), source: 'bundled_subset' as const }
     : loadQuestions(config.questionsPerDomain ?? PER_DOMAIN_DEFAULT);
 
   // BP133 Yoke #24 Task 4: total-question cap, applied uniformly before mode dispatch so a
   // "3-question smoke test" is one explicit number in both local_ollama and wan_mesh modes.
   // BP134 Phase F item 2: exactPerCategory takes priority over maxTotalQuestions when set.
-  const allQuestions = exactPerCategory
-    ? sampleExactPerCategory(allQuestionsUncapped, exactPerCategory)
-    : config.maxTotalQuestions && config.maxTotalQuestions > 0
-      ? downsampleQuestions(allQuestionsUncapped, config.maxTotalQuestions)
-      : allQuestionsUncapped;
+  // BP140-K6: an explicit questionIds subset takes priority over BOTH -- see config.questionIds'
+  // doc comment on this function's signature. When requestedQuestionIds is absent, this whole
+  // branch is unreachable and the two lines below it are byte-for-byte the pre-existing logic.
+  const allQuestions = requestedQuestionIds
+    ? filterQuestionsByIds(allQuestionsUncapped, requestedQuestionIds)
+    : exactPerCategory
+      ? sampleExactPerCategory(allQuestionsUncapped, exactPerCategory)
+      : config.maxTotalQuestions && config.maxTotalQuestions > 0
+        ? downsampleQuestions(allQuestionsUncapped, config.maxTotalQuestions)
+        : allQuestionsUncapped;
+
+  // BP140-K6: honest subset bookkeeping -- computed once here so both the early wanError
+  // return below and the normal result object at the bottom of this function report the
+  // identical isSubsetRun/subsetQuestionIds/subsetOfTotal triple (single source of truth,
+  // no risk of the two divergent).
+  const isSubsetRun = requestedQuestionIds !== undefined;
+  const subsetOfTotal = isSubsetRun ? allQuestionsUncapped.length : undefined;
 
   const corpusManifest = source === 'bundled_subset' ? loadBundledCorpusManifest() : null;
 
@@ -1049,6 +1110,9 @@ export async function runOneClickMmluProTest(config: {
         wanError,
         substrateEnabled,
         plowEnabled,
+        isSubsetRun,
+        subsetQuestionIds: requestedQuestionIds,
+        subsetOfTotal,
       };
       broadcast(progressChannel, { type: 'complete', result: emptyResult });
       return emptyResult;
@@ -1116,7 +1180,14 @@ export async function runOneClickMmluProTest(config: {
   const conditionSuffix = plowEnabled
     ? (plowAndonEnabled ? ' [plow: Condition C, Andon loop]' : ' [plow: Condition B, single pass]')
     : (dispatchMode === 'wan_mesh' ? ' [single-shot]' : '');
-  const datasetLabel = (dispatchMode === 'wan_mesh'
+  // BP140-K6: an explicit questionIds subset run gets an unmistakable "SUBSET RUN" prefix on
+  // the label itself, IN ADDITION TO the isSubsetRun/subsetQuestionIds/subsetOfTotal fields
+  // below -- Truth-Always redundancy so a subset can never be misread as a full run even if
+  // a caller only reads datasetLabel (a free-text string) and ignores the structured fields.
+  const subsetLabelPrefix = isSubsetRun
+    ? `SUBSET RUN (${questions.length} of ${subsetOfTotal} questions) -- `
+    : '';
+  const datasetLabel = subsetLabelPrefix + (dispatchMode === 'wan_mesh'
     ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions dispatched to ${livePeers.length} live WAN peer(s) via relay_routes/relay_route_replies (session ${sessionId}) -- ${outcomes.length} total question-peer answers`
     : source === 'full_corpus_live'
       ? `${questions.length} real curated TIGER-Lab/MMLU-Pro questions, evenly sampled live from the full ~11,000-question corpus (dev-machine-only path)`
@@ -1152,6 +1223,12 @@ export async function runOneClickMmluProTest(config: {
     consensusAccuracy,
     federatedSubstrateEnabled: dispatchMode === 'wan_mesh' ? federatedSubstrateEnabled : undefined,
     ...(optionFanOutOutcomes && optionFanOutOutcomes.length > 0 ? { optionFanOutOutcomes } : {}),
+    // BP140-K6 REQUIREMENT 4 (honest subset receipts): isSubsetRun is always present (true or
+    // false), never omitted -- a caller checking `result.isSubsetRun` should never need an
+    // `=== undefined` fallback to tell full from subset. subsetQuestionIds/subsetOfTotal are
+    // only meaningful (and only present) when isSubsetRun is true.
+    isSubsetRun,
+    ...(isSubsetRun ? { subsetQuestionIds: requestedQuestionIds, subsetOfTotal } : {}),
   };
 
   broadcast(progressChannel, { type: 'complete', result });

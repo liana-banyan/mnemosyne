@@ -11,6 +11,11 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 // ai_dispatch_settings.json) rather than inventing a second, possibly-diverging persistence
 // path. See SettingsTab.tsx's own export comment above these three for the rationale.
 import { loadMnemDrt, saveMnemDrt, persistMnemDrtToBackend } from '../SettingsTab';
+// BP140-K5 MOVE 3: "Two Barrels" replaces "The Meter" below -- see TwoBarrelMeter.tsx's header
+// for the full boundary-check writeup (getAnswerCacheMeterSummary() is aggregate-only, so
+// Barrel 2 renders a single real "aggregate" stratum and Barrel 1 renders an honest "not yet
+// tracked" empty state; no per-AI number is fabricated).
+import { TwoBarrelMeter } from '../TwoBarrelMeter';
 
 export interface ProveItWorksTabProps {
   onFirstComplete?: () => void;
@@ -23,8 +28,10 @@ type CheckState = 'idle' | 'checking' | 'alive' | 'offline';
 type AuthorityCheckState = 'idle' | 'checking' | 'done' | 'error';
 type AuthorityTestState = 'idle' | 'running' | 'done' | 'error';
 
+// BP140-K4: widened from 3 to 5 members (chatgpt/gemini added) to match
+// checkNexusAuthoritySignInStatus()'s now-shared BrowserAuthorityName-typed response.
 interface AuthoritySignInRow {
-  authority: 'user_google' | 'user_perplexity' | 'user_claude';
+  authority: 'user_google' | 'user_perplexity' | 'user_claude' | 'user_chatgpt' | 'user_gemini';
   signedIn: boolean;
   reason: string;
   checkedAt: string;
@@ -44,6 +51,8 @@ const AUTHORITY_LABELS: Record<string, string> = {
   user_google: 'Google',
   user_perplexity: 'Perplexity',
   user_claude: 'Claude',
+  user_chatgpt: 'ChatGPT',
+  user_gemini: 'Gemini',
 };
 
 const REASON_EXPLANATIONS: Record<string, string> = {
@@ -165,7 +174,7 @@ export function ProveItWorksTab(props: ProveItWorksTabProps) {
   // saved. When switching ON while not currently signed in, also opens the SAME nexus sign-in
   // window NexusAuthoritySignInPanel.tsx's own "Sign in to X" button opens
   // (window.amplify.openNexusAuthoritySignIn) -- toggle-on doubles as the login trigger.
-  const toggleAuthorityEnabled = useCallback((authority: 'user_google' | 'user_perplexity' | 'user_claude', nextVal: boolean, signedIn: boolean) => {
+  const toggleAuthorityEnabled = useCallback((authority: AuthoritySignInRow['authority'], nextVal: boolean, signedIn: boolean) => {
     const current = loadMnemDrt();
     const next = { ...current, mnem_drt_specialists: { ...current.mnem_drt_specialists, [authority]: nextVal } };
     saveMnemDrt(next);
@@ -272,51 +281,24 @@ export function ProveItWorksTab(props: ProveItWorksTabProps) {
         </div>
       </div>
 
-      {/* BP136: The Meter — real counters */}
-      <div style={panelStyle()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>The Meter</div>
-          <button
-            type="button"
-            onClick={() => void refreshMeter()}
-            disabled={loadingMeter}
-            title="Refresh"
-            style={{
-              background: 'none',
-              border: '1px solid rgba(148, 163, 184, 0.3)',
-              borderRadius: 4,
-              color: '#94a3b8',
-              fontSize: 11,
-              padding: '2px 8px',
-              cursor: loadingMeter ? 'wait' : 'pointer',
-            }}
-          >
-            {loadingMeter ? '…' : '↻ Refresh'}
-          </button>
+      {/* BP140-K5 MOVE 3: Two Barrels -- replaces "The Meter". Same meter/loadingMeter state,
+          same refreshMeter() IPC call as before; only the visualization changed. */}
+      <TwoBarrelMeter meter={meter} loading={loadingMeter} onRefresh={() => void refreshMeter()} />
+
+      {meter && meter.total_queries > 0 && (
+        <div style={{ ...panelStyle(), fontSize: 11, color: '#606060', lineHeight: 1.7 }}>
+          <div>
+            Served free (from substrate): <b style={{ color: '#6ee7b7' }}>{meter.served_verbatim_count}</b> of{' '}
+            {meter.total_queries} queries
+          </div>
+          {meter.avg_served_verbatim_latency_ms > 0 && (
+            <div>Avg latency, served free: {meter.avg_served_verbatim_latency_ms}ms</div>
+          )}
+          <div>
+            RAG-assisted: {meter.rag_count} · Local generate: {meter.local_generate_count} · Flagship: {meter.flagship_count}
+          </div>
         </div>
-        {meter && meter.total_queries > 0 ? (
-          <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.9 }}>
-            <div>
-              Served free (from substrate): <b style={{ color: '#6ee7b7' }}>{meter.served_verbatim_count}</b> of{' '}
-              {meter.total_queries} queries
-            </div>
-            <div>
-              Estimated cost avoided: <b style={{ color: '#6ee7b7' }}>${meter.cloud_cost_avoided_usd.toFixed(4)}</b>{' '}
-              <span style={{ color: '#606060' }}>(estimate — not a guarantee)</span>
-            </div>
-            {meter.avg_served_verbatim_latency_ms > 0 && (
-              <div>Avg latency, served free: {meter.avg_served_verbatim_latency_ms}ms</div>
-            )}
-            <div style={{ color: '#606060' }}>
-              RAG-assisted: {meter.rag_count} · Local generate: {meter.local_generate_count} · Flagship: {meter.flagship_count}
-            </div>
-          </div>
-        ) : (
-          <div style={{ fontSize: 12, color: '#606060', fontStyle: 'italic' }}>
-            No queries recorded yet. Ask a question, then come back and refresh.
-          </div>
-        )}
-      </div>
+      )}
 
       <div style={{ fontSize: 11, color: '#707070', margin: '20px 0 4px', lineHeight: 1.5 }}>
         Press the button to confirm your substrate poller is live.

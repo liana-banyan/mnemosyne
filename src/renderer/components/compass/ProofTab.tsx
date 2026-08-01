@@ -1,55 +1,42 @@
 // compass/ProofTab.tsx -- BP138 Yoke 0.9.14: Compass nav tab 2 (Proof).
+// BP140-K5: run controls relocated here from Power/Diagnostics (see MOVE 1 in the K5 dispatch)
+// -- the Founder wants to be able to run the Sourced-Knowledge Benchmark right where its proof
+// lives, not hunt for it under More > Power. No new component was built for this: the SAME
+// OneClickMeshTestPanel.tsx (its own IPC handlers, its own run-controls checkboxes, its own
+// live-progress feed, its own results view + Coroner autopsy) is now mounted here instead of in
+// PowerDiagnosticsPanel.tsx -- a placement change, not a rewrite. See PowerDiagnosticsPanel.tsx's
+// header for the corresponding removal note.
 //
 // Composes, all reused as-is (no rebuild):
-//  - ProveItWorksTab.tsx (real Answer-Cache Meter + poller health check -- "third-party
-//    proofs" in miniature: every number here comes from a persisted per-query JSONL log).
-//  - MeshTestResultSummary (extracted from OneClickMeshTestPanel.tsx this same Yoke, see that
-//    file's header) -- the Sourced-Knowledge Benchmark's RESULTS ONLY (aggregate accuracy,
-//    per-peer breakdown, mesh consensus, downloadable full receipt, and -- with
-//    showPerQuestionDetail -- the per-question "how this answer was assembled" provenance
-//    list). The run CONTROLS (mode picker, WAN Mesh, 12-Blade Plow, Research Arm, Mesh
-//    Synergy, HOT/COLD Lift) stay in Power/Diagnostics (Phase 2, under More) -- this tab never
-//    renders them, so a new user lands here without ever seeing a mesh-toggle wall.
-//  - A Phase 5 "Share this proof" Cue Deck card, gated on a real persisted benchmark result.
+//  - ProveItWorksTab.tsx (real Answer-Cache Meter + poller health check + the Browser Authority
+//    panel, whose sign-in rows are interactive enable toggles bound to the existing
+//    authorityEnabled/mnem_drt_specialists state -- "third-party proofs" in miniature: every
+//    number here comes from a persisted per-query JSONL log or a live IPC probe).
+//  - OneClickMeshTestPanel.tsx, directly under Test Authority -- the FULL Sourced-Knowledge
+//    Benchmark surface: run controls (Substrate context, 12-Blade Column Plow, Andon retry loop,
+//    Research Arm, Mesh Synergy, Decompose+Eliminate, Federated substrate, question-count,
+//    HOT/COLD Lift), its live per-question progress feed, the shared MeshTestResultSummary
+//    results view (aggregate accuracy, per-peer breakdown, mesh consensus, downloadable
+//    receipt, "Share your results"), and the Answer Coroner autopsy panel. A new user now sees
+//    the run controls the first time they land here -- that tradeoff (vs. the prior "never show
+//    a mesh-toggle wall" stance) is the explicit point of this relocation.
 //
 // Honest gap (documented in the Yoke final report too): if no benchmark has ever been run on
-// this machine, this tab shows an explicit empty state pointing at Power/Diagnostics rather
-// than a fabricated number.
+// this machine, OneClickMeshTestPanel's own internal empty state (no `result` yet) covers it --
+// no fabricated number, no separate placeholder needed here anymore.
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { ProveItWorksTab } from '../standard/ProveItWorksTab';
-import { MeshTestResultSummary, loadLastMeshTestResult, type OneClickRunResult } from '../OneClickMeshTestPanel';
-import { CueDeckCardRenderer, type CueCardTemplate } from '../CueDeckCardRenderer';
+import { OneClickMeshTestPanel } from '../OneClickMeshTestPanel';
 import type { CompassNavigate } from './types';
+import type { AuthState } from '../../amplify.d';
 
 export interface ProofTabProps {
   onNavigate: CompassNavigate;
+  authState: AuthState | null;
 }
 
-export function ProofTab({ onNavigate }: ProofTabProps): React.ReactElement {
-  const [result, setResult] = useState<OneClickRunResult | null>(() => loadLastMeshTestResult());
-  const [shareOpen, setShareOpen] = useState(false);
-
-  // Refresh when the tab regains focus (e.g. a benchmark run finished in Power/Diagnostics
-  // while this tab was mounted in the background) -- same convention SocialTab.tsx uses for
-  // its own "Check My Math" card.
-  useEffect(() => {
-    const onFocus = () => setResult(loadLastMeshTestResult());
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, []);
-
-  const shareTemplate: CueCardTemplate | null = result ? {
-    id: 'doctrine-proof-share',
-    title: 'See My Proof',
-    subtitle: 'Sourced-Knowledge Benchmark -- real, provenance-backed result',
-    body_text: result.dispatchMode === 'wan_mesh'
-      ? `Dispatched across ${result.livePeersFound ?? '?'} live WAN mesh peer(s): ${result.correct}/${result.scored} correct. ${result.datasetLabel}`
-      : `Dispatched locally on this machine: ${result.correct}/${result.scored} correct. ${result.datasetLabel}`,
-    accent_color: 'secondary',
-    background_type: 'gradient',
-  } : null;
-
+export function ProofTab({ onNavigate, authState }: ProofTabProps): React.ReactElement {
   return (
     <div style={{
       height: '100%', overflowY: 'auto', padding: '16px 20px',
@@ -64,47 +51,23 @@ export function ProofTab({ onNavigate }: ProofTabProps): React.ReactElement {
 
       {/* ProveItWorksTab's onSwitchTab always calls back with 'ask' (see its own footer
           button) -- the param is ignored here since Proof only ever routes it to Compass's
-          Ask tab, not an arbitrary string. */}
+          Ask tab, not an arbitrary string. Its own last section is the Test Authority /
+          Browser Authority panel -- OneClickMeshTestPanel is mounted immediately below it,
+          per the BP140-K5 MOVE 1 placement (run controls now directly under Test Authority). */}
       <ProveItWorksTab onSwitchTab={() => onNavigate('ask')} />
 
       <div style={{ marginTop: 20, marginBottom: 8, fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' as const, letterSpacing: 0.5 }}>
-        Sourced-Knowledge Benchmark -- results
+        Sourced-Knowledge Benchmark -- run controls + results
       </div>
 
-      {result ? (
-        <>
-          <MeshTestResultSummary result={result} showPerQuestionDetail />
-          <div style={{ marginTop: 10 }}>
-            <button onClick={() => setShareOpen((v) => !v)} style={{
-              background: 'none', color: '#6ee7b7', border: '1px solid #1e4038', borderRadius: 6,
-              padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              fontFamily: 'system-ui, sans-serif',
-            }}>
-              📤 {shareOpen ? 'Hide share card' : 'Share this proof'}
-            </button>
-            {shareOpen && shareTemplate && (
-              <div style={{ marginTop: 10 }}>
-                <CueDeckCardRenderer template={shareTemplate} />
-              </div>
-            )}
-          </div>
-        </>
-      ) : (
-        <div style={{
-          fontSize: 12, color: '#475569', fontStyle: 'italic',
-          background: '#111827', border: '1px solid #1e2a38', borderRadius: 8, padding: '14px 16px',
-        }}>
-          No benchmark run yet on this machine -- honestly empty, not a placeholder number. Run
-          the Sourced-Knowledge Benchmark from{' '}
-          <button
-            onClick={() => onNavigate('more', 'power')}
-            style={{ background: 'none', border: 'none', color: '#6ee7b7', fontSize: 12, fontWeight: 700, cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
-          >
-            Power (under More)
-          </button>{' '}
-          to generate a real, honest result here.
-        </div>
-      )}
+      {/* BP140-K5 MOVE 1: relocated verbatim from PowerDiagnosticsPanel.tsx -- same component,
+          same props, same 'mnemo-jump-to-social' cross-tab share wiring (CompassShell.tsx
+          listens for that DOM CustomEvent globally, so it still works from this new mount
+          point with zero changes to the event contract). */}
+      <OneClickMeshTestPanel
+        authState={authState}
+        onShareResult={() => { window.dispatchEvent(new CustomEvent('mnemo-jump-to-social')); }}
+      />
     </div>
   );
 }

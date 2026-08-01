@@ -8,12 +8,15 @@
 // surface is flagged only as a candidate to evaluate for Proof in a LATER build (see this
 // Yoke's final report, open questions).
 //
+// BP140-K5 MOVE 1: the Sourced-Knowledge Benchmark's OneClickMeshTestPanel run controls +
+// results (previously rendered here) have been RELOCATED to compass/ProofTab.tsx, directly
+// under its Test Authority panel -- see that file's header. This is a placement change, not a
+// removal of functionality: same component, same props, same IPC handlers, only mounted from a
+// different parent now. Nothing below duplicates it.
+//
 // Composes (all reused as-is, relocated not duplicated):
 //  - LeanFederationPanel (from LeanGauntletTab.tsx) -- peer scan, same collapsible-toggle
 //    pattern the old Package Store tab used.
-//  - OneClickMeshTestPanel -- full component (run controls + its own live/complete result
-//    view via the now-shared MeshTestResultSummary). New users never see this because it is
-//    reachable ONLY through More -> Power, never from Ask/Proof/Library/Social/the Ask home.
 //  - Substrate (Tools & Panels / Stats / Console) -- moved here per the Founder's explicit
 //    "Substrate stays out of Library, moves to Power/More as internal/advanced vocabulary"
 //    decision. Mirrors CleanShell.tsx's CombinedSubstrateTab sub-tab pattern exactly, but is
@@ -23,7 +26,6 @@
 import React, { useState } from 'react';
 import type { AuthState } from '../../amplify.d';
 import { LeanFederationPanel } from '../LeanGauntletTab';
-import { OneClickMeshTestPanel } from '../OneClickMeshTestPanel';
 import { SubstrateTab } from '../SubstrateTab';
 import { SubstrateStatsTab } from '../SubstrateStatsTab';
 import { UnifiedSubstrateConsole } from '../UnifiedSubstrateConsole';
@@ -64,7 +66,10 @@ export interface PowerDiagnosticsPanelProps {
   authState: AuthState | null;
 }
 
-export function PowerDiagnosticsPanel({ authState }: PowerDiagnosticsPanelProps): React.ReactElement {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept on the props interface so
+// MoreTab.tsx's existing `<PowerDiagnosticsPanel authState={authState} />` call site needs no
+// change (BP140-K5 MOVE 1); no longer read here now that OneClickMeshTestPanel moved to Proof.
+export function PowerDiagnosticsPanel({ authState: _authState }: PowerDiagnosticsPanelProps): React.ReactElement {
   const [showPeerScan, setShowPeerScan] = useState(false);
   const [showSubstrate, setShowSubstrate] = useState(false);
 
@@ -75,9 +80,10 @@ export function PowerDiagnosticsPanel({ authState }: PowerDiagnosticsPanelProps)
     }}>
       <div style={{ marginBottom: 4, fontSize: 16, fontWeight: 700, color: '#f0fdf4' }}>Power / Diagnostics</div>
       <div style={{ marginBottom: 16, fontSize: 11, color: '#64748b', lineHeight: 1.5 }}>
-        Advanced, internal controls -- mesh dispatch, the raw benchmark run-controls, and
-        substrate internals. Not part of the new-user product promise; that's why this lives
-        only here, under More.
+        Advanced, internal controls -- mesh dispatch and substrate internals. Not part of the
+        new-user product promise; that's why this lives only here, under More. The
+        Sourced-Knowledge Benchmark's run controls moved to the Proof tab (BP140-K5) -- see it
+        there, directly under Test Authority.
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' as const }}>
@@ -100,17 +106,6 @@ export function PowerDiagnosticsPanel({ authState }: PowerDiagnosticsPanelProps)
           <SubstrateComposer />
         </div>
       )}
-
-      <div style={{ marginBottom: 8, fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: 0.5 }}>
-        Sourced-Knowledge Benchmark -- run controls
-      </div>
-      {/* Reuses the exact same cross-tab jump wiring as the old Package Store tab
-          (CleanShell.tsx:148/378-385) -- CompassShell listens for this same
-          'mnemo-jump-to-social' DOM CustomEvent and switches to the Social tab. */}
-      <OneClickMeshTestPanel
-        authState={authState}
-        onShareResult={() => { window.dispatchEvent(new CustomEvent('mnemo-jump-to-social')); }}
-      />
     </div>
   );
 }

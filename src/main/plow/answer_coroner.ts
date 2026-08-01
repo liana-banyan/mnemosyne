@@ -334,6 +334,173 @@ export function classifyLocalOutcome(o: LocalCoronerOutcomeInput): CoronerRecord
   });
 }
 
+// ─── RGBY fact-verdict taxonomy (BP140 Yoke: Eblet-Learning Substrate / Liana Cycle) ─────────
+//
+// The taxonomy itself (canon_eblet_fact_verdict_color_taxonomy_rgby_bp139) lives on
+// VerifiedEbletEntry.factVerdict's own doc comment in mnem_eblet_store.ts -- restated here only
+// as the one-line reminder each branch below cites:
+//   G = right, R = wrong, B = undetermined, Y = unknowable, O = conflicting/unresolved.
+//
+// WHY CORONER TIME: factVerdict needs GROUND TRUTH, which only exists here (classifyCore has
+// sealedLetter) -- runAuthorityEnsemble (plow_mc_answerer.ts) never sees the sealed letter and
+// structurally cannot compute this itself. The full candidate set (winner AND losers) is
+// threaded from there to here via CanonicalPlowMcResult.ensembleCandidates ->
+// callCanonicalPlowMcAnswererForMeshTest's plowTrace.ensemble_candidates -> this file's
+// LocalCoronerOutcomeInput.plowTrace -- see plow_mc_answerer.ts's own doc comments on that field
+// for the full thread. Today only the local-run Coroner path (runAnswerCoronerOnLocalOutcomes)
+// calls persistEnsembleCandidateFactVerdicts -- the WAN-history path (runAnswerCoroner /
+// classifyRecord) does NOT, to avoid double-writing the same real answer's candidates once at
+// "just ran" time and again on a later WAN autopsy of the same rows; see this Yoke's build
+// report for that call and why it is left to Bishop to decide whether the WAN path should also
+// persist (e.g. for rows that predate this Yoke and were never scored locally).
+
+/** Minimal shape this module needs from an AuthorityEnsembleCandidate (plow_mc_answerer.ts) --
+ *  duplicated rather than imported to avoid a cross-module type dependency for a plain-data
+ *  shape that crosses an IPC boundary as untyped JSON by the time it reaches here (renderer ->
+ *  preload -> index.ts -> this file). Structurally compatible with AuthorityEnsembleCandidate;
+ *  any additional fields on the real type are simply ignored. */
+export interface EnsembleCandidateForFactVerdict {
+  authority: string;
+  letter: string;
+  reasoning: string;
+  sourceUrl?: string;
+  method?: string;
+}
+
+/** Defensive extraction of plowTrace.ensemble_candidates (see the thread-doc above) -- plowTrace
+ *  is `Record<string, unknown>` because it crosses an IPC boundary as JSON, so this never trusts
+ *  the shape blindly. Returns [] (never throws) on anything malformed, absent, or from a
+ *  pre-BP140 receipt that never had this field at all. */
+export function extractEnsembleCandidates(
+  plowTrace: Record<string, unknown> | null | undefined,
+): EnsembleCandidateForFactVerdict[] {
+  const raw = plowTrace?.ensemble_candidates;
+  if (!Array.isArray(raw)) return [];
+  const out: EnsembleCandidateForFactVerdict[] = [];
+  for (const item of raw) {
+    if (
+      item && typeof item === 'object' &&
+      typeof (item as Record<string, unknown>).authority === 'string' &&
+      typeof (item as Record<string, unknown>).letter === 'string' &&
+      typeof (item as Record<string, unknown>).reasoning === 'string'
+    ) {
+      const c = item as Record<string, unknown>;
+      out.push({
+        authority: c.authority as string,
+        letter: c.letter as string,
+        reasoning: c.reasoning as string,
+        sourceUrl: typeof c.sourceUrl === 'string' ? c.sourceUrl : undefined,
+        method: typeof c.method === 'string' ? c.method : undefined,
+      });
+    }
+  }
+  return out;
+}
+
+/** Pure, unit-testable rule that maps one candidate's outcome to the RGBY letter. This is the
+ *  ONE place the taxonomy's semantics live -- see the module header above for the verbatim
+ *  4-line reminder and mnem_eblet_store.ts's VerifiedEbletEntry.factVerdict doc comment for the
+ *  full canon definitions this must stay consistent with.
+ *
+ *  Precedence (checked in this order):
+ *   1. `unanswerable` -> Y. No caller in this build sets this yet -- there is no existing signal
+ *      in this codebase for "the question itself has no determinable fact of the matter" (as
+ *      opposed to "our engine gave up", which is B below). Wired honestly for a future caller
+ *      (e.g. a benchmark that flags a contested/no-consensus answer key) rather than fabricated
+ *      from abstainReason strings that do not actually mean that.
+ *   2. `candidateLetter === null` (this authority abstained / produced no parseable letter) or
+ *      `sealedLetter === null` (no ground truth exists yet, "nobody has confirmed it") -> B.
+ *   3. `candidateLetter === sealedLetter` -> G, unconditionally -- right is right even if the
+ *      vote that produced it was contested.
+ *   4. Otherwise this candidate is wrong vs ground truth. If `disagreement` is true (the
+ *      ENSEMBLE's own corroboration for this question was an active, unresolved disagreement --
+ *      AuthorityEnsembleOutcome.corroboration/CoronerRecord.browserAuthorityCorroboration ===
+ *      'disagree' | 'adjudicated' -- a property of the vote, never derived by comparing letters
+ *      after the fact), tag O instead of plain R: this candidate was on the losing side of a
+ *      genuine authority conflict, a go-INVESTIGATE signal distinct from an ordinary lone-
+ *      authority miss. Otherwise plain R. */
+export function deriveFactVerdict(params: {
+  candidateLetter: string | null;
+  sealedLetter: string | null;
+  disagreement?: boolean;
+  unanswerable?: boolean;
+}): 'G' | 'R' | 'B' | 'Y' | 'O' {
+  if (params.unanswerable) return 'Y';
+
+  const candidate = params.candidateLetter ? params.candidateLetter.toUpperCase().trim() : null;
+  const sealed = params.sealedLetter ? params.sealedLetter.toUpperCase().trim() : null;
+
+  if (candidate === null || candidate === '') return 'B';
+  if (sealed === null || sealed === '') return 'B';
+
+  if (candidate === sealed) return 'G';
+  return params.disagreement ? 'O' : 'R';
+}
+
+/** Persists ONE factVerdict-tagged eblet per ensemble candidate (winner AND losers) for a single
+ *  graded question -- the whole point per the Yoke's design intent: "keep the reasoning we paid
+ *  for", so the Liana Cycle can learn methods from G, study R, and investigate O, not just the
+ *  one letter that happened to win the vote. Each write is individually try/caught and non-
+ *  fatal -- one bad candidate must never abort the rest of the batch or the caller's own scoring
+ *  loop. Returns the count of eblets actually written (for caller bookkeeping/logging only).
+ *
+ *  Dynamic-imports writeVerifiedEblet (mnem_eblet_store.ts), the same cross-module convention
+ *  plow_mc_answerer.ts already uses for its own main-process imports (e.g. '../index',
+ *  '../ip_ledger/stamp_certify') -- keeps this module decoupled from the eblet-store subsystem
+ *  at load time and avoids any import-cycle risk. */
+export async function persistEnsembleCandidateFactVerdicts(params: {
+  /** UNTRUNCATED question text -- deliberately NOT CoronerRecord.question, which classifyCore
+   *  truncates to 300 chars for its own trace-record purposes; truncating here would corrupt the
+   *  eblet's own sha256(question+answer) provenance and question-similarity matching for any
+   *  question longer than 300 chars (routine for MMLU-Pro). */
+  question: string;
+  sealedLetter: string | null;
+  disagreement: boolean;
+  candidates: EnsembleCandidateForFactVerdict[];
+}): Promise<number> {
+  const { question, sealedLetter, disagreement, candidates } = params;
+  if (candidates.length === 0) return 0;
+
+  let written = 0;
+  try {
+    const { writeVerifiedEblet } = await import('../mnem_eblet_store');
+    const now = Date.now();
+    for (const candidate of candidates) {
+      const factVerdict = deriveFactVerdict({
+        candidateLetter: candidate.letter,
+        sealedLetter,
+        disagreement,
+      });
+      try {
+        await writeVerifiedEblet({
+          question,
+          answer: candidate.letter,
+          provenance: `answer_coroner:ensemble_candidate:${candidate.authority}`,
+          // Advisory only -- writeVerifiedEblet() re-derives verified/verdict from provenance/
+          // corroboration via computeHonestVerification(), same as every other caller. factVerdict
+          // is an ORTHOGONAL axis (Coroner-graded, ground-truth-backed) and is never used to
+          // synthesize a corroboration claim this writer has no independent basis for.
+          verified: false,
+          sha256: '',
+          timestamp: now,
+          reasoning: candidate.reasoning,
+          class: 'whole_answer',
+          factVerdict,
+        });
+        written++;
+      } catch (err) {
+        console.warn(
+          `[answer_coroner] persistEnsembleCandidateFactVerdicts: write failed for candidate ` +
+          `authority=${candidate.authority} (non-fatal, skipping):`, err,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[answer_coroner] persistEnsembleCandidateFactVerdicts: mnem_eblet_store import failed (non-fatal):', err);
+  }
+  return written;
+}
+
 /** Shared aggregation: CoronerRecord[] -> CoronerRoundup. Used by both the Supabase/WAN path
  *  and the local-outcomes path so the byClass/correctableWrongs/prioritizedFixList math is
  *  computed exactly once. */
@@ -398,21 +565,53 @@ function buildRoundupFromRecords(records: CoronerRecord[]): CoronerRoundup {
 
 /** Classifies the CURRENT run's outcomes (in-memory/persisted, no network call) and returns
  *  the SAME CoronerRoundup shape runAnswerCoroner returns -- the renderer's existing roundup
- *  display JSX needs no branching to show either source. Synchronous (no fetch), but kept
- *  as a plain function (not async) is fine to `await` from a caller either way. */
-export function runAnswerCoronerOnLocalOutcomes(
+ *  display JSX needs no branching to show either source.
+ *
+ *  BP140 Yoke: now genuinely async (previously "synchronous, but fine to await either way") --
+ *  each outcome's classification is still the same synchronous classifyLocalOutcome() call as
+ *  before, but immediately after, this now also persists a factVerdict-tagged eblet for every
+ *  ensemble candidate the outcome's plowTrace carries (via persistEnsembleCandidateFactVerdicts,
+ *  see that function's doc comment) -- a local disk append, never a network call, so the
+ *  "no fetch" property of the doc comment above still holds; only "synchronous" no longer does.
+ *  Every existing caller already either awaits this function's return value or (per the old
+ *  comment) treats a non-Promise return as fine-to-await, so this is a safe widening -- see
+ *  index.ts's 'plow:run-answer-coroner-local' handler, which now `await`s it. */
+export async function runAnswerCoronerOnLocalOutcomes(
   outcomes: LocalCoronerOutcomeInput[],
   opts: { onProgress?: (msg: string) => void } = {},
-): CoronerRoundup {
+): Promise<CoronerRoundup> {
   const log = (msg: string) => {
     console.log(`[coroner:local] ${msg}`);
     opts.onProgress?.(msg);
   };
 
   log(`classifying ${outcomes.length} outcome(s) from the current run...`);
-  const records = outcomes.map(classifyLocalOutcome);
+  const records: CoronerRecord[] = [];
+  let factVerdictsWritten = 0;
+  for (const outcome of outcomes) {
+    const record = classifyLocalOutcome(outcome);
+    records.push(record);
+
+    // BP140 Yoke: persist every ensemble candidate's RGBY factVerdict now that ground truth
+    // (record.sealedLetter) is known -- see the module header's "WHY CORONER TIME" note. Only
+    // fires when this outcome's plowTrace actually carries a candidate set (ensemble branch,
+    // post-BP140 receipts); every pre-BP140/non-ensemble outcome extracts [] and is a no-op.
+    const candidates = extractEnsembleCandidates(outcome.plowTrace);
+    if (candidates.length > 0) {
+      const disagreement =
+        record.browserAuthorityCorroboration === 'disagree' ||
+        record.browserAuthorityCorroboration === 'adjudicated';
+      factVerdictsWritten += await persistEnsembleCandidateFactVerdicts({
+        question: outcome.question,
+        sealedLetter: record.sealedLetter,
+        disagreement,
+        candidates,
+      });
+    }
+  }
   const roundup = buildRoundupFromRecords(records);
 
+  log(`factVerdict eblets written this run: ${factVerdictsWritten}`);
   log('');
   log('╔══════════════════════════════════════════════════════════════');
   log('║  ANSWER CORONER ROUNDUP (current run)');
