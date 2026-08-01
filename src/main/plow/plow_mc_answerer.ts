@@ -3398,6 +3398,36 @@ export async function resolveDeterministicComputeOverride(
 // entries" -- because nothing solved by the plow ever landed in that table) actually has rows
 // to find and push to peers. Both writes are individually try/caught and fully non-fatal: a
 // failed write here must never turn a correct answer into an error for the caller.
+/** KN-BP141-6 FIX A (bare-letter writer bug): this is the exact writer that produced the one
+ *  false positive found in KN-BP141-5's mandatory shape-quarantine check -- provenance
+ *  'plow_mc_answerer:solved:wikipedia:...', verified:true, answer field exactly "H) " for the
+ *  birthday-paradox question. Root cause confirmed by direct read of every call site of
+ *  writeAndReplicateSolvedAnswer below (all four, at this file's ~4030/~4166/~4619/~5797 lines):
+ *  several build `optionText` via `.find(...)?.text ?? ''`, so a failed option-text lookup
+ *  silently produces an EMPTY string, and `answer: \`${chosenLetter}) ${optionText}\`` then
+ *  degenerates into a bare option letter with trailing punctuation and nothing else -- an answer
+ *  key for a question we got right, carrying zero reusable knowledge.
+ *
+ *  Per the ticket: fix the WRITER, never loosen the reader's shape-quarantine predicate
+ *  (isAnswerKeyShapedEblet, mnem_eblet_store.ts, KN-BP141-5) -- that predicate stays exactly as
+ *  specified; this is the other half of the fix, at the source.
+ *
+ *  THRESHOLD IMPLEMENTED: `optionText.trim().length > 0` -- substantive content is "anything
+ *  beyond an empty/whitespace-only string," checked on the RAW optionText input BEFORE it is
+ *  concatenated with the letter and punctuation. This deliberately imposes NO minimum length
+ *  beyond non-empty: a short-but-real value ("42", "0", "-1", a single word) is still genuine
+ *  information distinct from "which letter was chosen" and must not be refused -- the ticket's
+ *  own "H) 42" example (letter prefix plus real content) is exactly this case, and passes this
+ *  check because `optionText` itself is "42", not empty. Only the ACTUAL observed bug shape
+ *  (optionText === '' or whitespace-only) is refused.
+ *
+ *  Extracted to a small, pure, named, exported function (rather than inlined) so it can be
+ *  verified directly against the real compiled dist without invoking the side-effecting write --
+ *  same convention as KN-BP141-5's isRgbyLedgerWrite() in mnem_eblet_store.ts. */
+export function hasSubstantiveAnswerContent(optionText: string): boolean {
+  return optionText.trim().length > 0;
+}
+
 async function writeAndReplicateSolvedAnswer(params: {
   researchQuery: string;
   domain: string;
@@ -3423,25 +3453,40 @@ async function writeAndReplicateSolvedAnswer(params: {
   corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute' | 'authority_extracted_compute';
 }): Promise<void> {
   const now = Date.now();
-  try {
-    await writeVerifiedEblet({
-      question: params.researchQuery,
-      answer: `${params.chosenLetter}) ${params.optionText}`,
-      provenance: `plow_mc_answerer:solved:${params.authority}${params.sourceUrl ? ':' + params.sourceUrl : ''}`,
-      // BP131 honesty fix: this literal is now advisory only -- writeVerifiedEblet() re-derives
-      // the real verified/verdict pair via computeHonestVerification() from `provenance` and
-      // `corroboration` below, so it can never again disagree with the verdict written alongside
-      // it (the old bug: this was hardcoded `true` while `verdict` right below was honestly
-      // 'unverified' in the very same object literal).
-      verified: false,
-      sha256: '',
-      timestamp: now,
-      class: 'whole_answer',
-      reasoning: params.reasoning,
-      corroboration: params.corroboration,
-    });
-  } catch (err) {
-    console.warn('[plow_mc_answerer] writeAndReplicateSolvedAnswer: local eblet write failed (non-fatal):', err);
+  const hasSubstantiveOptionText = hasSubstantiveAnswerContent(params.optionText);
+  if (hasSubstantiveOptionText) {
+    try {
+      await writeVerifiedEblet({
+        question: params.researchQuery,
+        answer: `${params.chosenLetter}) ${params.optionText}`,
+        provenance: `plow_mc_answerer:solved:${params.authority}${params.sourceUrl ? ':' + params.sourceUrl : ''}`,
+        // BP131 honesty fix: this literal is now advisory only -- writeVerifiedEblet() re-derives
+        // the real verified/verdict pair via computeHonestVerification() from `provenance` and
+        // `corroboration` below, so it can never again disagree with the verdict written alongside
+        // it (the old bug: this was hardcoded `true` while `verdict` right below was honestly
+        // 'unverified' in the very same object literal).
+        verified: false,
+        sha256: '',
+        timestamp: now,
+        class: 'whole_answer',
+        reasoning: params.reasoning,
+        corroboration: params.corroboration,
+      });
+    } catch (err) {
+      console.warn('[plow_mc_answerer] writeAndReplicateSolvedAnswer: local eblet write failed (non-fatal):', err);
+    }
+  } else {
+    // KN-BP141-6 FIX A: refuse the local eblet write outright rather than persist a bare-letter
+    // answer key -- "if only a letter is available, do not write the record at all." Scoped to
+    // ONLY the writeVerifiedEblet call above; the ip_ledger replication stamp below is a
+    // separate subsystem/data model (out of this ticket's stated scope) and still fires
+    // unconditionally, same as before this fix.
+    console.warn(
+      `[plow_mc_answerer] writeAndReplicateSolvedAnswer: refused local eblet write for question=` +
+      `${JSON.stringify(params.researchQuery.slice(0, 80))} chosenLetter=${params.chosenLetter} -- ` +
+      `optionText was empty/whitespace-only, the resulting answer would carry no substantive ` +
+      `content beyond the option letter itself (KN-BP141-6 FIX A, not written, not an error)`,
+    );
   }
   try {
     // Dynamic import (same convention this file already uses for cross-module main-process
