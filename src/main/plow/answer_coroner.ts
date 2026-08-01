@@ -14,6 +14,8 @@
 // HEADLINE NUMBERS (never conflate):
 //   correctable-wrongs: authority-empty + matched-wrong-option + plow-discordant + etc. (drive to 0)
 //   honest-abstains:    atom genuinely unverifiable -- CORRECT behavior, NOT a failure
+//   no-response:        question was never actually attempted (transport timeout/error) --
+//                        NOT a correctness verdict at all, and NOT an abstain. See BP141 Yoke.
 //
 // Rule 66: version, never overwrite -- this is a new file, no supersede needed.
 
@@ -27,7 +29,12 @@ export type WrongClass =
   | 'plow-discordant'       // no voter majority (concordance=DISCORDANT), fell to abstain or guessed
   | 'substrate-gap'         // swarm ran, zero candidates survived miner+furnace
   | 'compute-wrong'         // compute sidecar ran and returned the wrong letter
-  | 'bad-decomposition';    // [Phase 2] decompose engine generated wrong foundation queries
+  | 'bad-decomposition'     // [Phase 2] decompose engine generated wrong foundation queries
+  // BP141 Yoke Task 4c: no plow ran at all (plowTrace empty/absent) -- classify by the mechanism
+  // that actually answered instead of falling through to a plow-* default. See classifyCore's
+  // right/wrong terminal else branches.
+  | 'single-shot-wrong'     // answeredBy=single_shot (or unset), no plowTrace, and it was wrong
+  | 'minor-council-wrong';  // answeredBy=minor_council, no plowTrace, and it was wrong
 
 export type AbstainClass =
   | 'honest-abstain'            // atom genuinely unverifiable -- CORRECT, leave as-is
@@ -37,9 +44,18 @@ export type RightClass =
   | 'substrate-hit'   // plow voters had relevant substrate candidates
   | 'sourced-fact'    // browser authority confirmed and the agreement produced a correct answer
   | 'plow-majority'   // standard CONCORDANT plow with no substrate or browser hit
-  | 'compute';        // compute sidecar was correct
+  | 'compute'         // compute sidecar was correct
+  // BP141 Yoke Task 4c: same no-plow-ran fix as WrongClass above, right-outcome side.
+  | 'single-shot-right'    // answeredBy=single_shot (or unset), no plowTrace, and it was right
+  | 'minor-council-right'; // answeredBy=minor_council, no plowTrace, and it was right
 
-export type AnswerClass = WrongClass | AbstainClass | RightClass;
+// BP141 Yoke Task 4b: a THIRD category, distinct from both WrongClass and AbstainClass -- an
+// UNATTEMPTED question (transport timeout / error before any answer was produced). Must never
+// be silently folded into either "correctable wrong" or "honest abstain" -- see classifyCore's
+// isNoResponse branch (checked before isAbstain) and CoronerRoundup.noResponseTotal.
+export type NoResponseClass = 'no-response';
+
+export type AnswerClass = WrongClass | AbstainClass | RightClass | NoResponseClass;
 
 // ─── Record / roundup types ─────────────────────────────────────────────────
 
@@ -51,7 +67,9 @@ export interface CoronerRecord {
   question: string;
   sealedLetter: string | null;
   answeredLetter: string | null;
-  outcome: 'right' | 'wrong' | 'abstain';
+  // BP141 Yoke Task 4b: 'no-response' added -- an unattempted question (transport timeout/error),
+  // structurally distinct from 'abstain' (which means the answering mechanism ran and declined).
+  outcome: 'right' | 'wrong' | 'abstain' | 'no-response';
   correctable: boolean;
   answerClass: AnswerClass;
   traceSummary: string;
@@ -74,11 +92,31 @@ export interface CoronerRoundup {
   totalRecords: number;
   correctableWrongs: number;  // HEADLINE 1 -- drive to 0
   honestAbstains: number;     // HEADLINE 2 -- leave honest (not a failure)
+  // BP141 Yoke Task 4b: HEADLINE 3 -- unattempted questions (timedOut/transport error), never
+  // folded into correctableWrongs or honestAbstains. A run that never asked half its questions
+  // must never be misread as a run that honestly declined to answer.
+  noResponseTotal: number;
   wrongTotal: number;
   rightTotal: number;
   abstainTotal: number;
   byClass: Record<string, CoronerRecord[]>;
   prioritizedFixList: FixItem[];  // correctable classes only, sorted by count desc
+  // BP141 Yoke Task 4d: the run's own configuration, stated alongside the class breakdown so a
+  // plow-off run can never be misread as a plow autopsy. null when the caller did not supply a
+  // runConfig (e.g. the WAN-history path, which spans many past runs with no single config).
+  substrateEnabled: boolean | null;
+  plowEnabled: boolean | null;
+  researchArmMode: boolean | null;
+}
+
+// BP141 Yoke Task 4d: run-level configuration flags, threaded from the receipt/run's own top-
+// level fields (substrateEnabled/plowEnabled/researchArmMode -- see OneClickMeshTestPanel.tsx's
+// receipt shape) through to the roundup card. Deliberately optional/nullable-in/nullable-out:
+// no caller is required to supply this, and absence is reported honestly (null), never guessed.
+export interface RunConfig {
+  substrateEnabled?: boolean | null;
+  plowEnabled?: boolean | null;
+  researchArmMode?: boolean | null;
 }
 
 // ─── Raw Supabase row shapes ─────────────────────────────────────────────────
@@ -116,6 +154,10 @@ function classifyCore(params: {
   answeredLetter: string | null;
   isAbstain: boolean;
   isCorrect: boolean;
+  // BP141 Yoke Task 4a: true when the question was never actually attempted (transport timeout
+  // or a non-empty transport error before any answer came back) -- MUST take precedence over
+  // isAbstain. A timeout is not an honest decline to answer; it is an unattempted question.
+  isNoResponse: boolean;
   plowTrace: Record<string, unknown>;
   abstainReason: string | null;
   answeredBy: string | null;
@@ -123,7 +165,7 @@ function classifyCore(params: {
 }): CoronerRecord {
   const {
     routeId, peerId, sessionId, domain, question, sealedLetter, answeredLetter,
-    isAbstain, isCorrect, plowTrace, abstainReason, answeredBy, processingMs,
+    isAbstain, isCorrect, isNoResponse, plowTrace, abstainReason, answeredBy, processingMs,
   } = params;
 
   const browserCorroboration = typeof plowTrace.browserAuthorityCorroboration === 'string'
@@ -136,12 +178,26 @@ function classifyCore(params: {
   const traceSummary = typeof plowTrace.traceSummary === 'string'
     ? plowTrace.traceSummary
     : (typeof plowTrace.trace_summary === 'string' ? plowTrace.trace_summary : '');
+  // BP141 Yoke Task 4c: plowTrace normalizes to {} at every call site when null/absent (see
+  // classifyRecord's `answerJson.plow_trace ?? {}` and classifyLocalOutcome's `o.plowTrace ?? {}`)
+  // so an empty-keys check here reliably means "no plow ran", regardless of which caller.
+  const hasPlowTrace = Object.keys(plowTrace).length > 0;
 
-  let outcome: 'right' | 'wrong' | 'abstain';
+  let outcome: 'right' | 'wrong' | 'abstain' | 'no-response';
   let correctable: boolean;
   let answerClass: AnswerClass;
 
-  if (isAbstain) {
+  // BP141 Yoke Task 4a/4b: checked BEFORE isAbstain -- a transport timeout/error means the
+  // question was never attempted at all, structurally distinct from a mechanism that ran and
+  // genuinely declined (honest-abstain) or bailed (over-conservative-abstain). Empirical receipt:
+  // Mini030 question_id 92/98, timedOut:true + error:"peer did not reply within timeout",
+  // isAbstain:false -- the Coroner used to fall through isAbstain's `parsedLetter === null`
+  // check and misreport these as "Honest abstains: leave honest", which is wrong.
+  if (isNoResponse) {
+    outcome = 'no-response';
+    correctable = false; // not a correctness defect to "fix" -- the question was simply never asked/answered
+    answerClass = 'no-response';
+  } else if (isAbstain) {
     outcome = 'abstain';
     // Determine honest vs over-conservative:
     // Honest: atom was genuinely unverifiable (abstain_reason signals a real limit)
@@ -186,8 +242,14 @@ function classifyCore(params: {
       answerClass = 'compute';
     } else if (candidatesPostFurnace !== null && candidatesPostFurnace > 0) {
       answerClass = 'substrate-hit';
-    } else {
+    } else if (hasPlowTrace) {
       answerClass = 'plow-majority';
+    } else {
+      // BP141 Yoke Task 4c: plowTrace is empty/absent -- no plow ran for this answer at all.
+      // Do NOT invent a plow classification (see Mini030 receipt: plowTrace null on every row,
+      // plow was off, yet the card previously reported plow classes). Classify by the mechanism
+      // that actually answered instead.
+      answerClass = answeredBy === 'minor_council' ? 'minor-council-right' : 'single-shot-right';
     }
   } else {
     // WRONG
@@ -210,9 +272,13 @@ function classifyCore(params: {
       answerClass = 'plow-discordant';
     } else if (candidatesPostFurnace !== null && candidatesPostFurnace === 0) {
       answerClass = 'substrate-gap';
-    } else {
+    } else if (hasPlowTrace) {
       // Default wrong class: plow ran but chose the wrong letter (voters disagreed less loudly)
       answerClass = 'plow-discordant';
+    } else {
+      // BP141 Yoke Task 4c: same no-plow-ran fix as the isCorrect branch above -- plowTrace is
+      // empty/absent, so there is no plow verdict to blame. Classify by the actual mechanism.
+      answerClass = answeredBy === 'minor_council' ? 'minor-council-wrong' : 'single-shot-wrong';
     }
   }
 
@@ -264,6 +330,13 @@ function classifyRecord(
   const abstainReason = typeof answerJson.abstain_reason === 'string' ? answerJson.abstain_reason : null;
   const answeredBy = typeof answerJson.answered_by === 'string' ? answerJson.answered_by : null;
 
+  // BP141 Yoke Task 4a: the relay_route_replies wire format (answer_json) does not currently
+  // carry a transport-timeout/error signal the way the renderer's local QuestionOutcome does --
+  // out of scope for this Yoke (LocalCoronerOutcomeInput/classifyLocalOutcome only, per ticket).
+  // Always false here; wired honestly rather than guessed. Revisit if/when the WAN wire format
+  // grows an equivalent field.
+  const isNoResponse = false;
+
   return classifyCore({
     routeId: route.id,
     peerId: reply.peer_id,
@@ -274,6 +347,7 @@ function classifyRecord(
     answeredLetter,
     isAbstain,
     isCorrect,
+    isNoResponse,
     plowTrace,
     abstainReason,
     answeredBy,
@@ -302,14 +376,29 @@ export interface LocalCoronerOutcomeInput {
   machineLabel?: string | null;
   latencyMs?: number | null;
   plowTrace?: Record<string, unknown> | null;
+  // BP141 Yoke Task 4a: field names match the renderer's QuestionOutcome shape verbatim (see
+  // OneClickMeshTestPanel.tsx / MeshTestTerminalTab.tsx interface QuestionOutcome -- both already
+  // carry `timedOut?: boolean` and `error?: string`). Threaded through so a transport timeout can
+  // never be misclassified as an honest abstain -- see classifyLocalOutcome below.
+  timedOut?: boolean;
+  error?: string;
 }
 
 /** One QuestionOutcome (renderer shape, OneClickMeshTestPanel.tsx) -> CoronerRecord. */
 export function classifyLocalOutcome(o: LocalCoronerOutcomeInput): CoronerRecord {
   const sealedLetter = o.correctLetter ? o.correctLetter.toUpperCase().trim() : null;
-  const isAbstain = !!o.isAbstain || o.parsedLetter === null;
-  const answeredLetter = isAbstain ? null : (o.parsedLetter ? o.parsedLetter.toUpperCase().trim() : null);
-  const isCorrect = !isAbstain && sealedLetter !== null && answeredLetter === sealedLetter;
+  // BP141 Yoke Task 4a: a timeout or a non-empty transport error means this question was never
+  // actually attempted -- checked BEFORE isAbstain so it can never fall into `parsedLetter ===
+  // null` -> isAbstain -> honest-abstain (the exact Mini030 question_id 92/98 misclassification
+  // this ticket exists to fix: timedOut:true, error:"peer did not reply within timeout",
+  // isAbstain:false, parsedLetter:null -- the OLD logic collapsed that into isAbstain via the
+  // `parsedLetter === null` clause below, regardless of the explicit isAbstain:false on the row).
+  const isNoResponse = !!o.timedOut || (typeof o.error === 'string' && o.error.trim().length > 0);
+  const isAbstain = !isNoResponse && (!!o.isAbstain || o.parsedLetter === null);
+  const answeredLetter = (isNoResponse || isAbstain)
+    ? null
+    : (o.parsedLetter ? o.parsedLetter.toUpperCase().trim() : null);
+  const isCorrect = !isNoResponse && !isAbstain && sealedLetter !== null && answeredLetter === sealedLetter;
 
   return classifyCore({
     routeId: `local-${o.question_id}`,
@@ -321,6 +410,7 @@ export function classifyLocalOutcome(o: LocalCoronerOutcomeInput): CoronerRecord
     answeredLetter,
     isAbstain,
     isCorrect,
+    isNoResponse,
     // No abstain_reason field exists on the local run's outcomes (only the WAN wire format
     // populates it) -- classifyCore's own traceSummary-pattern fallback (relevanceGateAbstain=
     // true / computeFallthroughAbstain=true) still classifies honest vs over-conservative
@@ -503,11 +593,17 @@ export async function persistEnsembleCandidateFactVerdicts(params: {
 
 /** Shared aggregation: CoronerRecord[] -> CoronerRoundup. Used by both the Supabase/WAN path
  *  and the local-outcomes path so the byClass/correctableWrongs/prioritizedFixList math is
- *  computed exactly once. */
-function buildRoundupFromRecords(records: CoronerRecord[]): CoronerRoundup {
+ *  computed exactly once.
+ *
+ *  BP141 Yoke Task 4d: accepts an optional runConfig so the returned card states the run's own
+ *  substrateEnabled/plowEnabled/researchArmMode configuration alongside its class breakdown --
+ *  never guessed, null when the caller does not supply one (e.g. the WAN-history path, which
+ *  spans many past runs and has no single config to report). */
+function buildRoundupFromRecords(records: CoronerRecord[], runConfig?: RunConfig): CoronerRoundup {
   const byClass: Record<string, CoronerRecord[]> = {};
   let correctableWrongs = 0;
   let honestAbstains = 0;
+  let noResponseTotal = 0;
   let wrongTotal = 0;
   let rightTotal = 0;
   let abstainTotal = 0;
@@ -517,7 +613,11 @@ function buildRoundupFromRecords(records: CoronerRecord[]): CoronerRoundup {
     if (!byClass[cls]) byClass[cls] = [];
     byClass[cls].push(rec);
 
-    if (rec.outcome === 'wrong') {
+    if (rec.outcome === 'no-response') {
+      // BP141 Yoke Task 4b: its own bucket -- never folded into wrongTotal/correctableWrongs
+      // nor abstainTotal/honestAbstains. See CoronerRoundup.noResponseTotal doc comment.
+      noResponseTotal++;
+    } else if (rec.outcome === 'wrong') {
       wrongTotal++;
       if (rec.correctable) correctableWrongs++;
     } else if (rec.outcome === 'right') {
@@ -535,6 +635,10 @@ function buildRoundupFromRecords(records: CoronerRecord[]): CoronerRoundup {
     'substrate-gap',
     'compute-wrong',
     'bad-decomposition',
+    // BP141 Yoke Task 4c: no-plow-ran wrong classes are correctable wrongs too (drive to 0),
+    // same as every other WrongClass member.
+    'single-shot-wrong',
+    'minor-council-wrong',
   ];
   const overConservativeClass: AbstainClass = 'over-conservative-abstain';
 
@@ -555,11 +659,15 @@ function buildRoundupFromRecords(records: CoronerRecord[]): CoronerRoundup {
     totalRecords: records.length,
     correctableWrongs,
     honestAbstains,
+    noResponseTotal,
     wrongTotal,
     rightTotal,
     abstainTotal,
     byClass,
     prioritizedFixList,
+    substrateEnabled: runConfig?.substrateEnabled ?? null,
+    plowEnabled: runConfig?.plowEnabled ?? null,
+    researchArmMode: runConfig?.researchArmMode ?? null,
   };
 }
 
@@ -578,7 +686,7 @@ function buildRoundupFromRecords(records: CoronerRecord[]): CoronerRoundup {
  *  index.ts's 'plow:run-answer-coroner-local' handler, which now `await`s it. */
 export async function runAnswerCoronerOnLocalOutcomes(
   outcomes: LocalCoronerOutcomeInput[],
-  opts: { onProgress?: (msg: string) => void } = {},
+  opts: { onProgress?: (msg: string) => void; runConfig?: RunConfig } = {},
 ): Promise<CoronerRoundup> {
   const log = (msg: string) => {
     console.log(`[coroner:local] ${msg}`);
@@ -586,6 +694,15 @@ export async function runAnswerCoronerOnLocalOutcomes(
   };
 
   log(`classifying ${outcomes.length} outcome(s) from the current run...`);
+  // BP141 Yoke Task 4d: state the run's own configuration up front -- a plow-off run must never
+  // be misread as a plow autopsy just because the class names below happen to mention "plow".
+  if (opts.runConfig) {
+    log(
+      `run config: substrateEnabled=${opts.runConfig.substrateEnabled ?? 'unknown'} ` +
+      `plowEnabled=${opts.runConfig.plowEnabled ?? 'unknown'} ` +
+      `researchArmMode=${opts.runConfig.researchArmMode ?? 'unknown'}`,
+    );
+  }
   const records: CoronerRecord[] = [];
   let factVerdictsWritten = 0;
   for (const outcome of outcomes) {
@@ -609,22 +726,25 @@ export async function runAnswerCoronerOnLocalOutcomes(
       });
     }
   }
-  const roundup = buildRoundupFromRecords(records);
+  const roundup = buildRoundupFromRecords(records, opts.runConfig);
 
   log(`factVerdict eblets written this run: ${factVerdictsWritten}`);
   log('');
   log('╔══════════════════════════════════════════════════════════════');
   log('║  ANSWER CORONER ROUNDUP (current run)');
   log(`║  ${records.length} records`);
+  log(`║  CONFIG: substrateEnabled=${roundup.substrateEnabled ?? 'unknown'} plowEnabled=${roundup.plowEnabled ?? 'unknown'} researchArmMode=${roundup.researchArmMode ?? 'unknown'}`);
   log('╠══════════════════════════════════════════════════════════════');
   if (records.length > 0) {
-    log(`║  RIGHT:   ${roundup.rightTotal.toString().padStart(4)}   (${((roundup.rightTotal / records.length) * 100).toFixed(1)}%)`);
-    log(`║  WRONG:   ${roundup.wrongTotal.toString().padStart(4)}   (${((roundup.wrongTotal / records.length) * 100).toFixed(1)}%)`);
-    log(`║  ABSTAIN: ${roundup.abstainTotal.toString().padStart(4)}   (${((roundup.abstainTotal / records.length) * 100).toFixed(1)}%)`);
+    log(`║  RIGHT:       ${roundup.rightTotal.toString().padStart(4)}   (${((roundup.rightTotal / records.length) * 100).toFixed(1)}%)`);
+    log(`║  WRONG:       ${roundup.wrongTotal.toString().padStart(4)}   (${((roundup.wrongTotal / records.length) * 100).toFixed(1)}%)`);
+    log(`║  ABSTAIN:     ${roundup.abstainTotal.toString().padStart(4)}   (${((roundup.abstainTotal / records.length) * 100).toFixed(1)}%)`);
+    log(`║  NO-RESPONSE: ${roundup.noResponseTotal.toString().padStart(4)}   (${((roundup.noResponseTotal / records.length) * 100).toFixed(1)}%)`);
   }
   log('╠══════════════════════════════════════════════════════════════');
   log(`║  HEADLINE 1 -- CORRECTABLE WRONGS: ${roundup.correctableWrongs}`);
   log(`║  HEADLINE 2 -- HONEST ABSTAINS:    ${roundup.honestAbstains}  (leave honest -- not a failure)`);
+  log(`║  HEADLINE 3 -- NO-RESPONSE:        ${roundup.noResponseTotal}  (unattempted -- never asked/answered, not an abstain)`);
   log('╚══════════════════════════════════════════════════════════════');
 
   return roundup;
@@ -675,11 +795,15 @@ export async function runAnswerCoroner(opts: {
       totalRecords: 0,
       correctableWrongs: 0,
       honestAbstains: 0,
+      noResponseTotal: 0,
       wrongTotal: 0,
       rightTotal: 0,
       abstainTotal: 0,
       byClass: {},
       prioritizedFixList: [],
+      substrateEnabled: null,
+      plowEnabled: null,
+      researchArmMode: null,
     };
   }
 
@@ -738,6 +862,7 @@ export async function runAnswerCoroner(opts: {
   log('╠══════════════════════════════════════════════════════════════');
   log(`║  HEADLINE 1 -- CORRECTABLE WRONGS: ${roundup.correctableWrongs}`);
   log(`║  HEADLINE 2 -- HONEST ABSTAINS:    ${roundup.honestAbstains}  (leave honest -- not a failure)`);
+  log(`║  HEADLINE 3 -- NO-RESPONSE:        ${roundup.noResponseTotal}  (unattempted -- never asked/answered, not an abstain)`);
   log('╠══════════════════════════════════════════════════════════════');
   log('║  PRIORITIZED FIX LIST (correctable classes):');
   for (const item of roundup.prioritizedFixList) {
