@@ -519,7 +519,11 @@ export interface CanonicalPlowMcResult {
     // is on AND concordanceStrictness is 'require_two'/'require_majority' AND exactly one
     // candidate answered a NO-COMPUTE question. See CanonicalPlowMcConfig.concordanceStrictness
     // and resolveConcordanceAcceptance for the full design.
-    | 'lone_rejected_by_strictness';
+    | 'lone_rejected_by_strictness'
+    // BP1xx DETERMINISTIC-OVERRIDE-HOIST: mirrors AuthorityEnsembleOutcome['corroboration']'s own
+    // 'deterministic_compute_override' addition -- the calculator answered before any authority
+    // agreement was even evaluated. See runAuthorityEnsemble's pre-branch check.
+    | 'deterministic_compute_override';
   /** BP1xx Authority-Ensemble-swarm-fold-in, OPTIONAL/ADDITIVE. Present only when
    *  researchArmAuthorityEnsemble was on for this call. True when the browser/Wolfram authority
    *  panel was NOT already a confident 2+ agreement and the specialist swarm (Miner -> Furnace
@@ -892,7 +896,14 @@ export interface AuthorityEnsembleCandidate {
     // BP139 browser-LLM authorities (PREMIUM, opt-in only -- see the gate at their call site
     // inside runAuthorityEnsemble below): general second opinions for conceptual/knowledge
     // questions the Perplexity/Google/specialist-swarm panel alone can miss.
-    | 'user_chatgpt' | 'user_gemini' | 'user_claude';
+    | 'user_chatgpt' | 'user_gemini' | 'user_claude'
+    // BP1xx DETERMINISTIC-OVERRIDE-HOIST: the synthetic "candidate" runAuthorityEnsemble's own
+    // pre-branch deterministic-compute check (see that function's header, right before the FAST
+    // PATH block) fabricates ONLY to carry the calculator's own letter/reasoning/method through
+    // the exact same acceptedCandidates shape the rest of this file's accept path already
+    // expects -- never a guessed/authority-sourced answer, always backed by a real
+    // DeterministicComputeCandidate.
+    | 'deterministic_compute';
   letter: string;
   reasoning: string;
   sourceUrl: string;
@@ -911,10 +922,22 @@ export interface AuthorityEnsembleOutcome {
     // lacking corroboration on a NO-COMPUTE question -- honest, distinct from 'none' (nobody
     // answered at all). See resolveConcordanceAcceptance's call site for the one place this is
     // ever set.
-    | 'lone_rejected_by_strictness';
+    | 'lone_rejected_by_strictness'
+    // BP1xx DETERMINISTIC-OVERRIDE-HOIST: the calculator answered BEFORE any agree/disagree/
+    // adjudicate/single-source branching below ever ran -- see this function's own pre-branch
+    // check, right before the FAST PATH block. Distinct from every label above because none of
+    // them apply: no authority-agreement question was ever even asked. Only reachable for
+    // answerType==='computable'.
+    | 'deterministic_compute_override';
   candidates: AuthorityEnsembleCandidate[];
   acceptedCandidates: AuthorityEnsembleCandidate[];
   adjudicationAttempted: boolean;
+  /** Populated ONLY alongside corroboration==='deterministic_compute_override' -- the real
+   *  DeterministicComputeCandidate the pre-branch hoist check found, so the caller can report the
+   *  SAME method/expression/computedValue provenance it already reports for the (unchanged)
+   *  post-branch override path, without recomputing the six tiers a second time. Undefined for
+   *  every other corroboration value. */
+  deterministicOverride?: DeterministicComputeCandidate | null;
   /** True only when the browser/Wolfram panel was NOT already a confident 2+ agreement, so the
    *  specialist swarm (Miner -> Furnace -> 3-voters) fired as an extra corroborating candidate.
    *  False on the fast agree-immediately path -- this is the field that proves the swarm stays
@@ -1354,6 +1377,69 @@ async function runAuthorityEnsemble(params: {
       }
     } else {
       log('wolfram=skipped (no WOLFRAM_APP_ID)');
+    }
+  }
+
+  // ── BP1xx DETERMINISTIC-OVERRIDE-HOIST ("the calculator wins the math, every time") ─────────
+  // THE BUG this closes: resolveDeterministicComputeOverride (defined below, six tiers --
+  // unit_aware/bare_value/schedule_amortization/density/physics_kepler/aircraft_lift_drag) used
+  // to be consulted ONLY after this function had already decided a chosenLetter via the agree/
+  // single-candidate/adjudicated branches further down. A computable question whose authorities
+  // DISAGREED, and whose one extra adjudication call also failed to resolve a letter, returns
+  // chosenLetter:null (corroboration 'disagree'/'none') from those branches -- the override was
+  // then never consulted at all, and the caller fell through to the older, narrower downstream
+  // Stage A.3 compute-sidecar block (unit_aware/bare_value/schedule only -- it predates and never
+  // learned the density/physics_kepler/aircraft_lift_drag tiers), then further still to ordinary
+  // voter/fact arbitration -- letting a flubbed authority letter win a question the calculator
+  // could have solved outright. Empirically observed across two live runs on the same build:
+  // density with AGREEING authorities -> override fired, corrected B->C; the SAME density
+  // question with DISAGREEING authorities -> override never ran, the wrong authority letter
+  // stood; same split for an aircraft question resolved by a single (unagreed) authority.
+  //
+  // FIX: consult the SAME six-tier override HERE, unconditionally for every computable question,
+  // BEFORE the fast-path/uncertain/single-candidate/adjudication branching below ever runs --
+  // "regardless of authority agreement state" (the whole point). Uses whatever candidate
+  // reasoning has been gathered so far (perplexity/google/browser-LLM/Wolfram -- the swarm has
+  // not fired yet at this point in the function). The four newer tiers (schedule/density/
+  // physics_kepler/aircraft_lift_drag) derive strictly from the question text, never from this
+  // reasoning, so running them this early costs nothing and changes nothing about what they can
+  // solve; the two older tiers (unit_aware/bare_value) simply see whatever componentFacts already
+  // exist at this point, the identical contract their existing downstream call site already
+  // honors. A confident single-option deterministic result short-circuits this entire function --
+  // the swarm never fires and no agree/disagree/adjudicate branching runs at all -- matching this
+  // file's own "cheap by design" doctrine (a real answer already found makes the swarm redundant
+  // spend). A null result (every non-computable question, and any computable question none of the
+  // six tiers can parse) falls through to the EXISTING branching below, byte-for-byte unchanged --
+  // this block is purely additive and never mutates `candidates`.
+  if (answerType === 'computable') {
+    const hoistReasoningTexts = candidates.map((c) => c.reasoning);
+    const hoistDecision = await resolveDeterministicComputeOverride(
+      researchQuery, mcOptions, '', hoistReasoningTexts,
+      { ollamaBaseUrl: config.ollamaBaseUrl, model: config.model, wolframAppId: process.env.WOLFRAM_APP_ID },
+    );
+    if (hoistDecision.deterministicOverride) {
+      const det = hoistDecision.deterministicOverride;
+      log(
+        `deterministic compute override fired PRE-BRANCH (${det.method}: ${det.sourceExpression} -> ` +
+        `${det.computedValue}${det.computedUnit ? ' ' + det.computedUnit : ''}) -> ${det.letter} -- ` +
+        `skipping agree/disagree/adjudicate/single-source branching entirely (candidates so far: ` +
+        `[${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}]).`,
+      );
+      return {
+        chosenLetter: det.letter,
+        corroboration: 'deterministic_compute_override',
+        candidates,
+        acceptedCandidates: [{
+          authority: 'deterministic_compute',
+          letter: det.letter,
+          reasoning: `${det.method}: ${det.sourceExpression} -> ${det.computedValue}${det.computedUnit ? ' ' + det.computedUnit : ''}`,
+          sourceUrl: '',
+          method: det.method,
+        }],
+        adjudicationAttempted: false,
+        swarmFired: false,
+        deterministicOverride: det,
+      };
     }
   }
 
@@ -2788,7 +2874,23 @@ export async function runCanonicalPlowMcAnswer(
         // call below is only ever made when that held) -- the accept condition further below is
         // unchanged in shape.
         let finalChosenLetter = ensembleOutcome.chosenLetter;
-        if (ensembleOutcome.chosenLetter && earlyAnswerTypeForBrowserAuthority === 'computable') {
+        // BP1xx DETERMINISTIC-OVERRIDE-HOIST: the ensemble already ran the SAME six-tier override
+        // BEFORE any agree/disagree/adjudicate/single-source branching (see runAuthorityEnsemble's
+        // own pre-branch check, right before its FAST PATH block) and short-circuited straight to
+        // this letter. There is no separate "ensemble letter" to compare against here -- this is
+        // always the override result, never a mere corroboration of some other pick -- so the
+        // second resolveDeterministicComputeOverride call below is skipped entirely: it would just
+        // recompute the identical six tiers a second time for the same question, wasted spend.
+        if (ensembleOutcome.corroboration === 'deterministic_compute_override' && ensembleOutcome.deterministicOverride) {
+          deterministicOverride = ensembleOutcome.deterministicOverride;
+          overrideFired = true;
+          finalChosenLetter = ensembleOutcome.chosenLetter;
+          console.log(
+            `[plow_mc_answerer] Stage F2 DETERMINISTIC OVERRIDE (pre-branch hoist): ` +
+            `${deterministicOverride.method} -> ${deterministicOverride.letter} -- calculator ` +
+            `answered before any authority agreement was even evaluated.`,
+          );
+        } else if (ensembleOutcome.chosenLetter && earlyAnswerTypeForBrowserAuthority === 'computable') {
           // The accepted candidate(s)' own reasoning text is the primary source (e.g.
           // Perplexity's fact text stating "... = 600 kg/m^3 ..."); when the swarm fired, its
           // voters' raw previews are folded in too as extra candidate quantity sources -- same
@@ -2875,13 +2977,25 @@ export async function runCanonicalPlowMcAnswer(
               chosenLetter: finalChosenLetter,
               optionText: acceptedOptionText,
               reasoning: overrideFired && deterministicOverride
-                ? `deterministic-compute-override (${deterministicOverride.method}): ` +
-                  `${deterministicOverride.sourceExpression} -> ${deterministicOverride.computedValue}` +
-                  `${deterministicOverride.computedUnit ? ' ' + deterministicOverride.computedUnit : ''} ` +
-                  `-> matched option ${deterministicOverride.letter}; ensemble had originally picked ` +
-                  `${ensembleOutcome.chosenLetter} via [${ensembleOutcome.acceptedCandidates.map((c) => c.authority).join(',')}] ` +
-                  `-- overridden. Original reasoning: ` +
-                  ensembleOutcome.acceptedCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | ')
+                ? ensembleOutcome.corroboration === 'deterministic_compute_override'
+                  // BP1xx DETERMINISTIC-OVERRIDE-HOIST: there is no prior "ensemble pick" to
+                  // describe as overridden here -- the calculator answered before any authority
+                  // agreement was even evaluated (see runAuthorityEnsemble's pre-branch check) --
+                  // so this honestly says so instead of the misleading "ensemble had originally
+                  // picked X ... overridden" phrasing the post-branch case below uses (accurate
+                  // only when a real, different ensemble pick actually existed first).
+                  ? `deterministic-compute (pre-branch hoist, ${deterministicOverride.method}): ` +
+                    `${deterministicOverride.sourceExpression} -> ${deterministicOverride.computedValue}` +
+                    `${deterministicOverride.computedUnit ? ' ' + deterministicOverride.computedUnit : ''} ` +
+                    `-> matched option ${deterministicOverride.letter}; no authority-agreement branching ` +
+                    `ran -- the calculator answered directly.`
+                  : `deterministic-compute-override (${deterministicOverride.method}): ` +
+                    `${deterministicOverride.sourceExpression} -> ${deterministicOverride.computedValue}` +
+                    `${deterministicOverride.computedUnit ? ' ' + deterministicOverride.computedUnit : ''} ` +
+                    `-> matched option ${deterministicOverride.letter}; ensemble had originally picked ` +
+                    `${ensembleOutcome.chosenLetter} via [${ensembleOutcome.acceptedCandidates.map((c) => c.authority).join(',')}] ` +
+                    `-- overridden. Original reasoning: ` +
+                    ensembleOutcome.acceptedCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | ')
                 : ensembleOutcome.acceptedCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | '),
               sourceUrl: overrideFired ? undefined : primary.sourceUrl,
               authority: overrideFired && deterministicOverride ? `deterministic_compute:${deterministicOverride.method}` : primary.authority,
