@@ -797,6 +797,36 @@ export function isAnswerKeyShapedEblet(
   return isBareOptionLetterAnswer(entry.answer ?? '') && isBenchmarkShapedQuestion(entry.question ?? '');
 }
 
+/** KN-BP141-5 FIX 2 (retrieval-side contamination: the answer-key pool), INDEPENDENT of FIX 1
+ *  above -- measured and gated separately, per the ticket's own instruction, so each layer's
+ *  effect can be attributed on its own.
+ *
+ *  VerifiedEbletEntry.factVerdict (BP140 Yoke) exists and is populated on the live substrate
+ *  (measured this ticket: G 427 / R 150 / O 117, all 694 on the same 694 answer_coroner:
+ *  ensemble_candidate rows FIX 1 targets by shape) and NOTHING reads it before this fix -- no
+ *  retrieval path in this file inspects factVerdict at all prior to KN-BP141-5.
+ *
+ *  Per the ticket: a record whose factVerdict is 'R' (wrong), 'O' (conflicting), 'B'
+ *  (undetermined), or 'Y' (unknowable) must never be served as supporting context, whatever its
+ *  class or provenance -- only 'G' (grounded) may be served. This function implements exactly
+ *  that admissibility rule for records that DO carry a factVerdict.
+ *
+ *  ABSENCE HANDLING (same "absence != inference" convention this field's own doc comment already
+ *  states, and the same convention isContaminatedComputeMethodEblet/isAnswerKeyShapedEblet use for
+ *  their own optional fields): factVerdict is absent on every eblet written before the BP140 Yoke
+ *  and on every non-scored production Ask (no ground truth to grade against) -- that is the vast
+ *  majority of the substrate (1,103 of 1,797 records measured this ticket carry no factVerdict at
+ *  all). An absent factVerdict means "no RGBY verdict recorded," never "R/O/B/Y" and never "G" by
+ *  inference -- this function returns false (admissible, i.e. NOT inadmissible) for an absent
+ *  factVerdict, so the 1,103 ordinary unlabeled records already legitimately served as context
+ *  keep being served exactly as before. Only a record that EXPLICITLY carries a non-'G' letter is
+ *  newly withheld by this fix. */
+export function isFactVerdictInadmissibleForRetrieval(
+  entry: Pick<VerifiedEbletEntry, 'factVerdict'>,
+): boolean {
+  return entry.factVerdict !== undefined && entry.factVerdict !== 'G';
+}
+
 /** BP136 Yoke (answer-cache v1): question<->question similarity, DISTINCT from
  *  computeQaRelevance() above (which scores question-vs-ANSWER overlap). This scores how
  *  similar a NEW question is to a STORED question, for the answer-cache serve-verbatim
@@ -1001,12 +1031,25 @@ export async function queryVerifiedEblets(question: string, topK = 3): Promise<V
 
   // KN-BP141-5 FIX 1: shape-based answer-key quarantine, independent of the provenance-prefix
   // check above -- see isAnswerKeyShapedEblet()'s doc comment for the full empirical basis.
-  const entries = afterComputeMethodQuarantine.filter((e) => !isAnswerKeyShapedEblet(e));
-  const answerKeyShapedQuarantinedCount = afterComputeMethodQuarantine.length - entries.length;
+  const afterAnswerKeyShapeQuarantine = afterComputeMethodQuarantine.filter((e) => !isAnswerKeyShapedEblet(e));
+  const answerKeyShapedQuarantinedCount = afterComputeMethodQuarantine.length - afterAnswerKeyShapeQuarantine.length;
   if (answerKeyShapedQuarantinedCount > 0) {
     console.log(
       `[EbletStore] queryVerifiedEblets: excluded ${answerKeyShapedQuarantinedCount} answer-key-shaped ` +
       `eblet(s) from retrieval (KN-BP141-5 FIX 1, Rule 66 quarantine-by-non-retrieval, not deleted)`,
+    );
+  }
+
+  // KN-BP141-5 FIX 2: factVerdict admissibility gate, independent of FIX 1 above -- see
+  // isFactVerdictInadmissibleForRetrieval()'s doc comment. Only a record whose factVerdict is
+  // explicitly a non-'G' letter is withheld here; an absent factVerdict is unaffected.
+  const entries = afterAnswerKeyShapeQuarantine.filter((e) => !isFactVerdictInadmissibleForRetrieval(e));
+  const factVerdictQuarantinedCount = afterAnswerKeyShapeQuarantine.length - entries.length;
+  if (factVerdictQuarantinedCount > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEblets: excluded ${factVerdictQuarantinedCount} eblet(s) with an ` +
+      `inadmissible factVerdict (R/O/B/Y) from retrieval (KN-BP141-5 FIX 2, Rule 66 quarantine-by-` +
+      `non-retrieval, not deleted)`,
     );
   }
 
@@ -1149,13 +1192,26 @@ export async function queryVerifiedEbletsTopical(
   // check above -- see isAnswerKeyShapedEblet()'s doc comment for the full empirical basis. This
   // is exactly the retrieval path (mesh-test B/C conditions, tools ON, answer-keys OFF) the
   // ticket's WHY section describes the loop leaking through.
-  const entries = afterComputeMethodQuarantine.filter((e) => !isAnswerKeyShapedEblet(e));
-  const answerKeyShapedQuarantinedCount = afterComputeMethodQuarantine.length - entries.length;
+  const afterAnswerKeyShapeQuarantine = afterComputeMethodQuarantine.filter((e) => !isAnswerKeyShapedEblet(e));
+  const answerKeyShapedQuarantinedCount = afterComputeMethodQuarantine.length - afterAnswerKeyShapeQuarantine.length;
   if (answerKeyShapedQuarantinedCount > 0) {
     console.log(
       `[EbletStore] queryVerifiedEbletsTopical: excluded ${answerKeyShapedQuarantinedCount} ` +
       `answer-key-shaped eblet(s) from retrieval for domain=${domain} (KN-BP141-5 FIX 1, Rule 66 ` +
       `quarantine-by-non-retrieval, not deleted)`,
+    );
+  }
+
+  // KN-BP141-5 FIX 2: factVerdict admissibility gate, independent of FIX 1 above -- see
+  // isFactVerdictInadmissibleForRetrieval()'s doc comment. Only a record whose factVerdict is
+  // explicitly a non-'G' letter is withheld here; an absent factVerdict is unaffected.
+  const entries = afterAnswerKeyShapeQuarantine.filter((e) => !isFactVerdictInadmissibleForRetrieval(e));
+  const factVerdictQuarantinedCount = afterAnswerKeyShapeQuarantine.length - entries.length;
+  if (factVerdictQuarantinedCount > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEbletsTopical: excluded ${factVerdictQuarantinedCount} eblet(s) ` +
+      `with an inadmissible factVerdict (R/O/B/Y) from retrieval for domain=${domain} (KN-BP141-5 ` +
+      `FIX 2, Rule 66 quarantine-by-non-retrieval, not deleted)`,
     );
   }
 
