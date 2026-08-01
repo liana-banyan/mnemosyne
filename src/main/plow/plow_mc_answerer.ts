@@ -101,6 +101,13 @@ import { solvePhysicsRelationProblem } from './plow_mc_physics_solver';
 // class, decided today by a vote+adjudicator that picked the wrong letter live) -- tried only after
 // tiers (i)-(vi) have already returned null. Never duplicates or modifies those six tiers.
 import { solvePseudocodeTraceProblem } from './plow_mc_pseudocode_trace_solver';
+// BP141-2 Task B ("Disagreement as Evidence"): a NINTH independent deterministic compute tier --
+// see that file's header for the full rationale and gate. Unlike every tier above, it does not
+// derive from questionText+options alone -- it also requires the ensemble's own INDEPENDENT
+// candidate scatter (IndependentSourceVote[], derivation-path-tagged via resolveCakeDerivationPath
+// below), since the whole point is recognizing that genuine cross-derivation-path disagreement IS
+// the evidence for a question's own "there is no single/specific answer" option.
+import { solveNoConsensusFromScatter, type IndependentSourceVote } from './plow_mc_no_consensus_solver';
 // BP-AIRCRAFT-SOLVER: a SIXTH, independent deterministic compute tier -- see that file's header
 // for the full rationale (the airplane lift/drag/takeoff-power benchmark wobble) -- tried only
 // after tiers (i)-(v) have already returned null. Never duplicates or modifies those five tiers.
@@ -2415,9 +2422,18 @@ async function runAuthorityEnsemble(params: {
   // this block is purely additive and never mutates `candidates`.
   if (answerType === 'computable') {
     const hoistReasoningTexts = candidates.map((c) => c.reasoning);
+    // BP141-2 Task B: real independent-source scatter, tagged with each candidate's derivation
+    // path so the no-consensus tier inside resolveDeterministicComputeOverride can evaluate its
+    // own gate on THIS ('computable'-classified) call path too, not just via its dedicated
+    // unconditional bypass above.
+    const hoistIndependentSources: IndependentSourceVote[] = candidates.map((c) => ({
+      letter: c.letter,
+      derivationPath: resolveCakeDerivationPath(c),
+    }));
     const hoistDecision = await resolveDeterministicComputeOverride(
       researchQuery, mcOptions, '', hoistReasoningTexts,
       { ollamaBaseUrl: config.ollamaBaseUrl, model: config.model, wolframAppId: process.env.WOLFRAM_APP_ID },
+      hoistIndependentSources,
     );
     if (hoistDecision.deterministicOverride) {
       const det = hoistDecision.deterministicOverride;
@@ -2493,6 +2509,65 @@ async function runAuthorityEnsemble(params: {
         computedUnit: det.computedUnit,
       };
     }
+  }
+
+  // ── BP141-2 Task B NO-CONSENSUS-ANSWER-TYPE-BYPASS (mirrors BP-PSEUDOCODE-TRACE-ANSWER-TYPE-
+  // BYPASS/BP141-1 SET-MEMBERSHIP-ANSWER-TYPE-BYPASS above): plow_mc_no_consensus_solver.ts's
+  // solveNoConsensusFromScatter is ALSO a registered tier inside resolveDeterministicComputeOverride
+  // below, but that function (like every tier inside it) is only ever reached when
+  // answerType === 'computable' (see the gated hoist block just above). A question whose correct
+  // answer IS "there is no single/specific answer" (run 030 receipt, question_id 92: Critical
+  // Security Studies "referent object" question) carries no numbers at all, so
+  // answer_type_classifier.ts files it 'reasoning', not 'computable' -- this solver would
+  // otherwise never even be consulted. UNLIKE the pseudocode-trace/set-membership bypasses, this
+  // one cannot run before ANY authority is consulted -- its entire gate depends on the ensemble's
+  // own INDEPENDENT candidate scatter, which does not exist yet at the very top of this function.
+  // It is placed HERE instead: unconditionally on answerType, using whatever candidates have been
+  // gathered so far (perplexity/google/browser-LLM/Wolfram -- the swarm has not fired yet), each
+  // tagged with its real derivation path via resolveCakeDerivationPath (the SAME independence-unit
+  // mapper the Cake Method tiers use -- A9/A10 REVISED, "VARIANCE IS NOT INDEPENDENCE"). A
+  // confident result short-circuits this entire function exactly like the deterministic-override
+  // hoist above; a null falls through to the EXISTING branching below, byte-for-byte unchanged --
+  // this block never mutates `candidates` and never widens solveNoConsensusFromScatter's own gate.
+  try {
+    const independentSourcesForNoConsensus: IndependentSourceVote[] = candidates.map((c) => ({
+      letter: c.letter,
+      derivationPath: resolveCakeDerivationPath(c),
+    }));
+    const noConsensus = solveNoConsensusFromScatter(researchQuery, mcOptions, independentSourcesForNoConsensus);
+    if (noConsensus) {
+      log(
+        `no_consensus_from_scatter PROVED answer ${noConsensus.letter} from the ensemble's own ` +
+        `independent-derivation-path scatter -- swarm/adjudication not consulted (answerType=${answerType}, ` +
+        `${noConsensus.trace}).`,
+      );
+      return {
+        chosenLetter: noConsensus.letter,
+        corroboration: 'deterministic_compute',
+        candidates,
+        acceptedCandidates: [{
+          authority: 'deterministic_compute',
+          letter: noConsensus.letter,
+          reasoning: noConsensus.trace,
+          sourceUrl: '',
+          method: 'no_consensus_from_scatter',
+        }],
+        adjudicationAttempted: false,
+        swarmFired: false,
+        deterministicOverride: {
+          letter: noConsensus.letter,
+          optionValue: NaN,
+          optionUnit: null,
+          computedValue: NaN,
+          computedUnit: null,
+          sourceExpression: noConsensus.trace,
+          source: 'question_expression',
+          method: 'no_consensus_from_scatter',
+        },
+      };
+    }
+  } catch (err) {
+    log(`no_consensus_from_scatter threw (non-fatal, ensemble continues normally): ${err}`);
   }
 
   // ── FAST PATH: 2+ browser/Wolfram candidates already agree -- accept immediately, swarm never
@@ -2859,6 +2934,11 @@ export async function resolveDeterministicComputeOverride(
   ensembleChosenLetter: string,
   reasoningTexts: string[],
   computeOpts: { ollamaBaseUrl?: string; model?: string; wolframAppId?: string } = {},
+  // BP141-2 Task B: OPTIONAL/ADDITIVE. Absent/empty on every pre-existing caller (byte-identical
+  // behavior -- the tier below trivially fails its own >= 3 distinct-derivation-paths gate on an
+  // empty array and returns null, same as any other tier's "missing piece" honest abstain). See
+  // plow_mc_no_consensus_solver.ts's header for the full gate this feeds.
+  independentSources: IndependentSourceVote[] = [],
 ): Promise<{ finalLetter: string; overrideFired: boolean; deterministicOverride: DeterministicComputeCandidate | null }> {
   let deterministicOverride: DeterministicComputeCandidate | null = null;
 
@@ -3171,6 +3251,46 @@ export async function resolveDeterministicComputeOverride(
       }
     } catch (err) {
       console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: solveSetMembershipProblem threw (non-fatal, ensemble letter kept):', err);
+    }
+  }
+
+  // Tier (no-consensus, BP141-2 Task B) -- a NINTH independent deterministic compute tier for
+  // questions that offer an explicit "there is no single/specific answer" option
+  // (plow_mc_no_consensus_solver.ts; run 030 receipt, question_id 92). Structurally different from
+  // every tier above: it does not derive from questionText+options alone, it also requires the
+  // ensemble's own INDEPENDENT candidate scatter (`independentSources`, derivation-path-tagged --
+  // A9/A10 REVISED, "VARIANCE IS NOT INDEPENDENCE") -- genuine cross-derivation-path disagreement
+  // across >= 3 distinct routes, with >= 3 distinct letters and no majority, and the no-consensus
+  // option is itself NOT the plurality pick, is the evidence that option is correct. Registered
+  // here ALSO reachable via its own unconditional answer-type bypass at the top of
+  // runAuthorityEnsemble (mirroring pseudocode_trace's/set_membership's own dual placement), for
+  // this gated (`answerType === 'computable'`) call path. Synchronous, no I/O, no model call.
+  // Tried last of the named solvers, only after tiers (i)-(viii, set-membership) above returned
+  // null; STRICTLY BEFORE the generic reasoning-text extraction tier below (BP-SPECIFIC-BEFORE-
+  // GENERIC discipline, same as every other named solver here).
+  if (!deterministicOverride) {
+    try {
+      const noConsensus = solveNoConsensusFromScatter(researchQueryForTiers, mcOptions, independentSources);
+      if (noConsensus) {
+        deterministicOverride = {
+          letter: noConsensus.letter,
+          // Mirrors solvePseudocodeTraceProblem's/solveSetMembershipProblem's own NaN-sentinel
+          // convention above: this solver compares a SCATTER VERDICT, not a scalar, so there is
+          // no honest numeric optionValue/computedValue to report here. The actual scatter data
+          // (no-consensus option, distinct-derivation-path count, distinct-letter count,
+          // plurality leaders, every independent vote) lives in `sourceExpression` (==
+          // noConsensus.trace) below, which every receipt path already carries.
+          optionValue: NaN,
+          optionUnit: null,
+          computedValue: NaN,
+          computedUnit: null,
+          sourceExpression: noConsensus.trace,
+          source: 'question_expression',
+          method: 'no_consensus_from_scatter',
+        };
+      }
+    } catch (err) {
+      console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: solveNoConsensusFromScatter threw (non-fatal, ensemble letter kept):', err);
     }
   }
 
@@ -4332,9 +4452,17 @@ export async function runCanonicalPlowMcAnswer(
           // mirrors the SAME process.env.WOLFRAM_APP_ID the downstream compute-sidecar block's
           // own computeAnswer() call already reads independently of specialistKeys (see that
           // call site's own comment).
+          // BP141-2 Task B: same real independent-source scatter contract as the pre-branch hoist
+          // site above, built from the FULLER post-ensemble candidate list (includes the swarm's
+          // own vote, unlike the pre-branch hoist which runs before the swarm fires).
+          const overrideIndependentSources: IndependentSourceVote[] = ensembleOutcome.candidates.map((c) => ({
+            letter: c.letter,
+            derivationPath: resolveCakeDerivationPath(c),
+          }));
           const decision = await resolveDeterministicComputeOverride(
             researchQuery, mcOptionsForBrowserAuthority, ensembleOutcome.chosenLetter, overrideReasoningTexts,
             { ollamaBaseUrl, model, wolframAppId: process.env.WOLFRAM_APP_ID },
+            overrideIndependentSources,
           );
           deterministicOverride = decision.deterministicOverride;
           overrideFired = decision.overrideFired;
