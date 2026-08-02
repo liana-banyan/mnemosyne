@@ -132,6 +132,13 @@ import { solveSetMembershipProblem, type GroundedFactEblet } from './plow_mc_set
 // never used inside this file to decide or override `deterministicOverride`/`finalLetter` itself.
 import { vetQuestion, type QuestionVettingFlags } from './plow_mc_question_vetting';
 import { runEliminationChart, type EliminationChartResult } from './plow_mc_elimination_chart';
+// KN-BP141-7 P6 (Founder-directed BP141): wires KN-BP141-3 Stage 2 (plow_mc_elimination_cascade.ts,
+// C4 bidirectional consistency) and Stage 3 (plow_gom_jabbar.ts, G5 tally-with-strike) into the
+// live answerer for the FIRST time -- see runEliminationCascadeCandidateProducer's own doc comment
+// (below, near runCakeMethodDisagreementResolution) for the honest scope of what could and could
+// not be wired this pass, and this file's own KN-BP141-7 P6 header note for the full rationale.
+import { checkBidirectionalConsistency, type BidirectionalConsistencyResult } from './plow_mc_elimination_cascade';
+import { tallyVotesStrikingFailures, type GomJabbarVote } from './plow_gom_jabbar';
 // BP137 Yoke v2b Stage A.0.1: semantic-cosine upgrade to the relevance TEST used inside the
 // gate below (the gating FLAG and abstain logic are unchanged -- see semantic_relevance_gate.ts
 // header for the full reuse rationale). ollamaManager imported directly (same module already
@@ -495,6 +502,15 @@ export interface CanonicalPlowMcResult {
    *  must treat that as NOT substrate-sourced (see plow_mc_answerer.ts header + Step 2 spec),
    *  never silently count chosenLetter as provenance-backed when this is empty. */
   provenanceReceipts: ProvenanceReceipt[];
+  /** KN-BP141-7 P5 (Founder-directed BP141, regression fix), OPTIONAL/ADDITIVE. True only when
+   *  this answer came from decompose-and-eliminate (plow_mc_decompose.ts), which this ticket
+   *  demotes to advisory-only -- concordance is forced to 'PARTIAL' (never 'CONCORDANT') and no
+   *  substrate write-back occurs, regardless of decompose's own reported `basis`. See
+   *  attemptDecomposeAndEliminate's own call-site comment for the full rationale (three live
+   *  receipts showing elimination destroying correct answers; no measured false-negative rate
+   *  exists against the ~2% bar other solvers were held to). Absent (not false) on every answer
+   *  that did not come from decompose. */
+  decomposeAdvisoryDemoted?: boolean;
   /** BP137 Yoke v2b Stage A, OPTIONAL/ADDITIVE. Present only when researchArmMode &&
    *  researchArmComputeSidecar were both true for this call (absent -- not false -- on every
    *  pre-Stage-A call and on every call with the flag off, so old receipts and this new field
@@ -625,9 +641,46 @@ export interface CanonicalPlowMcResult {
     ownLetter: string | null;
     pickedOwnLetterWithSelfPresent: boolean | null;
     pickedSameLetterWithSelfAbsent: boolean | null;
+    cutLetter: string | null;
+    chosenLetter: string | null;
+    judgeWasDisputant: boolean;
   }[];
+  /** KN-BP141-7 P3 -- mirrors AuthorityEnsembleOutcome.cakeSelfPreferenceRate, see that field's
+   *  own doc comment for the full rationale. */
+  cakeSelfPreferenceRate?: number | null;
   cakeCuts?: { pickerKey: string; derivationPath: string; letter: string }[];
   cakePicks?: { pickerKey: string; derivationPath: string; pickedLetter: string | null }[];
+  /** KN-BP141-7 P2 -- mirrors AuthorityEnsembleOutcome.minorityCutsOverridden, see that field's
+   *  own doc comment for the full rationale. */
+  minorityCutsOverridden?: { letter: string; derivationPath: string }[];
+  /** KN-BP141-7 P1 -- mirrors AuthorityEnsembleOutcome.cakePickerCutterInvariant, see that field's
+   *  own doc comment for the full rationale. */
+  cakePickerCutterInvariant?: {
+    cutterRoots: string[];
+    pickerRoots: string[];
+    cuttersWithNoPick: string[];
+    pickersWithNoCut: string[];
+  };
+  /** KN-BP141-7 P6 -- mirrors AuthorityEnsembleOutcome.cascadeCandidateProducer, see that field's
+   *  own doc comment for the full rationale. */
+  cascadeCandidateProducer?: {
+    attempted: boolean;
+    consistent: boolean;
+    mostToLeast: string[];
+    leastToMost: string[];
+    candidateAddedToCutPool: boolean;
+    trace: string;
+  };
+  /** KN-BP141-7 P6 -- mirrors AuthorityEnsembleOutcome.gomJabbarG5Advisory, see that field's own
+   *  doc comment for the full rationale. `applied` is always false; G5 stays disabled this pass. */
+  gomJabbarG5Advisory?: {
+    applied: false;
+    wouldStrike: boolean;
+    strickenSources: string[];
+    admissibleSources: string[];
+    tally: Record<string, number>;
+    trace: string;
+  };
   /** BP140 Yoke (Eblet-Learning Substrate / Liana Cycle), OPTIONAL/ADDITIVE. The full ensemble
    *  candidate set (winner AND every losing candidate), carried through so the Coroner -- the
    *  only place ground truth is actually available -- can persist a factVerdict-tagged eblet for
@@ -1055,6 +1108,29 @@ export interface AuthorityEnsembleCandidate {
 // its own prompt -- never genuinely blind. THE CAKE METHOD: one cuts, the other picks --
 // generalized here to N participants (N=1 is the degenerate single-machine case).
 //
+// KN-BP141-7 P4 (Founder-directed BP141, regression investigation): THE TRIGGER CONDITION, STATED
+// EXPLICITLY. runCakeMethodDisagreementResolution is called from exactly ONE call site (see
+// runAuthorityEnsemble's own "Still all disagree even with the swarm folded in" log line, right
+// before the call), reached only when BOTH of the following hold:
+//   (1) answerType !== 'computable', OR it IS 'computable' but the pre-branch deterministic-
+//       compute-override hoist (BP1xx DETERMINISTIC-OVERRIDE-HOIST, "the calculator wins the math,
+//       every time") found nothing -- a genuine deterministic proof always short-circuits BEFORE
+//       Cake ever gets a chance to run, per P2's own "a proof outranks a referee" requirement.
+//   (2) the browser/Wolfram/LLM authority panel's FAST PATH did not already accept an agreement --
+//       i.e. there was no single lone accepted candidate and no 2+ same-letter agreeing group
+//       (structured OR LLM-only) -- AND, after the specialist swarm was folded in as one more
+//       corroborating vote specifically to try to resolve that disagreement, the swarm EITHER also
+//       disagreed with the LLM-only group's letter (swarmStructurallyDisagrees) OR still produced
+//       no agreeing group at all.
+// This is BY DESIGN, not an accident: Cake is the LAST resort inside the authority ensemble,
+// reached only once every cheaper agreement path has been tried and failed. It is deliberately
+// narrow -- most questions resolve at the fast-path agree/single-accept stage and never reach Cake
+// at all. Empirically, on run 032's real 20-question set, Cake fired on exactly 3 of 20 questions
+// (question_id 66, 98, 105 -- confirmed by grep for "cakeMethodUsed": true in that run's receipt);
+// all three were genuine, persistent multi-source disagreements the swarm could not settle either,
+// not a narrowing bug. See this ticket's own KN-BP141-7 report for the full count and per-question
+// breakdown.
+//
 // A6 (ALL CUT): every available participant answers with NO candidate pool visible. In today's
 // single-machine deployment this is realized two ways: (1) the EXISTING browser/Wolfram/swarm
 // candidates gathered earlier in runAuthorityEnsemble already satisfy this -- each answered the
@@ -1331,6 +1407,114 @@ function buildCakeCutPromptText(question: string, options: McOption[], route: Ca
   return `${question.trim()}\n\nOptions:\n${optionLines}\n\n${framing}\n\nReply starting with "Answer: <letter>" then a one-sentence reason.`;
 }
 
+// KN-BP141-7 P6 (Founder-directed BP141, regression fix, ONLY AFTER P1-P5): wires
+// plow_mc_elimination_cascade.ts's C4 (checkBidirectionalConsistency) into the live answerer for the
+// FIRST time, as a CANDIDATE PRODUCER, never an eliminator -- it contributes at most one additional cut
+// to the Cake Method's cutPool (see its one call site inside runCakeMethodDisagreementResolution below),
+// tagged with its own derivation path, and never removes or excludes any other participant's cut or
+// pick. Rationale, per this ticket's own explicit instruction: three live receipts this ticket (run 032,
+// qid 105, qid 111, qid 98) show elimination destroying correct answers -- adding a STRONGER eliminator
+// to a stage that already over-eliminates, before that over-elimination is even measured and closed,
+// would compound the exact defect this ticket exists to fix. That is why this wiring produces candidates
+// only, and why plow_gom_jabbar.ts's G5 (wired further below, at its own call site after
+// minorityCutsOverridden) stays disabled rather than being wired as a second eliminator alongside it.
+//
+// C4 needs no ground truth and no second model, only two live calls to the SAME model asking for its own
+// ranking of every option letter in both directions (most-confident-first, then least-confident-first).
+// This two-call sequence IS the "multi-turn dispatch harness" the ticket asks for -- nothing more
+// elaborate was needed because C4's own admissibility test is defined purely on one source's own two
+// rankings (see plow_mc_elimination_cascade.ts's C4 section header for the full "a source that cannot
+// reverse its own ranking does not know" rationale). A candidate is produced ONLY when the two rankings
+// are byte-for-byte reverses of each other (checkBidirectionalConsistency's own admissibility bar) -- an
+// inconsistent source produces NO candidate at all (never a guessed one), and that inconsistency is still
+// reported in the returned trace for the Coroner to see, never silently dropped.
+//
+// HONEST SCOPE NOTE (P6): plow_gom_jabbar.ts's G1 (reconcileDerivedQuantity) requires a caller-supplied
+// set of DerivedQuantityFactor entries (independently-sourced numeric factors to reconcile against a
+// claimed product/quotient) that nothing in this file currently extracts from a live question -- wiring
+// G1 here would mean inventing a factor-extraction mechanism that does not exist yet, which is exactly
+// the kind of decorative, non-integrated wiring this ticket asks NOT to build. G1 (and, transitively, G2
+// evaluateSignificantFigureAccept's own SymPy-backed arithmetic check, which only has real callers when
+// G1 has already produced factors to reconcile) are left UNWIRED this pass -- reported honestly here as
+// an open gap rather than forced. Only G5 (tallyVotesStrikingFailures) is wired, and only advisory, at
+// its own call site below.
+async function runEliminationCascadeCandidateProducer(
+  researchQuery: string,
+  mcOptions: McOption[],
+  config: CanonicalPlowMcConfig,
+  log: (msg: string) => void,
+): Promise<{
+  candidate: { letter: string; derivationPath: CakeDerivationPath; reasoning: string } | null;
+  consistency: BidirectionalConsistencyResult;
+}> {
+  const validLetters = new Set(mcOptions.map((o) => o.letter));
+  // KN-BP141-7 P6: a deliberately simple first-appearance-order letter extraction, separate from
+  // resolveAuthorityLetterMatch (which is built to find exactly ONE letter, not a full ranking).
+  // Honest limitation, recorded rather than hidden: a model that mentions the same letter early in
+  // unrelated prose before actually starting its ranking could pollute the sequence -- the two prompts
+  // below ask for one letter per line, nothing else, specifically to keep this heuristic reliable in
+  // practice, but this comment records the known edge case rather than papering over it.
+  const extractLetterSequence = (raw: string | null): string[] => {
+    if (!raw) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const re = /\b([A-Z])\b/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(raw)) !== null) {
+      const letter = m[1]!;
+      if (validLetters.has(letter) && !seen.has(letter)) {
+        seen.add(letter);
+        out.push(letter);
+      }
+    }
+    return out;
+  };
+
+  const optionLines = mcOptions.map((o) => `${o.letter}) ${o.text}`).join('\n');
+  const mostToLeastPrompt =
+    `${researchQuery.trim()}\n\nOptions:\n${optionLines}\n\nRank ALL of the option letters above from ` +
+    'MOST confident correct to LEAST confident correct. Reply with exactly one letter per line, most ' +
+    'confident first, every letter listed exactly once, nothing else.';
+  const leastToMostPrompt =
+    `${researchQuery.trim()}\n\nOptions:\n${optionLines}\n\nRank ALL of the option letters above from ` +
+    'LEAST confident correct to MOST confident correct. Reply with exactly one letter per line, least ' +
+    'confident first, every letter listed exactly once, nothing else.';
+
+  let mostToLeast: string[] = [];
+  let leastToMost: string[] = [];
+  try {
+    // Two live, sequential dispatch calls to the SAME model (multi-turn harness, KN-BP141-7 P6) --
+    // deliberately sequential, not parallel, so this stays a true two-turn conversation-shaped
+    // dispatch rather than two independent one-shot calls that happen to run concurrently.
+    const rawMostToLeast = await callOllama(mostToLeastPrompt, config.ollamaBaseUrl, config.model, 0);
+    mostToLeast = extractLetterSequence(rawMostToLeast);
+    const rawLeastToMost = await callOllama(leastToMostPrompt, config.ollamaBaseUrl, config.model, 0);
+    leastToMost = extractLetterSequence(rawLeastToMost);
+  } catch (err) {
+    log(`cascade-candidate-producer threw during dispatch (non-fatal, no candidate produced): ${err}`);
+  }
+
+  const consistency = checkBidirectionalConsistency('local_orchestrator:elimination_cascade', mostToLeast, leastToMost);
+  log(`cascade-candidate-producer ${consistency.trace}`);
+
+  if (!consistency.consistent || mostToLeast.length === 0) {
+    return { candidate: null, consistency };
+  }
+
+  const topLetter = mostToLeast[0]!;
+  return {
+    candidate: {
+      letter: topLetter,
+      derivationPath: 'deterministic_solver:elimination_cascade_c4',
+      reasoning:
+        'Elimination cascade C4 candidate producer (KN-BP141-7 P6): bidirectional-consistent ranking ' +
+        `most-to-least=[${mostToLeast.join(',')}] reverses cleanly to the same source's own ` +
+        `least-to-most=[${leastToMost.join(',')}] -- top candidate ${topLetter}.`,
+    },
+    consistency,
+  };
+}
+
 export interface AuthorityEnsembleOutcome {
   chosenLetter: string | null;
   corroboration:
@@ -1545,7 +1729,33 @@ export interface AuthorityEnsembleOutcome {
     ownLetter: string | null;
     pickedOwnLetterWithSelfPresent: boolean | null;
     pickedSameLetterWithSelfAbsent: boolean | null;
+    /** KN-BP141-7 P3: alias of `ownLetter`, named to match this ticket's own audit vocabulary --
+     *  the letter this SAME participant cut (null when it never cut, e.g. user_claude on a
+     *  question where only user_perplexity/local_orchestrator cut). Byte-identical value to
+     *  `ownLetter`, kept as a distinct field per Rule 66 (additive, never repurposing an existing
+     *  name) rather than renaming `ownLetter` and breaking every existing reader of that field. */
+    cutLetter: string | null;
+    /** KN-BP141-7 P3: the letter this participant PICKED (its full-pool, self-present pick --
+     *  same value as the corresponding entry in `cakePicks` for this pickerKey, duplicated here so
+     *  a single audit-entry row carries cut+pick+judge-status together without a second lookup). */
+    chosenLetter: string | null;
+    /** KN-BP141-7 P3: true iff this picker ALSO cut on this question (ownLetter !== null) -- i.e.
+     *  the judge was itself one of the original disputants. This is the exact condition the old
+     *  single-Perplexity-judge design could never avoid (the judge always was a disputant); the
+     *  Cake Method's whole point is that a judge who WAS a disputant is still checked (via this
+     *  audit) rather than trusted blindly. Never undefined once cakeMethodUsed is true -- always
+     *  a real boolean for every entry in this array. */
+    judgeWasDisputant: boolean;
   }[];
+  /** KN-BP141-7 P3: aggregate self-preference rate across every picker THIS run who had an own
+   *  cut in the pool to test (i.e. every audit entry with pickedOwnLetterWithSelfPresent !== null)
+   *  -- fraction (0..1) of those pickers who picked their own cut's letter when their own cut was
+   *  present. null when no picker this run had an own cut to test (cakeSelfPreferenceAudit exists
+   *  but every entry's own fields are null, e.g. every cut on this question came from a
+   *  non-promptable source like specialist_swarm/user_google/wolfram/elimination_cascade and no
+   *  picker's own root ever appeared in cutPool). Computed directly from real per-run data, never
+   *  a scripted stand-in -- this is the field this ticket's P3 requires exist and populate. */
+  cakeSelfPreferenceRate?: number | null;
   /** Verification-addition (BP141-2 Founder Correction): "report cut agreement broken down BY
    *  derivation path, so we can see whether two routes that agree did so independently or because
    *  they collapsed onto the same underlying retrieval" -- and, symmetrically, WHO picked WHAT, so
@@ -1553,6 +1763,60 @@ export interface AuthorityEnsembleOutcome {
    *  with its derivation path attached. */
   cakeCuts?: { pickerKey: string; derivationPath: CakeDerivationPath; letter: string }[];
   cakePicks?: { pickerKey: string; derivationPath: CakeDerivationPath; pickedLetter: string | null }[];
+  /** KN-BP141-7 P2 (Founder-directed BP141, regression fix): a cut whose letter no picker shares
+   *  is real surviving minority evidence, not noise -- plurality removes it from the final letter
+   *  deterministically (N picks reading ONE pool are correlated, not N independent votes), but it
+   *  must never be silently discarded from the trace. One entry per cut (not per distinct letter)
+   *  whose letter never appears among any real pick this run, alongside chosenLetter/cutScatter/
+   *  pickConvergence above so the Coroner can see exactly how often a correct-but-outvoted cut
+   *  existed. Always present (as [] when nothing was overridden) whenever cakeMethodUsed is true --
+   *  "on every Cake row," per this ticket's own requirement, never omitted when empty. */
+  minorityCutsOverridden?: { letter: string; derivationPath: CakeDerivationPath }[];
+  /** KN-BP141-7 P1 (Founder-directed BP141, regression fix): the picker-set/cutter-set invariant
+   *  this run, computed from real cutPool/pickers data (never asserted blind) -- see
+   *  runCakeMethodDisagreementResolution's own A6/A7 doc comment for the full rationale. Emitted on
+   *  every Cake row so a defect (were the gating below ever weakened) is visible in the trace
+   *  itself, not just in a thrown exception. `cuttersWithNoPick` is EXPECTED to be non-empty on
+   *  most real questions (specialist_swarm/user_google/wolfram_alpha/elimination_cascade have no
+   *  conversational pick interface by design -- see A7's own doc comment) and is not itself a
+   *  defect; `pickersWithNoCut` must always be empty -- a non-empty value here would mean the
+   *  invariant-enforcing filter below has a bug (it would already have thrown before reaching this
+   *  point, since the same check is asserted as a hard error first). */
+  cakePickerCutterInvariant?: {
+    cutterRoots: string[];
+    pickerRoots: string[];
+    cuttersWithNoPick: string[];
+    pickersWithNoCut: string[];
+  };
+  /** KN-BP141-7 P6 (Founder-directed BP141): the elimination cascade's C4 bidirectional-consistency
+   *  candidate-producer result this run -- see runEliminationCascadeCandidateProducer's own doc
+   *  comment for the full rationale. `attempted` is false only if the producer itself threw before
+   *  either dispatch call completed (network/process failure, non-fatal to the rest of Cake).
+   *  `candidateAddedToCutPool` mirrors exactly whether a cutPool entry with
+   *  derivationPath==='deterministic_solver:elimination_cascade_c4' exists in `cakeCuts` above this
+   *  run -- true only when `consistent` is true AND a non-empty ranking existed. Always present (as
+   *  attempted:false when not reached) whenever cakeMethodUsed is true. */
+  cascadeCandidateProducer?: {
+    attempted: boolean;
+    consistent: boolean;
+    mostToLeast: string[];
+    leastToMost: string[];
+    candidateAddedToCutPool: boolean;
+    trace: string;
+  };
+  /** KN-BP141-7 P6 (Founder-directed BP141): Gom Jabbar G5 "failure strikes the vote" computed for
+   *  real from this run's own cascadeCandidateProducer result, but `applied` is HARD-CODED false --
+   *  G5 stays DISABLED this pass per this ticket's own explicit instruction. Nothing in cutPool,
+   *  picks, or chosenLetter above is ever changed by this field; it exists purely so the Coroner can
+   *  see what G5 WOULD have stricken, without G5 actually striking anything. */
+  gomJabbarG5Advisory?: {
+    applied: false;
+    wouldStrike: boolean;
+    strickenSources: string[];
+    admissibleSources: string[];
+    tally: Record<string, number>;
+    trace: string;
+  };
 }
 
 /** BP1xx STRUCTURED-CORROBORATOR GATE: the ONE place that encodes "which authorities count as a
@@ -1680,8 +1944,13 @@ export async function runCakeMethodDisagreementResolution(params: {
   cakeQuadrant: string;
   anonymizedOrderSeed: number;
   cakeSelfPreferenceAudit: AuthorityEnsembleOutcome['cakeSelfPreferenceAudit'];
+  cakeSelfPreferenceRate: AuthorityEnsembleOutcome['cakeSelfPreferenceRate'];
   cakeCuts: AuthorityEnsembleOutcome['cakeCuts'];
   cakePicks: AuthorityEnsembleOutcome['cakePicks'];
+  minorityCutsOverridden: AuthorityEnsembleOutcome['minorityCutsOverridden'];
+  cakePickerCutterInvariant: AuthorityEnsembleOutcome['cakePickerCutterInvariant'];
+  cascadeCandidateProducer: AuthorityEnsembleOutcome['cascadeCandidateProducer'];
+  gomJabbarG5Advisory: AuthorityEnsembleOutcome['gomJabbarG5Advisory'];
 }> {
   const { researchQuery, mcOptions, candidates, config, bridge, browserLlmOverrides, log } = params;
   const seed = computeAnonymizedOrderSeed(researchQuery);
@@ -1703,8 +1972,17 @@ export async function runCakeMethodDisagreementResolution(params: {
       cutTranscripts.push(cutPrompt, raw ?? '');
       const resolved = raw ? resolveAuthorityLetterMatch(raw, mcOptions) : null;
       if (resolved && raw) {
+        // KN-BP141-7 P1 FIX (doubled-prefix bug): `route` is already a fully-qualified
+        // CAKE_LOCAL_ROUTE_POOL entry, e.g. 'local_orchestrator:retrieval_first' -- it already
+        // carries the 'local_orchestrator:' prefix. The old code below re-prepended it
+        // (`local_orchestrator:${route}`), producing the doubled pickerKey
+        // "local_orchestrator:local_orchestrator:retrieval_first" visible verbatim in run 032's
+        // own receipt (qid 98 and qid 105 cakeCuts[].pickerKey). `route` IS the correct pickerKey
+        // as-is -- it still starts with 'local_orchestrator:' so ownsCut()'s
+        // `cutPickerKey.startsWith(pickerRootKey + ':')` check below continues to match the
+        // 'local_orchestrator' picker root exactly as before; only the literal doubling is fixed.
         cutPool.push({
-          pickerKey: `local_orchestrator:${route}`,
+          pickerKey: route,
           derivationPath: route,
           modelIdentity: config.model,
           letter: resolved.letter,
@@ -1715,6 +1993,34 @@ export async function runCakeMethodDisagreementResolution(params: {
     } catch (err) {
       log(`cake-cut ${route} threw (non-fatal, cut skipped): ${err}`);
     }
+  }
+
+  // KN-BP141-7 P6: elimination cascade wired as a CANDIDATE PRODUCER (never an eliminator) -- see
+  // runEliminationCascadeCandidateProducer's own doc comment above for the full rationale and honest
+  // scope. Fires unconditionally alongside the local-orchestrator cuts above; contributes at most one
+  // additional cut, gated ONLY on C4's own bidirectional-consistency admissibility bar, never on
+  // anything this file decides for it. Its pickerKey/derivationPath ('deterministic_solver:
+  // elimination_cascade_c4') has no colon-root matching any real picker (user_perplexity/user_claude/
+  // user_chatgpt/user_gemini/local_orchestrator), so it is correctly CUT-only below, same structural
+  // reason specialist_swarm/user_google/wolfram_alpha already are (see A7's own doc comment above).
+  let cascadeConsistencyResult: BidirectionalConsistencyResult | null = null;
+  try {
+    const { candidate, consistency } = await runEliminationCascadeCandidateProducer(researchQuery, mcOptions, config, log);
+    cascadeConsistencyResult = consistency;
+    if (candidate) {
+      cutPool.push({
+        pickerKey: candidate.derivationPath,
+        derivationPath: candidate.derivationPath,
+        modelIdentity: config.model,
+        letter: candidate.letter,
+        reasoning: candidate.reasoning,
+      });
+      log(`cake-cut ${candidate.derivationPath}=${candidate.letter} (KN-BP141-7 P6 cascade candidate, C4-consistent)`);
+    } else {
+      log('cake-cut elimination_cascade_c4 produced NO candidate this question (C4 inconsistent or empty ranking -- see its own admissibility bar, never a guessed candidate).');
+    }
+  } catch (err) {
+    log(`cake-cut elimination_cascade_c4 threw (non-fatal, cut skipped): ${err}`);
   }
 
   const cutModels = cutPool.map((c) => c.modelIdentity);
@@ -1732,28 +2038,61 @@ export async function runCakeMethodDisagreementResolution(params: {
   function ownsCut(cutPickerKey: string, pickerRootKey: string): boolean {
     return cutPickerKey === pickerRootKey || cutPickerKey.startsWith(`${pickerRootKey}:`);
   }
+  // KN-BP141-7 P1: the picker-set/cutter-set invariant's own root-key extraction -- the FIRST
+  // colon-delimited segment of a cut's pickerKey is its "root" identity (e.g.
+  // 'local_orchestrator:retrieval_first' -> 'local_orchestrator', 'user_perplexity' -> unchanged,
+  // since it has no colon). Deliberately the SAME shape ownsCut() already tests
+  // (`cutPickerKey.startsWith(pickerRootKey + ':')`), extracted as its own pure function so the
+  // cutter-root-set below and the picker-gating below both use one identical definition of "root."
+  function cakePickerRootKey(pickerKey: string): string {
+    const i = pickerKey.indexOf(':');
+    return i === -1 ? pickerKey : pickerKey.slice(0, i);
+  }
   function buildLabeledPool(pool: typeof poolForChoose, pickerKey: string, suffix: string) {
     const shuffled = shuffleCakePoolForPicker(pool, seed, `${pickerKey}${suffix}`);
     return shuffled.map((c, i) => ({ label: `Source ${i + 1}`, letter: c.letter, rationale: c.rationale }));
   }
 
-  // ── A7: pickers -- every reachable, promptable participant. Google/Wolfram/swarm are CUT-only
-  //    (no natural single-turn conversational "pick" interface), same as the pre-Cake judge was
-  //    always Perplexity, never Google. ─────────────────────────────────────────────────────────
+  // KN-BP141-7 P1 (Founder-directed BP141, regression fix -- PRIMARY DEFECT): the set of cutter
+  // ROOT identities actually present in cutPool THIS question. Amendment A6/A7 requires ALL CUT
+  // then ALL PICK -- "the picker set MUST equal the cutter set. A participant that did not cut
+  // does not pick." Live receipt evidence (run 032, qid 105 and qid 98): user_claude picked on
+  // both questions despite never appearing in cutPool at all -- it held no independent position of
+  // its own, yet its pick counted equally against a picker (user_perplexity) who both cut AND
+  // picked. Computed here, BEFORE the pickers array below, so every pickers.push() can be gated on
+  // it (never the reverse -- gating AFTER construction would just be the same bug with an extra
+  // step).
+  const cutterRootKeys = new Set(cutPool.map((c) => cakePickerRootKey(c.pickerKey)));
+
+  // ── A7: pickers -- every reachable, promptable participant THAT ALSO CUT. Google/Wolfram/
+  //    swarm/elimination_cascade are CUT-only (no natural single-turn conversational "pick"
+  //    interface) and are correctly absent from cutterRootKeys-gated pickers below for that
+  //    structural reason, same as the pre-Cake judge was always Perplexity, never Google -- that
+  //    is the ticket's own explicitly-allowed case ("a participant that cut but is unavailable at
+  //    pick time keeps its cut in the pool and simply casts no pick... never silently dropped");
+  //    it is NOT a licence for a picker with no cut at all to pick, which is the actual bug fixed
+  //    by the `cutterRootKeys.has(...)` guard on every push below. ──────────────────────────────
   type Picker = { pickerKey: string; derivationPath: CakeDerivationPath; askPick: (p: string) => Promise<string | null> };
-  const pickers: Picker[] = [
-    {
+  const pickers: Picker[] = [];
+  if (cutterRootKeys.has('user_perplexity')) {
+    pickers.push({
       pickerKey: 'user_perplexity',
       derivationPath: 'browser:user_perplexity',
       askPick: async (p) => {
         const r = await runBrowserAuthorityLookup(p, { ...config, preferredAuthority: 'user_perplexity' }, bridge);
         return r ? r.fact : null;
       },
-    },
-  ];
+    });
+  } else {
+    log('cake-pick user_perplexity SKIPPED (KN-BP141-7 P1: no corresponding cut this question -- a participant that did not cut does not pick).');
+  }
   const llmPickerNames: BrowserLlmAuthorityName[] = ['user_claude', 'user_chatgpt', 'user_gemini'];
   for (const llmName of llmPickerNames) {
     if (!isBrowserLlmAuthorityEnabled(llmName, browserLlmOverrides)) continue;
+    if (!cutterRootKeys.has(llmName)) {
+      log(`cake-pick ${llmName} SKIPPED (KN-BP141-7 P1: no corresponding cut this question -- a participant that did not cut does not pick).`);
+      continue;
+    }
     pickers.push({
       pickerKey: llmName,
       derivationPath: `browser:${llmName}`,
@@ -1765,11 +2104,36 @@ export async function runCakeMethodDisagreementResolution(params: {
       },
     });
   }
-  pickers.push({
-    pickerKey: 'local_orchestrator',
-    derivationPath: 'local_orchestrator:pick',
-    askPick: async (p) => callOllama(p, config.ollamaBaseUrl, config.model, 0),
-  });
+  if (cutterRootKeys.has('local_orchestrator')) {
+    pickers.push({
+      pickerKey: 'local_orchestrator',
+      derivationPath: 'local_orchestrator:pick',
+      askPick: async (p) => callOllama(p, config.ollamaBaseUrl, config.model, 0),
+    });
+  } else {
+    log('cake-pick local_orchestrator SKIPPED (KN-BP141-7 P1: no corresponding cut this question -- a participant that did not cut does not pick).');
+  }
+
+  // KN-BP141-7 P1: defensive, hard assertion -- every pickers.push() above is already gated on
+  // cutterRootKeys, so this can only ever fire if a future edit reintroduces an ungated push. A
+  // real defect here is surfaced loudly (thrown), never papered over, per this ticket's own
+  // "assert this invariant... if the sets diverge, that is a defect to surface, never to paper
+  // over" instruction.
+  const pickerRootKeysForInvariant = new Set(pickers.map((p) => cakePickerRootKey(p.pickerKey)));
+  const pickersWithNoCut = [...pickerRootKeysForInvariant].filter((r) => !cutterRootKeys.has(r));
+  if (pickersWithNoCut.length > 0) {
+    throw new Error(
+      `CAKE METHOD INVARIANT VIOLATION (KN-BP141-7 P1): picker root(s) [${pickersWithNoCut.join(', ')}] ` +
+      'have no corresponding cut in cutPool this question -- a participant that did not cut must never pick.',
+    );
+  }
+  const cuttersWithNoPick = [...cutterRootKeys].filter((r) => !pickerRootKeysForInvariant.has(r));
+  const cakePickerCutterInvariant: NonNullable<AuthorityEnsembleOutcome['cakePickerCutterInvariant']> = {
+    cutterRoots: [...cutterRootKeys],
+    pickerRoots: [...pickerRootKeysForInvariant],
+    cuttersWithNoPick,
+    pickersWithNoCut,
+  };
 
   const picks: { pickerKey: string; derivationPath: CakeDerivationPath; pickedLetter: string | null }[] = [];
   const cakeSelfPreferenceAudit: NonNullable<AuthorityEnsembleOutcome['cakeSelfPreferenceAudit']> = [];
@@ -1782,7 +2146,8 @@ export async function runCakeMethodDisagreementResolution(params: {
       assertCakeChoosePromptIsBlind(choosePromptFull, cutTranscripts);
       const responseFull = await picker.askPick(choosePromptFull);
       const resolvedFull = responseFull ? resolveAuthorityLetterMatch(responseFull, mcOptions) : null;
-      picks.push({ pickerKey: picker.pickerKey, derivationPath: picker.derivationPath, pickedLetter: resolvedFull?.letter ?? null });
+      const thisPickedLetter = resolvedFull?.letter ?? null;
+      picks.push({ pickerKey: picker.pickerKey, derivationPath: picker.derivationPath, pickedLetter: thisPickedLetter });
       log(`cake-pick ${picker.pickerKey}=${resolvedFull ? resolvedFull.letter : 'no-letter'}`);
 
       // A4 blindness audit -- fresh-context pick, own cut(s) removed, for THIS picker only.
@@ -1800,6 +2165,12 @@ export async function runCakeMethodDisagreementResolution(params: {
           ownLetter: ownCut.letter,
           pickedOwnLetterWithSelfPresent: resolvedFull ? resolvedFull.letter === ownCut.letter : null,
           pickedSameLetterWithSelfAbsent: resolvedNoSelf ? resolvedNoSelf.letter === ownCut.letter : null,
+          // KN-BP141-7 P3: real, live-run values (never a scripted stand-in) -- see this ticket's
+          // own AuthorityEnsembleOutcome.cakeSelfPreferenceAudit doc comment for why these three
+          // fields exist alongside ownLetter/pickedOwnLetterWithSelfPresent/pickedSameLetterWithSelfAbsent.
+          cutLetter: ownCut.letter,
+          chosenLetter: thisPickedLetter,
+          judgeWasDisputant: true,
         });
       } else {
         cakeSelfPreferenceAudit.push({
@@ -1808,6 +2179,9 @@ export async function runCakeMethodDisagreementResolution(params: {
           ownLetter: null,
           pickedOwnLetterWithSelfPresent: null,
           pickedSameLetterWithSelfAbsent: null,
+          cutLetter: null,
+          chosenLetter: thisPickedLetter,
+          judgeWasDisputant: false,
         });
       }
     } catch (err) {
@@ -1817,12 +2191,97 @@ export async function runCakeMethodDisagreementResolution(params: {
     }
   }
 
+  // KN-BP141-7 P3: cakeSelfPreferenceRate, the aggregate this ticket requires populate from a REAL
+  // run -- fraction of pickers who had their own cut present in the pool and picked that SAME
+  // letter. Denominator is only pickers who actually had an own cut to test (pickedOwnLetterWithSelfPresent
+  // !== null); null (not 0) when no such picker existed this question, an honest "not measurable
+  // here" rather than a fabricated 0%.
+  const eligibleSelfPreferenceAudits = cakeSelfPreferenceAudit.filter((a) => a.pickedOwnLetterWithSelfPresent !== null);
+  const selfPreferringCount = eligibleSelfPreferenceAudits.filter((a) => a.pickedOwnLetterWithSelfPresent === true).length;
+  const cakeSelfPreferenceRate = eligibleSelfPreferenceAudits.length > 0
+    ? selfPreferringCount / eligibleSelfPreferenceAudits.length
+    : null;
+
   const { chosenLetter, pickConvergence } = tallyCakePicksWithAbstain(picks.map((p) => p.pickedLetter));
   const cakeQuadrant = resolveCakeQuadrant(cutScatter, pickConvergence, picks.length);
   log(
     `cake-method result: chosenLetter=${chosenLetter ?? 'ABSTAIN'} cutScatter=${cutScatter} ` +
-    `pickConvergence=${pickConvergence} distinctDerivationCount=${distinctDerivationCount} quadrant=${cakeQuadrant}`,
+    `pickConvergence=${pickConvergence} distinctDerivationCount=${distinctDerivationCount} quadrant=${cakeQuadrant} ` +
+    `cakeSelfPreferenceRate=${cakeSelfPreferenceRate === null ? 'n/a' : cakeSelfPreferenceRate.toFixed(3)}`,
   );
+
+  // KN-BP141-7 P2 (Founder-directed BP141, regression fix): a cut whose letter no real pick shares
+  // is real surviving minority evidence that plurality removed BY CONSTRUCTION (N picks reading
+  // ONE anonymized pool are correlated, never N independent votes) -- retained here rather than
+  // silently discarded. This is exactly what happened on qid 105 (run 032): the correct cut E
+  // (user_perplexity) was never picked by anyone once user_claude and local_orchestrator (neither
+  // of which held an independent E position -- user_claude never even cut) both picked A.
+  const pickedLetters = new Set(picks.map((p) => p.pickedLetter).filter((l): l is string => l !== null));
+  const minorityCutsOverridden = cutPool
+    .filter((c) => c.letter !== chosenLetter && !pickedLetters.has(c.letter))
+    .map((c) => ({ letter: c.letter, derivationPath: c.derivationPath }));
+
+  // KN-BP141-7 P6: the cascade candidate producer's own trace, summarized for the outer receipt --
+  // see AuthorityEnsembleOutcome.cascadeCandidateProducer's own doc comment for field meanings.
+  const cascadeCandidateProducer: NonNullable<AuthorityEnsembleOutcome['cascadeCandidateProducer']> = cascadeConsistencyResult
+    ? {
+        attempted: true,
+        consistent: cascadeConsistencyResult.consistent,
+        mostToLeast: cascadeConsistencyResult.mostToLeast,
+        leastToMost: cascadeConsistencyResult.leastToMost,
+        candidateAddedToCutPool: cascadeConsistencyResult.consistent && cascadeConsistencyResult.mostToLeast.length > 0,
+        trace: cascadeConsistencyResult.trace,
+      }
+    : {
+        attempted: false,
+        consistent: false,
+        mostToLeast: [],
+        leastToMost: [],
+        candidateAddedToCutPool: false,
+        trace: 'cascade candidate producer threw before either dispatch call completed -- see cake-cut log line.',
+      };
+
+  // KN-BP141-7 P6: Gom Jabbar G5 advisory-only wiring -- tallyVotesStrikingFailures is REAL, wired,
+  // and computes a REAL admissible/stricken partition, but its result is NEVER applied to
+  // chosenLetter, picks, or cutPool above (G5's "failure strikes the vote" stays DISABLED this pass,
+  // per this ticket's own explicit instruction; `applied` below is hard-coded false, not a runtime
+  // flag that could ever drift to true). The one vote evaluated is the cascade candidate producer's
+  // own C4 result, the only source in this pool with a bidirectional-consistency verdict available.
+  // When C4 failed, the candidate was already never added to cutPool above (see
+  // runEliminationCascadeCandidateProducer), so there is nothing left for a real G5 to strike in
+  // practice on that path -- this still records what G5 WOULD have done, honestly, for the trace,
+  // rather than omitting the wiring because its real-world effect on this one candidate is currently
+  // a no-op.
+  const gomJabbarG5Advisory: NonNullable<AuthorityEnsembleOutcome['gomJabbarG5Advisory']> = (() => {
+    if (!cascadeConsistencyResult) {
+      return {
+        applied: false,
+        wouldStrike: false,
+        strickenSources: [],
+        admissibleSources: [],
+        tally: {},
+        trace: 'G5 ADVISORY: elimination cascade candidate producer did not run or threw -- no vote to evaluate.',
+      };
+    }
+    const votes: GomJabbarVote[] = [{
+      source: cascadeConsistencyResult.source,
+      letter: cascadeConsistencyResult.mostToLeast[0] ?? '',
+      admissible: cascadeConsistencyResult.consistent,
+      failureReason: cascadeConsistencyResult.consistent ? undefined : 'C4 bidirectional consistency failed',
+    }];
+    const tallyResult = tallyVotesStrikingFailures(votes);
+    return {
+      applied: false,
+      wouldStrike: tallyResult.strickenSources.length > 0,
+      strickenSources: tallyResult.strickenSources,
+      admissibleSources: tallyResult.admissibleSources,
+      tally: tallyResult.tally,
+      trace:
+        `${tallyResult.trace} (KN-BP141-7 P6: ADVISORY ONLY, applied=false -- G5's strike never ` +
+        'actually excludes anything from the real cutPool/pick/tally above.)',
+    };
+  })();
+  log(`gom-jabbar-g5-advisory ${gomJabbarG5Advisory.trace}`);
 
   const acceptedCandidate: AuthorityEnsembleCandidate | null = chosenLetter
     ? {
@@ -1850,8 +2309,13 @@ export async function runCakeMethodDisagreementResolution(params: {
     cakeQuadrant,
     anonymizedOrderSeed: seed,
     cakeSelfPreferenceAudit,
+    cakeSelfPreferenceRate,
     cakeCuts,
     cakePicks: picks,
+    minorityCutsOverridden,
+    cakePickerCutterInvariant,
+    cascadeCandidateProducer,
+    gomJabbarG5Advisory,
   };
 }
 
@@ -2861,8 +3325,13 @@ async function runAuthorityEnsemble(params: {
         cakeQuadrant: cake.cakeQuadrant,
         anonymizedOrderSeed: cake.anonymizedOrderSeed,
         cakeSelfPreferenceAudit: cake.cakeSelfPreferenceAudit,
+        cakeSelfPreferenceRate: cake.cakeSelfPreferenceRate,
         cakeCuts: cake.cakeCuts,
         cakePicks: cake.cakePicks,
+        minorityCutsOverridden: cake.minorityCutsOverridden,
+        cakePickerCutterInvariant: cake.cakePickerCutterInvariant,
+        cascadeCandidateProducer: cake.cascadeCandidateProducer,
+        gomJabbarG5Advisory: cake.gomJabbarG5Advisory,
       };
     }
     log('cake method resolved no plurality letter -- honest fall-through (abstain)');
@@ -2878,8 +3347,13 @@ async function runAuthorityEnsemble(params: {
       cakeQuadrant: cake.cakeQuadrant,
       anonymizedOrderSeed: cake.anonymizedOrderSeed,
       cakeSelfPreferenceAudit: cake.cakeSelfPreferenceAudit,
+      cakeSelfPreferenceRate: cake.cakeSelfPreferenceRate,
       cakeCuts: cake.cakeCuts,
       cakePicks: cake.cakePicks,
+      minorityCutsOverridden: cake.minorityCutsOverridden,
+      cakePickerCutterInvariant: cake.cakePickerCutterInvariant,
+      cascadeCandidateProducer: cake.cascadeCandidateProducer,
+      gomJabbarG5Advisory: cake.gomJabbarG5Advisory,
     };
   } catch (err) {
     log(`cake method threw (non-fatal): ${err}`);
@@ -4187,44 +4661,50 @@ export async function runCanonicalPlowMcAnswer(
         // Deterministic answer from decompose -- build a CanonicalPlowMcResult receipt
         onProgress?.(`decompose-conclusion:${decomposeResult.chosenLetter}`);
         const decomposeLatencyMs = decomposeResult.latencyMs;
-        // BP138 Fix A honesty invariant: only a genuinely sourced basis earns CONCORDANT --
-        // 'sole-survivor-elimination' (every other option falsified by a real sourced fact) or
-        // 'verified-true-fact' (the surviving option's own foundation fact was independently
-        // verified-true). Any other/absent basis alongside a non-null chosenLetter would be an
-        // undisclosed pick and must NOT be reported at full confidence -- demote to PARTIAL so
-        // downstream BMV/gates treat it as less certain. The per-option `tactic` field on each
-        // receipt is left untouched either way for audit.
+        // BP138 Fix A honesty invariant (superseded by KN-BP141-7 P5 immediately below): only a
+        // genuinely sourced basis was ever eligible for full confidence -- 'sole-survivor-
+        // elimination' (every other option falsified by a real sourced fact) or 'verified-true-
+        // fact' (the surviving option's own foundation fact was independently verified-true).
+        // Still computed and logged (never silently dropped, Rule 66 spirit) even though it no
+        // longer gates concordance or the write-back below -- both are now unconditional per P5.
         const decomposeHasSourcedBasis =
           decomposeResult.basis === 'sole-survivor-elimination' ||
           decomposeResult.basis === 'verified-true-fact';
-        const decomposeConcordance: ConcordanceClass = decomposeHasSourcedBasis ? 'CONCORDANT' : 'PARTIAL';
+        console.log(
+          `[plow_mc_answerer] KN-BP141-7 P5: decompose-and-eliminate fired (basis=${decomposeResult.basis}, ` +
+          `hadSourcedBasis=${decomposeHasSourcedBasis}) -- ADVISORY-DEMOTED per this ticket (concordance ` +
+          'forced to PARTIAL, substrate write-back skipped, regardless of basis).',
+        );
+        // KN-BP141-7 P5 (Founder-directed BP141, regression fix): DEMOTED TO ADVISORY. Three live
+        // receipts this ticket (run 032) show elimination destroying correct answers (qid 105,
+        // qid 111, qid 98) -- qid 111 specifically is THIS mechanism: decompose-and-eliminate
+        // killed 8 of 9 options via Google-search-based elimination, kept option C, wrong (correct
+        // answer was I, which run 031 found correctly via the authority ensemble before decompose
+        // ever got a chance to run on that question). Decompose-and-eliminate has never been
+        // measured against the ~2% false-negative-rate bar R1/R2/R3 (KN-BP141-3 Stage 1) were held
+        // to on the full 10,956-question corpus -- no such measurement exists as of this ticket,
+        // and this ticket does NOT run that corpus itself (Founder-run only). Per this ticket's own
+        // explicit instruction ("demote... to advisory UNLESS it can show a measured false-negative
+        // rate below ~2%... report that no such measurement currently exists"): decomposeConcordance
+        // is now UNCONDITIONALLY 'PARTIAL', never 'CONCORDANT', regardless of decomposeHasSourcedBasis
+        // -- a real, measured demotion (lower BMV/gate confidence downstream), not a cosmetic label.
+        // This is a genuine behavior change from the pre-KN-BP141-7 code (which granted full
+        // CONCORDANT confidence on a sourced basis) -- never widened back to CONCORDANT here to
+        // force a pass; if this demotion changes a previously-passing question's gate outcome,
+        // that is the honest, correct result of an unmeasured mechanism no longer claiming
+        // certainty it has not earned.
+        const decomposeConcordance: ConcordanceClass = 'PARTIAL';
+        const decomposeAdvisoryDemoted = true;
         const decomposeBmv = computeBmvScore(0, 0, 0, 0, decomposeConcordance, 0, decomposeLatencyMs);
-        // WIRE-THE-LOOP fix parts 2+3: this is a genuinely SOLVED answer (sourced elimination or
-        // a verified-true foundation fact) -- write it back + replicate it. Only on the sourced-
-        // basis branch (never the undisclosed-basis PARTIAL demotion) -- an unsourced pick must
-        // never be taught to the mesh as if it were a confirmed fact.
-        if (decomposeHasSourcedBasis) {
-          const decomposeSourceUrl = decomposeResult.receipts.find((r) => r.option === decomposeResult.chosenLetter && r.sourceUrl)?.sourceUrl
-            ?? decomposeResult.receipts.find((r) => r.sourceUrl)?.sourceUrl;
-          const decomposeOptionText = decomposeResult.receipts.find((r) => r.option === decomposeResult.chosenLetter)?.optionText ?? '';
-          try {
-            await writeAndReplicateSolvedAnswer({
-              researchQuery,
-              domain,
-              chosenLetter: decomposeResult.chosenLetter,
-              optionText: decomposeOptionText,
-              reasoning: decomposeResult.traceSummary,
-              sourceUrl: decomposeSourceUrl,
-              authority: 'decompose-and-eliminate',
-              // BP131 honesty fix: a sourced elimination/verified-true-foundation basis is a real
-              // finding, but it is still ONE method's own single-threaded reasoning, not 2+
-              // independent authorities agreeing -- honestly single_authority, not concordant.
-              corroboration: 'single_authority',
-            });
-          } catch (err) {
-            console.warn('[plow_mc_answerer] decompose writeback/replicate failed (non-fatal):', err);
-          }
-        }
+        // KN-BP141-7 P5: the substrate write-back (writeAndReplicateSolvedAnswer) is now SKIPPED
+        // UNCONDITIONALLY for decompose-sourced answers, even on a nominally "sourced" basis --
+        // teaching the mesh an unmeasured, over-elimination-prone mechanism's answer as verified
+        // truth would compound this exact defect across every future question that reads the
+        // substrate, not just this one. The decompose result itself is still returned below (it
+        // remains the best available answer when nothing else in the pipeline produced one -- an
+        // advisory guess is still better than a guaranteed abstain when it is the ONLY source) but
+        // it no longer self-teaches. Per Rule 66, nothing is deleted here -- this is a change to
+        // what gets written GOING FORWARD, never a rewrite/removal of anything already on disk.
         return {
           questionId,
           domain,
@@ -4234,9 +4714,10 @@ export async function runCanonicalPlowMcAnswer(
             temperature: 0,
             status: 'parsed_ok',
             responseChars: decomposeResult.traceSummary.length,
-            rawPreview: `decompose-and-eliminate: ${decomposeResult.traceSummary.slice(0, 200)}`,
+            rawPreview: `decompose-and-eliminate (KN-BP141-7 P5: ADVISORY, demoted, no substrate write-back): ${decomposeResult.traceSummary.slice(0, 200)}`,
           }],
           concordance: decomposeConcordance,
+          decomposeAdvisoryDemoted,
           bmvScore: decomposeBmv,
           gateOutcomes: evaluateGates(0, decomposeBmv, decomposeConcordance, decomposeLatencyMs),
           specialistsUsed: [],
@@ -4607,6 +5088,29 @@ export async function runCanonicalPlowMcAnswer(
               `${ensembleOutcome.chosenLetter} -- no override needed.`,
             );
           }
+          // KN-BP141-7 P2 (Founder-directed BP141): "A DETERMINISTIC PROOF OUTRANKS EVERY PICK,
+          // ABSOLUTELY... a referee must not be allowed to overrule one." This is a defensive,
+          // belt-and-suspenders hard assertion on top of the assignment above (which already
+          // guarantees this by construction: `finalChosenLetter = decision.finalLetter` a few
+          // lines up, for the exact non-reasoning_fact case checked here) -- it exists so the
+          // invariant is AUDITED, not merely believed. A genuine deterministic proof
+          // (source !== 'reasoning_fact', i.e. not a derived restatement of an authority's own
+          // reasoning) that fired must never end up losing to ensembleOutcome.chosenLetter,
+          // whether that letter came from plain agreement, a lone accept, OR the Cake Method's own
+          // pick-stage plurality (ensembleOutcome.corroboration === 'adjudicated'). Throws loudly
+          // rather than silently accepting a violated invariant, per this ticket's own "never
+          // widen a gate to force a pass" discipline.
+          if (overrideFired && deterministicOverride && deterministicOverride.source !== 'reasoning_fact') {
+            if (finalChosenLetter !== deterministicOverride.letter) {
+              throw new Error(
+                'DETERMINISTIC PROOF OVERRULED BY A PICK (KN-BP141-7 P2 INVARIANT VIOLATION): ' +
+                `deterministic compute (${deterministicOverride.method}, source=${deterministicOverride.source}) ` +
+                `proved letter ${deterministicOverride.letter}, but finalChosenLetter is ` +
+                `${finalChosenLetter ?? 'null'} -- a referee (ensemble/Cake pick-stage result ` +
+                `${ensembleOutcome.chosenLetter ?? 'null'}) must never be allowed to overrule a proof.`,
+              );
+            }
+          }
         }
         // BP-COMPUTE-HONEST-DEMOTE: the ONE place this override's honesty label is decided,
         // reused for both the `authority` provenance string and the `corroboration` field below
@@ -4797,8 +5301,13 @@ export async function runCanonicalPlowMcAnswer(
             cakeQuadrant: ensembleOutcome.cakeQuadrant,
             anonymizedOrderSeed: ensembleOutcome.anonymizedOrderSeed,
             cakeSelfPreferenceAudit: ensembleOutcome.cakeSelfPreferenceAudit,
+            cakeSelfPreferenceRate: ensembleOutcome.cakeSelfPreferenceRate,
             cakeCuts: ensembleOutcome.cakeCuts,
             cakePicks: ensembleOutcome.cakePicks,
+            minorityCutsOverridden: ensembleOutcome.minorityCutsOverridden,
+            cakePickerCutterInvariant: ensembleOutcome.cakePickerCutterInvariant,
+            cascadeCandidateProducer: ensembleOutcome.cascadeCandidateProducer,
+            gomJabbarG5Advisory: ensembleOutcome.gomJabbarG5Advisory,
             // BP140 Yoke: the full candidate set (winner AND losers), for the Coroner's
             // per-candidate factVerdict persist -- see CanonicalPlowMcResult.ensembleCandidates.
             ensembleCandidates: ensembleOutcome.candidates,
@@ -6107,8 +6616,23 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
       cakeQuadrant: plowResult.cakeQuadrant,
       anonymizedOrderSeed: plowResult.anonymizedOrderSeed,
       cakeSelfPreferenceAudit: plowResult.cakeSelfPreferenceAudit,
+      // KN-BP141-7 P2/P3 (regression fix): cakeSelfPreferenceRate/minorityCutsOverridden/
+      // cakePickerCutterInvariant are the three measurements this ticket requires exist and
+      // populate from a real run (see AuthorityEnsembleOutcome's own doc comments on each field
+      // for the full rationale) -- camelCase, same not-yet-consumed-by-classifyCore convention as
+      // cakeMethodUsed/cutModels/etc. immediately above. Present only when cakeMethodUsed is true.
+      cakeSelfPreferenceRate: plowResult.cakeSelfPreferenceRate,
       cakeCuts: plowResult.cakeCuts,
       cakePicks: plowResult.cakePicks,
+      minorityCutsOverridden: plowResult.minorityCutsOverridden,
+      cakePickerCutterInvariant: plowResult.cakePickerCutterInvariant,
+      // KN-BP141-7 P6: present only when cakeMethodUsed is true -- see
+      // AuthorityEnsembleOutcome.cascadeCandidateProducer / gomJabbarG5Advisory's own doc comments.
+      cascadeCandidateProducer: plowResult.cascadeCandidateProducer,
+      gomJabbarG5Advisory: plowResult.gomJabbarG5Advisory,
+      // KN-BP141-7 P5: present only when this answer came from decompose-and-eliminate -- see
+      // CanonicalPlowMcResult.decomposeAdvisoryDemoted's own doc comment.
+      decomposeAdvisoryDemoted: plowResult.decomposeAdvisoryDemoted,
     };
     console.log(`[${logLabel}] plow-answered letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
     return { answer, plowTrace };
