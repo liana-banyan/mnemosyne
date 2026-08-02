@@ -604,6 +604,176 @@ export function classifyLocalOutcome(o: LocalCoronerOutcomeInput): CoronerRecord
   });
 }
 
+// ─── D3 Demo Display Classification (BP141 KN-BP141-9, "The Demo Front Door") ────────────────
+//
+// WHY THIS EXISTS: the WrongClass/RightClass/etc. taxonomy above (11+ internal class names) is
+// correct and precise for an engineer doing a fix-list autopsy, but it is not what a first-time
+// viewer -- Founder's example: "a UTSA professor with a $2M AI grant, live demo, never seen this
+// software" -- can read in five seconds with no glossary. This section maps every CoronerRecord
+// onto exactly SIX outward-facing classes, chosen by HOW the answer was reached (evidentiary
+// strength), never by whether it happened to be right or wrong (Founder: "Colour by HOW an
+// answer was reached, not merely right or wrong."):
+//
+//   PROVEN        answered by a deterministic solver (named on the row). Flagship class.
+//   CORROBORATED  independent sources agreed (structured corroboration, corroboration='agree').
+//   ADJUDICATED   sources disagreed and a judge decided (corroboration='adjudicated'). Weaker
+//                 than CORROBORATED on purpose.
+//   UNGROUNDED    accepted with zero post-Furnace grounding (candidatesPostFurnace falsy) even
+//                 though some acceptance mechanism ran. Weakest evidentiary tier.
+//   CONTESTED     the existing contested-key class -- NOT counted as a failure.
+//   NO RESPONSE   timeout or transport error -- NOT an abstain.
+//
+// Everything else (plow-majority/substrate-hit/single-shot-*/minor-council-*/abstains/coverage-
+// gap/etc.) falls to 'unclassified' -- an honest catch-all, never forced into one of the six
+// named tiers it does not actually belong to.
+//
+// Colours picked and WCAG-contrast-checked (>=4.5:1 for the given fg/bg pair, computed via the
+// standard relative-luminance formula) as part of this Yoke's own verification pass; see this
+// Yoke's build report for the exact contrast ratios. Every class also carries a distinct icon/
+// label -- colour is never the only carrier (WCAG 1.4.1), and greyscale-desaturation was
+// separately verified against a rendered swatch.
+
+export type DemoDisplayClass =
+  | 'proven'
+  | 'corroborated'
+  | 'adjudicated'
+  | 'ungrounded'
+  | 'contested'
+  | 'no-response'
+  | 'unclassified';
+
+export interface DemoDisplayInfo {
+  displayClass: DemoDisplayClass;
+  /** Plain-English, all-caps label -- what actually renders on the row. No internal jargon. */
+  label: string;
+  /** One short plain-English clause -- for PROVEN, this is "solved by <solver name>". */
+  detail: string;
+  /** A glyph distinct per class, rendered ALONGSIDE the colour and label -- never colour alone. */
+  icon: string;
+  /** Foreground (text/icon) colour, hex. */
+  colorFg: string;
+  /** Background (chip) colour, hex. */
+  colorBg: string;
+}
+
+/** Canonical, unit-testable classifier: CoronerRecord -> one of the six demo classes (or the
+ *  honest 'unclassified' catch-all). Pure function, no I/O -- safe to call from the main-process
+ *  Coroner IPC path (runAnswerCoroner / runAnswerCoronerOnLocalOutcomes callers) or a future test
+ *  file. NOTE for maintainers: OneClickMeshTestPanel.tsx (the renderer) carries its OWN copy of
+ *  this exact decision table, reading fields directly off its own QuestionOutcome/plowTrace shape
+ *  instead of a CoronerRecord -- duplicated rather than imported, same reasoning as this file's
+ *  own EnsembleCandidateForFactVerdict comment above (this module is main-process-only: it
+ *  eagerly imports getAnonKey/getSupabaseUrl from ../shared/anon_key, itself reading
+ *  process.env, and the renderer bundle -- Vite, contextIsolation, no Node globals -- cannot
+ *  safely pull that module graph across the main/renderer boundary). Any change to the decision
+ *  logic here MUST be mirrored by hand in that renderer copy (search
+ *  "classifyOutcomeForDemoDisplay" in OneClickMeshTestPanel.tsx). */
+export function classifyForDemoDisplay(record: CoronerRecord): DemoDisplayInfo {
+  const hasGrounding = (record.candidatesPostFurnace ?? 0) > 0;
+  const corrob = record.browserAuthorityCorroboration;
+
+  if (record.outcome === 'no-response') {
+    return {
+      displayClass: 'no-response',
+      label: 'NO RESPONSE',
+      detail: 'timed out or a transport error -- never attempted, not an abstain',
+      icon: '\u23F1', // ⏱
+      colorFg: '#94a3b8',
+      colorBg: '#1e293b',
+    };
+  }
+
+  // Checked before contested-key/corroborated/adjudicated below: classifyCore's own branching
+  // makes 'compute'/'compute-wrong' and 'contested-key' mutually exclusive (isDeterministicCompute
+  // is decided before the contested-key check in the wrong-outcome branch), so this ordering
+  // never mis-shadows a real contested-key row.
+  if (record.answerClass === 'compute' || record.answerClass === 'compute-wrong') {
+    return {
+      displayClass: 'proven',
+      label: 'PROVEN',
+      detail: record.deterministicSolverName
+        ? `solved by ${record.deterministicSolverName}`
+        : 'solved by a deterministic compute sidecar',
+      icon: '\u2605', // ★
+      colorFg: '#4ade80',
+      colorBg: '#052e16',
+    };
+  }
+
+  if (record.answerClass === 'contested-key') {
+    return {
+      displayClass: 'contested',
+      label: 'CONTESTED',
+      detail: 'the strongest sources disagreed with the sealed key -- not counted as a failure',
+      icon: '\u21C4', // ⇄
+      colorFg: '#c4b5fd',
+      colorBg: '#2e1a47',
+    };
+  }
+
+  // UNGROUNDED: some acceptance mechanism actually ran (corrob is non-null/non-'none') but zero
+  // facts survived the Furnace to back it up -- covers both the WrongClass 'ungrounded-
+  // adjudication' class AND a RightClass 'sourced-fact' answer that happened to be correct on a
+  // single unsupported browser call (e.g. corrob values 'single_claude'/'single_perplexity' with
+  // candidatesPostFurnace 0/absent) -- checked here so it can never be mistaken for the
+  // independently-corroborated 'agree' tier below just because it happened to be right.
+  if (corrob && corrob !== 'none' && !hasGrounding) {
+    return {
+      displayClass: 'ungrounded',
+      label: 'UNGROUNDED',
+      detail: 'accepted with zero post-Furnace grounding',
+      icon: '\u25B2', // ▲
+      colorFg: '#cbd5e1',
+      colorBg: '#1f2937',
+    };
+  }
+
+  if (corrob === 'agree') {
+    return {
+      displayClass: 'corroborated',
+      label: 'CORROBORATED',
+      detail: 'independent sources agreed',
+      icon: '\u2713', // ✓
+      colorFg: '#60a5fa',
+      colorBg: '#0c2340',
+    };
+  }
+
+  if (corrob === 'adjudicated') {
+    return {
+      displayClass: 'adjudicated',
+      label: 'ADJUDICATED',
+      detail: 'sources disagreed, a judge decided',
+      icon: '\u2696', // ⚖
+      colorFg: '#fbbf24',
+      colorBg: '#3a2f0a',
+    };
+  }
+
+  return {
+    displayClass: 'unclassified',
+    label: record.outcome === 'wrong' ? 'WRONG' : record.outcome === 'abstain' ? 'ABSTAIN' : 'ANSWERED',
+    detail: record.answerClass,
+    icon: '\u2022', // •
+    colorFg: '#94a3b8',
+    colorBg: '#111827',
+  };
+}
+
+/** Plain-English, no-jargon legend for the six named classes above -- rendered once per card,
+ *  never per row. Order matches the "evidentiary strength, strongest first" reading the Founder
+ *  asked for (PROVEN unmistakably first). 'unclassified' is deliberately omitted from the legend
+ *  -- it is an honest catch-all for classes outside this demo's six-tier scope, not a taught
+ *  concept. */
+export const DEMO_DISPLAY_LEGEND: Array<{ displayClass: DemoDisplayClass; label: string; description: string }> = [
+  { displayClass: 'proven', label: 'PROVEN', description: 'A calculator solved it outright -- no guessing involved.' },
+  { displayClass: 'corroborated', label: 'CORROBORATED', description: 'Multiple independent sources checked and agreed.' },
+  { displayClass: 'adjudicated', label: 'ADJUDICATED', description: 'Sources disagreed, so a judge step picked one.' },
+  { displayClass: 'ungrounded', label: 'UNGROUNDED', description: 'Accepted with no supporting facts found -- weakest evidence.' },
+  { displayClass: 'contested', label: 'CONTESTED', description: 'Strong sources disagreed with the answer key -- not a system failure.' },
+  { displayClass: 'no-response', label: 'NO RESPONSE', description: 'Timed out or failed to connect -- never actually attempted.' },
+];
+
 // ─── RGBY fact-verdict taxonomy (BP140 Yoke: Eblet-Learning Substrate / Liana Cycle) ─────────
 //
 // The taxonomy itself (canon_eblet_fact_verdict_color_taxonomy_rgby_bp139) lives on
