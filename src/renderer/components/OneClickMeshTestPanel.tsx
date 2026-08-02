@@ -120,6 +120,199 @@ function ProvenanceReceiptRow({ outcome }: { outcome: QuestionOutcome }): React.
   );
 }
 
+// ─── D3 Demo Display Classification (BP141 KN-BP141-9, "The Demo Front Door") ────────────────
+//
+// Renderer's own mirror of src/main/plow/answer_coroner.ts's classifyForDemoDisplay(). See that
+// function's own doc comment for WHY this is duplicated rather than imported: answer_coroner.ts
+// eagerly imports getAnonKey/getSupabaseUrl from ../shared/anon_key, which itself reads
+// process.env -- that module graph cannot safely cross the main/renderer boundary under Vite's
+// bundler + Electron's contextIsolation. This copy reads directly off this panel's own
+// QuestionOutcome/plowTrace shape instead of a CoronerRecord, but the six-way decision table is
+// identical. ANY CHANGE to answer_coroner.ts's classifyForDemoDisplay MUST be mirrored here by
+// hand (search "classifyOutcomeForDemoDisplay" -- that string appears in both files' comments).
+//
+// Founder: "I want to be inspired and I want the TESTERS to be inspired." Colour is chosen by
+// HOW an answer was reached (evidentiary strength), never merely by right/wrong. Colour is never
+// the only carrier (WCAG 1.4.1) -- every class also carries a distinct icon and a plain-English
+// text label; contrast ratios and greyscale distinguishability were checked as part of this
+// Yoke's own verification pass (see this Yoke's build report for the exact numbers).
+export type DemoDisplayClass =
+  | 'proven'
+  | 'corroborated'
+  | 'adjudicated'
+  | 'ungrounded'
+  | 'contested'
+  | 'no-response'
+  | 'unclassified';
+
+interface DemoDisplayInfo {
+  displayClass: DemoDisplayClass;
+  /** Plain-English, all-caps label -- what actually renders on the row. No internal jargon. */
+  label: string;
+  /** One short plain-English clause -- for PROVEN, this is "solved by <solver name>". */
+  detail: string;
+  /** A glyph distinct per class, rendered ALONGSIDE the colour and label -- never colour alone. */
+  icon: string;
+  colorFg: string;
+  colorBg: string;
+}
+
+function classifyOutcomeForDemoDisplay(o: QuestionOutcome): DemoDisplayInfo {
+  const isNoResponse = !!o.timedOut || (typeof o.error === 'string' && o.error.trim().length > 0);
+  if (isNoResponse) {
+    return {
+      displayClass: 'no-response',
+      label: 'NO RESPONSE',
+      detail: 'timed out or a transport error -- never attempted, not an abstain',
+      icon: '\u23F1', // ⏱
+      colorFg: '#94a3b8',
+      colorBg: '#1e293b',
+    };
+  }
+
+  const plowTrace = (o.plowTrace ?? {}) as Record<string, unknown>;
+  const browserCorroboration = typeof plowTrace.browserAuthorityCorroboration === 'string'
+    ? plowTrace.browserAuthorityCorroboration
+    : null;
+  const candidatesPostFurnace = typeof plowTrace.candidatesPostFurnace === 'number'
+    ? plowTrace.candidatesPostFurnace
+    : null;
+  const hasGrounding = (candidatesPostFurnace ?? 0) > 0;
+  const structuredCorroborator = plowTrace.structuredCorroborator === true;
+  const independentCorroboration = plowTrace.independentCorroboration === true;
+  const voterLetters: (string | null)[] = Array.isArray(plowTrace.voter_letters)
+    ? (plowTrace.voter_letters as unknown[]).map((v) => (typeof v === 'string' ? v : null))
+    : [];
+  const nonNullVoters = voterLetters.filter((v): v is string => v !== null);
+  const isUnanimousVote = nonNullVoters.length > 0 && nonNullVoters.every((v) => v === nonNullVoters[0]);
+  const isDeterministicCompute =
+    browserCorroboration === 'deterministic_compute' ||
+    browserCorroboration === 'deterministic_compute_override';
+
+  let deterministicSolverName: string | null = null;
+  if (isDeterministicCompute && Array.isArray(plowTrace.voter_diagnostics)) {
+    for (const diag of plowTrace.voter_diagnostics as unknown[]) {
+      const rawPreview = typeof (diag as Record<string, unknown>)?.rawPreview === 'string'
+        ? (diag as Record<string, unknown>).rawPreview as string
+        : '';
+      const match = rawPreview.match(/^deterministic_compute \(([^)]+)\)/);
+      if (match) { deterministicSolverName = match[1]; break; }
+    }
+  }
+
+  if (isDeterministicCompute) {
+    return {
+      displayClass: 'proven',
+      label: 'PROVEN',
+      detail: deterministicSolverName ? `solved by ${deterministicSolverName}` : 'solved by a deterministic compute sidecar',
+      icon: '\u2605', // ★
+      colorFg: '#4ade80',
+      colorBg: '#052e16',
+    };
+  }
+
+  // Contested-key: mirrors classifyCore's wrong-branch check -- the STRONGEST acceptance path
+  // (structured + independent + unanimous voters) still landed on the wrong letter. Only
+  // reachable when the answer was actually wrong (not correct, not an abstain).
+  if (!o.isCorrect && !o.isAbstain && browserCorroboration && browserCorroboration !== 'none'
+      && structuredCorroborator && independentCorroboration && isUnanimousVote) {
+    return {
+      displayClass: 'contested',
+      label: 'CONTESTED',
+      detail: 'the strongest sources disagreed with the sealed key -- not counted as a failure',
+      icon: '\u21C4', // ⇄
+      colorFg: '#c4b5fd',
+      colorBg: '#2e1a47',
+    };
+  }
+
+  if (browserCorroboration && browserCorroboration !== 'none' && !hasGrounding) {
+    return {
+      displayClass: 'ungrounded',
+      label: 'UNGROUNDED',
+      detail: 'accepted with zero post-Furnace grounding',
+      icon: '\u25B2', // ▲
+      colorFg: '#cbd5e1',
+      colorBg: '#1f2937',
+    };
+  }
+
+  if (browserCorroboration === 'agree') {
+    return {
+      displayClass: 'corroborated',
+      label: 'CORROBORATED',
+      detail: 'independent sources agreed',
+      icon: '\u2713', // ✓
+      colorFg: '#60a5fa',
+      colorBg: '#0c2340',
+    };
+  }
+
+  if (browserCorroboration === 'adjudicated') {
+    return {
+      displayClass: 'adjudicated',
+      label: 'ADJUDICATED',
+      detail: 'sources disagreed, a judge decided',
+      icon: '\u2696', // ⚖
+      colorFg: '#fbbf24',
+      colorBg: '#3a2f0a',
+    };
+  }
+
+  return {
+    displayClass: 'unclassified',
+    label: o.isAbstain ? 'ABSTAIN' : o.isCorrect ? 'ANSWERED' : 'WRONG',
+    detail: o.answeredBy ? `answered by ${o.answeredBy}` : 'unclassified',
+    icon: '\u2022', // •
+    colorFg: '#94a3b8',
+    colorBg: '#111827',
+  };
+}
+
+/** Plain-English, no-jargon legend, mirrors answer_coroner.ts's DEMO_DISPLAY_LEGEND verbatim.
+ *  Rendered once per card, not per row. 'unclassified' deliberately omitted -- honest catch-all,
+ *  not a taught concept for a first-time viewer. */
+const DEMO_DISPLAY_LEGEND: Array<{ displayClass: DemoDisplayClass; label: string; description: string }> = [
+  { displayClass: 'proven', label: 'PROVEN', description: 'A calculator solved it outright -- no guessing involved.' },
+  { displayClass: 'corroborated', label: 'CORROBORATED', description: 'Multiple independent sources checked and agreed.' },
+  { displayClass: 'adjudicated', label: 'ADJUDICATED', description: 'Sources disagreed, so a judge step picked one.' },
+  { displayClass: 'ungrounded', label: 'UNGROUNDED', description: 'Accepted with no supporting facts found -- weakest evidence.' },
+  { displayClass: 'contested', label: 'CONTESTED', description: 'Strong sources disagreed with the answer key -- not a system failure.' },
+  { displayClass: 'no-response', label: 'NO RESPONSE', description: 'Timed out or failed to connect -- never actually attempted.' },
+];
+
+/** BP141 KN-BP141-9 D3: one row's colour-coded classification chip + latency, rendered next to
+ *  the existing checkmark/category/question line. Latency is shown explicitly per Founder's
+ *  requirement: "qid 33 answered in 211ms by proof while adjudicated rows took 45 to 80 seconds.
+ *  That contrast IS the demo, make sure it is visible." */
+function DemoDisplayBadge({ outcome }: { outcome: QuestionOutcome }): React.ReactElement {
+  const info = classifyOutcomeForDemoDisplay(outcome);
+  const latencySeconds = outcome.latencyMs >= 1000 ? `${(outcome.latencyMs / 1000).toFixed(1)}s` : `${Math.round(outcome.latencyMs)}ms`;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 4 }}>
+      <span
+        title={info.detail}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          background: info.colorBg, color: info.colorFg,
+          border: `1px solid ${info.colorFg}`, borderRadius: 4,
+          padding: '1px 6px', fontSize: 9, fontWeight: 800, letterSpacing: 0.3,
+          fontFamily: 'system-ui, sans-serif',
+        }}
+      >
+        <span aria-hidden="true">{info.icon}</span>
+        <span>{info.label}</span>
+      </span>
+      {/* BP141 KN-BP141-9 D3: the PROVEN solver name (and every other class's plain-English
+          detail) is printed as VISIBLE text here, not left as a hover-only title attribute --
+          Founder's requirement is "Name the solver on the row", which a tooltip does not
+          satisfy for a live demo audience who will never think to hover. */}
+      <span style={{ fontSize: 9, color: info.colorFg, fontStyle: 'italic', opacity: 0.85 }}>{info.detail}</span>
+      <span style={{ fontSize: 9, color: '#64748b', fontFamily: 'monospace' }}>{latencySeconds}</span>
+    </span>
+  );
+}
+
 interface PeerAccuracyBreakdown {
   peerId: string;
   machineLabel: string;
@@ -189,6 +382,31 @@ export interface OneClickRunResult {
 }
 
 type DispatchModeChoice = 'auto' | 'wan_mesh' | 'local_ollama';
+
+// BP141 KN-BP141-9 D1 ("The Demo Front Door"): one button is the front door, not one option
+// among seven. Founder, verbatim: "More detail setup = more barrier."
+//
+// RECOMMENDED_DEFAULTS is the exact configuration that produced run 031's 18/20 scored result
+// (C:\Users\Administrator\Downloads\031mnemo_mesh_test_receipt_2026-08-01T18-13-04-045Z.json):
+// substrateEnabled true, plowEnabled true, researchArmMode true, plowAndonEnabled true
+// (Condition C -- that receipt's plowTrace.condition field reads "C_warm_andon" on every row),
+// 20 questions. Dispatch mode is set to 'local_ollama' rather than the old 'auto' default
+// specifically because a stranger's machine (the professor's laptop) has zero live WAN mesh
+// peers -- 'auto' would silently fall back to local anyway per this file's own doc comment
+// above, but setting it explicitly here means the demo reproduces run 031's actual dispatchMode
+// ("local_ollama", confirmed by reading that receipt's own top-level field) instead of depending
+// on live peer discovery succeeding or failing invisibly mid-demo.
+const RECOMMENDED_DEFAULTS = {
+  mode: 'local_ollama' as DispatchModeChoice,
+  substrateEnabled: true,
+  plowEnabled: true,
+  plowAndonEnabled: true,
+  researchArmMode: true,
+  researchArmMeshSynergy: false,
+  researchArmDecompose: false,
+  federatedSubstrateEnabled: false,
+  maxTotalQuestions: 20,
+};
 
 type ProgressEvent =
   | { type: 'start'; total: number }
@@ -465,8 +683,10 @@ export function MeshTestResultSummary({ result, onShareResult, showPerQuestionDe
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
               {result.outcomes.map((o, i) => (
                 <div key={`${o.question_id}-${o.peerId ?? 'local'}-${i}`}>
-                  <div style={{ fontSize: 11, color: o.isCorrect ? '#4ade80' : '#f87171', display: 'flex', gap: 8 }}>
+                  <div style={{ fontSize: 11, color: o.isCorrect ? '#4ade80' : '#f87171', display: 'flex', gap: 8, alignItems: 'center' }}>
                     <span>{o.isCorrect ? '✓' : o.timedOut ? '⏱' : o.isAbstain ? '·' : '✗'}</span>
+                    {/* BP141 KN-BP141-9 D3: colour-coded demo classification chip + latency. */}
+                    <DemoDisplayBadge outcome={o} />
                     {o.machineLabel && <span style={{ color: '#38bdf8' }}>[{o.machineLabel}]</span>}
                     {o.answeredBy === 'plow' && <span style={{ color: '#facc15' }}>[plow]</span>}
                     <span style={{ color: '#64748b' }}>[{o.category}]</span>
@@ -529,50 +749,68 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   const [pioneerBonus, setPioneerBonus] = useState<PioneerBonusState>({
     visible: false, modelName: '', position: 0, multiplier: 1, label: '',
   });
-  const [mode, setMode] = useState<DispatchModeChoice>('auto');
-  // BP133 Yoke #24 Task 1: explicit substrate on/off switch. Defaults to OFF so a run's
-  // meaning never changes silently -- the Founder must opt in to substrate-assisted answers.
-  const [substrateEnabled, setSubstrateEnabled] = useState(false);
+  // BP141 KN-BP141-9 D1: initial values below now start at RECOMMENDED_DEFAULTS (not the old
+  // all-OFF/'auto' defaults) so the panel opens ALREADY matching the known-good, proof-backed
+  // configuration -- "pre-selected on first open" per the Founder's ask. The individual
+  // setters/onChange handlers are unchanged; a manual toggle still works exactly as before, it
+  // just now starts from a different baseline and flips `recommendedDefaultsApplied` to false
+  // (see that state + applyRecommendedDefaults() below).
+  const [mode, setMode] = useState<DispatchModeChoice>(RECOMMENDED_DEFAULTS.mode);
+  // BP133 Yoke #24 Task 1: explicit substrate on/off switch.
+  const [substrateEnabled, setSubstrateEnabled] = useState(RECOMMENDED_DEFAULTS.substrateEnabled);
   // BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow (wan_mesh only --
   // has no effect in local_ollama mode, since the plow answerer runs on the RESPONDING
-  // peer's machine). Off by default: the Founder must opt in, matching substrate's pattern.
-  const [plowEnabled, setPlowEnabled] = useState(false);
+  // peer's machine).
+  const [plowEnabled, setPlowEnabled] = useState(RECOMMENDED_DEFAULTS.plowEnabled);
   // Condition C (Andon retry loop) vs Condition B (single pass) -- only meaningful when
   // plowEnabled is true.
-  const [plowAndonEnabled, setPlowAndonEnabled] = useState(false);
+  const [plowAndonEnabled, setPlowAndonEnabled] = useState(RECOMMENDED_DEFAULTS.plowAndonEnabled);
   // BP137 Yoke v2b (Research Arm): explicit opt-in, only meaningful when plowEnabled is true.
   // Bundles Stage A.0 (relevance gate moved upstream of the MC voters -- fixes the Bush/Biden
   // off-topic-citation failure mode) + Stage A (answer-type classifier + real compute sidecar
   // for computable questions) together. Off by default, same opt-in pattern as every other
   // toggle here.
-  const [researchArmMode, setResearchArmMode] = useState(false);
+  const [researchArmMode, setResearchArmMode] = useState(RECOMMENDED_DEFAULTS.researchArmMode);
   // BP138 Yoke 0.9.13 F3: explicit opt-in to mesh-synergy dispatch (asker's round-robin
   // distribution of DIFFERENT authorities -- user_google/user_perplexity/swarm -- across live
   // peers for the SAME question, instead of every peer redundantly running the identical full
   // plow). Only meaningful when plowEnabled + researchArmMode are also true AND mode is
   // wan_mesh with 2+ live peers (see one_click_mmlu_pro.ts's researchArmMeshSynergy doc comment
   // for the exact AND-gate). Off by default, same opt-in pattern as every toggle above.
-  const [researchArmMeshSynergy, setResearchArmMeshSynergy] = useState(false);
+  const [researchArmMeshSynergy, setResearchArmMeshSynergy] = useState(RECOMMENDED_DEFAULTS.researchArmMeshSynergy);
   // BP138 Yoke Phase 2: explicit opt-in to the Decompose-and-Eliminate engine. AND-gated with
   // researchArmMode at the back-end (one_click_mmlu_pro.ts). Only meaningful in wan_mesh +
   // plowEnabled + researchArmMode. Off by default -- all pre-Phase-2 behavior unchanged.
-  const [researchArmDecompose, setResearchArmDecompose] = useState(false);
+  const [researchArmDecompose, setResearchArmDecompose] = useState(RECOMMENDED_DEFAULTS.researchArmDecompose);
   // BP135 Yoke #34 Phase 5: explicit opt-in to pooled cross-peer substrate (federated
   // substrate layer). Only meaningful when substrateEnabled is true AND mode is wan_mesh --
   // ignored server-side otherwise (see one_click_mmlu_pro.ts config.federatedSubstrateEnabled
   // doc comment). Off by default, same pattern as substrateEnabled/plowEnabled/plowAndonEnabled:
   // the Founder must opt in, a run's meaning never changes silently.
-  const [federatedSubstrateEnabled, setFederatedSubstrateEnabled] = useState(false);
+  const [federatedSubstrateEnabled, setFederatedSubstrateEnabled] = useState(RECOMMENDED_DEFAULTS.federatedSubstrateEnabled);
   // BP133 Yoke #24 Task 4: question-count control. QUESTION_COUNT_PRESETS[0] (3) is the
   // one-click smoke test; F12 DevTools is unavailable in this build, so this replaces the
   // only prior way to change question count (a console workaround).
-  const [maxTotalQuestions, setMaxTotalQuestions] = useState<number>(20);
+  const [maxTotalQuestions, setMaxTotalQuestions] = useState<number>(RECOMMENDED_DEFAULTS.maxTotalQuestions);
   // BP134 Yoke #32 Phase F item 2: "Full 14x5 MMLU-Pro" preset -- exact 5-per-category
   // sampling across all 14 canonical domains (70 total), substrate+plow+andon forced ON.
   // Cleared by any manual change to the individual toggles/question-count below, since at
   // that point the run is no longer the untouched preset (Truth-Always: never let a result
   // silently claim "Full 14x5" when the Founder changed a setting after selecting it).
   const [fullPresetSelected, setFullPresetSelected] = useState(false);
+  // BP141 KN-BP141-9 D1: true when the panel's current config matches RECOMMENDED_DEFAULTS
+  // (initially true -- "pre-selected on first open"). Flips to false the instant ANY manual
+  // control is touched (every onChange handler below now calls
+  // setRecommendedDefaultsApplied(false) alongside its existing setFullPresetSelected(false)
+  // call), so the primary button can honestly read "Custom" the moment the config diverges,
+  // and "Back to Recommended" is always one click away -- "never silently strand the user in a
+  // broken config."
+  const [recommendedDefaultsApplied, setRecommendedDefaultsApplied] = useState(true);
+  // BP141 KN-BP141-9 D1: the ONE collapsed disclosure ("Show what this does / Customize").
+  // Collapsed by default -- the 7 checkboxes + mode selector + question-count + "Full 14x5"
+  // preset all live inside this disclosure now, so the front door is the recommended-defaults
+  // button, not a wall of knobs.
+  const [customizeOpen, setCustomizeOpen] = useState(false);
   const [total, setTotal] = useState(0);
   const [doneCount, setDoneCount] = useState(0);
   const [peersDiscovered, setPeersDiscovered] = useState<number | null>(null);
@@ -614,6 +852,27 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   // tab switches/reloads); this is the explicit "Clear results" action -- only this empties
   // the view, matching "I want to keep seeing them ... until it is replaced or I clear it."
   const [loadedReceiptName, setLoadedReceiptName] = useState<string | null>(null);
+
+  // BP141 KN-BP141-9 D1: the front-door action. Resets every knob this file owns back to
+  // RECOMMENDED_DEFAULTS in one click -- including maxTotalQuestions and mode, not just the 4
+  // headline flags, so "Back to Recommended" is a genuine full reset and never leaves a stray
+  // manual change (e.g. a changed question count) silently in effect alongside the recommended
+  // flags. Deliberately does NOT touch `fullPresetSelected` truthiness beyond clearing it --
+  // this button and the separate "Full 14x5 MMLU-Pro" preset button (customize-only, unchanged)
+  // remain two distinct, mutually-exclusive presets.
+  const applyRecommendedDefaults = useCallback(() => {
+    setMode(RECOMMENDED_DEFAULTS.mode);
+    setSubstrateEnabled(RECOMMENDED_DEFAULTS.substrateEnabled);
+    setPlowEnabled(RECOMMENDED_DEFAULTS.plowEnabled);
+    setPlowAndonEnabled(RECOMMENDED_DEFAULTS.plowAndonEnabled);
+    setResearchArmMode(RECOMMENDED_DEFAULTS.researchArmMode);
+    setResearchArmMeshSynergy(RECOMMENDED_DEFAULTS.researchArmMeshSynergy);
+    setResearchArmDecompose(RECOMMENDED_DEFAULTS.researchArmDecompose);
+    setFederatedSubstrateEnabled(RECOMMENDED_DEFAULTS.federatedSubstrateEnabled);
+    setMaxTotalQuestions(RECOMMENDED_DEFAULTS.maxTotalQuestions);
+    setFullPresetSelected(false);
+    setRecommendedDefaultsApplied(true);
+  }, []);
 
   const handleClearResults = useCallback(() => {
     setResult(null);
@@ -1008,7 +1267,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
 
   const modeButton = (choice: DispatchModeChoice, label: string) => (
     <button
-      onClick={() => setMode(choice)}
+      onClick={() => { setMode(choice); setRecommendedDefaultsApplied(false); }}
       disabled={busy}
       style={{
         background: mode === choice ? '#10b981' : 'transparent',
@@ -1034,14 +1293,17 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         🧪 Sourced-Knowledge Benchmark (MMLU-Pro format, with provenance)
       </div>
       <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6, lineHeight: 1.5 }}>
-        Runs real MMLU-Pro-format multiple-choice questions (ground truth answers,
-        not fabricated) across your live WAN mesh peers and scores every answer live.
+        Runs real multiple-choice questions with known correct answers and scores every
+        answer live -- no fabricated numbers.
       </div>
-      {/* BP137 Honest-MMLU-Provenance Yoke, Step 3: explicit separation from any reasoning
-          claim -- this benchmark measures whether a named, independent authority (fetched via
-          the CSIA Spider swarm) happens to agree with the answer key, NOT whether the model
-          reasoned its way there. The mesh null result already killed the reasoning claim
-          elsewhere in this app; this label makes sure it is never implicitly resurrected here. */}
+      {/* BP141 KN-BP141-9 D3 plain-English pass: the technical "sourced-knowledge vs reasoning"
+          explainer below (BP137 Honest-MMLU-Provenance Yoke, Step 3) names the internal "Plow"
+          feature by name, which the ticket's jargon rule forbids on the default, pre-click
+          surface ("No ... 'plow' on any user-facing surface"). Gated behind customizeOpen so a
+          first-time viewer never sees it unless they choose to dig in; nothing below was
+          deleted, per Rule 66 -- only its render condition changed, same treatment already
+          applied to the 7 checkboxes this Yoke gated earlier. */}
+      {customizeOpen && (
       <div style={{
         fontSize: 10, color: '#94a3b8', marginBottom: 10, lineHeight: 1.6,
         background: 'rgba(110,231,183,0.05)', border: '1px solid rgba(110,231,183,0.15)',
@@ -1054,7 +1316,64 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         answer. Without Plow, the model answers from its own knowledge with no receipt -- those
         answers are shown but are never counted as substrate-sourced (see the headline below).
       </div>
+      )}
 
+      {/* BP141 KN-BP141-9 D1 ("The Demo Front Door"): ONE prominent button is the entry point,
+          not one option among seven. Founder, verbatim: "More detail setup = more barrier."
+          Pre-selected on first open (recommendedDefaultsApplied starts true, and every useState
+          above already initializes to RECOMMENDED_DEFAULTS) -- a first-time viewer who never
+          touches anything below still runs the exact configuration that produced run 031's
+          18/20 scored result. */}
+      <button
+        onClick={applyRecommendedDefaults}
+        disabled={busy}
+        style={{
+          display: 'block', width: '100%',
+          background: recommendedDefaultsApplied ? '#10b981' : 'transparent',
+          color: recommendedDefaultsApplied ? '#0d1117' : '#facc15',
+          border: `2px solid ${recommendedDefaultsApplied ? '#10b981' : '#facc15'}`,
+          borderRadius: 8, padding: '12px 16px', fontSize: 14, fontWeight: 800,
+          cursor: busy ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif',
+          marginBottom: 6,
+        }}
+      >
+        {recommendedDefaultsApplied ? '\u2713 Recommended Defaults (ready to run)' : '\u21BA Back to Recommended Defaults'}
+      </button>
+      {!recommendedDefaultsApplied && (
+        <div style={{ fontSize: 11, color: '#facc15', marginBottom: 8, textAlign: 'center' as const }}>
+          Custom configuration -- click above to return to the known-good recommended setup.
+        </div>
+      )}
+
+      {/* BP141 KN-BP141-9 D1: the ONE collapsed disclosure. Collapsed by default -- expanding
+          reveals the mode selector, the 7 checkboxes (each now with a plain-English one-liner),
+          question count, and the separate "Full 14x5 MMLU-Pro" preset. Nothing below this line
+          was deleted; it is all still fully reachable, just no longer the first thing a viewer
+          has to parse (Rule 66: additive/gated, never removed). */}
+      <button
+        onClick={() => setCustomizeOpen((v) => !v)}
+        style={{
+          background: 'none', border: 'none', color: '#94a3b8', fontSize: 11, fontWeight: 700,
+          cursor: 'pointer', fontFamily: 'system-ui, sans-serif', padding: 0, marginBottom: 10,
+          display: 'block',
+        }}
+      >
+        {customizeOpen ? '\u25BC' : '\u25B6'} {customizeOpen ? 'Hide' : 'Show'} what this does / Customize
+      </button>
+      {customizeOpen && (
+        <div style={{
+          fontSize: 10, color: '#94a3b8', marginBottom: 10, lineHeight: 1.6,
+          background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.18)',
+          borderRadius: 6, padding: '8px 10px',
+        }}>
+          <b style={{ color: '#6ee7b7' }}>Recommended</b> = Substrate ON + 12-Blade Plow ON +
+          Research Arm ON + Andon retry loop ON (Condition C) + 20 questions, run locally on this
+          machine. This is the exact setup that produced 18 correct out of 20 in the reference
+          run -- stated here so it is inspectable, not magic.
+        </div>
+      )}
+      {customizeOpen && (
+      <>
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
         {modeButton('auto', 'Auto (WAN if live)')}
         {modeButton('wan_mesh', 'WAN Mesh only')}
@@ -1087,13 +1406,18 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           type="checkbox"
           checked={substrateEnabled}
           disabled={busy}
-          onChange={(e) => { setSubstrateEnabled(e.target.checked); setFullPresetSelected(false); }}
+          onChange={(e) => { setSubstrateEnabled(e.target.checked); setFullPresetSelected(false); setRecommendedDefaultsApplied(false); }}
         />
         Substrate context {substrateEnabled ? 'ON' : 'OFF'}
         <span style={{ color: '#475569', fontSize: 10 }}>
           (ON injects related topical eblets into the prompt; OFF sends the bare question, no substrate call is made at all)
         </span>
       </label>
+      {/* BP141 KN-BP141-9 D1: plain-English one-liner, no jargon -- what a first-time viewer
+          reads instead of (or before) the technical span above. */}
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 10, marginLeft: 22, marginTop: -6 }}>
+        Plain English: gives the AI background notes on the topic before it answers.
+      </div>
 
       {/* BP133 Yoke #24 Task 2: explicit opt-in to the 12-Blade Column Plow. Combined with the
           substrate toggle above, these two switches select Condition A (plow OFF + substrate
@@ -1114,7 +1438,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           type="checkbox"
           checked={plowEnabled}
           disabled={busy}
-          onChange={(e) => { setPlowEnabled(e.target.checked); setFullPresetSelected(false); }}
+          onChange={(e) => { setPlowEnabled(e.target.checked); setFullPresetSelected(false); setRecommendedDefaultsApplied(false); }}
         />
         12-Blade Column Plow {plowEnabled ? 'ON' : 'OFF'}
         <span style={{ color: '#475569', fontSize: 10 }}>
@@ -1123,6 +1447,10 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           a single Ollama call. Slower; WAN Mesh per-question timeout auto-raised to 5min)
         </span>
       </label>
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6, marginLeft: 22, marginTop: -4 }}>
+        Plain English: checks the answer against many independent fact-finding methods instead
+        of trusting one guess.
+      </div>
       {plowEnabled && (
         <label
           style={{
@@ -1135,10 +1463,16 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
             type="checkbox"
             checked={plowAndonEnabled}
             disabled={busy}
-            onChange={(e) => { setPlowAndonEnabled(e.target.checked); setFullPresetSelected(false); }}
+            onChange={(e) => { setPlowAndonEnabled(e.target.checked); setFullPresetSelected(false); setRecommendedDefaultsApplied(false); }}
           />
           Andon retry loop {plowAndonEnabled ? 'ON (Condition C)' : 'OFF (Condition B, single pass)'}
         </label>
+      )}
+      {plowEnabled && (
+        <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6, marginLeft: 42, marginTop: -4 }}>
+          Plain English: if the independent checks disagree, tries again automatically instead
+          of giving up.
+        </div>
       )}
       {plowEnabled && (
         <label
@@ -1152,13 +1486,19 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
             type="checkbox"
             checked={researchArmMode}
             disabled={busy}
-            onChange={(e) => { setResearchArmMode(e.target.checked); setFullPresetSelected(false); }}
+            onChange={(e) => { setResearchArmMode(e.target.checked); setFullPresetSelected(false); setRecommendedDefaultsApplied(false); }}
           />
           Research Arm (Stage A.0+A) {researchArmMode ? 'ON' : 'OFF'}
           <span style={{ color: '#475569', fontSize: 10 }}>
             (ON: relevance gate moved upstream of the MC voters -- abstains rather than voting on off-topic sources -- plus a classifier + deterministic compute sidecar for computable questions)
           </span>
         </label>
+      )}
+      {plowEnabled && researchArmMode && (
+        <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6, marginLeft: 42, marginTop: -4 }}>
+          Plain English: adds a math/logic solver that can prove some answers outright, and
+          skips questions it cannot verify instead of guessing.
+        </div>
       )}
       {/* BP138 Yoke 0.9.13 F3: Mesh Synergy checkbox -- mirrors the Research Arm checkbox
           immediately above. Gated WAN-mesh + plow + research-arm-only: this is an asker-side
@@ -1182,7 +1522,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
               type="checkbox"
               checked={researchArmMeshSynergy}
               disabled={meshSynergyGated}
-              onChange={(e) => { setResearchArmMeshSynergy(e.target.checked); setFullPresetSelected(false); }}
+              onChange={(e) => { setResearchArmMeshSynergy(e.target.checked); setFullPresetSelected(false); setRecommendedDefaultsApplied(false); }}
             />
             Mesh Synergy {researchArmMeshSynergy ? 'ON' : 'OFF'} (requires 2+ peers)
             <span style={{ color: '#475569', fontSize: 10 }}>
@@ -1193,6 +1533,12 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           </label>
         );
       })()}
+      {plowEnabled && researchArmMode && (
+        <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6, marginLeft: 42, marginTop: -4 }}>
+          Plain English: splits the fact-finding work across multiple connected computers
+          running at once (only works with 2+ connected computers).
+        </div>
+      )}
 
       {/* BP138 Yoke Phase 2: Decompose-and-Eliminate engine checkbox. Nested under
           plowEnabled + researchArmMode. WIRE-THE-LOOP fix (single-box local plow, M0 goal):
@@ -1214,7 +1560,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
             type="checkbox"
             checked={researchArmDecompose}
             disabled={busy}
-            onChange={(e) => { setResearchArmDecompose(e.target.checked); setFullPresetSelected(false); }}
+            onChange={(e) => { setResearchArmDecompose(e.target.checked); setFullPresetSelected(false); setRecommendedDefaultsApplied(false); }}
           />
           Decompose+Eliminate {researchArmDecompose ? 'ON' : 'OFF'}
           <span style={{ color: '#475569', fontSize: 10 }}>
@@ -1224,6 +1570,12 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
             Mesh mode. BP138 Phase 2.)
           </span>
         </label>
+      )}
+      {plowEnabled && researchArmMode && (
+        <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6, marginLeft: 42, marginTop: -4 }}>
+          Plain English: breaks a question into smaller facts, checks each one, and rules out
+          wrong choices one at a time.
+        </div>
       )}
 
       {/* BP135 Yoke #34 Phase 5: explicit opt-in to the federated-substrate layer -- pools
@@ -1245,7 +1597,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
               type="checkbox"
               checked={federatedSubstrateEnabled}
               disabled={federatedGated}
-              onChange={(e) => { setFederatedSubstrateEnabled(e.target.checked); setFullPresetSelected(false); }}
+              onChange={(e) => { setFederatedSubstrateEnabled(e.target.checked); setFullPresetSelected(false); setRecommendedDefaultsApplied(false); }}
             />
             Federated substrate (pool eblets across peers) {federatedSubstrateEnabled ? 'ON' : 'OFF'}
             <span style={{ color: '#475569', fontSize: 10 }}>
@@ -1256,6 +1608,10 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           </label>
         );
       })()}
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 10, marginLeft: 22, marginTop: -6 }}>
+        Plain English: shares background notes across all connected computers instead of each
+        one working alone.
+      </div>
 
       {/* BP133 Yoke #24 Task 4: question-count control -- no DevTools console workaround
           needed, F12 dev-tools is unavailable in this build. */}
@@ -1264,7 +1620,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         {[3, 10, 20, 50].map((n) => (
           <button
             key={n}
-            onClick={() => { setMaxTotalQuestions(n); setFullPresetSelected(false); }}
+            onClick={() => { setMaxTotalQuestions(n); setFullPresetSelected(false); setRecommendedDefaultsApplied(false); }}
             disabled={busy}
             style={{
               background: !fullPresetSelected && maxTotalQuestions === n ? '#10b981' : 'transparent',
@@ -1285,7 +1641,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           disabled={busy}
           onChange={(e) => {
             const v = parseInt(e.target.value, 10);
-            if (!Number.isNaN(v) && v > 0) { setMaxTotalQuestions(v); setFullPresetSelected(false); }
+            if (!Number.isNaN(v) && v > 0) { setMaxTotalQuestions(v); setFullPresetSelected(false); setRecommendedDefaultsApplied(false); }
           }}
           style={{
             width: 52, background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 6,
@@ -1306,6 +1662,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
             setPlowAndonEnabled(true);
             setMode('auto');
             setFullPresetSelected(true);
+            setRecommendedDefaultsApplied(false);
           }}
           disabled={busy}
           style={{
@@ -1323,6 +1680,8 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           run this AFTER seeding the Chocolate Pack to see "hot" differ from "cold")
         </span>
       </div>
+      </>
+      )}
 
       {state !== 'running' && (
         <button
@@ -1531,10 +1890,25 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
 
       {displayOutcomes.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: state === 'running' ? 0 : 10 }}>
+          {/* BP141 KN-BP141-9 D3: one-line plain-English legend, rendered once above the list --
+              no internal vocabulary ("SEG"/"Yoke"/"BP"/"plow" never appear here). */}
+          <div style={{
+            fontSize: 10, color: '#64748b', marginBottom: 4, lineHeight: 1.6,
+            display: 'flex', flexWrap: 'wrap' as const, gap: 10,
+          }}>
+            {DEMO_DISPLAY_LEGEND.map((l) => (
+              <span key={l.displayClass}>
+                <strong style={{ color: '#94a3b8' }}>{l.label}</strong>: {l.description}
+              </span>
+            ))}
+          </div>
           {displayOutcomes.map((o, i) => (
             <div key={`${o.question_id}-${o.peerId ?? 'local'}-${i}`}>
-              <div style={{ fontSize: 11, color: o.isCorrect ? '#4ade80' : '#f87171', display: 'flex', gap: 8 }}>
+              <div style={{ fontSize: 11, color: o.isCorrect ? '#4ade80' : '#f87171', display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span>{o.isCorrect ? '✓' : o.timedOut ? '⏱' : o.isAbstain ? '·' : '✗'}</span>
+                {/* BP141 KN-BP141-9 D3: colour-coded demo classification chip + latency -- the
+                    PROVEN class names its solver in the tooltip/detail, latency is always shown. */}
+                <DemoDisplayBadge outcome={o} />
                 {o.machineLabel && <span style={{ color: '#38bdf8' }}>[{o.machineLabel}]</span>}
                 {o.answeredBy === 'plow' && <span style={{ color: '#facc15' }}>[plow]</span>}
                 <span style={{ color: '#64748b' }}>[{o.category}]</span>
@@ -1597,6 +1971,10 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         />
       )}
 
+      {/* BP141 KN-BP141-9 D3 plain-English pass: this internal engineering scope-note cited
+          "Yoke #23", forbidden on the default surface by this Yoke's own jargon rule. Gated
+          behind customizeOpen -- content unchanged, nothing deleted, per Rule 66. */}
+      {customizeOpen && (
       <div style={{ fontSize: 10, color: '#334155', marginTop: 12, lineHeight: 1.5 }}>
         Scope note: "Auto" picks WAN mesh dispatch when live peers are online (via the
         relay_routes/relay_route_replies bus, Supabase-relayed, never a raw LAN IP) and
@@ -1604,6 +1982,7 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
         flow is still pending Bishop/Founder confirming 2 or more peers online -- see
         Yoke #23 Bishop handoff.
       </div>
+      )}
 
       {/* BP138 Phase 1 / BP139 -- Answer Coroner autopsy panel */}
       <div style={{ marginTop: 18, borderTop: '1px solid #1e2a38', paddingTop: 14 }}>
