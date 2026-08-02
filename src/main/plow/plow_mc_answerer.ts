@@ -6851,12 +6851,48 @@ export async function runCanonicalPlowMcAnswer(
       `googleFact=${browserGoogleResult ? 'yes' : 'no'} perplexityFact=${browserPerplexityResult ? 'yes' : 'no'} ` +
       `injectedAsTopFacts=${browserFactCandidates.length}`
     : '';
+
+  // KN-BP142-3 Phase 0b (carried over from KN-BP142-2 Defect B, diagnosed there, fixed here):
+  // when ensembleSwarmAlreadyFired is true, the swarm loop above deliberately did not re-fire
+  // (cheap-by-design guard, correct and untouched), so specialistsUsed/candidatesRaw/postMiner/
+  // postFurnace are all genuinely [] / 0 -- no NEW fetch happened in THIS function call.
+  // bmvScore and gateOutcomes just above are computed from those genuinely-empty numbers and
+  // are DELIBERATELY LEFT UNCHANGED here -- the voters really did arbitrate over zero freshly-
+  // fetched facts, and that score must stay honest; this fix never touches a decision or a gate.
+  //
+  // But 9 real specialists DID run for this exact question, inside the authority ensemble
+  // above, and ensembleSwarmReceipt already carries their real names and candidate counts
+  // (captured at `ensembleSwarmReceipt = ensembleOutcome.swarmReceipt` near the top of this
+  // function) -- that data was previously read only for one console.log line in the
+  // ensembleSwarmAlreadyFired branch and then discarded. Reporting `specialists=[] raw=0` on
+  // the receipt when 9 specialists genuinely ran is a bookkeeping discard, not a decision --
+  // this block ONLY changes what the RECEIPT/TRACE SAYS ran; allCandidates/postMiner/postFurnace
+  // themselves are never mutated, so nothing that actually decided anything above (Miner,
+  // Saladin/Furnace, factsForArbitration, bmvScore, gateOutcomes, the voters) is touched, and
+  // the swarm is still not re-fired -- exactly the guard's own "cheap-by-design" intent.
+  const reportedSpecialistsUsed = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
+    ? ensembleSwarmReceipt.specialistsUsed
+    : specialistsUsed;
+  const reportedCandidatesRaw = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
+    ? ensembleSwarmReceipt.candidatesRaw
+    : candidatesRaw;
+  const reportedCandidatesPostMiner = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
+    ? ensembleSwarmReceipt.candidatesPostMiner
+    : postMiner.length;
+  const reportedCandidatesPostFurnace = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
+    ? ensembleSwarmReceipt.candidatesPostFurnace
+    : postFurnace.length;
+  const swarmReusedFromEnsembleTrace = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
+    ? ' swarmReusedFromEnsemble=true (specialists ran inside the authority ensemble above, not re-fired here)'
+    : '';
+
   const traceSummary =
-    `specialists=[${specialistsUsed.join(',')}] raw=${candidatesRaw} postMiner=${postMiner.length} ` +
-    `postFurnace=${postFurnace.length} voters=[${voterLetters.map((l) => l ?? '-').join(',')}] ` +
+    `specialists=[${reportedSpecialistsUsed.join(',')}] raw=${reportedCandidatesRaw} ` +
+    `postMiner=${reportedCandidatesPostMiner} postFurnace=${reportedCandidatesPostFurnace} ` +
+    `voters=[${voterLetters.map((l) => l ?? '-').join(',')}] ` +
     `voterStatus=[${voterDiagnostics.map((v) => v.status).join(',')}] ` +
     `concordance=${concordance} bmv=${bmvScore} andonRetries=${andonRetry} latencyGateAdvisoryOnly=true` +
-    `${relevanceGateMethodTrace}${psionicMarkerTrace}${browserAuthorityTrace}`;
+    `${relevanceGateMethodTrace}${psionicMarkerTrace}${browserAuthorityTrace}${swarmReusedFromEnsembleTrace}`;
 
   // KN-BP142-2 Defect A: THE ONLY place decompose's stashed advisory candidate can become the
   // final answer. Reached only after Psionic, browser authority Stage F2, the authority ensemble,
@@ -6898,10 +6934,10 @@ export async function runCanonicalPlowMcAnswer(
     concordance,
     bmvScore,
     gateOutcomes,
-    specialistsUsed,
-    candidatesRaw,
-    candidatesPostMiner: postMiner.length,
-    candidatesPostFurnace: postFurnace.length,
+    specialistsUsed: reportedSpecialistsUsed,
+    candidatesRaw: reportedCandidatesRaw,
+    candidatesPostMiner: reportedCandidatesPostMiner,
+    candidatesPostFurnace: reportedCandidatesPostFurnace,
     andonTriggered: andonRetry > 0,
     andonRetries: andonRetry,
     ebletsWritten,
