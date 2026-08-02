@@ -164,6 +164,12 @@ export interface BidirectionalConsistencyResult {
   leastToMost: string[];
   expectedLeastToMost: string[];
   trace: string;
+  /** BP142: true when the source returned no ranking at all on one or both directions, so there
+   *  was nothing to check. Distinct from `consistent: false`, which means the source DID answer
+   *  twice and contradicted itself. Both are inadmissible; only this one is "never asked/never
+   *  answered". Callers reporting a C5 pass rate must exclude these from the denominator rather
+   *  than counting them as failures, or the rate describes transport health, not source quality. */
+  noData: boolean;
 }
 
 /** Pure comparison: `leastToMost` must be the EXACT element-wise reverse of `mostToLeast` (same
@@ -178,12 +184,34 @@ export function checkBidirectionalConsistency(
   leastToMost: string[],
 ): BidirectionalConsistencyResult {
   const expectedLeastToMost = [...mostToLeast].reverse();
+
+  // BP142: an empty ranking must never read as a PASS. Without this guard, mostToLeast=[] and
+  // leastToMost=[] satisfy the length check (0 === 0) and `.every()` on an empty array is
+  // vacuously true, so a source that returned NOTHING was reported as having "reversed cleanly".
+  // That is a gate lying about its own inputs. Timeouts are the common cause: at BP141 five of
+  // fifteen real ranking calls exceeded even a 120s window and came back empty. Report what was
+  // RECEIVED before reporting a verdict about it. Never widen a gate to force a pass.
+  const noData = mostToLeast.length === 0 || leastToMost.length === 0;
+
   const consistent =
+    !noData &&
     leastToMost.length === expectedLeastToMost.length &&
     leastToMost.every((letter, i) => letter === expectedLeastToMost[i]);
 
   let trace: string;
-  if (consistent) {
+  if (noData) {
+    const which =
+      mostToLeast.length === 0 && leastToMost.length === 0
+        ? 'both directions'
+        : mostToLeast.length === 0
+          ? 'the most-to-least direction'
+          : 'the least-to-most direction';
+    trace =
+      `C4 NO DATA: source="${source}" returned no ranking on ${which} ` +
+      `(mostToLeast=[${mostToLeast.join(',')}], leastToMost=[${leastToMost.join(',')}]). ` +
+      `Inadmissible for this question. This is NOT a pass and NOT a self-contradiction; ` +
+      `the source was never heard from.`;
+  } else if (consistent) {
     trace = `C4 PASS: source="${source}" mostToLeast=[${mostToLeast.join(',')}] reverses cleanly to leastToMost=[${leastToMost.join(',')}]`;
   } else {
     const mismatches: string[] = [];
@@ -199,7 +227,7 @@ export function checkBidirectionalConsistency(
       `mismatches: ${mismatches.join('; ')}`;
   }
 
-  return { source, consistent, mostToLeast, leastToMost, expectedLeastToMost, trace };
+  return { source, consistent, mostToLeast, leastToMost, expectedLeastToMost, trace, noData };
 }
 
 /** Applies checkBidirectionalConsistency across every caller-supplied source ranking pair and
