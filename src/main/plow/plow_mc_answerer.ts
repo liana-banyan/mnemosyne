@@ -535,6 +535,17 @@ export interface CanonicalPlowMcResult {
    *  exists against the ~2% bar other solvers were held to). Absent (not false) on every answer
    *  that did not come from decompose. */
   decomposeAdvisoryDemoted?: boolean;
+  /** KN-BP142-2 Defect A (Founder-directed BP142), OPTIONAL/ADDITIVE. True only when this exact
+   *  answer is decompose's advisory candidate AND it reached the caller through the function's
+   *  final-fallthrough last-resort path -- meaning every other tier (Psionic, browser authority,
+   *  authority ensemble, swarm+voters) ran its full course and reached its own natural end with
+   *  chosenLetter still null. Absent (not false) on every other answer, including every decompose
+   *  answer from BEFORE this fix that would have been returned directly (that early-return path
+   *  no longer exists -- see attemptDecomposeAndEliminate's two call sites' own comments). This
+   *  field is the receipt-level proof that "advisory" now structurally means "cannot preempt a
+   *  real decision, only fill a genuine total absence of one" -- never present alongside a
+   *  chosenLetter any other stage actually produced. */
+  decomposeAdvisoryUsedAsLastResort?: boolean;
   /** BP137 Yoke v2b Stage A, OPTIONAL/ADDITIVE. Present only when researchArmMode &&
    *  researchArmComputeSidecar were both true for this call (absent -- not false -- on every
    *  pre-Stage-A call and on every call with the flag off, so old receipts and this new field
@@ -5172,9 +5183,45 @@ export async function runCanonicalPlowMcAnswer(
   const earlyAnswerTypeForOrdering = authorityEnsembleOn ? classifyAnswerType(researchQuery) : undefined;
   const deferDecomposeToEnsembleFallback =
     authorityEnsembleOn && (earlyAnswerTypeForOrdering === 'computable' || earlyAnswerTypeForOrdering === 'reasoning');
+  // KN-BP142-2 Defect A (Founder-directed BP142): "Advisory must mean CANNOT DECIDE. Not decides
+  // with a weaker label." Prior to this fix, BOTH decompose call sites (this one and the second,
+  // just after Stage F2 below) did `if (decomposeEarlyResult) return decomposeEarlyResult;` --
+  // an UNCONDITIONAL early return the instant decompose produced any letter at all. That made
+  // decompose (KN-BP141-7 P5: demoted to PARTIAL concordance, no substrate write-back, an
+  // unmeasured mechanism with no false-negative-rate bar) structurally EQUIVALENT in priority to
+  // every stronger downstream mechanism it runs BEFORE -- Psionic, browser-authority Stage F2, the
+  // authority ensemble, and swarm+voters never got a chance to even attempt a question decompose
+  // happened to answer wrong. Live receipts: qid 111 (Jupiter moon-resonance question, correct
+  // answer I) -- run 031's authority ensemble found I correctly; run 032 AND run 033 both let
+  // decompose fire FIRST at this exact call site (before the ensemble ever ran), kill 8 of 9
+  // options via Google-search-based elimination, keep wrong option C, and return it as the FINAL
+  // answer in over two minutes -- costing the point both times, with the correct mechanism never
+  // even consulted.
+  //
+  // THE FIX: `decomposeAdvisoryResult` (declared just below) is a STASH, never an early return.
+  // Every downstream tier gets the exact same unobstructed chance to decide this question that it
+  // would have had if decompose had abstained outright -- byte-identical control flow to
+  // decomposeOn===false from this point through the rest of the pipeline. The stash is consulted
+  // in EXACTLY ONE place: this function's own final fallthrough return, far below, and ONLY when
+  // the entire rest of the pipeline (Psionic, browser authority, authority ensemble, swarm+voters)
+  // reaches ITS OWN natural end with chosenLetter still null -- i.e. only as the last resort when
+  // the alternative is a guaranteed abstain, never as a substitute for a real decision. This is
+  // NOT a change to elimination's own strength or to any gate (per this ticket's explicit "do NOT
+  // fix this by making elimination stronger or by widening any gate" instruction) -- it is a
+  // change to WHO gets to decide first, nothing else.
+  let decomposeAdvisoryResult: CanonicalPlowMcResult | null = null;
   if (decomposeOn && !deferDecomposeToEnsembleFallback) {
     const decomposeEarlyResult = await attemptDecomposeAndEliminate();
-    if (decomposeEarlyResult) return decomposeEarlyResult;
+    if (decomposeEarlyResult) {
+      decomposeAdvisoryResult = decomposeEarlyResult;
+      console.log(
+        `[plow_mc_answerer] KN-BP142-2 Defect A: decompose-and-eliminate produced an ADVISORY ` +
+        `candidate (letter=${decomposeEarlyResult.chosenLetter}, basis trace in traceSummary) at ` +
+        `the pre-ensemble call site -- STASHED, not returned. The full pipeline (Psionic/browser-` +
+        `authority/ensemble/swarm+voters) runs exactly as if decompose had abstained; this ` +
+        `candidate can only become the final answer if every one of those stages also abstains.`,
+      );
+    }
   }
 
   // ── BP137 Yoke v2b Stage D.1: Psionic zero-LLM accelerator ────────────────────────────────
@@ -5892,9 +5939,24 @@ export async function runCanonicalPlowMcAnswer(
   // fallback when the ensemble produced no sourced letter" per the Founder's mandate. Every
   // other case already resolved decompose at its original pre-Psionic/pre-F2 position above (or
   // never runs decompose at all, when researchArmDecompose is off).
+  // KN-BP142-2 Defect A: same fix as the pre-ensemble call site above -- STASH, never return.
+  // This is the deferred position (computable/reasoning + ensemble on, ensemble itself already
+  // ran to completion above and produced no sourced letter) -- decompose here still must not
+  // preempt the swarm+voters stage that runs after this point. Overwrites decomposeAdvisoryResult
+  // only if it was still null (the pre-ensemble call site above is mutually exclusive with this
+  // one via the same deferDecomposeToEnsembleFallback gate, so in practice at most one of the two
+  // ever fires for a given question -- this `??=`-equivalent guard is defensive, not load-bearing).
   if (deferDecomposeToEnsembleFallback && decomposeOn) {
     const decomposeFallbackResult = await attemptDecomposeAndEliminate();
-    if (decomposeFallbackResult) return decomposeFallbackResult;
+    if (decomposeFallbackResult && !decomposeAdvisoryResult) {
+      decomposeAdvisoryResult = decomposeFallbackResult;
+      console.log(
+        `[plow_mc_answerer] KN-BP142-2 Defect A: decompose-and-eliminate produced an ADVISORY ` +
+        `candidate (letter=${decomposeFallbackResult.chosenLetter}) at the post-ensemble fallback ` +
+        `call site -- STASHED, not returned. Swarm+voters below still run exactly as if decompose ` +
+        `had abstained; this candidate can only become the final answer if swarm+voters also abstain.`,
+      );
+    }
   }
 
   // BP134 Yoke #32 Phase C: deepHarvest is opt-in per call (field-sowing only, see config
@@ -6795,6 +6857,37 @@ export async function runCanonicalPlowMcAnswer(
     `voterStatus=[${voterDiagnostics.map((v) => v.status).join(',')}] ` +
     `concordance=${concordance} bmv=${bmvScore} andonRetries=${andonRetry} latencyGateAdvisoryOnly=true` +
     `${relevanceGateMethodTrace}${psionicMarkerTrace}${browserAuthorityTrace}`;
+
+  // KN-BP142-2 Defect A: THE ONLY place decompose's stashed advisory candidate can become the
+  // final answer. Reached only after Psionic, browser authority Stage F2, the authority ensemble,
+  // AND this function's own swarm+voters arbitration (chosenLetter/concordance finalized at
+  // computeLetterConcordance(voterLetters) above, never reassigned after) have ALL run to
+  // completion -- every one of those was given the exact same chance to decide this question that
+  // it would have had if decompose had abstained outright, because it WAS structurally treated as
+  // an abstain (stashed, not returned) at both call sites above. This branch fires ONLY when the
+  // real pipeline's own chosenLetter is still null/empty: a genuine, guaranteed abstain is the
+  // only condition under which "an advisory guess is still better than a guaranteed abstain" (the
+  // pre-existing P5 rationale) applies. A real chosenLetter -- CONCORDANT, PARTIAL, or even a weak
+  // DISCORDANT-but-non-null vote -- ALWAYS wins over the advisory candidate; decompose can fill an
+  // absence, it can never override a presence. Never widens elimination, never touches a gate.
+  if (!chosenLetter && decomposeAdvisoryResult) {
+    console.log(
+      `[plow_mc_answerer] KN-BP142-2 Defect A: full pipeline reached its own natural end with ` +
+      `chosenLetter=null (concordance=${concordance}) -- falling back to the stashed ADVISORY ` +
+      `decompose candidate (letter=${decomposeAdvisoryResult.chosenLetter}) as the LAST resort. ` +
+      `This is the only path by which decompose's output can be the final answer, and it happened ` +
+      `only because every stronger mechanism (Psionic/browser-authority/ensemble/swarm+voters) ` +
+      `already tried and produced nothing of its own.`,
+    );
+    return {
+      ...decomposeAdvisoryResult,
+      decomposeAdvisoryUsedAsLastResort: true,
+      traceSummary:
+        `${decomposeAdvisoryResult.traceSummary} | KN-BP142-2 Defect A: used as LAST-RESORT ` +
+        `fallback -- full pipeline's own result was chosenLetter=null concordance=${concordance} ` +
+        `(realPipelineTrace: ${traceSummary})`,
+    };
+  }
 
   return {
     questionId,
