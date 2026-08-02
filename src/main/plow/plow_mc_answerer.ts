@@ -3659,6 +3659,40 @@ async function runEliminationCascadeFormatIndependentFallback(
     'LEAST confident correct to MOST confident correct. Reply with exactly one letter per line, least ' +
     'confident first, every letter listed exactly once, nothing else.';
 
+  // C7 (EXTENDED, KN-BP142-3 Phase 2): the ranking mechanism above never had its own citable-
+  // source attempt -- unlike the ticket-C3 shortcut leg above (which already calls
+  // getRawBrowserAuthorityFact), the two Ollama ranking calls below have no web access and cite
+  // nothing, so this path structurally guaranteed "no citable source" (see this function's own
+  // sourceNote text further down, still the honest fallback when no capture is made here). Per
+  // Founder mandate ("that needs to happen always," BP142, on the 13 sources his own manual
+  // cascade surfaced that this capture was silently dropping): when a bridge IS supplied, attempt
+  // ONE more real getRawBrowserAuthorityFact lookup here too, purely for C7 capture. Capture-only,
+  // additive, never affects mostToLeast/leastToMost/candidateLetter below -- same try/caught,
+  // non-blocking discipline as every other bridge call in this file, and the SAME sourceCaptures
+  // array the shortcut leg above already pushes into, so a caller sees one combined list
+  // regardless of which leg(s) actually captured something.
+  if (bridge) {
+    try {
+      const rankingSourceQuery =
+        `${stemForRanking.trim()}\n\nState the single most relevant fact, with its source, that helps ` +
+        'decide this question.';
+      const rawFact = await getRawBrowserAuthorityFact(
+        rankingSourceQuery,
+        { researchArmMode: true, researchArmBrowserAuthority: true, preferredAuthority: 'user_perplexity' },
+        bridge,
+      );
+      if (rawFact && rawFact.fact) {
+        const capture = buildCascadeSourceCapture(rawFact.sourceUrl, rawFact.fact, rankingSourceQuery, rawFact.authority);
+        if (capture) {
+          sourceCaptures.push(capture);
+          log(`C7 source capture (ranking mechanism): url=${capture.url} claim="${capture.claim}"`);
+        }
+      }
+    } catch (err) {
+      log(`C7 browser-authority source capture (ranking mechanism) threw (non-fatal): ${err}`);
+    }
+  }
+
   let mostToLeast: string[] = [];
   let leastToMost: string[] = [];
   try {
