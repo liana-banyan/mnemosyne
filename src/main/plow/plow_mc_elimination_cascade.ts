@@ -13,17 +13,24 @@
 // plow_mc_no_consensus_solver.ts -- this module only ever consumes caller-supplied rankings/votes
 // and applies the Founder's own consistency/acceptance math to them.
 //
-// HONEST GAP (documented, not fabricated -- same convention as the Cake Method's own "live
-// mesh-peer transport not wired" gap in plow_mc_answerer.ts): as of this commit, no harness in this
-// repo actually dispatches a most-to-least AND a least-to-most ranking QUERY to a live source for
-// an arbitrary question inside the answering pipeline itself -- that dispatch, and the pipeline
-// wiring that would let C1-C5 decide a live answer, does not exist yet. This file is the pure
-// mechanism; KN-BP141-3's own verification script exercises it against REAL model output (Ollama,
-// this machine's local llama3.3:70b/llama3.1:8b/gemma4:12b) to prove out C4 specifically, per the
-// ticket's own requirement (d) -- see scratchpad/verify_kn_bp141_3_stage2_c4_bidirectional.js.
+// HONEST GAP, CLOSED THIS TICKET FOR resolveDeterministicComputeOverride (KN-BP141-10, Founder-
+// directed BP141): KN-BP141-3's own note above ("no harness in this repo actually dispatches a
+// most-to-least AND a least-to-most ranking QUERY... inside the answering pipeline itself") and
+// KN-BP141-7's own wiring note (the SAME dispatch, but only as a Cake Method candidate producer,
+// reached only when authorities already disagree) are both superseded for the NEW call site added
+// this ticket: plow_mc_answerer.ts's resolveDeterministicComputeOverride now dispatches this exact
+// C1/C4/C5 mechanism as a format-independent FALLBACK tier, positioned AFTER every named parsing
+// solver and BEFORE the generic reasoning-text extraction tier -- see that file's
+// runEliminationCascadeFormatIndependentFallback for the live dispatch harness (still the caller's
+// job, per this file's own contract above; this file remains pure). The gate/helper functions below
+// (evaluateFormatIndependentFallbackGate, extractLetterRankingSequence, extractNumericOptionValues,
+// CascadeSourceCapture/buildCascadeSourceCapture) are additive to this file specifically to support
+// that new call site without requiring the caller to reimplement pure logic that belongs here.
 //
 // Rule 66: version, never overwrite -- new file, no supersede needed. No em-dashes anywhere in
 // this file (or its comments) -- "--" used throughout per Rule 66.
+
+import { extractNumber } from './compute_sidecar';
 
 // ─── C1: ASK THE INVERSE ────────────────────────────────────────────────────────────────────────
 //
@@ -323,4 +330,183 @@ export function evaluateSignificantFigureAccept(
       `C5 ACCEPT: nearest option ${nearest.letter} (distance ${nearest.distance}) clears the required ` +
       `precision (${requiredPrecision}) with a winning margin of ${winningMargin} over the next-nearest option.`,
   };
+}
+
+// ─── KN-BP141-10 C2: THE FORMAT-INDEPENDENT FALLBACK'S OWN GATE ────────────────────────────────
+//
+// "Trigger when every named parsing solver returned null AND the question offers a decidable
+// quantity." The "every named parsing solver returned null" half is enforced structurally by this
+// tier's POSITION in resolveDeterministicComputeOverride (C1 -- after every named solver, before
+// the generic reasoning-text tier), never by anything in this file. This section is the OTHER
+// half: does the question, on its own, offer a decidable quantity this fallback could go find --
+// evaluated WITHOUT parsing this question's own specific prompt shape (that would just be another
+// named parser). Two independent, mutually exclusive-or signals:
+//
+//   (1) NUMERIC OPTIONS -- at least 2 of the option texts carry distinct extractable numeric
+//       values (extractNumber, reused from compute_sidecar.ts rather than re-implemented). This is
+//       exactly the shape C5 (evaluateSignificantFigureAccept, above) already knows how to accept/
+//       abstain against once a computed value is in hand.
+//   (2) SUPERLATIVE/RANKING LANGUAGE, OR a NOT/EXCEPT qualifier (detectNegationQuestion, C1 above)
+//       -- both stem shapes admit a RANKING of the options by some real-world quantity even when
+//       that quantity is never spelled out as a number anywhere in the prompt. Worked example
+//       (verification (b) below): "which world region is the most densely populated" -- population
+//       density is the deciding quantity, but no option text states a number; the only way to
+//       decide is to rank the options by it.
+//
+// HONEST LIMITATION (measured, not claimed complete -- Rule 66): this is a real heuristic gate, not
+// a classifier proven to cover every one of the 10,956 corpus questions. A question with neither
+// signal (no superlative/ranking language, no numeric options, no NOT/EXCEPT qualifier -- e.g. a
+// bare factual-identification question like "what is the powerhouse of the cell") correctly does
+// NOT fire this gate -- see this ticket's own verification (e) negative control. See verification
+// (d) for the measured ceiling this gate produces on the full real corpus, reported honestly
+// whatever it is.
+
+const SUPERLATIVE_RE =
+  /\b(most|least|highest|lowest|greatest|smallest|largest|biggest|densest|fastest|slowest|closest|nearest|farthest|furthest|warmest|coldest|oldest|newest|youngest|longest|shortest|heaviest|lightest|strongest|weakest|best|worst|maximum|minimum)\b/gi;
+
+export interface OptionLike {
+  letter: string;
+  text: string;
+}
+
+/** Pulls every option whose text carries an extractable numeric value (extractNumber, reused
+ *  verbatim from compute_sidecar.ts -- never re-implemented here). Options with no parseable
+ *  number are silently skipped (not an error -- a mixed numeric/non-numeric option set is legal,
+ *  e.g. one distractor phrased as prose); the returned list may therefore be shorter than
+ *  `options`. */
+export function extractNumericOptionValues(options: OptionLike[]): OptionValue[] {
+  const out: OptionValue[] = [];
+  for (const o of options) {
+    const v = extractNumber(o.text);
+    if (v !== null) out.push({ letter: o.letter, value: v });
+  }
+  return out;
+}
+
+export interface FormatIndependentFallbackGate {
+  fires: boolean;
+  numericOptionValues: OptionValue[];
+  superlativeSignal: boolean;
+  matchedSuperlativeTerms: string[];
+  negationSignal: boolean;
+  trace: string;
+}
+
+/** The gate itself -- pure, synchronous, no I/O. See this section's own header above for the full
+ *  rationale on both signals and the honest-limitation note. `stemText` should be the bare
+ *  question text (the SAME researchQueryForTiers convention every other tier/stage in this engine
+ *  already uses, e.g. vetQuestion/runEliminationChart's own first parameter), never the options
+ *  block appended to it. */
+export function evaluateFormatIndependentFallbackGate(
+  stemText: string,
+  options: OptionLike[],
+): FormatIndependentFallbackGate {
+  const numericOptionValues = extractNumericOptionValues(options);
+  const distinctNumericValues = new Set(numericOptionValues.map((o) => o.value)).size;
+  const matchedSuperlativeTerms = [
+    ...new Set([...stemText.matchAll(SUPERLATIVE_RE)].map((m) => (m[0] as string).toLowerCase())),
+  ];
+  const superlativeSignal = matchedSuperlativeTerms.length > 0;
+  const negationSignal = detectNegationQuestion(stemText).isNegated;
+
+  if (distinctNumericValues >= 2) {
+    return {
+      fires: true,
+      numericOptionValues,
+      superlativeSignal,
+      matchedSuperlativeTerms,
+      negationSignal,
+      trace:
+        `GATE FIRES (numeric options): ${distinctNumericValues} distinct numeric option values ` +
+        `present -- a decidable quantity is directly evaluable via C5 significant-figure accept.`,
+    };
+  }
+  if (superlativeSignal || negationSignal) {
+    const parts: string[] = [];
+    if (superlativeSignal) parts.push(`superlative language [${matchedSuperlativeTerms.join(',')}]`);
+    if (negationSignal) parts.push('a NOT/EXCEPT qualifier');
+    return {
+      fires: true,
+      numericOptionValues,
+      superlativeSignal,
+      matchedSuperlativeTerms,
+      negationSignal,
+      trace:
+        `GATE FIRES (ranking signal): question stem carries ${parts.join(' and ')} -- options are ` +
+        `rankable by a real-world quantity even though no option states one numerically.`,
+    };
+  }
+  return {
+    fires: false,
+    numericOptionValues,
+    superlativeSignal,
+    matchedSuperlativeTerms,
+    negationSignal,
+    trace:
+      'GATE ABSTAINS: fewer than 2 distinct numeric option values, no superlative/ranking ' +
+      'language, no NOT/EXCEPT qualifier -- this question does not offer a decidable quantity ' +
+      'this fallback can identify without parsing its own specific prompt shape.',
+  };
+}
+
+// ─── KN-BP141-10: ranking-response parsing, extracted as a pure, general, EXPORTED helper ──────
+//
+// A deliberately simple first-appearance-order letter extraction (same convention and same
+// documented edge case as plow_mc_answerer.ts's own KN-BP141-7 P6 local `extractLetterSequence`,
+// which stays private to that file's Cake Method candidate producer and is NOT modified or reused
+// here per the KN-BP141-10 ticket's own "do not clobber" instruction on that already-landed code)
+// -- factored out here, as a NEW exported function, so this ticket's own format-independent
+// fallback call site does not have to duplicate the regex inline. Honest limitation, recorded
+// rather than hidden: a source that mentions the same letter early in unrelated prose before
+// actually starting its ranking could pollute the sequence -- callers should compose their own
+// prompt to ask for one letter per line, nothing else, specifically to keep this heuristic
+// reliable in practice. */
+export function extractLetterRankingSequence(raw: string | null, validLetters: Set<string>): string[] {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const re = /\b([A-Z])\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    const letter = m[1] as string;
+    if (validLetters.has(letter) && !seen.has(letter)) {
+      seen.add(letter);
+      out.push(letter);
+    }
+  }
+  return out;
+}
+
+// ─── C7: SOURCE CAPTURE IS MANDATORY ────────────────────────────────────────────────────────────
+//
+// "Every cascade query that returns a cited source records that URL with the claim it supported...
+// Emit them in a shape the Liana Cycle can absorb as Fact eblets later. Do NOT build the absorption
+// here; that is the next ticket. Just stop losing them." This section is that shape ONLY -- a plain
+// data record and a pure constructor, no persistence, no substrate write, no eblet minting. The
+// caller (plow_mc_answerer.ts) is responsible for actually dispatching a source capable of citing a
+// URL (e.g. the browser-authority bridge's Perplexity lookup) and for not discarding the resulting
+// CascadeSourceCapture[] once produced -- this file cannot enforce either of those on its own,
+// exactly like every other "the asking is the caller's job" boundary in this file.
+
+export interface CascadeSourceCapture {
+  url: string;
+  claim: string;
+  query: string;
+  source: string;
+  capturedAt: string;
+}
+
+/** Pure constructor -- stamps `capturedAt` as an ISO timestamp at call time (the one small
+ *  exception to this file's "pure" contract: a wall-clock read, never randomness, never I/O, never
+ *  a decision that changes based on it). Returns null (never a fabricated capture) when `url` is
+ *  empty/whitespace -- a caller must not manufacture a source capture for a source that returned
+ *  no citation at all. */
+export function buildCascadeSourceCapture(
+  url: string,
+  claim: string,
+  query: string,
+  source: string,
+): CascadeSourceCapture | null {
+  if (!url || url.trim().length === 0) return null;
+  return { url, claim, query, source, capturedAt: new Date().toISOString() };
 }

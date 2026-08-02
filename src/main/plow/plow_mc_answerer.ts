@@ -139,6 +139,30 @@ import { runEliminationChart, type EliminationChartResult } from './plow_mc_elim
 // not be wired this pass, and this file's own KN-BP141-7 P6 header note for the full rationale.
 import { checkBidirectionalConsistency, type BidirectionalConsistencyResult } from './plow_mc_elimination_cascade';
 import { tallyVotesStrikingFailures, type GomJabbarVote } from './plow_gom_jabbar';
+// KN-BP141-10 (Founder-directed BP141): "Wire the Elimination Cascade as the format-independent
+// fallback." A TENTH independent deterministic compute tier inside resolveDeterministicComputeOverride
+// -- see runEliminationCascadeFormatIndependentFallback's own doc comment (below, just above that
+// tier's call site) for the full mechanism. Unlike KN-BP141-7 P6's cascade wiring (a Cake Method
+// CANDIDATE only, reached solely when authorities already disagree), this tier is a genuine
+// FALLBACK -- reached whenever every named parsing solver above it in resolveDeterministicComputeOverride
+// has already returned null, regardless of whether any authority ensemble ever ran at all.
+// evaluateFormatIndependentFallbackGate/extractNumericOptionValues/extractLetterRankingSequence/
+// CascadeSourceCapture/buildCascadeSourceCapture are all NEW exports added to
+// plow_mc_elimination_cascade.ts this ticket (additive only -- C1-C5's own pre-existing exports are
+// unmodified). runSympyArithmetic (plow_gom_jabbar.ts G2) is reused here, never re-implemented, per
+// this ticket's own C6 ("arithmetic is ours, always"). getRawBrowserAuthorityFact
+// (browser_authority_adapter.ts) is reused for this ticket's own C7 (mandatory source capture) --
+// see that call site's own comment for the honest scope of when it can and cannot fire.
+import {
+  evaluateFormatIndependentFallbackGate,
+  extractLetterRankingSequence,
+  buildCascadeSourceCapture,
+  evaluateSignificantFigureAccept,
+  buildInverseQueryFraming,
+  type CascadeSourceCapture,
+} from './plow_mc_elimination_cascade';
+import { runSympyArithmetic } from './plow_gom_jabbar';
+import { getRawBrowserAuthorityFact } from './browser_authority_adapter';
 // BP137 Yoke v2b Stage A.0.1: semantic-cosine upgrade to the relevance TEST used inside the
 // gate below (the gating FLAG and abstain logic are unchanged -- see semantic_relevance_gate.ts
 // header for the full reuse rationale). ollamaManager imported directly (same module already
@@ -2911,6 +2935,11 @@ async function runAuthorityEnsemble(params: {
       researchQuery, mcOptions, '', hoistReasoningTexts,
       { ollamaBaseUrl: config.ollamaBaseUrl, model: config.model, wolframAppId: process.env.WOLFRAM_APP_ID },
       hoistIndependentSources,
+      // KN-BP141-10: `bridge` is already in scope here (this whole block runs inside
+      // runAuthorityEnsemble, which destructures `bridge` from its own params) -- threaded through
+      // so the format-independent fallback's own C7 (mandatory source capture) can attempt a real
+      // Perplexity lookup on this call path too, not just the post-branch site below.
+      bridge,
     );
     if (hoistDecision.deterministicOverride) {
       const det = hoistDecision.deterministicOverride;
@@ -3398,6 +3427,320 @@ async function runAuthorityEnsemble(params: {
 // why this function itself is now async -- callers must await it. Any tier throwing is caught and
 // treated as "this tier found nothing" (falls through to the next tier / honest ensemble
 // fall-through), never propagated.
+// ─── KN-BP141-10 (Founder-directed BP141): THE FORMAT-INDEPENDENT FALLBACK ─────────────────────
+//
+// "Every deterministic solver in this engine PARSES a prompt somebody else wrote... The cascade
+// does NOT parse the given prompt. It COMPOSES ITS OWN QUERIES and does the arithmetic locally."
+// This function is that mechanism, wired as a live dispatch harness (the SAME kind of harness
+// KN-BP141-7 P6 built for the Cake Method, reused here for a genuinely different call site).
+//
+// C1 (WIRING): called from inside resolveDeterministicComputeOverride, AFTER every named parsing
+// solver (tiers (i) through the no-consensus tier) and BEFORE the generic reasoning-text extraction
+// tier -- see that function's own call site, just below this one, for the exact position. This
+// function contributes a CANDIDATE ONLY -- it never eliminates any option and never touches any
+// other tier's result. Reached only via the same `if (!deterministicOverride)` gate every other
+// tier already uses, so "every named parser already returned null" is enforced by POSITION, not by
+// anything in this function.
+//
+// C2 (GATE): evaluateFormatIndependentFallbackGate (plow_mc_elimination_cascade.ts) decides whether
+// this question offers a decidable quantity at all, without parsing this question's own specific
+// prompt shape -- see that function's own header for the two-signal rationale (numeric options /
+// superlative-or-negation language) and its honest limitation. Gate-miss costs zero dispatches.
+//
+// NUMBERING NOTE: this ticket's own C1-C8 list is DISTINCT from plow_mc_elimination_cascade.ts's
+// own internal C1-C5 stage labels. Mapping used throughout this function's comments: ticket-C3's
+// shortcut uses the file's own C5 (evaluateSignificantFigureAccept); ticket-C4 ("accept condition is
+// significant figures") IS that same C5 function's own accept condition; ticket-C5 ("bidirectional
+// consistency is a hard gate on the source") is the file's own C4 (checkBidirectionalConsistency).
+//
+// C3 (SHORTCUT FIRST, "C5 first, C1-C4 only if needed"): when the gate fired via NUMERIC OPTIONS,
+// this function tries the direct-quantity shortcut FIRST -- one composed query asking a source to
+// state ONLY the deciding numeric quantity, verified via SymPy (C6, never the source's own stated
+// arithmetic), checked against the option set via evaluateSignificantFigureAccept. Only when that
+// shortcut is not attempted (fewer than 2 distinct numeric option values) or abstains does this
+// function fall through to the full ranking mechanism (C1's own inverse-query framing for negated
+// stems + the bidirectional-consistency-gated ranking, ticket-C5).
+//
+// C7 (SOURCE CAPTURE): when `bridge` is supplied, this function ALSO attempts one real
+// getRawBrowserAuthorityFact (Perplexity) lookup for the same composed quantity query -- the ONE
+// channel in this mechanism capable of returning a real, citable URL (local Ollama has no web access
+// and cites nothing). Every returned URL is captured via buildCascadeSourceCapture, regardless of
+// whether that source's own quantity ends up deciding. HONEST GAP: getRawBrowserAuthorityFact
+// requires a REAL BrowserAuthorityBridge (main-process IPC to a live, logged-in browser session
+// inside the running Electron app) -- it cannot be exercised by a standalone CLI verification script
+// the way the local Ollama leg can; see this ticket's own verification report for exactly which
+// checks exercised the live browser leg vs. the local-only mechanism.
+//
+// C8 (GOM JABBAR STAYS ADVISORY): Gom Jabbar G5 (tallyVotesStrikingFailures) is computed from this
+// mechanism's own consistency result on the ranking path, exactly like KN-BP141-7 P6's Cake Method
+// wiring -- `applied` is hard-coded false, never a runtime flag that could drift to true. It never
+// strikes anything from this function's own candidate decision.
+//
+// Never throws to its caller -- every dispatch leg is individually try/caught, matching every other
+// tier's own error-handling convention in resolveDeterministicComputeOverride.
+function extractArithmeticSubstring(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (/^[\d+\-*/^().eE\s]+$/.test(trimmed)) return trimmed;
+  const m = trimmed.match(/-?\d+(?:\.\d+)?(?:\s*[-+*/^]\s*-?\d+(?:\.\d+)?)+|-?\d+(?:\.\d+)?/);
+  return m ? m[0] : null;
+}
+
+async function runEliminationCascadeFormatIndependentFallback(
+  researchQueryForTiers: string,
+  mcOptions: McOption[],
+  computeOpts: { ollamaBaseUrl?: string; model?: string },
+  bridge: BrowserAuthorityBridge | undefined,
+  log: (msg: string) => void,
+): Promise<{ candidate: DeterministicComputeCandidate | null; receipt: EliminationCascadeFallbackReceipt }> {
+  const gate = evaluateFormatIndependentFallbackGate(researchQueryForTiers, mcOptions);
+  log(`gate: ${gate.trace}`);
+  if (!gate.fires) {
+    return {
+      candidate: null,
+      receipt: {
+        attempted: false,
+        decided: false,
+        gate,
+        tierUsed: null,
+        consistency: null,
+        sourceCaptures: [],
+        gomJabbarG5Advisory: null,
+        trace: `NOT ATTEMPTED: ${gate.trace}`,
+      },
+    };
+  }
+
+  const sourceCaptures: CascadeSourceCapture[] = [];
+  const validLetters = new Set(mcOptions.map((o) => o.letter));
+  const model = computeOpts.model ?? '';
+  const ollamaBaseUrl = computeOpts.ollamaBaseUrl ?? '';
+
+  // ── ticket-C3 shortcut: direct-quantity identification, tried FIRST when numeric options exist ──
+  const distinctNumericValues = new Set(gate.numericOptionValues.map((o) => o.value)).size;
+  if (distinctNumericValues >= 2) {
+    const quantityQuery =
+      `${researchQueryForTiers.trim()}\n\nState ONLY the single numeric value (a plain number, or a ` +
+      'simple arithmetic expression using + - * / and parentheses, e.g. 750/1.25) that is the ' +
+      'deciding quantity for this question. No words, no units, no explanation -- the number or ' +
+      'expression alone, nothing else.';
+
+    // C7: attempt the ONE real, citable source first (Perplexity, via the caller-supplied bridge).
+    let browserQuantity: number | null = null;
+    let browserQuantitySympyVerified = false;
+    if (bridge) {
+      try {
+        const rawFact = await getRawBrowserAuthorityFact(
+          quantityQuery,
+          { researchArmMode: true, researchArmBrowserAuthority: true, preferredAuthority: 'user_perplexity' },
+          bridge,
+        );
+        if (rawFact && rawFact.fact) {
+          const capture = buildCascadeSourceCapture(rawFact.sourceUrl, rawFact.fact, quantityQuery, rawFact.authority);
+          if (capture) {
+            sourceCaptures.push(capture);
+            log(`C7 source capture: url=${capture.url} claim="${capture.claim}"`);
+          }
+          const extracted = extractArithmeticSubstring(rawFact.fact);
+          if (extracted) {
+            const sympyResult = await runSympyArithmetic(extracted);
+            if (sympyResult) {
+              browserQuantity = sympyResult.value;
+              browserQuantitySympyVerified = true;
+            }
+          }
+          if (browserQuantity === null) {
+            const n = extractNumber(rawFact.fact);
+            if (n !== null) browserQuantity = n; // honest fallback, NOT SymPy-verified
+          }
+        }
+      } catch (err) {
+        log(`C7 browser-authority quantity lookup threw (non-fatal): ${err}`);
+      }
+    }
+
+    // Local self-consistency leg: always attempted (zero marginal cost, no bridge dependency), the
+    // same config.model this whole answerer already uses elsewhere for local dispatch.
+    let localQuantity: number | null = null;
+    let localQuantitySympyVerified = false;
+    try {
+      const raw = await callOllama(quantityQuery, ollamaBaseUrl, model, 0);
+      if (raw) {
+        const extracted = extractArithmeticSubstring(raw);
+        if (extracted) {
+          const sympyResult = await runSympyArithmetic(extracted);
+          if (sympyResult) {
+            localQuantity = sympyResult.value;
+            localQuantitySympyVerified = true;
+          }
+        }
+        if (localQuantity === null) {
+          const n = extractNumber(raw);
+          if (n !== null) localQuantity = n;
+        }
+      }
+    } catch (err) {
+      log(`local-orchestrator quantity dispatch threw (non-fatal): ${err}`);
+    }
+
+    // Prefer the citable (browser-authority) quantity when available -- it carries a real source;
+    // the local quantity is this mechanism's own fallback when no bridge was supplied or the
+    // browser leg returned nothing usable.
+    const chosenQuantity = browserQuantity !== null ? browserQuantity : localQuantity;
+    const chosenSympyVerified = browserQuantity !== null ? browserQuantitySympyVerified : localQuantitySympyVerified;
+    const chosenSourceLabel = browserQuantity !== null ? 'browser_authority:user_perplexity' : 'local_orchestrator';
+
+    if (chosenQuantity !== null) {
+      const acceptResult = evaluateSignificantFigureAccept(chosenQuantity, gate.numericOptionValues);
+      log(
+        `ticket-C3/C5 shortcut: quantity=${chosenQuantity} (source=${chosenSourceLabel}, ` +
+        `sympyVerified=${chosenSympyVerified}) -- ${acceptResult.trace}`,
+      );
+      if (acceptResult.accept && acceptResult.letter) {
+        const matchedOption = gate.numericOptionValues.find((o) => o.letter === acceptResult.letter);
+        const sourceNote = sourceCaptures.length > 0
+          ? ` | C7 captured ${sourceCaptures.length} source(s): ${sourceCaptures.map((c) => c.url).join(', ')}`
+          : ' | C7: no source URL captured this question.';
+        const trace =
+          `${gate.trace} | ticket-C3/C5 SHORTCUT ACCEPTED: quantity=${chosenQuantity} ` +
+          `(source=${chosenSourceLabel}, SymPy-verified=${chosenSympyVerified}) -> option ` +
+          `${acceptResult.letter} | ${acceptResult.trace}${sourceNote}`;
+        return {
+          candidate: {
+            letter: acceptResult.letter,
+            optionValue: matchedOption ? matchedOption.value : NaN,
+            optionUnit: null,
+            computedValue: chosenQuantity,
+            computedUnit: null,
+            sourceExpression: trace,
+            source: 'question_expression',
+            method: 'elimination_cascade_fallback',
+            cascadeFiredAfterParserMiss: true,
+          },
+          receipt: {
+            attempted: true,
+            decided: true,
+            gate,
+            tierUsed: 'c5_shortcut',
+            consistency: null,
+            sourceCaptures,
+            gomJabbarG5Advisory: null,
+            trace,
+          },
+        };
+      }
+    } else {
+      log('ticket-C3/C5 shortcut: neither the browser-authority leg nor the local leg produced a usable quantity -- falling through to ranking.');
+    }
+  }
+
+  // ── full C1/ticket-C5 ranking mechanism (bidirectional-consistency-gated) ──────────────────────
+  const stemForRanking = gate.negationSignal
+    ? (buildInverseQueryFraming(researchQueryForTiers) ?? researchQueryForTiers)
+    : researchQueryForTiers;
+  const optionLines = mcOptions.map((o) => `${o.letter}) ${o.text}`).join('\n');
+  const mostToLeastPrompt =
+    `${stemForRanking.trim()}\n\nOptions:\n${optionLines}\n\nRank ALL of the option letters above from ` +
+    'MOST confident correct to LEAST confident correct. Reply with exactly one letter per line, most ' +
+    'confident first, every letter listed exactly once, nothing else.';
+  const leastToMostPrompt =
+    `${stemForRanking.trim()}\n\nOptions:\n${optionLines}\n\nRank ALL of the option letters above from ` +
+    'LEAST confident correct to MOST confident correct. Reply with exactly one letter per line, least ' +
+    'confident first, every letter listed exactly once, nothing else.';
+
+  let mostToLeast: string[] = [];
+  let leastToMost: string[] = [];
+  try {
+    const rawMostToLeast = await callOllama(mostToLeastPrompt, ollamaBaseUrl, model, 0);
+    mostToLeast = extractLetterRankingSequence(rawMostToLeast, validLetters);
+    const rawLeastToMost = await callOllama(leastToMostPrompt, ollamaBaseUrl, model, 0);
+    leastToMost = extractLetterRankingSequence(rawLeastToMost, validLetters);
+  } catch (err) {
+    log(`ranking dispatch threw (non-fatal, no candidate produced): ${err}`);
+    return {
+      candidate: null,
+      receipt: {
+        attempted: true,
+        decided: false,
+        gate,
+        tierUsed: null,
+        consistency: null,
+        sourceCaptures,
+        gomJabbarG5Advisory: null,
+        trace: `${gate.trace} | ranking dispatch threw before both calls completed -- no candidate.`,
+      },
+    };
+  }
+
+  const consistency = checkBidirectionalConsistency(
+    'local_orchestrator:elimination_cascade_format_independent_fallback',
+    mostToLeast,
+    leastToMost,
+  );
+  log(`ticket-C5 (bidirectional consistency): ${consistency.trace}`);
+
+  const g5Vote: GomJabbarVote = {
+    source: consistency.source,
+    letter: mostToLeast[0] ?? '',
+    admissible: consistency.consistent,
+    failureReason: consistency.consistent ? undefined : 'bidirectional consistency failed',
+  };
+  const g5Tally = tallyVotesStrikingFailures([g5Vote]);
+  const gomJabbarG5Advisory = {
+    applied: false as const,
+    wouldStrike: g5Tally.strickenSources.length > 0,
+    strickenSources: g5Tally.strickenSources,
+    admissibleSources: g5Tally.admissibleSources,
+    tally: g5Tally.tally,
+    trace: `${g5Tally.trace} (KN-BP141-10: ADVISORY ONLY, applied=false -- G5's strike never excludes this candidate.)`,
+  };
+  log(`gom-jabbar-g5-advisory: ${gomJabbarG5Advisory.trace}`);
+
+  const sourceNote = sourceCaptures.length > 0
+    ? ` | C7 captured ${sourceCaptures.length} source(s): ${sourceCaptures.map((c) => c.url).join(', ')}`
+    : ' | C7: no source URL captured this question (local ranking mechanism only, no citable source).';
+
+  if (!consistency.consistent || mostToLeast.length === 0) {
+    return {
+      candidate: null,
+      receipt: {
+        attempted: true,
+        decided: false,
+        gate,
+        tierUsed: null,
+        consistency,
+        sourceCaptures,
+        gomJabbarG5Advisory,
+        trace:
+          `${gate.trace} | ticket-C5 ranking mechanism ATTEMPTED, source INADMISSIBLE (bidirectional ` +
+          `consistency failed or empty ranking) -- no candidate produced. ${consistency.trace}${sourceNote}`,
+      },
+    };
+  }
+
+  const candidateLetter = (gate.negationSignal ? mostToLeast[mostToLeast.length - 1] : mostToLeast[0]) as string;
+  const trace =
+    `${gate.trace} | ticket-C1/C5 RANKING ACCEPTED: source bidirectionally consistent ` +
+    `(mostToLeast=[${mostToLeast.join(',')}]) -> option ${candidateLetter}` +
+    `${gate.negationSignal ? ' (negated stem -- candidate is the LEAST-affirmed option, per C1 inverse-query framing)' : ''} ` +
+    `| ${consistency.trace}${sourceNote}`;
+
+  return {
+    candidate: {
+      letter: candidateLetter,
+      optionValue: NaN,
+      optionUnit: null,
+      computedValue: NaN,
+      computedUnit: null,
+      sourceExpression: trace,
+      source: 'question_expression',
+      method: 'elimination_cascade_fallback',
+      cascadeFiredAfterParserMiss: true,
+    },
+    receipt: { attempted: true, decided: true, gate, tierUsed: 'c1_c4_ranking', consistency, sourceCaptures, gomJabbarG5Advisory, trace },
+  };
+}
+
 export interface DeterministicComputeCandidate {
   letter: string;
   optionValue: number;
@@ -3414,6 +3757,25 @@ export interface DeterministicComputeCandidate {
    *  underlying tiers without forcing them into a shared method-name vocabulary they don't
    *  actually share. */
   method: string;
+  /** KN-BP141-10 (Founder-directed BP141), OPTIONAL/ADDITIVE. True ONLY on the one
+   *  DeterministicComputeCandidate produced by runEliminationCascadeFormatIndependentFallback below
+   *  -- absent (never false) on every other tier's candidate. Ticket's own C2: "so we can measure
+   *  how often the fallback is what saved the answer" -- this field is that measurement's anchor;
+   *  every candidate carrying it true is, by this tier's own position in
+   *  resolveDeterministicComputeOverride (after every named parsing solver), a question where every
+   *  named parser had already failed and this format-independent mechanism is what produced the
+   *  final letter. */
+  cascadeFiredAfterParserMiss?: boolean;
+}
+export interface EliminationCascadeFallbackReceipt {
+  attempted: boolean;
+  decided: boolean;
+  gate: import('./plow_mc_elimination_cascade').FormatIndependentFallbackGate;
+  tierUsed: 'c5_shortcut' | 'c1_c4_ranking' | null;
+  consistency: BidirectionalConsistencyResult | null;
+  sourceCaptures: CascadeSourceCapture[];
+  gomJabbarG5Advisory: { applied: false; wouldStrike: boolean; strickenSources: string[]; admissibleSources: string[]; tally: Record<string, number>; trace: string } | null;
+  trace: string;
 }
 export async function resolveDeterministicComputeOverride(
   researchQuery: string,
@@ -3426,6 +3788,15 @@ export async function resolveDeterministicComputeOverride(
   // empty array and returns null, same as any other tier's "missing piece" honest abstain). See
   // plow_mc_no_consensus_solver.ts's header for the full gate this feeds.
   independentSources: IndependentSourceVote[] = [],
+  // KN-BP141-10: OPTIONAL/ADDITIVE, undefined on every pre-existing caller (both this file's own
+  // two call sites are updated this ticket to pass their already-in-scope bridge; any OTHER caller,
+  // e.g. scratchpad/verify_kn_bp141_3_wiring_advisory_signals.js, which calls this function directly
+  // against the compiled dist without a bridge argument, is unaffected -- see this ticket's own C7
+  // call site below for the honest "bridge absent -> zero source captures, never a fabricated one"
+  // behavior). Enables C7 (mandatory source capture): when present, the format-independent fallback
+  // ALSO attempts one real, citable browser-authority (Perplexity) lookup for the deciding quantity,
+  // alongside its own local self-consistency mechanism, which never carries a citable URL.
+  bridge?: BrowserAuthorityBridge,
 ): Promise<{
   finalLetter: string;
   overrideFired: boolean;
@@ -3436,6 +3807,14 @@ export async function resolveDeterministicComputeOverride(
   // (Stage 0/1 never throw uncaught -- see the try/catch immediately after researchQueryForTiers),
   // never influences finalLetter/overrideFired/deterministicOverride itself.
   advisorySignals: { vettingFlags: QuestionVettingFlags | null; eliminationChart: EliminationChartResult | null };
+  // KN-BP141-10: OPTIONAL/ADDITIVE, same contract as `advisorySignals` above -- every pre-existing
+  // caller that destructures only finalLetter/overrideFired/deterministicOverride/advisorySignals is
+  // byte-for-byte unaffected. null when the tier was never REACHED (a strictly earlier tier -- tiers
+  // (i) through (ix, no-consensus) -- already produced a deterministicOverride, so per this tier's
+  // own `if (!deterministicOverride)` gate it never ran at all). Non-null whenever the tier was
+  // reached, whether or not its own gate fired, whether or not it decided -- see
+  // EliminationCascadeFallbackReceipt's own field docs for the full attempted/decided distinction.
+  cascadeFallback: EliminationCascadeFallbackReceipt | null;
 }> {
   let deterministicOverride: DeterministicComputeCandidate | null = null;
 
@@ -3817,6 +4196,40 @@ export async function resolveDeterministicComputeOverride(
     }
   }
 
+  // Tier (cascade fallback, KN-BP141-10, Founder-directed BP141) -- a TENTH independent
+  // deterministic compute tier, and the FIRST one in this whole function that does not derive from
+  // parsing this question's own specific prompt shape at all. Every tier above (i)-(ix) PARSES a
+  // prompt somebody else wrote -- a unit-bearing expression contiguous in the text, a Procedure/
+  // Explanation table, an explicit "no consensus" option string, an entity list resolvable against
+  // the substrate. This tier COMPOSES ITS OWN QUERIES and verifies the answer locally (SymPy, C6) --
+  // see runEliminationCascadeFormatIndependentFallback's own doc comment, just above
+  // DeterministicComputeCandidate's interface declaration, for the full C1-C8 mechanism. Tried last
+  // of all named/structured tiers, only after tiers (i)-(ix) above returned null; STRICTLY BEFORE
+  // the generic reasoning-text extraction tier below (BP-SPECIFIC-BEFORE-GENERIC discipline, same as
+  // every other named tier here) -- this fallback still derives from the question text + options
+  // (composed fresh, never parsed), so it correctly gets first refusal ahead of the generic
+  // "read a number out of an authority's own reasoning text" last resort. `cascadeFallbackReceipt`
+  // is reported unconditionally below (whether or not the gate fired, whether or not it decided) via
+  // this function's own new `cascadeFallback` return field -- see that field's own doc comment.
+  let cascadeFallbackReceipt: EliminationCascadeFallbackReceipt | null = null;
+  if (!deterministicOverride) {
+    try {
+      const cascadeResult = await runEliminationCascadeFormatIndependentFallback(
+        researchQueryForTiers,
+        mcOptions,
+        { ollamaBaseUrl: computeOpts.ollamaBaseUrl, model: computeOpts.model },
+        bridge,
+        (msg) => console.log(`[plow_mc_answerer] resolveDeterministicComputeOverride: cascade-fallback ${msg}`),
+      );
+      cascadeFallbackReceipt = cascadeResult.receipt;
+      if (cascadeResult.candidate) {
+        deterministicOverride = cascadeResult.candidate;
+      }
+    } catch (err) {
+      console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: runEliminationCascadeFormatIndependentFallback threw (non-fatal, ensemble letter kept):', err);
+    }
+  }
+
   // Tier (viii) -- LAST RESORT, generic reasoning-text extraction: computeUnitAwareMatch's paths
   // (a)/(c) (a unit-bearing or bare-numeric quantity pulled out of an authority's OWN reasoning/
   // fact text, `reasoningTexts`, rather than the question itself). See this function's
@@ -3860,6 +4273,7 @@ export async function resolveDeterministicComputeOverride(
     overrideFired,
     deterministicOverride,
     advisorySignals: { vettingFlags: stage0VettingFlags, eliminationChart: stage1EliminationChart },
+    cascadeFallback: cascadeFallbackReceipt,
   };
 }
 
@@ -5043,6 +5457,10 @@ export async function runCanonicalPlowMcAnswer(
             researchQuery, mcOptionsForBrowserAuthority, ensembleOutcome.chosenLetter, overrideReasoningTexts,
             { ollamaBaseUrl, model, wolframAppId: process.env.WOLFRAM_APP_ID },
             overrideIndependentSources,
+            // KN-BP141-10: `browserBridge` is already in scope here (constructed a few lines above,
+            // same real bridge the Stage F2 ensemble call above it already uses) -- threaded through
+            // for the SAME C7 reason as the pre-branch hoist site above.
+            browserBridge,
           );
           deterministicOverride = decision.deterministicOverride;
           overrideFired = decision.overrideFired;
