@@ -827,6 +827,84 @@ export function isFactVerdictInadmissibleForRetrieval(
   return entry.factVerdict !== undefined && entry.factVerdict !== 'G';
 }
 
+/** KN-BP142-3 FIX 3 (retrieval-side contamination: the canonical_plow scrape pool), INDEPENDENT of
+ *  FIX 1 and FIX 2 above -- neither of those two catches this shape, by design and confirmed by
+ *  running both real compiled predicates over the real live substrate this ticket (0 caught):
+ *    - isAnswerKeyShapedEblet requires a BARE MC OPTION LETTER answer ("B", "B)", "answer: B"). The
+ *      canonical_plow rows carry a 100-600 char scraped passage as `answer`, never a bare letter, so
+ *      they never match isBareOptionLetterAnswer and sail through FIX 1 untouched.
+ *    - isFactVerdictInadmissibleForRetrieval withholds only a record whose factVerdict is an
+ *      EXPLICIT non-'G' letter. The canonical_plow rows carry no factVerdict field at all (absent,
+ *      same as ~61% of the substrate per FIX 2's own doc comment), so this returns "admissible" by
+ *      its own documented absence-handling design. Sails through FIX 2 untouched too.
+ *
+ *  Bishop measured (this ticket, KN-BP142-3 Phase 0) 225 records in the live substrate carrying
+ *  provenance 'canonical_plow:<source>:<domain>:bp083' -- a benchmark-topic scrape pass that stored
+ *  a domain-labeled STEM as `question` and an unrelated scraped passage as `answer`, e.g.:
+ *    question: "biology | Which of the following would most likely provide examples of mitotic cell
+ *               divisi | wikipedia"
+ *    answer:   "In many legal jurisdictions, the manner of death is a determination, typically made
+ *               by the coroner, medical examiner, police..." (600 chars, topic: forensic pathology,
+ *               NOT mitosis -- completely unrelated to the question stem)
+ *  `question` here is not a question at all -- it is a `domain | truncated-stem | source` LABEL the
+ *  scraper used to file the passage under, and `answer` is the scraped passage itself, never an
+ *  actual answer to the stem. All 225 carry `verified: true` and are, right now, fully admissible to
+ *  every retrieval path in this file -- a voter or RAG context builder that received one of these
+ *  would be handed an authoritative-looking "verified" fact about coroners for a mitosis question.
+ *
+ *  THIS predicate is SHAPE-based on the `question` field's own delimiter structure, exactly like
+ *  isAnswerKeyShapedEblet's own design principle above ("a record that LOOKS like an X is an X
+ *  regardless of who wrote it") -- it does not read `provenance` at all, so a future writer that
+ *  independently produces the same `domain | stem | source` label shape is caught here too, without
+ *  this file needing to learn that writer's provenance string first.
+ *
+ *  Two independent conditions, BOTH required:
+ *    1. `question` has the `domain | stem | source` label shape: split on the FIRST and LAST pipe
+ *       character (there may be more than one pipe inside the middle stem itself, e.g. a
+ *       "Statement 1 | ..." MMLU-Pro logic stem) -- the text before the first pipe is a short,
+ *       lowercase, letters/spaces/underscore-only LABEL (<=26 chars, e.g. "biology", "computer
+ *       science"), and the text after the last pipe is a short, lowercase, letters-only SOURCE
+ *       token (3-20 chars, e.g. "wikipedia", "arxiv", "openalex", "wikidata", "pubmed"). A genuine
+ *       question never has this exact leading-label / trailing-single-word shape.
+ *    2. `answer` is a long passage: >=100 chars after trimming -- well below the family's own
+ *       measured median (~600 chars, truncated at 600) but above anything a normal bare-fact or
+ *       short-answer eblet would carry, kept as a second independent corroborating signal so this
+ *       predicate never fires on condition 1 alone.
+ *
+ *  MEASURED THIS TICKET against the real live substrate (scratchpad/kn_bp142_3_predicate_design_
+ *  check.js and verify_kn_bp142_3_phase0_predicate_fprate.js): exactly 225 of 1,816 raw records
+ *  match BOTH conditions, and all 225 of the 225 are canonical_plow provenance -- 0 false positives
+ *  (nothing else in the whole store, contaminated or clean, matches this shape) and 0 false
+ *  negatives (every one of the 225 Bishop identified by provenance is also caught by this shape
+ *  check, independently, without ever reading provenance). See that verification script's own
+ *  output in the KN-BP142-3 Yoke return for the full funnel breakdown.
+ *
+ *  Rule 66 / vault-sacrosanct: quarantine BY NON-RETRIEVAL ONLY, exactly like the two predicates
+ *  above -- the record stays on disk, byte-identical, forever; every retrieval path that can
+ *  surface it must run this predicate and drop a match, never mutate the file. */
+const SCRAPE_LABEL_DOMAIN_RE = /^[a-z][a-z _]{1,25}$/;
+const SCRAPE_LABEL_SOURCE_RE = /^[a-z]{3,20}$/;
+const SCRAPE_LABEL_PASSAGE_MIN_LENGTH = 100;
+
+function isScrapeLabelShapedQuestion(question: string): boolean {
+  const idxFirst = question.indexOf('|');
+  const idxLast = question.lastIndexOf('|');
+  if (idxFirst === -1 || idxFirst === idxLast) return false;
+  const domainPart = question.slice(0, idxFirst).trim();
+  const sourcePart = question.slice(idxLast + 1).trim();
+  return SCRAPE_LABEL_DOMAIN_RE.test(domainPart) && SCRAPE_LABEL_SOURCE_RE.test(sourcePart);
+}
+
+function isLongScrapedPassageAnswer(answer: string): boolean {
+  return answer.trim().length >= SCRAPE_LABEL_PASSAGE_MIN_LENGTH;
+}
+
+export function isCanonicalPlowScrapeShapedEblet(
+  entry: Pick<VerifiedEbletEntry, 'question' | 'answer'>,
+): boolean {
+  return isScrapeLabelShapedQuestion(entry.question ?? '') && isLongScrapedPassageAnswer(entry.answer ?? '');
+}
+
 /** BP136 Yoke (answer-cache v1): question<->question similarity, DISTINCT from
  *  computeQaRelevance() above (which scores question-vs-ANSWER overlap). This scores how
  *  similar a NEW question is to a STORED question, for the answer-cache serve-verbatim
@@ -1043,13 +1121,25 @@ export async function queryVerifiedEblets(question: string, topK = 3): Promise<V
   // KN-BP141-5 FIX 2: factVerdict admissibility gate, independent of FIX 1 above -- see
   // isFactVerdictInadmissibleForRetrieval()'s doc comment. Only a record whose factVerdict is
   // explicitly a non-'G' letter is withheld here; an absent factVerdict is unaffected.
-  const entries = afterAnswerKeyShapeQuarantine.filter((e) => !isFactVerdictInadmissibleForRetrieval(e));
-  const factVerdictQuarantinedCount = afterAnswerKeyShapeQuarantine.length - entries.length;
+  const afterFactVerdictQuarantine = afterAnswerKeyShapeQuarantine.filter((e) => !isFactVerdictInadmissibleForRetrieval(e));
+  const factVerdictQuarantinedCount = afterAnswerKeyShapeQuarantine.length - afterFactVerdictQuarantine.length;
   if (factVerdictQuarantinedCount > 0) {
     console.log(
       `[EbletStore] queryVerifiedEblets: excluded ${factVerdictQuarantinedCount} eblet(s) with an ` +
       `inadmissible factVerdict (R/O/B/Y) from retrieval (KN-BP141-5 FIX 2, Rule 66 quarantine-by-` +
       `non-retrieval, not deleted)`,
+    );
+  }
+
+  // KN-BP142-3 FIX 3: canonical_plow scrape-shaped quarantine, independent of FIX 1 and FIX 2
+  // above -- see isCanonicalPlowScrapeShapedEblet()'s doc comment for the full empirical basis.
+  const entries = afterFactVerdictQuarantine.filter((e) => !isCanonicalPlowScrapeShapedEblet(e));
+  const scrapeShapedQuarantinedCount = afterFactVerdictQuarantine.length - entries.length;
+  if (scrapeShapedQuarantinedCount > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEblets: excluded ${scrapeShapedQuarantinedCount} canonical_plow ` +
+      `scrape-shaped eblet(s) from retrieval (KN-BP142-3 FIX 3, Rule 66 quarantine-by-non-retrieval, ` +
+      `not deleted)`,
     );
   }
 
@@ -1205,13 +1295,27 @@ export async function queryVerifiedEbletsTopical(
   // KN-BP141-5 FIX 2: factVerdict admissibility gate, independent of FIX 1 above -- see
   // isFactVerdictInadmissibleForRetrieval()'s doc comment. Only a record whose factVerdict is
   // explicitly a non-'G' letter is withheld here; an absent factVerdict is unaffected.
-  const entries = afterAnswerKeyShapeQuarantine.filter((e) => !isFactVerdictInadmissibleForRetrieval(e));
-  const factVerdictQuarantinedCount = afterAnswerKeyShapeQuarantine.length - entries.length;
+  const afterFactVerdictQuarantine = afterAnswerKeyShapeQuarantine.filter((e) => !isFactVerdictInadmissibleForRetrieval(e));
+  const factVerdictQuarantinedCount = afterAnswerKeyShapeQuarantine.length - afterFactVerdictQuarantine.length;
   if (factVerdictQuarantinedCount > 0) {
     console.log(
       `[EbletStore] queryVerifiedEbletsTopical: excluded ${factVerdictQuarantinedCount} eblet(s) ` +
       `with an inadmissible factVerdict (R/O/B/Y) from retrieval for domain=${domain} (KN-BP141-5 ` +
       `FIX 2, Rule 66 quarantine-by-non-retrieval, not deleted)`,
+    );
+  }
+
+  // KN-BP142-3 FIX 3: canonical_plow scrape-shaped quarantine, independent of FIX 1 and FIX 2
+  // above -- this is exactly the retrieval path (mesh-test B/C conditions, tools ON, answer-keys
+  // OFF) that could hand a voter a scraped, topically-unrelated passage disguised as a "verified"
+  // fact for the current question's domain. See isCanonicalPlowScrapeShapedEblet()'s doc comment.
+  const entries = afterFactVerdictQuarantine.filter((e) => !isCanonicalPlowScrapeShapedEblet(e));
+  const scrapeShapedQuarantinedCount = afterFactVerdictQuarantine.length - entries.length;
+  if (scrapeShapedQuarantinedCount > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEbletsTopical: excluded ${scrapeShapedQuarantinedCount} ` +
+      `canonical_plow scrape-shaped eblet(s) from retrieval for domain=${domain} (KN-BP142-3 FIX 3, ` +
+      `Rule 66 quarantine-by-non-retrieval, not deleted)`,
     );
   }
 
