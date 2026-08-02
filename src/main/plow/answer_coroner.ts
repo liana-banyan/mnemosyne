@@ -267,7 +267,27 @@ function classifyCore(params: {
   // 'agree'/'adjudicated' tiers this file already distinguishes. Checked before the isCorrect/
   // isWrong branches below decide between 'sourced-fact'/'compute'/etc. Empirical receipt:
   // Mini029Run question_id 33, corroboration=deterministic_compute, sources=[deterministic_compute].
-  const isDeterministicCompute = browserCorroboration === 'deterministic_compute';
+  // BP141 KN-BP141-9 D2 (Bishop-measured undercount): the named-solver path emits TWO distinct
+  // corroboration strings, not one. A solver that answers a question nothing else reached emits
+  // 'deterministic_compute'; a solver that OVERRIDES an authority ensemble which had already
+  // produced a letter emits 'deterministic_compute_override'. Matching only the bare string
+  // silently filed every override as 'sourced-fact', so the card under-reported proofs.
+  //
+  // Empirical receipt, run 031
+  // (C:\Users\Administrator\Downloads\031mnemo_mesh_test_receipt_2026-08-01T18-13-04-045Z.json):
+  //   question_id 33  corroboration='deterministic_compute'           pseudocode_trace
+  //   question_id 92  corroboration='deterministic_compute'           no_consensus_from_scatter
+  //   question_id 20  corroboration='deterministic_compute_override'  [user_perplexity:E] -> J, key J
+  //   question_id 27  corroboration='deterministic_compute_override'  [perplexity:A, claude:C] -> C, key C
+  //   question_id 59  corroboration='deterministic_compute_override'  [perplexity:G, claude:E] -> E, key E
+  //   question_id 118 corroboration='deterministic_compute_override'  [perplexity:H, claude:E] -> E, key E
+  // SIX proofs in that run; the card reported TWO. On 27, 59 and 118 the deterministic path
+  // corrected a wrong authority pick, which is the single most valuable thing the engine does and
+  // was the least visible. An override is MORE evidentially interesting than a bare proof, never
+  // less, so both belong in the same class.
+  const isDeterministicCompute =
+    browserCorroboration === 'deterministic_compute' ||
+    browserCorroboration === 'deterministic_compute_override';
   // BP141 Yoke Task 6a: plow_mc_answerer.ts's voter_diagnostics writer for every named-solver
   // return prefixes rawPreview with the literal `"deterministic_compute (<solver>)"` (e.g.
   // "deterministic_compute (pseudocode_trace): pseudocode_trace: list1=..."). Parsed rather than
