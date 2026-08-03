@@ -45,6 +45,13 @@
 import type { VerifiedEbletEntry } from '../mnem_eblet_store';
 import type { CoronerRecord, LocalCoronerOutcomeInput } from './answer_coroner';
 import { classifyLocalOutcome } from './answer_coroner';
+// KN-BP142-10: the Rooting Rule (canon BP142) made structural. The SAME shared tier
+// classification/ROOTED predicate that gates mnem_eblet_store.ts's computeHonestVerification()
+// (the verified:true write gate) also gates mintLedgerMark() below (the Mark-mint write gate),
+// so neither write path can drift from the other. See rooting_rule.ts's own header for the
+// full canon citation.
+import type { RootingTier } from '../rooting_rule';
+import { isRooted, rootedTraceLabel, TIER_PROVEN, TIER_GROUND_TRUTH_CHECKED } from '../rooting_rule';
 
 // ─── Method bank consultation (the CONSULT half named explicitly by the ticket) ────────────────
 
@@ -239,7 +246,34 @@ export function classifyMissType(record: CoronerRecord): MissType {
   return 'abstain-or-other-type';
 }
 
-// ─── Ledger honesty: mint a mark ONLY on a genuinely-verified correct answer ────────────────────
+// ─── Ledger honesty: mint a mark ONLY on a ROOTED (Tier 1/Tier 2) result ────────────────────────
+// KN-BP142-10: this section is the second of the two real write paths the Rooting Rule (canon
+// BP142) binds. See rooting_rule.ts's header for the full canon citation and the KN-BP142-6
+// production finding that motivated making the rule structural instead of merely observed.
+
+/**
+ * Classifies a CoronerRecord (this runner's own real ground-truth comparison against the
+ * held-out bank's known correctLetter -- never a re-derivation, just a re-grouping of fields
+ * classifyLocalOutcome/classifyCore already computed) onto a Rooting Rule tier.
+ *
+ * A miss (outcome !== 'right', i.e. 'wrong'/'abstain'/'no-response') is NEVER classified into a
+ * tier at all (returns null, not Tier 3) -- a wrong or abstained answer was not concordant-ONLY
+ * accepted here either, it was simply checked against the answer key and failed; canon's Tier 3
+ * describes a DIFFERENT mechanism (independent sources/models agreeing with each other, with no
+ * ground truth available to check against at all), which does not arise inside this runner's own
+ * loop because this runner always has a known answer key (canon: "The autonomous loop
+ * self-scores on KNOWN-answer banks only, which is Tier 2, and never self-declares a benchmark").
+ * A correct answer (outcome === 'right') is:
+ *   TIER 1 proven               when a named deterministic solver computed it
+ *                                (record.deterministicSolverName is set) -- the solver's own
+ *                                proof plus the bank's own known-correct check both agree.
+ *   TIER 2 ground-truth-checked otherwise -- the bank's own known answer key is exactly what
+ *                                ground-truth-checked means (canon Tier 2's own definition).
+ */
+export function classifyCoronerRecordTier(record: CoronerRecord): RootingTier | null {
+  if (record.outcome !== 'right') return null;
+  return record.deterministicSolverName ? TIER_PROVEN : TIER_GROUND_TRUTH_CHECKED;
+}
 
 export interface LedgerMarkRecord {
   peerId: string;
@@ -250,35 +284,73 @@ export interface LedgerMarkRecord {
   sealedLetter: string | null;
   mechanism: string;
   verifiedAt: number;
+  /** KN-BP142-10 (Rooting Rule, canon BP142): REQUIRED, not optional. Every caller of
+   *  mintLedgerMark, including one that does not exist yet, must declare which tier justifies
+   *  this mint -- there is no default and no way to construct a valid LedgerMarkRecord without
+   *  naming one. mintLedgerMark() itself then independently verifies isRooted(rootingTier)
+   *  before writing anything; a caller cannot mint by simply passing an arbitrary tier string
+   *  that happens to satisfy the type checker's structural check alone -- the runtime gate below
+   *  is the actual enforcement, the type merely makes the omission impossible. */
+  rootingTier: RootingTier;
 }
 
 /**
  * Canon: "only a genuinely-verified answer flips verdict to verified and mints a mark ... so the
- * Substrate's growing smartness is always real, never cosmetic." The ENTIRE ledger-honesty gate
- * lives in this one pure boolean function: a mark is earned if and only if the Coroner's own
- * classification (real ground-truth comparison, computed upstream by classifyLocalOutcome/
- * classifyCore, never re-derived or second-guessed here) says outcome==='right'. Every other
+ * Substrate's growing smartness is always real, never cosmetic," now read through the BP142
+ * Rooting Rule's own vocabulary: "only a ROOTED eblet may mint a Mark to a peer." The ledger-
+ * honesty gate lives in this one pure predicate: a mark is earned if and only if
+ * classifyCoronerRecordTier(record) yields a tier, AND that tier is ROOTED (Tier 1 proven or
+ * Tier 2 ground-truth-checked; never Tier 3 concordant, never null/unclassified). Every other
  * outcome ('wrong', 'abstain', 'no-response') -- including a consult HIT that still led to a
  * wrong answer -- earns nothing. This function cannot be bypassed by a consult HIT alone; a HIT
  * only changes what prompt the real answerer saw, never whether the mark-mint gate itself fires.
+ * This predicate is advisory to callers (a convenience pre-check); mintLedgerMark() below is the
+ * actual, non-bypassable enforcement, since it re-checks isRooted() itself on whatever
+ * rootingTier the caller supplies, independent of whether this predicate was consulted first.
  */
 export function shouldMintLedgerMark(record: CoronerRecord): boolean {
-  return record.outcome === 'right';
+  return isRooted(classifyCoronerRecordTier(record));
 }
 
 /**
  * Appends one JSONL line to a dedicated ledger file, SEPARATE from verified_eblets.jsonl on
  * purpose: a mark credits a contributing PEER for a real contribution, it is not itself a fact/
  * answer eblet, and mixing the two concepts into one store would blur the retrieval-eligible
- * substrate with a rewards ledger it was never designed to hold. Lazy `require('electron')`
- * inside the try, same main-process-only convention every other userData-path writer in this
- * codebase already uses (see mnem_eblet_store.ts / specialist_adapters.ts's
- * readConcordanceStrictnessFromSettings) -- non-fatal by construction: any failure (no Electron
- * app available, e.g. this module under test in bare Node, or a disk error) is caught, logged,
- * and returns false, never thrown, and never blocks the caller's own turn loop. Rule 66: append-
- * only, never rewrites or deletes an existing mark.
+ * substrate with a rewards ledger it was never designed to hold.
+ *
+ * KN-BP142-10 (Rooting Rule, canon BP142) STRUCTURAL GATE: the FIRST thing this function does,
+ * before touching Electron, the filesystem, or anything else, is check isRooted(mark.rootingTier)
+ * and REFUSE (return false, log the refusal, write nothing) if it is not ROOTED. This is the
+ * write path itself refusing, not a caller choosing well -- a caller cannot mint by passing the
+ * "right" peerId/questionId/etc, because mintLedgerMark's own body still checks the tier
+ * independent of whatever the caller believed or intended. A Tier 3 (concordant) or
+ * null/unclassified rootingTier is refused here even if every other field is a perfectly
+ * legitimate mark; there is no argument combination that bypasses this check, since it is the
+ * very first statement in the function body, before the try block that does any I/O at all.
+ *
+ * Lazy `require('electron')` inside the try (the ROOTED branch only), same main-process-only
+ * convention every other userData-path writer in this codebase already uses (see
+ * mnem_eblet_store.ts / specialist_adapters.ts's readConcordanceStrictnessFromSettings) --
+ * non-fatal by construction: any failure (no Electron app available, e.g. this module under test
+ * in bare Node, or a disk error) is caught, logged, and returns false, never thrown, and never
+ * blocks the caller's own turn loop. Rule 66: append-only, never rewrites or deletes an existing
+ * mark.
  */
 export async function mintLedgerMark(mark: LedgerMarkRecord): Promise<boolean> {
+  if (!isRooted(mark.rootingTier)) {
+    // KN-BP142-10 verification (c): the refusal, verbatim, at the exact write path where a Mark
+    // is actually minted. Grep this file for "ROOTED" to find it. Never throws -- an honest,
+    // logged no-op is the real mechanism, matching this function's existing non-fatal contract.
+    console.warn(
+      `[liana_cycle_runner] mintLedgerMark REFUSED: rootingTier="${mark.rootingTier}" is ` +
+      `${rootedTraceLabel(mark.rootingTier)}, not ROOTED. Only Tier 1 (proven) or Tier 2 ` +
+      `(ground-truth-checked) may mint a Mark; Tier 3 (concordant) never does, per canon ` +
+      `canon_rooting_rule_only_proven_and_ground_truth_checked_root_an_eblet_bp142. Mark for ` +
+      `qid=${mark.questionId} domain=${mark.domain} NOT written.`,
+    );
+    return false;
+  }
+
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { app } = require('electron') as typeof import('electron');
@@ -290,6 +362,10 @@ export async function mintLedgerMark(mark: LedgerMarkRecord): Promise<boolean> {
     mkdirSync(dir, { recursive: true });
     const file = join(dir, 'liana_cycle_marks.jsonl');
     appendFileSync(file, `${JSON.stringify(mark)}\n`, 'utf-8');
+    console.log(
+      `[liana_cycle_runner] mintLedgerMark: rootingTier="${mark.rootingTier}" is ` +
+      `${rootedTraceLabel(mark.rootingTier)}, qid=${mark.questionId} mark WRITTEN to ${file}.`,
+    );
     return true;
   } catch (err) {
     console.warn('[liana_cycle_runner] mintLedgerMark failed (non-fatal, mark not persisted):', err);
@@ -432,6 +508,10 @@ export async function runLianaCycleTurn(
       ? classifyMissType(record)
       : null;
 
+    // KN-BP142-10: the tier is computed ONCE here from the real CoronerRecord and threaded
+    // through to mintLedgerMark, which independently re-checks isRooted() on it -- this call
+    // site cannot make mintLedgerMark trust a tier it does not itself verify.
+    const rootingTier = classifyCoronerRecordTier(record);
     let markMinted = false;
     if (shouldMintLedgerMark(record)) {
       markMinted = await mintLedgerMark({
@@ -443,6 +523,12 @@ export async function runLianaCycleTurn(
         sealedLetter: record.sealedLetter,
         mechanism: consult.hit ? `consult_hit:${consult.methodTag}` : 'derived',
         verifiedAt: Date.now(),
+        // shouldMintLedgerMark(record) === true guarantees rootingTier is non-null and ROOTED
+        // (see that function's own body); the `?? 'concordant'` fallback below is unreachable in
+        // practice but keeps this call site type-correct without an `as RootingTier` cast, and
+        // if it were EVER reached (a future refactor breaking that guarantee), it would name the
+        // one tier mintLedgerMark's own gate is guaranteed to refuse, never silently mint.
+        rootingTier: rootingTier ?? 'concordant',
       });
       if (markMinted) marksMinted++;
     }
