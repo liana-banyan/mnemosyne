@@ -5975,6 +5975,19 @@ export async function runCanonicalPlowMcAnswer(
   // the uncertain branch (2+ authorities agreed immediately).
   let ensembleSwarmAlreadyFired = false;
   let ensembleSwarmReceipt: AuthorityEnsembleOutcome['swarmReceipt'];
+  // KN-BP143-2 B1a: captured OUTSIDE the `if (authorityEnsembleOn)` block below, same
+  // outer-scope convention as ensembleSwarmAlreadyFired/ensembleSwarmReceipt just above, so the
+  // browserAuthorityTrace line far below (which runs unconditionally on every browserAuthorityOn
+  // question, regardless of which branch resolved it) can report the ENSEMBLE's own real
+  // candidate list instead of browserGoogleResult/browserPerplexityResult -- those two variables
+  // are only ever written inside the LEGACY (else) branch a few hundred lines down and are
+  // provably dead reads whenever authorityEnsembleOn is true (which is every scored-path call,
+  // since researchArmAuthorityEnsemble is fanned in from the same researchArmMode flag as
+  // researchArmBrowserAuthority itself -- see callCanonicalPlowMcAnswererForMeshTest). Stays
+  // undefined when the ensemble never runs (flag off, or the legacy branch was taken), which the
+  // trace line below treats as "fall back to the pre-existing legacy variables", so the flag-off/
+  // legacy-branch case is byte-for-byte unchanged.
+  let ensembleCandidatesForTrace: AuthorityEnsembleCandidate[] | undefined;
   // WIRE-THE-LOOP fix part 5 (compute/reasoning routing): earlyAnswerTypeForBrowserAuthority is
   // read once here (was already computed inside the old lookup_fact-only branch) so both the
   // lookup and the widened compute/reasoning gate below share one classification call.
@@ -6040,6 +6053,14 @@ export async function runCanonicalPlowMcAnswer(
         browserAuthorityCorroboration = ensembleOutcome.corroboration;
         ensembleSwarmAlreadyFired = ensembleOutcome.swarmFired;
         ensembleSwarmReceipt = ensembleOutcome.swarmReceipt;
+        // KN-BP143-2 B1a: ensembleOutcome.candidates is ALWAYS populated on every return path of
+        // runAuthorityEnsemble (the accept branches AND every fall-through-to-disagree/adjudicate
+        // branch alike -- confirmed by direct read of every return statement in that function),
+        // unlike CanonicalPlowMcResult.ensembleCandidates further below (which this ticket's own
+        // Part A report found is only attached on the accept branch). Capturing the OUTCOME's own
+        // candidates here, unconditionally, is what lets the trace line below report real
+        // per-authority participation even on a disagree/fallthrough question like qid 66.
+        ensembleCandidatesForTrace = ensembleOutcome.candidates;
         console.log(
           `[plow_mc_answerer] Stage F2 ensemble RESOLVED at t=${Date.now() - startMs}ms ` +
           `corroboration=${ensembleOutcome.corroboration} swarmFired=${ensembleOutcome.swarmFired} ` +
@@ -7506,9 +7527,25 @@ export async function runCanonicalPlowMcAnswer(
   // BP137 Yoke v2b Stage F2: only appended when the early browser-authority-first block
   // actually attempted a lookup (classified 'lookup_fact' AND browserAuthorityOn) -- empty
   // string, byte-unchanged trace, for every other case.
+  // KN-BP143-2 B1a (Part A finding A1): googleFact/perplexityFact used to read
+  // browserGoogleResult/browserPerplexityResult unconditionally -- those two variables are only
+  // ever written by the LEGACY (else) branch above, never by the Authority Ensemble branch
+  // (authorityEnsembleOn), so this line reported a hardcoded "no/no" for every ensemble question
+  // regardless of what Google/Perplexity actually returned (qid 66, receipt 037: corroboration=
+  // disagree -- which requires 2+ REAL resolved candidates -- yet googleFact=no perplexityFact=no
+  // in the SAME line). Read the ensemble's own real candidate list when it ran; fall back to the
+  // pre-existing legacy variables only when it did not (ensembleCandidatesForTrace stays
+  // undefined for the legacy branch and for every flag-off caller) -- byte-identical trace for
+  // both of those cases, honest for the ensemble case.
+  const googleAnsweredForTrace = ensembleCandidatesForTrace
+    ? ensembleCandidatesForTrace.some((c) => c.authority === 'user_google')
+    : !!browserGoogleResult;
+  const perplexityAnsweredForTrace = ensembleCandidatesForTrace
+    ? ensembleCandidatesForTrace.some((c) => c.authority === 'user_perplexity')
+    : !!browserPerplexityResult;
   const browserAuthorityTrace = browserAuthorityAttempted
     ? ` browserAuthorityFirst=true corroboration=${browserAuthorityCorroboration} ` +
-      `googleFact=${browserGoogleResult ? 'yes' : 'no'} perplexityFact=${browserPerplexityResult ? 'yes' : 'no'} ` +
+      `googleFact=${googleAnsweredForTrace ? 'yes' : 'no'} perplexityFact=${perplexityAnsweredForTrace ? 'yes' : 'no'} ` +
       `injectedAsTopFacts=${browserFactCandidates.length}`
     : '';
 
