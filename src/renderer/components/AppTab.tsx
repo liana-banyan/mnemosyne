@@ -2,6 +2,15 @@
 // The unified member-services dashboard — 10 canonical cooperative sub-services.
 // Services 1-4: partial implementations exist elsewhere — tiles link to relevant tabs/views.
 // Services 5-10: new implementations (Application-002 surfaces).
+//
+// KN-BP143-3 D4: this file has zero importers anywhere in src/ (confirmed by exhaustive search)
+// -- it is not reachable from CompassShell, CleanShell, or any other live route, so the 5
+// 'coming-soon' tiles below were not actually visible to the Founder today. Still fixed rather
+// than left as-is: cut per the ticket's "default to cutting" rule, in case this surface is ever
+// re-wired later, it starts honest. Removed: Research, Bounty's App, Make Something, Pawn
+// Walkthrough, Theia -- none of the five has a real implementation to link to. The remaining 5
+// tiles (Peer Hosting, Recipe Pantry, Software Work, Atlas, Local Network) all have status:'open'
+// and a real tabTarget.
 
 import React, { useState, useRef } from 'react';
 import type { AuthState } from '../amplify.d';
@@ -33,14 +42,6 @@ const SERVICES: ServiceTile[] = [
     tabTarget: 'kitchen-table',
   },
   {
-    id: 2,
-    icon: '🔬',
-    name: 'Research',
-    description: 'Academic and business research assistance — opt in to Chronos substrate for deep literature and source retrieval.',
-    status: 'coming-soon',
-    actionLabel: 'Coming Soon',
-  },
-  {
     id: 3,
     icon: '🍽️',
     name: 'Recipe Pantry',
@@ -57,38 +58,6 @@ const SERVICES: ServiceTile[] = [
     status: 'open',
     actionLabel: 'Open',
     tabTarget: 'helm',
-  },
-  {
-    id: 5,
-    icon: '🏆',
-    name: "Bounty's App",
-    description: 'Trail-Bounty-Code-Breaker — earn marks by completing cooperative challenges, breaking trails, and solving bounties.',
-    status: 'coming-soon',
-    actionLabel: 'Coming Soon',
-  },
-  {
-    id: 6,
-    icon: '💡',
-    name: 'Make Something',
-    description: 'Submit your idea to the cooperative — "What do you want made?" unTech entry form for member-sourced products.',
-    status: 'coming-soon',
-    actionLabel: 'Coming Soon',
-  },
-  {
-    id: 7,
-    icon: '🗺️',
-    name: 'Pawn Walkthrough',
-    description: 'Code Breakers Trail Heads — guided cooperative onboarding paths with progressive mark rewards and peer mentorship.',
-    status: 'coming-soon',
-    actionLabel: 'Coming Soon',
-  },
-  {
-    id: 8,
-    icon: '📸',
-    name: 'Theia',
-    description: 'Photos, videos, and albums — member-owned media storage with cooperative peer-sync. Zero ads, your IP retained.',
-    status: 'coming-soon',
-    actionLabel: 'Coming Soon',
   },
   {
     id: 9,

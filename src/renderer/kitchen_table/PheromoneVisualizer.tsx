@@ -1,5 +1,12 @@
 ﻿// Pheromone Visualizer — MnemosyneC™ v0.1.8 · SEG-FT-6 · BP052 NOVACULA
 // Trail heat map · access frequency · auto-refresh every 10s
+//
+// KN-BP143-3 D4: this file used to fall back to a 20-entry MOCK_TRAILS array (fabricated
+// subjects, access counts, timestamps, and scores) whenever caiCore.getPheromoneTrails() was
+// unavailable or empty, rendering a fully-populated heat map + trail registry that looked like
+// real telemetry. Cut, not wired: no engine call anywhere in this codebase currently returns
+// per-trail pheromone data, so there is nothing real to fill the grid with. When there is no live
+// data, the grid renders its existing honest empty state below instead.
 
 import React, { useState, useEffect, useCallback } from 'react';
 
@@ -9,29 +16,6 @@ interface PheromoneTrail {
   lastAccessed: string;
   score: number;
 }
-
-const MOCK_TRAILS: PheromoneTrail[] = [
-  { subject: 'Kitchen Table™ meal-planning session', accessCount: 47, lastAccessed: new Date(Date.now() - 120_000).toISOString(), score: 0.94 },
-  { subject: 'Atlas™ event creation flow', accessCount: 38, lastAccessed: new Date(Date.now() - 300_000).toISOString(), score: 0.88 },
-  { subject: 'Banyan Metric™ composite calculation', accessCount: 33, lastAccessed: new Date(Date.now() - 600_000).toISOString(), score: 0.82 },
-  { subject: 'Eblet™ provenance chain lookup', accessCount: 29, lastAccessed: new Date(Date.now() - 900_000).toISOString(), score: 0.77 },
-  { subject: 'P2P discovery peer expiry policy', accessCount: 24, lastAccessed: new Date(Date.now() - 1_200_000).toISOString(), score: 0.71 },
-  { subject: 'Recipe™ AI-assist fallback behavior', accessCount: 21, lastAccessed: new Date(Date.now() - 1_800_000).toISOString(), score: 0.67 },
-  { subject: 'Caithedral™ retrieval score normalization', accessCount: 18, lastAccessed: new Date(Date.now() - 2_400_000).toISOString(), score: 0.62 },
-  { subject: 'DevModeTab panel navigation state', accessCount: 15, lastAccessed: new Date(Date.now() - 3_600_000).toISOString(), score: 0.55 },
-  { subject: 'MnemosyneTabView tab persistence', accessCount: 12, lastAccessed: new Date(Date.now() - 5_400_000).toISOString(), score: 0.48 },
-  { subject: 'Atlas™ participant color assignment', accessCount: 10, lastAccessed: new Date(Date.now() - 7_200_000).toISOString(), score: 0.43 },
-  { subject: 'Kitchen Table IPC channel registration', accessCount: 8, lastAccessed: new Date(Date.now() - 10_800_000).toISOString(), score: 0.36 },
-  { subject: 'Photo ref local path resolution', accessCount: 7, lastAccessed: new Date(Date.now() - 14_400_000).toISOString(), score: 0.31 },
-  { subject: 'Multicast beacon 30s interval', accessCount: 6, lastAccessed: new Date(Date.now() - 18_000_000).toISOString(), score: 0.26 },
-  { subject: 'Settings tab DevMode toggle sync', accessCount: 5, lastAccessed: new Date(Date.now() - 21_600_000).toISOString(), score: 0.21 },
-  { subject: 'GauntletTab first-complete flag', accessCount: 4, lastAccessed: new Date(Date.now() - 28_800_000).toISOString(), score: 0.17 },
-  { subject: 'FAQTab topic routing from Frame', accessCount: 3, lastAccessed: new Date(Date.now() - 36_000_000).toISOString(), score: 0.13 },
-  { subject: 'FrameMode auto-detect polling', accessCount: 3, lastAccessed: new Date(Date.now() - 43_200_000).toISOString(), score: 0.12 },
-  { subject: 'Watchdog overlay 8s interval', accessCount: 2, lastAccessed: new Date(Date.now() - 50_400_000).toISOString(), score: 0.08 },
-  { subject: 'Tray icon tooltip format', accessCount: 2, lastAccessed: new Date(Date.now() - 57_600_000).toISOString(), score: 0.07 },
-  { subject: 'Brand triple-click wind unlock', accessCount: 1, lastAccessed: new Date(Date.now() - 72_000_000).toISOString(), score: 0.03 },
-];
 
 function heatColor(score: number): string {
   const r = Math.round(255 * score);
@@ -60,10 +44,12 @@ export function PheromoneVisualizer() {
         setTrails(result);
         setHasLiveData(true);
       } else {
-        setTrails(MOCK_TRAILS);
+        setTrails([]);
+        setHasLiveData(false);
       }
     } catch {
-      setTrails(MOCK_TRAILS);
+      setTrails([]);
+      setHasLiveData(false);
     }
     setLastRefresh(new Date());
   }, []);
@@ -84,60 +70,69 @@ export function PheromoneVisualizer() {
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>Pheromone Visualizer</div>
           <div style={{ fontSize: 9, color: '#475569', marginTop: 1 }}>
-            {hasLiveData ? '● Live trails' : '○ Mock data'} · auto-refresh 10s · last: {lastRefresh.toLocaleTimeString()}
+            {hasLiveData ? '● Live trails' : '○ No trail data yet'} · auto-refresh 10s · last: {lastRefresh.toLocaleTimeString()}
           </div>
         </div>
         <button onClick={() => void load()} style={{ padding: '3px 8px', fontSize: 9, cursor: 'pointer', border: '1px solid rgba(100,116,139,0.2)', background: 'transparent', color: '#64748b', borderRadius: 5 }}>↻ Refresh</button>
       </div>
 
-      {/* Heat map grid — 10×N cells */}
-      <div>
-        <div style={{ fontSize: 9, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Trail Heat Map</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', gap: 3 }}>
-          {gridItems.map((trail, i) => (
-            <div
-              key={i}
-              title={`${trail.subject}\nAccess: ${trail.accessCount}\nScore: ${(trail.score * 100).toFixed(0)}%`}
-              style={{
-                height: 20,
-                borderRadius: 3,
-                background: heatColor(trail.score / maxScore),
-                opacity: 0.7 + (trail.score / maxScore) * 0.3,
-                cursor: 'default',
-                transition: 'opacity 0.2s',
-              }}
-            />
-          ))}
-          {/* Fill remaining cells */}
-          {Array.from({ length: Math.max(0, 100 - gridItems.length) }).map((_, i) => (
-            <div key={`empty-${i}`} style={{ height: 20, borderRadius: 3, background: 'rgba(100,116,139,0.06)' }} />
-          ))}
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-          <span style={{ fontSize: 8, color: '#334155' }}>cool (low access)</span>
-          <span style={{ fontSize: 8, color: '#334155' }}>hot (high access)</span>
-        </div>
-      </div>
-
-      {/* Trail list */}
-      <div>
-        <div style={{ fontSize: 9, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Trail Registry ({trails.length})</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-          {sorted.slice(0, 12).map((trail, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', background: 'rgba(15,23,42,0.4)', border: '1px solid rgba(100,116,139,0.08)', borderRadius: 5 }}>
-              <div style={{ width: 6, height: 6, borderRadius: '50%', background: heatColor(trail.score / maxScore), flexShrink: 0 }} />
-              <div style={{ flex: 1, fontSize: 9, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{trail.subject}</div>
-              <div style={{ flexShrink: 0, display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span style={{ fontSize: 9, color: '#475569' }}>{trail.accessCount}×</span>
-                <span style={{ fontSize: 8, color: '#334155' }}>{relTime(trail.lastAccessed)}</span>
-                <span style={{ fontSize: 8, fontWeight: 700, color: trail.score >= 0.8 ? '#22c55e' : trail.score >= 0.5 ? '#f59e0b' : '#64748b' }}>
-                  {(trail.score * 100).toFixed(0)}%
-                </span>
-              </div>
+      {hasLiveData ? (
+        <>
+          {/* Heat map grid — 10×N cells */}
+          <div>
+            <div style={{ fontSize: 9, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Trail Heat Map</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', gap: 3 }}>
+              {gridItems.map((trail, i) => (
+                <div
+                  key={i}
+                  title={`${trail.subject}\nAccess: ${trail.accessCount}\nScore: ${(trail.score * 100).toFixed(0)}%`}
+                  style={{
+                    height: 20,
+                    borderRadius: 3,
+                    background: heatColor(trail.score / maxScore),
+                    opacity: 0.7 + (trail.score / maxScore) * 0.3,
+                    cursor: 'default',
+                    transition: 'opacity 0.2s',
+                  }}
+                />
+              ))}
+              {/* Fill remaining cells */}
+              {Array.from({ length: Math.max(0, 100 - gridItems.length) }).map((_, i) => (
+                <div key={`empty-${i}`} style={{ height: 20, borderRadius: 3, background: 'rgba(100,116,139,0.06)' }} />
+              ))}
             </div>
-          ))}
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+              <span style={{ fontSize: 8, color: '#334155' }}>cool (low access)</span>
+              <span style={{ fontSize: 8, color: '#334155' }}>hot (high access)</span>
+            </div>
+          </div>
+
+          {/* Trail list */}
+          <div>
+            <div style={{ fontSize: 9, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Trail Registry ({trails.length})</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {sorted.slice(0, 12).map((trail, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', background: 'rgba(15,23,42,0.4)', border: '1px solid rgba(100,116,139,0.08)', borderRadius: 5 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: heatColor(trail.score / maxScore), flexShrink: 0 }} />
+                  <div style={{ flex: 1, fontSize: 9, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{trail.subject}</div>
+                  <div style={{ flexShrink: 0, display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontSize: 9, color: '#475569' }}>{trail.accessCount}×</span>
+                    <span style={{ fontSize: 8, color: '#334155' }}>{relTime(trail.lastAccessed)}</span>
+                    <span style={{ fontSize: 8, fontWeight: 700, color: trail.score >= 0.8 ? '#22c55e' : trail.score >= 0.5 ? '#f59e0b' : '#64748b' }}>
+                      {(trail.score * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div style={{ fontSize: 10, color: '#64748b', fontStyle: 'italic', lineHeight: 1.6, padding: '20px 0', textAlign: 'center' }}>
+          Not yet tracked -- no engine call anywhere in this codebase returns per-trail pheromone
+          data today. Honestly empty, not a fabricated heat map (KN-BP143-3 D4).
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -81,13 +81,11 @@ function applyFilterSort(
 function BountyCard({ bounty }: { bounty: Bounty }) {
   const diff = DIFFICULTY_CONFIG[bounty.difficulty];
 
-  const handleAccept = () => {
-    alert('Bounty acceptance coming soon — Pawn Phase 3 publication in progress.');
-  };
-
-  const handleViewTrail = () => {
-    alert(`Trail viewer for ${bounty.id} coming soon — KniPr035 (TrailEbletViewer) not yet wired to Bounty IDs.`);
-  };
+  // KN-BP143-3 D4: these buttons used to fire a blocking native alert() claiming the action was
+  // "coming soon" -- on a live button, that's a fabricated interaction (the click appears to do
+  // something, it just tells you it doesn't). Neither Pawn Phase 3 publication (accept) nor
+  // KniPr035's TrailEbletViewer-to-Bounty-ID wiring (view trail) exists yet, so both actions are
+  // cut: the buttons render disabled with an honest tooltip instead of pretending to respond.
 
   return (
     <div
@@ -144,41 +142,39 @@ function BountyCard({ bounty }: { bounty: Bounty }) {
         </span>
       </div>
 
-      {/* Action buttons */}
+      {/* Action buttons -- disabled, not wired to alert() stand-ins (KN-BP143-3 D4) */}
       <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
         <button
-          onClick={handleAccept}
+          disabled
+          title="Bounty acceptance is not live yet -- Pawn Phase 3 publication is in progress."
           style={{
             flex: 1,
             padding: '6px 10px',
-            background: 'rgba(110,231,183,0.1)',
-            border: '1px solid rgba(110,231,183,0.3)',
+            background: 'rgba(100,116,139,0.08)',
+            border: '1px solid rgba(100,116,139,0.15)',
             borderRadius: 6,
-            color: '#6ee7b7',
+            color: '#334155',
             fontSize: 11,
             fontWeight: 600,
-            cursor: 'pointer',
+            cursor: 'default',
           }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(110,231,183,0.18)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(110,231,183,0.1)'; }}
         >
           Accept Bounty
         </button>
         <button
-          onClick={handleViewTrail}
+          disabled
+          title={`Trail viewer for ${bounty.id} is not wired yet -- KniPr035 (TrailEbletViewer) does not yet map to Bounty IDs.`}
           style={{
             flex: 1,
             padding: '6px 10px',
-            background: 'rgba(96,165,250,0.08)',
-            border: '1px solid rgba(96,165,250,0.25)',
+            background: 'rgba(100,116,139,0.08)',
+            border: '1px solid rgba(100,116,139,0.15)',
             borderRadius: 6,
-            color: '#60a5fa',
+            color: '#334155',
             fontSize: 11,
             fontWeight: 600,
-            cursor: 'pointer',
+            cursor: 'default',
           }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(96,165,250,0.16)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(96,165,250,0.08)'; }}
         >
           View Trail
         </button>
