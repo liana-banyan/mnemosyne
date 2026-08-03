@@ -24,6 +24,12 @@ import { BrainSwapSelector } from './BrainSwapSelector';
 // localStorage, see that file's own header) to check researchArmMode/researchArmBrowserAuthority
 // -- do not reinvent this check, per the Yoke's explicit instruction.
 import { loadNexusAuthoritySettings } from '../settings/nexus_authority_settings_store';
+// KN-BP143-3 D5 (amended, scoped to real data): per-message live engine view -- token-stream
+// terminal + real completion/nexus badges, addressable stage ids. Absorbs the three
+// pre-existing badges below (self-context, answer-cache, browser-authority provenance) into
+// this one per-message surface -- see this file's own header note near their old call sites
+// for why (they were global/last-message-only; this fixes that).
+import { AskEngineView, type AskEngineState } from './AskEngineView';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,11 +40,12 @@ interface ChatMessage {
   role: Role;
   content: string;
   ts: number;
-  /** BP138 Yoke 0.9.15 FIX 4: present ONLY when this answer was served via the browser-authority
-   *  raw-fact path (nexusAskLookupFact) instead of the local-Ollama path -- absent (not a fake
-   *  value) on every message the local model answered, so old history entries and this new field
-   *  never collide. Renders a labeled, clickable source link in MsgBubble below. */
-  provenance?: { authority: 'user_google' | 'user_perplexity'; sourceUrl: string };
+  /** KN-BP143-3 D5: per-message live-engine-view state, accumulated live as real
+   *  onAskTokenProgress/onAskTokenComplete/nexusAskLookupFact events arrive for THIS message,
+   *  then frozen (replay-able) once the turn concludes. Replaces the old standalone
+   *  `provenance` field below (folded into `engine.nexus`) and the old global
+   *  selfCtxStatus/lastServedFromSubstrate header state (folded into `engine.completion`). */
+  engine?: AskEngineState;
 }
 
 const LS_HISTORY_KEY = 'mnemo_ask_history';
@@ -113,7 +120,8 @@ function MsgBubble({ msg }: { msg: ChatMessage }) {
   return (
     <div style={{
       display: 'flex',
-      justifyContent: isUser ? 'flex-end' : 'flex-start',
+      flexDirection: 'column',
+      alignItems: isUser ? 'flex-end' : 'flex-start',
       marginBottom: 10,
     }}>
       <div style={{
@@ -130,27 +138,19 @@ function MsgBubble({ msg }: { msg: ChatMessage }) {
       }}>
         {msg.content}
         {msg.content === '' && <span style={{ opacity: 0.4 }}>▌</span>}
-        {/* BP138 Yoke 0.9.15 FIX 4: honest provenance -- only rendered when this specific answer
-            genuinely came from a browser-authority lookup (msg.provenance set at the call site
-            below, never fabricated). Real, clickable sourceUrl from a real page load. */}
-        {msg.provenance && (
-          <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(148,163,184,0.15)', fontSize: 11 }}>
-            <span style={{ color: '#94a3b8' }}>
-              Source: {msg.provenance.authority === 'user_perplexity' ? 'Perplexity' : 'Google'} (your browser session) --{' '}
-            </span>
-            <a
-              href={msg.provenance.sourceUrl}
-              onClick={(e) => {
-                e.preventDefault();
-                window.amplify?.openExternal?.(msg.provenance!.sourceUrl);
-              }}
-              style={{ color: '#6ee7b7', textDecoration: 'underline', cursor: 'pointer', wordBreak: 'break-all' }}
-            >
-              {msg.provenance.sourceUrl}
-            </a>
-          </div>
-        )}
       </div>
+      {/* KN-BP143-3 D5 (amended, scoped to real data): per-message live engine view --
+          absorbs the old inline browser-authority source link that used to render here
+          (msg.provenance) into the `nexus:authority` badge below, since re-showing the same
+          authority+sourceUrl fact twice in two different styles would be a duplicate. */}
+      {!isUser && (
+        <AskEngineView
+          messageId={msg.id}
+          liveText={msg.content}
+          engine={msg.engine}
+          onOpenExternal={(url) => window.amplify?.openExternal?.(url)}
+        />
+      )}
     </div>
   );
 }
@@ -314,11 +314,13 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
     showToast('Saved to your Downloads folder. Ready for a fresh question.');
   }, [messages, showToast, activeBrainLabel]);
 
-  // SEG-2 v0.3.7: self-context status badge — shows whether MEMORY.md loaded last Ask
-  const [selfCtxStatus, setSelfCtxStatus] = useState<'unknown' | 'loaded' | 'missing'>('unknown');
-  // BP136 Yoke: answer-cache badge — shows whether the last Ask was served free from the
-  // verified-answer substrate (no model call) vs. generated. Provenance shown on hover.
-  const [lastServedFromSubstrate, setLastServedFromSubstrate] = useState<{ served: boolean; provenance?: string } | null>(null);
+  // KN-BP143-3 D5: the old global selfCtxStatus/lastServedFromSubstrate header badges (SEG-2
+  // v0.3.7 / BP136 Yoke) are REMOVED here -- they only ever reflected the LAST message's
+  // completion payload (stale/wrong once you scroll up to an older message), which is exactly
+  // the flaw this Yoke's per-message live-engine-view fixes. Both facts now render per-message
+  // via AskEngineView's `completion:self-context` / `completion:served-from-substrate` badges
+  // (see updateMsgEngine calls in handleSend below), attached to the specific message they
+  // describe instead of floating in the header describing only "whatever happened most recently".
 
   // v0.1.57.1 (BP081): streaming state — refs only (no extra React state for per-second ticks)
   const currentAiIdRef = useRef<string | null>(null);
@@ -434,6 +436,14 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
     });
   }, []);
 
+  // KN-BP143-3 D5: merge a partial patch into a message's per-message live-engine-view
+  // state (AskEngineView). In-memory only during streaming (mirrors updateMsgInMemory's
+  // no-localStorage-write-mid-stream contract) -- the completion patch's caller below
+  // additionally calls saveHistory so the finished engine state persists to history.
+  const updateMsgEngine = useCallback((id: string, patch: AskEngineState) => {
+    setMessages((prev) => prev.map((m) => m.id === id ? { ...m, engine: { ...m.engine, ...patch } } : m));
+  }, []);
+
   // v0.1.57.1: tear down streaming subscriptions and timer
   const clearStream = useCallback(() => {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
@@ -494,6 +504,8 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
           // Switch bubble to cold-start text immediately
           isColdRef.current = true;
           updateMsgInMemory(id, coldStartText(elapsedRef.current));
+          // KN-BP143-3 D5: real cold-start signal -> per-message engine-view badge/phase.
+          updateMsgEngine(id, { coldStart: true });
           return;
         }
 
@@ -502,6 +514,9 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
             // First token: stop heartbeat timer, enter streaming mode
             isStreamingRef.current = true;
             if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+            // KN-BP143-3 D5: first real token -> engine-view terminal switches phase label
+            // from waiting/cold-start to streaming.
+            updateMsgEngine(id, { streaming: true });
           }
           // Replace bubble content with latest assembled text (streaming in place)
           updateMsgInMemory(id, data.assembled);
@@ -520,19 +535,25 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
           ? `⚠ Ask threw: ${data.error}. See Diagnostic.`
           : (data.content || '');
 
-        // SEG-2 v0.3.7: update self-context badge from completion event
-        if (typeof (data as Record<string, unknown>).selfContextLoaded === 'boolean') {
-          setSelfCtxStatus((data as Record<string, unknown>).selfContextLoaded ? 'loaded' : 'missing');
-        }
-
-        // BP136 Yoke: answer-cache badge — servedFromSubstrate is only ever present (true or
-        // false) when ANSWER_CACHE_MODE is on; absent entirely when the flag is off, so the
-        // badge simply doesn't render for anyone who hasn't opted in via the Prove It panel.
-        if (typeof data.servedFromSubstrate === 'boolean') {
-          setLastServedFromSubstrate({ served: data.servedFromSubstrate, provenance: data.provenance });
-        } else {
-          setLastServedFromSubstrate(null);
-        }
+        // KN-BP143-3 D5: fold every real completion field (including the two additive,
+        // untyped-in-amplify.d.ts-but-real-at-runtime fields, selfContextLoaded + bmv) into
+        // this message's engine.completion, in place of the old global selfCtxStatus /
+        // lastServedFromSubstrate header state. AskEngineView renders one badge per truthy
+        // field -- absent/false-non-meaningful fields simply produce no badge.
+        const rawData = data as Record<string, unknown>;
+        const selfContextLoaded = typeof rawData.selfContextLoaded === 'boolean' ? rawData.selfContextLoaded as boolean : undefined;
+        updateMsgEngine(id, {
+          streaming: false,
+          completion: {
+            hotHits: data.hotHits,
+            servedFromSubstrate: data.servedFromSubstrate,
+            cost_usd: data.cost_usd,
+            latency_ms: data.latency_ms,
+            provenance: data.provenance,
+            verified: data.verified,
+            selfContextLoaded,
+          },
+        });
 
         updateMsgAndSave(id, finalContent);
         clearStream();
@@ -563,20 +584,24 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
     // the SAME classifyAnswerType() plow_mc_answerer.ts already uses; only a genuine
     // 'lookup_fact' question ever attempts a browser-authority call. On a real hit, this answers
     // directly from the user's own logged-in Google/Perplexity session with a visible,
-    // clickable source link (MsgBubble's provenance render above) -- the local-Ollama call below
-    // never fires for that question. On anything else (not lookup_fact, flags say on but the
-    // browser authority genuinely returned nothing usable, or the IPC call itself throws), this
-    // falls through HONESTLY to the exact same local-Ollama path below -- never a fabricated
-    // answer, never a fake source.
+    // clickable source link (KN-BP143-3 D5: now the engine-view's `nexus:authority` badge,
+    // which absorbed the old inline provenance render that used to live in MsgBubble) --
+    // the local-Ollama call below never fires for that question. On anything else (not
+    // lookup_fact, flags say on but the browser authority genuinely returned nothing usable,
+    // or the IPC call itself throws), this falls through HONESTLY to the exact same
+    // local-Ollama path below -- never a fabricated answer, never a fake source.
     const nexusSettings = loadNexusAuthoritySettings();
     if (nexusSettings.researchArmMode && nexusSettings.researchArmBrowserAuthority && window.amplify?.nexusAskLookupFact) {
       try {
         const lookup = await window.amplify.nexusAskLookupFact(text);
         if (lookup?.usable && lookup.fact && lookup.sourceUrl && lookup.authority) {
           const fact = lookup.fact;
-          const provenance = { authority: lookup.authority, sourceUrl: lookup.sourceUrl };
+          // KN-BP143-3 D5: real nexus short-circuit result -> engine.nexus (absorbs the old
+          // standalone `provenance` field on ChatMessage; also carries confidence, which the
+          // old field never had).
+          const nexus: AskEngineState['nexus'] = { authority: lookup.authority, sourceUrl: lookup.sourceUrl, confidence: lookup.confidence };
           setMessages((prev) => {
-            const next = prev.map((m) => m.id === aiId ? { ...m, content: fact, provenance } : m);
+            const next = prev.map((m) => m.id === aiId ? { ...m, content: fact, engine: { ...m.engine, nexus } } : m);
             saveHistory(next);
             return next;
           });
@@ -646,7 +671,7 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
       setThinking(false);
       textareaRef.current?.focus();
     }
-  }, [input, thinking, messages, appendMsg, updateMsgInMemory, updateMsgAndSave, clearStream]);
+  }, [input, thinking, messages, appendMsg, updateMsgInMemory, updateMsgAndSave, updateMsgEngine, clearStream]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -668,40 +693,8 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#f0fdf4', flex: 1, minWidth: 120 }}>
             Ask A Question
           </h2>
-          {/* SEG-2 v0.3.7: self-context status badge per BP078 every-click-visible-feedback */}
-          {selfCtxStatus !== 'unknown' && (
-            <span style={{
-              fontSize: 10,
-              fontWeight: 600,
-              padding: '2px 8px',
-              borderRadius: 4,
-              background: selfCtxStatus === 'loaded' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)',
-              border: `1px solid ${selfCtxStatus === 'loaded' ? '#10b981' : '#ef4444'}`,
-              color: selfCtxStatus === 'loaded' ? '#6ee7b7' : '#f87171',
-              whiteSpace: 'nowrap' as const,
-            }}>
-              {selfCtxStatus === 'loaded' ? 'Self-Context ✅' : 'Self-Context ⚠️ missing'}
-            </span>
-          )}
-          {/* BP136 Yoke: answer-cache badge — only renders when ANSWER_CACHE_MODE has fired
-              at least once this session (servedFromSubstrate present on the last completion). */}
-          {lastServedFromSubstrate && (
-            <span
-              title={lastServedFromSubstrate.provenance ? `Provenance: ${lastServedFromSubstrate.provenance}` : undefined}
-              style={{
-                fontSize: 10,
-                fontWeight: 600,
-                padding: '2px 8px',
-                borderRadius: 4,
-                background: lastServedFromSubstrate.served ? 'rgba(16,185,129,0.12)' : 'rgba(148,163,184,0.12)',
-                border: `1px solid ${lastServedFromSubstrate.served ? '#10b981' : '#64748b'}`,
-                color: lastServedFromSubstrate.served ? '#6ee7b7' : '#94a3b8',
-                whiteSpace: 'nowrap' as const,
-              }}
-            >
-              {lastServedFromSubstrate.served ? '🎯 Served Free (from substrate) — $0' : 'Generated'}
-            </span>
-          )}
+          {/* KN-BP143-3 D5: old global self-context + answer-cache header badges removed --
+              now rendered per-message via AskEngineView (see MsgBubble above). */}
           {/* BP132 Yoke #21 C6: Brain-swap toggle -- surfaces + controls which cognitive
               core actually answers (previously invisible; brain_registry.json defaults
               to a flagship brain_id even though every Ask silently ran on Gemma before C5). */}
