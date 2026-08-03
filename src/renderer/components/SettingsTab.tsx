@@ -400,225 +400,29 @@ const chronosStyles = {
   },
 };
 
-// TODO KniPr034-next: wire to Chronos aggregation IPC + Trail Eblet count from ~/.claude/state/eblets/TRAILS/
-interface ContributionStats {
-  ebletsContributed: number;
-  marksEarned: number;
-  patronageProjected: number;
-  privacyBudgetRemaining: number;
-  codeBreaker: {
-    eligible: boolean;
-    tier: 'none' | 'apprentice' | 'master';
-    progress: {
-      easy: number;
-      moderate: number;
-      strenuous: number;
-      veryStrenuous: number;
-      extreme: number;
-    };
-  };
-}
-
-const PLACEHOLDER_STATS: ContributionStats = {
-  ebletsContributed: 0,
-  marksEarned: 0,
-  patronageProjected: 0,
-  privacyBudgetRemaining: 100,
-  codeBreaker: {
-    eligible: false,
-    tier: 'none',
-    progress: { easy: 0, moderate: 0, strenuous: 0, veryStrenuous: 0, extreme: 0 },
-  },
-};
-
-// ─── KniPr037: Code Breaker guild entry tracking ────────────────────────────
-
-type CodeBreakerTier = 'none' | 'apprentice' | 'master';
-
-function computeTier(stats: ContributionStats): CodeBreakerTier {
-  const { easy, moderate, strenuous, veryStrenuous, extreme } = stats.codeBreaker.progress;
-  const weightedMarks = easy * 10 + moderate * 25 + strenuous * 60 + veryStrenuous * 140 + extreme * 141;
-  const apprenticeEligible = easy >= 10 && moderate >= 5 && strenuous >= 2 && veryStrenuous >= 1 && weightedMarks >= 61;
-  const masterEligible = weightedMarks >= 250 && (extreme >= 1 || veryStrenuous >= 3);
-  if (masterEligible) return 'master';
-  if (apprenticeEligible) return 'apprentice';
-  return 'none';
-}
+// KN-BP143-3 D4: the ContributionStats interface, PLACEHOLDER_STATS, computeTier, and the whole
+// Code Breaker Guild weighted-Marks calculator that used to live below were CUT, not wired. There
+// is no Chronos aggregation IPC channel anywhere in preload.ts/amplify.d.ts (checked -- zero
+// hits) to back Eblets-contributed, Marks-earned, patronage projection, or guild-tier progress,
+// so this panel was permanently rendering a hardcoded all-zero ContributionStats object dressed
+// up with a "Numbers grow as you contribute" promise it structurally could never keep -- a
+// meter with no data source, exactly what this ticket exists to remove. Reported per the
+// ticket's "report anything you cut" rule. Re-add the real thing once KniPr034-next's Chronos
+// aggregation IPC exists.
 
 function MyContributionPanel() {
-  // [PLACEHOLDER: IPC data binding for Marks ledger — next session]
-  const stats = PLACEHOLDER_STATS;
-  const [showTooltip, setShowTooltip] = useState(false);
-
-  const { easy, moderate, strenuous, veryStrenuous, extreme } = stats.codeBreaker.progress;
-  const weightedMarks = easy * 10 + moderate * 25 + strenuous * 60 + veryStrenuous * 140 + extreme * 141;
-  const tier = computeTier(stats);
-
-  const apprenticeGoal = 61;
-  const masterGoal = 250;
-  const apprenticePct = Math.min(100, Math.round((weightedMarks / apprenticeGoal) * 100));
-  const masterPct = Math.min(100, Math.round((weightedMarks / masterGoal) * 100));
-  const apprenticeEligible = easy >= 10 && moderate >= 5 && strenuous >= 2 && veryStrenuous >= 1 && weightedMarks >= 61;
-
   const s = styles;
-  const cb = cbStyles;
 
   return (
     <section style={s.section}>
       <div style={s.sectionHeader}>★ My Contribution</div>
 
       <div style={s.card}>
-        {/* Eblets + Marks */}
-        <div style={contribStyles.row}>
-          <span style={contribStyles.rowLabel}>Eblets contributed</span>
-          <span style={contribStyles.rowValue}>{stats.ebletsContributed}</span>
-        </div>
-        <div style={contribStyles.row}>
-          <span style={contribStyles.rowLabel}>Weighted Marks earned</span>
-          <span style={contribStyles.rowValue}>{stats.marksEarned}</span>
-        </div>
-
-        {/* Patronage projection with info tooltip */}
-        <div style={{ ...contribStyles.row, position: 'relative' }}>
-          <span style={contribStyles.rowLabel}>
-            Quarterly patronage projection
-            <span
-              style={contribStyles.infoIcon}
-              onMouseEnter={() => setShowTooltip(true)}
-              onMouseLeave={() => setShowTooltip(false)}
-              aria-label="About patronage projection"
-            >
-              ℹ
-            </span>
-            {showTooltip && (
-              <div style={contribStyles.tooltip}>
-                Marks earn patronage dividends once the cooperative treasury is established.
-                Actual amounts depend on platform revenue and member participation.
-              </div>
-            )}
-          </span>
-          <span style={contribStyles.rowValue}>
-            ${stats.patronageProjected.toFixed(2)}{' '}
-            <span style={contribStyles.dimNote}>(projected, not guaranteed)</span>
-          </span>
-        </div>
-
-        {/* Privacy budget */}
-        <div style={contribStyles.row}>
-          <span style={contribStyles.rowLabel}>Privacy budget remaining</span>
-          <span style={contribStyles.rowValue}>{stats.privacyBudgetRemaining}%</span>
-        </div>
-
-        <div style={contribStyles.divider} />
-
-        {/* ── Code Breaker Guild Entry (KniPr037) ─────────────────────────── */}
-        <div style={{ marginBottom: 8 }}>
-          <div style={cb.sectionTitle}>Code Breaker Guild Entry</div>
-
-          {/* Weighted Mark calculator */}
-          <div style={cb.calcBox}>
-            <div style={cb.calcTotal}>
-              Weighted Marks:{' '}
-              <span style={cb.calcTotalValue}>{weightedMarks}</span>
-            </div>
-            <div style={cb.calcDivider} />
-            {([
-              { label: 'Easy (×10)',            count: easy,         weight: 10  },
-              { label: 'Moderate (×25)',         count: moderate,     weight: 25  },
-              { label: 'Strenuous (×60)',        count: strenuous,    weight: 60  },
-              { label: 'Very Strenuous (×140)',  count: veryStrenuous,weight: 140 },
-              { label: 'Extreme (×141)',         count: extreme,      weight: 141 },
-            ] as const).map(({ label, count, weight }) => (
-              <div key={label} style={cb.calcRow}>
-                <span style={cb.calcLabel}>{label}:</span>
-                <span style={cb.calcFormula}>
-                  {count} × {weight} = {count * weight}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* Tier badge */}
-          <div style={cb.tierRow}>
-            <span style={cb.tierLabel}>Code Breaker Tier:</span>
-            <span style={{
-              ...cb.tierBadge,
-              ...(tier === 'master' ? cb.tierMaster : tier === 'apprentice' ? cb.tierApprentice : cb.tierNone),
-            }}>
-              {tier === 'master' ? 'Master' : tier === 'apprentice' ? 'Apprentice' : 'None'}
-            </span>
-          </div>
-
-          {/* Progress toward Apprentice */}
-          {tier === 'none' && (
-            <div style={cb.progressSection}>
-              <div style={cb.progressLabel}>
-                Next tier: Apprentice{' '}
-                <span style={cb.progressGoal}>(61 Marks needed)</span>
-              </div>
-              <div style={cb.reqNote}>
-                Requirements: 10 Easy + 5 Moderate + 2 Strenuous + 1 Very-Strenuous
-              </div>
-              <div style={contribStyles.progressTrack}>
-                <div style={{ ...contribStyles.progressFill, width: `${apprenticePct}%` }} />
-              </div>
-              <div style={cb.progressCount}>
-                {weightedMarks} / 61 Marks
-              </div>
-              <div style={cb.masterNote}>
-                After Apprentice → Master Code Breaker requires 250 Marks
-                + 1 Extreme completion OR 3 Very-Strenuous substitute
-              </div>
-            </div>
-          )}
-
-          {/* Progress toward Master (once Apprentice) */}
-          {tier === 'apprentice' && (
-            <div style={cb.progressSection}>
-              <div style={cb.progressLabel}>
-                Progress toward Master{' '}
-                <span style={cb.progressGoal}>(250 Marks needed)</span>
-              </div>
-              <div style={contribStyles.progressTrack}>
-                <div style={{ ...contribStyles.progressFill, width: `${masterPct}%` }} />
-              </div>
-              <div style={cb.progressCount}>
-                {weightedMarks} / 250 Marks
-                {' · '}
-                {extreme >= 1
-                  ? '✓ Extreme req met'
-                  : veryStrenuous >= 3
-                  ? '✓ 3×VS req met'
-                  : 'Need: 1 Extreme OR 3 Very-Strenuous'}
-              </div>
-              <div style={cb.masterNote}>
-                Master also requires: 1 Extreme completion OR 3 Very-Strenuous substitute
-              </div>
-            </div>
-          )}
-
-          {/* Eligibility indicator — Apprentice threshold hit */}
-          {apprenticeEligible && tier === 'none' && (
-            <div style={cb.eligibilityBox}>
-              <div style={cb.eligibilityCheck}>✓ Code Breaker Apprentice eligibility met!</div>
-              <button style={cb.claimBtn} disabled>
-                Claim your Apprentice badge →
-                <span style={cb.claimNote}> (backend next wave)</span>
-              </button>
-            </div>
-          )}
-
-          {tier === 'apprentice' && (
-            <div style={cb.eligibilityBox}>
-              <div style={cb.eligibilityCheck}>✓ Apprentice Code Breaker</div>
-            </div>
-          )}
-
-          {tier === 'master' && (
-            <div style={{ ...cb.eligibilityBox, borderColor: 'rgba(251,191,36,0.35)', background: 'rgba(251,191,36,0.05)' }}>
-              <div style={{ ...cb.eligibilityCheck, color: '#fbbf24' }}>✓ Master Code Breaker</div>
-            </div>
-          )}
+        <div style={{ fontSize: 10, color: '#64748b', fontStyle: 'italic', lineHeight: 1.7 }}>
+          Not yet tracked. Eblets contributed, weighted Marks earned, quarterly patronage
+          projection, and Code Breaker Guild tier progress all require a Chronos aggregation
+          channel (KniPr034-next) that does not exist in the engine yet. Honestly empty here,
+          not a fabricated running total.
         </div>
 
         <div style={contribStyles.divider} />
@@ -633,10 +437,6 @@ function MyContributionPanel() {
             Manage privacy settings →
           </button>
         </div>
-      </div>
-
-      <div style={contribStyles.zeroNote}>
-        All zeros = new account. Numbers grow as you contribute Trails and earn Bounties.
       </div>
     </section>
   );
@@ -749,151 +549,6 @@ const contribStyles = {
     color: '#475569',
     marginTop: 5,
     fontStyle: 'italic',
-  },
-};
-
-// ─── Code Breaker guild entry styles (KniPr037) ──────────────────────────────
-const cbStyles = {
-  sectionTitle: {
-    fontSize: 10,
-    fontWeight: 700,
-    color: '#94a3b8',
-    letterSpacing: '0.04em',
-    marginBottom: 8,
-    textTransform: 'uppercase' as const,
-  },
-  calcBox: {
-    background: 'rgba(100,116,139,0.06)',
-    border: '1px solid rgba(100,116,139,0.12)',
-    borderRadius: 6,
-    padding: '8px 10px',
-    marginBottom: 10,
-  },
-  calcTotal: {
-    fontSize: 11,
-    fontWeight: 700,
-    color: '#e2e8f0',
-    marginBottom: 4,
-  },
-  calcTotalValue: {
-    color: '#6ee7b7',
-  },
-  calcDivider: {
-    height: 1,
-    background: 'rgba(100,116,139,0.15)',
-    margin: '5px 0 6px',
-  },
-  calcRow: {
-    display: 'flex' as const,
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-    marginBottom: 3,
-  },
-  calcLabel: {
-    fontSize: 9,
-    color: '#64748b',
-    minWidth: 140,
-  },
-  calcFormula: {
-    fontSize: 9,
-    color: '#94a3b8',
-    fontVariantNumeric: 'tabular-nums' as const,
-  },
-  tierRow: {
-    display: 'flex' as const,
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  tierLabel: {
-    fontSize: 10,
-    color: '#64748b',
-  },
-  tierBadge: {
-    fontSize: 10,
-    fontWeight: 700,
-    borderRadius: 4,
-    padding: '2px 8px',
-    border: '1px solid',
-  } as React.CSSProperties,
-  tierNone: {
-    color: '#475569',
-    borderColor: 'rgba(71,85,105,0.3)',
-    background: 'rgba(71,85,105,0.08)',
-  } as React.CSSProperties,
-  tierApprentice: {
-    color: '#6ee7b7',
-    borderColor: 'rgba(110,231,183,0.35)',
-    background: 'rgba(110,231,183,0.08)',
-  } as React.CSSProperties,
-  tierMaster: {
-    color: '#fbbf24',
-    borderColor: 'rgba(251,191,36,0.35)',
-    background: 'rgba(251,191,36,0.08)',
-  } as React.CSSProperties,
-  progressSection: {
-    marginBottom: 8,
-  },
-  progressLabel: {
-    fontSize: 10,
-    fontWeight: 600,
-    color: '#94a3b8',
-    marginBottom: 3,
-  },
-  progressGoal: {
-    fontSize: 9,
-    fontWeight: 400,
-    color: '#475569',
-  },
-  reqNote: {
-    fontSize: 9,
-    color: '#64748b',
-    marginBottom: 5,
-    lineHeight: 1.5,
-  },
-  progressCount: {
-    fontSize: 9,
-    color: '#64748b',
-    marginTop: 3,
-    marginBottom: 4,
-  },
-  masterNote: {
-    fontSize: 9,
-    color: '#475569',
-    fontStyle: 'italic' as const,
-    lineHeight: 1.5,
-  },
-  eligibilityBox: {
-    background: 'rgba(110,231,183,0.05)',
-    border: '1px solid rgba(110,231,183,0.25)',
-    borderRadius: 6,
-    padding: '7px 10px',
-    marginTop: 8,
-    display: 'flex' as const,
-    flexDirection: 'column' as const,
-    gap: 5,
-  },
-  eligibilityCheck: {
-    fontSize: 10,
-    fontWeight: 700,
-    color: '#6ee7b7',
-  },
-  claimBtn: {
-    background: 'rgba(110,231,183,0.1)',
-    border: '1px solid rgba(110,231,183,0.3)',
-    borderRadius: 5,
-    color: '#6ee7b7',
-    fontSize: 10,
-    fontWeight: 600,
-    padding: '4px 10px',
-    cursor: 'not-allowed',
-    opacity: 0.7,
-    alignSelf: 'flex-start',
-  } as React.CSSProperties,
-  claimNote: {
-    fontSize: 9,
-    fontWeight: 400,
-    color: '#475569',
   },
 };
 
@@ -1984,7 +1639,11 @@ export function SettingsTab({
           >
             {currentSkuTier === 'full' ? 'FULL active' : 'Activate FULL'}
           </button>
-          {/* TODO: wire Activate FULL to activation flow when built */}
+          {/* KN-BP143-3 D4: this is already wired, not a stub -- clicking scrolls to the real SKU
+              picker below (MnemDrtPanel's "Install type (SKU)" buttons, id="settings-section-
+              ai-tier"), where FULL is one of the four real, live options. The stale "TODO: wire
+              when built" comment implied this button did nothing; it does something real today
+              (scroll-assist to the actual control), just not a one-click direct activation. */}
         </div>
       </section>
 

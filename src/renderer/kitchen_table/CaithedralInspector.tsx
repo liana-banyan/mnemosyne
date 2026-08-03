@@ -72,11 +72,15 @@ export function CaithedralInspector() {
       setEntries((prev) => [entry, ...prev]);
       setHasLiveData(true);
     } catch {
+      // KN-BP143-3 D4: this used to fabricate a fake confidence score (Math.random() * 0.4 +
+      // 0.6) so the histogram/list bar always looked like a plausible real result even when
+      // cai-core genuinely returned nothing. score: 0 is the honest value -- no result, no score
+      // -- and the snippet text already labels this row as mock/disconnected.
       const entry: RetrievalEntry = {
         timestamp: new Date().toISOString(),
         query: testQuery,
         sourceScribe: 'mock',
-        score: Math.random() * 0.4 + 0.6,
+        score: 0,
         resultSnippet: `Mock result for: "${testQuery}" — cai-core not connected`,
       };
       setEntries((prev) => [entry, ...prev]);
