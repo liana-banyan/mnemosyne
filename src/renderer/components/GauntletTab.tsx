@@ -164,12 +164,18 @@ export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
         .slice(0, i + 1)
         .reduce((acc, r) => acc + (r.banyan_metric ?? 0), bm);
 
+      // KN-BP143-3 D4 (follow-up): speed_delta/cost_delta/accuracy_delta used to be
+      // Math.random()-derived (simulateDelta()) so the stage row always showed a
+      // plausible-looking "+1.4x" style number even though no real substrate
+      // measurement was ever taken. 0 is the honest placeholder -- StageRow already
+      // renders 0 as "baseline" rather than a fake delta -- until SAGA 08 wires real
+      // substrate calls in place of the setTimeout jitter above.
       results[i] = {
         ...results[i],
         status: 'complete',
-        speed_delta: def.stage === 1 ? 0 : simulateDelta(),
-        cost_delta: def.stage === 1 ? 0 : simulateDelta() * -0.8,
-        accuracy_delta: def.stage === 1 ? 0 : simulateDelta() * 0.3,
+        speed_delta: 0,
+        cost_delta: 0,
+        accuracy_delta: 0,
         banyan_metric: bm,
         cumulative_bm: cumulative,
       };
@@ -216,10 +222,6 @@ export function GauntletTab({ authState, onFirstComplete }: GauntletTabProps) {
     // Scaffolded simulation — SAGA 08 replaces with real substrate measurement
     const base = [0, 1.2, 2.8, 1.5, 1.9, 1.4];
     return base[stage - 1] ?? 0;
-  }
-
-  function simulateDelta(): number {
-    return Math.round((0.3 + Math.random() * 2) * 10) / 10;
   }
 
   const totalBM = stageResults.reduce((acc, r) => acc + (r.banyan_metric ?? 0), 0);
