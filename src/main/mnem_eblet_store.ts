@@ -905,6 +905,66 @@ export function isCanonicalPlowScrapeShapedEblet(
   return isScrapeLabelShapedQuestion(entry.question ?? '') && isLongScrapedPassageAnswer(entry.answer ?? '');
 }
 
+/** KN-BP142-6 FIX 4 (retrieval-side contamination: the empty-body bare-letter pool),
+ *  INDEPENDENT of FIX 1, FIX 2, and FIX 3 above.
+ *
+ *  Founder ran the scored 20 (run 034), the Aristotle "incontinence" question (correct key E)
+ *  was answered A. Bishop traced the live substrate and found the CORRECT answer twice
+ *  (verified, provenance plow_mc_answerer:solved:user_perplexity:...) and also, verified: true,
+ *  a record whose entire answer is "A) " (a bare option letter followed by a closing
+ *  parenthesis and nothing else), provenance plow_mc_answerer:solved:wikipedia:
+ *  https://en.wikipedia.org/wiki/Female_ejaculation, an article with no topical relationship to
+ *  Aristotle or incontinence.
+ *
+ *  KN-BP142-6 traced isAnswerKeyShapedEblet() against this exact record (real record, real
+ *  compiled predicate, see this ticket's own Yoke return for the full sub-check trace) and
+ *  found the miss is NOT in isBareOptionLetterAnswer (it correctly returns true for "A) ",
+ *  the BARE_LETTER_ANSWER_RE regex already tolerates the trailing whitespace). The miss is in
+ *  isBenchmarkShapedQuestion: the Aristotle question is only 49 characters (the gate requires
+ *  > 60), ends in ":" rather than "?", and matches none of the curated MC-stem phrases, so it
+ *  fails the benchmark-shape gate and the record sails through FIX 1 untouched even though its
+ *  answer is the purest possible instance of a bare option letter.
+ *
+ *  KN-BP142-6 measured (this ticket, scratchpad/kn_bp142_6_task4_predicate_design_check.js)
+ *  against the full live substrate (1,816 records at measurement time): exactly 4 records
+ *  match "option letter, REQUIRED closing punctuation, then nothing else" and all 4 are this
+ *  same shape, all provenance plow_mc_answerer:solved:wikipedia:..., all verified: true. Manual
+ *  audit of all 4 (not a sample) confirms every one is a genuinely empty answer body, none
+ *  carries any substantive content this predicate would be wrongly discarding.
+ *
+ *  This predicate is DELIBERATELY INDEPENDENT of question shape, unlike isAnswerKeyShapedEblet
+ *  above, because an answer whose entire content, once the option-letter prefix is stripped, is
+ *  empty can never be a useful, substantive answer to serve as context, regardless of what the
+ *  paired question looks like. That is exactly the gap Task 1 located: pairing the bare-letter
+ *  check with a question-shape gate is what let a 49-character, non-"?" question slip an
+ *  empty-body answer through FIX 1 whole.
+ *
+ *  This predicate is DELIBERATELY NARROWER than isBareOptionLetterAnswer's own BARE_LETTER_
+ *  ANSWER_RE (which makes the closing punctuation OPTIONAL, so a bare "E" or "A" with no
+ *  punctuation at all also matches it): the closing punctuation mark is REQUIRED here.
+ *  answer_coroner:ensemble_candidate rows (694 of them per FIX 1's own doc comment) store a
+ *  bare letter with NO trailing punctuation by design (their own admissibility path is
+ *  isFactVerdictInadmissibleForRetrieval, not this one) -- requiring the punctuation mark is
+ *  what keeps this predicate from colliding with that unrelated, intentionally-designed family.
+ *  Measured this ticket: BARE_LETTER_ANSWER_RE alone matches 698 of 1,816 records; requiring
+ *  the punctuation mark narrows that to exactly the same 4 records found above, a 694-record
+ *  reduction that is entirely the un-punctuated ensemble_candidate shape, correctly excluded.
+ *
+ *  Rule 66 / vault-sacrosanct: quarantine BY NON-RETRIEVAL ONLY, exactly like the three
+ *  predicates above -- the record stays on disk, byte-identical, forever; every retrieval path
+ *  that can surface it must run this predicate and drop a match, never mutate the file. */
+const EMPTY_BODY_OPTION_LETTER_ANSWER_RE = /^\s*[A-J][).:]\s*$/;
+
+function isEmptyBodyOptionLetterAnswer(answer: string): boolean {
+  return EMPTY_BODY_OPTION_LETTER_ANSWER_RE.test(answer);
+}
+
+export function isEmptyAnswerBodyShapedEblet(
+  entry: Pick<VerifiedEbletEntry, 'answer'>,
+): boolean {
+  return isEmptyBodyOptionLetterAnswer(entry.answer ?? '');
+}
+
 /** BP136 Yoke (answer-cache v1): question<->question similarity, DISTINCT from
  *  computeQaRelevance() above (which scores question-vs-ANSWER overlap). This scores how
  *  similar a NEW question is to a STORED question, for the answer-cache serve-verbatim
@@ -1133,12 +1193,26 @@ export async function queryVerifiedEblets(question: string, topK = 3): Promise<V
 
   // KN-BP142-3 FIX 3: canonical_plow scrape-shaped quarantine, independent of FIX 1 and FIX 2
   // above -- see isCanonicalPlowScrapeShapedEblet()'s doc comment for the full empirical basis.
-  const entries = afterFactVerdictQuarantine.filter((e) => !isCanonicalPlowScrapeShapedEblet(e));
-  const scrapeShapedQuarantinedCount = afterFactVerdictQuarantine.length - entries.length;
+  const afterScrapeShapeQuarantine = afterFactVerdictQuarantine.filter((e) => !isCanonicalPlowScrapeShapedEblet(e));
+  const scrapeShapedQuarantinedCount = afterFactVerdictQuarantine.length - afterScrapeShapeQuarantine.length;
   if (scrapeShapedQuarantinedCount > 0) {
     console.log(
       `[EbletStore] queryVerifiedEblets: excluded ${scrapeShapedQuarantinedCount} canonical_plow ` +
       `scrape-shaped eblet(s) from retrieval (KN-BP142-3 FIX 3, Rule 66 quarantine-by-non-retrieval, ` +
+      `not deleted)`,
+    );
+  }
+
+  // KN-BP142-6 FIX 4: empty-body bare-letter quarantine, independent of FIX 1, FIX 2, and FIX 3
+  // above -- see isEmptyAnswerBodyShapedEblet()'s doc comment for the full empirical basis. This
+  // is deliberately question-shape-independent, plugging the exact gap KN-BP142-6 traced in FIX
+  // 1 (a short, non-"?" question let a bare-letter, empty-body answer sail through).
+  const entries = afterScrapeShapeQuarantine.filter((e) => !isEmptyAnswerBodyShapedEblet(e));
+  const emptyBodyQuarantinedCount = afterScrapeShapeQuarantine.length - entries.length;
+  if (emptyBodyQuarantinedCount > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEblets: excluded ${emptyBodyQuarantinedCount} empty-answer-body ` +
+      `bare-letter eblet(s) from retrieval (KN-BP142-6 FIX 4, Rule 66 quarantine-by-non-retrieval, ` +
       `not deleted)`,
     );
   }
@@ -1309,13 +1383,27 @@ export async function queryVerifiedEbletsTopical(
   // above -- this is exactly the retrieval path (mesh-test B/C conditions, tools ON, answer-keys
   // OFF) that could hand a voter a scraped, topically-unrelated passage disguised as a "verified"
   // fact for the current question's domain. See isCanonicalPlowScrapeShapedEblet()'s doc comment.
-  const entries = afterFactVerdictQuarantine.filter((e) => !isCanonicalPlowScrapeShapedEblet(e));
-  const scrapeShapedQuarantinedCount = afterFactVerdictQuarantine.length - entries.length;
+  const afterScrapeShapeQuarantine = afterFactVerdictQuarantine.filter((e) => !isCanonicalPlowScrapeShapedEblet(e));
+  const scrapeShapedQuarantinedCount = afterFactVerdictQuarantine.length - afterScrapeShapeQuarantine.length;
   if (scrapeShapedQuarantinedCount > 0) {
     console.log(
       `[EbletStore] queryVerifiedEbletsTopical: excluded ${scrapeShapedQuarantinedCount} ` +
       `canonical_plow scrape-shaped eblet(s) from retrieval for domain=${domain} (KN-BP142-3 FIX 3, ` +
       `Rule 66 quarantine-by-non-retrieval, not deleted)`,
+    );
+  }
+
+  // KN-BP142-6 FIX 4: empty-body bare-letter quarantine, independent of FIX 1, FIX 2, and FIX 3
+  // above -- this is exactly the retrieval path (mesh-test B/C conditions, tools ON, answer-keys
+  // OFF) the ticket traced the Aristotle "incontinence" miss through. See
+  // isEmptyAnswerBodyShapedEblet()'s doc comment for the full empirical basis.
+  const entries = afterScrapeShapeQuarantine.filter((e) => !isEmptyAnswerBodyShapedEblet(e));
+  const emptyBodyQuarantinedCount = afterScrapeShapeQuarantine.length - entries.length;
+  if (emptyBodyQuarantinedCount > 0) {
+    console.log(
+      `[EbletStore] queryVerifiedEbletsTopical: excluded ${emptyBodyQuarantinedCount} ` +
+      `empty-answer-body bare-letter eblet(s) from retrieval for domain=${domain} (KN-BP142-6 ` +
+      `FIX 4, Rule 66 quarantine-by-non-retrieval, not deleted)`,
     );
   }
 
