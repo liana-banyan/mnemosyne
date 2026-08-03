@@ -237,6 +237,19 @@ export function generateQuestionId(question: string, domain: string): string {
 // decompose/verdict calls, compute_sidecar.ts's expression-sampling call, and the C3 shortcut's
 // single-quantity query inside the same fallback function) is unaffected and keeps the original
 // 30_000ms budget exactly as before, since none of them pass a 6th argument.
+//
+// KN-BP142-8 (Founder-directed BP142): a SECOND non-default value now exists --
+// plow_mc_answerer.ts's Cake Method CUT (local_orchestrator, 2 routes) and PICK
+// (local_orchestrator) call sites inside runCakeMethodDisagreementResolution now pass
+// CAKE_METHOD_TIMEOUT_MS (270_000, see that constant's own doc comment in plow_mc_answerer.ts for
+// the measured rationale) -- live-verified this ticket that both were aborting on the 30_000ms
+// default every single time on real qid 105/98 traffic, a transport starvation that had been
+// misread as a cut-stage reasoning gap. The Cake Method's OWN elimination-cascade candidate
+// producer (runEliminationCascadeCandidateProducer, a DIFFERENT function from
+// runEliminationCascadeFormatIndependentFallback above) still keeps the original 30_000ms default
+// -- it is a related but distinct call site this ticket deliberately left unchanged, out of its
+// own strictly-scoped "cut and pick call sites only" boundary; see KN-BP142-8's own YOKE_RETURN
+// for why that is reported as an open gap rather than silently fixed alongside it.
 export async function callOllama(
   prompt: string,
   ollamaBaseUrl: string,
