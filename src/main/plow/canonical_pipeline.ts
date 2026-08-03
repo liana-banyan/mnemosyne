@@ -224,12 +224,26 @@ export function generateQuestionId(question: string, domain: string): string {
 // a non-default value is plow_mc_answerer.ts's reasoning-mode voter path (raised to ~1024 so a
 // step-by-step derivation fits in the budget instead of being truncated before the model reaches
 // its own "Answer: X" line). The bare-letter default path is untouched.
+//
+// KN-BP142-7 (Founder-directed BP142): optional `timeoutMs` param, DEFAULT OLLAMA_TIMEOUT_MS
+// (30_000) -- byte-identical to every existing call site that does not pass a 6th argument. This
+// is a transport budget, not an acceptance threshold: it only controls how long this function
+// waits for Ollama to respond before giving up, never what counts as a correct or admissible
+// answer once a response arrives. The only callers that ever pass a non-default value are
+// plow_mc_answerer.ts's two elimination-cascade bidirectional ranking calls inside
+// runEliminationCascadeFormatIndependentFallback (see ELIMINATION_CASCADE_RANKING_TIMEOUT_MS in
+// that file for the measured rationale). Every other call site in the codebase (Saladin adversarial
+// challenge, Three Fates voters, the Cake Method cascade-candidate-producer, plow_mc_decompose.ts's
+// decompose/verdict calls, compute_sidecar.ts's expression-sampling call, and the C3 shortcut's
+// single-quantity query inside the same fallback function) is unaffected and keeps the original
+// 30_000ms budget exactly as before, since none of them pass a 6th argument.
 export async function callOllama(
   prompt: string,
   ollamaBaseUrl: string,
   model: string,
   temperature: number,
   numPredict: number = 256,
+  timeoutMs: number = OLLAMA_TIMEOUT_MS,
 ): Promise<string | null> {
   const buildBody = (includeThink: boolean) => ({
     model,
@@ -244,7 +258,7 @@ export async function callOllama(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildBody(true)),
-      signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (resp.status === 400) {
       // BP083 fallback: this peer's Ollama version rejects the `think` field outright.
@@ -252,7 +266,7 @@ export async function callOllama(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildBody(false)),
-        signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     }
     if (!resp.ok) return null;

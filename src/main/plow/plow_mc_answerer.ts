@@ -3489,6 +3489,30 @@ async function runAuthorityEnsemble(params: {
 //
 // Never throws to its caller -- every dispatch leg is individually try/caught, matching every other
 // tier's own error-handling convention in resolveDeterministicComputeOverride.
+// KN-BP142-7 (Founder-directed BP142, "FIX MNEMOSYNEC to have the cascade working"): a transport
+// budget, sized to the work, for the elimination cascade's two bidirectional ranking calls ONLY
+// (mostToLeastPrompt / leastToMostPrompt, below). NOT an acceptance threshold, margin, or
+// consistency rule -- C4/checkBidirectionalConsistency's own comparison logic in
+// plow_mc_elimination_cascade.ts is completely untouched by this constant; this only controls how
+// long callOllama waits for a response to arrive before giving up.
+//
+// MEASURED CAUSE (KN-BP141-10's own verification (b), reconfirmed this ticket): the two ranking
+// calls below ask llama3.3:70b to produce a FULL ordering of every option letter, twice (once
+// most-to-least, once least-to-most). At BP141, 5 of 15 real bidirectional ranking calls on
+// llama3.3:70b took 93 to 110 seconds. The pre-existing default (canonical_pipeline.ts's
+// OLLAMA_TIMEOUT_MS, 30_000ms) aborts the request before a 70B model finishes producing two full
+// orderings, so `mostToLeast`/`leastToMost` come back empty and checkBidirectionalConsistency
+// correctly reports `noData: true` (an honest abstain caused by transport timeout, not a real
+// self-inconsistency finding).
+//
+// 180_000ms (3 minutes) gives roughly 1.6x headroom over the observed 110s ceiling, sized to the
+// two-full-ordering workload actually being asked of the model, not chosen to force any particular
+// outcome. This constant affects ONLY the two callOllama call sites inside
+// runEliminationCascadeFormatIndependentFallback that pass it explicitly, below -- see callOllama's
+// own doc comment in canonical_pipeline.ts for the full enumeration of every other call site this
+// change does NOT affect (all of which keep the original 30_000ms default byte-for-byte).
+const ELIMINATION_CASCADE_RANKING_TIMEOUT_MS = 180_000;
+
 function extractArithmeticSubstring(raw: string): string | null {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return null;
@@ -3696,9 +3720,12 @@ async function runEliminationCascadeFormatIndependentFallback(
   let mostToLeast: string[] = [];
   let leastToMost: string[] = [];
   try {
-    const rawMostToLeast = await callOllama(mostToLeastPrompt, ollamaBaseUrl, model, 0);
+    // KN-BP142-7: explicit widened timeout (ELIMINATION_CASCADE_RANKING_TIMEOUT_MS, see its own
+    // doc comment above) on these two calls only -- numPredict stays the pre-existing default
+    // (256, unchanged) since only the transport budget was under-sized, not the token budget.
+    const rawMostToLeast = await callOllama(mostToLeastPrompt, ollamaBaseUrl, model, 0, 256, ELIMINATION_CASCADE_RANKING_TIMEOUT_MS);
     mostToLeast = extractLetterRankingSequence(rawMostToLeast, validLetters);
-    const rawLeastToMost = await callOllama(leastToMostPrompt, ollamaBaseUrl, model, 0);
+    const rawLeastToMost = await callOllama(leastToMostPrompt, ollamaBaseUrl, model, 0, 256, ELIMINATION_CASCADE_RANKING_TIMEOUT_MS);
     leastToMost = extractLetterRankingSequence(rawLeastToMost, validLetters);
   } catch (err) {
     log(`ranking dispatch threw (non-fatal, no candidate produced): ${err}`);
