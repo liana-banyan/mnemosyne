@@ -14,15 +14,41 @@
 // STYLE: mirrors NexusAuthoritySettings.tsx's section/card/toggleRow conventions exactly (same
 // dark palette, same disabled-until-flags-on pattern) so it reads as one continuous "Nexus
 // Authority (BP137)" settings area rather than a visually distinct add-on.
+//
+// KN-BP143-3 D2: sign-in and enable, in one place. Before this pass, this panel could only show
+// sign-in status -- the ENABLE checkbox for ChatGPT/Gemini/Claude lived on a different tab
+// entirely (ProveItWorksTab.tsx's "Browser Authority" section / SettingsTab.tsx's MnemDrtPanel),
+// writing `mnem_drt_specialists` in ai_dispatch_settings.json. A user could sign in here and
+// reasonably believe that meant "on" -- it did not. This pass reuses the SAME
+// loadMnemDrt/saveMnemDrt/persistMnemDrtToBackend path those two files already share (see
+// SettingsTab.tsx's own export comment above those three functions) rather than inventing a
+// fourth store, and renders an explicit enable control next to every sign-in row so sign-in and
+// enabled are always two distinct, visible facts that can never silently disagree unnoticed.
+// Google/Perplexity have no single enable boolean anywhere in the codebase -- their "on" state is
+// which arm(s) NexusAuthoritySettings.tsx's per-arm picker (rendered directly above this section)
+// currently routes to them, already loaded via loadNexusAuthoritySettings().perArmAuthority. That
+// real, already-existing data drives their (read-only) enabled/disabled fact here instead of a
+// fabricated checkbox with nothing behind it.
 
 import { useCallback, useEffect, useState } from 'react';
 import { loadNexusAuthoritySettings } from './nexus_authority_settings_store';
+import { loadMnemDrt, saveMnemDrt, persistMnemDrtToBackend } from '../components/SettingsTab';
 
 // BP140-K4: widened from 3 to 5 members (chatgpt/gemini added). Kept as an independent literal
 // union here rather than a cross-layer import of the shared BrowserAuthorityName -- same
 // convention this file's own header note already documents for every renderer-side setting type
 // on this page (no cross-Electron-boundary import).
 type AuthorityKey = 'user_google' | 'user_perplexity' | 'user_claude' | 'user_chatgpt' | 'user_gemini';
+
+// Mirrors src/main/plow/specialist_adapters.ts's BrowserLlmAuthorityName -- the subset of
+// AuthorityKey that has a real mnem_drt_specialists enable override (Google/Perplexity do not;
+// see the D2 header note above). Independent literal union, same no-cross-Electron-boundary-
+// import convention as AuthorityKey itself.
+type BrowserLlmKey = 'user_chatgpt' | 'user_gemini' | 'user_claude';
+
+function isBrowserLlmKey(k: AuthorityKey): k is BrowserLlmKey {
+  return k === 'user_chatgpt' || k === 'user_gemini' || k === 'user_claude';
+}
 
 interface AuthorityRowState {
   status: 'unknown' | 'checking' | 'signed_in' | 'not_signed_in';
@@ -51,16 +77,50 @@ export function NexusAuthoritySignInPanel() {
   });
   const [sessionOpen, setSessionOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // D2: mnem_drt_specialists mirror for the 3 BrowserLlmKey rows -- same shared store
+  // SettingsTab.tsx's MnemDrtPanel and ProveItWorksTab.tsx's Browser Authority section read/write.
+  const [mnemDrtSpecialists, setMnemDrtSpecialists] = useState<Record<string, boolean>>(
+    () => loadMnemDrt().mnem_drt_specialists,
+  );
+  // D2: which arm(s) currently route to user_google / user_perplexity -- real data already
+  // persisted by NexusAuthoritySettings.tsx's per-arm picker, read here (not written) to derive
+  // an honest enabled/disabled fact for the two authorities with no mnem_drt_specialists entry.
+  const [armsRoutedTo, setArmsRoutedTo] = useState<Record<string, number>>({});
 
   useEffect(() => {
     const refresh = () => {
       const snapshot = loadNexusAuthoritySettings();
       setFlagsEnabled(snapshot.researchArmMode && snapshot.researchArmBrowserAuthority);
+      const armCounts: Record<string, number> = {};
+      for (const authority of Object.values(snapshot.perArmAuthority)) {
+        armCounts[authority] = (armCounts[authority] ?? 0) + 1;
+      }
+      setArmsRoutedTo(armCounts);
+      setMnemDrtSpecialists(loadMnemDrt().mnem_drt_specialists);
     };
     refresh();
     setLoaded(true);
     window.addEventListener('nexus-authority-settings-changed', refresh);
     return () => window.removeEventListener('nexus-authority-settings-changed', refresh);
+  }, []);
+
+  // D2: the enable toggle for the 3 BrowserLlmKey rows. Mirrors ProveItWorksTab.tsx's
+  // toggleAuthorityEnabled() exactly -- reads loadMnemDrt() fresh (not a closed-over value) so
+  // this never clobbers other specialist keys (wikipedia/wolfram/etc.) that MnemDrtPanel may have
+  // already saved, then saves + persists through the same shared path. Same "toggle is the login
+  // trigger" convention as that file: switching ON while not yet signed in also opens the sign-in
+  // window, since an enabled-but-never-signed-in authority answers nothing.
+  const handleToggleEnabled = useCallback((authority: BrowserLlmKey, nextVal: boolean, signedIn: boolean) => {
+    const current = loadMnemDrt();
+    const next = { ...current, mnem_drt_specialists: { ...current.mnem_drt_specialists, [authority]: nextVal } };
+    saveMnemDrt(next);
+    void persistMnemDrtToBackend(next);
+    setMnemDrtSpecialists(next.mnem_drt_specialists);
+    if (nextVal && !signedIn) {
+      void window.amplify?.openNexusAuthoritySignIn?.(authority)?.then((result) => {
+        if (result?.ok) setSessionOpen(true);
+      });
+    }
   }, []);
 
   const handleOpenSignIn = useCallback(async (authority: AuthorityKey) => {
@@ -163,27 +223,67 @@ export function NexusAuthoritySignInPanel() {
               row.status === 'signed_in' ? '#6ee7b7' :
               row.status === 'not_signed_in' ? '#fbbf24' :
               '#64748b';
+            const signedIn = row.status === 'signed_in';
+            // D2: the enable fact, computed separately from the sign-in fact above. ChatGPT/
+            // Gemini/Claude have a real per-authority boolean (mnem_drt_specialists); Google/
+            // Perplexity have no such boolean anywhere -- their "enabled" fact is real arm-routing
+            // data instead (see armsRoutedTo above), never a fabricated checkbox.
+            const isLlm = isBrowserLlmKey(authority);
+            const llmEnabled = isLlm ? (mnemDrtSpecialists[authority] ?? false) : false;
+            const armCount = armsRoutedTo[authority] ?? 0;
+            const enabled = isLlm ? llmEnabled : armCount > 0;
+            const disagrees = signedIn && !enabled;
             return (
-              <div key={authority} style={s.authorityRow}>
-                <div style={{ flex: 1 }}>
-                  <div style={s.authorityName}>{AUTHORITY_LABELS[authority]}</div>
-                  <div style={{ ...s.statusPill, color: pillColor }}>
-                    ● {pillLabel}
-                    {row.reason && row.status !== 'checking' ? ` (${row.reason})` : ''}
+              <div key={authority} style={s.authorityRowWrap}>
+                <div style={s.authorityRow}>
+                  <div style={{ flex: 1 }}>
+                    <div style={s.authorityName}>{AUTHORITY_LABELS[authority]}</div>
+                    <div style={{ ...s.statusPill, color: pillColor }}>
+                      ● {pillLabel}
+                      {row.reason && row.status !== 'checking' ? ` (${row.reason})` : ''}
+                    </div>
                   </div>
+                  {isLlm ? (
+                    <button
+                      style={{ ...s.enableBtn, ...(llmEnabled ? s.enableBtnOn : {}) }}
+                      disabled={!flagsEnabled || busy}
+                      onClick={() => handleToggleEnabled(authority, !llmEnabled, signedIn)}
+                      title={
+                        !flagsEnabled ? "Enable Research Arm + User's Browser Session above first" :
+                        llmEnabled ? `Disable ${AUTHORITY_LABELS[authority]} as an authority` :
+                        signedIn ? `Enable ${AUTHORITY_LABELS[authority]} as an authority` :
+                        `Enable ${AUTHORITY_LABELS[authority]} and sign in`
+                      }
+                    >
+                      {llmEnabled ? 'Enabled ✓' : 'Enabled ☐'}
+                    </button>
+                  ) : (
+                    <div
+                      style={{ ...s.enableStatus, color: enabled ? '#6ee7b7' : '#64748b' }}
+                      title="Set by the per-arm picker above (Nexus Authority) -- not editable here"
+                    >
+                      {enabled ? `Enabled (${armCount} arm${armCount === 1 ? '' : 's'})` : 'Not enabled'}
+                    </div>
+                  )}
+                  <button
+                    style={s.actionBtn}
+                    disabled={!flagsEnabled || busy}
+                    onClick={() => handleOpenSignIn(authority)}
+                    title={
+                      flagsEnabled
+                        ? `Open a visible window to sign into ${AUTHORITY_LABELS[authority]}`
+                        : "Enable Research Arm + User's Browser Session above first"
+                    }
+                  >
+                    Sign in to {AUTHORITY_LABELS[authority]}
+                  </button>
                 </div>
-                <button
-                  style={s.actionBtn}
-                  disabled={!flagsEnabled || busy}
-                  onClick={() => handleOpenSignIn(authority)}
-                  title={
-                    flagsEnabled
-                      ? `Open a visible window to sign into ${AUTHORITY_LABELS[authority]}`
-                      : "Enable Research Arm + User's Browser Session above first"
-                  }
-                >
-                  Sign in to {AUTHORITY_LABELS[authority]}
-                </button>
+                {disagrees && (
+                  <div style={s.disagreeNote}>
+                    Signed in, not enabled -- this authority will not be used to answer questions
+                    until enabled{isLlm ? ' above' : ' via the per-arm picker above'}.
+                  </div>
+                )}
               </div>
             );
           })}
@@ -257,6 +357,11 @@ const styles: Record<string, React.CSSProperties> = {
     paddingTop: 8,
     borderTop: '1px solid rgba(100,116,139,0.12)',
   },
+  authorityRowWrap: {
+    display: 'flex',
+    flexDirection: 'column',
+    borderBottom: '1px solid rgba(100,116,139,0.1)',
+  },
   authorityRow: {
     display: 'flex',
     alignItems: 'center',
@@ -265,6 +370,38 @@ const styles: Record<string, React.CSSProperties> = {
   },
   authorityName: { fontSize: 11, fontWeight: 700, color: '#e2e8f0' },
   statusPill: { fontSize: 9.5, fontWeight: 600, marginTop: 2 },
+  enableBtn: {
+    background: 'rgba(15,23,42,0.6)',
+    border: '1px solid rgba(100,116,139,0.3)',
+    borderRadius: 6,
+    padding: '5px 10px',
+    fontSize: 10,
+    color: '#94a3b8',
+    fontWeight: 700,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  enableBtnOn: {
+    background: 'rgba(110,231,183,0.12)',
+    border: '1px solid rgba(110,231,183,0.4)',
+    color: '#6ee7b7',
+  },
+  enableStatus: {
+    fontSize: 10,
+    fontWeight: 700,
+    whiteSpace: 'nowrap',
+    padding: '5px 10px',
+  },
+  disagreeNote: {
+    fontSize: 9.5,
+    color: '#fbbf24',
+    background: 'rgba(251,191,36,0.08)',
+    border: '1px solid rgba(251,191,36,0.25)',
+    borderRadius: 6,
+    padding: '4px 8px',
+    margin: '0 0 6px',
+    lineHeight: 1.5,
+  },
   actionBtn: {
     background: 'rgba(15,23,42,0.6)',
     border: '1px solid rgba(100,116,139,0.3)',
