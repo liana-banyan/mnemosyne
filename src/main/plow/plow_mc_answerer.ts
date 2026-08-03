@@ -7615,6 +7615,11 @@ export async function runCanonicalPlowMcAnswer(
     return {
       ...decomposeAdvisoryResult,
       decomposeAdvisoryUsedAsLastResort: true,
+      // KN-BP143-2 B1b: this is a fall-through path too (chosenLetter=null reached the function's
+      // natural end) -- the ensemble still ran and produced real candidates before decompose's
+      // advisory letter won as last resort; carry them for the Coroner's per-candidate
+      // factVerdict persist, same as every other path below.
+      ...(ensembleCandidatesForTrace ? { ensembleCandidates: ensembleCandidatesForTrace } : {}),
       traceSummary:
         `${decomposeAdvisoryResult.traceSummary} | KN-BP142-2 Defect A: used as LAST-RESORT ` +
         `fallback -- full pipeline's own result was chosenLetter=null concordance=${concordance} ` +
@@ -7641,6 +7646,13 @@ export async function runCanonicalPlowMcAnswer(
     latencyMs: Date.now() - startMs,
     traceSummary,
     provenanceReceipts,
+    // KN-BP143-2 B1b: ensembleOutcome.candidates is populated on every return path of
+    // runAuthorityEnsemble (accept AND disagree/fall-through alike), unlike this field which
+    // was previously only attached on the accept branch above (~line 6437). This is the
+    // ordinary swarm/voter-arbitration fall-through result (qid 66/72/85/105/111's shape) --
+    // carry the same captured candidates through here too, using the outer-scoped
+    // ensembleCandidatesForTrace from B1a (undefined when the ensemble never ran).
+    ...(ensembleCandidatesForTrace ? { ensembleCandidates: ensembleCandidatesForTrace } : {}),
     ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
     ...(psionicConcurred ? { psionicConcurred } : {}),
     ...(psionicDiscorded ? { psionicDiscorded } : {}),
