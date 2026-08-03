@@ -1386,6 +1386,27 @@ export function assertCakeChoosePromptIsBlind(choosePrompt: string, cutTextsToEx
   }
 }
 
+/** KN-BP143-1 Defect 1 (CAKE SELF-PREFERENCE): an authority that is a DISPUTANT in this
+ *  adjudication -- its own cut is present in the pool, i.e. `judgeWasDisputant === true` on its
+ *  own cakeSelfPreferenceAudit entry -- is INELIGIBLE to judge/vote in the tally. Not
+ *  down-weighted: excluded entirely. This is exactly the defect the Cake Method was built to fix
+ *  in the first place (see runCakeMethodDisagreementResolution's own doc comment: "never a single
+ *  disputant judging its own dispute") -- KN-BP141-7 P1's cutter-equals-picker invariant
+ *  reintroduced it structurally, because every picker who can legally vote now always has a cut
+ *  of its own sitting in the very pool it is judging. Matched by pickerKey (never by array index)
+ *  so this stays correct even if a future edit decouples how `picks` and `audit` are built. Pure,
+ *  synchronous, exported so it is directly testable against real receipt-shaped input -- see
+ *  KN-BP143-1's own verification script. If EVERY picker turns out to be a disputant, the
+ *  returned array is empty and the caller's tally (tallyCakePicksWithAbstain) honestly ABSTAINS --
+ *  never widen this gate to force a pick. */
+export function filterCakePicksToEligibleJudges<T extends { pickerKey: string }>(
+  picks: T[],
+  audit: { pickerKey: string; judgeWasDisputant: boolean }[],
+): T[] {
+  const disputantPickerKeys = new Set(audit.filter((a) => a.judgeWasDisputant).map((a) => a.pickerKey));
+  return picks.filter((p) => !disputantPickerKeys.has(p.pickerKey));
+}
+
 /** A7: the final letter is the PLURALITY of picks. Ties fall through to abstain -- NEVER to
  *  whichever picker answered first (no positional/temporal tie-break of any kind). Pure. */
 export function tallyCakePicksWithAbstain(
@@ -2282,7 +2303,20 @@ export async function runCakeMethodDisagreementResolution(params: {
     ? selfPreferringCount / eligibleSelfPreferenceAudits.length
     : null;
 
-  const { chosenLetter, pickConvergence } = tallyCakePicksWithAbstain(picks.map((p) => p.pickedLetter));
+  // KN-BP143-1 Defect 1: exclude every disputant's vote from the tally -- see
+  // filterCakePicksToEligibleJudges's own doc comment. eligiblePicks can legitimately be empty
+  // (every real picker in the current architecture always cut too, per the P1 invariant above),
+  // in which case tallyCakePicksWithAbstain([]) honestly returns {chosenLetter: null,
+  // pickConvergence: 0} -- an ABSTAIN, never a forced pick.
+  const eligiblePicks = filterCakePicksToEligibleJudges(picks, cakeSelfPreferenceAudit);
+  if (eligiblePicks.length < picks.length) {
+    log(
+      `cake-method: ${picks.length - eligiblePicks.length} of ${picks.length} pick(s) EXCLUDED as ` +
+      `disputant judges (KN-BP143-1 Defect 1 -- an authority may not judge an adjudication it is ` +
+      `itself a party to) -- eligible voters: [${eligiblePicks.map((p) => p.pickerKey).join(', ') || 'NONE'}].`,
+    );
+  }
+  const { chosenLetter, pickConvergence } = tallyCakePicksWithAbstain(eligiblePicks.map((p) => p.pickedLetter));
   const cakeQuadrant = resolveCakeQuadrant(cutScatter, pickConvergence, picks.length);
   log(
     `cake-method result: chosenLetter=${chosenLetter ?? 'ABSTAIN'} cutScatter=${cutScatter} ` +
@@ -3333,6 +3367,75 @@ async function runAuthorityEnsemble(params: {
     };
   }
 
+  // KN-BP143-1 Defect 4 (THE `agree` PATH HAS NO CORRECTNESS GATE): the no-consensus scatter
+  // check earlier in this function (BP141-2 Task B NO-CONSENSUS-ANSWER-TYPE-BYPASS, above) only
+  // ever saw the PRE-SWARM candidate set -- the swarm has not fired yet at that point in this
+  // function, so its vote can never contribute to that computation, even though by THIS point it
+  // already has. If too few independent sources existed pre-swarm to clear solveNoConsensusFromScatter's
+  // own >=3-distinct-derivation-path gate (B2), that check trivially returned null and this
+  // function moved on -- meaning the swarm's own vote, once it arrives, can never get a second look
+  // from the SAME solver before a bare two-source concurrence (below) is allowed to accept.
+  // Real receipt evidence (run 030, qid 92, Critical Security Studies "referent object" question,
+  // correct answer E via its own explicit no-consensus option): the swarm-complete candidate set
+  // [user_perplexity:B, user_google:F, user_claude:J, specialist_swarm:B] scatters across 3
+  // distinct letters (B/F/J) with NO strict majority (B holds 2 of 4 -- exactly 50%, not >50%) --
+  // solveNoConsensusFromScatter's own B3/B4 gates would correctly recognize this as genuine
+  // no-consensus evidence for option E, but the code never gave it the chance: it fell straight
+  // into the swarm-augmented "2+ agree" branch below on perplexity+swarm's bare concurrence,
+  // discarding google's and claude's dissent entirely. Required behavior (this ticket): "two-source
+  // concurrence must not preempt a deterministic path that would otherwise fire... evaluate
+  // deterministic and scatter-fallback resolution BEFORE accepting bare concurrence." FIX: re-run
+  // the SAME solver, SAME independence-unit convention (resolveCakeDerivationPath), against the
+  // NOW-COMPLETE (swarm-included) candidate set, immediately BEFORE the swarm-augmented agreement
+  // check below ever gets to accept a bare concurrence. A null result here changes nothing (falls
+  // through to the existing branching, byte-for-byte); a non-null result is accepted with the SAME
+  // 'deterministic_compute' shape the pre-swarm call site above already uses. This can only ever
+  // ADD a correctly-gated deterministic accept ahead of a bare agree -- it never removes or weakens
+  // any existing accept path, and it never widens solveNoConsensusFromScatter's own B1-B4 gates.
+  try {
+    const independentSourcesPostSwarm: IndependentSourceVote[] = candidates.map((c) => ({
+      letter: c.letter,
+      derivationPath: resolveCakeDerivationPath(c),
+    }));
+    const noConsensusPostSwarm = solveNoConsensusFromScatter(researchQuery, mcOptions, independentSourcesPostSwarm);
+    if (noConsensusPostSwarm) {
+      log(
+        `no_consensus_from_scatter PROVED answer ${noConsensusPostSwarm.letter} from the ` +
+        `SWARM-COMPLETE independent-derivation-path scatter (KN-BP143-1 Defect 4: re-checked after ` +
+        `the swarm fired, before bare two-source concurrence could preempt it) -- ` +
+        `${noConsensusPostSwarm.trace}.`,
+      );
+      return {
+        chosenLetter: noConsensusPostSwarm.letter,
+        corroboration: 'deterministic_compute',
+        candidates,
+        acceptedCandidates: [{
+          authority: 'deterministic_compute',
+          letter: noConsensusPostSwarm.letter,
+          reasoning: noConsensusPostSwarm.trace,
+          sourceUrl: '',
+          method: 'no_consensus_from_scatter',
+        }],
+        adjudicationAttempted: false,
+        swarmFired: true,
+        swarmReceipt,
+        reasoningFactComputeReceipt,
+        deterministicOverride: {
+          letter: noConsensusPostSwarm.letter,
+          optionValue: NaN,
+          optionUnit: null,
+          computedValue: NaN,
+          computedUnit: null,
+          sourceExpression: noConsensusPostSwarm.trace,
+          source: 'question_expression',
+          method: 'no_consensus_from_scatter',
+        },
+      };
+    }
+  } catch (err) {
+    log(`no_consensus_from_scatter (post-swarm recheck, KN-BP143-1 Defect 4) threw (non-fatal, ensemble continues normally): ${err}`);
+  }
+
   // 2+ candidates (now possibly including the swarm) -- re-check for a 2+ agreement. Adding the
   // swarm's letter can turn a prior disagreement into a cross-validated accept.
   const byLetter = new Map<string, AuthorityEnsembleCandidate[]>();
@@ -3932,6 +4035,12 @@ export async function resolveDeterministicComputeOverride(
   // reached, whether or not its own gate fired, whether or not it decided -- see
   // EliminationCascadeFallbackReceipt's own field docs for the full attempted/decided distinction.
   cascadeFallback: EliminationCascadeFallbackReceipt | null;
+  // KN-BP143-1 Defect 2: the cascade's own candidate, ALWAYS reported here when it decided one --
+  // whether or not it was actually promoted into `deterministicOverride`/`finalLetter` (see the
+  // advisory-only gate at this tier's own call site above). Lets a caller/receipt/test see "what
+  // the eliminator would have said" even on a call where a real ensemble answer correctly kept it
+  // from firing. null whenever the tier was never reached or never decided.
+  cascadeAdvisoryCandidate: DeterministicComputeCandidate | null;
 }> {
   let deterministicOverride: DeterministicComputeCandidate | null = null;
 
@@ -4048,6 +4157,31 @@ export async function resolveDeterministicComputeOverride(
   // (compute_sidecar.ts hardcodes this -- confirmed by direct read), so it belongs alongside tier
   // (i)'s question-expression path, ahead of the four named solvers, unchanged from its historical
   // position.
+  //
+  // KN-BP143-1 Defect 3 ("DETERMINISTIC" COMPUTE IS NOT DETERMINISTIC): computeAnswer() is NOT one
+  // tier internally -- it tries THREE, in order, and reports which one actually fired via its own
+  // `computed.method`: (1) 'local_arithmetic' (extractArithmeticExpression + two independent
+  // hand-rolled evaluators cross-checked against each other -- genuinely pure/deterministic, no
+  // I/O), (2) 'model_derived_expression' (compute_sidecar.ts's computeViaModelExpression -- an
+  // OLLAMA CALL sampled at MODEL_EXPR_SAMPLE_TEMPERATURE = 0.3, by that constant's own doc comment
+  // "so the 3 samples can actually disagree" -- genuinely stochastic BY DESIGN), (3)
+  // 'wolfram_compute' (an external HTTP API this process does not control). The code below used to
+  // accept ALL THREE identically as `method: 'bare_value', source: 'question_expression'` -- i.e.
+  // it asserted a temperature-0.3 model sample was "the calculator," the exact false claim the
+  // public thesis ("computing gives you an answer that does not change overnight") depends on
+  // being true. Real receipt proof (qid 15, runs 035/036, identical question/options 26 minutes
+  // apart): 'bare_value'/'question_expression' returned J then C -- confirmed here that qid 15's
+  // text ("Jane Morrow gave a 60-day sight-draft...") contains no literal contiguous arithmetic
+  // expression at all (extractArithmeticExpression's own gate requires two-or-more numbers joined
+  // directly by an operator), so 'local_arithmetic' can only ever fail on it -- the ONLY way this
+  // tier could have produced a letter is via tier (2), the stochastic model sample. FIX: only
+  // 'local_arithmetic' may populate `deterministicOverride` here -- it is the only one of the three
+  // that is actually deterministic. A 'model_derived_expression' or 'wolfram_compute' result is
+  // silently discarded at this call site (never guessed into a letter, never labeled deterministic)
+  // -- the question correctly falls through to tier (iii) onward, and ultimately to the ensemble's
+  // own (separately audited) vote if nothing else fires. This never touches computeAnswer() itself
+  // (its self-consistency sampling still exists, still serves its own internal purpose) -- it only
+  // stops THIS caller from trusting a stochastic sample as a deterministic override.
   if (!deterministicOverride) {
     try {
       const computed = await computeAnswer(researchQueryForTiers, {
@@ -4056,7 +4190,15 @@ export async function resolveDeterministicComputeOverride(
         model: computeOpts.model,
         componentFacts: reasoningTexts,
       });
-      if (computed) {
+      if (computed && computed.method !== 'local_arithmetic') {
+        console.log(
+          `[plow_mc_answerer] resolveDeterministicComputeOverride: computeAnswer produced a value ` +
+          `via '${computed.method}' (KN-BP143-1 Defect 3: NOT genuinely deterministic -- only ` +
+          `'local_arithmetic' may become a deterministicOverride at this tier) -- discarded, next ` +
+          `tier tried. value=${computed.value} expression=${JSON.stringify(computed.expression)}.`,
+        );
+      }
+      if (computed && computed.method === 'local_arithmetic') {
         const matched = matchValueToOption(computed.value, mcOptions);
         if (matched) {
           deterministicOverride = {
@@ -4328,7 +4470,23 @@ export async function resolveDeterministicComputeOverride(
   // "read a number out of an authority's own reasoning text" last resort. `cascadeFallbackReceipt`
   // is reported unconditionally below (whether or not the gate fired, whether or not it decided) via
   // this function's own new `cascadeFallback` return field -- see that field's own doc comment.
+  //
+  // KN-BP143-1 Defect 2 (CASCADE FALLBACK CAN OVERRIDE A REAL ANSWER): unlike every OTHER tier in
+  // this function, this one does not derive a specific number from THIS question's own text via a
+  // named, checked solver -- it is elimination-by-ranking (C1-C8), and standing canon is explicit
+  // that every eliminator ships ADVISORY ONLY: naive elimination discards the correct key in 61 of
+  // 497 measured questions (12.3%). An advisory component that can silently overwrite an already-
+  // computed real answer is a 12.3% random-damage generator, not a corroborator. THE FIX (mirrors
+  // the shape already shipped for decomposeAdvisoryResult, commit 36c6c45a): the candidate is
+  // STASHED into `cascadeAdvisoryCandidate`, never early-assigned into `deterministicOverride`
+  // here. It is promoted into `deterministicOverride` ONLY at this function's own natural end,
+  // gated on BOTH `!deterministicOverride` (no other tier already decided -- unchanged) AND
+  // `!ensembleChosenLetter` (the caller had no real answer of its own either -- see the promotion
+  // site below, just above `overrideFired`/`finalLetter`). A real ensemble answer's presence alone
+  // now makes this tier advisory-only for that call: it can fill an absence, it can never overwrite
+  // a result.
   let cascadeFallbackReceipt: EliminationCascadeFallbackReceipt | null = null;
+  let cascadeAdvisoryCandidate: DeterministicComputeCandidate | null = null;
   if (!deterministicOverride) {
     try {
       const cascadeResult = await runEliminationCascadeFormatIndependentFallback(
@@ -4340,11 +4498,22 @@ export async function resolveDeterministicComputeOverride(
       );
       cascadeFallbackReceipt = cascadeResult.receipt;
       if (cascadeResult.candidate) {
-        deterministicOverride = cascadeResult.candidate;
+        cascadeAdvisoryCandidate = cascadeResult.candidate;
       }
     } catch (err) {
       console.warn('[plow_mc_answerer] resolveDeterministicComputeOverride: runEliminationCascadeFormatIndependentFallback threw (non-fatal, ensemble letter kept):', err);
     }
+  }
+  // KN-BP143-1 Defect 2, the actual advisory-only promotion: consulted ONLY when the pipeline
+  // reaches its natural end with no chosen letter -- i.e. no earlier tier already produced a
+  // deterministicOverride (`!deterministicOverride`, unchanged gate) AND the caller itself had no
+  // real ensemble answer to protect (`!ensembleChosenLetter`). Kept at this tier's original
+  // position (immediately after its own call, still strictly before tier (viii)'s generic
+  // reasoning-text extraction below) so the ONLY behavior change from this fix is "never overwrite
+  // a real ensembleChosenLetter" -- every other ordering/priority relationship between tiers is
+  // byte-for-byte unchanged.
+  if (!deterministicOverride && cascadeAdvisoryCandidate && !ensembleChosenLetter) {
+    deterministicOverride = cascadeAdvisoryCandidate;
   }
 
   // Tier (viii) -- LAST RESORT, generic reasoning-text extraction: computeUnitAwareMatch's paths
@@ -4391,6 +4560,7 @@ export async function resolveDeterministicComputeOverride(
     deterministicOverride,
     advisorySignals: { vettingFlags: stage0VettingFlags, eliminationChart: stage1EliminationChart },
     cascadeFallback: cascadeFallbackReceipt,
+    cascadeAdvisoryCandidate,
   };
 }
 
