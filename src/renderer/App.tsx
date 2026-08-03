@@ -15,12 +15,9 @@ import { FrameModeIndicator } from './components/FrameModeIndicator';
 import { DashboardCornerAffordance } from './components/DashboardCornerAffordance';
 import { UpdateToast } from './components/UpdateToast';
 import { UpdateModal } from './components/UpdateModal';
-// unrouted BP135 -- see YOKE_35 (Phase 1: CleanShell is now the default 'dashboard' mount below;
-// MnemosyneTabView is no longer reachable from the shipped app. Kept per Rule 66 -- un-route, don't delete.)
-import { MnemosyneTabView } from './components/MnemosyneTabView';
-// unrouted BP135 -- see YOKE_35 (Phase 1: no longer mounted anywhere in App.tsx -- both the
-// 'dashboard' view and the '#/clean-shell' hash now mount CleanShell. Kept per Rule 66.)
-import { LeanShell } from './components/LeanShell';
+// unrouted KN-BP143-3 -- MnemosyneTabView and LeanShell (below) were already dead (never
+// rendered, see prior YOKE_35 comment history in git blame) but their imports lingered here.
+// Removing the imports per Rule 66 -- un-route, don't delete the files themselves.
 import { CleanShell } from './components/CleanShell';
 // BP138 Yoke 0.9.14 — new 5-tab Compass nav (Ask/Proof/Library/Social/More), reachable for
 // testing at #/compass. Sibling to CleanShell.tsx; does not touch it or either of its two
@@ -211,8 +208,8 @@ export default function App() {
   // BP139 Yoke 0.9.15: CompassShell (the BP138 Yoke 0.9.14 5-tab Ask/Proof/Library/Social/More
   // nav) is now the DEFAULT front door for ALL users, replacing CleanShell (the BP135 YOKE_35
   // default). CleanShell is NOT deleted -- it stays fully reachable at '#/clean-shell' (Rule 66:
-  // un-route, don't delete) and onExitToLean below wires the Compass "<- Lean" button straight to
-  // that existing route as the reversible escape hatch back to the old 13-tab shell.
+  // un-route, don't delete), but KN-BP143-3 D1 removes the in-app "<- Lean" escape hatch: one
+  // shell, no switcher. CleanShell is only reachable by typing the hash directly.
   if (view === 'dashboard') {
     return (
       <ErrorBoundary label="Compass Shell (BP139 Yoke 0.9.15 default)">
@@ -221,7 +218,6 @@ export default function App() {
           onModeChange={handleModeChange}
           onClose={() => window.close()}
           authState={authState}
-          onExitToLean={() => { window.location.hash = '#/clean-shell'; window.location.reload(); }}
         />
         {/* BP083 v0.3.2: update UI must mount in dashboard window (was overlay-only) */}
         <UpdateToast />
@@ -365,7 +361,6 @@ export default function App() {
           onModeChange={handleModeChange}
           onClose={() => window.close()}
           authState={authState}
-          onExitToLean={() => { window.location.hash = '#/dashboard'; window.location.reload(); }}
         />
         <UpdateToast />
         <UpdateModal />

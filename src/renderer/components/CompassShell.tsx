@@ -65,13 +65,12 @@ function BgStatusBar({ msg }: { msg: string | null }) {
 }
 
 function TabBar({
-  active, onSelect, isMember, onMemberCta, onExitToLean,
+  active, onSelect, isMember, onMemberCta,
 }: {
   active: CompassTab;
   onSelect: (t: CompassTab) => void;
   isMember: boolean;
   onMemberCta: () => void;
-  onExitToLean?: () => void;
 }) {
   return (
     <div style={{
@@ -112,18 +111,6 @@ function TabBar({
           Become a Member · $5/yr
         </button>
       )}
-      {onExitToLean && (
-        <button
-          onClick={onExitToLean}
-          title="Back to the standard Lean view"
-          style={{
-            background: 'none', border: '1px solid #1e2a38', borderRadius: 4, color: '#475569',
-            fontSize: 11, padding: '3px 8px', cursor: 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
-          }}
-        >
-          ← Lean
-        </button>
-      )}
     </div>
   );
 }
@@ -133,10 +120,9 @@ export interface CompassShellProps {
   onModeChange: (mode: FrameMode) => void;
   onClose: () => void;
   authState: AuthState | null;
-  onExitToLean?: () => void;
 }
 
-export function CompassShell({ currentMode, onModeChange, authState, onExitToLean }: CompassShellProps) {
+export function CompassShell({ currentMode, onModeChange, authState }: CompassShellProps) {
   const [activeTab, setActiveTab] = useState<CompassTab>('ask');
   const [moreSubView, setMoreSubView] = useState<MoreSubView>('menu');
   const [bgStatus, setBgStatus] = useState<string | null>(null);
@@ -228,7 +214,7 @@ export function CompassShell({ currentMode, onModeChange, authState, onExitToLea
           {memberToast}
         </div>
       )}
-      <TabBar active={activeTab} onSelect={setActiveTab} isMember={isMember} onMemberCta={handleMemberCta} onExitToLean={onExitToLean} />
+      <TabBar active={activeTab} onSelect={setActiveTab} isMember={isMember} onMemberCta={handleMemberCta} />
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         {activeTab === 'ask' && <AskHomeTab onNavigate={handleNavigate} />}
         {activeTab === 'proof' && <ProofTab onNavigate={handleNavigate} authState={authState} />}
