@@ -43,12 +43,19 @@
 
 import { writeVerifiedEblet, loadAllVerifiedEblets } from '../mnem_eblet_store';
 
-/** Minimal structural shape this module actually reads from a compute-success result. Any of
- *  DeterministicComputeCandidate (plow_mc_answerer.ts) / ComputeSidecarResult / UnitAwareComputeResult
- *  (compute_sidecar.ts) already satisfy this -- callers pass the real result object directly, no
- *  adapter needed, and this module simply ignores every field on it other than `method`. */
+/** Minimal structural shape this module actually reads from a compute-success result. Any
+ *  DeterministicComputeCandidate (plow_mc_answerer.ts) already satisfies this -- callers pass the
+ *  real result object directly, no adapter needed, and this module simply ignores every field on
+ *  it other than `method` and `computeProvenance`.
+ *
+ *  KN-BP143-1b: `computeProvenance` added as a REQUIRED sibling to `method` -- see
+ *  AUTHORITY_EXTRACTED_METHODS's own doc comment below for why the previous method-name-only
+ *  design was itself a bare-string-equality risk this ticket's own trap section warns against.
+ *  Exactly as safe to read as `method` for this module's leak-safety argument above: a two-value
+ *  enum, never question content, never a computed value or letter. */
 export interface ComputeSuccessMethodOnly {
   method: string;
+  computeProvenance: 'literal_expression' | 'model_derived';
 }
 
 interface FormulaSpec {
@@ -172,18 +179,20 @@ const FORMULA_SPECS: Record<string, FormulaSpec> = {
   aircraft_lift_drag: AIRCRAFT_LIFT_DRAG_SPEC,
 };
 
-// BP-COMPUTE-HONEST-DEMOTE: these two method tags are, by construction, the ONLY two that
-// compute_sidecar.ts's computeUnitAwareMatch ever stamps with `source: 'reasoning_fact'` --
-// 'unit_reasoning_extraction' is path (a) (compute_sidecar.ts:889-905) and 'bare_value_match' is
-// path (c) (compute_sidecar.ts:914-930); every OTHER method tag in FORMULA_SPECS above is either
-// 'unit_expression'/'unit_aware' (path (b), always `source: 'question_expression'`) or one of the
-// four named solvers, which derive strictly from the question text + options and never carry a
-// 'reasoning_fact' source at all (see resolveDeterministicComputeOverride's tiers (iii)-(vi) in
-// plow_mc_answerer.ts). Encoding the check this way -- purely off `method`, a fixed 1:1 mapping --
-// means this module still never has to read (and this file's own leak-safety argument above still
-// never has to claim it reads) anything beyond `result.method`.
-const AUTHORITY_EXTRACTED_METHODS = new Set(['unit_reasoning_extraction', 'bare_value_match']);
-
+// KN-BP143-1b: this Set-of-method-names lookup is EXACTLY the "bare string equality" trap this
+// ticket's addendum warns against -- it was a fixed 1:1 mapping off `method` ONLY because, at the
+// time BP-COMPUTE-HONEST-DEMOTE was written, 'unit_reasoning_extraction' (path (a)) and
+// 'bare_value_match' (path (c)) happened to be the only two method tags compute_sidecar.ts's
+// computeUnitAwareMatch ever stamped with `source: 'reasoning_fact'`. That mapping was silently
+// invalidated the moment ANY other tier started constructing a DeterministicComputeCandidate with
+// a model_derived origin under a method name not in this Set -- which the consumer audit for this
+// ticket found is already true today (no_consensus_from_scatter, elimination_cascade_fallback,
+// and the set_membership tier all mint under their own method names, all model_derived, none in
+// this Set, so this lookup would have silently minted them as 'deterministic_compute' formula
+// eblets had any of them ever reached this function -- see plow_mc_answerer.ts's own per-tier
+// computeProvenance doc comments). Retired in favor of reading `result.computeProvenance`
+// directly, the same field ComputeSuccessMethodOnly above now requires from every caller -- no
+// method-name enumeration to silently drift out of sync ever again.
 const PROVENANCE_PREFIX = 'deterministic_compute:formula:';
 // Sibling prefix for the two AUTHORITY_EXTRACTED_METHODS above -- deliberately does NOT contain
 // the substring 'deterministic_compute', because mnem_eblet_store.ts's computeHonestVerification()
@@ -208,9 +217,10 @@ export type FormulaMintOutcome = 'minted' | 'duplicate' | 'skipped_no_spec' | 'e
  * (class:'component', corroboration:'deterministic_compute') for that result's `method`, unless
  * one already exists for that method or no safe general formula spec is registered for it.
  *
- * Reads ONLY `result.method` -- see this file's header for why that is the entire leak-safety
- * argument. Never throws; every failure mode (no spec, dedup hit, or a write/read error) resolves
- * to a returned outcome string, logged, with the caller's answer path completely unaffected.
+ * Reads ONLY `result.method` and `result.computeProvenance` -- see this file's header for why
+ * that pair is the entire leak-safety argument (KN-BP143-1b widened this from `.method` alone).
+ * Never throws; every failure mode (no spec, dedup hit, or a write/read error) resolves to a
+ * returned outcome string, logged, with the caller's answer path completely unaffected.
  */
 export async function mintFormulaEbletFromCompute(
   result: ComputeSuccessMethodOnly,
@@ -233,10 +243,13 @@ export async function mintFormulaEbletFromCompute(
       return 'skipped_no_spec';
     }
 
-    // BP-COMPUTE-HONEST-DEMOTE: `isAuthorityExtracted` is a pure lookup on `method` (see
-    // AUTHORITY_EXTRACTED_METHODS's own doc comment above) -- still reads nothing off `result`
-    // beyond `.method`, preserving this module's leak-safety argument unchanged.
-    const isAuthorityExtracted = AUTHORITY_EXTRACTED_METHODS.has(method);
+    // KN-BP143-1b: `isAuthorityExtracted` now reads `result.computeProvenance` directly instead
+    // of re-deriving it from a method-name Set (see this file's header comment for why that Set
+    // was itself a latent honesty bug). `result.computeProvenance` is exactly as safe to read as
+    // `.method` for this module's leak-safety argument -- a two-value enum, never question
+    // content -- so this preserves the "never reads anything beyond method" argument in spirit
+    // (now: "method + computeProvenance", both non-content fields).
+    const isAuthorityExtracted = result.computeProvenance === 'model_derived';
     const provenance = `${isAuthorityExtracted ? AUTHORITY_EXTRACTED_PROVENANCE_PREFIX : PROVENANCE_PREFIX}${method}`;
 
     const existing = await loadAllVerifiedEblets();
@@ -264,10 +277,9 @@ export async function mintFormulaEbletFromCompute(
       timestamp: Date.now(),
       class: 'component',
       reasoning: spec.reasoning,
-      // BP-COMPUTE-HONEST-DEMOTE: 'unit_reasoning_extraction'/'bare_value_match' are always
-      // reasoning_fact-sourced (see AUTHORITY_EXTRACTED_METHODS above) -- the general
-      // unit-conversion/tolerance-match TECHNIQUE this mints is still true and reusable, but it
-      // must not wear the 'deterministic_compute' label a real question-derived compute earns.
+      // BP-COMPUTE-HONEST-DEMOTE (KN-BP143-1b: now keyed off computeProvenance, see above) -- a
+      // model_derived result's general TECHNIQUE is still true and reusable, but it must not wear
+      // the 'deterministic_compute' label a real literal_expression compute earns.
       corroboration: isAuthorityExtracted ? 'authority_extracted_compute' : 'deterministic_compute',
     });
 

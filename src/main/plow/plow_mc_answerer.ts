@@ -1609,21 +1609,27 @@ export interface AuthorityEnsembleOutcome {
   deterministicOverride?: DeterministicComputeCandidate | null;
   /** BP-ECHO-NO-VOTE receipt/annotation, OPTIONAL/ADDITIVE. Populated ONLY when the pre-branch
    *  hoist check (right before the FAST PATH block below) found a DeterministicComputeCandidate
-   *  whose `source === 'reasoning_fact'` -- a real, checked compute, but one whose input quantity
-   *  was extracted from an authority's OWN reasoning/fact text rather than the question itself
-   *  (see 'deterministic_compute_reasoning_fact' on AuthorityEnsembleCandidate's `authority` union
-   *  for the full rationale). PRIOR behavior (BP-COMPUTE-HONEST-DEMOTE) pushed this into
-   *  `candidates` as an ordinary voting entry -- but that entry is a DERIVED RESTATEMENT of
-   *  whichever authority's text it was pulled from, so it always shares that authority's letter,
-   *  and letting it into `candidates` meant the same voice silently counted twice toward a 2+
-   *  "agree" (live receipt: candidates==[user_perplexity, deterministic_compute_reasoning_fact],
-   *  the second derived FROM the first -- the ensemble read it as independent corroboration when
-   *  it was an echo). THIS field is the fix: the reasoning_fact compute result is recorded HERE
-   *  (never pushed into `candidates`, so it can never enter concordance/agreement/adjudication
-   *  counting, and STRUCTURED_AUTHORITIES/hasStructuredCorroborator never see it either), purely
-   *  so the Coroner/trace can still see a compute ran and what it produced. See the log line at
-   *  its one push-site (runAuthorityEnsemble, right after the pre-branch hoist check) for the
-   *  human-readable equivalent of this same receipt. */
+   *  that is `model_derived` (originally written for `source === 'reasoning_fact'` alone -- a
+   *  real, checked compute whose input quantity was extracted from an authority's OWN reasoning/
+   *  fact text rather than the question itself; see 'deterministic_compute_reasoning_fact' on
+   *  AuthorityEnsembleCandidate's `authority` union for the full rationale. KN-BP143-1b: the
+   *  field's NAME still says `reasoningFact` for source-compat with every existing reader, but its
+   *  POPULATION condition is now `!isLiteralExpressionProvenance(det)`, which also catches
+   *  no_consensus_from_scatter/elimination_cascade_fallback candidates reaching this site --
+   *  neither is reasoning-fact-sourced in the original narrow sense, both are equally
+   *  model_derived and equally disqualified from voting for the same reason). PRIOR behavior
+   *  (BP-COMPUTE-HONEST-DEMOTE) pushed this into `candidates` as an ordinary voting entry -- but
+   *  that entry is a DERIVED RESTATEMENT of whichever authority/scatter it was pulled from, so it
+   *  always shares that source's letter, and letting it into `candidates` meant the same voice
+   *  silently counted twice toward a 2+ "agree" (live receipt: candidates==[user_perplexity,
+   *  deterministic_compute_reasoning_fact], the second derived FROM the first -- the ensemble read
+   *  it as independent corroboration when it was an echo). THIS field is the fix: the model_derived
+   *  compute result is recorded HERE (never pushed into `candidates`, so it can never enter
+   *  concordance/agreement/adjudication counting, and STRUCTURED_AUTHORITIES/
+   *  hasStructuredCorroborator never see it either), purely so the Coroner/trace can still see a
+   *  compute ran and what it produced. See the log line at its one push-site (runAuthorityEnsemble,
+   *  right after the pre-branch hoist check) for the human-readable equivalent of this same
+   *  receipt. */
   reasoningFactComputeReceipt?: {
     letter: string;
     method: string;
@@ -2796,6 +2802,17 @@ async function runAuthorityEnsemble(params: {
           sourceExpression: pseudocodeTrace.trace,
           source: 'question_expression',
           method: 'pseudocode_trace',
+          // KN-BP143-1b: the procedures table, the worked example, AND every option's own code
+          // segment are all stated verbatim in the question text (this solver's own gate --
+          // ASK_RE + PROCEDURE_TABLE_RE + WORKED_EXAMPLE_RE -- requires all three to be present).
+          // Execution is deterministic (no model call); the operands being executed are the
+          // question's own procedures against the question's own worked example. literal_expression.
+          computeProvenance: 'literal_expression',
+          computeProvenanceDetail:
+            'Procedure definitions, worked example, and every option\'s own code segment are all ' +
+            'read verbatim from the question text; the answer is which option\'s procedures, ' +
+            'executed exactly as stated, reproduce the worked example\'s own stated output -- no ' +
+            'operand from any authority\'s reasoning or a model sample.',
         },
       };
     }
@@ -2833,6 +2850,16 @@ async function runAuthorityEnsemble(params: {
         `set_membership PROVED answer ${setMembership.letter} against a grounded Fact eblet in the ` +
         `live substrate -- ensemble not consulted (answerType=${answerType}, ${setMembership.trace}).`,
       );
+      // KN-BP143-1b CONSUMER AUDIT FINDING (gate 5, NOT fixed this pass): same shape of finding as
+      // no_consensus_from_scatter's own early bypass elsewhere in this file -- a direct early
+      // return outside resolveDeterministicComputeOverride's own pipeline, not reached by this
+      // ticket's isLiteralExpressionProvenance demotion fix. This candidate's own
+      // computeProvenance (below) is model_derived per this ticket's judgment call (the canonical
+      // set is substrate-sourced, not question-verbatim); `corroboration: 'deterministic_compute'`
+      // here would carry the same conflated label if this ever fires. Currently DORMANT on the
+      // real substrate (loadGroundedSetMembershipFacts's own doc comment: zero `vault_export:fact:`
+      // eblets exist as of this ticket), so unlike no_consensus_from_scatter this is a reported
+      // structural gap, not yet an observed production mislabel.
       return {
         chosenLetter: setMembership.letter,
         corroboration: 'deterministic_compute',
@@ -2855,6 +2882,25 @@ async function runAuthorityEnsemble(params: {
           sourceExpression: setMembership.trace,
           source: 'question_expression',
           method: 'set_membership',
+          // KN-BP143-1b JUDGMENT CALL (reported per this ticket's own "needs deciding rather than
+          // assuming" discipline, same posture as gate 3's qid 33/qid 27 tracing): the deciding
+          // operand here is the CANONICAL ENUMERATED SET, and that set is NOT verbatim in the
+          // question text -- it comes from loadGroundedSetMembershipFacts(), a live-substrate read
+          // of a `vault_export:fact:`-provenance eblet. This is NOT a stochastic model sample (the
+          // read is deterministic and the fact was vault-curated, not freshly authority-extracted
+          // per question) -- structurally a different, likely more trustworthy, flavor of
+          // "not-question-derived" than qid 15's Ollama-sampled coincidence. The addendum's schema
+          // is binary with no third tier (mirrors the Rooting Rule's own deliberate exclusion of a
+          // middle tier), so this fails closed to model_derived: an operand traced to substrate/
+          // authority state rather than the question text may corroborate but must not root as a
+          // literal-expression proof under this taxonomy. Flagged for Bishop/Founder to ratify or
+          // to mint a third tier for "grounded-fact-derived" if that distinction matters later.
+          computeProvenance: 'model_derived',
+          computeProvenanceDetail:
+            'Canonical enumerated set (which options ARE/are NOT members) came from a vault-' +
+            'curated Fact eblet already in the live substrate, not from the question text itself ' +
+            '-- deterministic and vetted, but not question-verbatim, so it fails closed to ' +
+            'model_derived under this ticket\'s binary schema (see the judgment-call note above).',
         },
       };
     }
@@ -3052,7 +3098,17 @@ async function runAuthorityEnsemble(params: {
       // is even evaluated (the live density-question bug this Yoke closes: the calculator
       // silently re-stated user_perplexity's own wrong number as a pre-branch "deterministic"
       // verdict, discarding user_claude's correct C).
-      if (det.source !== 'reasoning_fact') {
+      // KN-BP143-1b: widened from `det.source !== 'reasoning_fact'` to
+      // isLiteralExpressionProvenance(det) -- the narrower string check only ever caught tier
+      // (i)'s own reasoning-text-extraction path. It structurally could NOT catch
+      // no_consensus_from_scatter or elimination_cascade_fallback (both hardcode
+      // `source: 'question_expression'` even though neither derives from the question text --
+      // see each tier's own computeProvenance doc comment above), so either one could reach this
+      // branch and short-circuit-return as a pre-branch 'deterministic_compute_override' before
+      // this ticket, structurally the SAME 1803828c-shaped miss the addendum's own trap section
+      // warns about, one layer up. isLiteralExpressionProvenance closes that gap for every tier at
+      // once, fails closed on any future tier this audit missed.
+      if (isLiteralExpressionProvenance(det)) {
         log(
           `deterministic compute override fired PRE-BRANCH (${det.method}: ${det.sourceExpression} -> ` +
           `${det.computedValue}${det.computedUnit ? ' ' + det.computedUnit : ''}) -> ${det.letter} -- ` +
@@ -3075,13 +3131,18 @@ async function runAuthorityEnsemble(params: {
           deterministicOverride: det,
         };
       }
-      // BP-ECHO-NO-VOTE: source === 'reasoning_fact' -- a real, checked compute, but its input
-      // quantity was extracted from an authority's OWN reasoning/fact text (`hoistReasoningTexts`,
-      // i.e. `candidates.map(c => c.reasoning)`), so it is a DERIVED RESTATEMENT of whichever
-      // authority it was pulled from, not independent evidence. PRIOR behavior here (BP-COMPUTE-
-      // HONEST-DEMOTE) pushed this into `candidates` as an "ordinary" voting entry -- but because
-      // it always shares the letter of the authority it was extracted from, that let the SAME
-      // voice count twice toward a 2+ "agree" (live receipt: candidates ended up
+      // BP-ECHO-NO-VOTE: !isLiteralExpressionProvenance(det) -- a real, checked compute, but at
+      // least one deciding operand did not trace to the question text (originally this was
+      // written for source === 'reasoning_fact' alone -- an authority's OWN reasoning/fact text,
+      // `hoistReasoningTexts`, i.e. `candidates.map(c => c.reasoning)` -- but KN-BP143-1b widened
+      // the check to isLiteralExpressionProvenance, which ALSO now catches no_consensus_from_scatter/
+      // elimination_cascade_fallback candidates reaching this site with a misleadingly-hardcoded
+      // `source: 'question_expression'` -- see each tier's own computeProvenance doc comment for
+      // why `source` alone cannot be trusted here any more). Either way it is a DERIVED
+      // RESTATEMENT of something else's output, not independent evidence. PRIOR behavior here
+      // (BP-COMPUTE-HONEST-DEMOTE) pushed this into `candidates` as an "ordinary" voting entry --
+      // but because it always shares the letter of the authority/scatter it was derived from, that
+      // let the SAME voice count twice toward a 2+ "agree" (live receipt: candidates ended up
       // [user_perplexity, deterministic_compute_reasoning_fact], the second derived FROM the
       // first -- an echo counted as corroboration). FIX: record it in `reasoningFactComputeReceipt`
       // ONLY (see that field's own doc comment on AuthorityEnsembleOutcome) -- it never enters
@@ -3093,9 +3154,9 @@ async function runAuthorityEnsemble(params: {
       log(
         `deterministic compute ran PRE-BRANCH (${det.method}: ${det.sourceExpression} -> ` +
         `${det.computedValue}${det.computedUnit ? ' ' + det.computedUnit : ''}) -> ${det.letter} but ` +
-        `source=reasoning_fact (extracted from an authority's own reasoning text, not the question -- ` +
-        `no independent grounding) -- recorded as a receipt ONLY, NOT pushed into the voting candidate ` +
-        `list (candidates so far, unaffected: [${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}]).`,
+        `computeProvenance=model_derived (${det.computeProvenanceDetail}) -- recorded as a receipt ` +
+        `ONLY, NOT pushed into the voting candidate list (candidates so far, unaffected: ` +
+        `[${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ') || 'none'}]).`,
       );
       reasoningFactComputeReceipt = {
         letter: det.letter,
@@ -3137,6 +3198,23 @@ async function runAuthorityEnsemble(params: {
         `independent-derivation-path scatter -- swarm/adjudication not consulted (answerType=${answerType}, ` +
         `${noConsensus.trace}).`,
       );
+      // KN-BP143-1b CONSUMER AUDIT FINDING (gate 5, NOT fixed this pass, reported per the
+      // addendum's own "report even if you do not change it" mandate): this is a direct early
+      // return, structurally separate from resolveDeterministicComputeOverride's own
+      // deterministicOverride pipeline -- it is NOT covered by this ticket's isLiteralExpressionProvenance
+      // demotion fix at the pre-branch-hoist/Stage-F2 sites below, because it never reaches either
+      // one. `corroboration: 'deterministic_compute'` here is the SAME conflated label this whole
+      // ticket exists to split: this candidate's own computeProvenance (just above) is
+      // model_derived (the deciding evidence is the ensemble's OWN candidate scatter, not the
+      // question text), yet the string this function returns is byte-identical to a genuine
+      // literal_expression proof's. NOT HYPOTHETICAL: answer_coroner.ts's own run-031 empirical
+      // note (question_id 92) documents this exact path firing in production with
+      // corroboration='deterministic_compute'. Restructuring this early-bypass's control flow (to
+      // demote rather than short-circuit, mirroring BP-ECHO-NO-VOTE's own receipt-only pattern) is
+      // out of scope for this ticket's blast radius -- it would also require coordinated changes
+      // to rooting_rule.ts's classifyCorroborationTier and answer_coroner.ts's own
+      // isDeterministicCompute check, neither of which this ticket's five verification gates
+      // exercise. Recommend a dedicated follow-up ticket.
       return {
         chosenLetter: noConsensus.letter,
         corroboration: 'deterministic_compute',
@@ -3159,6 +3237,21 @@ async function runAuthorityEnsemble(params: {
           sourceExpression: noConsensus.trace,
           source: 'question_expression',
           method: 'no_consensus_from_scatter',
+          // KN-BP143-1b (see the post-swarm-recheck no_consensus_from_scatter site below for the
+          // fuller version of this same rationale -- kept in sync deliberately): the deciding
+          // input is `independentSourcesForNoConsensus`, i.e. the ENSEMBLE'S OWN candidates
+          // (perplexity/google/browser-LLM/Wolfram, each an authority or model output) scattering
+          // across 3+ distinct letters -- not an operand read from the question text. `source:
+          // 'question_expression'` above is honestly wrong for this tier (a pre-existing label the
+          // ticket's own thesis names exactly this class of defect); computeProvenance is the
+          // correction. This candidate may still corroborate/be recorded; per gate 2/isLiteral
+          // ExpressionProvenance it may never independently root or override a settled answer.
+          computeProvenance: 'model_derived',
+          computeProvenanceDetail:
+            'Deciding evidence is the ensemble\'s OWN scatter of independent-derivation-path ' +
+            'candidates (other authorities\' and models\' own answers) reaching no majority on a ' +
+            'question that also offers an explicit no-consensus option -- every operand here is ' +
+            'another authority/model\'s output, not the question text.',
         },
       };
     }
@@ -3405,6 +3498,12 @@ async function runAuthorityEnsemble(params: {
         `the swarm fired, before bare two-source concurrence could preempt it) -- ` +
         `${noConsensusPostSwarm.trace}.`,
       );
+      // KN-BP143-1b CONSUMER AUDIT FINDING (gate 5, NOT fixed this pass): same finding as this
+      // solver's own pre-swarm bypass above -- a direct early return outside
+      // resolveDeterministicComputeOverride's own pipeline, so this ticket's
+      // isLiteralExpressionProvenance demotion fix does not reach it. `corroboration:
+      // 'deterministic_compute'` here is the same conflated label the addendum exists to split;
+      // see the pre-swarm bypass's own fuller note above (kept in sync deliberately).
       return {
         chosenLetter: noConsensusPostSwarm.letter,
         corroboration: 'deterministic_compute',
@@ -3429,6 +3528,20 @@ async function runAuthorityEnsemble(params: {
           sourceExpression: noConsensusPostSwarm.trace,
           source: 'question_expression',
           method: 'no_consensus_from_scatter',
+          // KN-BP143-1b: real receipt confirming this is not hypothetical -- answer_coroner.ts's
+          // own run-031 empirical note (question_id 92) shows this exact tier firing with
+          // corroboration='deterministic_compute' in production, structurally indistinguishable
+          // from a genuine literal_expression proof in every existing receipt field. The deciding
+          // input is `independentSourcesPostSwarm` -- the SWARM-COMPLETE candidate scatter, i.e.
+          // other authorities'/models' own answers -- never the question text. model_derived: may
+          // be recorded and may corroborate (this tier already only fires on genuine 3+-distinct-
+          // derivation-path, no-majority scatter -- a real, meaningful signal), but per gate 2 must
+          // never independently root or override through the deterministic-override path.
+          computeProvenance: 'model_derived',
+          computeProvenanceDetail:
+            'Deciding evidence is the SWARM-COMPLETE independent-derivation-path scatter -- other ' +
+            'authorities\' and models\' own answers reaching no majority -- re-checked after the ' +
+            'swarm fired, never an operand read from the question text itself.',
         },
       };
     }
@@ -3799,6 +3912,23 @@ async function runEliminationCascadeFormatIndependentFallback(
             source: 'question_expression',
             method: 'elimination_cascade_fallback',
             cascadeFiredAfterParserMiss: true,
+            // KN-BP143-1b: the deciding quantity (chosenQuantity) is COMPOSED and DISPATCHED --
+            // either to a real browser authority (Perplexity, via bridge, C7) or to the local
+            // Ollama model -- never read off the question text by this mechanism itself (that is
+            // exactly why every NAMED parsing solver is tried first, per this tier's own position
+            // documented above: those solvers derive from the question, this one asks someone/
+            // something else). SymPy (runSympyArithmetic) verifies the RETURNED expression
+            // evaluates correctly -- it verifies arithmetic, not truth, and never verifies that the
+            // quantity itself is correct or that it came from the question. `source:
+            // 'question_expression'` above is honestly wrong for this tier for the same reason as
+            // no_consensus_from_scatter's own note elsewhere in this file; computeProvenance is
+            // the correction. May corroborate; per gate 2 must never independently root/override.
+            computeProvenance: 'model_derived',
+            computeProvenanceDetail:
+              `Deciding quantity ${chosenQuantity} was obtained by dispatching a FRESHLY COMPOSED ` +
+              `query to ${chosenSourceLabel} (SymPy-verified=${chosenSympyVerified}, meaning ` +
+              'arithmetic-checked, not truth-checked) -- never read off the question text, which ' +
+              'is the entire reason every named parsing solver is tried first, ahead of this tier.',
           },
           receipt: {
             attempted: true,
@@ -3956,8 +4086,88 @@ async function runEliminationCascadeFormatIndependentFallback(
       source: 'question_expression',
       method: 'elimination_cascade_fallback',
       cascadeFiredAfterParserMiss: true,
+      // KN-BP143-1b: same rationale as the C3/C5 shortcut leg above -- the deciding evidence here
+      // is a most-to-least/least-to-most RANKING dispatched to a model (local Ollama, plus a C7
+      // capture attempt to a real browser authority when a bridge is supplied), gated only on
+      // BIDIRECTIONAL SELF-CONSISTENCY (the two orderings agreeing with each other), never on
+      // agreement with anything read from the question text. Self-consistency is not truth --
+      // model_derived: may corroborate, per gate 2 must never independently root/override.
+      computeProvenance: 'model_derived',
+      computeProvenanceDetail:
+        `Deciding evidence is a most-to-least/least-to-most option RANKING dispatched to a model ` +
+        `(bidirectionally self-consistent: ${consistency.trace}) -- ranking language and preference ` +
+        'are supplied by the model, never read verbatim off the question text.',
     },
     receipt: { attempted: true, decided: true, gate, tierUsed: 'c1_c4_ranking', consistency, sourceCaptures, gomJabbarG5Advisory, trace },
+  };
+}
+
+// KN-BP143-1b (Bishop ADDENDUM A, prompted by Knight's own gate 5 tracing on KN-BP143-1): the
+// label conflation this ticket exists to close. `source`/`method` above answer "which tier
+// produced this," never "were the operands this tier used actually verbatim in the question."
+// qid 27 (wood density) and qid 15 (60-day sight-draft) both carried the IDENTICAL
+// method='bare_value'/source='question_expression' label pre-KN-BP143-1 -- qid 15 flipped J-then-
+// C 26 minutes apart on identical input (genuinely stochastic, tier (ii)'s model_derived_expression
+// path), while qid 27's own pre-fix answer was ALSO riding that same stochastic path and only
+// happened to land correctly, run after run, until it didn't have to any more (KN-BP143-1 Defect 3
+// closed the tier (ii) leak; qid 27 now correctly falls through to density_solver). One label, two
+// provenances, no receipt field able to tell them apart. Modeled on the Rooting Rule
+// (rooting_rule.ts): exactly two values, deliberately no third "trust it anyway" tier.
+//
+// NAMING NOTE (deviation from the addendum's suggested field name, reported per this ticket's own
+// gate 5 consumer-audit discipline): the addendum's own prose calls this `derivationPath`. This
+// file ALREADY has a field of that exact name -- `IndependentSourceVote.derivationPath` /
+// `CakeDerivationPath` (defined ~line 1207, consumed at 20+ call sites: resolveCakeDerivationPath,
+// cakeCuts/cakePicks, minorityCutsOverridden, etc.) -- an entirely unrelated concept: WHICH
+// independence-unit (browser:user_perplexity / local_orchestrator:pick / deterministic_solver:*)
+// cast a given vote, for the Cake Method's own quorum/independence accounting. Reusing the same
+// field name for a second, unrelated meaning on a different interface would recreate this exact
+// ticket's own bug class one layer up -- a shared label covering two different things, this time
+// at the field-name layer instead of the value layer. Named `computeProvenance` /
+// `computeProvenanceDetail` instead; flagged here for Bishop/Founder to ratify or rename.
+export type ComputeProvenance = 'literal_expression' | 'model_derived';
+
+/** THE FIX, gate 4's fail-closed default lives here: literal_expression may root a
+ *  deterministic-override decision (become finalLetter, earn verified:true, mint a formula/method
+ *  eblet); model_derived may be recorded and may corroborate, but per this function's own
+ *  ONLY-CALLER-SITES-BELOW discipline, must never independently decide/override through the
+ *  deterministic-override path. Fails closed by construction: every consumer below tests
+ *  `=== 'literal_expression'` (never `!== 'model_derived'`), so a third, future, unanticipated
+ *  value -- or an absent field on some caller this audit missed -- reads as model_derived, never
+ *  as literal_expression. Absence of proof is not proof (BP139 computeHonestVerification
+ *  precedent, cited verbatim in the addendum). */
+export function isLiteralExpressionProvenance(
+  candidate: Pick<DeterministicComputeCandidate, 'computeProvenance'> | null | undefined,
+): boolean {
+  return !!candidate && candidate.computeProvenance === 'literal_expression';
+}
+
+/** Tier (i)/(viii)'s shared classifier: computeUnitAwareMatch (compute_sidecar.ts) reports
+ *  `source: 'question_expression'` for its own path (b) (a unit-bearing expression literally
+ *  contiguous in the QUESTION text -- every operand traced to the question, literal_expression) and
+ *  `source: 'reasoning_fact'` for paths (a)/(c) (a quantity pulled out of an authority's own
+ *  reasoning/fact text -- an operand supplied by an authority's output, model_derived, exactly
+ *  pattern (b) in the addendum's own two-provenance framing). Derived dynamically off the REAL
+ *  returned `source`, never assumed from which tier called it -- tier (viii) re-tries path (b)
+ *  internally too (harmless dead code path per that tier's own doc comment), so a defensive dynamic
+ *  check here is correct even though tier (viii) in practice only ever reaches path (a)/(c). */
+function classifyUnitAwareComputeProvenance(source: string): { computeProvenance: ComputeProvenance; computeProvenanceDetail: string } {
+  if (source === 'question_expression') {
+    return {
+      computeProvenance: 'literal_expression',
+      computeProvenanceDetail:
+        'Unit-bearing expression (computeUnitAwareMatch path (b)) was literally contiguous in the ' +
+        'question text -- every operand traced verbatim to the question, none from an authority\'s ' +
+        'reasoning or a model sample.',
+    };
+  }
+  return {
+    computeProvenance: 'model_derived',
+    computeProvenanceDetail:
+      `Deciding quantity was extracted from an authority's own reasoning/fact text ` +
+      `(computeUnitAwareMatch source='${source}', paths (a)/(c)), not the question itself -- a ` +
+      'derived restatement of whichever authority it was pulled from, not an independent literal ' +
+      'expression.',
   };
 }
 
@@ -3986,6 +4196,18 @@ export interface DeterministicComputeCandidate {
    *  named parser had already failed and this format-independent mechanism is what produced the
    *  final letter. */
   cascadeFiredAfterParserMiss?: boolean;
+  /** KN-BP143-1b (Bishop ADDENDUM A): REQUIRED, not optional -- see this ticket's own "fail closed
+   *  on a missing field" mandate. `source`/`method` above name WHICH tier answered; this names
+   *  WHETHER that tier's operands were verbatim question text (`literal_expression`, may root) or
+   *  drawn from a model/authority/substrate output (`model_derived`, may corroborate, may never
+   *  root). See isLiteralExpressionProvenance() just above for the one predicate every consumer
+   *  gates on, and ComputeProvenance's own doc comment for the naming-collision note. */
+  computeProvenance: ComputeProvenance;
+  /** KN-BP143-1b: REQUIRED. Human-readable, per-operand provenance note -- addendum's own point 4,
+   *  "record which operands came from where." Never a fixed boilerplate string per tier: each call
+   *  site states, in its own words, which concrete operand(s) this specific result depended on and
+   *  why that does or does not satisfy literal_expression. */
+  computeProvenanceDetail: string;
 }
 export interface EliminationCascadeFallbackReceipt {
   attempted: boolean;
@@ -3997,6 +4219,30 @@ export interface EliminationCascadeFallbackReceipt {
   gomJabbarG5Advisory: { applied: false; wouldStrike: boolean; strickenSources: string[]; admissibleSources: string[]; tally: Record<string, number>; trace: string } | null;
   trace: string;
 }
+/**
+ * KN-BP143-1b CONSUMER-AUDIT WARNING, READ BEFORE CALLING THIS FUNCTION DIRECTLY:
+ *
+ * This function's own returned `overrideFired`/`finalLetter` are PRE-DEMOTION -- they reflect
+ * ONLY "did some tier produce a candidate whose letter differs from ensembleChosenLetter," with
+ * NO check of `deterministicOverride.computeProvenance` at all. A `model_derived` candidate (one
+ * or more deciding operands came from a model/authority output, never the question text) can and
+ * will set `overrideFired: true` here exactly as readily as a genuine `literal_expression` proof.
+ *
+ * The actual "is this candidate allowed to become the final answer" gate is NOT inside this
+ * function -- it lives one layer up, at this file's own two call sites
+ * (runAuthorityEnsemble's pre-branch hoist, tagged BP-ECHO-NO-VOTE; and runCanonicalPlowMcAnswer's
+ * Stage F2, tagged BP-COMPUTE-DEMOTE-SITE-2), both of which independently re-check
+ * `isLiteralExpressionProvenance(deterministicOverride)` on this function's own returned
+ * candidate before trusting `overrideFired`/`finalLetter` for anything.
+ *
+ * ANY new caller of this function -- a script, a test, a future refactor -- MUST apply that same
+ * check itself: call isLiteralExpressionProvenance(result.deterministicOverride) and decline to
+ * let the candidate decide anything when it returns false, exactly as both existing call sites do.
+ * Trusting `result.overrideFired` directly, without that check, reproduces the exact
+ * commit-`1803828c`-shaped bug this ticket's own addendum warns about, one layer up: a
+ * coincidence wearing a proof's label. See `isLiteralExpressionProvenance` (exported, just above
+ * this function) for the one-line predicate to call.
+ */
 export async function resolveDeterministicComputeOverride(
   researchQuery: string,
   mcOptions: McOption[],
@@ -4145,6 +4391,11 @@ export async function resolveDeterministicComputeOverride(
         sourceExpression: unitAware.sourceExpression,
         source: unitAware.source,
         method: 'unit_aware',
+        // KN-BP143-1b: componentFacts={} at this call site means only path (b) can ever fire here
+        // (source is always 'question_expression' in practice) -- classified dynamically off the
+        // real returned source anyway, defensively, rather than hardcoded, per
+        // classifyUnitAwareComputeProvenance's own doc comment.
+        ...classifyUnitAwareComputeProvenance(unitAware.source),
       };
     }
   } catch (err) {
@@ -4210,6 +4461,21 @@ export async function resolveDeterministicComputeOverride(
             sourceExpression: computed.expression,
             source: 'question_expression',
             method: 'bare_value',
+            // KN-BP143-1b: this is the ORIGINAL conflation the addendum was drafted about (qid 27
+            // vs qid 15, both once labeled identically here). The KN-BP143-1 Defect 3 fix (the
+            // `computed.method === 'local_arithmetic'` guard just above) already ensures ONLY the
+            // genuinely-deterministic extractArithmeticExpression path can reach this assignment --
+            // 'model_derived_expression' (temperature-0.3 Ollama sampling) and 'wolfram_compute'
+            // are discarded before this line runs. Given that guard held, every operand here is an
+            // arithmetic expression traced verbatim to the question text. literal_expression.
+            computeProvenance: 'literal_expression',
+            computeProvenanceDetail:
+              `Arithmetic expression "${computed.expression}" was extracted directly from the ` +
+              'question text via extractArithmeticExpression and evaluated by two independent ' +
+              'hand-rolled evaluators cross-checked against each other (computeAnswer\'s own ' +
+              '\'local_arithmetic\' method, the only one of its three internal paths that may ' +
+              'reach this assignment per the KN-BP143-1 Defect 3 guard above) -- no model sample, ' +
+              'no external API, no authority reasoning.',
           };
         }
       }
@@ -4235,6 +4501,14 @@ export async function resolveDeterministicComputeOverride(
           sourceExpression: scheduled.provenance,
           source: 'schedule_solver',
           method: 'schedule_amortization',
+          // KN-BP143-1b: solveScheduleProblem derives strictly from the question text (principal/
+          // payment/rate/period, all parsed off researchQueryForTiers) + mcOptions -- never from
+          // reasoningTexts, never a model call (see this tier's own doc comment above). literal_expression.
+          computeProvenance: 'literal_expression',
+          computeProvenanceDetail:
+            'Principal, payment amount, periodic rate, and period count were all parsed directly ' +
+            'from the question text by solveScheduleProblem; the amortization projection is pure ' +
+            'arithmetic over those question-derived values, no model call, no authority reasoning.',
         };
       }
     } catch (err) {
@@ -4264,6 +4538,16 @@ export async function resolveDeterministicComputeOverride(
           sourceExpression: density.trace,
           source: 'density_solver',
           method: 'density',
+          // KN-BP143-1b GATE 1 (the finding that prompted this whole ticket): solveDensityProblem
+          // derives strictly from the question text (mass + dimensions) + mcOptions -- never from
+          // reasoningTexts, never a model call (see this tier's own doc comment above). This is
+          // qid 27's real post-KN-BP143-1 resolution path -- genuinely literal_expression NOW,
+          // unlike its pre-fix stochastic ride through tier (ii)'s model_derived_expression path.
+          computeProvenance: 'literal_expression',
+          computeProvenanceDetail:
+            'Mass and the three linear dimensions were parsed directly from the question text by ' +
+            'solveDensityProblem; density = mass / volume is pure arithmetic over those question-' +
+            'derived values, unit-normalized, no model call, no authority reasoning.',
         };
       }
     } catch (err) {
@@ -4293,6 +4577,14 @@ export async function resolveDeterministicComputeOverride(
           sourceExpression: physics.trace,
           source: 'physics_solver',
           method: 'physics_kepler',
+          // KN-BP143-1b: solvePhysicsRelationProblem derives strictly from the question text
+          // (separation + masses) + mcOptions -- never from reasoningTexts, never a model call
+          // (see this tier's own doc comment above). literal_expression.
+          computeProvenance: 'literal_expression',
+          computeProvenanceDetail:
+            'Separation and the two orbiting masses were parsed directly from the question text ' +
+            'by solvePhysicsRelationProblem; Kepler\'s third law is solved algebraically over ' +
+            'those question-derived values, no model call, no authority reasoning.',
         };
       }
     } catch (err) {
@@ -4322,6 +4614,16 @@ export async function resolveDeterministicComputeOverride(
           sourceExpression: aircraft.trace,
           source: 'aircraft_solver',
           method: 'aircraft_lift_drag',
+          // KN-BP143-1b: solveAircraftLiftDragProblem derives strictly from the question text
+          // (weight, wing area, takeoff speed, air density, the two linear coefficient relations)
+          // + mcOptions -- never from reasoningTexts, never a model call (see this tier's own doc
+          // comment above). literal_expression.
+          computeProvenance: 'literal_expression',
+          computeProvenanceDetail:
+            'Weight, wing area, takeoff speed, air density, and the two linear lift/drag-' +
+            'coefficient relations were all parsed directly from the question text by ' +
+            'solveAircraftLiftDragProblem; the angle-of-attack/power solve is algebra over those ' +
+            'question-derived values, no model call, no authority reasoning.',
         };
       }
     } catch (err) {
@@ -4363,6 +4665,15 @@ export async function resolveDeterministicComputeOverride(
           sourceExpression: pseudocode.trace,
           source: 'question_expression',
           method: 'pseudocode_trace',
+          // KN-BP143-1b: same rationale as this solver's own answer-type-bypass call site earlier
+          // in this file -- procedures, worked example, and every option's code segment are all
+          // stated verbatim in the question text; execution is deterministic. literal_expression.
+          computeProvenance: 'literal_expression',
+          computeProvenanceDetail:
+            'Procedure definitions, worked example, and every option\'s own code segment are all ' +
+            'read verbatim from the question text; the answer is which option\'s procedures, ' +
+            'executed exactly as stated, reproduce the worked example\'s own stated output -- no ' +
+            'operand from any authority\'s reasoning or a model sample.',
         };
       }
     } catch (err) {
@@ -4408,6 +4719,16 @@ export async function resolveDeterministicComputeOverride(
           sourceExpression: setMembership.trace,
           source: 'question_expression',
           method: 'set_membership',
+          // KN-BP143-1b JUDGMENT CALL: same rationale as this solver's own answer-type-bypass call
+          // site earlier in this file -- the canonical enumerated set is a live-substrate
+          // (vault_export:fact:) read, not question-verbatim. Fails closed to model_derived under
+          // this ticket's binary schema; see that call site's fuller note.
+          computeProvenance: 'model_derived',
+          computeProvenanceDetail:
+            'Canonical enumerated set came from a vault-curated Fact eblet already in the live ' +
+            'substrate, not from the question text itself -- deterministic and vetted, but not ' +
+            'question-verbatim, so it fails closed to model_derived under this ticket\'s binary ' +
+            'schema.',
         };
       }
     } catch (err) {
@@ -4448,6 +4769,16 @@ export async function resolveDeterministicComputeOverride(
           sourceExpression: noConsensus.trace,
           source: 'question_expression',
           method: 'no_consensus_from_scatter',
+          // KN-BP143-1b: same rationale as this tier's own two call sites elsewhere in this file
+          // (runAuthorityEnsemble's early bypass and post-swarm recheck) -- deciding evidence is
+          // `independentSources`, the ensemble's OWN scatter of other authorities'/models' answers,
+          // never an operand read from the question text.
+          computeProvenance: 'model_derived',
+          computeProvenanceDetail:
+            'Deciding evidence is the ensemble\'s OWN scatter of independent-derivation-path ' +
+            'candidates (other authorities\' and models\' own answers) reaching no majority on a ' +
+            'question that also offers an explicit no-consensus option -- every operand here is ' +
+            'another authority/model\'s output, not the question text.',
         };
       }
     } catch (err) {
@@ -4545,6 +4876,11 @@ export async function resolveDeterministicComputeOverride(
           sourceExpression: unitAwareFromReasoning.sourceExpression,
           source: unitAwareFromReasoning.source,
           method: 'unit_aware',
+          // KN-BP143-1b: tier (i) above already tried path (b) and returned null, so a hit HERE is
+          // virtually always path (a)/(c) (source='reasoning_fact') -- but classified dynamically
+          // off the real returned source anyway, defensively, per classifyUnitAwareComputeProvenance's
+          // own doc comment, rather than assumed from this tier's position.
+          ...classifyUnitAwareComputeProvenance(unitAwareFromReasoning.source),
         };
       }
     } catch (err) {
@@ -4777,27 +5113,33 @@ async function writeComputeMethodEblet(params: {
       // literal below is advisory only (see writeAndReplicateSolvedAnswer's own doc comment for
       // why); `corroboration` below is what actually earns this write its honest
       // verified:true/verdict:'verified' via computeHonestVerification().
-      // BP-COMPUTE-HONEST-DEMOTE: `corroboration: 'deterministic_compute'` is only honest when
-      // `result.source === 'question_expression'` -- the quantity came from a literal expression
-      // in the QUESTION itself (or one of the four named solvers, which are equally
-      // question-only). When `result.source === 'reasoning_fact'` (compute_sidecar.ts paths
-      // (a)/(c): the quantity was extracted from an authority's own reasoning/fact text), the
-      // unit-conversion/tolerance-match still genuinely ran -- it is not a guess -- but it has no
-      // independent grounding of its own, so it earns the distinct, honest
-      // 'authority_extracted_compute' label instead, which computeHonestVerification()
-      // deliberately does NOT treat as a verified accept class.
+      // BP-COMPUTE-HONEST-DEMOTE: `corroboration: 'deterministic_compute'` is only honest when the
+      // quantity's operands are all traced to the QUESTION itself (or one of the four named
+      // solvers, which are equally question-only). KN-BP143-1b: widened from
+      // `result.source === 'reasoning_fact'` to `!isLiteralExpressionProvenance(result)` -- the
+      // narrower string check only ever caught tier (i)'s reasoning-text-extraction path; it
+      // could not catch no_consensus_from_scatter or elimination_cascade_fallback results reaching
+      // this writer (both hardcode `source: 'question_expression'` even though neither derives
+      // from the question text -- see each tier's own computeProvenance doc comment). When
+      // computeProvenance is model_derived, the unit-conversion/tolerance-match (or ranking/
+      // scatter-check) still genuinely ran -- it is not a guess -- but it has no independent
+      // grounding of its own, so it earns the distinct, honest 'authority_extracted_compute' label
+      // instead, which computeHonestVerification() deliberately does NOT treat as a verified
+      // accept class.
       verified: true,
       sha256: '',
       timestamp: Date.now(),
       class: 'component',
       // BP-CONTAMINATION-FIX: no more `question="${researchQuery...}"` -- that was the leak.
-      // `result.source` is a short generic tag ('question_expression' | 'reasoning_fact', see
-      // compute_sidecar.ts), never raw question text, so this stays method-general.
+      // `result.source` is a short generic tag, never raw question text, so this stays
+      // method-general. KN-BP143-1b: `result.computeProvenance` is equally general/safe to log
+      // (a two-value enum, no question content) -- added alongside source for the same "record
+      // which operands came from where" reason as the eblet's own class-signature above.
       reasoning:
-        `General derivation note: identify the quantity's source (source=${result.source}), unit-` +
-        `convert it into each option's own unit, and accept only a single tolerance-matching ` +
-        `option. Class signature: ${classSignature}.`,
-      corroboration: result.source === 'reasoning_fact' ? 'authority_extracted_compute' : 'deterministic_compute',
+        `General derivation note: identify the quantity's source (source=${result.source}, ` +
+        `computeProvenance=${result.computeProvenance}), unit-convert it into each option's own ` +
+        `unit, and accept only a single tolerance-matching option. Class signature: ${classSignature}.`,
+      corroboration: isLiteralExpressionProvenance(result) ? 'deterministic_compute' : 'authority_extracted_compute',
     });
     computeMethodEbletCheckedProvenance.add(provenance);
     return true;
@@ -5788,29 +6130,39 @@ export async function runCanonicalPlowMcAnswer(
           deterministicOverride = decision.deterministicOverride;
           overrideFired = decision.overrideFired;
           finalChosenLetter = decision.finalLetter;
-          // BP-COMPUTE-DEMOTE-SITE-2 (Bishop-ratified, same rule as the pre-branch hoist site):
-          // this POST-branch override can still carry `source === 'reasoning_fact'` here (the
-          // quantity was extracted from an authority's own reasoning text, not the question or a
-          // named solver) -- unlike the non-reasoning_fact sources (question_expression /
-          // schedule_solver / density_solver / physics_solver / aircraft_solver), which are the
-          // genuine deterministic floor and keep their veto UNCHANGED below, a reasoning_fact
-          // result has no independent grounding and must not be allowed to overturn a settled
-          // ensemble consensus. Declined here BEFORE the finalChosenLetter it would otherwise have
-          // produced (decision.finalLetter) is allowed to stick, by reverting finalChosenLetter to
-          // the ensemble's own letter and forcing overrideFired false -- every downstream field
-          // gated on `overrideFired && deterministicOverride` (the eblet writeback's
-          // reasoning/authority/sourceUrl/corroboration, traceSummary, provenanceReceipts) then
-          // honestly falls back to its own no-override path, i.e. the ensemble's genuine
-          // accepted-candidate authority/reasoning/sourceUrl, exactly as if no compute had run.
-          // `deterministicOverride` itself is left populated (not nulled) so nothing downstream
-          // that merely reads its fields (none do outside the overrideFired-gated branches today)
-          // is surprised by a null -- the compute's own result is still visible right here in this
-          // log line, it simply loses its veto.
-          if (overrideFired && deterministicOverride && deterministicOverride.source === 'reasoning_fact') {
+          // BP-COMPUTE-DEMOTE-SITE-2 (Bishop-ratified, same rule as the pre-branch hoist site).
+          // KN-BP143-1b: widened from `deterministicOverride.source === 'reasoning_fact'` to
+          // `!isLiteralExpressionProvenance(deterministicOverride)` -- the narrower string check
+          // only ever caught tier (i)'s own reasoning-text-extraction path; it structurally could
+          // NOT catch no_consensus_from_scatter or the elimination-cascade fallback reaching this
+          // site via `decision.deterministicOverride` (both hardcode `source: 'question_expression'`
+          // even though neither derives from the question text -- see each tier's own
+          // computeProvenance doc comment), so either could have reached
+          // `overrideFired && deterministicOverride` here, overturned a settled ensemble consensus,
+          // and tripped the KN-BP141-7 P2 hard invariant below as if it were a genuine proof.
+          // isLiteralExpressionProvenance closes that gap for every tier at once, and is BYTE-
+          // IDENTICAL for the reasoning_fact case this site already handled (source='reasoning_fact'
+          // classifies to computeProvenance='model_derived' 1:1, see classifyUnitAwareComputeProvenance).
+          // Every one of the non-literal sources named in the comment historically here
+          // (question_expression / schedule_solver / density_solver / physics_solver /
+          // aircraft_solver) are the genuine deterministic floor and keep their veto UNCHANGED
+          // below -- only a model_derived candidate is declined here BEFORE the finalChosenLetter
+          // it would otherwise have produced (decision.finalLetter) is allowed to stick, by
+          // reverting finalChosenLetter to the ensemble's own letter and forcing overrideFired
+          // false -- every downstream field gated on `overrideFired && deterministicOverride` (the
+          // eblet writeback's reasoning/authority/sourceUrl/corroboration, traceSummary,
+          // provenanceReceipts) then honestly falls back to its own no-override path, i.e. the
+          // ensemble's genuine accepted-candidate authority/reasoning/sourceUrl, exactly as if no
+          // compute had run. `deterministicOverride` itself is left populated (not nulled) so
+          // nothing downstream that merely reads its fields (none do outside the
+          // overrideFired-gated branches today) is surprised by a null -- the compute's own result
+          // is still visible right here in this log line, it simply loses its veto.
+          if (overrideFired && deterministicOverride && !isLiteralExpressionProvenance(deterministicOverride)) {
             console.log(
-              `[plow_mc_answerer] authority_extracted_compute declined to override settled ` +
-              `ensemble answer ${ensembleOutcome.chosenLetter} (source=reasoning_fact, no ` +
-              `independent grounding) -- ensemble result stands.`,
+              `[plow_mc_answerer] ${deterministicOverride.method} (model_derived: ` +
+              `${deterministicOverride.computeProvenanceDetail}) declined to override settled ` +
+              `ensemble answer ${ensembleOutcome.chosenLetter} -- no independent grounding, ` +
+              `ensemble result stands.`,
             );
             finalChosenLetter = ensembleOutcome.chosenLetter;
             overrideFired = false;
@@ -5833,15 +6185,16 @@ export async function runCanonicalPlowMcAnswer(
           // ABSOLUTELY... a referee must not be allowed to overrule one." This is a defensive,
           // belt-and-suspenders hard assertion on top of the assignment above (which already
           // guarantees this by construction: `finalChosenLetter = decision.finalLetter` a few
-          // lines up, for the exact non-reasoning_fact case checked here) -- it exists so the
-          // invariant is AUDITED, not merely believed. A genuine deterministic proof
-          // (source !== 'reasoning_fact', i.e. not a derived restatement of an authority's own
-          // reasoning) that fired must never end up losing to ensembleOutcome.chosenLetter,
-          // whether that letter came from plain agreement, a lone accept, OR the Cake Method's own
-          // pick-stage plurality (ensembleOutcome.corroboration === 'adjudicated'). Throws loudly
-          // rather than silently accepting a violated invariant, per this ticket's own "never
-          // widen a gate to force a pass" discipline.
-          if (overrideFired && deterministicOverride && deterministicOverride.source !== 'reasoning_fact') {
+          // lines up, for the exact literal_expression case checked here) -- it exists so the
+          // invariant is AUDITED, not merely believed. KN-BP143-1b: widened from
+          // `source !== 'reasoning_fact'` to `isLiteralExpressionProvenance(deterministicOverride)`
+          // for the SAME reason as the demotion check just above -- a genuine literal_expression
+          // proof that fired must never end up losing to ensembleOutcome.chosenLetter, whether that
+          // letter came from plain agreement, a lone accept, OR the Cake Method's own pick-stage
+          // plurality (ensembleOutcome.corroboration === 'adjudicated'). Throws loudly rather than
+          // silently accepting a violated invariant, per this ticket's own "never widen a gate to
+          // force a pass" discipline.
+          if (overrideFired && deterministicOverride && isLiteralExpressionProvenance(deterministicOverride)) {
             if (finalChosenLetter !== deterministicOverride.letter) {
               throw new Error(
                 'DETERMINISTIC PROOF OVERRULED BY A PICK (KN-BP141-7 P2 INVARIANT VIOLATION): ' +
@@ -5860,12 +6213,14 @@ export async function runCanonicalPlowMcAnswer(
         // const only covers the two string literals built inline at this call site). Neither the
         // pre-branch hoist path (ensembleOutcome.corroboration === 'deterministic_compute_override')
         // nor the post-branch override above can reach `overrideFired && deterministicOverride`
-        // with source==='reasoning_fact' any more (BP-COMPUTE-DEMOTE-SITE-2 declines it before
+        // with a model_derived candidate any more (BP-COMPUTE-DEMOTE-SITE-2 declines it before
         // overrideFired is ever set true for that case) -- so this const can still evaluate true
-        // for a reasoning_fact result, but every consumer below is itself gated on
+        // for a model_derived result, but every consumer below is itself gated on
         // `overrideFired && deterministicOverride`, which is false in that case, so the label is
         // computed but never actually used to describe an override that didn't happen.
-        const overrideIsAuthorityExtracted = !!deterministicOverride && deterministicOverride.source === 'reasoning_fact';
+        // KN-BP143-1b: widened from `deterministicOverride.source === 'reasoning_fact'` to
+        // `!isLiteralExpressionProvenance(deterministicOverride)`, same rationale as above.
+        const overrideIsAuthorityExtracted = !!deterministicOverride && !isLiteralExpressionProvenance(deterministicOverride);
         const overrideComputeLabel: 'deterministic_compute' | 'authority_extracted_compute' =
           overrideIsAuthorityExtracted ? 'authority_extracted_compute' : 'deterministic_compute';
         if (finalChosenLetter && ensembleOutcome.acceptedCandidates.length > 0) {
@@ -6004,6 +6359,13 @@ export async function runCanonicalPlowMcAnswer(
               (overrideFired && deterministicOverride
                 ? ` deterministicComputeOverride=true ensembleLetter=${ensembleOutcome.chosenLetter} ` +
                   `computeMethod=${deterministicOverride.method} computeSource=${deterministicOverride.source} ` +
+                  // KN-BP143-1b: the field this whole ticket exists to make legible in a receipt
+                  // without tracing code -- computeMethod/computeSource above name WHICH tier and
+                  // HOW, this names whether that tier's operands were question-verbatim. Only ever
+                  // reaches this string when overrideFired, i.e. already isLiteralExpressionProvenance
+                  // per the P2 invariant just above -- always 'literal_expression' here today; kept
+                  // dynamic (never hardcoded) so a future gap this audit missed still surfaces honestly.
+                  `computeProvenance=${deterministicOverride.computeProvenance} ` +
                   `computeLabel=${overrideComputeLabel}`
                 : ''),
             // BP-COMPUTE-HONEST-DEMOTE: `verified: !overrideIsAuthorityExtracted` -- a
@@ -6491,26 +6853,48 @@ export async function runCanonicalPlowMcAnswer(
       });
       if (unitAware) {
         onProgress?.(`compute-sidecar:${unitAware.method}`);
-        const unitEbletWritten = await writeComputeMethodEblet({ researchQuery, result: unitAware });
+        // KN-BP143-1b: this legacy (non-ensemble, Stage A.3) compute-sidecar path constructs its
+        // own DeterministicComputeCandidate-shaped record purely to satisfy writeComputeMethodEblet/
+        // mintFormulaEbletFromCompute's now-required computeProvenance field, reusing the SAME
+        // classifyUnitAwareComputeProvenance classifier tier (i)/(viii) already use -- one
+        // classification rule for computeUnitAwareMatch's source, never a second, divergent one.
+        const unitComputeResult: DeterministicComputeCandidate = {
+          ...unitAware,
+          ...classifyUnitAwareComputeProvenance(unitAware.source),
+        };
+        const unitEbletWritten = await writeComputeMethodEblet({ researchQuery, result: unitComputeResult });
         // BP141 (this Yoke): additionally shelve the reusable formula/tool for this method
         // (dedup'd, one per method) -- independent of, and never blocking, the write above.
-        await mintFormulaEbletFromCompute(unitAware);
+        await mintFormulaEbletFromCompute(unitComputeResult);
         const unitLatencyMs = Date.now() - startMs;
         const unitConcordance: ConcordanceClass = 'CONCORDANT';
         const unitBmv = computeBmvScore(1, 1, 1, 0, unitConcordance, 1, unitLatencyMs);
         // BP-COMPUTE-HONEST-DEMOTE: this legacy (non-ensemble, Stage A.3) compute-sidecar path
         // still returns `unitAware.letter` directly on any match, regardless of source -- that
         // early-return behavior is UNCHANGED this pass (out of scope, flagged for Bishop below).
-        // The one thing fixed here is the receipt's own `verified` claim: a reasoning_fact-sourced
-        // match (unitAware.source, see compute_sidecar.ts paths (a)/(c)) is a real, checked
-        // computation but has no independent grounding, so it must not claim `verified: true`.
+        // KN-BP143-1b CONSUMER AUDIT FINDING (gate 5): this is a THIRD site (beyond the two
+        // resolveDeterministicComputeOverride demote sites this ticket fixes) where a
+        // model_derived result can still unconditionally decide the final answer -- structurally
+        // the SAME gap the addendum's rule 2 exists to close, already named out-of-scope by a
+        // prior ticket rather than newly discovered here. Reported per this ticket's own "report
+        // even if you do not change it" mandate; NOT fixed this pass, to keep this ticket's own
+        // blast radius to the ensemble-path demotion sites the five verification gates actually
+        // exercise. The one thing fixed here (still true, still BP-COMPUTE-HONEST-DEMOTE's
+        // original scope) is the receipt's own `verified` claim: a model_derived match has no
+        // independent grounding and must not claim `verified: true`. Re-expressed off
+        // computeProvenance (isLiteralExpressionProvenance) rather than the bare
+        // `source === 'reasoning_fact'` string -- byte-identical outcome for this tier today (the
+        // only two sources computeUnitAwareMatch ever returns are question_expression/
+        // reasoning_fact, mapped 1:1 by classifyUnitAwareComputeProvenance above), but no longer a
+        // second, independently-drifting copy of that same classification rule.
+        const unitIsLiteral = isLiteralExpressionProvenance(unitComputeResult);
         const unitReceipt: ProvenanceReceipt = {
-          source: `${unitAware.source === 'reasoning_fact' ? 'authority_extracted_compute' : 'deterministic_compute'}:${unitAware.method}`,
+          source: `${unitIsLiteral ? 'deterministic_compute' : 'authority_extracted_compute'}:${unitAware.method}`,
           contentHash: createHash('sha256')
             .update(`${unitAware.sourceExpression}=${unitAware.computedValue}${unitAware.computedUnit ?? ''}`)
             .digest('hex')
             .slice(0, 16),
-          verified: unitAware.source !== 'reasoning_fact',
+          verified: unitIsLiteral,
         };
         const unitTraceSummary =
           `researchArmComputeSidecar=true answerType=computable method=${unitAware.method} ` +
