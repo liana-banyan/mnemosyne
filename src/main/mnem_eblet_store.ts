@@ -35,6 +35,11 @@ import { app } from 'electron';
 // results) and fail-soft contract. Does not create an import cycle -- semantic_soccerball.ts
 // only imports ollama_manager.ts.
 import { semantic_soccerball_emit, computeSemanticSimilarity } from './semantic_soccerball';
+// KN-BP142-10: the Rooting Rule (canon BP142) made structural. computeHonestVerification()
+// below no longer decides tier membership itself -- it delegates to this shared module so the
+// exact same tier logic also gates liana_cycle_runner.ts's mintLedgerMark(), and neither write
+// path can drift from the other. See rooting_rule.ts's own header for the full canon citation.
+import { classifyCorroborationTier, isRooted, rootedTraceLabel } from './rooting_rule';
 
 // ─── Eblet store roots (BP132 Yoke #21 B4 — portability fix) ──────────────────
 //
@@ -570,25 +575,32 @@ export interface VerifiedEbletEntry {
    *  local comparison (e.g. the mesh test's payload.correct_answer_letter) -- production Asks
    *  have no ground truth to compare against and must write 'unverified'. */
   verdict?: 'correct' | 'wrong' | 'verified' | 'unverified';
-  /** BP131 honesty fix, ADDITIVE/OPTIONAL. Caller-supplied hint about WHY this answer is being
-   *  offered as verified, consumed by computeHonestVerification() at write time (see below) --
-   *  never trusted blindly, only used to select among the three legitimate accept classes:
-   *  'concordant' (2+ independent authorities/voters genuinely agreed -- an ensemble CONCORDANT
-   *  accept, NOT a single_* accept), 'deterministic_compute' (a calculator/solver proved the
-   *  answer, no LLM/authority guess involved), 'coroner_verified' (answer_coroner.ts explicitly
-   *  ratified this as verified). 'single_authority' and 'coroner_unverified' are also accepted
-   *  values so a caller can be explicit about a NON-qualifying signal (lone uncorroborated
-   *  authority, or an explicit Coroner rejection) rather than leaving the field absent -- both
-   *  resolve to the same honest verified:false/verdict:'unverified' outcome as leaving it unset.
-   *  BP-COMPUTE-HONEST-DEMOTE addition: 'authority_extracted_compute' -- a real, checked
-   *  unit-conversion/tolerance-match ran (never a guess), but the quantity it converted was
-   *  extracted from an authority/LLM's own reasoning or fact text (compute_sidecar.ts
-   *  UnitAwareComputeResult's `source: 'reasoning_fact'`, paths (a)/(c)) rather than a literal
-   *  expression present in the question itself (path (b), which alone still earns
-   *  'deterministic_compute'). Deliberately NOT one of computeHonestVerification()'s three accept
-   *  classes below -- it has no independent grounding of its own (it is a derived restatement of
-   *  another candidate's claim), so it resolves to the same honest verified:false/verdict:
-   *  'unverified' outcome as 'single_authority'. */
+  /** BP131 honesty fix, ADDITIVE/OPTIONAL, tier semantics made structural by KN-BP142-10 (the
+   *  Rooting Rule, canon BP142; see rooting_rule.ts). Caller-supplied hint about WHY this answer
+   *  is being offered as verified, consumed by computeHonestVerification() at write time (see
+   *  below) via rooting_rule.ts's classifyCorroborationTier() -- never trusted blindly, only used
+   *  to select among the two tiers that ROOT (flip verified:true): 'deterministic_compute' (Tier
+   *  1 proven -- a calculator/solver proved the answer, no LLM/authority guess involved) and
+   *  'coroner_verified' (Tier 2 ground-truth-checked -- answer_coroner.ts explicitly ratified
+   *  this against a known answer key). 'concordant' (2+ independent authorities/voters
+   *  genuinely agreed -- an ensemble CONCORDANT accept, NOT a single_* accept) IS a real,
+   *  named tier (Tier 3, concordant), but per the BP142 Rooting Rule it never ROOTS: agreement
+   *  alone is not verification ("variance is not independence, and the independence unit is the
+   *  DERIVATION PATH, never the model or the machine"), so it resolves to the same honest
+   *  verified:false/verdict:'unverified' outcome as an uncorroborated single-authority guess --
+   *  the answer is still written and still retrievable, it simply is not ROOTED. 'single_authority'
+   *  and 'coroner_unverified' are also accepted values so a caller can be explicit about a
+   *  NON-qualifying signal (lone uncorroborated authority, or an explicit Coroner rejection)
+   *  rather than leaving the field absent -- both resolve to the same honest
+   *  verified:false/verdict:'unverified' outcome as leaving it unset. BP-COMPUTE-HONEST-DEMOTE
+   *  addition: 'authority_extracted_compute' -- a real, checked unit-conversion/tolerance-match
+   *  ran (never a guess), but the quantity it converted was extracted from an authority/LLM's own
+   *  reasoning or fact text (compute_sidecar.ts UnitAwareComputeResult's `source:
+   *  'reasoning_fact'`, paths (a)/(c)) rather than a literal expression present in the question
+   *  itself (path (b), which alone still earns 'deterministic_compute'). Deliberately unclassified
+   *  by classifyCorroborationTier() -- it has no independent grounding of its own (it is a
+   *  derived restatement of another candidate's claim), so it resolves to the same honest
+   *  verified:false/verdict:'unverified' outcome as 'single_authority'. */
   corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute' | 'authority_extracted_compute' | 'coroner_verified' | 'coroner_unverified';
   /** 0-1, derived from concordance/BMV at write time (see computeArgumentConfidence() in
    *  canonical_pipeline.ts) -- how much the writing pipeline itself trusted this fact. */
@@ -1707,8 +1719,9 @@ export async function runStartupIntegrityCheck(): Promise<StartupIntegrityResult
 }
 
 /**
- * BP131 honesty fix: the SINGLE centralized predicate that decides whether a write to
- * verified_eblets.jsonl may honestly carry `verified:true`/`verdict:'verified'`.
+ * BP131 honesty fix, made structural by KN-BP142-10 (the Rooting Rule, canon BP142): the SINGLE
+ * centralized predicate that decides whether a write to verified_eblets.jsonl may honestly carry
+ * `verified:true`/`verdict:'verified'`.
  *
  * Root cause this closes: VerifiedEbletEntry.verified used to be typed as the literal `true`,
  * which structurally FORCED every one of this file's ~20 call sites (plow_mc_answerer.ts,
@@ -1724,58 +1737,70 @@ export async function runStartupIntegrityCheck(): Promise<StartupIntegrityResult
  * whatever the caller passed for `verified`/`verdict`, so the two fields can never again
  * disagree and `verified:true` can never again mean "an LLM/authority guessed once."
  *
- * Accept classes (verified:true, verdict:'verified') -- exactly three, matching Founder-ratified
- * BP131 build spec:
- *   1. Deterministic-compute provenance: `provenance` contains 'deterministic_compute' or
- *      'schedule_amortization' (a calculator/solver proved the answer, no LLM guess involved),
- *      OR the caller explicitly passes `corroboration: 'deterministic_compute'`.
- *   2. Genuine multi-source concordance: caller passes `corroboration: 'concordant'` (2+
- *      independent authorities/voters actually agreed -- an ensemble CONCORDANT accept, never a
- *      single_* accept).
- *   3. Explicit Coroner ratification: caller passes `corroboration: 'coroner_verified'`
- *      (answer_coroner.ts's own verified verdict).
- * Reject class (verified:false, verdict:'unverified') -- the default/fail-closed outcome for
- * everything else, INCLUDING a lone single_google/single_perplexity/single_wolfram accept, an
- * explicit `corroboration: 'single_authority'` or `'coroner_unverified'`, or no corroboration
- * signal supplied at all. Fail-closed by design: absence of a qualifying signal must never be
- * silently upgraded to verified:true. BP-COMPUTE-HONEST-DEMOTE: `corroboration:
- * 'authority_extracted_compute'` also falls into this reject class, deliberately -- it is a real
- * checked computation with no independent grounding (see that literal's own doc comment above),
- * so callers must ALSO make sure `provenance` never contains the literal substring
- * 'deterministic_compute' for such a write (the `deterministicByProvenance` check just below is a
- * second, independent way to reach `accepted`, and would otherwise silently re-grant verified:true
- * regardless of this corroboration value).
+ * KN-BP142-10 SECOND HONESTY FIX, layered on top of the first: BP131's own three accept classes
+ * included `corroboration: 'concordant'` (2+ independent authorities/voters merely agreeing) as
+ * equal in weight to a deterministic-compute proof or an explicit Coroner ground-truth
+ * ratification. Founder's BP142 Rooting Rule canon settles this was never true equality --
+ * "variance is not independence, and the independence unit is the DERIVATION PATH, never the
+ * model or the machine. Two models are not two witnesses." KN-BP142-6 measured the live cost of
+ * treating them as equal: nine verified:true records for one MMLU-Pro question, none correct,
+ * four minted via a legitimate two-model concordant accept AFTER this file's own honesty fix had
+ * already landed. `verified:true` now REQUIRES the write to be ROOTED (see rooting_rule.ts) --
+ * Tier 1 (proven) or Tier 2 (ground-truth-checked) only. `corroboration: 'concordant'` still
+ * classifies to a real, named tier (Tier 3, concordant) but that tier is deliberately excluded
+ * from the ROOTED set, so it now resolves to the same honest verified:false/verdict:'unverified'
+ * outcome as an uncorroborated single_authority guess -- it is NOT rejected outright (the write
+ * still happens, the answer is still stored and still retrievable, per canon's "Tier 3 still
+ * answers" clause), it simply does not ROOT.
  *
- * ORTHOGONAL AXIS carve-out: `verdict` also carries a second, pre-existing, unrelated meaning --
- * 'correct'/'wrong' ground-truth grading against a TEST'S OWN answer key (mesh-test/benchmark
- * mode only, e.g. plow_mc_answerer.ts's verdictForLedger comparing the plow's chosenLetter to
- * testModeCorrectAnswerLetter). That is a real, already-truthful signal -- substrate_toggle.ts's
- * formatHit() reads verdict==='wrong' to inject a live "KNOWN-WRONG (avoid)" marker for future
- * voters, a genuine in-use feature. It must not be clobbered by this predicate: if the caller
- * supplies `verdict: 'correct'` or `'wrong'`, that value is preserved VERBATIM (never
- * overwritten to 'verified'/'unverified') -- `verified` is still independently computed from
- * corroboration/provenance as above, since "matched the test's answer key" and "was externally
- * corroborated" are different claims (a lucky single-authority guess that happens to match the
- * key is still not verified). The one invariant that must always hold is the task's actual
- * concern -- verified:true never paired with an honestly-unconfirmed verdict; 'correct'/'wrong'
- * are grading outcomes, not "unconfirmed", so this carve-out cannot reintroduce that bug.
+ * Tier classification (delegated to rooting_rule.ts's classifyCorroborationTier(), the ONE
+ * shared source of truth also consulted by liana_cycle_runner.ts's mintLedgerMark() write gate):
+ *   TIER 1 proven               : provenance contains 'deterministic_compute' or
+ *                                  'schedule_amortization', OR corroboration ===
+ *                                  'deterministic_compute'.
+ *   TIER 2 ground-truth-checked : corroboration === 'coroner_verified' (answer_coroner.ts's own
+ *                                  explicit ratification).
+ *   TIER 3 concordant           : corroboration === 'concordant'. Classified, never rejected as
+ *                                  malformed, but NEVER ROOTS (see rooting_rule.ts's isRooted()).
+ *   unclassified (null)         : corroboration === 'coroner_unverified' (an explicit Coroner
+ *                                  REJECTION, wins over a provenance-string deterministic match),
+ *                                  or 'single_authority'/'authority_extracted_compute'/undefined
+ *                                  with no deterministic provenance signal. Fail-closed by
+ *                                  design: absence of a qualifying signal must never be silently
+ *                                  upgraded to verified:true. BP-COMPUTE-HONEST-DEMOTE:
+ *                                  'authority_extracted_compute' stays unclassified deliberately
+ *                                  -- it is a real checked computation with no independent
+ *                                  grounding (see that literal's own doc comment above), so
+ *                                  callers must ALSO make sure `provenance` never contains the
+ *                                  literal substring 'deterministic_compute' for such a write.
+ *
+ * ORTHOGONAL AXIS carve-out (unchanged by KN-BP142-10): `verdict` also carries a second,
+ * pre-existing, unrelated meaning -- 'correct'/'wrong' ground-truth grading against a TEST'S OWN
+ * answer key (mesh-test/benchmark mode only, e.g. plow_mc_answerer.ts's verdictForLedger
+ * comparing the plow's chosenLetter to testModeCorrectAnswerLetter). That is a real,
+ * already-truthful signal -- substrate_toggle.ts's formatHit() reads verdict==='wrong' to inject
+ * a live "KNOWN-WRONG (avoid)" marker for future voters, a genuine in-use feature. It must not be
+ * clobbered by this predicate: if the caller supplies `verdict: 'correct'` or `'wrong'`, that
+ * value is preserved VERBATIM (never overwritten to 'verified'/'unverified') -- `verified` is
+ * still independently computed from the ROOTED tier check above, since "matched the test's
+ * answer key" and "was ROOTED via proven/ground-truth-checked corroboration" are different
+ * claims (a lucky single-authority guess that happens to match the key is still not ROOTED). The
+ * one invariant that must always hold is the task's actual concern -- verified:true never paired
+ * with an honestly-unconfirmed verdict; 'correct'/'wrong' are grading outcomes, not
+ * "unconfirmed", so this carve-out cannot reintroduce that bug.
  */
 export function computeHonestVerification(
   entry: Pick<VerifiedEbletEntry, 'provenance' | 'corroboration' | 'verdict'>,
 ): { verified: boolean; verdict: 'correct' | 'wrong' | 'verified' | 'unverified' } {
-  const provenance = entry.provenance ?? '';
-  const deterministicByProvenance =
-    provenance.includes('deterministic_compute') || provenance.includes('schedule_amortization');
+  const tier = classifyCorroborationTier(entry.corroboration, entry.provenance);
+  const verified = isRooted(tier);
 
-  const accepted =
-    entry.corroboration === 'coroner_verified' ||
-    entry.corroboration === 'concordant' ||
-    entry.corroboration === 'deterministic_compute' ||
-    // coroner_unverified is an explicit REJECTION and must win over a provenance-string match --
-    // checked first via the ternary ordering below, not here.
-    (entry.corroboration !== 'coroner_unverified' && deterministicByProvenance);
-
-  const verified = entry.corroboration === 'coroner_unverified' ? false : accepted;
+  // KN-BP142-10 verification (b): the ROOTED trace, verbatim, at the exact write path where
+  // `verified` is decided. Grep this file for "ROOTED" to find it.
+  console.log(
+    `[EbletStore] computeHonestVerification: corroboration=${entry.corroboration ?? '(none)'} ` +
+    `tier=${tier ?? '(unclassified)'} -> ${rootedTraceLabel(tier)} (verified=${verified})`,
+  );
 
   // Ground-truth grading carve-out (see doc comment above): preserve a real 'correct'/'wrong'
   // grade verbatim; only ever synthesize 'verified'/'unverified' when the caller did NOT supply
