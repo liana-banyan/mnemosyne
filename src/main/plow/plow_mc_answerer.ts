@@ -725,6 +725,58 @@ export interface CanonicalPlowMcResult {
    *  every other return path (legacy non-ensemble browser-authority accept, mesh-synergy,
    *  decompose, swarm-only) and on every pre-BP140 receipt. */
   ensembleCandidates?: AuthorityEnsembleCandidate[];
+  /** KN-BP144-1 Phase 1 ("the letter does not come from where we thought"), OPTIONAL, CLOSED
+   *  VOCABULARY, NO FREE TEXT. Answers "which code path actually produced chosenLetter", set AT
+   *  the assignment site itself (never re-derived after the fact from other fields -- doing so
+   *  would rebuild the exact defect this field exists to close: a receipt reader could not tell
+   *  qid 66/72/79/85/105's local 3-temp self-vote fall-through from a genuine authority-ensemble
+   *  accept, which is precisely how BP143 misattributed that fall-through's failures to
+   *  specialist_swarm for a full day).
+   *
+   *  'deterministic_compute_override' -- a calculator proved the letter, not a vote: covers BOTH
+   *    call sites of resolveDeterministicComputeOverride (the pre-branch hoist inside
+   *    runAuthorityEnsemble, and the post-accept override in this function), AND
+   *    runAuthorityEnsemble's own unconditional-on-answerType calculator bypasses (pseudocode_trace/
+   *    set_membership/no_consensus_from_scatter, corroboration:'deterministic_compute') -- these are
+   *    the SAME "the calculator answered, not a vote" bucket even though only the former is
+   *    literally resolveDeterministicComputeOverride; see KN-BP144-1_REPORT.md for this
+   *    interpretive choice. Also used for the legacy (pre-ensemble) Stage A.3 compute-sidecar
+   *    tiers (computeUnitAwareMatch/computeAnswer/solveScheduleProblem called directly, not
+   *    through resolveDeterministicComputeOverride) -- same rationale, flagged likewise.
+   *  'ensemble_accept' -- runAuthorityEnsemble returned a truthy chosenLetter via a genuine
+   *    authority-agreement path: 'agree', any 'single_*' lone accept, or
+   *    'lone_rejected_by_strictness' never reaching this (that is a null-chosenLetter path).
+   *  'cake_adjudicated' -- runCakeMethodDisagreementResolution converged on a plurality pick
+   *    (ensembleOutcome.corroboration === 'adjudicated').
+   *  'voter_concordance_fallthrough' -- the ensemble fell through with no letter (or never ran),
+   *    and computeLetterConcordance(voterLetters) on the line-7286 local 3-temperature self-vote
+   *    produced a non-null chosenLetter. THIS is the mechanism KN-BP144-1 exists to make legible.
+   *  'abstain' -- no letter, by any mechanism (relevance-gate/compute-fallthrough early abstains,
+   *    or the voter loop's own concordance coming back null).
+   *
+   *  Deliberately left UNSET (absent) on a small number of legacy/gated-off-by-default paths this
+   *  ticket's own 12-question gate set never exercises and that do not map onto this closed
+   *  vocabulary without misrepresenting the mechanism: production readback (a cache recall, not a
+   *  derivation), mesh-synergy single-authority-slice, the legacy (non-ensemble,
+   *  authorityEnsembleOn===false) Stage F2 browser-authority accept, and decompose-and-eliminate's
+   *  advisory-last-resort fallback (already flagged by its own decomposeAdvisoryUsedAsLastResort
+   *  field). See KN-BP144-1_REPORT.md for the full list and rationale -- never fabricated to force
+   *  a value onto a mechanism this vocabulary was not built to describe. */
+  letterSource?:
+    | 'deterministic_compute_override'
+    | 'ensemble_accept'
+    | 'cake_adjudicated'
+    | 'voter_concordance_fallthrough'
+    | 'abstain';
+  /** KN-BP144-1 Phase 1, OPTIONAL/ADDITIVE. Verbatim ensembleOutcome.corroboration, captured
+   *  UNCONDITIONALLY the moment the ensemble returns (accept AND every fall-through/disagree
+   *  path alike, including 'disagree' itself) -- present ONLY when authorityEnsembleOn was true
+   *  for this call, so its mere presence already answers "did the ensemble run at all", which
+   *  browserAuthorityCorroboration cannot (that field defaults to the SAME literal 'none' string
+   *  AuthorityEnsembleOutcome uses for "the ensemble ran and nobody answered", and is also
+   *  overwritten by the LEGACY non-ensemble branch with its own narrower corroboration vocabulary
+   *  -- see that field's own doc comment). Absent when authorityEnsembleOn was false/off. */
+  ensembleOutcomeCorroboration?: AuthorityEnsembleOutcome['corroboration'];
   /** BP137 Yoke v2b Stage D, extra requirement, OPTIONAL/ADDITIVE. True only when the new
    *  compute-fallthrough-no-facts abstain fired (classified computable, compute sidecar
    *  attempted and failed/no-match, AND zero facts were available for the voters -- whether
@@ -5471,6 +5523,11 @@ export async function runCanonicalPlowMcAnswer(
                 contentHash: (readbackExact.sha256 || createHash('sha256').update(readbackExact.question + readbackExact.answer).digest('hex')).slice(0, 16),
                 verified: true,
               }],
+              // KN-BP144-1 Phase 1: letterSource deliberately left UNSET -- a cache recall of an
+              // already-verified answer is not a derivation this ticket's closed vocabulary
+              // describes (not a vote, not a calculator, not the ensemble). Gated off by default
+              // (config.productionReadbackEnabled) and not exercised by this ticket's 12 gate
+              // questions. See KN-BP144-1_REPORT.md.
             };
           }
         }
@@ -5653,6 +5710,9 @@ export async function runCanonicalPlowMcAnswer(
         ...(meshSynergyResult.sourceUrl ? { provenanceUrl: meshSynergyResult.sourceUrl } : {}),
       }] : [],
       meshSynergyAssigned: assignedAuthority,
+      // KN-BP144-1 Phase 1: letterSource deliberately left UNSET -- a single assigned-authority
+      // slice is not one of this ticket's 5 mechanisms. Gated off by default
+      // (config.researchArmMeshSynergy) and not exercised by this ticket's 12 gate questions.
     };
   }
 
@@ -5780,6 +5840,12 @@ export async function runCanonicalPlowMcAnswer(
               verified: true,
               ...(r.sourceUrl ? { provenanceUrl: r.sourceUrl } : {}),
             })),
+          // KN-BP144-1 Phase 1: letterSource deliberately left UNSET -- decompose-and-eliminate is
+          // not one of this ticket's 5 mechanisms (it eliminates OPTIONS, not candidate SOURCES;
+          // see the ticket's own Phase 2 framing). This result is only ever used as an ADVISORY
+          // stash (attemptDecomposeAndEliminate's own contract) -- if it becomes the served
+          // answer, it does so via the last-resort return, which is separately flagged by
+          // decomposeAdvisoryUsedAsLastResort. Not exercised by this ticket's 12 gate questions.
         };
       }
       // decomposeResult is null OR chosenLetter is null (honest ABSTAIN / authority-empty):
@@ -5926,6 +5992,10 @@ export async function runCanonicalPlowMcAnswer(
             verified: false,
           }],
           psionicShortCircuit: true,
+          // KN-BP144-1 Phase 1: letterSource deliberately left UNSET -- Psionic's own predictive
+          // short-circuit is not one of this ticket's 5 mechanisms (already distinctly flagged by
+          // psionicShortCircuit above). Gated off by default; not exercised by this ticket's 12
+          // gate questions.
         };
       }
     }
@@ -5988,6 +6058,15 @@ export async function runCanonicalPlowMcAnswer(
   // trace line below treats as "fall back to the pre-existing legacy variables", so the flag-off/
   // legacy-branch case is byte-for-byte unchanged.
   let ensembleCandidatesForTrace: AuthorityEnsembleCandidate[] | undefined;
+  // KN-BP144-1 Phase 1: mirrors ensembleCandidatesForTrace's own outer-scope-capture pattern
+  // (KN-BP143-2 B1a) -- captured unconditionally the moment the ensemble returns, so every
+  // downstream return site (accept, decompose-last-resort, and the final voter-concordance
+  // fall-through) can carry the SAME real ensembleOutcome.corroboration through to the receipt,
+  // never recomputed or inferred from other fields. See CanonicalPlowMcResult.
+  // ensembleOutcomeCorroboration's own doc comment for why this is not redundant with
+  // browserAuthorityCorroboration (that variable is shared with, and overwritten by, the LEGACY
+  // non-ensemble branch below with a narrower vocabulary).
+  let ensembleOutcomeCorroborationForTrace: AuthorityEnsembleOutcome['corroboration'] | undefined;
   // WIRE-THE-LOOP fix part 5 (compute/reasoning routing): earlyAnswerTypeForBrowserAuthority is
   // read once here (was already computed inside the old lookup_fact-only branch) so both the
   // lookup and the widened compute/reasoning gate below share one classification call.
@@ -6061,6 +6140,7 @@ export async function runCanonicalPlowMcAnswer(
         // candidates here, unconditionally, is what lets the trace line below report real
         // per-authority participation even on a disagree/fallthrough question like qid 66.
         ensembleCandidatesForTrace = ensembleOutcome.candidates;
+        ensembleOutcomeCorroborationForTrace = ensembleOutcome.corroboration;
         console.log(
           `[plow_mc_answerer] Stage F2 ensemble RESOLVED at t=${Date.now() - startMs}ms ` +
           `corroboration=${ensembleOutcome.corroboration} swarmFired=${ensembleOutcome.swarmFired} ` +
@@ -6268,6 +6348,24 @@ export async function runCanonicalPlowMcAnswer(
             acceptCandidatesRaw, acceptCandidatesPostMiner, acceptCandidatesPostFurnace,
             acceptCandidatesPostFurnace, acceptConcordance, acceptSpecialistsUsed.length, acceptLatencyMs,
           );
+          // KN-BP144-1 Phase 1: set HERE, at the accept assignment itself, not re-derived later
+          // from corroboration/overrideFired by some downstream reader. Both
+          // ensembleOutcome.corroboration values that mean "a calculator proved it" -- the actual
+          // resolveDeterministicComputeOverride winner (pre-branch hoist OR the post-accept
+          // override just computed above) AND runAuthorityEnsemble's own unconditional-on-
+          // answerType calculator bypasses (pseudocode_trace/set_membership/
+          // no_consensus_from_scatter, which report corroboration:'deterministic_compute' without
+          // ever calling resolveDeterministicComputeOverride) -- are bucketed together here; see
+          // this field's own doc comment on CanonicalPlowMcResult for why that is an honest
+          // reading of the closed vocabulary, not a widening of it.
+          const letterSourceForAccept: CanonicalPlowMcResult['letterSource'] =
+            ensembleOutcome.corroboration === 'deterministic_compute_override'
+            || ensembleOutcome.corroboration === 'deterministic_compute'
+            || (overrideFired && !!deterministicOverride)
+              ? 'deterministic_compute_override'
+              : ensembleOutcome.corroboration === 'adjudicated'
+                ? 'cake_adjudicated'
+                : 'ensemble_accept';
           // When the deterministic compute overrode the ensemble's letter, the eblet writeback
           // must say so honestly -- "solved by user_perplexity" would be a lie once the calculator
           // has replaced that letter. writeComputeMethodEblet (the SAME writer the downstream
@@ -6435,6 +6533,8 @@ export async function runCanonicalPlowMcAnswer(
             // BP140 Yoke: the full candidate set (winner AND losers), for the Coroner's
             // per-candidate factVerdict persist -- see CanonicalPlowMcResult.ensembleCandidates.
             ensembleCandidates: ensembleOutcome.candidates,
+            letterSource: letterSourceForAccept,
+            ensembleOutcomeCorroboration: ensembleOutcome.corroboration,
             ...(deterministicOverride ? {
               authorityEnsembleDeterministicOverride: {
                 ensembleLetter: ensembleOutcome.chosenLetter!,
@@ -6586,6 +6686,12 @@ export async function runCanonicalPlowMcAnswer(
             }],
             answerType: earlyAnswerTypeForBrowserAuthority,
             browserAuthorityCorroboration,
+            // KN-BP144-1 Phase 1: letterSource deliberately left UNSET -- this is the LEGACY
+            // (authorityEnsembleOn===false) browser-authority accept path, a genuinely different
+            // mechanism from runAuthorityEnsemble despite the structural similarity; labeling it
+            // 'ensemble_accept' would misrepresent that the ensemble never ran. Not reachable in
+            // this ticket's diagnosis (which is specifically about the authorityEnsembleOn===true
+            // branch) and not exercised by this ticket's 12 gate questions.
           };
         }
       }
@@ -6956,6 +7062,14 @@ export async function runCanonicalPlowMcAnswer(
             value: unitAware.computedValue,
             matchedOptionValue: unitAware.optionValue,
           },
+          // KN-BP144-1 Phase 1: legacy (pre-ensemble) Stage A.3 tier -- computeUnitAwareMatch
+          // called directly here, never through resolveDeterministicComputeOverride. Bucketed as
+          // 'deterministic_compute_override' anyway (a calculator, not a vote, decided this) --
+          // see CanonicalPlowMcResult.letterSource's own doc comment for that interpretive call.
+          // Not exercised by any of KN-BP144-1's 12 gate questions (confirmed against the named
+          // 038 receipt); see KN-BP144-1_REPORT.md.
+          letterSource: 'deterministic_compute_override',
+          ...(ensembleOutcomeCorroborationForTrace ? { ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace } : {}),
         };
       }
       // Units-aware attempt found nothing unambiguous -- fall through to the pre-existing
@@ -7035,6 +7149,10 @@ export async function runCanonicalPlowMcAnswer(
               value: computed.value,
               matchedOptionValue: matched.optionValue,
             },
+            // KN-BP144-1 Phase 1: same legacy-tier rationale as the computeUnitAwareMatch site
+            // just above -- see that site's own comment.
+            letterSource: 'deterministic_compute_override',
+            ...(ensembleOutcomeCorroborationForTrace ? { ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace } : {}),
           };
         }
       }
@@ -7103,6 +7221,10 @@ export async function runCanonicalPlowMcAnswer(
             value: scheduleResult.value,
             matchedOptionValue: scheduleResult.optionValue,
           },
+          // KN-BP144-1 Phase 1: same legacy-tier rationale as the computeUnitAwareMatch site
+          // above -- see that site's own comment.
+          letterSource: 'deterministic_compute_override',
+          ...(ensembleOutcomeCorroborationForTrace ? { ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace } : {}),
         };
       }
       // Schedule solver found no confident loan structure, or a structure that didn't converge,
@@ -7183,6 +7305,7 @@ export async function runCanonicalPlowMcAnswer(
       provenanceReceipts: [],
       answerType: classifiedAnswerType,
       computeFallthroughAbstain: true,
+      letterSource: 'abstain',
     };
   }
 
@@ -7236,6 +7359,7 @@ export async function runCanonicalPlowMcAnswer(
       provenanceReceipts: [],
       ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
       relevanceGateAbstain: true,
+      letterSource: 'abstain',
     };
   }
   // BP137 Stage A.3: reuses componentFactsList (defined above, before the compute attempt) --
@@ -7620,6 +7744,14 @@ export async function runCanonicalPlowMcAnswer(
       // advisory letter won as last resort; carry them for the Coroner's per-candidate
       // factVerdict persist, same as every other path below.
       ...(ensembleCandidatesForTrace ? { ensembleCandidates: ensembleCandidatesForTrace } : {}),
+      ...(ensembleOutcomeCorroborationForTrace ? { ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace } : {}),
+      // KN-BP144-1 Phase 1: deliberately left UNSET here, not inherited from
+      // decomposeAdvisoryResult (which never set it) and not force-mapped onto this closed
+      // vocabulary -- the real pipeline's own mechanism produced no letter at all (that is
+      // literally this branch's guard, `!chosenLetter`, which by itself would read 'abstain');
+      // the letter actually being returned came from decompose-and-eliminate, a mechanism this
+      // ticket's 5-value vocabulary was not built to describe and that decomposeAdvisoryUsedAsLastResort
+      // above already flags distinctly. See KN-BP144-1_REPORT.md.
       traceSummary:
         `${decomposeAdvisoryResult.traceSummary} | KN-BP142-2 Defect A: used as LAST-RESORT ` +
         `fallback -- full pipeline's own result was chosenLetter=null concordance=${concordance} ` +
@@ -7653,6 +7785,15 @@ export async function runCanonicalPlowMcAnswer(
     // carry the same captured candidates through here too, using the outer-scoped
     // ensembleCandidatesForTrace from B1a (undefined when the ensemble never ran).
     ...(ensembleCandidatesForTrace ? { ensembleCandidates: ensembleCandidatesForTrace } : {}),
+    ...(ensembleOutcomeCorroborationForTrace ? { ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace } : {}),
+    // KN-BP144-1 Phase 1: this is THE fall-through site the ticket exists to instrument -- the
+    // ensemble either never ran, or ran and fell through with no letter (disagree/none/lone-
+    // rejected), and chosenLetter above is computeLetterConcordance(voterLetters)'s own verdict
+    // on the line-7286 local 3-temperature self-vote. A truthy chosenLetter here means that self-
+    // vote produced the served answer; a null chosenLetter means it did not either, i.e. a
+    // genuine abstain. Set from chosenLetter itself (already finalized above, never reassigned
+    // after computeLetterConcordance), never inferred from a different field.
+    letterSource: chosenLetter ? 'voter_concordance_fallthrough' : 'abstain',
     ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
     ...(psionicConcurred ? { psionicConcurred } : {}),
     ...(psionicDiscorded ? { psionicDiscorded } : {}),
