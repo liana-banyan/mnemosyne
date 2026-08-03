@@ -11,11 +11,12 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 // ai_dispatch_settings.json) rather than inventing a second, possibly-diverging persistence
 // path. See SettingsTab.tsx's own export comment above these three for the rationale.
 import { loadMnemDrt, saveMnemDrt, persistMnemDrtToBackend } from '../SettingsTab';
-// BP140-K5 MOVE 3: "Two Barrels" replaces "The Meter" below -- see TwoBarrelMeter.tsx's header
-// for the full boundary-check writeup (getAnswerCacheMeterSummary() is aggregate-only, so
-// Barrel 2 renders a single real "aggregate" stratum and Barrel 1 renders an honest "not yet
-// tracked" empty state; no per-AI number is fabricated).
-import { TwoBarrelMeter } from '../TwoBarrelMeter';
+// BP140-K5 MOVE 3 originally shipped "Two Barrels" here, replacing "The Meter". KN-BP143-3 D3
+// removed the top barrel ("Tokens Remaining" -- it had no data source anywhere in the engine and
+// rendered as a permanently empty box) -- see TwoBarrelMeter.tsx's header for the full writeup.
+// What remains is CostAvoidedMeter: getAnswerCacheMeterSummary() -> cloud_cost_avoided_usd,
+// rendered as a single real "aggregate" stratum; no per-AI number is fabricated.
+import { CostAvoidedMeter } from '../TwoBarrelMeter';
 
 export interface ProveItWorksTabProps {
   onFirstComplete?: () => void;
@@ -281,9 +282,10 @@ export function ProveItWorksTab(props: ProveItWorksTabProps) {
         </div>
       </div>
 
-      {/* BP140-K5 MOVE 3: Two Barrels -- replaces "The Meter". Same meter/loadingMeter state,
-          same refreshMeter() IPC call as before; only the visualization changed. */}
-      <TwoBarrelMeter meter={meter} loading={loadingMeter} onRefresh={() => void refreshMeter()} />
+      {/* KN-BP143-3 D3: Cost Avoided (was "Two Barrels", now one real barrel). Same
+          meter/loadingMeter state, same refreshMeter() IPC call as before; only the
+          visualization changed. */}
+      <CostAvoidedMeter meter={meter} loading={loadingMeter} onRefresh={() => void refreshMeter()} />
 
       {meter && meter.total_queries > 0 && (
         <div style={{ ...panelStyle(), fontSize: 11, color: '#606060', lineHeight: 1.7 }}>
