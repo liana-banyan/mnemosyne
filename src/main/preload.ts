@@ -1390,6 +1390,21 @@ contextBridge.exposeInMainWorld('amplify', {
     return () => ipcRenderer.removeListener('mesh-test:progress', handler);
   },
 
+  // KN-BP142-5: Liana Cycle Engine caller -- same three-shape pattern (run-now / get-status /
+  // progress listener) as meshTestRunOneClick/meshTestIsActive/onMeshTestProgress above. See
+  // src/main/plow/liana_cycle_scheduler.ts for the trigger policy, kill switch, and receipt.
+  lianaCycleRunNow: (): Promise<
+    { ok: true; summary: unknown; receiptPath: string | null } | { ok: false; error: string }
+  > => ipcRenderer.invoke('liana-cycle:run-now'),
+  lianaCycleGetStatus: (): Promise<unknown> => ipcRenderer.invoke('liana-cycle:get-status'),
+  lianaCycleSetEnabled: (enabled: boolean): Promise<{ ok: boolean; enabled: boolean }> =>
+    ipcRenderer.invoke('liana-cycle:set-enabled', enabled),
+  onLianaCycleProgress: (cb: (payload: unknown) => void): (() => void) => {
+    const handler = (_event: unknown, payload: unknown) => cb(payload);
+    ipcRenderer.on('liana-cycle:progress', handler);
+    return () => ipcRenderer.removeListener('liana-cycle:progress', handler);
+  },
+
   // BP138 Yoke: one-click HOT/COLD substrate lift -- see runHotColdLiftTest() in
   // src/main/mesh_test/one_click_mmlu_pro.ts. Config shape mirrors meshTestRunOneClick
   // above (it IS that same config, representing the HOT arm); the main-process handler
