@@ -101,6 +101,11 @@ import {
 // dynamic `await import('../index')`, which exists only because THIS file dynamically imports
 // plow_mc_answerer.ts elsewhere, a cycle that does not exist for browser_authority_adapter.ts).
 import { classifyAnswerType } from './plow/answer_type_classifier';
+// KN-BP142-5: the Liana Cycle Engine's caller/scheduler/kill-switch (see that file's own header
+// for the trigger-policy write-up). Lightweight at import time -- runCanonicalPlowMcAnswer and
+// the mesh-test module are only dynamically imported inside runOneLianaCycleTurn(), same lazy-
+// import convention every other heavy plow_mc_answerer.ts caller in this file already uses.
+import { initLianaCycleScheduler } from './plow/liana_cycle_scheduler';
 import { getRawBrowserAuthorityFact, type BrowserAuthorityBridge } from './plow/browser_authority_adapter';
 // BP137 Yoke 0.9.12 Stage F1 ("persistent, always-on, logged-in browser authority") --
 // ADDITIVE. See nexus_authority_persistent_session.ts's own header for the full mechanism.
@@ -7943,6 +7948,12 @@ app.whenReady().then(async () => {
   // SAGA-1 BP055: Dashboard is the default boot surface; overlay never auto-creates.
   createTray();
   registerIPCHandlers();
+
+  // KN-BP142-5: start the Liana Cycle Engine's idle-check scheduler and register its own
+  // liana-cycle:* IPC handlers. Off by default (kill switch, see liana_cycle_scheduler.ts's own
+  // readLianaCycleEnabledFromSettings) -- this call only starts the (cheap, no-op-until-enabled)
+  // poll loop, it does not itself run a turn.
+  initLianaCycleScheduler();
 
   // BP137 0.9.12 Stage F1 build item 1: warm the persistent nexus-authority session at app
   // lifetime start, NOT tied to any tab's open/close lifecycle. ensureNexusAuthoritySession()
