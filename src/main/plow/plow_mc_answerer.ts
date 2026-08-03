@@ -1930,6 +1930,45 @@ export function resolveConcordanceAcceptance(params: {
   return true; // 'lenient' (and any unrecognized/legacy value) -- no-op, today's exact behavior.
 }
 
+// KN-BP142-8 (Founder-directed BP142): the Cake Method's CUT (local_orchestrator, 2 routes) and
+// PICK (local_orchestrator) calls both ran on canonical_pipeline.ts's default OLLAMA_TIMEOUT_MS
+// (30_000ms), exactly the gap KN-BP142-7's own commit comment named out of scope ("the Cake
+// Method cascade-candidate-producer" and, by the same 30s-default reasoning, its cut/pick
+// siblings). Live-verified this ticket, real llama3.3:70b, real compiled dist, qid 105
+// (philosophy/Aristotle-incontinence) and qid 98 (other/world-region-density): with candidates=[]
+// so only the local_orchestrator cut/pick path ran, EVERY ONE of the 4 callOllama calls (2 cuts
+// x 2 questions) aborted at the 30_000ms budget with AbortSignal.timeout's TimeoutError -- zero
+// cuts survived on either question, chosenLetter came back ABSTAIN on both, and the BP141
+// Coffee's "correct letter never cut by ANY participant" finding on these exact two qids is,
+// AT LEAST IN PART, this transport starvation, not a reasoning failure (see this ticket's own
+// YOKE_RETURN for the full per-participant table and the (A)/(B)/(C) verdict).
+//
+// SIZING (measured, not guessed): re-run with the timeout ceiling raised to 300_000ms purely for
+// measurement (never applied to production) showed real completion times of 31.8s-165.4s across
+// the 6 real cut/pick calls this ticket exercised (qid105 CUT retrieval_first=165.4s,
+// reasoning_first=43.3s, PICK=44.9s; qid98 CUT retrieval_first=67.1s, reasoning_first=31.8s,
+// PICK=32.7s) -- a WIDER and more variable range than KN-BP142-7's own 93-113s ranking-call
+// ceiling, consistent with this same file's canonical_pipeline.ts comment about single-GPU-host
+// queuing variance. Applying KN-BP142-7's own "~1.6x headroom over the observed ceiling" rule to
+// THIS measured ceiling (165.4s x ~1.6 = ~264.6s) and rounding up to a clean number gives
+// 270_000ms (4.5 minutes) -- sized to the measured work, not chosen to force any particular
+// outcome, and not the same numeric value as ELIMINATION_CASCADE_RANKING_TIMEOUT_MS (180_000ms)
+// because that constant was sized to a different, faster workload (two full-ranking generations,
+// not a single recall-then-answer or choose-among-anonymized-sources generation).
+//
+// This constant affects ONLY the two callOllama call sites inside
+// runCakeMethodDisagreementResolution that pass it explicitly below (the local_orchestrator CUT
+// loop and the local_orchestrator PICK's askPick) -- see callOllama's own doc comment in
+// canonical_pipeline.ts for the full enumeration of every other call site this change does NOT
+// affect, all of which keep their original budget (OLLAMA_TIMEOUT_MS 30_000ms, or
+// ELIMINATION_CASCADE_RANKING_TIMEOUT_MS 180_000ms for the two ranking calls that already pass
+// it) byte-for-byte. A timeout is a transport budget, not an acceptance threshold: this change
+// touches ONLY how long callOllama waits for a response, never what counts as a correct or
+// admissible cut/pick once a response arrives -- the Cake blind, the self-preference audit, the
+// N-Cut/N-Pick structure, and every acceptance threshold in this file are byte-identical to
+// before this change.
+const CAKE_METHOD_TIMEOUT_MS = 270_000;
+
 /** BP141-2 THE CAKE METHOD's live orchestrator -- replaces the old single-Perplexity-judge
  *  adjudication call entirely (buildAdjudicationPromptText, removed). Called ONLY from
  *  runAuthorityEnsemble's disagreement branch (the swarm has already been folded in and the
@@ -2003,7 +2042,11 @@ export async function runCakeMethodDisagreementResolution(params: {
   for (const route of localRoutes) {
     try {
       const cutPrompt = buildCakeCutPromptText(researchQuery, mcOptions, route);
-      const raw = await callOllama(cutPrompt, config.ollamaBaseUrl, config.model, 0);
+      // KN-BP142-8: widened from the 30s default to CAKE_METHOD_TIMEOUT_MS (see that constant's
+      // own doc comment above for the measured rationale) -- numPredict stays the pre-existing
+      // default (256, unchanged) since only the transport budget was under-sized, not the token
+      // budget.
+      const raw = await callOllama(cutPrompt, config.ollamaBaseUrl, config.model, 0, 256, CAKE_METHOD_TIMEOUT_MS);
       cutTranscripts.push(cutPrompt, raw ?? '');
       const resolved = raw ? resolveAuthorityLetterMatch(raw, mcOptions) : null;
       if (resolved && raw) {
@@ -2143,7 +2186,9 @@ export async function runCakeMethodDisagreementResolution(params: {
     pickers.push({
       pickerKey: 'local_orchestrator',
       derivationPath: 'local_orchestrator:pick',
-      askPick: async (p) => callOllama(p, config.ollamaBaseUrl, config.model, 0),
+      // KN-BP142-8: widened from the 30s default to CAKE_METHOD_TIMEOUT_MS, same rationale as the
+      // CUT call site above.
+      askPick: async (p) => callOllama(p, config.ollamaBaseUrl, config.model, 0, 256, CAKE_METHOD_TIMEOUT_MS),
     });
   } else {
     log('cake-pick local_orchestrator SKIPPED (KN-BP141-7 P1: no corresponding cut this question -- a participant that did not cut does not pick).');
