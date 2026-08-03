@@ -1,10 +1,5 @@
-// TwoBarrelMeter.tsx -- BP140-K5 MOVE 3 originally shipped "Two Barrels" (a Tokens Remaining
-// barrel above a Tokens Saved barrel) replacing the old "The Meter" panel on the Proof tab
-// (ProveItWorksTab.tsx). KN-BP143-3 D3 removes Barrel 1 ("Tokens Remaining"): it had literally
-// zero data source anywhere in the engine -- not aggregate, not per-AI -- and rendered as a
-// permanently empty container in front of the Founder every day. Filename kept as-is (the
-// exported symbols below are what other files actually import; renaming the file is a needless
-// diff on top of the real fix).
+// TwoBarrelMeter.tsx -- BP140-K5 MOVE 3: "Two Barrels" replacing the old "The Meter" panel on
+// the Proof tab (ProveItWorksTab.tsx).
 //
 // BOUNDARY CHECK RESULT (K5 dispatch, done before any of this was built): read
 // src/main/answer_cache_meter.ts's getAnswerCacheMeterSummary() return type
@@ -12,22 +7,28 @@
 // { total_queries, served_verbatim_count, rag_count, local_generate_count, flagship_count,
 //   cloud_cost_avoided_usd, avg_latency_ms, avg_served_verbatim_latency_ms } -- there is no
 // per-AI/per-authority breakdown anywhere in that file, and a repo-wide search for
-// tokens_remaining/tokenBudget/quota_remaining/rateLimit-style fields (the data the old Barrel 1
-// would have needed) returned zero hits anywhere in src/. Per the K5 dispatch's explicit
-// instruction: STOP the full per-AI barrel build, scaffold the barrel UI against the aggregate
-// data only, and report the gap to Bishop -- per-AI attribution is a data-model call, not this
-// file's to invent. That report is what led to D3: an honestly-documented empty box is still an
-// empty box in front of the Founder every day, so the box is gone, not just explained.
+// tokens_remaining/tokenBudget/quota_remaining/rateLimit-style fields (the data Barrel 1 would
+// need) returned zero hits anywhere in src/. Per the K5 dispatch's explicit instruction: STOP
+// the full per-AI barrel build, scaffold the barrel UI against the aggregate data only, and
+// report the gap to Bishop (see the K5 response for the full writeup) -- per-AI attribution is
+// a data-model call, not this file's to invent.
 //
 // What this file actually renders, honestly:
-//  - The single real barrel uses REAL data: cloud_cost_avoided_usd from
-//    getAnswerCacheMeterSummary(), rendered as one "All authorities (aggregate)" sand stratum --
-//    because that is the only granularity the engine currently tracks. No per-AI split is
-//    fabricated. Labeled "Cost Avoided", not "Tokens Saved" -- the underlying number is a dollar
-//    estimate, not a token count, and the label now says exactly what it measures.
-//  - When the Coupon Clipper measurement lands (a second real, aggregate-or-better metric), a
-//    second barrel can return -- built against that real data source, not resurrected as an empty
-//    placeholder ahead of it.
+//  - Barrel 2 (tokens SAVED) uses REAL data: cloud_cost_avoided_usd from
+//    getAnswerCacheMeterSummary(), rendered as a single "All authorities (aggregate)" sand
+//    stratum -- because that is the only granularity the engine currently tracks. No per-AI
+//    split is fabricated.
+//  - Barrel 1 (tokens REMAINING) has literally zero data source anywhere in the engine right
+//    now -- not aggregate, not per-AI. Its component, TokensRemainingBarrel, already renders an
+//    explicit, honest "not yet tracked" empty state if it were mounted (same Truth-Always
+//    convention this app already uses for "No queries recorded yet") -- but per KN-BP143-3 D3
+//    (Founder amendment), an honestly-labeled empty box is STILL an empty box in front of the
+//    Founder every day, so TwoBarrelMeter below no longer mounts it at all. The function, its
+//    props, the color legend, spigot, and layout are all kept exactly as built (Founder's
+//    explicit instruction: do not delete Barrel 1 or its structure) so the Coupon Clipper's
+//    price-aware routing/savings work can flip SHOW_TOKENS_REMAINING_BARREL below and pass real
+//    `layers` the moment that data exists -- no rebuild of this component. See
+//    SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md for that work.
 //
 // Colorblind rule (Founder spec): every color segment carries a text label -- never a
 // color-only encoding. Enforced below by always rendering the label text next to every swatch.
@@ -36,7 +37,9 @@
 // this file) -- every existing panel (ProveItWorksTab.tsx, OneClickMeshTestPanel.tsx, etc.)
 // hardcodes the same dark palette via inline styles. "Theme-aware" here means this component
 // reuses that SAME existing dark palette/token set (the #6ee7b7 / #94a3b8 / #facc15 / #38bdf8
-// accent colors already used throughout the Proof tab) rather than inventing a clashing scheme.
+// accent colors already used throughout the Proof tab) rather than inventing a clashing scheme
+// -- there is no actual light/dark switch to be "aware" of yet. Flagged to Bishop alongside the
+// per-AI gap.
 
 import React, { useState } from 'react';
 
@@ -45,6 +48,26 @@ export interface MeterSummaryForBarrels {
   served_verbatim_count: number;
   cloud_cost_avoided_usd: number;
 }
+
+/** Shared 5-authority color/label palette -- mirrors AUTHORITY_LABELS in ProveItWorksTab.tsx.
+ *  Not used for any REAL per-AI split today (no per-AI data exists) -- kept here as the single
+ *  place a future per-AI Barrel 1/Barrel 2 wiring would pull colors from, so that work never
+ *  starts from a blank palette decision. */
+export const AUTHORITY_BARREL_COLORS: Record<string, string> = {
+  user_google: '#38bdf8',
+  user_perplexity: '#a78bfa',
+  user_claude: '#facc15',
+  user_chatgpt: '#4ade80',
+  user_gemini: '#f472b6',
+};
+
+export const AUTHORITY_BARREL_LABELS: Record<string, string> = {
+  user_google: 'Google',
+  user_perplexity: 'Perplexity',
+  user_claude: 'Claude',
+  user_chatgpt: 'ChatGPT',
+  user_gemini: 'Gemini',
+};
 
 /** One barrel layer -- generic enough to hold either a real per-AI number (future) or the
  *  single "aggregate" stand-in this file uses today. */
@@ -65,7 +88,9 @@ export interface AutoScaleResult {
  *   value <  0.05                -> denominator 1    ("out of 1")
  *   0.05 <= value < 0.5          -> denominator 10   ("out of 10")
  *   0.5  <= value < 5            -> denominator 100  ("out of 100")
- *   ... climbs by 10x as value keeps growing (5<=v<50 -> 1000, and so on) */
+ *   ... climbs by 10x as value keeps growing (5<=v<50 -> 1000, and so on)
+ *  Each barrel calls this independently on its OWN total, per spec ("each barrel auto-scales
+ *  independently") -- there is no shared/global scale between Barrel 1 and Barrel 2. */
 export function computeAutoScale(value: number): AutoScaleResult {
   const v = Math.abs(value);
   let tier = 0;
@@ -128,11 +153,114 @@ function LegendRow({
   );
 }
 
-/** The one real barrel -- cost AVOIDED, color-LAYERED sand strata (never mixing colors), fed by
+/** Barrel 1 (top) -- tokens REMAINING per AI. Vertical-fill liquid metaphor + a spigot that
+ *  would "pour" as tokens are used, per the spec's flow metaphor. Renders an explicit, honest
+ *  empty state: `layers` is always `[]` today because no engine anywhere in this codebase
+ *  tracks a per-AI (or even aggregate) "tokens remaining" number -- see this file's header.
+ *  Structured to accept real `layers` the moment that data exists, with zero layout changes. */
+export function TokensRemainingBarrel({
+  layers, resolution,
+}: { layers: BarrelLayer[]; resolution: number }): React.ReactElement {
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const total = layers.reduce((s, l) => (hidden.has(l.key) ? s : s + l.value), 0);
+  const { denominator } = computeAutoScale(total);
+  const hasData = layers.length > 0;
+
+  // Stack visible layers bottom-up as vertical liquid bands (never mixing: each keeps its own
+  // color band, like Barrel 2's sand strata, just filled bottom-to-top instead of poured once).
+  let cursor = 0;
+  const bands = layers
+    .filter((l) => !hidden.has(l.key))
+    .map((l) => {
+      const frac = total > 0 ? l.value / total : 0;
+      const fillFrac = denominator > 0 ? Math.min(1, total / denominator) : 0;
+      const bandHeight = BARREL_H * fillFrac * frac;
+      const y = BARREL_H - cursor - bandHeight;
+      cursor += bandHeight;
+      return { ...l, y, bandHeight };
+    });
+
+  return (
+    <div style={{
+      background: '#111827', border: '1px solid #1e2d45', borderRadius: 8,
+      padding: '12px 14px', marginBottom: 8,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>🛢️ Tokens Remaining</div>
+        <div style={{ fontSize: 10, color: '#64748b' }}>
+          Scale: <b style={{ color: '#94a3b8' }}>out of {denominator}</b>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 14 }}>
+        <svg width={BARREL_W} height={BARREL_H + 24} viewBox={`0 0 ${BARREL_W} ${BARREL_H + 24}`}>
+          <clipPath id="barrel1-clip">
+            <path d={barrelShellPath(BARREL_W, BARREL_H)} />
+          </clipPath>
+          <path
+            d={barrelShellPath(BARREL_W, BARREL_H)}
+            fill="rgba(148,163,184,0.05)"
+            stroke="rgba(148,163,184,0.35)"
+            strokeWidth={2}
+          />
+          {hasData && (
+            <g clipPath="url(#barrel1-clip)">
+              {bands.map((b) => (
+                <rect key={b.key} x={0} y={b.y} width={BARREL_W} height={Math.max(0, b.bandHeight)} fill={b.color} opacity={0.85} />
+              ))}
+            </g>
+          )}
+          {/* horizontal barrel bands -- decorative chrome only */}
+          {[0.33, 0.66].map((f) => (
+            <line key={f} x1={0} y1={BARREL_H * f} x2={BARREL_W} y2={BARREL_H * f} stroke="rgba(148,163,184,0.15)" strokeWidth={2} />
+          ))}
+          {/* spigot */}
+          <rect x={BARREL_W / 2 - 4} y={BARREL_H} width={8} height={14} fill="rgba(148,163,184,0.5)" />
+          <circle cx={BARREL_W / 2} cy={BARREL_H + 18} r={5} fill="rgba(148,163,184,0.5)" />
+          {!hasData && (
+            <text x={BARREL_W / 2} y={BARREL_H / 2} textAnchor="middle" fontSize={10} fill="#475569" fontFamily="system-ui, sans-serif">
+              no data
+            </text>
+          )}
+        </svg>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+          {hasData ? (
+            <>
+              <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>
+                {formatAutoScale(total, resolution)} remaining
+              </div>
+              {layers.map((l) => (
+                <LegendRow
+                  key={l.key}
+                  color={l.color}
+                  label={l.label}
+                  valueText={l.value.toFixed(resolution)}
+                  dimmed={hidden.has(l.key)}
+                  onToggle={() => setHidden((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(l.key)) next.delete(l.key); else next.add(l.key);
+                    return next;
+                  })}
+                />
+              ))}
+            </>
+          ) : (
+            <div style={{ fontSize: 10, color: '#64748b', fontStyle: 'italic', lineHeight: 1.6 }}>
+              Not yet tracked -- no per-AI (or aggregate) token-remaining counter exists in the
+              answer engine today. Honestly empty, not a fabricated number. Flagged to Bishop
+              as a data-model gap (BP140-K5 MOVE 3 report).
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Barrel 2 (below) -- tokens SAVED, color-LAYERED sand strata (never mixing colors), fed by
  *  getAnswerCacheMeterSummary() -> cloud_cost_avoided_usd. Per the boundary check, that field is
  *  aggregate-only, so this renders exactly ONE real stratum ("All authorities (aggregate)")
  *  rather than fabricating a per-AI split the engine cannot back up. */
-export function CostAvoidedBarrel({
+export function TokensSavedBarrel({
   meter, resolution,
 }: { meter: MeterSummaryForBarrels | null; resolution: number }): React.ReactElement {
   const [hidden, setHidden] = useState<Set<string>>(new Set());
@@ -164,7 +292,7 @@ export function CostAvoidedBarrel({
       padding: '12px 14px', marginBottom: 8,
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>🏜️ Cost Avoided (cumulative)</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>🏜️ Tokens Saved (cumulative)</div>
         <div style={{ fontSize: 10, color: '#64748b' }}>
           Scale: <b style={{ color: '#94a3b8' }}>out of {denominator}</b>
         </div>
@@ -245,16 +373,29 @@ export function CostAvoidedBarrel({
   );
 }
 
-export interface CostAvoidedMeterProps {
+export interface TwoBarrelMeterProps {
   meter: MeterSummaryForBarrels | null;
   loading: boolean;
   onRefresh: () => void;
 }
 
-/** "Cost Avoided" panel -- KN-BP143-3 D3 replaces the old two-barrel composite (the top barrel,
- *  "Tokens Remaining," had no data source anywhere in the engine and rendered as a permanently
- *  empty box). One real metric, correctly labeled as what it measures. */
-export function CostAvoidedMeter({ meter, loading, onRefresh }: CostAvoidedMeterProps): React.ReactElement {
+// KN-BP143-3 D3 (Founder amendment): Barrel 1 has no data source anywhere in the engine, so its
+// render is suppressed here -- but per the Founder's explicit instruction, TokensRemainingBarrel
+// itself, its props, and this call site are NOT deleted, only gated off, so the Coupon Clipper's
+// price-aware routing/savings work can flip this to `true` (with real `layers`, not `[]`) and get
+// a working barrel with zero rebuild. See
+// SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md.
+const SHOW_TOKENS_REMAINING_BARREL = false;
+
+/** Composite "Two Barrels" panel -- replaces the old single "The Meter" block. Barrel 1 sits on
+ *  top of Barrel 2 with a small funnel glyph between them illustrating the spec's flow metaphor
+ *  (a query's pour from Barrel 1 is either SPENT, or caught by the Substrate funnel into Barrel
+ *  2 as a SAVING). The funnel is static chrome today since Barrel 1 has no live flow to animate
+ *  (see the per-file header) -- it will start reflecting a real flow the moment Barrel 1 gets a
+ *  data source. Both Barrel 1 and the funnel are gated by SHOW_TOKENS_REMAINING_BARREL above:
+ *  the funnel visually depends on a filled Barrel 1 pouring into it, so it is suppressed
+ *  alongside it rather than left dangling above Barrel 2 with nothing to catch. */
+export function TwoBarrelMeter({ meter, loading, onRefresh }: TwoBarrelMeterProps): React.ReactElement {
   const [resolution, setResolution] = useState(3);
 
   return (
@@ -264,10 +405,10 @@ export function CostAvoidedMeter({ meter, loading, onRefresh }: CostAvoidedMeter
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>Cost Avoided</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>Two Barrels</div>
           <div style={{ fontSize: 10, color: '#606060', marginTop: 2 }}>
-            Real counter only -- per-AI attribution pending an engine data-model decision (see
-            gap note below).
+            Replaces "The Meter" -- real counters only, per-AI attribution pending an engine
+            data-model decision (see gap notes below each barrel).
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -303,7 +444,19 @@ export function CostAvoidedMeter({ meter, loading, onRefresh }: CostAvoidedMeter
         </div>
       </div>
 
-      <CostAvoidedBarrel meter={meter} resolution={resolution} />
+      {SHOW_TOKENS_REMAINING_BARREL && (
+        <>
+          <TokensRemainingBarrel layers={[]} resolution={resolution} />
+
+          <div style={{ display: 'flex', justifyContent: 'center', margin: '-2px 0 4px' }}>
+            <span style={{ fontSize: 16, color: '#475569' }} title="Substrate funnel -- catches a query that would have been SPENT and routes it into Barrel 2 as a SAVING instead">
+              🔻 substrate funnel
+            </span>
+          </div>
+        </>
+      )}
+
+      <TokensSavedBarrel meter={meter} resolution={resolution} />
     </div>
   );
 }
