@@ -392,6 +392,12 @@ export interface OneClickRunResult {
   /** Present only when isSubsetRun is true -- how many questions existed in the full dataset
    *  this subset was drawn from (the M in "N of M questions"). */
   subsetOfTotal?: number;
+  /** KN-BP144-7 T4 ("Make The Silent Authorities Loud"): mirrors
+   *  one_click_mmlu_pro.ts's OneClickRunResult.authorityOutcomeSummary of the same name -- per
+   *  authority (five browser authorities + swarm), the count of each closed-vocabulary outcome
+   *  across the whole run. Optional here only because older persisted/loaded receipts (pre-
+   *  KN-BP144-7) never had this field; every result produced by this build always sets it. */
+  authorityOutcomeSummary?: Record<string, Record<string, number>>;
 }
 
 type DispatchModeChoice = 'auto' | 'wan_mesh' | 'local_ollama';

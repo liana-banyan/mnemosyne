@@ -59,6 +59,7 @@ import {
   distillExtraction,
   isBrowserAuthorityEnabled,
   type BrowserAuthorityAdapterConfig,
+  type BrowserAuthorityDispatchOutcome,
   type BrowserAuthorityLookupResult,
   type BrowserAuthorityName,
   type BrowserAuthorityQuery,
@@ -89,6 +90,20 @@ export { buildBrowserAuthorityQueryUrl, distillExtraction, isBrowserAuthorityEna
  */
 export interface BrowserAuthorityBridge {
   runQueryInUserBrowser(query: BrowserAuthorityQuery): Promise<BrowserAuthorityRawExtraction | null>;
+  /** KN-BP144-7 T1/T2, OPTIONAL/ADDITIVE. Every EXISTING bridge implementation in this repo
+   *  (createNotWiredBridge below, and every ad-hoc bridge object built at a call site) omits
+   *  this method entirely, which is a structurally valid BrowserAuthorityBridge with or without
+   *  it -- so adding it here changes nothing for any caller that does not implement it.
+   *  A bridge that DOES implement it (index.ts's real runBrowserAuthorityQueryFromMain()-backed
+   *  bridges, updated this ticket) reports the SAME dispatch-level classification
+   *  runBrowserAuthorityQueryFromMainObserved() already computes -- never a second, divergent
+   *  classification -- alongside the identical `raw` value runQueryInUserBrowser() would have
+   *  returned for the same query. See runBrowserAuthorityLookupObserved() below for the one
+   *  caller that consults this method when present. */
+  runQueryInUserBrowserObserved?(query: BrowserAuthorityQuery): Promise<{
+    raw: BrowserAuthorityRawExtraction | null;
+    dispatchOutcome: BrowserAuthorityDispatchOutcome;
+  }>;
 }
 
 /**
@@ -155,6 +170,74 @@ export async function runBrowserAuthorityLookup(
   if (!raw) return null;
 
   return distillExtraction(raw, trimmedQuestion);
+}
+
+// ─── KN-BP144-7 T1/T2: dispatch-observed sibling of runBrowserAuthorityLookup above ────────────
+//
+// PURELY ADDITIVE: this function is NEW, is called from NO pre-existing call site (only the
+// Authority Ensemble's five browser-authority attempts, updated this same ticket, call it), and
+// does not alter runBrowserAuthorityLookup above by one byte. It duplicates that function's
+// query-construction + flag-gate + distillation logic on purpose rather than having
+// runBrowserAuthorityLookup call it internally -- keeping the two functions textually
+// independent means a bug in this new one can never regress the pre-existing one, which every
+// non-ensemble caller (Stage F3 mesh-synergy, decompose, the eliminator, the Ask-tab lookup)
+// still depends on unchanged.
+export interface BrowserAuthorityLookupObservation {
+  /** Byte-identical to what runBrowserAuthorityLookup(question, config, bridge) would have
+   *  returned for the SAME query against the SAME bridge -- this function never distills
+   *  differently, it only additionally reports HOW the null/non-null outcome came about. */
+  result: BrowserAuthorityLookupResult | null;
+  /** T1's closed dispatch-level vocabulary (see browser_authority_types.ts's own KN-BP144-7
+   *  banner): 'disabled' when the master researchArmMode+researchArmBrowserAuthority switch is
+   *  off (this leg's own gate, checked BEFORE the bridge is ever touched -- mirrors
+   *  isBrowserAuthorityEnabled's existing early-return above byte-for-byte); 'dispatched' when a
+   *  genuine, non-empty extraction came back (parse-level, in the ensemble, decides
+   *  no_result/parse_failed/answered from there); 'not_signed_in'/'timeout'/'no_result'
+   *  otherwise, exactly as classified by index.ts's runBrowserAuthorityQueryFromMainObserved via
+   *  the bridge's OPTIONAL runQueryInUserBrowserObserved method. When the supplied `bridge` does
+   *  NOT implement that optional method (e.g. createNotWiredBridge, or a future test double),
+   *  this leg has no transport-level reason to report and falls back to the coarsest honest
+   *  classification available from the plain `raw` result alone: 'dispatched' on a non-null
+   *  raw, 'no_result' on null -- never 'timeout'/'not_signed_in'/'disabled' (this ticket's own
+   *  refusal against inferring a finer-grained state than what was actually observed). */
+  dispatchOutcome: BrowserAuthorityDispatchOutcome;
+  /** The raw (pre-distillation) extraction, when one came back -- exposed so a caller wanting
+   *  a parse_failed preview (T3) can read the actual returned text even when distillExtraction
+   *  itself rejected it (e.g. an empty/whitespace-only snippet). */
+  raw: BrowserAuthorityRawExtraction | null;
+}
+
+export async function runBrowserAuthorityLookupObserved(
+  question: string,
+  config: BrowserAuthorityAdapterConfig,
+  bridge: BrowserAuthorityBridge,
+): Promise<BrowserAuthorityLookupObservation> {
+  if (!isBrowserAuthorityEnabled(config)) {
+    return { result: null, dispatchOutcome: 'disabled', raw: null };
+  }
+
+  const trimmedQuestion = question.trim();
+  if (!trimmedQuestion) {
+    return { result: null, dispatchOutcome: 'no_result', raw: null };
+  }
+
+  const authority: BrowserAuthorityName = config.preferredAuthority ?? 'user_google';
+  const query: BrowserAuthorityQuery = {
+    question: trimmedQuestion,
+    authority,
+    ...(config.mcOptions && config.mcOptions.length > 0 ? { mcOptions: config.mcOptions } : {}),
+    ...(config.embedOptionsForGoogle ? { embedOptionsForGoogle: true } : {}),
+  };
+
+  if (bridge.runQueryInUserBrowserObserved) {
+    const observed = await bridge.runQueryInUserBrowserObserved(query);
+    const result = observed.raw ? distillExtraction(observed.raw, trimmedQuestion) : null;
+    return { result, dispatchOutcome: observed.dispatchOutcome, raw: observed.raw };
+  }
+
+  const raw = await bridge.runQueryInUserBrowser(query);
+  const result = raw ? distillExtraction(raw, trimmedQuestion) : null;
+  return { result, dispatchOutcome: raw ? 'dispatched' : 'no_result', raw };
 }
 
 // ─── BP138 Yoke 0.9.15 FIX 3: raw fact+source primitive (no MC match required) ────────────────
