@@ -58,6 +58,16 @@ import { randomBytes } from 'node:crypto';
 import { app, BrowserWindow } from 'electron';
 import { discoverLiveWanPeers, dispatchQuestionToWanPeers, dispatchOptionFanOutToWanPeers, type WanPeerInfo, type WanConsensusResult, type MeshSynergyPooledResult, type OptionFanOutOutcome } from './wan_dispatch';
 import { applySubstrateToggle, isDebugPromptLoggingEnabled, buildOutboundPromptLogLine } from './substrate_toggle';
+// KN-BP144-7 T4 ("Make The Silent Authorities Loud"): the closed vocabulary + normalization
+// helper this run-level summary is built from -- see that module's own KN-BP144-7 banner and
+// plow_mc_answerer.ts's per-question authorityOutcomes for where these per-question records
+// originate (callCanonicalPlowMcAnswererForMeshTest's plowTrace.authorityOutcomes).
+import {
+  ENSEMBLE_AUTHORITY_KEYS,
+  normalizeAuthorityAttemptOutcomes,
+  type BrowserAuthorityAttemptOutcome,
+  type EnsembleAuthorityKey,
+} from '../../shared/plow/browser_authority_types';
 
 export interface MmluProQuestion {
   question_id: number;
@@ -216,6 +226,50 @@ export interface OneClickRunResult {
   /** Present only when isSubsetRun is true -- how many questions existed in the full
    *  (unsampled) dataset this subset was drawn from -- the M in "N of M questions". */
   subsetOfTotal?: number;
+  /** KN-BP144-7 T4 ("Make The Silent Authorities Loud"), OPTIONAL/ADDITIVE. Per authority
+   *  (five browser authorities + swarm), the count of each closed-vocabulary outcome across
+   *  every question in `outcomes` above -- "Claude answered 8 of 20, timed out on 7, was never
+   *  attempted on 5" readable from this ONE block without opening a single question. Computed
+   *  by computeAuthorityOutcomeRunSummary() below, unconditionally, from whatever
+   *  `outcomes[].plowTrace.authorityOutcomes` each question actually carries (normalized, so a
+   *  question with none at all -- e.g. minor_council/single_shot answeredBy, or any pre-
+   *  KN-BP144-7 receipt -- counts as all-'not_attempted' for that question, never omitted from
+   *  the tally). Always present (every count defaults to 0), never conditionally omitted. */
+  authorityOutcomeSummary: Record<EnsembleAuthorityKey, Record<BrowserAuthorityAttemptOutcome, number>>;
+}
+
+/** KN-BP144-7 T4: the ONE place that tallies per-question authorityOutcomes into the run-level
+ *  summary block. Pure, no I/O -- reads only `outcomes[].plowTrace.authorityOutcomes` (an
+ *  untyped passthrough field on OneClickQuestionOutcome.plowTrace, KN-BP144-7's own addition to
+ *  plow_mc_answerer.ts's CanonicalPlowMcResult), normalizing every question via
+ *  normalizeAuthorityAttemptOutcomes so a question that never carried this field at all (every
+ *  pre-KN-BP144-7 outcome, and every minor_council/single_shot outcome that never ran the
+ *  ensemble) tallies as all-'not_attempted' for that question rather than being silently
+ *  skipped -- T3's "no key omitted anywhere" extended to the run-level rollup. Never reads or
+ *  changes isCorrect/parsedLetter/any scoring field.
+ */
+export function computeAuthorityOutcomeRunSummary(
+  outcomes: ReadonlyArray<{ plowTrace?: Record<string, unknown> | null }>,
+): Record<EnsembleAuthorityKey, Record<BrowserAuthorityAttemptOutcome, number>> {
+  const ALL_OUTCOMES: BrowserAuthorityAttemptOutcome[] = [
+    'not_attempted', 'disabled', 'not_signed_in', 'timeout', 'no_result', 'parse_failed', 'answered',
+  ];
+  const summary = {} as Record<EnsembleAuthorityKey, Record<BrowserAuthorityAttemptOutcome, number>>;
+  for (const key of ENSEMBLE_AUTHORITY_KEYS) {
+    summary[key] = {} as Record<BrowserAuthorityAttemptOutcome, number>;
+    for (const outcome of ALL_OUTCOMES) summary[key][outcome] = 0;
+  }
+  for (const o of outcomes) {
+    const rawAuthorityOutcomes = o.plowTrace?.authorityOutcomes as
+      | Partial<Record<EnsembleAuthorityKey, { outcome: BrowserAuthorityAttemptOutcome }>>
+      | null
+      | undefined;
+    const normalized = normalizeAuthorityAttemptOutcomes(rawAuthorityOutcomes);
+    for (const key of ENSEMBLE_AUTHORITY_KEYS) {
+      summary[key][normalized[key].outcome] += 1;
+    }
+  }
+  return summary;
 }
 
 let running = false;
@@ -1113,6 +1167,8 @@ export async function runOneClickMmluProTest(config: {
         isSubsetRun,
         subsetQuestionIds: requestedQuestionIds,
         subsetOfTotal,
+        // KN-BP144-7 T4: zero questions ran -- every authority's every count is honestly 0.
+        authorityOutcomeSummary: computeAuthorityOutcomeRunSummary([]),
       };
       broadcast(progressChannel, { type: 'complete', result: emptyResult });
       return emptyResult;
@@ -1229,6 +1285,10 @@ export async function runOneClickMmluProTest(config: {
     // only meaningful (and only present) when isSubsetRun is true.
     isSubsetRun,
     ...(isSubsetRun ? { subsetQuestionIds: requestedQuestionIds, subsetOfTotal } : {}),
+    // KN-BP144-7 T4: unconditional (never gated on plowEnabled/researchArmMode) -- a run where
+    // the ensemble never fired at all simply tallies every question as all-'not_attempted' for
+    // every authority, which is itself the honest, correct summary for that run.
+    authorityOutcomeSummary: computeAuthorityOutcomeRunSummary(outcomes),
   };
 
   broadcast(progressChannel, { type: 'complete', result });

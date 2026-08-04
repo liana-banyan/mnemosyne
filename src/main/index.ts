@@ -89,6 +89,7 @@ import {
   buildBrowserAuthorityQueryUrl,
   buildMcAwareQueryText,
   isInteractiveBrowserAuthority,
+  type BrowserAuthorityDispatchOutcome,
   type BrowserAuthorityName,
   type BrowserAuthorityQuery,
   type BrowserAuthorityRawExtraction,
@@ -1642,10 +1643,39 @@ let browserAuthorityInFlightChain: Promise<unknown> = Promise.resolve();
 //      the same source, -> null here.
 // A genuinely scraped, non-empty reply is the ONLY path that reaches a real
 // BrowserAuthorityRawExtraction return below.
-async function runInteractiveBrowserAuthorityQuery(
+// KN-BP144-7 T1/T2: the dispatch-level observation this leg reports back to
+// runBrowserAuthorityQueryFromMainObserved -- ADDITIVE, never consulted by any resolve() above
+// (those are unchanged, byte-for-byte). `raw` is exactly what this function always returned;
+// `dispatchOutcome` is a new, honest classification of WHY `raw` is null, derived solely from
+// the SAME `r.reason`/`r.success` values this function already computed above -- never a guess,
+// never inferred from anything downstream.
+interface BrowserAuthorityDispatchObservation {
+  raw: BrowserAuthorityRawExtraction | null;
+  dispatchOutcome: BrowserAuthorityDispatchOutcome;
+}
+
+/** T2's own literal example vocabulary for the interactive path's `reason` field
+ *  (not_signed_in / composer_not_found_timeout / outer_script_timeout / stream_timeout_or_empty
+ *  / empty_ipc_payload / webview_send_failed / no_webview_element / outer_script_exception) --
+ *  mapped onto the closed 5-value dispatch vocabulary. 'not_signed_in' is the one reason string
+ *  that IS itself a vocabulary word (webview_preload.ts's own login-wall detector). The three
+ *  reasons that are genuinely about exceeding a time budget (outer_script_timeout,
+ *  stream_timeout_or_empty, composer_not_found_timeout -- the last is a fast-fail composer-find
+ *  window, still a window exceeded with nothing returned) map to 'timeout'. Every other
+ *  technical dispatch failure (no webview element, empty IPC payload, send failed, an exception
+ *  in the outer script, or no reason reported at all) maps to 'no_result' -- "asked, returned
+ *  successfully [no hard timeout], produced nothing usable" is the honest, literal description
+ *  of each of those, never a fabricated finer distinction this leg cannot actually observe. */
+function classifyInteractiveDispatchReason(reason: string | undefined): BrowserAuthorityDispatchOutcome {
+  if (reason === 'not_signed_in') return 'not_signed_in';
+  if (reason === 'outer_script_timeout' || reason === 'stream_timeout_or_empty' || reason === 'composer_not_found_timeout') return 'timeout';
+  return 'no_result';
+}
+
+async function runInteractiveBrowserAuthorityQueryObserved(
   nexusWindow: BrowserWindow,
   query: BrowserAuthorityQuery,
-): Promise<BrowserAuthorityRawExtraction | null> {
+): Promise<BrowserAuthorityDispatchObservation> {
   const navigateUrl = buildBrowserAuthorityQueryUrl(query); // fixed landing URL for interactive authorities
   // The question (with its MC options, if any) travels as the COMPOSER payload, not the URL --
   // buildMcAwareQueryText is the SAME pure formatter user_perplexity's query-URL path already
@@ -1719,7 +1749,7 @@ async function runInteractiveBrowserAuthorityQuery(
     const result = await nexusWindow.webContents.executeJavaScript(script);
     if (!result || typeof result !== 'object') {
       console.log(`${logPrefix}: main-null-result (executeJavaScript returned no object)`);
-      return null;
+      return { raw: null, dispatchOutcome: 'no_result' };
     }
     const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null; reason?: string };
     if (!r.success || !r.snippet || !r.sourceUrl) {
@@ -1727,29 +1757,40 @@ async function runInteractiveBrowserAuthorityQuery(
       // us exactly which stage failed (composer_not_found_timeout / not_signed_in / outer_script_
       // timeout / stream_timeout_or_empty / etc.)
       console.log(`${logPrefix}: main-fail reason=${r.reason ?? 'no_reason_reported'}`);
-      return null;
+      return { raw: null, dispatchOutcome: classifyInteractiveDispatchReason(r.reason) };
     }
     console.log(`${logPrefix}: main-success scraped-len=${r.snippet.length}`);
     return {
-      snippet: r.snippet,
-      sourceUrl: r.sourceUrl,
-      authority: query.authority,
-      selectorUsed: r.selectorUsed ?? null,
+      raw: {
+        snippet: r.snippet,
+        sourceUrl: r.sourceUrl,
+        authority: query.authority,
+        selectorUsed: r.selectorUsed ?? null,
+      },
+      dispatchOutcome: 'dispatched',
     };
   } catch (err) {
     console.warn(`${logPrefix}: main-exception (non-fatal, resolving null):`, (err as Error)?.message ?? err);
-    return null;
+    return { raw: null, dispatchOutcome: 'no_result' };
   }
 }
 
-export async function runBrowserAuthorityQueryFromMain(
+// KN-BP144-7 T1: "one shared wrapper... or the states will diverge the way the four authority
+// surfaces diverged." This is that wrapper -- the ONE place that observes every
+// runBrowserAuthorityQueryFromMain attempt (interactive AND static, all five browser
+// authorities alike, since every one of them funnels through here) and classifies it into the
+// closed dispatch vocabulary. runBrowserAuthorityQueryFromMain (below) is now a thin,
+// byte-identical-behavior wrapper around this function that discards the observation and
+// returns exactly what it always returned -- every pre-existing caller (Stage F3 mesh-synergy,
+// decompose, the eliminator, the Ask-tab lookup, etc.) is untouched.
+export async function runBrowserAuthorityQueryFromMainObserved(
   query: BrowserAuthorityQuery,
-): Promise<BrowserAuthorityRawExtraction | null> {
-  const runOnce = async (): Promise<BrowserAuthorityRawExtraction | null> => {
+): Promise<BrowserAuthorityDispatchObservation> {
+  const runOnceObserved = async (): Promise<BrowserAuthorityDispatchObservation> => {
     const nexusWindow = ensureNexusAuthoritySession();
     if (!nexusWindow) {
       console.warn('[browser-authority-main] persistent nexus-authority session unavailable (flag off, or window could not be created) -- resolving null (honest, never fabricated).');
-      return null;
+      return { raw: null, dispatchOutcome: 'disabled' };
     }
 
     // BP139 FIX: the marker-based sign-in probe produces FALSE NEGATIVES, confirmed live -- the
@@ -1773,7 +1814,7 @@ export async function runBrowserAuthorityQueryFromMain(
     // window unavailable, in-flight serialization) already ran before this point and applies
     // identically to both branches; only the on-page mechanism differs from here down.
     if (isInteractiveBrowserAuthority(query.authority)) {
-      return await runInteractiveBrowserAuthorityQuery(nexusWindow, query);
+      return await runInteractiveBrowserAuthorityQueryObserved(nexusWindow, query);
     }
 
     const navigateUrl = buildBrowserAuthorityQueryUrl(query);
@@ -1787,7 +1828,12 @@ export async function runBrowserAuthorityQueryFromMain(
       return new Promise(function(resolve) {
         try {
           var wv = document.querySelector('webview');
-          if (!wv) { resolve(null); return; }
+          // KN-BP144-7 T2: these resolve() calls now carry a diagnostics-only \`reason\` string
+          // (mirroring the interactive script's own existing convention above) instead of a bare
+          // null -- this is NEVER load-bearing for success/failure below (still decided purely by
+          // r.success/r.snippet/r.sourceUrl, exactly as before), it only lets the Node-side
+          // observation classify WHY the eventual null happened, honestly, from what actually ran.
+          if (!wv) { resolve({ success: false, reason: 'no_webview_element' }); return; }
           var settled = false;
           var retried = false;
           var timeoutId = setTimeout(function() {
@@ -1795,7 +1841,7 @@ export async function runBrowserAuthorityQueryFromMain(
             settled = true;
             wv.removeEventListener('ipc-message', onMsg);
             wv.removeEventListener('did-finish-load', onLoad);
-            resolve(null);
+            resolve({ success: false, reason: 'outer_script_timeout' });
           }, ${BROWSER_AUTHORITY_MAIN_TIMEOUT_MS});
           function onMsg(e) {
             if (!e || e.channel !== 'browser-authority-extraction-result') return;
@@ -1838,7 +1884,7 @@ export async function runBrowserAuthorityQueryFromMain(
               try {
                 wv.send('browser-authority-run-query', { query: ${JSON.stringify(query.question)}, authority: ${JSON.stringify(query.authority)} });
               } catch (sendErr) {
-                if (!settled) { settled = true; clearTimeout(timeoutId); resolve(null); }
+                if (!settled) { settled = true; clearTimeout(timeoutId); resolve({ success: false, reason: 'webview_send_failed' }); }
               }
             }, ${BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS});
           }
@@ -1846,7 +1892,7 @@ export async function runBrowserAuthorityQueryFromMain(
           wv.addEventListener('did-finish-load', onLoad);
           wv.loadURL(${JSON.stringify(navigateUrl)});
         } catch (err) {
-          resolve(null);
+          resolve({ success: false, reason: 'outer_script_exception' });
         }
       });
     })()
@@ -1854,35 +1900,59 @@ export async function runBrowserAuthorityQueryFromMain(
 
     try {
       const result = await nexusWindow.webContents.executeJavaScript(script);
-      if (!result || typeof result !== 'object') return null;
-      const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null };
-      if (!r.success || !r.snippet || !r.sourceUrl) return null; // honest -- never a partial/fabricated extraction
+      if (!result || typeof result !== 'object') return { raw: null, dispatchOutcome: 'no_result' };
+      const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null; reason?: string };
+      if (!r.success || !r.snippet || !r.sourceUrl) {
+        // honest -- never a partial/fabricated extraction. KN-BP144-7 T2: this static (Google/
+        // Perplexity) path has no login-wall detector of its own (unlike the interactive script
+        // above), so 'not_signed_in' can never be observed here -- only genuinely reported reasons
+        // are ever classified, per this ticket's own "never infer/deduce" refusal.
+        const dispatchOutcome: BrowserAuthorityDispatchOutcome = r.reason === 'outer_script_timeout' ? 'timeout' : 'no_result';
+        return { raw: null, dispatchOutcome };
+      }
       return {
-        snippet: r.snippet,
-        sourceUrl: r.sourceUrl,
-        authority: query.authority,
-        selectorUsed: r.selectorUsed ?? null,
+        raw: {
+          snippet: r.snippet,
+          sourceUrl: r.sourceUrl,
+          authority: query.authority,
+          selectorUsed: r.selectorUsed ?? null,
+        },
+        dispatchOutcome: 'dispatched',
       };
     } catch (err) {
       console.warn('[browser-authority-main] executeJavaScript round trip failed (non-fatal, resolving null):', (err as Error)?.message ?? err);
-      return null;
+      return { raw: null, dispatchOutcome: 'no_result' };
     }
   };
 
   // BP139 serialize fix: chain this call onto whatever is currently in flight instead of
-  // dropping it. `.then(runOnce, runOnce)` runs runOnce() once the previous link SETTLES
-  // (whether it resolved OR rejected), so one failing/timed-out call can never poison or stall
-  // the queue for later callers. `thisCall` is what THIS caller awaits (its real value/
-  // rejection); `browserAuthorityInFlightChain` is updated to a version that swallows this
-  // call's outcome via `.then(() => undefined, () => undefined)` purely so the NEXT queued call
-  // still fires even if this one throws. Single-query behavior is unchanged: with nothing else
-  // in flight, browserAuthorityInFlightChain is already-resolved, so runOnce() runs on the very
-  // next microtask, same as a direct call. No deadlock risk: runOnce()'s own body is bounded by
-  // BROWSER_AUTHORITY_MAIN_TIMEOUT_MS (20s) inside the script's own setTimeout/resolve(null), so
-  // every link settles within that bound and the chain always advances.
-  const thisCall = browserAuthorityInFlightChain.then(runOnce, runOnce);
+  // dropping it. `.then(runOnceObserved, runOnceObserved)` runs runOnceObserved() once the
+  // previous link SETTLES (whether it resolved OR rejected), so one failing/timed-out call can
+  // never poison or stall the queue for later callers. `thisCall` is what THIS caller awaits (its
+  // real value/rejection); `browserAuthorityInFlightChain` is updated to a version that swallows
+  // this call's outcome via `.then(() => undefined, () => undefined)` purely so the NEXT queued
+  // call still fires even if this one throws. Single-query behavior is unchanged: with nothing
+  // else in flight, browserAuthorityInFlightChain is already-resolved, so runOnceObserved() runs
+  // on the very next microtask, same as a direct call. No deadlock risk: runOnceObserved()'s own
+  // body is bounded by BROWSER_AUTHORITY_MAIN_TIMEOUT_MS (20s) inside the script's own
+  // setTimeout/resolve(...), so every link settles within that bound and the chain always
+  // advances.
+  const thisCall = browserAuthorityInFlightChain.then(runOnceObserved, runOnceObserved);
   browserAuthorityInFlightChain = thisCall.then(() => undefined, () => undefined);
   return thisCall;
+}
+
+// Thin, byte-identical-behavior wrapper: every pre-existing caller of this exact exported name
+// (Stage F3 mesh-synergy, decompose, the eliminator, the mesh-synergy fan-out verifier, the
+// Ask-tab lookup, the direct IPC handler) gets exactly what it always got -- KN-BP144-7 added a
+// richer OBSERVED variant above for callers that want the new instrumentation (currently only
+// the Authority Ensemble's own Stage F2 bridge, plow_mc_answerer.ts), and changed nothing about
+// what this function itself returns.
+export async function runBrowserAuthorityQueryFromMain(
+  query: BrowserAuthorityQuery,
+): Promise<BrowserAuthorityRawExtraction | null> {
+  const observed = await runBrowserAuthorityQueryFromMainObserved(query);
+  return observed.raw;
 }
 
 // --- IPC Handlers ------------------------------------------------------------

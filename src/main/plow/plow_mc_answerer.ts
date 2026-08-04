@@ -197,9 +197,25 @@ import { predictViaPsionic, PSIONIC_FAST_PATH_THRESHOLD, PSIONIC_MIN_CORROBORATI
 // would be a circular top-level require).
 import {
   runBrowserAuthorityLookup,
+  runBrowserAuthorityLookupObserved,
   type BrowserAuthorityBridge,
   type BrowserAuthorityLookupResult,
+  type BrowserAuthorityRawExtraction,
 } from './browser_authority_adapter';
+// KN-BP144-7 T1-T4 ("Make The Silent Authorities Loud"): the closed attempt-outcome vocabulary
+// + its default/normalize helpers, imported directly from the shared vocabulary module (never
+// duplicated) -- see that file's own "KN-BP144-7" banner for the full rationale. PURELY
+// ADDITIVE: nothing imported here is read by any answering/scoring/elimination decision in this
+// file; it only feeds the new authorityOutcomes bookkeeping threaded through
+// runAuthorityEnsemble/runCanonicalPlowMcAnswer below.
+import {
+  createDefaultAuthorityAttemptOutcomes,
+  normalizeAuthorityAttemptOutcomes,
+  truncateAuthorityPreview,
+  type BrowserAuthorityAttemptOutcomes,
+  type BrowserAuthorityAttemptRecord,
+  type BrowserAuthorityDispatchOutcome,
+} from '../../shared/plow/browser_authority_types';
 // BP137 Yoke v2b Stage E: the distributed Star Chamber fan-out, fired ONLY at the single call
 // site below (Stage D's final don't-know) -- see star_chamber_dispatch.ts's own header for the
 // full wiring rationale (genuinely independent Google/Perplexity/Wolfram authorities, never
@@ -462,6 +478,14 @@ export interface CanonicalPlowMcConfig {
    *  concordant / coroner_verified only; everything else (including "no corroboration field at
    *  all", the legacy-row shape) fails CLOSED and is never recalled. */
   productionReadbackEnabled?: boolean;
+  /** KN-BP144-7 T1-T3, OPTIONAL/ADDITIVE, never read by any answering/scoring logic in this
+   *  file. When a caller supplies this object, runCanonicalPlowMcAnswer mutates it IN PLACE
+   *  (never reassigns it) as the Authority Ensemble genuinely reaches each of the five browser
+   *  authorities plus the swarm, so the caller can read the SAME object reference after
+   *  awaiting the call and attach it to a receipt. Absent/undefined (every pre-KN-BP144-7
+   *  caller): a fresh all-'not_attempted' map is created internally and simply discarded --
+   *  byte-identical behavior, zero new work, for every caller that does not opt in. */
+  authorityOutcomesSink?: BrowserAuthorityAttemptOutcomes;
 }
 
 /** BP133 Yoke #27: per-voter diagnostic detail, always computed (cheap: just string lengths
@@ -743,6 +767,15 @@ export interface CanonicalPlowMcResult {
    *  every other return path (legacy non-ensemble browser-authority accept, mesh-synergy,
    *  decompose, swarm-only) and on every pre-BP140 receipt. */
   ensembleCandidates?: AuthorityEnsembleCandidate[];
+  /** KN-BP144-7 T1-T4 ("Make The Silent Authorities Loud"), OPTIONAL/ADDITIVE. Present on the
+   *  SAME return sites as ensembleCandidates immediately above (the ensemble genuinely ran),
+   *  using the exact same outer-scope-capture convention (authorityOutcomesForTrace, set once
+   *  right after runAuthorityEnsemble returns, read at every return site below). Absent on every
+   *  return path where the ensemble never ran (flag off, legacy branch, mesh-synergy, decompose,
+   *  every pre-KN-BP144-7 receipt) -- callCanonicalPlowMcAnswererForMeshTest normalizes this via
+   *  normalizeAuthorityAttemptOutcomes() before attaching it to a receipt's plowTrace, so T3's "no
+   *  key omitted anywhere" gate holds even when this field itself is absent here. */
+  authorityOutcomes?: BrowserAuthorityAttemptOutcomes;
   /** KN-BP144-1 Phase 1 ("the letter does not come from where we thought"), OPTIONAL, CLOSED
    *  VOCABULARY, NO FREE TEXT. Answers "which code path actually produced chosenLetter", set AT
    *  the assignment site itself (never re-derived after the fact from other fields -- doing so
@@ -3075,6 +3108,86 @@ async function queryGeminiBrowserAuthority(
   return result ? { fact: result.fact, sourceUrl: result.sourceUrl } : null;
 }
 
+// KN-BP144-7 T1/T2: dispatch-observed siblings of the three queryXBrowserAuthority functions
+// just above. PURELY ADDITIVE -- NEW functions, called from NO pre-existing site (only the
+// ensemble's browser-LLM loop below, updated this same ticket); the three functions above are
+// left byte-for-byte untouched and remain fully reachable/correct on their own (nothing calls
+// them any more after this ticket, but deleting dead-but-correct code is out of this ticket's
+// blast radius). Each is the exact same shape as its non-observed sibling, just threading through
+// runBrowserAuthorityLookupObserved instead of runBrowserAuthorityLookup so the ensemble can
+// record what dispatch level actually saw.
+interface BrowserLlmAuthorityObservation {
+  result: { fact: string; sourceUrl: string } | null;
+  dispatchOutcome: BrowserAuthorityDispatchOutcome;
+  raw: BrowserAuthorityRawExtraction | null;
+}
+
+async function queryClaudeBrowserAuthorityObserved(
+  question: string,
+  mcOptionTexts: string[],
+  bridge: BrowserAuthorityBridge,
+): Promise<BrowserLlmAuthorityObservation> {
+  const observed = await runBrowserAuthorityLookupObserved(
+    question,
+    {
+      researchArmMode: true,
+      researchArmBrowserAuthority: true,
+      preferredAuthority: 'user_claude',
+      ...(mcOptionTexts.length > 0 ? { mcOptions: mcOptionTexts } : {}),
+    },
+    bridge,
+  );
+  return {
+    result: observed.result ? { fact: observed.result.fact, sourceUrl: observed.result.sourceUrl } : null,
+    dispatchOutcome: observed.dispatchOutcome,
+    raw: observed.raw,
+  };
+}
+
+async function queryChatGptBrowserAuthorityObserved(
+  question: string,
+  mcOptionTexts: string[],
+  bridge: BrowserAuthorityBridge,
+): Promise<BrowserLlmAuthorityObservation> {
+  const observed = await runBrowserAuthorityLookupObserved(
+    question,
+    {
+      researchArmMode: true,
+      researchArmBrowserAuthority: true,
+      preferredAuthority: 'user_chatgpt',
+      ...(mcOptionTexts.length > 0 ? { mcOptions: mcOptionTexts } : {}),
+    },
+    bridge,
+  );
+  return {
+    result: observed.result ? { fact: observed.result.fact, sourceUrl: observed.result.sourceUrl } : null,
+    dispatchOutcome: observed.dispatchOutcome,
+    raw: observed.raw,
+  };
+}
+
+async function queryGeminiBrowserAuthorityObserved(
+  question: string,
+  mcOptionTexts: string[],
+  bridge: BrowserAuthorityBridge,
+): Promise<BrowserLlmAuthorityObservation> {
+  const observed = await runBrowserAuthorityLookupObserved(
+    question,
+    {
+      researchArmMode: true,
+      researchArmBrowserAuthority: true,
+      preferredAuthority: 'user_gemini',
+      ...(mcOptionTexts.length > 0 ? { mcOptions: mcOptionTexts } : {}),
+    },
+    bridge,
+  );
+  return {
+    result: observed.result ? { fact: observed.result.fact, sourceUrl: observed.result.sourceUrl } : null,
+    dispatchOutcome: observed.dispatchOutcome,
+    raw: observed.raw,
+  };
+}
+
 /** BP141-1: reads GROUNDED Fact eblets straight from the live substrate (via the SAME
  *  loadAllVerifiedEblets() reader every other consumer of verified_eblets.jsonl already uses) --
  *  never invented, never a search-result echo. Filters to entries whose provenance carries the
@@ -3178,6 +3291,38 @@ export function diagnoseNoConsensusScatterDecline(
   };
 }
 
+/** KN-BP144-7 T2: the ONE parse-level choke point that turns a dispatch-level observation plus
+ *  "did resolveAuthorityLetterMatch find a letter" into the closed 7-value vocabulary, shared by
+ *  every one of the five browser-authority call sites inside runAuthorityEnsemble below (never
+ *  re-derived per-authority, so the classification logic cannot diverge the way T1's own
+ *  rationale warns against). Pure, no I/O:
+ *   - dispatchOutcome !== 'dispatched' (disabled/not_signed_in/timeout/no_result): that IS the
+ *     final outcome, unchanged -- dispatch level already observed something more specific than
+ *     this leg could ever re-derive, so it is passed through verbatim, never overwritten.
+ *   - dispatchOutcome === 'dispatched' but `result` is null: a genuine raw extraction came back
+ *     but distillExtraction() itself rejected it (empty/whitespace-only snippet, or no
+ *     sourceUrl) -- "asked, returned successfully, produced nothing usable" is T1's own literal
+ *     definition of 'no_result'.
+ *   - dispatchOutcome === 'dispatched', `result` non-null, parsedOk true: 'answered'.
+ *   - dispatchOutcome === 'dispatched', `result` non-null, parsedOk false: 'parse_failed', with
+ *     T3's required first-200-chars preview of result.fact -- the genuinely-returned, genuinely-
+ *     distilled text resolveAuthorityLetterMatch was unable to extract a letter from. */
+function resolveEnsembleAttemptOutcome(
+  observed: { dispatchOutcome: BrowserAuthorityDispatchOutcome; result: { fact: string } | null },
+  parsedOk: boolean,
+): BrowserAuthorityAttemptRecord {
+  if (observed.dispatchOutcome !== 'dispatched') {
+    return { outcome: observed.dispatchOutcome };
+  }
+  if (!observed.result) {
+    return { outcome: 'no_result' };
+  }
+  if (parsedOk) {
+    return { outcome: 'answered' };
+  }
+  return { outcome: 'parse_failed', rawPreview: truncateAuthorityPreview(observed.result.fact) };
+}
+
 /** Runs the full ensemble for one question: queries every free authority available for
  *  `answerType`, resolves each via resolveAuthorityLetterMatch (Wolfram via a direct computed-
  *  value match against the options instead, since it never returns free text), and corroborates
@@ -3208,6 +3353,16 @@ async function runAuthorityEnsemble(params: {
     domain, mcPromptWithSubstrate, widenerOperators, widenerBackupOperators, onProgress, log,
   } = params;
   const candidates: AuthorityEnsembleCandidate[] = [];
+  // KN-BP144-7 T1-T3 ("Make The Silent Authorities Loud"): the per-question closed-vocabulary
+  // attempt-outcome record for all five browser authorities plus the swarm. Uses the caller-
+  // supplied sink (mutated IN PLACE, never reassigned, so the caller's own reference stays live
+  // after this function returns) when config.authorityOutcomesSink is present; otherwise creates
+  // a fresh all-'not_attempted' map that is simply discarded -- byte-identical extra work (six
+  // cheap object-literal writes at most) for every pre-KN-BP144-7 caller that never sets that
+  // field. PURELY ADDITIVE: `authorityOutcomes` is never read by any line below that decides
+  // `candidates`, `chosenLetter`, or `corroboration` -- see each write site's own comment.
+  const authorityOutcomes: BrowserAuthorityAttemptOutcomes =
+    config.authorityOutcomesSink ?? createDefaultAuthorityAttemptOutcomes();
   // BP-ECHO-NO-VOTE: set ONLY inside the pre-branch hoist check below (det.source === 'reasoning_fact'
   // case) -- see AuthorityEnsembleOutcome.reasoningFactComputeReceipt's own doc comment for why
   // this is threaded through every return below INSTEAD OF being pushed into `candidates`.
@@ -3371,9 +3526,16 @@ async function runAuthorityEnsemble(params: {
 
   // ── Perplexity, WITH options embedded (unchanged mechanism from the legacy path) ──────────
   try {
-    const perplexityResult = await runBrowserAuthorityLookup(
+    // KN-BP144-7 T1/T2: runBrowserAuthorityLookupObserved is a byte-identical-result sibling of
+    // runBrowserAuthorityLookup (see that function's own doc comment) -- `perplexityResult` below
+    // is exactly what the pre-existing runBrowserAuthorityLookup(...) call would have produced
+    // for this same query/config/bridge; `observed.dispatchOutcome`/`observed.raw` are the only
+    // new information, consulted ONLY for authorityOutcomes.user_perplexity just below, never by
+    // `resolved`/`candidates`.
+    const observed = await runBrowserAuthorityLookupObserved(
       researchQuery, { ...config, preferredAuthority: 'user_perplexity', mcOptions: mcOptionTexts }, bridge,
     );
+    const perplexityResult = observed.result;
     const resolved = perplexityResult ? resolveAuthorityLetterMatch(perplexityResult.fact, mcOptions) : null;
     if (resolved && perplexityResult) {
       candidates.push({
@@ -3381,6 +3543,7 @@ async function runAuthorityEnsemble(params: {
         sourceUrl: perplexityResult.sourceUrl, method: resolved.method,
       });
     }
+    authorityOutcomes.user_perplexity = resolveEnsembleAttemptOutcome(observed, resolved !== null);
     log(`perplexity=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter'}`);
   } catch (err) {
     log(`perplexity threw (non-fatal): ${err}`);
@@ -3388,11 +3551,12 @@ async function runAuthorityEnsemble(params: {
 
   // ── Google, NOW ALSO with options embedded (BP139 fix -- was bare-question-only before) ───
   try {
-    const googleResult = await runBrowserAuthorityLookup(
+    const observed = await runBrowserAuthorityLookupObserved(
       researchQuery,
       { ...config, preferredAuthority: 'user_google', mcOptions: mcOptionTexts, embedOptionsForGoogle: true },
       bridge,
     );
+    const googleResult = observed.result;
     const resolved = googleResult ? resolveAuthorityLetterMatch(googleResult.fact, mcOptions) : null;
     if (resolved && googleResult) {
       candidates.push({
@@ -3400,6 +3564,7 @@ async function runAuthorityEnsemble(params: {
         sourceUrl: googleResult.sourceUrl, method: resolved.method,
       });
     }
+    authorityOutcomes.user_google = resolveEnsembleAttemptOutcome(observed, resolved !== null);
     log(`google=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter'}`);
   } catch (err) {
     log(`google threw (non-fatal): ${err}`);
@@ -3435,14 +3600,22 @@ async function runAuthorityEnsemble(params: {
   for (const llmName of browserLlmNames) {
     if (!isBrowserLlmAuthorityEnabled(llmName, browserLlmOverrides)) {
       log(`${llmName}=skipped (disabled, opt-in default-off -- see BROWSER_LLM_AUTHORITY_METADATA)`);
+      // KN-BP144-7 T1: this IS T1's own literal 'disabled' definition -- "asked, authority is
+      // switched off" -- observed directly from this loop's own pre-existing gate check, never
+      // inferred from a later absence.
+      authorityOutcomes[llmName] = { outcome: 'disabled' };
       continue;
     }
     try {
-      const llmResult = llmName === 'user_claude'
-        ? await queryClaudeBrowserAuthority(researchQuery, mcOptionTexts, bridge)
+      // KN-BP144-7 T1/T2: the *Observed siblings return the exact same `result` shape their
+      // non-observed counterparts (still defined above, now otherwise-uncalled) returned as
+      // `llmResult` -- `resolved`/`candidates` below are therefore unchanged byte-for-byte.
+      const observed = llmName === 'user_claude'
+        ? await queryClaudeBrowserAuthorityObserved(researchQuery, mcOptionTexts, bridge)
         : llmName === 'user_chatgpt'
-          ? await queryChatGptBrowserAuthority(researchQuery, mcOptionTexts, bridge)
-          : await queryGeminiBrowserAuthority(researchQuery, mcOptionTexts, bridge);
+          ? await queryChatGptBrowserAuthorityObserved(researchQuery, mcOptionTexts, bridge)
+          : await queryGeminiBrowserAuthorityObserved(researchQuery, mcOptionTexts, bridge);
+      const llmResult = observed.result;
       const resolved = llmResult ? resolveAuthorityLetterMatch(llmResult.fact, mcOptions) : null;
       if (resolved && llmResult) {
         candidates.push({
@@ -3450,6 +3623,7 @@ async function runAuthorityEnsemble(params: {
           sourceUrl: llmResult.sourceUrl, method: resolved.method,
         });
       }
+      authorityOutcomes[llmName] = resolveEnsembleAttemptOutcome(observed, resolved !== null);
       log(`${llmName}=${resolved ? `${resolved.letter}(${resolved.method})` : 'no-letter (enabled, wired-but-no-result)'}`);
     } catch (err) {
       log(`${llmName} threw (non-fatal): ${err}`);
@@ -3831,16 +4005,29 @@ async function runAuthorityEnsemble(params: {
         sourceUrl: 'specialist-swarm-internal-consensus',
         method: 'specialist_swarm_vote',
       });
+      // KN-BP144-7 T1/T3: swarm's own closed-vocabulary subset is {not_attempted, no_result,
+      // answered} -- see browser_authority_types.ts's own EnsembleAuthorityKey doc comment. This
+      // branch is reached only when the swarm's letter was genuinely counted as a candidate above.
+      authorityOutcomes.specialist_swarm = { outcome: 'answered' };
     } else if (swarmResult.chosenLetter && swarmResult.concordance === 'CONCORDANT') {
       log(
         `[plow_mc_answerer] specialist_swarm ABSTAINS (no verified grounding: postFurnace=0, ` +
         `arbitrated over ${swarmResult.candidatesPostMiner} unverified postMiner fallback fact(s)) ` +
         `-- letter ${swarmResult.chosenLetter} not counted as corroboration.`,
       );
+      // Asked, returned successfully (a genuine CONCORDANT vote), but that vote was ruled
+      // ungrounded and therefore never became a usable candidate -- T1's own 'no_result'.
+      authorityOutcomes.specialist_swarm = { outcome: 'no_result' };
+    } else {
+      // DISCORDANT/PARTIAL/no-letter -- asked, returned, nothing usable.
+      authorityOutcomes.specialist_swarm = { outcome: 'no_result' };
     }
     log(`swarm=${swarmResult.chosenLetter ? `${swarmResult.chosenLetter}(${swarmResult.concordance})` : `no-letter(${swarmResult.concordance})`}`);
   } catch (err) {
     log(`specialist swarm threw (non-fatal): ${err}`);
+    // Genuinely asked (the try block was entered) but no usable outcome -- never left as the
+    // default 'not_attempted', which would falsely say the swarm was never consulted at all.
+    authorityOutcomes.specialist_swarm = { outcome: 'no_result' };
   }
 
   if (candidates.length === 0) {
@@ -6614,6 +6801,12 @@ export async function runCanonicalPlowMcAnswer(
   // trace line below treats as "fall back to the pre-existing legacy variables", so the flag-off/
   // legacy-branch case is byte-for-byte unchanged.
   let ensembleCandidatesForTrace: AuthorityEnsembleCandidate[] | undefined;
+  // KN-BP144-7 T1-T4: mirrors ensembleCandidatesForTrace's own outer-scope-capture pattern
+  // immediately below/above -- created fresh (all 'not_attempted') right before the ensemble is
+  // invoked, threaded into runAuthorityEnsemble via config.authorityOutcomesSink, then mutated IN
+  // PLACE by that call (see runAuthorityEnsemble's own authorityOutcomes doc comment). Stays
+  // undefined when the ensemble never runs, exactly like ensembleCandidatesForTrace.
+  let authorityOutcomesForTrace: BrowserAuthorityAttemptOutcomes | undefined;
   // KN-BP144-1 Phase 1: mirrors ensembleCandidatesForTrace's own outer-scope-capture pattern
   // (KN-BP143-2 B1a) -- captured unconditionally the moment the ensemble returns, so every
   // downstream return site (accept, decompose-last-resort, and the final voter-concordance
@@ -6655,6 +6848,24 @@ export async function runCanonicalPlowMcAnswer(
             return null;
           }
         },
+        // KN-BP144-7 T1/T2, OPTIONAL/ADDITIVE (BrowserAuthorityBridge.runQueryInUserBrowserObserved
+        // is an optional interface member -- see that field's own doc comment): reaches THE SAME
+        // single shared wrapper (runBrowserAuthorityQueryFromMainObserved, index.ts) T1 requires,
+        // and reports its dispatch-level classification back to runBrowserAuthorityLookupObserved
+        // (browser_authority_adapter.ts), which is what lets the Authority Ensemble distinguish
+        // disabled/not_signed_in/timeout/no_result for real instead of falling back to this
+        // bridge's own coarsest classification. Never a second, divergent call: exactly one
+        // runBrowserAuthorityQueryFromMainObserved invocation per query, same as
+        // runQueryInUserBrowser above always was for runBrowserAuthorityQueryFromMain.
+        async runQueryInUserBrowserObserved(query) {
+          try {
+            const mainModule = await import('../index');
+            return await mainModule.runBrowserAuthorityQueryFromMainObserved(query);
+          } catch (err) {
+            console.warn('[plow_mc_answerer] Stage F2 browser-authority bridge (observed) call failed (non-fatal, honest no_result):', err);
+            return { raw: null, dispatchOutcome: 'no_result' };
+          }
+        },
       };
       // WIRE-THE-LOOP fix part 1: the MC options this question actually has, embedded into
       // Perplexity's prompt (buildMcAwareQueryText, via BrowserAuthorityAdapterConfig.mcOptions)
@@ -6668,11 +6879,16 @@ export async function runCanonicalPlowMcAnswer(
       // paths below runs. false/absent (every pre-Yoke caller) takes the ELSE branch, which is
       // the EXACT pre-ensemble logic, byte-for-byte unchanged from before this Yoke.
       if (authorityEnsembleOn) {
+        // KN-BP144-7 T1-T4: a fresh all-'not_attempted' sink, threaded into runAuthorityEnsemble
+        // below via a shallow-cloned config (never mutates the caller's own `config` object) so
+        // that function can mutate it IN PLACE as it genuinely reaches each authority. Read back
+        // into authorityOutcomesForTrace immediately after the call returns.
+        const authorityOutcomesSinkForEnsemble = createDefaultAuthorityAttemptOutcomes();
         const ensembleOutcome = await runAuthorityEnsemble({
           researchQuery,
           mcOptions: mcOptionsForBrowserAuthority,
           mcOptionTexts: mcOptionTextsForQuery,
-          config,
+          config: { ...config, authorityOutcomesSink: authorityOutcomesSinkForEnsemble },
           bridge: browserBridge,
           // Non-null: this branch only runs inside `if (browserAuthorityOn)`, right after the
           // unconditional `earlyAnswerTypeForBrowserAuthority = classifyAnswerType(...)` assignment
@@ -6697,6 +6913,9 @@ export async function runCanonicalPlowMcAnswer(
         // per-authority participation even on a disagree/fallthrough question like qid 66.
         ensembleCandidatesForTrace = ensembleOutcome.candidates;
         ensembleOutcomeCorroborationForTrace = ensembleOutcome.corroboration;
+        // KN-BP144-7 T1-T4: authorityOutcomesSinkForEnsemble was mutated in place by the call
+        // above -- this is simply reading that same object back, never re-deriving it.
+        authorityOutcomesForTrace = authorityOutcomesSinkForEnsemble;
         console.log(
           `[plow_mc_answerer] Stage F2 ensemble RESOLVED at t=${Date.now() - startMs}ms ` +
           `corroboration=${ensembleOutcome.corroboration} swarmFired=${ensembleOutcome.swarmFired} ` +
@@ -7091,6 +7310,10 @@ export async function runCanonicalPlowMcAnswer(
             ensembleCandidates: ensembleOutcome.candidates,
             letterSource: letterSourceForAccept,
             ensembleOutcomeCorroboration: ensembleOutcome.corroboration,
+            // KN-BP144-7 T1-T4: same outer-scope capture as ensembleCandidatesForTrace's own
+            // sibling sites below -- guaranteed set by this point (this whole block is reached
+            // only after the `if (authorityEnsembleOn)` branch above already ran the ensemble).
+            authorityOutcomes: authorityOutcomesForTrace,
             ...(deterministicOverride ? {
               authorityEnsembleDeterministicOverride: {
                 ensembleLetter: ensembleOutcome.chosenLetter!,
@@ -8130,6 +8353,7 @@ export async function runCanonicalPlowMcAnswer(
         ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
         ensembleCandidates: ensembleCandidatesForTrace,
         ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace,
+        authorityOutcomes: authorityOutcomesForTrace,
         letterSource: 'abstain_constraint_excluded_all',
         eliminatorTrace: eliminatorResult.trace,
         eliminatorConstraintSurvivors: eliminatorResult.survivorsOut,
@@ -8211,6 +8435,7 @@ export async function runCanonicalPlowMcAnswer(
         ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
         ensembleCandidates: ensembleCandidatesForTrace,
         ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace,
+        authorityOutcomes: authorityOutcomesForTrace,
         letterSource: eliminatorConstraintActive ? 'cascade_adjudicated_constrained' : 'cascade_adjudicated_unconstrained',
         cascadeEliminationLog: cascade.eliminationLog,
         eliminatorTrace: eliminatorResult.trace,
@@ -8250,6 +8475,7 @@ export async function runCanonicalPlowMcAnswer(
       ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
       ensembleCandidates: ensembleCandidatesForTrace,
       ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace,
+      authorityOutcomes: authorityOutcomesForTrace,
       letterSource: 'abstain',
       cascadeEliminationLog: cascade.eliminationLog,
       cascadeAdjudicatorAbstain: true,
@@ -8613,6 +8839,7 @@ export async function runCanonicalPlowMcAnswer(
       // factVerdict persist, same as every other path below.
       ...(ensembleCandidatesForTrace ? { ensembleCandidates: ensembleCandidatesForTrace } : {}),
       ...(ensembleOutcomeCorroborationForTrace ? { ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace } : {}),
+      ...(authorityOutcomesForTrace ? { authorityOutcomes: authorityOutcomesForTrace } : {}),
       // KN-BP144-1 Phase 1: deliberately left UNSET here, not inherited from
       // decomposeAdvisoryResult (which never set it) and not force-mapped onto this closed
       // vocabulary -- the real pipeline's own mechanism produced no letter at all (that is
@@ -8654,6 +8881,7 @@ export async function runCanonicalPlowMcAnswer(
     // ensembleCandidatesForTrace from B1a (undefined when the ensemble never ran).
     ...(ensembleCandidatesForTrace ? { ensembleCandidates: ensembleCandidatesForTrace } : {}),
     ...(ensembleOutcomeCorroborationForTrace ? { ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace } : {}),
+    ...(authorityOutcomesForTrace ? { authorityOutcomes: authorityOutcomesForTrace } : {}),
     // KN-BP144-1 Phase 1: this is THE fall-through site the ticket exists to instrument -- the
     // ensemble either never ran, or ran and fell through with no letter (disagree/none/lone-
     // rejected), and chosenLetter above is computeLetterConcordance(voterLetters)'s own verdict
@@ -8898,6 +9126,14 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
       // KN-BP141-7 P5: present only when this answer came from decompose-and-eliminate -- see
       // CanonicalPlowMcResult.decomposeAdvisoryDemoted's own doc comment.
       decomposeAdvisoryDemoted: plowResult.decomposeAdvisoryDemoted,
+      // KN-BP144-7 T1-T3 ("Make The Silent Authorities Loud"): normalizeAuthorityAttemptOutcomes
+      // is the ONE choke point that guarantees ALL SIX keys (five browser authorities + swarm)
+      // are present on every single question's trace, always -- filling in 'not_attempted' for
+      // any key plowResult.authorityOutcomes did not itself set (including the case where that
+      // field is entirely undefined, e.g. authorityEnsembleOn was somehow false). This is this
+      // ticket's own T3 gate, enforced unconditionally at THE single shared call site every
+      // scored/benchmark run funnels through (this function -- see its own header comment).
+      authorityOutcomes: normalizeAuthorityAttemptOutcomes(plowResult.authorityOutcomes),
     };
     console.log(`[${logLabel}] plow-answered letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
     return { answer, plowTrace };

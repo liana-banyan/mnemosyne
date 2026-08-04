@@ -353,3 +353,85 @@ export function distillExtraction(
     extractedAt: new Date().toISOString(),
   };
 }
+
+// ─── KN-BP144-7 ("Make The Silent Authorities Loud"): closed-vocabulary attempt-outcome ───────
+// instrumentation. PURELY ADDITIVE -- nothing below this banner is read by, or changes, any
+// answering/scoring/elimination decision anywhere in this repo. It exists solely so a receipt
+// can say, per question and per authority, WHICH of these seven (and only these seven) states
+// actually happened, instead of every non-answer looking like the same absent key. See
+// KN-BP144-7_MAKE_THE_SILENT_AUTHORITIES_LOUD.md for the full rationale (the qid 92 run
+// 039-vs-040 delta this closes).
+//
+// T1's closed vocabulary, EXACTLY these seven values, no free text:
+export type BrowserAuthorityAttemptOutcome =
+  | 'not_attempted'  // the pipeline never asked
+  | 'disabled'       // asked, authority is switched off
+  | 'not_signed_in'  // asked, no valid session
+  | 'timeout'        // asked, exceeded its window, nothing returned
+  | 'no_result'      // asked, returned successfully, produced nothing usable
+  | 'parse_failed'   // asked, returned text, the letter could not be extracted
+  | 'answered';      // asked, returned, parsed into a candidate
+
+// T2 dispatch-level vocabulary (the bridge/main-process leg, index.ts's
+// runBrowserAuthorityQueryFromMainObserved): a strict SUBSET of the seven above, plus
+// 'dispatched' -- a non-final, internal-only signal meaning "a real, non-empty extraction came
+// back; hand it to parse level (the ensemble) to decide no_result/parse_failed/answered." T2
+// deliberately narrows dispatch level to distinguish ONLY disabled/not_signed_in/timeout/
+// no_result (never parse_failed/answered/not_attempted -- those are not observable at the
+// transport layer; not_attempted in particular can only be known by whoever decides NOT to call
+// this leg at all, which is the ensemble's own per-authority gate, not this leg).
+export type BrowserAuthorityDispatchOutcome =
+  | 'disabled' | 'not_signed_in' | 'timeout' | 'no_result' | 'dispatched';
+
+/** The five browser authorities plus the swarm -- T3's "all five browser authorities plus the
+ *  swarm, every time, including the ones that were never attempted." specialist_swarm is not a
+ *  BrowserAuthorityName (it never touches a webview), but T3 requires it in the same per-
+ *  question, closed-vocabulary record, so this widens the key type by exactly one literal. */
+export type EnsembleAuthorityKey = BrowserAuthorityName | 'specialist_swarm';
+
+export const ENSEMBLE_AUTHORITY_KEYS: readonly EnsembleAuthorityKey[] = [
+  'user_google', 'user_perplexity', 'user_claude', 'user_chatgpt', 'user_gemini', 'specialist_swarm',
+];
+
+export interface BrowserAuthorityAttemptRecord {
+  outcome: BrowserAuthorityAttemptOutcome;
+  /** T3: "For parse_failed, include the first 200 characters of what was actually returned."
+   *  Present ONLY when outcome === 'parse_failed' -- every other outcome omits this field rather
+   *  than carrying a null/empty placeholder. */
+  rawPreview?: string;
+}
+
+export type BrowserAuthorityAttemptOutcomes = Record<EnsembleAuthorityKey, BrowserAuthorityAttemptRecord>;
+
+/** T3's "an absent key is exactly the ambiguity this ticket removes, so absence is not
+ *  permitted" -- the single place all six keys get seeded to 'not_attempted' before anything is
+ *  actually tried. Every question's record starts as this object; individual keys are then
+ *  overwritten (never deleted) as the ensemble genuinely reaches each authority. */
+export function createDefaultAuthorityAttemptOutcomes(): BrowserAuthorityAttemptOutcomes {
+  const out = {} as BrowserAuthorityAttemptOutcomes;
+  for (const key of ENSEMBLE_AUTHORITY_KEYS) out[key] = { outcome: 'not_attempted' };
+  return out;
+}
+
+/** The single normalization choke point for T3's "no key omitted anywhere" gate: fills in
+ *  'not_attempted' for any of the six keys missing from a partial (or entirely absent) record,
+ *  never removes or overwrites a key that IS already present. Pure, no I/O -- safe to call from
+ *  the receipt-shaping layer (one_click_mmlu_pro.ts) on every question, including the ones whose
+ *  answer came from a deterministic bypass that never touched this record at all. */
+export function normalizeAuthorityAttemptOutcomes(
+  partial: Partial<BrowserAuthorityAttemptOutcomes> | null | undefined,
+): BrowserAuthorityAttemptOutcomes {
+  const base = createDefaultAuthorityAttemptOutcomes();
+  if (!partial) return base;
+  for (const key of ENSEMBLE_AUTHORITY_KEYS) {
+    const rec = partial[key];
+    if (rec && typeof rec.outcome === 'string') base[key] = rec;
+  }
+  return base;
+}
+
+/** T3's "first 200 characters of what was actually returned" -- one pure helper so every
+ *  parse_failed call site truncates identically instead of re-deriving the same slice(0,200). */
+export function truncateAuthorityPreview(text: string, maxChars = 200): string {
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
