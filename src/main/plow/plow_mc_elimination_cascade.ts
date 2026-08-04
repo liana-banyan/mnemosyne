@@ -31,6 +31,7 @@
 // this file (or its comments) -- "--" used throughout per Rule 66.
 
 import { extractNumber } from './compute_sidecar';
+import { extractStemConcept, determineStemPolarity } from './plow_mc_elimination_chart';
 
 // ─── C1: ASK THE INVERSE ────────────────────────────────────────────────────────────────────────
 //
@@ -537,4 +538,457 @@ export function buildCascadeSourceCapture(
 ): CascadeSourceCapture | null {
   if (!url || url.trim().length === 0) return null;
   return { url, claim, query, source, capturedAt: new Date().toISOString() };
+}
+
+// ─── STAGE R: REGISTER RESOLUTION (KN-BP144-2) ──────────────────────────────────────────────────
+//
+// Founder-directed, BP144, Excerpt 7 (BP141 transcript, recovered BP144, session
+// C:\Users\Administrator\.claude\projects\C--Users-Administrator-Documents\e68c0fd2-b6d7-49c5-8428-
+// b874c5baf4ca.jsonl). Encodes steps 2-6 of the Founder's qid-85 hand walkthrough -- the step AFTER
+// categorization (step 1, already covered by plow_mc_elimination_chart.ts's R1/R2/R3, Stage 1) and
+// the step this engine's own six-of-six run-038 hand-application never reached: determine what
+// REGISTER the stem's concept noun is being used in ("bias" means something different in statistics,
+// sewing, electronics, and K-pop -- no definition eliminates anything until the register is known),
+// infer that register from the OPTION TEXT (not the stem alone -- that is what he did: "I would
+// guess from 'sample' being used in A, B, C, D, E, H, I..."), ADMIT the guess and VERIFY it with one
+// targeted lookup (mandatory, never optional -- "How do I know that? I don't, I'm guessing. So I'll
+// check." -- an unverified register guess is exactly the class of confident-wrong-answer this whole
+// engine exists to eliminate), reduce the verified definition to a core predicate, and match
+// surviving options against that predicate, logging every option's own match/fail reason (a bare
+// "eliminated" fails this ticket).
+//
+// SAME CONTRACT AS EVERY OTHER STAGE IN THIS FILE: pure, synchronous, no I/O -- see this file's own
+// header, lines 8-14. The actual lookup dispatch ("what is bias in statistics") is the CALLER's job,
+// exactly like C4 consumes caller-supplied rankings and C5 consumes caller-supplied computed values.
+// If the caller has no verification lookup to supply, this stage ABSTAINS -- it never proceeds on an
+// unverified guess. That is a defect, not a fallback path, per the ticket's own instruction. This is
+// also why this stage is buildable without touching plow_mc_answerer.ts (KN-BP144-2 Phase 1 finding):
+// the mandatory-verification-or-abstain contract lives entirely inside this pure function's own
+// gating, not in any live dispatch this file would otherwise need to reach out and perform itself.
+//
+// SCOPE, DELIBERATELY NARROW (Rule-66-style honesty, matching plow_mc_elimination_chart.ts's own
+// CONCEPT_TARGET_PROPERTIES table): register signal words are curated per CONCEPT, keyed by the same
+// stem concept noun plow_mc_elimination_chart.ts's own extractStemConcept already extracts
+// (re-imported here, never reimplemented). A concept with no curated register table is an honest
+// no-op, never a guess. The predicate-referent extraction (step 5) is, by contrast, deliberately
+// GENERAL and register-agnostic -- it looks for "differs from / deviates from / relative to /
+// compared with / difference between" clause shapes in whatever definitionText the caller's real
+// lookup actually returned, and extracts the referent fresh each time. It does not hardcode
+// "population," "bias," or anything specific to qid 85 anywhere in its pattern set (see KN-BP144-2
+// Phase 0 report, item 3, for why this specific generality is the ticket's actual deliverable).
+
+export interface RegisterCandidate {
+  register: string;
+  matchedSignalWords: string[];
+  optionsCarryingSignal: string[];
+}
+
+export interface RegisterVerificationLookup {
+  /** The exact query issued, e.g. "what is bias in statistics" -- should name both the concept and
+   *  the guessed register, mirroring the Founder's own step 4 query shape. Never constructed by this
+   *  file; the caller must have actually issued it. */
+  query: string;
+  /** The verbatim (or lightly excerpted) text returned by the lookup. Never fabricated by this file
+   *  -- the caller must have actually issued the query and captured a real response. */
+  definitionText: string;
+  /** Optional: the register this verification was FOR, so this stage can confirm the caller's
+   *  lookup actually targeted the register THIS stage guessed, not a stale or mismatched one. */
+  registerClaimed?: string;
+  source?: string;
+}
+
+export interface PredicateMatchDetail {
+  letter: string;
+  matched: boolean;
+  reason: string;
+}
+
+export interface RegisterResolutionStageResult {
+  /** false = the stage did not run its inference logic at all (guard condition not met -- fewer
+   *  than 2 survivors, or no definitional concept detected in the stem). true = the stage actually
+   *  attempted register inference, whether or not it ultimately abstained past that point. */
+  applied: boolean;
+  /** true = the stage ran but could not safely resolve (no curated register table, ambiguous
+   *  register, no verification supplied, mismatched verification, predicate could not be reduced, or
+   *  the predicate would have discarded every survivor) -- `survivorsOut` equals `survivorsIn`
+   *  unchanged. Distinct from `applied: false` (never got that far at all). */
+  abstained: boolean;
+  survivorsIn: string[];
+  survivorsOut: string[];
+  concept: string | null;
+  registerCandidate: RegisterCandidate | null;
+  registerCounts: Record<string, number>;
+  verification: RegisterVerificationLookup | null;
+  derivedPredicateReferentTerms: string[];
+  matches: PredicateMatchDetail[];
+  trace: string[];
+}
+
+// Curated per-concept register signal tables. Deliberately narrow -- see section header above. Each
+// register carries the substrings this stage looks for in OPTION TEXT (not the stem) to infer which
+// register the stem's concept noun is being used in. "bias" is the anchor case (qid 85, measured
+// against the real corpus in KN-BP144-2 Phase 0/2); other concepts are added here only once measured
+// against a real question, never guessed in bulk ahead of evidence.
+const CONCEPT_REGISTER_SIGNALS: Record<string, Array<{ register: string; signalWords: string[] }>> = {
+  bias: [
+    { register: 'statistics', signalWords: ['sample', 'sampling', 'population', 'estimate', 'estimates', 'average', 'random', 'represent'] },
+    { register: 'sewing', signalWords: ['fabric', 'cloth', 'thread', 'diagonal', 'stretch', 'seam', 'grain', 'weave'] },
+    { register: 'electronics', signalWords: ['voltage', 'current', 'circuit', 'transistor', 'resistor', 'diode', 'amplifier'] },
+    { register: 'pop_culture', signalWords: ['member', 'fan', 'favorite', 'idol', 'k-pop', 'kpop', 'group'] },
+  ],
+};
+
+export interface RegisterInferenceOutcome {
+  candidate: RegisterCandidate | null;
+  counts: Record<string, number>;
+  trace: string;
+}
+
+/** Steps 2-3: infer the register from the OPTION TEXT (every option, not just survivors -- this is
+ *  deliberately the FULL set, matching the Founder's own step 3, which counted "sample" across A-I
+ *  before any elimination had happened). Returns candidate=null when the concept has no curated
+ *  table, when no register's signal words appear in any option, or when two or more registers are
+ *  tied for the most option-coverage (an honest abstain -- ambiguous is not evidence, the same
+ *  standard R1 in plow_mc_elimination_chart.ts already holds itself to). */
+export function inferRegisterFromOptionText(
+  concept: string,
+  options: OptionLike[],
+): RegisterInferenceOutcome {
+  const table = CONCEPT_REGISTER_SIGNALS[concept];
+  if (!table) {
+    return {
+      candidate: null,
+      counts: {},
+      trace: `REGISTER ABSTAIN: concept="${concept}" has no curated register table -- honest abstain, not a guess.`,
+    };
+  }
+
+  const counts: Record<string, number> = {};
+  const carriers: Record<string, string[]> = {};
+  const matchedWords: Record<string, string[]> = {};
+  for (const entry of table) {
+    const carrierLetters: string[] = [];
+    const words = new Set<string>();
+    for (const opt of options) {
+      const lower = opt.text.toLowerCase();
+      const hit = entry.signalWords.filter((w) => lower.includes(w));
+      if (hit.length > 0) {
+        carrierLetters.push(opt.letter);
+        for (const w of hit) words.add(w);
+      }
+    }
+    counts[entry.register] = carrierLetters.length;
+    carriers[entry.register] = carrierLetters;
+    matchedWords[entry.register] = [...words].sort();
+  }
+
+  const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const top = ranked[0];
+  if (!top || top[1] === 0) {
+    return {
+      candidate: null,
+      counts,
+      trace: `REGISTER ABSTAIN: concept="${concept}" -- no register's signal words appeared in any option text. counts=${JSON.stringify(counts)}`,
+    };
+  }
+  const topRegister = top[0];
+  const topCount = top[1];
+  const second = ranked[1];
+  const secondCount = second ? second[1] : 0;
+  if (topCount === secondCount) {
+    return {
+      candidate: null,
+      counts,
+      trace: `REGISTER ABSTAIN: concept="${concept}" -- register inference ambiguous, top registers tied at ${topCount} options. counts=${JSON.stringify(counts)} -- ambiguous is not evidence.`,
+    };
+  }
+
+  const candidate: RegisterCandidate = {
+    register: topRegister,
+    matchedSignalWords: matchedWords[topRegister] ?? [],
+    optionsCarryingSignal: carriers[topRegister] ?? [],
+  };
+  return {
+    candidate,
+    counts,
+    trace:
+      `REGISTER GUESS: concept="${concept}" -> register="${topRegister}" (signal words ` +
+      `[${candidate.matchedSignalWords.join(',')}] found in options [${candidate.optionsCarryingSignal.join(',')}], ` +
+      `beating next-best by ${topCount - secondCount}). This is a GUESS -- admitted as such, not proceeded on until verified.`,
+  };
+}
+
+// Step 4-5: reduce a verified definition to a predicate. General, register-agnostic anchor patterns
+// for "X differs/deviates from/relative to/compared with Y" -- Y is captured as the predicate's
+// required referent. Deliberately does NOT hardcode "population" or "bias" anywhere in this pattern
+// set; the referent is extracted fresh from whatever definitionText the caller's real lookup actually
+// returned, for whatever concept/register this stage is running against.
+const REFERENT_ANCHOR_PATTERNS: RegExp[] = [
+  /\bdiffer(?:s|ing)?\s+from\s+(?:the\s+)?(?:true\s+)?([a-z][a-z\s]{2,60}?)(?=[.,;]|\s+(?:and|which|that)\b|$)/i,
+  /\bdeviat(?:e|es|ing|ion)\s+from\s+(?:the\s+)?(?:true\s+)?([a-z][a-z\s]{2,60}?)(?=[.,;]|\s+(?:and|which|that)\b|$)/i,
+  /\brelative\s+to\s+(?:the\s+)?(?:true\s+)?([a-z][a-z\s]{2,60}?)(?=[.,;]|\s+(?:and|which|that)\b|$)/i,
+  /\bcompared?\s+(?:to|with)\s+(?:the\s+)?(?:true\s+)?([a-z][a-z\s]{2,60}?)(?=[.,;]|\s+(?:and|which|that)\b|$)/i,
+  /\bdifference\s+between\s+(?:the\s+)?[a-z][a-z\s]{2,60}?\s+and\s+(?:the\s+)?([a-z][a-z\s]{2,60}?)(?=[.,;]|$)/i,
+];
+
+const REFERENT_STOPWORDS = new Set([
+  'a', 'an', 'the', 'of', 'its', 'is', 'are', 'being', 'that', 'which', 'to', 'for', 'and', 'or', 'this',
+  'these', 'those', 'it', 'in', 'on', 'at', 'by', 'with', 'from', 'value', 'values',
+]);
+
+/** Step 5: pull the required comparison REFERENT out of a verified definition's own text, and reduce
+ *  it to a small set of content-noun terms (stopwords dropped). Returns [] (never a fabricated
+ *  referent) when none of the general anchor patterns match the text at all -- an honest signal that
+ *  this definition could not be mechanically reduced to a checkable predicate. */
+export function extractPredicateReferentTerms(definitionText: string): string[] {
+  for (const pattern of REFERENT_ANCHOR_PATTERNS) {
+    const m = pattern.exec(definitionText);
+    if (m && m[1]) {
+      const phrase = m[1].toLowerCase();
+      const terms = phrase
+        .split(/\s+/)
+        .map((w) => w.replace(/[^a-z]/g, ''))
+        .filter((w) => w.length > 2 && !REFERENT_STOPWORDS.has(w));
+      if (terms.length > 0) return [...new Set(terms)];
+    }
+  }
+  return [];
+}
+
+/** Step 6, per option: does this ONE surviving option's own text literally contain at least one of
+ *  the predicate's required referent terms? Literal substring match only -- this is the whole point
+ *  (the Founder's rule 11, "if they WERE the same, they would use the same words. And they don't."):
+ *  an option is credited with a referent only if its OWN text states it, never because an external
+ *  reasoner could plausibly complete it with an unstated referent (see KN-BP144-2 Phase 0 report,
+ *  item 2, for the qid-85 E-vs-J case this directly operationalizes). */
+export function evaluateOptionAgainstPredicate(
+  option: OptionLike,
+  referentTerms: string[],
+): PredicateMatchDetail {
+  const lower = option.text.toLowerCase();
+  const hit = referentTerms.filter((t) => lower.includes(t));
+  if (hit.length > 0) {
+    return {
+      letter: option.letter,
+      matched: true,
+      reason: `contains required referent term(s) [${hit.join(',')}] in its own text: "${option.text}"`,
+    };
+  }
+  return {
+    letter: option.letter,
+    matched: false,
+    reason:
+      `does not contain any required referent term [${referentTerms.join(',')}] in its own text -- ` +
+      `an external reasoner could complete this option with the missing referent, but this stage only ` +
+      `credits what the option's own text actually states: "${option.text}"`,
+  };
+}
+
+/** The full stage: Founder's steps 2-6, gated exactly as the ticket requires.
+ *
+ *  - Runs only when >= 2 survivors are supplied (no-op on 0 or 1 -- `applied: false`).
+ *  - Register inference (steps 2-3) is derived from the FULL option set's text, never the stem alone.
+ *  - Verification (step 4) is MANDATORY: a null `verification`, or one whose `registerClaimed`
+ *    mismatches the inferred register, always abstains -- never proceeds on an unverified guess.
+ *  - Predicate reduction (step 5) is general and register-agnostic; an unreducible definition
+ *    abstains rather than forcing a predicate that was never actually derived.
+ *  - Predicate matching (step 6) is per-option and logged with the specific reason each survivor
+ *    matched or failed -- never a bare "eliminated".
+ *  - Never discards the last survivor: if the predicate would eliminate every remaining survivor,
+ *    the stage abstains and returns the survivor set unchanged instead of forcing a result.
+ *  - Never widens any of the above gates to force a pass (BP141, standing). */
+export function runRegisterResolutionStage(
+  stemText: string,
+  options: OptionLike[],
+  survivors: string[],
+  verification: RegisterVerificationLookup | null,
+): RegisterResolutionStageResult {
+  const trace: string[] = [];
+
+  if (survivors.length < 2) {
+    trace.push(
+      `NO-OP: ${survivors.length} survivor(s) supplied -- this stage only runs on 2+ survivors, per ` +
+      `the ticket's own requirement. Returning survivors unchanged.`,
+    );
+    return {
+      applied: false,
+      abstained: false,
+      survivorsIn: survivors,
+      survivorsOut: survivors,
+      concept: null,
+      registerCandidate: null,
+      registerCounts: {},
+      verification,
+      derivedPredicateReferentTerms: [],
+      matches: [],
+      trace,
+    };
+  }
+
+  // Gate matches plow_mc_elimination_chart.ts's own R1/R2/R3 gate exactly (determineStemPolarity
+  // MUST be determinate, i.e. the stem itself uses a definitional verb per DEFINITIONAL_STEM_RE, not
+  // merely contain a defect/virtue noun anywhere). Without the polarity check, a computational stem
+  // that happens to mention "error" in a non-definitional sense (e.g. "calculate... the probability
+  // of error" -- measured on run 038's qid 53 during this ticket's own false-negative sweep) would
+  // extract a spurious concept and attempt register inference on a question this stage was never
+  // meant to touch. It would still abstain safely (no curated register table for "error"), but the
+  // gate should not let it get that far in the first place -- caught and fixed this ticket.
+  const stemPolarity = determineStemPolarity(stemText);
+  const concept = stemPolarity !== 'indeterminate' ? extractStemConcept(stemText) : null;
+  if (!concept) {
+    trace.push(
+      `NO-OP: no defect/virtue definitional concept noun detected in a determinately-definitional stem ` +
+      `("${stemText}") -- this stage only applies to definitional questions (the same ` +
+      `DEFINITIONAL_STEM_RE + determineStemPolarity + extractStemConcept gate ` +
+      `plow_mc_elimination_chart.ts's own R1/R2/R3 already use). Returning survivors unchanged.`,
+    );
+    return {
+      applied: false,
+      abstained: false,
+      survivorsIn: survivors,
+      survivorsOut: survivors,
+      concept: null,
+      registerCandidate: null,
+      registerCounts: {},
+      verification,
+      derivedPredicateReferentTerms: [],
+      matches: [],
+      trace,
+    };
+  }
+
+  const { candidate, counts, trace: registerTrace } = inferRegisterFromOptionText(concept, options);
+  trace.push(registerTrace);
+  if (!candidate) {
+    trace.push('ABSTAIN: register could not be confidently inferred (see above) -- survivors unchanged.');
+    return {
+      applied: true,
+      abstained: true,
+      survivorsIn: survivors,
+      survivorsOut: survivors,
+      concept,
+      registerCandidate: null,
+      registerCounts: counts,
+      verification,
+      derivedPredicateReferentTerms: [],
+      matches: [],
+      trace,
+    };
+  }
+
+  // Step 4: mandatory verification. Never proceed on an unverified guess -- a defect, not a fallback.
+  if (!verification) {
+    trace.push(
+      `ABSTAIN: register guessed as "${candidate.register}" but NO verification lookup was supplied by ` +
+      `the caller. Per the ticket, mandatory verification with no lookup available means this stage ` +
+      `must abstain -- it never proceeds on an unverified register guess. Survivors unchanged.`,
+    );
+    return {
+      applied: true,
+      abstained: true,
+      survivorsIn: survivors,
+      survivorsOut: survivors,
+      concept,
+      registerCandidate: candidate,
+      registerCounts: counts,
+      verification: null,
+      derivedPredicateReferentTerms: [],
+      matches: [],
+      trace,
+    };
+  }
+  if (verification.registerClaimed && verification.registerClaimed !== candidate.register) {
+    trace.push(
+      `ABSTAIN: register guessed as "${candidate.register}" but the supplied verification was for ` +
+      `registerClaimed="${verification.registerClaimed}" -- mismatched verification is treated the same ` +
+      `as no verification. Survivors unchanged.`,
+    );
+    return {
+      applied: true,
+      abstained: true,
+      survivorsIn: survivors,
+      survivorsOut: survivors,
+      concept,
+      registerCandidate: candidate,
+      registerCounts: counts,
+      verification,
+      derivedPredicateReferentTerms: [],
+      matches: [],
+      trace,
+    };
+  }
+  trace.push(
+    `VERIFIED: query="${verification.query}" returned definitionText (first 200 chars)="` +
+    `${verification.definitionText.slice(0, 200)}${verification.definitionText.length > 200 ? '...' : ''}"` +
+    `${verification.source ? ` source=${verification.source}` : ''}`,
+  );
+
+  // Step 5: reduce to a predicate.
+  const referentTerms = extractPredicateReferentTerms(verification.definitionText);
+  if (referentTerms.length === 0) {
+    trace.push(
+      'ABSTAIN: the verified definition could not be mechanically reduced to a checkable predicate ' +
+      '(no "differs from / deviates from / relative to / compared with / difference between" referent ' +
+      'clause found in the returned text). Survivors unchanged -- never force a predicate that is not ' +
+      'actually there.',
+    );
+    return {
+      applied: true,
+      abstained: true,
+      survivorsIn: survivors,
+      survivorsOut: survivors,
+      concept,
+      registerCandidate: candidate,
+      registerCounts: counts,
+      verification,
+      derivedPredicateReferentTerms: [],
+      matches: [],
+      trace,
+    };
+  }
+  trace.push(`PREDICATE: required referent terms derived from the verified definition: [${referentTerms.join(',')}]`);
+
+  // Step 6: match every survivor against the predicate, logging each one's own reason.
+  const survivorOptions = options.filter((o) => survivors.includes(o.letter));
+  const matches = survivorOptions.map((o) => evaluateOptionAgainstPredicate(o, referentTerms));
+  for (const m of matches) trace.push(`MATCH ${m.letter}: matched=${m.matched} -- ${m.reason}`);
+
+  const matchedLetters = matches.filter((m) => m.matched).map((m) => m.letter);
+  if (matchedLetters.length === 0) {
+    trace.push(
+      'ABSTAIN: the predicate would eliminate every remaining survivor -- this stage never discards ' +
+      'the last survivor(s). Returning the full survivor set unchanged instead of forcing a result.',
+    );
+    return {
+      applied: true,
+      abstained: true,
+      survivorsIn: survivors,
+      survivorsOut: survivors,
+      concept,
+      registerCandidate: candidate,
+      registerCounts: counts,
+      verification,
+      derivedPredicateReferentTerms: referentTerms,
+      matches,
+      trace,
+    };
+  }
+
+  trace.push(
+    `RESULT: survivors narrowed from [${survivors.join(',')}] to [${matchedLetters.join(',')}] by ` +
+    `literal-referent predicate match under register="${candidate.register}".`,
+  );
+  return {
+    applied: true,
+    abstained: false,
+    survivorsIn: survivors,
+    survivorsOut: matchedLetters,
+    concept,
+    registerCandidate: candidate,
+    registerCounts: counts,
+    verification,
+    derivedPredicateReferentTerms: referentTerms,
+    matches,
+    trace,
+  };
 }
