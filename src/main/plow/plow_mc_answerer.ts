@@ -1,4 +1,4 @@
-// plow_mc_answerer.ts — BP133 Yoke #24 Task 2: the 12-Blade Column Plow, adapted to answer a
+﻿// plow_mc_answerer.ts — BP133 Yoke #24 Task 2: the 12-Blade Column Plow, adapted to answer a
 // single graded multiple-choice question instead of doing open-ended knowledge-building.
 //
 // WHY THIS FILE EXISTS (R-MECHANISM-VERIFY, 2026-07-24): canonical_pipeline.ts's exported
@@ -2157,6 +2157,29 @@ export interface AuthorityEnsembleOutcome {
     tally: Record<string, number>;
     trace: string;
   };
+  /** KN-BP144-12 Part B ("THE ELIMINATOR ABOVE AGREEMENT"), OPTIONAL/ADDITIVE. Populated ONLY when
+   *  checkEliminatorConstraintAboveAgreement found an ACTIVE constraint (applied && !abstained)
+   *  that excludes the letter an accept-on-agreement branch (fast-path structured, or swarm-
+   *  augmented multipath) was about to return, and that branch VOIDED the accept instead --
+   *  corroboration is 'disagree' on every return this field accompanies, chosenLetter is always
+   *  null. `letter` is the letter that would have been accepted absent this check; `survivorsOut`
+   *  is the eliminator's own surviving-option set at the moment of the void; `trace` is the SAME
+   *  runRegisterResolutionStage trace array (register inference, verification check, predicate
+   *  derivation, per-option matched/failed reason) KN-BP144-4's below-agreement call site already
+   *  surfaces as `eliminatorTrace` -- named distinctly here (never conflated with that field)
+   *  because this one fires BEFORE accept-on-agreement, not after it, and the two can in principle
+   *  both be present on the same question's full trace lineage (this one first, then the
+   *  below-agreement one re-deriving/re-checking against the full candidate pool once this return's
+   *  'disagree' reaches runCanonicalPlowMcAnswer's cascadeAdjudicatorEngaged block). Absent for
+   *  every accept that was never challenged by this check (constraintActive was false, or the
+   *  accepted letter already survived) -- the overwhelming majority of real questions, since this
+   *  eliminator's own curated CONCEPT_REGISTER_SIGNALS table applies to a "bias"-concept stem only
+   *  (see checkEliminatorConstraintAboveAgreement's own header for the measured scope). */
+  eliminatorAboveAgreementVoided?: {
+    letter: string;
+    survivorsOut: string[];
+    trace: string[];
+  };
 }
 
 /** BP1xx STRUCTURED-CORROBORATOR GATE: the ONE place that encodes "which authorities count as a
@@ -3404,6 +3427,109 @@ function resolveEnsembleAttemptOutcome(
   return { outcome: 'parse_failed', rawPreview: truncateAuthorityPreview(observed.result.fact) };
 }
 
+// ── KN-BP144-12 Part B ("THE ELIMINATOR ABOVE AGREEMENT") ──────────────────────────────────────
+//
+// The rule (established KN-BP144-4, unchanged here): an eliminator produces a CONSTRAINT; an
+// adjudicator produces a CHOICE; a choice that violates a constraint is invalid. Consensus is
+// just a choice with more voices behind it -- it does not override a constraint.
+//
+// KN-BP144-4 already gave the register-resolution eliminator (runRegisterResolutionStage,
+// KN-BP144-2 Phase 2, never edited -- called only, per that ticket's own A5 refusal, unchanged
+// here) a reachable entry point BELOW accept-on-agreement: it only ever runs once
+// runAuthorityEnsemble has already returned corroboration:'disagree' and control has reached
+// runCanonicalPlowMcAnswer's cascadeAdjudicatorEngaged block, far downstream. By construction it
+// can never see (or void) an agreement that was already accepted and returned upstream of that
+// point. This function is the SAME eliminator (Stage 1 chaining via runEliminationChart, cheap
+// sync Pass 1 first, live-verification Pass 2 only when Pass 1 finds a real registerCandidate --
+// byte-identical two-pass convention to KN-BP144-4's own below-agreement call site, duplicated
+// rather than hoisted so neither call site's behavior depends on the other ever having run),
+// given a SECOND, EARLIER entry point -- called from INSIDE the accept-on-agreement branches
+// below, BEFORE either one is allowed to return an accept.
+//
+// This function never decides an answer and never filters a candidate list itself -- it only
+// ever produces (or withholds) a constraint, exactly like its below-agreement twin. Its callers
+// (the two accept-on-agreement branches below) are the ones that decide whether the letter they
+// are about to accept survives that constraint.
+//
+// MEASURED SCOPE (KN-BP144-12 Phase 0 + this ticket's own probe, scratchpad/kn_bp144_12_partB_
+// probe_all20.mjs, all 20 real standing corpus questions): runRegisterResolutionStage's own
+// CONCEPT_REGISTER_SIGNALS table (untouched, still curates "bias" only, per the refusal against
+// editing plow_mc_elimination_cascade.ts) makes Pass 1 return applied:true for exactly ONE of the
+// 20 real questions (qid 85, a "bias" definitional stem) and applied:false (a structural no-op,
+// constraintActive always false) for the other 19 -- including qid 98, whose stem ("which world
+// region is NOT considered densely populated") names no defect/virtue concept at all and so can
+// never reach this eliminator's curated domain, regardless of where in the pipeline it is called
+// from. This is reported honestly in this ticket's own report rather than papered over: this
+// function is a correct, reachable, no-new-mechanism reuse of the existing eliminator, not a
+// guarantee that the existing eliminator's narrow curated domain happens to cover every question
+// this ticket named.
+async function checkEliminatorConstraintAboveAgreement(
+  researchQuery: string,
+  mcOptions: McOption[],
+): Promise<{ constraintActive: boolean; survivorsOut: string[]; trace: string[] }> {
+  let stage1Survivors: string[] = mcOptions.map((o) => o.letter);
+  try {
+    stage1Survivors = runEliminationChart(researchQuery, mcOptions).survivors;
+  } catch (err) {
+    console.warn(
+      '[plow_mc_answerer] KN-BP144-12 Part B: Stage 1 (runEliminationChart) threw ahead of the ' +
+      'above-agreement eliminator check (non-fatal, falling back to the full option set):', err,
+    );
+  }
+  const probe = runRegisterResolutionStage(researchQuery, mcOptions, stage1Survivors, null);
+  let result: RegisterResolutionStageResult = probe;
+  if (probe.applied && probe.registerCandidate) {
+    // PASS 2: mirrors KN-BP144-4's own real-bridge-construction pattern verbatim (see that call
+    // site, far below, for the identical dynamic-import mechanism) -- constructed locally here
+    // because that call site's own browserBridge/Stage-F2 bridge is out of scope this early in
+    // the pipeline. Never fabricated: a missing/failed bridge, or a lookup that returns nothing
+    // usable, leaves liveVerification null and the second call abstains exactly as
+    // runRegisterResolutionStage's own mandatory-verification-or-abstain contract requires.
+    let liveVerification: RegisterVerificationLookup | null = null;
+    const verificationQuery = `what is ${probe.concept!} in ${probe.registerCandidate.register}`;
+    const eliminatorBridge: BrowserAuthorityBridge = {
+      async runQueryInUserBrowser(query) {
+        try {
+          const mainModule = await import('../index');
+          return await mainModule.runBrowserAuthorityQueryFromMain(query);
+        } catch (err) {
+          console.warn(
+            '[plow_mc_answerer] KN-BP144-12 Part B above-agreement eliminator verification ' +
+            'bridge call failed (non-fatal, honest null):', err,
+          );
+          return null;
+        }
+      },
+    };
+    try {
+      const rawFact = await getRawBrowserAuthorityFact(
+        verificationQuery,
+        { researchArmMode: true, researchArmBrowserAuthority: true, preferredAuthority: 'user_perplexity' },
+        eliminatorBridge,
+      );
+      if (rawFact && rawFact.fact) {
+        liveVerification = {
+          query: verificationQuery,
+          definitionText: rawFact.fact,
+          registerClaimed: probe.registerCandidate.register,
+          source: rawFact.authority,
+        };
+      }
+    } catch (err) {
+      console.warn(
+        '[plow_mc_answerer] KN-BP144-12 Part B above-agreement eliminator verification lookup ' +
+        'threw (non-fatal, eliminator abstains):', err,
+      );
+    }
+    result = runRegisterResolutionStage(researchQuery, mcOptions, stage1Survivors, liveVerification);
+  }
+  // Mirrors KN-BP144-4 A3's fourth bullet exactly: applied-and-abstained (or never applied) is NO
+  // CONSTRAINT AT ALL -- only applied && !abstained is a real constraint worth checking a letter
+  // against.
+  const constraintActive = result.applied && !result.abstained;
+  return { constraintActive, survivorsOut: result.survivorsOut, trace: result.trace };
+}
+
 /** Runs the full ensemble for one question: queries every free authority available for
  *  `answerType`, resolves each via resolveAuthorityLetterMatch (Wolfram via a direct computed-
  *  value match against the options instead, since it never returns free text), and corroborates
@@ -3987,16 +4113,36 @@ async function runAuthorityEnsemble(params: {
     const agreeingGroupFast = [...byLetterFast.values()].find((group) => group.length >= 2);
     if (agreeingGroupFast) {
       if (hasStructuredCorroborator(agreeingGroupFast)) {
-        log(`browser/wolfram authorities already agree on ${agreeingGroupFast[0]!.letter} (structurally corroborated) -- swarm skipped (fast path).`);
-        return {
-          chosenLetter: agreeingGroupFast[0]!.letter, corroboration: 'agree', candidates,
-          acceptedCandidates: agreeingGroupFast, adjudicationAttempted: false, swarmFired: false,
-          structuredCorroborator: true,
-          // BP141: fast path only reaches here when hasStructuredCorroborator already found a
-          // structured member (wolfram_alpha -- the swarm has not fired yet at this point) among
-          // the agreeing group, so each agreeing candidate has its own independent evidence.
-          independentCorroboration: true,
-        };
+        // KN-BP144-12 Part B ("THE ELIMINATOR ABOVE AGREEMENT"): same check as the swarm-augmented
+        // accept-on-agreement branch further below -- see checkEliminatorConstraintAboveAgreement's
+        // own header comment for the full rationale. Applied here too for principled completeness
+        // (this IS an accept-on-agreement return), even though this fast path additionally requires
+        // a structured (wolfram_alpha) member, which in practice never co-occurs with the narrow
+        // "bias"-concept domain this eliminator's curated CONCEPT_REGISTER_SIGNALS table covers.
+        const letterAboutToAcceptFast = agreeingGroupFast[0]!.letter;
+        const eliminatorAboveFast = await checkEliminatorConstraintAboveAgreement(researchQuery, mcOptions);
+        if (eliminatorAboveFast.constraintActive && !eliminatorAboveFast.survivorsOut.includes(letterAboutToAcceptFast)) {
+          log(
+            `KN-BP144-12 Part B: fast-path structured agreement on ${letterAboutToAcceptFast} VOIDED -- ` +
+            `above-agreement eliminator constraint survivors=[${eliminatorAboveFast.survivorsOut.join(',')}] ` +
+            `EXCLUDE ${letterAboutToAcceptFast}. Falling through to the swarm-uncertain branch below ` +
+            `exactly as if the fast path had declined for any other reason. Eliminator trace:\n  ${eliminatorAboveFast.trace.join('\n  ')}`,
+          );
+        } else {
+          const constraintNote = eliminatorAboveFast.constraintActive
+            ? `constrained to [${eliminatorAboveFast.survivorsOut.join(',')}] (does not exclude ${letterAboutToAcceptFast})`
+            : 'no active constraint';
+          log(`browser/wolfram authorities already agree on ${agreeingGroupFast[0]!.letter} (structurally corroborated) -- swarm skipped (fast path). KN-BP144-12 Part B above-agreement eliminator: ${constraintNote}.`);
+          return {
+            chosenLetter: agreeingGroupFast[0]!.letter, corroboration: 'agree', candidates,
+            acceptedCandidates: agreeingGroupFast, adjudicationAttempted: false, swarmFired: false,
+            structuredCorroborator: true,
+            // BP141: fast path only reaches here when hasStructuredCorroborator already found a
+            // structured member (wolfram_alpha -- the swarm has not fired yet at this point) among
+            // the agreeing group, so each agreeing candidate has its own independent evidence.
+            independentCorroboration: true,
+          };
+        }
       }
       // BP1xx STRUCTURED-CORROBORATOR GATE ("Q85"): every agreeing candidate here is LLM-class
       // (opinion, no structured backing behind either of them) -- e.g. user_perplexity and
@@ -4352,12 +4498,55 @@ async function runAuthorityEnsemble(params: {
       // singlepath verdict -- every candidate there is on its own distinct browser/Wolfram path).
       const diversity = assessAgreeingGroupDerivationDiversity(agreeingGroup);
       if (diversity.verdict === 'agree_multipath') {
+        // KN-BP144-12 Part B ("THE ELIMINATOR ABOVE AGREEMENT"): before this multipath agreement
+        // is allowed to return an accept, give the SAME register-resolution eliminator KN-BP144-4
+        // already wired BELOW accept-on-agreement a chance to see (and void) it HERE, ABOVE. See
+        // checkEliminatorConstraintAboveAgreement's own header comment for the full rationale and
+        // this ticket's own measured scope. "An eliminator produces a constraint; an adjudicator
+        // produces a choice; a choice that violates a constraint is invalid" -- agreement is just
+        // a choice with more voices behind it; it does not override a constraint.
+        const letterAboutToAccept = agreeingGroup[0]!.letter;
+        const eliminatorAbove = await checkEliminatorConstraintAboveAgreement(researchQuery, mcOptions);
+        const eliminatorVoidsThisAgreement =
+          eliminatorAbove.constraintActive && !eliminatorAbove.survivorsOut.includes(letterAboutToAccept);
+        if (eliminatorVoidsThisAgreement) {
+          log(
+            `KN-BP144-12 Part B: swarm-augmented agreement on ${letterAboutToAccept} ` +
+            `(candidates=[${agreeingGroup.map((c) => c.authority).join(',')}], agree_multipath, ` +
+            `${diversity.distinctPaths.length} distinct derivation paths) VOIDED -- above-agreement ` +
+            `eliminator constraint survivors=[${eliminatorAbove.survivorsOut.join(',')}] EXCLUDE ` +
+            `${letterAboutToAccept}. Consensus does not override a constraint (KN-BP144-4's own ` +
+            `rule, unchanged) -- honest fall-through to disagree/adjudication over the FULL candidate ` +
+            `set, never a fabricated re-pick and never THE CAKE METHOD (this return exits before that ` +
+            `block). Eliminator trace:\n  ${eliminatorAbove.trace.join('\n  ')}`,
+          );
+          return {
+            chosenLetter: null,
+            corroboration: 'disagree',
+            candidates,
+            acceptedCandidates: [],
+            adjudicationAttempted: false,
+            swarmFired: true,
+            swarmReceipt,
+            reasoningFactComputeReceipt,
+            preAgreeDeterministicScatterAttempt: preAgreeScatterAttempt,
+            eliminatorAboveAgreementVoided: {
+              letter: letterAboutToAccept,
+              survivorsOut: eliminatorAbove.survivorsOut,
+              trace: eliminatorAbove.trace,
+            },
+          };
+        }
+        const constraintNoteSwarm = eliminatorAbove.constraintActive
+          ? `constrained to [${eliminatorAbove.survivorsOut.join(',')}] (does not exclude ${letterAboutToAccept})`
+          : 'no active constraint';
         log(
           `swarm-augmented agreement on ${agreeingGroup[0]!.letter} ` +
           `(candidates=[${agreeingGroup.map((c) => c.authority).join(',')}]) -- ` +
           `${groupHasStructured ? 'structurally corroborated' : 'LLM-ONLY concordance (swarm yielded nothing usable to corroborate or contest it)'}, ` +
           `agree_multipath (${diversity.distinctPaths.length} distinct derivation paths: ` +
-          `[${diversity.pathAssignments.join(', ')}]), accepted.`,
+          `[${diversity.pathAssignments.join(', ')}]), accepted. ` +
+          `KN-BP144-12 Part B above-agreement eliminator: ${constraintNoteSwarm}.`,
         );
         return {
           chosenLetter: agreeingGroup[0]!.letter, corroboration: 'agree', candidates,
