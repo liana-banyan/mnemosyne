@@ -75,6 +75,16 @@ function safeParsePerArmAuthority(raw: string | null): NexusPerArmAuthority {
   }
 }
 
+// KN-BP144-3 Phase 1: distinguishes "never persisted anything" from "explicitly persisted
+// false" -- loadNexusAuthoritySettings()'s `=== 'true'` check collapses both to `false`, which
+// is the right default for READING but the wrong signal for a caller (OneClickMeshTestPanel.tsx)
+// that needs to know whether it should seed a first-run default into this store or defer to
+// whatever is already there. Exported so no caller needs to know/duplicate the raw
+// LS_NEXUS_AUTHORITY_MODE key string.
+export function hasNexusAuthorityModeEverBeenSet(): boolean {
+  try { return localStorage.getItem(LS_NEXUS_AUTHORITY_MODE) !== null; } catch { return false; }
+}
+
 /** Reads the full Nexus authority settings snapshot. Every field falls back to its
  *  Bishop-prompt-mandated safe default (both flags false, every arm 'local_free') when
  *  localStorage is empty, unavailable, or holds unparseable data -- never throws. */
@@ -111,16 +121,36 @@ function pushFlagsToMainProcessMirror(researchArmMode: boolean, researchArmBrows
   } catch { /* non-fatal -- localStorage remains the renderer's own source of truth regardless */ }
 }
 
+// KN-BP144-3 Phase 1 ("the two-gate trap must become visible or become one gate", Founder
+// preference from BP143 per this ticket's WHY section): researchArmBrowserAuthority used to be
+// a SEPARATE sub-flag a user had to independently opt into, from the SAME Settings surface, one
+// row below the master switch -- easy to miss, and its own comment above (BP137 Stage F1)
+// confirms nexus_authority_persistent_session.ts's ensureNexusAuthoritySession() ANDs it with
+// researchArmMode as its own, second, silent gate. plow_mc_answerer.ts's scored-path call site
+// (callCanonicalPlowMcAnswererForMeshTest) already collapses these two into one by deriving
+// `researchArmBrowserAuthority: researchArmMode` for every benchmark run -- this store now
+// makes that the RULE everywhere, not a scored-path-only special case: the two flags always
+// move together, so no caller of this store (LeanAskTab.tsx's Ask-tab gate,
+// NexusAuthoritySignInPanel.tsx's flagsEnabled, nexus_authority_persistent_session.ts's file
+// mirror) can ever observe them disagreeing. saveResearchArmBrowserAuthority() below is kept
+// (not deleted -- Rule 66) for any future caller that genuinely needs independent control, but
+// no UI in this repo calls it anymore as of this pass (see NexusAuthoritySettings.tsx's now-
+// read-only "User's Browser Session" row).
 function readBooleanFlag(key: string): boolean {
   try { return localStorage.getItem(key) === 'true'; } catch { return false; }
 }
 
 export function saveResearchArmMode(enabled: boolean): void {
   try { localStorage.setItem(LS_NEXUS_AUTHORITY_MODE, String(enabled)); } catch { /* non-fatal */ }
-  pushFlagsToMainProcessMirror(enabled, readBooleanFlag(LS_NEXUS_AUTHORITY_BROWSER));
+  try { localStorage.setItem(LS_NEXUS_AUTHORITY_BROWSER, String(enabled)); } catch { /* non-fatal */ }
+  pushFlagsToMainProcessMirror(enabled, enabled);
   window.dispatchEvent(new Event('nexus-authority-settings-changed'));
 }
 
+/** Kept for Rule 66 / API stability -- see the one-gate collapse note above saveResearchArmMode()
+ *  for why nothing in this repo's UI calls this anymore. A future caller that sets this
+ *  independently will have its value silently re-synced to match researchArmMode the next time
+ *  saveResearchArmMode() runs (which is every master-switch toggle) -- documented, not hidden. */
 export function saveResearchArmBrowserAuthority(enabled: boolean): void {
   try { localStorage.setItem(LS_NEXUS_AUTHORITY_BROWSER, String(enabled)); } catch { /* non-fatal */ }
   pushFlagsToMainProcessMirror(readBooleanFlag(LS_NEXUS_AUTHORITY_MODE), enabled);
