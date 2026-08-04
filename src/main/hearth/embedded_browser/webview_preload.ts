@@ -536,15 +536,71 @@ function isClaudeStillStreaming(): boolean {
   return findFirstMatch(CLAUDE_STOP_BUTTON_SELECTORS) !== null;
 }
 
+/** KN-BP144-9 Phase 1 (BP144, this pass -- Founder-approved after Phase 0's read-only
+ *  investigation): constructs a DataTransfer carrying `text` as text/plain and dispatches a
+ *  synthetic ClipboardEvent('paste', ...) at `el`. Modern rich-text editor libraries (Quill,
+ *  ProseMirror, Slate, Draft.js) register their OWN 'paste' event listener, call
+ *  event.preventDefault(), and parse event.clipboardData themselves through the editor's own
+ *  normalization pipeline -- correctly turning embedded newlines into separate paragraph/block
+ *  nodes in the editor's internal document model. This is a fundamentally more portable
+ *  mechanism than document.execCommand('insertText', ...) (setComposerText's pre-existing
+ *  method, kept below as the fallback), which relies on the BROWSER's own native contentEditable
+ *  command handling and does not know anything about a specific editor library's internal model
+ *  -- Phase 0 found this asymmetry plausible as the explanation for why Gemini's Quill-based
+ *  composer (5/20 answered, 2 explicit "the options never arrived" refusals) behaves differently
+ *  from ChatGPT's ProseMirror-based composer (19/20 answered) despite both receiving
+ *  byte-identical prompt text via the exact same setComposerText call. Returns false (never
+ *  throws) if DataTransfer/ClipboardEvent construction fails in this webview's sandboxed
+ *  context -- a false here always falls through to the pre-existing method below, never blocks
+ *  it. */
+function dispatchSyntheticPaste(el: HTMLElement, text: string): boolean {
+  try {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/plain', text);
+    const pasteEvent = new ClipboardEvent('paste', {
+      clipboardData: dataTransfer,
+      bubbles: true,
+      cancelable: true,
+    });
+    el.dispatchEvent(pasteEvent);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** KN-BP144-9 Phase 1 (BP144, this pass): loose but concrete self-verification for a composer
+ *  readback after EITHER injection path below -- true when the readback contains the LAST
+ *  non-empty line of what was sent (for this file's buildMcAwareQueryText-shaped MC prompts,
+ *  that is the final "Which option is correct? Reply starting with..." instruction line; for a
+ *  bare question with no options, the question itself). A rich-text editor that silently
+ *  dropped or truncated the TAIL of a multi-paragraph insert -- exactly Phase 0's own finding,
+ *  Gemini reporting it received a question but not the options that were supposed to follow it
+ *  -- fails this check even though SOME text visibly landed. Whitespace is normalized on both
+ *  sides since some editors collapse runs of whitespace or insert zero-width joiners between
+ *  pasted segments. This is the "prove the far end" half of the paste attempt above: the DOM is
+ *  read back and checked, not assumed, before the paste path is trusted. */
+function composerReadbackLooksComplete(readback: string, sentText: string): boolean {
+  const sentLines = sentText.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+  const lastLine = sentLines[sentLines.length - 1];
+  const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
+  if (!lastLine) return normalize(readback).length > 0;
+  return normalize(readback).includes(normalize(lastLine));
+}
+
 /** Sets `text` into a composer element and dispatches the input events real typing would
- *  produce. Tries document.execCommand('insertText', ...) FIRST for a contentEditable element
- *  (the standard resilient way to feed text into a rich-text editor like ProseMirror -- it fires
- *  the editor's own 'beforeinput'/'input' pipeline, unlike a raw innerText assignment, which many
- *  such editors silently ignore or fail to pick up into their internal document model). Falls
- *  back to the direct-assignment + dispatchEvent('input') technique this file's own pre-existing
- *  injectContext() (line ~89 above) already uses for a plain contentEditable/textarea, for parity
- *  with that already-working convention. Returns false (never throws) on any DOM access failure
- *  -- a false here is reported as success:false upstream, never a fabricated result. */
+ *  produce. For a contentEditable element, tries a synthetic paste event FIRST (see
+ *  dispatchSyntheticPaste's own doc comment for why -- KN-BP144-9 Phase 1, this pass), verifying
+ *  the result actually landed in the DOM (composerReadbackLooksComplete) before trusting it.
+ *  Falls through to the PRE-EXISTING document.execCommand('insertText', ...) method -- BYTE-
+ *  IDENTICAL to before this pass -- if the paste path is unavailable or unverifiable, so an
+ *  authority whose composer already worked via execCommand alone (ChatGPT's ProseMirror
+ *  composer, Claude's own hand-written driver) cannot regress: this is an ADDITIVE delivery
+ *  mechanism, never a replacement. Falls back further to the direct-assignment +
+ *  dispatchEvent('input') technique this file's own pre-existing injectContext() (line ~89
+ *  above) already uses for a plain contentEditable/textarea, for parity with that
+ *  already-working convention. Returns false (never throws) on any DOM access failure -- a
+ *  false here is reported as success:false upstream, never a fabricated result. */
 function setComposerText(el: HTMLElement, text: string): boolean {
   try {
     el.focus();
@@ -553,6 +609,20 @@ function setComposerText(el: HTMLElement, text: string): boolean {
       // empty, but this is defensive against a reused/navigated-back composer).
       const selectAllOk = document.execCommand('selectAll', false, undefined);
       if (selectAllOk) document.execCommand('delete', false, undefined);
+
+      if (dispatchSyntheticPaste(el, text)) {
+        const readback = el.innerText ?? '';
+        if (composerReadbackLooksComplete(readback, text)) {
+          return true;
+        }
+        // The paste event was dispatched but the editor's own model did not visibly absorb the
+        // full text (or absorbed only part of it) -- clear whatever partial state that attempt
+        // left behind so the execCommand path below starts from a clean composer, exactly as it
+        // always has, rather than appending on top of a partial paste.
+        document.execCommand('selectAll', false, undefined);
+        document.execCommand('delete', false, undefined);
+      }
+
       const inserted = document.execCommand('insertText', false, text);
       if (!inserted) {
         // execCommand unsupported/failed -- fall back to direct DOM mutation + synthetic input
