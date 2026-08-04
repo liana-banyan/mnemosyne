@@ -161,6 +161,17 @@ import {
   buildInverseQueryFraming,
   type CascadeSourceCapture,
 } from './plow_mc_elimination_cascade';
+// KN-BP144-4 ("Constraint Beats Preference"): the register-resolution stage (KN-BP144-2 Phase 2,
+// Founder's Excerpt 7 steps 2-6) is CALLED here for the first time -- it was previously buildable
+// but never wired to anything, per that ticket's own commit message. Never edited (A5 refusal) --
+// this file only ever calls it, with whatever caller-supplied verification lookup it can (or
+// cannot) actually obtain. See the eliminator's own call site (below, inside the
+// cascadeAdjudicatorEngaged block) for the full A1-A4 wiring.
+import {
+  runRegisterResolutionStage,
+  type RegisterResolutionStageResult,
+  type RegisterVerificationLookup,
+} from './plow_mc_elimination_cascade';
 import { runSympyArithmetic } from './plow_gom_jabbar';
 import { getRawBrowserAuthorityFact } from './browser_authority_adapter';
 // BP137 Yoke v2b Stage A.0.1: semantic-cosine upgrade to the relevance TEST used inside the
@@ -760,20 +771,31 @@ export interface CanonicalPlowMcResult {
    *    produced a non-null chosenLetter. THIS is the mechanism KN-BP144-1 Phase 1 exists to make
    *    legible. As of Phase 2 (Amendment 1), this value can no longer be produced for a question
    *    that reaches the candidate-source cascade adjudicator (corroboration==='disagree' with
-   *    non-empty candidates) -- that question now either resolves as 'cascade_adjudicated' or
-   *    abstains before the self-vote ever runs. Still reachable for every other fall-through
-   *    shape (corroboration 'none'/'lone_rejected_by_strictness', or the ensemble never ran at
-   *    all), unchanged.
-   *  'cascade_adjudicated' -- KN-BP144-1 Phase 2 (Amendment 1, scoped to qids 66/72/85/105): the
-   *    candidate-SOURCE cascade adjudicator (runCandidateSourceCascadeAdjudicator, see its own
-   *    doc comment) ran BEFORE the local self-vote was allowed to decide anything, and exactly
-   *    one letter survived its elimination rules. Never produced when the adjudicator abstains
-   *    (that case is 'abstain' below, same as every other honest no-letter outcome) or when the
-   *    adjudicator's placement guard does not hold (corroboration !== 'disagree', or empty
-   *    candidates) -- every such question is completely unaffected by Phase 2, byte-for-byte.
+   *    non-empty candidates) -- that question now either resolves as
+   *    'cascade_adjudicated_unconstrained'/'cascade_adjudicated_constrained' or abstains before
+   *    the self-vote ever runs. Still reachable for every other fall-through shape (corroboration
+   *    'none'/'lone_rejected_by_strictness', or the ensemble never ran at all), unchanged.
+   *  'cascade_adjudicated_unconstrained' -- KN-BP144-4: the candidate-SOURCE cascade adjudicator
+   *    (runCandidateSourceCascadeAdjudicator) ran and exactly one letter survived its own
+   *    elimination rules, AND the KN-BP144-4 register-resolution eliminator (see A1/A2 in
+   *    KN-BP144-4_CONSTRAINT_BEATS_PREFERENCE.md) either did not apply, or applied and abstained
+   *    -- no constraint was in force, so the adjudicator chose exactly as it did before this
+   *    ticket (byte-identical to the pre-KN-BP144-4 'cascade_adjudicated' value this replaces).
+   *  'cascade_adjudicated_constrained' -- KN-BP144-4: same as above, EXCEPT the eliminator DID
+   *    produce a real surviving-option constraint, and it was applied as a filter on the
+   *    adjudicator's admissible candidates BEFORE the adjudicator ran (A2) -- the returned letter
+   *    is guaranteed to lie within that constraint by construction, never merely by luck.
+   *  'abstain_constraint_excluded_all' -- KN-BP144-4 (A3, third bullet): the eliminator produced a
+   *    real constraint and it excluded EVERY candidate the adjudicator would otherwise have
+   *    considered -- honest ABSTAIN, reached BEFORE runCandidateSourceCascadeAdjudicator is even
+   *    called, and never falling back to the local self-vote. Distinct from 'abstain' below (that
+   *    is the adjudicator's OWN rule-5 ambiguity on whatever candidates DID survive the
+   *    constraint, or the pre-existing no-eliminator case); this tag exists so a reader can tell
+   *    "the constraint killed it" apart from "the adjudicator itself couldn't decide".
    *  'abstain' -- no letter, by any mechanism (relevance-gate/compute-fallthrough early abstains,
-   *    the cascade adjudicator's own honest ABSTAIN per rule 5, or the voter loop's own
-   *    concordance coming back null).
+   *    the cascade adjudicator's own honest ABSTAIN per rule 5 -- whether unconstrained or
+   *    operating on an eliminator-narrowed candidate pool -- or the voter loop's own concordance
+   *    coming back null).
    *
    *  Deliberately left UNSET (absent) on a small number of legacy/gated-off-by-default paths this
    *  ticket's own 12-question gate set never exercises and that do not map onto this closed
@@ -788,7 +810,9 @@ export interface CanonicalPlowMcResult {
     | 'ensemble_accept'
     | 'cake_adjudicated'
     | 'voter_concordance_fallthrough'
-    | 'cascade_adjudicated'
+    | 'cascade_adjudicated_unconstrained'
+    | 'cascade_adjudicated_constrained'
+    | 'abstain_constraint_excluded_all'
     | 'abstain';
   /** KN-BP144-1 Phase 2 (Amendment 1), OPTIONAL/ADDITIVE. Present ONLY when the candidate-source
    *  cascade adjudicator (runCandidateSourceCascadeAdjudicator) actually engaged for this
@@ -807,6 +831,19 @@ export interface CanonicalPlowMcResult {
    *  outcome -- this field exists only to distinguish WHICH abstain mechanism fired, for the
    *  Founder's own live per-question audit. */
   cascadeAdjudicatorAbstain?: boolean;
+  /** KN-BP144-4, OPTIONAL/ADDITIVE. Present whenever the cascade-adjudicator guard
+   *  (cascadeAdjudicatorEngaged) held, regardless of whether the eliminator actually applied,
+   *  abstained, or produced a real constraint -- the full human-readable trace from
+   *  runRegisterResolutionStage (register inference, verification check, predicate derivation,
+   *  per-option match/fail reasons), never a bare "filtered". See letterSource's own doc comment
+   *  for the three-way vocabulary this trace explains. */
+  eliminatorTrace?: string[];
+  /** KN-BP144-4, OPTIONAL/ADDITIVE. Present ONLY when the eliminator produced a REAL constraint
+   *  (applied && !abstained) -- the exact surviving-letter set that was used to filter the
+   *  adjudicator's admissible candidates (A2). Absent (not empty-array) whenever no constraint
+   *  was in force, so its mere presence already answers "was a constraint active" without
+   *  needing to re-derive it from letterSource. */
+  eliminatorConstraintSurvivors?: string[];
   /** KN-BP144-1 Phase 1, OPTIONAL/ADDITIVE. Verbatim ensembleOutcome.corroboration, captured
    *  UNCONDITIONALLY the moment the ensemble returns (accept AND every fall-through/disagree
    *  path alike, including 'disagree' itself) -- present ONLY when authorityEnsembleOn was true
@@ -2148,7 +2185,8 @@ export function runCandidateSourceCascadeAdjudicator(
     const letter = distinctLetters[0]!;
     eliminationLog.push(
       `RULE 4 (exactly one distinct letter survives): ${letter}, backed by [${describe(pool)}] -- ` +
-      `letterSource: cascade_adjudicated.`,
+      `letterSource: cascade_adjudicated_unconstrained or _constrained, per the caller's own ` +
+      `KN-BP144-4 eliminator-constraint state (this function has no knowledge of that state).`,
     );
     return { chosenLetter: letter, eliminationLog, survivingCandidates: pool };
   }
@@ -7612,17 +7650,98 @@ export async function runCanonicalPlowMcAnswer(
     && !!ensembleCandidatesForTrace
     && ensembleCandidatesForTrace.length > 0;
   if (cascadeAdjudicatorEngaged) {
-    const cascade = runCandidateSourceCascadeAdjudicator(ensembleCandidatesForTrace!);
+    // ── KN-BP144-4 A1 ("give the eliminator its own reachable entry point"): the
+    //    register-resolution stage (plow_mc_elimination_cascade.ts's runRegisterResolutionStage,
+    //    added KN-BP144-2 Phase 2, never edited here per A5) is called HERE, gated ONLY on
+    //    cascadeAdjudicatorEngaged above -- the SAME 'disagree'-fall-through-with-real-candidates
+    //    guard the adjudicator itself keys on, and deliberately NOT on `answerType`. The
+    //    `answerType === 'computable'` gates at resolveDeterministicComputeOverride's two call
+    //    sites are left untouched (they guard deterministic compute override, a wholly different
+    //    concern) -- eliminating OPTIONS has nothing to do with whether a question is computable,
+    //    and every failure this ticket exists to fix classifies as 'reasoning', which those gates
+    //    never reach.
+    //
+    //    PASS 1 (verification: null, pure/sync/no I/O): learns whether this question even has a
+    //    curated concept + inferable register at all. An eliminator that never applies, or
+    //    applies and abstains on pass 1, needs no live lookup -- "no constraint at all" (A3's
+    //    fourth bullet) is already the honest answer, and skipping the dispatch entirely is
+    //    strictly cheaper. Only a real registerCandidate on pass 1 makes a live verification
+    //    lookup worth attempting at all.
+    const eliminatorOptions = parseOptionsFromPrompt(mcPromptWithSubstrate);
+    const eliminatorSurvivorsIn = eliminatorOptions.map((o) => o.letter);
+    const eliminatorProbe = runRegisterResolutionStage(researchQuery, eliminatorOptions, eliminatorSurvivorsIn, null);
+    let eliminatorResult: RegisterResolutionStageResult = eliminatorProbe;
+    if (eliminatorProbe.applied && eliminatorProbe.registerCandidate) {
+      // PASS 2: a real live verification lookup, attempted so the mandatory-verification-or-
+      // abstain contract inside runRegisterResolutionStage (KN-BP144-2 Phase 2's own gate) has a
+      // real caller-supplied lookup to check, instead of always hitting its null-verification
+      // abstain branch. Mirrors the SAME real-bridge-construction pattern this file already uses
+      // for the format-independent fallback's own C7 source capture (see that call site, above,
+      // for the identical dynamic-import mechanism) -- constructed locally here because the
+      // Stage-F2 `browserBridge` above is scoped to that block and is not reachable at this later
+      // point in the function. Never fabricated: a missing/failed bridge, or a lookup that
+      // returns nothing usable, leaves `liveVerification` null and the second call abstains
+      // exactly as the stage's own contract requires.
+      let liveVerification: RegisterVerificationLookup | null = null;
+      const verificationQuery = `what is ${eliminatorProbe.concept!} in ${eliminatorProbe.registerCandidate.register}`;
+      const eliminatorBridge: BrowserAuthorityBridge = {
+        async runQueryInUserBrowser(query) {
+          try {
+            const mainModule = await import('../index');
+            return await mainModule.runBrowserAuthorityQueryFromMain(query);
+          } catch (err) {
+            console.warn('[plow_mc_answerer] KN-BP144-4 eliminator verification bridge call failed (non-fatal, honest null):', err);
+            return null;
+          }
+        },
+      };
+      try {
+        const rawFact = await getRawBrowserAuthorityFact(
+          verificationQuery,
+          { researchArmMode: true, researchArmBrowserAuthority: true, preferredAuthority: 'user_perplexity' },
+          eliminatorBridge,
+        );
+        if (rawFact && rawFact.fact) {
+          liveVerification = {
+            query: verificationQuery,
+            definitionText: rawFact.fact,
+            registerClaimed: eliminatorProbe.registerCandidate.register,
+            source: rawFact.authority,
+          };
+        }
+      } catch (err) {
+        console.warn('[plow_mc_answerer] KN-BP144-4 eliminator verification lookup threw (non-fatal, eliminator abstains):', err);
+      }
+      eliminatorResult = runRegisterResolutionStage(researchQuery, eliminatorOptions, eliminatorSurvivorsIn, liveVerification);
+    }
+    // A3, fourth bullet: applied-and-abstained (or never applied at all) is NO CONSTRAINT AT ALL
+    // -- structurally distinct from an empty survivor set (which would silently kill every
+    // candidate). Only `applied && !abstained` is a real constraint worth filtering on.
+    const eliminatorConstraintActive = eliminatorResult.applied && !eliminatorResult.abstained;
+    const eliminatorConstraintSet = eliminatorConstraintActive ? new Set(eliminatorResult.survivorsOut) : null;
     console.log(
-      `[plow_mc_answerer] KN-BP144-1 Phase 2 cascade adjudicator ENGAGED (ensemble fell through ` +
-      `disagree, candidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}]) ` +
-      `-> ${cascade.chosenLetter ?? 'ABSTAIN'}. Elimination log:\n  ${cascade.eliminationLog.join('\n  ')}`,
+      `[plow_mc_answerer] KN-BP144-4 eliminator ${
+        eliminatorConstraintActive
+          ? `CONSTRAINED survivorsIn=[${eliminatorResult.survivorsIn.join(',')}] -> survivorsOut=[${eliminatorResult.survivorsOut.join(',')}]`
+          : eliminatorResult.applied ? 'ABSTAINED (no constraint -- adjudicator proceeds unfiltered)' : 'NO-OP (no constraint -- adjudicator proceeds unfiltered)'
+      }. Trace:\n  ${eliminatorResult.trace.join('\n  ')}`,
     );
+
+    // A2: the eliminator's surviving option set FILTERS the adjudicator's ADMISSIBLE CANDIDATES
+    // before it ever runs -- so whatever the adjudicator returns (if anything) already satisfies
+    // the constraint by construction, never merely by luck. When there is no active constraint,
+    // `admissibleCandidates` is the exact same array as `ensembleCandidatesForTrace`, byte-
+    // identical to pre-KN-BP144-4 behavior.
+    const admissibleCandidates = eliminatorConstraintSet
+      ? ensembleCandidatesForTrace!.filter((c) => eliminatorConstraintSet.has(c.letter))
+      : ensembleCandidatesForTrace!;
+
     // KN-BP144-1 Phase 2: cascadeReported* mirrors the SAME ensembleSwarmAlreadyFired-aware
     // honest-bookkeeping pattern this file's own final return uses further below (see that
     // block's own comment) -- duplicated rather than hoisted, so this early return touches zero
     // existing lines. The swarm ran once, inside the ensemble, above; this return never re-fires
-    // it and never fabricates a second count.
+    // it and never fabricates a second count. Hoisted above the adjudicator call (KN-BP144-4) so
+    // the A3-third-bullet abstain path below can reuse it too.
     const cascadeReportedSpecialistsUsed = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
       ? ensembleSwarmReceipt.specialistsUsed : specialistsUsed;
     const cascadeReportedCandidatesRaw = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
@@ -7632,6 +7751,55 @@ export async function runCanonicalPlowMcAnswer(
     const cascadeReportedCandidatesPostFurnace = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
       ? ensembleSwarmReceipt.candidatesPostFurnace : postFurnace.length;
     const cascadeLatencyMs = Date.now() - startMs;
+
+    // A3, third bullet: the constraint excluded EVERY candidate the adjudicator would otherwise
+    // have considered -- honest ABSTAIN, reached BEFORE runCandidateSourceCascadeAdjudicator is
+    // even called, and never falling back to the local self-vote below.
+    if (eliminatorConstraintActive && admissibleCandidates.length === 0) {
+      const exclusionConcordance: ConcordanceClass = 'DISCORDANT';
+      console.log(
+        `[plow_mc_answerer] KN-BP144-4 abstain_constraint_excluded_all: constraint=[${eliminatorResult.survivorsOut.join(',')}] ` +
+        `excluded every candidate in allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}] -- ` +
+        `honest ABSTAIN, adjudicator never reached.`,
+      );
+      return {
+        questionId,
+        domain,
+        chosenLetter: null,
+        voterLetters: [],
+        voterDiagnostics: [],
+        concordance: exclusionConcordance,
+        bmvScore: 0,
+        gateOutcomes: evaluateGates(cascadeReportedCandidatesPostFurnace, 0, exclusionConcordance, cascadeLatencyMs),
+        specialistsUsed: cascadeReportedSpecialistsUsed,
+        candidatesRaw: cascadeReportedCandidatesRaw,
+        candidatesPostMiner: cascadeReportedCandidatesPostMiner,
+        candidatesPostFurnace: cascadeReportedCandidatesPostFurnace,
+        andonTriggered: andonRetry > 0,
+        andonRetries: andonRetry,
+        ebletsWritten: 0,
+        latencyMs: cascadeLatencyMs,
+        traceSummary:
+          `KN-BP144-4 abstainConstraintExcludedAll=true eliminatorConstraint=[${eliminatorResult.survivorsOut.join(',')}] ` +
+          `allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
+          `andonRetries=${andonRetry}`,
+        provenanceReceipts: [],
+        ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
+        ensembleCandidates: ensembleCandidatesForTrace,
+        ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace,
+        letterSource: 'abstain_constraint_excluded_all',
+        eliminatorTrace: eliminatorResult.trace,
+        eliminatorConstraintSurvivors: eliminatorResult.survivorsOut,
+      };
+    }
+
+    const cascade = runCandidateSourceCascadeAdjudicator(admissibleCandidates);
+    console.log(
+      `[plow_mc_answerer] KN-BP144-1 Phase 2 cascade adjudicator ENGAGED (ensemble fell through ` +
+      `disagree, admissibleCandidates=[${admissibleCandidates.map((c) => `${c.authority}:${c.letter}`).join(', ')}]` +
+      `${eliminatorConstraintActive ? ` -- KN-BP144-4 filtered by constraint=[${eliminatorResult.survivorsOut.join(',')}] from allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}]` : ' -- KN-BP144-4 no constraint active'}) ` +
+      `-> ${cascade.chosenLetter ?? 'ABSTAIN'}. Elimination log:\n  ${cascade.eliminationLog.join('\n  ')}`,
+    );
     if (cascade.chosenLetter) {
       // RULE 4 WIN: exactly one letter survived. CONCORDANT is the honest concordance label here
       // -- see runCandidateSourceCascadeAdjudicator's own header: this is either 2+ genuinely
@@ -7689,6 +7857,7 @@ export async function runCanonicalPlowMcAnswer(
           `KN-BP144-1 Phase 2 cascadeAdjudicated=true matchedOption=${cascade.chosenLetter} ` +
           `survivingCandidates=[${cascade.survivingCandidates.map((c) => `${c.authority}:${c.letter}`).join(',')}] ` +
           `allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
+          `${eliminatorConstraintActive ? `KN-BP144-4 eliminatorConstraint=[${eliminatorResult.survivorsOut.join(',')}] ` : 'KN-BP144-4 eliminatorConstraint=none '}` +
           `andonRetries=${andonRetry}`,
         provenanceReceipts: cascade.survivingCandidates.map((c) => ({
           source: c.authority,
@@ -7699,8 +7868,10 @@ export async function runCanonicalPlowMcAnswer(
         ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
         ensembleCandidates: ensembleCandidatesForTrace,
         ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace,
-        letterSource: 'cascade_adjudicated',
+        letterSource: eliminatorConstraintActive ? 'cascade_adjudicated_constrained' : 'cascade_adjudicated_unconstrained',
         cascadeEliminationLog: cascade.eliminationLog,
+        eliminatorTrace: eliminatorResult.trace,
+        ...(eliminatorConstraintActive ? { eliminatorConstraintSurvivors: eliminatorResult.survivorsOut } : {}),
       };
     }
     // RULE 5 ABSTAIN: more than one distinct letter survived, or none did. Honest no-letter --
@@ -7728,7 +7899,9 @@ export async function runCanonicalPlowMcAnswer(
       latencyMs: cascadeLatencyMs,
       traceSummary:
         `KN-BP144-1 Phase 2 cascadeAdjudicated=true cascadeAbstain=true ` +
+        `admissibleCandidates=[${admissibleCandidates.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
         `allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
+        `${eliminatorConstraintActive ? `KN-BP144-4 eliminatorConstraint=[${eliminatorResult.survivorsOut.join(',')}] ` : 'KN-BP144-4 eliminatorConstraint=none '}` +
         `andonRetries=${andonRetry}`,
       provenanceReceipts: [],
       ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
@@ -7737,6 +7910,8 @@ export async function runCanonicalPlowMcAnswer(
       letterSource: 'abstain',
       cascadeEliminationLog: cascade.eliminationLog,
       cascadeAdjudicatorAbstain: true,
+      eliminatorTrace: eliminatorResult.trace,
+      ...(eliminatorConstraintActive ? { eliminatorConstraintSurvivors: eliminatorResult.survivorsOut } : {}),
     };
   }
 
