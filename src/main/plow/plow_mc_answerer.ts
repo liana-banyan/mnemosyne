@@ -7667,8 +7667,35 @@ export async function runCanonicalPlowMcAnswer(
     //    fourth bullet) is already the honest answer, and skipping the dispatch entirely is
     //    strictly cheaper. Only a real registerCandidate on pass 1 makes a live verification
     //    lookup worth attempting at all.
+    //
+    //    PHASE B FIX (KN-BP144-4 Phase B verification finding): Phase A fed this stage the FULL
+    //    option-letter set as `survivors`, not Stage 1's (runEliminationChart, R1/R2/R3) own
+    //    narrowed output -- contradicting the prior-art chaining convention this same repo's own
+    //    scratchpad/kn_bp144_2_gate_qid85.mjs and gate_fn_sweep.mjs already established
+    //    (runEliminationChart(...).survivors feeding into runRegisterResolutionStage(...) as ITS
+    //    OWN survivors input). Verified against the real compiled dist this Phase B
+    //    (scratchpad/kn_bp144_4_phaseB_gate_stage1_chaining.mjs, all 20 real run-038 questions):
+    //    feeding the full 10-option set let qid 85's real corpus text produce {A,D,E} -- option D
+    //    ("results in a sample that perfectly represents the population") sneaks back in as a
+    //    coincidental predicate-referent match that Stage 1 had ALREADY screened out -- whereas
+    //    chaining Stage 1's own survivors ({A,E,J} for qid 85) into this call produces exactly
+    //    {A,E}, matching the ticket's own explicitly-stated expected narrowing byte-for-byte. Zero
+    //    false-negative-rate change across the full 20-question sweep either way (E always
+    //    survives in both variants), but the chained variant is the one the ticket's own WHY
+    //    section describes and the one that actually completes KN-BP144-2's intended two-stage
+    //    design -- this is completing that design, not a threshold nudge, so per this ticket's own
+    //    Phase B instruction it does not violate "never widen a gate to force a pass." Wrapped in
+    //    the SAME non-fatal try/catch convention resolveDeterministicComputeOverride's own Stage
+    //    0/1 call site uses (a throw here must never break the eliminator path -- fails back to
+    //    the full option set, honest and no worse than Phase A's own original behavior).
     const eliminatorOptions = parseOptionsFromPrompt(mcPromptWithSubstrate);
-    const eliminatorSurvivorsIn = eliminatorOptions.map((o) => o.letter);
+    let eliminatorStage1Survivors: string[] = eliminatorOptions.map((o) => o.letter);
+    try {
+      eliminatorStage1Survivors = runEliminationChart(researchQuery, eliminatorOptions).survivors;
+    } catch (err) {
+      console.warn('[plow_mc_answerer] KN-BP144-4 Phase B: Stage 1 (runEliminationChart) threw ahead of the eliminator (non-fatal, falling back to the full option set):', err);
+    }
+    const eliminatorSurvivorsIn = eliminatorStage1Survivors;
     const eliminatorProbe = runRegisterResolutionStage(researchQuery, eliminatorOptions, eliminatorSurvivorsIn, null);
     let eliminatorResult: RegisterResolutionStageResult = eliminatorProbe;
     if (eliminatorProbe.applied && eliminatorProbe.registerCandidate) {
