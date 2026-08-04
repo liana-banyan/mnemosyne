@@ -15,8 +15,13 @@
 // additional stages beyond what those real events actually carry. If a field is absent,
 // undefined, null, or false-in-a-non-meaningful-way, nothing renders for it.
 //
-// There is NO plow tier/authority/abstain data on this path (Ask does not go through
-// plow_mc_answerer.ts) — deliberately not represented here. See LeanAskTab.tsx header notes.
+// KN-BP144-8 Phase 1 (2026-08-04) AMENDMENT: the line above was true when D5 landed -- Ask
+// did not go through canonical_pipeline.ts at all. It now does, via the NEW
+// window.amplify.aiDispatch.queryEngine channel (ai-dispatch:query-engine, separate from the
+// plain-chat `query` channel this file's badges above were originally built for). The new
+// `stages`/`receipt` fields on AskEngineState below carry that path's real substrate-tier /
+// concordance / specialist-outcome / abstain data -- additive, never touching a single
+// existing field or stage id above, and absent entirely on a plain-chat turn.
 //
 // STAGE IDS (React keys + data-stage-id, per this Yoke's addressability requirement):
 //   cold-start                         — badge, only when this turn's coldStart flag fired
@@ -31,6 +36,13 @@
 //   nexus:authority                    — badge, only when the Nexus browser-authority
 //                                         short-circuit actually fired and resolved usable
 //   engine-view:toggle / engine-view:collapsed — the expand/collapse control itself
+//   engine:specialist:<name>           — KN-BP144-8 Phase 1: one live-status row per specialist
+//                                         the free-text engine's roster includes for this turn
+//   engine:substrate-tier               — badge, only when receipt.servedFromSubstrate === true
+//   engine:concordance                  — badge, only when receipt.concordance is present
+//   engine:bmv                          — badge, only when receipt.bmvScore is a real number
+//   engine:andon                        — badge, only when receipt.andonTriggered === true
+//   engine:abstained                    — the abstention banner, only when receipt.abstained
 
 import React, { useState } from 'react';
 
@@ -57,6 +69,36 @@ export interface AskEngineNexus {
   confidence?: number;
 }
 
+/** KN-BP144-8 Phase 1: one live-status row per specialist the free-text engine's roster
+ *  includes for this turn, built up incrementally by LeanAskTab.tsx from real
+ *  'ask-engine-progress' events (CanonicalPlowProgressEvent's specialist-fire/specialist-done)
+ *  -- never a fabricated/simulated list. 'pending' is the honest starting state for every
+ *  roster member before its own specialist-fire event has arrived. */
+export interface AskEngineSpecialistStage {
+  name: string;
+  status: 'pending' | 'firing' | 'done';
+  candidateCount?: number;
+}
+
+/** KN-BP144-8 Phase 1: the free-text engine's own receipt, read verbatim off the
+ *  onAskTokenComplete payload's additive `engine` field (see preload.ts's aiDispatch.
+ *  onAskTokenComplete type) -- populated by canonical_pipeline.ts's
+ *  runCanonicalFreeTextQuestion(), never synthesized by this view. Absent entirely on a
+ *  plain-chat (non-engine) turn. */
+export interface AskEngineReceipt {
+  abstained: boolean;
+  abstainReason?: string;
+  servedFromSubstrate: boolean;
+  substrateTier?: string | null;
+  concordance?: string;
+  bmvScore?: number;
+  gateOutcomes?: Array<{ gate: string; passed: boolean; detail: string }>;
+  specialistOutcomes?: Array<{ name: string; fired: boolean; candidateCount: number }>;
+  andonTriggered?: boolean;
+  andonRetries?: number;
+  ebletsWritten?: number;
+}
+
 /** Per-message engine state, accumulated live by LeanAskTab.tsx as real events arrive,
  *  then frozen on the message once the turn concludes (replay-able forever after). */
 export interface AskEngineState {
@@ -64,6 +106,14 @@ export interface AskEngineState {
   streaming?: boolean;
   completion?: AskEngineCompletion;
   nexus?: AskEngineNexus;
+  /** KN-BP144-8 Phase 1, ADDITIVE. Live per-specialist status while the free-text engine's
+   *  swarm is running; stays on the message afterward as a record of what actually fired. */
+  stages?: AskEngineSpecialistStage[];
+  /** KN-BP144-8 Phase 1, ADDITIVE. Set once the engine call resolves. */
+  receipt?: AskEngineReceipt;
+  /** KN-BP144-8 Phase 1, ADDITIVE: true while the substrate-first check is running, before
+   *  the engine has decided whether to short-circuit or fall through to the specialist swarm. */
+  substrateChecking?: boolean;
 }
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────────────────
@@ -122,15 +172,21 @@ export function AskEngineView({ messageId, liveText, engine, onOpenExternal }: A
 
   const completion = engine?.completion;
   const nexus = engine?.nexus;
-  const done = Boolean(completion) || Boolean(nexus);
+  const receipt = engine?.receipt;
+  const stages = engine?.stages;
+  const done = Boolean(completion) || Boolean(nexus) || Boolean(receipt);
   const coldStart = Boolean(engine?.coldStart);
-  const streaming = Boolean(engine?.streaming) && !done;
+  const substrateChecking = Boolean(engine?.substrateChecking) && !done;
+  const streaming = (Boolean(engine?.streaming) || Boolean(stages && stages.length > 0)) && !done;
 
   let phaseLabel = 'waiting';
   let phaseColor = '#64748b';
   if (done) {
-    phaseLabel = 'complete';
-    phaseColor = '#38bdf8';
+    phaseLabel = receipt?.abstained ? 'abstained' : 'complete';
+    phaseColor = receipt?.abstained ? '#f87171' : '#38bdf8';
+  } else if (substrateChecking) {
+    phaseLabel = 'checking substrate';
+    phaseColor = '#a78bfa';
   } else if (streaming) {
     phaseLabel = 'streaming';
     phaseColor = '#34d399';
@@ -165,6 +221,33 @@ export function AskEngineView({ messageId, liveText, engine, onOpenExternal }: A
     }
     if (completion.selfContextLoaded === true) {
       badges.push({ stageId: 'completion:self-context', color: '#6ee7b7', node: <>🧠 Self-Context loaded</> });
+    }
+  }
+  if (receipt) {
+    if (receipt.servedFromSubstrate === true) {
+      badges.push({
+        stageId: 'engine:substrate-tier',
+        color: '#10b981',
+        node: <>🎯 Substrate hit — ROOTED ({receipt.substrateTier ?? 'unknown tier'})</>,
+      });
+    }
+    if (receipt.concordance) {
+      const concordanceColor = receipt.concordance === 'CONCORDANT' ? '#6ee7b7'
+        : receipt.concordance === 'PARTIAL' ? '#fbbf24' : '#f87171';
+      badges.push({ stageId: 'engine:concordance', color: concordanceColor, node: <>⚖ {receipt.concordance}</> });
+    }
+    if (typeof receipt.bmvScore === 'number' && !Number.isNaN(receipt.bmvScore)) {
+      badges.push({ stageId: 'engine:bmv', color: '#a78bfa', node: <>BMV {receipt.bmvScore}</> });
+    }
+    if (receipt.andonTriggered === true) {
+      badges.push({
+        stageId: 'engine:andon',
+        color: '#fbbf24',
+        node: <>🔁 Andon retried ({receipt.andonRetries ?? 0}x)</>,
+      });
+    }
+    if (typeof receipt.ebletsWritten === 'number' && receipt.ebletsWritten > 0) {
+      badges.push({ stageId: 'engine:eblets-written', color: '#6ee7b7', node: <>+{receipt.ebletsWritten} eblet{receipt.ebletsWritten === 1 ? '' : 's'} written</> });
     }
   }
   if (nexus) {
@@ -258,6 +341,60 @@ export function AskEngineView({ messageId, liveText, engine, onOpenExternal }: A
         <span style={{ color: done ? '#94a3b8' : phaseColor }}>{liveText}</span>
         {!done && <span style={{ opacity: 0.6, color: phaseColor }}>▋</span>}
       </div>
+
+      {/* KN-BP144-8 Phase 1, ticket 1.5: an honest abstention renders as an abstention, never
+          a blank bubble or a plain-model answer with the receipt quietly omitted. */}
+      {receipt?.abstained === true && (
+        <div
+          data-stage-id="engine:abstained"
+          style={{
+            marginTop: 6,
+            padding: '6px 10px',
+            borderRadius: 6,
+            background: 'rgba(248,113,113,0.08)',
+            border: '1px solid rgba(248,113,113,0.35)',
+            color: '#fca5a5',
+            fontSize: 11,
+          }}
+        >
+          ⚠ The engine could not produce an honest answer to this question.
+          {receipt.abstainReason ? <> {receipt.abstainReason}</> : null}
+        </div>
+      )}
+
+      {/* KN-BP144-8 Phase 1: live per-specialist status, ticket 1.3 -- stage by stage, which
+          authority fired, which returned nothing, real completion badges, not a spinner. */}
+      {stages && stages.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 4, marginTop: 6 }}>
+          {stages.map((s) => {
+            const dot = s.status === 'done' ? (s.candidateCount && s.candidateCount > 0 ? '🟢' : '⚪')
+              : s.status === 'firing' ? '◌' : '⚪';
+            const color = s.status === 'done'
+              ? (s.candidateCount && s.candidateCount > 0 ? '#6ee7b7' : '#64748b')
+              : s.status === 'firing' ? '#fbbf24' : '#334155';
+            return (
+              <div
+                key={s.name}
+                data-stage-id={`engine:specialist:${s.name}`}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: 10.5,
+                  color,
+                  padding: '2px 4px',
+                }}
+              >
+                <span>{dot} {s.name}</span>
+                <span>
+                  {s.status === 'pending' && 'pending'}
+                  {s.status === 'firing' && 'firing…'}
+                  {s.status === 'done' && `${s.candidateCount ?? 0} candidate${s.candidateCount === 1 ? '' : 's'}`}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {badges.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6, marginTop: 6 }}>

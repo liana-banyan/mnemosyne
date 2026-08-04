@@ -997,6 +997,29 @@ contextBridge.exposeInMainWorld('amplify', {
   aiDispatch: {
     query: (args: { court_member: string; messages: Array<{role: string; content: string}>; model_override?: string }) =>
       ipcRenderer.invoke('ai-dispatch:query', args),
+    // KN-BP144-8 Phase 1: the free-text question path that actually calls the canonical_pipeline.ts
+    // engine (substrate-first ROOTED check, then specialist swarm + Three Fates arbitration) --
+    // a SEPARATE channel from `query` above, which remains the plain-Ollama-chat path untouched.
+    queryEngine: (args: { question: string }): Promise<{ ok: boolean; streaming?: boolean; error?: string }> =>
+      ipcRenderer.invoke('ai-dispatch:query-engine', args),
+    // KN-BP144-8 Phase 1: one push event per CanonicalPlowProgressEvent the engine emits
+    // (substrate-check-start/substrate-hit-rooted/substrate-miss/specialist-fire/specialist-done/
+    // saladin-done/furnace-done/three-fates-done/scribe-done/question-done, etc.) -- additive,
+    // only ever fired by the new query-engine path above, never by plain `query`.
+    onAskEngineProgress: (handler: (data: {
+      type: string;
+      specialistName?: string;
+      specialistCandidates?: number;
+      minerPassed?: number;
+      furnacePassed?: number;
+      substrateTier?: string | null;
+      substrateProvenance?: string;
+      andonRetry?: number;
+    }) => void): (() => void) => {
+      const h = (_evt: Electron.IpcRendererEvent, data: Parameters<typeof handler>[0]) => handler(data);
+      ipcRenderer.on('ask-engine-progress', h);
+      return () => ipcRenderer.removeListener('ask-engine-progress', h);
+    },
     listLocalModels: () =>
       ipcRenderer.invoke('ai-dispatch:list-local-models'),
     testConnection: () =>
@@ -1022,17 +1045,23 @@ contextBridge.exposeInMainWorld('amplify', {
       latency_ms?: number;
       provenance?: string;
       verified?: boolean;
+      // KN-BP144-8 Phase 1, ADDITIVE: only present when this completion came from
+      // ai-dispatch:query-engine, never from plain ai-dispatch:query.
+      engine?: {
+        abstained: boolean;
+        abstainReason?: string;
+        servedFromSubstrate: boolean;
+        substrateTier?: string | null;
+        concordance?: string;
+        bmvScore?: number;
+        gateOutcomes?: Array<{ gate: string; passed: boolean; detail: string }>;
+        specialistOutcomes?: Array<{ name: string; fired: boolean; candidateCount: number }>;
+        andonTriggered?: boolean;
+        andonRetries?: number;
+        ebletsWritten?: number;
+      };
     }) => void): (() => void) => {
-      const h = (_evt: Electron.IpcRendererEvent, data: {
-        content: string;
-        error?: string;
-        hotHits?: number;
-        servedFromSubstrate?: boolean;
-        cost_usd?: number;
-        latency_ms?: number;
-        provenance?: string;
-        verified?: boolean;
-      }) => handler(data);
+      const h = (_evt: Electron.IpcRendererEvent, data: Parameters<typeof handler>[0]) => handler(data);
       ipcRenderer.on('ask-token-complete', h);
       return () => ipcRenderer.removeListener('ask-token-complete', h);
     },
@@ -2304,6 +2333,13 @@ declare global {
       // AI Dispatch IPC (BP060 Application 002 Steps 3+4 · UI-8)
       aiDispatch?: {
         query: (args: { court_member: string; messages: Array<{role: string; content: string}>; model_override?: string }) => Promise<{ ok: boolean; text?: string; model?: string; provider?: string; error?: string; streaming?: boolean }>;
+        // KN-BP144-8 Phase 1: free-text question path that calls canonical_pipeline.ts's engine.
+        queryEngine: (args: { question: string }) => Promise<{ ok: boolean; streaming?: boolean; error?: string }>;
+        onAskEngineProgress: (handler: (data: {
+          type: string; specialistName?: string; specialistCandidates?: number;
+          minerPassed?: number; furnacePassed?: number;
+          substrateTier?: string | null; substrateProvenance?: string; andonRetry?: number;
+        }) => void) => () => void;
         listLocalModels: () => Promise<{ ok: boolean; models: string[]; error?: string }>;
         testConnection: () => Promise<{ ok: boolean; models: string[]; url: string; error?: string }>;
         getSettings: () => Promise<{ ok: boolean; settings?: { answer_cache_mode?: boolean; [k: string]: unknown }; error?: string }>;
@@ -2315,6 +2351,14 @@ declare global {
           content: string; error?: string; hotHits?: number;
           servedFromSubstrate?: boolean; cost_usd?: number; latency_ms?: number;
           provenance?: string; verified?: boolean;
+          // KN-BP144-8 Phase 1, ADDITIVE: only present on a query-engine completion.
+          engine?: {
+            abstained: boolean; abstainReason?: string; servedFromSubstrate: boolean;
+            substrateTier?: string | null; concordance?: string; bmvScore?: number;
+            gateOutcomes?: Array<{ gate: string; passed: boolean; detail: string }>;
+            specialistOutcomes?: Array<{ name: string; fired: boolean; candidateCount: number }>;
+            andonTriggered?: boolean; andonRetries?: number; ebletsWritten?: number;
+          };
         }) => void) => () => void;
         // BP136 Yoke: real, restart-surviving meter for the Prove It panel
         getAnswerCacheMeterSummary?: () => Promise<{
