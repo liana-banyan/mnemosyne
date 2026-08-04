@@ -1,0 +1,194 @@
+[
+  {
+    "qid": 1,
+    "answer_type": "reasoning",
+    "parsedLetter": "B",
+    "correctLetter": "B",
+    "isCorrect": true,
+    "trace_summary": "KN-BP144-1 Phase 2 cascadeAdjudicated=true matchedOption=B survivingCandidates=[user_chatgpt:B] allCandidates=[user_chatgpt:B, specialist_swarm:B] KN-BP144-4 eliminatorConstraint=none andonRetries=0",
+    "hasEnsembleCandidates": 2
+  },
+  {
+    "qid": 7,
+    "answer_type": "reasoning",
+    "parsedLetter": "H",
+    "correctLetter": "H",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "agree",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=agree matchedOption=H swarmFired=true sources=[user_perplexity,user_chatgpt,user_gemini,user_claude,specialist_swarm] allCandidates=[user_perplexity:H, user_chatgpt:H, user_gemini:H, user_claude:H, specialist_swarm:H] adjudicationAttempted=false andonRetries=0",
+    "hasEnsembleCandidates": 5
+  },
+  {
+    "qid": 14,
+    "answer_type": "reasoning",
+    "parsedLetter": "C",
+    "correctLetter": "C",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "agree",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=agree matchedOption=C swarmFired=true sources=[user_chatgpt,user_claude,specialist_swarm] allCandidates=[user_chatgpt:C, user_claude:C, specialist_swarm:C] adjudicationAttempted=false andonRetries=0",
+    "hasEnsembleCandidates": 3
+  },
+  {
+    "qid": 20,
+    "answer_type": "computable",
+    "parsedLetter": "J",
+    "correctLetter": "J",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "deterministic_compute_override",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=deterministic_compute_override matchedOption=J swarmFired=false sources=[deterministic_compute] allCandidates=[user_perplexity:I, user_chatgpt:J, user_claude:D] adjudicationAttempted=false andonRetries=0 deterministicComputeOverride=true ensembleLetter=J computeMethod=schedule_amortization computeSource=schedule_solver computeProvenance=literal_expression computeLabel=deterministic_compute",
+    "hasEnsembleCandidates": 3
+  },
+  {
+    "qid": 27,
+    "answer_type": "computable",
+    "parsedLetter": "C",
+    "correctLetter": "C",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "deterministic_compute_override",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=deterministic_compute_override matchedOption=C swarmFired=false sources=[deterministic_compute] allCandidates=[user_perplexity:B, user_chatgpt:C, user_claude:C] adjudicationAttempted=false andonRetries=0 deterministicComputeOverride=true ensembleLetter=C computeMethod=density computeSource=density_solver computeProvenance=literal_expression computeLabel=deterministic_compute",
+    "hasEnsembleCandidates": 3
+  },
+  {
+    "qid": 33,
+    "answer_type": "reasoning",
+    "parsedLetter": "C",
+    "correctLetter": "C",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "deterministic_compute",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=deterministic_compute matchedOption=C swarmFired=false sources=[deterministic_compute] allCandidates=[] adjudicationAttempted=false andonRetries=0",
+    "hasEnsembleCandidates": 0
+  },
+  {
+    "qid": 40,
+    "answer_type": "reasoning",
+    "parsedLetter": "C",
+    "correctLetter": "C",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "agree",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=agree matchedOption=C swarmFired=true sources=[user_perplexity,user_chatgpt,user_gemini,user_claude,specialist_swarm] allCandidates=[user_perplexity:C, user_chatgpt:C, user_gemini:C, user_claude:C, specialist_swarm:C] adjudicationAttempted=false andonRetries=0",
+    "hasEnsembleCandidates": 5
+  },
+  {
+    "qid": 46,
+    "answer_type": "reasoning",
+    "parsedLetter": "G",
+    "correctLetter": "G",
+    "isCorrect": true,
+    "trace_summary": "KN-BP144-1 Phase 2 cascadeAdjudicated=true matchedOption=G survivingCandidates=[user_chatgpt:G] allCandidates=[user_chatgpt:G, specialist_swarm:G] KN-BP144-4 eliminatorConstraint=none andonRetries=0",
+    "hasEnsembleCandidates": 2
+  },
+  {
+    "qid": 53,
+    "answer_type": "computable",
+    "parsedLetter": "B",
+    "correctLetter": "B",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "agree",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=agree matchedOption=B swarmFired=true sources=[user_perplexity,user_chatgpt,specialist_swarm] allCandidates=[user_perplexity:B, user_chatgpt:B, specialist_swarm:B] adjudicationAttempted=false andonRetries=0",
+    "hasEnsembleCandidates": 3
+  },
+  {
+    "qid": 59,
+    "answer_type": "computable",
+    "parsedLetter": "E",
+    "correctLetter": "E",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "deterministic_compute_override",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=deterministic_compute_override matchedOption=E swarmFired=false sources=[deterministic_compute] allCandidates=[user_perplexity:C, user_chatgpt:E, user_claude:E] adjudicationAttempted=false andonRetries=0 deterministicComputeOverride=true ensembleLetter=E computeMethod=aircraft_lift_drag computeSource=aircraft_solver computeProvenance=literal_expression computeLabel=deterministic_compute",
+    "hasEnsembleCandidates": 3
+  },
+  {
+    "qid": 66,
+    "answer_type": "reasoning",
+    "parsedLetter": null,
+    "correctLetter": "H",
+    "isCorrect": false,
+    "trace_summary": "KN-BP144-1 Phase 2 cascadeAdjudicated=true cascadeAbstain=true admissibleCandidates=[user_chatgpt:J, user_claude:H, specialist_swarm:B] allCandidates=[user_chatgpt:J, user_claude:H, specialist_swarm:B] KN-BP144-4 eliminatorConstraint=none andonRetries=0",
+    "hasEnsembleCandidates": 3
+  },
+  {
+    "qid": 72,
+    "answer_type": "reasoning",
+    "parsedLetter": "F",
+    "correctLetter": "E",
+    "isCorrect": false,
+    "trace_summary": "KN-BP144-1 Phase 2 cascadeAdjudicated=true matchedOption=F survivingCandidates=[user_chatgpt:F] allCandidates=[user_chatgpt:F, specialist_swarm:F] KN-BP144-4 eliminatorConstraint=none andonRetries=0",
+    "hasEnsembleCandidates": 2
+  },
+  {
+    "qid": 79,
+    "answer_type": "reasoning",
+    "parsedLetter": "B",
+    "correctLetter": "B",
+    "isCorrect": true,
+    "trace_summary": "KN-BP144-1 Phase 2 cascadeAdjudicated=true matchedOption=B survivingCandidates=[user_perplexity:B,user_chatgpt:B,user_claude:B] allCandidates=[user_perplexity:B, user_chatgpt:B, user_claude:B, specialist_swarm:C] KN-BP144-4 eliminatorConstraint=none andonRetries=0",
+    "hasEnsembleCandidates": 4
+  },
+  {
+    "qid": 85,
+    "answer_type": "reasoning",
+    "parsedLetter": "J",
+    "correctLetter": "E",
+    "isCorrect": false,
+    "trace_summary": "KN-BP144-1 Phase 2 cascadeAdjudicated=true matchedOption=J survivingCandidates=[user_chatgpt:J] allCandidates=[user_chatgpt:J, specialist_swarm:A] KN-BP144-4 eliminatorConstraint=none andonRetries=0",
+    "hasEnsembleCandidates": 2
+  },
+  {
+    "qid": 92,
+    "answer_type": "reasoning",
+    "parsedLetter": "E",
+    "correctLetter": "E",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "deterministic_compute",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=deterministic_compute matchedOption=E swarmFired=false sources=[deterministic_compute] allCandidates=[user_perplexity:B, user_google:F, user_chatgpt:B, user_gemini:E, user_claude:J] adjudicationAttempted=false andonRetries=0",
+    "hasEnsembleCandidates": 5
+  },
+  {
+    "qid": 98,
+    "answer_type": "reasoning",
+    "parsedLetter": "G",
+    "correctLetter": "A",
+    "isCorrect": false,
+    "browserAuthorityCorroboration": "agree",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=agree matchedOption=G swarmFired=true sources=[user_perplexity,user_chatgpt,user_claude,specialist_swarm] allCandidates=[user_perplexity:G, user_chatgpt:G, user_claude:G, specialist_swarm:G] adjudicationAttempted=false andonRetries=0",
+    "hasEnsembleCandidates": 4
+  },
+  {
+    "qid": 105,
+    "answer_type": "reasoning",
+    "parsedLetter": "E",
+    "correctLetter": "E",
+    "isCorrect": true,
+    "trace_summary": "KN-BP144-1 Phase 2 cascadeAdjudicated=true matchedOption=E survivingCandidates=[user_perplexity:E,user_chatgpt:E,user_claude:E] allCandidates=[user_perplexity:E, user_chatgpt:E, user_claude:E, specialist_swarm:A] KN-BP144-4 eliminatorConstraint=none andonRetries=0",
+    "hasEnsembleCandidates": 4
+  },
+  {
+    "qid": 111,
+    "answer_type": "reasoning",
+    "parsedLetter": "I",
+    "correctLetter": "I",
+    "isCorrect": true,
+    "trace_summary": "KN-BP144-1 Phase 2 cascadeAdjudicated=true matchedOption=I survivingCandidates=[user_perplexity:I,user_chatgpt:I] allCandidates=[user_perplexity:I, user_chatgpt:I, specialist_swarm:C] KN-BP144-4 eliminatorConstraint=none andonRetries=0",
+    "hasEnsembleCandidates": 3
+  },
+  {
+    "qid": 118,
+    "answer_type": "computable",
+    "parsedLetter": "E",
+    "correctLetter": "E",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "deterministic_compute_override",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=deterministic_compute_override matchedOption=E swarmFired=false sources=[deterministic_compute] allCandidates=[user_perplexity:H, user_chatgpt:E, user_gemini:E, user_claude:E] adjudicationAttempted=false andonRetries=0 deterministicComputeOverride=true ensembleLetter=E computeMethod=physics_kepler computeSource=physics_solver computeProvenance=literal_expression computeLabel=deterministic_compute",
+    "hasEnsembleCandidates": 4
+  },
+  {
+    "qid": 124,
+    "answer_type": "lookup_fact",
+    "parsedLetter": "E",
+    "correctLetter": "E",
+    "isCorrect": true,
+    "browserAuthorityCorroboration": "agree",
+    "trace_summary": "authorityEnsembleAccepted=true corroboration=agree matchedOption=E swarmFired=true sources=[user_perplexity,user_chatgpt,user_gemini,user_claude,specialist_swarm] allCandidates=[user_perplexity:E, user_chatgpt:E, user_gemini:E, user_claude:E, specialist_swarm:E] adjudicationAttempted=false andonRetries=0",
+    "hasEnsembleCandidates": 5
+  }
+]

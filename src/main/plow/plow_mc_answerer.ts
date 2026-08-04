@@ -9030,12 +9030,108 @@ export interface PlowMcAnswererCallParams {
   logLabel: string;
 }
 
+// KN-BP144-11 T0 ("the one that got skipped") -- CanonicalPlowMcResult.letterSource (set at
+// eleven call sites inside runCanonicalPlowMcAnswer, see that interface's own doc comment) and
+// CanonicalPlowMcResult.ensembleOutcomeCorroboration (captured unconditionally the moment the
+// ensemble returns) were both producing correctly and neither was ever added to the plowTrace
+// object below -- the receipt's allow-list simply never listed them, so they vanished silently
+// with no error and no empty value. "Absent" and "never-listed" were the same shape; that is
+// the entire defect this section closes.
+//
+// T1 fixes the seam (both fields are now assigned into the plowTrace object below, from the
+// SAME plowResult fields the rest of this function already reads -- their computation is
+// untouched). T2 is the jig, so the next additive field gets this guarantee for free instead of
+// silently repeating T0:
+//   1. letterSource/ensembleOutcomeCorroboration are REQUIRED on PlowTraceReceipt (this function's
+//      own return type) -- the compiler refuses to type a receipt object literal that omits them,
+//      even though both stay OPTIONAL on CanonicalPlowMcResult itself (correctly -- see that
+//      interface's doc comment for the legacy/gated-off paths that genuinely never compute a
+//      value, which this ticket does not touch).
+//   2. 'unset' is added to each field's vocabulary AT THIS BOUNDARY ONLY, for exactly those
+//      legacy paths -- never a bare absent key.
+//   3. buildPlowTraceReceipt() is the one function every return path in
+//      callCanonicalPlowMcAnswererForMeshTest routes through; it performs that 'unset' coercion
+//      and, if a required key is still absent on the raw fields it was handed (defensive --
+//      should be structurally unreachable given point 2, but "should be unreachable" is the exact
+//      description that fit letterSource before this ticket), records the violation INSIDE the
+//      returned receipt's own `jigViolations` array rather than letting the key vanish a second
+//      time.
+
+/** KN-BP144-11 T2: the closed vocabulary for `PlowTraceReceipt.letterSource`, widened by exactly
+ *  one sentinel ('unset') beyond CanonicalPlowMcResult['letterSource']'s own vocabulary --
+ *  CanonicalPlowMcResult's field stays optional/untouched (some legacy paths genuinely never
+ *  compute it); this receipt-facing type is where "never computed" becomes an honest, present,
+ *  non-fabricated value instead of an absent key. */
+export type PlowTraceLetterSource = NonNullable<CanonicalPlowMcResult['letterSource']> | 'unset';
+
+/** KN-BP144-11 T3: same required+sentinel treatment as PlowTraceLetterSource above, for the
+ *  sibling field added in the SAME commit (518d8af2) that had the identical defect -- produced on
+ *  CanonicalPlowMcResult, never carried into the receipt's plowTrace until this ticket. */
+export type PlowTraceEnsembleOutcomeCorroboration = NonNullable<CanonicalPlowMcResult['ensembleOutcomeCorroboration']> | 'unset';
+
+/** KN-BP144-11 T2: the receipt-facing trace type. Every OTHER plowTrace key keeps its pre-existing
+ *  untyped `Record<string, unknown>` shape (widening this interface's index signature to type
+ *  every one of those ~35 keys individually is the "cascades beyond this file" risk the ticket
+ *  warns against and is explicitly out of this ticket's scope -- named as a follow-on below, not
+ *  chased here); only the two fields this ticket's defect concerns are pulled out and made
+ *  required. Structurally still assignable to `Record<string, unknown>` (the index signature
+ *  guarantees that), so no external consumer of `PlowMcAnswererCallResult.plowTrace` needs to
+ *  change -- confirmed by inspection of every current caller (index.ts, one_click_mmlu_pro.ts,
+ *  OneClickMeshTestPanel.tsx, wan_dispatch.ts, answer_coroner.ts), all of which read/pass this
+ *  field through their own `Record<string, unknown> | null` typed fields. */
+export interface PlowTraceReceipt {
+  [key: string]: unknown;
+  letterSource: PlowTraceLetterSource;
+  ensembleOutcomeCorroboration: PlowTraceEnsembleOutcomeCorroboration;
+  /** KN-BP144-11 T2: populated by buildPlowTraceReceipt ONLY when a required key below was
+   *  actually absent on the raw fields it was given -- see that function's own doc comment.
+   *  Absent (not an empty array) on every receipt where the jig found nothing to report. */
+  jigViolations?: string[];
+}
+
+/** KN-BP144-11 T2: every key a persisted plowTrace must never silently omit. Add to this array,
+ *  not to the object literal in callCanonicalPlowMcAnswererForMeshTest directly, the next time a
+ *  producer/consumer seam like this one needs closing -- that is what makes this a jig and not a
+ *  one-time patch. */
+const REQUIRED_PLOW_TRACE_KEYS = ['letterSource', 'ensembleOutcomeCorroboration'] as const;
+
+/** KN-BP144-11 T2: THE single boundary function every plowTrace object must pass through before
+ *  it is returned from callCanonicalPlowMcAnswererForMeshTest (both the success path and the
+ *  crash/error path below) -- never a second, independently-typed-out assembly. Any
+ *  REQUIRED_PLOW_TRACE_KEYS entry that is `undefined` on the raw fields it is given is (1) logged
+ *  as a violation, verbatim, inside the returned receipt's own `jigViolations` array, and (2)
+ *  coerced to the explicit 'unset' sentinel -- never a bare absent key. This is deliberately a
+ *  runtime check, not only a compile-time one: TypeScript's structural typing cannot stop a caller
+ *  from building a `Record<string, unknown>` that happens to omit these keys before handing it
+ *  here (that is exactly what the pre-T0 object literal did), so the jig has to catch it at the
+ *  one place every such object is required to pass through, not merely declare it required and
+ *  hope every future writer remembers.
+ *
+ *  Exported (additive, non-required-by-the-ticket visibility change, same convention this file
+ *  already uses for resolveConcordanceAcceptance/runCandidateSourceCascadeAdjudicator) so this
+ *  ticket's own far-end verification calls the REAL compiled function directly, never a
+ *  hand-reimplementation. */
+export function buildPlowTraceReceipt(fields: Record<string, unknown>): PlowTraceReceipt {
+  const receipt: Record<string, unknown> = { ...fields };
+  const jigViolations: string[] = [];
+  for (const key of REQUIRED_PLOW_TRACE_KEYS) {
+    if (receipt[key] === undefined) {
+      jigViolations.push(`required plowTrace key "${key}" was absent at receipt assembly -- defaulted to 'unset', never a bare missing key`);
+      receipt[key] = 'unset';
+    }
+  }
+  if (jigViolations.length > 0) {
+    receipt.jigViolations = jigViolations;
+  }
+  return receipt as PlowTraceReceipt;
+}
+
 export interface PlowMcAnswererCallResult {
   /** null = genuine no-answer (DISCORDANT or all-voters-empty, or a plow crash) -- the caller
    *  must preserve this distinction rather than coercing null to a guessed letter, same
    *  Truth-Always doctrine as CanonicalPlowMcResult.chosenLetter itself. */
   answer: string | null;
-  plowTrace: Record<string, unknown>;
+  plowTrace: PlowTraceReceipt;
 }
 
 /** THE single call site for "answer this MC question via the 12-Blade Column Plow" shared by
@@ -9101,7 +9197,16 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
       (stage) => console.log(`[${logLabel}] plow-stage: ${stage}`),
     );
     const answer = plowResult.chosenLetter; // null = genuine no-answer, handled by abstain logic below
-    const plowTrace: Record<string, unknown> = {
+    const rawPlowTraceFields: Record<string, unknown> = {
+      // KN-BP144-11 T1/T3: both fields are produced correctly by runCanonicalPlowMcAnswer above
+      // (eleven letterSource call sites, one unconditional ensembleOutcomeCorroboration capture --
+      // see CanonicalPlowMcResult's own doc comments; neither field's computation is touched by
+      // this ticket) and were never added to this allow-list until now -- see the module note
+      // above PlowMcAnswererCallResult for the full defect. Both are optional/absent-capable on
+      // CanonicalPlowMcResult (documented legacy paths); buildPlowTraceReceipt below coerces an
+      // absent value to the 'unset' sentinel rather than letting either key vanish silently.
+      letterSource: plowResult.letterSource,
+      ensembleOutcomeCorroboration: plowResult.ensembleOutcomeCorroboration,
       concordance: plowResult.concordance,
       bmv_score: plowResult.bmvScore,
       gate_outcomes: plowResult.gateOutcomes,
@@ -9216,12 +9321,18 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
       // scored/benchmark run funnels through (this function -- see its own header comment).
       authorityOutcomes: normalizeAuthorityAttemptOutcomes(plowResult.authorityOutcomes),
     };
+    // KN-BP144-11 T2: THE one boundary every plowTrace object routes through -- see
+    // buildPlowTraceReceipt's own doc comment above PlowMcAnswererCallResult.
+    const plowTrace = buildPlowTraceReceipt(rawPlowTraceFields);
     console.log(`[${logLabel}] plow-answered letter=${answer ?? 'NONE'} ${plowResult.traceSummary}`);
     return { answer, plowTrace };
   } catch (plowErr) {
     // Truth-Always: a plow crash must surface as an honest abstain, never silently fall back
-    // to single-shot and misreport itself as a plow answer.
+    // to single-shot and misreport itself as a plow answer. Routed through the same
+    // buildPlowTraceReceipt boundary (KN-BP144-11 T2) as the success path above, so even a crash
+    // receipt carries an honest 'unset' letterSource/ensembleOutcomeCorroboration rather than
+    // omitting both keys.
     console.error(`[${logLabel}] plow-answerer error:`, plowErr);
-    return { answer: null, plowTrace: { error: String(plowErr) } };
+    return { answer: null, plowTrace: buildPlowTraceReceipt({ error: String(plowErr) }) };
   }
 }

@@ -1,0 +1,9 @@
+All 20 scored answers byte-identical (parsedLetter/correctLetter/isCorrect): true
+
+Deterministic proof qids 20/27/33/59/92/118:
+ qid 20 old.parsedLetter=J new.parsedLetter=J old.isCorrect=true new.isCorrect=true unchanged=true
+ qid 27 old.parsedLetter=C new.parsedLetter=C old.isCorrect=true new.isCorrect=true unchanged=true
+ qid 33 old.parsedLetter=C new.parsedLetter=C old.isCorrect=true new.isCorrect=true unchanged=true
+ qid 59 old.parsedLetter=E new.parsedLetter=E old.isCorrect=true new.isCorrect=true unchanged=true
+ qid 92 old.parsedLetter=E new.parsedLetter=E old.isCorrect=true new.isCorrect=true unchanged=true
+ qid 118 old.parsedLetter=E new.parsedLetter=E old.isCorrect=true new.isCorrect=true unchanged=true

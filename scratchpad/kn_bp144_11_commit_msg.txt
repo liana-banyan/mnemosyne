@@ -1,0 +1,43 @@
+KN-BP144-11 T0/T1/T2/T3: close the letterSource/ensembleOutcomeCorroboration receipt seam
+
+T1: letterSource and ensembleOutcomeCorroboration were both computed correctly on
+CanonicalPlowMcResult (11 letterSource call sites, one unconditional
+ensembleOutcomeCorroboration capture) but neither was ever added to the receipt's
+plowTrace allow-list in callCanonicalPlowMcAnswererForMeshTest -- producer produced,
+consumer was never told to consume. Both are now assigned into the object literal
+from the same plowResult fields the rest of the function already reads. Their
+computation is untouched.
+
+T2 (the jig): new PlowTraceReceipt type makes both fields REQUIRED (with an added
+'unset' sentinel closed-vocabulary member for the legacy paths where
+CanonicalPlowMcResult correctly leaves them optional/absent), and a new exported
+buildPlowTraceReceipt() boundary function is the one place both return paths of
+callCanonicalPlowMcAnswererForMeshTest now route through -- it coerces an absent
+required key to 'unset' and records the fact inside the receipt's own
+jigViolations array, rather than letting either key vanish silently a second time.
+
+T3: ensembleOutcomeCorroboration had the identical defect (same commit, 518d8af2,
+that added letterSource) -- confirmed absent from the pre-fix allow-list, fixed
+under the same T1/T2 pattern.
+
+Purely additive to callCanonicalPlowMcAnswererForMeshTest's own receipt-assembly
+region: 115 insertions, 4 modified lines (a renamed local, a type annotation, two
+boundary-function call wrappers), 0 lines of answering/elimination/adjudication
+logic touched. plow_mc_elimination_cascade.ts, resolveCakeDerivationPath, and
+STRUCTURED_AUTHORITIES are untouched.
+
+Gates: tsc --noEmit -p tsconfig.main.json clean; npm run build:main clean (dist
+rebuilt before this commit). Verified against the real compiled dist: a probe
+literal missing letterSource/ensembleOutcomeCorroboration on PlowTraceReceipt
+fails to compile (TS2739), confirming the required-type gate is real. A fresh
+receipt-shaped JSON was built by feeding the REAL exported buildPlowTraceReceipt
+real recorded field data from receipt 041 (letterSource/ensembleOutcomeCorroboration
+derived per-row from that row's own trace_summary per the interface's documented
+closed-vocabulary rules, every other field copied verbatim) -- letterSource present
+and non-empty on 20/20 questions, receipt_assert.mjs exits 0, all 20 scored answers
+and the six deterministic-proof qids (20/27/33/59/92/118) byte-identical to the
+source receipt. See KN-BP144-11_REPORT.md for full method, limitations, and the
+honest gates-skipped section (no live end-to-end rerun was performed, matching
+KN-BP144-1's own accepted precedent for this exact class of proof).
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
