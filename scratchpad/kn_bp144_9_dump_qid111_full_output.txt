@@ -1,0 +1,667 @@
+Receipt: C:\Users\Administrator\Downloads\041mnemo_mesh_test_receipt_2026-08-04T19-03-05-234Z.json
+Top-level receipt keys: ["startedAt","completedAt","total","scored","correct","accuracy","outcomes","dispatchMode","datasetLabel","questionSource","substrateEnabled","plowEnabled","researchArmMode","cancelled","isSubsetRun","authorityOutcomeSummary"]
+Total questions in receipt: 20
+
+
+================================================================================
+qid 111
+================================================================================
+Row's own top-level keys: ["question_id","question","category","modelRawAnswer","parsedLetter","correctLetter","isCorrect","latencyMs","substrateContextInjected","answeredBy","plowTrace","isAbstain"]
+question: What is the significance of the 1:2:4 resonance in the Jupiter's moons system?
+category: physics
+
+-- Row-level candidate "final answer" fields --
+modelRawAnswer: "I"
+parsedLetter (model's final parsed answer): "I"
+correctLetter (ground truth): "I"
+isCorrect: true
+answeredBy: "plow"
+isAbstain: false
+latencyMs: 132099
+substrateContextInjected: true
+
+-- plowTrace top-level keys (full structure, so no field is missed by guessing) --
+["concordance","bmv_score","gate_outcomes","specialists_used","candidates_raw","candidates_post_miner","candidatesPostFurnace","andon_triggered","andon_retries","eblets_written","voter_letters","voter_diagnostics","latency_ms","trace_summary","condition","reasoning_mode","provenance_receipts","research_arm_mode","answer_type","ensemble_candidates","authorityOutcomes"]
+
+-- plowTrace candidate "final chosen/accepted answer" fields --
+concordance: "CONCORDANT"
+voter_letters: ["I"]
+voter_diagnostics: [{"temperature":0,"status":"parsed_ok","responseChars":815,"rawPreview":"cascade adjudicator (candidate-source elimination, KN-BP144-1 Phase 2): RULE 1 (duplicate derivation path): eliminated [specialist_swarm:C] -- derivation path 'swarm' is the SAME local model as the about-to-be-skipped self-vote fallthrough, and a genuinely different-path candidate survives ([user_perplexity:I, user_chatgpt:I]); not counted as a second independent witnes"}]
+bmv_score: 73.4
+andon_triggered: false
+andon_retries: 0
+condition: "C_warm_andon"
+reasoning_mode: false
+answer_type: "reasoning"
+research_arm_mode: true
+specialists_used: ["wikipedia","wikidata","openalex","commoncrawl","crossref","stackexchange","arxiv","wolfram","nist","semanticscholar"]
+candidates_raw: 5
+candidates_post_miner: 5
+candidatesPostFurnace: 3
+gate_outcomes: [{"gate":"G1_FACT","passed":true,"detail":"3 candidates survived Furnace"},{"gate":"G2_CONC","passed":true,"detail":"Concordance: CONCORDANT"},{"gate":"G3_BMV","passed":true,"detail":"BMV: 73.4"},{"gate":"G4_LAT","passed":false,"detail":"Latency: 132.0s"}]
+eblets_written: 1
+
+-- Scan for ticket-guessed field names (reporting presence/absence explicitly) --
+  corroboration: on row=false, on plowTrace=false
+  chosenLetter: on row=false, on plowTrace=false
+  finalAnswer: on row=false, on plowTrace=false
+  acceptedLetter: on row=false, on plowTrace=false
+  swarmResult: on row=false, on plowTrace=false
+  adjudicated: on row=false, on plowTrace=false
+
+-- plowTrace.ensemble_candidates (full array, 3 entries) --
+[
+  {
+    "authority": "user_perplexity",
+    "letter": "I",
+    "reasoning": "Answer: I) It makes the orbit of Io slightly elliptical. The 1:2:4 Laplace resonance between Io, Europa, and Ganymede maintains nonzero eccentricity in Io’s orbit, keeping it slightly elliptical and driving strong tidal heating. wikipedia +1",
+    "sourceUrl": "https://www.perplexity.ai/search/ce08aca6-a59e-4df6-acb7-0094d3d41178",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "user_chatgpt",
+    "letter": "I",
+    "reasoning": "Answer: I) It makes the orbit of Io slightly elliptical. The 1:2:4 resonance among Jupiter’s moons Io, Europa, and Ganymede causes repeated",
+    "sourceUrl": "https://chatgpt.com/c/6a723d7a-6dcc-83e8-9fc2-2843d2bc9c20",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "specialist_swarm",
+    "letter": "C",
+    "reasoning": "specialist swarm consensus (10 specialists: [wikipedia,wikidata,openalex,commoncrawl,crossref,stackexchange,arxiv,wolfram,nist,semanticscholar], voters=[C,C,C], concordance=CONCORDANT, postFurnace=3).",
+    "sourceUrl": "specialist-swarm-internal-consensus",
+    "method": "specialist_swarm_vote"
+  }
+]
+
+-- plowTrace.authorityOutcomes (full object) --
+{
+  "user_google": {
+    "outcome": "parse_failed",
+    "rawPreview": "A Laplace resonance is a three-body MMR with a 1:2:4 orbital period ratio (equivalent to a 4:2:1 ratio of orbits). The term arose because Pierre-Simon Laplace discovered that such a resonance governed"
+  },
+  "user_perplexity": {
+    "outcome": "answered"
+  },
+  "user_claude": {
+    "outcome": "parse_failed",
+    "rawPreview": "The Laplace resonance (Io:Europa:Ganymede orbiting in a 1:2:4 ratio) prevents their orbits from fully circularizing, keeping Io's orbit slightly elliptical — which drives the tidal flexing responsible"
+  },
+  "user_chatgpt": {
+    "outcome": "answered"
+  },
+  "user_gemini": {
+    "outcome": "parse_failed",
+    "rawPreview": "The 1:2:4 mean-motion orbital resonance among Jupiter’s innermost Galilean moons—Ganymede, Europa, and Io—is a stable gravitational interaction known as the Laplace resonance. For every 1 orbit Ganyme"
+  },
+  "specialist_swarm": {
+    "outcome": "answered"
+  }
+}
+
+================================================================================
+qid 27
+================================================================================
+Row's own top-level keys: ["question_id","question","category","modelRawAnswer","parsedLetter","correctLetter","isCorrect","latencyMs","substrateContextInjected","answeredBy","plowTrace","isAbstain"]
+question: Calculate the density of a block of wood which weighs 750 kgand has the dimensions 25 cm × 0.10 m × 50.0 m.
+category: chemistry
+
+-- Row-level candidate "final answer" fields --
+modelRawAnswer: "C"
+parsedLetter (model's final parsed answer): "C"
+correctLetter (ground truth): "C"
+isCorrect: true
+answeredBy: "plow"
+isAbstain: false
+latencyMs: 51925
+substrateContextInjected: true
+
+-- plowTrace top-level keys (full structure, so no field is missed by guessing) --
+["concordance","bmv_score","gate_outcomes","specialists_used","candidates_raw","candidates_post_miner","candidatesPostFurnace","andon_triggered","andon_retries","eblets_written","voter_letters","voter_diagnostics","latency_ms","trace_summary","condition","reasoning_mode","provenance_receipts","research_arm_mode","answer_type","ensemble_candidates","browserAuthorityCorroboration","authorityOutcomes"]
+
+-- plowTrace candidate "final chosen/accepted answer" fields --
+concordance: "CONCORDANT"
+voter_letters: ["C"]
+voter_diagnostics: [{"temperature":0,"status":"parsed_ok","responseChars":150,"rawPreview":"deterministic_compute (density): density: density: mass=750kg volume=(25 cm * 0.1 m * 50 m) expr=\"750 kg / (25 cm * 0.1 m * 50 m)\" computed=0.6g / cc matchedOption=C(0.6g / cc) -> 0.6"},{"temperature":0,"status":"parsed_ok","responseChars":134,"rawPreview":"deterministic-compute-override (density): density: mass=750kg volume=(25 cm * 0.1 m * 50 m) expr=\"750 kg / (25 cm * 0.1 m * 50 m)\" computed=0.6g / cc matchedOption=C(0.6g / cc) -> 0.6"}]
+bmv_score: 19.3
+andon_triggered: false
+andon_retries: 0
+condition: "C_warm_andon"
+reasoning_mode: false
+answer_type: "computable"
+research_arm_mode: true
+specialists_used: []
+candidates_raw: 0
+candidates_post_miner: 0
+candidatesPostFurnace: 0
+gate_outcomes: [{"gate":"G1_FACT","passed":false,"detail":"No candidates survived Furnace — no verified facts"},{"gate":"G2_CONC","passed":true,"detail":"Concordance: CONCORDANT"},{"gate":"G3_BMV","passed":false,"detail":"BMV: 19.3"},{"gate":"G4_LAT","passed":true,"detail":"Latency: 51.8s"}]
+eblets_written: 2
+
+-- Scan for ticket-guessed field names (reporting presence/absence explicitly) --
+  corroboration: on row=false, on plowTrace=false
+  chosenLetter: on row=false, on plowTrace=false
+  finalAnswer: on row=false, on plowTrace=false
+  acceptedLetter: on row=false, on plowTrace=false
+  swarmResult: on row=false, on plowTrace=false
+  adjudicated: on row=false, on plowTrace=false
+
+-- plowTrace.ensemble_candidates (full array, 3 entries) --
+[
+  {
+    "authority": "user_perplexity",
+    "letter": "B",
+    "reasoning": "Answer: B Convert all dimensions to meters (0.25 m × 0.10 m × 50.0 m = 1.25 m³), then density = 750 kg / 1.25 m³ = 600 kg/m³ =",
+    "sourceUrl": "https://www.perplexity.ai/search/bc681ead-a8b6-4140-b562-3adc8bb31832",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "user_chatgpt",
+    "letter": "C",
+    "reasoning": "Answer: C) 0.60 g/cc — The volume is 25 cm×0.10 m×50.0 m=1.25 m 3 , so the density is 750 kg/1.25 m 3 =600 kg/m 3 =0.60 g/cc.",
+    "sourceUrl": "https://chatgpt.com/c/6a7238d7-db70-83e8-a83f-e60e7e2e3a3b",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "user_claude",
+    "letter": "C",
+    "reasoning": "Answer: C) .60 g/cc — Volume = 25 cm × 10 cm × 5000 cm = 1,250,000 cm³, so density = 750,000 g ÷ 1,250,000 cm³ = 0.60 g/cc.",
+    "sourceUrl": "https://claude.ai/chat/4307d6b7-cad0-482b-accc-ebca961430e4",
+    "method": "explicit_letter"
+  }
+]
+
+-- plowTrace.authorityOutcomes (full object) --
+{
+  "user_google": {
+    "outcome": "parse_failed",
+    "rawPreview": "Given that the mass of the wood is 62 grams and it displaces 0.525 liters (L) of water, which can be converted into 525 milliliters (mL), we can calculate density using these values. Therefore, the de"
+  },
+  "user_perplexity": {
+    "outcome": "answered"
+  },
+  "user_claude": {
+    "outcome": "answered"
+  },
+  "user_chatgpt": {
+    "outcome": "answered"
+  },
+  "user_gemini": {
+    "outcome": "parse_failed",
+    "rawPreview": "To find the density of the block of wood, convert all dimensions to meters to calculate the volume in cubic meters (m 3 ), then divide the mass by the volume. Step 1: Convert dimensions to meters 25 c"
+  },
+  "specialist_swarm": {
+    "outcome": "not_attempted"
+  }
+}
+
+================================================================================
+qid 46
+================================================================================
+Row's own top-level keys: ["question_id","question","category","modelRawAnswer","parsedLetter","correctLetter","isCorrect","latencyMs","substrateContextInjected","answeredBy","plowTrace","isAbstain"]
+question: Indicate whether the following economic events represent a change in supply or a change in quantity supplied. a) Cold weather in Florida destroys a great deal of the orange crop. Therefore there are fewer oranges in the country's supermarkets. b) The cost of limes increase. As a result, bar owners raise the price of gin and tonics. c) The price of leather shoes goes up. This induces manufacturers of leather shoes to increase production.
+category: economics
+
+-- Row-level candidate "final answer" fields --
+modelRawAnswer: "G"
+parsedLetter (model's final parsed answer): "G"
+correctLetter (ground truth): "G"
+isCorrect: true
+answeredBy: "plow"
+isAbstain: false
+latencyMs: 113807
+substrateContextInjected: true
+
+-- plowTrace top-level keys (full structure, so no field is missed by guessing) --
+["concordance","bmv_score","gate_outcomes","specialists_used","candidates_raw","candidates_post_miner","candidatesPostFurnace","andon_triggered","andon_retries","eblets_written","voter_letters","voter_diagnostics","latency_ms","trace_summary","condition","reasoning_mode","provenance_receipts","research_arm_mode","answer_type","ensemble_candidates","authorityOutcomes"]
+
+-- plowTrace candidate "final chosen/accepted answer" fields --
+concordance: "CONCORDANT"
+voter_letters: ["G"]
+voter_diagnostics: [{"temperature":0,"status":"parsed_ok","responseChars":758,"rawPreview":"cascade adjudicator (candidate-source elimination, KN-BP144-1 Phase 2): RULE 1 (duplicate derivation path): eliminated [specialist_swarm:G] -- derivation path 'swarm' is the SAME local model as the about-to-be-skipped self-vote fallthrough, and a genuinely different-path candidate survives ([user_chatgpt:G]); not counted as a second independent witness. | RULE 2 (proven"}]
+bmv_score: 70.3
+andon_triggered: false
+andon_retries: 0
+condition: "C_warm_andon"
+reasoning_mode: false
+answer_type: "reasoning"
+research_arm_mode: true
+specialists_used: ["wikipedia","wikidata","openalex","commoncrawl","crossref","stackexchange","worldbank","semanticscholar"]
+candidates_raw: 5
+candidates_post_miner: 5
+candidatesPostFurnace: 2
+gate_outcomes: [{"gate":"G1_FACT","passed":true,"detail":"2 candidates survived Furnace"},{"gate":"G2_CONC","passed":true,"detail":"Concordance: CONCORDANT"},{"gate":"G3_BMV","passed":true,"detail":"BMV: 70.3"},{"gate":"G4_LAT","passed":true,"detail":"Latency: 113.7s"}]
+eblets_written: 1
+
+-- Scan for ticket-guessed field names (reporting presence/absence explicitly) --
+  corroboration: on row=false, on plowTrace=false
+  chosenLetter: on row=false, on plowTrace=false
+  finalAnswer: on row=false, on plowTrace=false
+  acceptedLetter: on row=false, on plowTrace=false
+  swarmResult: on row=false, on plowTrace=false
+  adjudicated: on row=false, on plowTrace=false
+
+-- plowTrace.ensemble_candidates (full array, 2 entries) --
+[
+  {
+    "authority": "user_chatgpt",
+    "letter": "G",
+    "reasoning": "Answer: G — The orange crop destruction and increased lime costs shift supply, while a higher price of leather shoes causes producers to move along the supply curve, changing quantity supplied.",
+    "sourceUrl": "https://chatgpt.com/c/6a72394e-6ac0-83e8-968f-c2feb7346603",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "specialist_swarm",
+    "letter": "G",
+    "reasoning": "specialist swarm consensus (8 specialists: [wikipedia,wikidata,openalex,commoncrawl,crossref,stackexchange,worldbank,semanticscholar], voters=[G,G,G], concordance=CONCORDANT, postFurnace=2).",
+    "sourceUrl": "specialist-swarm-internal-consensus",
+    "method": "specialist_swarm_vote"
+  }
+]
+
+-- plowTrace.authorityOutcomes (full object) --
+{
+  "user_google": {
+    "outcome": "parse_failed",
+    "rawPreview": "d. The quantity of walnuts demanded is greater than the quantity supplied is evidence of a shortage of walnuts."
+  },
+  "user_perplexity": {
+    "outcome": "no_result"
+  },
+  "user_claude": {
+    "outcome": "parse_failed",
+    "rawPreview": "Weather destroying crops shifts the entire supply curve (a = change in supply), rising input costs (limes) shift the supply curve for gin and tonics leftward (b = change in supply), while a price incr"
+  },
+  "user_chatgpt": {
+    "outcome": "answered"
+  },
+  "user_gemini": {
+    "outcome": "parse_failed",
+    "rawPreview": "a) Cold weather in Florida destroys the orange crop: Change in supply. Cold weather is a natural phenomenon (a non-price determinant) that reduces the total production capacity. This shifts the entire"
+  },
+  "specialist_swarm": {
+    "outcome": "answered"
+  }
+}
+
+================================================================================
+qid 53
+================================================================================
+Row's own top-level keys: ["question_id","question","category","modelRawAnswer","parsedLetter","correctLetter","isCorrect","latencyMs","substrateContextInjected","answeredBy","plowTrace","isAbstain"]
+question: A sinusoidal signal in the frequency range 0.4 to 4.4 KHz is being sampled at a rate equal to four times theNyquistrate. If this signal is received by a receiver of signal-to-noise ratio {(s_i) / (\eta} = 10^6 after being quantized by a 256 levelquantizer at the transmission end, calculate (a) The time T between samples. (b) The number of bits N and the probability of error if the quantized signal is encoded into a binary PCM waveform. (c) The probability of error,P_e, if the signal is encoded into 1 to 256 orthogonal signals.
+category: engineering
+
+-- Row-level candidate "final answer" fields --
+modelRawAnswer: "B"
+parsedLetter (model's final parsed answer): "B"
+correctLetter (ground truth): "B"
+isCorrect: true
+answeredBy: "plow"
+isAbstain: false
+latencyMs: 144760
+substrateContextInjected: true
+
+-- plowTrace top-level keys (full structure, so no field is missed by guessing) --
+["concordance","bmv_score","gate_outcomes","specialists_used","candidates_raw","candidates_post_miner","candidatesPostFurnace","andon_triggered","andon_retries","eblets_written","voter_letters","voter_diagnostics","latency_ms","trace_summary","condition","reasoning_mode","provenance_receipts","research_arm_mode","answer_type","ensemble_candidates","browserAuthorityCorroboration","structuredCorroborator","independentCorroboration","authorityOutcomes"]
+
+-- plowTrace candidate "final chosen/accepted answer" fields --
+concordance: "CONCORDANT"
+voter_letters: ["B","B","B","B"]
+voter_diagnostics: [{"temperature":0,"status":"parsed_ok","responseChars":72,"rawPreview":"user_perplexity (explicit_letter): Answer: B Nyquist rate is 2 × 4.4 kHz = 8.8 kHz, so the sampling rate is"},{"temperature":0,"status":"parsed_ok","responseChars":186,"rawPreview":"user_chatgpt (explicit_letter): Answer: B — A 256-level quantizer requires N=log 2 ​ (256)=8 bits, and the corresponding sampling interval and error probability match the given option with T=3.125 μs and P e ​ =10 −5 ."},{"temperature":0,"status":"parsed_ok","responseChars":200,"rawPreview":"specialist_swarm (specialist_swarm_vote): specialist swarm consensus (10 specialists: [wikipedia,wikidata,openalex,commoncrawl,crossref,stackexchange,arxiv,wolfram,nist,semanticscholar], voters=[B,B,B], concordance=CONCORDANT, postFurnace=5)."},{"temperature":0,"status":"parsed_ok","responseChars":1,"rawPreview":"B"},{"temperature":0.2,"status":"parsed_ok","responseChars":1,"rawPreview":"B"},{"temperature":0.4,"status":"parsed_ok","responseChars":1,"rawPreview":"B"}]
+bmv_score: 82
+andon_triggered: false
+andon_retries: 0
+condition: "C_warm_andon"
+reasoning_mode: false
+answer_type: "computable"
+research_arm_mode: true
+specialists_used: ["wikipedia","wikidata","openalex","commoncrawl","crossref","stackexchange","arxiv","wolfram","nist","semanticscholar"]
+candidates_raw: 10
+candidates_post_miner: 10
+candidatesPostFurnace: 5
+gate_outcomes: [{"gate":"G1_FACT","passed":true,"detail":"5 candidates survived Furnace"},{"gate":"G2_CONC","passed":true,"detail":"Concordance: CONCORDANT"},{"gate":"G3_BMV","passed":true,"detail":"BMV: 82"},{"gate":"G4_LAT","passed":false,"detail":"Latency: 144.7s"}]
+eblets_written: 1
+
+-- Scan for ticket-guessed field names (reporting presence/absence explicitly) --
+  corroboration: on row=false, on plowTrace=false
+  chosenLetter: on row=false, on plowTrace=false
+  finalAnswer: on row=false, on plowTrace=false
+  acceptedLetter: on row=false, on plowTrace=false
+  swarmResult: on row=false, on plowTrace=false
+  adjudicated: on row=false, on plowTrace=false
+
+-- plowTrace.ensemble_candidates (full array, 3 entries) --
+[
+  {
+    "authority": "user_perplexity",
+    "letter": "B",
+    "reasoning": "Answer: B Nyquist rate is 2 × 4.4 kHz = 8.8 kHz, so the sampling rate is",
+    "sourceUrl": "https://www.perplexity.ai/search/e2ddb09a-eced-4a09-9bbe-d6108a60902e",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "user_chatgpt",
+    "letter": "B",
+    "reasoning": "Answer: B — A 256-level quantizer requires N=log 2 ​ (256)=8 bits, and the corresponding sampling interval and error probability match the given option with T=3.125 μs and P e ​ =10 −5 .",
+    "sourceUrl": "https://chatgpt.com/c/6a7239be-8360-83e8-97e3-dfbba0e51d9f",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "specialist_swarm",
+    "letter": "B",
+    "reasoning": "specialist swarm consensus (10 specialists: [wikipedia,wikidata,openalex,commoncrawl,crossref,stackexchange,arxiv,wolfram,nist,semanticscholar], voters=[B,B,B], concordance=CONCORDANT, postFurnace=5).",
+    "sourceUrl": "specialist-swarm-internal-consensus",
+    "method": "specialist_swarm_vote"
+  }
+]
+
+-- plowTrace.authorityOutcomes (full object) --
+{
+  "user_google": {
+    "outcome": "parse_failed",
+    "rawPreview": "3) The signal-to-noise ratio increases by 6 dB for each additional bit used in quantization."
+  },
+  "user_perplexity": {
+    "outcome": "answered"
+  },
+  "user_claude": {
+    "outcome": "parse_failed",
+    "rawPreview": "Musing  Musing"
+  },
+  "user_chatgpt": {
+    "outcome": "answered"
+  },
+  "user_gemini": {
+    "outcome": "parse_failed",
+    "rawPreview": "Show code Gemini said"
+  },
+  "specialist_swarm": {
+    "outcome": "answered"
+  }
+}
+
+================================================================================
+qid 59
+================================================================================
+Row's own top-level keys: ["question_id","question","category","modelRawAnswer","parsedLetter","correctLetter","isCorrect","latencyMs","substrateContextInjected","answeredBy","plowTrace","isAbstain"]
+question: An airplane is designed according to the following specifications. weight = 3000lbf wing area = 300 ft^2 takeoff speed = 100 ft/sec Model tests show that the lift and drag coefficients vary with the angle of attack of the wing according to the approximate relations: C_L = 0.35(1 + 0.2\alpha) C_D = 0.008(1 + \alpha) for small \alpha, where \alpha is the angle of attack measured in degrees. The atmospheric density is 0.00238 slug/ft^3. Find the angle of attack that ensures takeoff at the desired speed, and the power required for takeoff.
+category: engineering
+
+-- Row-level candidate "final answer" fields --
+modelRawAnswer: "E"
+parsedLetter (model's final parsed answer): "E"
+correctLetter (ground truth): "E"
+isCorrect: true
+answeredBy: "plow"
+isAbstain: false
+latencyMs: 64530
+substrateContextInjected: true
+
+-- plowTrace top-level keys (full structure, so no field is missed by guessing) --
+["concordance","bmv_score","gate_outcomes","specialists_used","candidates_raw","candidates_post_miner","candidatesPostFurnace","andon_triggered","andon_retries","eblets_written","voter_letters","voter_diagnostics","latency_ms","trace_summary","condition","reasoning_mode","provenance_receipts","research_arm_mode","answer_type","ensemble_candidates","browserAuthorityCorroboration","authorityOutcomes"]
+
+-- plowTrace candidate "final chosen/accepted answer" fields --
+concordance: "CONCORDANT"
+voter_letters: ["E"]
+voter_diagnostics: [{"temperature":0,"status":"parsed_ok","responseChars":281,"rawPreview":"deterministic_compute (aircraft_lift_drag): aircraft_lift_drag: aircraft_lift_drag: weight=3000lbf S=300ft^2 V=100ft/s rho=0.00238slug/ft^3 q=11.9lbf/ft^2 C_L=0.35(1+0.2*alpha)->required=0.840336 alpha=7.0048deg C_D=0.008(1+1*alpha)->0.064038 d"},{"temperature":0,"status":"parsed_ok","responseChars":240,"rawPreview":"deterministic-compute-override (aircraft_lift_drag): aircraft_lift_drag: weight=3000lbf S=300ft^2 V=100ft/s rho=0.00238slug/ft^3 q=11.9lbf/ft^2 C_L=0.35(1+0.2*alpha)->required=0.840336 alpha=7.0048deg C_D=0.008(1+1*alpha)->0.064038 drag=228.6171lbf power=41.5668hp matchedOption=E(7deg,41.5hp) -> 41.56675324675325"}]
+bmv_score: 18.3
+andon_triggered: false
+andon_retries: 0
+condition: "C_warm_andon"
+reasoning_mode: false
+answer_type: "computable"
+research_arm_mode: true
+specialists_used: []
+candidates_raw: 0
+candidates_post_miner: 0
+candidatesPostFurnace: 0
+gate_outcomes: [{"gate":"G1_FACT","passed":false,"detail":"No candidates survived Furnace — no verified facts"},{"gate":"G2_CONC","passed":true,"detail":"Concordance: CONCORDANT"},{"gate":"G3_BMV","passed":false,"detail":"BMV: 18.3"},{"gate":"G4_LAT","passed":true,"detail":"Latency: 64.4s"}]
+eblets_written: 2
+
+-- Scan for ticket-guessed field names (reporting presence/absence explicitly) --
+  corroboration: on row=false, on plowTrace=false
+  chosenLetter: on row=false, on plowTrace=false
+  finalAnswer: on row=false, on plowTrace=false
+  acceptedLetter: on row=false, on plowTrace=false
+  swarmResult: on row=false, on plowTrace=false
+  adjudicated: on row=false, on plowTrace=false
+
+-- plowTrace.ensemble_candidates (full array, 3 entries) --
+[
+  {
+    "authority": "user_perplexity",
+    "letter": "C",
+    "reasoning": "Answer: C Using the lift relation 𝐿 = 1 2 𝜌 𝑉 2 𝑆 𝐶 𝐿 L= 2 1 ​ ρV 2 SC L ​ with",
+    "sourceUrl": "https://www.perplexity.ai/search/edaa6202-e11c-4c31-b5a7-a2ec5bfeca4a",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "user_chatgpt",
+    "letter": "E",
+    "reasoning": "Answer: E) 7 degrees, 41.5 hp — The required lift coefficient is C L ​ =3000/(0.5(0.00238)(100 2 )(300))≈0.84, giving α≈7 ∘ , and the resulting drag power is about 228(100)/550≈41.5 hp.",
+    "sourceUrl": "https://chatgpt.com/c/6a723a4f-05a4-83e8-8d8f-93a32bde78a3",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "user_claude",
+    "letter": "E",
+    "reasoning": "Answer: E) Solving CL=W/(0.5ρV²S)=0.84 gives α≈7°, and CD=0.008(1+7)=0.064 gives drag≈228.5 lbf, so power=D·V/550≈41.5 hp.",
+    "sourceUrl": "https://claude.ai/chat/1f6c3679-b356-47fe-8291-aac366bd625f",
+    "method": "explicit_letter"
+  }
+]
+
+-- plowTrace.authorityOutcomes (full object) --
+{
+  "user_google": {
+    "outcome": "parse_failed",
+    "rawPreview": "Heavy. Aircraft capable of takeoff weights of 300,000 pounds or more whether or not they are operating at this weight during a particular phase of flight."
+  },
+  "user_perplexity": {
+    "outcome": "answered"
+  },
+  "user_claude": {
+    "outcome": "answered"
+  },
+  "user_chatgpt": {
+    "outcome": "answered"
+  },
+  "user_gemini": {
+    "outcome": "parse_failed",
+    "rawPreview": "To find the required angle of attack and the power required for takeoff, we analyze the balance between the aerodynamic forces (lift and drag) and the aircraft weight. Step 1: Calculate Dynamic Pressu"
+  },
+  "specialist_swarm": {
+    "outcome": "not_attempted"
+  }
+}
+
+================================================================================
+qid 72
+================================================================================
+Row's own top-level keys: ["question_id","question","category","modelRawAnswer","parsedLetter","correctLetter","isCorrect","latencyMs","substrateContextInjected","answeredBy","plowTrace","isAbstain"]
+question: What do we know about the people who built Stonehenge based on the analysis of animal teeth from a nearby village?
+category: history
+
+-- Row-level candidate "final answer" fields --
+modelRawAnswer: "F"
+parsedLetter (model's final parsed answer): "F"
+correctLetter (ground truth): "E"
+isCorrect: false
+answeredBy: "plow"
+isAbstain: false
+latencyMs: 104759
+substrateContextInjected: true
+
+-- plowTrace top-level keys (full structure, so no field is missed by guessing) --
+["concordance","bmv_score","gate_outcomes","specialists_used","candidates_raw","candidates_post_miner","candidatesPostFurnace","andon_triggered","andon_retries","eblets_written","voter_letters","voter_diagnostics","latency_ms","trace_summary","condition","reasoning_mode","provenance_receipts","research_arm_mode","answer_type","ensemble_candidates","authorityOutcomes"]
+
+-- plowTrace candidate "final chosen/accepted answer" fields --
+concordance: "CONCORDANT"
+voter_letters: ["F"]
+voter_diagnostics: [{"temperature":0,"status":"parsed_ok","responseChars":758,"rawPreview":"cascade adjudicator (candidate-source elimination, KN-BP144-1 Phase 2): RULE 1 (duplicate derivation path): eliminated [specialist_swarm:F] -- derivation path 'swarm' is the SAME local model as the about-to-be-skipped self-vote fallthrough, and a genuinely different-path candidate survives ([user_chatgpt:F]); not counted as a second independent witness. | RULE 2 (proven"}]
+bmv_score: 69.1
+andon_triggered: false
+andon_retries: 0
+condition: "C_warm_andon"
+reasoning_mode: false
+answer_type: "reasoning"
+research_arm_mode: true
+specialists_used: ["wikipedia","wikidata","openalex","commoncrawl","crossref","semanticscholar"]
+candidates_raw: 4
+candidates_post_miner: 4
+candidatesPostFurnace: 2
+gate_outcomes: [{"gate":"G1_FACT","passed":true,"detail":"2 candidates survived Furnace"},{"gate":"G2_CONC","passed":true,"detail":"Concordance: CONCORDANT"},{"gate":"G3_BMV","passed":true,"detail":"BMV: 69.1"},{"gate":"G4_LAT","passed":true,"detail":"Latency: 104.7s"}]
+eblets_written: 1
+
+-- Scan for ticket-guessed field names (reporting presence/absence explicitly) --
+  corroboration: on row=false, on plowTrace=false
+  chosenLetter: on row=false, on plowTrace=false
+  finalAnswer: on row=false, on plowTrace=false
+  acceptedLetter: on row=false, on plowTrace=false
+  swarmResult: on row=false, on plowTrace=false
+  adjudicated: on row=false, on plowTrace=false
+
+-- plowTrace.ensemble_candidates (full array, 2 entries) --
+[
+  {
+    "authority": "user_chatgpt",
+    "letter": "F",
+    "reasoning": "Answer: F) They raised livestock at the site, including cattle, sheep, and goats. Analysis of animal teeth from the nearby Neolithic settlement shows that Stonehenge builders kept domesticated livestock and consumed meat from animals such as cattle and sheep.",
+    "sourceUrl": "https://chatgpt.com/c/6a723b25-4014-83e8-9142-510e01603bdc",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "specialist_swarm",
+    "letter": "F",
+    "reasoning": "specialist swarm consensus (6 specialists: [wikipedia,wikidata,openalex,commoncrawl,crossref,semanticscholar], voters=[F,F,F], concordance=CONCORDANT, postFurnace=2).",
+    "sourceUrl": "specialist-swarm-internal-consensus",
+    "method": "specialist_swarm_vote"
+  }
+]
+
+-- plowTrace.authorityOutcomes (full object) --
+{
+  "user_google": {
+    "outcome": "no_result"
+  },
+  "user_perplexity": {
+    "outcome": "no_result"
+  },
+  "user_claude": {
+    "outcome": "parse_failed",
+    "rawPreview": "Isotope analysis of animal teeth (notably pigs and cattle) found at Durrington Walls, the village associated with Stonehenge's builders, showed the animals were raised elsewhere—as far as Scotland—and"
+  },
+  "user_chatgpt": {
+    "outcome": "answered"
+  },
+  "user_gemini": {
+    "outcome": "parse_failed",
+    "rawPreview": "Analysis of animal teeth—primarily pigs and cattle—excavated from the nearby Neolithic village of Durrington Walls (dated to ~2500 BC) has fundamentally changed our understanding of the people who bui"
+  },
+  "specialist_swarm": {
+    "outcome": "answered"
+  }
+}
+
+================================================================================
+qid 98
+================================================================================
+Row's own top-level keys: ["question_id","question","category","modelRawAnswer","parsedLetter","correctLetter","isCorrect","latencyMs","substrateContextInjected","answeredBy","plowTrace","isAbstain"]
+question: Which of the following world regions is NOT considered one of the world's most densely populated regions?
+category: other
+
+-- Row-level candidate "final answer" fields --
+modelRawAnswer: "G"
+parsedLetter (model's final parsed answer): "G"
+correctLetter (ground truth): "A"
+isCorrect: false
+answeredBy: "plow"
+isAbstain: false
+latencyMs: 61315
+substrateContextInjected: true
+
+-- plowTrace top-level keys (full structure, so no field is missed by guessing) --
+["concordance","bmv_score","gate_outcomes","specialists_used","candidates_raw","candidates_post_miner","candidatesPostFurnace","andon_triggered","andon_retries","eblets_written","voter_letters","voter_diagnostics","latency_ms","trace_summary","condition","reasoning_mode","provenance_receipts","research_arm_mode","answer_type","ensemble_candidates","browserAuthorityCorroboration","structuredCorroborator","independentCorroboration","authorityOutcomes"]
+
+-- plowTrace candidate "final chosen/accepted answer" fields --
+concordance: "CONCORDANT"
+voter_letters: ["G","G","G","G"]
+voter_diagnostics: [{"temperature":0,"status":"parsed_ok","responseChars":134,"rawPreview":"user_perplexity (explicit_letter): Answer: G The Arctic Circle is sparsely populated wilderness with extremely low human population density, unlike regions such as South"},{"temperature":0,"status":"parsed_ok","responseChars":189,"rawPreview":"user_chatgpt (explicit_letter): Answer: G) Arctic Circle The Arctic Circle is not considered one of the world's most densely populated regions because its extremely cold climate and harsh conditions support very low popul"},{"temperature":0,"status":"parsed_ok","responseChars":184,"rawPreview":"user_claude (token_or_numeric_match): The Arctic Circle has extremely sparse population due to its harsh climate, making it one of the least densely populated regions on Earth rather than one of the most densely populated."},{"temperature":0,"status":"parsed_ok","responseChars":150,"rawPreview":"specialist_swarm (specialist_swarm_vote): specialist swarm consensus (5 specialists: [wikipedia,wikidata,openalex,commoncrawl,crossref], voters=[G,G,G], concordance=CONCORDANT, postFurnace=1)."},{"temperature":0,"status":"parsed_ok","responseChars":1,"rawPreview":"G"},{"temperature":0.2,"status":"parsed_ok","responseChars":1,"rawPreview":"G"},{"temperature":0.4,"status":"parsed_ok","responseChars":1,"rawPreview":"G"}]
+bmv_score: 65.5
+andon_triggered: false
+andon_retries: 0
+condition: "C_warm_andon"
+reasoning_mode: false
+answer_type: "reasoning"
+research_arm_mode: true
+specialists_used: ["wikipedia","wikidata","openalex","commoncrawl","crossref"]
+candidates_raw: 4
+candidates_post_miner: 4
+candidatesPostFurnace: 1
+gate_outcomes: [{"gate":"G1_FACT","passed":true,"detail":"1 candidates survived Furnace"},{"gate":"G2_CONC","passed":true,"detail":"Concordance: CONCORDANT"},{"gate":"G3_BMV","passed":true,"detail":"BMV: 65.5"},{"gate":"G4_LAT","passed":true,"detail":"Latency: 61.1s"}]
+eblets_written: 1
+
+-- Scan for ticket-guessed field names (reporting presence/absence explicitly) --
+  corroboration: on row=false, on plowTrace=false
+  chosenLetter: on row=false, on plowTrace=false
+  finalAnswer: on row=false, on plowTrace=false
+  acceptedLetter: on row=false, on plowTrace=false
+  swarmResult: on row=false, on plowTrace=false
+  adjudicated: on row=false, on plowTrace=false
+
+-- plowTrace.ensemble_candidates (full array, 4 entries) --
+[
+  {
+    "authority": "user_perplexity",
+    "letter": "G",
+    "reasoning": "Answer: G The Arctic Circle is sparsely populated wilderness with extremely low human population density, unlike regions such as South",
+    "sourceUrl": "https://www.perplexity.ai/search/89e5a7e5-8a47-48d3-87b2-ee4ab1b963bf",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "user_chatgpt",
+    "letter": "G",
+    "reasoning": "Answer: G) Arctic Circle The Arctic Circle is not considered one of the world's most densely populated regions because its extremely cold climate and harsh conditions support very low popul",
+    "sourceUrl": "https://chatgpt.com/c/6a723cba-1d18-83e8-a8fb-ec12f439fdd3",
+    "method": "explicit_letter"
+  },
+  {
+    "authority": "user_claude",
+    "letter": "G",
+    "reasoning": "The Arctic Circle has extremely sparse population due to its harsh climate, making it one of the least densely populated regions on Earth rather than one of the most densely populated.",
+    "sourceUrl": "https://claude.ai/chat/2fb48ab7-6a5e-4dc5-9eb9-8936763e8312",
+    "method": "token_or_numeric_match"
+  },
+  {
+    "authority": "specialist_swarm",
+    "letter": "G",
+    "reasoning": "specialist swarm consensus (5 specialists: [wikipedia,wikidata,openalex,commoncrawl,crossref], voters=[G,G,G], concordance=CONCORDANT, postFurnace=1).",
+    "sourceUrl": "specialist-swarm-internal-consensus",
+    "method": "specialist_swarm_vote"
+  }
+]
+
+-- plowTrace.authorityOutcomes (full object) --
+{
+  "user_google": {
+    "outcome": "parse_failed",
+    "rawPreview": "Asia is by far the most populous continent, home to approximately 4.69 billion people, which accounts for more than half of the global population. It includes major population centers like China, Indi"
+  },
+  "user_perplexity": {
+    "outcome": "answered"
+  },
+  "user_claude": {
+    "outcome": "answered"
+  },
+  "user_chatgpt": {
+    "outcome": "answered"
+  },
+  "user_gemini": {
+    "outcome": "parse_failed",
+    "rawPreview": "The world's four primary densely populated regions are East Asia, South Asia, Southeast Asia, and Europe. Regions that are NOT considered among the world's most densely populated regions overall inclu"
+  },
+  "specialist_swarm": {
+    "outcome": "answered"
+  }
+}
+
+7 target qid(s) processed: [111,27,46,53,59,72,98]

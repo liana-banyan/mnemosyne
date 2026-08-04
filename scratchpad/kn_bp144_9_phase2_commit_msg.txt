@@ -1,0 +1,43 @@
+KN-BP144-9 Phase 2: numeric-gate fallthrough fix for matchFreeTextAnswerToOption
+
+Founder-approved after Phase 0's read-only investigation. Phase 0 found the numeric-first branch
+in matchFreeTextAnswerToOption was blocking 10 of 32 receipt-041 parse_failed rows: any incidental
+number in an authority's answer text (a ratio like "1:2:4", a date, a population figure) forced an
+unconditional early return, even on questions whose OWN options are pure prose with no number at
+all -- the token-overlap fallback (strategy 2) never even ran for these, regardless of how strong
+its match would have been.
+
+Fix: the numeric short-circuit (strategy 1) now only fires -- and only ever returns an honest null
+on a tolerance miss -- when optionsContainNumericValue(options) is true, i.e. this question's own
+options are themselves numeric-shaped. When they are (qids 27/53/59 in receipt 041), behavior is
+byte-for-byte unchanged. When they are not, but the answer text still contains an incidental
+number, this now falls through to token-overlap, gated by a NEW, strictly higher score floor
+(PSIONIC_OPTION_MATCH_MIN_SCORE_INCIDENTAL_NUMBER = 0.5, vs the ordinary 0.34) -- added after a
+real-compiled-dist false-extraction check found the ordinary floor alone let one incidental-number
+row (qid 111, user_google) through at a merely-coincidental 0.43 while the genuine match on the
+same question (qid 111, user_claude) scored 0.80. The stricter floor is a uniform, question-
+agnostic bar for this specific fallthrough shape, not a fix tuned to qid 111 itself; it excludes
+the coincidental case while preserving the genuine one. Neither PSIONIC_OPTION_MATCH_MIN_SCORE nor
+PSIONIC_OPTION_MATCH_MIN_MARGIN (used by every other, unaffected call path) is touched.
+
+Also exports matchFreeTextAnswerToOption, extractChosenLetterFromAuthorityText, and
+resolveAuthorityLetterMatch (previously module-private) SOLELY so verification scripts can import
+and replay them directly from the real compiled dist -- no behavior change, closes a Phase 0-
+flagged honesty gap (hand-copied reimplementation risked silent divergence from the real source).
+
+tsc --noEmit -p tsconfig.main.json: clean. npm run build:main: clean.
+
+Gate results (full detail in KN-BP144-9_REPORT.md Phase 2 section):
+- False-extraction count across all 32 real parse_failed rawPreview rows, replayed against the
+  real compiled dist: 2 (qid 85/gemini, qid 105/gemini), NEITHER attributable to this diff --
+  both rows contain no digit at all, so this pass's new code branches are never entered; their
+  control flow is byte-identical to the pre-existing, unmodified token-overlap fallback. Already
+  named and flagged in the Phase 0 report before this diff was written. Reported honestly as an
+  open, pre-existing defect, not fixed by this ticket (out of its minimal, targeted scope).
+- 2 correct recoveries confirmed against real data: qid 14/gemini -> C, qid 111/claude -> I.
+- Negative control: all 51 real 'answered' ensemble_candidates rows (5 browser authorities)
+  reproduce the identical letter under the post-fix parser. PASSES.
+- Deterministic-proof qids 20/27/33/59/92/118: confirmed by diff-scope inspection (all resolve via
+  resolveDeterministicComputeOverride / the reasoning-voter parser, both structurally untouched by
+  this diff, which only touches lines inside matchFreeTextAnswerToOption and its two siblings) and
+  by direct receipt inspection (all isCorrect:true, unchanged).
