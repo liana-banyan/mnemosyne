@@ -195,6 +195,13 @@ import {
 // model-voting) and minor_star_chamber.ts's header for why that previously-orphaned file's
 // adjudication core (not its model-council path) is the real handler underneath this call.
 import { runStageEDistributedStarChamber } from './star_chamber_dispatch';
+// KN-BP144-1 Phase 2 (Amendment 1): the ONE place tier classification / the ROOTED predicate
+// live (BP142, Founder-ratified) -- reused verbatim for the candidate-source cascade
+// adjudicator's rule 2 ("proven beats concordant"), never a second, independently-drifting
+// tier classifier. See runCandidateSourceCascadeAdjudicator's own doc comment for the exact,
+// narrow way a per-candidate authority tag is mapped onto classifyCorroborationTier's existing
+// corroboration-string input contract.
+import { isRooted, classifyCorroborationTier } from '../rooting_rule';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -750,9 +757,23 @@ export interface CanonicalPlowMcResult {
    *    (ensembleOutcome.corroboration === 'adjudicated').
    *  'voter_concordance_fallthrough' -- the ensemble fell through with no letter (or never ran),
    *    and computeLetterConcordance(voterLetters) on the line-7286 local 3-temperature self-vote
-   *    produced a non-null chosenLetter. THIS is the mechanism KN-BP144-1 exists to make legible.
+   *    produced a non-null chosenLetter. THIS is the mechanism KN-BP144-1 Phase 1 exists to make
+   *    legible. As of Phase 2 (Amendment 1), this value can no longer be produced for a question
+   *    that reaches the candidate-source cascade adjudicator (corroboration==='disagree' with
+   *    non-empty candidates) -- that question now either resolves as 'cascade_adjudicated' or
+   *    abstains before the self-vote ever runs. Still reachable for every other fall-through
+   *    shape (corroboration 'none'/'lone_rejected_by_strictness', or the ensemble never ran at
+   *    all), unchanged.
+   *  'cascade_adjudicated' -- KN-BP144-1 Phase 2 (Amendment 1, scoped to qids 66/72/85/105): the
+   *    candidate-SOURCE cascade adjudicator (runCandidateSourceCascadeAdjudicator, see its own
+   *    doc comment) ran BEFORE the local self-vote was allowed to decide anything, and exactly
+   *    one letter survived its elimination rules. Never produced when the adjudicator abstains
+   *    (that case is 'abstain' below, same as every other honest no-letter outcome) or when the
+   *    adjudicator's placement guard does not hold (corroboration !== 'disagree', or empty
+   *    candidates) -- every such question is completely unaffected by Phase 2, byte-for-byte.
    *  'abstain' -- no letter, by any mechanism (relevance-gate/compute-fallthrough early abstains,
-   *    or the voter loop's own concordance coming back null).
+   *    the cascade adjudicator's own honest ABSTAIN per rule 5, or the voter loop's own
+   *    concordance coming back null).
    *
    *  Deliberately left UNSET (absent) on a small number of legacy/gated-off-by-default paths this
    *  ticket's own 12-question gate set never exercises and that do not map onto this closed
@@ -767,7 +788,25 @@ export interface CanonicalPlowMcResult {
     | 'ensemble_accept'
     | 'cake_adjudicated'
     | 'voter_concordance_fallthrough'
+    | 'cascade_adjudicated'
     | 'abstain';
+  /** KN-BP144-1 Phase 2 (Amendment 1), OPTIONAL/ADDITIVE. Present ONLY when the candidate-source
+   *  cascade adjudicator (runCandidateSourceCascadeAdjudicator) actually engaged for this
+   *  question (corroboration==='disagree', non-empty ensembleCandidates) -- absent whenever the
+   *  adjudicator's placement guard did not hold, so every question outside Phase 2's scope
+   *  (including every one of the six negative-control proofs and qid 111) never carries this
+   *  field at all. One human-readable line per elimination rule evaluated (rules 1-5, in order,
+   *  even when a given rule was a no-op for this candidate set) -- see BP138's "the Founder must
+   *  be able to watch this run live, question by question" requirement. */
+  cascadeEliminationLog?: string[];
+  /** KN-BP144-1 Phase 2 (Amendment 1), OPTIONAL/ADDITIVE. True only when the cascade adjudicator
+   *  engaged AND abstained (rule 5: more than one distinct letter survived elimination, or none
+   *  did). Mirrors relevanceGateAbstain/computeFallthroughAbstain's own presence convention --
+   *  absent (not false) whenever the adjudicator did not engage or engaged and resolved a
+   *  letter. letterSource is 'abstain' on this same result, same as every other honest no-letter
+   *  outcome -- this field exists only to distinguish WHICH abstain mechanism fired, for the
+   *  Founder's own live per-question audit. */
+  cascadeAdjudicatorAbstain?: boolean;
   /** KN-BP144-1 Phase 1, OPTIONAL/ADDITIVE. Verbatim ensembleOutcome.corroboration, captured
    *  UNCONDITIONALLY the moment the ensemble returns (accept AND every fall-through/disagree
    *  path alike, including 'disagree' itself) -- present ONLY when authorityEnsembleOn was true
@@ -1955,6 +1994,169 @@ const STRUCTURED_AUTHORITIES = new Set<AuthorityEnsembleCandidate['authority']>(
 ]);
 function hasStructuredCorroborator(group: AuthorityEnsembleCandidate[]): boolean {
   return group.some((c) => STRUCTURED_AUTHORITIES.has(c.authority));
+}
+
+/** KN-BP144-1 Phase 2 (Amendment 1, scoped to qids 66/72/85/105). "The cascade adjudicates
+ *  candidateSOURCES, not option letters" -- see this ticket's own header diagnosis for why
+ *  `specialist_swarm` and the line-7410 local 3-temperature self-vote are the SAME derivation
+ *  path (`resolveCakeDerivationPath` maps both to the local Ollama model), so letting the
+ *  self-vote decide AFTER `specialist_swarm` has already cast a dissenting vote inside
+ *  `runAuthorityEnsemble` is the local model outvoting a genuinely independent browser
+ *  authority with its own echo, not a second witness. This function is called ONCE, at the ONE
+ *  placement the ticket names (2.1): after `runAuthorityEnsemble` has honestly fallen through
+ *  with `corroboration: 'disagree'` (2+ real candidates, genuinely disagreeing letters, the
+ *  swarm already folded in and THE CAKE METHOD already tried and failed to converge), and
+ *  BEFORE the self-vote loop is allowed to run at all. It is NOT `runEliminationCascadeFormat
+ *  IndependentFallback` (that eliminates answer OPTIONS A-J trying to produce an answer; this
+ *  eliminates candidate SOURCES trying to decide which source to trust) -- see 2.3's explicit
+ *  "what you must NOT do" list. It never touches `runCakeMethodDisagreementResolution` (already
+ *  ran, already abstained honestly, upstream of this call) and never widens
+ *  `answerType === 'computable'`'s gate (adjudicating between sources has nothing to do with the
+ *  question's type).
+ *
+ *  ELIMINATION RULES, canon per the ticket 2.2, evaluated IN ORDER, never reordered, never a
+ *  sixth rule invented:
+ *
+ *   RULE 1 (duplicate derivation path is eliminated, not counted twice): any candidate whose
+ *     `resolveCakeDerivationPath` is `'swarm'` (today, only ever `specialist_swarm` -- see that
+ *     function's own switch) is eliminated from this cascade WHENEVER at least one candidate on
+ *     a genuinely different derivation path also survives. `specialist_swarm`'s vote and the
+ *     about-to-be-skipped self-vote are the SAME witness (same local model, same path); letting
+ *     it stand as a competing "second voice" against a real browser authority would double-count
+ *     that one witness. This is the rule that does the real elimination work on 66/72/85/105's
+ *     actual candidate sets (verified against the named 038 receipt -- see KN-BP144-1_REPORT.md);
+ *     it can never fire on a lone `specialist_swarm` candidate (single_specialist_swarm, qid
+ *     111's shape) because a lone candidate never reaches this function at all -- that is the
+ *     ensemble's own ACCEPT return, upstream of this call site, out of Phase 2's scope per
+ *     Amendment 1.
+ *   RULE 2 (proven beats concordant): any surviving candidate whose per-candidate rooting tier
+ *     (via `classifyCorroborationTier`/`isRooted`, rooting_rule.ts, BP142 canon -- reused
+ *     verbatim, never a second classifier) is Tier 1/2 beats every surviving candidate that is
+ *     not. Only a candidate whose `authority === 'deterministic_compute'` can ever reach Tier 1
+ *     here (rooting_rule.ts's tier map has no branch for a bare browser/LLM/swarm authority tag)
+ *     -- a real, honest, structural NO-OP for every one of 66/72/85/105's actual candidate sets
+ *     (none carry that tag at this decision point; a `deterministic_compute` candidate always
+ *     resolves at an earlier accept/override return, never reaching 'disagree') -- kept, not
+ *     skipped, because the rule is canon and a future candidate set may differ.
+ *   RULE 3 (a structured corroborator counts as structured only if genuinely independent, same
+ *     duplicate-path test as rule 1, applied to `hasStructuredCorroborator`): checked for
+ *     completeness/logging on whatever survives rules 1-2. Rule 1 already removed the only
+ *     `STRUCTURED_AUTHORITIES` member that can ever reach this function's candidate set on a
+ *     genuine 'disagree' (`specialist_swarm`, whenever a non-swarm co-survivor exists) -- so this
+ *     is also a structural NO-OP for 66/72/85/105 today, logged honestly as such, kept for the
+ *     same forward-compatibility reason as rule 2.
+ *   RULE 4 (if exactly one candidate survives, it is the letter): read as one surviving DISTINCT
+ *     LETTER, not one surviving candidate object -- two candidates on genuinely different
+ *     derivation paths that already independently agree on the same letter (66/72/85/105's own
+ *     shape, once rule 1 removes the dissenting swarm entry: two of {perplexity, claude} left,
+ *     already agreeing) collapse to that one letter here. This is an explicit, flagged
+ *     interpretive choice, not a sixth invented rule: the ticket's own worked expectation
+ *     ("Expected: H, E, E" for 66/72/105) is only reachable this way -- 72 and 105 both leave
+ *     TWO surviving candidate objects (perplexity+claude) that agree, and a literal
+ *     candidate-count reading of rule 4 would force an ABSTAIN there, contradicting the ticket's
+ *     own stated expectation. See KN-BP144-1_REPORT.md for this call, argued from the ticket's
+ *     own self-consistency.
+ *   RULE 5 (if more than one survives, or none does, ABSTAIN): more than one distinct letter
+ *     survives rules 1-4, or every candidate was eliminated -- honest ABSTAIN, never falling back
+ *     to the local self-vote to break the tie (that fallback is exactly the mechanism this
+ *     function exists to preempt).
+ *
+ *  Returns `chosenLetter: null` for an honest ABSTAIN (rule 5) -- the caller must never treat
+ *  that as "adjudicator did not run"; `cascadeEliminationLog` is always non-empty (one entry per
+ *  rule) whenever this function is called at all. This function has NO knowledge of whether its
+ *  own output is correct against any ground truth -- it is a pure, honest elimination over the
+ *  candidates it is given, same discipline as every other solver tier in this file: never guess,
+ *  report what actually survived.
+ *
+ *  Exported (same "extract into a small pure helper and test that" convention as
+ *  resolveConcordanceAcceptance above -- zero I/O, zero Ollama/browser dependency, a plain
+ *  AuthorityEnsembleCandidate[] in, a plain result out) specifically so this ticket's own
+ *  Phase 2 verification gate can call the REAL compiled function against the real named
+ *  receipt's candidate data, rather than a hand-reimplementation that could silently drift from
+ *  what actually ships. Purely additive -- no existing caller's behavior changes by this becoming
+ *  reachable from outside the module. */
+export function runCandidateSourceCascadeAdjudicator(
+  candidates: readonly AuthorityEnsembleCandidate[],
+): { chosenLetter: string | null; eliminationLog: string[]; survivingCandidates: AuthorityEnsembleCandidate[] } {
+  const eliminationLog: string[] = [];
+  let pool: AuthorityEnsembleCandidate[] = [...candidates];
+  const describe = (group: AuthorityEnsembleCandidate[]): string =>
+    group.length > 0 ? group.map((c) => `${c.authority}:${c.letter}`).join(', ') : 'none';
+
+  // RULE 1 -- duplicate derivation path (specialist_swarm === the about-to-be-skipped local
+  // self-vote, same model, same path).
+  const nonSwarmSurvivorExists = pool.some((c) => resolveCakeDerivationPath(c) !== 'swarm');
+  const swarmEntries = pool.filter((c) => resolveCakeDerivationPath(c) === 'swarm');
+  if (nonSwarmSurvivorExists && swarmEntries.length > 0) {
+    pool = pool.filter((c) => resolveCakeDerivationPath(c) !== 'swarm');
+    eliminationLog.push(
+      `RULE 1 (duplicate derivation path): eliminated [${describe(swarmEntries)}] -- derivation ` +
+      `path 'swarm' is the SAME local model as the about-to-be-skipped self-vote fallthrough, and ` +
+      `a genuinely different-path candidate survives ([${describe(pool)}]); not counted as a ` +
+      `second independent witness.`,
+    );
+  } else {
+    eliminationLog.push(
+      `RULE 1 (duplicate derivation path): no-op -- ${swarmEntries.length === 0
+        ? 'no candidate on the \'swarm\' derivation path is present'
+        : 'the \'swarm\'-path candidate has no non-swarm co-survivor to be a duplicate of'} ` +
+      `(pool=[${describe(pool)}]).`,
+    );
+  }
+
+  // RULE 2 -- proven (Tier 1/2, rooting_rule.ts) beats concordant. Only a candidate tagged
+  // 'deterministic_compute' can ever classify to a rooting tier here -- see this function's own
+  // header for why that is an honest, non-inventive reuse of classifyCorroborationTier's
+  // existing corroboration-string input contract, never a second tier classifier.
+  const rooted = pool.filter((c) =>
+    isRooted(classifyCorroborationTier(c.authority === 'deterministic_compute' ? 'deterministic_compute' : undefined)),
+  );
+  if (rooted.length > 0 && rooted.length < pool.length) {
+    const demoted = pool.filter((c) => !rooted.includes(c));
+    pool = rooted;
+    eliminationLog.push(
+      `RULE 2 (proven beats concordant): eliminated [${describe(demoted)}] -- outranked by a ` +
+      `Tier 1/2 (ROOTED) candidate [${describe(rooted)}].`,
+    );
+  } else {
+    eliminationLog.push(
+      `RULE 2 (proven beats concordant): no-op -- no surviving candidate reaches isRooted() ` +
+      `(pool=[${describe(pool)}]).`,
+    );
+  }
+
+  // RULE 3 -- a structured corroborator counts as structured only if genuinely independent
+  // (same duplicate-path test as rule 1).
+  const structuredSurvivors = pool.filter((c) => hasStructuredCorroborator([c]));
+  if (structuredSurvivors.length === 0) {
+    eliminationLog.push('RULE 3 (structured corroborator independence): no-op -- no STRUCTURED_AUTHORITIES candidate survives rules 1-2.');
+  } else {
+    const structuredPaths = new Set(structuredSurvivors.map((c) => resolveCakeDerivationPath(c)));
+    const nonStructuredPaths = new Set(pool.filter((c) => !hasStructuredCorroborator([c])).map((c) => resolveCakeDerivationPath(c)));
+    const genuinelyIndependent = [...structuredPaths].every((p) => !nonStructuredPaths.has(p));
+    eliminationLog.push(
+      `RULE 3 (structured corroborator independence): [${describe(structuredSurvivors)}] is ` +
+      `structured (STRUCTURED_AUTHORITIES) and ${genuinelyIndependent ? 'genuinely independent -- no-op' : 'NOT independent of a co-surviving path'} ` +
+      `(rule 1 already resolved any duplicate-path conflict among today's survivors: pool=[${describe(pool)}]).`,
+    );
+  }
+
+  // RULES 4/5 -- collapse survivors to distinct letters (see this function's header for why
+  // "candidate" is read as "distinct surviving letter", an explicit, flagged interpretive call).
+  const distinctLetters = [...new Set(pool.map((c) => c.letter))];
+  if (distinctLetters.length === 1 && pool.length > 0) {
+    const letter = distinctLetters[0]!;
+    eliminationLog.push(
+      `RULE 4 (exactly one distinct letter survives): ${letter}, backed by [${describe(pool)}] -- ` +
+      `letterSource: cascade_adjudicated.`,
+    );
+    return { chosenLetter: letter, eliminationLog, survivingCandidates: pool };
+  }
+  eliminationLog.push(
+    `RULE 5 (${distinctLetters.length === 0 ? 'no candidate survives' : `${distinctLetters.length} distinct letters survive [${distinctLetters.join(',')}]`}): ` +
+    `ABSTAIN -- never falling back to the local self-vote to break this tie.`,
+  );
+  return { chosenLetter: null, eliminationLog, survivingCandidates: pool };
 }
 
 /** BP139 CONCORDANCE GATE -- pure decision function, zero I/O, fully unit-testable in isolation
@@ -7389,6 +7591,154 @@ export async function runCanonicalPlowMcAnswer(
   }));
   const arbitrationPrompt = buildMcArbitrationPrompt(factsContext, mcPromptWithSubstrate);
   const debugPromptLoggingEnabled = process.env.MNEMO_DEBUG_LOG_PROMPTS === '1';
+
+  // ── KN-BP144-1 Phase 2 (Amendment 1, scoped to qids 66/72/85/105) -- candidate-SOURCE cascade
+  //    adjudicator, placed HERE per ticket 2.1: after the authority ensemble has already fully
+  //    resolved (fast path, single-accept, swarm-augmented agreement, THE CAKE METHOD -- all
+  //    upstream of this line, all untouched) and honestly fallen through with
+  //    corroboration:'disagree', and BEFORE the local self-vote loop just below is allowed to
+  //    decide anything. Guard is exactly the ticket's own placement condition: ensemble
+  //    corroboration is literally 'disagree' AND ensembleCandidatesForTrace is non-empty --
+  //    false for every other case (ensemble off, ensemble never reached 'disagree', or 'disagree'
+  //    with zero real candidates, which cannot actually occur per runAuthorityEnsemble's own
+  //    return shapes but is checked defensively rather than assumed). qid 111
+  //    (corroboration:'single_specialist_swarm') and all six negative-control proofs
+  //    (corroboration: deterministic_compute_override/deterministic_compute, all ACCEPT-branch
+  //    returns far above this line) NEVER reach this guard true -- they return before this
+  //    function body is even entered, so they are unaffected by construction, not merely by
+  //    intent. ─────────────────────────────────────────────────────────────────────────────────
+  const cascadeAdjudicatorEngaged =
+    ensembleOutcomeCorroborationForTrace === 'disagree'
+    && !!ensembleCandidatesForTrace
+    && ensembleCandidatesForTrace.length > 0;
+  if (cascadeAdjudicatorEngaged) {
+    const cascade = runCandidateSourceCascadeAdjudicator(ensembleCandidatesForTrace!);
+    console.log(
+      `[plow_mc_answerer] KN-BP144-1 Phase 2 cascade adjudicator ENGAGED (ensemble fell through ` +
+      `disagree, candidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}]) ` +
+      `-> ${cascade.chosenLetter ?? 'ABSTAIN'}. Elimination log:\n  ${cascade.eliminationLog.join('\n  ')}`,
+    );
+    // KN-BP144-1 Phase 2: cascadeReported* mirrors the SAME ensembleSwarmAlreadyFired-aware
+    // honest-bookkeeping pattern this file's own final return uses further below (see that
+    // block's own comment) -- duplicated rather than hoisted, so this early return touches zero
+    // existing lines. The swarm ran once, inside the ensemble, above; this return never re-fires
+    // it and never fabricates a second count.
+    const cascadeReportedSpecialistsUsed = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
+      ? ensembleSwarmReceipt.specialistsUsed : specialistsUsed;
+    const cascadeReportedCandidatesRaw = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
+      ? ensembleSwarmReceipt.candidatesRaw : candidatesRaw;
+    const cascadeReportedCandidatesPostMiner = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
+      ? ensembleSwarmReceipt.candidatesPostMiner : postMiner.length;
+    const cascadeReportedCandidatesPostFurnace = ensembleSwarmAlreadyFired && ensembleSwarmReceipt
+      ? ensembleSwarmReceipt.candidatesPostFurnace : postFurnace.length;
+    const cascadeLatencyMs = Date.now() - startMs;
+    if (cascade.chosenLetter) {
+      // RULE 4 WIN: exactly one letter survived. CONCORDANT is the honest concordance label here
+      // -- see runCandidateSourceCascadeAdjudicator's own header: this is either 2+ genuinely
+      // independent derivation-path candidates already agreeing (66/72/85/105's own shape once
+      // the dissenting swarm entry is eliminated), or, when only one candidate ever existed after
+      // elimination, a lone but source-adjudicated accept -- never a guess, never a self-vote echo.
+      const cascadeConcordance: ConcordanceClass = 'CONCORDANT';
+      const cascadeBmv = computeBmvScore(
+        cascadeReportedCandidatesRaw, cascadeReportedCandidatesPostMiner, cascadeReportedCandidatesPostFurnace,
+        1, cascadeConcordance, cascadeReportedSpecialistsUsed.length, cascadeLatencyMs,
+      );
+      const cascadeOptionText = parseOptionsFromPrompt(mcPromptWithSubstrate).find((o) => o.letter === cascade.chosenLetter)?.text ?? '';
+      const cascadeSourced = cascade.survivingCandidates.find((c) => !!c.sourceUrl && c.sourceUrl !== 'specialist-swarm-internal-consensus') ?? cascade.survivingCandidates[0]!;
+      try {
+        await writeAndReplicateSolvedAnswer({
+          researchQuery,
+          domain,
+          chosenLetter: cascade.chosenLetter,
+          optionText: cascadeOptionText,
+          reasoning: cascade.survivingCandidates.map((c) => `${c.authority}: ${c.reasoning}`).join(' | '),
+          sourceUrl: cascadeSourced.sourceUrl && cascadeSourced.sourceUrl !== 'specialist-swarm-internal-consensus' ? cascadeSourced.sourceUrl : undefined,
+          authority: cascadeSourced.authority,
+          // Honest per the SAME BP131/BP141 corroboration vocabulary writeAndReplicateSolvedAnswer
+          // already enforces: 2+ surviving candidates that independently agree earn 'concordant';
+          // exactly one surviving candidate (e.g. qid 66's shape, swarm eliminated, Perplexity the
+          // sole survivor) earns 'single_authority' -- never 'concordant' for a lone survivor.
+          corroboration: cascade.survivingCandidates.length >= 2 ? 'concordant' : 'single_authority',
+        });
+      } catch (err) {
+        console.warn('[plow_mc_answerer] KN-BP144-1 Phase 2 cascade-adjudicated writeback/replicate failed (non-fatal):', err);
+      }
+      return {
+        questionId,
+        domain,
+        chosenLetter: cascade.chosenLetter,
+        voterLetters: [cascade.chosenLetter],
+        voterDiagnostics: [{
+          temperature: 0,
+          status: 'parsed_ok',
+          responseChars: cascade.eliminationLog.join(' ').length,
+          rawPreview: `cascade adjudicator (candidate-source elimination, KN-BP144-1 Phase 2): ${cascade.eliminationLog.join(' | ').slice(0, 300)}`,
+        }],
+        concordance: cascadeConcordance,
+        bmvScore: cascadeBmv,
+        gateOutcomes: evaluateGates(cascadeReportedCandidatesPostFurnace, cascadeBmv, cascadeConcordance, cascadeLatencyMs),
+        specialistsUsed: cascadeReportedSpecialistsUsed,
+        candidatesRaw: cascadeReportedCandidatesRaw,
+        candidatesPostMiner: cascadeReportedCandidatesPostMiner,
+        candidatesPostFurnace: cascadeReportedCandidatesPostFurnace,
+        andonTriggered: andonRetry > 0,
+        andonRetries: andonRetry,
+        ebletsWritten: 1,
+        latencyMs: cascadeLatencyMs,
+        traceSummary:
+          `KN-BP144-1 Phase 2 cascadeAdjudicated=true matchedOption=${cascade.chosenLetter} ` +
+          `survivingCandidates=[${cascade.survivingCandidates.map((c) => `${c.authority}:${c.letter}`).join(',')}] ` +
+          `allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
+          `andonRetries=${andonRetry}`,
+        provenanceReceipts: cascade.survivingCandidates.map((c) => ({
+          source: c.authority,
+          contentHash: createHash('sha256').update(c.reasoning).digest('hex').slice(0, 16),
+          verified: true,
+          ...(c.sourceUrl && c.sourceUrl !== 'specialist-swarm-internal-consensus' ? { provenanceUrl: c.sourceUrl } : {}),
+        })),
+        ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
+        ensembleCandidates: ensembleCandidatesForTrace,
+        ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace,
+        letterSource: 'cascade_adjudicated',
+        cascadeEliminationLog: cascade.eliminationLog,
+      };
+    }
+    // RULE 5 ABSTAIN: more than one distinct letter survived, or none did. Honest no-letter --
+    // never falls back to the local self-vote below (that fallback is exactly what this
+    // adjudicator exists to preempt). Mirrors the compute-fallthrough-no-facts/relevance-gate
+    // abstain returns' own shape just above in this file (voterLetters/voterDiagnostics empty,
+    // no writeback, DISCORDANT).
+    const cascadeAbstainConcordance: ConcordanceClass = 'DISCORDANT';
+    return {
+      questionId,
+      domain,
+      chosenLetter: null,
+      voterLetters: [],
+      voterDiagnostics: [],
+      concordance: cascadeAbstainConcordance,
+      bmvScore: 0,
+      gateOutcomes: evaluateGates(cascadeReportedCandidatesPostFurnace, 0, cascadeAbstainConcordance, cascadeLatencyMs),
+      specialistsUsed: cascadeReportedSpecialistsUsed,
+      candidatesRaw: cascadeReportedCandidatesRaw,
+      candidatesPostMiner: cascadeReportedCandidatesPostMiner,
+      candidatesPostFurnace: cascadeReportedCandidatesPostFurnace,
+      andonTriggered: andonRetry > 0,
+      andonRetries: andonRetry,
+      ebletsWritten: 0,
+      latencyMs: cascadeLatencyMs,
+      traceSummary:
+        `KN-BP144-1 Phase 2 cascadeAdjudicated=true cascadeAbstain=true ` +
+        `allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
+        `andonRetries=${andonRetry}`,
+      provenanceReceipts: [],
+      ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
+      ensembleCandidates: ensembleCandidatesForTrace,
+      ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace,
+      letterSource: 'abstain',
+      cascadeEliminationLog: cascade.eliminationLog,
+      cascadeAdjudicatorAbstain: true,
+    };
+  }
 
   // BP133 Yoke #27 Task 27.1: SEQUENTIAL, not Promise.all. Root cause confirmed by Bishop's
   // read of the first live A/C/B run's plow_trace: 3 CONCURRENT gemma4:12b generations on a
