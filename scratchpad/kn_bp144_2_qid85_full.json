@@ -1,0 +1,112 @@
+{
+  "question_id": 85,
+  "question": "Which of these statements correctly explains bias?",
+  "category": "math",
+  "modelRawAnswer": "G",
+  "parsedLetter": "G",
+  "correctLetter": "E",
+  "isCorrect": false,
+  "latencyMs": 105847,
+  "substrateContextInjected": true,
+  "answeredBy": "plow",
+  "plowTrace": {
+    "concordance": "CONCORDANT",
+    "bmv_score": 18.3,
+    "gate_outcomes": [
+      {
+        "gate": "G1_FACT",
+        "passed": false,
+        "detail": "No candidates survived Furnace — no verified facts"
+      },
+      {
+        "gate": "G2_CONC",
+        "passed": true,
+        "detail": "Concordance: CONCORDANT"
+      },
+      {
+        "gate": "G3_BMV",
+        "passed": false,
+        "detail": "BMV: 18.3"
+      },
+      {
+        "gate": "G4_LAT",
+        "passed": true,
+        "detail": "Latency: 105.8s"
+      }
+    ],
+    "specialists_used": [
+      "wikipedia",
+      "wikidata",
+      "openalex",
+      "commoncrawl",
+      "crossref",
+      "stackexchange",
+      "arxiv",
+      "wolfram",
+      "semanticscholar"
+    ],
+    "candidates_raw": 6,
+    "candidates_post_miner": 6,
+    "candidatesPostFurnace": 2,
+    "andon_triggered": false,
+    "andon_retries": 0,
+    "eblets_written": 0,
+    "voter_letters": [
+      "G",
+      "G",
+      "G"
+    ],
+    "voter_diagnostics": [
+      {
+        "temperature": 0,
+        "status": "parsed_ok",
+        "responseChars": 1,
+        "rawPreview": "G"
+      },
+      {
+        "temperature": 0.2,
+        "status": "parsed_ok",
+        "responseChars": 1,
+        "rawPreview": "G"
+      },
+      {
+        "temperature": 0.4,
+        "status": "parsed_ok",
+        "responseChars": 1,
+        "rawPreview": "G"
+      }
+    ],
+    "latency_ms": 105847,
+    "trace_summary": "specialists=[wikipedia,wikidata,openalex,commoncrawl,crossref,stackexchange,arxiv,wolfram,semanticscholar] raw=6 postMiner=6 postFurnace=2 voters=[G,G,G] voterStatus=[parsed_ok,parsed_ok,parsed_ok] concordance=CONCORDANT bmv=18.3 andonRetries=0 latencyGateAdvisoryOnly=true relevanceGateMethod=semantic psionicDiscorded=true browserAuthorityFirst=true corroboration=disagree googleFact=no perplexityFact=yes injectedAsTopFacts=0 swarmReusedFromEnsemble=true (specialists ran inside the authority ensemble above, not re-fired here)",
+    "condition": "C_warm_andon",
+    "reasoning_mode": false,
+    "provenance_receipts": [],
+    "research_arm_mode": true,
+    "answer_type": "reasoning",
+    "ensemble_candidates": [
+      {
+        "authority": "user_perplexity",
+        "letter": "J",
+        "reasoning": "Answer: J — Bias in statistics is a systematic process that makes estimates consistently too high or too low on average, rather than centered on the true population value. wikipedia +1",
+        "sourceUrl": "https://www.perplexity.ai/search/541159fa-0381-4b50-8510-af69b139dca4",
+        "method": "explicit_letter"
+      },
+      {
+        "authority": "user_claude",
+        "letter": "J",
+        "reasoning": "Bias refers to a systematic tendency in the sampling/estimation process that causes the resulting estimates to be consistently too high or too low on average, rather than centered on the true population value.",
+        "sourceUrl": "https://claude.ai/chat/c00de7fb-3dea-44ea-b8c8-6d53e5673a2d",
+        "method": "token_or_numeric_match"
+      },
+      {
+        "authority": "specialist_swarm",
+        "letter": "A",
+        "reasoning": "specialist swarm consensus (9 specialists: [wikipedia,wikidata,openalex,commoncrawl,crossref,stackexchange,arxiv,wolfram,semanticscholar], voters=[A,A,A], concordance=CONCORDANT, postFurnace=2).",
+        "sourceUrl": "specialist-swarm-internal-consensus",
+        "method": "specialist_swarm_vote"
+      }
+    ],
+    "browserAuthorityCorroboration": "disagree"
+  },
+  "isAbstain": false
+}

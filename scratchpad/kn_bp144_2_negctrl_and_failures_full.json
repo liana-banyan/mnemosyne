@@ -1,0 +1,228 @@
+{
+  "20": {
+    "question_id": 20,
+    "question": "Mr.Scaccioborrows $100 from his credit union and agrees to pay back $20 a month with interest of 1% per month on the unpaid balance. How much does he pay?",
+    "options": [
+      "$120.00",
+      "$115.00",
+      "$110.00",
+      "$100.00",
+      "$106.00",
+      "$101.00",
+      "$105.00",
+      "$112.00",
+      "$108.00",
+      "$103.00"
+    ],
+    "answer": "J",
+    "answer_index": 9,
+    "category": "business",
+    "source_id": "791",
+    "src": "tiger-lab-mmlu-pro-curated"
+  },
+  "27": {
+    "question_id": 27,
+    "question": "Calculate the density of a block of wood which weighs 750 kgand has the dimensions 25 cm × 0.10 m × 50.0 m.",
+    "options": [
+      "1.00 g/cc",
+      ".70 g/cc",
+      ".60 g/cc",
+      "0.40 g/cc",
+      "0.45 g/cc",
+      ".80 g/cc",
+      "0.30 g/cc",
+      ".50 g/cc",
+      "0.75 g/cc",
+      "0.90 g/cc"
+    ],
+    "answer": "C",
+    "answer_index": 2,
+    "category": "chemistry",
+    "source_id": "4212",
+    "src": "tiger-lab-mmlu-pro-curated"
+  },
+  "33": {
+    "question_id": 33,
+    "question": "Two lists, list1 and list2, contain the names of books found in two different collections. A librarian wants to create newList, which will contain the names of all books found in either list, in alphabetical order, with duplicate entries removed.\n\n For example, if 1istl contains\n [\"Macbeth\", \"Frankenstein\", \"Jane Eyre\"]\n and 1ist2 contains\n [\"Frankenstein\", \"Dracula, \"Macbeth\", \"Hamlet\"],\n then newList will contain\n [\"Dracula\", \"Frankenstein\", \"Hamlet\", \"Jane Eyre\", \"Macbeth\"].\n\n The following procedures are available to create newList.\n Procedure\n Explanation\n Sort (list)\n Sorts list in alphabetical order and returns the resulting list.\n Combine (listl, list2)\n Creates a new list consisting of the entries from\n list1 followed by the entries from list2. The resulting list is returned.\n RemoveDuplicates (list)\n Iterates through list. If any two or more entries have the same value, the duplicate entries are removed so that any entry appears at most once. The resulting list is returned.\n\n Which of the following code segments will correctly create newList?",
+    "options": [
+      "newList ← Combine (list1, list2)",
+      "listl ← Sort (listl)\n list2 ← Sort (list2)\n newList ← Combine (listl, list2)\n newList ← RemoveDuplicates (newList)",
+      "newList ← Combine (listl, list2)\n newList ← Sort (newList)\n newList ← RemoveDup1icates (newList)",
+      "list1 ← RemoveDuplicates (list1)",
+      "listl ← RemoveDuplicates (listl)\n list2 ← RemoveDuplicates (list2)\n newList ← Combine (listl, 1ist2)\n newList ← Sort (newList)",
+      "newList ← Sort (list1)",
+      "list1 ← Sort (list1)",
+      "listl ← RemoveDuplicates (listl)\n listl ← Sort (listl)\n list2 ← RemoveDuplicates (list2)\n 1ist2 ← Sort (list2)\n newList ← Combine (listl, list2)"
+    ],
+    "answer": "C",
+    "answer_index": 2,
+    "category": "computer_science",
+    "source_id": "10442",
+    "src": "tiger-lab-mmlu-pro-curated"
+  },
+  "59": {
+    "question_id": 59,
+    "question": "An airplane is designed according to the following specifications. weight = 3000lbf wing area = 300 ft^2 takeoff speed = 100 ft/sec Model tests show that the lift and drag coefficients vary with the angle of attack of the wing according to the approximate relations: C_L = 0.35(1 + 0.2\\alpha) C_D = 0.008(1 + \\alpha) for small \\alpha, where \\alpha is the angle of attack measured in degrees. The atmospheric density is 0.00238 slug/ft^3. Find the angle of attack that ensures takeoff at the desired speed, and the power required for takeoff.",
+    "options": [
+      "11 degrees, 55 hp",
+      "4 degrees, 30 hp",
+      "3 degrees, 28 hp",
+      "5 degrees, 35 hp",
+      "7 degrees, 41.5 hp",
+      "8 degrees, 45 hp",
+      "6 degrees, 38 hp",
+      "10 degrees, 50 hp",
+      "9 degrees, 48 hp",
+      "12 degrees, 60 hp"
+    ],
+    "answer": "E",
+    "answer_index": 4,
+    "category": "engineering",
+    "source_id": "12067",
+    "src": "tiger-lab-mmlu-pro-curated"
+  },
+  "66": {
+    "question_id": 66,
+    "question": "You notice that your patient's submandibular lymph nodes are enlarged. You would look for potential infection sites in the",
+    "options": [
+      "hard palate.",
+      "hard palate, upper lip, and upper central incisor.",
+      "upper lip and upper central incisor.",
+      "hard palate, upper lip, and lower first molar.",
+      "hard palate and upper lip.",
+      "hard palate, upper lip and upper central incisor.",
+      "hard palate, upper central incisor and lower first molar.",
+      "hard palate, upper lip, upper central incisor and lower first molar.",
+      "upper lip and lower first molar.",
+      "upper lip, upper central incisor and lower first molar."
+    ],
+    "answer": "H",
+    "answer_index": 7,
+    "category": "health",
+    "source_id": "6418",
+    "src": "tiger-lab-mmlu-pro-curated"
+  },
+  "72": {
+    "question_id": 72,
+    "question": "What do we know about the people who built Stonehenge based on the analysis of animal teeth from a nearby village?",
+    "options": [
+      "They had no domesticated animals but hunted wild animals for meat.",
+      "They had domesticated animals, but they did not consume their meat.",
+      "They bred and raised a specific species of deer for food.",
+      "They were vegetarian and did not consume meat.",
+      "They brought animals to the site from outside of the region.",
+      "They raised livestock at the site, including cattle, sheep, and goats.",
+      "They hunted antelope, gazelle, and bear.",
+      "They imported exotic animals from distant lands.",
+      "They primarily raised and hunted aquatic animals.",
+      "They hunted only large game animals, such as mammoths and bison."
+    ],
+    "answer": "E",
+    "answer_index": 4,
+    "category": "history",
+    "source_id": "4707",
+    "src": "tiger-lab-mmlu-pro-curated"
+  },
+  "92": {
+    "question_id": 92,
+    "question": "Within Critical Security Studies, what is the referent object of security?",
+    "options": [
+      "Technological systems",
+      "The people and their collectives.",
+      "International organizations",
+      "Economic structures",
+      "There is no specific referent point.",
+      "The environment.",
+      "Military power",
+      "Non-state actors",
+      "Political ideologies",
+      "The state and state apparatus."
+    ],
+    "answer": "E",
+    "answer_index": 4,
+    "category": "other",
+    "source_id": "5152",
+    "src": "tiger-lab-mmlu-pro-curated"
+  },
+  "98": {
+    "question_id": 98,
+    "question": "Which of the following world regions is NOT considered one of the world's most densely populated regions?",
+    "options": [
+      "South America",
+      "South Asia",
+      "North Africa",
+      "Northeast United States",
+      "Europe",
+      "Central Asia",
+      "Arctic Circle",
+      "Amazon Rainforest",
+      "Sahara Desert"
+    ],
+    "answer": "A",
+    "answer_index": 0,
+    "category": "other",
+    "source_id": "5723",
+    "src": "tiger-lab-mmlu-pro-curated"
+  },
+  "105": {
+    "question_id": 105,
+    "question": "In Aristotle’s terminology, incontinence is when:",
+    "options": [
+      "one knows that one's feelings are inappropriate, but acts on them anyway.",
+      "one knows that one’s feelings are inappropriate, and does not act on them.",
+      "one acts on one's feelings, regardless of their appropriateness.",
+      "one does not know that one’s actions are wrong.",
+      "one knows that one’s actions are wrong, but does them anyway.",
+      "one does not act despite knowing that one's actions are right.",
+      "one does the right action, but for the wrong reason.",
+      "one does not know that one's actions are right.",
+      "one does the right action, but does not understand why it's right."
+    ],
+    "answer": "E",
+    "answer_index": 4,
+    "category": "philosophy",
+    "source_id": "10979",
+    "src": "tiger-lab-mmlu-pro-curated"
+  },
+  "111": {
+    "question_id": 111,
+    "question": "What is the significance of the 1:2:4 resonance in the Jupiter's moons system?",
+    "options": [
+      "It causes the three moons to always be in a straight line.",
+      "It causes Io to rotate on its axis faster than it orbits Jupiter",
+      "It creates a gap with no asteriods between the orbits.",
+      "It results in the formation of a visible ring around Jupiter.",
+      "It prevents the moons from colliding with each other.",
+      "It causes a gravitational pull that affects Jupiter's orbit around the sun.",
+      "It results in a uniform gravitational pull on all three moons.",
+      "It prevents formation of the ring material into other moons.",
+      "It makes the orbit of Io slightly elliptical."
+    ],
+    "answer": "I",
+    "answer_index": 8,
+    "category": "physics",
+    "source_id": "9044",
+    "src": "tiger-lab-mmlu-pro-curated"
+  },
+  "118": {
+    "question_id": 118,
+    "question": "Two double stars of the same mass as the sun rotate about their common center of mass. Their separation is 4 light years. What is their period of revolution?\n",
+    "options": [
+      "5$10^7 \\mathrm{yr}$",
+      "1.5$10^8 \\mathrm{yr}$",
+      "1.1$10^8 \\mathrm{yr}$",
+      "2$10^8 \\mathrm{yr}$",
+      "9$10^7 \\mathrm{yr}$ ",
+      "7$10^7 \\mathrm{yr}$",
+      "1.2$10^8 \\mathrm{yr}$",
+      "1$10^8 \\mathrm{yr}$",
+      "6$10^7 \\mathrm{yr}$",
+      "8$10^7 \\mathrm{yr}$"
+    ],
+    "answer": "E",
+    "answer_index": 4,
+    "category": "physics",
+    "source_id": "9962",
+    "src": "tiger-lab-mmlu-pro-curated"
+  }
+}
