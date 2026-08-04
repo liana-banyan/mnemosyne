@@ -1843,6 +1843,23 @@ export interface AuthorityEnsembleOutcome {
    *          the Coroner's classifyCore (answer_coroner.ts) reads plowTrace keys by exact camelCase
    *          name with no fallback, and this is the name that signal is meant to be read under. */
   independentCorroboration?: boolean;
+  /** KN-BP144-5 T1/T3, OPTIONAL/ADDITIVE. Populated ONLY at the swarm-augmented agree-branch call
+   *  site (the ONE place `specialist_swarm` can ever appear inside an agreeing 2+ group -- the
+   *  fast path, before the swarm fires, can never produce this field since every candidate there
+   *  is on its own distinct browser/Wolfram derivation path by construction). Records
+   *  `assessAgreeingGroupDerivationDiversity`'s own verdict for whichever agreeing group was
+   *  found, WHETHER OR NOT that verdict changed the outcome (a `swarmStructurallyDisagrees` early
+   *  decline never reaches this assessment at all, so its absence there is itself meaningful).
+   *  `agree_multipath` = accepted as today, genuine corroboration across 2+ distinct paths.
+   *  `agree_singlepath` = declined -- the agreeing group, once RULE 1's own swarm-duplicate
+   *  elimination is applied, collapses to a single surviving derivation path, which per T1 "is
+   *  not corroboration" -- falls through to adjudication exactly as if the candidates had
+   *  disagreed. Never a bare count (T3's own requirement) -- `agreeGroupPathAssignments` below
+   *  carries the full `authority:path` breakdown per original agreeing-group member. */
+  agreeDerivationVerdict?: 'agree_multipath' | 'agree_singlepath';
+  /** KN-BP144-5 T3: `authority:derivationPath` for every member of the agreeing group this
+   *  assessment ran over, in original order -- present whenever agreeDerivationVerdict is. */
+  agreeGroupPathAssignments?: string[];
   /** BP141-1 SINGLE-SOURCE-NO-GROUNDING GATE (Task 3, run 029 receipt, question_id 98), OPTIONAL/
    *  ADDITIVE. Populated ONLY at the exactly-one-candidate accept site (corroboration one of
    *  single_google/single_perplexity/single_wolfram/single_chatgpt/single_gemini/single_claude/
@@ -2112,6 +2129,62 @@ function hasStructuredCorroborator(group: AuthorityEnsembleCandidate[]): boolean
  *  receipt's candidate data, rather than a hand-reimplementation that could silently drift from
  *  what actually ships. Purely additive -- no existing caller's behavior changes by this becoming
  *  reachable from outside the module. */
+// KN-BP144-5 T1: "runCandidateSourceCascadeAdjudicator already implements duplicate-derivation-path
+// elimination. Reuse that logic. Do not write a second, divergent copy of it... there must be
+// exactly one definition of 'these two candidates are the same witness.'" Extracted verbatim from
+// RULE 1 below (zero behavior change at that call site -- see the refactor immediately following)
+// so the NEW accept-on-agreement diversity test (assessAgreeingGroupDerivationDiversity, this
+// ticket's own agree-branch call site) and RULE 1 itself share the exact same elimination: any
+// candidate whose resolveCakeDerivationPath is 'swarm' is eliminated from `pool` whenever at least
+// one candidate on a genuinely different derivation path also survives. specialist_swarm's vote
+// and the about-to-be-skipped local self-vote are the SAME witness (same local model, same path);
+// letting it stand as a competing "second voice" would double-count that one witness.
+export function eliminateDuplicateSwarmDerivationPath(
+  pool: readonly AuthorityEnsembleCandidate[],
+): { survivors: AuthorityEnsembleCandidate[]; eliminated: AuthorityEnsembleCandidate[] } {
+  const nonSwarmSurvivorExists = pool.some((c) => resolveCakeDerivationPath(c) !== 'swarm');
+  const swarmEntries = pool.filter((c) => resolveCakeDerivationPath(c) === 'swarm');
+  if (nonSwarmSurvivorExists && swarmEntries.length > 0) {
+    return { survivors: pool.filter((c) => resolveCakeDerivationPath(c) !== 'swarm'), eliminated: swarmEntries };
+  }
+  return { survivors: [...pool], eliminated: [] };
+}
+
+// KN-BP144-5 T1/T3: the accept-on-agreement branch's own derivation-path diversity test, reusing
+// eliminateDuplicateSwarmDerivationPath (the SAME test RULE 1 above implements -- no second,
+// divergent copy). "Before accepting on agreement, test whether the agreeing group spans more
+// than one derivation path. Agreeing group spans two or more distinct derivation paths: accept as
+// it does today... Agreeing group is a single derivation path: this is not corroboration." T3:
+// "Log the path assignment of every candidate in the agreeing group. A bare count fails this
+// ticket" -- `pathAssignments` below carries exactly that, `authority:path` per original member,
+// never a bare number.
+export interface AgreeingGroupDiversityAssessment {
+  verdict: 'agree_multipath' | 'agree_singlepath';
+  /** The agreeing group after RULE 1's own swarm-duplicate elimination -- what actually remains
+   *  to test for path diversity. */
+  dedupedGroup: AuthorityEnsembleCandidate[];
+  /** Distinct resolveCakeDerivationPath values surviving in dedupedGroup. Path COUNT, not
+   *  candidate count -- two candidates on the same path are one entry here. */
+  distinctPaths: string[];
+  /** `authority:derivationPath` for every member of the ORIGINAL (pre-dedup) agreeing group, so a
+   *  reader can see exactly which candidate was assigned which path without re-deriving it. */
+  pathAssignments: string[];
+}
+
+export function assessAgreeingGroupDerivationDiversity(
+  agreeingGroup: readonly AuthorityEnsembleCandidate[],
+): AgreeingGroupDiversityAssessment {
+  const { survivors: dedupedGroup } = eliminateDuplicateSwarmDerivationPath(agreeingGroup);
+  const distinctPaths = [...new Set(dedupedGroup.map((c) => resolveCakeDerivationPath(c)))];
+  const pathAssignments = agreeingGroup.map((c) => `${c.authority}:${resolveCakeDerivationPath(c)}`);
+  return {
+    verdict: distinctPaths.length >= 2 ? 'agree_multipath' : 'agree_singlepath',
+    dedupedGroup,
+    distinctPaths,
+    pathAssignments,
+  };
+}
+
 export function runCandidateSourceCascadeAdjudicator(
   candidates: readonly AuthorityEnsembleCandidate[],
 ): { chosenLetter: string | null; eliminationLog: string[]; survivingCandidates: AuthorityEnsembleCandidate[] } {
@@ -2121,11 +2194,12 @@ export function runCandidateSourceCascadeAdjudicator(
     group.length > 0 ? group.map((c) => `${c.authority}:${c.letter}`).join(', ') : 'none';
 
   // RULE 1 -- duplicate derivation path (specialist_swarm === the about-to-be-skipped local
-  // self-vote, same model, same path).
-  const nonSwarmSurvivorExists = pool.some((c) => resolveCakeDerivationPath(c) !== 'swarm');
-  const swarmEntries = pool.filter((c) => resolveCakeDerivationPath(c) === 'swarm');
-  if (nonSwarmSurvivorExists && swarmEntries.length > 0) {
-    pool = pool.filter((c) => resolveCakeDerivationPath(c) !== 'swarm');
+  // self-vote, same model, same path). KN-BP144-5 T1: now the SAME shared helper the new
+  // agree-branch diversity test below also calls -- see eliminateDuplicateSwarmDerivationPath's
+  // own doc comment. This refactor changes nothing about this call site's behavior.
+  const { survivors: poolAfterRule1, eliminated: swarmEntries } = eliminateDuplicateSwarmDerivationPath(pool);
+  if (swarmEntries.length > 0) {
+    pool = poolAfterRule1;
     eliminationLog.push(
       `RULE 1 (duplicate derivation path): eliminated [${describe(swarmEntries)}] -- derivation ` +
       `path 'swarm' is the SAME local model as the about-to-be-skipped self-vote fallthrough, and ` +
@@ -2134,7 +2208,7 @@ export function runCandidateSourceCascadeAdjudicator(
     );
   } else {
     eliminationLog.push(
-      `RULE 1 (duplicate derivation path): no-op -- ${swarmEntries.length === 0
+      `RULE 1 (duplicate derivation path): no-op -- ${pool.every((c) => resolveCakeDerivationPath(c) !== 'swarm')
         ? 'no candidate on the \'swarm\' derivation path is present'
         : 'the \'swarm\'-path candidate has no non-swarm co-survivor to be a duplicate of'} ` +
       `(pool=[${describe(pool)}]).`,
@@ -3866,28 +3940,116 @@ async function runAuthorityEnsemble(params: {
       && swarmConcordanceForGate === 'CONCORDANT'
       && swarmChosenLetterForGate !== agreeingGroup[0]!.letter;
     if (!swarmStructurallyDisagrees) {
+      // KN-BP144-5 T1: "before accepting on agreement, test whether the agreeing group spans more
+      // than one derivation path." Reuses RULE 1's exact swarm-duplicate-elimination test
+      // (eliminateDuplicateSwarmDerivationPath, via assessAgreeingGroupDerivationDiversity) -- the
+      // SAME logic runCandidateSourceCascadeAdjudicator's RULE 1 already implements, no second,
+      // divergent copy. This is the ONLY place `specialist_swarm` can ever appear inside an
+      // agreeing 2+ group (the fast path above, before the swarm fires, can never produce a
+      // singlepath verdict -- every candidate there is on its own distinct browser/Wolfram path).
+      const diversity = assessAgreeingGroupDerivationDiversity(agreeingGroup);
+      if (diversity.verdict === 'agree_multipath') {
+        log(
+          `swarm-augmented agreement on ${agreeingGroup[0]!.letter} ` +
+          `(candidates=[${agreeingGroup.map((c) => c.authority).join(',')}]) -- ` +
+          `${groupHasStructured ? 'structurally corroborated' : 'LLM-ONLY concordance (swarm yielded nothing usable to corroborate or contest it)'}, ` +
+          `agree_multipath (${diversity.distinctPaths.length} distinct derivation paths: ` +
+          `[${diversity.pathAssignments.join(', ')}]), accepted.`,
+        );
+        return {
+          chosenLetter: agreeingGroup[0]!.letter, corroboration: 'agree', candidates,
+          acceptedCandidates: agreeingGroup, adjudicationAttempted: false, swarmFired: true, swarmReceipt,
+          reasoningFactComputeReceipt,
+          structuredCorroborator: groupHasStructured,
+          // BP141: mirrors groupHasStructured here -- a specialist_swarm member can only be part of
+          // `agreeingGroup` when it survived the BP141 echo-abstention push-site check (genuine
+          // Furnace-verified grounding), so "has a structured member" and "each agreeing member has
+          // its own independent evidence" are the same test at this call site.
+          independentCorroboration: groupHasStructured,
+          agreeDerivationVerdict: diversity.verdict,
+          agreeGroupPathAssignments: diversity.pathAssignments,
+        };
+      }
       log(
-        `swarm-augmented agreement on ${agreeingGroup[0]!.letter} ` +
-        `(candidates=[${agreeingGroup.map((c) => c.authority).join(',')}]) -- ` +
-        `${groupHasStructured ? 'structurally corroborated' : 'LLM-ONLY concordance (swarm yielded nothing usable to corroborate or contest it)'}, accepted.`,
+        `swarm-augmented agreement on ${agreeingGroup[0]!.letter} is agree_singlepath -- ` +
+        `[${diversity.pathAssignments.join(', ')}] collapse to a single surviving derivation path ` +
+        `once RULE 1's own swarm-duplicate elimination is applied -- this is NOT corroboration ` +
+        `(KN-BP144-5 T1). Declining the accept, falling through exactly as if the candidates had ` +
+        `disagreed.`,
       );
-      return {
-        chosenLetter: agreeingGroup[0]!.letter, corroboration: 'agree', candidates,
-        acceptedCandidates: agreeingGroup, adjudicationAttempted: false, swarmFired: true, swarmReceipt,
-        reasoningFactComputeReceipt,
-        structuredCorroborator: groupHasStructured,
-        // BP141: mirrors groupHasStructured here -- a specialist_swarm member can only be part of
-        // `agreeingGroup` when it survived the BP141 echo-abstention push-site check (genuine
-        // Furnace-verified grounding), so "has a structured member" and "each agreeing member has
-        // its own independent evidence" are the same test at this call site.
-        independentCorroboration: groupHasStructured,
-      };
+      // KN-BP144-5 T2: "a single-path agreement must not suppress a deterministic solver... when
+      // T1 declines to accept, the pipeline must reach the deterministic solvers in the same way
+      // it would have on genuine scatter." Re-run the SAME no_consensus_from_scatter check the
+      // post-swarm recheck above already ran (KN-BP143-1 Defect 4), this time over a
+      // derivation-path-deduped candidate set (RULE 1's own swarm-duplicate elimination applied to
+      // the FULL candidate list, not just the agreeing group) -- the manufactured majority T1 just
+      // declined was inflating the exact scatter arithmetic this solver's own B2/B3 gates depend
+      // on. A null result changes nothing (falls through to THE CAKE METHOD, byte-for-byte); a
+      // non-null result is accepted with the SAME 'deterministic_compute' shape every other call
+      // site of this solver already uses. This can only ever ADD a correctly-gated deterministic
+      // accept ahead of a same-path agreement's fallthrough -- it never widens
+      // solveNoConsensusFromScatter's own B1-B4 gates.
+      try {
+        const { survivors: dedupedForScatter } = eliminateDuplicateSwarmDerivationPath(candidates);
+        const independentSourcesDeduped: IndependentSourceVote[] = dedupedForScatter.map((c) => ({
+          letter: c.letter,
+          derivationPath: resolveCakeDerivationPath(c),
+        }));
+        const noConsensusAfterSinglepathDecline = solveNoConsensusFromScatter(researchQuery, mcOptions, independentSourcesDeduped);
+        if (noConsensusAfterSinglepathDecline) {
+          log(
+            `no_consensus_from_scatter PROVED answer ${noConsensusAfterSinglepathDecline.letter} from ` +
+            `the derivation-path-deduped scatter (KN-BP144-5 T2: re-checked after a single-path ` +
+            `agreement was declined, before THE CAKE METHOD could run) -- ${noConsensusAfterSinglepathDecline.trace}.`,
+          );
+          return {
+            chosenLetter: noConsensusAfterSinglepathDecline.letter,
+            corroboration: 'deterministic_compute',
+            candidates,
+            acceptedCandidates: [{
+              authority: 'deterministic_compute',
+              letter: noConsensusAfterSinglepathDecline.letter,
+              reasoning: noConsensusAfterSinglepathDecline.trace,
+              sourceUrl: '',
+              method: 'no_consensus_from_scatter',
+            }],
+            adjudicationAttempted: false,
+            swarmFired: true,
+            swarmReceipt,
+            reasoningFactComputeReceipt,
+            agreeDerivationVerdict: diversity.verdict,
+            agreeGroupPathAssignments: diversity.pathAssignments,
+            deterministicOverride: {
+              letter: noConsensusAfterSinglepathDecline.letter,
+              optionValue: NaN,
+              optionUnit: null,
+              computedValue: NaN,
+              computedUnit: null,
+              sourceExpression: noConsensusAfterSinglepathDecline.trace,
+              source: 'question_expression',
+              method: 'no_consensus_from_scatter',
+              computeProvenance: 'model_derived',
+              computeProvenanceDetail:
+                'Deciding evidence is the derivation-path-deduped scatter, re-checked after ' +
+                'KN-BP144-5 T1 declined a single-path agreement as non-corroborative -- never a ' +
+                'literal expression read from the question text itself.',
+            },
+          };
+        }
+        log(
+          `no_consensus_from_scatter (KN-BP144-5 T2 recheck) found no scatter proof either -- ` +
+          `falling through to THE CAKE METHOD.`,
+        );
+      } catch (err) {
+        log(`no_consensus_from_scatter (KN-BP144-5 T2 recheck) threw (non-fatal, ensemble continues normally): ${err}`);
+      }
+    } else {
+      log(
+        `swarm STRUCTURALLY DISAGREES with LLM-only agreement on ${agreeingGroup[0]!.letter} ` +
+        `(swarm reached CONCORDANT consensus on ${swarmChosenLetterForGate} instead) -- ` +
+        `declining the accept, routing to adjudication over the full candidate set.`,
+      );
     }
-    log(
-      `swarm STRUCTURALLY DISAGREES with LLM-only agreement on ${agreeingGroup[0]!.letter} ` +
-      `(swarm reached CONCORDANT consensus on ${swarmChosenLetterForGate} instead) -- ` +
-      `declining the accept, routing to adjudication over the full candidate set.`,
-    );
   }
 
   // Still all disagree even with the swarm folded in -- BP141-2 THE CAKE METHOD (N-Cut/N-Pick)
