@@ -327,6 +327,11 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const unsubProgressRef = useRef<(() => void) | null>(null);
   const unsubCompleteRef = useRef<(() => void) | null>(null);
+  // KN-BP144-8 Phase 1: the free-text engine's own stage-progress subscription, separate
+  // from unsubProgressRef above (which is the plain-chat token-delta stream and is not used
+  // on the engine path -- the engine has no token-by-token text to stream, only discrete
+  // stage events, until its one final answer arrives).
+  const unsubEngineProgressRef = useRef<(() => void) | null>(null);
   const elapsedRef = useRef(0);
   const isColdRef = useRef(false);
   const isStreamingRef = useRef(false);
@@ -449,6 +454,7 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     if (unsubProgressRef.current) { unsubProgressRef.current(); unsubProgressRef.current = null; }
     if (unsubCompleteRef.current) { unsubCompleteRef.current(); unsubCompleteRef.current = null; }
+    if (unsubEngineProgressRef.current) { unsubEngineProgressRef.current(); unsubEngineProgressRef.current = null; }
     elapsedRef.current = 0;
     isColdRef.current = false;
     isStreamingRef.current = false;
@@ -494,33 +500,53 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
       updateMsgInMemory(id, txt);
     }, 1000);
 
-    // v0.1.57.1: subscribe to token progress BEFORE calling query (avoid race)
-    if (window.amplify?.aiDispatch?.onAskTokenProgress) {
-      unsubProgressRef.current = window.amplify.aiDispatch.onAskTokenProgress((data) => {
+    // KN-BP144-8 Phase 1: subscribe to the free-text ENGINE's stage progress BEFORE calling
+    // queryEngine (avoid race, same discipline as the old onAskTokenProgress subscription
+    // this replaces). The engine has no token-by-token delta stream -- it emits discrete
+    // CanonicalPlowProgressEvent stage events instead, so the live bubble text and the
+    // AskEngineView stage list are both driven from this one subscription.
+    if (window.amplify?.aiDispatch?.onAskEngineProgress) {
+      const specialistStages = new Map<string, { name: string; status: 'pending' | 'firing' | 'done'; candidateCount?: number }>();
+      unsubEngineProgressRef.current = window.amplify.aiDispatch.onAskEngineProgress((ev) => {
         const id = currentAiIdRef.current;
         if (!id) return;
 
-        if (data.coldStart) {
-          // Switch bubble to cold-start text immediately
-          isColdRef.current = true;
-          updateMsgInMemory(id, coldStartText(elapsedRef.current));
-          // KN-BP143-3 D5: real cold-start signal -> per-message engine-view badge/phase.
-          updateMsgEngine(id, { coldStart: true });
-          return;
+        if (!isStreamingRef.current) {
+          // First real engine event: stop heartbeat timer, same discipline as first-token.
+          isStreamingRef.current = true;
+          if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
         }
 
-        if (data.delta) {
-          if (!isStreamingRef.current) {
-            // First token: stop heartbeat timer, enter streaming mode
-            isStreamingRef.current = true;
-            if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-            // KN-BP143-3 D5: first real token -> engine-view terminal switches phase label
-            // from waiting/cold-start to streaming.
-            updateMsgEngine(id, { streaming: true });
-          }
-          // Replace bubble content with latest assembled text (streaming in place)
-          updateMsgInMemory(id, data.assembled);
+        if (ev.type === 'substrate-check-start') {
+          updateMsgEngine(id, { substrateChecking: true, streaming: true });
+          updateMsgInMemory(id, 'Checking substrate…');
+          return;
         }
+        if (ev.type === 'substrate-miss') {
+          updateMsgEngine(id, { substrateChecking: false });
+          updateMsgInMemory(id, 'No rooted substrate hit — querying specialists…');
+          return;
+        }
+        if (ev.type === 'substrate-hit-rooted') {
+          updateMsgEngine(id, { substrateChecking: false });
+          return;
+        }
+        if (ev.type === 'specialist-fire' && ev.specialistName) {
+          specialistStages.set(ev.specialistName, { name: ev.specialistName, status: 'firing' });
+          updateMsgEngine(id, { stages: Array.from(specialistStages.values()) });
+          updateMsgInMemory(id, `Querying ${ev.specialistName}…`);
+          return;
+        }
+        if (ev.type === 'specialist-done' && ev.specialistName) {
+          specialistStages.set(ev.specialistName, {
+            name: ev.specialistName, status: 'done', candidateCount: ev.specialistCandidates ?? 0,
+          });
+          updateMsgEngine(id, { stages: Array.from(specialistStages.values()) });
+          return;
+        }
+        if (ev.type === 'saladin-done') { updateMsgInMemory(id, 'Adversarial fence (Saladin) checking candidates…'); return; }
+        if (ev.type === 'furnace-done') { updateMsgInMemory(id, 'Furnace burning weak/challenged candidates…'); return; }
+        if (ev.type === 'three-fates-done') { updateMsgInMemory(id, 'Three Fates arbitrating…'); return; }
       });
     }
 
@@ -531,8 +557,14 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
         if (!id) return;
 
         // v0.1.57.1 differentiated error
+        // KN-BP144-8 Phase 1, ticket 1.5: an engine abstention is real and honest, not an
+        // error -- render it as a plain-language notice in the bubble itself (the Engine
+        // View banner below carries the full reason), never a silently empty bubble and
+        // never a plain-model guess dressed up as if the engine had answered.
         const finalContent = data.error
           ? `⚠ Ask threw: ${data.error}. See Diagnostic.`
+          : data.engine?.abstained === true
+          ? '(The engine could not produce an honest answer to this question — see Engine View below.)'
           : (data.content || '');
 
         // KN-BP143-3 D5: fold every real completion field (including the two additive,
@@ -544,6 +576,7 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
         const selfContextLoaded = typeof rawData.selfContextLoaded === 'boolean' ? rawData.selfContextLoaded as boolean : undefined;
         updateMsgEngine(id, {
           streaming: false,
+          substrateChecking: false,
           completion: {
             hotHits: data.hotHits,
             servedFromSubstrate: data.servedFromSubstrate,
@@ -553,6 +586,9 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
             verified: data.verified,
             selfContextLoaded,
           },
+          // KN-BP144-8 Phase 1, ADDITIVE: only present when this completion came from the
+          // engine path (ai-dispatch:query-engine) -- absent entirely on a plain-chat turn.
+          ...(data.engine ? { receipt: data.engine as AskEngineState['receipt'] } : {}),
         });
 
         updateMsgAndSave(id, finalContent);
@@ -624,18 +660,18 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
       }
     }
 
-    // SEG-1 v0.1.57: route through ai-dispatch:query IPC.
-    // Main process runs queryVerifiedEblets() HOT retrieve then streams Ollama /api/chat.
-    const history = [...messages, userMsg];
-    const ipcMessages = history
-      .filter((m) => m.role !== 'system')
-      .slice(-10)
-      .map((m) => ({ role: m.role as string, content: m.content }));
-
-    // v0.1.57.1 differentiated error: check for preload bridge before invoking
-    if (!window.amplify?.aiDispatch?.query) {
-      // v0.1.57.1 differentiated error
-      updateMsgAndSave(aiId, '⚠ Preload bridge missing · reinstall MnemosyneC.');
+    // KN-BP144-8 Phase 1: the Ask tab now calls the actual free-text engine
+    // (canonical_pipeline.ts's runCanonicalFreeTextQuestion via ai-dispatch:query-engine) --
+    // substrate-first ROOTED check, then specialist swarm + Saladin + Furnace + Three Fates
+    // arbitration -- in place of the old plain-Ollama-chat ai-dispatch:query call. Per ticket
+    // 1.5, this is a real replacement, not an opt-in: an abstention now renders as an
+    // abstention (see onAskTokenComplete above), never a plain local-model guess relabeled as
+    // an engine answer. KNOWN SCOPE LIMIT (reported honestly, not silently): the engine takes
+    // a single free-text question, not this tab's multi-turn message history -- prior-turn
+    // context in `messages` is not passed. Every question is answered fresh, exactly as the
+    // benchmark harness itself answers each question fresh.
+    if (!window.amplify?.aiDispatch?.queryEngine) {
+      updateMsgAndSave(aiId, '⚠ Preload bridge missing (engine) · reinstall MnemosyneC.');
       clearStream();
       setThinking(false);
       textareaRef.current?.focus();
@@ -643,35 +679,31 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
     }
 
     try {
-      const result = await window.amplify.aiDispatch.query({
-        court_member: 'lean_ask',
-        messages: ipcMessages,
-      });
+      const result = await window.amplify.aiDispatch.queryEngine({ question: text });
 
       if (!result?.ok) {
         // Pre-stream error — no events will fire; handle synchronously
-        const errMsg = result?.error ?? 'Unknown error from local AI.';
-        const displayMsg = errMsg.includes('No compatible model')
-          ? '⚠ Your AI model is still setting up. Check the Home tab.'
-          // v0.1.57.1 differentiated error
+        const errMsg = result?.error ?? 'Unknown error from the engine.';
+        const displayMsg = errMsg.includes('No compatible model') || errMsg.includes('not reachable')
+          ? '⚠ Your local AI runtime is still setting up. Check the Home tab.'
           : `⚠ Ask threw: ${errMsg}. See Diagnostic.`;
         updateMsgAndSave(aiId, displayMsg);
         clearStream();
         setThinking(false);
         textareaRef.current?.focus();
       }
-      // If result.streaming === true: events drive the rest — do NOT call setThinking(false) here
+      // If result.streaming === true: ask-engine-progress / ask-token-complete events drive
+      // the rest — do NOT call setThinking(false) here.
 
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      // v0.1.57.1 differentiated error
       updateMsgAndSave(aiId, `⚠ Ask threw: ${errMsg}. See Diagnostic.`);
-      console.warn('[LeanAskTab] aiDispatch.query threw:', e);
+      console.warn('[LeanAskTab] aiDispatch.queryEngine threw:', e);
       clearStream();
       setThinking(false);
       textareaRef.current?.focus();
     }
-  }, [input, thinking, messages, appendMsg, updateMsgInMemory, updateMsgAndSave, updateMsgEngine, clearStream]);
+  }, [input, thinking, appendMsg, updateMsgInMemory, updateMsgAndSave, updateMsgEngine, clearStream]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {

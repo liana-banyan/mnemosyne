@@ -29,6 +29,9 @@
 import { createHash } from 'crypto';
 import { type CandidateEblet, type SpecialistKeys, SPECIALIST_REGISTRY, type SpecialistName } from './specialist_adapters';
 import { getOperatorsForDomain } from './domain_operator_map';
+// KN-BP144-8 Phase 1: rooting_rule.ts has zero imports of its own (confirmed dependency-free,
+// no circular-import risk) -- used by runCanonicalFreeTextQuestion's substrate-first gate below.
+import { type RootingTier, classifyCorroborationTier, isRooted } from '../rooting_rule';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -73,6 +76,15 @@ export interface CanonicalPlowQuestionResult {
   candidatesPostMiner: number;
   candidatesPostFurnace: number;
   scribes: ScriberRecord[];
+  /** KN-BP144-8 Phase 1, ADDITIVE/OPTIONAL. Before this ticket, runThreeFates()'s `.answers`
+   *  (the 3-voter arbitration's actual free-text answer strings) were computed and then
+   *  discarded at the one call site -- only `.concordance` was kept. Every batch/MC caller of
+   *  this pipeline predates and is indifferent to this field (it is never read by
+   *  runDomainPipeline, runCanonicalPlow, plow_worker_service.ts, or mic_ipc.ts), so its
+   *  presence is byte-identical-safe for every existing consumer. null means Three Fates never
+   *  ran (zero facts survived to arbitrate) or every voter call failed -- an honest absence,
+   *  never backfilled with a guess. */
+  answerText?: string | null;
 }
 
 export interface CanonicalPlowDomainResult {
@@ -106,7 +118,17 @@ export interface CanonicalPlowProgressEvent {
     | 'andon-exhausted'
     | 'question-done'
     | 'domain-done'
-    | 'complete';
+    | 'complete'
+    // KN-BP144-8 Phase 1, ADDITIVE: emitted only by runCanonicalFreeTextQuestion's own
+    // substrate-first gate, before it ever decides whether to call runCanonicalQuestion at
+    // all. No existing consumer (runDomainPipeline / TestItOutTab.tsx / plow_worker_service.ts)
+    // emits or reads these two -- they cannot appear on any batch/MC event stream.
+    | 'substrate-check-start'
+    | 'substrate-hit-rooted'
+    | 'substrate-miss';
+  /** KN-BP144-8 Phase 1, ADDITIVE. Only set on 'substrate-hit-rooted' / 'substrate-miss'. */
+  substrateTier?: RootingTier | null;
+  substrateProvenance?: string;
   domain?: string;
   domainIndex?: number;
   totalDomains?: number;
@@ -786,10 +808,18 @@ async function runCanonicalQuestion(
     : postMiner.slice(0, 3); // fallback: use pre-Saladin candidates if Furnace burned all
 
   let concordance: ConcordanceClass = 'DISCORDANT';
+  // KN-BP144-8 Phase 1: the one honest answer-text material this pipeline ever produces --
+  // a direct, unedited pass-through of a Three Fates voter's own literal response, never a
+  // Furnace-survivor source snippet (that is evidence, not a synthesized answer -- presenting
+  // it as "the answer" would be a fabrication per Phase 0's own finding). Prefer voter 0
+  // (temp=0.0, the most deterministic) and fall back to any other non-null voter only if that
+  // specific call failed -- never averaged, never rewritten.
+  let answerText: string | null = null;
 
   if (factsForArbitration.length > 0) {
     const result = await runThreeFates(question, factsForArbitration, ollamaBaseUrl, model);
     concordance = result.concordance;
+    answerText = result.answers[0] ?? result.answers.find((a) => a !== null) ?? null;
   }
 
   onProgress({
@@ -894,6 +924,10 @@ async function runCanonicalQuestion(
           specialistsUsed, candidatesRaw,
           candidatesPostMiner: postMiner.length, candidatesPostFurnace: postFurnace.length,
           scribes: [recoveredRecord],
+          // KN-BP144-8 Phase 1: no Three Fates arbitration ran on this escalation-recovered
+          // branch (recoveredCandidates came from Federated Andon Tier 1/2, not this question's
+          // own voter pass) -- explicit null, never a guess dressed as an engine answer.
+          answerText: null,
         };
       } else if (resolution.status === 'pending_human') {
         andonTierResolved = 3;
@@ -940,9 +974,177 @@ async function runCanonicalQuestion(
     candidatesPostMiner: postMiner.length,
     candidatesPostFurnace: postFurnace.length,
     scribes: [record],
+    answerText,
   };
 
   return finalResult;
+}
+
+// ─── Single free-text question entry point (KN-BP144-8 Phase 1) ──────────────
+
+/** Per-specialist outcome for a single free-text question, so a receipt can show which
+ *  authorities actually fired and how many candidates each returned, without needing to
+ *  parse the raw CanonicalPlowProgressEvent stream after the fact. */
+export interface FreeTextSpecialistOutcome {
+  name: SpecialistName;
+  fired: boolean;
+  candidateCount: number;
+}
+
+/** The single-question free-text answer receipt. This is the ONE object a caller (the Ask
+ *  tab's IPC handler) needs to render both the answer and its full provenance -- built by
+ *  runCanonicalFreeTextQuestion(), never independently re-assembled by any call site (same
+ *  "one boundary function" receipt discipline KN-BP144-11's buildPlowTraceReceipt() and
+ *  KN-BP144-7's authorityOutcomes record both use on the MC path -- mirrored here, not
+ *  imported from there, since plow_mc_answerer.ts is off-limits to this ticket and its
+ *  receipt type is shaped for MC-specific fields (letterSource etc.) this path has none of). */
+export interface CanonicalFreeTextResult {
+  questionId: string;
+  question: string;
+  domain: string;
+  /** True only when 1.2's substrate-first gate found a ROOTED hit and returned it verbatim --
+   *  in that case NO specialist, Saladin, or Three Fates call was ever made (specialistOutcomes
+   *  is an empty array, not a lie dressed up as "nothing fired"). */
+  servedFromSubstrate: boolean;
+  substrateTier?: RootingTier | null;
+  substrateProvenance?: string;
+  /** The honest engine answer, or null. Never backfilled with a plain local-model guess --
+   *  see runCanonicalQuestion's own answerText doc comment for exactly where this comes from. */
+  answerText: string | null;
+  /** True iff the engine could not produce answerText (no evidence survived Furnace, or every
+   *  Three Fates voter call failed). The Ask surface must render this as an abstention, per
+   *  ticket 1.5 -- never as a plain model answer with the receipt quietly omitted. */
+  abstained: boolean;
+  abstainReason?: string;
+  concordance?: ConcordanceClass;
+  bmvScore?: number;
+  gateOutcomes?: GateOutcome[];
+  specialistOutcomes: FreeTextSpecialistOutcome[];
+  andonTriggered?: boolean;
+  andonRetries?: number;
+  ebletsWritten?: number;
+  latencyMs: number;
+  /** The complete underlying receipt, for a caller that wants every field runCanonicalQuestion
+   *  produced rather than this wrapper's flattened summary. Absent when servedFromSubstrate. */
+  questionResult?: CanonicalPlowQuestionResult;
+}
+
+/**
+ * KN-BP144-8 Phase 1: the single-question free-text entry point the live Ask tab calls,
+ * wrapping the existing batch-shaped runCanonicalQuestion() rather than replacing it --
+ * runDomainPipeline/runCanonicalPlow (the MC-adjacent-but-separate benchmark/mesh-test batch
+ * callers) are completely untouched by this function's existence; it is purely additive.
+ *
+ * Implements ticket 1.2 verbatim: the substrate is consulted FIRST, before any specialist
+ * ("authority" in this pipeline's vocabulary) is ever queried. A hit is served verbatim ONLY
+ * if rooting_rule.ts's isRooted() says so (Tier 1 proven or Tier 2 ground-truth-checked) --
+ * a Tier 3 concordant or unclassified hit falls through to the real engine exactly like a
+ * miss, per BP142 canon ("Tier 3 still answers, it is served and stored, it simply is not
+ * ROOTED" -- that tier's eblets are not distinguished from a genuine miss at THIS gate; they
+ * get a fresh, fully-provenanced engine answer instead of a half-trusted old one).
+ *
+ * Deliberately does NOT touch the internal Spider dead-code inside runCanonicalQuestion
+ * (queryVerifiedEbletsTopical at that function's own Stage 1, still discarded via
+ * `void spiderEblets`) -- fixing that is a separate, larger, BMV/gate-math-touching change
+ * (see KN-BP144-8_REPORT.md Phase 1 §Architecture for the blast-radius analysis). This
+ * function's OWN substrate check, run before runCanonicalQuestion is ever called, satisfies
+ * 1.2 without needing that internal fix.
+ */
+export async function runCanonicalFreeTextQuestion(
+  question: string,
+  domain: string,
+  ollamaBaseUrl: string,
+  model: string,
+  specialistKeys: SpecialistKeys,
+  writeEbletFn: (eblet: {
+    question: string; answer: string; provenance: string;
+    verified: true; sha256: string; timestamp: number;
+  }) => Promise<void>,
+  onProgress: (event: CanonicalPlowProgressEvent) => void,
+): Promise<CanonicalFreeTextResult> {
+  const startMs = Date.now();
+  const questionId = generateQuestionId(question, domain);
+
+  onProgress({ type: 'substrate-check-start', domain, questionIndex: 0, totalQuestions: 1 });
+
+  // ── 1.2: substrate consulted FIRST ─────────────────────────────────────────
+  try {
+    const { queryVerifiedEblets } = await import('../mnem_eblet_store');
+    const hits = await queryVerifiedEblets(question, 3);
+    const topHit = hits[0];
+    if (topHit) {
+      const tier = classifyCorroborationTier(topHit.corroboration, topHit.provenance);
+      if (isRooted(tier)) {
+        onProgress({
+          type: 'substrate-hit-rooted', domain, questionIndex: 0, totalQuestions: 1,
+          substrateTier: tier, substrateProvenance: topHit.provenance,
+        });
+        onProgress({ type: 'question-done', domain, questionIndex: 0, totalQuestions: 1 });
+        return {
+          questionId, question, domain,
+          servedFromSubstrate: true,
+          substrateTier: tier,
+          substrateProvenance: topHit.provenance,
+          answerText: topHit.answer,
+          abstained: false,
+          specialistOutcomes: [],
+          latencyMs: Date.now() - startMs,
+        };
+      }
+    }
+  } catch {
+    // Substrate read failing is non-fatal -- fall through to the real engine, same
+    // discipline as Spider's own try/catch inside runCanonicalQuestion above.
+  }
+
+  onProgress({ type: 'substrate-miss', domain, questionIndex: 0, totalQuestions: 1 });
+
+  // ── No ROOTED hit: query the real engine (specialists = this pipeline's "authorities") ──
+  const operators = getOperatorsForDomain(domain);
+  const specialistOutcomes = new Map<SpecialistName, FreeTextSpecialistOutcome>();
+  for (const name of operators) specialistOutcomes.set(name, { name, fired: false, candidateCount: 0 });
+
+  const wrappedOnProgress = (event: CanonicalPlowProgressEvent) => {
+    if (event.type === 'specialist-done' && event.specialistName) {
+      specialistOutcomes.set(event.specialistName, {
+        name: event.specialistName,
+        fired: true,
+        candidateCount: event.specialistCandidates ?? 0,
+      });
+    }
+    onProgress(event);
+  };
+
+  const result = await runCanonicalQuestion(
+    domain, question, questionId, operators,
+    ollamaBaseUrl, model, specialistKeys,
+    writeEbletFn, wrappedOnProgress,
+    0, 1, 0, 1,
+  );
+
+  const answerText = result.answerText ?? null;
+  const abstained = answerText == null;
+
+  return {
+    questionId, question, domain,
+    servedFromSubstrate: false,
+    answerText,
+    abstained,
+    abstainReason: abstained
+      ? 'No candidates survived evaluation, or every Three Fates voter call failed -- the ' +
+        'engine has no honest answer to give, so the front door abstains rather than falling ' +
+        'back to a plain local-model guess.'
+      : undefined,
+    concordance: result.concordance,
+    bmvScore: result.bmvScore,
+    gateOutcomes: result.gateOutcomes,
+    specialistOutcomes: Array.from(specialistOutcomes.values()),
+    andonTriggered: result.andonTriggered,
+    andonRetries: result.andonRetries,
+    ebletsWritten: result.ebletsWritten,
+    latencyMs: Date.now() - startMs,
+    questionResult: result,
+  };
 }
 
 // ─── Domain pipeline ──────────────────────────────────────────────────────────

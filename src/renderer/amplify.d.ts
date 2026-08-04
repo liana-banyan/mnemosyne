@@ -487,6 +487,22 @@ declare global {
           messages: Array<{ role: string; content: string }>;
           model_override?: string;
         }) => Promise<{ ok: boolean; text?: string; error?: string; model_used?: string; streaming?: boolean }>;
+        // KN-BP144-8 Phase 1: the free-text question path that calls canonical_pipeline.ts's
+        // engine (substrate-first ROOTED check, then specialist swarm + Three Fates
+        // arbitration) -- a SEPARATE channel from `query` above, which remains the plain-
+        // Ollama-chat path untouched.
+        queryEngine: (args: { question: string }) => Promise<{ ok: boolean; streaming?: boolean; error?: string }>;
+        // KN-BP144-8 Phase 1: one push event per CanonicalPlowProgressEvent the engine emits.
+        onAskEngineProgress: (handler: (data: {
+          type: string;
+          specialistName?: string;
+          specialistCandidates?: number;
+          minerPassed?: number;
+          furnacePassed?: number;
+          substrateTier?: string | null;
+          substrateProvenance?: string;
+          andonRetry?: number;
+        }) => void) => () => void;
         // v0.1.57.1: token streaming push events
         onAskTokenProgress: (handler: (data: { delta: string; assembled: string; coldStart?: boolean }) => void) => () => void;
         // BP136 Yoke (answer-cache v1): servedFromSubstrate/cost_usd/latency_ms/provenance/
@@ -500,6 +516,20 @@ declare global {
           latency_ms?: number;
           provenance?: string;
           verified?: boolean;
+          // KN-BP144-8 Phase 1, ADDITIVE: only present on a query-engine completion.
+          engine?: {
+            abstained: boolean;
+            abstainReason?: string;
+            servedFromSubstrate: boolean;
+            substrateTier?: string | null;
+            concordance?: string;
+            bmvScore?: number;
+            gateOutcomes?: Array<{ gate: string; passed: boolean; detail: string }>;
+            specialistOutcomes?: Array<{ name: string; fired: boolean; candidateCount: number }>;
+            andonTriggered?: boolean;
+            andonRetries?: number;
+            ebletsWritten?: number;
+          };
         }) => void) => () => void;
         // BP132 Yoke #21 C7: user-facing Anthropic API key (never exposes the raw key back out)
         getAnthropicKeyStatus?: () => Promise<{ ok: boolean; hasKey: boolean }>;

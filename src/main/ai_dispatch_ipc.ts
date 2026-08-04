@@ -1312,6 +1312,117 @@ export function registerAiDispatchIPC(): void {
     },
   );
 
+  // ── ai-dispatch:query-engine (KN-BP144-8 Phase 1) ───────────────────────
+  // The Ask tab's free-text question calling the actual canonical_pipeline.ts engine
+  // (substrate-first ROOTED short-circuit, then specialist swarm + Saladin + Furnace + Three
+  // Fates arbitration) -- NOT the plain-Ollama-chat 'ai-dispatch:query' handler above, and NOT
+  // plow_mc_answerer.ts's multiple-choice path (off-limits to this ticket).
+  //
+  // Returns { ok: true, streaming: true } immediately; stage-by-stage progress flows via the
+  // 'ask-engine-progress' push event (one per CanonicalPlowProgressEvent, e.g. substrate
+  // check, each specialist firing/done, Saladin/Furnace/Three-Fates done); the final receipt
+  // flows via 'ask-token-complete', same event name and same badge-relevant fields
+  // (content/servedFromSubstrate/provenance/verified/latency_ms/cost_usd) the existing
+  // AskEngineView badge system already renders, PLUS a new additive `engine` field carrying
+  // this path's own receipt (abstained/concordance/bmvScore/gateOutcomes/specialistOutcomes/
+  // substrateTier) that has no equivalent on the plain-chat path.
+  //
+  // 1.5: an abstention (engine.abstained === true) sends content: '' -- never a plain local-
+  // model guess dressed as an engine answer. The renderer must render engine.abstained as an
+  // abstention, not silently show an empty bubble.
+  ipcMain.handle(
+    'ai-dispatch:query-engine',
+    async (event, args: { question: string }) => {
+      markAppBusy();
+      const tStart = Date.now();
+      const question = (args?.question ?? '').trim();
+      if (!question) {
+        clearAppBusy();
+        return { ok: false, error: 'Empty question' };
+      }
+
+      const reachable = await ollamaManager.isReachable();
+      if (!reachable) {
+        clearAppBusy();
+        return { ok: false, error: 'Local model runtime (Ollama) is not reachable -- the engine needs it for specialist arbitration.' };
+      }
+
+      const settings = loadSettings();
+      const selectedGemmaModel = ollamaManager.getSelectedModel();
+      const activeBrain = getActiveBrain();
+      const activeBrainLocalModel = activeBrain && activeBrain.kind === 'local' ? activeBrain.model_id : undefined;
+      const model = activeBrainLocalModel ?? settings.preferred_model ?? selectedGemmaModel ?? FLOOR_MODEL;
+      // KN-BP144-8 Phase 1: no domain classifier exists for free-typed questions yet -- 'general'
+      // is not a member of domain_operator_map.ts's Domain union, so getOperatorsForDomain()
+      // falls back to BASE_OPERATORS (wikipedia/wikidata/openalex/commoncrawl/crossref, all
+      // free/keyless) rather than a topic-tailored roster. Confirmed safe-degradation, not a
+      // crash, by SEG-1's Phase 1 research pass -- named honestly here rather than guessed at.
+      const domain = 'general';
+
+      (async () => {
+        try {
+          const { runCanonicalFreeTextQuestion } = await import('./plow/canonical_pipeline');
+          const writeEbletFn = async (eblet: {
+            question: string; answer: string; provenance: string;
+            verified: true; sha256: string; timestamp: number;
+          }) => {
+            await writeVerifiedEblet(eblet);
+          };
+
+          const onProgress = (progEvent: import('./plow/canonical_pipeline').CanonicalPlowProgressEvent) => {
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('ask-engine-progress', progEvent);
+            }
+          };
+
+          const result = await runCanonicalFreeTextQuestion(
+            question, domain, OLLAMA_API_BASE, model, {}, writeEbletFn, onProgress,
+          );
+
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('ask-token-complete', {
+              content: result.abstained ? '' : (result.answerText ?? ''),
+              servedFromSubstrate: result.servedFromSubstrate,
+              provenance: result.substrateProvenance,
+              // Honest, narrow use of `verified`: true only for the substrate-served ROOTED
+              // path. An engine-arbitrated answer (concordant or not) is never marked verified
+              // here -- that badge means "ROOTED", not "the model tried its best".
+              verified: result.servedFromSubstrate,
+              cost_usd: 0,
+              latency_ms: result.latencyMs,
+              engine: {
+                abstained: result.abstained,
+                abstainReason: result.abstainReason,
+                servedFromSubstrate: result.servedFromSubstrate,
+                substrateTier: result.substrateTier,
+                concordance: result.concordance,
+                bmvScore: result.bmvScore,
+                gateOutcomes: result.gateOutcomes,
+                specialistOutcomes: result.specialistOutcomes,
+                andonTriggered: result.andonTriggered,
+                andonRetries: result.andonRetries,
+                ebletsWritten: result.ebletsWritten,
+              },
+            });
+          }
+        } catch (err) {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('ask-token-complete', {
+              content: '',
+              error: String(err),
+              engine: { abstained: true, abstainReason: `Engine call failed: ${String(err)}` },
+            });
+          }
+        }
+      })().finally(() => {
+        clearAppBusy();
+        console.log(`[AskEngine] question-engine turn finished in ${Date.now() - tStart}ms`);
+      });
+
+      return { ok: true, streaming: true };
+    },
+  );
+
   // ── ai-dispatch:eblet-index-stats (SEG-6 / SEG-5) ───────────────────────
   // Returns EbletIndexStats for the substrate counter UI panel.
   ipcMain.handle('ai-dispatch:eblet-index-stats', () => {

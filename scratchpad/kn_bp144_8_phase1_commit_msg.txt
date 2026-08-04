@@ -1,0 +1,32 @@
+KN-BP144-8 Phase 1: wire the Ask tab to the revived free-text plow engine
+
+The Ask tab now calls runCanonicalFreeTextQuestion() (new, in
+canonical_pipeline.ts) instead of plain Ollama chat -- reviving the orphaned
+free-text pipeline Phase 0 found sitting behind the dead TestItOutTab.tsx,
+per Founder-confirmed architecture (revive over extend-the-thin-path).
+
+- canonical_pipeline.ts: new substrate-first (isRooted() short-circuit)
+  single-question entry point + receipt types; additive-only changes to
+  existing types (answerText field, 3 new progress-event types) -- zero
+  changed definitions for any of the 14 symbols plow_mc_answerer.ts imports
+  from this file, confirmed by scratchpad/kn_bp144_8_phase1_negative_control.mjs.
+- ai_dispatch_ipc.ts: new 'ai-dispatch:query-engine' IPC handler, streaming
+  stage progress + the engine's own receipt (gate outcomes, concordance,
+  BMV, specialist outcomes, rooting tier). Honest abstention: content: ''
+  on engine.abstained, never a plain-model fallback dressed as an answer.
+- preload.ts / amplify.d.ts: new queryEngine/onAskEngineProgress surface.
+- AskEngineView.tsx / LeanAskTab.tsx: reuse the existing stage-id/badge
+  system (KN-BP143-3 D5) rather than building a second display; new
+  abstention banner and specialist stage-list grid.
+
+Verified: MC benchmark path (plow_mc_answerer.ts, plow_mc_elimination_cascade.ts,
+STRUCTURED_AUTHORITIES, resolveCakeDerivationPath) structurally untouched;
+main/renderer tsc gates byte-identical to pre-diff baseline (0 / 83 errors);
+FE-1/FE-2/FE-3 + substrate-short-circuit and authority-path-fire proven
+against real compiled dist with real Ollama + real network calls; genuine
+abstained:true case proven; 5 real screenshots captured against a live
+running instance (after working around a GPU-compositor blocker in this
+environment). Full verbatim evidence in
+BISHOP_DROPZONE/KN-BP144-8_REPORT.md's Phase 1 section.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
