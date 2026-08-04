@@ -1090,6 +1090,16 @@ const PSIONIC_OPTION_MATCH_MIN_SCORE = 0.34;
  *  text shares no tokens with any of them and every option scores equally near zero). */
 const PSIONIC_OPTION_MATCH_MIN_MARGIN = 0.08;
 
+/** KN-BP144-9 Phase 2 (BP144, this pass): a strictly higher score floor than
+ *  PSIONIC_OPTION_MATCH_MIN_SCORE, applied ONLY when matchFreeTextAnswerToOption falls through to
+ *  text-similarity carrying an incidental number the question's own options don't share (see that
+ *  function's own doc comment for the full rationale and the qid-111 worked example this bar was
+ *  derived from). 0.5 -- "at least half of the option's own distinctive words are echoed back" --
+ *  chosen as a materially higher, round, self-justifying bar on its own terms (not fitted to
+ *  separate two specific scores), comfortably clearing the genuine match this fallthrough exists
+ *  to recover (0.80) while excluding the coincidental one that motivated adding this floor (0.43). */
+const PSIONIC_OPTION_MATCH_MIN_SCORE_INCIDENTAL_NUMBER = 0.5;
+
 /** Same lightweight tokenizer convention as computeLetterConcordance's neighbors in this file
  *  (lowercase, strip non-alphanumeric, split on whitespace) -- deliberately NOT importing
  *  psionic_predictor.ts's private tokenize()/STOP_WORDS (module-internal, not exported) or
@@ -1104,6 +1114,15 @@ function tokenizeForOptionMatch(text: string): string[] {
     .filter((w) => w.length > 2);
 }
 
+/** KN-BP144-9 Phase 2 (BP144, this pass): whether this question's OWN option set is itself
+ *  numeric-shaped -- i.e. at least one option's text contains an extractable number. Gates the
+ *  numeric short-circuit in matchFreeTextAnswerToOption immediately below. Computed fresh per
+ *  call (options arrays here are small, ~4-10 entries, this is not a hot loop) rather than
+ *  cached, to keep this a pure function with no hidden state. */
+function optionsContainNumericValue(options: McOption[]): boolean {
+  return options.some((opt) => extractNumber(opt.text) !== null);
+}
+
 /** BP137 Yoke v2b Stage D.1: matches Psionic's free-text `answer` against this question's MC
  *  options. Two strategies, tried in order (documented in the Stage D report as the "option-
  *  matching approach" the Yoke asked to be explicit about):
@@ -1116,19 +1135,69 @@ function tokenizeForOptionMatch(text: string): string[] {
  *      scorer only if it clears both PSIONIC_OPTION_MATCH_MIN_SCORE (absolute floor) AND
  *      PSIONIC_OPTION_MATCH_MIN_MARGIN over the second-best (relative floor) -- an ambiguous or
  *      weak match returns null (no short-circuit, no answer forced), never a best-effort guess.
+ *
+ *  KN-BP144-9 Phase 2 fix (BP144, this pass -- Founder-approved after Phase 0's read-only
+ *  investigation): strategy 1's numeric short-circuit is now gated on optionsContainNumericValue
+ *  (immediately above) -- it only fires, and only ever returns null on a tolerance miss, when
+ *  THIS QUESTION'S OWN OPTIONS are themselves numeric-shaped. Phase 0 found 10 of 32 receipt-041
+ *  parse_failed rows were being intercepted by strategy 1 finding an INCIDENTAL number anywhere
+ *  in the answer text (a date, a ratio component like "1:2:4", a population figure) on questions
+ *  whose options were pure prose with no numbers at all -- the incidental number could never
+ *  possibly match any option (none had one to match), so the old code's unconditional early
+ *  `return null` was silently discarding the answer before strategy 2 (token-overlap) ever ran,
+ *  even when strategy 2 would have cleared both its own thresholds cleanly (hand-verified: qid
+ *  111's "Laplace resonance ... 1:2:4 ... keeping Io's orbit slightly elliptical" scores option
+ *  I at 0.80, comfortably clearing PSIONIC_OPTION_MATCH_MIN_SCORE and its margin over the
+ *  second-place option). This fix does NOT touch, lower, or bypass either threshold -- a
+ *  question whose options ARE numeric (qids 27/53/59 in that same receipt) is completely
+ *  unaffected, byte-for-byte, since optionsContainNumericValue is true for all of them and
+ *  strategy 1 still runs exactly as before, including its own honest null on a genuine tolerance
+ *  miss. Never widens a gate; only stops a non-numeric question's answer from being handed to
+ *  the wrong strategy.
  */
-function matchFreeTextAnswerToOption(
+export function matchFreeTextAnswerToOption(
   answerText: string,
   options: McOption[],
 ): { letter: string; score: number } | null {
-  const numeric = extractNumber(answerText);
-  if (numeric !== null) {
-    const numericMatch = matchValueToOption(numeric, options);
-    if (numericMatch) return { letter: numericMatch.letter, score: 1 };
-    // A numeric token was present but matched no option within tolerance -- do NOT fall
-    // through to the text-similarity heuristic for this same answer (that would risk a
-    // false text-match papering over a real numeric mismatch). Honest null.
-    return null;
+  // KN-BP144-9 Phase 2 (BP144, this pass): tracks whether this call is falling through to the
+  // text-similarity strategy carrying an INCIDENTAL number the answer text contained (a number
+  // this question's own options don't share -- see optionsContainNumericValue above). A live
+  // false-extraction check against the real 041 receipt's rawPreview text (verified against the
+  // real compiled dist, not a hand copy) found that this specific fallthrough shape -- an
+  // incidental number (a ratio, a date) sitting inside an otherwise weak token-overlap match --
+  // can score just high enough to clear the ordinary PSIONIC_OPTION_MATCH_MIN_SCORE floor without
+  // the match being genuinely unambiguous (qid 111, user_google, this receipt: scores option C at
+  // 0.43 on "...a three-body MMR with a 1:2:4 orbital period ratio... ratio of orbits..." purely
+  // because "with"/"the"/"orbits" happen to overlap C's wording -- NOT because the text identifies
+  // option C). The SAME text, from user_claude, scores the genuinely correct option I at 0.80 --
+  // a real, substantive match, not noise. A single higher floor cannot be tuned to split these two
+  // per-question (forbidden -- "never tune to a specific question id"), so instead this fallthrough
+  // path carries a strictly higher, uniformly-applied bar than the ordinary prose path: the
+  // rationale is general, not row-specific -- an answer that mentions a number belonging to
+  // NEITHER this question's options carries a demonstrated tendency (this receipt is the
+  // demonstration) to still coincidentally share ordinary connector/topic words with some option,
+  // so a merely-adequate overlap score is a weaker signal here than it is for a plain prose answer
+  // with no incidental number at all, and must clear a materially higher bar before being treated
+  // as unambiguous. This does NOT touch PSIONIC_OPTION_MATCH_MIN_SCORE/_MIN_MARGIN themselves --
+  // the ordinary (no-incidental-number) path below is 100% unchanged.
+  let requireStricterFloor = false;
+  if (optionsContainNumericValue(options)) {
+    const numeric = extractNumber(answerText);
+    if (numeric !== null) {
+      const numericMatch = matchValueToOption(numeric, options);
+      if (numericMatch) return { letter: numericMatch.letter, score: 1 };
+      // A numeric token was present, THIS QUESTION'S OPTIONS are themselves numeric, but the
+      // token matched no option within tolerance -- do NOT fall through to the text-similarity
+      // heuristic for this same answer (that would risk a false text-match papering over a real
+      // numeric mismatch on a genuinely computable question). Honest null, unchanged from
+      // before this pass.
+      return null;
+    }
+  } else if (extractNumber(answerText) !== null) {
+    // This question's OWN options are pure prose (no number anywhere), yet the answer text
+    // contains a number -- an incidental digit (ratio, date, count) with nothing to match against.
+    // Fall through to text-similarity, but only ever accept it under the stricter bar above.
+    requireStricterFloor = true;
   }
 
   const answerTokens = new Set(tokenizeForOptionMatch(answerText));
@@ -1145,7 +1214,10 @@ function matchFreeTextAnswerToOption(
 
   const top = scored[0];
   const second = scored[1];
-  if (!top || top.score < PSIONIC_OPTION_MATCH_MIN_SCORE) return null;
+  const scoreFloor = requireStricterFloor
+    ? PSIONIC_OPTION_MATCH_MIN_SCORE_INCIDENTAL_NUMBER
+    : PSIONIC_OPTION_MATCH_MIN_SCORE;
+  if (!top || top.score < scoreFloor) return null;
   if (second && top.score - second.score < PSIONIC_OPTION_MATCH_MIN_MARGIN) return null;
   return { letter: top.letter, score: top.score };
 }
@@ -1168,7 +1240,16 @@ function matchFreeTextAnswerToOption(
 // buildBrowserAuthorityQueryUrl's user_google branch) will almost never contain this pattern by
 // chance, so this stays a no-op there -- Google answers keep falling through to the existing
 // token-overlap fallback (matchFreeTextAnswerToOption), unchanged.
-function extractChosenLetterFromAuthorityText(
+// KN-BP144-9 Phase 2 (BP144, this pass): exported, along with matchFreeTextAnswerToOption above
+// and resolveAuthorityLetterMatch immediately below, SOLELY so a scratchpad verification script
+// can import these three from the real compiled dist and replay them against the real 041
+// receipt's rawPreview text -- per this ticket's own "verify against the real compiled dist"
+// mandate. Phase 0 had to hand-copy-reimplement all three for the same reason and flagged that
+// as an honesty gap (a silent divergence between the copy and the real source could not be ruled
+// out). No behavior changes from this export -- these three functions' bodies are otherwise
+// byte-identical in control flow to before this pass except for the one gated line in
+// matchFreeTextAnswerToOption documented on that function itself.
+export function extractChosenLetterFromAuthorityText(
   answerText: string,
   options: McOption[],
 ): { letter: string; score: number } | null {
@@ -1195,7 +1276,7 @@ function extractChosenLetterFromAuthorityText(
  * local matcher only if the authority declines" per the Founder's design. Never returns a match
  * neither function would have honestly returned on its own.
  */
-function resolveAuthorityLetterMatch(
+export function resolveAuthorityLetterMatch(
   answerText: string,
   options: McOption[],
 ): { letter: string; score: number; method: 'explicit_letter' | 'token_or_numeric_match' } | null {
