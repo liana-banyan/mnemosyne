@@ -1,0 +1,29 @@
+KN-BP144-9 Phase 1: synthetic-paste delivery mechanism for interactive browser-LLM composers
+
+Founder-approved after Phase 0's read-only investigation (browser authority response-parsing
+failures, 041 mesh test receipt). Phase 0 proved Gemini and ChatGPT receive byte-identical
+prompt TEXT via buildMcAwareQueryText, ruling out the ticket's original "prompt construction"
+hypothesis and pointing instead at the DOM-level delivery mechanism (Quill vs ProseMirror).
+
+Change: setComposerText() in webview_preload.ts now tries a synthetic ClipboardEvent('paste',
+{clipboardData}) dispatch FIRST for contentEditable composers, self-verifying via a DOM readback
+(composerReadbackLooksComplete) before trusting it, and falling through to the pre-existing
+document.execCommand('insertText', ...) path -- byte-identical to before this pass -- when the
+paste path is unavailable or the readback doesn't confirm the full text landed. Additive only:
+ChatGPT's already-working ProseMirror composer and Claude's own hand-written driver cannot
+regress, since their existing path is untouched and only consulted as a fallback.
+
+Rationale: modern rich-text editors (Quill, ProseMirror, Slate, Draft.js) register their own
+'paste' event handler and parse clipboardData through the editor's own normalization pipeline,
+a more portable mechanism than a raw execCommand('insertText') that bypasses editor-specific
+paragraph/newline handling entirely.
+
+tsc --noEmit -p tsconfig.main.json: clean. npm run build:main: clean.
+
+Honest gate status (see KN-BP144-9_REPORT.md Phase 1 section for full detail):
+- Could NOT obtain a live signed-in Gemini/ChatGPT session in this environment to produce FE-3
+  (Gemini's own words no longer asking for the options). Reported plainly, not fabricated.
+- A separate background browser-automation investigation was dispatched against public Quill/
+  ProseMirror demo pages to test the execCommand-vs-paste-event behavior difference empirically;
+  its findings (if concluded in time) are folded into the report as supporting/refuting evidence,
+  not as a substitute for the missing FE-3 live-session proof.
