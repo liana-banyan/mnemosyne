@@ -28,7 +28,6 @@ import {
 } from '../../shared/plow/browser_authority_types';
 import {
   loadNexusAuthoritySettings,
-  saveResearchArmBrowserAuthority,
   saveResearchArmMode,
   setArmAuthority,
 } from './nexus_authority_settings_store';
@@ -63,18 +62,16 @@ export function NexusAuthoritySettings() {
     setLoaded(true);
   }, []);
 
+  // KN-BP144-3 Phase 1 (one gate, not two): toggling the master switch now also flips
+  // researchArmBrowserAuthority in lockstep (see saveResearchArmMode()'s own comment in
+  // nexus_authority_settings_store.ts) -- update both pieces of local state together so this
+  // panel's own read-only sub-flag row (below) never has a stale frame where it disagrees with
+  // what was just persisted.
   const handleModeToggle = useCallback(() => {
     setResearchArmMode((prev) => {
       const next = !prev;
       saveResearchArmMode(next);
-      return next;
-    });
-  }, []);
-
-  const handleBrowserAuthorityToggle = useCallback(() => {
-    setResearchArmBrowserAuthority((prev) => {
-      const next = !prev;
-      saveResearchArmBrowserAuthority(next);
+      setResearchArmBrowserAuthority(next);
       return next;
     });
   }, []);
@@ -120,30 +117,38 @@ export function NexusAuthoritySettings() {
           </button>
         </div>
 
-        {/* Browser-authority sub-switch, visible only when master switch is on -- matches
-            plow_mc_answerer.ts's own researchArmMode-AND-sub-flag convention (read for style
-            reference only, never imported from here). */}
+        {/* KN-BP144-3 Phase 1: this used to be an INDEPENDENT clickable sub-switch a user had to
+            separately remember to turn on -- the exact "silent second gate" this ticket's WHY
+            section names (ensureNexusAuthoritySession() ANDs this with researchArmMode, and a
+            user who only ever flips the master switch above never saw this row at all unless
+            they expanded it). It is now a read-only status line: saveResearchArmMode() always
+            keeps researchArmBrowserAuthority equal to researchArmMode, so there is exactly ONE
+            control (Research Arm, above) and this row exists only to make that fact visible,
+            never to invite a second, independently-forgettable decision. */}
         {researchArmMode && (
           <div style={s.toggleRow}>
             <div style={{ flex: 1 }}>
               <div style={s.toggleLabel}>User's Browser Session</div>
               <div style={s.toggleDesc}>
-                Allow the lookup arm to use your own logged-in Google/Perplexity session (via
-                the embedded Chrome panel) instead of only the local specialist-adapter swarm.
+                Included automatically whenever Research Arm is ON -- no separate switch to
+                forget. Lets the lookup arm use your own logged-in Google/Perplexity/Claude/
+                ChatGPT/Gemini session (via the embedded Nexus browser) instead of only the
+                local specialist-adapter swarm.
               </div>
             </div>
-            <button
+            <div
               style={{
                 ...s.pill,
+                cursor: 'default',
                 background: researchArmBrowserAuthority ? 'rgba(110,231,183,0.12)' : 'rgba(100,116,139,0.08)',
                 borderColor: researchArmBrowserAuthority ? 'rgba(110,231,183,0.4)' : 'rgba(100,116,139,0.3)',
                 color: researchArmBrowserAuthority ? '#6ee7b7' : '#64748b',
               }}
-              onClick={handleBrowserAuthorityToggle}
-              aria-label="Toggle browser-authority sub-flag"
+              title="Follows Research Arm automatically -- not independently editable"
+              aria-label="Browser-authority sub-flag status (read-only, follows Research Arm)"
             >
               {researchArmBrowserAuthority ? 'ON' : 'OFF'}
-            </button>
+            </div>
           </div>
         )}
 

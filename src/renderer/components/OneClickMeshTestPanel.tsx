@@ -14,6 +14,19 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import type { AuthState } from '../amplify.d';
+// KN-BP144-3 Phase 1 ("one store, one truth"): researchArmMode used to live ONLY in this
+// component's own useState, fully disconnected from nexus_authority_settings_store.ts (the
+// store Settings > Nexus Authority's master switch reads/writes) -- confirmed by direct read,
+// this file never imported that module before this pass. That meant the Settings toggle had
+// ZERO effect on this panel's scored runs, and this panel's checkbox had zero effect on what
+// Settings displayed -- two independent "truths" for the identical CanonicalPlowMcConfig.
+// researchArmMode field. See loadNexusAuthoritySettings/saveResearchArmMode/
+// hasNexusAuthorityModeEverBeenSet usages below for the fix.
+import {
+  hasNexusAuthorityModeEverBeenSet,
+  loadNexusAuthoritySettings,
+  saveResearchArmMode,
+} from '../settings/nexus_authority_settings_store';
 
 export const LS_LAST_RESULT = 'mnemo_last_mesh_test_result';
 
@@ -770,7 +783,38 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
   // off-topic-citation failure mode) + Stage A (answer-type classifier + real compute sidecar
   // for computable questions) together. Off by default, same opt-in pattern as every other
   // toggle here.
-  const [researchArmMode, setResearchArmMode] = useState(RECOMMENDED_DEFAULTS.researchArmMode);
+  //
+  // KN-BP144-3 Phase 1 ("one store, one truth"): initial value now comes from
+  // nexus_authority_settings_store.ts -- the SAME canonical store Settings > Nexus Authority's
+  // master switch reads/writes -- instead of always starting from the hardcoded
+  // RECOMMENDED_DEFAULTS constant regardless of what the user set elsewhere. On a genuinely
+  // fresh install (hasNexusAuthorityModeEverBeenSet() false -- the store has never been written
+  // by ANY surface), this seeds the store with RECOMMENDED_DEFAULTS.researchArmMode and persists
+  // that seed immediately, preserving BP141 KN-BP141-9 D1's "pre-selected on first open" UX
+  // without inventing a second default independent of the store. Every subsequent mount (or a
+  // live change from the Settings tab while this panel is also mounted, via the
+  // 'nexus-authority-settings-changed' listener below) reads the real persisted value -- never a
+  // silently different one. setResearchArmMode (the wrapper below) is what makes this
+  // bidirectional: every manual toggle of this checkbox also persists into the store, so the
+  // Settings tab's toggle and this panel's checkbox can never again silently disagree.
+  const [researchArmMode, setResearchArmModeRaw] = useState<boolean>(() => {
+    if (!hasNexusAuthorityModeEverBeenSet()) {
+      saveResearchArmMode(RECOMMENDED_DEFAULTS.researchArmMode);
+      return RECOMMENDED_DEFAULTS.researchArmMode;
+    }
+    return loadNexusAuthoritySettings().researchArmMode;
+  });
+  const setResearchArmMode = useCallback((next: boolean) => {
+    setResearchArmModeRaw(next);
+    saveResearchArmMode(next);
+  }, []);
+  // Keeps this panel in sync when researchArmMode changes from a DIFFERENT mounted surface
+  // (Settings > Nexus Authority's master switch) -- closes the loop the other direction too.
+  useEffect(() => {
+    const syncFromStore = () => setResearchArmModeRaw(loadNexusAuthoritySettings().researchArmMode);
+    window.addEventListener('nexus-authority-settings-changed', syncFromStore);
+    return () => window.removeEventListener('nexus-authority-settings-changed', syncFromStore);
+  }, []);
   // BP138 Yoke 0.9.13 F3: explicit opt-in to mesh-synergy dispatch (asker's round-robin
   // distribution of DIFFERENT authorities -- user_google/user_perplexity/swarm -- across live
   // peers for the SAME question, instead of every peer redundantly running the identical full
@@ -1490,7 +1534,9 @@ export function OneClickMeshTestPanel({ onShareResult, authState }: OneClickMesh
           />
           Research Arm (Stage A.0+A) {researchArmMode ? 'ON' : 'OFF'}
           <span style={{ color: '#475569', fontSize: 10 }}>
-            (ON: relevance gate moved upstream of the MC voters -- abstains rather than voting on off-topic sources -- plus a classifier + deterministic compute sidecar for computable questions)
+            (ON: relevance gate moved upstream of the MC voters -- abstains rather than voting on off-topic sources -- plus a classifier + deterministic compute sidecar for computable questions.
+            Also enables Google/Perplexity/Claude/ChatGPT/Gemini browser authorities, subject to each one's own enable toggle in Settings &gt; Authorities. KN-BP144-3: this checkbox is the SAME
+            Research Arm switch as Settings &gt; Nexus Authority -- changing it here changes it there too, and vice versa.)
           </span>
         </label>
       )}
