@@ -1860,6 +1860,25 @@ export interface AuthorityEnsembleOutcome {
   /** KN-BP144-5 T3: `authority:derivationPath` for every member of the agreeing group this
    *  assessment ran over, in original order -- present whenever agreeDerivationVerdict is. */
   agreeGroupPathAssignments?: string[];
+  /** KN-BP144-6 T1/T3, OPTIONAL/ADDITIVE. Records the outcome of this ticket's own attempt of
+   *  solveNoConsensusFromScatter (the deterministic scatter-class solver -- the only one of this
+   *  shape in this file today; see this field's own push-site comment for why no sibling exists to
+   *  attempt alongside it) run BEFORE the swarm-augmented accept-on-agreement branch is reached.
+   *  Set exactly once, immediately after that attempt runs (fired or declined), then threaded
+   *  UNCHANGED into every return this function can reach after that point (the multipath accept,
+   *  KN-BP144-5's own singlepath-decline recheck firing, THE CAKE METHOD's accept, THE CAKE
+   *  METHOD's no-plurality abstain, and the final disagree fallthrough) -- so any reader of the
+   *  eventual outcome can always see whether the earlier attempt fired, declined (`detail` always
+   *  names the EXACT B1-B4 gate that failed -- never a bare "declined", T3's own explicit
+   *  requirement), or the question's own option set made the solver not applicable at all (B1).
+   *  Absent only when this function returned BEFORE reaching that call site -- the pseudocode/
+   *  set-membership/deterministic-override-hoist/pre-swarm-scatter bypasses, or the pre-swarm
+   *  fast-path accept, all still return earlier, byte-identical to before this ticket. */
+  preAgreeDeterministicScatterAttempt?: {
+    verdict: 'deterministic_attempted_fired' | 'deterministic_attempted_declined' | 'deterministic_not_applicable';
+    solver: 'no_consensus_from_scatter';
+    detail: string;
+  };
   /** BP141-1 SINGLE-SOURCE-NO-GROUNDING GATE (Task 3, run 029 receipt, question_id 98), OPTIONAL/
    *  ADDITIVE. Populated ONLY at the exactly-one-candidate accept site (corroboration one of
    *  single_google/single_perplexity/single_wolfram/single_chatgpt/single_gemini/single_claude/
@@ -3083,6 +3102,82 @@ async function loadGroundedSetMembershipFacts(): Promise<GroundedFactEblet[]> {
   }
 }
 
+// KN-BP144-6 T3: read-only diagnostic mirror of solveNoConsensusFromScatter's own B1-B4 gates
+// (plow_mc_no_consensus_solver.ts). Built SOLELY so a decline can be reported with the EXACT gate
+// it failed ("never a bare 'declined'" -- this ticket's own explicit requirement). This file is
+// the one file this ticket may edit, and the solver's own NO_CONSENSUS_PATTERNS/
+// isNoConsensusOptionText are not exported from that module, so this is a deliberate, kept-in-
+// sync-by-hand duplicate of that same 7-pattern list, FOR TRACE ATTRIBUTION ONLY. It never gates
+// any accept/decline decision anywhere in this file -- every call site below branches exclusively
+// on the REAL solveNoConsensusFromScatter's own return value (null or a result); this function is
+// consulted only AFTER that real call already returned null, purely to name why it declined. If
+// this mirror ever silently drifts out of sync with the solver's own patterns, the only possible
+// consequence is an imprecise HUMAN-READABLE gate name in a log line -- never a behavior change
+// anywhere in this file (the UNRESOLVED fallback below reports exactly that risk honestly rather
+// than asserting a gate name this mirror cannot actually confirm).
+const NO_CONSENSUS_PATTERNS_MIRROR: RegExp[] = [
+  /\bthere is no specific\b/i,
+  /\bthere is no single\b/i,
+  /\bno single (correct )?(answer|consensus)\b/i,
+  /\bno specific (correct )?(answer|consensus)\b/i,
+  /\bthere is no consensus\b/i,
+  /\bno consensus (exists|has been reached)\b/i,
+  /\bno (universally |generally )?agreed[- ]upon\b/i,
+];
+
+// Exported for the same reason eliminateDuplicateSwarmDerivationPath/assessAgreeingGroupDerivationDiversity
+// are (see those functions' own doc comments) -- purely additive, so this ticket's own real-dist
+// verification script can exercise the exact diagnostic this file's traces rely on, no second copy.
+export function diagnoseNoConsensusScatterDecline(
+  options: McOption[],
+  independentSources: IndependentSourceVote[],
+): { notApplicable: boolean; detail: string } {
+  const noConsensusOptions = options.filter((o) => NO_CONSENSUS_PATTERNS_MIRROR.some((re) => re.test(o.text)));
+  if (noConsensusOptions.length === 0) {
+    return { notApplicable: true, detail: 'B1: no option in this question asserts no-single-answer/no-consensus -- solver not applicable to this question shape' };
+  }
+  if (noConsensusOptions.length >= 2) {
+    return {
+      notApplicable: true,
+      detail: `B1: ${noConsensusOptions.length} options match the no-consensus phrasing (ambiguous which is "the" one: [${noConsensusOptions.map((o) => o.letter).join(',')}]) -- solver not applicable`,
+    };
+  }
+  const noConsensusOption = noConsensusOptions[0]!;
+  const votesByPath = new Map<string, string>();
+  for (const s of independentSources) {
+    if (!s.derivationPath || !s.letter) continue;
+    if (!votesByPath.has(s.derivationPath)) votesByPath.set(s.derivationPath, s.letter);
+  }
+  const distinctDerivationCount = votesByPath.size;
+  const votesDescription = [...votesByPath.entries()].map(([p, l]) => `${p}:${l}`).join(', ');
+  if (distinctDerivationCount < 3) {
+    return { notApplicable: false, detail: `B2: only ${distinctDerivationCount} distinct derivation path(s) among independent sources (need >=3) -- votes=[${votesDescription}]` };
+  }
+  const letterCounts = new Map<string, number>();
+  for (const letter of votesByPath.values()) letterCounts.set(letter, (letterCounts.get(letter) ?? 0) + 1);
+  const distinctLetterCount = letterCounts.size;
+  if (distinctLetterCount < 3) {
+    return { notApplicable: false, detail: `B3: only ${distinctLetterCount} distinct letter(s) survive [${[...letterCounts.keys()].join(',')}] (need >=3) -- votes=[${votesDescription}]` };
+  }
+  let maxCount = 0;
+  for (const c of letterCounts.values()) maxCount = Math.max(maxCount, c);
+  if (maxCount * 2 > distinctDerivationCount) {
+    const leaders = [...letterCounts.entries()].filter(([, c]) => c === maxCount).map(([l]) => l);
+    return { notApplicable: false, detail: `B3: letter(s) [${leaders.join(',')}] hold a strict majority (${maxCount} of ${distinctDerivationCount} distinct-path votes) -- votes=[${votesDescription}]` };
+  }
+  const pluralityLeaders = [...letterCounts.entries()].filter(([, c]) => c === maxCount).map(([l]) => l);
+  if (pluralityLeaders.includes(noConsensusOption.letter)) {
+    return {
+      notApplicable: false,
+      detail: `B4: no-consensus option's own letter ${noConsensusOption.letter} is itself among the plurality leader(s) [${pluralityLeaders.join(',')}] -- scatter corroborates that letter, not "no consensus"`,
+    };
+  }
+  return {
+    notApplicable: false,
+    detail: `UNRESOLVED: this diagnostic mirror reads B1-B4 as all passing, but the real solveNoConsensusFromScatter call still returned null -- reporting the mismatch honestly rather than asserting a gate name this mirror cannot actually confirm (votes=[${votesDescription}], no_consensus_option=${noConsensusOption.letter})`,
+  };
+}
+
 /** Runs the full ensemble for one question: queries every free authority available for
  *  `answerType`, resolves each via resolveAuthorityLetterMatch (Wolfram via a direct computed-
  *  value match against the options instead, since it never returns free text), and corroborates
@@ -3851,8 +3946,26 @@ async function runAuthorityEnsemble(params: {
   // 'deterministic_compute' shape the pre-swarm call site above already uses. This can only ever
   // ADD a correctly-gated deterministic accept ahead of a bare agree -- it never removes or weakens
   // any existing accept path, and it never widens solveNoConsensusFromScatter's own B1-B4 gates.
+  //
+  // KN-BP144-6 T1/T2 FIX ("THE SOLVER NEVER GOT TO SPEAK"): this call site already ran BEFORE the
+  // swarm-augmented accept-on-agreement branch (KN-BP143-1 Defect 4 placed it here specifically for
+  // that reason) -- T1's "move the attempt before accept-on-agreement" requirement was already
+  // structurally true at this exact position. What was NOT yet true, and is the actual fix this
+  // ticket makes: the input this call site fed the solver was the RAW, un-deduped `candidates`
+  // list, counting specialist_swarm as a SEPARATE independent vote alongside whichever non-swarm
+  // authority it agrees with -- inflating both the independence count (B2) and, more consequentially,
+  // the majority arithmetic (B3), which reads specialist_swarm's own vote as one more distinct voice
+  // for whatever letter the swarm landed on. T2 requires the SAME input construction KN-BP144-5's
+  // own T2 already built for its own diversity-decline recheck below (eliminateDuplicateSwarmDerivationPath
+  // applied to the full candidate list, never a set already collapsed by an agreement check) --
+  // reused here verbatim, not a second divergent copy. This can only ever REMOVE a vote (swarm's,
+  // and only when a genuinely different-path candidate survives to make it a duplicate witness), so
+  // it can only ever make the majority/independence arithmetic MORE conservative, never invent scatter
+  // that was not already present among the genuinely independent non-swarm authorities.
+  let preAgreeScatterAttempt: AuthorityEnsembleOutcome['preAgreeDeterministicScatterAttempt'];
   try {
-    const independentSourcesPostSwarm: IndependentSourceVote[] = candidates.map((c) => ({
+    const { survivors: dedupedForPreAgreeScatter } = eliminateDuplicateSwarmDerivationPath(candidates);
+    const independentSourcesPostSwarm: IndependentSourceVote[] = dedupedForPreAgreeScatter.map((c) => ({
       letter: c.letter,
       derivationPath: resolveCakeDerivationPath(c),
     }));
@@ -3860,9 +3973,9 @@ async function runAuthorityEnsemble(params: {
     if (noConsensusPostSwarm) {
       log(
         `no_consensus_from_scatter PROVED answer ${noConsensusPostSwarm.letter} from the ` +
-        `SWARM-COMPLETE independent-derivation-path scatter (KN-BP143-1 Defect 4: re-checked after ` +
-        `the swarm fired, before bare two-source concurrence could preempt it) -- ` +
-        `${noConsensusPostSwarm.trace}.`,
+        `SWARM-COMPLETE, swarm-deduped independent-derivation-path scatter (KN-BP143-1 Defect 4 + ` +
+        `KN-BP144-6 T1/T2: re-checked after the swarm fired, deduped, before bare two-source ` +
+        `concurrence could preempt it) -- deterministic_attempted_fired -- ${noConsensusPostSwarm.trace}.`,
       );
       // KN-BP143-1b CONSUMER AUDIT FINDING (gate 5, NOT fixed this pass): same finding as this
       // solver's own pre-swarm bypass above -- a direct early return outside
@@ -3885,6 +3998,11 @@ async function runAuthorityEnsemble(params: {
         swarmFired: true,
         swarmReceipt,
         reasoningFactComputeReceipt,
+        preAgreeDeterministicScatterAttempt: {
+          verdict: 'deterministic_attempted_fired',
+          solver: 'no_consensus_from_scatter',
+          detail: noConsensusPostSwarm.trace,
+        },
         deterministicOverride: {
           letter: noConsensusPostSwarm.letter,
           optionValue: NaN,
@@ -3898,21 +4016,38 @@ async function runAuthorityEnsemble(params: {
           // own run-031 empirical note (question_id 92) shows this exact tier firing with
           // corroboration='deterministic_compute' in production, structurally indistinguishable
           // from a genuine literal_expression proof in every existing receipt field. The deciding
-          // input is `independentSourcesPostSwarm` -- the SWARM-COMPLETE candidate scatter, i.e.
-          // other authorities'/models' own answers -- never the question text. model_derived: may
-          // be recorded and may corroborate (this tier already only fires on genuine 3+-distinct-
-          // derivation-path, no-majority scatter -- a real, meaningful signal), but per gate 2 must
-          // never independently root or override through the deterministic-override path.
+          // input is `independentSourcesPostSwarm` -- the SWARM-COMPLETE, swarm-deduped candidate
+          // scatter, i.e. other authorities'/models' own answers -- never the question text.
+          // model_derived: may be recorded and may corroborate (this tier already only fires on
+          // genuine 3+-distinct-derivation-path, no-majority scatter -- a real, meaningful signal),
+          // but per gate 2 must never independently root or override through the
+          // deterministic-override path.
           computeProvenance: 'model_derived',
           computeProvenanceDetail:
-            'Deciding evidence is the SWARM-COMPLETE independent-derivation-path scatter -- other ' +
-            'authorities\' and models\' own answers reaching no majority -- re-checked after the ' +
-            'swarm fired, never an operand read from the question text itself.',
+            'Deciding evidence is the SWARM-COMPLETE, swarm-deduped independent-derivation-path ' +
+            'scatter -- other authorities\' and models\' own answers reaching no majority -- ' +
+            're-checked after the swarm fired, never an operand read from the question text itself.',
         },
       };
     }
+    const decline = diagnoseNoConsensusScatterDecline(mcOptions, independentSourcesPostSwarm);
+    preAgreeScatterAttempt = {
+      verdict: decline.notApplicable ? 'deterministic_not_applicable' : 'deterministic_attempted_declined',
+      solver: 'no_consensus_from_scatter',
+      detail: decline.detail,
+    };
+    log(
+      `no_consensus_from_scatter (KN-BP143-1 Defect 4 + KN-BP144-6 T1/T2 pre-accept-on-agreement ` +
+      `attempt, swarm-deduped survivors=[${dedupedForPreAgreeScatter.map((c) => `${c.authority}:${c.letter}`).join(', ')}]) ` +
+      `${preAgreeScatterAttempt.verdict} -- ${decline.detail}.`,
+    );
   } catch (err) {
-    log(`no_consensus_from_scatter (post-swarm recheck, KN-BP143-1 Defect 4) threw (non-fatal, ensemble continues normally): ${err}`);
+    preAgreeScatterAttempt = {
+      verdict: 'deterministic_attempted_declined',
+      solver: 'no_consensus_from_scatter',
+      detail: `threw non-fatally, treated as an honest decline: ${err}`,
+    };
+    log(`no_consensus_from_scatter (post-swarm recheck, KN-BP143-1 Defect 4 + KN-BP144-6 T1/T2) threw (non-fatal, ensemble continues normally): ${err}`);
   }
 
   // 2+ candidates (now possibly including the swarm) -- re-check for a 2+ agreement. Adding the
@@ -3968,6 +4103,10 @@ async function runAuthorityEnsemble(params: {
           independentCorroboration: groupHasStructured,
           agreeDerivationVerdict: diversity.verdict,
           agreeGroupPathAssignments: diversity.pathAssignments,
+          // KN-BP144-6 T3: the pre-accept-on-agreement scatter attempt above already declined (or
+          // this branch could not have been reached -- a fire there returns early and never falls
+          // through to here), threaded through so a reader can see BOTH signals on this one accept.
+          preAgreeDeterministicScatterAttempt: preAgreeScatterAttempt,
         };
       }
       log(
@@ -4019,6 +4158,11 @@ async function runAuthorityEnsemble(params: {
             reasoningFactComputeReceipt,
             agreeDerivationVerdict: diversity.verdict,
             agreeGroupPathAssignments: diversity.pathAssignments,
+            // KN-BP144-6 T3: distinct from THIS return's own fire (KN-BP144-5's T2, a later, separate
+            // attempt) -- carries forward what the EARLIER (KN-BP144-6 T1) pre-accept-on-agreement
+            // attempt said, which must have been a decline/not-applicable for execution to have
+            // reached this far (a T1 fire returns early and never falls through to here).
+            preAgreeDeterministicScatterAttempt: preAgreeScatterAttempt,
             deterministicOverride: {
               letter: noConsensusAfterSinglepathDecline.letter,
               optionValue: NaN,
@@ -4087,12 +4231,17 @@ async function runAuthorityEnsemble(params: {
         cakePickerCutterInvariant: cake.cakePickerCutterInvariant,
         cascadeCandidateProducer: cake.cascadeCandidateProducer,
         gomJabbarG5Advisory: cake.gomJabbarG5Advisory,
+        // KN-BP144-6 T3: threaded through to the final adjudicated accept too, so a reader can
+        // confirm the pre-accept-on-agreement scatter attempt declined/was-not-applicable on this
+        // path (a fire anywhere upstream returns early and never reaches THE CAKE METHOD at all).
+        preAgreeDeterministicScatterAttempt: preAgreeScatterAttempt,
       };
     }
     log('cake method resolved no plurality letter -- honest fall-through (abstain)');
     return {
       chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [],
       adjudicationAttempted: true, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt,
+      preAgreeDeterministicScatterAttempt: preAgreeScatterAttempt,
       cakeMethodUsed: cake.cakeMethodUsed,
       cutModels: cake.cutModels,
       cutDerivations: cake.cutDerivations,
@@ -4114,7 +4263,12 @@ async function runAuthorityEnsemble(params: {
     log(`cake method threw (non-fatal): ${err}`);
   }
 
-  return { chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [], adjudicationAttempted: true, swarmFired: true, swarmReceipt, reasoningFactComputeReceipt };
+  return {
+    chosenLetter: null, corroboration: 'disagree', candidates, acceptedCandidates: [], adjudicationAttempted: true,
+    swarmFired: true, swarmReceipt, reasoningFactComputeReceipt,
+    // KN-BP144-6 T3: threaded through to this final honest fallthrough too -- never silently absent.
+    preAgreeDeterministicScatterAttempt: preAgreeScatterAttempt,
+  };
 }
 
 // ─── BP1xx Deterministic-Compute-Override ("let the calculator win the math") ──────────────
