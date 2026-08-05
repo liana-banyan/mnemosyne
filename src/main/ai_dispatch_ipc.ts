@@ -5,6 +5,12 @@
 // Eblet compose: top-3 local eblet snippets prepended to user message when Mnem-DRT active.
 // BP087 Brain Swap: brain-registry:list, brain-registry:get-active, brain-registry:set-active,
 //   brain-registry:smoke-test -- routing bifurcation for local vs flagship brains.
+// BP145-M4: Slice 1, verified-LOCAL answer-cache write-back reachable under answer_cache_mode
+//   alone (search "BP145-M4 Slice 1"). Slice 2, the escalation ladder -- substrate hit, local
+//   model, deterministic solver (honestly skipped, no free-text-reachable form exists), cheap
+//   cloud, flagship -- gated behind escalation_ladder_mode, triggered only by honest abstention
+//   (search "BP145-M4 Slice 2"). Canon: canon_escalation_is_triggered_by_honest_abstention_
+//   never_scheduled_bp144.
 
 import { ipcMain } from 'electron';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
@@ -27,7 +33,9 @@ import {
 } from './mnem_eblet_store';
 import { semantic_soccerball_emit, computeSemanticSimilarity } from './semantic_soccerball';
 // BP136 Yoke: answer-cache meter (read-through/write-back cost + routing telemetry)
-import { recordAnswerCacheEvent, getAnswerCacheMeterSummary, ESTIMATED_QUERY_COST_USD } from './answer_cache_meter';
+// BP145-M4 Slice 2: additive import of ESTIMATED_CHEAP_CLOUD_QUERY_COST_USD for the escalation
+// ladder's TIER 3 (cheap cloud) meter record.
+import { recordAnswerCacheEvent, getAnswerCacheMeterSummary, ESTIMATED_QUERY_COST_USD, ESTIMATED_CHEAP_CLOUD_QUERY_COST_USD } from './answer_cache_meter';
 // BP136 Yoke v2a (CSIA activation): Psionic zero-LLM prediction + convergence-on-match fast
 // path, and its own SEPARATE meter (see psionic_predictor.ts / csia_meter.ts headers for the
 // honesty-mandate verification that no prior "Psionic" code existed to wire). Independent of
@@ -79,6 +87,25 @@ import {
 } from './user_anthropic_key';
 
 const OLLAMA_API_BASE = 'http://127.0.0.1:11434';
+
+// BP145-M4 Slice 2 (the escalation ladder, TIER 3 cheap cloud): a real, working Anthropic
+// model id already used elsewhere in this codebase for a real API call (agent_probe.ts's own
+// ping/health-check, model: 'claude-haiku-4-7') -- reused verbatim, not invented for this
+// ticket. Declared inline here rather than added to brain_registry.ts's DEFAULT_BRAINS,
+// because brain_registry.ts is not among this ticket's owned files. Dispatched through the
+// SAME dispatchViaBrain() the existing flagship branch already uses -- kind:'flagship' is
+// correct here (dispatchViaBrain's 'flagship' branch is a generic Anthropic Messages API
+// caller, not literally restricted to the Opus/Sonnet capability tier).
+const CHEAP_CLOUD_BRAIN: BrainEntry = {
+  brain_id: 'claude-haiku-4-7',
+  vendor: 'anthropic',
+  model_id: 'claude-haiku-4-7',
+  kind: 'flagship',
+  api_endpoint: 'https://api.anthropic.com',
+  cost_per_1k_tokens: 0.001,
+  capability_tier: 3,
+  status: 'available',
+};
 
 // BP087 SEGResultEnvelope -- unified return type for brain-aware dispatch.
 // Existing callers that destructure only `content` are unaffected (content is always present).
@@ -243,6 +270,16 @@ interface AiDispatchSettings {
   /** BP140-K3 Homework: seconds of Electron powerMonitor.getSystemIdleTime() required before a
    *  homework job is allowed to start. DEFAULTS to 300 (5 minutes) when unset. */
   homework_idle_threshold_seconds?: number;
+  /** BP145-M4 Slice 2: gates the escalation-ladder dispatch path in ai-dispatch:query (TIER 1
+   *  local-model honest-abstention check -> TIER 2 deterministic solver, honestly skipped, no
+   *  free-text-reachable form exists -> TIER 3 cheap cloud -> TIER 4 flagship). DEFAULTS OFF
+   *  (undefined === off) -- with it off, ai-dispatch:query behaves byte-for-byte as it did
+   *  before this Yoke: the pre-existing static activeBrain.kind==='flagship' branch decides
+   *  local vs. flagship exactly as before, with zero new lines executed. INDEPENDENT of
+   *  answer_cache_mode/csia_mode/semantic_soccerball_mode -- this flag only controls WHICH
+   *  routing decision is made, not whether TIER 0 (the answer-cache serve gate + CSIA fast
+   *  path, both unconditional/always-checked earlier in the same handler) runs. */
+  escalation_ladder_mode?: boolean;
 }
 
 /** BP136 Yoke: resolves the answer-cache mode flag from settings, with an env-var override
@@ -275,6 +312,13 @@ function isCsiaResearchEnabled(settings: AiDispatchSettings): boolean {
  *  (via semantic_soccerball_emit returning non-null) and fall back to the token path on null. */
 function isSemanticSoccerballModeEnabled(settings: AiDispatchSettings): boolean {
   return settings.semantic_soccerball_mode === true || process.env.SEMANTIC_SOCCERBALL_MODE === '1';
+}
+
+/** BP145-M4 Slice 2: resolves the escalation_ladder_mode flag, same env-var-override
+ *  convention as every other mode resolver in this file (ESCALATION_LADDER_MODE=1 for quick
+ *  local testing without touching the settings file). Defaults OFF. */
+function isEscalationLadderModeEnabled(settings: AiDispatchSettings): boolean {
+  return settings.escalation_ladder_mode === true || process.env.ESCALATION_LADDER_MODE === '1';
 }
 
 function getSettingsPath(): string {
@@ -398,6 +442,8 @@ export function registerAiDispatchIPC(): void {
       // BP140-K3 Homework: additive, mirrors the csia_research line above.
       if (incoming.homework_enabled !== undefined) updated.homework_enabled = incoming.homework_enabled;
       if (incoming.homework_idle_threshold_seconds !== undefined) updated.homework_idle_threshold_seconds = incoming.homework_idle_threshold_seconds;
+      // BP145-M4 Slice 2: additive, mirrors the homework_idle_threshold_seconds line above.
+      if (incoming.escalation_ladder_mode !== undefined) updated.escalation_ladder_mode = incoming.escalation_ladder_mode;
       try {
         saveSettings(updated);
         return { ok: true };
@@ -922,6 +968,200 @@ export function registerAiDispatchIPC(): void {
         chatMessages.push(m);
       }
 
+      // ── BP145-M4 Slice 2: the escalation ladder ─────────────────────────────────────────
+      // Canon: canon_escalation_is_triggered_by_honest_abstention_never_scheduled_bp144.
+      // Ladder per SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md Part
+      // Two: TIER 0 substrate hit, TIER 1 local model, TIER 2 deterministic solver, TIER 3
+      // cheap cloud, TIER 4 flagship. TIER 0 already ran above (the answer-cache exact/semantic
+      // serve gate + the CSIA Psionic fast path) -- if it had hit, this function already
+      // returned before reaching this line. This block starts at TIER 1. Gated behind
+      // escalation_ladder_mode, DEFAULT OFF -- with it off, zero lines below execute and
+      // ai-dispatch:query falls through to the pre-existing static flagship/local branch below,
+      // byte-identical to before this ticket.
+      //
+      // THE RULE (Founder verbatim, BP144): a paid tier is reachable ONLY through an honest
+      // abstention from the tier below it. Never a timer, never a default, never low
+      // confidence. "Low confidence but answered" and "honestly abstained" are structurally
+      // distinct signals here, never conflated -- see the report (KN-BP145-M4_REPORT.md) for
+      // the full writeup; in one line:
+      //   TIER 1 (runCanonicalFreeTextQuestion): `abstained` is a REAL field the pipeline
+      //     itself computes as `answerText == null` -- no candidate survived Furnace, or every
+      //     Three Fates voter call failed. A Tier-3-concordant-but-not-ROOTED answer still sets
+      //     abstained:false and IS served here, never escalated.
+      //   TIER 3/4 (cheap cloud / flagship): abstention = a STRUCTURAL failure to produce any
+      //     content (HTTP error, missing key, empty response) -- never a judgment about how
+      //     confident or hedgy the returned text sounds.
+      const escalationLadderModeOn = isEscalationLadderModeEnabled(settings);
+      if (escalationLadderModeOn) {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('ask-token-progress', { coldStart: false, delta: '', assembled: '', escalationLadder: true });
+        }
+        void (async () => {
+          const trace: string[] = [];
+          try {
+            // TIER 1: local model, via the real honest-abstention-aware free-text engine
+            // (canonical_pipeline.ts) -- orphaned from the live Ask tab today per HARDWIRE-02,
+            // reused here rather than re-implemented, per "orphan check before building."
+            // 100% local/free: substrate check, 9-specialist swarm (free public APIs), Saladin,
+            // Furnace, Three Fates arbitration -- no flagship call anywhere inside it.
+            const { runCanonicalFreeTextQuestion } = await import('./plow/canonical_pipeline');
+            const ladderWriteEbletFn = async (eblet: {
+              question: string; answer: string; provenance: string;
+              verified: true; sha256: string; timestamp: number;
+            }) => {
+              await writeVerifiedEblet(eblet);
+            };
+            const onLadderProgress = (progEvent: import('./plow/canonical_pipeline').CanonicalPlowProgressEvent) => {
+              if (!event.sender.isDestroyed()) {
+                event.sender.send('ask-engine-progress', progEvent);
+              }
+            };
+            const tier1Result = await runCanonicalFreeTextQuestion(
+              currentTurnQuestion, 'general', OLLAMA_API_BASE, model, {}, ladderWriteEbletFn, onLadderProgress,
+            );
+            trace.push(
+              `tier1(local_model): abstained=${tier1Result.abstained} servedFromSubstrate=${tier1Result.servedFromSubstrate}` +
+              (tier1Result.abstainReason ? ` reason="${tier1Result.abstainReason}"` : ''),
+            );
+            if (!tier1Result.abstained && tier1Result.answerText) {
+              const latency_ms = Date.now() - tQueryStart;
+              if (answerCacheModeOn) {
+                recordAnswerCacheEvent({ routing: 'local_generate', cost_usd: 0, latency_ms });
+              }
+              console.log(`[EscalationLadder] SERVED at TIER 1 (local model, honest answer, no abstention). trace=${trace.join(' | ')}`);
+              if (!event.sender.isDestroyed()) {
+                event.sender.send('ask-token-complete', {
+                  content: tier1Result.answerText,
+                  hotHits: substrateCounters?.hotHits,
+                  selfContextLoaded: memoryMdContent.length > 0,
+                  servedFromSubstrate: tier1Result.servedFromSubstrate,
+                  provenance: tier1Result.substrateProvenance,
+                  verified: tier1Result.servedFromSubstrate,
+                  cost_usd: 0,
+                  latency_ms,
+                  escalationTier: 1,
+                  escalationTrace: trace,
+                });
+              }
+              return;
+            }
+
+            // TIER 2: deterministic solver. HONESTLY SKIPPED, not faked. Confirmed by direct
+            // read this session (KN-BP145-M4_REPORT.md Phase 0, F0.6): resolveDeterministicComputeOverride
+            // (plow_mc_answerer.ts) has exactly two callers, both internal to that file, and is
+            // scoped to a discrete multiple-choice option set -- it has no free-text-reachable
+            // form anywhere in this codebase today, and plow_mc_answerer.ts is off-limits to
+            // this ticket regardless. Widening this ladder to fake a Tier 2 hit here would be
+            // exactly the "never widen a gate to force a pass" refusal this ticket names.
+            trace.push('tier2(deterministic_solver): SKIPPED -- no free-text-reachable implementation exists on this path, not faked');
+            console.log('[EscalationLadder] TIER 2 (deterministic solver) has no free-text-reachable implementation on this path -- honestly skipped, proceeding to TIER 3.');
+
+            // TIER 3: cheap cloud (Haiku-class). Reuses dispatchViaBrain -- the SAME dispatch
+            // function the flagship branch already uses -- with a real, already-used-elsewhere
+            // Anthropic model id (see CHEAP_CLOUD_BRAIN's own doc comment). Abstention here
+            // means a STRUCTURAL failure to produce content (HTTP error, missing key, empty
+            // response) -- never a judgment call on how confident the text sounds.
+            const tier3Result = await dispatchViaBrain(CHEAP_CLOUD_BRAIN, chatMessages);
+            const tier3Abstained = Boolean(tier3Result.error) || !tier3Result.content;
+            trace.push(
+              `tier3(cheap_cloud:${CHEAP_CLOUD_BRAIN.model_id}): abstained=${tier3Abstained}` +
+              (tier3Result.error ? ` error="${tier3Result.error}"` : ''),
+            );
+            if (!tier3Abstained) {
+              if (answerCacheModeOn) {
+                recordAnswerCacheEvent({
+                  routing: 'cheap_cloud',
+                  cost_usd: ESTIMATED_CHEAP_CLOUD_QUERY_COST_USD,
+                  latency_ms: tier3Result.latency_ms,
+                });
+                if (isQaRelevant(currentTurnQuestion, tier3Result.content)) {
+                  try {
+                    await writeVerifiedEblet({
+                      question: currentTurnQuestion,
+                      answer: tier3Result.content,
+                      provenance: `cheap_cloud:${tier3Result.brain_id}:${Date.now()}`,
+                      verified: true,
+                      sha256: '',
+                      timestamp: Date.now(),
+                      class: 'whole_answer',
+                    }, { computeSemanticCode: semanticModeOn });
+                  } catch (err) {
+                    console.warn('[AnswerCache] writeVerifiedEblet (cheap_cloud, ladder tier3) failed:', err);
+                  }
+                }
+              }
+              console.log(`[EscalationLadder] SERVED at TIER 3 (cheap cloud, honest answer, no abstention). trace=${trace.join(' | ')}`);
+              if (!event.sender.isDestroyed()) {
+                event.sender.send('ask-token-complete', {
+                  content: tier3Result.content,
+                  hotHits: substrateCounters?.hotHits,
+                  selfContextLoaded: memoryMdContent.length > 0,
+                  brainId: tier3Result.brain_id,
+                  cost_usd: ESTIMATED_CHEAP_CLOUD_QUERY_COST_USD,
+                  latency_ms: tier3Result.latency_ms,
+                  escalationTier: 3,
+                  escalationTrace: trace,
+                });
+              }
+              return;
+            }
+
+            // TIER 4: flagship. Last resort -- only reached because TIER 1 honestly abstained
+            // AND TIER 3 structurally failed to produce content. Prefers the user's own active
+            // flagship brain if one is selected; otherwise falls back to the registry default
+            // flagship (claude-sonnet-4-6) rather than inventing a new brain entry.
+            const flagshipBrain: BrainEntry =
+              (activeBrain && activeBrain.kind === 'flagship' ? activeBrain : undefined) ??
+              DEFAULT_BRAINS.find((b) => b.brain_id === 'claude-sonnet-4-6')!;
+            const tier4Result = await dispatchViaBrain(flagshipBrain, chatMessages);
+            trace.push(`tier4(flagship:${flagshipBrain.model_id}): error=${tier4Result.error ?? '(none)'}`);
+            if (answerCacheModeOn && !tier4Result.error && tier4Result.content && isQaRelevant(currentTurnQuestion, tier4Result.content)) {
+              try {
+                await writeVerifiedEblet({
+                  question: currentTurnQuestion,
+                  answer: tier4Result.content,
+                  provenance: `flagship:${tier4Result.brain_id}:${Date.now()}`,
+                  verified: true,
+                  sha256: '',
+                  timestamp: Date.now(),
+                  class: 'whole_answer',
+                }, { computeSemanticCode: semanticModeOn });
+              } catch (err) {
+                console.warn('[AnswerCache] writeVerifiedEblet (flagship, ladder tier4) failed:', err);
+              }
+            }
+            if (answerCacheModeOn) {
+              recordAnswerCacheEvent({
+                routing: 'flagship',
+                cost_usd: tier4Result.error ? 0 : ESTIMATED_QUERY_COST_USD,
+                latency_ms: tier4Result.latency_ms,
+              });
+            }
+            console.log(`[EscalationLadder] reached TIER 4 (flagship, last resort). trace=${trace.join(' | ')}`);
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('ask-token-complete', {
+                content: tier4Result.content,
+                error: tier4Result.error ?? undefined,
+                hotHits: substrateCounters?.hotHits,
+                selfContextLoaded: memoryMdContent.length > 0,
+                brainId: tier4Result.brain_id,
+                flagship: true,
+                cost_usd: tier4Result.error ? 0 : ESTIMATED_QUERY_COST_USD,
+                latency_ms: tier4Result.latency_ms,
+                escalationTier: 4,
+                escalationTrace: trace,
+              });
+            }
+          } catch (err) {
+            console.warn('[EscalationLadder] failed unexpectedly:', err);
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('ask-token-complete', { content: '', error: String(err), escalationTrace: trace });
+            }
+          }
+        })().finally(() => clearAppBusy());
+        return { ok: true, streaming: true, escalationLadder: true };
+      }
+
       // BP132 Yoke #21 C5: when the active/selected brain is 'flagship' (e.g. Claude),
       // route through dispatchViaBrain() instead of hardcoding Ollama. This was previously
       // dead plumbing -- ai-dispatch:query ALWAYS hit `${OLLAMA_API_BASE}/api/chat` below,
@@ -942,8 +1182,12 @@ export function registerAiDispatchIPC(): void {
           // BP136 Yoke: write-back -- "compute once". A real, $-costing flagship/frontier
           // answer becomes a $0 hit next time. Gated by the same mode flag (default OFF);
           // only writes when isQaRelevant clears the existing 0.08 gate, so a junk/error
-          // response never enters the verbatim-serve path. Local-Ollama answers are
-          // deliberately NOT written back in v1 (scope: keep the cache high-quality).
+          // response never enters the verbatim-serve path. Local-Ollama answers were
+          // deliberately NOT written back in v1 (scope: keep the cache high-quality) --
+          // BP145-M4 Slice 1 closes that gap with the SAME shape of write-back, gated the same
+          // way, in the local-generation completion branch further down in this same handler
+          // (search this file for "BP145-M4 Slice 1"). That v1 scope note is now historical,
+          // not current behavior.
           if (answerCacheModeOn && !result.error && result.content && isQaRelevant(currentTurnQuestion, result.content)) {
             try {
               await writeVerifiedEblet({
@@ -1277,6 +1521,45 @@ export function registerAiDispatchIPC(): void {
                       semanticModeOn,
                     );
                     if (recursionResult.contextVerdict) csiaContextVerdictLocal = recursionResult.contextVerdict;
+                  }
+                  // BP145-M4 Slice 1 (verified-LOCAL write-back, the actual fix for FIX_LIST.md
+                  // F-10 "Answer-cache write-back is flagship-only"): mirrors the flagship
+                  // branch's write-back above EXACTLY -- same isQaRelevant gate, same bare
+                  // writeVerifiedEblet call shape, no corroboration hint supplied, so `verified`/
+                  // `verdict` are decided the SAME honest way (computeHonestVerification/
+                  // isRooted inside writeVerifiedEblet itself) as every other direct call site
+                  // in this file -- not a new verification standard invented for this one path.
+                  // Gated ONLY on answerCacheModeOn -- NOT on csiaModeOn. The pre-existing
+                  // v2c-1 "verified LOCAL write-back" block above (csiaLocalVerified) only ever
+                  // fires when csia_mode is ALSO on, which is why the free/local tier never
+                  // populated under plain answer_cache_mode alone -- that was the actual defect,
+                  // confirmed by direct read this session (see KN-BP145-M4_REPORT.md Phase 0,
+                  // F0.2/F0.3). Skipped when any CSIA path already stored this exact answer this
+                  // request, same dedup discipline BP137 ADDENDUM FIX 4 already established for
+                  // the blocks above.
+                  if (
+                    answerCacheModeOn &&
+                    assembled.length > 0 &&
+                    !csiaConvergenceStoredLocal &&
+                    !csiaResearchResultLocal?.stored &&
+                    !csiaLocalVerified?.stored &&
+                    isQaRelevant(currentTurnQuestion, assembled)
+                  ) {
+                    try {
+                      await writeVerifiedEblet({
+                        // BUG1 FIX: current-turn question only, same discipline as every other
+                        // write-back call site in this file.
+                        question: currentTurnQuestion,
+                        answer: assembled,
+                        provenance: `local:${model}:${Date.now()}`,
+                        verified: true,
+                        sha256: '',
+                        timestamp: Date.now(),
+                        class: 'whole_answer',
+                      }, { computeSemanticCode: semanticModeOn });
+                    } catch (err) {
+                      console.warn('[AnswerCache] writeVerifiedEblet (local, BP145-M4 Slice 1) failed:', err);
+                    }
                   }
                   if (!event.sender.isDestroyed()) {
                   // substrate R1: write complete assembled content on done:true

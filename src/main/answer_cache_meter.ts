@@ -14,7 +14,11 @@ import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { app } from 'electron';
 
-export type AnswerCacheRouting = 'served_verbatim' | 'rag' | 'local_generate' | 'flagship';
+// BP145-M4 Slice 2 (the escalation ladder): 'cheap_cloud' is the new TIER 3 routing label.
+// Additive -- every existing reader that switches on this union already has a default/else
+// branch (see getAnswerCacheMeterSummary below), so this is not a breaking change to any
+// existing consumer.
+export type AnswerCacheRouting = 'served_verbatim' | 'rag' | 'local_generate' | 'flagship' | 'cheap_cloud';
 
 export interface AnswerCacheMeterRecord {
   ts: string; // ISO-8601
@@ -29,6 +33,8 @@ export interface AnswerCacheMeterSummary {
   rag_count: number;
   local_generate_count: number;
   flagship_count: number;
+  /** BP145-M4 Slice 2 (the escalation ladder): TIER 3 (cheap cloud, Haiku-class) hit count. */
+  cheap_cloud_count: number;
   /** Estimate only (label kept honest downstream in the UI) -- cloud API cost that would have
    *  been incurred for each served_verbatim hit had it instead gone through a full model call.
    *  Same CLOUD_COST_PER_TOKEN_USD * TYPICAL_RESPONSE_TOKENS convention as substrate_router.ts. */
@@ -43,6 +49,15 @@ export interface AnswerCacheMeterSummary {
 export const CLOUD_COST_PER_TOKEN_USD = 0.000003;
 export const TYPICAL_RESPONSE_TOKENS = 800;
 export const ESTIMATED_QUERY_COST_USD = CLOUD_COST_PER_TOKEN_USD * TYPICAL_RESPONSE_TOKENS;
+
+// BP145-M4 Slice 2 (the escalation ladder, TIER 3 cheap cloud): same "reuse the estimate
+// convention, label it honestly" discipline as ESTIMATED_QUERY_COST_USD above -- NOT sourced
+// from a verified price table. SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_
+// BP143.md Part One (a versioned, dated, source-verified price table) is sequenced BEFORE
+// routing in that spec's own SEQUENCING section and is a separate, not-yet-built ticket. This
+// is a rough placeholder ratio only, so the meter's cheap_cloud rows are not silently
+// presented as zero-cost -- replace with the real Part One table the moment it exists.
+export const ESTIMATED_CHEAP_CLOUD_QUERY_COST_USD = CLOUD_COST_PER_TOKEN_USD * 0.4 * TYPICAL_RESPONSE_TOKENS;
 
 function meterFile(): string {
   return resolve(app.getPath('userData'), 'substrate', 'answer_cache_meter.jsonl');
@@ -90,6 +105,7 @@ export function getAnswerCacheMeterSummary(): AnswerCacheMeterSummary {
   const rag = records.filter((r) => r.routing === 'rag');
   const local = records.filter((r) => r.routing === 'local_generate');
   const flagship = records.filter((r) => r.routing === 'flagship');
+  const cheapCloud = records.filter((r) => r.routing === 'cheap_cloud');
 
   const avgLatency = (rs: AnswerCacheMeterRecord[]): number =>
     rs.length > 0 ? Math.round(rs.reduce((s, r) => s + r.latency_ms, 0) / rs.length) : 0;
@@ -100,6 +116,7 @@ export function getAnswerCacheMeterSummary(): AnswerCacheMeterSummary {
     rag_count: rag.length,
     local_generate_count: local.length,
     flagship_count: flagship.length,
+    cheap_cloud_count: cheapCloud.length,
     cloud_cost_avoided_usd: served.length * ESTIMATED_QUERY_COST_USD,
     avg_latency_ms: avgLatency(records),
     avg_served_verbatim_latency_ms: avgLatency(served),
