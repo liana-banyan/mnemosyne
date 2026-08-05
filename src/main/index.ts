@@ -48,6 +48,86 @@ import log from 'electron-log/main';
 log.initialize({ preload: true });
 log.transports.file.level = 'info';
 log.transports.file.maxSize = 10 * 1024 * 1024; // 10 MB rotation
+
+// ----------------------------------------------------------------------------
+// KN-BP145-N6 (2026-08-05) -- deliberate, narrow exception to the KN-BP145-E
+// append-only rule above. These lines EDIT the pre-existing electron-log
+// wiring immediately below (they do not add a new registration); the defect
+// this fixes is IN this existing transport setup, not a missing registration,
+// and there is no APPEND ZONE for "wrap an existing transport's write fn".
+// See KN-BP145-N6_REPORT.md for the full Phase 0 mechanism trace.
+//
+// Root cause, confirmed by reading node_modules/electron-log 5.4.4 source:
+// electron-log's own Logger.processMessage() already wraps each transport
+// call in try/catch, so a first EPIPE/EBADF throw from a broken
+// stdout/stderr pipe (the terminal that owned this process's stdout is gone,
+// but the process is still alive) IS already caught there. Its catch handler
+// (processInternalErrorFn, overridden in electron-log's own
+// createDefaultLogger.js) then calls transports.console.writeFn(...) a
+// SECOND time, unguarded by any try/catch, to log "Unhandled electron-log
+// error" -- and since the pipe is still broken, that second write throws
+// again with nothing upstream to catch it, becoming an uncaught exception in
+// the main process. Every later console.log/error call anywhere in the app
+// (all aliased to electron-log via Object.assign(console, log.functions)
+// below) repeats this exact two-step failure.
+//
+// Fix: wrap log.transports.console.writeFn itself -- the innermost point
+// that actually touches process.stdout/process.stderr -- so EPIPE/EBADF
+// never escapes as a throw in the first place, which prevents electron-log's
+// own fragile unguarded retry path from ever being reached. Once a broken
+// pipe is observed, the console transport is latched to a permanent no-op
+// for the rest of the process lifetime (a broken pipe does not un-break), so
+// later log calls do not keep attempting a write that can never succeed.
+// log.transports.file is untouched by any of this and keeps writing
+// independently -- it targets a rotating file on disk, not this process's
+// inherited stdout/stderr handles, so a broken console pipe cannot affect it.
+//
+// Defense in depth: depending on platform and buffering state, a broken pipe
+// can also surface as an async 'error' event on the stream object rather
+// than a synchronous throw inside the write call, so the same narrow
+// EPIPE/EBADF check is applied to process.stdout/process.stderr 'error'
+// listeners too. Scope is deliberately narrow to these two "the write target
+// is gone" error codes -- any other error class is re-thrown unchanged, so
+// this does not widen a gate or change behavior for any other failure.
+function isBrokenPipeWriteError(err: unknown): err is NodeJS.ErrnoException {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    'code' in err &&
+    ((err as NodeJS.ErrnoException).code === 'EPIPE' ||
+      (err as NodeJS.ErrnoException).code === 'EBADF')
+  );
+}
+
+let consoleTransportBrokenPipeLatched = false;
+
+for (const stdStream of [process.stdout, process.stderr]) {
+  stdStream?.on?.('error', (err: unknown) => {
+    if (isBrokenPipeWriteError(err)) {
+      consoleTransportBrokenPipeLatched = true;
+      return;
+    }
+    throw err;
+  });
+}
+
+const rawConsoleWriteFn = log.transports.console.writeFn.bind(log.transports.console);
+log.transports.console.writeFn = (options: { message: Parameters<typeof rawConsoleWriteFn>[0]['message'] }) => {
+  if (consoleTransportBrokenPipeLatched) {
+    return;
+  }
+  try {
+    rawConsoleWriteFn(options);
+  } catch (err) {
+    if (isBrokenPipeWriteError(err)) {
+      consoleTransportBrokenPipeLatched = true;
+      return;
+    }
+    throw err;
+  }
+};
+// ----------------------------------------------------------------------------
+
 // Pipe ALL main-process console.* through electron-log
 Object.assign(console, log.functions);
 import ws from 'ws';
