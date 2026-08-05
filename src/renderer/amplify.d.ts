@@ -263,6 +263,11 @@ declare global {
       // Watchdog (B83d)
       watchdogStatus: () => Promise<import('./hearth/active_substrate/ActiveSubstratePanel').WatchdogStatusPayload>;
       watchdogHistory: (subject: string, window_hours?: number) => Promise<Array<{ ts: string; level: string; message: string }>>;
+      // Grand Central board panel (KN-BP144-10)
+      boardGetState: () => Promise<import('../main/board/board_state_reader').BoardSnapshot | null>;
+      boardMarkDispatched: (
+        id: string,
+      ) => Promise<{ ok: boolean; dispatchedAt?: string; snapshot?: import('../main/board/board_state_reader').BoardSnapshot | null; error?: string }>;
       // Webview preload path (B83b)
       getWebviewPreloadPath?: () => string;
       // Browser-authority Nexus IPC leg (BP137 Yoke v2b Integration-1, Part 2)
