@@ -1,16 +1,27 @@
 // local-runtime-client.ts — BP060 Application 002 Steps 3+4 · DOCTRINE-CLASS
 // OpenAI-compatible REST client — NOT Ollama-specific SDK.
-// Reads LOCAL_RUNTIME_URL from settings (default: http://localhost:11434).
-// Works with Ollama, llama.cpp, vLLM, LM Studio — any OpenAI-compatible local server.
+// Reads LOCAL_RUNTIME_URL from settings (default: THE NEXUS, openai_compat_server.ts,
+// 127.0.0.1:11535 -- KN-BP145-P3). Works with Ollama, llama.cpp, vLLM, LM Studio, or THE NEXUS
+// itself -- any OpenAI-compatible local server -- by construction (setRuntimeUrl() still
+// overrides this for a direct-to-runtime connection when that is genuinely what's wanted).
 // Label: "Local LLM Engine" — NOT "Ollama" hardcoded anywhere.
 // AI-agnostic and runtime-agnostic by construction per
 // canon_cooperative_class_local_inference_runtime_agnostic_ollama_default_alternatives_supported_resilience_bp059.
+//
+// KN-BP145-P3: this is the "agent-side client configuration" that HARDWIRE-04 Layer 3 requires
+// to be pointed at THE NEXUS so the involuntary substrate read happens at the I/O boundary
+// instead of at a raw Ollama/vendor endpoint the agent talks to directly. Defaulting to the
+// Nexus's own host:port (imported, not re-typed, so there is one source of truth for the bind
+// address) and attaching the Nexus's own Bearer token file when present makes this the default,
+// zero-config path; explicitly calling setRuntimeUrl() with a different host is still how a
+// caller opts back out to a bare local runtime.
 // decay_class: BETWEEN
 
 import type { ProviderClient, ProviderQueryArgs, ProviderResponse } from './types';
 import { FLOOR_MODEL } from '../../shared/floor-model';
+import { OPENAI_COMPAT_SERVER_HOST, OPENAI_COMPAT_SERVER_PORT, readCurrentToken } from '../openai_compat_server';
 
-const DEFAULT_LOCAL_RUNTIME_URL = 'http://localhost:11434';
+const DEFAULT_LOCAL_RUNTIME_URL = `http://${OPENAI_COMPAT_SERVER_HOST}:${OPENAI_COMPAT_SERVER_PORT}`;
 const DEFAULT_LOCAL_MODEL = FLOOR_MODEL;
 
 export class LocalRuntimeClient implements ProviderClient {
@@ -27,6 +38,19 @@ export class LocalRuntimeClient implements ProviderClient {
     return true; // local is always "configured" — may just not be running
   }
 
+  /**
+   * Attaches the Nexus's own Bearer token when one exists on disk (i.e. when `runtimeUrl` is
+   * actually THE NEXUS) and is silently a no-op otherwise -- a bare Ollama/llama.cpp/vLLM/LM
+   * Studio endpoint has no token file, `readCurrentToken()` returns null, and no Authorization
+   * header is sent, exactly as before this change for any non-Nexus runtimeUrl.
+   */
+  private buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const token = readCurrentToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return headers;
+  }
+
   async query(args: ProviderQueryArgs): Promise<ProviderResponse> {
     const model = args.model || DEFAULT_LOCAL_MODEL;
     const url = `${this.runtimeUrl}/v1/chat/completions`;
@@ -34,7 +58,7 @@ export class LocalRuntimeClient implements ProviderClient {
     try {
       const resp = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.buildHeaders(),
         body: JSON.stringify({
           model,
           messages: args.messages,
@@ -65,7 +89,7 @@ export class LocalRuntimeClient implements ProviderClient {
 
   async listModels(): Promise<{ ok: boolean; models: string[]; error?: string }> {
     try {
-      const resp = await fetch(`${this.runtimeUrl}/v1/models`);
+      const resp = await fetch(`${this.runtimeUrl}/v1/models`, { headers: this.buildHeaders() });
       if (!resp.ok) {
         return { ok: false, models: [], error: `HTTP ${resp.status}` };
       }

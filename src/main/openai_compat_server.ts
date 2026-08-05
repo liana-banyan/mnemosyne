@@ -55,7 +55,7 @@ const TOKEN_FILENAME = 'openai_compat_server_token.txt';
 
 // ─── Bearer token (local-only secret, this app's own making) ──────────────────────────────────
 
-function getTokenFilePath(): string {
+export function getTokenFilePath(): string {
   return join(app.getPath('userData'), TOKEN_FILENAME);
 }
 
@@ -69,8 +69,13 @@ function ensureTokenFileExists(): void {
   console.log(`[openai_compat_server] generated a new Bearer token at ${filePath} (value never logged)`);
 }
 
-/** Reads the token fresh on every call -- a manual on-disk rotation takes effect immediately. */
-function readCurrentToken(): string | null {
+/**
+ * Reads the token fresh on every call -- a manual on-disk rotation takes effect immediately.
+ * Exported so that in-process agent-side clients (e.g. LocalRuntimeClient, KN-BP145-P3) can
+ * attach the same Bearer token when their base_url is pointed at this server, without a second
+ * token-file implementation. Never logs the value.
+ */
+export function readCurrentToken(): string | null {
   try {
     const filePath = getTokenFilePath();
     if (!existsSync(filePath)) return null;
