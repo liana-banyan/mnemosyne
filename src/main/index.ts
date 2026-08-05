@@ -5,6 +5,44 @@
 // process.env (ANTHROPIC_API_KEY, etc.) before any consumer module reads them at load.
 // Implements Blood Rule R16 (R-NO-API-KEY-EXPOSURE) ? values never logged.
 
+// ============================================================================
+// KN-BP145-E -- APPEND-ONLY REGISTRATION SURFACE (2026-08-04, branch clean-shell-v0.9)
+// ============================================================================
+// RULE: this file is a REGISTRATION SURFACE, not a place to write new logic.
+// A "registration" here is exactly one of three shapes:
+//   1. a top-level import of another module's registration/init function
+//   2. a no-arg init()-style call inside app.whenReady() that starts a poll
+//      loop or registers that module's own IPC handlers
+//   3. a safeHandle(...)/ipcMain.handle(...) call inside registerIPCHandlers()
+// GOING FORWARD: new registrations are ADDITIONS ONLY, one line (or one small
+// block) per registration, placed at the matching "APPEND ZONE" for that
+// category (search this file for "APPEND ZONE" -- three exist, one per
+// category above, each with an "END APPEND ZONE" close). EXISTING lines are
+// never edited to add a new registration -- only new lines are inserted at a
+// zone. Two workers appending distinct lines at the same zone do not
+// conflict with each other in git (their diffs touch disjoint lines), so
+// the contention this rule exists to remove disappears without a lock.
+// THIS RULE DOES NOT RETROACTIVELY REFACTOR the pre-existing inline handler
+// bodies already living in registerIPCHandlers() below -- extracting those
+// out of this file is a separately-scoped, much larger ticket. "No logic,
+// additions only" is the bar for what gets ADDED from this point forward,
+// not a claim that every pre-existing line already meets it.
+// KN-BP144-18 PHASE 2 STATUS (checked this session, HEAD ffdf3d24): its
+// main-side helper file does not exist yet in this repo -- no commit under
+// any BP144-18 message, and no untracked/tracked file matching the names
+// its own Phase 0 report (KN-BP144-18_REPORT.md, section 0.6) considered.
+// That report's "two lines" figure (one import, one init() call) is a
+// footprint ESTIMATE it copied from this file's own board_ipc.ts precedent
+// (see the initBoardWatcher import and call below), not two lines that
+// already exist and were merely waiting to be appended. When that helper
+// file is actually built, its import belongs at IMPORT APPEND ZONE below and
+// its init() call belongs at INIT-CALL APPEND ZONE below (or, if it turns
+// out to register its IPC channel directly rather than via its own init(),
+// its safeHandle/ipcMain.handle call belongs at the IPC-HANDLER APPEND ZONE
+// inside registerIPCHandlers() instead) -- all three zones are open now and
+// none requires editing any line outside itself.
+// ============================================================================
+
 import './env_loader';
 import log from 'electron-log/main';
 log.initialize({ preload: true });
@@ -240,6 +278,12 @@ import {
 
 // BP080 Genesis Mint — IP Ledger read/write (main-process only; Federal Body Cam doctrine)
 import { loadAllEntries, registerClaim } from './ip_ledger/ip_ledger_store';
+
+// --- APPEND ZONE: IMPORT -- new registration-module imports go below this line, per KN-BP145-E
+// One import line per new registration module. Never insert a new import between existing
+// imports above this zone; always append here instead.
+// (currently empty -- the next new registration import lands here)
+// --- END APPEND ZONE: IMPORT -------------------------------------------------
 
 // --- Constants --------------------------------------------------------------
 
@@ -6472,6 +6516,12 @@ function registerIPCHandlers(): void {
       return { status: 'error', error: (err as Error).message };
     }
   });
+
+  // --- APPEND ZONE: IPC-HANDLER -- new safeHandle()/ipcMain.handle() registrations go below this line, per KN-BP145-E
+  // One handler registration per new IPC channel. Never insert a new handler between existing
+  // handlers above; always append here instead, before this function's closing brace.
+  // (currently empty -- the next new IPC handler registration lands here)
+  // --- END APPEND ZONE: IPC-HANDLER --------------------------------------
 }
 
 // --- Mesh Results Watcher (SEG-U-7 BP078) ------------------------------------
@@ -8044,6 +8094,12 @@ app.whenReady().then(async () => {
   // `persist:nexus-authority` session partition, and no other new side effect occurs. See
   // nexus_authority_persistent_session.ts's header for the full flag-mirror mechanism.
   ensureNexusAuthoritySession();
+
+  // --- APPEND ZONE: INIT-CALL -- new init()-style registration calls go below this line, per KN-BP145-E
+  // One no-arg init() call per new registration module (same pattern as initBoardWatcher()
+  // above). Never insert a new call between the init() calls above; always append here instead.
+  // (currently empty -- the next new registration init() call lands here)
+  // --- END APPEND ZONE: INIT-CALL -----------------------------------------
 
   // SAGA 10 BP045 W1 ? Register mnemosyne:// + mnemo:// deep-link protocols (BP065)
   registerDeepLinkProtocol(
