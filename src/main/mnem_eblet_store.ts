@@ -688,6 +688,190 @@ export function readVerdict(entry: VerifiedEbletEntry): 'correct' | 'wrong' | 'v
   return entry.verdict ?? 'unverified';
 }
 
+// ─── KN-BP144-15 Phase 2: rejection records ("eliminations are facts and we throw them away") ──
+//
+// A REJECTION IS A CLAIM ABOUT AN OPTION, NOT ABOUT AN ANSWER (ticket's own framing, binding).
+// VerifiedEbletEntry does not fit one as-is (Phase 0 report 0.4, full finding there): its
+// retrieval key is a (question, answer) PAIR, where `answer` is conventionally the WINNING
+// value a caller wants SERVED; there is no slot for "which option's own text is being rejected
+// and why", and `class: 'whole_answer' | 'component'` both describe something meant to be served
+// or reused as an answer fragment, which a rejection structurally is not. Per the ticket's own
+// instruction ("prefer a new, separate type/record alongside it, written through the same store
+// mechanism" -- not editing VerifiedEbletEntry itself), RejectedOptionEbletEntry below is that
+// distinct, minimal, additive type. It reuses VerifiedEbletEntry's own `corroboration`/`verdict`
+// vocabulary (unchanged, not widened) purely so it can be passed to computeHonestVerification()
+// below unmodified -- the SAME Rooting Rule gate every other write already goes through, applied
+// here without needing a single line of that gate's own logic to change (Phase 0 0.5's own
+// finding: the gate is caller-agnostic, only the "does anything ever construct a rejection-shaped
+// call" seam was missing -- this closes exactly that seam, nothing else).
+export interface RejectedOptionEbletEntry {
+  /** The full question stem this rejection concerns -- kept for provenance/audit trail, NEVER
+   *  the retrieval key (Phase 0 0.4: a synthesized one-off "why is J wrong for qid 85"-shaped
+   *  question would never match how a real future question actually phrases itself). Retrieval
+   *  by a later question touching the same concept is intended to key off `concept`/
+   *  `predicateReferentTerms` instead -- see queryRejectedOptionEblets() below. */
+  question: string;
+  /** The REJECTED option's own letter. Never a winner, never a servable `answer` -- there is
+   *  deliberately no field here that could be read as "the answer to this question". */
+  rejectedLetter: string;
+  /** The rejected option's own text, quoted verbatim -- the evidence a future reader can check
+   *  `reason` against without re-deriving it, matching EliminationRecord.evidence in
+   *  plow_mc_elimination_cascade.ts (the producer this type is designed to receive from). */
+  optionText: string;
+  /** The rule identifier that produced this rejection -- see EliminationRecord.ruleId. */
+  ruleId: string;
+  /** The full rationale, verbatim -- never a bare rule code (Phase 0 0.3's own load-bearing
+   *  finding: a bare rule name is not a reason worth storing). */
+  reason: string;
+  /** The concept this rejection's rule was reasoning about (e.g. "bias") -- the durable retrieval
+   *  key per Phase 0 0.4 above. Null when the producing rule never resolved one. */
+  concept: string | null;
+  /** The register the rule resolved to (e.g. "statistics"), narrowing retrieval further than
+   *  concept alone. Null when the producing rule never resolved one. */
+  register: string | null;
+  /** The predicate referent terms this rejection was checked against -- the actual checkable
+   *  claim, retrievable independent of any one question's phrasing ("downchain linkage": a LATER
+   *  fact about the same concept/register/referent-terms triple can find this rejection by that
+   *  triple, the same way `concept`/`registerCandidate.register`/`derivedPredicateReferentTerms`
+   *  already let plow_mc_elimination_cascade.ts's own caller correlate a later run against an
+   *  earlier one). */
+  predicateReferentTerms: string[];
+  /** Same free-text provenance convention as VerifiedEbletEntry.provenance -- origin-tracing,
+   *  agnostic to positive/negative claim shape (Phase 0 0.4: this field generalizes cleanly). */
+  provenance: string;
+  /** Same vocabulary as VerifiedEbletEntry.corroboration, UNCHANGED -- passed to
+   *  computeHonestVerification() verbatim; see that function's own doc comment for tier
+   *  semantics. A rejection reached via a mandatory-verification-gated, literal-substring
+   *  predicate check (this ticket's own producing mechanism) is a deterministic, mechanically
+   *  reproducible claim -- no LLM guess, no "agreement" -- so it is honestly classified
+   *  'deterministic_compute' (Tier 1) by this type's own writer below, not left to a generic
+   *  'concordant' default that would understate what was actually proven. */
+  corroboration?: VerifiedEbletEntry['corroboration'];
+  verdict?: VerifiedEbletEntry['verdict'];
+  timestamp: number;
+}
+
+/** Persisted-record shape: RejectedOptionEbletEntry plus the fields computeHonestVerification()/
+ *  the writer below derive rather than accept from the caller, plus the structural
+ *  `claimType: 'rejection'` marker (FE-3 defense in depth -- see writeRejectedOptionEblet's own
+ *  doc comment for why this field exists even though physical file separation already makes a
+ *  rejection unreachable by every existing candidate-set query). */
+export interface StoredRejectedOptionEblet extends RejectedOptionEbletEntry {
+  claimType: 'rejection';
+  verified: boolean;
+  sha256: string;
+}
+
+/**
+ * Append a rejected-option claim to its own dedicated store file.
+ *
+ * Store location: {userData}/substrate/rejected_option_eblets.jsonl -- deliberately a SEPARATE
+ * file from {userData}/substrate/verified_eblets.jsonl (the answering pool queryVerifiedEblets/
+ * queryVerifiedEbletsTopical/loadAllVerifiedEblets read) and from
+ * {userData}/substrate/rgby_ledger.jsonl (the KN-BP141-5 FIX 3 sibling). This is not an
+ * incidental choice: it is the FIRST of two independent reasons a stored rejection can never
+ * become a candidate/vote/corroborator (KN-BP144-15 ticket's own mandatory FE-3 requirement) --
+ * no existing candidate-set-building function anywhere in this file (or in
+ * plow_mc_answerer.ts/answer_coroner.ts/csia_research.ts, confirmed by grep of every
+ * `verified_eblets.jsonl`/`rgby_ledger.jsonl` reference in src/main) ever opens this filename,
+ * so a rejection is unreachable by them BY CONSTRUCTION, not merely by the absence of code that
+ * happens not to read it today. The SECOND, independent reason is the `claimType: 'rejection'`
+ * marker persisted on every row (see StoredRejectedOptionEblet) -- defense in depth: even a
+ * hypothetical future reader that scanned every substrate/*.jsonl file indiscriminately would
+ * still have to affirmatively ignore this marker to misuse a rejection as a candidate.
+ *
+ * ROOTING RULE (KN-BP142-10, unchanged, applied here exactly as at every other write path):
+ * `verified`/`verdict` are ALWAYS re-derived via computeHonestVerification() -- never taken
+ * verbatim from `entry`. A rejection whose `corroboration` does not qualify for Tier 1/Tier 2
+ * (per rooting_rule.ts's classifyCorroborationTier(), unmodified) is honestly persisted with
+ * verified:false/verdict:'unverified' -- exactly the same honesty discipline writeVerifiedEblet()
+ * already applies to a positive claim. This function cannot "fail" the Rooting Rule by
+ * construction: it never overrides what computeHonestVerification() decides.
+ *
+ * Rule 66: append-only, same as writeVerifiedEblet() -- no existing row is ever rewritten.
+ *
+ * Returns the sha256 of (question + '\0' + rejectedLetter + '\0' + reason) as write confirmation
+ * -- a rejection's natural identity is the TRIPLE (which question, which option, which reason),
+ * never a (question, answer) pair (Phase 0 0.4's own finding on why that pair does not fit).
+ */
+export async function writeRejectedOptionEblet(entry: RejectedOptionEbletEntry): Promise<string> {
+  const { verified: honestVerified, verdict: honestVerdict } = computeHonestVerification(entry);
+
+  const ebletDir = resolve(app.getPath('userData'), 'substrate');
+  const ebletFile = resolve(ebletDir, 'rejected_option_eblets.jsonl');
+  if (!existsSync(ebletDir)) {
+    mkdirSync(ebletDir, { recursive: true });
+  }
+
+  const expectedSha = createHash('sha256')
+    .update(entry.question + '\0' + entry.rejectedLetter + '\0' + entry.reason)
+    .digest('hex');
+
+  const line = JSON.stringify({
+    claimType: 'rejection',
+    question: entry.question,
+    rejectedLetter: entry.rejectedLetter,
+    optionText: entry.optionText,
+    ruleId: entry.ruleId,
+    reason: entry.reason,
+    concept: entry.concept,
+    register: entry.register,
+    predicateReferentTerms: entry.predicateReferentTerms,
+    provenance: entry.provenance,
+    verified: honestVerified,
+    verdict: honestVerdict,
+    sha256: expectedSha,
+    timestamp: entry.timestamp,
+  });
+
+  appendFileSync(ebletFile, line + '\n', 'utf-8');
+  return expectedSha;
+}
+
+/**
+ * Reads back every rejection persisted by writeRejectedOptionEblet() above (FE-1: "the far end is
+ * a rejection record readable from the store, not a function that returned one" -- this is that
+ * read-back path). Optional `filter` narrows by the durable retrieval keys Phase 0 0.4 identified
+ * (`concept`/`question`) -- NEVER by a servable answer, because none exists on this shape.
+ * Malformed lines are skipped, consistent with every other reader in this file. Returns [] when
+ * the file does not exist yet (no rejection ever written) -- never throws.
+ */
+export async function queryRejectedOptionEblets(filter?: {
+  concept?: string;
+  question?: string;
+}): Promise<StoredRejectedOptionEblet[]> {
+  const ebletFile = resolve(app.getPath('userData'), 'substrate', 'rejected_option_eblets.jsonl');
+  if (!existsSync(ebletFile)) return [];
+
+  let raw: string;
+  try {
+    raw = readFileSync(ebletFile, 'utf-8');
+  } catch {
+    return [];
+  }
+
+  const entries: StoredRejectedOptionEblet[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as Partial<StoredRejectedOptionEblet>;
+      if (parsed.claimType === 'rejection' && parsed.question && parsed.rejectedLetter) {
+        entries.push(parsed as StoredRejectedOptionEblet);
+      }
+    } catch {
+      console.warn('[EbletStore] Malformed rejected_option_eblets line skipped:', trimmed.slice(0, 80));
+    }
+  }
+
+  if (!filter) return entries;
+  return entries.filter(
+    (e) =>
+      (filter.concept === undefined || e.concept === filter.concept) &&
+      (filter.question === undefined || e.question === filter.question),
+  );
+}
+
 /** BP135 Yoke #34 (0.9.7): shared Q/A relevance check, used at BOTH write time (before stamping
  *  a specialist-derived fact as a verified eblet, canonical_pipeline.ts's runScribe) and read
  *  time (queryVerifiedEbletsTopical below, filtering existing junk WITHOUT deleting it -- Rule
