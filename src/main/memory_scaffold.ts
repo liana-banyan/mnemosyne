@@ -286,6 +286,15 @@ export function registerMemoryScaffoldIPC(): void {
 // Install marker: {userData}/substrate/.starter_chocolates_v0.9.4 (bumped BP134 Yoke #32
 // Phase A from v0.3.7 so machines carrying the old broken 0-installed marker re-seed).
 // Idempotent — if marker exists, returns immediately (no double-write on restart).
+//
+// KN-BP145-M2 (2026-08-05): re-verified live, not by log line. Real machine substrate at
+// {userData}/substrate/verified_eblets.jsonl held 1,844 records (280 starter_chocolate: +
+// 1,564 real usage) with today's-date writes, and an isolated clean-room run of this exact
+// function against a synthetic packaged layout also produced 280/280 correctly from zero
+// pre-existing state. The devPath/extraResources/userData-directory defects this function's
+// header once described are fixed as of c12b3ccb (BP134) and stayed fixed at c799a4da. Do not
+// re-open that premise without re-checking the live substrate first. Full evidence:
+// LianaBanyanPlatform/BISHOP_DROPZONE/KN-BP145-M2_REPORT.md.
 
 interface StarterEblet {
   question: string;
