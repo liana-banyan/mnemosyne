@@ -603,6 +603,55 @@ export interface PredicateMatchDetail {
   reason: string;
 }
 
+// ─── KN-BP144-15 Phase 1: CAPTURE-ONLY structured elimination records ──────────────────────────
+//
+// "Eliminations are facts and we throw them away." Step 6 above (evaluateOptionAgainstPredicate)
+// already produces the richest, most specific reason string this file produces (Phase 0 report
+// 0.2/0.3) -- but that reason lives only as prose inside PredicateMatchDetail.reason, with its
+// rule identity implicit (the caller has to already know "this came from Step 6") and its
+// evidence (the option's own text the rule actually read) folded into the SAME prose string
+// rather than held as its own field. `EliminationRecord` below does not change what Step 6
+// decides or what any pre-existing field (`matches`, `trace`, `survivorsOut`) reports -- it is a
+// pure, additive re-shaping of information already computed, captured together the way a durable
+// fact should be: which rule, what it concluded, and the exact evidence that fired it, as three
+// separate fields a caller can read without re-parsing prose.
+//
+// SCOPE, DELIBERATELY NARROW (KN-BP144-15 ticket refusal: do not change any elimination rule,
+// threshold, or gate; capture only): this file has exactly ONE mechanism that eliminates
+// individual OPTIONS with a substantive per-option reason -- Step 6's literal-referent predicate
+// match. The other reason-bearing functions in this file report on a different kind of subject
+// entirely: checkBidirectionalConsistency judges a SOURCE's ranking (admissible/inadmissible),
+// not an option; evaluateSignificantFigureAccept and evaluateFormatIndependentFallbackGate judge
+// whether the WHOLE question is decidable this way at all, not any one option. Force-fitting
+// those into an "eliminated option" record would fabricate a subject the rule never actually
+// had an opinion about -- exactly the kind of dishonest generalization this codebase's Rule 66
+// discipline forbids. If a future rule in this file ever DOES eliminate individual options with
+// its own reason (a second arm alongside Step 6), `ruleId` below already gives it a place to
+// identify itself distinctly, without needing this type to change.
+export interface EliminationRecord {
+  /** Identifies WHICH rule/arm produced this record, distinct from `reason` (the full prose
+   *  rationale) -- so a caller (or a future second per-option elimination arm in this file) never
+   *  has to parse `reason`'s prose to know which mechanism fired. Today always
+   *  'STAGE_R_STEP6_LITERAL_REFERENT_PREDICATE' (see the constant of the same value, below). */
+  ruleId: string;
+  /** The option letter this record concerns. Only ELIMINATED options are represented here (see
+   *  this interface's own header) -- never a survivor, never a winner. */
+  letter: string;
+  /** The full rationale, verbatim from the corresponding PredicateMatchDetail.reason -- not
+   *  re-derived, not paraphrased. */
+  reason: string;
+  /** The evidence that fired this rule: the option's OWN text, quoted verbatim, exactly as Step 6
+   *  itself read it via evaluateOptionAgainstPredicate's literal substring check -- never a
+   *  summary, never fabricated. */
+  evidence: string;
+}
+
+/** KN-BP144-15 Phase 1: stable identifier for this file's one per-option elimination arm (Step 6,
+ *  literal-referent predicate match inside runRegisterResolutionStage). A module-level constant,
+ *  not inlined at each use, so every EliminationRecord this arm ever produces carries the exact
+ *  same string -- a caller can group/filter on it without a typo risk. */
+const STAGE_R_STEP6_LITERAL_REFERENT_PREDICATE_RULE_ID = 'STAGE_R_STEP6_LITERAL_REFERENT_PREDICATE';
+
 export interface RegisterResolutionStageResult {
   /** false = the stage did not run its inference logic at all (guard condition not met -- fewer
    *  than 2 survivors, or no definitional concept detected in the stem). true = the stage actually
@@ -622,6 +671,14 @@ export interface RegisterResolutionStageResult {
   derivedPredicateReferentTerms: string[];
   matches: PredicateMatchDetail[];
   trace: string[];
+  /** KN-BP144-15 Phase 1: structured elimination records, one per option this stage actually
+   *  ELIMINATED (matched: false in `matches`) -- see EliminationRecord's own doc comment above.
+   *  Purely additive: [] on every return path that never reaches Step 6 (no-op / abstain before
+   *  matching), and derived from `matches` (never a second source of truth) on the two return
+   *  paths that do. Zero behavior change -- `survivorsOut`/`matches`/`trace` are computed exactly
+   *  as before this ticket; this field only re-shapes information already present into a
+   *  structured record a caller can read without parsing `reason`'s prose. */
+  eliminationRecords: EliminationRecord[];
 }
 
 // Curated per-concept register signal tables. Deliberately narrow -- see section header above. Each
@@ -822,6 +879,7 @@ export function runRegisterResolutionStage(
       derivedPredicateReferentTerms: [],
       matches: [],
       trace,
+      eliminationRecords: [],
     };
   }
 
@@ -854,6 +912,7 @@ export function runRegisterResolutionStage(
       derivedPredicateReferentTerms: [],
       matches: [],
       trace,
+      eliminationRecords: [],
     };
   }
 
@@ -873,6 +932,7 @@ export function runRegisterResolutionStage(
       derivedPredicateReferentTerms: [],
       matches: [],
       trace,
+      eliminationRecords: [],
     };
   }
 
@@ -895,6 +955,7 @@ export function runRegisterResolutionStage(
       derivedPredicateReferentTerms: [],
       matches: [],
       trace,
+      eliminationRecords: [],
     };
   }
   if (verification.registerClaimed && verification.registerClaimed !== candidate.register) {
@@ -915,6 +976,7 @@ export function runRegisterResolutionStage(
       derivedPredicateReferentTerms: [],
       matches: [],
       trace,
+      eliminationRecords: [],
     };
   }
   trace.push(
@@ -944,6 +1006,7 @@ export function runRegisterResolutionStage(
       derivedPredicateReferentTerms: [],
       matches: [],
       trace,
+      eliminationRecords: [],
     };
   }
   trace.push(`PREDICATE: required referent terms derived from the verified definition: [${referentTerms.join(',')}]`);
@@ -959,6 +1022,12 @@ export function runRegisterResolutionStage(
       'ABSTAIN: the predicate would eliminate every remaining survivor -- this stage never discards ' +
       'the last survivor(s). Returning the full survivor set unchanged instead of forcing a result.',
     );
+    // KN-BP144-15 Phase 1: eliminationRecords is [] here, DELIBERATELY, even though `matches`
+    // reports every option as matched:false -- this branch is the "never discard the last
+    // survivor(s)" safety override: nothing was ACTUALLY eliminated (survivorsOut === survivors,
+    // unchanged, same as before this ticket). A capture record must describe what really
+    // happened, not what the predicate would have said before the override reverted it -- an
+    // eliminationRecords array here would misreport an override-preserved survivor as rejected.
     return {
       applied: true,
       abstained: true,
@@ -971,6 +1040,7 @@ export function runRegisterResolutionStage(
       derivedPredicateReferentTerms: referentTerms,
       matches,
       trace,
+      eliminationRecords: [],
     };
   }
 
@@ -978,6 +1048,25 @@ export function runRegisterResolutionStage(
     `RESULT: survivors narrowed from [${survivors.join(',')}] to [${matchedLetters.join(',')}] by ` +
     `literal-referent predicate match under register="${candidate.register}".`,
   );
+  // KN-BP144-15 Phase 1: structured elimination records, built FROM `matches` (never a second
+  // source of truth) -- one per option `matches` reports as NOT matched, i.e. genuinely eliminated
+  // on THIS branch (the override above did not fire; at least one option survived). Indexed
+  // against `survivorOptions` (same order, same length, `matches` was built via a 1:1 .map over
+  // it) purely to attach the option's own text as `evidence` -- never changes which options are
+  // considered eliminated, which remains decided entirely by `matches[i].matched` /
+  // `survivorsOut`, exactly as before this ticket.
+  const eliminationRecords: EliminationRecord[] = [];
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
+    if (m && !m.matched) {
+      eliminationRecords.push({
+        ruleId: STAGE_R_STEP6_LITERAL_REFERENT_PREDICATE_RULE_ID,
+        letter: m.letter,
+        reason: m.reason,
+        evidence: survivorOptions[i]?.text ?? '',
+      });
+    }
+  }
   return {
     applied: true,
     abstained: false,
@@ -990,5 +1079,6 @@ export function runRegisterResolutionStage(
     derivedPredicateReferentTerms: referentTerms,
     matches,
     trace,
+    eliminationRecords,
   };
 }
