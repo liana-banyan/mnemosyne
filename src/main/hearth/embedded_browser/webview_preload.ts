@@ -186,12 +186,88 @@ interface BrowserAuthorityRunQueryRequest {
   authority: BrowserAuthorityName;
 }
 
+/** (KN-BP145-B) A citation is evidence about WHERE an authority's answer came from -- never a
+ *  voting candidate and never merged into `snippet`/`reasoning`. Kept as its own array field,
+ *  structurally distinct from `sourceUrl` (the page/query URL) on every result message in this
+ *  file, so a downstream consumer cannot accidentally promote a citation into the ensemble's
+ *  candidate/vote path by reading the wrong field name. */
+interface CitationRecord {
+  url: string;
+  label: string;
+  /** Best-effort category proxy -- the citation's hostname (e.g. "wikipedia.org"), not a
+   *  semantic topic category. No live authenticated session was available this session to
+   *  confirm whether Google/Perplexity render an explicit topic/category heading above grouped
+   *  citations (see this ticket's report, "FAR-END PROOFS NOT PRODUCED"). Hostname is the
+   *  honest, statically-verifiable proxy; a heading-derived semantic category is left to a
+   *  follow-up once a live signed-in session can be inspected. */
+  category: string;
+}
+
+/** Scans anchor elements WITHIN an already-matched answer/message container for citation links
+ *  -- deliberately not a new page-wide selector. The defect this ticket fixes and the citation
+ *  capture it adds share one scrape point: the container the answer text is already read from.
+ *  Running both off the same matched element means a single selector fix covers both surfaces in
+ *  one pass. Same-origin links (nav chrome back to the authority's own site) are excluded. Never
+ *  throws; a malformed href is skipped, not fabricated into a citation. */
+function extractCitationsFromElement(el: HTMLElement): CitationRecord[] {
+  const seen = new Set<string>();
+  const citations: CitationRecord[] = [];
+  try {
+    const anchors = el.querySelectorAll<HTMLAnchorElement>('a[href]');
+    anchors.forEach((a) => {
+      try {
+        const href = a.getAttribute('href') ?? '';
+        if (!/^https?:\/\//i.test(href)) return; // external links only -- no javascript:/relative/mailto
+        const url = new URL(href, window.location.href);
+        if (url.hostname === window.location.hostname) return; // exclude same-site nav chrome
+        if (seen.has(url.href)) return;
+        seen.add(url.href);
+        citations.push({
+          url: url.href,
+          label: (a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+          category: url.hostname.replace(/^www\./, ''),
+        });
+      } catch {
+        /* malformed href or URL parse failure -- skip this anchor, never fabricate a citation */
+      }
+    });
+  } catch {
+    /* DOM access error on this container -- return whatever was collected before the failure */
+  }
+  return citations;
+}
+
+// (KN-BP145-B) UI-chrome denylist: text shapes that are page furniture (button labels,
+// accessibility labels, collapsible-block toggles), not answer content. Byte-identical strings
+// like "Show code Gemini said" were confirmed (KN-BP144-9 Phase 0, Mode 6) captured by the
+// resilient-scrape fallback tiers across two different questions -- a fixed UI fragment, not two
+// coincidentally short real answers. These patterns are shape-based, never tied to a specific
+// question id (the standing "never tune to a qid" refusal), and are checked before ANY match is
+// accepted, across the static extractor and every resilient-fallback tier below.
+const UI_CHROME_DENYLIST_PATTERNS: RegExp[] = [
+  /^(show|hide)\s+(code|more|less|details|thinking|sources?)\b/i,
+  /\bsaid$/i, // accessibility label pattern, e.g. "<Name> said" appended after a collapsed block
+  /^copy(?:\s+code)?$/i,
+  /^(regenerate|edit|share|export|read aloud|listen|retry)(\s+response)?$/i,
+  /^\d+\s*\/\s*\d+$/, // pagination chrome, e.g. "1/3"
+];
+
+function looksLikeUiChrome(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return UI_CHROME_DENYLIST_PATTERNS.some((re) => re.test(t));
+}
+
 interface BrowserAuthorityExtractionResultMessage {
   success: boolean;
   authority: BrowserAuthorityName;
   snippet: string;
   sourceUrl: string | null;
   selectorUsed: string | null;
+  /** Evidence about where the answer text was found -- distinct from sourceUrl (the page/query
+   *  URL this system navigated to) and never merged into snippet. Empty array is honest (no
+   *  discoverable citation link inside the matched container), never a placeholder. */
+  citations: CitationRecord[];
 }
 
 // Best-effort Google featured-snippet / answer-box selectors, most-specific first.
@@ -213,12 +289,12 @@ const PERPLEXITY_ANSWER_SELECTORS = [
   'main [class*="prose"]',
 ];
 
-function firstNonEmptyTextMatch(selectors: string[]): { text: string; selector: string } | null {
+function firstNonEmptyTextMatch(selectors: string[]): { text: string; selector: string; element: HTMLElement } | null {
   for (const sel of selectors) {
     try {
       const el = document.querySelector<HTMLElement>(sel);
       const text = el?.innerText?.trim();
-      if (text && text.length >= 20) return { text, selector: sel };
+      if (text && text.length >= 20 && !looksLikeUiChrome(text)) return { text, selector: sel, element: el as HTMLElement };
     } catch {
       /* invalid selector or DOM access error -- try the next candidate */
     }
@@ -231,7 +307,7 @@ function extractBrowserAuthorityAnswer(authority: BrowserAuthorityName): Browser
   const match = firstNonEmptyTextMatch(selectors);
 
   if (!match) {
-    return { success: false, authority, snippet: '', sourceUrl: null, selectorUsed: null };
+    return { success: false, authority, snippet: '', sourceUrl: null, selectorUsed: null, citations: [] };
   }
 
   return {
@@ -240,6 +316,7 @@ function extractBrowserAuthorityAnswer(authority: BrowserAuthorityName): Browser
     snippet: match.text.replace(/\s+/g, ' ').trim(),
     sourceUrl: window.location.href,
     selectorUsed: match.selector,
+    citations: extractCitationsFromElement(match.element),
   };
 }
 
@@ -292,6 +369,9 @@ interface BrowserAuthorityInteractiveResultMessage {
   // fail log (STEP 3) say WHY a null came back (not_signed_in / composer_not_found_timeout / etc.)
   // instead of just "no result".
   reason?: string;
+  /** (KN-BP145-B) Same contract as BrowserAuthorityExtractionResultMessage.citations above --
+   *  distinct from sourceUrl, never merged into snippet, empty array (never omitted) on failure. */
+  citations: CitationRecord[];
 }
 
 // Best-effort composer selectors, most-specific first. claude.ai's composer is a ProseMirror
@@ -353,14 +433,14 @@ const CLAUDE_FALLBACK_MESSAGE_SELECTORS = [
 // trivial/empty noise, per the fix-pass spec (">~15 chars, not equal to the prompt").
 const RESILIENT_TEXT_MIN_LENGTH = 15;
 
-function lastNonEmptyTextMatch(selectors: string[]): { text: string; selector: string } | null {
+function lastNonEmptyTextMatch(selectors: string[]): { text: string; selector: string; element: HTMLElement } | null {
   for (const sel of selectors) {
     try {
       const matches = document.querySelectorAll<HTMLElement>(sel);
       if (matches.length === 0) continue;
       const el = matches[matches.length - 1];
       const text = el?.innerText?.trim();
-      if (text && text.length >= 1) return { text, selector: sel };
+      if (text && text.length >= 1 && !looksLikeUiChrome(text)) return { text, selector: sel, element: el };
     } catch {
       /* invalid selector or DOM access error -- try the next candidate */
     }
@@ -388,14 +468,14 @@ function isEchoedPrompt(text: string, promptText: string): boolean {
  *  substantial-text bar and is not the echoed user prompt; null if nothing qualifies. Never
  *  throws -- a selector-parse failure just means an empty combined query, handled by the
  *  try/catch below. */
-function findBroadFallbackMatch(promptText: string): { text: string; selector: string } | null {
+function findBroadFallbackMatch(promptText: string): { text: string; selector: string; element: HTMLElement } | null {
   try {
     const combinedSelector = CLAUDE_FALLBACK_MESSAGE_SELECTORS.join(',');
     const matches = Array.from(document.querySelectorAll<HTMLElement>(combinedSelector));
     for (let i = matches.length - 1; i >= 0; i--) {
       const el = matches[i];
       const text = el?.innerText?.trim() ?? '';
-      if (text.length < RESILIENT_TEXT_MIN_LENGTH || isEchoedPrompt(text, promptText)) continue;
+      if (text.length < RESILIENT_TEXT_MIN_LENGTH || isEchoedPrompt(text, promptText) || looksLikeUiChrome(text)) continue;
       let matchedSelector = 'broad-fallback';
       for (const sel of CLAUDE_FALLBACK_MESSAGE_SELECTORS) {
         try {
@@ -407,7 +487,7 @@ function findBroadFallbackMatch(promptText: string): { text: string; selector: s
           /* invalid selector -- keep the generic label */
         }
       }
-      return { text, selector: matchedSelector };
+      return { text, selector: matchedSelector, element: el };
     }
   } catch {
     /* invalid combined selector or DOM access error */
@@ -423,7 +503,7 @@ function findBroadFallbackMatch(promptText: string): { text: string; selector: s
  *  over-inclusive is acceptable per the fix-pass spec since this only needs to CONTAIN the
  *  answer. Returns null if the result doesn't clear the substantial-text bar or is itself just
  *  the echoed prompt. Never throws. */
-function findMainRegionTailFallback(promptText: string): { text: string; selector: string } | null {
+function findMainRegionTailFallback(promptText: string): { text: string; selector: string; element: HTMLElement } | null {
   try {
     const root = document.querySelector('main') ?? document.body;
     if (!root) return null;
@@ -444,8 +524,14 @@ function findMainRegionTailFallback(promptText: string): { text: string; selecto
       const idx = fullText.lastIndexOf(normalizedPrompt);
       if (idx >= 0) tail = fullText.slice(idx + normalizedPrompt.length).trim();
     }
-    if (tail.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(tail, promptText)) {
-      return { text: tail, selector: 'main-tail-fallback' };
+    if (tail.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(tail, promptText) && !looksLikeUiChrome(tail)) {
+      // `clone` (not `root`) is the citation-scan target below: nav/aside/header and the
+      // composer/send-button elements were just stripped from it, so any citation link that
+      // happened to live only in those chrome regions is not recoverable here -- an accepted
+      // trade-off since those regions are page furniture, not where a real answer's citations
+      // render, and stripping them is exactly what makes the tail-fallback text honest in the
+      // first place.
+      return { text: tail, selector: 'main-tail-fallback', element: clone };
     }
   } catch {
     /* DOM access error */
@@ -458,7 +544,7 @@ function findMainRegionTailFallback(promptText: string): { text: string; selecto
  *  fallback (tier (c)) -- returns the FIRST tier that yields non-trivial (>= 15 char), non-
  *  echoed-prompt text. Never fabricates: returns null (not a placeholder string) when every tier
  *  comes up empty, exactly like the pre-fix lastNonEmptyTextMatch-only path did. */
-function getResilientAssistantText(promptText: string): { text: string; selector: string } | null {
+function getResilientAssistantText(promptText: string): { text: string; selector: string; element: HTMLElement } | null {
   const specific = lastNonEmptyTextMatch(CLAUDE_ASSISTANT_MESSAGE_SELECTORS);
   if (specific && specific.text.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(specific.text, promptText)) {
     return specific;
@@ -753,7 +839,7 @@ function findComposerFast(
 function runClaudeInteractiveQuery(promptText: string): void {
   const reportFailure = (reason?: string) => {
     ipcRenderer.sendToHost('browser-authority-interactive-result', {
-      success: false, authority: 'user_claude', snippet: '', sourceUrl: null, selectorUsed: null,
+      success: false, authority: 'user_claude', snippet: '', sourceUrl: null, selectorUsed: null, citations: [],
       ...(reason ? { reason } : {}),
     } as BrowserAuthorityInteractiveResultMessage);
   };
@@ -801,6 +887,7 @@ function runClaudeInteractiveQuery(promptText: string): void {
       let hasSeenStreaming = false;
       let loggedStreamingDetected = false;
       let lastSelector: string | null = null;
+      let lastMatchElement: HTMLElement | null = null;
       const startedAt = Date.now();
 
       const finish = (success: boolean) => {
@@ -827,6 +914,7 @@ function runClaudeInteractiveQuery(promptText: string): void {
           snippet: success ? lastText.replace(/\s+/g, ' ').trim() : '',
           sourceUrl: success ? window.location.href : null,
           selectorUsed: success ? lastSelector : null,
+          citations: success && lastMatchElement ? extractCitationsFromElement(lastMatchElement) : [],
           ...(success ? {} : { reason: 'stream_timeout_or_empty' }),
         } as BrowserAuthorityInteractiveResultMessage);
       };
@@ -846,7 +934,10 @@ function runClaudeInteractiveQuery(promptText: string): void {
         // stay empty for the whole poll no matter how long we waited.
         const match = getResilientAssistantText(promptText);
         const currentText = match?.text ?? '';
-        if (match) lastSelector = match.selector;
+        if (match) {
+          lastSelector = match.selector;
+          lastMatchElement = match.element;
+        }
 
         if (currentText.length > 0 && currentText === lastText) {
           ticksSinceChange++;
@@ -1099,14 +1190,14 @@ function isGenericStillStreaming(config: InteractiveAuthorityDriverConfig): bool
 function findBroadFallbackMatchGeneric(
   selectors: string[],
   promptText: string,
-): { text: string; selector: string } | null {
+): { text: string; selector: string; element: HTMLElement } | null {
   try {
     const combinedSelector = selectors.join(',');
     const matches = Array.from(document.querySelectorAll<HTMLElement>(combinedSelector));
     for (let i = matches.length - 1; i >= 0; i--) {
       const el = matches[i];
       const text = el?.innerText?.trim() ?? '';
-      if (text.length < RESILIENT_TEXT_MIN_LENGTH || isEchoedPrompt(text, promptText)) continue;
+      if (text.length < RESILIENT_TEXT_MIN_LENGTH || isEchoedPrompt(text, promptText) || looksLikeUiChrome(text)) continue;
       let matchedSelector = 'broad-fallback';
       for (const sel of selectors) {
         try {
@@ -1118,7 +1209,7 @@ function findBroadFallbackMatchGeneric(
           /* invalid selector -- keep the generic label */
         }
       }
-      return { text, selector: matchedSelector };
+      return { text, selector: matchedSelector, element: el };
     }
   } catch {
     /* invalid combined selector or DOM access error */
@@ -1130,7 +1221,7 @@ function findBroadFallbackMatchGeneric(
 function findMainRegionTailFallbackGeneric(
   config: InteractiveAuthorityDriverConfig,
   promptText: string,
-): { text: string; selector: string } | null {
+): { text: string; selector: string; element: HTMLElement } | null {
   try {
     const root = document.querySelector('main') ?? document.body;
     if (!root) return null;
@@ -1151,8 +1242,11 @@ function findMainRegionTailFallbackGeneric(
       const idx = fullText.lastIndexOf(normalizedPrompt);
       if (idx >= 0) tail = fullText.slice(idx + normalizedPrompt.length).trim();
     }
-    if (tail.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(tail, promptText)) {
-      return { text: tail, selector: 'main-tail-fallback' };
+    if (tail.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(tail, promptText) && !looksLikeUiChrome(tail)) {
+      // See findMainRegionTailFallback's twin comment above: `clone` has chrome selectors already
+      // stripped, so this is the same accepted trade-off (citations only inside stripped regions
+      // are not recoverable here).
+      return { text: tail, selector: 'main-tail-fallback', element: clone };
     }
   } catch {
     /* DOM access error */
@@ -1165,7 +1259,7 @@ function findMainRegionTailFallbackGeneric(
 function getResilientAssistantTextGeneric(
   config: InteractiveAuthorityDriverConfig,
   promptText: string,
-): { text: string; selector: string } | null {
+): { text: string; selector: string; element: HTMLElement } | null {
   const specific = lastNonEmptyTextMatch(config.assistantMessageSelectorsTierA);
   if (specific && specific.text.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(specific.text, promptText)) {
     return specific;
@@ -1206,7 +1300,7 @@ function submitComposerGeneric(composerEl: HTMLElement, sendButtonSelectors: str
 function runGenericInteractiveQuery(config: InteractiveAuthorityDriverConfig, promptText: string): void {
   const reportFailure = (reason?: string) => {
     ipcRenderer.sendToHost('browser-authority-interactive-result', {
-      success: false, authority: config.authority, snippet: '', sourceUrl: null, selectorUsed: null,
+      success: false, authority: config.authority, snippet: '', sourceUrl: null, selectorUsed: null, citations: [],
       ...(reason ? { reason } : {}),
     } as BrowserAuthorityInteractiveResultMessage);
   };
@@ -1247,6 +1341,7 @@ function runGenericInteractiveQuery(config: InteractiveAuthorityDriverConfig, pr
       let hasSeenStreaming = false;
       let loggedStreamingDetected = false;
       let lastSelector: string | null = null;
+      let lastMatchElement: HTMLElement | null = null;
       const startedAt = Date.now();
 
       const finish = (success: boolean) => {
@@ -1268,6 +1363,7 @@ function runGenericInteractiveQuery(config: InteractiveAuthorityDriverConfig, pr
           snippet: success ? lastText.replace(/\s+/g, ' ').trim() : '',
           sourceUrl: success ? window.location.href : null,
           selectorUsed: success ? lastSelector : null,
+          citations: success && lastMatchElement ? extractCitationsFromElement(lastMatchElement) : [],
           ...(success ? {} : { reason: 'stream_timeout_or_empty' }),
         } as BrowserAuthorityInteractiveResultMessage);
       };
@@ -1282,7 +1378,10 @@ function runGenericInteractiveQuery(config: InteractiveAuthorityDriverConfig, pr
 
         const match = getResilientAssistantTextGeneric(config, promptText);
         const currentText = match?.text ?? '';
-        if (match) lastSelector = match.selector;
+        if (match) {
+          lastSelector = match.selector;
+          lastMatchElement = match.element;
+        }
 
         if (currentText.length > 0 && currentText === lastText) {
           ticksSinceChange++;
@@ -1333,7 +1432,7 @@ ipcRenderer.on('browser-authority-run-interactive-query', (_event, payload: Brow
   }
   logInjectionEvent('interactive_query_unsupported_authority', { authority: payload.authority, url: window.location.href });
   ipcRenderer.sendToHost('browser-authority-interactive-result', {
-    success: false, authority: payload.authority, snippet: '', sourceUrl: null, selectorUsed: null,
+    success: false, authority: payload.authority, snippet: '', sourceUrl: null, selectorUsed: null, citations: [],
   } as BrowserAuthorityInteractiveResultMessage);
 });
 
