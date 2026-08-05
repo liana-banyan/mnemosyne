@@ -40,6 +40,24 @@
 // accent colors already used throughout the Proof tab) rather than inventing a clashing scheme
 // -- there is no actual light/dark switch to be "aware" of yet. Flagged to Bishop alongside the
 // per-AI gap.
+//
+// KN-BP145-M1 ADDITION: Barrel 1 now HAS a real data source design -- see
+// src/main/hearth/usage_barrel_scraper.ts. That module scrapes Anthropic's own claude.ai
+// Settings > Usage panel for the rolling 5-hour and weekly rate-limit windows (percent consumed
+// plus reset countdown; the vendor never publishes an allocation/token count, and none is
+// invented here) and computes a real consumption-rate-vs-reset-time operational answer. This is
+// a DIFFERENT metric from TokensRemainingBarrel above (which is reserved, untouched, for the
+// Coupon Clipper's future per-AI tokens-remaining-as-an-amount work per KN-BP143-3 D3 -- do not
+// conflate the two). VendorUsageBarrel below renders the new metric as its own, separately
+// labeled block. WIRING BOUNDARY (report this honestly, do not fabricate a live wire): this
+// component only renders whatever `vendorUsage` prop it is given. The actual IPC round trip --
+// preload.ts contextBridge export, an index.ts ipcMain handler calling
+// scrapeVendorUsagePanel()/computeUsageBarrelOperationalSnapshot(), and a ProveItWorksTab.tsx
+// call site passing the result down as this prop -- touches three files outside this ticket's
+// owned scope and is NOT built here (see the KN-BP145-M1 report). SHOW_VENDOR_USAGE_BARREL below
+// stays `false` until that wiring lands, mirroring the exact SHOW_TOKENS_REMAINING_BARREL
+// precedent: an honestly-labeled "unknown" box is still a box the Founder would see every day
+// with no live data behind it yet.
 
 import React, { useState } from 'react';
 
@@ -256,6 +274,104 @@ export function TokensRemainingBarrel({
   );
 }
 
+// ─── KN-BP145-M1: vendor usage-ceiling barrel (a different metric from TokensRemainingBarrel) ──
+
+/** Renderer-local mirror of usage_barrel_scraper.ts's VendorUsageWindowReading -- same
+ *  duplication convention MeterSummaryForBarrels already uses above for
+ *  AnswerCacheMeterSummary (the renderer process cannot import a main-process module directly;
+ *  it only ever sees whatever shape crosses the IPC boundary). */
+export interface VendorUsageWindowView {
+  label: string;
+  percentConsumed: number;
+  resetText: string;
+}
+
+/** Renderer-local mirror of usage_barrel_scraper.ts's UsageBarrelOperationalSnapshot, trimmed to
+ *  what this component actually renders. `status` distinguishes "never checked yet"
+ *  (`'unknown'`) from "checked and it failed" (`'error'`) from "checked and it worked"
+ *  (`'ok'`) -- all three render an honest state, never a fabricated percent. */
+export interface VendorUsageBarrelData {
+  status: 'unknown' | 'ok' | 'error';
+  fiveHour: VendorUsageWindowView | null;
+  weeklyAllModels: VendorUsageWindowView | null;
+  weeklyModelSpecific: VendorUsageWindowView | null;
+  usageCredits: { usedUsd: number; limitUsd: number } | null;
+  operationalAnswer: string | null;
+  lastCheckedAt: string | null;
+  /** Present only when status === 'error' -- the scraper's own failureReason tag, shown verbatim
+   *  rather than swallowed, so a stalled scrape is visible as a labeled failure, not silence. */
+  failureReason: string | null;
+}
+
+/** One percent-fill gauge row -- deliberately NOT the vertical-liquid-fill metaphor
+ *  TokensRemainingBarrel uses above, because this data is fundamentally different: a BOUNDED
+ *  0-100 percent-of-an-unpublished-allocation with its own reset clock, not an unbounded amount
+ *  stacked from multiple layers. A horizontal percent bar is the honest fit for "percent
+ *  consumed of something you cannot see the total of." */
+function UsageGaugeRow({
+  reading, color,
+}: { reading: VendorUsageWindowView; color: string }): React.ReactElement {
+  const pct = Math.max(0, Math.min(100, reading.percentConsumed));
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#94a3b8', marginBottom: 2 }}>
+        <span>{reading.label}</span>
+        <span style={{ color: '#cbd5e1' }}>{pct}% consumed</span>
+      </div>
+      <div style={{ height: 8, background: 'rgba(148,163,184,0.12)', borderRadius: 4, overflow: 'hidden' }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: color, transition: 'width 0.3s ease' }} />
+      </div>
+      <div style={{ fontSize: 9, color: '#64748b', marginTop: 2 }}>
+        {reading.resetText || 'reset time unknown'}
+      </div>
+    </div>
+  );
+}
+
+/** Barrel 1 (top), KN-BP145-M1 realization -- vendor usage ceiling (Anthropic claude.ai plan
+ *  limits: rolling 5-hour window + weekly window, each percent-consumed + reset countdown). No
+ *  denominator/token count is ever rendered because the vendor never publishes one -- see
+ *  usage_barrel_scraper.ts's header. Renders an explicit "not yet checked" or "check failed"
+ *  state rather than a fabricated 0%. */
+export function VendorUsageBarrel({ data }: { data: VendorUsageBarrelData | null }): React.ReactElement {
+  const hasData = !!data && data.status === 'ok' && (data.fiveHour !== null || data.weeklyAllModels !== null);
+
+  return (
+    <div style={{
+      background: '#111827', border: '1px solid #1e2d45', borderRadius: 8,
+      padding: '12px 14px', marginBottom: 8,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>🚦 Vendor Usage Ceiling</div>
+        <div style={{ fontSize: 10, color: '#64748b' }}>
+          {data?.lastCheckedAt ? `checked ${new Date(data.lastCheckedAt).toLocaleTimeString()}` : 'never checked'}
+        </div>
+      </div>
+      {hasData ? (
+        <>
+          {data?.fiveHour && <UsageGaugeRow reading={data.fiveHour} color="#38bdf8" />}
+          {data?.weeklyAllModels && <UsageGaugeRow reading={data.weeklyAllModels} color="#facc15" />}
+          {data?.weeklyModelSpecific && <UsageGaugeRow reading={data.weeklyModelSpecific} color="#f472b6" />}
+          {data?.usageCredits && (
+            <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 6 }}>
+              Usage credits: ${data.usageCredits.usedUsd.toFixed(2)} of ${data.usageCredits.limitUsd.toFixed(2)}
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: '#cbd5e1', lineHeight: 1.5, borderTop: '1px solid #1e2d45', paddingTop: 6 }}>
+            {data?.operationalAnswer || 'No operational answer computed.'}
+          </div>
+        </>
+      ) : (
+        <div style={{ fontSize: 10, color: '#64748b', fontStyle: 'italic', lineHeight: 1.6 }}>
+          {data?.status === 'error'
+            ? `Not yet tracked -- last check failed (${data.failureReason ?? 'unlabeled failure'}). Honestly reported, not a fabricated percent.`
+            : 'Not yet checked -- the vendor usage scrape has not run yet in this session.'}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Barrel 2 (below) -- tokens SAVED, color-LAYERED sand strata (never mixing colors), fed by
  *  getAnswerCacheMeterSummary() -> cloud_cost_avoided_usd. Per the boundary check, that field is
  *  aggregate-only, so this renders exactly ONE real stratum ("All authorities (aggregate)")
@@ -377,6 +493,11 @@ export interface TwoBarrelMeterProps {
   meter: MeterSummaryForBarrels | null;
   loading: boolean;
   onRefresh: () => void;
+  /** KN-BP145-M1: optional so ProveItWorksTab.tsx (not owned by this ticket) keeps compiling
+   *  unchanged with zero edits until a future ticket wires the real IPC call and passes this
+   *  down. Undefined/null both render the same honest "not yet checked" state as an explicit
+   *  `{ status: 'unknown', ... }` object would. */
+  vendorUsage?: VendorUsageBarrelData | null;
 }
 
 // KN-BP143-3 D3 (Founder amendment): Barrel 1 has no data source anywhere in the engine, so its
@@ -387,6 +508,14 @@ export interface TwoBarrelMeterProps {
 // SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md.
 const SHOW_TOKENS_REMAINING_BARREL = false;
 
+// KN-BP145-M1: same D3 precedent, same reasoning, different barrel. VendorUsageBarrel's design
+// and scrape module (usage_barrel_scraper.ts) are real and callable today, but the IPC round trip
+// that would give this component a real `vendorUsage` prop is not built by this ticket (see the
+// header note above and the KN-BP145-M1 report) -- so this stays `false` until a future ticket
+// wires preload.ts + index.ts + ProveItWorksTab.tsx and flips it, rather than showing the Founder
+// a permanently-"not yet checked" box every day.
+const SHOW_VENDOR_USAGE_BARREL = false;
+
 /** Composite "Two Barrels" panel -- replaces the old single "The Meter" block. Barrel 1 sits on
  *  top of Barrel 2 with a small funnel glyph between them illustrating the spec's flow metaphor
  *  (a query's pour from Barrel 1 is either SPENT, or caught by the Substrate funnel into Barrel
@@ -395,7 +524,7 @@ const SHOW_TOKENS_REMAINING_BARREL = false;
  *  data source. Both Barrel 1 and the funnel are gated by SHOW_TOKENS_REMAINING_BARREL above:
  *  the funnel visually depends on a filled Barrel 1 pouring into it, so it is suppressed
  *  alongside it rather than left dangling above Barrel 2 with nothing to catch. */
-export function TwoBarrelMeter({ meter, loading, onRefresh }: TwoBarrelMeterProps): React.ReactElement {
+export function TwoBarrelMeter({ meter, loading, onRefresh, vendorUsage }: TwoBarrelMeterProps): React.ReactElement {
   const [resolution, setResolution] = useState(3);
 
   return (
@@ -443,6 +572,10 @@ export function TwoBarrelMeter({ meter, loading, onRefresh }: TwoBarrelMeterProp
           </button>
         </div>
       </div>
+
+      {SHOW_VENDOR_USAGE_BARREL && (
+        <VendorUsageBarrel data={vendorUsage ?? null} />
+      )}
 
       {SHOW_TOKENS_REMAINING_BARREL && (
         <>
