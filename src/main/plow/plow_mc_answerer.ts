@@ -1369,7 +1369,18 @@ export interface AuthorityEnsembleCandidate {
     // extra Perplexity call was the judge" (no longer true: N participants cut AND pick now, see
     // runCakeMethodDisagreementResolution()). Kept as its own additive union member (Rule 66) rather
     // than repurposing an existing tag.
-    | 'cake_pick_plurality';
+    | 'cake_pick_plurality'
+    // KN-BP145-A: the format-independent elimination cascade fallback
+    // (runEliminationCascadeFormatIndependentFallback, PAPER-15 sections 3-7), given its OWN
+    // reachable entry point at the disagree-fallthrough site (cascadeAdjudicatorEngaged), gated
+    // on that condition rather than on answerType === 'computable' -- see that call site's own
+    // comment for the full rationale. Deliberately NOT tagged 'deterministic_compute': that tag
+    // makes runCandidateSourceCascadeAdjudicator's RULE 2 (isRooted/"proven beats concordant")
+    // treat a candidate as an automatic-win proof, which this mechanism's own model_derived
+    // provenance (KN-BP143-1 Defect 2 / BP-ECHO-NO-VOTE, same file) explicitly does not deserve --
+    // it composes and verifies its own query, which is real evidence, but it must corroborate and
+    // compete as one more genuinely independent witness, never auto-override.
+    | 'elimination_cascade_fallback';
   letter: string;
   reasoning: string;
   sourceUrl: string;
@@ -1478,6 +1489,12 @@ export function resolveCakeDerivationPath(candidate: AuthorityEnsembleCandidate)
     case 'wolfram_alpha': return 'deterministic_solver:wolfram_compute';
     case 'specialist_swarm': return 'swarm';
     case 'deterministic_compute': return `deterministic_solver:${candidate.method}`;
+    // KN-BP145-A: the elimination cascade fallback composes and verifies its own query (see that
+    // call site's own comment) -- real evidence, its own distinct route, but deliberately mapped to
+    // a 'deterministic_solver:' path rather than left equal to 'deterministic_compute' itself, so it
+    // never collides with (or is mistaken for) a literal-expression calculator tier in any trace or
+    // downstream switch that keys specifically on candidate.authority === 'deterministic_compute'.
+    case 'elimination_cascade_fallback': return 'deterministic_solver:elimination_cascade_fallback';
     // Legacy/synthesized tags -- should never actually appear in a CUT pool (the judge tag predates
     // Cake, the plurality tag is Cake's own OUTPUT, not an input cut), but mapped honestly rather
     // than left to fall through to 'unknown:' if a future caller ever passes one in.
@@ -8563,14 +8580,94 @@ export async function runCanonicalPlowMcAnswer(
       }. Trace:\n  ${eliminatorResult.trace.join('\n  ')}`,
     );
 
+    // ── KN-BP145-A: give runEliminationCascadeFormatIndependentFallback (PAPER-15 sections 3-7,
+    //    this file, defined above -- C1-C8, "the cascade never parses option text; it composes its
+    //    own verification queries") its OWN reachable entry point here, gated ONLY on
+    //    cascadeAdjudicatorEngaged (the SAME 'disagree'-fall-through-with-real-candidates guard the
+    //    register-resolution eliminator just above and the adjudicator below both already key on),
+    //    deliberately NOT on `answerType`. Ticket diagnosis, confirmed by Phase 0 (this ticket's own
+    //    report, KN-BP145-A_REPORT.md): this mechanism was previously reachable ONLY from inside
+    //    resolveDeterministicComputeOverride (two call sites, both gated
+    //    `answerType === 'computable'`), so a 'reasoning'-classified question -- 12 of run 043's 20,
+    //    including every one of qids 66/72/79/85/92/98/105/111 this ticket concerns -- could never
+    //    reach it, regardless of what its own internal gate (evaluateFormatIndependentFallbackGate)
+    //    would have said. This call site bypasses resolveDeterministicComputeOverride entirely; the
+    //    OTHER nine compute tiers inside that function (unit_aware/bare_value/schedule/density/
+    //    physics/aircraft/pseudocode/set_membership/no_consensus) are untouched and stay exactly as
+    //    computable-gated as before -- only this one mechanism gets a second, independent door. The
+    //    `answerType === 'computable'` gate itself is never widened, here or anywhere else in this
+    //    file. `eliminatorOptions` (line above) is the FULL presented option set A-J parsed from
+    //    this same prompt -- passed straight through, never a candidate-sources list -- so this
+    //    tier's own internal gate and both its ranking/quantity legs operate over real options, and
+    //    any candidate it produces can name a letter no authority ever proposed (PAPER-15's own
+    //    format-independence claim). Wrapped in the SAME non-fatal try/catch convention every other
+    //    call site of this function already uses (a throw here must never break the adjudicator
+    //    path -- falls back to no cascade candidate, honest and no worse than pre-KN-BP145-A
+    //    behavior).
+    let cascadeFallbackCandidateForAdjudication: AuthorityEnsembleCandidate | null = null;
+    try {
+      const cascadeFallbackBridge: BrowserAuthorityBridge = {
+        async runQueryInUserBrowser(query) {
+          try {
+            const mainModule = await import('../index');
+            return await mainModule.runBrowserAuthorityQueryFromMain(query);
+          } catch (err) {
+            console.warn('[plow_mc_answerer] KN-BP145-A cascade-fallback bridge call failed (non-fatal, honest null):', err);
+            return null;
+          }
+        },
+      };
+      const cascadeFallbackResult = await runEliminationCascadeFormatIndependentFallback(
+        researchQuery,
+        eliminatorOptions,
+        { ollamaBaseUrl, model },
+        cascadeFallbackBridge,
+        (msg) => console.log(`[plow_mc_answerer] KN-BP145-A cascade-fallback (disagree-fallthrough entry): ${msg}`),
+      );
+      console.log(
+        `[plow_mc_answerer] KN-BP145-A cascade-fallback receipt: attempted=${cascadeFallbackResult.receipt.attempted} ` +
+        `decided=${cascadeFallbackResult.receipt.decided} -- ${cascadeFallbackResult.receipt.trace}`,
+      );
+      if (cascadeFallbackResult.candidate) {
+        const det = cascadeFallbackResult.candidate;
+        cascadeFallbackCandidateForAdjudication = {
+          authority: 'elimination_cascade_fallback',
+          letter: det.letter,
+          reasoning:
+            `elimination cascade format-independent fallback (KN-BP145-A entry point, method=${det.method}): ` +
+            `${det.sourceExpression}`,
+          sourceUrl: cascadeFallbackResult.receipt.sourceCaptures[0]?.url ?? '',
+          method: det.method,
+        };
+        console.log(
+          `[plow_mc_answerer] KN-BP145-A cascade-fallback produced candidate letter=${det.letter} -- added as a ` +
+          `genuinely independent witness (derivation path 'deterministic_solver:elimination_cascade_fallback'), ` +
+          `never auto-rooted (runCandidateSourceCascadeAdjudicator's RULE 2 keys literally on ` +
+          `authority === 'deterministic_compute', which this candidate is deliberately NOT tagged as).`,
+        );
+      }
+    } catch (err) {
+      console.warn('[plow_mc_answerer] KN-BP145-A cascade-fallback threw (non-fatal, adjudicator proceeds without it):', err);
+    }
+
     // A2: the eliminator's surviving option set FILTERS the adjudicator's ADMISSIBLE CANDIDATES
     // before it ever runs -- so whatever the adjudicator returns (if anything) already satisfies
     // the constraint by construction, never merely by luck. When there is no active constraint,
     // `admissibleCandidates` is the exact same array as `ensembleCandidatesForTrace`, byte-
     // identical to pre-KN-BP144-4 behavior.
-    const admissibleCandidates = eliminatorConstraintSet
-      ? ensembleCandidatesForTrace!.filter((c) => eliminatorConstraintSet.has(c.letter))
+    // KN-BP145-A: `candidatesIncludingCascadeFallback` is `ensembleCandidatesForTrace` plus the new
+    // cascade-fallback candidate (if one fired) appended -- `ensembleCandidatesForTrace` itself is
+    // left untouched so every OTHER trace string in this file that reads it (the "allCandidates="
+    // log lines below, the receipt's own `ensembleCandidates` field) keeps meaning exactly what it
+    // always meant: what the authority ensemble itself returned. The cascade fallback is a LATER,
+    // separate stage; it is folded in only at this admissibility-filtering step, subject to the
+    // SAME eliminator constraint as every authority-sourced candidate, never given a bypass.
+    const candidatesIncludingCascadeFallback = cascadeFallbackCandidateForAdjudication
+      ? [...ensembleCandidatesForTrace!, cascadeFallbackCandidateForAdjudication]
       : ensembleCandidatesForTrace!;
+    const admissibleCandidates = eliminatorConstraintSet
+      ? candidatesIncludingCascadeFallback.filter((c) => eliminatorConstraintSet.has(c.letter))
+      : candidatesIncludingCascadeFallback;
 
     // KN-BP144-1 Phase 2: cascadeReported* mirrors the SAME ensembleSwarmAlreadyFired-aware
     // honest-bookkeeping pattern this file's own final return uses further below (see that
