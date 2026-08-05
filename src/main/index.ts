@@ -283,6 +283,7 @@ import { loadAllEntries, registerClaim } from './ip_ledger/ip_ledger_store';
 // One import line per new registration module. Never insert a new import between existing
 // imports above this zone; always append here instead.
 // (currently empty -- the next new registration import lands here)
+import { initOpenAiCompatServer } from './openai_compat_server'; // KN-BP145-M3: THE NEXUS
 // --- END APPEND ZONE: IMPORT -------------------------------------------------
 
 // --- Constants --------------------------------------------------------------
@@ -8099,6 +8100,7 @@ app.whenReady().then(async () => {
   // One no-arg init() call per new registration module (same pattern as initBoardWatcher()
   // above). Never insert a new call between the init() calls above; always append here instead.
   // (currently empty -- the next new registration init() call lands here)
+  initOpenAiCompatServer(); // KN-BP145-M3: THE NEXUS, local OpenAI-compat substrate-injecting server, 127.0.0.1 only
   // --- END APPEND ZONE: INIT-CALL -----------------------------------------
 
   // SAGA 10 BP045 W1 ? Register mnemosyne:// + mnemo:// deep-link protocols (BP065)
