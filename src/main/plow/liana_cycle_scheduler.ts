@@ -11,6 +11,16 @@
 // decision logic; this file only decides WHEN to call it, WHAT bank to feed it, HOW to surface
 // what happened, and WHETHER it is allowed to run at all.
 //
+// KN-BP145-P2 note: liana_cycle_runner.ts's runLianaCycleTurn now also ROUTES (escalates a single
+// question to researchArmMode:true, and only that question, only when its Coroner record is
+// 'honest-abstain'; unresolved escalations are appended to a new abstention-queue file for
+// Layer B). This file's own call site, the `config` object it builds below, and the receipt/
+// status shapes are UNCHANGED by that addition -- CycleTurnSummary simply carries two new fields
+// (escalationsAttempted, routedToAbstentionQueue) that flow through the existing
+// JSON.stringify(receipt) write and the existing broadcast() payload with no code change needed
+// here, since this file never destructures CycleTurnSummary's fields by name, only forwards the
+// whole object.
+//
 // ─── TRIGGER POLICY (documented plainly, per the ticket's explicit requirement) ─────────────────
 //
 // CHOSEN POLICY: idle-triggered automatic turns (primary, "always-on" in the canon sense) PLUS a
@@ -279,12 +289,20 @@ export async function runOneLianaCycleTurn(
     }) as unknown as (params: Record<string, unknown>) => Promise<void>;
 
     // Conservative, local-only config: researchArmMode left false/absent on purpose for the
-    // automatic (idle-triggered) path -- an unattended turn should not depend on a live,
-    // signed-in browser authority session that may not exist while the machine is idle. A
-    // manual turn (Founder present at the keyboard to trigger it) uses this exact same config
-    // today too, for one honest, single, auditable code path rather than two divergent ones;
-    // widening the manual path to opt into research-arm authorities is left as a follow-up, not
-    // done here, so this ticket's diff stays scoped to wiring the caller.
+    // BASE-tier attempt of every question, on both the automatic (idle-triggered) and manual
+    // path -- an unattended turn should not DEFAULT to depending on a live, signed-in browser
+    // authority session that may not exist while the machine is idle. This object is passed to
+    // runLianaCycleTurn unchanged; it is never mutated here.
+    //
+    // KN-BP145-P2 note (does not change this object): liana_cycle_runner.ts's runLianaCycleTurn
+    // may still escalate an INDIVIDUAL question to researchArmMode:true, but only ever as a
+    // per-question copy (`{ ...config, researchArmMode: true }`) built inside that function, and
+    // only when that question's own Coroner record classifies as 'honest-abstain' -- never as a
+    // blanket setting applied to every question in the turn, and never by this file. See
+    // liana_cycle_runner.ts's "Route: the improvement channel" section header for the full canon
+    // citation (canon_escalation_is_triggered_by_honest_abstention_never_scheduled_bp144) and the
+    // bounded-timeout reasoning that keeps that per-question escalation from hanging an idle-
+    // triggered, unattended turn on a browser-authority session that may not exist right now.
     const config = {
       domain: 'liana_cycle',
       ollamaBaseUrl: 'http://127.0.0.1:11434',
