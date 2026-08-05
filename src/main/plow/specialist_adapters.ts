@@ -23,18 +23,184 @@
  * SPECIALIST_METADATA (below the registry) carries the Phase 1 Standard/Premium
  * tier + domain-affinity + cost seed for the Pawn authority list. Descriptive only.
  *
- * Weight scale: 0.0–1.0 (Miner threshold: >= 0.6).
+ * Weight scale: 0.0-1.0 (Miner threshold: >= 0.6).
  * Content length: Miner threshold >= 100 chars.
  * Timeout per adapter: 5000ms.
+ *
+ * KN-BP145-C (BP145): the per-adapter `weight` value below is no longer a hand-typed
+ * constant. It is resolved per call, per (source, domain), through resolveSourceWeight()
+ * (see the SourceCredibilityLedger section below), which returns UNMEASURED_PASSTHROUGH_WEIGHT
+ * until a real outcome-attributed observation exists for that exact (source, domain) pair and
+ * clears MIN_SAMPLE_SIZE_FOR_GATING. No observation-writer exists anywhere in this codebase yet
+ * (attribution is blocked on KN-BP144-14 Phase 1, per SPEC_THE_BANYAN_METRIC_FOR_SOURCES_BP144.md
+ * Section 1), so today every call resolves to UNMEASURED_PASSTHROUGH_WEIGHT -- honestly absent,
+ * not the old 0.62-0.90 hand-typed guesses this replaces.
  */
 
 export interface CandidateEblet {
   source: string;         // adapter name
   content: string;        // factual content (must pass Miner: >= 100 chars)
-  weight: number;         // source quality weight (must pass Miner: >= 0.6)
+  weight: number;         // resolved via resolveSourceWeight() -- see SourceCredibilityLedger below
   sid: string;            // stable ID (hash of source + content prefix)
   provenance_url?: string;
   domain?: string;
+}
+
+// ─── Source Credibility Ledger (KN-BP145-C, BP145) ─────────────────────────────
+//
+// Replaces the fabricated static per-adapter `weight` literals this file used to carry at
+// (pre-change) lines 117, 154, 195, 235, 287, 334, 367, 391, 444, 485, 507, 521, 566, 617, 674,
+// 719, 777, 850, 891 -- nineteen hand-typed numbers between 0.62 and 0.90, assigned once by a
+// human, never updated by an outcome. Full design: SPEC_THE_BANYAN_METRIC_FOR_SOURCES_BP144.md
+// at C:\Users\Administrator\Documents\LianaBanyanPlatform\BISHOP_DROPZONE\. This is the minimum
+// honest slice of that design scoped to this one file, per KN-BP145-C.
+//
+// NAMING: deliberately NOT called "Banyan Metric" anywhere in this section's identifiers.
+// ~120 legacy eblets already use that name for an unrelated BP045-060 per-session scoring
+// framework (confirmed by the SPEC's own orphan check, which found BanyanMetricLedger.tsx
+// scores sessions, not sources). This concept is named the SourceCredibilityLedger throughout --
+// a distinct, source-x-domain concept, flagged here for Bishop to canonicalize or rename later.
+//
+// NON-SEPARABLE UNIT: every read and write below is keyed by (sourceId, domainId) together.
+// There is no lookup or storage path in this module that scores a source without a domain
+// attached (SPEC: "a source score without a domain is not a valid record").
+
+/** One (source, domain) credibility record: a count of real observations, the empirical
+ *  correctness rate over those observations, and the date of the most recent one. */
+export interface SourceCredibilityRecord {
+  sourceId: string;
+  domainId: string;
+  observedN: number;
+  scoreValue: number;   // mean correctness over observedN observations, 0.0-1.0
+  vintageDate: string;  // ISO-8601 timestamp of the most recent observation, per SPEC Section 4
+}
+
+// No observation-writer exists anywhere in this codebase yet: per SPEC Section 1, per-claim
+// attribution (which specific source's content a scored answer's final letter actually rested
+// on) is blocked on KN-BP144-14 Phase 1 landing. The ledger therefore starts, and today stays,
+// EMPTY. This is intentional -- seeding it with anything, including the same 0.62-0.90 numbers
+// under a new name, is exactly the fabrication this ticket exists to kill. In-memory only (a
+// Map, not a file or DB table): nothing persists it across process restarts yet, because nothing
+// writes to it yet either. Flagged as a known gap in the KN-BP145-C report, not papered over.
+const sourceCredibilityLedger = new Map<string, SourceCredibilityRecord>();
+
+function sourceCredibilityKey(sourceId: string, domainId: string): string {
+  return `${sourceId}::${domainId}`;
+}
+
+/**
+ * Minimum number of real, outcome-attributed observations a (source, domain) pair must carry
+ * before its empirical score is allowed to gate, rank, or otherwise influence anything. Fixed
+ * here, before any observation exists, and must not be adjusted later after seeing what some
+ * source's score would look like at a different threshold (SPEC Section 2: "a minimum-n
+ * threshold picked after seeing which sources look good or bad at various candidate thresholds
+ * is not a threshold, it is the desired conclusion wearing a number").
+ *
+ * Rationale for 30: a conventional statistical floor for treating a binomial proportion's normal
+ * approximation as reasonable (the "np >= 5 and n(1-p) >= 5" rule of thumb implies n >= 20 at the
+ * worst case p = 0.5; 30 is the more common textbook rounding of that floor, sometimes called the
+ * "n >= 30" rule for the sampling distribution of a mean/proportion to be treated as approximately
+ * normal). At n = 30 and the worst-case true rate p = 0.5, the two-sided 95% Wald interval
+ * half-width is 1.96 * sqrt(0.5*0.5/30) ~= 0.179 -- under 18 points, tight enough that a score
+ * crossing this floor says something, not nothing. No source has any observations yet, so there
+ * was nothing to tune this number against when it was picked; it is a textbook floor, not a
+ * fitted one.
+ */
+export const MIN_SAMPLE_SIZE_FOR_GATING = 30;
+
+/**
+ * A record whose most recent observation (vintageDate) is older than this is treated as
+ * UNMEASURED for gating/ranking purposes -- never as BAD (SPEC Section 4, "Source BM must decay
+ * toward UNMEASURED, never toward BAD"). The underlying record (observedN, scoreValue,
+ * vintageDate) is never deleted, decremented, or zeroed by this check; the vintage stamp is
+ * exactly what lets a later reader see "this was true on this date" even after the score has
+ * stopped gating anything (SPEC Section 4's "unmeasured-but-dated" fourth state). 180 days is a
+ * deliberately generous idle window -- long enough that a source already cleared to gate is not
+ * punished for a short quiet spell, short enough that a truly stale measurement stops being
+ * trusted as current. Decay is evaluated lazily, at read time in resolveSourceWeight() below, not
+ * by any background timer that mutates stored records.
+ */
+export const STALE_AFTER_MS = 180 * 24 * 60 * 60 * 1000;
+
+/**
+ * The value CandidateEblet.weight resolves to for any (source, domain) pair with no record, a
+ * record below MIN_SAMPLE_SIZE_FOR_GATING, or a record older than STALE_AFTER_MS -- i.e., every
+ * pair today, since the ledger starts empty and nothing writes to it yet.
+ *
+ * `weight` is a required `number` field (not optional) because three files this ticket does not
+ * own read it via numeric threshold comparisons that must keep compiling and behaving sanely
+ * without being touched: plow_mc_answerer.ts (`c.weight >= MINER_MIN_WEIGHT` at its Miner gate,
+ * `b.weight - a.weight` at its Furnace sort), canonical_pipeline.ts (the same Miner-gate/Furnace-
+ * sort pair, plus runSaladin()'s own `candidate.weight >= 0.7` / `candidate.weight >= 0.75`
+ * heuristic-fallback thresholds), and csia_research.ts (the same Miner-gate pattern). All three
+ * import MINER_MIN_WEIGHT = 0.6 from canonical_pipeline.ts.
+ *
+ * This constant is deliberately set to that same 0.6 -- not imported (canonical_pipeline.ts
+ * already imports from this file, so importing back would create a circular module dependency;
+ * the literal is duplicated intentionally, with this comment as the tie between them) -- so that
+ * "unmeasured" is mathematically guaranteed to clear the Miner content-quality gate (neither
+ * privileged nor penalized by it) while ALSO failing runSaladin's higher 0.7/0.75 skip-challenge
+ * thresholds. That second effect is an intended, honest consequence, not an oversight: every
+ * candidate from every adapter in this file now receives Saladin's full adversarial challenge
+ * instead of the automatic pass the old fabricated high weights (0.80-0.90) used to buy it. More
+ * scrutiny for an unmeasured source is the safe direction -- "gates nothing" must never be read
+ * as "assume good."
+ */
+export const UNMEASURED_PASSTHROUGH_WEIGHT = 0.6;
+
+/**
+ * Resolves the effective CandidateEblet.weight for one (source, domain) pair. Returns the real
+ * empirical score only when a record exists, has cleared MIN_SAMPLE_SIZE_FOR_GATING, and is not
+ * stale (per STALE_AFTER_MS); otherwise returns UNMEASURED_PASSTHROUGH_WEIGHT. Every adapter
+ * function below calls this in place of the hand-typed literal it used to return.
+ */
+export function resolveSourceWeight(sourceId: string, domainId: string): number {
+  const record = sourceCredibilityLedger.get(sourceCredibilityKey(sourceId, domainId));
+  if (!record) return UNMEASURED_PASSTHROUGH_WEIGHT;
+  if (record.observedN < MIN_SAMPLE_SIZE_FOR_GATING) return UNMEASURED_PASSTHROUGH_WEIGHT;
+  const ageMs = Date.now() - Date.parse(record.vintageDate);
+  if (!Number.isFinite(ageMs) || ageMs > STALE_AFTER_MS) return UNMEASURED_PASSTHROUGH_WEIGHT;
+  return record.scoreValue;
+}
+
+/**
+ * Records one real, outcome-attributed observation for a (source, domain) pair and returns the
+ * updated record. Not called anywhere in this codebase yet -- no consumer currently attributes a
+ * scored answer's correctness back to a specific source's claim (SPEC Section 1: per-claim
+ * attribution is "currently absent" for both the specialist adapters and the browser
+ * authorities). Exported now so the write side of the ledger exists and is ready the moment
+ * per-claim attribution lands (KN-BP144-14 Phase 1), rather than being invented twice. A caller
+ * that has not yet verified attribution has no business calling this -- recording an observation
+ * against the wrong source is worse than recording nothing.
+ */
+export function recordSourceObservation(
+  sourceId: string,
+  domainId: string,
+  wasCorrect: boolean,
+  observedAt: string = new Date().toISOString(),
+): SourceCredibilityRecord {
+  const key = sourceCredibilityKey(sourceId, domainId);
+  const existing = sourceCredibilityLedger.get(key);
+  const priorN = existing ? existing.observedN : 0;
+  const priorScore = existing ? existing.scoreValue : 0;
+  const newN = priorN + 1;
+  const newScore = (priorScore * priorN + (wasCorrect ? 1 : 0)) / newN;
+  const record: SourceCredibilityRecord = {
+    sourceId,
+    domainId,
+    observedN: newN,
+    scoreValue: newScore,
+    vintageDate: observedAt,
+  };
+  sourceCredibilityLedger.set(key, record);
+  return record;
+}
+
+/** Inspection/test hook only -- not a gating call site. Returns the raw stored record (if any),
+ *  with no staleness or minimum-sample resolution applied (that logic lives in
+ *  resolveSourceWeight() above). */
+export function getSourceCredibilityRecord(sourceId: string, domainId: string): SourceCredibilityRecord | undefined {
+  return sourceCredibilityLedger.get(sourceCredibilityKey(sourceId, domainId));
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────────
@@ -114,7 +280,7 @@ export async function fetchWikipedia(question: string, domain: string, maxResult
         candidates.push({
           source: 'wikipedia',
           content: content.slice(0, 800),
-          weight: 0.85,
+          weight: resolveSourceWeight('wikipedia', domain),
           sid: stableId('wikipedia', content),
           provenance_url: summary.content_urls?.desktop?.page,
           domain,
@@ -151,7 +317,7 @@ export async function fetchWikidata(question: string, domain: string, maxResults
         return {
           source: 'wikidata',
           content: content.length >= 100 ? content : content + ' (Wikidata entity)',
-          weight: 0.72,
+          weight: resolveSourceWeight('wikidata', domain),
           sid: stableId('wikidata', content),
           provenance_url: r.url,
           domain,
@@ -192,7 +358,7 @@ export async function fetchStackExchange(
         return {
           source: 'stackexchange',
           content: content.slice(0, 700),
-          weight: 0.72,
+          weight: resolveSourceWeight('stackexchange', domain),
           sid: stableId('stackexchange', content),
           provenance_url: item.link,
           domain,
@@ -232,7 +398,7 @@ export async function fetchArxiv(question: string, domain: string): Promise<Cand
       entries.push({
         source: 'arxiv',
         content,
-        weight: 0.82,
+        weight: resolveSourceWeight('arxiv', domain),
         sid: stableId('arxiv', content),
         provenance_url: link,
         domain,
@@ -284,7 +450,7 @@ export async function fetchWolframAlpha(
     return [{
       source: 'wolfram',
       content,
-      weight: 0.90,
+      weight: resolveSourceWeight('wolfram', domain),
       sid: stableId('wolfram', content),
       domain,
     }];
@@ -331,7 +497,7 @@ export async function fetchOpenAlex(question: string, domain: string): Promise<C
       candidates.push({
         source: 'openalex',
         content,
-        weight: 0.80,
+        weight: resolveSourceWeight('openalex', domain),
         sid: stableId('openalex', content),
         provenance_url: work.doi ? `https://doi.org/${work.doi}` : undefined,
         domain,
@@ -364,7 +530,7 @@ export async function fetchNIST(question: string, domain: string): Promise<Candi
         candidates.push({
           source: 'nist',
           content,
-          weight: 0.88,
+          weight: resolveSourceWeight('nist', domain),
           sid: stableId('nist', content),
           provenance_url: doc.doi ? `https://doi.org/${doc.doi}` : undefined,
           domain,
@@ -388,7 +554,7 @@ export async function fetchNIST(question: string, domain: string): Promise<Candi
             return [{
               source: 'nist',
               content,
-              weight: 0.88,
+              weight: resolveSourceWeight('nist', domain),
               sid: stableId('nist_webbook', content),
               provenance_url: wbUrl,
               domain,
@@ -441,7 +607,7 @@ export async function fetchPubMed(
       candidates.push({
         source: 'pubmed',
         content,
-        weight: 0.82,
+        weight: resolveSourceWeight('pubmed', domain),
         sid: stableId('pubmed', content),
         provenance_url: `https://pubmed.ncbi.nlm.nih.gov/${id}/`,
         domain,
@@ -482,7 +648,7 @@ export async function fetchCommonCrawl(question: string, domain: string): Promis
           candidates.push({
             source: 'commoncrawl',
             content,
-            weight: 0.62,
+            weight: resolveSourceWeight('commoncrawl', domain),
             sid: stableId('commoncrawl', entry.url),
             provenance_url: entry.url,
             domain,
@@ -504,7 +670,7 @@ export async function fetchCommonCrawl(question: string, domain: string): Promis
         return [{
           source: 'commoncrawl',
           content: abstract.slice(0, 700),
-          weight: 0.65,
+          weight: resolveSourceWeight('commoncrawl', domain),
           sid: stableId('duckduckgo', abstract),
           provenance_url: ddg.AbstractURL,
           domain,
@@ -518,7 +684,7 @@ export async function fetchCommonCrawl(question: string, domain: string): Promis
           return [{
             source: 'commoncrawl',
             content: text.slice(0, 600),
-            weight: 0.62,
+            weight: resolveSourceWeight('commoncrawl', domain),
             sid: stableId('duckduckgo', text),
             provenance_url: topic.FirstURL,
             domain,
@@ -563,7 +729,7 @@ export async function fetchEuropePMC(question: string, domain: string, maxResult
       candidates.push({
         source: 'europepmc',
         content,
-        weight: 0.83,
+        weight: resolveSourceWeight('europepmc', domain),
         sid: stableId('europepmc', content),
         provenance_url: r.doi ? `https://doi.org/${r.doi}` : (r.pmid ? `https://europepmc.org/article/MED/${r.pmid}` : undefined),
         domain,
@@ -614,7 +780,7 @@ export async function fetchOpenFDA(question: string, domain: string, maxResults 
       candidates.push({
         source: 'openfda',
         content,
-        weight: 0.80,
+        weight: resolveSourceWeight('openfda', domain),
         sid: stableId('openfda', content),
         provenance_url: r.set_id ? `https://api.fda.gov/drug/label.json?search=set_id:${r.set_id}` : undefined,
         domain,
@@ -671,7 +837,7 @@ export async function fetchMedlinePlus(question: string, domain: string, maxResu
       candidates.push({
         source: 'medlineplus',
         content,
-        weight: 0.78,
+        weight: resolveSourceWeight('medlineplus', domain),
         sid: stableId('medlineplus', content),
         provenance_url: docUrl,
         domain,
@@ -716,7 +882,7 @@ export async function fetchCrossref(question: string, domain: string, maxResults
       candidates.push({
         source: 'crossref',
         content,
-        weight: 0.75,
+        weight: resolveSourceWeight('crossref', domain),
         sid: stableId('crossref', content),
         provenance_url: item.DOI ? `https://doi.org/${item.DOI}` : item.URL,
         domain,
@@ -774,7 +940,7 @@ export async function fetchClinicalTrials(question: string, domain: string, maxR
       candidates.push({
         source: 'clinicaltrials',
         content,
-        weight: 0.80,
+        weight: resolveSourceWeight('clinicaltrials', domain),
         sid: stableId('clinicaltrials', content),
         provenance_url: nctId ? `https://clinicaltrials.gov/study/${nctId}` : undefined,
         domain,
@@ -847,7 +1013,7 @@ export async function fetchWorldBank(question: string, domain: string): Promise<
     return [{
       source: 'worldbank',
       content,
-      weight: 0.78,
+      weight: resolveSourceWeight('worldbank', domain),
       sid: stableId('worldbank', content),
       provenance_url: `https://data.worldbank.org/indicator/${indicator.code}?locations=${country.code}`,
       domain,
@@ -888,7 +1054,7 @@ export async function fetchSemanticScholar(question: string, domain: string, max
       candidates.push({
         source: 'semanticscholar',
         content,
-        weight: 0.78,
+        weight: resolveSourceWeight('semanticscholar', domain),
         sid: stableId('semanticscholar', content),
         provenance_url: r.url,
         domain,
