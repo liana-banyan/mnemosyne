@@ -24,6 +24,10 @@ import { discoverPeers } from './constellation_discovery';
 import { randomBytes, createHash } from 'crypto';
 import { networkInterfaces } from 'os';
 import { getAnonKey } from '../shared/anon_key';
+// KN-BP144-16 Phase 1: sign the LAN /api/plow-domain dispatch (see peer_server.ts's
+// resolvePlowDomainRequest() for the receiving side).
+import { signAnnouncePayload } from './announce_frame';
+import { getStablePeerId } from './peer-discovery';
 
 const PEER_SERVER_PORT = 7474;
 
@@ -258,15 +262,26 @@ async function dispatchDomainToPeer(
   // LAN peers: direct HTTP POST to peer_server port 7474
   const url = `http://${peer.address}/api/plow-domain`;
   try {
+    // KN-BP144-16 Phase 1: sign the dispatch body with this machine's own Thorax Ed25519
+    // keypair. sender_peer_id lets the receiver look up a previously-learned key for this
+    // sender (constellation_discovery.ts's lookupKnownPeerPublicKey) instead of trusting only
+    // the self-declared key embedded in this same frame. Falls back to the legacy flat body
+    // ONLY if signing itself fails — the receiver's own opt-out setting (default: refuse)
+    // governs whether that fallback is accepted, not this sender.
+    const dispatchPayload = {
+      domain,
+      questions,
+      ollamaBaseUrl: payload.ollamaBaseUrl ?? 'http://127.0.0.1:11434',
+      model: payload.model ?? 'gemma4:12b',
+      sender_peer_id: getStablePeerId(),
+    };
+    const signed = signAnnouncePayload(dispatchPayload.sender_peer_id, dispatchPayload);
+    const requestBody = signed ? { signed_frame: signed.signedHex } : dispatchPayload;
+
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        domain,
-        questions,
-        ollamaBaseUrl: payload.ollamaBaseUrl ?? 'http://127.0.0.1:11434',
-        model: payload.model ?? 'gemma4:12b',
-      }),
+      body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(30 * 60 * 1000), // 30 min timeout for a full domain
     });
 

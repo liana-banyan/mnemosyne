@@ -58,6 +58,10 @@ import {
 } from '../identity/peerIdentityCollector';
 import { getLBSession } from '../lb_auth';
 import { getAnonKey, getAnonKeyHeaders } from '../shared/anon_key';
+// KN-BP144-16 Phase 1: /api/plow-domain authentication (see that ticket's REPORT.md).
+import { peekAnnouncePayload, verifyAnnounceFrame } from './announce_frame';
+import { isUnauthenticatedLanDiscoveryAllowed } from './mesh_trust_settings';
+import { lookupKnownPeerPublicKey } from './constellation_discovery';
 
 export const PEER_SERVER_PORT = 7474;
 const PRESENCE_INTERVAL_MS = 60_000;
@@ -345,6 +349,88 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+interface PlowDomainRequestOk {
+  ok: true;
+  domain: string;
+  questions: string[];
+  ollamaBaseUrl?: string;
+  model?: string;
+}
+interface PlowDomainRequestRefused {
+  ok: false;
+  status: number;
+  error: string;
+}
+
+/**
+ * KN-BP144-16 Phase 1: authenticates and extracts a /api/plow-domain request body.
+ *
+ * Two shapes are accepted:
+ *  - { signed_frame: <hex> } — the current, signed shape. sender_peer_id and public_key_hex are
+ *    read from the DECODED frame payload (announce_frame.ts), never from outside it. The public
+ *    key used to verify is PREFERRED from this node's own previously-learned record for that
+ *    sender_peer_id (constellation_discovery.ts's lookupKnownPeerPublicKey — populated only by a
+ *    signature-verified UDP beacon), falling back to the self-declared key embedded in this same
+ *    frame (trust-on-first-use) only when no previously-learned key exists. A signature that IS
+ *    present and fails verification is ALWAYS refused — never gated by the opt-out below.
+ *  - legacy flat { domain, questions, ollamaBaseUrl?, model? } — pre-KN-BP144-16 shape, accepted
+ *    ONLY when isUnauthenticatedLanDiscoveryAllowed() is true (default false).
+ */
+// Exported (KN-BP144-16 Phase 1) purely so the real /api/plow-domain decision logic can be
+// exercised through a real HTTP transport in a test harness without binding to the production
+// PEER_SERVER_PORT (7474) — see KN-BP144-16_REPORT.md's FE-3 method note for why: this
+// process's own real peer_server may already be running live on 7474 with the pre-Phase-1
+// dist loaded in memory (Node does not hot-reload). No behavior change; handleRequest's own
+// call site above is unchanged.
+export function resolvePlowDomainRequest(body: string): PlowDomainRequestOk | PlowDomainRequestRefused {
+  let outer: { signed_frame?: string; domain?: string; questions?: string[]; ollamaBaseUrl?: string; model?: string };
+  try {
+    outer = JSON.parse(body);
+  } catch {
+    return { ok: false, status: 400, error: 'request body is not valid JSON' };
+  }
+
+  if (typeof outer.signed_frame === 'string') {
+    const peeked = peekAnnouncePayload(outer.signed_frame);
+    if (!peeked) {
+      return { ok: false, status: 400, error: 'signed_frame present but malformed (failed to decode)' };
+    }
+    const senderPeerId = typeof peeked.payload.sender_peer_id === 'string' ? peeked.payload.sender_peer_id : undefined;
+    const knownKey = senderPeerId ? lookupKnownPeerPublicKey(senderPeerId) : undefined;
+    const keyToVerify = knownKey ?? peeked.claimedPublicKeyHex;
+
+    if (!keyToVerify) {
+      return { ok: false, status: 403, error: 'refused: signed_frame carried no public_key_hex and no previously-known key exists for this sender' };
+    }
+
+    const verified = verifyAnnounceFrame(outer.signed_frame, keyToVerify);
+    if (!verified.valid) {
+      // A refused signature stays refused, unconditionally — never gated by the opt-out setting.
+      return { ok: false, status: 403, error: `refused: ${verified.reason}` };
+    }
+    const vp = verified.payload as {
+      domain?: string; questions?: string[]; ollamaBaseUrl?: string; model?: string;
+    };
+    if (typeof vp.domain !== 'string' || !Array.isArray(vp.questions)) {
+      return { ok: false, status: 400, error: 'verified frame missing required domain/questions fields' };
+    }
+    return { ok: true, domain: vp.domain, questions: vp.questions, ollamaBaseUrl: vp.ollamaBaseUrl, model: vp.model };
+  }
+
+  // Legacy/unsigned shape.
+  if (!isUnauthenticatedLanDiscoveryAllowed()) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'refused: unsigned /api/plow-domain request and unauthenticated LAN dispatch is disabled by default (KN-BP144-16)',
+    };
+  }
+  if (typeof outer.domain !== 'string' || !Array.isArray(outer.questions)) {
+    return { ok: false, status: 400, error: 'request missing required domain/questions fields' };
+  }
+  return { ok: true, domain: outer.domain, questions: outer.questions, ollamaBaseUrl: outer.ollamaBaseUrl, model: outer.model };
+}
+
 function sendJson(res: ServerResponse, statusCode: number, data: unknown): void {
   const body = JSON.stringify(data);
   res.writeHead(statusCode, {
@@ -396,12 +482,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
     try {
       const body = await readBody(req);
-      const { domain, questions, ollamaBaseUrl, model } = JSON.parse(body) as {
-        domain: string;
-        questions: string[];
-        ollamaBaseUrl?: string;
-        model?: string;
-      };
+      const resolved = resolvePlowDomainRequest(body);
+      if (!resolved.ok) {
+        console.warn(`[PeerServer] REFUSED /api/plow-domain: ${resolved.error}`);
+        sendJson(res, resolved.status, { error: resolved.error });
+        return;
+      }
+      const { domain, questions, ollamaBaseUrl, model } = resolved;
       const result = await _onPlowDomain(
         domain,
         questions,
