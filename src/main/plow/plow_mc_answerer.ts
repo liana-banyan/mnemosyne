@@ -808,16 +808,22 @@ export interface CanonicalPlowMcResult {
    *    'cascade_adjudicated_unconstrained'/'cascade_adjudicated_constrained' or abstains before
    *    the self-vote ever runs. Still reachable for every other fall-through shape (corroboration
    *    'none'/'lone_rejected_by_strictness', or the ensemble never ran at all), unchanged.
-   *  'cascade_adjudicated_unconstrained' -- KN-BP144-4: the candidate-SOURCE cascade adjudicator
-   *    (runCandidateSourceCascadeAdjudicator) ran and exactly one letter survived its own
-   *    elimination rules, AND the KN-BP144-4 register-resolution eliminator (see A1/A2 in
-   *    KN-BP144-4_CONSTRAINT_BEATS_PREFERENCE.md) either did not apply, or applied and abstained
-   *    -- no constraint was in force, so the adjudicator chose exactly as it did before this
-   *    ticket (byte-identical to the pre-KN-BP144-4 'cascade_adjudicated' value this replaces).
-   *  'cascade_adjudicated_constrained' -- KN-BP144-4: same as above, EXCEPT the eliminator DID
-   *    produce a real surviving-option constraint, and it was applied as a filter on the
-   *    adjudicator's admissible candidates BEFORE the adjudicator ran (A2) -- the returned letter
-   *    is guaranteed to lie within that constraint by construction, never merely by luck.
+   *  'cascade_adjudicated_unconstrained' -- KN-BP144-4/KN-BP145-P1: the candidate-SOURCE cascade
+   *    adjudicator (runCandidateSourceCascadeAdjudicator) ran and exactly one letter survived its
+   *    own elimination rules, AND NEITHER real eliminator upstream of it produced a surviving-
+   *    option constraint -- the KN-BP144-4 register-resolution eliminator (see A1/A2 in
+   *    KN-BP144-4_CONSTRAINT_BEATS_PREFERENCE.md) either did not apply or applied and abstained,
+   *    AND the KN-BP145-P1 format-independent-fallback eliminator (below) either did not decide or
+   *    was not attempted -- no constraint was in force, so the adjudicator chose exactly as it did
+   *    before KN-BP144-4 (byte-identical to the pre-KN-BP144-4 'cascade_adjudicated' value this
+   *    replaces).
+   *  'cascade_adjudicated_constrained' -- KN-BP144-4/KN-BP145-P1: same as above, EXCEPT AT LEAST
+   *    ONE of the two real eliminators DID produce a surviving-option constraint (register-
+   *    resolution, the format-independent fallback's own decided letter, or both intersected when
+   *    both fire), and it was applied as a filter on the adjudicator's admissible candidates
+   *    BEFORE the adjudicator ran (A2 / KN-BP145-P1's own binding step below) -- the returned
+   *    letter is guaranteed to lie within that constraint by construction, never merely by luck,
+   *    and a candidate whose letter falls outside it is excluded as INVALID, never merely outvoted.
    *  'abstain_constraint_excluded_all' -- KN-BP144-4 (A3, third bullet): the eliminator produced a
    *    real constraint and it excluded EVERY candidate the adjudicator would otherwise have
    *    considered -- honest ABSTAIN, reached BEFORE runCandidateSourceCascadeAdjudicator is even
@@ -8650,23 +8656,74 @@ export async function runCanonicalPlowMcAnswer(
       console.warn('[plow_mc_answerer] KN-BP145-A cascade-fallback threw (non-fatal, adjudicator proceeds without it):', err);
     }
 
+    // ── KN-BP145-P1 ("constrain the cascade, do not just vote in it"): a DECIDED cascade-fallback
+    //    candidate ran runEliminationCascadeFormatIndependentFallback's own C1-C8 elimination
+    //    procedure over the FULL presented option set (every A-J letter ranked, then gated by C4
+    //    bidirectional consistency or C5 significant-figure precision) -- that is a genuine
+    //    narrowing of the option set, not merely one more voice among candidate SOURCES. Standing
+    //    defect confirmed against real receipts 043/044 (KN-BP145 dispatch): before this fix, a
+    //    decided fallback candidate was folded into `candidatesIncludingCascadeFallback` above as
+    //    an equal-weight vote, filtered only by whatever the separate, narrow, "bias"-concept-only
+    //    register-resolution stage decided -- so a disagreeing authority vote could force RULE 4/5
+    //    to outvote or abstain a letter this mechanism had already proven via its own C4/C5 gates.
+    //    Per this file's own architecture doc (HARDWIRE-01_ANSWERING_PIPELINE.md, stage 4): "An
+    //    eliminator produces a CONSTRAINT; an adjudicator produces a CHOICE; a choice that violates
+    //    a constraint is invalid, not outvoted." Fix: a decided fallback candidate's own letter
+    //    becomes a real survivor-set constraint here, intersected with any register-resolution
+    //    constraint already active (both eliminators use the SAME "applied && !abstained-equivalent"
+    //    admission test: only a `decided` fallback result counts, exactly like register-resolution's
+    //    own `applied && !abstained` gate above) -- never simply appended as a vote. Never widens
+    //    either gate: the fallback's own `decided` flag is unchanged (still gated by its own C4/C5
+    //    checks inside plow_mc_elimination_cascade.ts, untouched by this ticket), and register-
+    //    resolution's own curated CONCEPT_REGISTER_SIGNALS domain is untouched -- this only changes
+    //    how an ALREADY-decided fallback result is BOUND to the adjudicator afterward. When both
+    //    eliminators are active and disagree (empty intersection), that is an honest conflict
+    //    between two independent constraint-producers -- routed to the SAME
+    //    `abstain_constraint_excluded_all` path below as a register-resolution-only exclusion would
+    //    be, never a silent pick of one eliminator over the other.
+    const fallbackConstraintSet: Set<string> | null = cascadeFallbackCandidateForAdjudication
+      ? new Set([cascadeFallbackCandidateForAdjudication.letter])
+      : null;
+    const combinedConstraintSet: Set<string> | null =
+      eliminatorConstraintSet && fallbackConstraintSet
+        ? new Set([...eliminatorConstraintSet].filter((l) => fallbackConstraintSet.has(l)))
+        : (eliminatorConstraintSet ?? fallbackConstraintSet);
+    const combinedConstraintActive = combinedConstraintSet !== null;
+    const combinedConstraintSourceLabel =
+      eliminatorConstraintActive && fallbackConstraintSet
+        ? `register-resolution=[${eliminatorResult.survivorsOut.join(',')}]+cascade-fallback=[${[...fallbackConstraintSet].join(',')}]`
+        : eliminatorConstraintActive
+          ? `register-resolution=[${eliminatorResult.survivorsOut.join(',')}]`
+          : fallbackConstraintSet
+            ? `cascade-fallback=[${[...fallbackConstraintSet].join(',')}]`
+            : 'none';
+    if (fallbackConstraintSet) {
+      console.log(
+        `[plow_mc_answerer] KN-BP145-P1 cascade-fallback CONSTRAINS (not votes): decided letter=` +
+        `${cascadeFallbackCandidateForAdjudication!.letter} -- combined constraint=[${combinedConstraintSet ? [...combinedConstraintSet].join(',') : 'EMPTY (conflict)'}] ` +
+        `(sources: ${combinedConstraintSourceLabel}).`,
+      );
+    }
+
     // A2: the eliminator's surviving option set FILTERS the adjudicator's ADMISSIBLE CANDIDATES
     // before it ever runs -- so whatever the adjudicator returns (if anything) already satisfies
     // the constraint by construction, never merely by luck. When there is no active constraint,
     // `admissibleCandidates` is the exact same array as `ensembleCandidatesForTrace`, byte-
-    // identical to pre-KN-BP144-4 behavior.
+    // identical to pre-KN-BP144-4 behavior. KN-BP145-P1: the filter now uses
+    // `combinedConstraintSet` (register-resolution AND/OR the format-independent fallback,
+    // intersected when both fire) rather than the register-resolution constraint alone.
     // KN-BP145-A: `candidatesIncludingCascadeFallback` is `ensembleCandidatesForTrace` plus the new
     // cascade-fallback candidate (if one fired) appended -- `ensembleCandidatesForTrace` itself is
     // left untouched so every OTHER trace string in this file that reads it (the "allCandidates="
     // log lines below, the receipt's own `ensembleCandidates` field) keeps meaning exactly what it
     // always meant: what the authority ensemble itself returned. The cascade fallback is a LATER,
     // separate stage; it is folded in only at this admissibility-filtering step, subject to the
-    // SAME eliminator constraint as every authority-sourced candidate, never given a bypass.
+    // SAME combined constraint as every authority-sourced candidate, never given a bypass.
     const candidatesIncludingCascadeFallback = cascadeFallbackCandidateForAdjudication
       ? [...ensembleCandidatesForTrace!, cascadeFallbackCandidateForAdjudication]
       : ensembleCandidatesForTrace!;
-    const admissibleCandidates = eliminatorConstraintSet
-      ? candidatesIncludingCascadeFallback.filter((c) => eliminatorConstraintSet.has(c.letter))
+    const admissibleCandidates = combinedConstraintSet
+      ? candidatesIncludingCascadeFallback.filter((c) => combinedConstraintSet.has(c.letter))
       : candidatesIncludingCascadeFallback;
 
     // KN-BP144-1 Phase 2: cascadeReported* mirrors the SAME ensembleSwarmAlreadyFired-aware
@@ -8688,10 +8745,10 @@ export async function runCanonicalPlowMcAnswer(
     // A3, third bullet: the constraint excluded EVERY candidate the adjudicator would otherwise
     // have considered -- honest ABSTAIN, reached BEFORE runCandidateSourceCascadeAdjudicator is
     // even called, and never falling back to the local self-vote below.
-    if (eliminatorConstraintActive && admissibleCandidates.length === 0) {
+    if (combinedConstraintActive && admissibleCandidates.length === 0) {
       const exclusionConcordance: ConcordanceClass = 'DISCORDANT';
       console.log(
-        `[plow_mc_answerer] KN-BP144-4 abstain_constraint_excluded_all: constraint=[${eliminatorResult.survivorsOut.join(',')}] ` +
+        `[plow_mc_answerer] KN-BP144-4/KN-BP145-P1 abstain_constraint_excluded_all: constraint=[${combinedConstraintSet ? [...combinedConstraintSet].join(',') : ''}] (${combinedConstraintSourceLabel}) ` +
         `excluded every candidate in allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}] -- ` +
         `honest ABSTAIN, adjudicator never reached.`,
       );
@@ -8713,7 +8770,7 @@ export async function runCanonicalPlowMcAnswer(
         ebletsWritten: 0,
         latencyMs: cascadeLatencyMs,
         traceSummary:
-          `KN-BP144-4 abstainConstraintExcludedAll=true eliminatorConstraint=[${eliminatorResult.survivorsOut.join(',')}] ` +
+          `KN-BP144-4/KN-BP145-P1 abstainConstraintExcludedAll=true eliminatorConstraint=[${combinedConstraintSet ? [...combinedConstraintSet].join(',') : ''}] (${combinedConstraintSourceLabel}) ` +
           `allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
           `andonRetries=${andonRetry}`,
         provenanceReceipts: [],
@@ -8723,7 +8780,7 @@ export async function runCanonicalPlowMcAnswer(
         authorityOutcomes: authorityOutcomesForTrace,
         letterSource: 'abstain_constraint_excluded_all',
         eliminatorTrace: eliminatorResult.trace,
-        eliminatorConstraintSurvivors: eliminatorResult.survivorsOut,
+        eliminatorConstraintSurvivors: combinedConstraintSet ? [...combinedConstraintSet] : eliminatorResult.survivorsOut,
       };
     }
 
@@ -8731,7 +8788,7 @@ export async function runCanonicalPlowMcAnswer(
     console.log(
       `[plow_mc_answerer] KN-BP144-1 Phase 2 cascade adjudicator ENGAGED (ensemble fell through ` +
       `disagree, admissibleCandidates=[${admissibleCandidates.map((c) => `${c.authority}:${c.letter}`).join(', ')}]` +
-      `${eliminatorConstraintActive ? ` -- KN-BP144-4 filtered by constraint=[${eliminatorResult.survivorsOut.join(',')}] from allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}]` : ' -- KN-BP144-4 no constraint active'}) ` +
+      `${combinedConstraintActive ? ` -- KN-BP144-4/KN-BP145-P1 filtered by constraint=[${combinedConstraintSet ? [...combinedConstraintSet].join(',') : ''}] (${combinedConstraintSourceLabel}) from allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}]` : ' -- KN-BP144-4/KN-BP145-P1 no constraint active'}) ` +
       `-> ${cascade.chosenLetter ?? 'ABSTAIN'}. Elimination log:\n  ${cascade.eliminationLog.join('\n  ')}`,
     );
     if (cascade.chosenLetter) {
@@ -8791,7 +8848,7 @@ export async function runCanonicalPlowMcAnswer(
           `KN-BP144-1 Phase 2 cascadeAdjudicated=true matchedOption=${cascade.chosenLetter} ` +
           `survivingCandidates=[${cascade.survivingCandidates.map((c) => `${c.authority}:${c.letter}`).join(',')}] ` +
           `allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
-          `${eliminatorConstraintActive ? `KN-BP144-4 eliminatorConstraint=[${eliminatorResult.survivorsOut.join(',')}] ` : 'KN-BP144-4 eliminatorConstraint=none '}` +
+          `${combinedConstraintActive ? `KN-BP144-4/KN-BP145-P1 eliminatorConstraint=[${combinedConstraintSet ? [...combinedConstraintSet].join(',') : ''}] (${combinedConstraintSourceLabel}) ` : 'KN-BP144-4/KN-BP145-P1 eliminatorConstraint=none '}` +
           `andonRetries=${andonRetry}`,
         provenanceReceipts: cascade.survivingCandidates.map((c) => ({
           source: c.authority,
@@ -8803,10 +8860,10 @@ export async function runCanonicalPlowMcAnswer(
         ensembleCandidates: ensembleCandidatesForTrace,
         ensembleOutcomeCorroboration: ensembleOutcomeCorroborationForTrace,
         authorityOutcomes: authorityOutcomesForTrace,
-        letterSource: eliminatorConstraintActive ? 'cascade_adjudicated_constrained' : 'cascade_adjudicated_unconstrained',
+        letterSource: combinedConstraintActive ? 'cascade_adjudicated_constrained' : 'cascade_adjudicated_unconstrained',
         cascadeEliminationLog: cascade.eliminationLog,
         eliminatorTrace: eliminatorResult.trace,
-        ...(eliminatorConstraintActive ? { eliminatorConstraintSurvivors: eliminatorResult.survivorsOut } : {}),
+        ...(combinedConstraintActive ? { eliminatorConstraintSurvivors: combinedConstraintSet ? [...combinedConstraintSet] : eliminatorResult.survivorsOut } : {}),
       };
     }
     // RULE 5 ABSTAIN: more than one distinct letter survived, or none did. Honest no-letter --
@@ -8836,7 +8893,7 @@ export async function runCanonicalPlowMcAnswer(
         `KN-BP144-1 Phase 2 cascadeAdjudicated=true cascadeAbstain=true ` +
         `admissibleCandidates=[${admissibleCandidates.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
         `allCandidates=[${ensembleCandidatesForTrace!.map((c) => `${c.authority}:${c.letter}`).join(', ')}] ` +
-        `${eliminatorConstraintActive ? `KN-BP144-4 eliminatorConstraint=[${eliminatorResult.survivorsOut.join(',')}] ` : 'KN-BP144-4 eliminatorConstraint=none '}` +
+        `${combinedConstraintActive ? `KN-BP144-4/KN-BP145-P1 eliminatorConstraint=[${combinedConstraintSet ? [...combinedConstraintSet].join(',') : ''}] (${combinedConstraintSourceLabel}) ` : 'KN-BP144-4/KN-BP145-P1 eliminatorConstraint=none '}` +
         `andonRetries=${andonRetry}`,
       provenanceReceipts: [],
       ...(classifiedAnswerType ? { answerType: classifiedAnswerType } : {}),
@@ -8847,7 +8904,7 @@ export async function runCanonicalPlowMcAnswer(
       cascadeEliminationLog: cascade.eliminationLog,
       cascadeAdjudicatorAbstain: true,
       eliminatorTrace: eliminatorResult.trace,
-      ...(eliminatorConstraintActive ? { eliminatorConstraintSurvivors: eliminatorResult.survivorsOut } : {}),
+      ...(combinedConstraintActive ? { eliminatorConstraintSurvivors: combinedConstraintSet ? [...combinedConstraintSet] : eliminatorResult.survivorsOut } : {}),
     };
   }
 
