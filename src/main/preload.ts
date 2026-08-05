@@ -621,6 +621,18 @@ contextBridge.exposeInMainWorld('amplify', {
   watchdogHistory: (subject: string, window_hours?: number): Promise<Array<{ ts: string; level: string; message: string }>> =>
     ipcRenderer.invoke('watchdog-history', { subject, window_hours }),
 
+  // ── Grand Central board panel (KN-BP144-10) ───────────────────────────────
+  // Read-only observer, ported from HARDWIRE/tools/board.mjs. Renderer never touches the
+  // filesystem or spawns git itself -- both calls just read/nudge the main-side cache.
+
+  boardGetState: (): Promise<import('./board/board_state_reader').BoardSnapshot | null> =>
+    ipcRenderer.invoke('board-get-state'),
+
+  boardMarkDispatched: (
+    id: string,
+  ): Promise<{ ok: boolean; dispatchedAt?: string; snapshot?: import('./board/board_state_reader').BoardSnapshot | null; error?: string }> =>
+    ipcRenderer.invoke('board-mark-dispatched', { id }),
+
   // ── Webview preload path (B83b) ───────────────────────────────────────────
 
   getWebviewPreloadPath: (): string =>

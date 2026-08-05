@@ -21,6 +21,8 @@ import { ProofTab } from './compass/ProofTab';
 import { LibraryTab } from './compass/LibraryTab';
 import { SocialCompassTab } from './compass/SocialCompassTab';
 import { MoreTab } from './compass/MoreTab';
+import { BoardPanel } from './board/BoardPanel';
+import { boardSubscription, alarmCount } from './board/board_subscription';
 import type { CompassTab, MoreSubView, CompassNavigate } from './compass/types';
 import type { FrameMode } from './FrameModeIndicator';
 import type { AuthState } from '../amplify.d';
@@ -35,6 +37,9 @@ const TABS: Array<{ id: CompassTab; label: string }> = [
   { id: 'library', label: 'Library' },
   { id: 'social', label: 'Social' },
   { id: 'more', label: 'More' },
+  // KN-BP144-10: Grand Central board panel. Sixth sibling tab -- no reordering of the other
+  // five, per the array's own swap-point convention above.
+  { id: 'board', label: 'Board' },
 ];
 
 async function openMembershipCheckout(onError?: (msg: string) => void): Promise<void> {
@@ -65,12 +70,13 @@ function BgStatusBar({ msg }: { msg: string | null }) {
 }
 
 function TabBar({
-  active, onSelect, isMember, onMemberCta,
+  active, onSelect, isMember, onMemberCta, boardAlarmCount,
 }: {
   active: CompassTab;
   onSelect: (t: CompassTab) => void;
   isMember: boolean;
   onMemberCta: () => void;
+  boardAlarmCount: number | null;
 }) {
   return (
     <div style={{
@@ -80,6 +86,12 @@ function TabBar({
       <div style={{ display: 'flex', alignItems: 'center', height: '100%', overflowX: 'auto', flexShrink: 1 }}>
         {TABS.map((t) => {
           const isActive = t.id === active;
+          // KN-BP144-10 T2: alarm-count badge on the Board tab's own nav entry, visible
+          // regardless of which tab is currently active -- this is the whole point of a panel
+          // rather than a terminal tab. Fed by boardSubscription's shared timer (see
+          // CompassShell's own useEffect below), which polls independent of BoardPanel ever
+          // being mounted.
+          const showBadge = t.id === 'board' && boardAlarmCount !== null && boardAlarmCount > 0;
           return (
             <button
               key={t.id}
@@ -93,6 +105,15 @@ function TabBar({
               }}
             >
               {t.label}
+              {showBadge && (
+                <span style={{
+                  position: 'absolute', top: 4, right: 4, background: '#dc2626', color: '#fff',
+                  borderRadius: 8, fontSize: 10, fontWeight: 700, lineHeight: 1,
+                  padding: '2px 5px', minWidth: 14, textAlign: 'center',
+                }}>
+                  {boardAlarmCount}
+                </span>
+              )}
             </button>
           );
         })}
@@ -130,6 +151,17 @@ export function CompassShell({ currentMode, onModeChange, authState }: CompassSh
 
   const [isMember, setIsMember] = useState<boolean>(authState?.member?.is_member === true);
   const [memberToast, setMemberToast] = useState<string | null>(null);
+
+  // KN-BP144-10 T2: subscribe to the board's shared poll HERE, at the shell level, not inside
+  // BoardPanel.tsx -- so the nav badge stays live ("visible from other tabs") whether or not the
+  // Board tab has ever been opened this session. boardSubscription is a singleton (see
+  // board_subscription.ts): this adds a second subscriber sharing BoardPanel's own timer, it
+  // does not start a second one.
+  const [boardAlarmCount, setBoardAlarmCount] = useState<number | null>(null);
+  useEffect(() => {
+    const unsub = boardSubscription.subscribe((state) => setBoardAlarmCount(alarmCount(state)));
+    return unsub;
+  }, []);
 
   const showMemberToast = useCallback((msg: string) => {
     setMemberToast(msg);
@@ -214,12 +246,13 @@ export function CompassShell({ currentMode, onModeChange, authState }: CompassSh
           {memberToast}
         </div>
       )}
-      <TabBar active={activeTab} onSelect={setActiveTab} isMember={isMember} onMemberCta={handleMemberCta} />
+      <TabBar active={activeTab} onSelect={setActiveTab} isMember={isMember} onMemberCta={handleMemberCta} boardAlarmCount={boardAlarmCount} />
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         {activeTab === 'ask' && <AskHomeTab onNavigate={handleNavigate} />}
         {activeTab === 'proof' && <ProofTab onNavigate={handleNavigate} authState={authState} />}
         {activeTab === 'library' && <LibraryTab />}
         {activeTab === 'social' && <SocialCompassTab />}
+        {activeTab === 'board' && <BoardPanel />}
         {activeTab === 'more' && (
           <MoreTab
             subView={moreSubView}

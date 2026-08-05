@@ -3,7 +3,9 @@
 // own file so CompassShell.tsx and the per-tab components below can both import the union
 // types without a circular import between CompassShell.tsx and its own children.
 
-export type CompassTab = 'ask' | 'proof' | 'library' | 'social' | 'more';
+// KN-BP144-10: 'board' added for the Grand Central board panel -- a sixth sibling tab, same
+// flat union as the original five (no routing library introduced).
+export type CompassTab = 'ask' | 'proof' | 'library' | 'social' | 'more' | 'board';
 
 export type MoreSubView =
   | 'menu'
