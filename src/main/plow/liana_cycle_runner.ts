@@ -38,9 +38,17 @@
 // dist. See that script's own header for exactly what ran, and this ticket's return document for
 // the honest limitation this note describes.
 //
-// Rule 66: this file writes nothing to verified_eblets.jsonl directly. The one write path it
-// owns (mintLedgerMark) appends to a SEPARATE, dedicated ledger file (liana_cycle_marks.jsonl),
-// never to the eblet store, and never deletes/overwrites -- append-only, same discipline.
+// Rule 66: this file writes nothing to verified_eblets.jsonl directly. The write paths it owns
+// (mintLedgerMark, and as of KN-BP145-P2 appendAbstentionQueueEntry) each append to their own
+// SEPARATE, dedicated file (liana_cycle_marks.jsonl, liana_cycle_abstention_queue.jsonl), never to
+// the eblet store, and never delete/overwrite -- append-only, same discipline, both files.
+//
+// KN-BP145-P2 (this ticket): closed the gap between CLASSIFY and re-RUN named in the ticket --
+// "run, autopsy, classify, route, re-run. Every piece is already built and none calls the next."
+// Added the ROUTE step (see the "Route: the improvement channel" section below): the ONLY new
+// connection is Coroner's answerClass === 'honest-abstain' now gating one bounded, escalated
+// re-attempt (researchArmMode:true), with an unresolved result appended to a new abstention-queue
+// file for Layer B. classifyMissType, consultMethodBank, and mintLedgerMark are all unchanged.
 
 import type { VerifiedEbletEntry } from '../mnem_eblet_store';
 import type { CoronerRecord, LocalCoronerOutcomeInput } from './answer_coroner';
@@ -373,6 +381,160 @@ export async function mintLedgerMark(mark: LedgerMarkRecord): Promise<boolean> {
   }
 }
 
+// ─── Route: the improvement channel (KN-BP145-P2) ───────────────────────────────────────────────
+// The gap this section closes: the Coroner (answer_coroner.ts) already classifies every miss into
+// named buckets (WrongClass / AbstainClass / RightClass), and this file already CONSULTS and
+// CLASSIFIES (above), but until this ticket nothing READ that classification to decide anything --
+// classifyMissType's own output was logged and returned, never acted on. This section is that
+// missing connection: run -> autopsy (Coroner) -> classify -> ROUTE -> re-run.
+//
+// THE BUDGET RULE THIS SECTION ENFORCES, STRUCTURALLY, NOT JUST IN A COMMENT (canon:
+// canon_escalation_is_triggered_by_honest_abstention_never_scheduled_bp144): a costlier answering
+// attempt (config.researchArmMode: true, which unlocks plow_mc_answerer.ts's live browser-
+// authority research arm -- see that file's own researchArmMode field, "AND-gated" with every
+// researchArm* sub-flag) is reachable ONLY by calling shouldEscalateOnAbstention(record) on the
+// REAL CoronerRecord this exact question's base attempt just produced, and ONLY when that record's
+// answerClass is the single literal string 'honest-abstain'. There is no timer, no counter, no
+// idle-duration check, and no "escalate every Nth question" fallback anywhere in this section --
+// the ONLY call site that can set researchArmMode:true on the escalated config is gated by this
+// one predicate, evaluated once, synchronously, on the very record classifyLocalOutcome just
+// returned for this question. 'over-conservative-abstain' -- the Coroner's OTHER abstain bucket,
+// naming a case where the system had enough signal but declined anyway -- deliberately does NOT
+// escalate: throwing a costlier tier at an over-conservative decline would not address the actual
+// failure (a gating rule, not a genuine capability gap) and would mask it instead of surfacing it.
+//
+// WHY THIS IS LAYER A, NOT LAYER B: this section authors no new solver, adapter, or voting rule --
+// it only calls the SAME caller-injected answerFn a second time with one extra boolean flag on the
+// config object already threaded through by the caller. When even the escalated attempt fails to
+// resolve the question, the section's other half (appendAbstentionQueueEntry) writes ONE labeled,
+// append-only record and stops -- it never invents an answer, never fabricates a fix, and never
+// touches any solver code. SPEC_THE_WORK_LOOP_IS_THE_LIANA_CYCLE_BP144.md item D names exactly
+// this record: "Every honest abstention becomes a labeled record: here is a question our methods
+// could not decide, and here is precisely which rule ran out. That is Layer A's output and it
+// generates itself. Layer B is the Founder ratifying the solver that closes it." Layer B (writing
+// the new solver the queue's backlog implies) is explicitly out of this section's scope and this
+// ticket's OWNS list -- nothing here authors code, ratifies a fix, or writes to any file a human
+// would mistake for a shipped solver.
+//
+// WHY A BOUNDED TIMEOUT WRAPS ONLY THE ESCALATED CALL, NEVER THE BASE CALL: liana_cycle_scheduler.
+// ts's own header already documents, for the UNCHANGED base-tier config, "an unattended turn
+// should not depend on a live, signed-in browser authority session that may not exist while the
+// machine is idle." Escalating to researchArmMode:true on an honest-abstain is canon-required
+// (this is precisely the tier the abstention unlocks), but an idle-triggered turn has no Founder
+// present to notice a hang, so ESCALATION_TIMEOUT_MS below bounds the WAIT on that one escalated
+// call via Promise.race -- honoring "infrastructure that fails must fail quietly and locally,
+// never take the host down with it." This is a bounded WAIT, not a true cancellation (answerFn
+// exposes no AbortController/cancellation token to this module); a slow underlying call may keep
+// running in the background after the race resolves, but the Cycle turn's own loop is never
+// blocked past the bound, and a timeout is classified and routed exactly like any other
+// unresolved escalation, never thrown, never silently swallowed.
+
+/** Bounded wait on the escalated (researchArmMode:true) attempt only. The base-tier attempt above
+ *  is never wrapped -- it already ran successfully in this same loop for every prior Cycle turn
+ *  and this ticket changes nothing about it. 90s is generously above the ~14s/question local-
+ *  Ollama baseline liana_cycle_scheduler.ts's own header measured, since a live browser-authority
+ *  round trip is real network+model latency, not local inference -- but still small enough that a
+ *  single stuck escalation cannot meaningfully compound against TURN_COOLDOWN_MS's 60-minute gap
+ *  between automatic turns. */
+export const ESCALATION_TIMEOUT_MS = 90_000;
+
+/**
+ * The ONLY gate for reaching the costlier (researchArmMode:true) answering tier. Pure, synchronous,
+ * evaluated on a single already-computed CoronerRecord -- no clock, no counter, no schedule. See
+ * this section's header comment for the full canon citation and the honest-abstain-vs-over-
+ * conservative-abstain distinction this predicate encodes.
+ */
+export function shouldEscalateOnAbstention(record: CoronerRecord): boolean {
+  return record.answerClass === 'honest-abstain';
+}
+
+/** One labeled record for Layer B (Founder/Bishop) to ratify a solver against -- never a fix,
+ *  never a guess, just "here is precisely which rule ran out," per SPEC_BP144 item D. */
+export interface AbstentionQueueEntry {
+  questionId: number;
+  domain: string;
+  question: string;
+  correctLetter: string;
+  /** The Coroner's answerClass for the base-tier attempt (always 'honest-abstain' -- the only
+   *  class that reaches this function, per shouldEscalateOnAbstention's own gate). */
+  baseAnswerClass: string;
+  /** true if the escalated (researchArmMode:true) attempt ran to completion; false if it timed
+   *  out (see ESCALATION_TIMEOUT_MS) or threw before producing a Coroner record. */
+  escalationCompleted: boolean;
+  /** The Coroner's answerClass for the escalated attempt, or null if escalationCompleted is
+   *  false (no record was produced to classify). */
+  escalatedAnswerClass: string | null;
+  escalatedChosenLetter: string | null;
+  /** Plain-English, honest, never fabricated: names exactly which mechanism/rule declined,
+   *  drawing only from the two real answerClass strings above -- never invents a diagnosis. */
+  ruleThatRanOut: string;
+  routedAt: number;
+}
+
+/**
+ * Appends ONE JSONL line to a dedicated, append-only queue file -- same discipline as
+ * mintLedgerMark's ledger file (Rule 66: never rewrites, never deletes, own file, never mixed with
+ * verified_eblets.jsonl or the mark ledger). Lazy `require('electron'/'fs'/'path')`, same main-
+ * process-only convention every other userData-path writer in this codebase already uses. Never
+ * throws; any failure (no Electron app available, e.g. this module under bare-Node test, or a disk
+ * error) is caught, logged, and returns false -- non-fatal by construction, matching this file's
+ * existing mintLedgerMark contract.
+ */
+export async function appendAbstentionQueueEntry(entry: AbstentionQueueEntry): Promise<boolean> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { app } = require('electron') as typeof import('electron');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { appendFileSync, mkdirSync } = require('fs') as typeof import('fs');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { join } = require('path') as typeof import('path');
+    const dir = join(app.getPath('userData'), 'substrate');
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, 'liana_cycle_abstention_queue.jsonl');
+    appendFileSync(file, `${JSON.stringify(entry)}\n`, 'utf-8');
+    console.log(
+      `[liana_cycle_runner] appendAbstentionQueueEntry: qid=${entry.questionId} domain=${entry.domain} ` +
+      `routed to ${file} for Layer B ratification.`,
+    );
+    return true;
+  } catch (err) {
+    console.warn('[liana_cycle_runner] appendAbstentionQueueEntry failed (non-fatal, entry not persisted):', err);
+    return false;
+  }
+}
+
+/** Races the escalated answerFn call against a bounded timer. Resolves to the real answer object
+ *  on completion within the bound, or to `{ chosenLetter: null, timedOut: true }` if the bound
+ *  elapses first -- an honest "we do not know yet" result, never a fabricated answer. See this
+ *  section's header comment for why only the escalated call, never the base call, is wrapped. */
+function raceEscalatedAnswer(
+  answerPromise: Promise<{ chosenLetter: string | null; [key: string]: unknown }>,
+  timeoutMs: number,
+): Promise<{ chosenLetter: string | null; timedOut?: boolean; [key: string]: unknown }> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ chosenLetter: null, timedOut: true });
+    }, timeoutMs);
+    answerPromise
+      .then((result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        console.warn('[liana_cycle_runner] escalated answerFn call threw (non-fatal, treated as unresolved):', err);
+        resolve({ chosenLetter: null, timedOut: false, error: (err as Error)?.message ?? String(err) });
+      });
+  });
+}
+
 // ─── The continuous runner: one full Cycle turn over a held-out known-answer bank ───────────────
 
 export interface HeldOutQuestion {
@@ -395,6 +557,16 @@ export interface CycleTurnQuestionResult {
   coronerRecord: CoronerRecord;
   missType: MissType | null;
   markMinted: boolean;
+  /** true iff the base-tier attempt classified as 'honest-abstain' and this question's escalated
+   *  (researchArmMode:true) attempt was therefore triggered. See shouldEscalateOnAbstention. */
+  escalationAttempted: boolean;
+  /** The escalated attempt's own answerClass, or null when escalationAttempted is false. When
+   *  the escalated attempt resolved the question ('right'), coronerRecord above already reflects
+   *  the ESCALATED record, not the original abstain -- this field preserves that history. */
+  escalatedAnswerClass: string | null;
+  /** true iff this question was routed to the abstention queue (escalation attempted AND still
+   *  did not resolve to 'right') for Layer B (Founder/Bishop) ratification. */
+  routedToAbstentionQueue: boolean;
 }
 
 export interface CycleTurnSummary {
@@ -405,6 +577,12 @@ export interface CycleTurnSummary {
   rightTotal: number;
   wrongTotal: number;
   abstainTotal: number;
+  /** Count of questions whose base-tier attempt classified as 'honest-abstain' and therefore
+   *  triggered the researchArmMode:true escalation this turn. */
+  escalationsAttempted: number;
+  /** Count of questions routed to the abstention queue this turn (escalated but still
+   *  unresolved) -- Layer B's real, current backlog size delta, not a projection. */
+  routedToAbstentionQueue: number;
 }
 
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
@@ -430,19 +608,26 @@ export interface RunLianaCycleTurnOpts {
 }
 
 /**
- * Runs ONE full Cycle turn (canon's numbered loop, steps 1-3 of the five-step doctrine: RUN,
- * CORONER, CLASSIFY -- steps 4/5, IMPROVE/RE-RUN, are the human-in-the-loop half the canon
- * explicitly reserves for Bishop/Founder, not this autonomous function) over a caller-supplied
+ * Runs ONE full Cycle turn (canon's numbered loop: RUN, CORONER autopsy, CLASSIFY, ROUTE,
+ * re-RUN-on-escalation -- all still Layer A/autonomous; IMPROVE, meaning a Founder/Bishop
+ * authoring a genuinely new solver against the abstention queue this turn may grow, remains
+ * Layer B/human-ratified and is explicitly out of this function's scope) over a caller-supplied
  * held-out known-answer bank:
  *
  *   for each question:
  *     1. CONSULT the method bank (real store data, via consultMethodBank) BEFORE answering.
  *     2. Build the prompt (consult-augmented on a HIT, unchanged on a MISS) and call the REAL
- *        answerFn (runCanonicalPlowMcAnswer in production).
+ *        answerFn (runCanonicalPlowMcAnswer in production) at the base tier.
  *     3. AUTOPSY the result via the Answer Coroner's own classifyLocalOutcome (real classifier,
  *        not reimplemented here).
- *     4. CLASSIFY the miss by TYPE (classifyMissType) when the outcome was wrong or abstain.
- *     5. LEDGER HONESTY: mint a mark (mintLedgerMark) if and only if shouldMintLedgerMark(record)
+ *     4. ROUTE (KN-BP145-P2): if and only if the base-tier record's answerClass is the literal
+ *        string 'honest-abstain' (shouldEscalateOnAbstention), re-RUN this exact question ONCE
+ *        more with researchArmMode:true (a bounded, timed escalation -- see raceEscalatedAnswer),
+ *        autopsy that escalated attempt too, adopt it as the question's record on a 'right'
+ *        outcome, and otherwise append ONE labeled entry to the abstention queue for Layer B.
+ *     5. CLASSIFY the miss by TYPE (classifyMissType) when the (possibly now-escalated) outcome
+ *        was wrong or abstain.
+ *     6. LEDGER HONESTY: mint a mark (mintLedgerMark) if and only if shouldMintLedgerMark(record)
  *        -- outcome==='right', real ground-truth comparison, never speculative.
  *
  * Never runs the Founder-reserved scored-20 benchmark itself -- the caller supplies whatever
@@ -466,6 +651,8 @@ export async function runLianaCycleTurn(
   let consultHits = 0;
   let consultMisses = 0;
   let marksMinted = 0;
+  let escalationsAttempted = 0;
+  let routedToAbstentionQueueCount = 0;
 
   for (const q of questions) {
     const topicText = `${q.domain} ${q.question}`;
@@ -502,7 +689,97 @@ export async function runLianaCycleTurn(
       peerId,
       plowTrace: answer as unknown as Record<string, unknown>,
     };
-    const record = classifyLocalOutcome(outcomeInput);
+    let record = classifyLocalOutcome(outcomeInput);
+
+    // ─── Route: the improvement channel (KN-BP145-P2) ───────────────────────────────────────────
+    // Gated ONLY by this exact question's own base-tier record, evaluated once, synchronously.
+    // See the section header above the type declarations for the full canon citation.
+    let escalationAttempted = false;
+    let escalatedAnswerClass: string | null = null;
+    let routedToAbstentionQueueForThisQuestion = false;
+
+    if (shouldEscalateOnAbstention(record)) {
+      escalationAttempted = true;
+      escalationsAttempted++;
+      const baseAnswerClass = record.answerClass;
+      log(
+        `qid=${q.id} answerClass='honest-abstain' -- escalating ONE bounded re-attempt with ` +
+        `researchArmMode:true per canon_escalation_is_triggered_by_honest_abstention_never_scheduled_bp144`,
+      );
+
+      const escalatedConfig: Record<string, unknown> = { ...config, researchArmMode: true };
+      const escalatedAnswer = await raceEscalatedAnswer(
+        answerFn(
+          mcPrompt,
+          q.question,
+          escalatedConfig,
+          opts.writeEbletFn ?? (async () => {}),
+          (stage) => log(`qid=${q.id} escalated progress: ${stage}`),
+        ),
+        ESCALATION_TIMEOUT_MS,
+      );
+
+      if (escalatedAnswer.timedOut) {
+        log(`qid=${q.id} escalated attempt timed out after ${ESCALATION_TIMEOUT_MS}ms -- routing to abstention queue`);
+        escalatedAnswerClass = null;
+        routedToAbstentionQueueForThisQuestion = true;
+        routedToAbstentionQueueCount++;
+        await appendAbstentionQueueEntry({
+          questionId: q.id,
+          domain: q.domain,
+          question: q.question,
+          correctLetter: q.correctLetter,
+          baseAnswerClass,
+          escalationCompleted: false,
+          escalatedAnswerClass: null,
+          escalatedChosenLetter: null,
+          ruleThatRanOut: `base tier: ${baseAnswerClass}; escalated tier: timed out after ${ESCALATION_TIMEOUT_MS}ms, never resolved`,
+          routedAt: Date.now(),
+        });
+      } else {
+        const escalatedChosenLetter = escalatedAnswer.chosenLetter ?? null;
+        const escalatedIsCorrect = escalatedChosenLetter !== null
+          && escalatedChosenLetter.toUpperCase().trim() === q.correctLetter.toUpperCase().trim();
+        const escalatedOutcomeInput: LocalCoronerOutcomeInput = {
+          question_id: q.id,
+          question: q.question,
+          category: q.domain,
+          correctLetter: q.correctLetter,
+          parsedLetter: escalatedChosenLetter,
+          isCorrect: escalatedIsCorrect,
+          isAbstain: escalatedChosenLetter === null,
+          answeredBy: 'liana_cycle_runner_escalated',
+          peerId,
+          plowTrace: escalatedAnswer as unknown as Record<string, unknown>,
+        };
+        const escalatedRecord = classifyLocalOutcome(escalatedOutcomeInput);
+        escalatedAnswerClass = escalatedRecord.answerClass;
+        log(
+          `qid=${q.id} escalated outcome=${escalatedRecord.outcome} answerClass=${escalatedRecord.answerClass}`,
+        );
+
+        if (escalatedRecord.outcome === 'right') {
+          // The costlier tier resolved what the base tier honestly could not -- adopt it as this
+          // question's real outcome for every downstream step (missType, rooting tier, mark mint).
+          record = escalatedRecord;
+        } else {
+          routedToAbstentionQueueForThisQuestion = true;
+          routedToAbstentionQueueCount++;
+          await appendAbstentionQueueEntry({
+            questionId: q.id,
+            domain: q.domain,
+            question: q.question,
+            correctLetter: q.correctLetter,
+            baseAnswerClass,
+            escalationCompleted: true,
+            escalatedAnswerClass: escalatedRecord.answerClass,
+            escalatedChosenLetter,
+            ruleThatRanOut: `base tier: ${baseAnswerClass}; escalated tier (researchArmMode:true): ${escalatedRecord.answerClass}, still unresolved`,
+            routedAt: Date.now(),
+          });
+        }
+      }
+    }
 
     const missType = record.outcome === 'wrong' || record.outcome === 'abstain'
       ? classifyMissType(record)
@@ -535,10 +812,22 @@ export async function runLianaCycleTurn(
 
     log(
       `qid=${q.id} outcome=${record.outcome} answerClass=${record.answerClass} ` +
-      `missType=${missType ?? 'n/a'} markMinted=${markMinted}`,
+      `missType=${missType ?? 'n/a'} markMinted=${markMinted} ` +
+      `escalationAttempted=${escalationAttempted} routedToAbstentionQueue=${routedToAbstentionQueueForThisQuestion}`,
     );
 
-    results.push({ id: q.id, domain: q.domain, consult, chosenLetter, coronerRecord: record, missType, markMinted });
+    results.push({
+      id: q.id,
+      domain: q.domain,
+      consult,
+      chosenLetter: record.answeredLetter ?? chosenLetter,
+      coronerRecord: record,
+      missType,
+      markMinted,
+      escalationAttempted,
+      escalatedAnswerClass,
+      routedToAbstentionQueue: routedToAbstentionQueueForThisQuestion,
+    });
   }
 
   const rightTotal = results.filter((r) => r.coronerRecord.outcome === 'right').length;
@@ -548,8 +837,19 @@ export async function runLianaCycleTurn(
   log(
     `TURN COMPLETE: ${results.length} question(s), right=${rightTotal} wrong=${wrongTotal} ` +
     `abstain=${abstainTotal}, consultHits=${consultHits} consultMisses=${consultMisses} ` +
-    `marksMinted=${marksMinted}`,
+    `marksMinted=${marksMinted}, escalationsAttempted=${escalationsAttempted} ` +
+    `routedToAbstentionQueue=${routedToAbstentionQueueCount}`,
   );
 
-  return { results, consultHits, consultMisses, marksMinted, rightTotal, wrongTotal, abstainTotal };
+  return {
+    results,
+    consultHits,
+    consultMisses,
+    marksMinted,
+    rightTotal,
+    wrongTotal,
+    abstainTotal,
+    escalationsAttempted,
+    routedToAbstentionQueue: routedToAbstentionQueueCount,
+  };
 }
