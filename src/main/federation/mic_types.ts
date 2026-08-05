@@ -26,6 +26,17 @@ export interface ConstellationPeer {
   ollamaModel: string | null;
   installedDomains: string[];   // which domain Chocolates are installed
   pendingWorkload: number;      // domains currently assigned to this peer
+  /** KN-BP144-16 Phase 1: this peer's Thorax Ed25519 public key, learned from a signature-
+   *  verified UDP beacon announcement (constellation_discovery.ts). Undefined for a peer never
+   *  seen via a verified announce (manually added, or seen only via an unauthenticated/legacy
+   *  beacon) -- callers must not assume presence. Never itself proof of continuity/identity
+   *  beyond "this announcement was signed by whoever holds the matching private key" (trust-on-
+   *  first-use) -- see announce_frame.ts's doc comment. */
+  public_key_hex?: string;
+  /** KN-BP144-16 Phase 1: whether the MOST RECENT beacon from this peer verified successfully.
+   *  'verified' | 'unauthenticated' | 'unknown' (never seen an announce from this peer at all,
+   *  e.g. manually added via mic:add-peer). */
+  thorax_announce_status?: 'verified' | 'unauthenticated' | 'unknown';
 }
 
 export interface DomainWorkUnit {

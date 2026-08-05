@@ -201,6 +201,8 @@ import { registerMicIpc } from './federation/mic_ipc';
 import { registerDiagnosisIpc } from './diagnosis/diagnosis_ipc';
 import { runCatacombMigrationCheck } from './diagnosis/catacomb_migrator';
 import { startPeerServer, stopPeerServer, getCurrentTier, registerPresenceConfig } from './federation/peer_server';
+// KN-BP144-16 Phase 1: LAN discovery opt-out setting (defaults to refuse-unauthenticated).
+import { registerMeshTrustSettingsIpc } from './federation/mesh_trust_settings';
 // BP134 Yoke #29 Part 2: this node must run peer_artifact_server so OTHER nodes' mesh-pull
 // (auto_update_scheduler.ts's findNewerPeers/pullAndVerifyFromPeers) has something to reach --
 // the client-side pull code already existed (BP087 Wave 4) but this server was never started.
@@ -3650,6 +3652,8 @@ function registerIPCHandlers(): void {
   // -- v0.4.0 BP083: MIC Dispatcher + The Diagnosis IPC handlers ------------
   registerMicIpc();
   registerDiagnosisIpc();
+  // -- KN-BP144-16 Phase 1: LAN discovery opt-out (default: refuse unauthenticated) -----------
+  registerMeshTrustSettingsIpc();
 
   // -- app:request-quit (renderer-invokable graceful quit) --------------------
   ipcMain.handle('app:request-quit', () => { app.quit(); });
