@@ -32,6 +32,19 @@ import { getOperatorsForDomain } from './domain_operator_map';
 // KN-BP144-8 Phase 1: rooting_rule.ts has zero imports of its own (confirmed dependency-free,
 // no circular-import risk) -- used by runCanonicalFreeTextQuestion's substrate-first gate below.
 import { type RootingTier, classifyCorroborationTier, isRooted } from '../rooting_rule';
+// KN-BP146-M6: static top-level import tried FIRST per the ticket's own instruction ("try the
+// simpler approach first"). openai_compat_server.ts imports `callOllama` from THIS module, so
+// this is a real two-file cycle. Verified clean by a real `tsc --noEmit` compile (KN-BP146-M6
+// Task 1d) AND a real runtime smoke test proving `readCurrentToken()` returns a genuine token
+// value at actual request time, not undefined/broken due to load order (KN-BP146-M6 Task 2) --
+// see this ticket's final report for both pieces of evidence. Reasoning for why this is safe:
+// `readCurrentToken` is only DEREFERENCED (via a property access on the required module's
+// namespace object, `openai_compat_server_1.readCurrentToken(...)` once compiled) INSIDE
+// callOllama's function body, never evaluated at either module's top level -- by the time
+// callOllama() is actually invoked (well after Electron's whole main-process bootstrap has
+// finished), both modules have fully finished loading regardless of which one required the
+// other first.
+import { OPENAI_COMPAT_SERVER_HOST, OPENAI_COMPAT_SERVER_PORT, readCurrentToken } from '../openai_compat_server';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -288,10 +301,27 @@ export async function callOllama(
     options: { temperature, num_predict: numPredict },
   });
 
+  // KN-BP146-M6: only a call whose target IS the Nexus carries an Authorization header -- a
+  // real Ollama daemon has no Bearer gate and never expects/wants one. `NEXUS_ADDRESS_SUFFIX`
+  // is computed HERE, at call time, not hoisted to a module-level constant -- a real isolated-
+  // probe run (KN-BP146-M6 Task 2) proved a module-level constant built from the circularly-
+  // imported OPENAI_COMPAT_SERVER_HOST/PORT VALUES freezes as "undefined:undefined" (the
+  // openai_compat_server module's own top-level `exports.OPENAI_COMPAT_SERVER_PORT = ...`
+  // assignment hasn't run yet at the point this module's top level executes, mid-cycle). A
+  // call-time function-body reference to the same two exports is fine (both modules are fully
+  // loaded by the time any request actually happens), which is exactly why `readCurrentToken()`
+  // below -- a function reference, not a snapshotted value -- was already safe.
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const nexusAddressSuffix = `${OPENAI_COMPAT_SERVER_HOST}:${OPENAI_COMPAT_SERVER_PORT}`;
+  if (ollamaBaseUrl.includes(nexusAddressSuffix)) {
+    const token = readCurrentToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+  }
+
   try {
     let resp = await fetch(`${ollamaBaseUrl}/api/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(buildBody(true)),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -299,7 +329,7 @@ export async function callOllama(
       // BP083 fallback: this peer's Ollama version rejects the `think` field outright.
       resp = await fetch(`${ollamaBaseUrl}/api/generate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(buildBody(false)),
         signal: AbortSignal.timeout(timeoutMs),
       });

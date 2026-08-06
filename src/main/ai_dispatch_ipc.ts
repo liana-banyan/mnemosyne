@@ -85,8 +85,19 @@ import {
   hasUserAnthropicKey,
   clearUserAnthropicKey,
 } from './user_anthropic_key';
+// KN-BP146-M6: THE NEXUS's own host/port, so the 'ai-dispatch:query-engine' handler's engine
+// call below can route through it instead of straight to raw Ollama. This file does not create
+// an import cycle with openai_compat_server.ts (only canonical_pipeline.ts <-> that file has one
+// -- see canonical_pipeline.ts's own KN-BP146-M6 comment for that fork-in-the-road).
+import { OPENAI_COMPAT_SERVER_HOST, OPENAI_COMPAT_SERVER_PORT } from './openai_compat_server';
 
 const OLLAMA_API_BASE = 'http://127.0.0.1:11434';
+// KN-BP146-M6: THE NEXUS's own address. Used ONLY at the 'ai-dispatch:query-engine' handler's
+// runCanonicalFreeTextQuestion(...) call site below -- every other OLLAMA_API_BASE call site in
+// this file (the /api/ps cold-start liveness check, the now-orphaned 'ai-dispatch:query' handler,
+// etc.) is deliberately left untouched and keeps hitting raw Ollama directly; out of this
+// ticket's scope per KN-BP146-M6.
+const NEXUS_LOCAL_URL = `http://${OPENAI_COMPAT_SERVER_HOST}:${OPENAI_COMPAT_SERVER_PORT}`;
 
 // BP145-M4 Slice 2 (the escalation ladder, TIER 3 cheap cloud): a real, working Anthropic
 // model id already used elsewhere in this codebase for a real API call (agent_probe.ts's own
@@ -1659,7 +1670,7 @@ export function registerAiDispatchIPC(): void {
           };
 
           const result = await runCanonicalFreeTextQuestion(
-            question, domain, OLLAMA_API_BASE, model, {}, writeEbletFn, onProgress,
+            question, domain, NEXUS_LOCAL_URL, model, {}, writeEbletFn, onProgress,
           );
 
           if (!event.sender.isDestroyed()) {
