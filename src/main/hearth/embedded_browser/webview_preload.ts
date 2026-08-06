@@ -268,7 +268,36 @@ interface BrowserAuthorityExtractionResultMessage {
    *  URL this system navigated to) and never merged into snippet. Empty array is honest (no
    *  discoverable citation link inside the matched container), never a placeholder. */
   citations: CitationRecord[];
+  /** (KN-BP147-M2) Ranked candidate results the underlying page itself independently listed for
+   *  this query -- distinct from BOTH `snippet` (the single distilled answer) and `citations`
+   *  (evidence about where THAT answer came from). D-BP146-006's M2 verified this module never
+   *  captured more than one result per lookup (first-match-wins on the answer-box selectors
+   *  only); this is the write side of that gap. Never a voting candidate on its own and never
+   *  wired to recordSourceObservation() -- specialist_adapters.ts's ledger write side stays
+   *  gated behind F-29/KN-BP144-14 Phase 1 per-claim attribution exactly as before this ticket;
+   *  this field only carries the OBSERVATION as far as the existing sendToHost channel already
+   *  reaches. Empty array (never omitted) when the page has no multi-candidate structure this
+   *  module recognizes, or when extraction found nothing -- same never-fabricate contract as
+   *  `citations` above. */
+  results: SearchResultCandidate[];
 }
+
+/** (KN-BP147-M2) One ranked candidate result independently listed by the underlying page for
+ *  this lookup -- e.g. one row of Google's organic result list, or one card in Perplexity's
+ *  "Sources" panel. `rank` is 1-based DOM order (the order the PAGE itself presented the
+ *  candidates in), never re-sorted or re-scored by this module. */
+interface SearchResultCandidate {
+  rank: number;
+  url: string;
+  title: string;
+  snippet: string;
+}
+
+// (KN-BP147-M2) N=5 per the ticket spec. Phase 0 (this pass) found no live signal that a larger
+// N is unsafe -- the two real DOM shapes actually reachable without login (Perplexity's expanded
+// Sources panel; see PERPLEXITY_SOURCES_TRIGGER_SELECTORS below) commonly carry ~10 cards, so 5
+// is a conservative slice of a real, larger list rather than the entire available set.
+const MAX_MULTI_RESULT_CANDIDATES = 5;
 
 // Best-effort Google featured-snippet / answer-box selectors, most-specific first.
 const GOOGLE_ANSWER_SELECTORS = [
@@ -302,7 +331,9 @@ function firstNonEmptyTextMatch(selectors: string[]): { text: string; selector: 
   return null;
 }
 
-function extractBrowserAuthorityAnswer(authority: BrowserAuthorityName): BrowserAuthorityExtractionResultMessage {
+function extractBrowserAuthorityAnswer(
+  authority: BrowserAuthorityName,
+): Omit<BrowserAuthorityExtractionResultMessage, 'results'> {
   const selectors = authority === 'user_perplexity' ? PERPLEXITY_ANSWER_SELECTORS : GOOGLE_ANSWER_SELECTORS;
   const match = firstNonEmptyTextMatch(selectors);
 
@@ -320,6 +351,197 @@ function extractBrowserAuthorityAnswer(authority: BrowserAuthorityName): Browser
   };
 }
 
+// ─── (KN-BP147-M2) Multi-result capture -- top-N candidates beyond the single answer above ────
+// Phase 0 (this pass) re-verified D-BP146-006's finding by direct read of this file: everything
+// above this banner (firstNonEmptyTextMatch, extractBrowserAuthorityAnswer) picks exactly ONE
+// element and returns exactly ONE snippet -- confirmed still true, unmodified above. This section
+// is purely ADDITIVE: it runs AFTER the existing single-answer extraction, never replaces or
+// reorders it, and populates the new `results` field on BrowserAuthorityExtractionResultMessage.
+//
+// R-MECHANISM-VERIFY, live findings this pass (Playwright, real network, real pages -- not
+// mocked HTML): google.com/search returns a JS-challenge/CAPTCHA page ("/sorry/" or an
+// SG_SS-cookie challenge) to every unauthenticated automated request tried from this build
+// environment (headless, headed-flag, and a plain HTTPS GET with a real browser User-Agent all
+// three confirmed blocked) -- consistent with this file's own long-standing "third-party page
+// markup changes without notice" honesty disclaimer, GOOGLE_ORGANIC_RESULT_CONTAINER_SELECTORS
+// below is therefore UNVERIFIED against a live SERP, same disclosed-unverified status this file
+// already ships for the ChatGPT/Gemini selectors above. perplexity.ai/search, by contrast, DID
+// load live and unauthenticated: its single-answer box matched PERPLEXITY_ANSWER_SELECTORS
+// exactly as-is (confirming the "single result" finding), and its "Sources" panel -- collapsed
+// by default (`aria-expanded="false"`) -- expanded on click to reveal a real, ranked list of 10
+// distinct external source cards, each a plain `<a href="https://...">` link. That live-verified
+// shape is what PERPLEXITY_SOURCES_TRIGGER_SELECTORS + extractExpandedExternalLinks below target.
+
+// Best-effort Google organic-result-list container selectors, most-specific first. UNVERIFIED
+// against a live page this pass (see banner above) -- kept honest rather than removed, following
+// this file's existing convention for a vendor whose DOM could not be reached with real
+// credentials (see the ChatGPT/Gemini selector blocks' own "UNVERIFIED... no live credentials
+// available" disclaimers). A selector-set miss here degrades to an empty `results` array, never
+// a fabricated candidate.
+const GOOGLE_ORGANIC_RESULT_CONTAINER_SELECTORS = [
+  'div.MjjYud',
+  'div.tF2Cxc',
+  'div.g',
+  '#rso > div',
+];
+
+/** Extracts up to `maxResults` organic-result candidates from a Google SERP. Synchronous --
+ *  Google's organic list (unlike Perplexity's Sources panel) renders directly in the initial
+ *  DOM, no click/expand step needed, so this stays a plain scrape consistent with the rest of
+ *  this file's non-interactive extraction path. Never throws; any per-container failure just
+ *  skips that one candidate rather than aborting the whole pass. */
+function extractGoogleOrganicResults(maxResults: number): SearchResultCandidate[] {
+  const out: SearchResultCandidate[] = [];
+  const seenUrls = new Set<string>();
+  try {
+    for (const containerSel of GOOGLE_ORGANIC_RESULT_CONTAINER_SELECTORS) {
+      let containers: NodeListOf<HTMLElement>;
+      try {
+        containers = document.querySelectorAll<HTMLElement>(containerSel);
+      } catch {
+        continue; // invalid selector on this page -- try the next candidate container shape
+      }
+      if (containers.length < 2) continue; // need a genuine LIST, not a single incidental match
+      containers.forEach((container) => {
+        if (out.length >= maxResults) return;
+        try {
+          const titleEl = container.querySelector<HTMLElement>('h3');
+          const linkEl = titleEl?.closest('a[href^="http"]') as HTMLAnchorElement | null
+            ?? container.querySelector<HTMLAnchorElement>('a[href^="http"]');
+          const href = linkEl?.getAttribute('href') ?? '';
+          if (!href || !/^https?:\/\//i.test(href)) return;
+          const parsed = new URL(href, window.location.href);
+          const url = parsed.href;
+          if (parsed.hostname === window.location.hostname || seenUrls.has(url)) return;
+          seenUrls.add(url);
+          const title = (titleEl?.innerText ?? '').replace(/\s+/g, ' ').trim();
+          const fullText = (container.innerText ?? '').replace(/\s+/g, ' ').trim();
+          const snippet = title && fullText.startsWith(title) ? fullText.slice(title.length).trim() : fullText;
+          if (!title && !snippet) return; // nothing usable -- skip rather than fabricate
+          out.push({ rank: out.length + 1, url, title, snippet: snippet.slice(0, 300) });
+        } catch {
+          /* this one container failed to parse -- skip it, keep the rest */
+        }
+      });
+      if (out.length > 0) break; // this container shape produced a real list -- don't also try the rest
+    }
+  } catch {
+    /* DOM access error at the outer level -- return whatever was collected before the failure */
+  }
+  return out;
+}
+
+/** Live-verified (this pass, Playwright against the real perplexity.ai/search page): the
+ *  "Sources" toggle is a <button aria-expanded="false|true"> whose own text starts with
+ *  "Sources" -- matched by text content rather than a class name/data-testid (none were
+ *  stable/present on the live page), same "shape-based, not tied to a specific string beyond
+ *  the literal visible label" spirit as this file's existing looksLikeUiChrome denylist.
+ *  Returns the CURRENT expanded state alongside the element so the caller never blind-clicks a
+ *  panel that is already open -- a live run this pass confirmed the panel toggles CLOSED again
+ *  on a second click of the same button (a plain accordion), which would have silently thrown
+ *  away an already-visible 10-source list down to the answer's own single inline citation. */
+function findPerplexitySourcesTrigger(): { element: HTMLElement; expanded: boolean } | null {
+  try {
+    const candidates = Array.from(document.querySelectorAll<HTMLButtonElement>('button[aria-expanded]'));
+    for (const btn of candidates) {
+      const text = (btn.innerText || btn.textContent || '').replace(/\s+/g, ' ').trim();
+      if (/^sources\b/i.test(text)) return { element: btn, expanded: btn.getAttribute('aria-expanded') === 'true' };
+    }
+  } catch {
+    /* DOM access error -- no trigger found */
+  }
+  return null;
+}
+
+/** Scans every external `<a href="http...">` on the page (excluding the current page's own
+ *  hostname -- same same-origin exclusion contract extractCitationsFromElement above already
+ *  uses) and returns up to `maxResults` as ranked candidates. Live-verified (this pass) against
+ *  perplexity.ai's expanded Sources panel: this plain global scan returned exactly the panel's
+ *  real 10 source links with no extraneous chrome links picked up, because perplexity.ai's
+ *  search-result page has no other off-site links until that panel is expanded. */
+function extractExpandedExternalLinks(maxResults: number): SearchResultCandidate[] {
+  const out: SearchResultCandidate[] = [];
+  const seenUrls = new Set<string>();
+  try {
+    const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href^="http"]'));
+    for (const a of anchors) {
+      if (out.length >= maxResults) break;
+      try {
+        const href = a.getAttribute('href') ?? '';
+        const url = new URL(href, window.location.href).href;
+        const parsed = new URL(url);
+        if (parsed.hostname === window.location.hostname || seenUrls.has(url)) continue;
+        seenUrls.add(url);
+        const title = (a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+        if (!title) continue; // nothing usable -- skip rather than fabricate a blank candidate
+        out.push({ rank: out.length + 1, url, title, snippet: '' });
+      } catch {
+        /* malformed href -- skip this anchor, never fabricate a candidate */
+      }
+    }
+  } catch {
+    /* DOM access error -- return whatever was collected before the failure */
+  }
+  return out;
+}
+
+/** Perplexity's Sources panel is collapsed by default (live-verified this pass). This checks the
+ *  TOGGLE BUTTON's own `aria-expanded` state as the source of truth for whether a click is safe
+ *  -- NOT a heuristic "are there already some external links on the page" scan. A live run this
+ *  pass caught exactly why that heuristic is wrong: the answer prose can already carry its OWN
+ *  one or two inline citation links (e.g. a single "britannica" pill) before the Sources panel
+ *  is ever opened, so a ">0 links already visible" check short-circuits and returns just that
+ *  one/two-link set, silently skipping the click that would have revealed the real ~10-card list.
+ *  It is also unsafe to click a button that is already `aria-expanded="true"` -- live-verified
+ *  this pass as a plain accordion toggle, so a second click COLLAPSES it back rather than being
+ *  a harmless no-op. Resolves to [] (never rejects, never fabricates) on every failure path -- no
+ *  trigger found (falls back to a plain link scan for a page shape with no toggle at all), click
+ *  throws, or the post-click scan still finds nothing. */
+const PERPLEXITY_SOURCES_EXPAND_WAIT_MS = 900;
+
+function expandAndExtractPerplexitySources(maxResults: number): Promise<SearchResultCandidate[]> {
+  return new Promise((resolve) => {
+    try {
+      const trigger = findPerplexitySourcesTrigger();
+      if (!trigger) {
+        // No toggle button on this page shape at all -- best-effort scan of whatever external
+        // links already exist, rather than giving up outright.
+        resolve(extractExpandedExternalLinks(maxResults));
+        return;
+      }
+      if (trigger.expanded) {
+        // Already open -- extract now, do NOT click (clicking would collapse it).
+        resolve(extractExpandedExternalLinks(maxResults));
+        return;
+      }
+      trigger.element.click();
+      setTimeout(() => {
+        try {
+          resolve(extractExpandedExternalLinks(maxResults));
+        } catch {
+          resolve([]);
+        }
+      }, PERPLEXITY_SOURCES_EXPAND_WAIT_MS);
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+/** Single dispatch point for the multi-result capture, by authority. Returns [] immediately
+ *  (no DOM work, no click) for every authority other than the two this ticket's live
+ *  investigation covered -- in particular claude.ai/chatgpt/gemini's interactive single-message
+ *  thread has no independent "multiple ranked candidates" structure to capture, so widening this
+ *  to them would be inventing scope the ticket did not ask for. */
+function extractMultiResultCandidates(
+  authority: BrowserAuthorityName,
+  maxResults: number,
+): Promise<SearchResultCandidate[]> {
+  if (authority === 'user_google') return Promise.resolve(extractGoogleOrganicResults(maxResults));
+  if (authority === 'user_perplexity') return expandAndExtractPerplexitySources(maxResults);
+  return Promise.resolve([]);
+}
+
 ipcRenderer.on('browser-authority-run-query', (_event, payload: BrowserAuthorityRunQueryRequest) => {
   logInjectionEvent('browser_authority_run_query_received', {
     authority: payload.authority,
@@ -334,7 +556,18 @@ ipcRenderer.on('browser-authority-run-query', (_event, payload: BrowserAuthority
     url: window.location.href,
   });
 
-  ipcRenderer.sendToHost('browser-authority-extraction-result', result);
+  // (KN-BP147-M2) Multi-result capture runs AFTER the existing single-answer extraction above --
+  // `result`'s own fields are computed byte-identically to before this ticket. This only adds
+  // the `results` field once the (possibly click-and-wait) multi-candidate pass resolves, then
+  // sends the single, now-richer message over the SAME pre-existing sendToHost channel.
+  extractMultiResultCandidates(payload.authority, MAX_MULTI_RESULT_CANDIDATES).then((results) => {
+    logInjectionEvent('browser_authority_multi_result_capture', {
+      authority: payload.authority,
+      result_count: results.length,
+      url: window.location.href,
+    });
+    ipcRenderer.sendToHost('browser-authority-extraction-result', { ...result, results });
+  });
 });
 
 // ─── (this build pass) claude.ai/new interactive browser authority ──────────────────────────
