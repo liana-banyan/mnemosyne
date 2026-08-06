@@ -2,7 +2,25 @@
  * MnemosyneC local MCP server — BP081 K-2 scaffold
  * Exposes substrate tools to local MCP clients (Claude Desktop, Cursor, etc.)
  * Default port: 11456. stdio transport also supported via standalone spawn mode.
- * v0.1.61 wires real business logic into tool stubs.
+ *
+ * KN-BP147-M1 (BP147 D-BP147-002, "put the doctrine in MnemosyneC and make it consumed"):
+ * the prior header here claimed "v0.1.61 wires real business logic into tool stubs" while
+ * every tool below was a hardcoded stub returning zeros/empty/not_implemented regardless of
+ * input -- a component reporting work it never did. That claim is corrected now to state
+ * what is ACTUALLY wired as of this Yoke:
+ *   - mnem_query_substrate      -> real queryEbletStore()        (mnem_eblet_store.ts)
+ *   - mnem_get_substrate_stats  -> real getEbletIndexStats()     (mnem_eblet_store.ts)
+ *   - mnem_record_qa            -> real writeVerifiedEblet()     (mnem_eblet_store.ts)
+ *   - mnem_run_giant_concordance -> real runGiantConcordance()   (plow/giant_concordance.ts) --
+ *     HARDWIRE-05 Prior Work Blood Rule check found this real 3-voter Ollama implementation
+ *     already existed and matches this tool's exact (question, candidateAnswer) contract; the
+ *     ticket's premise that it might have "no real implementation" is REFUTED.
+ *   - mnem_share_eblet_to_peer  -> checked federation/*, keys_engines/peer_artifact_*,
+ *     mesh_test/wan_dispatch.ts, kitchen_table/p2p_discovery.ts: rich peer/mesh infrastructure
+ *     exists for presence, app-update-artifact transfer, and batch mesh-test dispatch, but NONE
+ *     of it shares a single existing verified eblet (by id) to one peer on consent. No real
+ *     implementation exists behind this tool -- it stays an HONEST, EXPLICIT not_implemented
+ *     stub (a truthful stub beats a lying wire) rather than an invented concordance.
  *
  * Transport strategy in Electron context:
  *  - HTTP/StreamableHTTP on port 11456 (primary for running app connections)
@@ -17,6 +35,8 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { queryEbletStore, getEbletIndexStats, writeVerifiedEblet } from './mnem_eblet_store';
+import { runGiantConcordance, type ConcordanceResult } from './plow/giant_concordance';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -95,10 +115,22 @@ function buildMcpServer(): McpServer {
         question: z.string().describe('The question to search in the substrate'),
       },
     },
-    async (_args: { question: string }) => {
-      const result: { eblets: Array<{ id: string; answer: string; domain: string; confidence: number }> } = {
-        eblets: [],
-      };
+    async (args: { question: string }) => {
+      pushRecentCall('mnem_query_substrate', 'mcp_client');
+      // KN-BP147-M1: was `_args` (argument ignored, always []). Now calls the real BM25
+      // retrieval path over the persistent eblet index and returns its actual snippet output
+      // verbatim. queryEbletStore() returns pre-formatted `[title] [category: X]\ncontent`
+      // strings, not a {id, domain, confidence}-shaped record -- that structured shape never
+      // existed upstream, so it is not fabricated here (a truthful shape beats a lying one).
+      let eblets: string[] = [];
+      let error: string | undefined;
+      try {
+        eblets = await queryEbletStore(args.question);
+      } catch (e) {
+        console.error('[MCP] mnem_query_substrate: queryEbletStore threw:', e);
+        error = String(e);
+      }
+      const result: { eblets: string[]; error?: string } = error ? { eblets, error } : { eblets };
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     },
   );
@@ -116,11 +148,35 @@ function buildMcpServer(): McpServer {
       },
     },
     async (args: { question: string; answer: string; provenance?: string; verified?: boolean }) => {
+      pushRecentCall('mnem_record_qa', 'mcp_client');
       console.log('[MCP] mnem_record_qa called — q:', String(args.question ?? '').slice(0, 60));
-      const result: { success: boolean; ebletId?: string; routedTo: 'direct_write' | 'plow_queue' } = {
-        success: true,
-        routedTo: 'plow_queue',
-      };
+      // KN-BP147-M1: was a hardcoded `{success:true, routedTo:'plow_queue'}` that never wrote
+      // disk regardless of input -- the exact "component reports success for work it did not
+      // do" defect this ticket names. Now calls the real writeVerifiedEblet() (verified this
+      // session by reading its appendFileSync write path, and by the BP141 series of commits
+      // that already exercise it in production call sites). `verified`/`verdict` are always
+      // re-derived by writeVerifiedEblet()'s own honesty gate (computeHonestVerification()),
+      // never trusted verbatim from this caller-supplied `verified` hint.
+      const provenance = args.provenance && args.provenance.trim().length > 0
+        ? args.provenance
+        : `mcp:mnem_record_qa:${Date.now()}`;
+      const timestamp = Date.now();
+      const sha256 = crypto.createHash('sha256').update(args.question + args.answer).digest('hex');
+      let result: { success: boolean; ebletId?: string; routedTo: 'direct_write'; error?: string };
+      try {
+        const writtenSha = await writeVerifiedEblet({
+          question: args.question,
+          answer: args.answer,
+          provenance,
+          verified: args.verified ?? false,
+          sha256,
+          timestamp,
+        });
+        result = { success: true, ebletId: writtenSha, routedTo: 'direct_write' };
+      } catch (e) {
+        console.error('[MCP] mnem_record_qa: writeVerifiedEblet threw:', e);
+        result = { success: false, routedTo: 'direct_write', error: String(e) };
+      }
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     },
   );
@@ -133,18 +189,24 @@ function buildMcpServer(): McpServer {
     },
     async () => {
       pushRecentCall('mnem_get_substrate_stats', 'mcp_client');
-      const result: {
-        totalEblets: number;
-        verifiedCount: number;
-        lastWriteTimestamp: number | null;
-        topDomains: Array<{ domain: string; count: number }>;
-      } = {
-        totalEblets: 0,
-        verifiedCount: 0,
-        lastWriteTimestamp: null,
-        topDomains: [],
-      };
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      // KN-BP147-M1 (ticket spec, mcp_server.ts:54/72 in the ticket doc): wired to the real
+      // getEbletIndexStats() (mnem_eblet_store.ts:409-428) exactly as specified. Its actual
+      // return shape (totalIndexed/byCategory/lastRefreshTimestamp) differs from the old
+      // stub's invented shape (totalEblets/verifiedCount/topDomains) -- returning the REAL
+      // shape rather than force-fitting fabricated field names that this function does not
+      // compute. (Note for the record: mnem_eblet_store.ts's separate queryStats() function,
+      // not named by this ticket, happens to match the old stub's field names exactly --
+      // flagged in the M1 report as a possible ticket-authoring mismatch, not acted on here
+      // since the ticket is unambiguous about which function to call.)
+      let stats: { totalIndexed: number; byCategory: Record<string, number>; lastRefreshTimestamp: number | null; error?: string };
+      try {
+        const real = getEbletIndexStats();
+        stats = { totalIndexed: real.totalIndexed, byCategory: real.byCategory, lastRefreshTimestamp: real.lastRefreshTimestamp };
+      } catch (e) {
+        console.error('[MCP] mnem_get_substrate_stats: getEbletIndexStats threw:', e);
+        stats = { totalIndexed: 0, byCategory: {}, lastRefreshTimestamp: null, error: String(e) };
+      }
+      return { content: [{ type: 'text' as const, text: JSON.stringify(stats) }] };
     },
   );
 
@@ -158,16 +220,23 @@ function buildMcpServer(): McpServer {
         candidateAnswer: z.string().describe('The candidate answer to evaluate'),
       },
     },
-    async (_args: { question: string; candidateAnswer: string }) => {
-      const result: {
-        verdict: 'verified' | 'rejected' | 'split';
-        confidence: number;
-        votes: Array<{ voter: number; verdict: string }>;
-      } = {
-        verdict: 'rejected',
-        confidence: 0,
-        votes: [],
-      };
+    async (args: { question: string; candidateAnswer: string }) => {
+      pushRecentCall('mnem_run_giant_concordance', 'mcp_client');
+      // KN-BP147-M1: was a hardcoded `{verdict:'rejected', confidence:0, votes:[]}` regardless
+      // of input. HARDWIRE-05 Prior Work Blood Rule check (this session): grepped this repo
+      // for GiantConcordance/giant_concordance before assuming nothing backs this tool, and
+      // found a real implementation at plow/giant_concordance.ts's runGiantConcordance() --
+      // a genuine 3-voter Ollama dispatch with perspective-diverse prompts, exact
+      // (question, candidateAnswer) signature match. Wired to the real function; it can
+      // honestly return 'inconclusive' (not fabricated as 'verified' or 'rejected') when
+      // fewer than 2 voters respond, e.g. Ollama unreachable on this machine.
+      let result: ConcordanceResult;
+      try {
+        result = await runGiantConcordance(args.question, args.candidateAnswer);
+      } catch (e) {
+        console.error('[MCP] mnem_run_giant_concordance: runGiantConcordance threw:', e);
+        result = { verdict: 'inconclusive', confidence: 0, votes: [], error: String(e) };
+      }
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     },
   );
@@ -183,9 +252,24 @@ function buildMcpServer(): McpServer {
       },
     },
     async (_args: { ebletId: string; peerId?: string }) => {
+      pushRecentCall('mnem_share_eblet_to_peer', 'mcp_client');
+      // KN-BP147-M1: HARDWIRE-05 Prior Work Blood Rule check (this session) searched
+      // federation/* (peer_server.ts, constellation_discovery.ts, presence_autoconnect.ts,
+      // mic_dispatcher.ts), keys_engines/peer_artifact_client.ts + peer_artifact_server.ts,
+      // mesh_test/wan_dispatch.ts, and kitchen_table/p2p_discovery.ts. Real peer/mesh
+      // infrastructure exists there, but for presence/discovery, app-UPDATE-artifact transfer,
+      // and batch mesh-TEST-question dispatch to many peers -- none of it shares ONE existing
+      // verified eblet (by id) to a specific peer on user consent, which is this tool's exact
+      // contract. No real implementation exists behind this tool. Left as an honest, explicit
+      // not_implemented stub per the ticket's own instruction ("a truthful stub beats a lying
+      // wire") -- HARD RULE observed: nothing invented here.
       const result: { success: boolean; reason?: string } = {
         success: false,
-        reason: 'not_implemented',
+        reason:
+          'not_implemented: no real single-eblet peer-share function exists in this repo as of ' +
+          'KN-BP147-M1 (checked federation/*, keys_engines/peer_artifact_*, mesh_test/wan_dispatch.ts, ' +
+          'kitchen_table/p2p_discovery.ts — all cover presence, app-update-artifact transfer, or ' +
+          'batch mesh-test dispatch, not single-eblet peer sharing by id)',
       };
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     },
