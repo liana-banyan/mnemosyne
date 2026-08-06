@@ -38,7 +38,17 @@ import {
 // four ARE the same duplicated abstraction: caithedral-core's
 // CAITHEDRAL_CRYSTAL (soccerball_tools.ts) and LOCAL_CRYSTAL (pearl_tools.ts),
 // plus librarian-mcp's MASS_CRYSTAL (hex_warehouse.ts, a different repo --
-// left untouched, see BLOCKED file). This module is the correct wiring point
+// left untouched, see BLOCKED file). SEPARATE FINDING (also see BLOCKED
+// files): librarian-mcp's live MCP tools literally named "soccerball_emit" /
+// "pearl_emit" do NOT call hex_warehouse.ts's functions at all -- they import
+// "caithedral-core/tools/soccerball", which librarian-mcp's node_modules
+// resolves to a THIRD, separate physical checkout at
+// LianaBanyanPlatform/caithedral-core (remote liana-banyan/caithedral-core,
+// stale, no durable-adapter code) -- not this repo's caithedral-core (remote
+// liana-banyan/cai-core, fixed below), and not hex_warehouse.ts either. That
+// checkout and librarian-mcp/src/server.ts are both outside this ticket's
+// OWNS block; the durable-adapter fix below cannot reach them. This module is
+// the correct wiring point
 // for the two caithedral-core stores: it already imports caithedral-core's
 // tools, it lives inside mnemosyne itself (not the portable, separately-
 // published caithedral-core repo -- see soccerball_tools.ts's
@@ -51,22 +61,38 @@ import {
 // any reason, this logs loudly and caithedral-core's tools keep their
 // original in-memory-only behavior, unchanged. Nothing wedges.
 //
-// KNOWN GAP (not this file's to fix -- src/main/crystal/ is READ-ONLY for
-// KN-BP147-M1, owned by the parallel M2 SEG): crystal_store.ts's own internal
-// `require("./crystal_types.ts")` keeps its literal .ts extension when tsc
-// compiles this tree for the packaged app, and the compiled dist output does
-// not ship crystal_types.ts alongside crystal_types.js -- so requiring the
-// TSC-COMPILED dist/main/crystal/crystal_store.js throws MODULE_NOT_FOUND.
-// Requiring the .ts source directly (as done below) works today under Node's
-// native TypeScript support (verified on Node v24.11.0, the environment this
-// ticket was executed in) but has NOT been verified under Electron's bundled
-// Node in a packaged build. The try/catch below means a failure here is safe
-// (fails open to the pre-existing in-memory behavior) but silently forfeits
-// durability until crystal_store.ts:45 drops the `.ts` extension. See the
-// BLOCKED file for the exact one-line fix, confirmed by a scratch-copy test.
+// KNOWN GAP (VERIFIED EMPIRICALLY, KN-BP147-M1 dispatch D-BP147-005 -- not
+// this file's to fix -- src/main/crystal/ is READ-ONLY for this ticket):
+// this require() call below deliberately uses NO extension (Node's normal
+// CommonJS resolution: try .js, then .ts under native type-stripping) so it
+// resolves correctly to the packaged dist/main/crystal/crystal_store.js in a
+// real tsc-compiled build. Confirmed working at that layer:
+//   `node -e "require('./crystal/crystal_store')"` from dist/main -- OK.
+// BUT crystal_store.ts:45 (read-only to this ticket) has its OWN internal
+// `require("./crystal_types.ts")` with a HARDCODED, literal `.ts` extension.
+// tsc does not rewrite string literals inside require() calls, and tsc does
+// not copy .ts SOURCE files into outDir -- it only emits .js -- so in any
+// tsc-compiled dist tree, dist/main/crystal/crystal_types.ts never exists,
+// only crystal_types.js does. The result: crystal_store.js's own load-time
+// require() throws MODULE_NOT_FOUND the instant anything requires it out of
+// a real dist build, in BOTH `npm run dev:main` and `npm run build` (both
+// run `tsc -p tsconfig.main.json` before `electron .`) -- there is no
+// execution path for the real app that avoids this. Verified by hand,
+// twice, from a clean dist/main/crystal/ with no stray .ts copy present:
+//   require('./crystal/crystal_store.ts') from dist/main -> MODULE_NOT_FOUND
+//     (Cannot find module './crystal/crystal_store.ts') -- the ORIGINAL bug.
+//   require('./crystal/crystal_store')    from dist/main -> loads crystal_store.js,
+//     which itself then throws MODULE_NOT_FOUND on './crystal_types.ts' --
+//     THIS extension fix (below) gets one layer closer but cannot fully
+//     resolve it alone, because the second failure is inside the read-only file.
+// The try/catch below means a failure here is safe (fails open to the
+// pre-existing in-memory behavior) but silently forfeits durability in the
+// real running app until crystal_store.ts:45 drops its OWN `.ts` extension.
+// See the BLOCKED file (HARDWIRE/LEDGER/YOKE/BLOCKED/D-BP147-005_M1_*.md)
+// for the exact one-line fix and the full verification transcript.
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const crystalStore = require('./crystal/crystal_store.ts') as {
+  const crystalStore = require('./crystal/crystal_store') as {
     mintChonk(pearls: string[]): string;
     resolveChonk(sid: string): {
       sid: string;
