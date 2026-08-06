@@ -365,6 +365,7 @@ import { loadAllEntries, registerClaim } from './ip_ledger/ip_ledger_store';
 // (currently empty -- the next new registration import lands here)
 import { initOpenAiCompatServer } from './openai_compat_server'; // KN-BP145-M3: THE NEXUS
 import { computeUsageBarrelOperationalSnapshot } from './hearth/usage_barrel_scraper'; // KN-BP147-M4: UNBARREL THE BARRELS
+import { startResidentWatcher } from './resident'; // KN-BP147-M2: THE RESIDENT CONSUMER, OD-04, THE RED QUEEN
 // --- END APPEND ZONE: IMPORT -------------------------------------------------
 
 // --- Constants --------------------------------------------------------------
@@ -8219,6 +8220,14 @@ app.whenReady().then(async () => {
   // above). Never insert a new call between the init() calls above; always append here instead.
   // (currently empty -- the next new registration init() call lands here)
   initOpenAiCompatServer(); // KN-BP145-M3: THE NEXUS, local OpenAI-compat substrate-injecting server, 127.0.0.1 only
+
+  // KN-BP147-M2: THE RESIDENT CONSUMER, OD-04, THE RED QUEEN. Reads the persisted WATCH-armed
+  // switch (resident/resident_settings.ts, app.getPath('userData')) FIRST -- if the user has
+  // not elected persistence, this call only logs its own dormancy and starts no interval.
+  // When armed, starts the free, read-only yoke poll loop (BLOCKED/RETURNS/HEARTBEAT under
+  // HARDWIRE\LEDGER) that survives this session's death because it runs in this process, not
+  // in any IDE. No ACT-class capability is reachable from this call -- see resident/autopilot_grant.ts.
+  startResidentWatcher();
   // --- END APPEND ZONE: INIT-CALL -----------------------------------------
 
   // SAGA 10 BP045 W1 ? Register mnemosyne:// + mnemo:// deep-link protocols (BP065)
