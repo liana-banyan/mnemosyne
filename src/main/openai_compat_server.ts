@@ -53,6 +53,12 @@ export const OPENAI_COMPAT_SERVER_HOST = '127.0.0.1';
 
 const TOKEN_FILENAME = 'openai_compat_server_token.txt';
 
+// KN-BP146-M6: the REAL Ollama daemon this server's own /api/generate route proxies to. Never
+// this server's own address -- no naming collision with any existing constant in this file (no
+// prior real-Ollama constant existed here; brain.api_endpoint is per-brain and resolved at
+// request time in handleChatCompletions, not a fixed module-level constant like this one).
+const REAL_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
+
 // ─── Bearer token (local-only secret, this app's own making) ──────────────────────────────────
 
 export function getTokenFilePath(): string {
@@ -139,6 +145,23 @@ interface OpenAiChatCompletionRequest {
    *  keyword scoring. Defaults to 'general', the same fallback literal index.ts's own
    *  eblet_topical WAN-relay handler uses for this exact function. */
   domain?: string;
+}
+
+// KN-BP146-M6: Ollama's OWN native /api/generate wire shape (flat prompt, not a messages array).
+// This is the exact shape canonical_pipeline.ts's callOllama() sends -- see that function's
+// buildBody() -- so this route can proxy it through with zero changes to callOllama's own
+// request-building or response-parsing logic.
+interface OllamaGenerateRequest {
+  model?: string;
+  prompt: string;
+  stream?: boolean;
+  think?: boolean;
+  options?: { temperature?: number; num_predict?: number };
+  /** Non-standard, additive field, same convention as OpenAiChatCompletionRequest.domain above. */
+  domain?: string;
+  /** Non-standard, additive field, same convention as OpenAiChatCompletionRequest.substrate_injection
+   *  above: default/absent = ON, explicit false = opt out. */
+  substrate_injection?: boolean;
 }
 
 // ─── Brain resolution ───────────────────────────────────────────────────────────────────────────
@@ -351,6 +374,82 @@ async function handleChatCompletions(req: http.IncomingMessage, res: http.Server
   });
 }
 
+// KN-BP146-M6: Ollama-native-shaped route, additive sibling to handleChatCompletions above --
+// this is the route the REAL live Ask-tab pipeline's callOllama() (canonical_pipeline.ts) speaks,
+// not the OpenAI chat-message shape. Substrate injection follows the exact same fold format as
+// handleChatCompletions/buildVerifiedContext above (PREPENDED onto the flat prompt, since there is
+// no separate system-message slot in Ollama's /api/generate shape). Forwards the (possibly
+// injected) body to the REAL Ollama daemon's own /api/generate and returns Ollama's real response
+// body and status code UNCHANGED, so callOllama's `data.response?.trim() ?? null` parsing and its
+// one-shot retry-without-`think`-on-HTTP-400 logic both keep working through this proxy hop with
+// zero changes to callOllama's response-handling.
+async function handleGenerateCompat(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  let parsed: OllamaGenerateRequest;
+  try {
+    const raw = await readRequestBody(req);
+    parsed = JSON.parse(raw) as OllamaGenerateRequest;
+  } catch {
+    sendOpenAiError(res, 400, 'Malformed JSON request body');
+    return;
+  }
+
+  if (typeof parsed.prompt !== 'string' || parsed.prompt.length === 0) {
+    sendOpenAiError(res, 400, '"prompt" must be a non-empty string');
+    return;
+  }
+
+  const domain = typeof parsed.domain === 'string' && parsed.domain.trim().length > 0 ? parsed.domain : 'general';
+
+  // Same opt-out convention as handleChatCompletions: absence, or any non-`false` value, is
+  // opt-in.
+  let injectedPrompt = parsed.prompt;
+  let hotHits = 0;
+  if (parsed.substrate_injection !== false) {
+    const { context, hits } = await buildVerifiedContext(parsed.prompt, domain);
+    hotHits = hits.length;
+    if (hits.length > 0) injectedPrompt = context + parsed.prompt;
+  }
+
+  // model/stream/think/options forwarded unchanged -- only `prompt` (and only when injection
+  // actually produced hits) differs from what the caller sent.
+  const forwardBody: Record<string, unknown> = {
+    model: parsed.model,
+    prompt: injectedPrompt,
+    stream: parsed.stream ?? false,
+  };
+  if (typeof parsed.think === 'boolean') forwardBody.think = parsed.think;
+  if (parsed.options) forwardBody.options = parsed.options;
+
+  const t0 = Date.now();
+  let upstreamRes: Response;
+  try {
+    upstreamRes = await fetch(`${REAL_OLLAMA_BASE_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(forwardBody),
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (err) {
+    const latencyMs = Date.now() - t0;
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[openai_compat_server] api.generate proxy FAILED, model=${parsed.model ?? '<none>'} hotHits=${hotHits} latency_ms=${latencyMs}: ${errMsg}`,
+    );
+    sendOpenAiError(res, 502, `Failed to reach real Ollama at ${REAL_OLLAMA_BASE_URL} -- ${errMsg}`, 'upstream_error');
+    return;
+  }
+
+  const latencyMs = Date.now() - t0;
+  const bodyText = await upstreamRes.text();
+  console.log(
+    `[openai_compat_server] api.generate ok, model=${parsed.model ?? '<none>'} hotHits=${hotHits} status=${upstreamRes.status} latency_ms=${latencyMs}`,
+  );
+
+  // Status code and body forwarded UNCHANGED -- see this function's own header comment for why.
+  res.writeHead(upstreamRes.status, { 'Content-Type': upstreamRes.headers.get('content-type') ?? 'application/json' });
+  res.end(bodyText);
+}
+
 // ─── Server bootstrap ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -387,6 +486,13 @@ export function startOpenAiCompatServer(
 
         if (req.method === 'POST' && req.url === '/v1/chat/completions') {
           await handleChatCompletions(req, res);
+          return;
+        }
+
+        // KN-BP146-M6: Bearer-gated exactly like every other route above -- isAuthorized() already
+        // ran before this if/else chain, so a missing/wrong token 401s before ever reaching here.
+        if (req.method === 'POST' && req.url === '/api/generate') {
+          await handleGenerateCompat(req, res);
           return;
         }
 
