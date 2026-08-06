@@ -7,6 +7,7 @@
 
 import { ipcMain } from 'electron';
 import { createHash } from 'crypto';
+import { existsSync, readFileSync } from 'fs';
 
 // ─── Native caithedral-core imports (DELTA-1 §X.A1 fix) ──────────────────────
 
@@ -15,6 +16,8 @@ import {
   soccerball_decode,
   soccerball_lookup,
   speckle_nibble,
+  setDurableCrystalAdapter,
+  setPearlDurableCrystalAdapter,
 } from 'caithedral-core/tools/soccerball';
 
 import { eblit_emit } from 'caithedral-core/tools/eblit';
@@ -27,6 +30,95 @@ import {
   substrate_address_validate,
   gen_valid_address,
 } from 'caithedral-core/tools/substrate_address';
+
+// ─── KN-BP147-M1: wire soccerball/pearl tools to the durable Crystal store ────
+// Phase 0 found FOUR places holding their own ephemeral content-addressed-
+// handle Map (this file's own AREOPAGUS_INDEX below is NOT one of them -- see
+// the note on that array for why it stays ephemeral by design). Three of the
+// four ARE the same duplicated abstraction: caithedral-core's
+// CAITHEDRAL_CRYSTAL (soccerball_tools.ts) and LOCAL_CRYSTAL (pearl_tools.ts),
+// plus librarian-mcp's MASS_CRYSTAL (hex_warehouse.ts, a different repo --
+// left untouched, see BLOCKED file). This module is the correct wiring point
+// for the two caithedral-core stores: it already imports caithedral-core's
+// tools, it lives inside mnemosyne itself (not the portable, separately-
+// published caithedral-core repo -- see soccerball_tools.ts's
+// DurableCrystalAdapter doc comment for why caithedral-core cannot hard-import
+// mnemosyne's internal src/main/crystal directly), and it is loaded once by
+// index.ts's existing import of registerCaithedralToolsIPC -- no index.ts
+// edit needed or made.
+//
+// Fails OPEN (HARDWIRE-00 Section 1.8): if crystal_store can't be loaded for
+// any reason, this logs loudly and caithedral-core's tools keep their
+// original in-memory-only behavior, unchanged. Nothing wedges.
+//
+// KNOWN GAP (not this file's to fix -- src/main/crystal/ is READ-ONLY for
+// KN-BP147-M1, owned by the parallel M2 SEG): crystal_store.ts's own internal
+// `require("./crystal_types.ts")` keeps its literal .ts extension when tsc
+// compiles this tree for the packaged app, and the compiled dist output does
+// not ship crystal_types.ts alongside crystal_types.js -- so requiring the
+// TSC-COMPILED dist/main/crystal/crystal_store.js throws MODULE_NOT_FOUND.
+// Requiring the .ts source directly (as done below) works today under Node's
+// native TypeScript support (verified on Node v24.11.0, the environment this
+// ticket was executed in) but has NOT been verified under Electron's bundled
+// Node in a packaged build. The try/catch below means a failure here is safe
+// (fails open to the pre-existing in-memory behavior) but silently forfeits
+// durability until crystal_store.ts:45 drops the `.ts` extension. See the
+// BLOCKED file for the exact one-line fix, confirmed by a scratch-copy test.
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const crystalStore = require('./crystal/crystal_store.ts') as {
+    mintChonk(pearls: string[]): string;
+    resolveChonk(sid: string): {
+      sid: string;
+      pearls: string[];
+      bindings: Record<string, { targetType: string; ref: string; meta?: Record<string, unknown> }>;
+    } | null;
+    bindChonk(
+      sid: string,
+      key: string,
+      target: { targetType: string; ref: string; meta?: Record<string, unknown> }
+    ): { ok: boolean; accepted: string; error?: string };
+    CRYSTAL_LOG_PATH: string;
+  };
+
+  // getMintTimestamp -- reads the Crystal's own append-only log (CRYSTAL_LOG_PATH
+  // and the CrystalLogRecord.ts field are both part of crystal_store.ts's/
+  // crystal_types.ts's EXPORTED public surface, not an internal reach-around) to
+  // recover the original mint ts for soccerball_lookup's PeanutRoll.ts field.
+  // resolveChonk() does not expose it directly.
+  function getMintTimestamp(sid: string): string | null {
+    try {
+      if (!existsSync(crystalStore.CRYSTAL_LOG_PATH)) return null;
+      const raw = readFileSync(crystalStore.CRYSTAL_LOG_PATH, 'utf-8');
+      for (const line of raw.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const rec = JSON.parse(trimmed);
+        if (rec.op === 'mint' && rec.sid === sid) return rec.ts as string;
+      }
+      return null;
+    } catch {
+      return null; // fail open -- ts is a diagnostic nicety, not load-bearing
+    }
+  }
+
+  const crystalAdapter = {
+    mintChonk: crystalStore.mintChonk,
+    resolveChonk: crystalStore.resolveChonk,
+    bindChonk: crystalStore.bindChonk,
+    getMintTimestamp,
+  };
+
+  setDurableCrystalAdapter(crystalAdapter);
+  setPearlDurableCrystalAdapter(crystalAdapter);
+} catch (e) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[caithedral_tools_ipc] KN-BP147-M1: Crystal durable store unavailable, ' +
+      'soccerball/pearl tools falling back to in-memory-only substrate:',
+    e,
+  );
+}
 
 // ─── Types (re-exported from caithedral-core for IPC shape reference) ─────────
 
@@ -58,6 +150,20 @@ function seededRng(seed: string): () => number {
 // caithedral-core maintains its own MassCrystal but that registry is only
 // accessible via the exported lookup functions.  We maintain a parallel
 // session-scoped index for Areopagus text search.
+//
+// KN-BP147-M1 Phase 0 finding: this array is DELIBERATELY left ephemeral, not
+// consolidated into the Crystal. It is not a fourth instance of the
+// content-addressed-handle-store duplication -- it is a substring TEXT SEARCH
+// index over sids/pearls/bindings that are ALREADY durable via soccerball_emit
+// above (once a Crystal adapter is wired in). It is explicitly documented
+// above as "session-scoped," is capped at 10,000 entries by design (indexSid
+// below), and answers a different question (substring match across many
+// entries) than the Crystal answers (exact-key O(1) resolve). Rebuilding it
+// on every process start from durable soccerball data, instead of letting it
+// die with the process, is a real feature that could be built later, but it
+// is not this ticket's "hold its own Map instead of the Crystal" defect --
+// bulldozing it here would be exactly the "don't bulldoze a legitimate cache"
+// case the ticket calls out. Left untouched.
 
 interface AreopagusEntry {
   sid: string;
