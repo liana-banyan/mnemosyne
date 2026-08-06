@@ -2112,6 +2112,25 @@ contextBridge.exposeInMainWorld('amplify', {
     query: (question: string): Promise<import('../main/csia_hybrid/inference_pipeline').CSIAHybridResult> =>
       ipcRenderer.invoke('csia:query', question),
   },
+  // KN-BP147-M4: UNBARREL THE BARRELS -- wraps 'usage-barrel-get-vendor-usage', the new
+  // ipcMain.handle() registration in index.ts's registerIPCHandlers() IPC-HANDLER append zone.
+  // That handler calls the real, already-built computeUsageBarrelOperationalSnapshot()/
+  // scrapeVendorUsagePanel() in src/main/hearth/usage_barrel_scraper.ts (untouched by this
+  // ticket) and shapes the result to exactly match TwoBarrelMeter.tsx's own
+  // VendorUsageBarrelData renderer-local mirror type -- the return type below is an inline
+  // structural mirror of that same shape (never a direct main-process import from a renderer
+  // consumer, same convention MeterSummaryForBarrels already follows for
+  // getAnswerCacheMeterSummary above).
+  getVendorUsageBarrelSnapshot: (): Promise<{
+    status: 'unknown' | 'ok' | 'error';
+    fiveHour: { label: string; percentConsumed: number; resetText: string } | null;
+    weeklyAllModels: { label: string; percentConsumed: number; resetText: string } | null;
+    weeklyModelSpecific: { label: string; percentConsumed: number; resetText: string } | null;
+    usageCredits: { usedUsd: number; limitUsd: number } | null;
+    operationalAnswer: string | null;
+    lastCheckedAt: string | null;
+    failureReason: string | null;
+  }> => ipcRenderer.invoke('usage-barrel-get-vendor-usage'),
 });
 
 // ─── Global type extension ────────────────────────────────────────────────────
@@ -2706,6 +2725,17 @@ declare global {
           evidence_count: number;
         }>;
       };
+      // KN-BP147-M4: UNBARREL THE BARRELS
+      getVendorUsageBarrelSnapshot: () => Promise<{
+        status: 'unknown' | 'ok' | 'error';
+        fiveHour: { label: string; percentConsumed: number; resetText: string } | null;
+        weeklyAllModels: { label: string; percentConsumed: number; resetText: string } | null;
+        weeklyModelSpecific: { label: string; percentConsumed: number; resetText: string } | null;
+        usageCredits: { usedUsd: number; limitUsd: number } | null;
+        operationalAnswer: string | null;
+        lastCheckedAt: string | null;
+        failureReason: string | null;
+      }>;
     };
     // SEG-V0150-P0-DIAGNOSE-BRIDGE: sentinel — set by preload before main bridge wires up
     __preloadLoaded?: boolean;

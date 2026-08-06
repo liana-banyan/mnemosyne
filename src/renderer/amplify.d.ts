@@ -714,6 +714,23 @@ declare global {
           evidence_count: number;
         }>;
       };
+
+      // KN-BP147-M4: UNBARREL THE BARRELS -- mirrors the runtime method src/main/preload.ts now
+      // exposes (wraps the new 'usage-barrel-get-vendor-usage' ipcMain.handle() registered in
+      // index.ts's IPC-HANDLER append zone, which calls the real
+      // computeUsageBarrelOperationalSnapshot()/scrapeVendorUsagePanel() in
+      // src/main/hearth/usage_barrel_scraper.ts). Shape matches
+      // TwoBarrelMeter.tsx's own VendorUsageBarrelData exactly.
+      getVendorUsageBarrelSnapshot?: () => Promise<{
+        status: 'unknown' | 'ok' | 'error';
+        fiveHour: { label: string; percentConsumed: number; resetText: string } | null;
+        weeklyAllModels: { label: string; percentConsumed: number; resetText: string } | null;
+        weeklyModelSpecific: { label: string; percentConsumed: number; resetText: string } | null;
+        usageCredits: { usedUsd: number; limitUsd: number } | null;
+        operationalAnswer: string | null;
+        lastCheckedAt: string | null;
+        failureReason: string | null;
+      }>;
     };
     // SEG-V0150-P0-DIAGNOSE-BRIDGE: sentinel -- set by preload before main bridge wires up
     __preloadLoaded?: boolean;

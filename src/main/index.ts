@@ -364,6 +364,7 @@ import { loadAllEntries, registerClaim } from './ip_ledger/ip_ledger_store';
 // imports above this zone; always append here instead.
 // (currently empty -- the next new registration import lands here)
 import { initOpenAiCompatServer } from './openai_compat_server'; // KN-BP145-M3: THE NEXUS
+import { computeUsageBarrelOperationalSnapshot } from './hearth/usage_barrel_scraper'; // KN-BP147-M4: UNBARREL THE BARRELS
 // --- END APPEND ZONE: IMPORT -------------------------------------------------
 
 // --- Constants --------------------------------------------------------------
@@ -6601,7 +6602,44 @@ function registerIPCHandlers(): void {
   // --- APPEND ZONE: IPC-HANDLER -- new safeHandle()/ipcMain.handle() registrations go below this line, per KN-BP145-E
   // One handler registration per new IPC channel. Never insert a new handler between existing
   // handlers above; always append here instead, before this function's closing brace.
-  // (currently empty -- the next new IPC handler registration lands here)
+  // KN-BP147-M4: UNBARREL THE BARRELS -- wires TwoBarrelMeter.tsx's VendorUsageBarrel to the
+  // real, already-built usage_barrel_scraper.ts (READ-ONLY to this ticket, not edited). Calls
+  // computeUsageBarrelOperationalSnapshot() (which itself calls scrapeVendorUsagePanel() -- see
+  // that file's header), then shapes the result into the exact VendorUsageBarrelData contract
+  // TwoBarrelMeter.tsx already defines, so the renderer needs zero additional mapping. Never
+  // fabricates a percent: a scrape failure maps to status:'error' with the scraper's own
+  // failureReason, verbatim.
+  safeHandle('usage-barrel-get-vendor-usage', async () => {
+    try {
+      const snapshot = await computeUsageBarrelOperationalSnapshot();
+      const { scrape } = snapshot;
+      const toView = (
+        r: { label: string; percentConsumed: number; resetText: string } | null,
+      ): { label: string; percentConsumed: number; resetText: string } | null =>
+        (r ? { label: r.label, percentConsumed: r.percentConsumed, resetText: r.resetText } : null);
+      return {
+        status: scrape.success ? 'ok' : 'error',
+        fiveHour: toView(scrape.fiveHour),
+        weeklyAllModels: toView(scrape.weeklyAllModels),
+        weeklyModelSpecific: toView(scrape.weeklyModelSpecific),
+        usageCredits: scrape.usageCredits,
+        operationalAnswer: snapshot.operationalAnswer,
+        lastCheckedAt: scrape.scrapedAt,
+        failureReason: scrape.failureReason,
+      };
+    } catch (err) {
+      return {
+        status: 'error' as const,
+        fiveHour: null,
+        weeklyAllModels: null,
+        weeklyModelSpecific: null,
+        usageCredits: null,
+        operationalAnswer: null,
+        lastCheckedAt: new Date().toISOString(),
+        failureReason: `ipc-handler-exception:${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  });
   // --- END APPEND ZONE: IPC-HANDLER --------------------------------------
 }
 

@@ -49,17 +49,24 @@
 // a DIFFERENT metric from TokensRemainingBarrel above (which is reserved, untouched, for the
 // Coupon Clipper's future per-AI tokens-remaining-as-an-amount work per KN-BP143-3 D3 -- do not
 // conflate the two). VendorUsageBarrel below renders the new metric as its own, separately
-// labeled block. WIRING BOUNDARY (report this honestly, do not fabricate a live wire): this
-// component only renders whatever `vendorUsage` prop it is given. The actual IPC round trip --
-// preload.ts contextBridge export, an index.ts ipcMain handler calling
-// scrapeVendorUsagePanel()/computeUsageBarrelOperationalSnapshot(), and a ProveItWorksTab.tsx
-// call site passing the result down as this prop -- touches three files outside this ticket's
-// owned scope and is NOT built here (see the KN-BP145-M1 report). SHOW_VENDOR_USAGE_BARREL below
-// stays `false` until that wiring lands, mirroring the exact SHOW_TOKENS_REMAINING_BARREL
-// precedent: an honestly-labeled "unknown" box is still a box the Founder would see every day
-// with no live data behind it yet.
+// labeled block.
+//
+// KN-BP147-M4 ADDITION ("UNBARREL THE BARRELS"): the IPC round trip is now real and live --
+// preload.ts exposes window.amplify.getVendorUsageBarrelSnapshot() (wraps the new
+// 'usage-barrel-get-vendor-usage' channel), index.ts's registerIPCHandlers() IPC-HANDLER append
+// zone registers the handler that calls computeUsageBarrelOperationalSnapshot() (which itself
+// calls scrapeVendorUsagePanel() -- see that file's header; both untouched, READ-ONLY to this
+// ticket) and shapes the result into exactly the VendorUsageBarrelData shape below. THIS file
+// (the sole file this ticket owns) now calls that bridge itself -- see useVendorUsageBarrelData()
+// below -- rather than requiring ProveItWorksTab.tsx (not owned by this ticket) to be edited to
+// pass a `vendorUsage` prop down. The `vendorUsage` prop stays in TwoBarrelMeterProps as an
+// optional EXPLICIT override: passing it skips the internal self-fetch entirely, so a future
+// caller that wants to own the fetch itself (e.g. to share one poll across multiple mounted
+// meters) still can, with zero changes here. SHOW_VENDOR_USAGE_BARREL below is now `true` -- the
+// box the Founder sees renders real data (or an honest failure/unknown state; this module never
+// fabricates a percent, per usage_barrel_scraper.ts's own honesty firewall).
 
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 
 export interface MeterSummaryForBarrels {
   total_queries: number;
@@ -493,11 +500,70 @@ export interface TwoBarrelMeterProps {
   meter: MeterSummaryForBarrels | null;
   loading: boolean;
   onRefresh: () => void;
-  /** KN-BP145-M1: optional so ProveItWorksTab.tsx (not owned by this ticket) keeps compiling
-   *  unchanged with zero edits until a future ticket wires the real IPC call and passes this
-   *  down. Undefined/null both render the same honest "not yet checked" state as an explicit
-   *  `{ status: 'unknown', ... }` object would. */
+  /** KN-BP145-M1, wired live by KN-BP147-M4: optional EXPLICIT override. When omitted
+   *  (`undefined`, the case for every caller today, including ProveItWorksTab.tsx, which passes
+   *  no such prop and needs no edit), TwoBarrelMeter self-fetches via
+   *  useVendorUsageBarrelData() below and manages its own loading/refresh. Passing an explicit
+   *  value (including `null`) opts OUT of the self-fetch, for a future caller that wants to own
+   *  the poll itself (e.g. to share one fetch across multiple mounted meters). */
   vendorUsage?: VendorUsageBarrelData | null;
+}
+
+/** KN-BP147-M4: the real call site. Calls the new
+ *  `window.amplify.getVendorUsageBarrelSnapshot()` contextBridge export (preload.ts) on mount,
+ *  which round-trips to index.ts's 'usage-barrel-get-vendor-usage' ipcMain handler and, through
+ *  it, the real usage_barrel_scraper.ts. Returns the fetched data plus a manual `refresh()` and
+ *  an honest `loading` flag. Every exit path -- bridge missing (e.g. a non-Electron test
+ *  harness), the invoke rejecting, or a successful-but-failed scrape -- resolves to an explicit
+ *  `status: 'error'` object with a labeled `failureReason`, never a fabricated percent standing
+ *  in for "I don't actually know." */
+function useVendorUsageBarrelData(enabled: boolean): {
+  data: VendorUsageBarrelData | null;
+  loading: boolean;
+  refresh: () => void;
+} {
+  const [data, setData] = useState<VendorUsageBarrelData | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchOnce = useCallback(() => {
+    const bridge = typeof window !== 'undefined' ? window.amplify : undefined;
+    if (!bridge?.getVendorUsageBarrelSnapshot) {
+      setData({
+        status: 'error',
+        fiveHour: null,
+        weeklyAllModels: null,
+        weeklyModelSpecific: null,
+        usageCredits: null,
+        operationalAnswer: null,
+        lastCheckedAt: null,
+        failureReason: 'ipc-bridge-unavailable',
+      });
+      return;
+    }
+    setLoading(true);
+    bridge
+      .getVendorUsageBarrelSnapshot()
+      .then((result) => setData(result))
+      .catch((err: unknown) => setData({
+        status: 'error',
+        fiveHour: null,
+        weeklyAllModels: null,
+        weeklyModelSpecific: null,
+        usageCredits: null,
+        operationalAnswer: null,
+        lastCheckedAt: null,
+        failureReason: `renderer-invoke-rejected:${err instanceof Error ? err.message : String(err)}`,
+      }))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (enabled) fetchOnce();
+    // Fetch once on mount (and whenever `enabled` flips on) -- no polling interval added here,
+    // matching Barrel 2's own click-to-refresh convention rather than inventing a new one.
+  }, [enabled, fetchOnce]);
+
+  return { data, loading, refresh: fetchOnce };
 }
 
 // KN-BP143-3 D3 (Founder amendment): Barrel 1 has no data source anywhere in the engine, so its
@@ -508,13 +574,11 @@ export interface TwoBarrelMeterProps {
 // SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md.
 const SHOW_TOKENS_REMAINING_BARREL = false;
 
-// KN-BP145-M1: same D3 precedent, same reasoning, different barrel. VendorUsageBarrel's design
-// and scrape module (usage_barrel_scraper.ts) are real and callable today, but the IPC round trip
-// that would give this component a real `vendorUsage` prop is not built by this ticket (see the
-// header note above and the KN-BP145-M1 report) -- so this stays `false` until a future ticket
-// wires preload.ts + index.ts + ProveItWorksTab.tsx and flips it, rather than showing the Founder
-// a permanently-"not yet checked" box every day.
-const SHOW_VENDOR_USAGE_BARREL = false;
+// KN-BP145-M1 built the design; KN-BP147-M4 wired it live (see the header note above) -- the IPC
+// round trip is real now (preload.ts + index.ts's IPC-HANDLER append zone + this file's own
+// useVendorUsageBarrelData() self-fetch), so this flips to `true`. The box the Founder sees now
+// renders real vendor-account usage or an honest failure/unknown state, never a fabricated one.
+const SHOW_VENDOR_USAGE_BARREL = true;
 
 /** Composite "Two Barrels" panel -- replaces the old single "The Meter" block. Barrel 1 sits on
  *  top of Barrel 2 with a small funnel glyph between them illustrating the spec's flow metaphor
@@ -526,6 +590,14 @@ const SHOW_VENDOR_USAGE_BARREL = false;
  *  alongside it rather than left dangling above Barrel 2 with nothing to catch. */
 export function TwoBarrelMeter({ meter, loading, onRefresh, vendorUsage }: TwoBarrelMeterProps): React.ReactElement {
   const [resolution, setResolution] = useState(3);
+
+  // KN-BP147-M4: self-fetch is enabled exactly when the caller did not pass an explicit
+  // `vendorUsage` override (see TwoBarrelMeterProps's doc comment) -- ProveItWorksTab.tsx today
+  // passes none, so this is always the active path in the shipping app right now.
+  const selfFetchEnabled = vendorUsage === undefined;
+  const selfFetched = useVendorUsageBarrelData(selfFetchEnabled);
+  const effectiveVendorUsage = selfFetchEnabled ? selfFetched.data : (vendorUsage ?? null);
+  const vendorUsageLoading = selfFetchEnabled && selfFetched.loading;
 
   return (
     <div style={{
@@ -560,21 +632,28 @@ export function TwoBarrelMeter({ meter, loading, onRefresh, vendorUsage }: TwoBa
           </label>
           <button
             type="button"
-            onClick={onRefresh}
-            disabled={loading}
+            onClick={() => {
+              onRefresh();
+              // KN-BP147-M4: the same Refresh button also re-triggers the vendor-usage
+              // self-fetch when this component owns that fetch (see selfFetchEnabled above) --
+              // one button, both barrels, rather than a second refresh control.
+              if (selfFetchEnabled) selfFetched.refresh();
+            }}
+            disabled={loading || vendorUsageLoading}
             title="Refresh"
             style={{
               background: 'none', border: '1px solid rgba(148, 163, 184, 0.3)', borderRadius: 4,
-              color: '#94a3b8', fontSize: 11, padding: '2px 8px', cursor: loading ? 'wait' : 'pointer',
+              color: '#94a3b8', fontSize: 11, padding: '2px 8px',
+              cursor: (loading || vendorUsageLoading) ? 'wait' : 'pointer',
             }}
           >
-            {loading ? '…' : '↻ Refresh'}
+            {(loading || vendorUsageLoading) ? '…' : '↻ Refresh'}
           </button>
         </div>
       </div>
 
       {SHOW_VENDOR_USAGE_BARREL && (
-        <VendorUsageBarrel data={vendorUsage ?? null} />
+        <VendorUsageBarrel data={effectiveVendorUsage} />
       )}
 
       {SHOW_TOKENS_REMAINING_BARREL && (
