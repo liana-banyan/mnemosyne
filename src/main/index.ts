@@ -366,6 +366,24 @@ import { loadAllEntries, registerClaim } from './ip_ledger/ip_ledger_store';
 import { initOpenAiCompatServer } from './openai_compat_server'; // KN-BP145-M3: THE NEXUS
 import { computeUsageBarrelOperationalSnapshot } from './hearth/usage_barrel_scraper'; // KN-BP147-M4: UNBARREL THE BARRELS
 import { startResidentWatcher } from './resident'; // KN-BP147-M2: THE RESIDENT CONSUMER, OD-04, THE RED QUEEN
+// KN-BP147-M2 (D-BP147-005): THE CRYSTAL, WIRED. Type-only import -- fully erased at compile
+// time, zero runtime require, so it carries none of the risk described below. See
+// getCrystalStore() (defined just above registerIPCHandlers()) for why the RUNTIME require of
+// crystal_store.ts is deliberately NOT a static import here: crystal_store.ts's own compiled
+// output contains a hardcoded require("./crystal_types.ts") (its line 45) which MODULE_NOT_FOUNDs
+// under the real Electron-bundled Node runtime (confirmed this session: Electron 31.7.7 ships
+// Node 20.18.0, which predates Node's native TS type-stripping entirely -- direct repro via
+// `ELECTRON_RUN_AS_NODE=1 node_modules\.bin\electron.cmd -e
+// "require('./dist/main/crystal/crystal_store.js')"` throws exactly that MODULE_NOT_FOUND).
+// That is a pre-existing defect in KN-BP147-M1's committed code (commit ccae7f1c) -- crystal/ is
+// this ticket's READ-ONLY zone, so rather than leave the Crystal permanently unreachable in the
+// real app, getCrystalStore() below installs a narrow, additive-only .ts->.js module-resolution
+// fallback (ensureCrystalTsToJsFallback(), touching zero bytes under crystal/) before requiring
+// the store, then requires it lazily via a plain runtime require() -- never a static top-level
+// `import` of the runtime module, which would throw during index.js's own module evaluation,
+// before app.whenReady() runs, crashing the whole app before any window opens: exactly what
+// this ticket's FAIL OPEN rule forbids, and exactly what the fallback exists to avoid needing.
+import type { BindingTarget, MutationReason, BindResult, ResolvedChonk } from './crystal/crystal_types';
 // --- END APPEND ZONE: IMPORT -------------------------------------------------
 
 // --- Constants --------------------------------------------------------------
@@ -2221,6 +2239,125 @@ async function handleMembershipReturn(memberId: string, token: string): Promise<
   } catch (err) {
     console.error('[membership-return] Exception:', err);
     notifyRenderer({ ok: false, error: String(err) });
+  }
+}
+
+// ============================================================================
+// KN-BP147-M2 (D-BP147-005): THE CRYSTAL, WIRED -- reachability layer for the durable
+// chonk-handle store built by KN-BP147-M1 (src/main/crystal/crystal_store.ts, commit
+// ccae7f1c). Placed here, immediately before registerIPCHandlers(), as a single self-contained
+// module-level unit (module-level CrystalStoreApi type + crystalLoadWarned flag +
+// getCrystalStore() function) so both the INIT-CALL append zone (inside app.whenReady()) and
+// the IPC-HANDLER append zone (inside registerIPCHandlers(), below) can share one loader
+// without either zone needing to define its own copy.
+//
+// FAIL OPEN (ticket-mandated, non-negotiable, HARDWIRE-00 Section 1.8): getCrystalStore() NEVER
+// throws. A failure to require() the compiled store -- including the real MODULE_NOT_FOUND
+// described in the IMPORT APPEND ZONE comment above -- is caught, logged loudly exactly once per
+// process lifetime (crystalLoadWarned), and reported back as `null`. Every caller (the startup
+// probe in the INIT-CALL zone, and each crystal:* IPC handler below) treats `null` as "Crystal
+// unavailable this session" and returns a clean { ok:false, error } to its own caller instead of
+// throwing further. A wedged boot is strictly worse than a store that stays dark.
+// ============================================================================
+let crystalLoadWarned = false;
+interface CrystalStoreApi {
+  CRYSTAL_DIR: string;
+  mintChonk: (pearls: string[]) => string;
+  resolveChonk: (sid: string) => ResolvedChonk | null;
+  bindChonk: (sid: string, key: string, target: BindingTarget) => BindResult;
+  mutateChonkBinding: (
+    sid: string,
+    key: string,
+    target: BindingTarget,
+    reason: MutationReason,
+    note: string,
+  ) => BindResult;
+  crystalStats: () => { mintedCount: number; logPath: string; logExists: boolean };
+}
+
+// KN-BP147-M2 (D-BP147-005): CONFIRMED (not assumed) this session by direct repro against the
+// ACTUAL bundled runtime this app ships with -- `ELECTRON_RUN_AS_NODE=1
+// node_modules\.bin\electron.cmd -e "console.log(process.versions.node)"` reports Electron
+// 31.7.7 bundles Node 20.18.0. Node's native TypeScript type-stripping (the mechanism that
+// would let a bare `require("./crystal_types.ts")` resolve at runtime with zero build step,
+// per crystal_store.ts's own header comment) only landed in Node 22.6 (experimental) / is
+// default-on from Node 23.6 -- Node 20.18.0 predates it entirely. Direct repro of the failure
+// under that exact bundled runtime: `ELECTRON_RUN_AS_NODE=1 node_modules\.bin\electron.cmd -e
+// "require('./dist/main/crystal/crystal_store.js')"` -> throws
+// `MODULE_NOT_FOUND: Cannot find module './crystal_types.ts'`. This is a pre-existing defect in
+// KN-BP147-M1's committed code (crystal_store.ts line 45, commit ccae7f1c) -- crystal/ is this
+// ticket's READ-ONLY zone (do not modify it), so the fix lives HERE instead, entirely inside
+// this ticket's own OWNS file, touching zero bytes under crystal/: a one-time, additive-only
+// Module._resolveFilename patch that retries a failed `<path>.ts` resolution once against the
+// sibling `<path>.js` before giving up. This can only ever HELP -- it activates only on a
+// resolution that would otherwise throw outright -- so it cannot change behavior for any other
+// module in this app that wasn't already broken. If crystal_types.ts is ever compiled to
+// crystal_types.js AND crystal_store.ts's own require string is later fixed upstream (outside
+// this ticket's scope), this patch simply becomes a permanent no-op for this path, not a
+// liability. Idempotent-guarded so repeated getCrystalStore() calls patch Module exactly once.
+let crystalTsToJsFallbackPatched = false;
+function ensureCrystalTsToJsFallback(): void {
+  if (crystalTsToJsFallbackPatched) return;
+  crystalTsToJsFallbackPatched = true;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const NodeModule = require('module');
+    const originalResolveFilename = NodeModule._resolveFilename;
+    NodeModule._resolveFilename = function patchedResolveFilename(
+      this: unknown,
+      request: string,
+      ...rest: unknown[]
+    ): string {
+      try {
+        return originalResolveFilename.call(NodeModule, request, ...rest);
+      } catch (resolveErr) {
+        if (typeof request === 'string' && request.endsWith('.ts')) {
+          try {
+            return originalResolveFilename.call(NodeModule, request.slice(0, -3) + '.js', ...rest);
+          } catch {
+            // Sibling .js doesn't exist either -- fall through and surface the ORIGINAL .ts
+            // resolution error below, not this secondary attempt's, so getCrystalStore()'s own
+            // catch logs the true root cause rather than a confusing double-hop message.
+          }
+        }
+        throw resolveErr;
+      }
+    };
+  } catch (patchErr) {
+    console.error(
+      '[crystal] KN-BP147-M2 (D-BP147-005): failed to install the .ts->.js module-resolution ' +
+        'fallback -- Crystal load will MODULE_NOT_FOUND on crystal_types.ts under the ' +
+        'Electron-bundled Node runtime (no native TS support pre-Node-22.6). Continuing -- ' +
+        'FAIL OPEN per this ticket and HARDWIRE-00 Section 1.8.',
+      patchErr,
+    );
+  }
+}
+
+function getCrystalStore(): CrystalStoreApi | null {
+  try {
+    ensureCrystalTsToJsFallback();
+    // Deliberate require(), not the top-level `import type` above -- see that import's comment
+    // for the full reasoning. require() is cached by Node after a successful load, so repeat
+    // calls from separate IPC handlers are cheap; after a FAILED load Node does not cache the
+    // failure, so this safely re-attempts (and re-fails identically) on every call rather than
+    // wedging into a permanently-broken state that could never recover if the underlying file
+    // were fixed later in the same running process.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require('./crystal/crystal_store') as CrystalStoreApi;
+    return mod;
+  } catch (err) {
+    if (!crystalLoadWarned) {
+      crystalLoadWarned = true;
+      console.error(
+        '[crystal] KN-BP147-M2 (D-BP147-005): FAILED to load the Crystal store ' +
+          '(src/main/crystal/crystal_store.js) -- Crystal-backed IPC channels (crystal:*) will ' +
+          'report { ok:false, error } to every caller this session. App continues normally -- ' +
+          'FAIL OPEN per this ticket and HARDWIRE-00 Section 1.8.',
+        err,
+      );
+    }
+    return null;
   }
 }
 
@@ -6641,6 +6778,95 @@ function registerIPCHandlers(): void {
       };
     }
   });
+  // KN-BP147-M2 (D-BP147-005): THE CRYSTAL, WIRED -- five thin wrappers around
+  // src/main/crystal/crystal_store.ts's (KN-BP147-M1) exported functions, via the shared
+  // getCrystalStore() loader defined just above this function. Every handler treats
+  // getCrystalStore() === null as the FAIL-OPEN case (see that function's own header) and
+  // returns { ok:false, error } rather than throwing -- an unreachable Crystal must never crash
+  // a renderer call or wedge the app. mintChonk/deriveMintAddress can throw synchronously on
+  // bad input (empty pearls array); the inner try/catch in each handler below catches that too,
+  // for the same reason.
+  safeHandle('crystal:mint', (_event, pearls: string[]) => {
+    const store = getCrystalStore();
+    if (!store) return { ok: false, error: 'crystal store unavailable (failed to load at startup)' };
+    try {
+      const sid = store.mintChonk(pearls);
+      return { ok: true, sid };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  safeHandle('crystal:bind', (_event, sid: string, key: string, target: BindingTarget) => {
+    const store = getCrystalStore();
+    if (!store) {
+      return {
+        ok: false,
+        sid,
+        key,
+        accepted: 'rejected-additive-only' as const,
+        error: 'crystal store unavailable (failed to load at startup)',
+      };
+    }
+    try {
+      return store.bindChonk(sid, key, target);
+    } catch (err) {
+      return {
+        ok: false,
+        sid,
+        key,
+        accepted: 'rejected-additive-only' as const,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+  safeHandle(
+    'crystal:mutate',
+    (_event, sid: string, key: string, target: BindingTarget, reason: MutationReason, note: string) => {
+      const store = getCrystalStore();
+      if (!store) {
+        return {
+          ok: false,
+          sid,
+          key,
+          accepted: 'rejected-invalid-reason' as const,
+          error: 'crystal store unavailable (failed to load at startup)',
+        };
+      }
+      try {
+        return store.mutateChonkBinding(sid, key, target, reason, note);
+      } catch (err) {
+        return {
+          ok: false,
+          sid,
+          key,
+          accepted: 'rejected-invalid-reason' as const,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
+  safeHandle('crystal:resolve', (_event, sid: string) => {
+    const store = getCrystalStore();
+    if (!store) return { ok: false, resolved: null, error: 'crystal store unavailable (failed to load at startup)' };
+    try {
+      return { ok: true, resolved: store.resolveChonk(sid) };
+    } catch (err) {
+      return { ok: false, resolved: null, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  safeHandle('crystal:stats', () => {
+    const store = getCrystalStore();
+    if (!store) return { ok: false, error: 'crystal store unavailable (failed to load at startup)' };
+    try {
+      return { ok: true, stats: store.crystalStats() };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
   // --- END APPEND ZONE: IPC-HANDLER --------------------------------------
 }
 
@@ -8228,6 +8454,14 @@ app.whenReady().then(async () => {
   // HARDWIRE\LEDGER) that survives this session's death because it runs in this process, not
   // in any IDE. No ACT-class capability is reachable from this call -- see resident/autopilot_grant.ts.
   startResidentWatcher();
+
+  // KN-BP147-M2 (D-BP147-005): THE CRYSTAL, WIRED. Probe-load the Crystal store once here so a
+  // load failure is discovered and logged at boot, not silently deferred to the first renderer
+  // call. getCrystalStore() (defined just above registerIPCHandlers()) is the single FAIL-OPEN
+  // loader shared with the crystal:* IPC handlers registered in registerIPCHandlers()'s own
+  // IPC-HANDLER append zone -- see that function's header for the full contract. This call
+  // cannot throw and never blocks app startup either way.
+  getCrystalStore();
   // --- END APPEND ZONE: INIT-CALL -----------------------------------------
 
   // SAGA 10 BP045 W1 ? Register mnemosyne:// + mnemo:// deep-link protocols (BP065)
