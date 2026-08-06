@@ -16,6 +16,16 @@
 // the app bundle. In packaged/installed builds, this path may not exist on the end-user
 // machine. The function gracefully returns [] when the path is absent -- no crash, no
 // warning surfaced to the user.
+//
+// KN-BP147-M2 (BP147, "put the doctrine in MnemosyneC and make it consumed"): three
+// estate-doctrine paths (Asteroid-ProofVault CANON x2, HARDWIRE/) are now REAL DEFAULTS in
+// resolveEbletStoreRoots() -- see estateDoctrineRoots() below -- not just an env var a human
+// has to remember to set. walkEbletStore() now also collects HARDWIRE-*.md alongside
+// *.eblet.md, skipping .superseded.* siblings and *_AUGUR_AUGUR_PRICING_VIOLATION_SUPERSEDE.md
+// stub artifacts. This machine's estate-scale-and-a-half `.claude/state/eblets/` corpus
+// (~432k files, measured live) is deliberately NOT among these roots -- see the comment on
+// estateDoctrineRoots() for why. Far-end proof (query returning real doctrine text, index
+// count before/after) is in the M2 return doc, not repeated here.
 
 import {
   existsSync,
@@ -80,6 +90,40 @@ function bundledDefaultEbletRoot(): string {
   return resolve(app.getAppPath(), 'resources', 'eblets_default');
 }
 
+// ─── Estate doctrine roots (KN-BP147-M2 -- "put the doctrine in MnemosyneC") ──
+//
+// PRIOR STATE (verified by reading this function before this Yoke, and by `git log
+// --oneline -- src/main/mnem_eblet_store.ts`, 16 commits, none of which touch estate-root
+// defaults): resolveEbletStoreRoots() only ever knew about MNEM_EBLET_STORE_ROOTS (env),
+// the bundled default set, and {userData}/eblets. Zero hardcoded reference to
+// LianaBanyanPlatform, Asteroid-ProofVault, HARDWIRE, or CANON existed anywhere in this
+// file -- confirmed by grep for those exact tokens turning up nothing outside comments
+// and deriveCategory()'s path-matching rules. The mechanism (deriveCategory's `canon`
+// tier, walkEbletStore's recursion, the BM25 index) was real; nothing pointed it at the
+// estate's own doctrine. This is that wire.
+//
+// Three bounded, named roots -- NOT the ~431k-file `.claude/state/eblets/` corpus this
+// module's own loadOrRebuildIndex() doc comment already anticipated (that tree's CANON
+// subdir alone holds ~288k files; PIXIE_DUST_BP051_FULL_REMINE_VERBATIM another ~143k --
+// verified live via Get-ChildItem -Recurse -File count, session of this Yoke). That much
+// larger, differently-named-but-similarly-named CANON tree is DELIBERATELY EXCLUDED from
+// this default set: it was never one of the three roots this ticket named, and a cold
+// walk+read of 431k files is not "a real, defaulted, discoverable configuration" -- it is
+// a startup hang. If the estate wants that corpus indexed too, that is a separate, later
+// ticket with its own bounded-subset design, not a silent side effect of this one.
+function estateDoctrineRoots(): string[] {
+  return [
+    // BP146 canon, this workspace (27 files measured live this session).
+    'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\Asteroid-ProofVault\\state\\eblets\\CANON',
+    // BP082-BP145 canon, sibling repo (922 files measured live this session; ticket
+    // said 921 -- off by one, one file landed between the ticket being written and
+    // this Yoke; not a material discrepancy).
+    'C:\\Users\\Administrator\\Documents\\Asteroid-ProofVault\\state\\eblets\\CANON',
+    // The HardWires themselves.
+    'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\HARDWIRE',
+  ];
+}
+
 /** Resolve + cache the live list of eblet store roots that actually exist on this machine. */
 function resolveEbletStoreRoots(): string[] {
   if (_resolvedRootsCache) return _resolvedRootsCache.roots;
@@ -90,6 +134,12 @@ function resolveEbletStoreRoots(): string[] {
   if (envOverride) {
     candidates.push(...envOverride.split(require('path').delimiter).map((p) => p.trim()).filter(Boolean));
   }
+
+  // KN-BP147-M2: estate doctrine roots are now real defaults, not an env var a human has
+  // to remember to set. The env override above is additive (same pattern this function
+  // already used for the bundled/userData tiers below) -- it can ADD roots on top of
+  // these, it does not need to replace them.
+  candidates.push(...estateDoctrineRoots());
 
   candidates.push(bundledDefaultEbletRoot());
   candidates.push(resolve(app.getPath('userData'), 'eblets'));
@@ -178,8 +228,31 @@ function deriveCategory(fullPath: string): EbletCategory {
 
 // ─── Recursive walker ─────────────────────────────────────────────────────────
 
+// KN-BP147-M2: widened from *.eblet.md only. HARDWIRE-*.md (HARDWIRE-00_THE_TRAIL_HEAD.md,
+// HARDWIRE-01_ANSWERING_PIPELINE.md, etc.) are doctrine too and do not carry the .eblet.md
+// suffix. Deliberately literal to the ticket's glob (`HARDWIRE-*.md`, hyphen) -- this does
+// NOT match HARDWIRE_CONVENTION.md (underscore), which stays out of the index by the same
+// rule that keeps it out of git's own glob-based tooling elsewhere in this estate.
+const HARDWIRE_DOC_PATTERN = /^HARDWIRE-.*\.md$/;
+// The estate's own live-editing convention (HARDWIRE_CONVENTION.md, Rule 66 "version never
+// overwrite") produces `<name>.superseded.<UTC-ts>[.md]` siblings on every edit, and a
+// separate hook produces `<name>_AUGUR_AUGUR_PRICING_VIOLATION_SUPERSEDE.md` stubs (~2KB
+// inert artifacts -- verified live: 8 of these exist under HARDWIRE/ this session, would
+// have polluted BM25 with near-duplicate short files had they not been filtered). Both are
+// excluded regardless of which pattern above matched the file.
+function isSupersededOrStubArtifact(name: string): boolean {
+  return name.includes('.superseded.') || name.endsWith('_AUGUR_AUGUR_PRICING_VIOLATION_SUPERSEDE.md');
+}
+
+function isIndexableEbletFile(name: string): boolean {
+  if (isSupersededOrStubArtifact(name)) return false;
+  return name.endsWith('.eblet.md') || HARDWIRE_DOC_PATTERN.test(name);
+}
+
 /**
- * SEG-1: Recursively walk `root` and collect all *.eblet.md paths.
+ * SEG-1: Recursively walk `root` and collect all indexable doctrine file paths --
+ * *.eblet.md (original scope) plus HARDWIRE-*.md (KN-BP147-M2), minus superseded/stub
+ * artifacts (see isIndexableEbletFile above).
  * Uses an explicit stack (no recursion) to handle deep trees safely.
  */
 function walkEbletStore(root: string): string[] {
@@ -197,7 +270,7 @@ function walkEbletStore(root: string): string[] {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         stack.push(full);
-      } else if (entry.name.endsWith('.eblet.md')) {
+      } else if (isIndexableEbletFile(entry.name)) {
         out.push(full);
       }
     }
@@ -345,7 +418,15 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
     try {
       const mtime = statSync(fullPath).mtimeMs;
       const raw = readFileSync(fullPath, 'utf-8');
-      const title = basename(fullPath, '.eblet.md').replace(/_/g, ' ').slice(0, 120);
+      // KN-BP147-M2: fullPath now may be a HARDWIRE-*.md doc, which does not carry the
+      // .eblet.md suffix -- strip whichever suffix actually applies so titles for both
+      // classes render clean (was: HARDWIRE docs kept their trailing ".md" verbatim in the
+      // title, a cosmetic-only defect, since basename()'s ext arg is a no-op when the
+      // path doesn't end with it).
+      const rawBase = fullPath.endsWith('.eblet.md')
+        ? basename(fullPath, '.eblet.md')
+        : basename(fullPath, '.md');
+      const title = rawBase.replace(/_/g, ' ').slice(0, 120);
       const snippet = raw.slice(0, 200);
       const category = deriveCategory(fullPath);
       entries.push({ path: fullPath, category, title, snippet, mtime });
