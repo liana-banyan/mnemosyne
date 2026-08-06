@@ -4135,52 +4135,90 @@ async function runAuthorityEnsemble(params: {
     }
     const agreeingGroupFast = [...byLetterFast.values()].find((group) => group.length >= 2);
     if (agreeingGroupFast) {
-      if (hasStructuredCorroborator(agreeingGroupFast)) {
-        // KN-BP144-12 Part B ("THE ELIMINATOR ABOVE AGREEMENT"): same check as the swarm-augmented
-        // accept-on-agreement branch further below -- see checkEliminatorConstraintAboveAgreement's
-        // own header comment for the full rationale. Applied here too for principled completeness
-        // (this IS an accept-on-agreement return), even though this fast path additionally requires
-        // a structured (wolfram_alpha) member, which in practice never co-occurs with the narrow
-        // "bias"-concept domain this eliminator's curated CONCEPT_REGISTER_SIGNALS table covers.
-        const letterAboutToAcceptFast = agreeingGroupFast[0]!.letter;
-        const eliminatorAboveFast = await checkEliminatorConstraintAboveAgreement(researchQuery, mcOptions);
-        if (eliminatorAboveFast.constraintActive && !eliminatorAboveFast.survivorsOut.includes(letterAboutToAcceptFast)) {
-          log(
-            `KN-BP144-12 Part B: fast-path structured agreement on ${letterAboutToAcceptFast} VOIDED -- ` +
-            `above-agreement eliminator constraint survivors=[${eliminatorAboveFast.survivorsOut.join(',')}] ` +
-            `EXCLUDE ${letterAboutToAcceptFast}. Falling through to the swarm-uncertain branch below ` +
-            `exactly as if the fast path had declined for any other reason. Eliminator trace:\n  ${eliminatorAboveFast.trace.join('\n  ')}`,
-          );
-        } else {
-          const constraintNote = eliminatorAboveFast.constraintActive
-            ? `constrained to [${eliminatorAboveFast.survivorsOut.join(',')}] (does not exclude ${letterAboutToAcceptFast})`
-            : 'no active constraint';
-          log(`browser/wolfram authorities already agree on ${agreeingGroupFast[0]!.letter} (structurally corroborated) -- swarm skipped (fast path). KN-BP144-12 Part B above-agreement eliminator: ${constraintNote}.`);
-          return {
-            chosenLetter: agreeingGroupFast[0]!.letter, corroboration: 'agree', candidates,
-            acceptedCandidates: agreeingGroupFast, adjudicationAttempted: false, swarmFired: false,
-            structuredCorroborator: true,
-            // BP141: fast path only reaches here when hasStructuredCorroborator already found a
-            // structured member (wolfram_alpha -- the swarm has not fired yet at this point) among
-            // the agreeing group, so each agreeing candidate has its own independent evidence.
-            independentCorroboration: true,
-          };
+      // KN-BP146-006 T1: derivation-path diversity guard, mirrored from the swarm-augmented
+      // accept-on-agreement branch's own KN-BP144-5 check further below (reuses
+      // assessAgreeingGroupDerivationDiversity, which itself reuses RULE 1's exact
+      // eliminateDuplicateSwarmDerivationPath test -- no second, divergent copy of either) so
+      // BOTH of this function's accept-on-agreement return sites share ONE guard, not one
+      // guarded and one not -- "before EITHER agree branch is allowed to return" applies here
+      // too, not only at the swarm-augmented site.
+      //
+      // HONEST NOTE, verified by inspection of this function's own authority-gathering code
+      // above (not just asserted): each of the 5 browser authorities + wolfram_alpha is queried
+      // at MOST ONCE per authority (one `candidates.push` per authority, each inside its own
+      // try/catch), and resolveCakeDerivationPath maps every authority reachable at this point
+      // in the function to its OWN distinct path (browser:user_X per vendor, or
+      // deterministic_solver:wolfram_compute) -- so a 2+ agreeingGroupFast here can never
+      // structurally collapse to a single surviving path on any candidate set this fast path can
+      // actually see today (the swarm, the one authority sharing a derivation path with anything
+      // else, has not fired yet at this point -- see the UNCERTAIN block below). This guard is
+      // therefore not reachable as a decline on any currently-possible input, and is added
+      // anyway so a future authority addition that COULD collide onto a shared path is caught by
+      // the same rule the swarm-augmented site already enforces, rather than leaving this the
+      // one accept-on-agreement site with no derivation-independence check at all.
+      const fastDiversity = assessAgreeingGroupDerivationDiversity(agreeingGroupFast);
+      if (fastDiversity.verdict === 'agree_singlepath') {
+        log(
+          `browser/wolfram fast-path agreement on ${agreeingGroupFast[0]!.letter} is ` +
+          `agree_singlepath -- [${fastDiversity.pathAssignments.join(', ')}] collapse to a single ` +
+          `surviving derivation path once RULE 1's own swarm-duplicate elimination is applied -- ` +
+          `this is NOT corroboration (same KN-BP144-5 T1 rule the swarm-augmented accept-on-` +
+          `agreement branch already enforces). Declining the fast path, falling through into the ` +
+          `uncertain branch immediately below exactly as if the candidates had disagreed.`,
+        );
+      } else {
+        if (hasStructuredCorroborator(agreeingGroupFast)) {
+          // KN-BP144-12 Part B ("THE ELIMINATOR ABOVE AGREEMENT"): same check as the swarm-augmented
+          // accept-on-agreement branch further below -- see checkEliminatorConstraintAboveAgreement's
+          // own header comment for the full rationale. Applied here too for principled completeness
+          // (this IS an accept-on-agreement return), even though this fast path additionally requires
+          // a structured (wolfram_alpha) member, which in practice never co-occurs with the narrow
+          // "bias"-concept domain this eliminator's curated CONCEPT_REGISTER_SIGNALS table covers.
+          const letterAboutToAcceptFast = agreeingGroupFast[0]!.letter;
+          const eliminatorAboveFast = await checkEliminatorConstraintAboveAgreement(researchQuery, mcOptions);
+          if (eliminatorAboveFast.constraintActive && !eliminatorAboveFast.survivorsOut.includes(letterAboutToAcceptFast)) {
+            log(
+              `KN-BP144-12 Part B: fast-path structured agreement on ${letterAboutToAcceptFast} VOIDED -- ` +
+              `above-agreement eliminator constraint survivors=[${eliminatorAboveFast.survivorsOut.join(',')}] ` +
+              `EXCLUDE ${letterAboutToAcceptFast}. Falling through to the swarm-uncertain branch below ` +
+              `exactly as if the fast path had declined for any other reason. Eliminator trace:\n  ${eliminatorAboveFast.trace.join('\n  ')}`,
+            );
+          } else {
+            const constraintNote = eliminatorAboveFast.constraintActive
+              ? `constrained to [${eliminatorAboveFast.survivorsOut.join(',')}] (does not exclude ${letterAboutToAcceptFast})`
+              : 'no active constraint';
+            log(`browser/wolfram authorities already agree on ${agreeingGroupFast[0]!.letter} (structurally corroborated) -- swarm skipped (fast path). KN-BP144-12 Part B above-agreement eliminator: ${constraintNote}.`);
+            return {
+              chosenLetter: agreeingGroupFast[0]!.letter, corroboration: 'agree', candidates,
+              acceptedCandidates: agreeingGroupFast, adjudicationAttempted: false, swarmFired: false,
+              structuredCorroborator: true,
+              // BP141: fast path only reaches here when hasStructuredCorroborator already found a
+              // structured member (wolfram_alpha -- the swarm has not fired yet at this point) among
+              // the agreeing group, so each agreeing candidate has its own independent evidence.
+              independentCorroboration: true,
+              // KN-BP146-006 T1: threaded through the fast-path accept too, mirroring the
+              // swarm-augmented site's own agreeDerivationVerdict/agreeGroupPathAssignments fields,
+              // so a reader can confirm THIS accept also cleared the diversity guard above.
+              agreeDerivationVerdict: fastDiversity.verdict,
+              agreeGroupPathAssignments: fastDiversity.pathAssignments,
+            };
+          }
         }
+        // BP1xx STRUCTURED-CORROBORATOR GATE ("Q85"): every agreeing candidate here is LLM-class
+        // (opinion, no structured backing behind either of them) -- e.g. user_perplexity and
+        // user_claude both confidently wrong together, with no deterministic compute and no
+        // specialist swarm ever consulted. Naive concordance cannot catch that. Do NOT fast-path
+        // accept: decline the fast path and fall through into the uncertain branch immediately
+        // below, which fires the specialist swarm (the required non-LLM structured corroborator)
+        // as one more candidate before any accept/adjudicate decision is made. Coverage is never
+        // dropped here -- this only ever delays the accept by one extra swarm call, never turns it
+        // into an abstain.
+        log(
+          `browser authorities agree on ${agreeingGroupFast[0]!.letter} but EVERY agreeing candidate ` +
+          `is LLM-class (${agreeingGroupFast.map((c) => c.authority).join(',')}) -- fast path DECLINED, ` +
+          `firing the specialist swarm as the required structured corroborator before accepting.`,
+        );
       }
-      // BP1xx STRUCTURED-CORROBORATOR GATE ("Q85"): every agreeing candidate here is LLM-class
-      // (opinion, no structured backing behind either of them) -- e.g. user_perplexity and
-      // user_claude both confidently wrong together, with no deterministic compute and no
-      // specialist swarm ever consulted. Naive concordance cannot catch that. Do NOT fast-path
-      // accept: decline the fast path and fall through into the uncertain branch immediately
-      // below, which fires the specialist swarm (the required non-LLM structured corroborator)
-      // as one more candidate before any accept/adjudicate decision is made. Coverage is never
-      // dropped here -- this only ever delays the accept by one extra swarm call, never turns it
-      // into an abstain.
-      log(
-        `browser authorities agree on ${agreeingGroupFast[0]!.letter} but EVERY agreeing candidate ` +
-        `is LLM-class (${agreeingGroupFast.map((c) => c.authority).join(',')}) -- fast path DECLINED, ` +
-        `firing the specialist swarm as the required structured corroborator before accepting.`,
-      );
     }
   }
 
