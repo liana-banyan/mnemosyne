@@ -176,6 +176,38 @@ export interface AuthState {
   degraded: boolean;
 }
 
+// ── The Crystal -- durable chonk-handle store (KN-BP147-M2, D-BP147-005) ──────────────────
+// Mirrors src/main/preload.ts's matching CrystalBindingTarget/CrystalMutationReason/
+// CrystalBindResult/CrystalResolvedChonk types exactly (which themselves mirror
+// src/main/crystal/crystal_types.ts, KN-BP147-M1, commit ccae7f1c).
+export interface CrystalBindingTarget {
+  targetType: string;
+  ref: string;
+  meta?: Record<string, unknown>;
+}
+
+export type CrystalMutationReason = 'superseded_source' | 'failed_resolution' | 'explicit_ratification';
+
+export interface CrystalBindResult {
+  ok: boolean;
+  sid: string;
+  key: string;
+  accepted:
+    | 'appended'
+    | 'idempotent-noop'
+    | 'rejected-additive-only'
+    | 'rejected-invalid-reason'
+    | 'superseded';
+  error?: string;
+  supersededSiblingPath?: string;
+}
+
+export interface CrystalResolvedChonk {
+  sid: string;
+  pearls: string[];
+  bindings: Record<string, CrystalBindingTarget>;
+}
+
 declare global {
   interface Window {
     amplify: {
@@ -731,6 +763,29 @@ declare global {
         lastCheckedAt: string | null;
         failureReason: string | null;
       }>;
+
+      // ── The Crystal -- durable chonk-handle store (KN-BP147-M2, D-BP147-005) ─────────────
+      // Wraps index.ts's crystal:* IPC channels (registerIPCHandlers()'s IPC-HANDLER append
+      // zone). FAIL OPEN: every method can legitimately resolve { ok:false, error } when the
+      // Crystal failed to load at startup -- not a bug, the ticket-mandated contract. Callers
+      // must handle ok:false gracefully.
+      crystal: {
+        mint: (pearls: string[]) => Promise<{ ok: boolean; sid?: string; error?: string }>;
+        bind: (sid: string, key: string, target: CrystalBindingTarget) => Promise<CrystalBindResult>;
+        mutate: (
+          sid: string,
+          key: string,
+          target: CrystalBindingTarget,
+          reason: CrystalMutationReason,
+          note: string,
+        ) => Promise<CrystalBindResult>;
+        resolve: (sid: string) => Promise<{ ok: boolean; resolved: CrystalResolvedChonk | null; error?: string }>;
+        stats: () => Promise<{
+          ok: boolean;
+          stats?: { mintedCount: number; logPath: string; logExists: boolean };
+          error?: string;
+        }>;
+      };
     };
     // SEG-V0150-P0-DIAGNOSE-BRIDGE: sentinel -- set by preload before main bridge wires up
     __preloadLoaded?: boolean;

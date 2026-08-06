@@ -246,6 +246,39 @@ export interface AuthState {
   degraded: boolean;
 }
 
+// ── The Crystal -- durable chonk-handle store (KN-BP147-M2, D-BP147-005) ──────────────────
+// Wire shapes mirroring src/main/crystal/crystal_types.ts (KN-BP147-M1, commit ccae7f1c).
+// Duplicated here rather than imported at runtime because these are used only as TYPES on the
+// renderer-facing side of the bridge -- the Crystal itself is main-process-only and the
+// renderer never touches its files or its module directly, only these five IPC channels below.
+export interface CrystalBindingTarget {
+  targetType: string;
+  ref: string;
+  meta?: Record<string, unknown>;
+}
+
+export type CrystalMutationReason = 'superseded_source' | 'failed_resolution' | 'explicit_ratification';
+
+export interface CrystalBindResult {
+  ok: boolean;
+  sid: string;
+  key: string;
+  accepted:
+    | 'appended'
+    | 'idempotent-noop'
+    | 'rejected-additive-only'
+    | 'rejected-invalid-reason'
+    | 'superseded';
+  error?: string;
+  supersededSiblingPath?: string;
+}
+
+export interface CrystalResolvedChonk {
+  sid: string;
+  pearls: string[];
+  bindings: Record<string, CrystalBindingTarget>;
+}
+
 // ─── Bridge ───────────────────────────────────────────────────────────────────
 
 contextBridge.exposeInMainWorld('amplify', {
@@ -2131,6 +2164,35 @@ contextBridge.exposeInMainWorld('amplify', {
     lastCheckedAt: string | null;
     failureReason: string | null;
   }> => ipcRenderer.invoke('usage-barrel-get-vendor-usage'),
+
+  // ── The Crystal -- durable chonk-handle store (KN-BP147-M2, D-BP147-005) ─────────────────
+  // Bridges index.ts's crystal:* IPC channels (registered in registerIPCHandlers()'s
+  // IPC-HANDLER append zone, next to getCrystalStore()'s own header comment) to the renderer.
+  // The Crystal itself (src/main/crystal/crystal_store.ts, KN-BP147-M1, commit ccae7f1c) is
+  // main-process-only; the renderer never touches its files directly, only these five channels.
+  // FAIL OPEN: every method here can legitimately resolve { ok:false, error } when the Crystal
+  // failed to load at startup -- that is the ticket-mandated contract, not a bug. A renderer
+  // caller must handle ok:false gracefully rather than assume success.
+  crystal: {
+    mint: (pearls: string[]): Promise<{ ok: boolean; sid?: string; error?: string }> =>
+      ipcRenderer.invoke('crystal:mint', pearls),
+    bind: (sid: string, key: string, target: CrystalBindingTarget): Promise<CrystalBindResult> =>
+      ipcRenderer.invoke('crystal:bind', sid, key, target),
+    mutate: (
+      sid: string,
+      key: string,
+      target: CrystalBindingTarget,
+      reason: CrystalMutationReason,
+      note: string,
+    ): Promise<CrystalBindResult> => ipcRenderer.invoke('crystal:mutate', sid, key, target, reason, note),
+    resolve: (sid: string): Promise<{ ok: boolean; resolved: CrystalResolvedChonk | null; error?: string }> =>
+      ipcRenderer.invoke('crystal:resolve', sid),
+    stats: (): Promise<{
+      ok: boolean;
+      stats?: { mintedCount: number; logPath: string; logExists: boolean };
+      error?: string;
+    }> => ipcRenderer.invoke('crystal:stats'),
+  },
 });
 
 // ─── Global type extension ────────────────────────────────────────────────────
