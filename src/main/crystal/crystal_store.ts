@@ -42,7 +42,28 @@
 const { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } = require("fs");
 const { resolve, join } = require("path");
 const { createHash } = require("crypto");
-const { isMutationReason } = require("./crystal_types.ts");
+// BP147, Bishop: the literal ".ts" extension was deliberate -- it let this module run
+// unbuilt under a plain `node` invocation, which the original far-end proof depended on.
+// It also made the module UNLOADABLE in the app that ships: the extension survives
+// compilation, dist/ contains only crystal_types.js, and Electron 31.7.7 bundles Node
+// 20.18.0, which predates native TS type-stripping entirely (22.6 experimental, 23.6
+// default). Verified by direct repro: requiring the compiled crystal_store.js threw
+// MODULE_NOT_FOUND. The proof ran on a path that cannot ship.
+// FIRST ATTEMPT AT THIS FIX WAS WRONG AND IS RECORDED SO NOBODY REPEATS IT: dropping the
+// extension to "./crystal_types" fixes the compiled path and BREAKS the unbuilt one. Node's
+// extensionless CommonJS resolution tries .js/.json/.node -- never .ts, even on a TS-capable
+// runtime. Verified by direct repro, not reasoned about. Trading one broken path for the
+// other is not a fix.
+// The shape that satisfies BOTH, locally, with no global module-resolution patch: try the
+// compiled specifier, fall back to the unbuilt one. Each branch names the runtime it serves.
+const crystalTypesRuntime = (() => {
+  try {
+    return require("./crystal_types"); // compiled: resolves crystal_types.js in dist/
+  } catch {
+    return require("./crystal_types.ts"); // unbuilt: TS-capable host runtime, no build step
+  }
+})();
+const { isMutationReason } = crystalTypesRuntime;
 import type {
   BindingTarget,
   CrystalBindings,
