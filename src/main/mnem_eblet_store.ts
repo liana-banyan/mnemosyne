@@ -39,7 +39,6 @@ import {
 } from 'fs';
 import { resolve, join, basename } from 'path';
 import { createHash } from 'crypto';
-import { app } from 'electron';
 // BP137 Yoke (Semantic Match Durable): additive semantic-code primitive, see
 // semantic_soccerball.ts header for the full honesty-mandate evidence (Ollama embed test
 // results) and fail-soft contract. Does not create an import cycle -- semantic_soccerball.ts
@@ -50,6 +49,129 @@ import { semantic_soccerball_emit, computeSemanticSimilarity } from './semantic_
 // exact same tier logic also gates liana_cycle_runner.ts's mintLedgerMark(), and neither write
 // path can drift from the other. See rooting_rule.ts's own header for the full canon citation.
 import { classifyCorroborationTier, isRooted, rootedTraceLabel } from './rooting_rule';
+
+// ─── Guarded Electron resolution (D-BP148-007/KNIGHT/M1/seg-e7c1) ─────────────
+//
+// PRIOR BUG: this file did a static `import { app } from 'electron';` at module scope.
+// Outside a real Electron process (plain `node`, ts-node, this file's own test harness,
+// a future CLI/MCP host) Node's `require('electron')` resolves to a plain path STRING,
+// not the Electron API surface -- `app` is `undefined` there, and every call site below
+// that did `app.getPath(...)` / `app.isPackaged` / `app.getAppPath()` unguarded threw
+// `TypeError: Cannot read properties of undefined (reading 'getPath')` the first time it
+// ran outside Electron's main process. That is a HARD crash, not the "substrate is
+// legitimately empty" case warmEbletIndex() was reporting it as (see that function's own
+// comment for the second half of this fix).
+//
+// FIX: same guarded pattern crystal_store.ts's resolveCrystalDir() already uses one
+// directory over (src/main/crystal/crystal_store.ts) -- try/catch require('electron'),
+// type-check `typeof app.getPath === 'function'` before trusting the result (a bare
+// `require('electron')` succeeding is not proof it's the real API; outside Electron it is
+// a string), and a computed non-Electron fallback when that check fails. Departure from
+// crystal_store.ts's version, deliberately: that module resolves ONCE at module load and
+// caches the directory in a top-level const. THIS file's own existing comment fifteen
+// lines below already documents why call-time (not load-time) resolution is load-bearing
+// here -- app.getPath()/isPackaged are only guaranteed safe to read once Electron's `app`
+// is actually ready, which module-load time is not guaranteed to be. This fix preserves
+// that: getElectronApp() is called fresh, at call time, from inside every function that
+// needs it, exactly where the old `app.` reference used to sit. It also caches a POSITIVE
+// resolution across calls (once real Electron is confirmed present, it stays present for
+// the life of the process) but never caches a NEGATIVE one, so a call made too early
+// (before Electron's `app` is wired) can never permanently poison later calls made after
+// it is.
+//
+// REAL-ELECTRON PATH IS BYTE-IDENTICAL: when `require('electron')` resolves an object with
+// a real `app.getPath` function, getElectronApp() returns that exact same `app` object, and
+// every call site below invokes the exact same `.getPath('userData')` / `.isPackaged` /
+// `.getAppPath()` it always did. This is strictly an ADDITIVE fallback for the non-Electron
+// case -- not a refactor of the real packaged app's resolution.
+type ElectronAppShape = {
+  getPath: (name: string) => string;
+  isPackaged: boolean;
+  getAppPath: () => string;
+};
+
+// The app.getPath('userData') app-name component. Electron derives this from package.json's
+// `name` field (mnemosyne/package.json:2 = "amplify-computer"), NOT electron-builder's
+// `productName` ("MnemosyneC") -- same distinction crystal_store.ts's own USERDATA_APP_NAME
+// comment documents, verified there against the live shipping app's on-disk footprint
+// (%APPDATA%\amplify-computer exists; %APPDATA%\MnemosyneC does not). Mirrored here rather
+// than imported, to avoid this module taking on crystal_store.ts as a load-bearing dependency
+// for one string constant.
+const USERDATA_APP_NAME = 'amplify-computer';
+
+let _electronAppCache: ElectronAppShape | null = null; // only ever caches a POSITIVE resolution -- see comment above.
+
+/**
+ * Returns the real Electron `app` object when running inside Electron's main process (and
+ * only then -- `typeof app.getPath === 'function'` is the actual proof, not merely that
+ * `require('electron')` didn't throw); otherwise returns `null` so callers can fall back.
+ */
+function getElectronApp(): ElectronAppShape | null {
+  if (_electronAppCache) return _electronAppCache;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const electron = require('electron') as { app?: ElectronAppShape };
+    if (electron && electron.app && typeof electron.app.getPath === 'function') {
+      _electronAppCache = electron.app;
+      return _electronAppCache;
+    }
+  } catch {
+    // Not resolvable outside Electron's main process -- expected for node scripts/tests.
+  }
+  return null;
+}
+
+/**
+ * Non-Electron fallback for `app.getPath('userData')`: computes the SAME location
+ * Electron's own convention would produce, with zero Electron dependency. Windows-only
+ * (verified against this machine's real %APPDATA%\amplify-computer footprint, same as
+ * crystal_store.ts's resolveCrystalDir()); throws for any other `process.platform` rather
+ * than shipping an unverified guess -- a wrong-but-silently-working path is the exact
+ * failure mode this fix exists to remove, not something to reintroduce on other platforms.
+ */
+function fallbackUserDataPath(): string {
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA;
+    if (appData) return resolve(appData, USERDATA_APP_NAME);
+    throw new Error(
+      "[EbletStore] non-Electron fallback: %APPDATA% is not set in this process's environment.",
+    );
+  }
+  throw new Error(
+    `[EbletStore] non-Electron fallback: no verified userData computation for ` +
+      `process.platform === "${process.platform}". Real Electron app.getPath('userData') ` +
+      `was not available either (see getElectronApp()).`,
+  );
+}
+
+/** Guarded replacement for `app.getPath('userData')`. Real-Electron behavior unchanged. */
+function resolveUserDataPath(): string {
+  const electronApp = getElectronApp();
+  if (electronApp) return electronApp.getPath('userData');
+  return fallbackUserDataPath();
+}
+
+/** Guarded replacement for `app.isPackaged`. Outside Electron, always `false` (a bare node
+ *  process is never a packaged Electron app). Real-Electron behavior unchanged. */
+function resolveIsPackaged(): boolean {
+  const electronApp = getElectronApp();
+  return electronApp ? electronApp.isPackaged : false;
+}
+
+/** Guarded replacement for `app.getAppPath()`. Outside Electron there is no packaged-app
+ *  root to ask Electron for; this file's own bundledDefaultEbletRoot() only reaches this
+ *  path in its "not packaged, running from source" branch, where Electron's own getAppPath()
+ *  resolves to the project root (the directory containing package.json). This mirrors that
+ *  by walking up from this compiled file's own on-disk location (dist/main/*.js -> project
+ *  root is two levels up), which is stable regardless of the calling process's cwd -- unlike
+ *  `process.cwd()`, which would silently depend on where node happened to be launched from
+ *  (the exact defect class B4's own portability fix, in this same file's history, removed).
+ *  Real-Electron behavior unchanged. */
+function resolveAppPath(): string {
+  const electronApp = getElectronApp();
+  if (electronApp) return electronApp.getAppPath();
+  return resolve(__dirname, '..', '..');
+}
 
 // ─── Eblet store roots (BP132 Yoke #21 B4 — portability fix) ──────────────────
 //
@@ -86,8 +208,11 @@ function bundledDefaultEbletRoot(): string {
   const packaged = typeof process !== 'undefined' && (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
     ? join((process as NodeJS.Process & { resourcesPath?: string }).resourcesPath!, 'eblets_default')
     : null;
-  if (app.isPackaged && packaged) return packaged;
-  return resolve(app.getAppPath(), 'resources', 'eblets_default');
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveIsPackaged()/resolveAppPath() replace the old
+  // unguarded `app.isPackaged`/`app.getAppPath()` -- byte-identical when real Electron is
+  // present, see the guarded-resolution block above for the non-Electron fallback.
+  if (resolveIsPackaged() && packaged) return packaged;
+  return resolve(resolveAppPath(), 'resources', 'eblets_default');
 }
 
 // ─── Estate doctrine roots (KN-BP147-M2 -- "put the doctrine in MnemosyneC") ──
@@ -142,7 +267,9 @@ function resolveEbletStoreRoots(): string[] {
   candidates.push(...estateDoctrineRoots());
 
   candidates.push(bundledDefaultEbletRoot());
-  candidates.push(resolve(app.getPath('userData'), 'eblets'));
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
+  // `app.getPath('userData')` -- byte-identical when real Electron is present.
+  candidates.push(resolve(resolveUserDataPath(), 'eblets'));
 
   const resolved = candidates.filter((root) => {
     try { return existsSync(root); } catch { return false; }
@@ -153,17 +280,25 @@ function resolveEbletStoreRoots(): string[] {
     console.error(
       `[EbletStore] WARNING: zero eblet store roots resolved on this machine — the substrate ` +
       `is EMPTY. Every Ask will run with no eblet context. Checked: ${candidates.join(' | ')}. ` +
-      `Set MNEM_EBLET_STORE_ROOTS or place eblets in ${resolve(app.getPath('userData'), 'eblets')}.`
+      `Set MNEM_EBLET_STORE_ROOTS or place eblets in ${resolve(resolveUserDataPath(), 'eblets')}.`
     );
-    for (const win of require('electron').BrowserWindow.getAllWindows() as import('electron').BrowserWindow[]) {
-      if (!win.isDestroyed()) {
-        win.webContents.send('eblet-store:diagnostic', {
-          kind: 'zero_roots_resolved',
-          message: 'No eblet store found on this machine — Ask will run without substrate context.',
-          checked: candidates,
-          userDataFallback: resolve(app.getPath('userData'), 'eblets'),
-          at: new Date().toISOString(),
-        });
+    // D-BP148-007/KNIGHT/M1/seg-e7c1: the renderer-notification loop below is Electron-only
+    // by nature (BrowserWindow has no non-Electron meaning) -- guarded by getElectronApp()
+    // instead of an unguarded `require('electron').BrowserWindow`, so this diagnostic branch
+    // degrades to "log only" outside Electron instead of throwing. Real-Electron behavior
+    // (the notification itself) is unchanged; this only skips it when there is no Electron
+    // renderer to notify in the first place.
+    if (getElectronApp()) {
+      for (const win of require('electron').BrowserWindow.getAllWindows() as import('electron').BrowserWindow[]) {
+        if (!win.isDestroyed()) {
+          win.webContents.send('eblet-store:diagnostic', {
+            kind: 'zero_roots_resolved',
+            message: 'No eblet store found on this machine — Ask will run without substrate context.',
+            checked: candidates,
+            userDataFallback: resolve(resolveUserDataPath(), 'eblets'),
+            at: new Date().toISOString(),
+          });
+        }
       }
     }
   } else {
@@ -290,7 +425,9 @@ export interface EbletIndexEntry {
 
 /** Path to the persistent index JSONL file. */
 function getIndexPath(): string {
-  return resolve(app.getPath('userData'), 'mnemosynec', 'substrate', 'eblet_index.jsonl');
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
+  // `app.getPath('userData')` -- byte-identical when real Electron is present.
+  return resolve(resolveUserDataPath(), 'mnemosynec', 'substrate', 'eblet_index.jsonl');
 }
 
 let _indexCache: { entries: EbletIndexEntry[]; loadedAt: number } | null = null;
@@ -468,10 +605,27 @@ export async function warmEbletIndex(): Promise<EbletIndexStats> {
       `[EbletIndex] warm-on-boot complete: ${entries.length} entries indexed ` +
       `(roots=${getEbletStoreRoots().length})`,
     );
-    return stats;
+    return { ...stats, status: 'ok' };
   } catch (e) {
-    console.error('[EbletIndex] warm-on-boot failed (non-fatal):', e);
-    return { totalIndexed: 0, byCategory: {}, lastRefreshTimestamp: null };
+    // D-BP148-007/KNIGHT/M1/seg-e7c1 (ticket M1.b, "fix the silent zero"): PRIOR BEHAVIOR
+    // returned {totalIndexed:0, byCategory:{}, lastRefreshTimestamp:null} on ANY failure --
+    // byte-for-byte identical to what a caller sees when the substrate is genuinely empty
+    // (fresh install, roots exist but hold zero eblets, etc). A hard failure (e.g. the
+    // Electron-fallback path above throwing, a rebuild I/O error) was therefore
+    // indistinguishable from "there is nothing to index" to any caller reading this return
+    // value -- exactly the defect ground-truth item 6 named. FIX: an explicit
+    // status:'failed' + `error` field makes the failure unmissable; this remains non-fatal
+    // to app boot (still returns a value, never throws/rejects) and the real underlying
+    // reason is logged below, not swallowed.
+    const reason = e instanceof Error ? (e.stack ?? e.message) : String(e);
+    console.error('[EbletIndex] warm-on-boot FAILED (non-fatal to app boot):', e);
+    return {
+      totalIndexed: 0,
+      byCategory: {},
+      lastRefreshTimestamp: null,
+      status: 'failed',
+      error: reason,
+    };
   }
 }
 
@@ -481,6 +635,13 @@ export interface EbletIndexStats {
   totalIndexed: number;
   byCategory: Partial<Record<EbletCategory, number>>;
   lastRefreshTimestamp: number | null;
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: both fields are optional and set ONLY by
+  // warmEbletIndex()'s catch branch. getEbletIndexStats() itself never sets `status` --
+  // a plain totalIndexed:0 from THAT function is the legitimately-empty case. `status:
+  // 'failed'` means path-resolution/rebuild threw (see `error` for the real reason), which
+  // is NOT the same thing and must not be presented to a human/caller as though it were.
+  status?: 'ok' | 'failed';
+  error?: string;
 }
 
 /**
@@ -878,7 +1039,9 @@ export interface StoredRejectedOptionEblet extends RejectedOptionEbletEntry {
 export async function writeRejectedOptionEblet(entry: RejectedOptionEbletEntry): Promise<string> {
   const { verified: honestVerified, verdict: honestVerdict } = computeHonestVerification(entry);
 
-  const ebletDir = resolve(app.getPath('userData'), 'substrate');
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
+  // `app.getPath('userData')` -- byte-identical when real Electron is present.
+  const ebletDir = resolve(resolveUserDataPath(), 'substrate');
   const ebletFile = resolve(ebletDir, 'rejected_option_eblets.jsonl');
   if (!existsSync(ebletDir)) {
     mkdirSync(ebletDir, { recursive: true });
@@ -921,7 +1084,9 @@ export async function queryRejectedOptionEblets(filter?: {
   concept?: string;
   question?: string;
 }): Promise<StoredRejectedOptionEblet[]> {
-  const ebletFile = resolve(app.getPath('userData'), 'substrate', 'rejected_option_eblets.jsonl');
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
+  // `app.getPath('userData')` -- byte-identical when real Electron is present.
+  const ebletFile = resolve(resolveUserDataPath(), 'substrate', 'rejected_option_eblets.jsonl');
   if (!existsSync(ebletFile)) return [];
 
   let raw: string;
@@ -1408,7 +1573,9 @@ function tokenizeQuestion(text: string): string[] {
  * equality check is used for exact-match because sha256(question) ≠ sha256(question+answer).
  */
 export async function queryVerifiedEblets(question: string, topK = 3): Promise<VerifiedEbletEntry[]> {
-  const ebletFile = resolve(app.getPath('userData'), 'substrate', 'verified_eblets.jsonl');
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
+  // `app.getPath('userData')` -- byte-identical when real Electron is present.
+  const ebletFile = resolve(resolveUserDataPath(), 'substrate', 'verified_eblets.jsonl');
   if (!existsSync(ebletFile)) return [];
 
   let raw: string;
@@ -1590,7 +1757,9 @@ export async function queryVerifiedEbletsTopical(
   domain: string,
   topK = 3,
 ): Promise<VerifiedEbletEntry[]> {
-  const ebletFile = resolve(app.getPath('userData'), 'substrate', 'verified_eblets.jsonl');
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
+  // `app.getPath('userData')` -- byte-identical when real Electron is present.
+  const ebletFile = resolve(resolveUserDataPath(), 'substrate', 'verified_eblets.jsonl');
   if (!existsSync(ebletFile)) return [];
 
   let raw: string;
@@ -1755,7 +1924,9 @@ export function queryStats(): SubstrateStats {
     return _statsCache.data;
   }
 
-  const ebletFile = resolve(app.getPath('userData'), 'substrate', 'verified_eblets.jsonl');
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
+  // `app.getPath('userData')` -- byte-identical when real Electron is present.
+  const ebletFile = resolve(resolveUserDataPath(), 'substrate', 'verified_eblets.jsonl');
 
   const empty = (): SubstrateStats => ({
     totalEblets: 0,
@@ -1891,7 +2062,9 @@ export interface StartupIntegrityResult {
  * Non-fatal: always returns a result even if checks partially fail.
  */
 export async function runStartupIntegrityCheck(): Promise<StartupIntegrityResult> {
-  const ebletDir = resolve(app.getPath('userData'), 'substrate');
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
+  // `app.getPath('userData')` -- byte-identical when real Electron is present.
+  const ebletDir = resolve(resolveUserDataPath(), 'substrate');
   const ebletFile = resolve(ebletDir, 'verified_eblets.jsonl');
   const quarantineFile = resolve(ebletDir, 'eblets.quarantine.jsonl');
 
@@ -2271,7 +2444,9 @@ export async function writeVerifiedEblet(
     // TODO(liana-marks): mintMarkForVerifiedContribution(peerId, entryId) -- Bishop wires DB side
   }
 
-  const ebletDir = resolve(app.getPath('userData'), 'substrate');
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
+  // `app.getPath('userData')` -- byte-identical when real Electron is present.
+  const ebletDir = resolve(resolveUserDataPath(), 'substrate');
   // KN-BP141-5 FIX 3: route ensemble-candidate RGBY-ledger writes to a sibling file the
   // answering retrieval path never reads -- see isRgbyLedgerWrite()'s doc comment above.
   const routeToRgbyLedger = isRgbyLedgerWrite(entry);
@@ -2382,7 +2557,9 @@ export async function writeVerifiedEblet(
  * those call sites would need to be modified to use.
  */
 export async function loadAllVerifiedEblets(): Promise<VerifiedEbletEntry[]> {
-  const ebletFile = resolve(app.getPath('userData'), 'substrate', 'verified_eblets.jsonl');
+  // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
+  // `app.getPath('userData')` -- byte-identical when real Electron is present.
+  const ebletFile = resolve(resolveUserDataPath(), 'substrate', 'verified_eblets.jsonl');
   if (!existsSync(ebletFile)) return [];
 
   let raw: string;
