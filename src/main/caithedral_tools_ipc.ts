@@ -61,35 +61,40 @@ import {
 // any reason, this logs loudly and caithedral-core's tools keep their
 // original in-memory-only behavior, unchanged. Nothing wedges.
 //
-// KNOWN GAP (VERIFIED EMPIRICALLY, KN-BP147-M1 dispatch D-BP147-005 -- not
-// this file's to fix -- src/main/crystal/ is READ-ONLY for this ticket):
-// this require() call below deliberately uses NO extension (Node's normal
-// CommonJS resolution: try .js, then .ts under native type-stripping) so it
-// resolves correctly to the packaged dist/main/crystal/crystal_store.js in a
-// real tsc-compiled build. Confirmed working at that layer:
-//   `node -e "require('./crystal/crystal_store')"` from dist/main -- OK.
-// BUT crystal_store.ts:45 (read-only to this ticket) has its OWN internal
-// `require("./crystal_types.ts")` with a HARDCODED, literal `.ts` extension.
-// tsc does not rewrite string literals inside require() calls, and tsc does
-// not copy .ts SOURCE files into outDir -- it only emits .js -- so in any
-// tsc-compiled dist tree, dist/main/crystal/crystal_types.ts never exists,
-// only crystal_types.js does. The result: crystal_store.js's own load-time
-// require() throws MODULE_NOT_FOUND the instant anything requires it out of
-// a real dist build, in BOTH `npm run dev:main` and `npm run build` (both
-// run `tsc -p tsconfig.main.json` before `electron .`) -- there is no
-// execution path for the real app that avoids this. Verified by hand,
-// twice, from a clean dist/main/crystal/ with no stray .ts copy present:
-//   require('./crystal/crystal_store.ts') from dist/main -> MODULE_NOT_FOUND
-//     (Cannot find module './crystal/crystal_store.ts') -- the ORIGINAL bug.
-//   require('./crystal/crystal_store')    from dist/main -> loads crystal_store.js,
-//     which itself then throws MODULE_NOT_FOUND on './crystal_types.ts' --
-//     THIS extension fix (below) gets one layer closer but cannot fully
-//     resolve it alone, because the second failure is inside the read-only file.
-// The try/catch below means a failure here is safe (fails open to the
-// pre-existing in-memory behavior) but silently forfeits durability in the
-// real running app until crystal_store.ts:45 drops its OWN `.ts` extension.
-// See the BLOCKED file (HARDWIRE/LEDGER/YOKE/BLOCKED/D-BP147-005_M1_*.md)
-// for the exact one-line fix and the full verification transcript.
+// FORMER KNOWN GAP (KN-BP147-M1 dispatch D-BP147-005) -- FIXED at commit 01059971,
+// re-confirmed still fixed at BP147 (see git log for this file for the confirming
+// commit). History kept below rather than deleted -- this estate keeps scars.
+//
+// This require() call below deliberately uses NO extension (Node's normal CommonJS
+// resolution: try .js, then .ts under native type-stripping) so it resolves correctly
+// to the packaged dist/main/crystal/crystal_store.js in a real tsc-compiled build.
+//
+// ORIGINAL GAP (now closed): crystal_store.ts:45 used to have its OWN internal
+// `require("./crystal_types.ts")` with a HARDCODED, literal `.ts` extension. tsc does
+// not rewrite string literals inside require() calls, and tsc does not copy .ts SOURCE
+// files into outDir -- it only emits .js -- so in a tsc-compiled dist tree,
+// dist/main/crystal/crystal_types.ts never existed, only crystal_types.js did. The
+// result used to be that crystal_store.js's own load-time require() threw
+// MODULE_NOT_FOUND the instant anything required it out of a real dist build, in BOTH
+// `npm run dev:main` and `npm run build`, forfeiting durability in the real running app
+// and silently falling back to the pre-existing in-memory behavior.
+//
+// THE FIX (commit 01059971, in crystal_store.ts, this ticket's read-only file): the
+// internal `require("./crystal_types.ts")` was replaced with a local try/catch dual
+// require -- try the extensionless compiled specifier first (resolves crystal_types.js
+// in dist/), fall back to the literal ".ts" specifier second (the unbuilt, TS-capable
+// host runtime). This satisfies both the packaged dist path and the unbuilt
+// `node`-invocation path the original far-end proof depended on, with no global
+// module-resolution patch.
+//
+// RE-VERIFIED AT BOTH FAR ENDS THIS PASS (BP147), not just re-read:
+//   unbuilt:   node -e "require('.../src/main/crystal/crystal_store.ts')"          -> loads OK
+//   compiled:  ELECTRON_RUN_AS_NODE=1 electron -e "require('.../dist/main/crystal/
+//              crystal_store.js')" (Electron 31.7.7 / bundled Node 20.18.0)          -> loads OK
+// The try/catch below is therefore now a genuine safety net for a load that
+// legitimately succeeds in the normal case, not a mask over a load that always fails.
+// See the BLOCKED file (HARDWIRE/LEDGER/YOKE/BLOCKED/D-BP147-005_M1_*.md) for the
+// original one-line-fix note and verification transcript from when the gap was closed.
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const crystalStore = require('./crystal/crystal_store') as {
