@@ -300,6 +300,10 @@ declare global {
       boardMarkDispatched: (
         id: string,
       ) => Promise<{ ok: boolean; dispatchedAt?: string; snapshot?: import('../main/board/board_state_reader').BoardSnapshot | null; error?: string }>;
+      // Grand Central "Verify" button (BP148 D-BP148-028), read-only
+      boardVerifyOrphan?: (
+        id: string,
+      ) => Promise<import('../main/board/board_verify').VerifyOrphanResult>;
       // Webview preload path (B83b)
       getWebviewPreloadPath?: () => string;
       // Browser-authority Nexus IPC leg (BP137 Yoke v2b Integration-1, Part 2)

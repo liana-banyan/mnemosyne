@@ -17,6 +17,10 @@
 export type BoardSnapshot = import('../../../main/board/board_state_reader').BoardSnapshot;
 export type BoardRow = import('../../../main/board/board_state_reader').BoardRow;
 export type BoardAlarm = import('../../../main/board/board_state_reader').BoardAlarm;
+// BP148 D-BP148-028: the Verify button's result shape, read straight from the main-process
+// module that computes it -- same "one source of truth, re-exported here" convention as the
+// three types above.
+export type VerifyOrphanResult = import('../../../main/board/board_verify').VerifyOrphanResult;
 
 export interface BoardState {
   snapshot: BoardSnapshot | null;

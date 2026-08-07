@@ -666,6 +666,13 @@ contextBridge.exposeInMainWorld('amplify', {
   ): Promise<{ ok: boolean; dispatchedAt?: string; snapshot?: import('./board/board_state_reader').BoardSnapshot | null; error?: string }> =>
     ipcRenderer.invoke('board-mark-dispatched', { id }),
 
+  // BP148 D-BP148-028: the Verify button. Read-only -- searches both repos' real git history
+  // (and working-tree status) for the ticket's own claimed files; never modifies anything.
+  boardVerifyOrphan: (
+    id: string,
+  ): Promise<import('./board/board_verify').VerifyOrphanResult> =>
+    ipcRenderer.invoke('board-verify-orphan', { id }),
+
   // ── Webview preload path (B83b) ───────────────────────────────────────────
 
   getWebviewPreloadPath: (): string =>
@@ -730,6 +737,18 @@ contextBridge.exposeInMainWorld('amplify', {
     sourceUrl?: string;
     authority?: 'user_google' | 'user_perplexity';
     confidence?: number;
+    // BP148 D-BP148-029 (per-arm routing) -- ADDITIVE fields, always present once the flag-off/
+    // not-lookup-fact early returns are past. perArmAssignedAuthority is whatever the per-arm
+    // picker (NexusAuthoritySettings.tsx) has stored for the 'lookup_fact' arm, or null if it
+    // could not be read (treated as unassigned). perArmRestrictedTo is non-null only when that
+    // assignment restricted the attempt to a single authority. perArmFellBack is true when a
+    // restricted attempt came back empty and the handler tried the other authority too, in which
+    // case perArmFallbackReason explains why -- see index.ts's handler header for the full
+    // mechanism. None of these change usable/fact/reason's existing meaning or presence.
+    perArmAssignedAuthority?: 'local_free' | 'user_google' | 'user_perplexity' | 'paid_api' | null;
+    perArmRestrictedTo?: 'user_google' | 'user_perplexity' | null;
+    perArmFellBack?: boolean;
+    perArmFallbackReason?: 'assigned_authority_unavailable';
   }> => ipcRenderer.invoke('nexus-ask-lookup-fact', { question }),
 
   // ── On-Deck Master-of-Ceremonies (BP037) ──────────────────────────────────
@@ -2320,14 +2339,22 @@ declare global {
         statuses: Array<{ authority: 'user_google' | 'user_perplexity' | 'user_claude'; signedIn: boolean; reason: string; checkedAt: string }>;
       }>;
       // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point.
+      // BP148 D-BP148-029: perArmAssignedAuthority/perArmRestrictedTo/perArmFellBack/
+      // perArmFallbackReason are ADDITIVE -- see the matching declaration above (the real
+      // ipcRenderer.invoke-typed one this ambient block mirrors) for the full field-by-field
+      // explanation.
       nexusAskLookupFact?: (question: string) => Promise<{
         answerType: 'computable' | 'lookup_fact' | 'reasoning';
         usable: boolean;
-        reason?: 'flag_off';
+        reason?: 'flag_off' | 'not_lookup_fact' | 'authority_empty';
         fact?: string;
         sourceUrl?: string;
         authority?: 'user_google' | 'user_perplexity';
         confidence?: number;
+        perArmAssignedAuthority?: 'local_free' | 'user_google' | 'user_perplexity' | 'paid_api' | null;
+        perArmRestrictedTo?: 'user_google' | 'user_perplexity' | null;
+        perArmFellBack?: boolean;
+        perArmFallbackReason?: 'assigned_authority_unavailable';
       }>;
       // On-Deck Master-of-Ceremonies (BP037)
       onDeckList?: () => Promise<import('./on_deck/on_deck_bridge').OnDeckBridgePayload>;
