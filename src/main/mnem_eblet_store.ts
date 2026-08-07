@@ -1066,6 +1066,19 @@ export async function writeRejectedOptionEblet(entry: RejectedOptionEbletEntry):
     verdict: honestVerdict,
     sha256: expectedSha,
     timestamp: entry.timestamp,
+    // D-BP148-037/BISHOP/critical-discard-fixes FIX: `corroboration` was accepted as a write-time
+    // INPUT to computeHonestVerification() above (it decides verified/verdict) but was never
+    // itself persisted to the JSONL line -- the identical D-BP148-034 gap already fixed in this
+    // function's sibling writeVerifiedEblet() (see that function's own line-level comment, commit
+    // 7b69bb84), just not swept up here. StoredRejectedOptionEblet extends
+    // RejectedOptionEbletEntry and promises this field on every stored row; without this line it
+    // could never actually be present at runtime. Purely additive/omitted-when-undefined, same
+    // convention as writeVerifiedEblet()'s own corroboration line -- does not change the
+    // derivation of `verified`/`verdict` above (still computed once, at write time, via
+    // computeHonestVerification()), does not change classifyCorroborationTier() or isRooted()
+    // (rooting_rule.ts untouched), and does not retroactively alter any existing line already on
+    // disk (Rule 66 -- old rows simply continue to have no `corroboration` field).
+    ...(entry.corroboration !== undefined ? { corroboration: entry.corroboration } : {}),
   });
 
   appendFileSync(ebletFile, line + '\n', 'utf-8');
