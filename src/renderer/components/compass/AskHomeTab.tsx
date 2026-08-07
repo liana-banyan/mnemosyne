@@ -20,6 +20,12 @@
 // Phase 5 (Cue Deck card): "Share your savings" card, gated on real Answer-Cache Meter data
 // (same IPC ProveItWorksTab.tsx already uses) -- skipped entirely (not shown) when the real
 // meter has zero recorded queries, per the hard "never fabricate" constraint.
+//
+// SEG: D-BP148-001/KNIGHT/M3/seg-m3t4r -- adds the optional, OFF-BY-DEFAULT dial-up modem
+// handshake sound checkbox (Founder request, BP148 release pass). Owned/persisted here (the
+// home-tab shell) rather than inside LeanAskTab itself, since it is a standing user preference,
+// not per-message chat state -- threaded down to LeanAskTab as a plain prop. Purely cosmetic;
+// see modemHandshakeSound.ts for the hard "never gate the real connection" contract.
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { LeanAskTab } from '../LeanAskTab';
@@ -28,6 +34,17 @@ import { NexusAuthoritySignInPanel } from '../../settings/NexusAuthoritySignInPa
 import { CueDeckCardRenderer, type CueCardTemplate } from '../CueDeckCardRenderer';
 import { CoopTouch } from './CoopTouch';
 import type { CompassNavigate } from './types';
+import { isModemHandshakeSoundSupported } from '../../lib/modemHandshakeSound';
+
+const LS_HANDSHAKE_SOUND_KEY = 'mnemo_modem_handshake_sound_enabled';
+
+function loadHandshakeSoundEnabled(): boolean {
+  try {
+    return localStorage.getItem(LS_HANDSHAKE_SOUND_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
 
 interface MeterSummary {
   total_queries: number;
@@ -43,6 +60,23 @@ export function AskHomeTab({ onNavigate }: AskHomeTabProps): React.ReactElement 
   const [nexusOpen, setNexusOpen] = useState(false);
   const [meter, setMeter] = useState<MeterSummary | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  // SEG D-BP148-001/KNIGHT/M3: dial-up handshake sound preference -- OFF BY DEFAULT
+  // (loadHandshakeSoundEnabled() returns false when the key has never been written), persisted
+  // across sessions once the Founder opts in.
+  const [handshakeSoundEnabled, setHandshakeSoundEnabled] = useState<boolean>(loadHandshakeSoundEnabled);
+  const handshakeSoundSupported = isModemHandshakeSoundSupported();
+
+  const toggleHandshakeSound = useCallback(() => {
+    setHandshakeSoundEnabled((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(LS_HANDSHAKE_SOUND_KEY, String(next));
+      } catch {
+        // non-fatal -- the toggle still works for this session even if persistence fails
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -94,6 +128,29 @@ export function AskHomeTab({ onNavigate }: AskHomeTabProps): React.ReactElement 
           )}
         </div>
 
+        {/* SEG D-BP148-001/KNIGHT/M3: optional, off-by-default dial-up modem handshake sound.
+            Purely cosmetic -- never gates, blocks, or delays the actual connection (see
+            modemHandshakeSound.ts). Hidden (not merely disabled) when the Web Audio API is not
+            available on this runtime, since offering a checkbox that can never do anything
+            would be dishonest UI. */}
+        {handshakeSoundSupported && (
+          <label
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748b',
+              cursor: 'pointer', userSelect: 'none' as const, width: 'fit-content',
+            }}
+            title="Plays a synthesized dial-up modem handshake sound when a message is sent. Cosmetic only -- never delays the actual reply."
+          >
+            <input
+              type="checkbox"
+              checked={handshakeSoundEnabled}
+              onChange={toggleHandshakeSound}
+              style={{ cursor: 'pointer' }}
+            />
+            📞 Dial-up handshake sound on connect
+          </label>
+        )}
+
         {nexusOpen && (
           <div style={{
             background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 8,
@@ -121,7 +178,7 @@ export function AskHomeTab({ onNavigate }: AskHomeTabProps): React.ReactElement 
       {/* Ask core -- reused as-is (query field, receipts, abstentions, self-context badge,
           answer-cache badge, Salt Level, brain-swap). */}
       <div style={{ flex: 1, overflow: 'hidden' }}>
-        <LeanAskTab />
+        <LeanAskTab handshakeSoundEnabled={handshakeSoundEnabled} />
       </div>
     </div>
   );

@@ -8,6 +8,14 @@
 // v0.1.62 (BP082): Clear + Save & Clear buttons in header. Save uses Blob download (path-b).
 // Persistent history in localStorage key 'mnemo_ask_history' (max 200 msgs).
 // Membership CTA banner pinned at bottom, never dismissible.
+//
+// SEG: D-BP148-001/KNIGHT/M3/seg-m3t4r -- THE HEX TERMINAL, UI SURFACE AND SPEECH.
+// Mounts M2's usePromptToHandle hook: the user's prompt is minted into a Crystal handle and
+// carried (not the raw prose) to Knight over the real message bridge, fired in parallel with
+// (never gating) the real engine call below. On reply, HARDWIRE-09 Law 1 governs: the reply is
+// rendered/spoken as a CELPANE by default, with full content behind an explicit second fetch.
+// See the "Hex Terminal" block below handleSend for the full disclosed design and the honest
+// gaps (no real celpane-authoring or mode-telemetry exists yet upstream of this ticket).
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 // SEG-1 v0.1.57: direct Ollama fetch replaced by window.amplify.aiDispatch.query IPC.
@@ -30,6 +38,12 @@ import { loadNexusAuthoritySettings } from '../settings/nexus_authority_settings
 // this one per-message surface -- see this file's own header note near their old call sites
 // for why (they were global/last-message-only; this fixes that).
 import { AskEngineView, type AskEngineState } from './AskEngineView';
+// D-BP148-001/KNIGHT/M3: M2's hook (landed aca2a047, does not touch this file) -- mints a
+// prompt into a Crystal handle and carries it to an addressee over the real bridge.
+import { usePromptToHandle } from '../hooks/usePromptToHandle';
+// M1's landed registry (c593f6b6) -- imported for typing only, per this ticket's instruction.
+import type { AddresseeId } from '../../main/addressee_registry';
+import { playModemHandshakeSound } from '../lib/modemHandshakeSound';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,6 +60,38 @@ interface ChatMessage {
    *  `provenance` field below (folded into `engine.nexus`) and the old global
    *  selfCtxStatus/lastServedFromSubstrate header state (folded into `engine.completion`). */
   engine?: AskEngineState;
+  /** SEG D-BP148-001/KNIGHT/M3: set on the OUTGOING user message once usePromptToHandle's
+   *  mint+send resolves (fired in parallel with the real engine call, never gating it). */
+  sentHandle?: SentHandleState;
+  /** SEG D-BP148-001/KNIGHT/M3: set on the assistant reply once the Hex Terminal celpane/
+   *  transparent-mode decision has been made for that reply -- see buildCelpane/shouldUseHandleMode. */
+  celpane?: CelpaneState;
+}
+
+/** SEG D-BP148-001/KNIGHT/M3 -- outbound mint+send result, attached to the user's own bubble. */
+interface SentHandleState {
+  addressee: AddresseeId;
+  handle: string;
+  sendStatus: 'sent' | 'failed';
+  sendError?: string;
+}
+
+/**
+ * SEG D-BP148-001/KNIGHT/M3 -- per-reply Hex Terminal state.
+ * mode 'handle': a real Crystal handle was minted for this reply; `lines` is the celpane
+ *   rendered/spoken by default; `fullContent` is revealed only after an explicit second fetch
+ *   (crystal.resolve), tracked by `fullRevealed`.
+ * mode 'transparent': v.42bis fallback -- either the reply was already cheaper than the
+ *   celpane+handle overhead, or minting produced no handle. Prose is shown/spoken directly;
+ *   there is nothing further to fetch, so `fullRevealed` is always true.
+ */
+interface CelpaneState {
+  mode: 'handle' | 'transparent';
+  handle?: string;
+  lines?: string[];
+  fullContent: string;
+  fullRevealed: boolean;
+  resolving?: boolean;
 }
 
 const LS_HISTORY_KEY = 'mnemo_ask_history';
@@ -109,14 +155,95 @@ function thinkingText(secs: number): string {
   return `Thinking... (${secs}s)`;
 }
 
+// ─── SEG D-BP148-001/KNIGHT/M3: THE HEX TERMINAL -- celpane + transparent-mode helpers ──────
+//
+// HARDWIRE-09 Law 1 (binding, not a suggestion this ticket invents): "a handle resolves to a
+// celpane, five short strings, a 10 to 50 token payload... full content requires a SECOND
+// EXPLICIT FETCH." DISCLOSED GAP, found while implementing this ticket, not papered over:
+// crystal_store.ts's resolveChonk() (src/main/crystal/crystal_store.ts) returns back EXACTLY
+// the pearls it was minted with -- i.e. the full original text -- not a compressed digest.
+// Nothing in M1's registry or M2's hook produces a celpane either. HARDWIRE-11's 5-field
+// (soul/heart/hands/hull/service) celpane is a human-authored artifact from a different system
+// entirely (librarian-mcp's pearl_emit/soccerball_emit, for SEG-return reporting to a
+// dispatcher) and is not wired to this chat surface. buildCelpane() below is therefore a
+// minimal, deterministic, CLIENT-SIDE heuristic digest (extractive, not LLM- or human-authored)
+// built here so this UI has something real to render/speak by default, per Law 1, pending a
+// real celpane-authoring mechanism upstream. This is disclosed in the SEG return, not invented
+// as if it were already-shipped machinery.
+
+const CELPANE_LINE_COUNT = 5;
+const CELPANE_MAX_WORDS_PER_LINE = 9;
+
+/** Rough words/0.75 token estimate -- same class of renderer-side heuristic already used by
+ *  classifyForUpgrade() above; not a real tokenizer, never claimed as one. */
+function estimateTokens(text: string): number {
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  return Math.ceil(words / 0.75);
+}
+
+/** Extractive, deterministic 5-line digest -- see the disclosed-gap note above. */
+function buildCelpane(fullText: string): string[] {
+  const sentences = fullText.replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+/).filter(Boolean);
+  const source = sentences.length > 0 ? sentences : [fullText];
+  const lines: string[] = [];
+  for (let i = 0; i < source.length && lines.length < CELPANE_LINE_COUNT; i++) {
+    const words = source[i].trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) continue;
+    const truncated = words.slice(0, CELPANE_MAX_WORDS_PER_LINE).join(' ');
+    const line = words.length > CELPANE_MAX_WORDS_PER_LINE ? `${truncated}…` : truncated;
+    lines.push(line);
+  }
+  return lines.length > 0 ? lines : [fullText.slice(0, 60)];
+}
+
+// v.42bis transparent-mode threshold, carried forward per this ticket's instruction: "if
+// addressing (minting and resolving a handle) would cost more than simply sending the prose,
+// send the prose." HONEST GAP: HARDWIRE-11's (M + H) >= P inequality is measured for
+// agent-to-dispatcher MCP wire exchanges; M4's telemetry module (hex_terminal_telemetry.ts, not
+// this ticket's file) owns the real paired cost measurement for THIS connector, and it is not
+// wired into this UI. This constant is a disclosed, simplified stand-in: M (the one-time local
+// IPC mint round trip) is treated as ~0 here (crystal:mint is a same-machine IPC call, not an
+// agent reading a wire payload the way HARDWIRE-11's measurement was), and H is approximated
+// from the celpane this file itself builds. If the reply is already shorter than what the
+// celpane+handle would cost to show, minting buys nothing, so send the prose directly.
+const HANDLE_MODE_OVERHEAD_TOKENS_ESTIMATE = 40;
+
+/** Per this ticket's explicit instruction: "if M2's hook ... does not yet expose a mode/
+ *  cost-comparison signal ... treat 'no handle produced' as transparent-mode." Checked both
+ *  before minting (Crystal unavailable) and after (mint call failed / returned no sid). */
+function shouldAttemptHandleMode(fullText: string): boolean {
+  if (!window.amplify?.crystal?.mint) return false;
+  return estimateTokens(fullText) > HANDLE_MODE_OVERHEAD_TOKENS_ESTIMATE;
+}
+
+/** Speaks the celpane (handle mode) or the prose (transparent mode) by default, per Law 1.
+ *  Feature-detected, best-effort, and never allowed to throw into the chat flow. */
+function speakAloud(text: string): void {
+  try {
+    if (!('speechSynthesis' in window) || !text.trim()) return;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  } catch {
+    // Speech is a Law 1 requirement but never allowed to break the chat flow if unsupported.
+  }
+}
+
 // ─── IPC-based chat via ai-dispatch:query (SEG-1 v0.1.57) ───────────────────
 // Routes through main-process IPC → queryVerifiedEblets HOT retrieve → Ollama /api/chat.
 // Non-streaming; substrate eblet context is injected server-side before LLM call.
 
 // ─── Message bubbles ─────────────────────────────────────────────────────────
 
-function MsgBubble({ msg }: { msg: ChatMessage }) {
+function MsgBubble({ msg, onRevealFullContent }: { msg: ChatMessage; onRevealFullContent: (msgId: string, handle: string) => void }) {
   const isUser = msg.role === 'user';
+  // SEG D-BP148-001/KNIGHT/M3: HARDWIRE-09 Law 1 -- while a celpane decision exists for this
+  // reply, the bubble shows the CELPANE (handle mode, not yet revealed) or the prose
+  // (transparent mode, or handle mode after the explicit reveal) -- never full content
+  // automatically in handle mode.
+  const celpane = msg.celpane;
+  const showingCelpaneOnly = !isUser && celpane?.mode === 'handle' && !celpane.fullRevealed;
+  const displayContent = showingCelpaneOnly ? (celpane!.lines ?? []).join('\n') : msg.content;
+
   return (
     <div style={{
       display: 'flex',
@@ -136,9 +263,51 @@ function MsgBubble({ msg }: { msg: ChatMessage }) {
         whiteSpace: 'pre-wrap',
         wordBreak: 'break-word',
       }}>
-        {msg.content}
+        {displayContent}
         {msg.content === '' && <span style={{ opacity: 0.4 }}>▌</span>}
       </div>
+
+      {/* SEG D-BP148-001/KNIGHT/M3: outbound mint+send badge on the user's own bubble --
+          proof that this prompt crossed as a handle (M2's hook), not the raw prose. */}
+      {isUser && msg.sentHandle && (
+        <div style={{ fontSize: 10, color: '#64748b', marginTop: 3, fontFamily: 'monospace' }}>
+          {msg.sentHandle.sendStatus === 'sent'
+            ? `→ sent to ${msg.sentHandle.addressee} as handle ${msg.sentHandle.handle.slice(0, 12)}…`
+            : `⚠ handle send to ${msg.sentHandle.addressee} failed: ${msg.sentHandle.sendError ?? 'unknown error'}`}
+        </div>
+      )}
+
+      {/* SEG D-BP148-001/KNIGHT/M3: celpane / transparent-mode badge + explicit reveal control. */}
+      {!isUser && celpane?.mode === 'handle' && (
+        <div style={{
+          fontSize: 10, color: '#818cf8', marginTop: 4, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+        }}>
+          <span style={{ fontFamily: 'monospace' }}>
+            🔑 celpane · handle {celpane.handle?.slice(0, 12)}…
+          </span>
+          {!celpane.fullRevealed && (
+            <button
+              type="button"
+              onClick={() => onRevealFullContent(msg.id, celpane.handle!)}
+              disabled={celpane.resolving}
+              style={{
+                background: 'none', border: '1px solid #4c1d95', borderRadius: 4, color: '#c4b5fd',
+                fontSize: 10, padding: '2px 7px', cursor: celpane.resolving ? 'wait' : 'pointer',
+                fontFamily: 'system-ui, sans-serif', outline: 'none',
+              }}
+            >
+              {celpane.resolving ? 'Fetching full content…' : 'Read full content →'}
+            </button>
+          )}
+          {celpane.fullRevealed && <span style={{ color: '#475569' }}>(full content fetched via a second, explicit crystal.resolve)</span>}
+        </div>
+      )}
+      {!isUser && celpane?.mode === 'transparent' && (
+        <div style={{ fontSize: 10, color: '#64748b', marginTop: 4 }}>
+          💬 transparent mode -- sent as prose, no handle minted (v.42bis: minting would not have paid for itself)
+        </div>
+      )}
+
       {/* KN-BP143-3 D5 (amended, scoped to real data): per-message live engine view --
           absorbs the old inline browser-authority source link that used to render here
           (msg.provenance) into the `nexus:authority` badge below, since re-showing the same
@@ -207,9 +376,17 @@ function MembershipBanner() {
 
 interface LeanAskTabProps {
   onSwitchToHome?: () => void;
+  /** SEG D-BP148-001/KNIGHT/M3: dial-up modem handshake sound, OFF BY DEFAULT. Owned/persisted
+   *  by the parent (AskHomeTab) so the setting is a single home-tab-level control rather than
+   *  re-declared per shell; defaults to false here too so any OTHER caller of LeanAskTab that
+   *  does not pass this prop (CleanShell, LeanShell -- neither is the shipping front door, see
+   *  App.tsx CompassShell) gets the same off-by-default behavior. */
+  handshakeSoundEnabled?: boolean;
 }
 
-export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
+export function LeanAskTab({ onSwitchToHome, handshakeSoundEnabled = false }: LeanAskTabProps) {
+  // D-BP148-001/KNIGHT/M3: M2's hook, mounted into this real chat flow.
+  const { sendPrompt } = usePromptToHandle();
   const [messages, setMessages] = useState<ChatMessage[]>(loadHistory);
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
@@ -449,6 +626,34 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
     setMessages((prev) => prev.map((m) => m.id === id ? { ...m, engine: { ...m.engine, ...patch } } : m));
   }, []);
 
+  // SEG D-BP148-001/KNIGHT/M3: the "read the full content" control -- HARDWIRE-09 Law 1's
+  // SECOND, EXPLICIT fetch. Only ever called from a user click (see MsgBubble); never
+  // automatic. Performs a real crystal:resolve IPC round trip rather than just flipping a flag
+  // to reveal the copy already held in memory, so this is a genuine second fetch, not a UI-only
+  // reveal of data that was already fully present.
+  const handleRevealFullContent = useCallback((msgId: string, handle: string) => {
+    setMessages((prev) => prev.map((m) => (m.id === msgId && m.celpane ? { ...m, celpane: { ...m.celpane, resolving: true } } : m)));
+    void (async () => {
+      try {
+        const res = await window.amplify.crystal.resolve(handle);
+        const full = res.ok && res.resolved
+          ? res.resolved.pearls.join('\n\n')
+          : `⚠ Could not resolve handle ${handle}: ${res.error ?? 'not found'}`;
+        setMessages((prev) => {
+          const next = prev.map((m) => (m.id === msgId && m.celpane ? {
+            ...m,
+            celpane: { ...m.celpane, fullContent: full, fullRevealed: true, resolving: false },
+          } : m));
+          saveHistory(next);
+          return next;
+        });
+      } catch (err) {
+        console.warn('[LeanAskTab] crystal.resolve threw on explicit full-content fetch:', err);
+        setMessages((prev) => prev.map((m) => (m.id === msgId && m.celpane ? { ...m, celpane: { ...m.celpane, resolving: false } } : m)));
+      }
+    })();
+  }, []);
+
   // v0.1.57.1: tear down streaming subscriptions and timer
   const clearStream = useCallback(() => {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
@@ -483,6 +688,44 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
     setThinking(true);
     appendMsg(userMsg);
     appendMsg(aiMsg);
+
+    // SEG D-BP148-001/KNIGHT/M3: optional dial-up handshake sound, fired at "connect" (the
+    // moment a new exchange starts). HARD CONTRACT from the ticket: purely cosmetic, must
+    // NEVER gate/block/delay the real connection -- not awaited, and the real engine call
+    // below proceeds on its own timeline regardless of whether this plays, finishes, or the
+    // Web Audio API even exists on this runtime.
+    if (handshakeSoundEnabled) {
+      playModemHandshakeSound();
+    }
+
+    // SEG D-BP148-001/KNIGHT/M3: mount M2's usePromptToHandle hook -- mint this prompt into a
+    // Crystal handle and carry the HANDLE (not the raw prose) to Knight over the real bridge.
+    // Fired in parallel and never awaited before the real engine call below: a slow or failed
+    // mint+send must never delay or gate the actual chat reply, mirroring the handshake-sound
+    // contract above. Result is attached to the user's own bubble once it resolves (see
+    // MsgBubble's sentHandle badge). Addressee is fixed to 'knight' -- this UI has no
+    // addressee picker (out of this ticket's OWNS block); 'knight' is used as the dispatcher
+    // context this ticket itself was fanned under, not a fabricated multi-recipient feature.
+    void (async () => {
+      try {
+        const handleResult = await sendPrompt(text, 'knight' as AddresseeId);
+        setMessages((prev) => {
+          const next = prev.map((m) => (m.id === userMsg.id ? {
+            ...m,
+            sentHandle: {
+              addressee: 'knight' as AddresseeId,
+              handle: handleResult.handle,
+              sendStatus: handleResult.sendStatus,
+              sendError: handleResult.sendError,
+            },
+          } : m));
+          saveHistory(next);
+          return next;
+        });
+      } catch (err) {
+        console.warn('[LeanAskTab] usePromptToHandle.sendPrompt threw (non-fatal, chat flow unaffected):', err);
+      }
+    })();
 
     // v0.1.57.1: initialise streaming refs for this query
     currentAiIdRef.current = aiId;
@@ -596,6 +839,50 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
         setThinking(false);
         textareaRef.current?.focus();
 
+        // SEG D-BP148-001/KNIGHT/M3: HARDWIRE-09 Law 1 -- celpane by default, full content
+        // only via a second explicit fetch. Only a real, successful, non-abstained reply goes
+        // through this: an error message or an honest abstention notice is not "content" to
+        // compress or speak as if it were an answer.
+        const isRealAnswer = !data.error && data.engine?.abstained !== true && finalContent.trim().length > 0;
+        if (isRealAnswer) {
+          void (async () => {
+            if (shouldAttemptHandleMode(finalContent)) {
+              try {
+                const mintRes = await window.amplify.crystal.mint([finalContent]);
+                if (mintRes.ok && mintRes.sid) {
+                  const lines = buildCelpane(finalContent);
+                  setMessages((prev) => {
+                    const next = prev.map((m) => (m.id === id ? {
+                      ...m,
+                      celpane: { mode: 'handle' as const, handle: mintRes.sid, lines, fullContent: finalContent, fullRevealed: false },
+                    } : m));
+                    saveHistory(next);
+                    return next;
+                  });
+                  speakAloud(lines.join('. '));
+                  return;
+                }
+                console.warn('[LeanAskTab] crystal.mint returned ok:false or no sid for this reply -- degrading to transparent mode:', mintRes.error);
+              } catch (err) {
+                console.warn('[LeanAskTab] crystal.mint threw for this reply -- degrading to transparent mode:', err);
+              }
+            }
+            // Transparent mode: either the estimate said the prose already wins, or minting
+            // was attempted and failed/produced no handle ("no handle produced" -> transparent,
+            // per this ticket's explicit instruction). Prose renders/speaks directly; there is
+            // no further fetch because nothing was ever minted for this reply.
+            setMessages((prev) => {
+              const next = prev.map((m) => (m.id === id ? {
+                ...m,
+                celpane: { mode: 'transparent' as const, fullContent: finalContent, fullRevealed: true },
+              } : m));
+              saveHistory(next);
+              return next;
+            });
+            speakAloud(finalContent);
+          })();
+        }
+
         // v0.4.1: check upgrade suggestion on Pinch Ask (inline footer, NOT popup)
         // Only suggest when salt level is pinch and answer was successfully returned
         if (saltLevel === 'pinch' && !data.error) {
@@ -703,7 +990,7 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
       setThinking(false);
       textareaRef.current?.focus();
     }
-  }, [input, thinking, appendMsg, updateMsgInMemory, updateMsgAndSave, updateMsgEngine, clearStream]);
+  }, [input, thinking, appendMsg, updateMsgInMemory, updateMsgAndSave, updateMsgEngine, clearStream, sendPrompt, handshakeSoundEnabled]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -976,7 +1263,7 @@ export function LeanAskTab({ onSwitchToHome }: LeanAskTabProps) {
             Ask anything. Your AI is private and local.
           </div>
         )}
-        {messages.map((m) => <MsgBubble key={m.id} msg={m} />)}
+        {messages.map((m) => <MsgBubble key={m.id} msg={m} onRevealFullContent={handleRevealFullContent} />)}
         <div ref={bottomRef} />
       </div>
 
