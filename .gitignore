@@ -35,3 +35,37 @@ caithedral-core/
 resources/ollama/bundled/models/blobs/
 resources/ollama/ollama.exe
 resources/ollama/ollama
+
+# BP148 D-BP148-017 untracked triage -----------------------------------------
+# Scratch/working directory: SEG verification scripts, tsc/build logs, probe
+# receipts, screenshots. 79 files already tracked in this dir stay tracked
+# (.gitignore never affects already-tracked paths) -- this only stops NEW
+# scratch files here from showing up in `git status`. Blast radius: everything
+# under scratchpad/, and nothing outside it.
+scratchpad/
+
+# Root-level tsc/build log scratch (BP145 P1 session), same class as the logs
+# already caught by scratchpad/ above but written outside it. Explicit paths
+# only -- blast radius: these 4 files, nothing else at root.
+.kn_bp145_p1_build_main.txt
+.kn_bp145_p1_tsc_baseline.txt
+.kn_bp145_p1_tsc_mainconfig.txt
+.kn_bp145_p1_tsc_out.txt
+
+# Electron test-profile userdata directory (BP145 M3), same class as the
+# *_isolated_userdata/ dirs already caught under scratchpad/. Explicit path
+# only -- blast radius: this one directory.
+.kn_bp145m3_test_userdata/
+
+# Root-level scratch verification script (BP141-7), self-describes as
+# read-only replay/debug, not production wiring. Explicit path only --
+# blast radius: this one file.
+KN-BP141-7_verification_replay.mjs
+
+# KN-BP141-9 verification harness files, self-labeled in their own header
+# comments as "scratch, not part of the shipped app", left inside
+# src/renderer/ instead of scratchpad/. Explicit paths only -- blast radius:
+# these 3 files; src/renderer/'s other ~208 tracked source files are untouched.
+src/renderer/kn_bp141_9_harness.html
+src/renderer/kn_bp141_9_harness.tsx
+src/renderer/kn_bp141_9_receipt_031.json
