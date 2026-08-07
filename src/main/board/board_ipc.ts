@@ -17,6 +17,18 @@
 import { ipcMain } from 'electron';
 import { computeBoardSnapshot, markDispatched, type BoardSnapshot } from './board_state_reader';
 import { verifyOrphanTicket, type VerifyOrphanResult } from './board_verify';
+import {
+  listDismissals,
+  dismissAlarm,
+  restoreAlarm,
+  commitUnownedFiles,
+  parkUnownedFiles,
+  discardUnownedFiles,
+  type CommitUnownedResult,
+  type ParkUnownedResult,
+  type DiscardUnownedResult,
+} from './board_alarm_actions';
+import type { AlarmDismissal, AlarmKind } from '../../shared/board/alarm_key';
 
 // Main-side recompute cadence: slower than the renderer's UI-refresh poll (5s, see
 // board_subscription.ts) on purpose -- git doesn't need to be re-shelled-out-to 12x as often as
@@ -104,6 +116,53 @@ export function initBoardWatcher(): void {
       }
       return verifyOrphanTicket(id);
     });
+    // BP148 D-BP148-031: alarm dismiss/acknowledge -- persisted (own file, see
+    // board_alarm_actions.ts), never erased. Applies to ANY alarm kind, not just UNOWNED --
+    // the Founder's rule is universal ("an alarm that states a fact but offers no action is
+    // noise"), and coordination-only alarm kinds (COLLISION, DOUBLE-BOOKED, ...) have nothing
+    // BUT acknowledge as their real action.
+    ipcMain.handle(
+      'board-alarm-dismiss',
+      (_event, args: { key: string; kind: AlarmKind; message: string; note?: string | null }): AlarmDismissal | { error: string } => {
+        const { key, kind, message, note } = args ?? ({} as typeof args);
+        if (!key || !kind || !message) return { error: 'missing key/kind/message' };
+        return dismissAlarm(key, kind, message, note ?? null);
+      },
+    );
+
+    ipcMain.handle('board-alarm-restore', (_event, args: { key: string }): AlarmDismissal | { error: string } => {
+      const key = args?.key;
+      if (!key) return { error: 'missing key' };
+      const restored = restoreAlarm(key);
+      return restored ?? { error: `no dismissal on record for key ${key}` };
+    });
+
+    ipcMain.handle('board-alarm-list-dismissals', (): AlarmDismissal[] => listDismissals());
+
+    // BP148 D-BP148-031: the three real UNOWNED actions. All three stage/touch ONLY the
+    // explicit file paths the renderer sends (never -A/./glob -- HARDWIRE-15), and all three
+    // re-validate those paths against a FRESH git status read inside board_alarm_actions.ts
+    // before touching anything (see that file's realDirtyStatusFor()).
+    ipcMain.handle(
+      'board-unowned-commit',
+      (_event, args: { files: string[]; message: string }): Promise<CommitUnownedResult> =>
+        commitUnownedFiles(args?.files ?? [], args?.message ?? ''),
+    );
+
+    ipcMain.handle(
+      'board-unowned-park',
+      (_event, args: { files: string[]; branchName: string; message?: string }): Promise<ParkUnownedResult> =>
+        parkUnownedFiles(args?.files ?? [], args?.branchName ?? '', args?.message ?? ''),
+    );
+
+    // Destructive. Requires confirm:true in the payload (defense in depth behind the UI's own
+    // two-step confirm -- see BoardPanel.tsx) -- board_alarm_actions.ts's discardUnownedFiles()
+    // refuses to run without it.
+    ipcMain.handle(
+      'board-unowned-discard',
+      (_event, args: { files: string[]; confirm: boolean }): Promise<DiscardUnownedResult> =>
+        discardUnownedFiles(args?.files ?? [], args?.confirm === true),
+    );
   } catch (err) {
     console.error('[board_ipc] IPC handler registration failed:', err);
   }

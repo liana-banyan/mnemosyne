@@ -673,6 +673,46 @@ contextBridge.exposeInMainWorld('amplify', {
   ): Promise<import('./board/board_verify').VerifyOrphanResult> =>
     ipcRenderer.invoke('board-verify-orphan', { id }),
 
+  // BP148 D-BP148-031: alarm dismiss/acknowledge, persisted + recoverable (see
+  // board_alarm_actions.ts). Works for any alarm kind.
+  boardAlarmDismiss: (
+    key: string,
+    kind: import('../shared/board/alarm_key').AlarmKind,
+    message: string,
+    note?: string | null,
+  ): Promise<import('../shared/board/alarm_key').AlarmDismissal | { error: string }> =>
+    ipcRenderer.invoke('board-alarm-dismiss', { key, kind, message, note: note ?? null }),
+
+  boardAlarmRestore: (
+    key: string,
+  ): Promise<import('../shared/board/alarm_key').AlarmDismissal | { error: string }> =>
+    ipcRenderer.invoke('board-alarm-restore', { key }),
+
+  boardAlarmListDismissals: (): Promise<import('../shared/board/alarm_key').AlarmDismissal[]> =>
+    ipcRenderer.invoke('board-alarm-list-dismissals'),
+
+  // BP148 D-BP148-031: the three real UNOWNED actions -- commit / park to a branch / discard.
+  // All explicit-path-only (never -A/./glob); see board_alarm_actions.ts for the full safety
+  // discipline. Discard is destructive and requires confirm:true.
+  boardUnownedCommit: (
+    files: string[],
+    message: string,
+  ): Promise<import('./board/board_alarm_actions').CommitUnownedResult> =>
+    ipcRenderer.invoke('board-unowned-commit', { files, message }),
+
+  boardUnownedPark: (
+    files: string[],
+    branchName: string,
+    message?: string,
+  ): Promise<import('./board/board_alarm_actions').ParkUnownedResult> =>
+    ipcRenderer.invoke('board-unowned-park', { files, branchName, message }),
+
+  boardUnownedDiscard: (
+    files: string[],
+    confirm: boolean,
+  ): Promise<import('./board/board_alarm_actions').DiscardUnownedResult> =>
+    ipcRenderer.invoke('board-unowned-discard', { files, confirm }),
+
   // ── Webview preload path (B83b) ───────────────────────────────────────────
 
   getWebviewPreloadPath: (): string =>

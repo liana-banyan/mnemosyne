@@ -304,6 +304,31 @@ declare global {
       boardVerifyOrphan?: (
         id: string,
       ) => Promise<import('../main/board/board_verify').VerifyOrphanResult>;
+      // Grand Central alarm actions (BP148 D-BP148-031): dismiss/acknowledge (persisted,
+      // recoverable, any alarm kind) + the three real UNOWNED actions (commit/park/discard).
+      boardAlarmDismiss?: (
+        key: string,
+        kind: import('../shared/board/alarm_key').AlarmKind,
+        message: string,
+        note?: string | null,
+      ) => Promise<import('../shared/board/alarm_key').AlarmDismissal | { error: string }>;
+      boardAlarmRestore?: (
+        key: string,
+      ) => Promise<import('../shared/board/alarm_key').AlarmDismissal | { error: string }>;
+      boardAlarmListDismissals?: () => Promise<import('../shared/board/alarm_key').AlarmDismissal[]>;
+      boardUnownedCommit?: (
+        files: string[],
+        message: string,
+      ) => Promise<import('../main/board/board_alarm_actions').CommitUnownedResult>;
+      boardUnownedPark?: (
+        files: string[],
+        branchName: string,
+        message?: string,
+      ) => Promise<import('../main/board/board_alarm_actions').ParkUnownedResult>;
+      boardUnownedDiscard?: (
+        files: string[],
+        confirm: boolean,
+      ) => Promise<import('../main/board/board_alarm_actions').DiscardUnownedResult>;
       // Webview preload path (B83b)
       getWebviewPreloadPath?: () => string;
       // Browser-authority Nexus IPC leg (BP137 Yoke v2b Integration-1, Part 2)

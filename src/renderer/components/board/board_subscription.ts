@@ -21,17 +21,30 @@ export type BoardAlarm = import('../../../main/board/board_state_reader').BoardA
 // module that computes it -- same "one source of truth, re-exported here" convention as the
 // three types above.
 export type VerifyOrphanResult = import('../../../main/board/board_verify').VerifyOrphanResult;
+// BP148 D-BP148-031: dismissal record + the alarm-key/label/explanation vocabulary. This one is
+// a REAL runtime import (not type-only, not the main-process re-export convention above) --
+// src/shared/board/alarm_key.ts has zero Node built-ins specifically so it bundles into the
+// renderer, and both this file and BoardPanel.tsx need canonicalizeAlarmKey() to actually RUN
+// (to match a live alarm against the dismissals list), not just its type.
+import { canonicalizeAlarmKey, type AlarmDismissal } from '../../../shared/board/alarm_key';
+export type { AlarmDismissal } from '../../../shared/board/alarm_key';
 
 export interface BoardState {
   snapshot: BoardSnapshot | null;
   loading: boolean;
   error: string | null;
+  /** BP148 D-BP148-031: every dismissal on record (active AND restored), keyed by the same
+   *  canonicalizeAlarmKey() an alarm's own key is computed with. Polled on the same cadence as
+   *  the snapshot so the badge and the panel never show a dismissal the other one doesn't know
+   *  about. null only until the first successful poll lands. */
+  dismissals: Record<string, AlarmDismissal> | null;
 }
 
 export const DEFAULT_BOARD_STATE: BoardState = {
   snapshot: null,
   loading: false,
   error: null,
+  dismissals: null,
 };
 
 type BoardCallback = (state: BoardState) => void;
@@ -79,8 +92,18 @@ class BoardSubscription {
     this._emit();
 
     try {
-      const snapshot = await window.amplify.boardGetState?.();
-      this.current = { snapshot: snapshot ?? null, loading: false, error: null };
+      // BP148 D-BP148-031: fetch snapshot + dismissals together so the two never show a
+      // half-refreshed pairing (e.g. an alarm the badge counts as active but the panel already
+      // knows is dismissed, or vice versa). boardAlarmListDismissals is optional-chained the
+      // same way every other bridge call in this file already is -- an older preload (mid-
+      // rollout) simply yields an empty dismissals map, never a crash.
+      const [snapshot, dismissalsList] = await Promise.all([
+        window.amplify.boardGetState?.(),
+        window.amplify.boardAlarmListDismissals?.(),
+      ]);
+      const dismissals: Record<string, AlarmDismissal> = {};
+      for (const d of dismissalsList ?? []) dismissals[d.key] = d;
+      this.current = { snapshot: snapshot ?? null, loading: false, error: null, dismissals };
     } catch (err) {
       this.current = { ...this.current, loading: false, error: String(err) };
     }
@@ -104,8 +127,20 @@ export const boardSubscription = new BoardSubscription(5000);
 
 /** T5: nothing fabricated -- badge count is the literal length of the real alarms array from
  *  the last successful snapshot, never a placeholder or guessed number. Returns null (not 0)
- *  when no snapshot has landed yet, so callers can render "unknown" instead of a false "clean". */
+ *  when no snapshot has landed yet, so callers can render "unknown" instead of a false "clean".
+ *
+ *  BP148 D-BP148-031: now EXCLUDES alarms the user has actively dismissed (restoredAt === null)
+ *  -- a dismissed alarm is still visible on the board (see BoardPanel.tsx's "Handled" section),
+ *  but it must stop contributing to the nav badge, or "dismiss" would be theater: the whole
+ *  point of acknowledging something is that the board stops nagging about it. A dismissal whose
+ *  underlying real-world alarm reappears gets a NEW canonicalizeAlarmKey() only if its identity
+ *  actually changed (different ticket/file/worker) -- see that function's own per-kind
+ *  volatility notes -- so a genuinely NEW instance of the same alarm kind still counts. */
 export function alarmCount(state: BoardState): number | null {
   if (!state.snapshot) return null;
-  return state.snapshot.alarms.length;
+  if (!state.dismissals) return state.snapshot.alarms.length;
+  return state.snapshot.alarms.filter((a) => {
+    const d = state.dismissals![canonicalizeAlarmKey(a)];
+    return !d || d.restoredAt !== null;
+  }).length;
 }
