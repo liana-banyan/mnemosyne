@@ -28,10 +28,22 @@
 //      see the note on `deriveMintAddress` below for why that is a considered departure from
 //      the three in-memory precedents, not a silent one).
 //
-// DATA LOCATION: resolved by `resolveCrystalDir()` below -- env override first, Electron
-// userData second, a loud cwd-relative fallback last. All of it lives inside this ticket's
-// OWNS block (this file writes only under its own resolved crystal dir; it never writes
-// anywhere else in the tree).
+// DATA LOCATION: resolved by `resolveCrystalDir()` below -- env override first, then Electron
+// userData (or, outside Electron, the SAME location computed directly). All of it lives inside
+// this ticket's OWNS block (this file writes only under its own resolved crystal dir; it never
+// writes anywhere else in the tree).
+//
+// BP147, Bishop D-BP147-006 UPDATE-02: step 3 used to be a loud cwd-relative fallback
+// (`resolve(process.cwd(), ".mnem_crystal_fallback")`, console.warn'd, then continued). That
+// was the defect, not a safety net: it made the store's location depend on WHERE a process
+// happened to be launched from. `librarian-mcp` is plain-node ESM with no Electron, so it could
+// never satisfy the Electron branch and always landed there, while the Electron app landed in
+// `%APPDATA%\amplify-computer\crystal\` -- two processes, two stores, BOTH reporting success,
+// NEITHER seeing the other's binds. Cost: silent data loss with no error anywhere in the chain.
+// The ruled replacement computes the Electron userData location directly (no Electron
+// dependency required) so both sides agree BY DEFAULT, and hard-errors instead of guessing when
+// it can't. See `resolveCrystalDir()` below for the full replacement and the Phase-0 evidence
+// that the two computations are byte-identical on Windows.
 
 // This directory carries its own package.json with "type": "commonjs" (see the file-header
 // note above) so this module -- and the test/proof scripts that require() it -- can run
@@ -75,32 +87,84 @@ import type {
 
 // ─── Storage location ──────────────────────────────────────────────────────
 
+// The app.getPath('userData') app-name component. Electron derives this from package.json's
+// `name` field (mnemosyne/package.json:2), NOT electron-builder's `productName` ("MnemosyneC",
+// build.productName in the same file) -- those are different fields serving different purposes
+// (installer/shortcut display name vs. app identity). Verified BP147 Phase 0 against the live
+// shipping app's actual on-disk footprint (%APPDATA%\amplify-computer exists; %APPDATA%\
+// MnemosyneC does not), not just reasoned from the field.
+const USERDATA_APP_NAME = "amplify-computer";
+
 function resolveCrystalDir(): string {
   const envOverride = process.env.MNEM_CRYSTAL_DIR;
   if (envOverride) return resolve(envOverride);
 
+  const attempted: string[] = [];
+
+  // 1. Genuinely inside Electron's main process: app.getPath('userData') IS the authority, on
+  //    whatever platform Electron is running on, because it is asking Electron itself rather
+  //    than re-deriving Electron's own convention.
+  //    Lazy + guarded: this module has zero HARD Electron dependency so it can run standalone
+  //    (tests, the kill-and-restart proof scripts, librarian-mcp, a future CLI) without an
+  //    Electron runtime. Outside Electron, `require('electron')` resolves to a path STRING, not
+  //    the app API -- the `typeof app.getPath === 'function'` guard is what actually detects
+  //    that difference.
   try {
-    // Lazy + guarded: this module has zero HARD Electron dependency so it can run standalone
-    // (tests, the kill-and-restart proof scripts, a future CLI) without an Electron runtime.
-    // Outside Electron, `require('electron')` resolves to a path STRING, not the app API --
-    // the `typeof app.getPath === 'function'` guard is what actually detects that difference.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const electron = require("electron") as { app?: { getPath: (name: string) => string } };
     const app = electron?.app;
     if (app && typeof app.getPath === "function") {
       return resolve(app.getPath("userData"), "crystal");
     }
+    attempted.push(
+      "Electron app.getPath('userData') -- 'electron' module resolved but exposes no " +
+        "app.getPath (this process is not Electron's main process)"
+    );
   } catch {
-    // Not running inside Electron (tests, proof scripts, CLI) -- fall through to the
-    // cwd-relative fallback below. Fail OPEN, never closed (HARDWIRE-00 Section 1.8).
+    attempted.push(
+      "Electron app.getPath('userData') -- 'electron' is not resolvable in this process " +
+        "(not running inside Electron, e.g. librarian-mcp / tests / proof scripts / a future CLI)"
+    );
   }
 
-  const fallback = resolve(process.cwd(), ".mnem_crystal_fallback");
-  console.warn(
-    `[crystal_store] no MNEM_CRYSTAL_DIR and no Electron app.getPath available; ` +
-      `falling back to ${fallback}. Set MNEM_CRYSTAL_DIR explicitly in production.`
+  // 2. Not inside Electron: compute the SAME location app.getPath('userData') would produce,
+  //    with zero Electron dependency and zero configuration, so both sides land in ONE store.
+  //    This is the actual fix for D-BP147-006 UPDATE-02 -- see the file-header note above for
+  //    the two-stores-both-silent defect this replaces.
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA;
+    if (appData) {
+      return resolve(appData, USERDATA_APP_NAME, "crystal");
+    }
+    attempted.push("Windows computed path -- %APPDATA% is not set in this process's environment");
+  } else {
+    // Electron's userData convention is platform-specific (macOS: ~/Library/Application
+    // Support/<name>; Linux: $XDG_CONFIG_HOME or ~/.config/<name>). This ticket's Phase-0
+    // evidence was gathered on Windows only -- there is no macOS/Linux hardware available this
+    // session to empirically confirm either convention against a live app's on-disk footprint
+    // the way the Windows path was confirmed (folder existence check, not just reasoning from
+    // Electron's docs). Shipping an unverified guess here is the EXACT failure mode this ruling
+    // exists to remove ("a wrong path that silently 'works'"), so this throws instead.
+    attempted.push(
+      `No verified non-Electron userData computation for process.platform === "${process.platform}" ` +
+        `-- Electron's convention differs by platform and was not empirically confirmed here`
+    );
+  }
+
+  // 3. Nothing resolved. HARD ERROR -- never a silent cwd-relative fallback. That fallback was
+  //    the defect this replaces: it made the store's location depend on where a process
+  //    happened to be launched from, so two processes with different working directories got
+  //    two different stores, both reporting success, neither seeing the other's binds.
+  throw new Error(
+    "[crystal_store] could not resolve a crystal storage directory. Tried, in order:\n" +
+      attempted.map((a) => `  - ${a}`).join("\n") +
+      "\n" +
+      "Fix: set MNEM_CRYSTAL_DIR to an absolute directory path -- it is an override and wins " +
+      "outright over everything above. " +
+      `Expected default location on Windows: %APPDATA%\\${USERDATA_APP_NAME}\\crystal. ` +
+      "This module does not fail open on its own -- callers already wrap getCrystalStore() in " +
+      "try/catch and degrade to in-memory; that is where fail-open belongs, not here."
   );
-  return fallback;
 }
 
 const CRYSTAL_DIR = resolveCrystalDir();
