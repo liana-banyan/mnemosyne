@@ -2655,6 +2655,23 @@ export async function writeVerifiedEblet(
     // above -- see the VerifiedEbletEntry.tic doc comment for the honesty-mandate verification
     // that these fields did not exist anywhere before this Yoke.
     ...(entry.tic !== undefined ? { tic: entry.tic } : {}),
+    // D-BP148-034/BISHOP/plant-rate FIX: `corroboration` was accepted as a write-time INPUT to
+    // computeHonestVerification() above (it decides verified/verdict) but was never itself
+    // persisted to the JSONL line -- a real gap between this field's own doc comment (which
+    // documents it as consumed by rooting_rule.ts's classifyCorroborationTier()) and
+    // queryVerifiedEblets()'s D-BP148-015 read-time re-derivation (`classifyCorroborationTier(
+    // e.corroboration, e.provenance)`), which has ALWAYS depended on `e.corroboration` being a
+    // real field on the stored entry and, until this line, could only ever recover Tier 1 (via
+    // the persisted `provenance` string) -- Tier 2 (`coroner_verified`) and Tier 3 (`concordant`)
+    // were unrecoverable at read time no matter what a caller passed at write time, because the
+    // one field that carries that signal silently vanished on every single write. Purely
+    // additive/omitted-when-undefined, same convention as every optional field on this object --
+    // does not change the derivation of `verified`/`verdict` above (still computed once, at write
+    // time, via computeHonestVerification()), does not change classifyCorroborationTier() or
+    // isRooted() (rooting_rule.ts untouched), and does not retroactively alter any existing line
+    // already on disk (Rule 66 -- old rows simply continue to have no `corroboration` field, same
+    // as before this fix, and continue to only ever recover Tier 1 via provenance at read time).
+    ...(entry.corroboration !== undefined ? { corroboration: entry.corroboration } : {}),
     // BP137 Yoke (Semantic Match Durable): additive/omitted exactly like every optional field
     // above -- see the VerifiedEbletEntry.semanticCode doc comment.
     ...(semanticCode !== undefined ? { semanticCode } : {}),

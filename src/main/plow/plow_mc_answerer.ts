@@ -267,6 +267,34 @@ export interface CanonicalPlowMcConfig {
    *  field is therefore synonymous with "this is a test/eval run", never a production Ask --
    *  undefined/null means verdict is always written as 'unverified' (production default). */
   testModeCorrectAnswerLetter?: string | null;
+  /** D-BP148-034/BISHOP/plant-rate, OPT-OUT/DEFAULT ON -- same `undefined` -> on / explicit
+   *  `false` -> off convention as answer_cache_mode / semantic_soccerball_mode /
+   *  escalation_ladder_mode (ai_dispatch_ipc.ts). Governs ONE thing only: whether a write-back
+   *  call site below that ALREADY has both a real `testModeCorrectAnswerLetter` (an externally-
+   *  supplied known answer key, present ONLY on a mesh-test/benchmark relay dispatch per that
+   *  field's own doc comment above, never on a production Ask -- see PlowMcConfig's
+   *  testModeCorrectAnswerLetter) AND its own genuinely-chosen `chosenLetter` for THIS call is
+   *  allowed to report `corroboration: 'coroner_verified'` (rooting_rule.ts Tier 2, "checked
+   *  against a known answer key", verbatim) instead of its pre-existing corroboration value, when
+   *  and only when the two letters match. This is the Tier 2 gap D-BP148-034's investigation
+   *  found: `'coroner_verified'` was a fully-documented value on VerifiedEbletEntry.corroboration
+   *  (mnem_eblet_store.ts) and on rooting_rule.ts's own classifyCorroborationTier(), but no writer
+   *  anywhere in src/main ever set it -- confirmed by grep, zero occurrences outside type unions/
+   *  doc comments -- even though this exact file already computes the identical ground-truth
+   *  comparison for the unrelated `verdict: 'correct'/'wrong'` axis (see verdictForLedger below)
+   *  a few hundred lines away and simply never connected the two. SAFETY: this can only ever
+   *  PROMOTE a write whose chosenLetter already, genuinely matches the externally-supplied key --
+   *  it can never demote, never fabricate a key, and never touches a production Ask (no key is
+   *  ever present there). When false, every one of the 5 call sites below is byte-identical to
+   *  its pre-existing corroboration value. Env var override GROUND_TRUTH_ROOTING_MODE=1 forces it
+   *  back on even over an explicit `false`, matching the other 3 resolvers' own override
+   *  convention. NOTE (disclosed, not smoothed over): PlowMcAnswererCallParams -- the one shared
+   *  call site (callCanonicalPlowMcAnswererForMeshTest) every real mesh-test/benchmark caller
+   *  actually goes through -- does not yet forward this field, so every current real caller gets
+   *  the default (on) and cannot yet opt out without the env var; wiring an explicit opt-out
+   *  through that params interface and into a persisted setting is a follow-on, out of this
+   *  ticket's contained scope (see the PLANT_RATE_BP148.md report). */
+  groundTruthRootingMode?: boolean;
   /** BP137 Yoke v2b (Research Arm), OPT-IN/DEFAULT FALSE master switch. Every sub-flag below
    *  requires researchArmMode true as well (AND-gated) -- a bare accidental sub-flag flip can
    *  never activate new behavior on its own. When false/absent (every caller that predates this
@@ -6065,6 +6093,54 @@ export function hasSubstantiveAnswerContent(optionText: string): boolean {
   return optionText.trim().length > 0;
 }
 
+/** D-BP148-034/BISHOP/plant-rate: resolves the groundTruthRootingMode opt-out gate, same
+ *  env-var-override / undefined-or-true-means-on / explicit-false-means-off shape as
+ *  ai_dispatch_ipc.ts's isAnswerCacheModeEnabled()/isSemanticSoccerballModeEnabled()/
+ *  isEscalationLadderModeEnabled() -- this file has no `settings` object of its own to read
+ *  (CanonicalPlowMcConfig is a plain per-call config, not AiDispatchSettings), so the flag lives
+ *  on that config object instead; the env var still allows quick local testing without touching
+ *  any settings file, matching the other three resolvers' own stated purpose. */
+function isGroundTruthRootingModeEnabled(groundTruthRootingMode: boolean | undefined): boolean {
+  if (groundTruthRootingMode === false) {
+    return process.env.GROUND_TRUTH_ROOTING_MODE === '1';
+  }
+  return true;
+}
+
+/** D-BP148-034/BISHOP/plant-rate: THE fix. Promotes `corroboration` to `'coroner_verified'`
+ *  (rooting_rule.ts Tier 2, "checked against a known answer key", verbatim) when, and only when,
+ *  ALL of the following hold -- every one independently checked, none inferred:
+ *    1. isGroundTruthRootingModeEnabled(params.groundTruthRootingMode) -- the opt-out gate is on.
+ *    2. params.testModeCorrectAnswerLetter is a real, non-null string -- an externally-supplied
+ *       known answer key was actually present for this call. Per CanonicalPlowMcConfig's own doc
+ *       comment this is true ONLY on a mesh-test/benchmark relay dispatch, NEVER a production Ask
+ *       -- so this function can never fire on a real user's question, structurally, not just by
+ *       convention.
+ *    3. params.chosenLetter matches it (case-insensitive) -- the system's own genuinely-computed
+ *       answer for THIS call actually equals the known key. A mismatch (the wrong-answer case)
+ *       always falls through to the caller's original `corroboration` untouched -- this function
+ *       can only ever PROMOTE a correct match, never demote a wrong one and never fabricate a
+ *       match that didn't happen.
+ *  Investigation finding this closes (see PLANT_RATE_BP148.md): 'coroner_verified' was a fully
+ *  documented value on VerifiedEbletEntry.corroboration and on rooting_rule.ts's own
+ *  classifyCorroborationTier() (Tier 2), but grep confirmed ZERO writers anywhere in src/main ever
+ *  set it -- Tier 2 was structurally dead code despite this exact file already computing the
+ *  identical ground-truth comparison a few hundred lines away, for the unrelated `verdict:
+ *  'correct'/'wrong'` axis (verdictForLedger), and never connecting the two. Extracted to a
+ *  small, pure, named, exported function (same convention as hasSubstantiveAnswerContent() just
+ *  above) so it is directly testable without invoking the side-effecting write. */
+export function groundTruthCorroborationOverride(params: {
+  chosenLetter: string;
+  testModeCorrectAnswerLetter?: string | null;
+  groundTruthRootingMode?: boolean;
+  corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute' | 'authority_extracted_compute' | 'coroner_verified';
+}): 'concordant' | 'single_authority' | 'deterministic_compute' | 'authority_extracted_compute' | 'coroner_verified' | undefined {
+  if (!isGroundTruthRootingModeEnabled(params.groundTruthRootingMode)) return params.corroboration;
+  if (!params.testModeCorrectAnswerLetter) return params.corroboration;
+  if (params.chosenLetter.toUpperCase() !== params.testModeCorrectAnswerLetter.toUpperCase()) return params.corroboration;
+  return 'coroner_verified';
+}
+
 async function writeAndReplicateSolvedAnswer(params: {
   researchQuery: string;
   domain: string;
@@ -6087,7 +6163,17 @@ async function writeAndReplicateSolvedAnswer(params: {
   // not a literal expression in the question -- see mnem_eblet_store.ts's
   // computeHonestVerification(), which deliberately does NOT grant this value verified:true the
   // way 'deterministic_compute' does (no independent grounding).
-  corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute' | 'authority_extracted_compute';
+  // D-BP148-034/BISHOP/plant-rate addition: 'coroner_verified' -- Tier 2 (ground-truth-checked).
+  // Never set by a caller directly; see groundTruthCorroborationOverride() below, applied inside
+  // this function from the two new params immediately below, the same way `verdict` is
+  // separately, honestly re-derived from ground truth elsewhere in this file.
+  corroboration?: 'concordant' | 'single_authority' | 'deterministic_compute' | 'authority_extracted_compute' | 'coroner_verified';
+  // D-BP148-034/BISHOP/plant-rate: see CanonicalPlowMcConfig.testModeCorrectAnswerLetter's own
+  // doc comment -- present ONLY on a mesh-test/benchmark relay dispatch, never a production Ask.
+  testModeCorrectAnswerLetter?: string | null;
+  // D-BP148-034/BISHOP/plant-rate: see CanonicalPlowMcConfig.groundTruthRootingMode's own doc
+  // comment for the full opt-out gate semantics.
+  groundTruthRootingMode?: boolean;
 }): Promise<void> {
   const now = Date.now();
   const hasSubstantiveOptionText = hasSubstantiveAnswerContent(params.optionText);
@@ -6107,7 +6193,7 @@ async function writeAndReplicateSolvedAnswer(params: {
         timestamp: now,
         class: 'whole_answer',
         reasoning: params.reasoning,
-        corroboration: params.corroboration,
+        corroboration: groundTruthCorroborationOverride(params),
       });
     } catch (err) {
       console.warn('[plow_mc_answerer] writeAndReplicateSolvedAnswer: local eblet write failed (non-fatal):', err);
@@ -6732,6 +6818,11 @@ export async function runCanonicalPlowMcAnswer(
           // for this slice -- a lone accept, not 2+-source agreement -- so this must NOT earn
           // verified:true (see writeAndReplicateSolvedAnswer's own doc comment).
           corroboration: 'single_authority',
+          // D-BP148-034/BISHOP/plant-rate: promotes to Tier 2 (coroner_verified) iff a real
+          // answer key is present AND meshSynergyChosenLetter matches it -- see
+          // groundTruthCorroborationOverride()'s own doc comment.
+          testModeCorrectAnswerLetter,
+          groundTruthRootingMode: config.groundTruthRootingMode,
         });
       } catch (err) {
         console.warn('[plow_mc_answerer] mesh-synergy writeback/replicate failed (non-fatal):', err);
@@ -7534,6 +7625,12 @@ export async function runCanonicalPlowMcAnswer(
               corroboration: overrideFired && deterministicOverride
                 ? overrideComputeLabel
                 : ensembleOutcome.corroboration === 'agree' ? 'concordant' : 'single_authority',
+              // D-BP148-034/BISHOP/plant-rate: promotes to Tier 2 (coroner_verified) iff a real
+              // answer key is present AND finalChosenLetter matches it -- see
+              // groundTruthCorroborationOverride()'s own doc comment. A no-op on the overrideFired
+              // branch above, which is already Tier 1 (proven) via its own anchored provenance.
+              testModeCorrectAnswerLetter,
+              groundTruthRootingMode: config.groundTruthRootingMode,
             });
           } catch (err) {
             console.warn('[plow_mc_answerer] ensemble-accepted writeback/replicate failed (non-fatal):', err);
@@ -7758,6 +7855,11 @@ export async function runCanonicalPlowMcAnswer(
               // accept, not concordance. This exact branch (a lone single_perplexity accept
               // written as verified:true) is the empirically-observed bug this Yoke fixes.
               corroboration: browserAuthorityCorroboration === 'agree' ? 'concordant' : 'single_authority',
+              // D-BP148-034/BISHOP/plant-rate: promotes to Tier 2 (coroner_verified) iff a real
+              // answer key is present AND acceptedResolution.letter matches it -- see
+              // groundTruthCorroborationOverride()'s own doc comment.
+              testModeCorrectAnswerLetter,
+              groundTruthRootingMode: config.groundTruthRootingMode,
             });
           } catch (err) {
             console.warn('[plow_mc_answerer] browser-authority-accepted writeback/replicate failed (non-fatal):', err);
@@ -8856,6 +8958,11 @@ export async function runCanonicalPlowMcAnswer(
           // exactly one surviving candidate (e.g. qid 66's shape, swarm eliminated, Perplexity the
           // sole survivor) earns 'single_authority' -- never 'concordant' for a lone survivor.
           corroboration: cascade.survivingCandidates.length >= 2 ? 'concordant' : 'single_authority',
+          // D-BP148-034/BISHOP/plant-rate: promotes to Tier 2 (coroner_verified) iff a real
+          // answer key is present AND cascade.chosenLetter matches it -- see
+          // groundTruthCorroborationOverride()'s own doc comment.
+          testModeCorrectAnswerLetter,
+          groundTruthRootingMode: config.groundTruthRootingMode,
         });
       } catch (err) {
         console.warn('[plow_mc_answerer] KN-BP144-1 Phase 2 cascade-adjudicated writeback/replicate failed (non-fatal):', err);
@@ -9197,6 +9304,13 @@ export async function runCanonicalPlowMcAnswer(
         reasoning: reasoningForLedger ?? sourcedCandidate.content,
         sourceUrl: sourcedCandidate.provenance_url,
         authority: sourcedCandidate.source,
+        // D-BP148-034/BISHOP/plant-rate: promotes to Tier 2 (coroner_verified) iff a real answer
+        // key is present AND chosenLetter matches it -- see groundTruthCorroborationOverride()'s
+        // own doc comment. This is the same ground-truth comparison verdictForLedger (above,
+        // ~line 9270) already makes for the unrelated verdict axis; this is the wiring that lets
+        // it ALSO reach corroboration for the first time.
+        testModeCorrectAnswerLetter,
+        groundTruthRootingMode: config.groundTruthRootingMode,
       });
     } catch (err) {
       console.warn('[plow_mc_answerer] swarm-voter writeback/replicate failed (non-fatal):', err);
