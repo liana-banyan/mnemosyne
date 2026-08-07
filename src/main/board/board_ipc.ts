@@ -16,6 +16,7 @@
 // belt-and-suspenders: cadence decoupling AND non-blocking I/O, not one or the other.
 import { ipcMain } from 'electron';
 import { computeBoardSnapshot, markDispatched, type BoardSnapshot } from './board_state_reader';
+import { verifyOrphanTicket, type VerifyOrphanResult } from './board_verify';
 
 // Main-side recompute cadence: slower than the renderer's UI-refresh poll (5s, see
 // board_subscription.ts) on purpose -- git doesn't need to be re-shelled-out-to 12x as often as
@@ -82,6 +83,26 @@ export function initBoardWatcher(): void {
       const dispatchedAt = markDispatched(id);
       await refresh();
       return { ok: true, dispatchedAt, snapshot: cache };
+    });
+
+    // BP148 D-BP148-028: the Verify button. Read-only -- never touches board_state.json, the
+    // cache, or git's working state. Runs its own on-demand git calls (see board_verify.ts);
+    // deliberately NOT routed through refresh()/cache, since a verify lookup has nothing to do
+    // with the 15s recompute cadence and must never be mistaken for one.
+    ipcMain.handle('board-verify-orphan', async (_event, args: { id: string }): Promise<VerifyOrphanResult> => {
+      const id = args?.id;
+      if (!id || typeof id !== 'string') {
+        return {
+          id: String(id ?? ''),
+          claimedTarget: null,
+          claimedSecondary: [],
+          repos: [],
+          verdict: 'unknown-ticket',
+          computedAt: new Date().toISOString(),
+          error: 'missing ticket id',
+        };
+      }
+      return verifyOrphanTicket(id);
     });
   } catch (err) {
     console.error('[board_ipc] IPC handler registration failed:', err);

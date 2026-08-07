@@ -69,7 +69,7 @@ export type TicketStatus =
 
 export type AlarmKind = 'COLLISION' | 'COLLISION-RISK' | 'DOUBLE-BOOKED' | 'STALLED' | 'ORPHANED' | 'IDLE' | 'UNOWNED';
 
-interface TicketRecord {
+export interface TicketRecord {
   id: string;
   ticketFile: string | null;
   reportFile: string | null;
@@ -163,7 +163,7 @@ function minsSince(d: string | Date | null): number | null {
   return d ? Math.floor((Date.now() - new Date(d).getTime()) / 60000) : null;
 }
 
-function collectTickets(): TicketRecord[] {
+export function collectTickets(): TicketRecord[] {
   const files = fs.readdirSync(DROPZONE).filter((f) => /^KN-BP\d+-\d+.*\.md$/.test(f));
   const byId = new Map<string, TicketRecord>();
   for (const f of files) {
@@ -200,6 +200,13 @@ function collectTickets(): TicketRecord[] {
     }
   }
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+}
+
+/** BP148 D-BP148-028: the one lookup board_verify.ts needs -- a single ticket's claimed
+ *  target/secondary file paths, straight from collectTickets()'s own dropzone parse (no second
+ *  parser, no cached/stale copy). Read-only, same as collectTickets() itself. */
+export function getTicketRecord(id: string): TicketRecord | null {
+  return collectTickets().find((t) => t.id === id) ?? null;
 }
 
 async function gitCommitsById(): Promise<{ map: Map<string, CommitEntry[]>; error: string | null }> {

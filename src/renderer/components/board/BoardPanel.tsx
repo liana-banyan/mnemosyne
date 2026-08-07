@@ -11,7 +11,20 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { boardSubscription, DEFAULT_BOARD_STATE, alarmCount } from './board_subscription';
-import type { BoardState, BoardRow, BoardAlarm } from './board_subscription';
+import type { BoardState, BoardRow, BoardAlarm, VerifyOrphanResult } from './board_subscription';
+
+// BP148 D-BP148-028: alarm messages carry the ticket id as their own literal prefix (see
+// board_state_reader.ts's ORPHANED alarm: `${r.id} has a report claiming...`) -- extracted here
+// with a trailing-space boundary so "KN-BP144-1" and "KN-BP144-11" never cross-match.
+function orphanIdFromAlarm(message: string): string | null {
+  const m = message.match(/^(KN-BP\d+-\d+)\s/);
+  return m ? m[1] : null;
+}
+
+type VerifyState =
+  | { status: 'loading' }
+  | { status: 'done'; result: VerifyOrphanResult }
+  | { status: 'error'; message: string };
 
 function statusColor(status: BoardRow['status']): string {
   switch (status) {
@@ -49,11 +62,77 @@ function relTime(iso: string | null): string {
   return `${Math.floor(diffMin / 60)}h ago`;
 }
 
+/** BP148 D-BP148-028: renders the Verify button's real result -- one of three honest states
+ *  (commit found / nothing found / uncommitted in the working tree), always WITH the evidence
+ *  (hash, repo, files, date), never a bare verdict. "Show the evidence, not just a verdict" is
+ *  the whole point of this ticket -- a green tick the user must trust is the same problem in a
+ *  nicer costume. */
+function VerifyEvidence({ state }: { state: VerifyState }) {
+  if (state.status === 'loading') {
+    return <div style={styles.verifyPanel}>searching mnemosyne + LianaBanyanPlatform (git log, git status)…</div>;
+  }
+  if (state.status === 'error') {
+    return <div style={{ ...styles.verifyPanel, color: '#fca5a5' }}>Verify failed: {state.message.slice(0, 300)}</div>;
+  }
+
+  const { result } = state;
+
+  if (result.verdict === 'unknown-ticket') {
+    return <div style={{ ...styles.verifyPanel, color: '#fca5a5' }}>unknown ticket: {result.error ?? `no dropzone ticket matches ${result.id}`}</div>;
+  }
+
+  const anyCommits = result.repos.some((r) => r.commits.length > 0);
+  const anyDirty = result.repos.some((r) => r.dirty.length > 0);
+
+  return (
+    <div style={styles.verifyPanel}>
+      <div style={{ ...styles.verifyVerdict, color: result.verdict === 'found' ? '#22c55e' : result.verdict === 'uncommitted' ? '#f6ad55' : '#ef4444' }}>
+        {result.verdict === 'found' && 'COMMIT FOUND'}
+        {result.verdict === 'uncommitted' && 'UNCOMMITTED IN WORKING TREE'}
+        {result.verdict === 'not_found' && 'NOTHING FOUND — this report is genuinely unbacked'}
+        <span style={styles.verifySubtle}> · claimed file: {result.claimedTarget ?? 'unknown'}{result.claimedSecondary.length > 0 ? ` (+${result.claimedSecondary.length} secondary)` : ''}</span>
+      </div>
+
+      {result.error && <div style={{ ...styles.verifySubtle, color: '#fca5a5' }}>git error during search: {result.error.slice(0, 200)}</div>}
+
+      {!anyCommits && !anyDirty && (
+        <div style={styles.verifySubtle}>searched both repos (all branches) by ticket id and by claimed file path — no matching commit, no uncommitted change.</div>
+      )}
+
+      {result.repos.map((r) => (
+        <div key={r.repo} style={styles.verifyRepoBlock}>
+          <div style={styles.verifyRepoHeader}>{r.repo} <span style={styles.verifySubtle}>({r.repoPath})</span></div>
+          {r.commits.length === 0 && r.dirty.length === 0 && <div style={styles.verifySubtle}>nothing found here</div>}
+          {r.commits.map((c) => (
+            <div key={c.sha} style={styles.verifyCommitRow}>
+              <span style={styles.verifySha}>{c.sha.slice(0, 10)}</span>
+              <span style={styles.verifySubtle}>{new Date(c.iso).toLocaleString()}</span>
+              <span style={styles.verifyBadge}>{c.matchedBy === 'ticket-id' ? 'matched: ticket id' : `matched: file (${c.matchedFile})`}</span>
+              <span style={styles.verifySubj}>{c.subj}</span>
+              {c.files.length > 0 && (
+                <span style={styles.verifySubtle}>files: {c.files.slice(0, 6).join(', ')}{c.files.length > 6 ? ` +${c.files.length - 6} more` : ''}</span>
+              )}
+            </div>
+          ))}
+          {r.dirty.length > 0 && (
+            <div style={styles.verifyDirty}>
+              uncommitted in working tree: {r.dirty.map((d) => d.trim()).join(' · ')}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function BoardPanel() {
   const [state, setState] = useState<BoardState>(DEFAULT_BOARD_STATE);
   const [selectedTicket, setSelectedTicket] = useState<string>('');
   const [dispatching, setDispatching] = useState(false);
   const [dispatchMsg, setDispatchMsg] = useState<string | null>(null);
+  // BP148 D-BP148-028: per-ticket Verify state, keyed by ticket id -- lets multiple orphan
+  // cards be verified independently without clobbering each other's result.
+  const [verifyState, setVerifyState] = useState<Record<string, VerifyState>>({});
 
   useEffect(() => {
     const unsub = boardSubscription.subscribe(setState);
@@ -90,6 +169,23 @@ export function BoardPanel() {
     }
     setDispatching(false);
   }, [selectedTicket]);
+
+  // BP148 D-BP148-028: read-only. Never marks dispatched, never touches board_state.json --
+  // just asks the main process to search real git history/working-tree status and show what it
+  // finds. See board_verify.ts for the actual search.
+  const handleVerify = useCallback(async (id: string) => {
+    setVerifyState((prev) => ({ ...prev, [id]: { status: 'loading' } }));
+    try {
+      const result = await window.amplify.boardVerifyOrphan?.(id);
+      if (result) {
+        setVerifyState((prev) => ({ ...prev, [id]: { status: 'done', result } }));
+      } else {
+        setVerifyState((prev) => ({ ...prev, [id]: { status: 'error', message: 'no response from main process' } }));
+      }
+    } catch (err) {
+      setVerifyState((prev) => ({ ...prev, [id]: { status: 'error', message: String(err) } }));
+    }
+  }, []);
 
   return (
     <div style={styles.wrap}>
@@ -155,12 +251,33 @@ export function BoardPanel() {
         ) : alarms.length === 0 ? (
           <div style={styles.noAlarms}>none</div>
         ) : (
-          alarms.map((a, i) => (
-            <div key={`${a.kind}-${i}`} style={styles.alarmRow}>
-              <span style={{ ...styles.alarmKind, color: alarmColor(a.kind) }}>{a.kind}</span>
-              <span style={styles.alarmMsg}>{a.message}</span>
-            </div>
-          ))
+          alarms.map((a, i) => {
+            const orphanId = a.kind === 'ORPHANED' ? orphanIdFromAlarm(a.message) : null;
+            const vs = orphanId ? verifyState[orphanId] : undefined;
+            return (
+              <div key={`${a.kind}-${i}`} style={styles.alarmCard}>
+                <div style={styles.alarmRow}>
+                  <span style={{ ...styles.alarmKind, color: alarmColor(a.kind) }}>{a.kind}</span>
+                  <span style={styles.alarmMsg}>{a.message}</span>
+                  {/* ── T-verify (BP148 D-BP148-028): "Verify before believing it" gets an
+                      actual verify affordance -- searches real git history/working-tree state
+                      in both repos, read-only, shows the evidence found (or its honest
+                      absence). Only rendered for ORPHANED cards; other alarm kinds are not
+                      report-vs-commit claims and have nothing for this button to check. ── */}
+                  {orphanId && (
+                    <button
+                      style={styles.verifyBtn}
+                      onClick={() => handleVerify(orphanId)}
+                      disabled={vs?.status === 'loading'}
+                    >
+                      {vs?.status === 'loading' ? 'Verifying…' : 'Verify'}
+                    </button>
+                  )}
+                </div>
+                {orphanId && vs && <VerifyEvidence state={vs} />}
+              </div>
+            );
+          })
         )}
       </div>
 
@@ -225,10 +342,40 @@ const styles: Record<string, React.CSSProperties> = {
   alarmsSection: { border: '1px solid #1e2a38', borderRadius: 6, padding: '0.5rem 0.6rem' },
   alarmsHeader: { fontSize: '0.72rem', fontWeight: 700, color: '#718096', marginBottom: '0.3rem' },
   noAlarms: { color: '#22c55e', fontSize: '0.75rem' },
-  alarmRow: { display: 'flex', gap: '0.5rem', fontSize: '0.72rem', padding: '0.15rem 0', alignItems: 'baseline' },
+  alarmCard: { padding: '0.15rem 0', borderBottom: '1px solid #131c26' },
+  alarmRow: { display: 'flex', gap: '0.5rem', fontSize: '0.72rem', padding: '0.15rem 0', alignItems: 'baseline', flexWrap: 'wrap' },
   alarmKind: { fontWeight: 700, minWidth: '80px', flexShrink: 0 },
-  alarmMsg: { color: '#cbd5e0' },
+  alarmMsg: { color: '#cbd5e0', flex: 1 },
   footerRow: { fontSize: '0.65rem', color: '#4a5568' },
+  // BP148 D-BP148-028: the Verify button + its evidence panel.
+  verifyBtn: {
+    background: '#1a1a2e', border: '1px solid #2d3748', borderRadius: 4,
+    color: '#38bdf8', fontSize: '0.68rem', fontWeight: 700, padding: '0.2rem 0.55rem',
+    cursor: 'pointer', flexShrink: 0, marginLeft: 'auto',
+  },
+  verifyPanel: {
+    marginTop: '0.3rem', marginBottom: '0.3rem', padding: '0.5rem 0.6rem',
+    background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 6,
+    fontSize: '0.68rem', color: '#cbd5e0', display: 'flex', flexDirection: 'column', gap: '0.35rem',
+  },
+  verifyVerdict: { fontWeight: 700, fontSize: '0.72rem' },
+  verifySubtle: { color: '#718096', fontSize: '0.65rem' },
+  verifyRepoBlock: {
+    borderTop: '1px solid #1e2a38', paddingTop: '0.3rem', display: 'flex', flexDirection: 'column', gap: '0.25rem',
+  },
+  verifyRepoHeader: { fontWeight: 700, color: '#a78bfa', fontSize: '0.68rem' },
+  verifyCommitRow: {
+    display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'baseline',
+    padding: '0.15rem 0', borderBottom: '1px dashed #1e2a38',
+  },
+  verifySha: { fontFamily: 'monospace', color: '#63b3ed', fontWeight: 700 },
+  verifySubj: { color: '#e2e8f0' },
+  verifyBadge: {
+    background: '#1a2e1a', color: '#22c55e', borderRadius: 8, padding: '1px 6px', fontSize: '0.6rem',
+  },
+  verifyDirty: {
+    color: '#f6ad55', fontSize: '0.65rem', padding: '0.15rem 0',
+  },
   dispatchSection: {
     display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: 'auto',
     borderTop: '1px solid #1e2a38', paddingTop: '0.5rem', flexWrap: 'wrap',
