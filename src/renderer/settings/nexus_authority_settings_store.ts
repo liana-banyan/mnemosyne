@@ -157,8 +157,24 @@ export function saveResearchArmBrowserAuthority(enabled: boolean): void {
   window.dispatchEvent(new Event('nexus-authority-settings-changed'));
 }
 
+// BP148 nexus-authority-enable fix: this write previously never dispatched
+// 'nexus-authority-settings-changed' -- the ONE event NexusAuthoritySignInPanel.tsx's own
+// useEffect (see that file's `refresh()`) listens for to recompute `armsRoutedTo` (its
+// derived "how many arms currently route to this authority" fact for Google/Perplexity's
+// enabled/disabled label). saveResearchArmMode()/saveResearchArmBrowserAuthority() above
+// both dispatch this event; this function -- the ACTUAL write path the per-arm picker
+// (NexusAuthoritySettings.tsx's handleArmAuthorityChange -> setArmAuthority below) goes
+// through on every click -- silently did not. Net effect, reported live by the Founder: a
+// user assigns Google to the Lookup arm, localStorage genuinely updates (confirmed by
+// direct read), but the sign-in panel's "Signed in, not enabled" notice never re-renders
+// until something else (e.g. toggling the master switch, or a full remount) happens to
+// fire the event or the component happens to reload. Adding the dispatch here makes this
+// write behave exactly like every other setter in this file: the read side is notified the
+// instant the write happens, with no other observable change to this function's return
+// value or its callers' behavior.
 export function savePerArmAuthority(perArm: NexusPerArmAuthority): void {
   try { localStorage.setItem(LS_NEXUS_PER_ARM, JSON.stringify(perArm)); } catch { /* non-fatal */ }
+  window.dispatchEvent(new Event('nexus-authority-settings-changed'));
 }
 
 /** Convenience setter for a single arm, reading-modifying-writing the persisted whole. */
