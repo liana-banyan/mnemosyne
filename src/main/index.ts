@@ -229,6 +229,17 @@ import { initLianaCycleScheduler } from './plow/liana_cycle_scheduler';
 // Read-only observer of dropzone/git/receipts state -- see src/main/board/ for the full port.
 import { initBoardWatcher } from './board/board_ipc';
 import { getRawBrowserAuthorityFact, type BrowserAuthorityBridge } from './plow/browser_authority_adapter';
+// BP148 D-BP148-029 (SEG per-arm-routing): pure per-arm routing-decision helper, split out so it
+// can be unit-tested without tripping this file's own module-scope app.whenReady() call (see
+// nexus_lookup_authority_routing.ts's header for why that rules out requiring dist/main/index.js
+// directly in a plain-Node test harness). Zero Electron import in that file; the actual
+// Electron-dependent read (overlayWindow.webContents.executeJavaScript) stays in THIS file, next
+// to the 'nexus-ask-lookup-fact' handler that is its only caller.
+import {
+  otherNexusBrowserAuthority,
+  planNexusLookupAuthorityRouting,
+  type NexusLookupAssignedAuthority,
+} from './nexus_lookup_authority_routing';
 // BP137 Yoke 0.9.12 Stage F1 ("persistent, always-on, logged-in browser authority") --
 // ADDITIVE. See nexus_authority_persistent_session.ts's own header for the full mechanism.
 // runBrowserAuthorityQueryFromMain() below is repointed to target ensureNexusAuthoritySession()'s
@@ -3383,6 +3394,44 @@ function registerIPCHandlers(): void {
     }
   });
 
+  // BP148 D-BP148-029 (SEG per-arm-routing): reads the Nexus per-arm authority assignment for
+  // the 'lookup_fact' arm LIVE off the main app window's (overlayWindow) own localStorage via
+  // executeJavaScript. There is deliberately no cross-process mirror for this specific setting
+  // to read instead: nexus_authority_flags.json (nexus_authority_persistent_session.ts) only
+  // ever mirrors the two master-switch booleans, never the per-arm object -- confirmed by direct
+  // read of that file's own header, which documents this exact gap as still open. Reading it
+  // live this way, rather than adding a new push-on-save leg to
+  // nexus_authority_settings_store.ts's savePerArmAuthority(), avoids any change to
+  // src/renderer/** (owned by concurrent SEGs this pass; see this ticket's OWNS/DO-NOT-EDIT
+  // split) -- overlayWindow already exists, already has the Settings UI's page loaded, and this
+  // file already probes its window.amplify state the same way elsewhere (see the preload-smoke
+  // checks near createOverlayWindow()). Returns null (never throws) for every failure mode: no
+  // window, executeJavaScript rejected, unparseable JSON, or the 'lookup_fact' key absent/not one
+  // of the four known values -- planNexusLookupAuthorityRouting() treats null exactly like an
+  // explicit 'local_free', which is today's unrestricted behavior, unchanged.
+  async function readNexusLookupArmAuthorityAssignment(): Promise<NexusLookupAssignedAuthority | null> {
+    if (!overlayWindow || overlayWindow.isDestroyed()) return null;
+    try {
+      // Key literal must stay byte-identical to nexus_authority_settings_store.ts's private
+      // LS_NEXUS_PER_ARM constant (not exported -- that file is renderer-owned, out of scope
+      // this pass); 'lookup_fact' must stay byte-identical to that file's NexusArmName literal
+      // for this arm (browser_authority_types.ts's NexusArmName union).
+      const raw = await overlayWindow.webContents.executeJavaScript(
+        `(function () { try { return window.localStorage.getItem('mnemo_nexus_per_arm_authority'); } catch (e) { return null; } })()`,
+      );
+      if (typeof raw !== 'string') return null;
+      const parsed = JSON.parse(raw) as { lookup_fact?: unknown } | null;
+      const value = parsed?.lookup_fact;
+      if (value === 'local_free' || value === 'user_google' || value === 'user_perplexity' || value === 'paid_api') {
+        return value;
+      }
+      return null;
+    } catch (err) {
+      console.warn('[nexus-ask-lookup-fact] per-arm assignment read failed (non-fatal, treated as unassigned):', err);
+      return null;
+    }
+  }
+
   // BP138 Yoke 0.9.15 FIX 4 -- Ask tab's raw-fact lookup entry point. Renderer-side
   // (LeanAskTab.tsx) already checked nexus_authority_settings_store.ts's own
   // researchArmMode/researchArmBrowserAuthority flags before ever calling this; this handler
@@ -3391,11 +3440,20 @@ function registerIPCHandlers(): void {
   // ("does NOT bypass the real safety gate"). Classification reuses classifyAnswerType()
   // directly (the SAME function Stage F2 calls, not a duplicate) -- only 'lookup_fact' ever
   // attempts a browser-authority call; 'computable'/'reasoning' return usable:false immediately,
-  // no webview/network side effect at all. Tries user_google then user_perplexity (same
-  // google-first order Stage F2 already uses) and returns the FIRST usable hit -- never both,
-  // never fabricated, never a partial result. Every non-hit path (flag off, not a lookup_fact,
-  // both authorities returned nothing) resolves { usable: false }, which LeanAskTab.tsx's caller
+  // no webview/network side effect at all. Returns the FIRST usable hit -- never both, never
+  // fabricated, never a partial result. Every non-hit path (flag off, not a lookup_fact, no
+  // authority returned anything) resolves { usable: false }, which LeanAskTab.tsx's caller
   // treats as "fall through to the existing local-Ollama path", never a thrown error.
+  //
+  // BP148 D-BP148-029: WHICH authorities get tried is now governed by the per-arm assignment
+  // (see readNexusLookupArmAuthorityAssignment/planNexusLookupAuthorityRouting above/imported)
+  // instead of unconditionally trying both. An unassigned/'local_free'/'paid_api' arm still
+  // tries both, google-first, byte-identical to pre-ticket behavior. An arm explicitly assigned
+  // to ONE browser authority tries ONLY that one first; if it comes back with nothing usable,
+  // the handler falls back to the other authority too (never silently fails the arm) and marks
+  // that fallback visibly via perArmFellBack/perArmFallbackReason on whatever result it returns,
+  // alongside perArmAssignedAuthority/perArmRestrictedTo so a caller can always tell what
+  // actually happened, not just what was configured.
   safeHandle('nexus-ask-lookup-fact', async (_event, { question }: { question: string }) => {
     const trimmed = typeof question === 'string' ? question.trim() : '';
     const answerType = classifyAnswerType(trimmed);
@@ -3414,8 +3472,14 @@ function registerIPCHandlers(): void {
         return runBrowserAuthorityQueryFromMain(query);
       },
     };
-    const authorities: Array<'user_google' | 'user_perplexity'> = ['user_google', 'user_perplexity'];
-    for (const authority of authorities) {
+
+    const perArmAssignedAuthority = await readNexusLookupArmAuthorityAssignment();
+    const routingPlan = planNexusLookupAuthorityRouting(perArmAssignedAuthority);
+    console.log(
+      `[nexus-ask-lookup-fact] per-arm routing: assigned=${perArmAssignedAuthority ?? '(unreadable/none)'} restrictedTo=${routingPlan.restrictedTo ?? '(none, trying both)'} order=[${routingPlan.authoritiesToTry.join(', ')}]`,
+    );
+
+    for (const authority of routingPlan.authoritiesToTry) {
       try {
         const fact = await getRawBrowserAuthorityFact(
           trimmed,
@@ -3423,16 +3487,51 @@ function registerIPCHandlers(): void {
           bridge,
         );
         if (fact) {
-          return { answerType, usable: true as const, ...fact };
+          return {
+            answerType, usable: true as const, ...fact,
+            perArmAssignedAuthority, perArmRestrictedTo: routingPlan.restrictedTo, perArmFellBack: false,
+          };
         }
       } catch (err) {
         console.warn(`[nexus-ask-lookup-fact] ${authority} lookup threw (non-fatal, honest null):`, err);
       }
     }
+
+    // BP148 D-BP148-029: restricted-single-authority fallback -- the assigned authority produced
+    // nothing usable (not signed in, session expired, genuinely no result). Fall back to trying
+    // the OTHER authority too, same as today's un-per-arm-routed behavior, rather than silently
+    // failing the arm or silently substituting an authority the user didn't ask for -- both the
+    // fact that a fallback happened and why are carried on whichever result this returns.
+    if (routingPlan.restrictedTo) {
+      const fallbackAuthority = otherNexusBrowserAuthority(routingPlan.restrictedTo);
+      console.log(`[nexus-ask-lookup-fact] assigned authority ${routingPlan.restrictedTo} returned nothing usable -- falling back to ${fallbackAuthority}`);
+      try {
+        const fact = await getRawBrowserAuthorityFact(
+          trimmed,
+          { researchArmMode: true, researchArmBrowserAuthority: true, preferredAuthority: fallbackAuthority },
+          bridge,
+        );
+        if (fact) {
+          return {
+            answerType, usable: true as const, ...fact,
+            perArmAssignedAuthority, perArmRestrictedTo: routingPlan.restrictedTo,
+            perArmFellBack: true, perArmFallbackReason: 'assigned_authority_unavailable' as const,
+          };
+        }
+      } catch (err) {
+        console.warn(`[nexus-ask-lookup-fact] ${fallbackAuthority} fallback lookup threw (non-fatal, honest null):`, err);
+      }
+    }
+
     // BP139: both authorities were tried and neither returned a usable fact -- distinct from the
     // 'not_lookup_fact' and 'flag_off' reasons above so a future diagnosis can tell "genuinely
     // asked the authority and got nothing" apart from "never asked at all".
-    return { answerType, usable: false as const, reason: 'authority_empty' as const };
+    return {
+      answerType, usable: false as const, reason: 'authority_empty' as const,
+      perArmAssignedAuthority, perArmRestrictedTo: routingPlan.restrictedTo,
+      perArmFellBack: !!routingPlan.restrictedTo,
+      ...(routingPlan.restrictedTo ? { perArmFallbackReason: 'assigned_authority_unavailable' as const } : {}),
+    };
   });
 
   // BP138 Yoke Phase 1: Answer Coroner IPC handler -- queries Supabase for benchmark answer
