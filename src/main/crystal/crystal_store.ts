@@ -124,8 +124,20 @@ function utcTsForFilename(): string {
 
 /**
  * deriveMintAddress -- pure, no I/O. The load-bearing property of this whole module:
- * identical `pearls` (any order, any duplication) MUST re-derive the identical 32-hex-char
- * address, every time, on any machine, forever.
+ * identical `pearls` MUST re-derive the identical 32-hex-char address, every time, on any
+ * machine, forever.
+ *
+ * SORTED BUT NOT DE-DUPLICATED (BP147, Bishop-ratified, verified against the real function --
+ * do not "fix" this, it is canonical): the input array is order-independent (`[...pearls].sort()`
+ * normalizes order before hashing) but duplicate entries are NOT collapsed, so they change the
+ * sorted array's JSON shape and therefore change the address. Measured:
+ *   deriveMintAddress(["pearl_a","pearl_b"])           -> 40b965c866ce4f9516da2ab468b2bb57
+ *   deriveMintAddress(["pearl_a","pearl_a","pearl_b"]) -> e02802d54aad31cadb7ec8d7bae883b8
+ * These are DIFFERENT addresses for a set that looks identical after de-duplication. This is
+ * intentional and load-bearing, not a bug: changing the hash to dedupe first would invalidate
+ * every handle already minted under the current scheme. Any second implementation of this
+ * algorithm MUST reproduce "sorted, not deduped" exactly, or it will silently mint different
+ * addresses for the same conceptual pearl set than this one does.
  *
  * DELIBERATE DEPARTURE FROM THE THREE EXISTING IN-MEMORY soccerball_emit IMPLEMENTATIONS:
  * they hash `{pearls, bindings}` TOGETHER, so adding one new binding fact mints an entirely
