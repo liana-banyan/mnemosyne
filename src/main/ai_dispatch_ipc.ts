@@ -257,11 +257,18 @@ interface AiDispatchSettings {
    *  csia_mode off), every new line this Yoke adds is unreachable. */
   csia_research?: boolean;
   /** BP137 Yoke (Semantic Match Durable): gates the embedding-based semantic serve-gate/read
-   *  path (see semantic_soccerball.ts + the SIMILARITY branch below). DEFAULTS OFF -- with it
-   *  off, or with it on but ollamaManager.embed() unavailable for a given request, behavior is
+   *  path (see semantic_soccerball.ts + the SIMILARITY branch below). DEFAULTS ON as of
+   *  D-BP148-003/BISHOP/M4 (Founder BP148 ruling, "it needs to be on by default") -- undefined
+   *  resolves true; set explicitly to `false` to opt back out (SEMANTIC_SOCCERBALL_MODE=1 can
+   *  still force it on over an explicit false, same OR semantics as before). With it off, or
+   *  with it on but ollamaManager.embed() unavailable for a given request, behavior is
    *  byte-identical to the existing token-similarity-only path. INDEPENDENT of answer_cache_mode
-   *  and csia_mode -- this flag only ever matters if answer_cache_mode is also on (there is no
-   *  serve-gate at all to enhance otherwise). */
+   *  and csia_mode as flags/resolvers, but NOT independent in reachability: there are TWO call
+   *  sites that consume this flag, and each sits inside a gate that still DEFAULTS OFF -- the
+   *  read-side serve-gate below is reached only when answer_cache_mode is also on, and a second,
+   *  mandatory "semantic floor" check is reached only when csia_mode is also on. This flag
+   *  resolving true is necessary but not sufficient for the semantic path to run in a default
+   *  install, since neither of those gates is open by default. */
   semantic_soccerball_mode?: boolean;
   /** BP139 Concordance Gate, OPT-IN/DEFAULT 'lenient'. Tunable acceptance bar for
    *  runAuthorityEnsemble's lone-candidate accept path (plow_mc_answerer.ts, NO-COMPUTE/
@@ -317,12 +324,24 @@ function isCsiaResearchEnabled(settings: AiDispatchSettings): boolean {
 }
 
 /** BP137 Yoke (Semantic Match Durable): resolves the semantic_soccerball_mode flag, same env-
- *  var-override convention (SEMANTIC_SOCCERBALL_MODE=1). Defaults OFF -- undefined on every
- *  settings file written before this Yoke. Does NOT by itself imply embeddings are actually
- *  available -- every call site must still check the per-request ollamaManager.embed() result
- *  (via semantic_soccerball_emit returning non-null) and fall back to the token path on null. */
+ *  var-override convention as the other resolvers in this file (SEMANTIC_SOCCERBALL_MODE=1
+ *  forces it on regardless of the settings value). DEFAULTS ON as of D-BP148-003/BISHOP/M4
+ *  (Founder BP148 ruling, "it needs to be on by default") -- undefined (every settings file
+ *  written before this flip) resolves true; an explicit `false` in settings is the opt-out and
+ *  resolves false unless the env var forces it back on. Does NOT by itself imply embeddings are
+ *  actually available -- every call site must still check the per-request ollamaManager.embed()
+ *  result (via semantic_soccerball_emit returning non-null) and fall back to the token path on
+ *  null. Does NOT by itself imply the semantic path is REACHABLE, either: see the two call
+ *  sites below, one nested under answer_cache_mode and one nested under csia_mode, both of
+ *  which still default OFF -- this flag flipping true is necessary but not sufficient. */
 function isSemanticSoccerballModeEnabled(settings: AiDispatchSettings): boolean {
-  return settings.semantic_soccerball_mode === true || process.env.SEMANTIC_SOCCERBALL_MODE === '1';
+  // D-BP148-003/BISHOP/M4/seg-m4bishop1: default flipped ON per Founder BP148 direct instruction.
+  // undefined -> true (new default); explicit false -> off; explicit true -> true; env var keeps
+  // its pre-existing OR-in behavior (can force on even over an explicit false in settings).
+  if (settings.semantic_soccerball_mode === false) {
+    return process.env.SEMANTIC_SOCCERBALL_MODE === '1';
+  }
+  return true;
 }
 
 /** BP145-M4 Slice 2: resolves the escalation_ladder_mode flag, same env-var-override
