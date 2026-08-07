@@ -793,13 +793,49 @@ const REFERENT_STOPWORDS = new Set([
   'these', 'those', 'it', 'in', 'on', 'at', 'by', 'with', 'from', 'value', 'values',
 ]);
 
+// D-BP148-013: REFERENT_ANCHOR_PATTERNS' capture class is [a-z\s] only (designed for plain-prose
+// search-engine snippets). Live chat-model output (observed: Ollama gemma4:12b via
+// scratchpad/seg_bp148_012_live_proof_output.txt) routinely wraps the exact terms these patterns
+// need to capture in markdown emphasis -- e.g. "differs from the **population parameter**" -- and
+// the bare asterisks fall outside [a-z\s], so the capture group can never reach a valid lookahead
+// terminator and the whole anchor pattern silently fails to match. Confirmed live: 3 of the 5
+// gemma4:12b qid-85 runs in that transcript produced a correct, on-topic completion ("Bias occurs
+// when the **expected estimate** differs from the **population parameter**.") that this function
+// discarded as [] purely because of the asterisks, not because the content was wrong.
+//
+// FIX CHOICE (per ticket): normalize the input before matching, not widen the capture class. This
+// changes only what the anchor patterns SEE, never what they ACCEPT -- REFERENT_ANCHOR_PATTERNS'
+// [a-z\s] class and REFERENT_STOPWORDS' literal-term filtering are both untouched, so Step 6's own
+// literal-substring guarantee (Founder's rule 11) is preserved exactly as before. Widening the
+// capture class (e.g. to [a-z\s*_`] or similar) was rejected: it would let markdown syntax
+// characters leak into the captured phrase and, through them, into extracted terms whenever a
+// pattern's lookahead happened to terminate mid-emphasis-run, which is a strictly worse and less
+// predictable failure mode than a strip that runs once, up front, before any pattern sees the text.
+//
+// Deliberately a character strip, not a balanced-pair unwrap (**bold** -> bold): live responses are
+// sometimes truncated mid-emphasis-run (see the same transcript, "...causes the results of an
+// analysis to deviate from the true value in a consistent direction.  Unlike ... bias is a flaw in
+// the design, data collection, or interpretation that pus[...]" -- truncated for display, but the
+// underlying model output itself can genuinely end mid-run in a real dispatch), and a balanced-pair
+// parser would silently do nothing on an unbalanced string, reproducing this exact defect. A strip
+// has no unbalanced case to fail on.
+function stripMarkdownEmphasis(text: string): string {
+  return text.replace(/[*_`~]/g, '');
+}
+
 /** Step 5: pull the required comparison REFERENT out of a verified definition's own text, and reduce
  *  it to a small set of content-noun terms (stopwords dropped). Returns [] (never a fabricated
  *  referent) when none of the general anchor patterns match the text at all -- an honest signal that
- *  this definition could not be mechanically reduced to a checkable predicate. */
+ *  this definition could not be mechanically reduced to a checkable predicate.
+ *
+ *  D-BP148-013: definitionText is normalized to strip markdown emphasis delimiters before any anchor
+ *  pattern runs, so live chat-model output that wraps key terms in markdown bold, italic, or code
+ *  spans is seen by REFERENT_ANCHOR_PATTERNS the same way a plain-prose snippet would be. See
+ *  stripMarkdownEmphasis above for why this is a strip, not a capture-class widening. */
 export function extractPredicateReferentTerms(definitionText: string): string[] {
+  const normalizedText = stripMarkdownEmphasis(definitionText);
   for (const pattern of REFERENT_ANCHOR_PATTERNS) {
-    const m = pattern.exec(definitionText);
+    const m = pattern.exec(normalizedText);
     if (m && m[1]) {
       const phrase = m[1].toLowerCase();
       const terms = phrase
