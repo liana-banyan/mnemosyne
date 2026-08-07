@@ -42,6 +42,13 @@
 //      simulated one.
 //   7. resolveTier1Model: with no explicit pick and Ollama unreachable (or the preferred model
 //      not installed), falls back to `fallbackModel` untouched -- never throws, never widens.
+//
+// D-BP148-024/BISHOP (Ask Tab Ladder Wiring) ADDENDUM: sections 8-12 below additionally cover
+// isPaidEscalationEnabled(), the money-safety gate added this ticket for the ladder's paid rungs
+// (TIER 3/4) and the pre-existing explicit-flagship-brain-pick branch -- both an explicit
+// settings opt-in AND a real configured Anthropic credential are required, DEFAULTS OFF (opposite
+// of every flag tested in 1-7 above), and neither condition alone is sufficient. Skipped (not
+// failed) rather than asserted against a dist/ build compiled before this ticket landed.
 
 (async function main(): Promise<void> {
 
@@ -77,11 +84,21 @@ if (!fs.existsSync(DIST_MODULE_PATH + '.js')) {
 }
 
 const mod = require(DIST_MODULE_PATH);
-const { isEscalationLadderModeEnabled, resolveTier1Model } = mod;
+const { isEscalationLadderModeEnabled, resolveTier1Model, isPaidEscalationEnabled } = mod;
 
 if (typeof isEscalationLadderModeEnabled !== 'function' || typeof resolveTier1Model !== 'function') {
   console.error('FATAL: expected exports isEscalationLadderModeEnabled/resolveTier1Model not found on the compiled module.');
   process.exit(2);
+}
+
+// D-BP148-024/BISHOP (Ask Tab Ladder Wiring): isPaidEscalationEnabled is a NEW export this
+// ticket adds (money-safety gate for the ladder's TIER 3/4 rungs and the explicit-flagship-
+// brain-pick branch). Not present on the module compiled before this ticket landed -- checked
+// separately, non-fatally, so this harness still runs its pre-existing assertions 1-7 even
+// against a stale dist/ build; section 8-12 below is skipped (not failed) in that case.
+const hasIsPaidEscalationEnabled = typeof isPaidEscalationEnabled === 'function';
+if (!hasIsPaidEscalationEnabled) {
+  console.warn('[ai_dispatch_ipc_escalation_ladder.test.ts] isPaidEscalationEnabled not found on the compiled module -- section 8-12 (money-safety gate) will be SKIPPED. Run `npm run build:main` to pick up D-BP148-024.');
 }
 
 console.log('\n=== ai_dispatch_ipc escalation-ladder local-first harness (D-BP148-022) ===\n');
@@ -168,6 +185,77 @@ if (!ollamaReachable) {
     'Ollama unreachable -> falls back to fallbackModel untouched',
     'real Ollama daemon at 127.0.0.1:11434 IS reachable on this machine -- cannot exercise the unreachable branch without a mock injection point',
   );
+}
+
+// ── 8-12: isPaidEscalationEnabled money-safety gate (D-BP148-024/BISHOP) ──────────────────
+//
+// What this proves (D-BP148-024's own acceptance bar, restated as assertions): reaching a paid
+// rung (TIER 3/4 of the ladder, or the explicit-flagship-brain-pick branch) requires BOTH an
+// explicit opt-in AND a real configured credential -- either one alone is not enough, and
+// (unlike escalation_ladder_mode/answer_cache_mode/semantic_soccerball_mode above, which all
+// DEFAULT ON) this flag DEFAULTS OFF, because it gates real money spend against a frozen budget.
+
+if (hasIsPaidEscalationEnabled) {
+  const savedKey = process.env.ANTHROPIC_API_KEY;
+  const savedPaidEnv = process.env.PAID_ESCALATION_ENABLED;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.PAID_ESCALATION_ENABLED;
+
+  // 8: undefined settings + no credential -> false. This is the real-world default state for
+  // every install today (no settings UI writes this flag yet) -- the Ask tab must never spend
+  // money out of the box.
+  assert(
+    isPaidEscalationEnabled({}) === false,
+    'undefined paid_escalation_enabled + no credential resolves false (DEFAULTS OFF, unlike every other flag in this file)',
+  );
+
+  // 9: explicit opt-in, but no credential configured -> still false. Opting in alone is not
+  // sufficient; per the ticket, "if no key/credential is configured... the ladder must stop".
+  assert(
+    isPaidEscalationEnabled({ paid_escalation_enabled: true }) === false,
+    'explicit opt-in with NO Anthropic credential configured still resolves false',
+  );
+
+  // 10: explicit opt-in AND a real (here, fake-but-present) credential -> true. Both conditions
+  // met is the only way this resolves true.
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-TEST-FAKE-KEY-do-not-use';
+  assert(
+    isPaidEscalationEnabled({ paid_escalation_enabled: true }) === true,
+    'explicit opt-in + a configured credential resolves true (both conditions met)',
+  );
+
+  // 11: credential present, but NO explicit opt-in -> false. A credential being configured
+  // (e.g. the Founder's own LockBox-loaded ANTHROPIC_API_KEY on a dev machine) must never be
+  // read as implicit consent to spend -- this is the exact silent-spend scenario the ticket
+  // names as a serious harm.
+  assert(
+    isPaidEscalationEnabled({}) === false,
+    'a configured credential with NO explicit opt-in still resolves false -- credential presence alone is never implicit consent to spend',
+  );
+  assert(
+    isPaidEscalationEnabled({ paid_escalation_enabled: false }) === false,
+    'explicit false + a configured credential resolves false (explicit opt-out honored)',
+  );
+
+  // 12: PAID_ESCALATION_ENABLED=1 env override still requires a credential -- the env var forces
+  // the OPT-IN half true (same OR-in convention as every other flag's env override in this
+  // file), but the AND-with-credential half is never bypassed by it.
+  process.env.PAID_ESCALATION_ENABLED = '1';
+  assert(
+    isPaidEscalationEnabled({ paid_escalation_enabled: false }) === true,
+    'PAID_ESCALATION_ENABLED=1 env var forces the opt-in half true even over an explicit settings false, WITH a credential present',
+  );
+  delete process.env.ANTHROPIC_API_KEY;
+  assert(
+    isPaidEscalationEnabled({ paid_escalation_enabled: false }) === false,
+    'PAID_ESCALATION_ENABLED=1 env var alone, with NO credential configured, still resolves false -- the env override cannot substitute for a real credential',
+  );
+
+  delete process.env.PAID_ESCALATION_ENABLED;
+  if (savedKey !== undefined) process.env.ANTHROPIC_API_KEY = savedKey; else delete process.env.ANTHROPIC_API_KEY;
+  if (savedPaidEnv !== undefined) process.env.PAID_ESCALATION_ENABLED = savedPaidEnv; else delete process.env.PAID_ESCALATION_ENABLED;
+} else {
+  skip('isPaidEscalationEnabled money-safety gate (8-12)', 'export not found on the compiled module -- run `npm run build:main` to pick up D-BP148-024');
 }
 
 // ── Summary ─────────────────────────────────────────────────────────────────────────────

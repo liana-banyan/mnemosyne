@@ -314,6 +314,22 @@ interface AiDispatchSettings {
    *  routing decision is made, not whether TIER 0 (the answer-cache serve gate + CSIA fast
    *  path, both unconditional/always-checked earlier in the same handler) runs. */
   escalation_ladder_mode?: boolean;
+  /** D-BP148-024/BISHOP (Ask Tab Ladder Wiring): money-safety gate for the escalation ladder's
+   *  PAID rungs only (TIER 3 cheap cloud, TIER 4 flagship) -- distinct from escalation_ladder_mode
+   *  above, which gates the whole ladder including the free TIER 1 rung, and distinct from the
+   *  pre-existing explicit-flagship-brain-pick branch below (search "money-safety gate" at that
+   *  call site), which this flag ALSO now covers. Founder is out of budget (Cursor allowance
+   *  exhausted, does not reset until 2026-09-02); wiring the Ask tab to a ladder (or a live
+   *  flagship-brain path) that silently starts spending money the moment TIER 1 abstains, or the
+   *  moment a flagship brain is active, would be a serious harm. UNLIKE every other mode flag in
+   *  this file, this one DEFAULTS OFF -- undefined resolves false. See isPaidEscalationEnabled()
+   *  below: reaching a paid call requires BOTH this flag explicitly true AND a real configured
+   *  Anthropic credential (resolveAnthropicApiKey()); either one missing stops at the last free
+   *  tier / blocks the flagship dispatch and reports an honest abstain, never a silent paid call.
+   *  No settings UI writes this flag yet (out of this ticket's scope, LeanAskTab.tsx + this file
+   *  only) -- today it can only be set via a hand-edited settings file or the
+   *  PAID_ESCALATION_ENABLED=1 env var (same override convention as every other flag here). */
+  paid_escalation_enabled?: boolean;
 }
 
 /** BP136 Yoke: resolves the answer-cache mode flag from settings, with an env-var override
@@ -377,6 +393,20 @@ export function isEscalationLadderModeEnabled(settings: AiDispatchSettings): boo
     return process.env.ESCALATION_LADDER_MODE === '1';
   }
   return true;
+}
+
+/** D-BP148-024/BISHOP: resolves whether ai-dispatch:query is allowed to reach a PAID call --
+ *  either the escalation ladder's TIER 3/4 rungs, or the pre-existing explicit-flagship-brain-
+ *  pick branch (both call sites check this same function -- search "money-safety gate"). See
+ *  paid_escalation_enabled's own doc comment above for the full rationale -- in one line:
+ *  DEFAULTS OFF (opposite of every other flag in this file), and requires BOTH an explicit
+ *  opt-in AND a real configured credential. Deliberately reuses resolveAnthropicApiKey()
+ *  (user_anthropic_key.ts) rather than reading process.env.ANTHROPIC_API_KEY directly, so this
+ *  checks the EXACT same credential dispatchViaBrain() itself will use, never a stale/different
+ *  notion of "configured". */
+export function isPaidEscalationEnabled(settings: AiDispatchSettings): boolean {
+  const optedIn = settings.paid_escalation_enabled === true || process.env.PAID_ESCALATION_ENABLED === '1';
+  return optedIn && Boolean(resolveAnthropicApiKey());
 }
 
 function getSettingsPath(): string {
@@ -1170,6 +1200,37 @@ export function registerAiDispatchIPC(): void {
             trace.push('tier2(deterministic_solver): SKIPPED -- no free-text-reachable implementation exists on this path, not faked');
             console.log('[EscalationLadder] TIER 2 (deterministic solver) has no free-text-reachable implementation on this path -- honestly skipped, proceeding to TIER 3.');
 
+            // D-BP148-024/BISHOP: money-safety gate, checked HERE -- after TIER 1 has honestly
+            // abstained and TIER 2 has been honestly skipped, but strictly BEFORE any paid rung
+            // is ever dispatched. TIER 3/4 below make real Anthropic API calls that cost real
+            // money; the Founder's budget is frozen until 2026-09-02 (see D-BP148-024 ticket).
+            // Without an explicit settings opt-in AND a real configured Anthropic credential
+            // (isPaidEscalationEnabled -- both required, see its own doc comment), the ladder
+            // stops HERE and reports an honest abstain via the SAME engine.abstained surface the
+            // renderer already uses for a genuine local abstain -- never a silent paid call.
+            if (!isPaidEscalationEnabled(settings)) {
+              trace.push('tier3+4(cloud): SKIPPED -- paid escalation disabled (no explicit opt-in and/or no Anthropic API key configured); stopping at the free-tier ceiling');
+              console.log(`[EscalationLadder] STOPPED at free-tier ceiling (paid escalation disabled). trace=${trace.join(' | ')}`);
+              if (!event.sender.isDestroyed()) {
+                event.sender.send('ask-token-complete', {
+                  content: '',
+                  hotHits: substrateCounters?.hotHits,
+                  selfContextLoaded: memoryMdContent.length > 0,
+                  escalationTier: 1,
+                  escalationTrace: trace,
+                  engine: {
+                    abstained: true,
+                    abstainReason: (tier1Result.abstainReason
+                      ? `Local model could not answer this question (${tier1Result.abstainReason}). `
+                      : 'Local model could not answer this question. ')
+                      + 'Cloud escalation exists but is disabled while paid usage is paused -- enable paid escalation and configure an Anthropic API key to allow it.',
+                    servedFromSubstrate: false,
+                  },
+                });
+              }
+              return;
+            }
+
             // TIER 3: cheap cloud (Haiku-class). Reuses dispatchViaBrain -- the SAME dispatch
             // function the flagship branch already uses -- with a real, already-used-elsewhere
             // Anthropic model id (see CHEAP_CLOUD_BRAIN's own doc comment). Abstention here
@@ -1286,6 +1347,32 @@ export function registerAiDispatchIPC(): void {
       // above) is reused as-is so the same eblet context flows into Claude as into Gemma.
       // (activeBrain computed earlier alongside `model` -- reused here, not redeclared.)
       if (activeBrain && activeBrain.kind === 'flagship') {
+        // D-BP148-024/BISHOP: money-safety gate. This branch was DEAD CODE from every UI until
+        // the Ask Tab Ladder Wiring ticket (confirmed: no renderer file called ai-dispatch:query
+        // before this ticket) -- an explicit flagship brain pick in Brain Swap could never
+        // actually trigger a paid call. Wiring the Ask tab to this handler makes it live for the
+        // first time, so it gets the SAME paid-escalation check as the ladder's TIER 3/4 (search
+        // "money-safety gate" above) before any real Anthropic spend can happen. Without an
+        // explicit opt-in AND a real configured credential, this reports an honest abstain
+        // instead of dispatching -- never a silent paid call just because a flagship brain
+        // happens to be the active pick.
+        if (!isPaidEscalationEnabled(settings)) {
+          console.log(`[ai-dispatch:query] BLOCKED flagship dispatch (brain=${activeBrain.brain_id}) -- paid escalation disabled (no explicit opt-in and/or no Anthropic API key configured).`);
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('ask-token-complete', {
+              content: '',
+              hotHits: substrateCounters?.hotHits,
+              selfContextLoaded: memoryMdContent.length > 0,
+              engine: {
+                abstained: true,
+                abstainReason: `The active brain (${activeBrain.brain_id}) is a paid cloud model, but paid escalation is disabled -- enable paid escalation and configure an Anthropic API key to use it, or switch to a local brain in Brain Swap.`,
+                servedFromSubstrate: false,
+              },
+            });
+          }
+          clearAppBusy();
+          return { ok: true, streaming: true, paidEscalationBlocked: true };
+        }
         if (!event.sender.isDestroyed()) {
           event.sender.send('ask-token-progress', { coldStart: false, delta: '', assembled: '', flagship: true, brainId: activeBrain.brain_id });
         }
