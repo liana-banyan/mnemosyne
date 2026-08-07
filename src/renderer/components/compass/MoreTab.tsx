@@ -31,6 +31,7 @@ import { LeanHelpTab } from '../LeanHelpTab';
 import { DiagnosticModeTab } from '../DiagnosticModeTab';
 import { MeshTestTerminalTab } from '../MeshTestTerminalTab';
 import { PowerDiagnosticsPanel } from './PowerDiagnosticsPanel';
+import { AuthorizationsPanel } from './AuthorizationsPanel';
 import type { MoreSubView } from './types';
 
 function HelpComposer(): React.ReactElement {
@@ -80,6 +81,10 @@ const MENU: MenuEntry[] = [
   { id: 'membership', icon: '💎', label: 'Membership', desc: '$5/year cooperative membership' },
   { id: 'help', icon: '❓', label: 'Help', desc: 'FAQ, remote diagnostics, terminal' },
   { id: 'power', icon: '🧪', label: 'Power / Diagnostics', desc: 'Advanced mesh + substrate controls' },
+  // D-BP148-038: one place for every permission MnemosyneC holds or grants -- automatic
+  // updates, mesh trust/peer verification, paid cloud escalation, Nexus authorities, and any
+  // active benchmark/long-running task.
+  { id: 'authorizations', icon: '🔐', label: 'Authorizations', desc: 'Permissions the app holds: updates, mesh trust, paid escalation, Nexus' },
 ];
 
 export interface MoreTabProps {
@@ -123,6 +128,7 @@ export function MoreTab({ subView, onSubViewChange, authState, currentMode, onMo
           {subView === 'membership' && <MembershipTab />}
           {subView === 'help' && <HelpComposer />}
           {subView === 'power' && <PowerDiagnosticsPanel authState={authState} />}
+          {subView === 'authorizations' && <AuthorizationsPanel onSubViewChange={onSubViewChange} />}
         </div>
       </div>
     );

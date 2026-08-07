@@ -435,6 +435,20 @@ contextBridge.exposeInMainWorld('amplify', {
     return () => ipcRenderer.removeListener('update-state-changed', handler);
   },
 
+  // ── Mesh Trust / Peer Verification (D-BP148-038 Authorizations panel) ───
+  // Bridges the two IPC handlers mesh_trust_settings.ts's registerMeshTrustSettingsIpc()
+  // already registers at app boot (src/main/index.ts) -- that setting has genuinely
+  // enforced since KN-BP144-16 (peer_server.ts /api/plow-domain, constellation_discovery.ts
+  // both fail closed on an unsigned peer unless this flag is true), but until this ticket no
+  // preload channel existed to read or flip it from any renderer. See
+  // src/main/federation/mesh_trust_settings.ts's own header for the exact one-thing this
+  // setting governs (tolerating an ABSENT signature only -- a present-but-failing signature
+  // is refused unconditionally regardless of this flag).
+  getMeshTrustSettings: (): Promise<{ allowUnauthenticatedLanDiscovery: boolean }> =>
+    ipcRenderer.invoke('mesh-trust:get-settings'),
+  setMeshTrustAllowUnauthenticatedLanDiscovery: (allow: boolean): Promise<{ allowUnauthenticatedLanDiscovery: boolean }> =>
+    ipcRenderer.invoke('mesh-trust:set-allow-unauthenticated-lan-discovery', allow),
+
   // ── MV-CN Peer Mesh (SAGA 3 BP045 W1) ───────────────────────────────────
   getMeshState: (): Promise<{ peers: unknown[]; relayConnected: boolean; ownPeerId: string }> =>
     ipcRenderer.invoke('get-mesh-state'),

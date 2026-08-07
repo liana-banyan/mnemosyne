@@ -256,6 +256,9 @@ declare global {
       onAutoUpdatePatchReady: (cb: (data: { version: string }) => void) => () => void;
       onAutoUpdateMajorAvailable: (cb: (data: { version: string }) => void) => () => void;
       onAutoUpdateApproveRequired: (cb: (data: { version: string; readyPath: string }) => void) => () => void;
+      // Mesh Trust / Peer Verification (D-BP148-038 Authorizations panel)
+      getMeshTrustSettings?: () => Promise<{ allowUnauthenticatedLanDiscovery: boolean }>;
+      setMeshTrustAllowUnauthenticatedLanDiscovery?: (allow: boolean) => Promise<{ allowUnauthenticatedLanDiscovery: boolean }>;
       // MoneyPenny
       getMoneyPennyUrl: () => Promise<{ url: string; ips: string[]; port: number }>;
       // Auth (Phase 7)
