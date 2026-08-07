@@ -2,7 +2,15 @@
 // §2 Truth-Always · §3 Sonnet 4.6 · Founder-ratified
 //
 // LeanAskTab — Ask A Question tab for the 3-tab LeanShell.
-// Model: gemma4:12b — LOCAL ONLY (A1.1 hard binding, no cloud exposure).
+// Model: gemma4:12b — LOCAL BY DEFAULT. D-BP148-024 AMENDMENT (see handleSend's own header note
+// near its ai-dispatch:query call site for the full writeup): the A1.1 "no cloud exposure" framing
+// above predates BP132 Yoke #21 C5's flagship-brain-swap feature and is no longer strictly true --
+// this tab now runs through ai-dispatch:query's real escalation ladder (BP145-M4 Slice 2) and the
+// pre-existing explicit-flagship-brain-pick branch, both of which CAN reach a paid Anthropic call.
+// Both are money-gated behind isPaidEscalationEnabled() (ai_dispatch_ipc.ts, main-process-only,
+// cannot be bypassed from this file) which DEFAULTS OFF and requires an explicit opt-in plus a
+// real configured credential -- with no settings UI wired to that flag yet, this tab is local-only
+// in practice today, but it is no longer local-only by hard binding in the code.
 // SEG-1 v0.1.57: routes through ai-dispatch:query IPC (substrate HOT retrieve active).
 // v0.1.57.1 (BP081): token streaming + cold-start heartbeat.
 // v0.1.62 (BP082): Clear + Save & Clear buttons in header. Save uses Blob download (path-b).
@@ -817,6 +825,30 @@ export function LeanAskTab({ onSwitchToHome, handshakeSoundEnabled = false }: Le
         // field -- absent/false-non-meaningful fields simply produce no badge.
         const rawData = data as Record<string, unknown>;
         const selfContextLoaded = typeof rawData.selfContextLoaded === 'boolean' ? rawData.selfContextLoaded as boolean : undefined;
+        // D-BP148-024/BISHOP (Ask Tab Ladder Wiring): escalationTier/brainId/flagship are real
+        // fields ai-dispatch:query's ladder emits (see ai_dispatch_ipc.ts's "EscalationLadder"
+        // block) but are not part of the typed onAskTokenComplete payload in preload.ts -- same
+        // additive-but-untyped convention as selfContextLoaded/bmv above, read the same way.
+        // "Do not invent a new UI surface" per this ticket: this reuses the EXISTING
+        // completion:provenance badge (AskEngineView.tsx already renders `Provenance: {text}`)
+        // as the one place the user sees which tier answered, rather than adding a new badge.
+        // Real substrate provenance (data.provenance, e.g. a rooted eblet's source) always wins
+        // when present -- the tier label is only synthesized as a fallback when there is no more
+        // specific provenance string already on this completion.
+        const escalationTier = typeof rawData.escalationTier === 'number' ? rawData.escalationTier as number : undefined;
+        const brainId = typeof rawData.brainId === 'string' ? rawData.brainId as string : undefined;
+        const flagshipTierLabel = brainId
+          ? `flagship brain "${brainId}" (paid cloud)`
+          : 'flagship (paid cloud)';
+        const tierLabel = escalationTier === 1
+          ? 'escalation ladder — TIER 1 (local model, free)'
+          : escalationTier === 3
+          ? `escalation ladder — TIER 3 (cheap cloud${brainId ? `: ${brainId}` : ''}, paid)`
+          : escalationTier === 4
+          ? `escalation ladder — TIER 4 (${flagshipTierLabel})`
+          : rawData.flagship === true
+          ? flagshipTierLabel
+          : undefined;
         updateMsgEngine(id, {
           streaming: false,
           substrateChecking: false,
@@ -825,12 +857,15 @@ export function LeanAskTab({ onSwitchToHome, handshakeSoundEnabled = false }: Le
             servedFromSubstrate: data.servedFromSubstrate,
             cost_usd: data.cost_usd,
             latency_ms: data.latency_ms,
-            provenance: data.provenance,
+            provenance: data.provenance ?? tierLabel,
             verified: data.verified,
             selfContextLoaded,
           },
-          // KN-BP144-8 Phase 1, ADDITIVE: only present when this completion came from the
-          // engine path (ai-dispatch:query-engine) -- absent entirely on a plain-chat turn.
+          // KN-BP144-8 Phase 1, ADDITIVE: only present when this completion came from either
+          // engine path -- ai-dispatch:query-engine (now orphaned, see this file's header), or
+          // D-BP148-024's ai-dispatch:query ladder (a real local-model abstain, OR the
+          // money-safety-gate's own honest-abstain-instead-of-paid-call event) -- absent
+          // entirely on a served/non-abstained plain-chat or ladder-TIER-1 turn.
           ...(data.engine ? { receipt: data.engine as AskEngineState['receipt'] } : {}),
         });
 
@@ -947,18 +982,38 @@ export function LeanAskTab({ onSwitchToHome, handshakeSoundEnabled = false }: Le
       }
     }
 
-    // KN-BP144-8 Phase 1: the Ask tab now calls the actual free-text engine
-    // (canonical_pipeline.ts's runCanonicalFreeTextQuestion via ai-dispatch:query-engine) --
-    // substrate-first ROOTED check, then specialist swarm + Saladin + Furnace + Three Fates
-    // arbitration -- in place of the old plain-Ollama-chat ai-dispatch:query call. Per ticket
-    // 1.5, this is a real replacement, not an opt-in: an abstention now renders as an
-    // abstention (see onAskTokenComplete above), never a plain local-model guess relabeled as
-    // an engine answer. KNOWN SCOPE LIMIT (reported honestly, not silently): the engine takes
-    // a single free-text question, not this tab's multi-turn message history -- prior-turn
-    // context in `messages` is not passed. Every question is answered fresh, exactly as the
-    // benchmark harness itself answers each question fresh.
-    if (!window.amplify?.aiDispatch?.queryEngine) {
-      updateMsgAndSave(aiId, '⚠ Preload bridge missing (engine) · reinstall MnemosyneC.');
+    // D-BP148-024/BISHOP (Ask Tab Ladder Wiring), SUPERSEDING the KN-BP144-8 Phase 1 note this
+    // replaces: the Ask tab previously called ai-dispatch:query-engine directly -- always-local,
+    // NO escalation, and a real abstain from canonical_pipeline.ts rendered as an EMPTY bubble
+    // (content: '' with no further attempt). A correctly-shaped escalation ladder already existed
+    // on the SEPARATE ai-dispatch:query channel (BP145-M4 Slice 2: TIER 1 local honest-abstain ->
+    // TIER 2 deterministic solver, honestly skipped -> TIER 3 cheap cloud -> TIER 4 flagship,
+    // triggered by a real `abstained` field, never a timer) but no renderer file called it, so it
+    // was dead code. TIER 1 of that ladder IS canonical_pipeline.ts's runCanonicalFreeTextQuestion
+    // -- the SAME engine query-engine called directly, so this is not a behavior regression for a
+    // genuine local abstain; the real gain is TIER 0 (answer-cache exact-match serve, checked
+    // before TIER 1) and TIER 1 now preferring the stronger llama3.3:70b over the settings/floor
+    // model (D-BP148-022) when no explicit model pick exists, plus the ladder framework being in
+    // place at all so a real abstain climbs instead of dying once paid escalation is enabled.
+    //
+    // MONEY CONSTRAINT (not optional, see D-BP148-024 ticket): TIER 3/4 are real paid Anthropic
+    // calls, and the Founder's budget is frozen until 2026-09-02. ai_dispatch_ipc.ts's
+    // isPaidEscalationEnabled() gate (checked server-side, main-process-only, cannot be bypassed
+    // from here) requires BOTH an explicit settings opt-in AND a real configured Anthropic
+    // credential before TIER 3/4 -- or the pre-existing explicit-flagship-brain-pick branch this
+    // same channel also reaches -- are ever allowed to fire. Neither is wired to any settings UI
+    // yet (out of this ticket's scope), so today this always, honestly, stops at the free TIER 1
+    // rung and reports an abstain via the SAME `data.engine.abstained` surface a genuine local
+    // abstain already uses (see onAskTokenComplete above) -- this file never has to know or care
+    // which of "local model abstained" vs "paid tier declined" happened; both render identically,
+    // honestly, as an abstention, never a fabricated answer and never a silently empty bubble.
+    //
+    // KNOWN SCOPE LIMIT (reported honestly, not silently): same as before this ticket -- the
+    // engine takes a single free-text question, not this tab's multi-turn message history;
+    // `messages` below carries only the current turn. Every question is answered fresh, exactly
+    // as the benchmark harness itself answers each question fresh.
+    if (!window.amplify?.aiDispatch?.query) {
+      updateMsgAndSave(aiId, '⚠ Preload bridge missing (ai-dispatch:query) · reinstall MnemosyneC.');
       clearStream();
       setThinking(false);
       textareaRef.current?.focus();
@@ -966,11 +1021,14 @@ export function LeanAskTab({ onSwitchToHome, handshakeSoundEnabled = false }: Le
     }
 
     try {
-      const result = await window.amplify.aiDispatch.queryEngine({ question: text });
+      const result = await window.amplify.aiDispatch.query({
+        court_member: 'ask_tab',
+        messages: [{ role: 'user', content: text }],
+      });
 
       if (!result?.ok) {
         // Pre-stream error — no events will fire; handle synchronously
-        const errMsg = result?.error ?? 'Unknown error from the engine.';
+        const errMsg = result?.error ?? 'Unknown error from the local AI runtime.';
         const displayMsg = errMsg.includes('No compatible model') || errMsg.includes('not reachable')
           ? '⚠ Your local AI runtime is still setting up. Check the Home tab.'
           : `⚠ Ask threw: ${errMsg}. See Diagnostic.`;
@@ -985,7 +1043,7 @@ export function LeanAskTab({ onSwitchToHome, handshakeSoundEnabled = false }: Le
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       updateMsgAndSave(aiId, `⚠ Ask threw: ${errMsg}. See Diagnostic.`);
-      console.warn('[LeanAskTab] aiDispatch.queryEngine threw:', e);
+      console.warn('[LeanAskTab] aiDispatch.query threw:', e);
       clearStream();
       setThinking(false);
       textareaRef.current?.focus();
