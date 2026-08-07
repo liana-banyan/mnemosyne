@@ -239,8 +239,11 @@ interface AiDispatchSettings {
   eblet_store_quota?: '10mb' | '100mb' | '1gb' | 'unlimited';
   federation_exchange_enabled?: boolean;
   /** BP136 Yoke: gates the answer-cache read-through/write-back short-circuit in
-   *  ai-dispatch:query. DEFAULTS OFF (undefined === off) -- with it off, ai-dispatch:query
-   *  behaves byte-for-byte as it did before this Yoke. */
+   *  ai-dispatch:query. DEFAULTS ON as of D-BP148-014/BISHOP (Founder BP148 ruling, opening
+   *  this gate is what makes the already-ON semantic_soccerball_mode flag reachable) --
+   *  undefined resolves true; set explicitly to `false` to opt back out (ANSWER_CACHE_MODE=1
+   *  can still force it on over an explicit false, same OR semantics as before). With it off,
+   *  ai-dispatch:query behaves byte-for-byte as it did before this Yoke. */
   answer_cache_mode?: boolean;
   /** BP136 Yoke v2a (CSIA activation): gates the Psionic zero-LLM prediction + convergence-on-
    *  match fast path in ai-dispatch:query. INDEPENDENT of answer_cache_mode above -- the two
@@ -301,10 +304,16 @@ interface AiDispatchSettings {
 }
 
 /** BP136 Yoke: resolves the answer-cache mode flag from settings, with an env-var override
- *  (ANSWER_CACHE_MODE=1) for quick local testing without touching the settings file. Defaults
- *  OFF -- the field is undefined on every settings file written before this Yoke. */
+ *  (ANSWER_CACHE_MODE=1) for quick local testing without touching the settings file. DEFAULTS
+ *  ON as of D-BP148-014/BISHOP (Founder BP148 ruling) -- undefined (every settings file written
+ *  before this flip) resolves true; an explicit `false` in settings is the opt-out and resolves
+ *  false unless the env var forces it back on. Mirrors isSemanticSoccerballModeEnabled()'s
+ *  exact shape below. */
 function isAnswerCacheModeEnabled(settings: AiDispatchSettings): boolean {
-  return settings.answer_cache_mode === true || process.env.ANSWER_CACHE_MODE === '1';
+  if (settings.answer_cache_mode === false) {
+    return process.env.ANSWER_CACHE_MODE === '1';
+  }
+  return true;
 }
 
 /** BP136 Yoke v2a (CSIA activation): resolves the csia_mode flag, same env-var-override
@@ -614,9 +623,10 @@ export function registerAiDispatchIPC(): void {
       // model call) when it is an exact question match, or when it clears
       // SERVE_VERBATIM_THRESHOLD on question<->question similarity (distinct from the 0.08
       // Q/A answer-relevance gate used above/elsewhere in this file for RAG relevance).
-      // Gated behind ANSWER_CACHE_MODE, DEFAULT OFF -- with it off this block is a no-op and
-      // ai-dispatch:query behaves byte-for-byte as it did before this Yoke (verified: disabling
-      // the flag skips every line below and falls straight through to the existing RAG path).
+      // Gated behind ANSWER_CACHE_MODE, DEFAULTS ON as of D-BP148-014/BISHOP -- with it off
+      // (explicit `false` in settings) this block is a no-op and ai-dispatch:query behaves
+      // byte-for-byte as it did before this Yoke (verified: disabling the flag skips every line
+      // below and falls straight through to the existing RAG path).
       //
       // BP136 Yoke (hotfix, post-Euler-mismatch incident): the SIMILARITY branch below (the
       // EXACT branch above it is unaffected and stays as-is -- exact match is always safe) now
