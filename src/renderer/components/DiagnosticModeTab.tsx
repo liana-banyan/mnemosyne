@@ -159,7 +159,12 @@ const AU_DEFAULT: AutoUpdateConfig = {
   majorVersionRequiresApproval: true,
 };
 
-function AutomaticUpdatesConsentPanel(): React.ReactElement {
+// D-BP148-038: exported (was module-private) so the new Authorizations panel
+// (compass/AuthorizationsPanel.tsx) can mount this SAME component instead of forking a
+// second copy -- there is still only one persisted consent flag and now still only one
+// implementation of the control that reads/writes it. This tab's own usage above
+// (<AutomaticUpdatesConsentPanel /> inside DiagnosticModeTab) is untouched.
+export function AutomaticUpdatesConsentPanel(): React.ReactElement {
   const [cfg, setCfg] = useState<AutoUpdateConfig>(AU_DEFAULT);
   const [loaded, setLoaded] = useState(false);
   const [confirming, setConfirming] = useState(false);

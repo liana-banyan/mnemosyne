@@ -17,7 +17,8 @@ export type MoreSubView =
   | 'settings'
   | 'membership'
   | 'help'
-  | 'power';
+  | 'power'
+  | 'authorizations';
 
 /** Single navigation callback threaded down through every Compass tab so the Ask home's
  *  quick-starts (Phase 3) can deep-link straight into a More sub-view instead of forcing a
