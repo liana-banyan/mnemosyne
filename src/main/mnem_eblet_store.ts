@@ -1674,9 +1674,136 @@ export async function queryVerifiedEblets(question: string, topK = 3): Promise<V
   const qNorm = question.trim().toLowerCase();
   const exactMatches = entries.filter((e) => e.question.trim().toLowerCase() === qNorm);
   if (exactMatches.length > 0) {
-    const nonComponent = exactMatches.filter((e) => e.class !== 'component');
-    const component = exactMatches.filter((e) => e.class === 'component');
-    return [...nonComponent, ...component];
+    // D-BP148-015/BISHOP/serve-path-ranking: file order is not a quality signal. The audit
+    // (AUDIT_BP148_IS_THE_ANSWER_CACHE_SAFE_TO_SERVE.md) showed this exact branch returning
+    // candidates in raw file/write order with no ranking at all, so ai_dispatch_ipc.ts's
+    // `verifiedHits.find(...)` (the verbatim-serve gate) always got the OLDEST surviving
+    // answer -- two arithmetic-verified cases (a density question, a Kepler binary-star
+    // period question) showed a wrong single-authority guess served while a later, Tier-1
+    // deterministic-compute answer for the identical question sat unreached in the same file.
+    //
+    // Fix: re-derive rootedness at READ time using THIS FILE's own rooting_rule.ts imports --
+    // the SAME classifyCorroborationTier()/isRooted() pair computeHonestVerification() already
+    // uses at write time (below) and plow_mc_answerer.ts's own production-readback path
+    // already uses ad hoc at read time (computeHonestVerification(readbackExact), guarded
+    // "never trust the stored verified flag alone"). Never a new/parallel notion of "rooted" --
+    // a record's PAST verified:true is no longer trusted verbatim for serving; only what its
+    // own corroboration/provenance can prove TODAY is. This is a retrieval decision only --
+    // Rule 66, nothing on disk is touched, an unrooted record just stops being servABLE.
+    const tierOf = (e: VerifiedEbletEntry) => classifyCorroborationTier(e.corroboration, e.provenance);
+    const rankedAll = exactMatches.map((e) => ({ entry: e, tier: tierOf(e), rooted: isRooted(tierOf(e)) }));
+    const rooted = rankedAll.filter((r) => r.rooted);
+
+    if (rooted.length === 0) {
+      console.log(
+        `[EbletStore] queryVerifiedEblets: ${exactMatches.length} exact-question-text match(es) ` +
+        `found but 0 pass isRooted() at read time -- abstaining, not serving (D-BP148-015)`,
+      );
+      return [];
+    }
+
+    // Ranking order within the rooted pool, most-preferred first -- justified per-step:
+    //  1. Higher tier: 'proven' (Tier 1, a solver computed it) before 'ground-truth-checked'
+    //     (Tier 2, checked against a known key). Tier 3/unrooted never reach here (filtered
+    //     above) -- isRooted()/classifyCorroborationTier() are the ONLY notion of rootedness
+    //     used, imported verbatim from rooting_rule.ts, never reinvented.
+    //  2. A real verdict ('verified' or a ground-truth 'correct') over an absent/'unverified'
+    //     one -- separates a record that has actually been through the honest write-time gate
+    //     (computeHonestVerification()) from a legacy row whose verified:true predates that
+    //     gate (the audit's 432-record/60%-of-servable-pool finding: verified:true paired with
+    //     verdict undefined/'unverified', a pairing the current write path cannot produce).
+    //  3. An EXPLICIT corroboration:'deterministic_compute' flag (compute_sidecar.ts's own
+    //     signal, set by the component that actually ran the computation) over a record that
+    //     only reached Tier 1 via classifyCorroborationTier()'s provenance-STRING fallback
+    //     (for callers that never set the field) -- the explicit flag is the more direct proof.
+    //  4. Most recent write wins the final tie -- newer writes are more likely to reflect the
+    //     current (fixed) write-time gate than an old one.
+    const tierRank = (t: ReturnType<typeof tierOf>) => (t === 'proven' ? 0 : t === 'ground-truth-checked' ? 1 : 2);
+    const hasRealVerdict = (e: VerifiedEbletEntry) => e.verdict === 'verified' || e.verdict === 'correct';
+    const verdictRank = (e: VerifiedEbletEntry) => (hasRealVerdict(e) ? 0 : 1);
+    const explicitComputeRank = (e: VerifiedEbletEntry) => (e.corroboration === 'deterministic_compute' ? 0 : 1);
+    type RankKey = [number, number, number];
+    const rankKey = (r: (typeof rooted)[number]): RankKey => [
+      tierRank(r.tier),
+      verdictRank(r.entry),
+      explicitComputeRank(r.entry),
+    ];
+    const compareKey = (a: RankKey, b: RankKey) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+
+    // Contradiction handling (D-BP148-015 step 3): group the ROOTED, non-component candidates
+    // by normalized answer text. class:'component' entries are excluded from this grouping --
+    // they are supporting-fact fragments stamped under the SAME question text as their parent
+    // whole_answer (csia_research.ts), so grouping them in would manufacture a false
+    // contradiction between an answer and its own component. A single distinct rooted answer
+    // -> no contradiction, rank and serve normally. 2+ distinct rooted answers to the identical
+    // question -> compare each answer-group's BEST rank key; serve the strictly-best group, or
+    // ABSTAIN (return []) if the top two groups tie on rank -- "prefer the better-rooted one; if
+    // indistinguishable, abstain and let the normal dispatch path run" (an honest cache miss is
+    // always cheaper than a confident wrong answer).
+    const rootedNonComponent = rooted.filter((r) => r.entry.class !== 'component');
+    const rootedComponent = rooted.filter((r) => r.entry.class === 'component');
+
+    if (rootedNonComponent.length === 0) {
+      // Only rooted components survived (no rooted whole-answer for this exact question) --
+      // return them for RAG/topical use; ai_dispatch_ipc.ts's topVerifiedHit already filters
+      // class !== 'component', so the verbatim-serve gate naturally sees no candidate here too.
+      return rootedComponent
+        .slice()
+        .sort((a, b) => b.entry.timestamp - a.entry.timestamp)
+        .map((r) => r.entry);
+    }
+
+    const byAnswer = new Map<string, typeof rootedNonComponent>();
+    for (const r of rootedNonComponent) {
+      const key = r.entry.answer.trim().toLowerCase();
+      const list = byAnswer.get(key) ?? [];
+      list.push(r);
+      byAnswer.set(key, list);
+    }
+    // ADDITIONAL tiebreak, beyond the four ranking criteria above -- disclosed explicitly, not
+    // slipped in silently. Measured against the real store (D-BP148-015 verification): the
+    // density acceptance case has 4 disagreeing ROOTED answer-groups that tie EXACTLY on tier/
+    // verdict/explicit-corroboration (14 records compute "C) .60 g/cc" via three independent
+    // deterministic sub-methods -- density/bare_value/answer_coroner -- vs 2 records for "A) 1.00
+    // g/cc" and 1 for "B) .70 g/cc", both from a single, internally-inconsistent sub-method,
+    // `deterministic_compute:unit_aware`, that also produced "C" most of the time). Without this
+    // tiebreak the ranking above would call that indistinguishable and abstain -- defensible, but
+    // it throws away real signal: EVERY one of these 18 records is INDEPENDENTLY Tier-1 rooted on
+    // its own terms already (unlike KN-BP142-6's Tier-3 "concordant" failure mode this ticket must
+    // not reintroduce -- that was N models merely agreeing, none independently proven; this is N
+    // ALREADY-proven derivations, via different compute sub-methods, being counted only to break a
+    // tie between them, never to grant rootedness itself). More independently-rooted derivations
+    // landing on the same answer is stronger evidence than fewer; ties (equal group size) still
+    // abstain below, so a genuine even split is never guessed. Placed after the four literal
+    // criteria and before recency: it is a claim about how many independent proofs exist, which
+    // outranks which single proof happens to be newest.
+    const groups = Array.from(byAnswer.values()).map((list) => {
+      const best = list.reduce((b, r) => (compareKey(rankKey(r), rankKey(b)) < 0 ? r : b));
+      const groupKey: [number, number, number, number] = [...rankKey(best), -list.length];
+      return { list, groupKey };
+    });
+    const compareGroupKey = (a: [number, number, number, number], b: [number, number, number, number]) =>
+      a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
+    groups.sort((a, b) => compareGroupKey(a.groupKey, b.groupKey));
+
+    if (groups.length > 1 && compareGroupKey(groups[0].groupKey, groups[1].groupKey) === 0) {
+      console.log(
+        `[EbletStore] queryVerifiedEblets: ${groups.length} mutually contradictory rooted ` +
+        `answer(s) for one exact question, indistinguishable by rank AND independent-derivation ` +
+        `count -- abstaining, not serving (D-BP148-015)`,
+      );
+      return [];
+    }
+
+    const winningGroup = groups[0].list
+      .slice()
+      .sort((a, b) => compareKey(rankKey(a), rankKey(b)) || b.entry.timestamp - a.entry.timestamp)
+      .map((r) => r.entry);
+    const winningComponents = rootedComponent
+      .slice()
+      .sort((a, b) => b.entry.timestamp - a.entry.timestamp)
+      .map((r) => r.entry);
+    return [...winningGroup, ...winningComponents];
   }
 
   // Keyword fallback
