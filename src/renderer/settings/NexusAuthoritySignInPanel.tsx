@@ -27,12 +27,29 @@
 // Google/Perplexity have no single enable boolean anywhere in the codebase -- their "on" state is
 // which arm(s) NexusAuthoritySettings.tsx's per-arm picker (rendered directly above this section)
 // currently routes to them, already loaded via loadNexusAuthoritySettings().perArmAuthority. That
-// real, already-existing data drives their (read-only) enabled/disabled fact here instead of a
-// fabricated checkbox with nothing behind it.
+// real, already-existing data drives their enabled/disabled fact here.
+//
+// BP148 nexus-authority-enable fix (Founder live report: assigning Google/Perplexity via the
+// per-arm picker above still left this row saying "Signed in, not enabled"): two bugs, fixed
+// together. (1) nexus_authority_settings_store.ts's savePerArmAuthority() never dispatched the
+// 'nexus-authority-settings-changed' event this panel's own refresh() listens for, so a per-arm
+// assignment updated localStorage correctly but never told this ALREADY-MOUNTED sibling
+// component to re-read it -- the label was stale, not wrong data. Fixed at the store (additive,
+// one line). (2) Per the Founder's explicit ask ("either be on by default, or have their own
+// check boxes right there to enable... I don't want to make users guess"), the row below is no
+// longer read-only for Google/Perplexity -- clicking it writes a REAL assignment (arm ->
+// authority, via setArmAuthority, the exact same call the per-arm picker above makes) rather
+// than a second, disconnected boolean. Checking it assigns this authority to the `lookup_fact`
+// arm (both authorities' own descriptions above frame them as fact-lookup sources; picking a
+// single, predictable target arm avoids guessing which of the user's existing per-arm choices to
+// touch); unchecking resets every arm currently pointed at this authority back to 'local_free'.
+// This is still not a second, independent enable bit -- it is a convenience mutation of the same
+// real per-arm data the picker above reads/writes, so the two controls can never disagree.
 
 import { useCallback, useEffect, useState } from 'react';
-import { loadNexusAuthoritySettings } from './nexus_authority_settings_store';
+import { loadNexusAuthoritySettings, setArmAuthority } from './nexus_authority_settings_store';
 import { loadMnemDrt, saveMnemDrt, persistMnemDrtToBackend } from '../components/SettingsTab';
+import { NEXUS_ARM_NAMES, type NexusArmName, type NexusAuthorityName } from '../../shared/plow/browser_authority_types';
 
 // BP140-K4: widened from 3 to 5 members (chatgpt/gemini added). Kept as an independent literal
 // union here rather than a cross-layer import of the shared BrowserAuthorityName -- same
@@ -82,26 +99,62 @@ export function NexusAuthoritySignInPanel() {
   const [mnemDrtSpecialists, setMnemDrtSpecialists] = useState<Record<string, boolean>>(
     () => loadMnemDrt().mnem_drt_specialists,
   );
-  // D2: which arm(s) currently route to user_google / user_perplexity -- real data already
-  // persisted by NexusAuthoritySettings.tsx's per-arm picker, read here (not written) to derive
-  // an honest enabled/disabled fact for the two authorities with no mnem_drt_specialists entry.
-  const [armsRoutedTo, setArmsRoutedTo] = useState<Record<string, number>>({});
+  // D2/BP148: the full per-arm map, not just a derived count -- real data already persisted by
+  // NexusAuthoritySettings.tsx's per-arm picker (and now also by this panel's own checkbox, see
+  // handleToggleBrowserAuthority below). Kept as the full map (not pre-reduced to counts) so the
+  // BP148 checkbox handler can find and reset EVERY arm currently pointed at an authority, not
+  // just count them.
+  const [perArmAuthority, setPerArmAuthority] = useState<Record<NexusArmName, NexusAuthorityName> | null>(null);
 
   useEffect(() => {
     const refresh = () => {
       const snapshot = loadNexusAuthoritySettings();
       setFlagsEnabled(snapshot.researchArmMode && snapshot.researchArmBrowserAuthority);
-      const armCounts: Record<string, number> = {};
-      for (const authority of Object.values(snapshot.perArmAuthority)) {
-        armCounts[authority] = (armCounts[authority] ?? 0) + 1;
-      }
-      setArmsRoutedTo(armCounts);
+      setPerArmAuthority(snapshot.perArmAuthority);
       setMnemDrtSpecialists(loadMnemDrt().mnem_drt_specialists);
     };
     refresh();
     setLoaded(true);
     window.addEventListener('nexus-authority-settings-changed', refresh);
     return () => window.removeEventListener('nexus-authority-settings-changed', refresh);
+  }, []);
+
+  // BP148: derives the same "how many arms route here" count the old armsRoutedTo state used
+  // to precompute, now from the live perArmAuthority map so it's never one write behind.
+  const armCountFor = useCallback((authority: NexusAuthorityName): number => {
+    if (!perArmAuthority) return 0;
+    let n = 0;
+    for (const arm of NEXUS_ARM_NAMES) if (perArmAuthority[arm] === authority) n++;
+    return n;
+  }, [perArmAuthority]);
+
+  // BP148: the new direct checkbox for Google/Perplexity (the "own check box right there" the
+  // Founder asked for). ON: if no arm is currently routed to this authority, assigns it to the
+  // lookup_fact arm (real data, same setArmAuthority() call the per-arm picker above uses) --
+  // if some arm already routes here, this is a no-op (already enabled, nothing to do). OFF:
+  // resets every arm currently pointed at this authority back to 'local_free', so the checkbox
+  // and the per-arm picker above always agree because they mutate the exact same store. Mirrors
+  // handleToggleEnabled's "toggle ON while not signed in also opens sign-in" convention below.
+  const handleToggleBrowserAuthority = useCallback((
+    authority: 'user_google' | 'user_perplexity',
+    nextVal: boolean,
+    signedIn: boolean,
+  ) => {
+    const current = loadNexusAuthoritySettings().perArmAuthority;
+    if (nextVal) {
+      const alreadyRouted = NEXUS_ARM_NAMES.some((arm) => current[arm] === authority);
+      if (!alreadyRouted) setArmAuthority('lookup_fact', authority);
+    } else {
+      for (const arm of NEXUS_ARM_NAMES) {
+        if (current[arm] === authority) setArmAuthority(arm, 'local_free');
+      }
+    }
+    setPerArmAuthority(loadNexusAuthoritySettings().perArmAuthority);
+    if (nextVal && !signedIn) {
+      void window.amplify?.openNexusAuthoritySignIn?.(authority)?.then((result) => {
+        if (result?.ok) setSessionOpen(true);
+      });
+    }
   }, []);
 
   // D2: the enable toggle for the 3 BrowserLlmKey rows. Mirrors ProveItWorksTab.tsx's
@@ -224,13 +277,14 @@ export function NexusAuthoritySignInPanel() {
               row.status === 'not_signed_in' ? '#fbbf24' :
               '#64748b';
             const signedIn = row.status === 'signed_in';
-            // D2: the enable fact, computed separately from the sign-in fact above. ChatGPT/
+            // D2/BP148: the enable fact, computed separately from the sign-in fact above. ChatGPT/
             // Gemini/Claude have a real per-authority boolean (mnem_drt_specialists); Google/
             // Perplexity have no such boolean anywhere -- their "enabled" fact is real arm-routing
-            // data instead (see armsRoutedTo above), never a fabricated checkbox.
+            // data instead (see armCountFor/perArmAuthority above), now clickable via the checkbox
+            // below (handleToggleBrowserAuthority), never a fabricated flag disconnected from it.
             const isLlm = isBrowserLlmKey(authority);
             const llmEnabled = isLlm ? (mnemDrtSpecialists[authority] ?? false) : false;
-            const armCount = armsRoutedTo[authority] ?? 0;
+            const armCount = isLlm ? 0 : armCountFor(authority as NexusAuthorityName);
             const enabled = isLlm ? llmEnabled : armCount > 0;
             const disagrees = signedIn && !enabled;
             return (
@@ -258,12 +312,19 @@ export function NexusAuthoritySignInPanel() {
                       {llmEnabled ? 'Enabled ✓' : 'Enabled ☐'}
                     </button>
                   ) : (
-                    <div
-                      style={{ ...s.enableStatus, color: enabled ? '#6ee7b7' : '#64748b' }}
-                      title="Set by the per-arm picker above (Nexus Authority) -- not editable here"
+                    <button
+                      style={{ ...s.enableBtn, ...(enabled ? s.enableBtnOn : {}) }}
+                      disabled={!flagsEnabled || busy}
+                      onClick={() => handleToggleBrowserAuthority(authority as 'user_google' | 'user_perplexity', !enabled, signedIn)}
+                      title={
+                        !flagsEnabled ? "Enable Research Arm + User's Browser Session above first" :
+                        enabled ? `Disable ${AUTHORITY_LABELS[authority]} (currently routed to ${armCount} arm${armCount === 1 ? '' : 's'}; also editable via the per-arm picker above)` :
+                        signedIn ? `Enable ${AUTHORITY_LABELS[authority]} as an authority (routes it to the Lookup arm)` :
+                        `Enable ${AUTHORITY_LABELS[authority]} and sign in (routes it to the Lookup arm)`
+                      }
                     >
-                      {enabled ? `Enabled (${armCount} arm${armCount === 1 ? '' : 's'})` : 'Not enabled'}
-                    </div>
+                      {enabled ? `Enabled ✓ (${armCount})` : 'Enabled ☐'}
+                    </button>
                   )}
                   <button
                     style={s.actionBtn}
@@ -281,7 +342,7 @@ export function NexusAuthoritySignInPanel() {
                 {disagrees && (
                   <div style={s.disagreeNote}>
                     Signed in, not enabled -- this authority will not be used to answer questions
-                    until enabled{isLlm ? ' above' : ' via the per-arm picker above'}.
+                    until enabled. Click <strong>Enabled ☐</strong> above to turn it on{isLlm ? '' : ' (or use the per-arm picker above -- both write the same setting)'}.
                   </div>
                 )}
               </div>
