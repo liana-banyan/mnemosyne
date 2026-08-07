@@ -168,6 +168,58 @@ console.log('\nTest 3 -- D-BP148-011 finding: no real qid-85 option text contain
     JSON.stringify(biasOptions.map((o) => o.text)));
 }
 
+// ── Test 4: D-BP148-013 -- markdown-wrapped live chat-model output must extract the same referent
+// terms as the equivalent plain-prose text. Text verbatim from a FRESH live gemma4:12b dispatch run
+// this ticket (scratchpad/seg_bp148_013_live_confirm.mjs run 1/5, real Ollama response, not
+// hand-written), which pre-fix returned [] purely because of the asterisks. ─────────────────────
+console.log('\nTest 4 -- D-BP148-013: markdown emphasis must not defeat referent extraction');
+{
+  const markdownText = 'Bias occurs when an **estimate** differs from a **population parameter**.';
+  const plainText = 'Bias occurs when an estimate differs from a population parameter.';
+  const markdownTerms = elim.extractPredicateReferentTerms(markdownText);
+  const plainTerms = elim.extractPredicateReferentTerms(plainText);
+  assert(markdownTerms.length > 0,
+    'a real live gemma4:12b response wrapping the referent in markdown bold no longer reduces to ' +
+    'zero referent terms (D-BP148-013 fix)', JSON.stringify(markdownTerms));
+  assert(JSON.stringify([...markdownTerms].sort()) === JSON.stringify([...plainTerms].sort()),
+    'the markdown-wrapped and plain-prose versions of the same sentence must extract the identical ' +
+    'referent term set -- proves normalization changes only what the matcher SEES, not what it ' +
+    'ACCEPTS (REFERENT_ANCHOR_PATTERNS and REFERENT_STOPWORDS both untouched this ticket)',
+    `markdown=${JSON.stringify(markdownTerms)} plain=${JSON.stringify(plainTerms)}`);
+
+  const stageResult = elim.runRegisterResolutionStage(
+    biasStem,
+    biasOptions,
+    biasOptions.map((o) => o.letter),
+    {
+      query: 'what is bias in statistics',
+      definitionText: markdownText,
+      registerClaimed: 'statistics',
+      source: 'D-BP148-013-verification',
+    },
+  );
+  assert(!stageResult.abstained && stageResult.survivorsOut.includes('E'),
+    'the markdown-wrapped real live response now narrows survivors to include E, exactly like the ' +
+    'equivalent plain-prose phrasing would -- fresh live confirmation (2 of 5 real gemma4:12b runs, ' +
+    'seg_bp148_013_live_confirm.mjs) showed this same shape both generate and land E',
+    JSON.stringify(stageResult.survivorsOut));
+}
+
+// ── Test 5: regression guard -- plain prose (no markdown at all) must behave identically before
+// and after this ticket's fix. stripMarkdownEmphasis on text with no [*_`~] characters is a no-op,
+// and this asserts that directly against Test 1's own live-failure phrase (still abstains, matches
+// shipped behavior unchanged) and Test 2's own Founder phrasing (still narrows to include E,
+// unchanged). ─────────────────────────────────────────────────────────────────────────────────────
+console.log('\nTest 5 -- D-BP148-013 regression guard: plain-prose behavior is unchanged by the fix');
+{
+  const liveFailureText = 'Statistical bias causes estimates to deviate from the true value.';
+  const termsAgain = elim.extractPredicateReferentTerms(liveFailureText);
+  assert(termsAgain.length === 0,
+    'the plain-prose (no markdown) live-failure phrase from Test 1 still abstains identically after ' +
+    'the D-BP148-013 fix -- stripMarkdownEmphasis is a no-op on text with no emphasis characters',
+    JSON.stringify(termsAgain));
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
