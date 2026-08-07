@@ -11,6 +11,11 @@
 //   cloud, flagship -- gated behind escalation_ladder_mode, triggered only by honest abstention
 //   (search "BP145-M4 Slice 2"). Canon: canon_escalation_is_triggered_by_honest_abstention_
 //   never_scheduled_bp144.
+// D-BP148-022: escalation_ladder_mode now DEFAULTS ON (was off) -- local Ollama (TIER 1) is the
+//   first MODEL rung after the rooted answer-cache, and an explicit active-flagship brain pick
+//   still bypasses the ladder entirely (search "explicitFlagshipPick"). TIER 1 also now prefers
+//   the strongest confirmed-installed local model (search "PREFERRED_LOCAL_FIRST_MODEL") unless
+//   the user made an explicit model pick.
 
 import { ipcMain } from 'electron';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
@@ -293,10 +298,18 @@ interface AiDispatchSettings {
   homework_idle_threshold_seconds?: number;
   /** BP145-M4 Slice 2: gates the escalation-ladder dispatch path in ai-dispatch:query (TIER 1
    *  local-model honest-abstention check -> TIER 2 deterministic solver, honestly skipped, no
-   *  free-text-reachable form exists -> TIER 3 cheap cloud -> TIER 4 flagship). DEFAULTS OFF
-   *  (undefined === off) -- with it off, ai-dispatch:query behaves byte-for-byte as it did
-   *  before this Yoke: the pre-existing static activeBrain.kind==='flagship' branch decides
-   *  local vs. flagship exactly as before, with zero new lines executed. INDEPENDENT of
+   *  free-text-reachable form exists -> TIER 3 cheap cloud -> TIER 4 flagship). DEFAULTS ON as
+   *  of D-BP148-022/BISHOP (Founder BP148 ruling, "make local Ollama the first rung of
+   *  dispatch") -- undefined (every settings file written before this flip) resolves true; an
+   *  explicit `false` in settings is the opt-out and resolves false unless the env var forces
+   *  it back on. Mirrors isAnswerCacheModeEnabled()/isSemanticSoccerballModeEnabled()'s exact
+   *  shape and the same precedent (both flipped ON the same way this campaign). With it on,
+   *  ai-dispatch:query tries TIER 1 (100% local/free) FIRST and reaches TIER 3/4 (paid) only on
+   *  a real honest abstention signal from the tier below -- never a timer, never a default, never
+   *  low confidence (see canon_escalation_is_triggered_by_honest_abstention_never_scheduled_bp144
+   *  and the escalationLadderModeOn call site below, which ALSO now defers to an explicit
+   *  active-flagship brain pick -- see `explicitFlagshipPick` at that call site: this flag
+   *  changes the DEFAULT, never a user's explicit provider ceiling). INDEPENDENT of
    *  answer_cache_mode/csia_mode/semantic_soccerball_mode -- this flag only controls WHICH
    *  routing decision is made, not whether TIER 0 (the answer-cache serve gate + CSIA fast
    *  path, both unconditional/always-checked earlier in the same handler) runs. */
@@ -353,11 +366,17 @@ function isSemanticSoccerballModeEnabled(settings: AiDispatchSettings): boolean 
   return true;
 }
 
-/** BP145-M4 Slice 2: resolves the escalation_ladder_mode flag, same env-var-override
- *  convention as every other mode resolver in this file (ESCALATION_LADDER_MODE=1 for quick
- *  local testing without touching the settings file). Defaults OFF. */
-function isEscalationLadderModeEnabled(settings: AiDispatchSettings): boolean {
-  return settings.escalation_ladder_mode === true || process.env.ESCALATION_LADDER_MODE === '1';
+/** BP145-M4 Slice 2 / D-BP148-022: resolves the escalation_ladder_mode flag, same env-var-
+ *  override convention as every other mode resolver in this file (ESCALATION_LADDER_MODE=1
+ *  for quick local testing without touching the settings file). DEFAULTS ON as of
+ *  D-BP148-022/BISHOP (Founder BP148 ruling) -- undefined resolves true; an explicit `false`
+ *  in settings is the opt-out and resolves false unless the env var forces it back on. Exact
+ *  same shape as isAnswerCacheModeEnabled()/isSemanticSoccerballModeEnabled() above. */
+export function isEscalationLadderModeEnabled(settings: AiDispatchSettings): boolean {
+  if (settings.escalation_ladder_mode === false) {
+    return process.env.ESCALATION_LADDER_MODE === '1';
+  }
+  return true;
 }
 
 function getSettingsPath(): string {
@@ -419,6 +438,44 @@ async function getInstalledOllamaModelsSafe(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+// D-BP148-022: the escalation ladder's TIER 1 model preference. llama3.3:70b is Founder-
+// confirmed live at 127.0.0.1:11434, free, unlimited, no rate window -- a materially stronger
+// model than gemma4:12b (the FLOOR_MODEL/selectedGemmaModel default TIER 1 would otherwise
+// fall back to). Preferring strength over speed on THIS ONE rung is deliberate: TIER 1's
+// answer/abstain decision is the one gate that decides whether a paid tier gets reached at
+// all, so a weak model either abstaining when a stronger one wouldn't, or (worse) answering
+// wrong with confidence, is exactly the "cheap and wrong" failure this ticket names -- and
+// unlike a paid tier, there is no cost reason to save the strong local model for later. A
+// two-step size ladder INSIDE Ollama (try gemma4:12b first, escalate to llama3.3:70b only on
+// its own abstain) was considered and rejected for this pass: it would add a second full
+// specialist-swarm+Furnace+Three-Fates pass (the expensive part, not raw chat completion --
+// see KN-BP145-M4_REPORT.md) before ever reaching TIER 1's own abstain signal, likely costing
+// MORE wall-clock than going straight to the strong model once, for an unmeasured quality
+// gain. Left as a documented option, not implemented, per HARDWIRE-17 (ordinary tier, no
+// novel design this pass).
+const PREFERRED_LOCAL_FIRST_MODEL = 'llama3.3:70b';
+
+/** D-BP148-022: resolves the model TIER 1 dispatches to. Honors explicit user intent FIRST --
+ *  `explicitModel` is the caller's precomputed result of the existing three-level precedence
+ *  chain (args.model_override ?? activeBrainLocalModel ?? settings.preferred_model); when any
+ *  of those fired, `explicitModel` is non-empty and this function returns `fallbackModel`
+ *  (the caller's own fully-resolved `model` variable) completely untouched -- this never
+ *  overrides a real user pick. Only when NONE of those three fired (the caller was about to
+ *  fall through to selectedGemmaModel/FLOOR_MODEL) does this check whether the stronger
+ *  PREFERRED_LOCAL_FIRST_MODEL is actually installed and reachable, and prefer it. Non-fatal
+ *  on any Ollama-reachability error -- falls back to `fallbackModel` exactly as before this
+ *  ticket. */
+export async function resolveTier1Model(explicitModel: string | undefined, fallbackModel: string): Promise<string> {
+  if (explicitModel) return fallbackModel;
+  try {
+    const installed = await getInstalledOllamaModelsSafe();
+    if (installed.includes(PREFERRED_LOCAL_FIRST_MODEL)) return PREFERRED_LOCAL_FIRST_MODEL;
+  } catch {
+    // non-fatal -- fall back to the caller's existing resolution
+  }
+  return fallbackModel;
 }
 
 export function registerAiDispatchIPC(): void {
@@ -1015,10 +1072,19 @@ export function registerAiDispatchIPC(): void {
       // cheap cloud, TIER 4 flagship. TIER 0 already ran above (the answer-cache exact/semantic
       // serve gate + the CSIA Psionic fast path) -- if it had hit, this function already
       // returned before reaching this line. This block starts at TIER 1. Gated behind
-      // escalation_ladder_mode, DEFAULT OFF -- with it off, zero lines below execute and
-      // ai-dispatch:query falls through to the pre-existing static flagship/local branch below,
-      // byte-identical to before this ticket.
+      // escalation_ladder_mode, DEFAULT ON as of D-BP148-022 -- with it off (explicit opt-out),
+      // zero lines below execute and ai-dispatch:query falls through to the pre-existing static
+      // flagship/local branch below, byte-identical to before this ticket.
       //
+      // D-BP148-022 "preserve explicit user intent" (explicitFlagshipPick below): an active
+      // brain the user (or brain-swap UI) EXPLICITLY set to a flagship/paid entry is a real
+      // provider choice, not the unset default -- this ticket changes the DEFAULT rung order,
+      // never a user's explicit ceiling. When that is the case, the ladder is skipped entirely
+      // and the pre-existing static activeBrain.kind==='flagship' branch below runs exactly as
+      // it would have with the ladder off, so an explicit flagship pick is honored whether or
+      // not escalation_ladder_mode is on. An unset/local active brain (the default, including
+      // every fresh install per BP134 Task D) is NOT an explicit paid pick and goes through the
+      // ladder, local-first.
       // THE RULE (Founder verbatim, BP144): a paid tier is reachable ONLY through an honest
       // abstention from the tier below it. Never a timer, never a default, never low
       // confidence. "Low confidence but answered" and "honestly abstained" are structurally
@@ -1031,7 +1097,8 @@ export function registerAiDispatchIPC(): void {
       //   TIER 3/4 (cheap cloud / flagship): abstention = a STRUCTURAL failure to produce any
       //     content (HTTP error, missing key, empty response) -- never a judgment about how
       //     confident or hedgy the returned text sounds.
-      const escalationLadderModeOn = isEscalationLadderModeEnabled(settings);
+      const explicitFlagshipPick = Boolean(activeBrain && activeBrain.kind === 'flagship');
+      const escalationLadderModeOn = isEscalationLadderModeEnabled(settings) && !explicitFlagshipPick;
       if (escalationLadderModeOn) {
         if (!event.sender.isDestroyed()) {
           event.sender.send('ask-token-progress', { coldStart: false, delta: '', assembled: '', escalationLadder: true });
@@ -1056,11 +1123,18 @@ export function registerAiDispatchIPC(): void {
                 event.sender.send('ask-engine-progress', progEvent);
               }
             };
+            // D-BP148-022: prefer the strongest confirmed-live local model on this rung,
+            // UNLESS the caller already made an explicit pick (see resolveTier1Model's own
+            // doc comment for the precedence and why). `model` (computed above, alongside
+            // `activeBrain`) is both the explicit-pick source of truth AND the fallback.
+            const explicitModelPick = args.model_override ?? activeBrainLocalModel ?? settings.preferred_model;
+            const tier1Model = await resolveTier1Model(explicitModelPick, model);
+            trace.push(`tier1-model-selected: ${tier1Model}${explicitModelPick ? ' (explicit pick)' : ''}`);
             const tier1Result = await runCanonicalFreeTextQuestion(
-              currentTurnQuestion, 'general', OLLAMA_API_BASE, model, {}, ladderWriteEbletFn, onLadderProgress,
+              currentTurnQuestion, 'general', OLLAMA_API_BASE, tier1Model, {}, ladderWriteEbletFn, onLadderProgress,
             );
             trace.push(
-              `tier1(local_model): abstained=${tier1Result.abstained} servedFromSubstrate=${tier1Result.servedFromSubstrate}` +
+              `tier1(local_model:${tier1Model}): abstained=${tier1Result.abstained} servedFromSubstrate=${tier1Result.servedFromSubstrate}` +
               (tier1Result.abstainReason ? ` reason="${tier1Result.abstainReason}"` : ''),
             );
             if (!tier1Result.abstained && tier1Result.answerText) {
