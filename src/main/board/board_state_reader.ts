@@ -204,9 +204,24 @@ function collectTickets(): TicketRecord[] {
 
 async function gitCommitsById(): Promise<{ map: Map<string, CommitEntry[]>; error: string | null }> {
   try {
+    // No -N cap: DIAGNOSED BUG (BP148 D-BP148-027) -- a fixed commit-count lookback is a lie that
+    // gets worse over time. board.mjs/this port's job is to say whether a ticket has a real
+    // commit ANYWHERE in history, not "in the last N commits" -- once a matching commit ages past
+    // rank N it silently flips REPORTED/COMMITTED work to a false ORPHANED alarm, and every new
+    // commit after that makes the window one commit narrower for everyone behind it. Six real
+    // KN-BP143/144 commits (ranks 61-76) were false-ORPHANED by the old `git log -60` cap; see
+    // BISHOP_DROPZONE/BOARD_ORPHAN_FIX_BP148.md for the measurement. Measured cost of the
+    // uncapped call on this repo (306 commits, 2026-08-07): ~66ms vs ~50ms capped -- negligible
+    // against both the 5s GIT_TIMEOUT_MS and the 15s BOARD_RECOMPUTE_MS poll cadence (see
+    // board_ipc.ts). If this repo's history ever grows enough (rough linear extrapolation: ~0.2ms
+    // per commit here, so low thousands of commits before this starts to matter) that the
+    // uncapped walk becomes a real fraction of the 15s cadence, the fix is to bound cost by MATCH
+    // count instead of history depth -- e.g. `git log --all --grep=<ticket-id-alternation>` built
+    // from collectTickets()'s live id list -- not to reintroduce a fixed commit-count cap, which
+    // is the exact defect this comment documents.
     const { stdout } = await execFileAsync(
       'git',
-      ['log', '-60', '--format=%h%x1f%cI%x1f%s'],
+      ['log', '--format=%h%x1f%cI%x1f%s'],
       { cwd: REPO, encoding: 'utf8', timeout: GIT_TIMEOUT_MS },
     );
     const map = new Map<string, CommitEntry[]>();
