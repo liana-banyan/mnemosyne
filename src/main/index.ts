@@ -3453,6 +3453,24 @@ function registerIPCHandlers(): void {
     options: Record<string, string> | null;
     qid?: number;
     shapeTestSummary: string;
+    // D-BP149-044/BISHOP/S44/seg-steppedmode -- STEPPED WALK, ADDITIVE. When present, this
+    // submission came from the stepped-walk panel (Founder BP149: "I want to see a stepped
+    // version of what actually happens ... I guide, I train ... and you record"), not the plain
+    // Teach box. Same channel, same write-to-disk mechanism, different content shape -- per the
+    // ticket's own instruction to extend the existing teach-submit IPC path rather than add a
+    // second one. Every field the operator typed is written VERBATIM, one response per step,
+    // never parsed or acted on (HARDWIRE-22: the operator's words are a record for a human to
+    // read later, not an instruction this pipeline executes).
+    steppedWalk?: {
+      steps: Array<{
+        index: number;
+        total: number;
+        lines: Array<{ kind: string; text: string; ts: string }>;
+        response: string;
+      }>;
+      abandoned: boolean;
+      abandonedAtStep?: number;
+    };
   }) => {
     try {
       const dropzoneDir = 'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\BISHOP_DROPZONE';
@@ -3471,7 +3489,53 @@ function registerIPCHandlers(): void {
         ? Object.entries(args.options).map(([L, t]) => `${L}) ${t}`).join('\n')
         : '(no lettered option list -- typed as a bare question)';
 
-      const content = `# METHOD TEACHING -- ${args.qid != null ? `qid ${args.qid}` : 'free-text question'}, submitted via the Liana Cycle terminal's Teach box
+      let content: string;
+      if (args.steppedWalk) {
+        const { steps, abandoned, abandonedAtStep } = args.steppedWalk;
+        const total = steps.length ? steps[0].total : 0;
+        const stepBlocks = steps.map((s) => {
+          const lines = s.lines.map((l) => `[${l.kind}] ${l.text}`).join('\n');
+          const resp = s.response && s.response.trim() ? s.response : '(no response -- advanced without annotation)';
+          return `### STEP ${s.index + 1} of ${s.total}\n\n${lines}\n\n**Operator's response at this step, verbatim:**\n\n${resp}\n`;
+        }).join('\n---\n\n');
+        const status = abandoned
+          ? `ABANDONED at step ${(abandonedAtStep ?? steps.length - 1) + 1} of ${total} -- everything collected up to that point is recorded below.`
+          : `WALK COMPLETED -- all ${total} step(s) reached.`;
+        content = `# STEPPED WALK TEACHING -- ${args.qid != null ? `qid ${args.qid}` : 'free-text question'}, submitted via the Liana Cycle terminal's stepped walk
+
+Written by the LianaCycleTab.tsx stepped-walk panel (D-BP149-044). Founder, BP149: "I want to see
+a stepped version of what actually happens: 1. I want the actual question asked with the answer
+options as the first response then pause and wait for my response, then when I hit go, show the
+next step, and I will give my response on that." The operator walked this ALREADY-COMPLETED run
+step by step and typed an optional annotation at each pause. Responses below are reproduced
+VERBATIM -- never paraphrased, summarized, or reformatted, and NONE of them changed how this run
+executed (HARDWIRE-22: extraction only, never judgment -- stepping changes the pacing, not the
+division of labor). A human reads this file and implements any correction by hand.
+
+## THE QUESTION THAT TRIGGERED THIS
+
+${args.question}
+
+${optionsBlock}
+
+## THE SHAPE TEST / OUTCOME AT WALK TIME
+
+${args.shapeTestSummary}
+
+## STATUS
+
+${status}
+
+## THE STEPS, IN ORDER
+
+${stepBlocks}
+
+---
+
+*Written ${new Date().toISOString()} by the Liana Cycle terminal's stepped walk.*
+`;
+      } else {
+        content = `# METHOD TEACHING -- ${args.qid != null ? `qid ${args.qid}` : 'free-text question'}, submitted via the Liana Cycle terminal's Teach box
 
 Written by the LianaCycleTab.tsx Teach box (D-BP149-043). The operator's own words below are
 reproduced VERBATIM -- never paraphrased, summarized, or reformatted. A human reads this file
@@ -3495,6 +3559,7 @@ ${args.teachingText}
 
 *Written ${new Date().toISOString()} by the Liana Cycle terminal Teach box.*
 `;
+      }
       writeFileSync(filePath, content, 'utf-8');
       const bytes = Buffer.byteLength(content, 'utf-8');
       return { ok: true, filePath, bytes };

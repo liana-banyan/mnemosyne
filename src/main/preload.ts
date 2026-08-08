@@ -775,6 +775,18 @@ contextBridge.exposeInMainWorld('amplify', {
     options: Record<string, string> | null;
     qid?: number;
     shapeTestSummary: string;
+    // D-BP149-044/BISHOP/S44/seg-steppedmode -- ADDITIVE. See index.ts's 'liana-teach-submit'
+    // handler for the full contract; present only for a stepped-walk submission.
+    steppedWalk?: {
+      steps: Array<{
+        index: number;
+        total: number;
+        lines: Array<{ kind: string; text: string; ts: string }>;
+        response: string;
+      }>;
+      abandoned: boolean;
+      abandonedAtStep?: number;
+    };
   }): Promise<{ ok: boolean; filePath?: string; bytes?: number; error?: string }> =>
     ipcRenderer.invoke('liana-teach-submit', args),
 
