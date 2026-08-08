@@ -92,7 +92,17 @@ const CUES: Array<{ demand: LianaDemand; re: RegExp; label: string }> = [
   {
     demand: 'IDENTIFY',
     // "You notice ... You would look for potential sources of infection in..."
-    re: /\b(you would look|which (sites?|structures?|organs?|areas?|regions?|of these|of the following) (is|are|drains?|would)|where would|identify the)\b/i,
+    //
+    // DOMAIN VOCABULARY REMOVED, BP150. This cue originally read
+    //   which (sites?|structures?|organs?|areas?|regions?|of these|of the following) (is|are|drains?|would)
+    // Adversarial SEG D-BP150-006 caught that `organs?` and `drains?` are ANATOMY terms, present
+    // only because qid 66 is an anatomy question -- while the file simultaneously claimed its cue
+    // tables carried "no domain vocabulary" and therefore could not be tuned toward the corpus.
+    // The claim was false and the counter-example was in the same file. Tuning a selector on the
+    // very questions it is measured against is how a benchmark result stops meaning anything.
+    // Now grammatical only: an interrogative determiner over a generic head, or an explicit
+    // instruction to locate something.
+    re: /\b(you would look|where would|identify the|which (?:of these|of the following) (?:is|are|would))\b/i,
     label: 'asks which member or instance satisfies a stated condition',
   },
 ];
