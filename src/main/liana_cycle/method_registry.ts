@@ -1,0 +1,140 @@
+// method_registry.ts -- D-BP149-041/BISHOP/S41/seg-methodregistry
+//
+// THE METHOD REGISTRY. Ratified canon:
+//   Asteroid-ProofVault/state/eblets/CANON/
+//     canon_the_liana_cycle_is_a_method_registry_taught_by_humans_bp149.eblet.md
+// Founder, BP149, verbatim: "put this engine behind the terminal, so I just type the
+// question... exactly. Because that is the basis of the Liana Cycle -- where we then do the
+// next question -- qid 85, using the other method I used to solve it... I guide, I train, I
+// give the Human Nuance, and you record (through Mnemosynec) and learn and apply... the POINT
+// is that that won't cover EVERY question. But I will. And so will other human operators,
+// which will teach the Substrate in the Cooperative."
+//
+// THE RULING THIS FILE IMPLEMENTS (five points, canon section "THE ARCHITECTURE THIS
+// REQUIRES"):
+//   1. Methods are named, recorded objects -- not branches inside one function. Each entry
+//      below is data (id/name/taughtBy) plus two functions (shapeTest, run), never a case
+//      label in a switch.
+//   2. The terminal SELECTS, it never guesses. selectMethod() runs every registered method's
+//      shapeTest() and returns the first one that matches. If none match, it returns null and
+//      the caller (liana_terminal_engine.ts) must say so plainly rather than running anything.
+//   3. An unmatched question is a teaching prompt, not a failure -- see
+//      liana_terminal_engine.ts's no-match transcript text.
+//   4. The human is the generator. Nothing in this file invents a new method; every entry here
+//      was taught by a human operator working a real case by hand (see each method's
+//      `taughtBy` field for the citation).
+//   5. Methods accumulate across operators -- this registry is the single append point. A
+//      method taught once (registered here) is available to every future question of that
+//      shape, for every operator.
+//
+// A method may be REGISTERED with no RUNNER (`run: null`) -- that is deliberate, not a bug.
+// METHOD 2 ("definitional-cascade") ships this way in this ticket: its shape is known (the
+// Founder's qid 85 walkthrough taught it), but its stages are not yet built. The registry must
+// be able to hold a known-but-unimplemented method so the terminal can say "this is a
+// recognized shape, not yet taught" instead of the less honest "no method matches" -- those are
+// different findings and the transcript must not conflate them.
+
+import type { LianaTerminalEvent, LianaTerminalOutcome } from '../../shared/liana_cycle/liana_terminal_types';
+import type { BrowserAuthorityRawExtraction } from '../../shared/plow/browser_authority_types';
+
+// Defined HERE (not in liana_terminal_engine.ts) so this file and every method module can
+// import it with no dependency on the engine module -- the engine imports methods, so a method
+// importing a type back from the engine would be a circular import. liana_terminal_engine.ts
+// re-exports this same type so index.ts's existing `AskGoogleFn`-shaped closure (unchanged by
+// this ticket) still type-checks against exactly one definition.
+export type AskGoogleFn = (question: string) => Promise<BrowserAuthorityRawExtraction | null>;
+
+export type EmitFn = (event: LianaTerminalEvent) => void;
+
+/** What every method's shapeTest() and run() receive. `options` is null for a free-text
+ *  question typed with no lettered option list -- most methods (which eliminate AMONG options)
+ *  will correctly refuse to match that shape; a future free-text-only method could still match
+ *  on `options === null`. `correctAnswer` is present only when the input resolved to a bundled
+ *  qid (loadQuestion() found it); a Founder-typed free-text question with typed options has no
+ *  known key, and outcomes built from it simply omit `correct`/`ok`. */
+export interface MethodQuestionInput {
+  qid?: number;
+  question: string;
+  options: Record<string, string> | null;
+  correctAnswer?: string;
+}
+
+export interface ShapeTestResult {
+  matches: boolean;
+  /** ALWAYS present, matched or not -- this is what the transcript prints for every method it
+   *  checked (BP149: "I DESPISE SUMMARIES", stream everything). A bare boolean tells the
+   *  Founder nothing about WHY a method was skipped. */
+  reason: string;
+}
+
+export interface MethodRunContext {
+  askGoogle: AskGoogleFn;
+  emit: EmitFn;
+}
+
+export interface LianaMethod {
+  /** Stable, lowercase-hyphenated id. Never reused for a different method once registered. */
+  id: string;
+  /** Human-readable name for the transcript. */
+  name: string;
+  /** The case that taught this method, cited plainly -- canon rule 4 above. */
+  taughtBy: string;
+  /** One-line description of the shape this method answers, for the "no method matches"
+   *  listing (must be readable without opening this file). */
+  shapeDescription: string;
+  /** Pure function: does this method's shape fit this question? Must not perform any I/O --
+   *  shape testing is a pre-flight check the registry runs for EVERY method on EVERY question,
+   *  and doing network/model calls here would mean paying for a query before knowing whether
+   *  it's even the right method. */
+  shapeTest: (input: MethodQuestionInput) => ShapeTestResult;
+  /** null = registered but not yet taught (a stub). The registry allows this on purpose; see
+   *  this file's header. Never call run() without checking it is non-null first. */
+  run: ((input: MethodQuestionInput, ctx: MethodRunContext) => Promise<LianaTerminalOutcome>) | null;
+}
+
+/** Average option length in words -- the one cheap, generic signal every shapeTest() below uses
+ *  to tell "options are short members of one category" (comparative shape, e.g. region names)
+ *  apart from "options are full competing statements" (definitional shape, e.g. "It describes a
+ *  process that..."). Calibrated against the six real BP149 questions in the canon's own
+ *  comparison table (qid 98 comparative avg ~2.0 words/option; qid 85 definitional avg ~11
+ *  words/option; qid 92/72/66/46 -- neither shape -- fall in between and are additionally
+ *  screened out by each method's own cue-word test). Exported so both methods (and any future
+ *  ones) share one measurement instead of each re-deriving it slightly differently. */
+export function avgOptionWordCount(options: Record<string, string>): number {
+  const texts = Object.values(options);
+  if (!texts.length) return 0;
+  const total = texts.reduce((sum, t) => sum + t.trim().split(/\s+/).filter(Boolean).length, 0);
+  return total / texts.length;
+}
+
+const REGISTRY: LianaMethod[] = [];
+
+/** Append-only. Called once per method module at import time (see comparative_cascade.ts /
+ *  definitional_cascade.ts's bottom-of-file registerMethod() call, and
+ *  liana_terminal_engine.ts's import of both). Registering the same id twice is a programming
+ *  error, not a runtime condition to handle gracefully -- it throws immediately so it is caught
+ *  at build/first-run time, not silently shadowed. */
+export function registerMethod(method: LianaMethod): void {
+  if (REGISTRY.some((m) => m.id === method.id)) {
+    throw new Error(`method_registry: duplicate method id "${method.id}" -- ids must be unique`);
+  }
+  REGISTRY.push(method);
+}
+
+export function listMethods(): LianaMethod[] {
+  return REGISTRY.slice();
+}
+
+/** Runs every registered method's shapeTest() in registration order and returns the FIRST
+ *  match, plus that match's own ShapeTestResult (so the caller can print the reason without
+ *  re-running the test). Returns null when nothing matches -- the caller (
+ *  liana_terminal_engine.ts) must treat that as "ask the human", never as license to run the
+ *  first method anyway. This function itself performs no I/O (shapeTest() contracts are pure),
+ *  so calling it to print a full per-method report costs nothing. */
+export function selectMethod(input: MethodQuestionInput): { method: LianaMethod; shape: ShapeTestResult } | null {
+  for (const method of REGISTRY) {
+    const shape = method.shapeTest(input);
+    if (shape.matches) return { method, shape };
+  }
+  return null;
+}

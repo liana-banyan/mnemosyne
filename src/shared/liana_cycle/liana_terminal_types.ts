@@ -35,8 +35,14 @@ export interface LianaTerminalOutcome {
   ok?: boolean;
   basis?: string;
   abstain: boolean;
-  /** True when the input did not parse as a bundled qid, so this ran as a single Google+Gemma
-   *  fact lookup instead of the full elimination cascade (no option pool to eliminate against). */
+  /** True when the input did not parse as a bundled qid (a free-text question, with or without
+   *  its own typed lettered options). */
   freeText: boolean;
   error?: string;
+  /** D-BP149-041 (method registry): the id of the registered method that answered this question
+   *  (e.g. 'comparative-cascade'), when one matched. ADDITIVE/OPTIONAL -- absent whenever no
+   *  method matched, a method's shape matched but it is an unimplemented stub, or the terminal
+   *  threw before method selection ran; every pre-registry caller that destructures only the
+   *  older fields keeps compiling and behaving identically. */
+  method?: string;
 }
