@@ -765,6 +765,19 @@ contextBridge.exposeInMainWorld('amplify', {
     return () => ipcRenderer.removeListener('liana-terminal-event', h);
   },
 
+  // D-BP149-043/BISHOP/S43/seg-method2build -- THE TEACH BOX. Wraps 'liana-teach-submit'
+  // (index.ts, registered next to 'liana-terminal-run' above). Writes the operator's own words,
+  // VERBATIM, to a teaching file in BISHOP_DROPZONE for a human to read and implement from --
+  // never auto-generates a method, never paraphrases what was typed.
+  lianaTeachSubmit: (args: {
+    teachingText: string;
+    question: string;
+    options: Record<string, string> | null;
+    qid?: number;
+    shapeTestSummary: string;
+  }): Promise<{ ok: boolean; filePath?: string; bytes?: number; error?: string }> =>
+    ipcRenderer.invoke('liana-teach-submit', args),
+
   // ── Nexus Authority persistent session (BP137 0.9.12 Stage F1) ─────────────
   // Thin wraps around the four IPC channels index.ts's registerIPCHandlers() registers next to
   // 'nexus-browser-authority-run-query' above -- see nexus_authority_persistent_session.ts's
