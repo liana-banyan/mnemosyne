@@ -1912,7 +1912,16 @@ async function runInteractiveBrowserAuthorityQueryObserved(
       console.log(`${logPrefix}: main-null-result (executeJavaScript returned no object)`);
       return { raw: null, dispatchOutcome: 'no_result' };
     }
-    const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null; reason?: string };
+    const r = result as {
+      success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null; reason?: string;
+      // BP149 D-BP149-016 (R4 repair): BrowserAuthorityInteractiveResultMessage
+      // (webview_preload.ts) has carried `citations` since KN-BP145-B -- same previously-unnamed,
+      // dropped-on-the-floor field as the static path above. No `results` here: the interactive
+      // authorities' single-message thread has no independent multi-candidate structure (per
+      // webview_preload.ts's extractMultiResultCandidates() dispatch, which returns [] for all
+      // three of them).
+      citations?: import('../shared/plow/browser_authority_types').CitationRecord[];
+    };
     if (!r.success || !r.snippet || !r.sourceUrl) {
       // honest -- never a partial/fabricated extraction; log WHY so the next run's console tells
       // us exactly which stage failed (composer_not_found_timeout / not_signed_in / outer_script_
@@ -1927,6 +1936,8 @@ async function runInteractiveBrowserAuthorityQueryObserved(
         sourceUrl: r.sourceUrl,
         authority: query.authority,
         selectorUsed: r.selectorUsed ?? null,
+        // BP149 D-BP149-016: carried through now instead of discarded.
+        citations: r.citations ?? [],
       },
       dispatchOutcome: 'dispatched',
     };
@@ -2062,7 +2073,16 @@ export async function runBrowserAuthorityQueryFromMainObserved(
     try {
       const result = await nexusWindow.webContents.executeJavaScript(script);
       if (!result || typeof result !== 'object') return { raw: null, dispatchOutcome: 'no_result' };
-      const r = result as { success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null; reason?: string };
+      const r = result as {
+        success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null; reason?: string;
+        // BP149 D-BP149-016 (R4 repair): the webview-side message
+        // (BrowserAuthorityExtractionResultMessage, webview_preload.ts) has ALWAYS carried these
+        // two fields over this exact IPC round trip -- this cast simply never named them before,
+        // so `result.citations`/`result.results` existed at runtime but were invisible to
+        // TypeScript and dropped on the floor by the `raw: {...}` object literal below.
+        citations?: import('../shared/plow/browser_authority_types').CitationRecord[];
+        results?: import('../shared/plow/browser_authority_types').SearchResultCandidate[];
+      };
       if (!r.success || !r.snippet || !r.sourceUrl) {
         // honest -- never a partial/fabricated extraction. KN-BP144-7 T2: this static (Google/
         // Perplexity) path has no login-wall detector of its own (unlike the interactive script
@@ -2077,6 +2097,11 @@ export async function runBrowserAuthorityQueryFromMainObserved(
           sourceUrl: r.sourceUrl,
           authority: query.authority,
           selectorUsed: r.selectorUsed ?? null,
+          // BP149 D-BP149-016: carried through now instead of discarded. Defaulted to [] (never
+          // omitted) when the webview message genuinely lacked the key, matching this file's own
+          // "empty is honest, absent is not" convention for citations/results elsewhere.
+          citations: r.citations ?? [],
+          results: r.results ?? [],
         },
         dispatchOutcome: 'dispatched',
       };

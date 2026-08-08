@@ -68,6 +68,36 @@ import {
   type BrowserAuthorityAttemptOutcome,
   type EnsembleAuthorityKey,
 } from '../../shared/plow/browser_authority_types';
+// BP149 D-BP149-016 (Founder rulings R1/R2): wires recordSourceObservation() (specialist_adapters.ts)
+// for the first time anywhere in this codebase -- per CLAIM (one ProvenanceReceipt per call), not
+// per question. See recordSourceObservationsForClaims()'s own doc comment for the full rationale
+// and its disclosed limitation. This module is the natural wiring point: it is the one place that
+// both KNOWS the graded correctness of a plow answer (isCorrect, against the sealed MMLU-Pro
+// answer key) AND already reads that answer's plowTrace/provenanceReceipts.
+import { recordSourceObservationsForClaims } from '../plow/specialist_adapters';
+
+/** BP149 D-BP149-016: plowTrace is an untyped `Record<string, unknown> | null` passthrough bag
+ *  (PlowTraceReceipt's own index signature) -- this is the one narrow, defensive read of its
+ *  `provenance_receipts` key (set at plow_mc_answerer.ts:9830), never a re-typing of the whole
+ *  bag. Returns [] (never throws) for any shape this does not recognize, so a malformed/absent
+ *  key degrades to "no claims to record" rather than a crash. */
+function extractProvenanceReceiptsForObservation(
+  plowTrace: Record<string, unknown> | null | undefined,
+): Array<{ source: string; citations?: Array<{ category: string }> }> {
+  const raw = plowTrace?.provenance_receipts;
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ source: string; citations?: Array<{ category: string }> }> = [];
+  for (const entry of raw) {
+    if (entry && typeof entry === 'object' && typeof (entry as { source?: unknown }).source === 'string') {
+      const e = entry as { source: string; citations?: Array<{ category?: unknown }> };
+      const citations = Array.isArray(e.citations)
+        ? e.citations.filter((c): c is { category: string } => !!c && typeof c.category === 'string')
+        : undefined;
+      out.push(citations ? { source: e.source, citations } : { source: e.source });
+    }
+  }
+  return out;
+}
 
 export interface MmluProQuestion {
   question_id: number;
@@ -663,6 +693,20 @@ async function answerQuestionLocallyViaPlow(
   const correctLetter = q.answer.toUpperCase();
   const isCorrect = callResult.answer !== null && callResult.answer === correctLetter;
 
+  // BP149 D-BP149-016 (R1/R2): one recordSourceObservation() call PER CLAIM (per
+  // ProvenanceReceipt this answer actually rested on), never one call for the whole question.
+  // Only fires when the plow genuinely produced a letter (callResult.answer !== null) -- an
+  // ABSTAIN has no isCorrect signal worth attributing to any source. Non-fatal: a malformed/
+  // absent provenance_receipts key yields [] (see extractProvenanceReceiptsForObservation) and
+  // this becomes a no-op, never a crash of the scored run.
+  if (callResult.answer !== null) {
+    recordSourceObservationsForClaims(
+      extractProvenanceReceiptsForObservation(callResult.plowTrace),
+      q.category,
+      isCorrect,
+    );
+  }
+
   // BP133 Yoke #24 Task 2.3 parity: local-plow outcomes now get the same persisted, auditable
   // receipt the WAN path has always written for answeredBy==='plow' outcomes -- only when a
   // sessionId was actually generated for this run (see runOneClickMmluProTest's local branch).
@@ -913,6 +957,18 @@ async function runWanMode(
       outcomes.push(outcome);
       unitIndex++;
       broadcast(progressChannel, { type: 'question-complete', index: unitIndex - 1, total: totalUnits, outcome });
+
+      // BP149 D-BP149-016 (R1/R2): same per-claim recordSourceObservation() wiring as the
+      // local-mode path (answerQuestionLocallyViaPlow above), applied to WAN peer answers --
+      // the receiving peer's plow ran remotely, but its plowTrace/provenanceReceipts cross the
+      // wire on `pa.plowTrace` unchanged, so the same extraction/loop applies here.
+      if (pa.answeredBy === 'plow' && pa.answerLetter !== null) {
+        recordSourceObservationsForClaims(
+          extractProvenanceReceiptsForObservation(pa.plowTrace),
+          q.category,
+          pa.isCorrect,
+        );
+      }
 
       // BP133 Yoke #24 Task 2.3: persist a scored receipt for every plow-answered outcome.
       // Deliberately scoped to answeredBy === 'plow' rather than every WAN outcome -- this is

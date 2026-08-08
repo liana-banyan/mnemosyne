@@ -203,6 +203,56 @@ export function getSourceCredibilityRecord(sourceId: string, domainId: string): 
   return sourceCredibilityLedger.get(sourceCredibilityKey(sourceId, domainId));
 }
 
+/**
+ * BP149 D-BP149-016 (Founder ruling R1, verbatim: "per-claim attribution" -- "A source earns or
+ * loses standing on EACH FACT it supplies, never on the answer the fact fed into. ... the
+ * observation record must carry the *claim* as its unit, not the *question*.") and R2 ("Make
+ * sure recordSourceObservation() IS wired.").
+ *
+ * THE SIGNATURE QUESTION THIS TICKET WAS ASKED TO SETTLE: recordSourceObservation() above
+ * already takes exactly one (sourceId, domainId, wasCorrect) event per call -- it was never
+ * incapable of per-claim granularity, it simply had zero callers. No signature change was
+ * needed; what was missing was a caller that loops per CLAIM instead of collapsing to one call
+ * per QUESTION. This is that loop: one recordSourceObservation() call per receipt in `receipts`
+ * (plow_mc_answerer.ts's ProvenanceReceipt[] -- the codebase's own existing claim unit, one per
+ * candidate fact a voter actually saw), rather than a single call keyed on whichever authority
+ * "won" the question. A source cited on 4 receipts across 4 questions earns 4 independent
+ * (source, domain) observations here, never 1.
+ *
+ * DISCLOSED LIMITATION, not smoothed over: `wasCorrect` is the graded correctness of the FINAL
+ * ANSWER the receipt contributed to, applied per-claim -- this codebase has no independent
+ * per-fact truth check (no mechanism verifies "was THIS specific claim, on its own, true"). This
+ * is the per-claim ATTRIBUTION unit R1 requires (each source's claim is scored separately from
+ * every other source's claim on the same question), but it is not yet per-claim GROUND-TRUTH
+ * verification (a source that supplied one correct and one incorrect fact to the SAME correct
+ * answer still gets both scored as correct here). Closing that second gap needs a real fact-level
+ * verifier, which does not exist anywhere in this repo today -- named as a follow-on, not invented
+ * here to avoid it landing as a second half-built mechanism (R5's own defect class).
+ *
+ * When a receipt carries `citations` (BP149 R4's type-boundary fix -- see
+ * BrowserAuthorityLookupResult.citations / ProvenanceReceipt.citations), each citation is ALSO
+ * recorded as its own, finer-grained claim under the `citation:<hostname>` sourceId -- this is
+ * how an individual citation the scraper collected actually reaches the ledger, not just the
+ * coarser adapter/authority-name receipt it was attached to.
+ */
+export function recordSourceObservationsForClaims(
+  receipts: ReadonlyArray<{ source: string; citations?: ReadonlyArray<{ category: string }> }>,
+  domainId: string,
+  wasCorrect: boolean,
+  observedAt?: string,
+): SourceCredibilityRecord[] {
+  const out: SourceCredibilityRecord[] = [];
+  for (const receipt of receipts) {
+    out.push(recordSourceObservation(receipt.source, domainId, wasCorrect, observedAt));
+    if (receipt.citations) {
+      for (const citation of receipt.citations) {
+        out.push(recordSourceObservation(`citation:${citation.category}`, domainId, wasCorrect, observedAt));
+      }
+    }
+  }
+  return out;
+}
+
 // ─── Internal helpers ──────────────────────────────────────────────────────────
 
 const ADAPTER_TIMEOUT_MS = 5000;
