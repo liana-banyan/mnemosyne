@@ -354,6 +354,20 @@ declare global {
         options: Record<string, string> | null;
         qid?: number;
         shapeTestSummary: string;
+        // D-BP149-044/BISHOP/S44/seg-steppedmode -- ADDITIVE. Present only for a stepped-walk
+        // submission (LianaCycleTab.tsx's stepped-walk panel); see index.ts's
+        // 'liana-teach-submit' handler for the full contract. A response never changes how the
+        // run executed -- it is recorded verbatim for a human to read later (HARDWIRE-22).
+        steppedWalk?: {
+          steps: Array<{
+            index: number;
+            total: number;
+            lines: Array<{ kind: string; text: string; ts: string }>;
+            response: string;
+          }>;
+          abandoned: boolean;
+          abandonedAtStep?: number;
+        };
       }) => Promise<{ ok: boolean; filePath?: string; bytes?: number; error?: string }>;
       // Nexus Authority persistent session (BP137 0.9.12 Stage F1)
       setNexusAuthorityBrowserFlags?: (
