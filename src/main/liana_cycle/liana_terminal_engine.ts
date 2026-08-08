@@ -38,6 +38,10 @@ import { app } from 'electron';
 import type { LianaTerminalEvent, LianaTerminalOutcome } from '../../shared/liana_cycle/liana_terminal_types';
 import { listMethods, selectMethod } from './method_registry';
 import type { AskGoogleFn, EmitFn, MethodQuestionInput } from './method_registry';
+// D-BP150-001 (Call an Audible). See audible.ts's header for why this is a decorator around the
+// injected askGoogle rather than a restructuring of the method modules.
+import { AudibleAbandoned, AudibleLog, wrapAskGoogleWithAudible } from './audible';
+import type { AudibleChannel } from './audible';
 // Registering a method is a side effect of importing its module (see each file's own
 // `registerMethod(...)` call at the bottom). Both are imported here, and ONLY here, so the
 // registry is fully populated before the first `runLianaCycleQuestion` call, regardless of
@@ -143,8 +147,21 @@ function parseFreeText(input: string): ParsedInput {
  *  teach the next one. Never runs a method whose shape test failed. Never throws -- an internal
  *  failure is reported as an 'error' event plus an abstained outcome, matching this estate's
  *  honest-abstain-over-fabrication rule. */
-export async function runLianaCycleQuestion(input: string, askGoogle: AskGoogleFn, emit: EmitFn): Promise<LianaTerminalOutcome> {
+export async function runLianaCycleQuestion(
+  input: string,
+  askGoogle: AskGoogleFn,
+  emit: EmitFn,
+  /** D-BP150-001 (Call an Audible), ADDITIVE/OPTIONAL. Null or omitted = audible mode OFF, in
+   *  which case wrapAskGoogleWithAudible returns `askGoogle` itself by reference and this run is
+   *  byte-for-byte the run it would have been before this parameter existed. Every pre-audible
+   *  caller keeps compiling and behaving identically. */
+  audible?: AudibleChannel | null,
+): Promise<LianaTerminalOutcome> {
   const trimmed = input.trim();
+  // Declared outside the try so the catch below can still return everything the operator typed
+  // before they abandoned -- Founder, BP149: "a walk that throws away your annotations because
+  // you quit early is worse than no walk."
+  const audibleLog = new AudibleLog();
   try {
     let parsed: ParsedInput;
     if (/^\d+$/.test(trimmed)) {
@@ -200,11 +217,44 @@ export async function runLianaCycleQuestion(input: string, askGoogle: AskGoogleF
       return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'method_not_yet_taught', method: method.id, options: parsed.options };
     }
 
-    const outcome = await method.run(methodInput, { askGoogle, emit });
-    return { ...outcome, method: method.id, options: parsed.options };
+    if (audible) {
+      note(emit, '   CALL AN AUDIBLE is ON -- this run stops before every Google query and again on what comes back. It waits until you say go; there is no timer.');
+    }
+    const outcome = await method.run(methodInput, {
+      askGoogle: wrapAskGoogleWithAudible(askGoogle, audible ?? null, emit, audibleLog),
+      emit,
+    });
+    return {
+      ...outcome,
+      method: method.id,
+      options: parsed.options,
+      ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
+    };
   } catch (e) {
+    // THE OPERATOR ENDING A RUN IS NOT AN ERROR, and must not be transcribed as one. It is an
+    // honest abstain that keeps every note typed on the way to it.
+    if (e instanceof AudibleAbandoned) {
+      emit({ kind: 'result', text: 'AUDIBLE ABANDONED -- run stopped by operator. Everything you typed is kept.', ts: nowIso() });
+      return {
+        question: trimmed,
+        verdict: null,
+        abstain: true,
+        freeText: !/^\d+$/.test(trimmed),
+        error: 'audible_abandoned',
+        options: null,
+        audibleLog: audibleLog.all(),
+      };
+    }
     const msg = e instanceof Error ? e.message : String(e);
     emit({ kind: 'error', text: `terminal threw: ${msg}`, ts: nowIso() });
-    return { question: trimmed, verdict: null, abstain: true, freeText: !/^\d+$/.test(trimmed), error: msg, options: null };
+    return {
+      question: trimmed,
+      verdict: null,
+      abstain: true,
+      freeText: !/^\d+$/.test(trimmed),
+      error: msg,
+      options: null,
+      ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
+    };
   }
 }

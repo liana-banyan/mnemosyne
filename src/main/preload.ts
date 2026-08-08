@@ -754,8 +754,12 @@ contextBridge.exposeInMainWorld('amplify', {
   // resolve. Mirrors the onAskEngineProgress push convention already used by the Ask tab.
   lianaTerminalRun: (
     input: string,
+    /** D-BP150-001 (Call an Audible), ADDITIVE/OPTIONAL. Omitted or false = the run this function
+     *  has always produced. True = the run stops before every Google query and again on what
+     *  comes back, until the operator says go. */
+    audible?: boolean,
   ): Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome> =>
-    ipcRenderer.invoke('liana-terminal-run', { input }),
+    ipcRenderer.invoke('liana-terminal-run', { input, audible }),
 
   onLianaTerminalEvent: (
     cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
@@ -764,6 +768,40 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.on('liana-terminal-event', h);
     return () => ipcRenderer.removeListener('liana-terminal-event', h);
   },
+
+  // D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE.
+  //
+  // onLianaAudiblePause fires when the engine has stopped and is waiting on the operator. It
+  // pushes the pause over 'liana-audible-pause' (event.sender.send, same convention as
+  // 'liana-terminal-event' above) rather than being polled, because a pause has no duration to
+  // poll for -- it lasts exactly as long as the Founder takes.
+  //
+  // lianaAudibleRespond is the ONLY way a pause is answered. It echoes the pauseId back so a
+  // late reply from a panel that has already moved on cannot resolve the wrong pause; index.ts
+  // returns {ok:false, reason:'no_such_pause'} for that case rather than throwing.
+  onLianaAudiblePause: (
+    cb: (pause: import('../shared/liana_cycle/liana_terminal_types').LianaAudiblePause) => void,
+  ): (() => void) => {
+    const h = (_event: Electron.IpcRendererEvent, pause: import('../shared/liana_cycle/liana_terminal_types').LianaAudiblePause) => cb(pause);
+    ipcRenderer.on('liana-audible-pause', h);
+    return () => ipcRenderer.removeListener('liana-audible-pause', h);
+  },
+
+  lianaAudibleRespond: (
+    response: import('../shared/liana_cycle/liana_terminal_types').LianaAudibleResponse,
+  ): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('liana-audible-respond', response),
+
+  // D-BP150-002/BISHOP/S02/seg-notesrecall -- the operator's already-written teaching notes,
+  // readable from inside a live pause so he can insert one instead of retyping it from memory.
+  // READ-ONLY: nothing on this channel writes, edits, or deletes a teaching file.
+  lianaNotesList: (
+    label?: string,
+  ): Promise<{
+    ok: boolean;
+    files: import('../shared/liana_cycle/liana_terminal_types').LianaTeachingFile[];
+    error?: string;
+  }> => ipcRenderer.invoke('liana-notes-list', { label }),
 
   // D-BP149-043/BISHOP/S43/seg-method2build -- THE TEACH BOX. Wraps 'liana-teach-submit'
   // (index.ts, registered next to 'liana-terminal-run' above). Writes the operator's own words,
