@@ -36,7 +36,10 @@ import fs from 'node:fs';
 import { join, resolve } from 'node:path';
 import { app } from 'electron';
 import type { LianaTerminalEvent, LianaTerminalOutcome } from '../../shared/liana_cycle/liana_terminal_types';
-import { listMethods, selectMethod } from './method_registry';
+import { explainSelection, listMethods, selectMethod } from './method_registry';
+// D-BP150-003 -- the Demand Test. Runs before method selection; see its own header for exactly
+// which half of the canon it implements and which half is still a scaffold.
+import { describeDemand, determineDemand } from './demand_test';
 import type { AskGoogleFn, EmitFn, MethodQuestionInput } from './method_registry';
 // D-BP150-001 (Call an Audible). See audible.ts's header for why this is a decorator around the
 // injected askGoogle rather than a restructuring of the method modules.
@@ -190,20 +193,43 @@ export async function runLianaCycleQuestion(
       note(emit, '   (no lettered option list -- typed as a bare question)');
     }
 
+    // D-BP150-003 -- THE DEMAND TEST runs BEFORE method selection. Founder, BP150: determine
+    // "WHICH METHOD of DATA needs to apply to the question in question... so we DON'T use it
+    // wrongly." Canon: canon_the_demand_test_selects_by_operation_not_by_regex_bp150.
+    // NOTE the placement is not yet the ruled one: canon R-2 puts this AFTER Survey the ASK, and
+    // Survey is unbuilt, so the derivation reads the question string and says so in its own output.
+    emit({ kind: 'stage', text: '-> DEMAND TEST -- what operation must this answer perform?', ts: nowIso() });
+    const demandResult = determineDemand(methodInput);
+    note(emit, `   ${describeDemand(demandResult)}`);
+
     emit({ kind: 'stage', text: '-> METHOD SELECTION -- checking every method on file', ts: nowIso() });
     const methods = listMethods();
-    for (const m of methods) {
-      const shape = m.shapeTest(methodInput);
-      note(emit, `   ${m.id} (${m.name}): ${shape.matches ? 'MATCHES' : 'no match'} -- ${shape.reason}`);
+    for (const row of explainSelection(methodInput, demandResult.demand)) {
+      note(emit, `   ${row.method.id} (${row.method.name}): ${row.eligible ? 'ELIGIBLE' : 'not run'} -- ${row.reason}`);
     }
 
-    const selection = selectMethod(methodInput);
+    const selection = selectMethod(methodInput, demandResult.demand);
     if (!selection) {
-      const roster = methods.map((m) => `${m.id} [taught by: ${m.taughtBy}]`).join('\n     ');
-      emit({ kind: 'result', text: 'NO METHOD MATCHES -- this question does not fit any recorded method.', ts: nowIso() });
+      const roster = methods.map((m) => `${m.id} [serves ${m.demand}] [taught by: ${m.taughtBy}]`).join('\n     ');
+      // NAME THE DEMAND IN THE REFUSAL. Canon R-5: the operator must learn WHAT KIND of method is
+      // missing, not merely that one is. "No method matches" tells him nothing he can act on;
+      // "nothing on file serves INFER" tells him exactly what to teach next.
+      const headline = demandResult.demand
+        ? `NO METHOD SERVES THIS DEMAND -- nothing on file performs ${demandResult.demand}.`
+        : 'DEMAND UNKNOWN -- the operation this answer must perform could not be determined, so no method may run.';
+      emit({ kind: 'result', text: headline, ts: nowIso() });
       note(emit, `   Methods on file:\n     ${roster}`);
       note(emit, '   This is not a failure -- it is the next teaching opportunity. Work this one by hand; the Liana Cycle records what you did and it becomes the next method.');
-      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'no_method_matched', options: parsed.options };
+      return {
+        qid: parsed.qid,
+        question: parsed.question,
+        verdict: null,
+        correct: parsed.correctAnswer,
+        abstain: true,
+        freeText,
+        error: demandResult.demand ? 'no_method_matched' : 'demand_unknown',
+        options: parsed.options,
+      };
     }
 
     const { method, shape } = selection;
