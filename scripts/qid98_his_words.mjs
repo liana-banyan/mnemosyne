@@ -20,6 +20,7 @@
 //   node scripts\qid98_his_words.mjs
 
 import fs from "fs";
+import { runRegisterGate } from "./register_gate.mjs";
 const PORT = 9333, OLLAMA = "http://127.0.0.1:11434/api/generate";
 const MODEL = process.env.CASCADE_MODEL ?? "gemma4:12b";
 const OUT = "C:/Users/Administrator/Documents/LianaBanyanPlatform/BISHOP_DROPZONE/QID98_HIS_WORDS_RESULTS.md";
@@ -259,53 +260,24 @@ const densities = {};      // letter -> number, from the hard-number questions
 const leastVotes = {};     // letter -> count of "asserted sparse / least-dense end of an ordering"
 const denseVotes = {};     // letter -> count of "asserted dense". A region Google repeatedly calls
                            // dense cannot be the answer to a question asking which is NOT dense.
-// ── STAGE 0: THE REGISTER GATE, ONE OPTION PER QUESTION.
+// ── STAGE 0: THE REGISTER GATE.
+//
 // His own first rule, Excerpt 3: "FIRST. Figure out what the question is actually asking, with
 // context like ... deserts and rainforests are not counted as regions."
+//
+// The gate now lives in scripts/register_gate.mjs as a standalone, self-testing module. The
+// inline version that used to sit here was patched eight times by scripted string replacement,
+// two of those patches failed halfway, and it ended up with two FEATURE_W definitions -- I was
+// reading one and running the other, which is why four consecutive fixes to it were wrong.
+// It is imported rather than reproduced so there is exactly one copy to be wrong.
 const t0 = Date.now();
 say(""); say(`${C.c}${C.b}[stage 0] register gate -- is each option a world region at all?${C.x}`);
 {
-  const FEATURE_W = /(desert|rainforest|forest|biome|climate zone|physical feature|landform|tundra|ice sheet|line of latitude|circle of latitude)/i;
-  const REGION_W = /(world region|subregion|continent|region of the world|geographic region|cultural region)/i;
-  const notRegions = [];
-  for (const L of ALL) {
-    const q = `In geography, is ${OPT[L]} classified as a world region, or as a desert, rainforest, biome or climate zone?`;
-    say(`${C.dim}  ${q}${C.x}`);
-    const res = await google(q);
-    if (!res.ok) { say(`${C.y}    no answer (${res.via})${C.x}`); continue; }
-    // BLOCK-SCOPED, AND NO MODEL CALL AT ALL.
-    //
-    // Founder, BP149: "what we do to our question, we need to do to the answers." The Twain case --
-    // "Mark Twain's Birthday", "What day was Twain born", "Twains Bday" -- is one entity in several
-    // phrasings. A search result is the same problem in miniature: the TITLE names the entity, and
-    // the BODY refers to it as "it" or "The desert". Asking for a single sentence that both names
-    // and classifies fails, because that sentence does not exist.
-    //
-    // A RESULT BLOCK IS ONE ASSERTION ABOUT ONE SUBJECT. If the block's title or body names this
-    // option (full name, or its unique head token -- "Sahara" for "Sahara Desert"), then a
-    // classification word anywhere in that block is a statement about this option. That is how a
-    // person reads the page, and it needs no model: the structure carries the reference.
-    let feature = false, region = false, used = "";
-    let nBlocks = 0, nAbout = 0, nWithClaims = 0;
-    for (const b of res.blocks || []) {
-      nBlocks++;
-      const whole = `${b.title} ${b.body}`;
-      if (!mentionsOption(whole, OPT[L])) continue;         // this block is not about our option
-      nAbout++;
-      // Strip question-shaped lines so "People also ask" and quiz stems cannot assert anything.
-      const claims = String(b.body).split(/(?<=[.!?])\s+/).filter(isAssertion).join(" ");
-      if (!claims.trim()) continue;
-      nWithClaims++;
-      if (L === "A" && nWithClaims <= 3) say(`${C.dim}      [dbg] title="${String(b.title).slice(0,60)}" claims="${claims.slice(0,200)}"${C.x}`);
-      if (FEATURE_W.test(claims)) { feature = true; used = `[${b.title.slice(0, 40)}] ${claims}`; }
-      if (REGION_W.test(claims)) { region = true; if (!used) used = `[${b.title.slice(0, 40)}] ${claims}`; }
-    }
-    if (feature && !region) { notRegions.push(L); say(`${C.g}    >>${C.x} ${OPT[L]}: NOT a world region`); say(`${C.dim}       ${used.slice(0,150)}${C.x}`); }
-    else if (region) say(`${C.dim}    ${OPT[L]}: world region${C.x}`);
-    else say(`${C.dim}    ${OPT[L]}: no assertion either way   [blocks=${nBlocks} about-this-option=${nAbout} with-assertions=${nWithClaims}]${C.x}`);
-    trail.push({ n: `0-${L}`, stage: 0, why: `register of ${OPT[L]}`, text: q, answer: res.text, via: res.via, sources: res.sources, effect: feature && !region ? "NOT a world region" : (region ? "world region" : "undetermined") });
+  const { notRegions, report } = await runRegisterGate(OPT);
+  for (const [L, r] of Object.entries(report)) {
+    trail.push({ n: `0-${L}`, stage: 0, why: `register of ${OPT[L]}`, text: `In geography, is ${OPT[L]} classified as a world region, or as a desert, rainforest, biome or climate zone?`, answer: "", via: "register_gate", sources: [], effect: r.verdict + (r.scope ? ` -- ${r.scope.why}` : "") });
   }
-  if (notRegions.length) { const b = pool.length; pool = pool.filter((L) => !notRegions.includes(L)); say(`${C.g}  >>${C.x} register gate removed ${notRegions.join(", ")}   pool ${b} -> ${pool.length}`); }
+  if (notRegions.length) { const b = pool.length; pool = pool.filter((x) => !notRegions.includes(x)); say(`${C.g}  >>${C.x} register gate removed ${notRegions.join(", ")}   pool ${b} -> ${pool.length}`); }
   else say(`${C.dim}  register gate removed nothing${C.x}`);
 }
 
@@ -512,6 +484,13 @@ if (!verdict) {
   const ranked = Object.keys(leastVotes).filter((L) => pool.includes(L)).sort((a, b) => leastVotes[b] - leastVotes[a]);
   if (ranked.length && (ranked.length === 1 || leastVotes[ranked[0]] > leastVotes[ranked[1]])) { verdict = ranked[0]; basis = `converged across framings as least dense (${leastVotes[ranked[0]]} votes)`; }
 }
+// SOLE SURVIVOR. If elimination has left exactly one option standing, that IS the answer, and
+// nothing further needs deciding. This rule existed in v3 and never made it into this file, so the
+// run that finally narrowed the pool to exactly {A} -- the correct answer -- abstained anyway,
+// because the ranking rule needs two options and the vote rule found none inside the pool.
+// The whole point of an elimination cascade is that eliminating everything else answers the
+// question. Not saying so was the last thing standing between the method and its result.
+if (!verdict && pool.length === 1) { verdict = pool[0]; basis = "sole survivor of elimination -- every other option was ruled out by register, inverse or density"; }
 
 say("");
 if (verdict) say(`  ${verdict === KEY ? C.g + "CORRECT" : C.r + "WRONG"}${C.x}  ${C.b}${verdict}${C.x} (${OPT[verdict]})   key=${KEY}`);
