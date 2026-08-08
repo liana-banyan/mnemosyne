@@ -295,6 +295,33 @@ export interface CanonicalPlowMcConfig {
    *  through that params interface and into a persisted setting is a follow-on, out of this
    *  ticket's contained scope (see the PLANT_RATE_BP148.md report). */
   groundTruthRootingMode?: boolean;
+  /** HARDWIRE-BP148-046/BISHOP/adjudication-always, OPT-OUT/DEFAULT ON -- same `undefined` -> on /
+   *  explicit `false` -> off convention as answer_cache_mode / semantic_soccerball_mode /
+   *  escalation_ladder_mode / generator_cascade_mode (ai_dispatch_ipc.ts) and groundTruthRootingMode
+   *  just above (this file). Founder ruling, direct and explicit (BP148): "I never said stop when
+   *  sources agree... Adjudication needs to run on every answer. Why not?" -- confirmed against his
+   *  own hand-worked cascade (FounderCascadeWorkedByHand.txt, Excerpt 2), which never stops on
+   *  agreement at any point. His own reasoning: convergent answers can come from divergent meanings
+   *  ("He ran/drove/walked/flew here" all mean he arrived; the mode differs every time) -- agreement
+   *  is not identity.
+   *
+   *  Governs ONE thing: whether the swarm-augmented accept-on-agreement branch inside
+   *  runAuthorityEnsemble (this file, agree_multipath case) also runs
+   *  runCandidateSourceCascadeAdjudicator -- the SAME adjudicator this file's outer call site
+   *  already runs on every genuine 'disagree' fall-through -- over the FULL candidate pool gathered
+   *  for the question, before accepting. When true (default): agreement is preserved as evidence
+   *  (agreeingGroup/structuredCorroborator/independentCorroboration/agreeDerivationVerdict/
+   *  agreeGroupPathAssignments are all still computed and still carried on the accept, byte-
+   *  identical to before) but no longer terminates the process by itself -- the adjudicator either
+   *  CONFIRMS the agreed letter (the common case: the full pool collapses to that one letter once
+   *  RULE 1 elimination applies) or, if a real dissenting candidate survives outside the agreeing
+   *  group, ABSTAINs and the accept is declined, falling through exactly as if the candidates had
+   *  disagreed. When false: byte-identical to pre-existing behavior (agreement alone accepts,
+   *  adjudicationAttempted:false, adjudicator never called). Env var override
+   *  ADJUDICATION_ALWAYS_MODE=1 forces it back on even over an explicit `false`, matching the other
+   *  four resolvers' own override convention. Never wires the parked generator cascade
+   *  (plow_generator_cascade.ts, untouched) and never touches rooting_rule.ts. */
+  adjudicationAlwaysMode?: boolean;
   /** BP137 Yoke v2b (Research Arm), OPT-IN/DEFAULT FALSE master switch. Every sub-flag below
    *  requires researchArmMode true as well (AND-gated) -- a bare accidental sub-flag flip can
    *  never activate new behavior on its own. When false/absent (every caller that predates this
@@ -1894,6 +1921,14 @@ export interface AuthorityEnsembleOutcome {
   candidates: AuthorityEnsembleCandidate[];
   acceptedCandidates: AuthorityEnsembleCandidate[];
   adjudicationAttempted: boolean;
+  /** HARDWIRE-BP148-046/BISHOP/adjudication-always, OPTIONAL/ADDITIVE. Populated ONLY when
+   *  adjudicationAlwaysMode was enabled AND the swarm-augmented accept-on-agreement branch actually
+   *  ran runCandidateSourceCascadeAdjudicator over the full candidate pool (agree_multipath case) --
+   *  the adjudicator's own eliminationLog, preserved so the agreement signal's confirmation (or, on
+   *  an abstain that declined the accept, the reason it was declined) is visible as real evidence on
+   *  the receipt, never silently discarded. Absent whenever adjudicationAlwaysMode is off, or the
+   *  accept came from a different branch (fast path, single-source, deterministic override). */
+  agreementAdjudicationLog?: string[];
   /** Populated ONLY alongside corroboration==='deterministic_compute_override' -- the real
    *  DeterministicComputeCandidate the pre-branch hoist check found, so the caller can report the
    *  SAME method/expression/computedValue provenance it already reports for the (unchanged)
@@ -4586,6 +4621,11 @@ async function runAuthorityEnsemble(params: {
       // agreeing 2+ group (the fast path above, before the swarm fires, can never produce a
       // singlepath verdict -- every candidate there is on its own distinct browser/Wolfram path).
       const diversity = assessAgreeingGroupDerivationDiversity(agreeingGroup);
+      // HARDWIRE-BP148-046: set ONLY inside the agree_multipath branch below, only on the new
+      // adjudication-always-abstained decline path -- carries that branch's own honest reason string
+      // out to the single, unified log call below (shared with the pre-existing agree_singlepath
+      // decline), so a genuinely 'agree_multipath' decline is never mislabeled as 'agree_singlepath'.
+      let agreeMultipathAdjudicationAbstainedNote: string | null = null;
       if (diversity.verdict === 'agree_multipath') {
         // KN-BP144-12 Part B ("THE ELIMINATOR ABOVE AGREEMENT"): before this multipath agreement
         // is allowed to return an accept, give the SAME register-resolution eliminator KN-BP144-4
@@ -4629,38 +4669,87 @@ async function runAuthorityEnsemble(params: {
         const constraintNoteSwarm = eliminatorAbove.constraintActive
           ? `constrained to [${eliminatorAbove.survivorsOut.join(',')}] (does not exclude ${letterAboutToAccept})`
           : 'no active constraint';
-        log(
-          `swarm-augmented agreement on ${agreeingGroup[0]!.letter} ` +
-          `(candidates=[${agreeingGroup.map((c) => c.authority).join(',')}]) -- ` +
-          `${groupHasStructured ? 'structurally corroborated' : 'LLM-ONLY concordance (swarm yielded nothing usable to corroborate or contest it)'}, ` +
-          `agree_multipath (${diversity.distinctPaths.length} distinct derivation paths: ` +
-          `[${diversity.pathAssignments.join(', ')}]), accepted. ` +
-          `KN-BP144-12 Part B above-agreement eliminator: ${constraintNoteSwarm}.`,
-        );
-        return {
-          chosenLetter: agreeingGroup[0]!.letter, corroboration: 'agree', candidates,
-          acceptedCandidates: agreeingGroup, adjudicationAttempted: false, swarmFired: true, swarmReceipt,
-          reasoningFactComputeReceipt,
-          structuredCorroborator: groupHasStructured,
-          // BP141: mirrors groupHasStructured here -- a specialist_swarm member can only be part of
-          // `agreeingGroup` when it survived the BP141 echo-abstention push-site check (genuine
-          // Furnace-verified grounding), so "has a structured member" and "each agreeing member has
-          // its own independent evidence" are the same test at this call site.
-          independentCorroboration: groupHasStructured,
-          agreeDerivationVerdict: diversity.verdict,
-          agreeGroupPathAssignments: diversity.pathAssignments,
-          // KN-BP144-6 T3: the pre-accept-on-agreement scatter attempt above already declined (or
-          // this branch could not have been reached -- a fire there returns early and never falls
-          // through to here), threaded through so a reader can see BOTH signals on this one accept.
-          preAgreeDeterministicScatterAttempt: preAgreeScatterAttempt,
-        };
+        // HARDWIRE-BP148-046/BISHOP/adjudication-always: THE FIX. See
+        // CanonicalPlowMcConfig.adjudicationAlwaysMode's own doc comment for the full Founder-ruling
+        // rationale ("agreement is not identity") and isAdjudicationAlwaysModeEnabled's doc comment
+        // for the gate convention. Live defect this closes: qid 98 (correct A) -- ChatGPT, Claude,
+        // and the specialist swarm all said G; three-way agreement returned an accept right here,
+        // byte-for-byte, with adjudicationAttempted:false, and runCandidateSourceCascadeAdjudicator
+        // (this file's own adjudicator, otherwise reachable ONLY on a genuine 'disagree' fall-through
+        // at this function's outer call site) never ran. When enabled (default), the SAME adjudicator
+        // now runs here too, over the FULL candidate pool (`candidates`, not just `agreeingGroup`) --
+        // agreement is preserved as evidence (every field below is unchanged) but no longer
+        // terminates the process by itself.
+        const adjudicationAlwaysOn = isAdjudicationAlwaysModeEnabled(config.adjudicationAlwaysMode);
+        const agreementAdjudication = adjudicationAlwaysOn
+          ? runCandidateSourceCascadeAdjudicator(candidates)
+          : null;
+        if (agreementAdjudication) {
+          log(
+            `HARDWIRE-BP148-046 adjudication-always: cascade adjudicator ran over the FULL pool ` +
+            `[${candidates.map((c) => `${c.authority}:${c.letter}`).join(', ')}] on an agreement ` +
+            `accept (agreeingGroup letter=${agreeingGroup[0]!.letter}) -> ` +
+            `${agreementAdjudication.chosenLetter ?? 'ABSTAIN'}. Elimination log:\n  ` +
+            `${agreementAdjudication.eliminationLog.join('\n  ')}`,
+          );
+        }
+        if (!agreementAdjudication || agreementAdjudication.chosenLetter) {
+          log(
+            `swarm-augmented agreement on ${agreeingGroup[0]!.letter} ` +
+            `(candidates=[${agreeingGroup.map((c) => c.authority).join(',')}]) -- ` +
+            `${groupHasStructured ? 'structurally corroborated' : 'LLM-ONLY concordance (swarm yielded nothing usable to corroborate or contest it)'}, ` +
+            `agree_multipath (${diversity.distinctPaths.length} distinct derivation paths: ` +
+            `[${diversity.pathAssignments.join(', ')}]), accepted` +
+            `${agreementAdjudication ? ' -- CONFIRMED by adjudication-always over the full pool (HARDWIRE-BP148-046)' : ''}. ` +
+            `KN-BP144-12 Part B above-agreement eliminator: ${constraintNoteSwarm}.`,
+          );
+          return {
+            // Guaranteed identical to agreeingGroup[0]!.letter whenever agreementAdjudication ran and
+            // confirmed (RULE 4 only fires on exactly one surviving distinct letter across the FULL
+            // pool, which by construction includes agreeingGroup) -- reading it from the adjudicator's
+            // own output rather than re-asserting agreeingGroup's letter keeps this return honestly
+            // sourced from whichever mechanism actually decided it.
+            chosenLetter: agreementAdjudication?.chosenLetter ?? agreeingGroup[0]!.letter, corroboration: 'agree', candidates,
+            acceptedCandidates: agreeingGroup, adjudicationAttempted: !!agreementAdjudication, swarmFired: true, swarmReceipt,
+            reasoningFactComputeReceipt,
+            structuredCorroborator: groupHasStructured,
+            // BP141: mirrors groupHasStructured here -- a specialist_swarm member can only be part of
+            // `agreeingGroup` when it survived the BP141 echo-abstention push-site check (genuine
+            // Furnace-verified grounding), so "has a structured member" and "each agreeing member has
+            // its own independent evidence" are the same test at this call site.
+            independentCorroboration: groupHasStructured,
+            agreeDerivationVerdict: diversity.verdict,
+            agreeGroupPathAssignments: diversity.pathAssignments,
+            // KN-BP144-6 T3: the pre-accept-on-agreement scatter attempt above already declined (or
+            // this branch could not have been reached -- a fire there returns early and never falls
+            // through to here), threaded through so a reader can see BOTH signals on this one accept.
+            preAgreeDeterministicScatterAttempt: preAgreeScatterAttempt,
+            // HARDWIRE-BP148-046: the adjudicator's own elimination log, preserved as evidence
+            // whenever adjudication-always actually ran -- absent when the flag is off, matching this
+            // field's own "present only when adjudication genuinely ran" contract.
+            ...(agreementAdjudication ? { agreementAdjudicationLog: agreementAdjudication.eliminationLog } : {}),
+          };
+        }
+        // HARDWIRE-BP148-046: adjudication-always ran and ABSTAINED (RULE 5 -- a genuine second
+        // distinct letter survives across the FULL pool) despite the agreeing-group-only consensus
+        // above. Do not accept: fall through to the SAME decline-and-recheck machinery the sibling
+        // agree_singlepath branch below already uses (the unified log call immediately below reports
+        // this reason honestly, not the agree_singlepath wording, since diversity.verdict really is
+        // 'agree_multipath' here -- only the FULL-pool adjudication disagreed with the narrower
+        // agreeing-group view).
+        agreeMultipathAdjudicationAbstainedNote =
+          `HARDWIRE-BP148-046 adjudication-always: swarm-augmented agreement on ` +
+          `${agreeingGroup[0]!.letter} DECLINED -- cascade adjudicator ABSTAINED over the FULL pool ` +
+          `despite agreeingGroup-only consensus (agreement is not identity -- Founder ruling, BP148). ` +
+          `Falling through exactly as if the candidates had disagreed.`;
       }
       log(
-        `swarm-augmented agreement on ${agreeingGroup[0]!.letter} is agree_singlepath -- ` +
+        agreeMultipathAdjudicationAbstainedNote ??
+        (`swarm-augmented agreement on ${agreeingGroup[0]!.letter} is agree_singlepath -- ` +
         `[${diversity.pathAssignments.join(', ')}] collapse to a single surviving derivation path ` +
         `once RULE 1's own swarm-duplicate elimination is applied -- this is NOT corroboration ` +
         `(KN-BP144-5 T1). Declining the accept, falling through exactly as if the candidates had ` +
-        `disagreed.`,
+        `disagreed.`),
       );
       // KN-BP144-5 T2: "a single-path agreement must not suppress a deterministic solver... when
       // T1 declines to accept, the pipeline must reach the deterministic solvers in the same way
@@ -6103,6 +6192,19 @@ export function hasSubstantiveAnswerContent(optionText: string): boolean {
 function isGroundTruthRootingModeEnabled(groundTruthRootingMode: boolean | undefined): boolean {
   if (groundTruthRootingMode === false) {
     return process.env.GROUND_TRUTH_ROOTING_MODE === '1';
+  }
+  return true;
+}
+
+/** HARDWIRE-BP148-046/BISHOP/adjudication-always: resolves the adjudicationAlwaysMode opt-out
+ *  gate, same env-var-override / undefined-or-true-means-on / explicit-false-means-off shape as
+ *  isGroundTruthRootingModeEnabled() just above and ai_dispatch_ipc.ts's own
+ *  isAnswerCacheModeEnabled()/isSemanticSoccerballModeEnabled()/isEscalationLadderModeEnabled().
+ *  See CanonicalPlowMcConfig.adjudicationAlwaysMode's own doc comment for the full Founder-ruling
+ *  rationale and exactly what this flag governs. */
+function isAdjudicationAlwaysModeEnabled(adjudicationAlwaysMode: boolean | undefined): boolean {
+  if (adjudicationAlwaysMode === false) {
+    return process.env.ADJUDICATION_ALWAYS_MODE === '1';
   }
   return true;
 }
