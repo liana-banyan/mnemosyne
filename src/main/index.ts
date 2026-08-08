@@ -264,6 +264,13 @@ import { toggleMonitor, getMetrics, getAllMonitorStates } from './hearth/active_
 // yoke ledger directory yoke_watcher.ts already watches -- reused here rather than inventing a
 // second Mic mechanism, per this ticket's explicit instruction.
 import { runLianaCycleQuestion } from './liana_cycle/liana_terminal_engine';
+// D-BP150-001 (Call an Audible) -- the operator-facing side of the pause. AudibleChannel is
+// implemented over IPC in the 'liana-terminal-run' handler below; audible.ts itself has no
+// Electron dependency, which is why the interface lives there and the wiring lives here.
+import type { AudibleChannel } from './liana_cycle/audible';
+// D-BP150-002 -- reading the operator's already-written teaching notes back into a live pause.
+import { listTeachingFiles } from './liana_cycle/teaching_notes';
+import type { LianaAudibleResponse } from '../shared/liana_cycle/liana_terminal_types';
 import { _paths as YOKE_PATHS } from './resident/yoke_watcher';
 // BP037 ? On-Deck Master-of-Ceremonies
 import { listOnDeck } from './on_deck/on_deck_bridge';
@@ -3409,6 +3416,23 @@ function registerIPCHandlers(): void {
     runBrowserAuthorityQueryFromMain(query),
   );
 
+  // D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE, the pending-pause table.
+  //
+  // A pause lives here between the moment the engine asks for it and the moment the operator
+  // answers. Keyed by pauseId (unique per run, minted in audible.ts) rather than by run or by
+  // window, because that is what makes a stale answer harmless: a response naming a pause that
+  // has already been settled finds nothing in this map and is dropped, instead of resolving
+  // whichever pause happens to be current.
+  //
+  // NOTHING IN HERE EXPIRES ON A TIMER, BY DESIGN. Founder, BP149, on the box that preceded
+  // this: "it stops and lets me start typing, but then it assumes I abandoned, so I need it to
+  // stop UNTIL I SAY GO." Entries are removed by exactly three events: the operator answers, the
+  // operator's window is destroyed, or the run ends. See the run handler's releasePending().
+  const PENDING_AUDIBLE_PAUSES = new Map<
+    string,
+    { resolve: (r: LianaAudibleResponse) => void; reject: (e: Error) => void }
+  >();
+
   // D-BP149-034/BISHOP/S34/seg-lianaterminal -- the Liana Cycle terminal. `askGoogle` is a
   // one-line closure around the SAME runBrowserAuthorityQueryFromMain() the line above uses (and
   // plow_mc_answerer.ts's Stage F2/F3 use) -- this is dependency injection so
@@ -3416,12 +3440,60 @@ function registerIPCHandlers(): void {
   // Streams every stage/fact/note/result line to the caller's own window as it happens
   // (event.sender.send, same push convention as 'ask-engine-progress') so the Founder watches the
   // cascade live instead of pasting console output back into a chat window.
-  safeHandle('liana-terminal-run', async (event, { input }: { input: string }) => {
-    const outcome = await runLianaCycleQuestion(
-      input,
-      (question) => runBrowserAuthorityQueryFromMain({ question, authority: 'user_google' }),
-      (evt) => { try { event.sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ } },
-    );
+  safeHandle('liana-terminal-run', async (event, { input, audible }: { input: string; audible?: boolean }) => {
+    // D-BP150-001 (Call an Audible). `audible` is OPTIONAL and defaults to off: an older
+    // renderer, or the Founder simply not toggling it, produces exactly the run this handler
+    // produced before this parameter existed (wrapAskGoogleWithAudible returns the unwrapped
+    // function by reference when the channel is null -- see audible.ts).
+    const sender = event.sender;
+    const runPauseIds = new Set<string>();
+
+    // A pause that outlives its window would hang the run forever with nothing to answer it.
+    // This is the ONLY non-operator way a pause ends -- there is deliberately no timer, per the
+    // Founder's BP149 report that the previous box "assumes I abandoned" while he was still
+    // typing.
+    const releasePending = (why: string) => {
+      for (const id of runPauseIds) {
+        const p = PENDING_AUDIBLE_PAUSES.get(id);
+        if (p) { PENDING_AUDIBLE_PAUSES.delete(id); p.reject(new Error(why)); }
+      }
+      runPauseIds.clear();
+    };
+    const onSenderGone = () => releasePending('window_closed');
+    sender.once('destroyed', onSenderGone);
+
+    const channel: AudibleChannel | null = audible
+      ? {
+          requestPause: (pause) =>
+            new Promise<LianaAudibleResponse>((resolve, reject) => {
+              if (sender.isDestroyed()) { reject(new Error('window_closed')); return; }
+              runPauseIds.add(pause.pauseId);
+              PENDING_AUDIBLE_PAUSES.set(pause.pauseId, { resolve, reject });
+              try {
+                sender.send('liana-audible-pause', pause);
+              } catch {
+                PENDING_AUDIBLE_PAUSES.delete(pause.pauseId);
+                runPauseIds.delete(pause.pauseId);
+                reject(new Error('window_closed'));
+              }
+            }),
+        }
+      : null;
+
+    let outcome;
+    try {
+      outcome = await runLianaCycleQuestion(
+        input,
+        (question) => runBrowserAuthorityQueryFromMain({ question, authority: 'user_google' }),
+        (evt) => { try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ } },
+        channel,
+      );
+    } finally {
+      sender.removeListener('destroyed', onSenderGone);
+      // Any pause still registered here belongs to a run that is over. Leaving one in the map
+      // would leak an unresolvable promise and let a later, unrelated response resolve it.
+      releasePending('run_ended');
+    }
     // THE MIC: one heartbeat line per completed question, written to the EXISTING yoke ledger
     // heartbeat directory yoke_watcher.ts already polls -- makes a run visible to Bishop without
     // the Founder copying anything, which is the entire point (Founder, BP148/BP149).
@@ -3436,6 +3508,32 @@ function registerIPCHandlers(): void {
       console.warn('[liana-terminal] heartbeat write failed (non-fatal):', e);
     }
     return outcome;
+  });
+
+  // D-BP150-001/BISHOP/S01/seg-audible -- the operator answering one pause. Returns a plain
+  // ok/reason rather than throwing on an unknown pauseId: a response for a pause that has
+  // already been settled (double-click, a late click after the run ended, a reply from a stale
+  // panel) is an ordinary condition, not an error, and must not surface to the operator as one.
+  safeHandle('liana-audible-respond', async (_event, response: LianaAudibleResponse) => {
+    const pending = PENDING_AUDIBLE_PAUSES.get(response.pauseId);
+    if (!pending) return { ok: false, reason: 'no_such_pause' as const };
+    PENDING_AUDIBLE_PAUSES.delete(response.pauseId);
+    pending.resolve(response);
+    return { ok: true as const };
+  });
+
+  // D-BP150-002/BISHOP/S02/seg-notesrecall -- HIS EARLIER NOTES, INSIDE A LIVE PAUSE.
+  // Founder, BP150: "post whichever of my notes I want into the textbox I'm typing in, so I don't
+  // have to go read it, or do it from memory." Read-only: this handler never writes, never
+  // deletes, and never edits a teaching file. An unreadable directory returns an empty list with
+  // ok:true and a stated reason -- the caller shows "none found", which is not the same claim as
+  // "none exist" (a tool's empty result is not evidence of absence).
+  safeHandle('liana-notes-list', async (_event, args?: { label?: string }) => {
+    try {
+      return { ok: true as const, files: listTeachingFiles(args?.label) };
+    } catch (e) {
+      return { ok: false as const, files: [], error: e instanceof Error ? e.message : String(e) };
+    }
   });
 
   // D-BP149-043/BISHOP/S43/seg-method2build -- THE TEACH BOX. method_registry.ts's own header

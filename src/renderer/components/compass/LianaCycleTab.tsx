@@ -23,7 +23,13 @@
 // dishonest fit.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { LianaTerminalEvent, LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
+import type {
+  LianaAudibleAction,
+  LianaAudiblePause,
+  LianaTeachingFile,
+  LianaTerminalEvent,
+  LianaTerminalOutcome,
+} from '../../../shared/liana_cycle/liana_terminal_types';
 
 const LS_LAST_RUNS_KEY = 'liana_terminal_recent_inputs';
 const MAX_RECENT = 12;
@@ -187,6 +193,80 @@ export function LianaCycleTab() {
   const [walkResult, setWalkResult] = useState<{ ok: boolean; filePath?: string; bytes?: number; error?: string } | null>(null);
   const walkInputRef = useRef<HTMLTextAreaElement>(null);
 
+  // D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE. Founder, BP149: "a button or toggle
+  // to 'let me redirect it before the next Google Call'."
+  //
+  // THIS IS NOT THE WALK ABOVE, AND THE TWO CONTROLS STAY SEPARATE ON PURPOSE. Audit the Run
+  // paces a run that has ALREADY FINISHED (see offersSteppedWalk's header). Call an Audible stops
+  // a LIVE run at a real decision point and changes what happens next. Founder ruling, carried in
+  // bishop_coffee.BP149_close_BP150_open.md: "A button that looks like it steers and only
+  // annotates is the exact defect class this session spent twelve hours removing."
+  const [audibleMode, setAudibleMode] = useState<boolean>(() => localStorage.getItem('liana.audible') === '1');
+  useEffect(() => { localStorage.setItem('liana.audible', audibleMode ? '1' : '0'); }, [audibleMode]);
+  const [activePause, setActivePause] = useState<LianaAudiblePause | null>(null);
+  // The query the operator is editing. Seeded from the pause's own literal query, so leaving it
+  // untouched and pressing Go sends EXACTLY what the method generated.
+  const [pauseQuery, setPauseQuery] = useState('');
+  const [pauseNote, setPauseNote] = useState('');
+  const [pauseAnswering, setPauseAnswering] = useState(false);
+  const pauseQueryRef = useRef<HTMLTextAreaElement>(null);
+  const pauseNoteRef = useRef<HTMLTextAreaElement>(null);
+
+  // D-BP150-002/BISHOP/S02/seg-notesrecall -- HIS EARLIER NOTES, AVAILABLE MID-PAUSE.
+  // Founder, BP150: "post whichever of my notes I want into the textbox I'm typing in, so I don't
+  // have to go read it, or do it from memory." His qid 85 walk notes ARE the spec for the method
+  // that does not exist yet; retyping them from memory at the moment they apply is where a plan
+  // gets lost.
+  //
+  // NOT FILTERED TO THE CURRENT QUESTION, deliberately. The notes are about the METHOD, not the
+  // question that provoked them -- "this register gate must go AFTER the initial Survey step" is
+  // wanted while walking anything, not only qid 85.
+  const [notesFiles, setNotesFiles] = useState<LianaTeachingFile[]>([]);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [notesState, setNotesState] = useState<'idle' | 'loading' | 'loaded' | 'unavailable'>('idle');
+  const [expandedNote, setExpandedNote] = useState<string | null>(null);
+  // Which box he was last typing in, so "Insert" lands where he expects rather than always in one
+  // of them. Defaults to the note box, which is the one that exists at both phases.
+  const lastBox = useRef<'query' | 'note'>('note');
+
+  const loadNotes = useCallback(async () => {
+    if (!window.amplify?.lianaNotesList) { setNotesState('unavailable'); return; }
+    setNotesState('loading');
+    try {
+      const res = await window.amplify.lianaNotesList();
+      setNotesFiles(res.files ?? []);
+      setNotesState('loaded');
+    } catch {
+      setNotesState('unavailable');
+    }
+  }, []);
+
+  // Loaded once a pause exists, not on mount: reading the dropzone costs a disk walk and there is
+  // nothing to insert into until the run has actually stopped.
+  useEffect(() => {
+    if (activePause && notesState === 'idle') void loadNotes();
+  }, [activePause, notesState, loadNotes]);
+
+  /** Inserts a note VERBATIM at the cursor of whichever box he was last in. Never reformats it,
+   *  never replaces what is already typed -- it splices, so a note can be dropped into the middle
+   *  of a sentence he is part way through. */
+  const insertNote = useCallback((text: string) => {
+    const which = lastBox.current;
+    const el = which === 'query' ? pauseQueryRef.current : pauseNoteRef.current;
+    const current = which === 'query' ? pauseQuery : pauseNote;
+    const setter = which === 'query' ? setPauseQuery : setPauseNote;
+    if (!el) { setter(current ? `${current}\n\n${text}` : text); return; }
+    const start = el.selectionStart ?? current.length;
+    const end = el.selectionEnd ?? start;
+    setter(current.slice(0, start) + text + current.slice(end));
+    // Put the caret after what was just inserted so he can keep typing from there.
+    requestAnimationFrame(() => {
+      el.focus();
+      const caret = start + text.length;
+      try { el.setSelectionRange(caret, caret); } catch { /* box may have re-rendered */ }
+    });
+  }, [pauseQuery, pauseNote]);
+
   // DRAGGABLE SPLIT. Founder, BP149: "I need the input box to be either movable or just half of the
   // screen ... like the right half." The right pane was a fixed 280px column, which left the Teach
   // textarea about eight lines of very narrow text -- unusable for typing out a method, which is
@@ -250,6 +330,77 @@ export function LianaCycleTab() {
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
+  // D-BP150-001 -- the engine has stopped and is waiting. Pushed, not polled: a pause has no
+  // duration to poll for, it lasts exactly as long as the Founder takes.
+  useEffect(() => {
+    if (!window.amplify?.onLianaAudiblePause) return;
+    const unsub = window.amplify.onLianaAudiblePause((pause) => {
+      setActivePause(pause);
+      setPauseQuery(pause.query);   // seeded verbatim; untouched + Go sends the method's own query
+      setPauseNote('');
+    });
+    return () => { unsub?.(); };
+  }, []);
+
+  // Focus whichever box the operator will actually type in at this phase: the query on the way
+  // out (the one he can change), the note on the way back (the query is history by then).
+  useEffect(() => {
+    if (!activePause) return;
+    if (activePause.phase === 'before_query') pauseQueryRef.current?.focus();
+    else pauseNoteRef.current?.focus();
+  }, [activePause]);
+
+  // THE ONLY WAY A PAUSE ENDS FROM THIS SIDE. `action` is chosen by which button was pressed --
+  // never inferred from what was typed. Auto-parsing the operator's free text and changing the
+  // run because of it is precisely the failure the method registry exists to prevent: we could no
+  // longer tell whether a method worked or whether the system had quietly rewritten itself.
+  const answerPause = useCallback(async (action: LianaAudibleAction) => {
+    const pause = activePause;
+    if (!pause || pauseAnswering) return;
+    if (!window.amplify?.lianaAudibleRespond) {
+      setTranscript((prev) => [...prev, {
+        kind: 'error',
+        text: 'Preload bridge missing (lianaAudibleRespond) -- rebuild main and restart the app.',
+        ts: new Date().toISOString(),
+      }]);
+      return;
+    }
+    // A rewrite is only a rewrite if the text actually differs. Pressing Go after incidentally
+    // touching the box must not be recorded as the operator having redirected the cascade.
+    const changed = pause.phase === 'before_query' && pauseQuery !== pause.query && pauseQuery.trim().length > 0;
+    const effectiveAction: LianaAudibleAction = action === 'go' && changed ? 'rewrite' : action;
+    setPauseAnswering(true);
+    try {
+      await window.amplify.lianaAudibleRespond({
+        pauseId: pause.pauseId,
+        action: effectiveAction,
+        replacementQuery: effectiveAction === 'rewrite' ? pauseQuery : undefined,
+        note: pauseNote || undefined,   // VERBATIM -- never trimmed, reformatted, or summarized
+      });
+      // Acknowledge in the transcript. Founder, BP149, on the notes box: a note that vanishes
+      // into state with no acknowledgement is indistinguishable from one that was lost.
+      const bits = [`audible call ${pause.callIndex} ${pause.phase === 'before_query' ? 'out' : 'back'}: ${effectiveAction}`];
+      if (pauseNote.trim()) bits.push(`note saved (${pauseNote.trim().length} chars)`);
+      setTranscript((prev) => [...prev, {
+        kind: 'fact', text: `  ${bits.join(' · ')}`, ts: new Date().toISOString(),
+      }]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setTranscript((prev) => [...prev, { kind: 'error', text: `audible respond threw: ${msg}`, ts: new Date().toISOString() }]);
+    } finally {
+      setPauseAnswering(false);
+      setActivePause(null);
+      setPauseNote('');
+    }
+  }, [activePause, pauseAnswering, pauseQuery, pauseNote]);
+
+  // Enter makes a newline in BOTH audible boxes. Only a button acts. This is the same rule the
+  // Founder had to ask for twice on the Audit notes box -- a single-line input whose Enter key
+  // advanced the step is what made typing a paragraph look like abandoning.
+  const handlePauseKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void answerPause('go'); }
+  };
+
   const handleRun = useCallback(async () => {
     const text = input.trim();
     if (!text || running) return;
@@ -267,16 +418,20 @@ export function LianaCycleTab() {
     setLastRunEvents([]);
     setWalkActive(false);
     setWalkResult(null);
+    // D-BP150-001: a stale pause panel from a previous run must never be answerable against this
+    // one. Its pauseId is already dead in main's table, but leaving it on screen would invite a
+    // click that silently does nothing.
+    setActivePause(null);
     setTranscript((prev) => [
       ...prev,
-      { kind: 'header', text: `═══ RUN  "${text}"`, ts: new Date().toISOString() },
+      { kind: 'header', text: `═══ RUN  "${text}"${audibleMode ? '   [CALL AN AUDIBLE ON]' : ''}`, ts: new Date().toISOString() },
     ]);
     const nextRecent = [text, ...recent.filter((r) => r !== text)].slice(0, MAX_RECENT);
     setRecent(nextRecent);
     saveRecent(nextRecent);
     setInput('');
     try {
-      const outcome = await window.amplify.lianaTerminalRun(text);
+      const outcome = await window.amplify.lianaTerminalRun(text, audibleMode);
       setLastOutcome(outcome);
       setLastRunEvents(runEventsRef.current.slice());
     } catch (err) {
@@ -284,9 +439,12 @@ export function LianaCycleTab() {
       setTranscript((prev) => [...prev, { kind: 'error', text: `IPC threw: ${msg}`, ts: new Date().toISOString() }]);
     } finally {
       setRunning(false);
+      // A run that ended (resolved, threw, or was abandoned from inside a pause) leaves no pause
+      // to answer. Main has already released it; this clears the panel to match.
+      setActivePause(null);
       inputRef.current?.focus();
     }
-  }, [input, running, recent]);
+  }, [input, running, recent, audibleMode]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') { e.preventDefault(); void handleRun(); }
@@ -469,6 +627,24 @@ export function LianaCycleTab() {
         <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
           Google is the only source · Gemma extracts · the code decides · $0
         </span>
+        {/* D-BP150-001 -- CALL AN AUDIBLE. Deliberately a separate control from Audit the Run,
+            which appears after a run that did not resolve. Audit annotates what already happened;
+            this steers what happens next. Founder ruling: do not merge them. */}
+        <button
+          type="button"
+          onClick={() => setAudibleMode((v) => !v)}
+          disabled={running}
+          title={'Stop before every Google query and again on what comes back, until you say go.\nOff: the run is exactly the run it has always been.'}
+          style={{
+            background: audibleMode ? 'linear-gradient(135deg, #b45309, #f59e0b)' : 'none',
+            border: `1px solid ${audibleMode ? '#f59e0b' : '#334155'}`, borderRadius: 5,
+            color: running ? '#334155' : audibleMode ? '#0d1117' : '#94a3b8',
+            fontSize: 11, fontWeight: 700, padding: '3px 9px',
+            cursor: running ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+          }}
+        >
+          Call an Audible{audibleMode ? ' · ARMED' : ''}
+        </button>
         <button
           type="button"
           onClick={handleClear}
@@ -483,6 +659,25 @@ export function LianaCycleTab() {
         </button>
       </div>
 
+      {/* D-BP150-001 -- THE TOGGLE HAS TO SAY WHAT IT WILL DO, AND WHEN.
+          Founder, BP150, on first use: "I clicked 'Call an Audible' and now it says 'On' but what
+          does that mean?" He had it on while looking at an already-finished run, so nothing
+          happened and nothing explained why. A state label with no statement of effect is the
+          defect his own BP148 ruling names: "which means what to who about why? no one knows."
+          This banner states the effect, and that it applies to the NEXT run, not this one. */}
+      {audibleMode && !activePause && (
+        <div style={{
+          margin: '0 16px 8px', padding: '7px 12px', background: '#3b2508',
+          border: '1px solid #b45309', borderRadius: 6, color: '#fbbf24', fontSize: 12,
+          fontFamily: 'system-ui, sans-serif',
+        }}>
+          <strong>Call an Audible is ARMED — nothing is paused yet.</strong> It takes effect on the
+          NEXT run you start. Type a question or qid and press Enter; the run will stop before every
+          Google query, and again on what comes back, and wait until you press a button. It does
+          nothing to a run that has already finished — for that, use Audit the Run.
+        </div>
+      )}
+
       {bridgeMissing && (
         <div style={{ margin: '0 16px 8px', padding: '8px 12px', background: '#7f1d1d', border: '1px solid #991b1b', borderRadius: 6, color: '#fca5a5', fontSize: 12 }}>
           Preload bridge missing (liana-terminal-run / liana-terminal-event) -- rebuild main and restart the app.
@@ -490,7 +685,269 @@ export function LianaCycleTab() {
       )}
 
       <div ref={splitRef} style={{ flex: 1, display: 'flex', minHeight: 0, gap: 0, background: '#1e2a38' }}>
-        {walkActive ? (
+        {activePause ? (
+          <>
+            {/* D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE, THE LIVE PAUSE.
+                The run is STOPPED right now, inside the engine, waiting on this panel. There is
+                no timer: it waits until a button is pressed. Founder, BP149: "I need it to stop
+                UNTIL I SAY GO."
+                LEFT: on the way out, the live transcript (context for the query you are about to
+                change). On the way back, the RAW payload -- before Gemma, before any parse
+                decision. That second view is the one that earns this feature: at BP149 five real
+                organic results were scraped and discarded because a `success` flag meant "no
+                answer box", and nothing ever showed anyone the text that arrived. */}
+            <div style={{
+              flex: 1.6, minWidth: 0, background: '#05080d', overflowY: 'auto', padding: '10px 14px',
+              fontFamily: 'Consolas, "Courier New", monospace', fontSize: 12, lineHeight: 1.5,
+            }}>
+              {activePause.phase === 'after_return' ? (
+                <>
+                  <div style={{ color: '#fbbf24', fontWeight: 700, marginBottom: 8, fontFamily: 'system-ui, sans-serif', fontSize: 13 }}>
+                    CALL {activePause.callIndex} CAME BACK -- raw, before Gemma, before any parse decision
+                  </div>
+                  <div style={{ color: '#64748b', marginBottom: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    query sent: {activePause.query}
+                    {'\n'}source: {activePause.sourceUrl ?? '(none)'}
+                  </div>
+                  <div style={{ color: activePause.rawSnippet ? '#4ade80' : '#64748b', marginBottom: 4, fontWeight: 700 }}>
+                    ANSWER BOX
+                  </div>
+                  <div style={{ color: '#e2e8f0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: 14 }}>
+                    {activePause.rawSnippet
+                      ? activePause.rawSnippet
+                      : '(none -- Google rendered no answer box. That is normal for this cascade\'s ordering, cake-cut and density stages, and it is NOT the same as "nothing came back". The facts, if any, are in the organic results below.)'}
+                  </div>
+                  <div style={{ color: '#22d3ee', marginBottom: 4, fontWeight: 700 }}>
+                    ORGANIC RESULTS ({activePause.blocks?.length ?? 0}) -- untruncated
+                  </div>
+                  {(activePause.blocks ?? []).length === 0 && (
+                    <div style={{ color: '#f87171' }}>
+                      (none -- this call genuinely returned nothing)
+                    </div>
+                  )}
+                  {(activePause.blocks ?? []).map((b, i) => (
+                    <div key={i} style={{ marginBottom: 12, paddingLeft: 8, borderLeft: '2px solid #1e2a38' }}>
+                      <div style={{ color: '#f0fdf4', fontWeight: 700, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{i + 1}. {b.title}</div>
+                      <div style={{ color: '#cbd5e1', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.body}</div>
+                      <div style={{ color: '#475569', wordBreak: 'break-all' }}>{b.url}</div>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <>
+                  {transcript.map((evt, i) => <TranscriptLine key={i} evt={evt} />)}
+                  <div ref={bottomRef} />
+                </>
+              )}
+            </div>
+
+            <div style={{ width: 6, flexShrink: 0, background: '#1e2a38' }} />
+
+            {/* RIGHT: what he changes and what he types. */}
+            <div style={{ width: rightW || 280, flexShrink: 0, background: '#0d1117', padding: 14, display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto' }}>
+              <div style={{ color: '#fbbf24', fontWeight: 700, fontFamily: 'system-ui, sans-serif', fontSize: 13 }}>
+                AUDIBLE -- call {activePause.callIndex}, {activePause.phase === 'before_query' ? 'before it goes out' : 'after it came back'}
+              </div>
+              <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'system-ui, sans-serif' }}>
+                The run is stopped inside the engine right now. It waits until you press a button --
+                there is no timer.
+              </div>
+
+              {activePause.phase === 'before_query' ? (
+                <>
+                  <label style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif' }}>
+                    The query about to be sent. Edit it and press Go to send yours instead; leave it
+                    alone and Go sends exactly what the method wrote.
+                  </label>
+                  {/* Enter makes a newline. Only a button acts -- the same rule the Audit notes
+                      box had to be corrected to at BP149. */}
+                  <textarea
+                    ref={pauseQueryRef}
+                    value={pauseQuery}
+                    onChange={(e) => setPauseQuery(e.target.value)}
+                    onFocus={() => { lastBox.current = 'query'; }}
+                    onKeyDown={handlePauseKeyDown}
+                    disabled={pauseAnswering}
+                    rows={6}
+                    wrap="soft"
+                    style={{
+                      background: '#05080d', border: `1px solid ${pauseQuery !== activePause.query ? '#f59e0b' : '#334155'}`,
+                      borderRadius: 6, color: '#e2e8f0', padding: '8px 10px', fontSize: 13,
+                      fontFamily: 'Consolas, monospace', outline: 'none', width: '100%', boxSizing: 'border-box',
+                      minHeight: 130, resize: 'vertical', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', lineHeight: 1.5,
+                    }}
+                  />
+                  {pauseQuery !== activePause.query && (
+                    <div style={{ fontSize: 11, color: '#f59e0b', fontFamily: 'system-ui, sans-serif' }}>
+                      Changed. Go will send your wording, verbatim, and record it as a rewrite.
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'system-ui, sans-serif' }}>
+                  The query is already spent, so there is nothing to rewrite here. To change what a
+                  call fetches, rewrite the QUERY on the way out. Hand-writing a fact at this point
+                  would put unsourced text into the evidence chain, which is the one thing this
+                  estate does not do.
+                </div>
+              )}
+
+              <label style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif' }}>
+                Your note on this call (recorded verbatim; blank is fine)
+              </label>
+              <textarea
+                ref={pauseNoteRef}
+                value={pauseNote}
+                onChange={(e) => setPauseNote(e.target.value)}
+                onFocus={() => { lastBox.current = 'note'; }}
+                onKeyDown={handlePauseKeyDown}
+                disabled={pauseAnswering}
+                rows={8}
+                wrap="soft"
+                placeholder={'Type as much as you want. Enter makes a new line.\nNothing advances until you press a button (or Ctrl+Enter for Go).'}
+                style={{
+                  background: '#05080d', border: '1px solid #334155', borderRadius: 6, color: '#e2e8f0',
+                  padding: '8px 10px', fontSize: 13, fontFamily: 'Consolas, monospace', outline: 'none',
+                  width: '100%', boxSizing: 'border-box', minHeight: 180, resize: 'vertical',
+                  whiteSpace: 'pre-wrap', overflowWrap: 'break-word', lineHeight: 1.5,
+                }}
+              />
+
+              {/* D-BP150-002 -- YOUR EARLIER NOTES. Click one to splice it into whichever box you
+                  were last typing in, verbatim, at the cursor. Read-only: opening this never
+                  edits or deletes a teaching file. */}
+              <div style={{ borderTop: '1px solid #1e2a38', paddingTop: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setNotesOpen((v) => !v)}
+                  style={{
+                    background: 'none', border: 'none', color: '#22d3ee', fontSize: 12, fontWeight: 700,
+                    padding: 0, cursor: 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+                  }}
+                >
+                  {notesOpen ? '▾' : '▸'} Your earlier notes
+                  {notesState === 'loaded' && ` (${notesFiles.reduce((n, f) => n + f.notes.length, 0)})`}
+                  {notesState === 'loading' && ' (reading…)'}
+                </button>
+
+                {notesOpen && (
+                  <div style={{ marginTop: 8, maxHeight: 320, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {notesState === 'unavailable' && (
+                      <div style={{ fontSize: 11, color: '#fca5a5', fontFamily: 'system-ui, sans-serif' }}>
+                        Preload bridge missing (lianaNotesList) -- rebuild main and restart the app.
+                      </div>
+                    )}
+                    {notesState === 'loaded' && notesFiles.length === 0 && (
+                      <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'system-ui, sans-serif' }}>
+                        No teaching files found in the dropzone. That is "none found", not proof none exist --
+                        if you expected some, say so and I will check the path rather than assume.
+                      </div>
+                    )}
+                    {notesFiles.map((f) => (
+                      <div key={f.filePath}>
+                        <div style={{ fontSize: 10, color: '#475569', fontFamily: 'system-ui, sans-serif', marginBottom: 4 }}>
+                          {f.label} · {f.writtenAt.slice(0, 16).replace('T', ' ')}Z
+                          {f.abandoned ? ' · ended early' : ''} · {f.notes.length} note{f.notes.length === 1 ? '' : 's'}
+                        </div>
+                        {f.notes.map((n, i) => {
+                          const key = `${f.filePath}#${i}`;
+                          const open = expandedNote === key;
+                          return (
+                            <div key={key} style={{ marginBottom: 6, paddingLeft: 6, borderLeft: '2px solid #1e2a38' }}>
+                              <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedNote(open ? null : key)}
+                                  title={n.heading}
+                                  style={{
+                                    background: 'none', border: 'none', color: '#94a3b8', fontSize: 11,
+                                    padding: 0, cursor: 'pointer', textAlign: 'left', flex: 1,
+                                    fontFamily: 'system-ui, sans-serif', outline: 'none',
+                                  }}
+                                >
+                                  {n.stepIndex != null ? `step ${n.stepIndex}` : 'teach box'} · {n.text.length} chars
+                                  {' — '}
+                                  <span style={{ color: '#64748b' }}>
+                                    {open ? '(hide)' : `${n.text.slice(0, 44).replace(/\s+/g, ' ')}…`}
+                                  </span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => insertNote(n.text)}
+                                  style={{
+                                    background: 'none', border: '1px solid #334155', borderRadius: 4,
+                                    color: '#22d3ee', fontSize: 10, fontWeight: 700, padding: '2px 7px',
+                                    cursor: 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none', flexShrink: 0,
+                                  }}
+                                >
+                                  Insert
+                                </button>
+                              </div>
+                              {open && (
+                                <div style={{
+                                  marginTop: 4, fontSize: 11, color: '#cbd5e1', whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-word', fontFamily: 'Consolas, monospace', lineHeight: 1.45,
+                                }}>
+                                  {n.text}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void answerPause('go')}
+                disabled={pauseAnswering}
+                style={{
+                  background: pauseAnswering ? '#1e2a38' : 'linear-gradient(135deg, #059669, #10b981)',
+                  color: pauseAnswering ? '#64748b' : '#fff', border: 'none', borderRadius: 6,
+                  padding: '8px 10px', fontSize: 13, fontWeight: 700, cursor: pauseAnswering ? 'default' : 'pointer',
+                  fontFamily: 'system-ui, sans-serif', outline: 'none',
+                }}
+              >
+                {pauseAnswering
+                  ? 'Sending…'
+                  : activePause.phase === 'before_query'
+                    ? (pauseQuery !== activePause.query ? 'Go -- send my wording ▸' : 'Go -- send it ▸')
+                    : 'Go -- use this result ▸'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void answerPause('skip')}
+                disabled={pauseAnswering}
+                style={{
+                  background: 'none', border: '1px solid #334155', borderRadius: 6,
+                  color: pauseAnswering ? '#334155' : '#94a3b8', padding: '7px 10px', fontSize: 12,
+                  cursor: pauseAnswering ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+                }}
+              >
+                {activePause.phase === 'before_query' ? 'Skip this call' : 'Discard this result'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void answerPause('abandon')}
+                disabled={pauseAnswering}
+                style={{
+                  background: 'none', border: '1px solid #7f1d1d', borderRadius: 6,
+                  color: pauseAnswering ? '#334155' : '#fca5a5', padding: '7px 10px', fontSize: 12, fontWeight: 700,
+                  cursor: pauseAnswering ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+                }}
+              >
+                End the run
+              </button>
+              <div style={{ fontSize: 10, color: '#475569', fontFamily: 'system-ui, sans-serif' }}>
+                Ending keeps every note you have typed so far. Skipping is not an error -- the
+                methods already handle a call that returns nothing.
+              </div>
+            </div>
+          </>
+        ) : walkActive ? (
           <>
             {/* D-BP149-044/BISHOP/S44/seg-steppedmode -- STEPPED WALK PANEL. LEFT: the current
                 step's captured events, rendered full-text with TranscriptLine (same component

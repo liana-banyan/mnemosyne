@@ -341,10 +341,32 @@ declare global {
       // D-BP149-034/BISHOP/S34/seg-lianaterminal -- the Liana Cycle terminal.
       lianaTerminalRun?: (
         input: string,
+        /** D-BP150-001 (Call an Audible), ADDITIVE/OPTIONAL. Omitted or false = the run this
+         *  function has always produced, byte for byte. */
+        audible?: boolean,
       ) => Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome>;
       onLianaTerminalEvent?: (
         cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
       ) => () => void;
+      // D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE. The engine stops before every
+      // Google query and again on what comes back, and waits -- with no timer -- until the
+      // operator answers. onLianaAudiblePause is the push; lianaAudibleRespond is the only way a
+      // pause ends from the renderer side. Distinct from the Teach box and from Audit the Run:
+      // those record what already happened, this changes what happens next.
+      onLianaAudiblePause?: (
+        cb: (pause: import('../shared/liana_cycle/liana_terminal_types').LianaAudiblePause) => void,
+      ) => () => void;
+      lianaAudibleRespond?: (
+        response: import('../shared/liana_cycle/liana_terminal_types').LianaAudibleResponse,
+      ) => Promise<{ ok: boolean; reason?: string }>;
+      // D-BP150-002 -- his earlier teaching notes, read back into a live pause. Read-only.
+      lianaNotesList?: (
+        label?: string,
+      ) => Promise<{
+        ok: boolean;
+        files: import('../shared/liana_cycle/liana_terminal_types').LianaTeachingFile[];
+        error?: string;
+      }>;
       // D-BP149-043/BISHOP/S43/seg-method2build -- THE TEACH BOX. Writes the operator's own
       // words, VERBATIM, to a teaching file (BISHOP_DROPZONE) for a human to read and implement
       // from -- never auto-generates a method.
