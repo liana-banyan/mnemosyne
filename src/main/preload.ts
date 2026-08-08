@@ -746,6 +746,25 @@ contextBridge.exposeInMainWorld('amplify', {
   ): Promise<import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null> =>
     ipcRenderer.invoke('nexus-browser-authority-run-query', query),
 
+  // D-BP149-034/BISHOP/S34/seg-lianaterminal -- the Liana Cycle terminal. lianaTerminalRun drives
+  // the ported founder_cascade_v2.mjs cascade in the main process (liana_terminal_engine.ts) and
+  // resolves once the run completes; onLianaTerminalEvent subscribes to the live stage-by-stage
+  // transcript pushed via 'liana-terminal-event' (event.sender.send in index.ts's handler) as the
+  // run happens, so the left pane renders it in real time rather than waiting for the final
+  // resolve. Mirrors the onAskEngineProgress push convention already used by the Ask tab.
+  lianaTerminalRun: (
+    input: string,
+  ): Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome> =>
+    ipcRenderer.invoke('liana-terminal-run', { input }),
+
+  onLianaTerminalEvent: (
+    cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
+  ): (() => void) => {
+    const h = (_event: Electron.IpcRendererEvent, evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => cb(evt);
+    ipcRenderer.on('liana-terminal-event', h);
+    return () => ipcRenderer.removeListener('liana-terminal-event', h);
+  },
+
   // ── Nexus Authority persistent session (BP137 0.9.12 Stage F1) ─────────────
   // Thin wraps around the four IPC channels index.ts's registerIPCHandlers() registers next to
   // 'nexus-browser-authority-run-query' above -- see nexus_authority_persistent_session.ts's
@@ -2379,6 +2398,13 @@ declare global {
       runBrowserAuthorityQuery?: (
         query: import('../shared/plow/browser_authority_types').BrowserAuthorityQuery,
       ) => Promise<import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null>;
+      // D-BP149-034/BISHOP/S34/seg-lianaterminal
+      lianaTerminalRun?: (
+        input: string,
+      ) => Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome>;
+      onLianaTerminalEvent?: (
+        cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
+      ) => () => void;
       // Nexus Authority persistent session (BP137 0.9.12 Stage F1)
       setNexusAuthorityBrowserFlags?: (
         researchArmMode: boolean,

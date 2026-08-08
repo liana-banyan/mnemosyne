@@ -21,6 +21,7 @@ import { ProofTab } from './compass/ProofTab';
 import { LibraryTab } from './compass/LibraryTab';
 import { SocialCompassTab } from './compass/SocialCompassTab';
 import { MoreTab } from './compass/MoreTab';
+import { LianaCycleTab } from './compass/LianaCycleTab';
 import { BoardPanel } from './board/BoardPanel';
 import { boardSubscription, alarmCount } from './board/board_subscription';
 import type { CompassTab, MoreSubView, CompassNavigate } from './compass/types';
@@ -40,6 +41,9 @@ const TABS: Array<{ id: CompassTab; label: string }> = [
   // KN-BP144-10: Grand Central board panel. Sixth sibling tab -- no reordering of the other
   // five, per the array's own swap-point convention above.
   { id: 'board', label: 'Board' },
+  // D-BP149-034/BISHOP/S34/seg-lianaterminal: the Liana Cycle terminal. Seventh sibling tab,
+  // same no-reordering convention.
+  { id: 'liana', label: 'Liana Cycle' },
 ];
 
 async function openMembershipCheckout(onError?: (msg: string) => void): Promise<void> {
@@ -253,6 +257,7 @@ export function CompassShell({ currentMode, onModeChange, authState }: CompassSh
         {activeTab === 'library' && <LibraryTab />}
         {activeTab === 'social' && <SocialCompassTab />}
         {activeTab === 'board' && <BoardPanel />}
+        {activeTab === 'liana' && <LianaCycleTab />}
         {activeTab === 'more' && (
           <MoreTab
             subView={moreSubView}

@@ -338,6 +338,13 @@ declare global {
       runBrowserAuthorityQuery?: (
         query: import('../shared/plow/browser_authority_types').BrowserAuthorityQuery,
       ) => Promise<import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null>;
+      // D-BP149-034/BISHOP/S34/seg-lianaterminal -- the Liana Cycle terminal.
+      lianaTerminalRun?: (
+        input: string,
+      ) => Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome>;
+      onLianaTerminalEvent?: (
+        cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
+      ) => () => void;
       // Nexus Authority persistent session (BP137 0.9.12 Stage F1)
       setNexusAuthorityBrowserFlags?: (
         researchArmMode: boolean,

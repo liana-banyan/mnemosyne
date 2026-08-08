@@ -5,7 +5,11 @@
 
 // KN-BP144-10: 'board' added for the Grand Central board panel -- a sixth sibling tab, same
 // flat union as the original five (no routing library introduced).
-export type CompassTab = 'ask' | 'proof' | 'library' | 'social' | 'more' | 'board';
+// D-BP149-034/BISHOP/S34/seg-lianaterminal: 'liana' added for the Liana Cycle terminal --
+// a sibling tab, not folded into LeanAskTab's chat surface (different UI: two-pane live
+// transcript + prompt, not a chat bubble list; different engine: the ported cascade, not
+// ai-dispatch:query's chat/escalation ladder).
+export type CompassTab = 'ask' | 'proof' | 'library' | 'social' | 'more' | 'board' | 'liana';
 
 export type MoreSubView =
   | 'menu'
