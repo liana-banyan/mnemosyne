@@ -587,6 +587,15 @@ export interface ProvenanceReceipt {
   verified: boolean;
   /** Direct source URL when the adapter provided one (e.g. Wikipedia page, arXiv abstract). */
   provenanceUrl?: string;
+  /** BP149 D-BP149-016 (R4 repair), ADDITIVE/OPTIONAL. Populated only at the browser-authority
+   *  legacy accept path below (the one construction site this ticket wires) from
+   *  BrowserAuthorityLookupResult.citations -- the exact citations extractCitationsFromElement()
+   *  scraped, now surviving past distillExtraction() instead of being dropped. Absent (not [])
+   *  on every OTHER provenanceReceipts construction site in this file (specialist swarm,
+   *  deterministic-compute, decompose, psionic, cake, elimination-cascade, and the
+   *  authority-ENSEMBLE browser-authority accept path) -- none of those threads citations this
+   *  far yet; named as a follow-up in PROVENANCE_WIRING_BP149.md, not silently implied here. */
+  citations?: Array<{ url: string; label: string; category: string }>;
 }
 
 export interface CanonicalPlowMcResult {
@@ -7997,6 +8006,12 @@ export async function runCanonicalPlowMcAnswer(
               contentHash: createHash('sha256').update(acceptedResult.fact).digest('hex').slice(0, 16),
               verified: acceptedResult.verified,
               ...(acceptedResult.sourceUrl ? { provenanceUrl: acceptedResult.sourceUrl } : {}),
+              // BP149 D-BP149-016 (R4 repair): acceptedResult is a BrowserAuthorityLookupResult;
+              // its `citations` field now survives distillExtraction() (browser_authority_types.ts)
+              // instead of being dropped at the old 4-field BrowserAuthorityRawExtraction
+              // boundary. Only set when non-empty -- an empty/absent array on acceptedResult means
+              // genuinely no citation was found, not a fabricated placeholder.
+              ...(acceptedResult.citations && acceptedResult.citations.length > 0 ? { citations: acceptedResult.citations } : {}),
             }],
             answerType: earlyAnswerTypeForBrowserAuthority,
             browserAuthorityCorroboration,

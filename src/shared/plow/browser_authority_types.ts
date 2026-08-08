@@ -174,6 +174,32 @@ export interface BrowserAuthorityQuery {
  * forward `snippet` past distillExtraction(); only the distilled `fact` field is meant to leave
  * this module's boundary (see the file-header "components not answers" note).
  */
+/** BP149 D-BP149-016 (provwire), mirrors webview_preload.ts's own (non-exported, structurally
+ *  identical) CitationRecord -- this is the SHARED-file canonical shape a main-process consumer
+ *  can import. `extractCitationsFromElement()` in webview_preload.ts has been producing this
+ *  shape on every extraction path since KN-BP145-B; it was simply never carried past the 4-field
+ *  BrowserAuthorityRawExtraction boundary below (R4, "the type-boundary drop is the real
+ *  defect"). Never fabricated -- an empty array means no discoverable citation link, never an
+ *  absent/omitted field. */
+export interface CitationRecord {
+  url: string;
+  label: string;
+  /** Hostname proxy (e.g. "wikipedia.org"), not a semantic topic category -- see
+   *  webview_preload.ts's own CitationRecord doc comment for why. */
+  category: string;
+}
+
+/** BP149 D-BP149-016 (provwire), mirrors webview_preload.ts's own (non-exported, structurally
+ *  identical) SearchResultCandidate (KN-BP147-M2's multi-result capture). One ranked candidate
+ *  independently listed by the underlying page (one Google organic-result row, one Perplexity
+ *  Sources-panel card). `rank` is 1-based DOM order, never re-sorted here. */
+export interface SearchResultCandidate {
+  rank: number;
+  url: string;
+  title: string;
+  snippet: string;
+}
+
 export interface BrowserAuthorityRawExtraction {
   /** Best-effort scraped answer text, already stripped of markup by the webview-side scraper. */
   snippet: string;
@@ -183,6 +209,20 @@ export interface BrowserAuthorityRawExtraction {
   authority: BrowserAuthorityName;
   /** Which DOM heuristic matched (for audit/debugging only, never shown to end users). */
   selectorUsed: string | null;
+  /** BP149 D-BP149-016, ADDITIVE/OPTIONAL -- the scraper (webview_preload.ts's
+   *  extractCitationsFromElement/BrowserAuthorityExtractionResultMessage.citations) has always
+   *  collected this; it is now carried past this boundary instead of being silently discarded.
+   *  Absent on every pre-fix caller that has not been updated to populate it -- every existing
+   *  consumer that destructures only {snippet, sourceUrl, authority, selectorUsed} keeps
+   *  compiling and behaving identically (R4/HARDWIRE convention: additive only). */
+  citations?: CitationRecord[];
+  /** BP149 D-BP149-016, ADDITIVE/OPTIONAL -- webview_preload.ts's KN-BP147-M2 multi-result
+   *  capture (BrowserAuthorityExtractionResultMessage.results, Google organic results /
+   *  Perplexity Sources-panel cards). Same absent-on-pre-fix-callers guarantee as `citations`
+   *  above. Never populated for the interactive authorities (user_claude/user_chatgpt/
+   *  user_gemini) -- their single-message thread has no independent multi-candidate structure to
+   *  capture, per webview_preload.ts's own extractMultiResultCandidates() dispatch. */
+  results?: SearchResultCandidate[];
 }
 
 /** BP137 Yoke v2b Stage C item 1's ProvenanceReceipt-compatible output shape. Field names/
@@ -207,6 +247,14 @@ export interface BrowserAuthorityLookupResult {
   verified: boolean;
   queryText: string;
   extractedAt: string; // ISO8601
+  /** BP149 D-BP149-016, ADDITIVE/OPTIONAL -- threaded straight through from
+   *  BrowserAuthorityRawExtraction.citations by distillExtraction() below. Absent (not empty)
+   *  when the raw extraction did not carry the field at all (a pre-fix caller); an empty array
+   *  means the field WAS carried and genuinely found nothing. */
+  citations?: CitationRecord[];
+  /** BP149 D-BP149-016, ADDITIVE/OPTIONAL -- threaded straight through from
+   *  BrowserAuthorityRawExtraction.results. Same absent-vs-empty distinction as `citations`. */
+  results?: SearchResultCandidate[];
 }
 
 /**
@@ -351,6 +399,12 @@ export function distillExtraction(
     verified: trimmedSnippet.length >= 20, // weak "genuinely scraped something substantive" signal
     queryText,
     extractedAt: new Date().toISOString(),
+    // BP149 D-BP149-016 (R4 repair): previously raw.citations/raw.results were never read here at
+    // all -- this is the exact "type-boundary drop" the ticket exists to close. `raw.citations`
+    // spread conditionally so a pre-fix raw object (the field genuinely absent, not empty) yields
+    // an absent field here too, never a fabricated empty array standing in for "never collected".
+    ...(raw.citations !== undefined ? { citations: raw.citations } : {}),
+    ...(raw.results !== undefined ? { results: raw.results } : {}),
   };
 }
 
