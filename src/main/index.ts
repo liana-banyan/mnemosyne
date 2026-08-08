@@ -258,6 +258,13 @@ import {
 import { querySagaState, recordWaveDispatch, recordWaveComplete } from './hearth/drekaskip_status/drekaskip_bridge';
 import { pollWatchdogStatus, getSubjectHistory } from './hearth/active_substrate/watchdog_bridge';
 import { toggleMonitor, getMetrics, getAllMonitorStates } from './hearth/active_substrate/scribe_monitor';
+// D-BP149-034/BISHOP/S34/seg-lianaterminal -- the Liana Cycle terminal (BP148 ratified canon:
+// canon_liana_cycle_terminal_window_we_fight_as_we_train_bp148.eblet.md). runLianaCycleQuestion
+// is the ported cascade (scripts/founder_cascade_v2.mjs); _paths.HEARTBEAT_DIR is the EXISTING
+// yoke ledger directory yoke_watcher.ts already watches -- reused here rather than inventing a
+// second Mic mechanism, per this ticket's explicit instruction.
+import { runLianaCycleQuestion } from './liana_cycle/liana_terminal_engine';
+import { _paths as YOKE_PATHS } from './resident/yoke_watcher';
 // BP037 ? On-Deck Master-of-Ceremonies
 import { listOnDeck } from './on_deck/on_deck_bridge';
 // Adaptive Concurrency Carrier (Layer 2+4)
@@ -2083,7 +2090,33 @@ export async function runBrowserAuthorityQueryFromMainObserved(
         citations?: import('../shared/plow/browser_authority_types').CitationRecord[];
         results?: import('../shared/plow/browser_authority_types').SearchResultCandidate[];
       };
-      if (!r.success || !r.snippet || !r.sourceUrl) {
+      // BP149 D-BP149-037: RESULTS-ONLY EXTRACTIONS ARE REAL EXTRACTIONS.
+      //
+      // This gate used to require a `snippet` -- Google's ANSWER BOX -- and returned null the
+      // moment one was absent, throwing away the organic results the scraper had ALREADY captured
+      // and put in `r.results`. Measured live at BP149: a signed-in, enabled Google authority ran
+      // for 6.5s, scraped 5 real organic results, and returned null, because the query produced no
+      // answer box.
+      //
+      // That is not a rare edge. It is most of the Founder's own cascade. His stage 3, 4 and 5
+      // framings ("Please put these regions in order of most densely to least densely populated",
+      // "please remove the half that are least populated", "What are the population densities of
+      // each of the following world regions?") are conversational requests Google answers with
+      // ORGANIC RESULTS, not with a box. Only his stage-1 inverse reliably gets a box. So every
+      // stage after the first returned null and his method could never run to completion.
+      //
+      // Returning the results is not a partial or fabricated extraction: the organic list is real
+      // captured page content with real URLs, and it is exactly what he reads off the page himself
+      // when there is no box. Fabrication would be inventing a snippet. This invents nothing, and
+      // an empty `snippet` tells the caller plainly that no box existed.
+      // `r.success` is set by extractBrowserAuthorityAnswer (webview_preload.ts:334-352), which
+      // returns success:false whenever no ANSWER BOX selector matches -- and which cannot see the
+      // organic results at all, since they are attached further down the chain
+      // (its return type is literally Omit<BrowserAuthorityExtractionResultMessage, 'results'>).
+      // So `success` means "an answer box was found", not "the scrape produced nothing". Gating on
+      // it discarded real captured page content. Results present is sufficient on its own.
+      const hasResults = Array.isArray(r.results) && r.results.length > 0;
+      if (!hasResults && (!r.success || !r.snippet || !r.sourceUrl)) {
         // honest -- never a partial/fabricated extraction. KN-BP144-7 T2: this static (Google/
         // Perplexity) path has no login-wall detector of its own (unlike the interactive script
         // above), so 'not_signed_in' can never be observed here -- only genuinely reported reasons
@@ -2093,8 +2126,11 @@ export async function runBrowserAuthorityQueryFromMainObserved(
       }
       return {
         raw: {
-          snippet: r.snippet,
-          sourceUrl: r.sourceUrl,
+          // Empty string when Google gave no answer box. Honest and load-bearing: a caller that
+          // sees `snippet === '' && results.length > 0` knows the facts are in the organic list,
+          // which is precisely the case the old gate deleted.
+          snippet: r.snippet ?? '',
+          sourceUrl: r.sourceUrl ?? null,
           authority: query.authority,
           selectorUsed: r.selectorUsed ?? null,
           // BP149 D-BP149-016: carried through now instead of discarded. Defaulted to [] (never
@@ -3372,6 +3408,35 @@ function registerIPCHandlers(): void {
   safeHandle('nexus-browser-authority-run-query', (_event, query: BrowserAuthorityQuery) =>
     runBrowserAuthorityQueryFromMain(query),
   );
+
+  // D-BP149-034/BISHOP/S34/seg-lianaterminal -- the Liana Cycle terminal. `askGoogle` is a
+  // one-line closure around the SAME runBrowserAuthorityQueryFromMain() the line above uses (and
+  // plow_mc_answerer.ts's Stage F2/F3 use) -- this is dependency injection so
+  // liana_terminal_engine.ts never has to import this giant entry file, not a second Google path.
+  // Streams every stage/fact/note/result line to the caller's own window as it happens
+  // (event.sender.send, same push convention as 'ask-engine-progress') so the Founder watches the
+  // cascade live instead of pasting console output back into a chat window.
+  safeHandle('liana-terminal-run', async (event, { input }: { input: string }) => {
+    const outcome = await runLianaCycleQuestion(
+      input,
+      (question) => runBrowserAuthorityQueryFromMain({ question, authority: 'user_google' }),
+      (evt) => { try { event.sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ } },
+    );
+    // THE MIC: one heartbeat line per completed question, written to the EXISTING yoke ledger
+    // heartbeat directory yoke_watcher.ts already polls -- makes a run visible to Bishop without
+    // the Founder copying anything, which is the entire point (Founder, BP148/BP149).
+    try {
+      mkdirSync(YOKE_PATHS.HEARTBEAT_DIR, { recursive: true });
+      const ts = new Date().toISOString();
+      const label = outcome.qid != null ? `qid=${outcome.qid}` : 'qid=free-text';
+      const verdictDesc = outcome.abstain ? 'ABSTAIN' : `verdict=${outcome.verdict}`;
+      const line = `${ts}  LIANA-TERMINAL  ${label}  ${verdictDesc}${outcome.correct ? `  key=${outcome.correct}  ok=${outcome.ok}` : ''}\n`;
+      appendFileSync(join(YOKE_PATHS.HEARTBEAT_DIR, 'LIANA-TERMINAL.beat'), line, 'utf8');
+    } catch (e) {
+      console.warn('[liana-terminal] heartbeat write failed (non-fatal):', e);
+    }
+    return outcome;
+  });
 
   // BP138 Yoke 0.9.15 FIX 1 -- main-process side of webview_preload.ts's IPC-relay logging.
   // That file's guest context is sandboxed (Electron 31 default) and can no longer touch
