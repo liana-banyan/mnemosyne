@@ -139,13 +139,36 @@ async function findAppPageTarget(port) {
   // The nexus-authority helper window's own page is a data: URL and its guest <webview> is a
   // separate "webview"-typed target with an about:blank/live-authority url — neither carries
   // window.amplify in a way this script should ever touch.
-  const candidate = targets.find((t) => t.type === 'page' && t.url.includes('index.html'));
+  // D-BP149-021/BISHOP/S21/seg-devattach -- THIS MATCHER IS WHY THE A/B COULD NEVER RUN IN DEV MODE.
+  // The original test was `t.url.includes('index.html')`, which only ever matches the PACKAGED
+  // build (file:///.../app.asar/dist/renderer/index.html#/dashboard). The Vite dev renderer serves
+  // at http://127.0.0.1:5173/#/dashboard -- no 'index.html' anywhere in the URL -- so the CLI threw
+  // "No renderer page target found" and silently attached to the packaged asar whenever one
+  // happened to be running. That is worse than failing: a source change plus a rebuild would appear
+  // to be under test while the packaged binary, containing neither, actually answered.
+  // Observed live BP149, both halves of that failure, on the same machine within one hour.
+  const isHelperWindow = (u) => u.startsWith('data:') || u === 'about:blank';
+  const isPackagedRenderer = (u) => u.includes('index.html');
+  // Any loopback http(s) origin is a dev renderer. Deliberately NOT pinned to 5173: the port is
+  // configurable and a hardcoded one would reintroduce this exact class of bug on the next change.
+  const isDevRenderer = (u) => /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d+\//.test(u);
+
+  const pages = targets.filter((t) => t.type === 'page' && !isHelperWindow(t.url));
+  const candidate =
+    pages.find((t) => isPackagedRenderer(t.url)) ?? pages.find((t) => isDevRenderer(t.url));
+
   if (!candidate) {
     throw new Error(
       `No renderer page target found among ${targets.length} CDP target(s) on port ${port}. ` +
+      `Accepted shapes: a packaged renderer (url contains 'index.html') or a dev renderer ` +
+      `(loopback http origin, e.g. http://127.0.0.1:5173/). ` +
       `Targets seen: ${targets.map((t) => `${t.type}:${t.url.slice(0, 60)}`).join(' | ')}`,
     );
   }
+  // Say WHICH build answered. An A/B whose arms silently ran against different binaries is not a
+  // measurement, and the operator must be able to see which one this run used.
+  const buildKind = isPackagedRenderer(candidate.url) ? 'PACKAGED (asar)' : 'DEV (source)';
+  console.log(`[cli] renderer build: ${buildKind} -- ${candidate.url.slice(0, 110)}`);
   return candidate;
 }
 
