@@ -1450,7 +1450,49 @@ function findBroadFallbackMatchGeneric(
   return null;
 }
 
-/** Parameterized twin of findMainRegionTailFallback above (tier c). */
+/** (D-BP149-028 fix) Whitespace-collapsing normalizer, same contract as isEchoedPrompt's own
+ *  inline `normalize` above -- used here for the SAME reason: a contenteditable rich-text editor
+ *  (confirmed live this pass against Gemini's Quill-based `.ql-editor` composer) re-renders a
+ *  multi-line submitted prompt as one `<p>`-equivalent block PER SOURCE LINE, so its rendered
+ *  `innerText` inserts an extra blank line between what were single `\n`-joined lines in the
+ *  original prompt string (verified live: a 4-option MC prompt built by buildMcAwareQueryText
+ *  round-tripped through Gemini's composer read back with `\n\n` where the source had a single
+ *  `\n` between "Options:" and "A) ..."). A raw, un-normalized `fullText.lastIndexOf(promptText)`
+ *  therefore NEVER finds a multi-line (i.e. any real MC-formatted) prompt once it has been
+ *  echoed onto the page -- confirmed live, `idx` was -1 on every tick of a real submitted query. */
+function normalizeWhitespaceForTailMatch(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/** Parameterized twin of findMainRegionTailFallback above (tier c).
+ *
+ * (D-BP149-028 fix, R-MECHANISM-VERIFY -- live CDP session against the Founder's real signed-in
+ * gemini.google.com/app, this pass) ROOT CAUSE of `user_gemini` being recorded parse_failed on
+ * 6/6 questions with a captured `rawPreview` of Gemini's own idle greeting text ("Work
+ * Conversation with Gemini Hi J, let's get into it" / "Let's jump in, J" / "What can I help
+ * with, J?"): this function's PRE-FIX body fell back to `tail = fullText` (the ENTIRE stripped
+ * main-region text) whenever `fullText.lastIndexOf(normalizedPrompt)` returned -1 -- which, per
+ * the comment above, is EVERY multi-line prompt, i.e. every real MC-formatted question this
+ * pipeline actually sends. On an early poll tick (before Gemini has echoed the submitted message
+ * into the DOM at all, or on some runs before it ever does), `fullText` IS JUST the idle
+ * landing-page greeting -- a short, non-empty, non-echoed-prompt, non-UI-chrome string that
+ * passes every one of this function's existing acceptance checks and gets returned as a
+ * "resilient" answer. Because that greeting text never changes, it satisfies the poll loop's
+ * "stable for N ticks" completion rule almost immediately (live logs: ~2.1-3.3s after submit,
+ * `sawStreaming:false` every time) -- finishing with `success:true` and a snippet that is pure
+ * page furniture, long before Gemini's real (slower, "Thinking"-mode) answer ever renders. That
+ * false "answered" result is what upstream then fails to extract a letter from and mislabels
+ * parse_failed.
+ *
+ * THE FIX (verified live this pass, same CDP session, same account): normalize whitespace on
+ * BOTH sides before searching (closes the multi-line mismatch -- `idx` went from always -1 to a
+ * correct positive match, 41, the instant Gemini echoed the prompt), AND -- the actually
+ * load-bearing change -- return null (never `fullText`) when the prompt genuinely cannot be
+ * located, instead of silently substituting the whole page. A tail is only ever returned when
+ * the submitted prompt was positively found and there is real text after it; an unlocated prompt
+ * now correctly means "nothing to report yet, keep polling" (or, if the poll budget is
+ * exhausted, an honest `success:false` / `stream_timeout_or_empty` -- never a fabricated
+ * "answered" built from whatever happened to be on screen). */
 function findMainRegionTailFallbackGeneric(
   config: InteractiveAuthorityDriverConfig,
   promptText: string,
@@ -1467,14 +1509,14 @@ function findMainRegionTailFallbackGeneric(
         /* invalid selector -- skip stripping it */
       }
     }
-    const fullText = clone.innerText?.trim() ?? '';
-    if (!fullText) return null;
-    const normalizedPrompt = promptText.trim();
-    let tail = fullText;
-    if (normalizedPrompt) {
-      const idx = fullText.lastIndexOf(normalizedPrompt);
-      if (idx >= 0) tail = fullText.slice(idx + normalizedPrompt.length).trim();
-    }
+    const rawFullText = clone.innerText?.trim() ?? '';
+    if (!rawFullText) return null;
+    const normalizedPrompt = normalizeWhitespaceForTailMatch(promptText);
+    if (!normalizedPrompt) return null; // nothing to search for -- never fall back to the whole page
+    const normalizedFullText = normalizeWhitespaceForTailMatch(rawFullText);
+    const idx = normalizedFullText.lastIndexOf(normalizedPrompt);
+    if (idx < 0) return null; // (D-BP149-028) prompt not yet located -- honest "nothing yet", never fullText
+    const tail = normalizedFullText.slice(idx + normalizedPrompt.length).trim();
     if (tail.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(tail, promptText) && !looksLikeUiChrome(tail)) {
       // See findMainRegionTailFallback's twin comment above: `clone` has chrome selectors already
       // stripped, so this is the same accepted trade-off (citations only inside stripped regions
