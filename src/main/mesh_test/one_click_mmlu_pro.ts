@@ -98,6 +98,17 @@ export interface OneClickQuestionOutcome {
    *  prompt sent to the model for this specific question (local_ollama mode only -- for
    *  wan_mesh outcomes this is decided by the responder and is not echoed back today). */
   substrateContextInjected?: boolean;
+  /** D-BP148-045/BISHOP (Wrasse Serving Path), OPTIONAL/ADDITIVE. The structured identity
+   *  (title/category/path/relevanceScore) of every canon-substrate hit (from the 914-record
+   *  production eblet_index.jsonl corpus) actually injected into this question's prompt --
+   *  see substrate_toggle.ts's SubstrateInjectionResult.canonEblets for the full doc comment.
+   *  Absent when canon_substrate_serve_mode was off or this outcome predates this ticket;
+   *  present-and-empty means the mode ran and found nothing (see canonGateStatus below for
+   *  which). local_ollama plow mode only, mirrors substrateContextInjected's own scope. */
+  canonSubstrateEblets?: import('./substrate_toggle').InjectedCanonEblet[];
+  /** D-BP148-045/BISHOP, OPTIONAL/ADDITIVE. Companion to canonSubstrateEblets above -- see
+   *  SubstrateInjectionResult.canonGateStatus for the full enum doc. */
+  canonSubstrateGateStatus?: 'relevance_filtered' | 'embeddings_unavailable_bm25_fallback' | 'no_hits' | 'disabled' | 'error';
   /** BP133 Yoke #24 Task 2: wan_mesh mode only -- which mechanism produced this outcome. */
   answeredBy?: 'plow' | 'minor_council' | 'single_shot';
   /** BP133 Yoke #24 Task 2: wan_mesh + plow mode only -- the plow's full audit trace, present
@@ -623,7 +634,7 @@ async function answerQuestionLocallyViaPlow(
   // Same single authoritative substrate injection site as dispatchQuestionLocally's single-shot
   // path above -- Condition A (plow, substrate OFF) is genuinely cold, Condition B/C (plow,
   // substrate ON) genuinely see the same context a single-shot substrate-ON run would see.
-  const { prompt: effectivePrompt, contextInjected } = await applySubstrateToggle(
+  const { prompt: effectivePrompt, contextInjected, canonEblets, canonGateStatus } = await applySubstrateToggle(
     basePrompt, q.question, q.category, substrateEnabled,
   );
 
@@ -680,6 +691,8 @@ async function answerQuestionLocallyViaPlow(
     isCorrect,
     latencyMs,
     substrateContextInjected: contextInjected,
+    canonSubstrateEblets: canonEblets,
+    canonSubstrateGateStatus: canonGateStatus,
     answeredBy: 'plow',
     plowTrace: callResult.plowTrace,
     isAbstain: callResult.answer === null,

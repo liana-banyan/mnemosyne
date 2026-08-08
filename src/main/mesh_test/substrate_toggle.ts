@@ -40,8 +40,110 @@ export interface SubstrateInjectionResult {
   prompt: string;
   /** True only when context was actually prepended to basePrompt. */
   contextInjected: boolean;
-  /** How many topical eblets were retrieved (0 when substrate is OFF -- the fetch never runs). */
+  /** How many topical eblets were retrieved (0 when substrate is OFF -- the fetch never runs).
+   *  D-BP148-045: includes canonEblets.length when the canon-substrate branch also injected
+   *  (see canonEblets below) -- this field's pre-existing meaning ("total hits actually
+   *  prepended to the prompt") is preserved, just widened to count both sources. */
   ebletCount: number;
+  /** D-BP148-045/BISHOP (Wrasse Serving Path), ADDITIVE/OPTIONAL. The structured identity of
+   *  every canon-substrate hit (from the 914-record production eblet_index.jsonl corpus, via
+   *  queryEbletStoreWithProvenance()) that was actually injected into `prompt` above -- title/
+   *  category/path/relevanceScore survive here so a caller can attribute the answer back to a
+   *  real doctrine file and, later, root it. Absent (not empty array) when
+   *  canon_substrate_serve_mode is off, so an off-run never carries a stray empty-array field a
+   *  reader might mistake for "checked, found nothing" -- see canonGateStatus for that
+   *  distinction when the mode IS on. */
+  canonEblets?: InjectedCanonEblet[];
+  /** D-BP148-045/BISHOP, ADDITIVE/OPTIONAL. Present only when canon_substrate_serve_mode was
+   *  on for this call, so a caller can tell an honest "checked, zero passed the relevance gate"
+   *  or "checked, embeddings were unavailable so BM25 rank was used instead" apart from "never
+   *  checked" -- the exact ambiguity this ticket's fail-soft requirement forbids leaving
+   *  unresolved. */
+  canonGateStatus?: 'relevance_filtered' | 'embeddings_unavailable_bm25_fallback' | 'no_hits' | 'disabled' | 'error';
+}
+
+/** D-BP148-045/BISHOP (Wrasse Serving Path): one canon-substrate hit's identity, carried
+ *  alongside (never instead of) the content actually injected into the prompt -- this is what
+ *  makes an answer attributable back to a real doctrine file in eblet_index.jsonl rather than
+ *  an opaque blob of prepended text, the difference between this and a plain RAG bolt-on. */
+export interface InjectedCanonEblet {
+  title: string;
+  category: string;
+  path: string;
+  /** Cosine relevance score (0-1) against the question, via semantic_relevance_gate.ts's
+   *  existing nomic-embed-text machinery (SEMANTIC_RELEVANCE_THRESHOLD = 0.58). null when the
+   *  embedding gate was unavailable for this hit (Ollama/embed model unreachable) -- in that
+   *  case the hit was kept via its BM25 rank alone, never silently dropped (see
+   *  canonGateStatus:'embeddings_unavailable_bm25_fallback' on the result that carries this hit). */
+  relevanceScore: number | null;
+}
+
+/** D-BP148-045/BISHOP: hard cap on how many canon-substrate eblets can be injected per query --
+ *  context spent on retrieval is context not spent on reasoning. Same top-3 shape
+ *  queryEbletStoreWithProvenance() already returns (it never returns more than 3), named here
+ *  explicitly so the cap is a real, findable constant rather than an incidental consequence of
+ *  the retrieval function's own internal slice(0,3). */
+export const MAX_INJECTED_CANON_EBLETS = 3;
+
+/** D-BP148-045/BISHOP: retrieves and relevance-gates canon-substrate hits for one question.
+ *  Fail-soft at every step, per the ticket's own naming of the exact defect being avoided here:
+ *  a retrieval error or an empty BM25 result must never be silently indistinguishable from "the
+ *  relevance gate ran and rejected everything" -- gateStatus always says which one happened.
+ *
+ *  Machinery reused, not duplicated: queryEbletStoreWithProvenance() (mnem_eblet_store.ts, the
+ *  914-record eblet_index.jsonl BM25 query queryEbletStore() has always run) for retrieval, and
+ *  semanticRelevance()/SEMANTIC_RELEVANCE_THRESHOLD (semantic_relevance_gate.ts, the SAME 0.58-
+ *  cosine gate plow_mc_answerer.ts's Stage A.0 already uses for a different candidate set) for
+ *  relevance filtering. Both imported lazily, matching this file's own existing convention
+ *  (queryVerifiedEbletsTopical above) of staying Electron-agnostic until this code path
+ *  actually runs. */
+async function retrieveCanonSubstrateHits(
+  questionText: string,
+): Promise<{ hits: InjectedCanonEblet[]; contents: Map<string, string>; gateStatus: 'relevance_filtered' | 'embeddings_unavailable_bm25_fallback' | 'no_hits' | 'error' }> {
+  try {
+    const { queryEbletStoreWithProvenance } = await import('../mnem_eblet_store');
+    const bm25Hits = await queryEbletStoreWithProvenance(questionText);
+    if (bm25Hits.length === 0) {
+      return { hits: [], contents: new Map(), gateStatus: 'no_hits' };
+    }
+
+    const { semanticRelevance, SEMANTIC_RELEVANCE_THRESHOLD } = await import('../plow/semantic_relevance_gate');
+    let anyCosineSucceeded = false;
+    const scored = await Promise.all(
+      bm25Hits.map(async (h) => {
+        const score = await semanticRelevance(questionText, h.content);
+        if (score !== null) anyCosineSucceeded = true;
+        return { hit: h, score };
+      }),
+    );
+
+    const contents = new Map(bm25Hits.map((h) => [h.path, h.content]));
+
+    if (!anyCosineSucceeded) {
+      // Fail-soft: the embedding gate was unavailable for EVERY candidate (Ollama/embed model
+      // unreachable) -- keep the BM25 ranking as-is rather than collapsing to zero. Collapsing
+      // here would be indistinguishable from "checked and nothing was relevant", which is
+      // exactly the swallow-to-empty shape this ticket forbids.
+      return {
+        hits: bm25Hits.slice(0, MAX_INJECTED_CANON_EBLETS).map((h) => ({
+          title: h.title, category: h.category, path: h.path, relevanceScore: null,
+        })),
+        contents,
+        gateStatus: 'embeddings_unavailable_bm25_fallback',
+      };
+    }
+
+    const passed = scored
+      .filter((s): s is { hit: typeof bm25Hits[number]; score: number } => s.score !== null && s.score >= SEMANTIC_RELEVANCE_THRESHOLD)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_INJECTED_CANON_EBLETS)
+      .map((s) => ({ title: s.hit.title, category: s.hit.category, path: s.hit.path, relevanceScore: s.score }));
+
+    return { hits: passed, contents, gateStatus: passed.length > 0 ? 'relevance_filtered' : 'no_hits' };
+  } catch (err) {
+    console.warn('[substrate_toggle] canon-substrate retrieval failed (non-fatal, no context injected, question still answered):', err);
+    return { hits: [], contents: new Map(), gateStatus: 'error' };
+  }
 }
 
 /** BP135 Phase 3 (Layer B: federated substrate). A topical eblet hit already pooled from one
@@ -105,34 +207,80 @@ export async function applySubstrateToggle(
   if (!substrateEnabled) {
     return { prompt: basePrompt, contextInjected: false, ebletCount: 0 };
   }
+
+  let baseResult: SubstrateInjectionResult;
   if (pooledHits && pooledHits.length > 0) {
     const pooledBlock = pooledHits
       .slice(0, topK)
       .map((e, i) => formatHit(e, i))
       .join('\n');
     const prompt = `Context from federated substrate (related background pooled from mesh peers, not this exact question):\n${pooledBlock}\n\n${basePrompt}`;
-    return { prompt, contextInjected: true, ebletCount: pooledHits.length };
-  }
-  try {
-    // Lazy import: keeps this module Electron-agnostic when substrate is OFF (the common
-    // case) and matches the existing lazy-import pattern already used for the same function
-    // in canonical_pipeline.ts and mesh_comparison_runner.ts.
-    const { queryVerifiedEbletsTopical } = await import('../mnem_eblet_store');
-    const hits = await queryVerifiedEbletsTopical(questionText, domain, topK);
-    if (hits.length === 0) {
-      return { prompt: basePrompt, contextInjected: false, ebletCount: 0 };
+    baseResult = { prompt, contextInjected: true, ebletCount: pooledHits.length };
+  } else {
+    try {
+      // Lazy import: keeps this module Electron-agnostic when substrate is OFF (the common
+      // case) and matches the existing lazy-import pattern already used for the same function
+      // in canonical_pipeline.ts and mesh_comparison_runner.ts.
+      const { queryVerifiedEbletsTopical } = await import('../mnem_eblet_store');
+      const hits = await queryVerifiedEbletsTopical(questionText, domain, topK);
+      if (hits.length === 0) {
+        baseResult = { prompt: basePrompt, contextInjected: false, ebletCount: 0 };
+      } else {
+        // BP135 Yoke #34 (0.9.7) argument-ledger: hits now carry verdict/reasoning (absent =
+        // 'unverified', same as pre-0.9.7 eblets) -- see formatHit() above for the KNOWN-WRONG rule.
+        const contextBlock = hits
+          .map((e, i) => formatHit(e, i))
+          .join('\n');
+        const prompt = `Context from substrate (related background, not this exact question):\n${contextBlock}\n\n${basePrompt}`;
+        baseResult = { prompt, contextInjected: true, ebletCount: hits.length };
+      }
+    } catch (err) {
+      console.warn('[substrate_toggle] topical fetch failed (non-fatal, falling back to no context):', err);
+      baseResult = { prompt: basePrompt, contextInjected: false, ebletCount: 0 };
     }
-    // BP135 Yoke #34 (0.9.7) argument-ledger: hits now carry verdict/reasoning (absent =
-    // 'unverified', same as pre-0.9.7 eblets) -- see formatHit() above for the KNOWN-WRONG rule.
-    const contextBlock = hits
-      .map((e, i) => formatHit(e, i))
-      .join('\n');
-    const prompt = `Context from substrate (related background, not this exact question):\n${contextBlock}\n\n${basePrompt}`;
-    return { prompt, contextInjected: true, ebletCount: hits.length };
-  } catch (err) {
-    console.warn('[substrate_toggle] topical fetch failed (non-fatal, falling back to no context):', err);
-    return { prompt: basePrompt, contextInjected: false, ebletCount: 0 };
   }
+
+  // ── D-BP148-045/BISHOP (Wrasse Serving Path): canon-substrate injection ──────────────────
+  // ADDITIVE, independently gated by canon_substrate_serve_mode (see its own doc comment in
+  // ai_dispatch_ipc.ts). Runs AFTER baseResult above is fully settled, and only ever ADDS to
+  // it -- when this mode is off, or the retrieval finds nothing, or it errors, `baseResult` is
+  // returned completely untouched (byte-identical to pre-D-BP148-045 applySubstrateToggle
+  // behavior). This is what makes "the model consults her own substrate" real: the 914-record
+  // eblet_index.jsonl production corpus (canon doctrine), not just the self-written
+  // verified_eblets.jsonl cache the branch above already reads.
+  let canonModeOn = true;
+  try {
+    // Lazy import, same Electron-agnostic discipline as the queryVerifiedEbletsTopical call
+    // above -- this settings read only happens when substrate is already ON.
+    const { isCanonSubstrateServeModeEnabledNow } = await import('../ai_dispatch_ipc');
+    canonModeOn = isCanonSubstrateServeModeEnabledNow();
+  } catch {
+    // Fail-soft: settings unreadable -- default ON, same convention as every other mode flag
+    // in this codebase (an unreadable settings file resolves every flag to its default, never
+    // to off).
+    canonModeOn = true;
+  }
+  if (!canonModeOn) {
+    return { ...baseResult, canonGateStatus: 'disabled' };
+  }
+
+  const { hits: canonHits, contents, gateStatus } = await retrieveCanonSubstrateHits(questionText);
+  if (canonHits.length === 0) {
+    return { ...baseResult, canonEblets: [], canonGateStatus: gateStatus };
+  }
+
+  const canonBlock = canonHits
+    .map((h, i) => `[canon ${i + 1} | category:${h.category} | ${h.title}]\n${(contents.get(h.path) ?? '').slice(0, 500)}`)
+    .join('\n\n');
+  const prompt = `Context from your own substrate (doctrine/canon corpus, related background, not necessarily this exact question):\n${canonBlock}\n\n${baseResult.prompt}`;
+
+  return {
+    prompt,
+    contextInjected: true,
+    ebletCount: baseResult.ebletCount + canonHits.length,
+    canonEblets: canonHits,
+    canonGateStatus: gateStatus,
+  };
 }
 
 /** Gate for Task 1 requirement 4: never logs by default; opt-in only, and never logs

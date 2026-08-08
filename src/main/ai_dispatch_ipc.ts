@@ -330,6 +330,23 @@ interface AiDispatchSettings {
    *  only) -- today it can only be set via a hand-edited settings file or the
    *  PAID_ESCALATION_ENABLED=1 env var (same override convention as every other flag here). */
   paid_escalation_enabled?: boolean;
+  /** D-BP148-045/BISHOP (Wrasse Serving Path): gates canon-substrate injection -- the
+   *  914-record production doctrine corpus at {userData}/mnemosynec/substrate/eblet_index.jsonl,
+   *  queried via queryEbletStoreWithProvenance() (mnem_eblet_store.ts) and relevance-filtered
+   *  via semantic_relevance_gate.ts's existing 0.58-cosine gate -- into
+   *  mesh_test/substrate_toggle.ts's applySubstrateToggle(), the single authoritative
+   *  substrate-injection site for the plow-answering path scripts/mesh-test-cli.mjs exercises.
+   *  Distinct from that same function's PRE-EXISTING queryVerifiedEbletsTopical() call (reads
+   *  verified_eblets.jsonl, a different, self-written Q&A cache) -- this flag governs ONLY the
+   *  NEW canon-corpus query this ticket adds; the old call is unaffected either way. Same
+   *  precedent shape as answer_cache_mode/semantic_soccerball_mode/escalation_ladder_mode/
+   *  generator_cascade_mode: undefined resolves true; explicit `false` in settings is the
+   *  opt-out (CANON_SUBSTRATE_SERVE_MODE=1 env var can still force it back on over an explicit
+   *  false, same OR semantics as the other four). See isCanonSubstrateServeModeEnabled() below
+   *  and its standalone reader isCanonSubstrateServeModeEnabledNow() (for modules outside this
+   *  file, e.g. substrate_toggle.ts, that want this one flag without importing this file's
+   *  private loadSettings()/AiDispatchSettings machinery wholesale). */
+  canon_substrate_serve_mode?: boolean;
 }
 
 /** BP136 Yoke: resolves the answer-cache mode flag from settings, with an env-var override
@@ -407,6 +424,29 @@ export function isEscalationLadderModeEnabled(settings: AiDispatchSettings): boo
 export function isPaidEscalationEnabled(settings: AiDispatchSettings): boolean {
   const optedIn = settings.paid_escalation_enabled === true || process.env.PAID_ESCALATION_ENABLED === '1';
   return optedIn && Boolean(resolveAnthropicApiKey());
+}
+
+/** D-BP148-045/BISHOP: resolves the canon_substrate_serve_mode flag, same env-var-override
+ *  convention as every other mode resolver in this file (CANON_SUBSTRATE_SERVE_MODE=1 for
+ *  quick local testing without touching the settings file). DEFAULTS ON, same shape as
+ *  isAnswerCacheModeEnabled()/isSemanticSoccerballModeEnabled()/isEscalationLadderModeEnabled()
+ *  above -- undefined resolves true; an explicit `false` in settings is the opt-out and
+ *  resolves false unless the env var forces it back on. */
+export function isCanonSubstrateServeModeEnabled(settings: AiDispatchSettings): boolean {
+  if (settings.canon_substrate_serve_mode === false) {
+    return process.env.CANON_SUBSTRATE_SERVE_MODE === '1';
+  }
+  return true;
+}
+
+/** D-BP148-045/BISHOP: standalone reader for modules outside this file (mesh_test/
+ *  substrate_toggle.ts, the caller this ticket adds) that need this ONE flag's resolved value
+ *  without importing this file's private loadSettings()/getSettingsPath() or its whole
+ *  AiDispatchSettings surface. Reads the exact same settings file loadSettings() below reads;
+ *  never throws (loadSettings() itself already fails soft to the default object on any read/
+ *  parse error, so this resolves true in that case too, same as every other flag here). */
+export function isCanonSubstrateServeModeEnabledNow(): boolean {
+  return isCanonSubstrateServeModeEnabled(loadSettings());
 }
 
 function getSettingsPath(): string {
@@ -570,6 +610,8 @@ export function registerAiDispatchIPC(): void {
       if (incoming.homework_idle_threshold_seconds !== undefined) updated.homework_idle_threshold_seconds = incoming.homework_idle_threshold_seconds;
       // BP145-M4 Slice 2: additive, mirrors the homework_idle_threshold_seconds line above.
       if (incoming.escalation_ladder_mode !== undefined) updated.escalation_ladder_mode = incoming.escalation_ladder_mode;
+      // D-BP148-045/BISHOP: additive, mirrors the escalation_ladder_mode line above.
+      if (incoming.canon_substrate_serve_mode !== undefined) updated.canon_substrate_serve_mode = incoming.canon_substrate_serve_mode;
       try {
         saveSettings(updated);
         return { ok: true };
