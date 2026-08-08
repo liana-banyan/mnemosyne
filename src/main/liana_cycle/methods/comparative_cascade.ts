@@ -530,6 +530,9 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
 export const comparativeCascadeMethod: LianaMethod = {
   id: 'comparative-cascade',
   name: 'The Comparative Cascade',
+  // D-BP150-003: this method orders options by a property. Its answer is a position in an
+  // ordering, so its demand is RANK. It must not run on a question that demands anything else.
+  demand: 'RANK',
   taughtBy: 'qid 98 (population density), Founder hand-worked BP149, proven live BP149 (scripts/qid98_his_words.mjs, D-BP149-036: A, sole survivor, Google only, $0, 183s)',
   shapeDescription: 'options are members of one category and the question turns on ranking them by a property',
   shapeTest,

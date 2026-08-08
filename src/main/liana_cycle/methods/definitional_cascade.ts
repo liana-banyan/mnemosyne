@@ -346,6 +346,9 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
 export const definitionalCascadeMethod: LianaMethod = {
   id: 'definitional-cascade',
   name: 'The Definitional Cascade',
+  // D-BP150-003: this method resolves what a term MEANS. Its answer is a meaning, so its demand
+  // is DEFINE. It must not run on a question that demands anything else.
+  demand: 'DEFINE',
   taughtBy: "the Founder's qid 85 walkthrough (bias), FounderCascadeWorkedByHand.txt Excerpt 7 -- D1-D4 built BP149 (D-BP149-043), D5 (sense-matching) deliberately left an honest abstain, not yet solved",
   shapeDescription: 'the question turns on what a term means and the options are competing statements of that meaning',
   shapeTest,

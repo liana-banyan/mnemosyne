@@ -36,6 +36,9 @@
 
 import type { LianaTerminalEvent, LianaTerminalOutcome } from '../../shared/liana_cycle/liana_terminal_types';
 import type { BrowserAuthorityRawExtraction } from '../../shared/plow/browser_authority_types';
+import type { LianaDemand } from './demand_test';
+
+export type { LianaDemand };
 
 // Defined HERE (not in liana_terminal_engine.ts) so this file and every method module can
 // import it with no dependency on the engine module -- the engine imports methods, so a method
@@ -75,6 +78,12 @@ export interface MethodRunContext {
 export interface LianaMethod {
   /** Stable, lowercase-hyphenated id. Never reused for a different method once registered. */
   id: string;
+  /** D-BP150-003 -- THE OPERATION THIS METHOD PERFORMS. Canon R-3: every method DECLARES the
+   *  demand it serves, and canon R-4: a method whose declared demand does not match the question's
+   *  demand MUST NOT RUN, even if its shape heuristics would have passed. This is the enforceable
+   *  form of the Founder's "so we DON'T use it wrongly". See
+   *  canon_the_demand_test_selects_by_operation_not_by_regex_bp150. */
+  demand: LianaDemand;
   /** Human-readable name for the transcript. */
   name: string;
   /** The case that taught this method, cited plainly -- canon rule 4 above. */
@@ -131,10 +140,45 @@ export function listMethods(): LianaMethod[] {
  *  liana_terminal_engine.ts) must treat that as "ask the human", never as license to run the
  *  first method anyway. This function itself performs no I/O (shapeTest() contracts are pure),
  *  so calling it to print a full per-method report costs nothing. */
-export function selectMethod(input: MethodQuestionInput): { method: LianaMethod; shape: ShapeTestResult } | null {
+export function selectMethod(
+  input: MethodQuestionInput,
+  /** D-BP150-003. The question's DEMAND, determined once by the caller (so the transcript can
+   *  print it) and passed in. `null` means it could not be determined -- and per canon R-4/R-5
+   *  that means NO METHOD MAY RUN. A question whose operation is unknown is a teaching prompt; a
+   *  method run against an unknown operation is exactly the "used wrongly" case this guards.
+   *  OPTIONAL so a pre-demand caller keeps compiling; omitting it skips the demand gate entirely
+   *  and restores the old shape-only behavior. */
+  demand?: LianaDemand | null,
+): { method: LianaMethod; shape: ShapeTestResult } | null {
+  const demandGated = demand !== undefined;
   for (const method of REGISTRY) {
+    // R-6: demand PRECEDES shape. Shape asks "can this machinery operate on this option set";
+    // demand asks "is this method's operation the one the question wants". Both must pass, and
+    // demand is checked first because it is the cheaper and more decisive of the two.
+    if (demandGated && method.demand !== demand) continue;
     const shape = method.shapeTest(input);
     if (shape.matches) return { method, shape };
   }
   return null;
+}
+
+/** Why each method was or was not eligible, for the transcript. Separated from selectMethod so the
+ *  engine can print a full per-method report without re-running selection. Founder, BP149: "I
+ *  DESPISE SUMMARIES" -- a method skipped on demand must say so, not silently vanish from the
+ *  listing the way a shape-test failure never did. */
+export function explainSelection(
+  input: MethodQuestionInput,
+  demand: LianaDemand | null,
+): Array<{ method: LianaMethod; eligible: boolean; reason: string }> {
+  return REGISTRY.map((method) => {
+    if (method.demand !== demand) {
+      return {
+        method,
+        eligible: false,
+        reason: `serves ${method.demand}, this question demands ${demand ?? 'UNKNOWN'} -- not run (canon R-4)`,
+      };
+    }
+    const shape = method.shapeTest(input);
+    return { method, eligible: shape.matches, reason: `demand ${method.demand} matches; shape: ${shape.reason}` };
+  });
 }
