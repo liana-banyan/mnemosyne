@@ -56,21 +56,24 @@ function nowIso(): string {
 
 // ─────────────────────────── pure helpers ───────────────────────────
 
-const norm = (s: unknown): string =>
+// norm/appearsIn/list/toLetters/googleBlocks/gemmaExtract are exported (D-BP149-043) so
+// definitional_cascade.ts can share this exact code for its own stages 0/1/2 and D2-D4 rather
+// than reproducing it -- see the "shared stages 0/1/2" block below for the full rationale.
+export const norm = (s: unknown): string =>
   String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 
-const appearsIn = (passage: string, s: string): boolean => {
+export const appearsIn = (passage: string, s: string): boolean => {
   const n = norm(s);
   if (!n || n.length < 3) return false;
   return norm(passage).includes(n);
 };
 
-const list = (letters: string[], OPT: Record<string, string>): string =>
+export const list = (letters: string[], OPT: Record<string, string>): string =>
   letters.map((L) => `${L}) ${OPT[L]}`).join(' ');
 
 /** Exact-match mapping of extracted text back to a known option letter. HARDWIRE-22:
  *  "Similarity is not identity" -- normalized string equality only, never fuzzy. */
-function toLetters(items: unknown[] | undefined, OPT: Record<string, string>): string[] {
+export function toLetters(items: unknown[] | undefined, OPT: Record<string, string>): string[] {
   const out: string[] = [];
   for (const it of items ?? []) {
     for (const [L, t] of Object.entries(OPT)) {
@@ -96,6 +99,88 @@ function toPerSqKm(value: number, unit?: string): { value: number; unit: string;
   return { value, unit: `as given (unit "${unit}" not a recognized area rate, assumed unconverted)`, assumed: true };
 }
 
+// ─────────────────────────── shared stages 0/1/2 (D-BP149-043, METHOD 2 reuse) ───────────────────────────
+// definitional_cascade.ts (METHOD 2) reuses these three exports verbatim for its own "stages 0,
+// 1 and 2 of Method 1, unchanged" per the Founder's BP149 teaching (method_registry.ts header:
+// "Use stages 0, 1 and 2 from Method 1, then add ... rules 12, 13 and 11"). Extracted out of
+// run() below with NO behavior change -- run() now calls runStage0RegisterGate() and
+// extractAssertedMentions() in exactly the places its old inline code used to sit, same inputs,
+// same outputs, same printed transcript text. qid 98 was re-verified live after this extraction
+// (see this ticket's return) to confirm the answer is still A.
+
+/** STAGE 0, register gate. Shared, not reproduced -- see this file's own header ("Google is the
+ *  only source ... Gemma extracts only ... Unit normalization happens in code") and
+ *  register_gate_loader.ts's doc comment for the two runtime shims that make importing
+ *  scripts/register_gate.mjs work inside Electron's main process. `pool` in, filtered pool out;
+ *  every line this prints is identical to what this stage always printed inline. */
+export async function runStage0RegisterGate(
+  OPT: Record<string, string>,
+  pool: string[],
+  ctx: MethodRunContext,
+): Promise<string[]> {
+  const { emit } = ctx;
+  const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
+  const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
+  const fact = (text: string) => emit({ kind: 'fact', text: `+ ${text}`, ts: nowIso() });
+
+  step('STAGE 0  register gate -- is each option a member of the category at all?');
+  let next = [...pool];
+  try {
+    const regMod = await loadRegisterGate();
+    const { notRegions, report } = await regMod.runRegisterGate(OPT, { verbose: false });
+    for (const [L, r] of Object.entries(report)) {
+      const ev = r.evidence ? `about=${r.evidence.about} feature=${r.evidence.featureHits.length} region=${r.evidence.regionHits.length}` : '(no evidence)';
+      note(`   ${L}) ${OPT[L]}: ${r.verdict}  [${ev}]${r.scope ? `  scope: ${r.scope.why}` : ''}`);
+    }
+    if (notRegions.length) {
+      const before = next.length;
+      next = next.filter((L) => !notRegions.includes(L));
+      fact(`register gate removed ${notRegions.join(', ')}   pool ${before} -> ${next.length}`);
+    } else {
+      note('   register gate removed nothing');
+    }
+  } catch (e) {
+    note(`   register gate unavailable (${e instanceof Error ? e.message : String(e)}) -- continuing with the full pool; register stage skipped honestly rather than guessing`);
+  }
+  return next;
+}
+
+export interface AssertedMention { L: string; sentence: string; }
+
+/** Shared extraction step underlying STAGE 1 (ask the inverse) and STAGE 2 (Jar Method): ask
+ *  Gemma (HARDWIRE-22 extraction only -- never judgment) which of the ALL option names this
+ *  passage mentions, and the verbatim sentence each appears in, then verify every claim against
+ *  the passage itself before trusting it: the option text must literally appear, the quoted
+ *  sentence must literally appear, and the sentence must be an assertion (register_gate.mjs's
+ *  isAssertion() -- not a question, not someone else's answer-option list). Callers decide what
+ *  the verified mentions MEAN (comparative_cascade.ts votes them high/low by density vocabulary;
+ *  definitional_cascade.ts's Jar Method uses the same votes to eliminate). */
+export async function extractAssertedMentions(
+  passageText: string,
+  ALL: string[],
+  OPT: Record<string, string>,
+  note: (text: string) => void,
+): Promise<AssertedMention[]> {
+  const ex = await gemmaExtract(
+    `Copy out every name from this list that appears anywhere in the passage, and for each one copy the complete sentence it appears in, word for word from the passage. Do not summarize. List: ${ALL.map((L) => OPT[L]).join('; ')}`,
+    passageText,
+    `{"mentions":[{"name":"exact name from the list","sentence":"the verbatim sentence"}]}`,
+  );
+  const regMod = await loadRegisterGate().catch(() => null);
+  const isAssertion = regMod?.isAssertion ?? (() => true);
+  const out: AssertedMention[] = [];
+  for (const m of (ex?.mentions as Array<{ name: string; sentence: string }> | undefined) ?? []) {
+    const L = toLetters([m?.name], OPT)[0];
+    if (!L) continue;
+    const s = String(m?.sentence || '');
+    if (!appearsIn(passageText, OPT[L])) { note(`      rejected ${L}: "${OPT[L]}" not in the passage`); continue; }
+    if (!appearsIn(passageText, s)) { note(`      rejected ${L}: quoted sentence not found in the passage`); continue; }
+    if (!isAssertion(s)) { note(`      rejected ${L}: sentence is a question or an answer-option list`); continue; }
+    out.push({ L, sentence: s });
+  }
+  return out;
+}
+
 /** Extracts the category noun phrase and the ranking property FROM THE QUESTION ITSELF -- see
  *  this file's header ("WHAT IS GENERALIZED") for why this replaces hand-copied wording. Falls
  *  back to generic-but-honest phrasing when the question does not fit the "following X is/are
@@ -119,15 +204,15 @@ function deriveCategoryAndProperty(question: string): { category: string; proper
 
 // ─────────────────────────── Google, blocks kept ───────────────────────────
 
-interface GoogleBlock { title: string; body: string; url: string; kind: string; }
-interface GoogleAnswer { ok: boolean; text: string; blocks: GoogleBlock[]; sources: string[]; via: string; }
+export interface GoogleBlock { title: string; body: string; url: string; kind: string; }
+export interface GoogleAnswer { ok: boolean; text: string; blocks: GoogleBlock[]; sources: string[]; via: string; }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Ported from qid98_his_words.mjs's google(): keeps result BLOCKS (title + body), never
  *  flattens to one string -- see this file's header. Reached via the injected in-process
  *  askGoogle (AskGoogleFn), not a second CDP dial. */
-async function googleBlocks(
+export async function googleBlocks(
   askGoogle: MethodRunContext['askGoogle'],
   query: string,
   tries = 3,
@@ -164,7 +249,7 @@ async function googleBlocks(
 
 // ─────────────────────────── Gemma, extraction only (HARDWIRE-22) ───────────────────────────
 
-async function gemmaExtract(instruction: string, passage: string, shape: string): Promise<Record<string, unknown> | null> {
+export async function gemmaExtract(instruction: string, passage: string, shape: string): Promise<Record<string, unknown> | null> {
   const prompt = `Read the passage and report only what it states. Do not reason about which answer is correct. Do not choose between options.
 
 PASSAGE:
@@ -225,8 +310,8 @@ function buildFounderQuestions(
 
 // ─────────────────────────── word sets (generalized superset of qid98_his_words.mjs's) ───────────────────────────
 
-const HIGH_WORDS = /\b(high|highest|most|dense|densely|densest|cluster|clusters|concentration|crowded|populous|greatest|largest|maximum|newest|latest)\b/i;
-const LOW_WORDS = /\b(low|lowest|least|sparse|sparsely|thinly|uninhabited|empty|smallest|fewest|minimum|oldest|earliest)\b/i;
+export const HIGH_WORDS = /\b(high|highest|most|dense|densely|densest|cluster|clusters|concentration|crowded|populous|greatest|largest|maximum|newest|latest)\b/i;
+export const LOW_WORDS = /\b(low|lowest|least|sparse|sparsely|thinly|uninhabited|empty|smallest|fewest|minimum|oldest|earliest)\b/i;
 
 // ─────────────────────────── shapeTest ───────────────────────────
 
@@ -280,27 +365,9 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   const denseVotes: Record<string, number> = {};
   const densities: Record<string, number> = {};
 
-  // STAGE 0: register gate -- imported from register_gate.mjs, not reproduced. See
-  // register_gate_loader.ts for the two runtime shims that make the import work inside
-  // Electron's main process.
-  step('STAGE 0  register gate -- is each option a member of the category at all?');
-  try {
-    const regMod = await loadRegisterGate();
-    const { notRegions, report } = await regMod.runRegisterGate(OPT, { verbose: false });
-    for (const [L, r] of Object.entries(report)) {
-      const ev = r.evidence ? `about=${r.evidence.about} feature=${r.evidence.featureHits.length} region=${r.evidence.regionHits.length}` : '(no evidence)';
-      note(`   ${L}) ${OPT[L]}: ${r.verdict}  [${ev}]${r.scope ? `  scope: ${r.scope.why}` : ''}`);
-    }
-    if (notRegions.length) {
-      const before = pool.length;
-      pool = pool.filter((L) => !notRegions.includes(L));
-      fact(`register gate removed ${notRegions.join(', ')}   pool ${before} -> ${pool.length}`);
-    } else {
-      note('   register gate removed nothing');
-    }
-  } catch (e) {
-    note(`   register gate unavailable (${e instanceof Error ? e.message : String(e)}) -- continuing with the full pool; register stage skipped honestly rather than guessing`);
-  }
+  // STAGE 0: register gate -- extracted to runStage0RegisterGate() above (D-BP149-043) so
+  // definitional_cascade.ts can share this exact code; behavior and printed output unchanged.
+  pool = await runStage0RegisterGate(OPT, pool, ctx);
 
   const inverseQuestion = /\bNOT\b/i.test(input.question)
     ? input.question.replace(/\bNOT\s+/i, ' ').replace(/\s+/g, ' ').trim()
@@ -320,20 +387,8 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
 
     let effect = '';
     if (q.stage === 1) {
-      const ex = await gemmaExtract(
-        `Copy out every name from this list that appears anywhere in the passage, and for each one copy the complete sentence it appears in, word for word from the passage. Do not summarize. List: ${ALL.map((L) => OPT[L]).join('; ')}`,
-        res.text,
-        `{"mentions":[{"name":"exact name from the list","sentence":"the verbatim sentence"}]}`,
-      );
-      const regMod = await loadRegisterGate().catch(() => null);
-      const isAssertion = regMod?.isAssertion ?? (() => true);
-      for (const m of (ex?.mentions as Array<{ name: string; sentence: string }> | undefined) ?? []) {
-        const L = toLetters([m?.name], OPT)[0];
-        if (!L) continue;
-        const s = String(m?.sentence || '');
-        if (!appearsIn(res.text, OPT[L])) { note(`      rejected ${L}: "${OPT[L]}" not in the passage`); continue; }
-        if (!appearsIn(res.text, s)) { note(`      rejected ${L}: quoted sentence not found in the passage`); continue; }
-        if (!isAssertion(s)) { note(`      rejected ${L}: sentence is a question or an answer-option list`); continue; }
+      const mentions = await extractAssertedMentions(res.text, ALL, OPT, note);
+      for (const { L, sentence: s } of mentions) {
         if (HIGH_WORDS.test(s) && !LOW_WORDS.test(s)) denseVotes[L] = (denseVotes[L] || 0) + 1;
         else if (LOW_WORDS.test(s) && !HIGH_WORDS.test(s)) leastVotes[L] = (leastVotes[L] || 0) + 1;
       }
@@ -354,21 +409,9 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
         effect = 'no usable ordering mapped';
       }
     } else if (q.stage === 4) {
-      const ex = await gemmaExtract(
-        `Copy out every name from this list that appears anywhere in the passage, and for each one copy the complete sentence it appears in, word for word from the passage. Do not summarize the sentence. List: ${ALL.map((L) => OPT[L]).join('; ')}`,
-        res.text,
-        `{"mentions":[{"name":"exact name from the list","sentence":"the verbatim sentence"}]}`,
-      );
-      const regMod = await loadRegisterGate().catch(() => null);
-      const isAssertion = regMod?.isAssertion ?? (() => true);
+      const mentions = await extractAssertedMentions(res.text, ALL, OPT, note);
       const low: string[] = [], high: string[] = [];
-      for (const m of (ex?.mentions as Array<{ name: string; sentence: string }> | undefined) ?? []) {
-        const L = toLetters([m?.name], OPT)[0];
-        if (!L) continue;
-        const s = String(m?.sentence || '');
-        if (!appearsIn(res.text, OPT[L])) { note(`      rejected ${L}: "${OPT[L]}" not in the passage`); continue; }
-        if (!appearsIn(res.text, s)) { note(`      rejected ${L}: quoted sentence not found in the passage`); continue; }
-        if (!isAssertion(s)) { note(`      rejected ${L}: sentence is a question or an answer-option list`); continue; }
+      for (const { L, sentence: s } of mentions) {
         if (LOW_WORDS.test(s) && !HIGH_WORDS.test(s)) low.push(L);
         else if (HIGH_WORDS.test(s) && !LOW_WORDS.test(s)) high.push(L);
         else note(`      ambiguous sentence for ${L}, counted for neither: ${s.slice(0, 110)}`);

@@ -68,6 +68,27 @@ function TranscriptLine({ evt }: { evt: LianaTerminalEvent }) {
   );
 }
 
+// D-BP149-043/BISHOP/S43/seg-method2build -- THE TEACH BOX. method_registry.ts's own header
+// named the gap this closes: "The terminal can ask and cannot listen. It reports 'recognized
+// shape, not yet taught' [or 'no method matches'] and gives the operator nowhere to teach it."
+// A run ends in exactly one of those two states via `outcome.error` -- 'method_not_yet_taught'
+// (a registered method's shapeTest matched but its `run` is null, e.g. a future stub) or
+// 'no_method_matched' (nothing on file fits at all). Both are teaching opportunities, not
+// failures, so both trigger this box.
+function isTeachableOutcome(outcome: LianaTerminalOutcome | null): boolean {
+  return outcome?.error === 'no_method_matched' || outcome?.error === 'method_not_yet_taught';
+}
+
+function shapeTestSummaryFor(outcome: LianaTerminalOutcome): string {
+  if (outcome.error === 'no_method_matched') {
+    return 'NO METHOD MATCHES -- this question does not fit any recorded method.';
+  }
+  if (outcome.error === 'method_not_yet_taught') {
+    return `NOT YET TAUGHT -- method "${outcome.method ?? '(unknown)'}" matched this question's shape but has no runner yet.`;
+  }
+  return '(unknown shape-test outcome)';
+}
+
 export function LianaCycleTab() {
   const [transcript, setTranscript] = useState<LianaTerminalEvent[]>([]);
   const [input, setInput] = useState('');
@@ -75,6 +96,9 @@ export function LianaCycleTab() {
   const [lastOutcome, setLastOutcome] = useState<LianaTerminalOutcome | null>(null);
   const [recent, setRecent] = useState<string[]>(loadRecent);
   const [bridgeMissing, setBridgeMissing] = useState(false);
+  const [teachText, setTeachText] = useState('');
+  const [teachSubmitting, setTeachSubmitting] = useState(false);
+  const [teachResult, setTeachResult] = useState<{ ok: boolean; filePath?: string; bytes?: number; error?: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -104,6 +128,8 @@ export function LianaCycleTab() {
     }
     setRunning(true);
     setLastOutcome(null);
+    setTeachText('');
+    setTeachResult(null);
     setTranscript((prev) => [
       ...prev,
       { kind: 'header', text: `═══ RUN  "${text}"`, ts: new Date().toISOString() },
@@ -131,7 +157,49 @@ export function LianaCycleTab() {
   const handleClear = useCallback(() => {
     setTranscript([]);
     setLastOutcome(null);
+    setTeachText('');
+    setTeachResult(null);
   }, []);
+
+  // THE TEACH BOX submit. Writes the operator's `teachText` to disk EXACTLY as typed -- this
+  // function never touches, trims (beyond the browser's own textarea value), reformats, or
+  // summarizes it. window.amplify.lianaTeachSubmit (preload.ts) forwards it verbatim to
+  // index.ts's 'liana-teach-submit' handler, which is the only place the file actually gets
+  // written. Never auto-generates a method from this text -- a human reads the file later.
+  const handleTeachSubmit = useCallback(async () => {
+    const text = teachText; // VERBATIM -- no .trim(), no reformatting of the operator's words
+    if (!text.trim() || !lastOutcome || teachSubmitting) return;
+    if (!window.amplify?.lianaTeachSubmit) {
+      setTeachResult({ ok: false, error: 'Preload bridge missing (lianaTeachSubmit) -- rebuild main and restart the app.' });
+      return;
+    }
+    setTeachSubmitting(true);
+    try {
+      const result = await window.amplify.lianaTeachSubmit({
+        teachingText: text,
+        question: lastOutcome.question,
+        options: lastOutcome.options ?? null,
+        qid: lastOutcome.qid,
+        shapeTestSummary: shapeTestSummaryFor(lastOutcome),
+      });
+      setTeachResult(result);
+      if (result.ok && result.filePath) {
+        setTranscript((prev) => [
+          ...prev,
+          {
+            kind: 'result',
+            text: `TEACHING WRITTEN -- ${result.filePath}  (${result.bytes ?? '?'} bytes)`,
+            ts: new Date().toISOString(),
+          },
+        ]);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setTeachResult({ ok: false, error: msg });
+    } finally {
+      setTeachSubmitting(false);
+    }
+  }, [teachText, lastOutcome, teachSubmitting]);
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -225,6 +293,54 @@ export function LianaCycleTab() {
                 ? (lastOutcome.abstain ? 'ABSTAIN (no extractable answer)' : `ANSWER: ${lastOutcome.verdict}`)
                 : (lastOutcome.abstain ? `ABSTAIN  key=${lastOutcome.correct ?? '?'}` : `${lastOutcome.ok ? 'CORRECT' : 'WRONG'}  ${lastOutcome.verdict}  key=${lastOutcome.correct ?? '?'}`)}
               {lastOutcome.basis && <div style={{ marginTop: 3, opacity: 0.8 }}>{lastOutcome.basis}</div>}
+            </div>
+          )}
+
+          {isTeachableOutcome(lastOutcome) && lastOutcome && (
+            <div style={{ marginTop: 4, padding: '8px 10px', borderRadius: 6, background: '#1e2a38', border: '1px solid #334155' }}>
+              <div style={{ fontSize: 11, color: '#facc15', fontFamily: 'system-ui, sans-serif', fontWeight: 700, marginBottom: 4 }}>
+                Teach the terminal
+              </div>
+              <div style={{ fontSize: 10, color: '#94a3b8', fontFamily: 'system-ui, sans-serif', marginBottom: 6, lineHeight: 1.4 }}>
+                {shapeTestSummaryFor(lastOutcome)} Type how you would work this one, in your own words. Written to disk verbatim -- nothing here is summarized, and no method is auto-generated from it.
+              </div>
+              <textarea
+                value={teachText}
+                onChange={(e) => setTeachText(e.target.value)}
+                disabled={teachSubmitting}
+                placeholder="First I would..."
+                rows={6}
+                style={{
+                  width: '100%', boxSizing: 'border-box', background: '#05080d', border: '1px solid #334155',
+                  borderRadius: 6, color: '#e2e8f0', padding: '8px 10px', fontSize: 12,
+                  fontFamily: 'Consolas, monospace', outline: 'none', resize: 'vertical',
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => void handleTeachSubmit()}
+                disabled={teachSubmitting || !teachText.trim()}
+                style={{
+                  marginTop: 6, width: '100%',
+                  background: teachSubmitting || !teachText.trim() ? '#1e2a38' : 'linear-gradient(135deg, #b45309, #f59e0b)',
+                  color: teachSubmitting || !teachText.trim() ? '#64748b' : '#fff', border: 'none', borderRadius: 6,
+                  padding: '7px 10px', fontSize: 12, fontWeight: 700,
+                  cursor: teachSubmitting || !teachText.trim() ? 'default' : 'pointer',
+                  fontFamily: 'system-ui, sans-serif', outline: 'none',
+                }}
+              >
+                {teachSubmitting ? 'Writing…' : 'Teach ▸'}
+              </button>
+              {teachResult && (
+                <div style={{
+                  marginTop: 6, fontSize: 10, fontFamily: 'monospace', wordBreak: 'break-word',
+                  color: teachResult.ok ? '#6ee7b7' : '#fca5a5',
+                }}>
+                  {teachResult.ok
+                    ? `written: ${teachResult.filePath} (${teachResult.bytes} bytes)`
+                    : `failed: ${teachResult.error}`}
+                </div>
+              )}
             </div>
           )}
 

@@ -45,4 +45,11 @@ export interface LianaTerminalOutcome {
    *  threw before method selection ran; every pre-registry caller that destructures only the
    *  older fields keeps compiling and behaving identically. */
   method?: string;
+  /** D-BP149-043 (Teach box): the parsed lettered option pool for this run, when one was
+   *  present -- null for a bare free-text question with no lettered options, undefined only if
+   *  parsing never got far enough to know (e.g. the terminal threw before parsing). ADDITIVE/
+   *  OPTIONAL, populated by liana_terminal_engine.ts at every return site; the LianaCycleTab.tsx
+   *  Teach box uses this to write the option list into a teaching file without re-parsing the
+   *  operator's raw input string itself. */
+  options?: Record<string, string> | null;
 }

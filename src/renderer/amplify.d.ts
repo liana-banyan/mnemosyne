@@ -345,6 +345,16 @@ declare global {
       onLianaTerminalEvent?: (
         cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
       ) => () => void;
+      // D-BP149-043/BISHOP/S43/seg-method2build -- THE TEACH BOX. Writes the operator's own
+      // words, VERBATIM, to a teaching file (BISHOP_DROPZONE) for a human to read and implement
+      // from -- never auto-generates a method.
+      lianaTeachSubmit?: (args: {
+        teachingText: string;
+        question: string;
+        options: Record<string, string> | null;
+        qid?: number;
+        shapeTestSummary: string;
+      }) => Promise<{ ok: boolean; filePath?: string; bytes?: number; error?: string }>;
       // Nexus Authority persistent session (BP137 0.9.12 Stage F1)
       setNexusAuthorityBrowserFlags?: (
         researchArmMode: boolean,

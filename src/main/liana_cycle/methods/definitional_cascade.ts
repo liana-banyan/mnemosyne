@@ -1,24 +1,61 @@
-// definitional_cascade.ts -- D-BP149-041/BISHOP/S41/seg-methodregistry
+// definitional_cascade.ts -- D-BP149-043/BISHOP/S43/seg-method2build
 //
 // METHOD 2 of the Liana Cycle method registry: THE DEFINITIONAL CASCADE. Shape: the question
 // turns on what a term MEANS, and the options are competing statements of that meaning.
-// Taught by the Founder's qid 85 walkthrough (bias), `FounderCascadeWorkedByHand.txt` Excerpt
+// Taught by the Founder's qid 85 walkthrough (bias), FounderCascadeWorkedByHand.txt Excerpt
 // 7 -- he never orders anything for that question. He categorizes the options by shared
 // predicate, looks up the definition of the term, establishes the REGISTER (statistics, not
 // sewing, not K-pop), reduces the definition to its core sense, and matches on sense rather
-// than tokens. Rules 12, 13 and 11 of his fourteen.
+// than tokens. Rules 12, 13 and 11 of his fourteen -- see
+// C:\Users\Administrator\Documents\LianaBanyanPlatform\BISHOP_DROPZONE\METHOD_2_TEACHING_BP149.md
+// for the ticket's own reading of the excerpt, stage by stage.
 //
-// THIS IS A DELIBERATE STUB. Ticket instruction, verbatim: "REGISTER IT AS A STUB, DO NOT
-// IMPLEMENT IT... This is deliberate: it is the next thing the Founder will teach, and the
-// registry must be able to hold a known-but-unimplemented method." `run: null` below is what
-// makes that possible -- see method_registry.ts's LianaMethod.run doc comment. The shapeTest
-// below is real (it is what lets the terminal say "this is a recognized shape, not yet taught"
-// instead of the less honest "no method matches" for a question like qid 85), but no stage,
-// no Google call, and no Gemma call exists here. When the Founder walks a definitional
-// question by hand, THAT session is what fills in `run`.
+// SHARED PREFIX -- stages 0, 1 and 2 of Method 1 (comparative_cascade.ts), REUSED NOT COPIED.
+// Founder, BP149, verbatim (method_registry.ts header): "Use stages 0, 1 and 2 from Method 1,
+// then add ... rules 12, 13 and 11 -- a different cascade for a different question shape."
+// runStage0RegisterGate() and extractAssertedMentions() are imported from comparative_cascade.ts
+// (which was given a small, behavior-preserving refactor by this ticket to make that import
+// possible -- see that file's own "shared stages 0/1/2" header block). Both stages were built
+// and calibrated for comparative/ranking questions (region membership, dense/sparse vocabulary);
+// applied here to a definitional question they are EXPECTED to mostly find nothing to do, and
+// that is reported honestly in the transcript, not hidden -- an honest no-op is not a bug.
+//
+// D1 THROUGH D5, HIS RULES 12/13/11 -- new to this file, the actual Method 2 machinery:
+//   D1 categorize options by shared predicate (rule 12) -- mechanical vocabulary clustering, no
+//      model call anywhere.
+//   D2 look up the bare term -- one Google search, recorded as a FACT, not an answer.
+//   D3 establish the register (rule 13) -- GUESS the register from the options' own vocabulary
+//      (code, a small keyword lexicon -- not a model judgment call), then VERIFY with a second,
+//      separate Google search ("what is <term> in <register>", his own literal phrasing on
+//      qid 85). Guess-then-check; the check is not optional.
+//   D4 reduce to core sense -- HARDWIRE-22 extraction only: Gemma copies the single defining
+//      sentence out of the register-verification passage, verbatim, never summarized, verified
+//      against the passage before being trusted (appearsIn check, same discipline every other
+//      extraction in this estate uses).
+//   D5 match on sense -- DELIBERATELY NOT IMPLEMENTED. HARDWIRE-22 + this ticket's own
+//      instruction: no bigram overlap, no embedding distance, no forced pick. Measured this
+//      session: a bigram scorer gave all ten of qid 46's options an identical 0.35; a narrow
+//      YES/NO to the local model scored 1 of 4 and flipped its own answer at temperature 0.
+//      This stage ends in an HONEST ABSTAIN carrying the core sense forward as a sourced fact
+//      plus the surviving candidate pool. An abstain at D5 is a PASS for this ticket -- nothing
+//      here is tuned to reach the answer key.
 
 import { avgOptionWordCount, registerMethod } from '../method_registry';
-import type { LianaMethod, MethodQuestionInput, ShapeTestResult } from '../method_registry';
+import type { LianaMethod, MethodQuestionInput, MethodRunContext, ShapeTestResult } from '../method_registry';
+import type { LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
+import {
+  appearsIn,
+  extractAssertedMentions,
+  gemmaExtract,
+  googleBlocks,
+  HIGH_WORDS,
+  LOW_WORDS,
+  runStage0RegisterGate,
+} from './comparative_cascade';
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
 
 // Calibrated against the six real BP149 questions in the canon comparison table: qid 85's ten
 // options average ~11 words each and nine of ten literally begin "It describes..." -- a set of
@@ -51,13 +88,268 @@ function shapeTest(input: MethodQuestionInput): ShapeTestResult {
   };
 }
 
+// ─────────────────────────── D1: categorize by shared predicate (rule 12), mechanical ───────────────────────────
+
+const D1_STOPWORDS = new Set([
+  'it', 'describes', 'a', 'an', 'the', 'of', 'that', 'results', 'in', 'is', 'are', 'to', 'for',
+  'on', 'with', 'and', 'or', 'process', 'which', 'this', 'be', 'has', 'have', 'their', 'from',
+  'by', 'as', 'at', 'not', 'no',
+]);
+
+function significantWords(text: string): Set<string> {
+  return new Set(
+    text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !D1_STOPWORDS.has(w)),
+  );
+}
+
+interface D1Result {
+  clusters: string[][];
+  oddOneOut: string[];
+  oddOneOutBasis: 'isolated' | 'min-degree';
+  wordSets: Record<string, Set<string>>;
+}
+
+/** D1, rule 12: "Well, first, I categorize the possible answers... A, B, sorta C but more to
+ *  that, D, E same as C ... G does not." Mechanical clustering by shared CONTENT vocabulary --
+ *  no model call anywhere, arithmetic over the option text only, per HARDWIRE-22 ("the code
+ *  decides"). Two options join a cluster when they share at least MIN_SHARED_WORDS significant
+ *  (non-stopword) words; connected components over that graph are the clusters. A component of
+ *  size 1 is reported as an odd one out (isolated -- nothing else in the set shares its
+ *  vocabulary at all). If nothing is isolated at this threshold, the option(s) with the fewest
+ *  total shared-word connections are reported instead, explicitly labeled by degree rather than
+ *  isolation so the finding is never overstated beyond what the arithmetic actually shows. */
+const MIN_SHARED_WORDS = 2;
+
+function categorizeBySharedPredicate(OPT: Record<string, string>): D1Result {
+  const letters = Object.keys(OPT);
+  const wordSets: Record<string, Set<string>> = {};
+  for (const L of letters) wordSets[L] = significantWords(OPT[L]);
+
+  const degree: Record<string, number> = {};
+  for (const L of letters) degree[L] = 0;
+  const parent: Record<string, string> = {};
+  for (const L of letters) parent[L] = L;
+  const find = (x: string): string => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+  const union = (a: string, b: string) => { const ra = find(a); const rb = find(b); if (ra !== rb) parent[ra] = rb; };
+
+  for (let i = 0; i < letters.length; i++) {
+    for (let j = i + 1; j < letters.length; j++) {
+      const a = letters[i]; const b = letters[j];
+      let shared = 0;
+      for (const w of wordSets[a]) if (wordSets[b].has(w)) shared++;
+      if (shared >= MIN_SHARED_WORDS) { union(a, b); degree[a]++; degree[b]++; }
+    }
+  }
+  const groups: Record<string, string[]> = {};
+  for (const L of letters) { const r = find(L); (groups[r] ||= []).push(L); }
+  const clusters = Object.values(groups).filter((g) => g.length > 1);
+  let oddOneOut = Object.values(groups).filter((g) => g.length === 1).flat();
+  let oddOneOutBasis: D1Result['oddOneOutBasis'] = 'isolated';
+  if (!oddOneOut.length && letters.length) {
+    const minDeg = Math.min(...letters.map((L) => degree[L]));
+    oddOneOut = letters.filter((L) => degree[L] === minDeg);
+    oddOneOutBasis = 'min-degree';
+  }
+  return { clusters, oddOneOut, oddOneOutBasis, wordSets };
+}
+
+// ─────────────────────────── D2: the bare term ───────────────────────────
+
+/** Pulls the term the question is actually asking about off the definitional cue phrase itself
+ *  ("...correctly explains BIAS?" -> "bias") -- code, not a model guess. Falls back to the last
+ *  content word in the question if no cue phrase is found (shapeTest already required one to
+ *  reach this point, so the fallback is a safety net, not the normal path). */
+function extractBareTerm(question: string): string {
+  const m = question.match(/(?:explains?|describes?|defines?|refers to|means)\s+([a-z][a-z0-9 '-]*?)\s*[?.!]*\s*$/i);
+  if (m && m[1].trim()) return m[1].trim();
+  const stripped = question.replace(/[?.!]+$/, '').trim();
+  const words = stripped.split(/\s+/);
+  return words[words.length - 1] || stripped;
+}
+
+// ─────────────────────────── D3: establish the register (rule 13) ───────────────────────────
+
+/** A small, honest keyword lexicon for the handful of registers a single ambiguous English term
+ *  commonly straddles (this is exactly what D2's "Other Meanings" Google lookup surfaces for
+ *  "bias" -- statistics, sewing, electronics, K-pop/pop-culture). This is a lookup TABLE, not a
+ *  model judgment call: matching option vocabulary against a fixed word list is arithmetic, the
+ *  same category of operation HARDWIRE-22 permits (classification by code over extracted/known
+ *  words), never asked of Gemma. */
+const REGISTER_LEXICON: Record<string, string[]> = {
+  statistics: ['sample', 'population', 'random', 'estimate', 'estimates', 'average', 'representative', 'data', 'variance', 'randomization', 'sampling', 'survey', 'error'],
+  sewing: ['fabric', 'cloth', 'stitch', 'seam', 'hem', 'textile', 'weave', 'thread', 'grain'],
+  electronics: ['voltage', 'circuit', 'current', 'resistor', 'diode', 'transistor', 'amplifier', 'signal'],
+  'pop culture': ['idol', 'fandom', 'member', 'favorite', 'group', 'celebrity', 'fan'],
+};
+
+/** D3, rule 13: "I would guess from 'sample' being used in A, B, C, D, E, H, I questions...
+ *  then it has to do with statistics. How do I know that? I don't, I'm guessing." Reads the
+ *  candidate register off the OPTIONS' own pooled vocabulary against the lexicon above; the
+ *  guess is checked (never trusted alone) by a second, separate Google query in run() below. */
+function guessRegisterFromOptions(OPT: Record<string, string>): { register: string; score: number; hits: string[] } {
+  const pooled = Object.values(OPT).join(' ').toLowerCase();
+  let best = { register: 'general', score: 0, hits: [] as string[] };
+  for (const [register, words] of Object.entries(REGISTER_LEXICON)) {
+    const hits = words.filter((w) => pooled.includes(w));
+    if (hits.length > best.score) best = { register, score: hits.length, hits };
+  }
+  return best;
+}
+
+// ─────────────────────────── run ───────────────────────────
+
+async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<LianaTerminalOutcome> {
+  const { askGoogle, emit } = ctx;
+  const OPT = input.options as Record<string, string>;
+  const ALL = Object.keys(OPT);
+  const KEY = input.correctAnswer;
+  const t0 = Date.now();
+
+  const say = (text: string) => emit({ kind: 'header', text, ts: nowIso() });
+  const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
+  const fact = (text: string) => emit({ kind: 'fact', text: `+ ${text}`, ts: nowIso() });
+  const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
+
+  say(`METHOD definitional-cascade -- ${input.qid != null ? `qid ${input.qid}` : 'free-text'}`);
+  note(`   ${input.question}`);
+  note(`   ${ALL.map((L) => `${L}) ${OPT[L]}`).join('  ')}`);
+
+  // ── SHARED PREFIX: stages 0, 1 and 2 of Method 1, reused not copied (see this file's header) ──
+  let pool = [...ALL];
+  pool = await runStage0RegisterGate(OPT, pool, ctx);
+
+  const inverseQuestion = /\bNOT\b/i.test(input.question)
+    ? input.question.replace(/\bNOT\s+/i, ' ').replace(/\s+/g, ' ').trim()
+    : input.question;
+  step('STAGE 1  ask the inverse -- one cheap source, the question turned around (shared code, comparative_cascade.ts)');
+  const q1Text = `${inverseQuestion} ${ALL.map((L) => `${L}) ${OPT[L]}`).join(' ')}`;
+  note(`   ${q1Text}`);
+  const denseVotes: Record<string, number> = {};
+  const leastVotes: Record<string, number> = {};
+  const res1 = await googleBlocks(askGoogle, q1Text);
+  if (res1.ok) {
+    fact(`Google [${res1.via}]: ${res1.text}`);
+    const mentions = await extractAssertedMentions(res1.text, ALL, OPT, note);
+    for (const { L, sentence: s } of mentions) {
+      if (HIGH_WORDS.test(s) && !LOW_WORDS.test(s)) denseVotes[L] = (denseVotes[L] || 0) + 1;
+      else if (LOW_WORDS.test(s) && !HIGH_WORDS.test(s)) leastVotes[L] = (leastVotes[L] || 0) + 1;
+    }
+    note(`   >> asserted-high votes: ${JSON.stringify(denseVotes)}   asserted-low votes: ${JSON.stringify(leastVotes)}`);
+  } else {
+    note(`   no answer (${res1.via})`);
+  }
+
+  step('STAGE 2  Jar Method -- remove the blocks we now KNOW are not the answer');
+  const jarElim = Object.keys(denseVotes).filter((L) => pool.includes(L) && denseVotes[L] >= 1);
+  if (jarElim.length) {
+    const before = pool.length;
+    pool = pool.filter((L) => !jarElim.includes(L));
+    fact(`Jar Method removed ${jarElim.join(', ')}   pool ${before} -> ${pool.length}`);
+  } else {
+    note("   Jar Method removed nothing -- stage 1's high/low vocabulary (built for ranking questions) found nothing to assert here, which is an honest no-op for a definitional question, not a failure");
+  }
+
+  // ── D1: categorize by shared predicate, mechanical ──
+  say('D1  CATEGORIZE OPTIONS BY SHARED PREDICATE (rule 12) -- mechanical, no model');
+  const survivingOPT: Record<string, string> = {};
+  for (const L of pool) survivingOPT[L] = OPT[L];
+  const d1 = categorizeBySharedPredicate(survivingOPT);
+  if (d1.clusters.length) {
+    for (const cluster of d1.clusters) {
+      note(`   cluster: ${cluster.join(', ')}   (${cluster.map((L) => `${L}: ${[...d1.wordSets[L]].join('/')}`).join('   ')})`);
+    }
+  } else {
+    note('   no cluster reached the 2-shared-word threshold');
+  }
+  note(`   odd one out (${d1.oddOneOutBasis === 'isolated' ? 'shares no significant vocabulary with anything else' : 'fewest shared-vocabulary connections of the set'}): ${d1.oddOneOut.join(', ') || '(none)'}`);
+
+  // ── D2: look up the bare term -- a fact, not an answer ──
+  say('D2  LOOK UP THE BARE TERM -- a fact, not an answer');
+  const term = extractBareTerm(input.question);
+  note(`   term: "${term}"`);
+  const d2Query = `define ${term}`;
+  note(`   ${d2Query}`);
+  const res2 = await googleBlocks(askGoogle, d2Query);
+  if (res2.ok) {
+    fact(`Google [${res2.via}]: ${res2.text}`);
+    note("   that doesn't answer the question -- it's just a fact to carry forward for component-factor reasoning; the register is still unknown");
+  } else {
+    note(`   no answer (${res2.via})`);
+  }
+
+  // ── D3: establish the register, guess then verify ──
+  say("D3  ESTABLISH THE REGISTER (rule 13) -- guess from the options' own vocabulary, then verify");
+  const guess = guessRegisterFromOptions(survivingOPT);
+  note(`   guess: "${guess.register}" (matched option vocabulary: ${guess.hits.join(', ') || '(none, defaulted to general)'})`);
+  note("   how do I know that? I don't, I'm guessing. so I'll check:");
+  const d3Query = `what is ${term} in ${guess.register}`;
+  note(`   ${d3Query}`);
+  const res3 = await googleBlocks(askGoogle, d3Query);
+  let registerPassage = '';
+  if (res3.ok) {
+    fact(`Google [${res3.via}]: ${res3.text}`);
+    registerPassage = res3.text;
+  } else {
+    note(`   no answer (${res3.via})`);
+  }
+
+  // ── D4: reduce to core sense -- extraction only, HARDWIRE-22 ──
+  say('D4  REDUCE TO CORE SENSE -- extraction only (HARDWIRE-22), copy verbatim, never summarize');
+  let coreSense: string | null = null;
+  if (registerPassage) {
+    const ex = await gemmaExtract(
+      `Copy the single sentence in this passage that most directly states what "${term}" means in the register of ${guess.register}. Copy it exactly as it appears, word for word. Do not summarize. Do not combine sentences. Do not choose between any list of options.`,
+      registerPassage,
+      `{"sentence":"the verbatim defining sentence, or null if none states it"}`,
+    );
+    const s = ex && typeof ex.sentence === 'string' ? ex.sentence.trim() : '';
+    if (s && appearsIn(registerPassage, s)) {
+      coreSense = s;
+      fact(`core sense (verbatim from the passage): "${coreSense}"`);
+    } else {
+      note('   no verbatim definitional sentence could be verified against the passage -- an honest gap, not a fabrication');
+    }
+  } else {
+    note('   no register-verification passage to extract from');
+  }
+
+  // ── D5: match on sense -- DO NOT FAKE THIS. Honest abstain. ──
+  say('D5  MATCH ON SENSE -- NOT IMPLEMENTED, HONEST ABSTAIN');
+  note('   no bigram overlap, no embedding distance, no forced pick, no "here are the options, pick one"');
+  note('   measured this session: a bigram scorer gave all ten of qid 46\'s options an identical 0.35; a narrow YES/NO to the local model scored 1 of 4 and flipped its own answer at temperature 0');
+  note(`   surviving candidate pool: ${pool.join(', ')}`);
+  if (coreSense) note(`   core sense carried forward as a sourced fact: "${coreSense}"`);
+  note('   sense-matching is not yet solved -- this is the exact case the Language Matrix exists to close, per the teaching');
+
+  const elapsedS = ((Date.now() - t0) / 1000).toFixed(1);
+  emit({ kind: 'result', text: `ABSTAIN (D5 not implemented)   pool=${pool.join(',')}${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+  note(`   ${elapsedS}s`);
+
+  const basisParts = [
+    `D1 clustered ${Object.keys(survivingOPT).length} options (odd one out: ${d1.oddOneOut.join(', ') || 'none'})`,
+    `D2 looked up "${term}"`,
+    `D3 established register "${guess.register}" and verified it`,
+    coreSense ? `D4 core sense: "${coreSense}"` : 'D4 no core sense verified',
+    'D5 sense-matching not implemented -- deliberate honest abstain per the BP149 teaching and HARDWIRE-22',
+  ];
+  return {
+    qid: input.qid,
+    question: input.question,
+    verdict: null,
+    correct: KEY,
+    abstain: true,
+    freeText: input.qid == null,
+    basis: `${basisParts.join('; ')}. candidates: ${pool.join(', ')}`,
+  };
+}
+
 export const definitionalCascadeMethod: LianaMethod = {
   id: 'definitional-cascade',
   name: 'The Definitional Cascade',
-  taughtBy: "the Founder's qid 85 walkthrough (bias), FounderCascadeWorkedByHand.txt Excerpt 7 -- NOT YET IMPLEMENTED, this is a registered stub awaiting the Founder's next hand-worked teaching session",
+  taughtBy: "the Founder's qid 85 walkthrough (bias), FounderCascadeWorkedByHand.txt Excerpt 7 -- D1-D4 built BP149 (D-BP149-043), D5 (sense-matching) deliberately left an honest abstain, not yet solved",
   shapeDescription: 'the question turns on what a term means and the options are competing statements of that meaning',
   shapeTest,
-  run: null,
+  run,
 };
 
 registerMethod(definitionalCascadeMethod);

@@ -3438,6 +3438,71 @@ function registerIPCHandlers(): void {
     return outcome;
   });
 
+  // D-BP149-043/BISHOP/S43/seg-method2build -- THE TEACH BOX. method_registry.ts's own header
+  // named the gap: "The terminal can ask and cannot listen. It reports 'recognized shape, not
+  // yet taught' [or 'no method matches'] and gives the operator nowhere to teach it." This
+  // channel is that missing input path. It writes the operator's own words, VERBATIM, to a
+  // teaching file on disk for a human to read and implement from later -- it NEVER auto-generates
+  // a method from the text, and it never paraphrases, summarizes, or reformats what was typed.
+  // Founder, BP149: "I DESPISE SUMMARIES." Mirrors METHOD_2_TEACHING_BP149.md's own shape (the
+  // hand-authored teaching file this ticket's Method 2 was built from) so a human reading either
+  // file finds the same structure.
+  safeHandle('liana-teach-submit', async (_event, args: {
+    teachingText: string;
+    question: string;
+    options: Record<string, string> | null;
+    qid?: number;
+    shapeTestSummary: string;
+  }) => {
+    try {
+      const dropzoneDir = 'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\BISHOP_DROPZONE';
+      mkdirSync(dropzoneDir, { recursive: true });
+      const slugSource = args.qid != null ? `qid${args.qid}` : args.question;
+      const slug = (slugSource || 'untitled')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 60) || 'untitled';
+      const utc = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+      const fileName = `METHOD_TEACHING_${slug}_${utc}.md`;
+      const filePath = join(dropzoneDir, fileName);
+
+      const optionsBlock = args.options && Object.keys(args.options).length
+        ? Object.entries(args.options).map(([L, t]) => `${L}) ${t}`).join('\n')
+        : '(no lettered option list -- typed as a bare question)';
+
+      const content = `# METHOD TEACHING -- ${args.qid != null ? `qid ${args.qid}` : 'free-text question'}, submitted via the Liana Cycle terminal's Teach box
+
+Written by the LianaCycleTab.tsx Teach box (D-BP149-043). The operator's own words below are
+reproduced VERBATIM -- never paraphrased, summarized, or reformatted. A human reads this file
+and implements the method by hand; nothing in this pipeline auto-generates code from it.
+
+## THE QUESTION THAT TRIGGERED THIS
+
+${args.question}
+
+${optionsBlock}
+
+## THE SHAPE TEST RESULT AT SUBMIT TIME
+
+${args.shapeTestSummary}
+
+## THE OPERATOR'S TEACHING, VERBATIM
+
+${args.teachingText}
+
+---
+
+*Written ${new Date().toISOString()} by the Liana Cycle terminal Teach box.*
+`;
+      writeFileSync(filePath, content, 'utf-8');
+      const bytes = Buffer.byteLength(content, 'utf-8');
+      return { ok: true, filePath, bytes };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
   // BP138 Yoke 0.9.15 FIX 1 -- main-process side of webview_preload.ts's IPC-relay logging.
   // That file's guest context is sandboxed (Electron 31 default) and can no longer touch
   // fs/path directly -- see its own header for the full CDP-verified root-cause writeup. This

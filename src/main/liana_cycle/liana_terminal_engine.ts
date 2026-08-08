@@ -151,7 +151,7 @@ export async function runLianaCycleQuestion(input: string, askGoogle: AskGoogleF
       parsed = parseQid(Number(trimmed));
       if (parsed.qidNotFound) {
         emit({ kind: 'error', text: `qid ${parsed.qid} not found in the bundled corpus (resources/mmlu_pro_bundled/questions.jsonl)`, ts: nowIso() });
-        return { qid: parsed.qid, question: '', verdict: null, abstain: true, freeText: false, error: 'qid not in bundle' };
+        return { qid: parsed.qid, question: '', verdict: null, abstain: true, freeText: false, error: 'qid not in bundle', options: null };
       }
     } else {
       parsed = parseFreeText(trimmed);
@@ -186,7 +186,7 @@ export async function runLianaCycleQuestion(input: string, askGoogle: AskGoogleF
       emit({ kind: 'result', text: 'NO METHOD MATCHES -- this question does not fit any recorded method.', ts: nowIso() });
       note(emit, `   Methods on file:\n     ${roster}`);
       note(emit, '   This is not a failure -- it is the next teaching opportunity. Work this one by hand; the Liana Cycle records what you did and it becomes the next method.');
-      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'no_method_matched' };
+      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'no_method_matched', options: parsed.options };
     }
 
     const { method, shape } = selection;
@@ -197,14 +197,14 @@ export async function runLianaCycleQuestion(input: string, askGoogle: AskGoogleF
     if (!method.run) {
       emit({ kind: 'result', text: `NOT YET TAUGHT -- ${method.name} is a registered method whose shape matched, but it has no runner yet.`, ts: nowIso() });
       note(emit, '   This is a known shape, not an unknown one -- the Founder has not walked a case for it yet. That is the next teaching session.');
-      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'method_not_yet_taught', method: method.id };
+      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'method_not_yet_taught', method: method.id, options: parsed.options };
     }
 
     const outcome = await method.run(methodInput, { askGoogle, emit });
-    return { ...outcome, method: method.id };
+    return { ...outcome, method: method.id, options: parsed.options };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     emit({ kind: 'error', text: `terminal threw: ${msg}`, ts: nowIso() });
-    return { question: trimmed, verdict: null, abstain: true, freeText: !/^\d+$/.test(trimmed), error: msg };
+    return { question: trimmed, verdict: null, abstain: true, freeText: !/^\d+$/.test(trimmed), error: msg, options: null };
   }
 }
