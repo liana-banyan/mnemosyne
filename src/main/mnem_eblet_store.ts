@@ -725,18 +725,37 @@ function bm25Score(
 /** Categories returned to LLM prompt by default (SEG-4 "just want the answers"). */
 const PRIORITY_CATEGORIES = new Set<EbletCategory>(['verified', 'canon', 'active', 'snapshot-canon']);
 
+/** D-BP148-045/BISHOP (Wrasse Serving Path): one structured hit from the production
+ *  eblet_index.jsonl corpus (914 records / 877 canon at time of writing) -- the SAME
+ *  BM25-scored top-3 result queryEbletStore() below has always returned, just with
+ *  `title`/`category`/`path` kept as separate fields instead of baked into one preformatted
+ *  string. This is what lets a caller carry real identity (which file, which category)
+ *  alongside the content it injects into a prompt, so an answer built from it can later be
+ *  attributed/rooted -- queryEbletStore()'s plain string[] return has no way to do that. */
+export interface EbletRetrievalHit {
+  title: string;
+  category: EbletCategory;
+  path: string;
+  /** First SNIPPET_WINDOW (500) chars of the source file -- same truncation
+   *  queryEbletStore() has always applied, just exposed here rather than pre-joined into a
+   *  formatted string. */
+  content: string;
+}
+
 /**
- * SEG-4: Query the local eblet store for files matching the user query.
+ * D-BP148-045/BISHOP: the scoring engine shared by queryEbletStore() (below, preserved
+ * byte-identical for its existing callers) and queryEbletStoreWithProvenance() (new,
+ * structured). Extracted rather than duplicated so the two never drift -- both return
+ * exactly the same top-3 BM25-over-canon/active/verified/snapshot-canon selection, one as
+ * a formatted string[], one as EbletRetrievalHit[].
  *
  * Supports `category:<name>` prefix to force a specific category class:
  *   e.g. "category:pixie-dust cooperative economics"
  *
  * Default behaviour surfaces canon/active/snapshot-canon eblets only.
  * Historical-mine (pixie-dust) is only returned when explicitly requested.
- *
- * Returns top-3 eblet snippets as string[].
  */
-export async function queryEbletStore(query: string): Promise<string[]> {
+async function queryEbletStoreEntries(query: string): Promise<EbletRetrievalHit[]> {
   // Parse optional category filter prefix
   let categoryFilter: EbletCategory | null = null;
   let effectiveQuery = query;
@@ -774,18 +793,44 @@ export async function queryEbletStore(query: string): Promise<string[]> {
     .slice(0, 3);
 
   // Lazy-load full body for top-3 winners only (SEG-3 discipline)
-  const results: string[] = [];
+  const results: EbletRetrievalHit[] = [];
   for (const r of scored) {
     try {
       const raw = readFileSync(r.entry.path, 'utf-8');
       const content = raw.slice(0, SNIPPET_WINDOW);
-      const categoryBadge = `[category: ${r.entry.category}]`;
-      results.push(`[${r.entry.title}] ${categoryBadge}\n${content}`);
+      results.push({ title: r.entry.title, category: r.entry.category, path: r.entry.path, content });
     } catch {
-      results.push(`[${r.entry.title}] [category: ${r.entry.category}]\n${r.entry.snippet}`);
+      results.push({ title: r.entry.title, category: r.entry.category, path: r.entry.path, content: r.entry.snippet });
     }
   }
   return results;
+}
+
+/**
+ * SEG-4: Query the local eblet store for files matching the user query.
+ *
+ * Supports `category:<name>` prefix to force a specific category class:
+ *   e.g. "category:pixie-dust cooperative economics"
+ *
+ * Default behaviour surfaces canon/active/snapshot-canon eblets only.
+ * Historical-mine (pixie-dust) is only returned when explicitly requested.
+ *
+ * Returns top-3 eblet snippets as string[]. Byte-identical to pre-D-BP148-045 behavior --
+ * this is now a thin formatter over queryEbletStoreEntries().
+ */
+export async function queryEbletStore(query: string): Promise<string[]> {
+  const hits = await queryEbletStoreEntries(query);
+  return hits.map((h) => `[${h.title}] [category: ${h.category}]\n${h.content}`);
+}
+
+/** D-BP148-045/BISHOP (Wrasse Serving Path): same top-3 BM25 selection as queryEbletStore()
+ *  above, structured so identity (title/category/path) survives alongside content instead of
+ *  being pre-joined into one opaque string -- see EbletRetrievalHit's own doc comment for why
+ *  this matters (provenance/rooting). New export; queryEbletStore()'s existing callers
+ *  (mcp_server.ts, librarian_corps/*, substrace/wake_router.ts, the orphaned
+ *  ai-dispatch:query handler) are completely untouched. */
+export async function queryEbletStoreWithProvenance(query: string): Promise<EbletRetrievalHit[]> {
+  return queryEbletStoreEntries(query);
 }
 
 // ─── SEG-4 v0.1.56: Verified eblet writer · SEG-1 v0.1.57: HOT retrieve path ──
