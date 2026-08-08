@@ -21,9 +21,16 @@
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE SAFETY RULE, AND IT IS MEASURED, NOT CAUTIONARY. Canon F-6: using aspect as a MAJORITY-KEEP
 // eliminator -- discard everything not in the largest aspect group -- discards the answer key on
-// 14 of 140 bundled questions (10.0%), against the 12.3% that got the naive option-eliminator
+// 15 of 140 bundled questions (10.7%), against the 12.3% that got the naive option-eliminator
 // banned from this estate. ON qid 85 ITSELF the majority rule discards the correct answer, because
 // PROCESS holds 7 options and the key is the lone RESULT.
+//
+// FIGURE CORRECTED BP150 by adversarial SEG D-BP150-006. This comment first shipped saying
+// "14 of 140 (10.0%)", measured with a scratch script written BEFORE this module existed; promoting
+// the element here EXTENDED its marker lists, so that figure described a classifier that no longer
+// exists. Re-measured against this compiled module: 15 / 10.7%, and multi-group discrimination is
+// 38 / 140 (27.1%), not the 20.7% originally published. A measurement is bound to the exact code
+// that produced it.
 //
 // Therefore `eliminateByAspect` REQUIRES the ASK's own aspect and will not accept a majority as a
 // substitute for it. That aspect comes from Survey. Until Survey exists, callers get the partition
@@ -84,7 +91,9 @@ export interface AspectPartition {
   tags: Record<string, AspectTag>;
   groups: Record<string, string[]>;
   /** True when more than one aspect is present -- i.e. this element has anything to say at all.
-   *  Measured BP150: only 20.7% of the bundled corpus. Being inert on the rest is correct. */
+   *  Measured BP150 against THIS compiled module: 38 of 140 bundled questions, 27.1%. (An earlier
+   *  20.7% was published from a pre-module scratch script and is corrected here.) Being inert on
+   *  the remaining ~73% is correct behavior, not a coverage gap. */
   discriminates: boolean;
 }
 
