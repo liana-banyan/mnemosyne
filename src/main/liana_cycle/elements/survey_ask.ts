@@ -99,13 +99,35 @@ export interface SurveyDiscardedBlock {
 
 export interface SurveyAskResult {
   term: string;
-  /** Every query actually sent, verbatim, in order. */
+  /** Every query actually sent to Google, verbatim, in order. Does NOT include
+   *  `reusedSources` below -- those cost no new Google call. */
   queries: string[];
   /** Distinct candidate denotations found. Deliberately UNRANKED -- see this file's header. */
   denotations: SurveyDenotation[];
   discarded: SurveyDiscardedBlock[];
+  /** D-BP150-018 (C). Labels of already-fetched block sources (e.g. Stage 1's inverse-question
+   *  fetch, comparative_cascade.ts) that were run through this SAME extraction/verification
+   *  pipeline, at zero additional Google cost -- see `SurveyAskOpts.extraBlockSources` below. */
+  reusedSources: string[];
   /** Always present -- the top-line honest summary for the transcript. */
   why: string;
+}
+
+export interface SurveyAskOpts {
+  /** D-BP150-018 (B). Field names to scope additional denotation queries to, one query per field:
+   *  "<term> in <field>". Sent for EVERY name in this list -- there is no "pick the best field"
+   *  step here; the caller (definitional_cascade.ts) is expected to pass every field its own
+   *  E-FIELD-GATE run left surviving, not just a single guess. An empty/omitted list leaves this
+   *  function's behavior identical to before this ticket: "define <term>" and "other meanings of
+   *  <term>" only. */
+  scopeFields?: string[];
+  /** D-BP150-018 (C). Already-fetched Google blocks, from a caller that ran its OWN query for its
+   *  own purpose (Stage 1's "ask the inverse", comparative_cascade.ts, shared not copied) and
+   *  happened to fetch material that may state a denotation of `term`. Survey never saw this
+   *  material before this ticket because it only ever ran its own two queries. Each entry's
+   *  blocks are pushed through the exact same extractDenotationFromBlock()/appearsIn()
+   *  verification every query-derived block gets -- no new Google call, no relaxed verification. */
+  extraBlockSources?: Array<{ query: string; blocks: GoogleBlock[] }>;
 }
 
 /** D2 reuses this exact query text ("define <term>"). Survey reuses it too, verbatim, so the two
@@ -122,6 +144,15 @@ function defineQuery(term: string): string {
  *  happens to surface it, is the concrete mechanism behind "enumerate, don't collapse". */
 function otherMeaningsQuery(term: string): string {
   return `other meanings of ${term}`;
+}
+
+/** D-BP150-018 (B). Scoped like D3 was, but for EVERY surviving field, not one guess: "<term> in
+ *  <field>" -- the exact query shape D3's register guess used ("what is bias in statistics"), the
+ *  scoping half of D3 this ticket restores without restoring D3's collapse. One of these is sent
+ *  per field the caller passes in `SurveyAskOpts.scopeFields`; every one of them is enumerated,
+ *  none is picked. */
+function scopedQuery(term: string, field: string): string {
+  return `${term} in ${field}`;
 }
 
 /** One Gemma call per source block, extraction only, HARDWIRE-22. Copies the defining sentence
@@ -199,19 +230,56 @@ async function extractDenotationFromBlock(
  * Returns EVERY verified candidate denotation, unranked, alongside an honest record of every
  * source block that was consulted and discarded. Never picks one. Never eliminates. Never scores.
  */
-export async function surveyAsk(term: string, ctx: MethodRunContext): Promise<SurveyAskResult> {
+export async function surveyAsk(term: string, ctx: MethodRunContext, opts: SurveyAskOpts = {}): Promise<SurveyAskResult> {
   const { askGoogle, emit } = ctx;
   const say = (text: string) => emit({ kind: 'header', text, ts: nowIso() });
   const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
   const fact = (text: string) => emit({ kind: 'fact', text: `+ ${text}`, ts: nowIso() });
   const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
 
-  say(`E-SURVEY-ASK -- enumerate denotations of "${term}" (does NOT pick one)`);
+  const scopeFields = opts.scopeFields ?? [];
+  const extraBlockSources = opts.extraBlockSources ?? [];
 
-  const queries = [defineQuery(term), otherMeaningsQuery(term)];
+  say(
+    `E-SURVEY-ASK -- enumerate denotations of "${term}" (does NOT pick one)`
+      + (scopeFields.length ? `, scoped to ${scopeFields.length} surviving field(s): ${scopeFields.join(', ')}` : ''),
+  );
+
+  // D-BP150-018 (B). One scoped query PER surviving field, in addition to the two unscoped
+  // queries -- nothing is dropped, nothing is picked. See scopedQuery()'s own header.
+  const queries = [defineQuery(term), otherMeaningsQuery(term), ...scopeFields.map((f) => scopedQuery(term, f))];
   const denotations: SurveyDenotation[] = [];
   const discarded: SurveyDiscardedBlock[] = [];
+  const reusedSources: string[] = [];
   const seenSentences = new Set<string>();
+
+  /** Shared per-block handling -- used for both freshly-fetched blocks (below) and reused Stage 1
+   *  blocks (further below), so a block runs through IDENTICAL extraction/verification/dedup
+   *  regardless of which path fetched it. */
+  async function handleBlock(block: GoogleBlock, sourceLabel: string): Promise<void> {
+    const { denotation, discardReason } = await extractDenotationFromBlock(term, block, sourceLabel);
+    if (!denotation) {
+      discarded.push({
+        query: sourceLabel,
+        sourceUrl: block.url,
+        sourceTitle: block.title,
+        why: discardReason ?? 'discarded, no reason recorded',
+      });
+      note(`      discarded [${block.url || '(no url)'}]: ${discardReason}`);
+      return;
+    }
+    const key = norm(denotation.sentence);
+    if (seenSentences.has(key)) {
+      note(`      duplicate of an already-recorded denotation, not added again: "${denotation.sentence}"`);
+      return;
+    }
+    seenSentences.add(key);
+    denotations.push(denotation);
+    fact(
+      `denotation [${denotation.aspect.aspect}${denotation.register ? `, register: ${denotation.register}` : ', register: unstated'}]: `
+        + `"${denotation.sentence}"`,
+    );
+  }
 
   for (const q of queries) {
     step(`survey query -- ${q}`);
@@ -223,43 +291,35 @@ export async function surveyAsk(term: string, ctx: MethodRunContext): Promise<Su
     }
     fact(`Google [${res.via}]: ${res.blocks.length} block(s) returned for "${q}"`);
 
-    for (const block of res.blocks) {
-      const { denotation, discardReason } = await extractDenotationFromBlock(term, block, q);
-      if (!denotation) {
-        discarded.push({
-          query: q,
-          sourceUrl: block.url,
-          sourceTitle: block.title,
-          why: discardReason ?? 'discarded, no reason recorded',
-        });
-        note(`      discarded [${block.url || '(no url)'}]: ${discardReason}`);
-        continue;
-      }
-      const key = norm(denotation.sentence);
-      if (seenSentences.has(key)) {
-        note(`      duplicate of an already-recorded denotation, not added again: "${denotation.sentence}"`);
-        continue;
-      }
-      seenSentences.add(key);
-      denotations.push(denotation);
-      fact(
-        `denotation [${denotation.aspect.aspect}${denotation.register ? `, register: ${denotation.register}` : ', register: unstated'}]: `
-          + `"${denotation.sentence}"`,
-      );
-    }
+    // eslint-disable-next-line no-await-in-loop -- one Gemma call per block, sequential by design
+    for (const block of res.blocks) await handleBlock(block, q);
   }
 
+  // D-BP150-018 (C). STOP THROWING AWAY STAGE 1'S HAUL: blocks a caller already fetched for its
+  // own purpose (Stage 1's inverse-question query, comparative_cascade.ts) are pushed through the
+  // exact same handleBlock() pipeline above -- same extraction prompt, same appearsIn()
+  // verification, same dedup against denotations already found -- at zero additional Google cost.
+  // Recorded separately in `reusedSources`, NOT in `queries`, because no new Google call happened.
+  for (const { query: sourceLabel, blocks } of extraBlockSources) {
+    step(`survey reused source -- ${sourceLabel} (already fetched, no new Google call)`);
+    reusedSources.push(sourceLabel);
+    // eslint-disable-next-line no-await-in-loop -- one Gemma call per block, sequential by design
+    for (const block of blocks) await handleBlock(block, sourceLabel);
+  }
+
+  const totalSourceCount = queries.length + reusedSources.length;
   const why = denotations.length
-    ? `${denotations.length} distinct denotation(s) found across ${queries.length} quer(y/ies) and `
+    ? `${denotations.length} distinct denotation(s) found across ${queries.length} Google quer(y/ies)`
+      + `${reusedSources.length ? ` + ${reusedSources.length} reused source(s)` : ''} and `
       + `${discarded.length} discarded source block(s). NOT resolved to one -- comparing these against `
       + 'the ANSWERS is E-MATCH-UP, which canon marks UNSOLVED; that comparison does not happen here.'
-    : `no verifiable denotation found for "${term}" across ${queries.length} quer(y/ies) `
+    : `no verifiable denotation found for "${term}" across ${totalSourceCount} source(s) `
       + `(${discarded.length} source block(s) consulted and discarded) -- an honest empty result, not a fabrication`;
 
   note(`   ${why}`);
   emit({ kind: 'result', text: `SURVEY (${term}): ${denotations.length} denotation(s), ${discarded.length} discarded`, ts: nowIso() });
 
-  return { term, queries, denotations, discarded, why };
+  return { term, queries, denotations, discarded, reusedSources, why };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
