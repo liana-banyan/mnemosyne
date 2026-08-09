@@ -75,9 +75,11 @@ const liDir = path.join(__dirname, '..', '..', '..', 'dist', 'main', 'liana_cycl
 const demandTestMod = require(path.join(liDir, 'demand_test.js'));
 const surveyStageMod = require(path.join(liDir, 'survey_stage.js'));
 
-const spyCounts = { determineDemand: 0, determineDemandFromSurveyedAsk: 0, runSurveyStage: 0 };
+const spyCounts = { determineDemand: 0, determineDemandFromSurveyedAsk: 0, determineDemandFromAmbiguityNested: 0, runSurveyStage: 0 };
 const originalDetermineDemand = demandTestMod.determineDemand;
 const originalDetermineDemandFromSurveyedAsk = demandTestMod.determineDemandFromSurveyedAsk;
+// D-BP151-032. Same spy technique as the two above, extended to the new ambiguity-path adapter.
+const originalDetermineDemandFromAmbiguityNested = demandTestMod.determineDemandFromAmbiguityNested;
 const originalRunSurveyStage = surveyStageMod.runSurveyStage;
 
 demandTestMod.determineDemand = (...args: unknown[]) => {
@@ -87,6 +89,10 @@ demandTestMod.determineDemand = (...args: unknown[]) => {
 demandTestMod.determineDemandFromSurveyedAsk = (...args: unknown[]) => {
   spyCounts.determineDemandFromSurveyedAsk += 1;
   return originalDetermineDemandFromSurveyedAsk(...args);
+};
+demandTestMod.determineDemandFromAmbiguityNested = (...args: unknown[]) => {
+  spyCounts.determineDemandFromAmbiguityNested += 1;
+  return originalDetermineDemandFromAmbiguityNested(...args);
 };
 surveyStageMod.runSurveyStage = (...args: unknown[]) => {
   spyCounts.runSurveyStage += 1;
@@ -128,10 +134,12 @@ console.log('liana_terminal_engine.contingency_operator.test.ts -- D-BP151-026\n
 
   assert(after1.runSurveyStage === before1.runSurveyStage, 'OFF (param omitted): runSurveyStage() was NEVER called');
   assert(after1.determineDemandFromSurveyedAsk === before1.determineDemandFromSurveyedAsk, 'OFF (param omitted): determineDemandFromSurveyedAsk() was NEVER called');
+  assert(after1.determineDemandFromAmbiguityNested === before1.determineDemandFromAmbiguityNested, 'OFF (param omitted): determineDemandFromAmbiguityNested() was NEVER called (D-BP151-032)');
   assert(after1.determineDemand === before1.determineDemand + 1, 'OFF (param omitted): determineDemand() (the original, untouched call) WAS called exactly once');
 
   assert(after2.runSurveyStage === before2.runSurveyStage, 'OFF (explicit false): runSurveyStage() was NEVER called');
   assert(after2.determineDemandFromSurveyedAsk === before2.determineDemandFromSurveyedAsk, 'OFF (explicit false): determineDemandFromSurveyedAsk() was NEVER called');
+  assert(after2.determineDemandFromAmbiguityNested === before2.determineDemandFromAmbiguityNested, 'OFF (explicit false): determineDemandFromAmbiguityNested() was NEVER called (D-BP151-032)');
   assert(after2.determineDemand === before2.determineDemand + 1, 'OFF (explicit false): determineDemand() WAS called exactly once');
 
   assert(
@@ -194,6 +202,127 @@ console.log('liana_terminal_engine.contingency_operator.test.ts -- D-BP151-026\n
   assert(outcomeOn.error === 'demand_unknown' || outcomeOn.error === 'no_method_matched', 'ON: the outcome is an honest abstain, not a fabricated answer sourced from Survey', outcomeOn.error);
   assert(outcomeOn.variant === 'contingency-operator-survey-splice', 'ON: the outcome states which variant produced the run');
   assert(outcomeOff.variant === undefined, 'OFF (same input, contrast case): outcome carries no variant key');
+}
+
+// ── 2c/2d. D-BP151-032: THE AMBIGUITY PATH IS WIRED TO DEMAND (determineDemandFromAmbiguityNested) ─
+// D-BP151-031 built SURVEY STEP 2's no-term ambiguity query and populated
+// `step2.ambiguityNested`, but nothing downstream consumed it -- liana_terminal_engine.ts's demand
+// ternary keyed off `step2.nested` alone, which stays null on this path BY DESIGN, so qid 98-shaped
+// questions always fell through to "SURVEY STEP 2 did not resolve a term to survey" and abstained
+// demand_unknown regardless of what the ambiguity query found. This block proves the NEW routing:
+// when `ambiguityNested` is non-empty, `determineDemandFromAmbiguityNested()` (demand_test.ts) is
+// called -- a DIFFERENT function and a DIFFERENT transcript line than the old "did not resolve a
+// term" fallback -- even in a fixture where the underlying nested surveys cannot find a denotation
+// (deterministic here: `askGoogle` is `fakeAskGoogle`, always null, so surveyAskNested()'s own
+// Google lookups for each ambiguity-named term find nothing) and the honest final answer is still
+// UNKNOWN. `transport: 'gemma'` is selected explicitly (with `global.fetch` mocked) so this block
+// is deterministic and does not depend on a live Ollama or Google reachable on the runner -- see
+// demand_test.ts's own new unit-level assertions (this ticket) for a fixture where a demand DOES
+// come out non-null, proving the reuse of determineDemandFromSurveyedAsk() actually resolves when
+// the underlying survey supports it.
+{
+  const originalFetch = global.fetch;
+  // The SAME mocked response answers whichever shape gemmaExtract() asks for -- askAmbiguity()'s
+  // 'gemma' branch parses `.terms` (present here); surveyAskNested()'s own internal gemmaExtract()
+  // call (for the named term's denotation) parses `.sentence`/`.register` (both absent here, so it
+  // finds nothing -- an honest empty denotation set, not a crash). This is why demand still comes
+  // back UNKNOWN in this block: it is proving the WIRING fires, not fabricating a resolvable case.
+  const mockResponse = { terms: [{ term: 'bias', standardMeaning: 'a systematic skew', alternativeMeaning: 'a personal prejudice', impact: 'changes which reading applies', isNegation: false }] };
+  (global as any).fetch = async () => ({ json: async () => ({ response: JSON.stringify(mockResponse) }) });
+  try {
+    // No quotes, and findAskCatalyst()'s "explains/describes/defines/means/definition of <word>"
+    // rule (elements/catalyst_words.ts) requires that word to be the LAST word of the question --
+    // this sentence has trailing words after "skew", so it deliberately derives NO term, taking
+    // the ambiguity path this block exists to exercise.
+    const input = 'In this scenario, which factor best accounts for the observed skew? A) Systematic skew B) Random noise';
+    const events: TerminalEvent[] = [];
+    const before = { ...spyCounts };
+    const outcome = await runLianaCycleQuestion(input, fakeAskGoogle, (e: TerminalEvent) => events.push(e), null, null, true, 'gemma');
+    const after = { ...spyCounts };
+
+    assert(after.runSurveyStage === before.runSurveyStage + 1, 'ambiguity-to-demand: runSurveyStage() WAS called exactly once');
+
+    const pathLine = events.find((e) => e.kind === 'note' && /DEMAND PATH:/.test(e.text));
+    assert(!!pathLine && /DEMAND PATH: ambiguity\b/.test(pathLine.text), 'ambiguity-to-demand: the receipt names the AMBIGUITY path (Law 5, HARDWIRE-23) -- not "nested", not "none"', pathLine?.text);
+
+    assert(after.determineDemandFromAmbiguityNested === before.determineDemandFromAmbiguityNested + 1, 'ambiguity-to-demand: determineDemandFromAmbiguityNested() WAS called exactly once -- the new routing fired');
+
+    const onDemandLine = events.find((e) => e.kind === 'note' && /DEMAND:/.test(e.text));
+    assert(!!onDemandLine && /none produced a determinable demand/.test(onDemandLine.text), 'ambiguity-to-demand: the DEMAND line carries the NEW adapter\'s own why-text (not the old "did not resolve a term" fallback text), proving determineDemandFromAmbiguityNested()\'s result -- not a stale null -- reached the transcript', onDemandLine?.text);
+    assert(!!onDemandLine && /SURVEY STEP 2 did not resolve a term to survey/.test(onDemandLine.text) === false, 'ambiguity-to-demand: the OLD "did not resolve a term" fallback text is NOT what produced this UNKNOWN -- it came from the new adapter instead');
+
+    assert(outcome.verdict === null, 'ambiguity-to-demand: verdict stays null -- Survey never answers the question');
+    assert(outcome.error === 'demand_unknown' || outcome.error === 'no_method_matched', 'ambiguity-to-demand: still an honest abstain when nothing is derivable -- demand_unknown remains legitimate', outcome.error);
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 2e-2h. D-BP151-032: determineDemandFromAmbiguityNested() UNIT-LEVEL, HAND-BUILT FIXTURES ────
+// The block above (2c/2d) proves the WIRING fires through real Survey machinery but, by
+// construction (mocked fetch/askGoogle), never resolves a real denotation, so it never proves a
+// demand CAN come out non-null from the ambiguity path -- only that the mechanism is reached. This
+// block closes that gap with hand-built `SurveyAskNestedResult` fixtures (bypassing Google/Ollama
+// entirely -- deterministic, no network, no live model), calling
+// determineDemandFromAmbiguityNested() (demand_test.js, the SAME compiled function
+// liana_terminal_engine.js calls) directly. Proves: (a) a single named term whose surveyed ask
+// resolves to a real demand DOES come out non-null via reuse of determineDemandFromSurveyedAsk()
+// (never a second derivation), (b) two AGREEING named terms still resolve to that one demand, (c)
+// two DISAGREEING named terms report UNKNOWN rather than picking a winner (HARDWIRE-23 Law 1 -- no
+// priority rule was ordered), (d) zero named terms reports UNKNOWN honestly.
+function fixtureNested(sentence: string | null, surveyedTerm = 'x'): any {
+  return {
+    input: surveyedTerm,
+    nest: { input: surveyedTerm, levels: [{ label: 'whole-phrase', text: surveyedTerm, why: 'fixture' }], refused: false, why: 'fixture' },
+    levels: [{
+      level: { label: 'whole-phrase', text: surveyedTerm, why: 'fixture' },
+      surveyedTerm,
+      survey: {
+        term: surveyedTerm,
+        queries: [],
+        denotations: sentence ? [{ sentence, sourceUrl: 'https://example.com', sourceTitle: 'fixture', register: null, registerWhy: 'fixture', aspect: 'process', why: 'fixture' }] : [],
+        discarded: [],
+        reusedSources: [],
+        why: 'fixture',
+      },
+    }],
+    refused: false,
+    why: 'fixture',
+  };
+}
+
+{
+  // (a) ONE named term, resolvable -> non-null demand, via reuse (not a second derivation).
+  const oneTerm = [{ term: 'bias', nested: fixtureNested('It describes a systematic skew in measurement.', 'bias') }];
+  const rOne = demandTestMod.determineDemandFromAmbiguityNested(oneTerm);
+  assert(rOne.demand === 'DEFINE', 'fixture(one resolvable term): demand resolves to DEFINE via determineDemandFromSurveyedAsk(), reused not reimplemented', JSON.stringify(rOne));
+  assert(rOne.derivedFrom === 'surveyed-ask', 'fixture(one resolvable term): derivedFrom is surveyed-ask');
+
+  // (b) TWO named terms, both resolve to the SAME demand -> that demand, not a coin-flip.
+  const twoAgree = [
+    { term: 'bias', nested: fixtureNested('It describes a systematic skew in measurement.', 'bias') },
+    { term: 'skew', nested: fixtureNested('It refers to an asymmetric distortion of the data.', 'skew') },
+  ];
+  const rAgree = demandTestMod.determineDemandFromAmbiguityNested(twoAgree);
+  assert(rAgree.demand === 'DEFINE', 'fixture(two agreeing terms): demand resolves to the AGREED value, not a first-wins tie-break', JSON.stringify(rAgree));
+
+  // (c) TWO named terms whose surveys DISAGREE (one DEFINE via a denotation, one framework-level
+  // LOCATE-IN-FRAMEWORK) -> UNKNOWN, no priority rule invented (HARDWIRE-23 Law 1).
+  const frameworkNested = {
+    ...fixtureNested(null, 'security'),
+    levels: [{ level: { label: 'framework', text: 'Critical Security Studies', why: 'fixture' }, surveyedTerm: 'security', survey: { term: 'security', queries: [], denotations: [], discarded: [], reusedSources: [], why: 'fixture' } }],
+  };
+  const twoDisagree = [
+    { term: 'bias', nested: fixtureNested('It describes a systematic skew in measurement.', 'bias') },
+    { term: 'security', nested: frameworkNested },
+  ];
+  const rDisagree = demandTestMod.determineDemandFromAmbiguityNested(twoDisagree);
+  assert(rDisagree.demand === null, 'fixture(two disagreeing terms): demand is UNKNOWN -- no priority rule invented among ambiguity-named terms', JSON.stringify(rDisagree));
+  assert(/DISAGREE/.test(rDisagree.why), 'fixture(two disagreeing terms): the why-text names the disagreement, not a silently swallowed conflict', rDisagree.why);
+
+  // (d) ZERO named terms -> UNKNOWN, honest, no crash.
+  const rEmpty = demandTestMod.determineDemandFromAmbiguityNested([]);
+  assert(rEmpty.demand === null, 'fixture(zero named terms): demand is UNKNOWN');
 }
 
 // ── 4. STEPPED AUDIBLE sees Survey's own steps, ATTRIBUTED correctly, and TARE for the unmapped ─

@@ -39,7 +39,7 @@ import type { LianaTerminalEvent, LianaTerminalOutcome } from '../../shared/lian
 import { explainSelection, listMethods, selectMethod } from './method_registry';
 // D-BP150-003 -- the Demand Test. Runs before method selection; see its own header for exactly
 // which half of the canon it implements and which half is still a scaffold.
-import { describeDemand, determineDemand, determineDemandFromSurveyedAsk } from './demand_test';
+import { describeDemand, determineDemand, determineDemandFromAmbiguityNested, determineDemandFromSurveyedAsk } from './demand_test';
 import type { DemandResult } from './demand_test';
 import type { AskGoogleFn, EmitFn, MethodQuestionInput, MethodRunContext } from './method_registry';
 // D-BP151-026/BISHOP/seg-contingency-operator (Contingency Operator: Survey Splice). Founder,
@@ -97,6 +97,26 @@ function note(emit: EmitFn, text: string): void {
 function isContingencyOperatorSurveySpliceEnabled(contingencyOperatorSurvey: boolean | undefined): boolean {
   if (contingencyOperatorSurvey === true) return true;
   return process.env.CONTINGENCY_OPERATOR_SURVEY_SPLICE === '1';
+}
+
+/** D-BP151-032/BISHOP/seg-ambiguity-to-demand: resolves SURVEY STEP 2's ambiguity-query transport.
+ *  Same param+env-var `isXEnabled()` shape as isContingencyOperatorSurveySpliceEnabled() above --
+ *  the pattern the Founder named to match -- but the POLARITY IS NOT FLIPPED this time: undefined
+ *  (and no `AMBIGUITY_QUERY_TRANSPORT=gemma` override) resolves to 'google', the SHIPPED default,
+ *  matching every OTHER cited resolver's "undefined = the shipped behavior" direction.
+ *
+ *  ATTRIBUTED: Founder, BP151, relayed addendum, verbatim: "I want to always run it on google,
+ *  which should be the default that can be changed in Mnemosynec at will." An explicit `'gemma'`
+ *  argument (only reachable today via index.ts's IPC parameter -- see this ticket's return,
+ *  "THINGS I NOTICED AND DID NOT DO", for why no renderer UI control was added, matching
+ *  isContingencyOperatorSurveySpliceEnabled()'s own precedent) or the env override selects the
+ *  local model instead. This function only routes; it never falls back on its own -- if Google is
+ *  unreachable, askAmbiguity() (survey_stage.ts) refuses rather than silently trying 'gemma'. */
+function resolveAmbiguityQueryTransport(ambiguityQueryTransport: 'google' | 'gemma' | undefined): 'google' | 'gemma' {
+  if (ambiguityQueryTransport === 'gemma') return 'gemma';
+  if (ambiguityQueryTransport === 'google') return 'google';
+  if (process.env.AMBIGUITY_QUERY_TRANSPORT === 'gemma') return 'gemma';
+  return 'google';
 }
 
 // ─────────────────────────── bundle lookup (unchanged convention) ───────────────────────────
@@ -209,9 +229,19 @@ export async function runLianaCycleQuestion(
    *  method selection, and DEMAND is derived from the surveyed ask
    *  (demand_test.ts's determineDemandFromSurveyedAsk()) instead of the CUES table. */
   contingencyOperatorSurvey?: boolean,
+  /** D-BP151-032, ADDITIVE/OPTIONAL. Only consulted when `contingencyOperatorSurvey` is on (SURVEY
+   *  STEP 2's ambiguity query does not run at all otherwise). undefined = resolveAmbiguityQueryTransport()'s
+   *  default, 'google' (Founder-ordered, relayed BP151 addendum: "I want to always run it on
+   *  google, which should be the default that can be changed in Mnemosynec at will."); 'gemma' (or
+   *  the AMBIGUITY_QUERY_TRANSPORT=gemma env override) selects the local model instead. Every
+   *  pre-existing caller (which passes nothing for this parameter) is unaffected on the OFF path
+   *  and gets the new Google default on the ON path -- there is no prior behavior to preserve here
+   *  since this parameter and the ambiguity-to-demand wiring it feeds ship together. */
+  ambiguityQueryTransport?: 'google' | 'gemma',
 ): Promise<LianaTerminalOutcome> {
   const trimmed = input.trim();
   const contingencyOperatorSurveyOn = isContingencyOperatorSurveySpliceEnabled(contingencyOperatorSurvey);
+  const resolvedAmbiguityQueryTransport = resolveAmbiguityQueryTransport(ambiguityQueryTransport);
   // D-BP151-026: present on EVERY outcome this function returns, including an early/abstained/
   // thrown one, so the receipt always states which variant produced the run -- undefined (and
   // therefore omitted from the outcome object entirely, see liana_terminal_types.ts's own doc
@@ -284,7 +314,11 @@ export async function runLianaCycleQuestion(
           });
         }
       }
-      surveyResult = await runSurveyStage(parsed.question, parsed.options, surveyStepWrap.ctx);
+      surveyResult = await runSurveyStage(parsed.question, parsed.options, surveyStepWrap.ctx, {
+        // D-BP151-032: already-resolved value (param + env override), passed straight through --
+        // survey_stage.ts invents no default of its own beyond matching this same polarity.
+        ambiguityQueryTransport: resolvedAmbiguityQueryTransport,
+      });
       try {
         await surveyStepWrap.finish();
       } catch (e) {
@@ -296,12 +330,31 @@ export async function runLianaCycleQuestion(
       }
       // PART 2: demand comes from the surveyed ask, WIRED not rewritten. Step 2's own output
       // (SurveyAskNestedResult) is exactly determineDemandFromSurveyedAsk()'s expected input
-      // (demand_test.ts:222). When Step 2 found no term to survey, there is nothing to feed it --
-      // reported honestly as demand unknown (canon R-5: a teaching prompt, not a fabricated
-      // guess), the same refusal shape survey_stage.ts's own steps already use throughout.
+      // (demand_test.ts). D-BP151-032: when Step 2 took the NO-TERM/ambiguity path instead
+      // (step2.nested stays null there BY DESIGN -- see survey_stage.ts's own doc comment on that
+      // field), step2.ambiguityNested carries one nested survey per source-named term; that is fed
+      // to determineDemandFromAmbiguityNested() (demand_test.ts), which itself calls
+      // determineDemandFromSurveyedAsk() -- the SAME function -- once per named term and reports
+      // UNKNOWN rather than choosing among them if they disagree (that function's own header). Only
+      // when STEP 2 found NEITHER a term NOR any ambiguity-named term is there nothing to derive a
+      // demand from at all -- reported honestly as demand unknown (canon R-5: a teaching prompt,
+      // not a fabricated guess), the same refusal shape survey_stage.ts's own steps already use.
+      //
+      // LAW 5 (HARDWIRE-23): the receipt names which path produced the demand -- 'nested',
+      // 'ambiguity', or 'none' -- in the transcript line emitted immediately below, independent of
+      // demandResult.derivedFrom (which stays 'surveyed-ask' for both paths; the PATH distinction
+      // is a finer-grained fact than the derivedFrom enum currently carries).
+      const demandPath: 'nested' | 'ambiguity' | 'none' = surveyResult.step2.nested
+        ? 'nested'
+        : surveyResult.step2.ambiguityNested.length
+          ? 'ambiguity'
+          : 'none';
+      note(emit, `   DEMAND PATH: ${demandPath} (Law 5, HARDWIRE-23 -- names which SURVEY STEP 2 result produced the demand below)`);
       demandResult = surveyResult.step2.nested
         ? determineDemandFromSurveyedAsk(surveyResult.step2.nested)
-        : {
+        : surveyResult.step2.ambiguityNested.length
+          ? determineDemandFromAmbiguityNested(surveyResult.step2.ambiguityNested)
+          : {
             demand: null,
             why: `SURVEY STEP 2 did not resolve a term to survey (${surveyResult.step2.why}) -- nothing to derive DEMAND from via the surveyed ask; this is a teaching prompt (canon R-5), not a fabricated guess`,
             derivedFrom: 'surveyed-ask',
