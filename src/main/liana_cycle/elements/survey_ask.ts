@@ -58,6 +58,13 @@
 import type { MethodRunContext } from '../method_registry';
 import { appearsIn, gemmaExtract, googleBlocks, norm, type GoogleBlock } from '../methods/comparative_cascade';
 import { tagAspect, type AspectTag } from './aspect_tag';
+// D-BP150-014 -- THE NEST METHOD's decomposition half, reused not reimplemented. Ratified canon:
+//   Asteroid-ProofVault/state/eblets/CANON/canon_the_nest_method_bp150.eblet.md
+// "E-SURVEY-ASK must gain decomposition: take a phrase, produce the nest, survey each level in
+// order, and carry the frame's resolved sense into the levels below it. Its current single-term
+// signature is a special case of the nest with depth 1." See surveyAskNested() at the bottom of
+// this file for the general form; surveyAsk() above is UNCHANGED and remains the depth-1 case.
+import { buildNest, type NestLevel, type NestResult } from './nest';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -253,4 +260,94 @@ export async function surveyAsk(term: string, ctx: MethodRunContext): Promise<Su
   emit({ kind: 'result', text: `SURVEY (${term}): ${denotations.length} denotation(s), ${discarded.length} discarded`, ts: nowIso() });
 
   return { term, queries, denotations, discarded, why };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP150-014 -- THE NEST FORM. Ratified canon: canon_the_nest_method_bp150.eblet.md.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export interface SurveyNestLevelResult {
+  /** buildNest()'s own level object (elements/nest.ts), unmodified. */
+  level: NestLevel;
+  /** The term actually sent to surveyAsk() for this level -- may differ from `level.text` when the
+   *  resolved frame's name was carried down into it. See surveyAskNested()'s own header note. */
+  surveyedTerm: string;
+  survey: SurveyAskResult;
+}
+
+export interface SurveyAskNestedResult {
+  input: string;
+  /** buildNest()'s own result (elements/nest.ts), unmodified -- not reproduced or re-derived. */
+  nest: NestResult;
+  /** One entry per nest level, OUTERMOST FIRST, per canon. For a depth-1 nest (buildNest() found no
+   *  frame/part split, or REFUSED) this has exactly one entry -- the special case canon names:
+   *  "depth-1 ... is a special case of the nest with depth 1." */
+  levels: SurveyNestLevelResult[];
+  /** True when buildNest() refused decomposition (elements/nest.ts, D-BP150-012 FIX 3) -- mirrors
+   *  NestResult.refused so a caller does not have to reach into `nest` to check it. */
+  refused: boolean;
+  /** Always present -- the top-line honest summary for the transcript. */
+  why: string;
+}
+
+/**
+ * E-SURVEY-ASK, THE NEST FORM. Decomposes `phrase` via buildNest() (elements/nest.ts, NOT
+ * re-derived here) and surveys each level OUTERMOST FIRST, exactly the order canon specifies:
+ * "1. The outer frame first ... 2. Each part, inside that frame ... 3. Check the construct is real
+ * ... 4. Then the whole phrase" (canon_the_nest_method_bp150).
+ *
+ * CARRYING THE FRAME'S SENSE DOWN: once the framework level has been surveyed, its own resolved
+ * NAME (e.g. "Critical Security Studies") -- never a CHOSEN denotation, since Survey never chooses
+ * one (that is E-MATCH-UP, UNSOLVED) -- is appended as context ("<level text> in <frame>") to the
+ * term surveyed for every level below it. This is the mechanical form of "carrying the resolved
+ * frame's sense ... into the levels below it" that stays inside what Survey is allowed to do: it
+ * carries forward a FACT the phrase itself states (the frame is named X), never a JUDGMENT (X
+ * means this one thing here).
+ *
+ * The single-term entry point (`surveyAsk` above) is UNCHANGED and remains the function to call
+ * for a bare term. This function is the general case: when buildNest() finds no frame and no
+ * "X of Y" split (the common case for a short definitional ask like qid 85's "bias"), it produces
+ * exactly one level whose surveyed term equals the input, and the result is substantively the same
+ * as calling `surveyAsk()` directly. When buildNest() REFUSES (its own structural gate,
+ * D-BP150-012 FIX 3 -- a multi-sentence, over-length, or lettered-option input), `nest.levels` is
+ * already a single whole-phrase level per that function's own contract, and this function surveys
+ * that one level and reports the refusal in `why` -- "survey the whole phrase as one level and say
+ * so", per this ticket's own instruction.
+ */
+export async function surveyAskNested(phrase: string, ctx: MethodRunContext): Promise<SurveyAskNestedResult> {
+  const { emit } = ctx;
+  const say = (text: string) => emit({ kind: 'header', text, ts: nowIso() });
+  const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
+
+  const nest = buildNest(phrase);
+  say(`E-SURVEY-ASK (NEST FORM) -- ${nest.levels.length} level(s): ${nest.levels.map((l) => l.label).join(' -> ')}${nest.refused ? ' [buildNest REFUSED decomposition]' : ''}`);
+  if (nest.refused) {
+    note(`   ${nest.why}`);
+  }
+
+  const levels: SurveyNestLevelResult[] = [];
+  let frameName: string | null = null;
+
+  for (const lvl of nest.levels) {
+    const surveyedTerm = (lvl.label !== 'framework' && frameName)
+      ? `${lvl.text} in ${frameName}`
+      : lvl.text;
+    note(`   LEVEL [${lvl.label}] "${lvl.text}"${surveyedTerm !== lvl.text ? ` -- surveyed as "${surveyedTerm}" (frame carried down)` : ''}`);
+    note(`      ${lvl.why}`);
+    // eslint-disable-next-line no-await-in-loop -- levels are dependency-ordered, outermost first,
+    // and each inner level's query depends on whether the outer one resolved a frame name; they
+    // cannot run concurrently.
+    const survey = await surveyAsk(surveyedTerm, ctx);
+    levels.push({ level: lvl, surveyedTerm, survey });
+    if (lvl.label === 'framework') {
+      frameName = lvl.text;
+    }
+  }
+
+  const why = nest.refused
+    ? `buildNest() refused decomposition (${nest.why}) -- surveyed the whole phrase as a single level, per this element's own instruction to do so and say so`
+    : `${levels.length} level(s) surveyed outermost-first: ${levels.map((l) => `${l.level.label}="${l.surveyedTerm}" (${l.survey.denotations.length} denotation(s))`).join('; ')}`;
+  emit({ kind: 'result', text: `SURVEY-NEST: ${levels.length} level(s) surveyed`, ts: nowIso() });
+
+  return { input: phrase, nest, levels, refused: nest.refused, why };
 }

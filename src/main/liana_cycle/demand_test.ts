@@ -30,6 +30,14 @@
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 import type { MethodQuestionInput } from './method_registry';
+// D-BP150-014 -- THE SURVEYED-ASK PATH. checkKind() is a VALUE import (no second classifier
+// written here, per that element's own header discipline); SurveyAskNestedResult is a TYPE-ONLY
+// import so it is erased at compile time and cannot create a runtime import cycle with
+// elements/survey_ask.ts (which itself imports a type from this module's sibling,
+// method_registry.ts -- see determineDemandFromSurveyedAsk()'s own header for why this ordering is
+// safe).
+import { checkKind } from './elements/kind_check';
+import type { SurveyAskNestedResult } from './elements/survey_ask';
 
 /** The six demand types read off the BP150 benchmark corpus. THE LIST IS OPEN, but per canon R-7
  *  a new type is a Founder act -- never inferred here from a question that matched nothing. */
@@ -129,7 +137,11 @@ const CUES: Array<{ demand: LianaDemand; re: RegExp; label: string }> = [
  * own phrase "refers to" fires the DEFINE cue on every one of these questions, and the quoted
  * passage can contain any cue word at random. The ask is the last line, so that is what gets read.
  */
-function effectiveAsk(question: string): string {
+// D-BP150-014: exported (previously module-private) so the surveyed-ask measurement path can feed
+// the SAME narrowed ask text into surveyAskNested() that determineDemand() already reads for the
+// string path -- an apples-to-apples comparison between the two derivations, not two different
+// inputs. No behavior change to any existing caller.
+export function effectiveAsk(question: string): string {
   const lines = question.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   if (lines.length <= 1) return question;
   const last = lines[lines.length - 1];
@@ -170,4 +182,84 @@ export function describeDemand(r: DemandResult): string {
     ? ' [derived from the question string -- SCAFFOLD; Survey is not built yet]'
     : '';
   return `${head} -- ${r.why}${caveat}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP150-014 -- THE SURVEYED-ASK PATH, ALONGSIDE THE SCAFFOLD ABOVE, NOT REPLACING IT.
+//
+// Canon R-1: "DEMAND is derived from the surveyed ASK ... never read off the question string by
+// pattern match." This function is the first implementation of that rule: it takes a
+// SurveyAskNestedResult (elements/survey_ask.ts's nest form, D-BP150-014) -- the actual output of
+// running Survey on the ASK -- and derives DEMAND from ITS STRUCTURE, never from `input.question`.
+//
+// This file's own header (above) says: "When Survey lands, the cue tables are DELETED, not
+// extended." THEY ARE NOT DELETED HERE, ON PURPOSE. determineDemandFromSurveyedAsk() is added
+// ALONGSIDE determineDemand() so both can be measured against each other on the same corpus before
+// either is trusted alone -- deleting the scaffold before the replacement is proven would destroy
+// the only baseline this estate has. See D-BP150-014's return for the surveyed-vs-string
+// comparison across the six canon benchmark questions. Bishop and the Founder decide when the cue
+// tables die, per this ticket's own instruction -- this function does not decide that for them.
+//
+// WHAT IS ACTUALLY DERIVABLE FROM THE SURVEYED ASK TODAY, AND WHAT IS NOT, STATED HONESTLY:
+//   - LOCATE-IN-FRAMEWORK: the nest produced a 'framework' level (elements/nest.ts's own
+//     "within/in <Capitalized Span>" rule) -- a term's role inside a named theory is exactly what a
+//     resolved framework level means structurally.
+//   - DEFINE: the MOST SPECIFIC surveyed level (the last one -- whole-phrase, or existence-check
+//     when the nest produced one) returned at least one denotation whose sentence kind-checks
+//     (elements/kind_check.ts's checkKind(), NOT a second classifier) as DEFINITION-STATEMENT -- a
+//     clause stating what a term means is exactly a denotation answering "what does this mean",
+//     which is what DEFINE requires.
+//   - RANK / CLASSIFY / IDENTIFY / INFER: NOT YET DERIVABLE from the surveyed ASK term's own
+//     denotations alone. These four characterize an OPERATION ON THE OPTIONS (order them, sort
+//     them into categories, pick the member that fits, draw a conclusion) -- none of that is
+//     visible in what the ASK's own term denotes. Reaching them honestly needs E-SURVEY-ANSWERS
+//     and/or E-CATALYST-WORDS signals this function does not consume. Returning `null` here for a
+//     question whose true demand is one of these four is NOT a defect being papered over; it is
+//     the accurate report of what this element can and cannot see yet, named per canon R-5 --
+//     "a question whose demand no method serves is a teaching prompt, not a failure."
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export function determineDemandFromSurveyedAsk(nested: SurveyAskNestedResult): DemandResult {
+  const frameworkLevel = nested.levels.find((l) => l.level.label === 'framework');
+  if (frameworkLevel) {
+    return {
+      demand: 'LOCATE-IN-FRAMEWORK',
+      why: `the surveyed ask decomposed a framework level ("${frameworkLevel.level.text}") via the `
+        + `Nest Method (elements/nest.ts) -- ${frameworkLevel.level.why}`,
+      derivedFrom: 'surveyed-ask',
+    };
+  }
+
+  const mostSpecific = nested.levels[nested.levels.length - 1];
+  if (mostSpecific) {
+    for (const d of mostSpecific.survey.denotations) {
+      const kc = checkKind(d.sentence);
+      if (kc.type === 'DEFINITION-STATEMENT') {
+        return {
+          demand: 'DEFINE',
+          why: `the most specific surveyed level ("${mostSpecific.surveyedTerm}") returned a `
+            + `denotation that kind-checks as DEFINITION-STATEMENT (${kc.why}): "${d.sentence}"`,
+          derivedFrom: 'surveyed-ask',
+        };
+      }
+    }
+    if (mostSpecific.survey.denotations.length === 0) {
+      return {
+        demand: null,
+        why: `no denotations were found for the surveyed ask ("${mostSpecific.surveyedTerm}") -- `
+          + 'nothing to derive an operation from; this is a teaching prompt (canon R-5), not a '
+          + 'fabricated guess',
+        derivedFrom: 'surveyed-ask',
+      };
+    }
+  }
+
+  return {
+    demand: null,
+    why: 'the surveyed ask carries no framework level and no denotation kind-checks as a '
+      + 'DEFINITION-STATEMENT -- RANK/CLASSIFY/IDENTIFY/INFER are not yet derivable from the '
+      + 'surveyed ASK term\'s own denotations alone (they characterize the operation on the '
+      + 'OPTIONS, not the ASK); an honest gap, not a fabrication -- see D-BP150-014\'s return',
+    derivedFrom: 'surveyed-ask',
+  };
 }
