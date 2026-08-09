@@ -3453,7 +3453,7 @@ function registerIPCHandlers(): void {
   // Streams every stage/fact/note/result line to the caller's own window as it happens
   // (event.sender.send, same push convention as 'ask-engine-progress') so the Founder watches the
   // cascade live instead of pasting console output back into a chat window.
-  safeHandle('liana-terminal-run', async (event, { input, audible, steppedAudible, contingencyOperatorSurvey }: { input: string; audible?: boolean; steppedAudible?: boolean; contingencyOperatorSurvey?: boolean }) => {
+  safeHandle('liana-terminal-run', async (event, { input, audible, steppedAudible, contingencyOperatorSurvey, ambiguityQueryTransport }: { input: string; audible?: boolean; steppedAudible?: boolean; contingencyOperatorSurvey?: boolean; ambiguityQueryTransport?: 'google' | 'gemma' }) => {
     // D-BP150-001 (Call an Audible). `audible` is OPTIONAL and defaults to off: an older
     // renderer, or the Founder simply not toggling it, produces exactly the run this handler
     // produced before this parameter existed (wrapAskGoogleWithAudible returns the unwrapped
@@ -3468,6 +3468,12 @@ function registerIPCHandlers(): void {
     // for the gate (which also honors CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 as an env override, the
     // same escape hatch its cited pattern's own resolvers use). No renderer UI control was added
     // by this ticket -- see this ticket's return, THINGS I NOTICED AND DID NOT DO.
+    // D-BP151-032 (Ambiguity Query Transport). `ambiguityQueryTransport` is likewise OPTIONAL, only
+    // consulted when `contingencyOperatorSurvey` is on -- see
+    // liana_terminal_engine.ts's resolveAmbiguityQueryTransport() for the gate (undefined ->
+    // 'google', the Founder-ordered default; 'gemma' or AMBIGUITY_QUERY_TRANSPORT=gemma selects the
+    // local model). Same "no renderer UI control added" precedent as `contingencyOperatorSurvey`
+    // immediately above -- see this ticket's return, THINGS I NOTICED AND DID NOT DO.
     const sender = event.sender;
     const runPauseIds = new Set<string>();
     const runSteppedPauseIds = new Set<string>();
@@ -3558,6 +3564,7 @@ function registerIPCHandlers(): void {
         channel,
         steppedChannel,
         contingencyOperatorSurvey,
+        ambiguityQueryTransport,
       );
     } finally {
       sender.removeListener('destroyed', onSenderGone);
@@ -3617,6 +3624,11 @@ function registerIPCHandlers(): void {
         // what THIS call asked for, kept alongside it so a request that asked for the variant but
         // threw before reaching it (outcome.variant absent) is still visible in the receipt.
         contingencyOperatorSurveyRequested: Boolean(contingencyOperatorSurvey),
+        // D-BP151-032: named so a receipt on disk states which transport was REQUESTED for the
+        // ambiguity query without cross-referencing the request, same convention as
+        // contingencyOperatorSurveyRequested immediately above. null when not requested (the
+        // Google default still applies inside the engine; this field only records an explicit ask).
+        ambiguityQueryTransportRequested: ambiguityQueryTransport ?? null,
         variant: outcome.variant ?? null,
         eventCount: events.length,
         transcript: events,

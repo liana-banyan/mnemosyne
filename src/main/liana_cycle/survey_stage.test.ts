@@ -120,48 +120,52 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
   assert(r.negationNamed === false, 'step2(term present): negationNamed stays false');
 }
 
-// ── 1b. D-BP151-031: NO TERM, ASK TEXT GIVEN, MODEL CALL FAILS -- STILL REFUSES CLEANLY ─────────
-// Monkey-patches the global fetch() askAmbiguityViaModel() uses (same technique any test in this
-// process can use -- fetch is looked up at call time, not captured at module load) to simulate the
-// local model being unreachable. No real network/Ollama call happens in this block.
+// ── 1b. D-BP151-031/032: NO TERM, ASK TEXT GIVEN, TRANSPORT='gemma', MODEL CALL FAILS -- REFUSES ─
+// Monkey-patches the global fetch() askAmbiguity()'s 'gemma' branch uses (same technique any test
+// in this process can use -- fetch is looked up at call time, not captured at module load) to
+// simulate the local model being unreachable. No real network/Ollama call happens in this block.
+// D-BP151-032: transport is now EXPLICIT ('gemma') since Google is the new default -- these tests
+// (1b-1f) exist specifically to cover the SELECTABLE local-model path; see 1g/1h below for the new
+// default ('google') transport's own tests.
 {
   const originalFetch = global.fetch;
   (global as any).fetch = async () => { throw new Error('simulated network failure'); };
   let r: Awaited<ReturnType<typeof founderStep2Survey>>;
   try {
     const { ctx, events } = fakeCtx();
-    r = await founderStep2Survey(null, ctx, 'Which of the following world regions is NOT considered one of the most densely populated?');
-    assert(r.ambiguity !== null, 'step2(model unreachable): ambiguity query was issued (askText was present)');
-    assert(r.ambiguity!.modelUnreachable === true, 'step2(model unreachable): modelUnreachable is true, measured via a failing fetch', JSON.stringify(r.ambiguity));
-    assert(r.ambiguity!.terms.length === 0, 'step2(model unreachable): terms is empty');
-    assert(r.ambiguityNested.length === 0, 'step2(model unreachable): ambiguityNested stays empty -- nothing to survey');
-    assert(r.nested === null, 'step2(model unreachable): nested stays null -- refuses exactly as the no-term path always has');
-    assert(r.negationNamed === false, 'step2(model unreachable): negationNamed stays false');
-    assert(events.some((e) => e.kind === 'result' && /no term/.test(e.text)), 'step2(model unreachable): still reports "no term" -- refusing beats guessing, unchanged', events.map((e) => e.text).join(' | '));
+    r = await founderStep2Survey(null, ctx, 'Which of the following world regions is NOT considered one of the most densely populated?', 'gemma');
+    assert(r.ambiguity !== null, 'step2(gemma, model unreachable): ambiguity query was issued (askText was present)');
+    assert(r.ambiguity!.modelUnreachable === true, 'step2(gemma, model unreachable): modelUnreachable is true, measured via a failing fetch', JSON.stringify(r.ambiguity));
+    assert(r.ambiguity!.transport === 'gemma', 'step2(gemma, model unreachable): transport is recorded as gemma', r.ambiguity!.transport);
+    assert(r.ambiguity!.terms.length === 0, 'step2(gemma, model unreachable): terms is empty');
+    assert(r.ambiguityNested.length === 0, 'step2(gemma, model unreachable): ambiguityNested stays empty -- nothing to survey');
+    assert(r.nested === null, 'step2(gemma, model unreachable): nested stays null -- refuses exactly as the no-term path always has');
+    assert(r.negationNamed === false, 'step2(gemma, model unreachable): negationNamed stays false');
+    assert(events.some((e) => e.kind === 'result' && /no term/.test(e.text)), 'step2(gemma, model unreachable): still reports "no term" -- refusing beats guessing, unchanged', events.map((e) => e.text).join(' | '));
   } finally {
     global.fetch = originalFetch;
   }
 }
 
-// ── 1c. D-BP151-031: NO TERM, ASK TEXT GIVEN, MODEL RUNS BUT NAMES NOTHING -- STILL REFUSES ─────
+// ── 1c. D-BP151-031/032: NO TERM, ASK TEXT GIVEN, TRANSPORT='gemma', MODEL NAMES NOTHING ────────
 {
   const originalFetch = global.fetch;
   (global as any).fetch = async () => ({ json: async () => ({ response: '{"terms":[]}' }) });
   let r: Awaited<ReturnType<typeof founderStep2Survey>>;
   try {
     const { ctx } = fakeCtx();
-    r = await founderStep2Survey(null, ctx, 'A plain question with nothing ambiguous in it.');
-    assert(r.ambiguity !== null, 'step2(model names nothing): ambiguity query was issued');
-    assert(r.ambiguity!.modelUnreachable === false, 'step2(model names nothing): the model call itself succeeded');
-    assert(r.ambiguity!.terms.length === 0, 'step2(model names nothing): terms is empty -- an honest empty result');
-    assert(r.ambiguityNested.length === 0, 'step2(model names nothing): ambiguityNested stays empty');
-    assert(r.nested === null, 'step2(model names nothing): nested stays null -- refuses, does not guess a term from an empty ambiguity result');
+    r = await founderStep2Survey(null, ctx, 'A plain question with nothing ambiguous in it.', 'gemma');
+    assert(r.ambiguity !== null, 'step2(gemma, names nothing): ambiguity query was issued');
+    assert(r.ambiguity!.modelUnreachable === false, 'step2(gemma, names nothing): the model call itself succeeded');
+    assert(r.ambiguity!.terms.length === 0, 'step2(gemma, names nothing): terms is empty -- an honest empty result');
+    assert(r.ambiguityNested.length === 0, 'step2(gemma, names nothing): ambiguityNested stays empty');
+    assert(r.nested === null, 'step2(gemma, names nothing): nested stays null -- refuses, does not guess a term from an empty ambiguity result');
   } finally {
     global.fetch = originalFetch;
   }
 }
 
-// ── 1d. D-BP151-031: NAMED TERMS BECOME THE SURVEYED TERMS, ALL OF THEM, SOURCE ORDER ───────────
+// ── 1d. D-BP151-031/032: TRANSPORT='gemma', NAMED TERMS BECOME THE SURVEYED TERMS, SOURCE ORDER ─
 // Deterministic mock: the model names two terms, one flagged isNegation. Proves (a) every named
 // term is surveyed (ambiguityNested), (b) the exact Founder wording was sent as `askedText`, (c)
 // the negation flag is set ONLY when the source names it -- never inferred from a word list here.
@@ -177,23 +181,23 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
   let r: Awaited<ReturnType<typeof founderStep2Survey>>;
   try {
     const { ctx } = fakeCtx();
-    r = await founderStep2Survey(null, ctx, "Which of the following world regions is NOT considered one of the world's most densely populated regions?");
+    r = await founderStep2Survey(null, ctx, "Which of the following world regions is NOT considered one of the world's most densely populated regions?", 'gemma');
     assert(
       r.ambiguity!.askedText === 'what words or phrases in this question could be understood with a different meaning that would fundamentally change the meaning of what is being asked?',
-      'step2(named terms): the ambiguity query used the Founder\'s exact verbatim wording',
+      'step2(gemma, named terms): the ambiguity query used the Founder\'s exact verbatim wording',
       r.ambiguity!.askedText,
     );
-    assert(r.ambiguity!.terms.length === 2, 'step2(named terms): both source-named terms are reported');
-    assert(r.ambiguityNested.length === 2, 'step2(named terms): every named term was surveyed -- no selection/ranking rule dropped one', JSON.stringify(r.ambiguityNested.map((a) => a.term)));
-    assert(r.ambiguityNested[0].term === 'densely populated' && r.ambiguityNested[1].term === 'NOT', 'step2(named terms): surveyed in the order the source returned them', JSON.stringify(r.ambiguityNested.map((a) => a.term)));
-    assert(r.ambiguityNested.every((a) => a.nested !== null && Array.isArray(a.nested.levels)), 'step2(named terms): each named term went through the SAME surveyAskNested() the quoted/cued path uses');
-    assert(r.negationNamed === true, 'step2(named terms): negationNamed is true -- the source flagged "NOT" as a negation term');
+    assert(r.ambiguity!.terms.length === 2, 'step2(gemma, named terms): both source-named terms are reported');
+    assert(r.ambiguityNested.length === 2, 'step2(gemma, named terms): every named term was surveyed -- no selection/ranking rule dropped one', JSON.stringify(r.ambiguityNested.map((a) => a.term)));
+    assert(r.ambiguityNested[0].term === 'densely populated' && r.ambiguityNested[1].term === 'NOT', 'step2(gemma, named terms): surveyed in the order the source returned them', JSON.stringify(r.ambiguityNested.map((a) => a.term)));
+    assert(r.ambiguityNested.every((a) => a.nested !== null && Array.isArray(a.nested.levels)), 'step2(gemma, named terms): each named term went through the SAME surveyAskNested() the quoted/cued path uses');
+    assert(r.negationNamed === true, 'step2(gemma, named terms): negationNamed is true -- the source flagged "NOT" as a negation term');
   } finally {
     global.fetch = originalFetch;
   }
 }
 
-// ── 1e. D-BP151-031: NEGATION FLAG IS NEVER SET WHEN NO SOURCE-NAMED TERM FLAGS IT ───────────────
+// ── 1e. D-BP151-031/032: TRANSPORT='gemma', NEGATION FLAG NEVER SET WHEN NOT SOURCE-NAMED ───────
 {
   const originalFetch = global.fetch;
   const mockResponse = { terms: [{ term: 'regions', standardMeaning: 'broad geographic zones', alternativeMeaning: 'specific political borders', impact: 'changes scope', isNegation: false }] };
@@ -201,14 +205,14 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
   let r: Awaited<ReturnType<typeof founderStep2Survey>>;
   try {
     const { ctx } = fakeCtx();
-    r = await founderStep2Survey(null, ctx, 'A question with one ambiguous but non-negating term.');
-    assert(r.negationNamed === false, 'step2(no negation named): negationNamed stays false when no source-named term flags isNegation');
+    r = await founderStep2Survey(null, ctx, 'A question with one ambiguous but non-negating term.', 'gemma');
+    assert(r.negationNamed === false, 'step2(gemma, no negation named): negationNamed stays false when no source-named term flags isNegation');
   } finally {
     global.fetch = originalFetch;
   }
 }
 
-// ── 1f. D-BP151-031: THE REAL LOCAL MODEL, LIVE, ON THE ACTUAL qid 98 QUESTION TEXT ──────────────
+// ── 1f. D-BP151-031/032: TRANSPORT='gemma', THE REAL LOCAL MODEL, LIVE, ACTUAL qid 98 TEXT ──────
 // Real local Ollama (gemma4:12b) -- the measured failure this ticket fixes, replayed directly.
 // Asserts MECHANICAL invariants only (a real response was usable, every named term was surveyed),
 // not exact model wording, since live phrasing can vary even at temperature 0 across machine/
@@ -216,12 +220,81 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
 {
   const { ctx } = fakeCtx();
   const qid98Text = "Which of the following world regions is NOT considered one of the world's most densely populated regions?";
-  const r = await founderStep2Survey(null, ctx, qid98Text);
-  assert(r.ambiguity !== null, 'step2(qid98, live model): ambiguity query was issued');
-  assert(r.ambiguity!.modelUnreachable === false, 'step2(qid98, live model): the local model WAS reachable for this run (measured, not assumed)', JSON.stringify(r.ambiguity));
-  assert(r.ambiguity!.terms.length > 0, 'step2(qid98, live model): the source named at least one ambiguous term for this question', JSON.stringify(r.ambiguity));
-  assert(r.ambiguityNested.length === r.ambiguity!.terms.length, 'step2(qid98, live model): every named term was surveyed, none dropped', JSON.stringify({ named: r.ambiguity!.terms.length, surveyed: r.ambiguityNested.length }));
-  console.log(`  [INFO] qid98 live ambiguity query named: ${r.ambiguity!.terms.map((t) => t.term).join(', ')}${r.negationNamed ? ' (negation named)' : ' (no negation named)'}`);
+  const r = await founderStep2Survey(null, ctx, qid98Text, 'gemma');
+  assert(r.ambiguity !== null, 'step2(gemma, qid98 live model): ambiguity query was issued');
+  assert(r.ambiguity!.modelUnreachable === false, 'step2(gemma, qid98 live model): the local model WAS reachable for this run (measured, not assumed)', JSON.stringify(r.ambiguity));
+  assert(r.ambiguity!.transport === 'gemma', 'step2(gemma, qid98 live model): transport is recorded as gemma');
+  assert(r.ambiguity!.terms.length > 0, 'step2(gemma, qid98 live model): the source named at least one ambiguous term for this question', JSON.stringify(r.ambiguity));
+  assert(r.ambiguityNested.length === r.ambiguity!.terms.length, 'step2(gemma, qid98 live model): every named term was surveyed, none dropped', JSON.stringify({ named: r.ambiguity!.terms.length, surveyed: r.ambiguityNested.length }));
+  console.log(`  [INFO] qid98 live ambiguity query (gemma) named: ${r.ambiguity!.terms.map((t) => t.term).join(', ')}${r.negationNamed ? ' (negation named)' : ' (no negation named)'}`);
+}
+
+// ── 1g. D-BP151-032: TRANSPORT OMITTED -> DEFAULTS TO 'google'; GOOGLE UNREACHABLE -> REFUSES, ──
+// NEVER SILENTLY FALLS BACK TO GEMMA. fakeCtx()'s askGoogle returns null (unreachable, no retry
+// wait avoided -- googleBlocks() still runs its own real 3-try/backoff loop, same accepted cost
+// this suite's step4 tests already pay). A fetch spy proves the local Ollama endpoint is NEVER
+// touched on this path -- the refusal is real, not a disguised fallback.
+{
+  const originalFetch = global.fetch;
+  let fetchCalls = 0;
+  (global as any).fetch = async (...args: unknown[]) => { fetchCalls += 1; return originalFetch(...(args as [any])); };
+  let r: Awaited<ReturnType<typeof founderStep2Survey>>;
+  try {
+    const { ctx } = fakeCtx(); // askGoogle: async () => null
+    r = await founderStep2Survey(null, ctx, 'Which of the following world regions is NOT considered one of the most densely populated?');
+    assert(r.ambiguity !== null, 'step2(transport omitted, Google unreachable): ambiguity query was issued');
+    assert(r.ambiguity!.transport === 'google', 'step2(transport omitted): resolves to \'google\' -- the Founder-ordered default', r.ambiguity!.transport);
+    assert(r.ambiguity!.modelUnreachable === true, 'step2(transport omitted, Google unreachable): modelUnreachable is true', JSON.stringify(r.ambiguity));
+    assert(r.ambiguity!.terms.length === 0, 'step2(transport omitted, Google unreachable): terms is empty');
+    assert(r.ambiguity!.citations.length === 0, 'step2(transport omitted, Google unreachable): citations is empty');
+    assert(fetchCalls === 0, 'step2(transport omitted, Google unreachable): the local Ollama fetch() endpoint was NEVER called -- no silent fallback to gemma', `fetchCalls=${fetchCalls}`);
+    assert(r.ambiguityNested.length === 0, 'step2(transport omitted, Google unreachable): ambiguityNested stays empty');
+    assert(r.nested === null, 'step2(transport omitted, Google unreachable): nested stays null -- refuses');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 1h. D-BP151-032: TRANSPORT='google' EXPLICIT, GOOGLE ANSWERS -- gemmaExtract() STRUCTURES IT ─
+// Mocks ctx.askGoogle to return a real-shaped BrowserAuthorityRawExtraction (snippet + a citation),
+// and mocks global.fetch (gemmaExtract()'s own Ollama call, UNRELAXED extraction-only prompt) to
+// return the same declared JSON shape. Proves: (a) the Google passage is what reaches gemmaExtract
+// (mechanical -- the mocked fetch always returns the same fixed JSON regardless of prompt content,
+// so this does not re-assert gemmaExtract()'s own internals, only that THIS path reaches it and
+// uses its output), (b) citations flow from googleBlocks()'s `sources` onto the result, (c) the
+// negation flag and named terms are carried exactly as extracted, same shape as the gemma path.
+{
+  const originalFetch = global.fetch;
+  const mockResponse = {
+    terms: [
+      { term: 'densely populated', standardMeaning: 'people per square mile', alternativeMeaning: 'total absolute population count', impact: 'changes which region qualifies', isNegation: false },
+      { term: 'NOT', standardMeaning: 'exclusion from the top group', alternativeMeaning: 'a misread double negative', impact: 'flips the correct choice to its exact opposite', isNegation: true },
+    ],
+  };
+  (global as any).fetch = async () => ({ json: async () => ({ response: JSON.stringify(mockResponse) }) });
+  const googleCtx = {
+    askGoogle: async () => ({
+      snippet: 'In this question, "densely populated" standardly means people per square mile, but could be read as total absolute population; "NOT" excludes the top group but could be misread as a double negative. Source: example.com.',
+      sourceUrl: 'https://example.com/densely-populated',
+      authority: 'user_google' as const,
+      selectorUsed: 'answer_box',
+      citations: [{ url: 'https://example.com/densely-populated', label: 'Densely Populated Regions', category: 'example.com' }],
+    }),
+    emit: (_e: TerminalEvent) => {},
+  };
+  let r: Awaited<ReturnType<typeof founderStep2Survey>>;
+  try {
+    r = await founderStep2Survey(null, googleCtx as any, "Which of the following world regions is NOT considered one of the world's most densely populated regions?", 'google');
+    assert(r.ambiguity !== null, 'step2(google explicit, Google answers): ambiguity query was issued');
+    assert(r.ambiguity!.transport === 'google', 'step2(google explicit): transport recorded as google');
+    assert(r.ambiguity!.modelUnreachable === false, 'step2(google explicit, Google answers): modelUnreachable is false', JSON.stringify(r.ambiguity));
+    assert(r.ambiguity!.terms.length === 2, 'step2(google explicit): both terms extracted from the Google passage via gemmaExtract()');
+    assert(r.ambiguity!.citations.length === 1 && r.ambiguity!.citations[0] === 'https://example.com/densely-populated', 'step2(google explicit): the Google citation URL is captured, not thrown away', JSON.stringify(r.ambiguity!.citations));
+    assert(r.ambiguityNested.length === 2, 'step2(google explicit): every named term was surveyed, same as the gemma path');
+    assert(r.negationNamed === true, 'step2(google explicit): negationNamed true -- "NOT" flagged by the extraction, same contract as the gemma path');
+  } finally {
+    global.fetch = originalFetch;
+  }
 }
 
 // ── 2. STEP 3 REFUSES CLEANLY WITH NO OPTIONS ────────────────────────────────────────────────

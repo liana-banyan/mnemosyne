@@ -95,13 +95,56 @@
 // FounderStep2Result, and `askNegated` on the top-level SurveyStageResult, are true only when the
 // SOURCE flagged a term this way.
 //
-// NOT WIRED TO DEMAND. demand_test.ts's determineDemandFromSurveyedAsk() and its one call site
-// (liana_terminal_engine.ts, `surveyResult.step2.nested ? determineDemandFromSurveyedAsk(...) :
-// ...`) both still key off `step2.nested` alone -- unchanged by this ticket, and `step2.nested`
-// stays null on the ambiguity path by design (there is no single term to hand it; there are
-// several, in `ambiguityNested`). This ticket does not touch demand_test.ts or
-// liana_terminal_engine.ts -- see this ticket's return, "THINGS I NOTICED AND DID NOT DO", for
-// exactly what that means for qid 98's live abstain.
+// WIRED TO DEMAND, D-BP151-032. The above ("NOT WIRED TO DEMAND") was true for D-BP151-031 and is
+// NOT true anymore. `ambiguityNested` (this field, below) is now consumed by demand_test.ts's new
+// `determineDemandFromAmbiguityNested()` -- an ADAPTER that calls the existing
+// `determineDemandFromSurveyedAsk()` once per source-named term and never writes a second demand
+// derivation (see that function's own header, demand_test.ts, for exactly what "adapt" means and
+// the one case it refuses to resolve on its own). liana_terminal_engine.ts's demand ternary now
+// reads: `nested` -> determineDemandFromSurveyedAsk(nested); else `ambiguityNested.length` ->
+// determineDemandFromAmbiguityNested(ambiguityNested); else demand unknown. This file itself is
+// UNCHANGED by that wiring -- `ambiguityNested`'s shape was already exactly what the adapter
+// needed; nothing here was restructured for it.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP151-032 AMENDMENT -- GOOGLE IS THE DEFAULT TRANSPORT FOR THE AMBIGUITY QUERY, NOT GEMMA.
+//
+// ATTRIBUTED: Founder, BP151, verbatim, relayed as an addition to this ticket: "I want to always
+// run it on google, which should be the default that can be changed in Mnemosynec at will."
+//
+// `askAmbiguityViaModel()` (D-BP151-031) is renamed `askAmbiguity()` and now takes a `transport`
+// argument ('google' | 'gemma'). GOOGLE IS THE DEFAULT. The local model (the entire D-BP151-031
+// implementation, prompt and reasoning UNCHANGED) is the selectable deviation, resolved by
+// liana_terminal_engine.ts's `resolveAmbiguityQueryTransport()` -- same param+env-var `isXEnabled`
+// shape as `isContingencyOperatorSurveySpliceEnabled()`, polarity NOT flipped this time (Google
+// default matches the convention's usual "undefined = the shipped behavior" direction).
+//
+// WHY THIS DOES NOT RE-OPEN THE HARDWIRE-22 QUESTION D-BP151-031 ALREADY SETTLED. That ticket's
+// own header explains why gemmaExtract() could not answer the ambiguity query: there was no
+// PASSAGE, only the bare question, and asking a model to reason about a question with nothing to
+// extract from is exactly the judgment gemmaExtract()'s "report only what it states" wrapper was
+// measured to suppress -- so D-BP151-031 had the local model reason directly, a named, disclosed
+// relaxation (this file's HARDWIRE-23 section, item 3, below). Google changes what gets handed to
+// Gemma: `askGoogle(query)` returns a REAL passage (the Founder measured this himself, running the
+// query on Google by hand -- three named terms with standard meaning, alternative meaning, impact,
+// AND A CITATION, narrower on the local model's live run per D-BP151-031's own test 1f). Extracting
+// the same `{term, standardMeaning, alternativeMeaning, impact, isNegation}` shape OUT OF a real
+// Google passage is ordinary extraction -- `gemmaExtract()` answers it UNRELAXED, the same as every
+// other Survey element that reads a Google passage (elements/survey_ask.ts, elements/field_gate.ts,
+// methods/comparative_cascade.ts). The `transport === 'gemma'` branch below is untouched from
+// D-BP151-031 -- same prompt, same reasoning, still the one named relaxation this file already
+// disclosed; selectable, not removed.
+//
+// IF GOOGLE IS UNREACHABLE, THIS REFUSES -- it does NOT silently fall back to the local model.
+// ATTRIBUTED (Founder, relayed BP151 addendum): a silent transport swap would make two runs
+// incomparable with no visible signal, "the same defect class as the two eblet_index.jsonl files."
+// A fallback, if ever wanted, is a Founder decision this function may not invent.
+//
+// CITATIONS. `googleBlocks()`'s own `sources` (URLs Google returned alongside its answer) are kept
+// on `AmbiguityQueryResult.citations`, unscored -- "do not build BM scoring here; just do not throw
+// the source away" (Founder, relayed BP151 addendum). No Treasury-of-Sources/BM wiring is added by
+// this ticket.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -143,30 +186,39 @@
 //   ALSO WIRED: findAskCatalyst() (elements/catalyst_words.ts) -- DEAD before this file (only
 //             substitution_search.ts, itself dead, called it). WIRED HERE, FIRST LIVE CALLER, to
 //             derive the term steps 2 and 4 need from the raw question text.
-//   STEP 2's NO-TERM PATH (D-BP151-031) -> askAmbiguityViaModel() (this file, below) -- a NEW
-//             minimal function, same reasoning as groupViaModel() (step 3): there is no passage to
-//             extract this from, so gemmaExtract()'s extraction-only wrapper would suppress the
-//             answer the same way it was measured to for step 3's grouping call. Reuses the SAME
-//             local Ollama instance and model (OLLAMA_API_BASE, GROUPING_MODEL, already declared
-//             below for step 3) via its own prompt -- not a second transport. See its own
-//             ATTRIBUTED comment.
+//   STEP 2's NO-TERM PATH (D-BP151-031, transport default changed D-BP151-032) -> askAmbiguity()
+//             (this file, below; renamed from askAmbiguityViaModel() -- D-BP151-032, the name went
+//             wrong the moment Google became the default transport). GOOGLE (askGoogle, the SAME
+//             channel every other Survey element already uses) is the default source;
+//             gemmaExtract() (unrelaxed) structures what Google said. The LOCAL model reasoning
+//             directly (D-BP151-031's original implementation) is the selectable alternative, same
+//             reasoning as groupViaModel() (step 3): there is no passage to extract from on THAT
+//             path, so gemmaExtract()'s extraction-only wrapper would suppress the answer the same
+//             way it was measured to for step 3's grouping call. See askAmbiguity()'s own
+//             ATTRIBUTED comment for both transports and the file header's D-BP151-032 section
+//             above for why Google-as-source does not reopen the HARDWIRE-22 question.
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // HARDWIRE-23 (THE TARE RULE) -- HOW THIS FILE STAYS CLEAN.
 //
-// This file introduces exactly THREE decision/relaxation rules of its own (D-BP151-031 adds the
-// third to the two D-BP151-025 introduced), and all three are ATTRIBUTED at their own call site,
-// per Law 4 -- no other decision rule (threshold, cutoff, ratio, tie-break, word list) exists
-// anywhere in this file:
+// This file introduces exactly FOUR decision/relaxation/routing rules of its own (D-BP151-032
+// adds the fourth to the three D-BP151-025/031 introduced), and all four are ATTRIBUTED at their
+// own call site, per Law 4 -- no other decision rule (threshold, cutoff, ratio, tie-break, word
+// list) exists anywhere in this file:
 //   1. groupOptionsByPredicate()'s model call (step 3) -- HARDWIRE-22 relaxed, Founder-ordered,
 //      scoped to this one call only.
 //   2. founderStep6JarMethod()'s direction-driven elimination (step 6) -- mechanical, driven by a
 //      caller-declared query direction, never a word list or a model judgment.
-//   3. askAmbiguityViaModel()'s ambiguity query (step 2's no-term path, D-BP151-031) -- HARDWIRE-22
-//      relaxed a second time, Founder-ordered, scoped to this one call only. It PICKS NOTHING: the
-//      source names candidate ambiguous terms and, per term, whether it is a negation -- this
-//      function reports every one of them, unranked; founderStep2Survey() surveys all of them,
-//      inventing no selection rule among them.
+//   3. askAmbiguity()'s `transport === 'gemma'` branch (step 2's no-term path, D-BP151-031) --
+//      HARDWIRE-22 relaxed a second time, Founder-ordered, scoped to this one call only. It PICKS
+//      NOTHING: the source names candidate ambiguous terms and, per term, whether it is a
+//      negation -- this function reports every one of them, unranked; founderStep2Survey() surveys
+//      all of them, inventing no selection rule among them.
+//   4. askAmbiguity()'s transport default (D-BP151-032) -- Google unless the caller (ultimately
+//      liana_terminal_engine.ts's resolveAmbiguityQueryTransport()) selects 'gemma', ATTRIBUTED:
+//      Founder, relayed BP151 addendum, "I want to always run it on google, which should be the
+//      default that can be changed in Mnemosynec at will." Unreachable Google refuses; it never
+//      silently substitutes the other transport (that would itself be an unattributed tare).
 // Every OTHER phase still either (a) delegates entirely to an existing element and reports its
 // result unmodified, or (b) reports raw, unranked facts with no decision made here.
 //
@@ -181,7 +233,7 @@ import { surveyAskNested, type SurveyAskNestedResult } from './elements/survey_a
 import { surveyAnswers, type SurveyAnswersResult } from './elements/survey_answers';
 import { fieldGate, type FieldGateResult } from './elements/field_gate';
 import { findAskCatalyst } from './elements/catalyst_words';
-import { extractAssertedMentions, type AssertedMention, type GoogleBlock } from './methods/comparative_cascade';
+import { extractAssertedMentions, gemmaExtract, googleBlocks, type AssertedMention, type GoogleBlock } from './methods/comparative_cascade';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -191,10 +243,11 @@ function nowIso(): string {
  *  (`OLLAMA_API_BASE`, `MODEL` -- not exported, so this file cannot import them). Read here with
  *  the IDENTICAL env-var names and defaults, so the SAME local Ollama instance and the SAME model
  *  answer every call in this file that talks to it directly -- gemmaExtract()'s own calls (via
- *  survey_ask.ts/survey_answers.ts/comparative_cascade.ts), step 3's groupViaModel(), AND (D-BP151-
- *  031) step 2's askAmbiguityViaModel() -- a config convention, not a second system. See
- *  groupViaModel()'s and askAmbiguityViaModel()'s own headers for why each CALL ITSELF cannot
- *  reuse gemmaExtract(). */
+ *  survey_ask.ts/survey_answers.ts/comparative_cascade.ts, AND, D-BP151-032, askAmbiguity()'s
+ *  'google' branch, which structures Google's passage through the SAME gemmaExtract()), step 3's
+ *  groupViaModel(), AND step 2's askAmbiguity() 'gemma' branch (D-BP151-031) -- a config
+ *  convention, not a second system. See groupViaModel()'s and askAmbiguity()'s own headers for why
+ *  each RELAXED CALL ITSELF cannot reuse gemmaExtract(). */
 const OLLAMA_API_BASE = process.env.OLLAMA_API_BASE ?? 'http://127.0.0.1:11434';
 const GROUPING_MODEL = process.env.CASCADE_MODEL ?? 'gemma4:12b';
 
@@ -203,8 +256,8 @@ const GROUPING_MODEL = process.env.CASCADE_MODEL ?? 'gemma4:12b';
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /** D-BP151-031. One term the SOURCE named as potentially ambiguous, in answer to the Founder's
- *  own query (askAmbiguityViaModel()'s own ATTRIBUTED comment) -- every field copied from the
- *  model's response, never summarized. `isNegation` is likewise ASKED OF THE SOURCE per term,
+ *  own query (askAmbiguity()'s own ATTRIBUTED comment) -- every field copied from the
+ *  source's response, never summarized. `isNegation` is likewise ASKED OF THE SOURCE per term,
  *  never checked here against a hardcoded word list (HARDWIRE-23 -- a word list here would be
  *  exactly the tare this file's own rule forbids). */
 export interface AmbiguityTermFinding {
@@ -215,27 +268,38 @@ export interface AmbiguityTermFinding {
   isNegation: boolean;
 }
 
-/** D-BP151-031. The full result of issuing the Founder's ambiguity query once. `terms` is
- *  deliberately UNRANKED -- see askAmbiguityViaModel()'s own header for why nothing here picks
- *  one. */
+/** D-BP151-031, extended D-BP151-032. The full result of issuing the Founder's ambiguity query
+ *  once. `terms` is deliberately UNRANKED -- see askAmbiguity()'s own header for why nothing here
+ *  picks one. */
 export interface AmbiguityQueryResult {
-  /** The Founder's own query text actually sent (verbatim; see askAmbiguityViaModel()). */
+  /** The Founder's own query text actually sent (verbatim; see askAmbiguity()). */
   askedText: string;
   terms: AmbiguityTermFinding[];
-  /** True exactly when the model call itself produced nothing (unreachable/failed/unparseable) --
-   *  distinguishes "no live model, not run" from "model ran and named nothing". */
+  /** True exactly when the query itself produced nothing (transport unreachable/failed/
+   *  unparseable) -- distinguishes "no live source, not run" from "source ran and named nothing".
+   *  Name kept from D-BP151-031 (was 'local model'-specific then); now covers either transport,
+   *  see `transport` below for which one actually answered. */
   modelUnreachable: boolean;
+  /** D-BP151-032. Which transport actually answered THIS call -- 'google' (the Founder-ordered
+   *  default) or 'gemma' (the selectable local alternative). Law 5 (HARDWIRE-23): the receipt
+   *  must name which transport produced the finding. */
+  transport: 'google' | 'gemma';
+  /** D-BP151-032. Source URL(s) `googleBlocks()` returned alongside its answer (its own `sources`
+   *  field, unmodified), kept so a later ticket can feed the Treasury of Sources / source-BM
+   *  scoring -- this ticket does not score them ("do not build BM scoring here; just do not throw
+   *  the source away", Founder, relayed BP151 addendum). Always empty on the 'gemma' transport (no
+   *  web source exists on that path). */
+  citations: string[];
   why: string;
 }
 
 export interface FounderStep2Result {
   term: string | null;
   /** Present only when `term` was derived -- surveyAskNested()'s own result (elements/
-   *  survey_ask.ts), UNMODIFIED. Ready for a future ticket to feed directly into
-   *  determineDemandFromSurveyedAsk() (demand_test.ts) -- not wired here, see this ticket's
-   *  return, "THINGS I NOTICED AND DID NOT DO". */
+   *  survey_ask.ts), UNMODIFIED. Consumed directly by determineDemandFromSurveyedAsk()
+   *  (demand_test.ts) at liana_terminal_engine.ts's call site (D-BP151-032 wires this). */
   nested: SurveyAskNestedResult | null;
-  /** D-BP151-031. Present only on the NO-TERM path -- askAmbiguityViaModel()'s raw result, issued
+  /** D-BP151-031. Present only on the NO-TERM path -- askAmbiguity()'s raw result, issued
    *  instead of guessing a term. Null on the existing quoted/cued-term path (additive, unchanged
    *  behavior there). */
   ambiguity: AmbiguityQueryResult | null;
@@ -249,31 +313,72 @@ export interface FounderStep2Result {
   why: string;
 }
 
+/** Shared parser for the ambiguity query's JSON term list, used by BOTH transports below (google's
+ *  gemmaExtract() output and gemma's own direct-reasoning output are the SAME declared shape) --
+ *  one parsing routine, not two, so a shape change only has to be made once. Not a demand/decision
+ *  rule of any kind (HARDWIRE-23's own carve-out: "mechanical implementation choices with no
+ *  effect on which answer comes out"): this only reshapes already-decided model/source output into
+ *  `AmbiguityTermFinding[]`, dropping only entries with no `term` at all. */
+function parseAmbiguityTerms(raw: unknown): AmbiguityTermFinding[] {
+  const rawTerms = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+  const terms: AmbiguityTermFinding[] = [];
+  for (const rt of rawTerms) {
+    const term = typeof rt?.term === 'string' ? rt.term.trim() : '';
+    if (!term) continue;
+    terms.push({
+      term,
+      standardMeaning: typeof rt?.standardMeaning === 'string' ? rt.standardMeaning.trim() : '',
+      alternativeMeaning: typeof rt?.alternativeMeaning === 'string' ? rt.alternativeMeaning.trim() : '',
+      impact: typeof rt?.impact === 'string' ? rt.impact.trim() : '',
+      isNegation: rt?.isNegation === true,
+    });
+  }
+  return terms;
+}
+
 /**
- * D-BP151-031. ATTRIBUTED: Founder, BP151, verbatim: "what words or phrases in this question
- * could be understood with a different meaning that would fundamentally change the meaning of
- * what is being asked?" -- his own fix for SURVEY STEP 2's no-term path, run by hand, worked first
- * try. See this file's own header, "D-BP151-031 AMENDMENT", for the measured failure this closes
- * (qid 98, LIANA_RUN_qid98_2026-08-09T22-37-19-658Z.json, transcript line 75).
+ * D-BP151-031, transport split D-BP151-032. ATTRIBUTED: Founder, BP151, verbatim: "what words or
+ * phrases in this question could be understood with a different meaning that would fundamentally
+ * change the meaning of what is being asked?" -- his own fix for SURVEY STEP 2's no-term path, run
+ * by hand, worked first try. See this file's own header, "D-BP151-031 AMENDMENT", for the measured
+ * failure this closes (qid 98, LIANA_RUN_qid98_2026-08-09T22-37-19-658Z.json, transcript line 75).
  *
- * WHY THE LOCAL MODEL, NOT gemmaExtract(): there is no fixed passage to extract this from -- the
- * question text itself is what is being reasoned about, exactly the shape of judgment
- * gemmaExtract()'s own wrapper ("report only what it states... never guess") was MEASURED (this
- * ticket's own predecessor, D-BP151-025, groupViaModel()'s header) to suppress. This reuses the
- * SAME relaxation groupOptionsByPredicate() already established for step 3 -- same local Ollama
- * instance (OLLAMA_API_BASE), same model (GROUPING_MODEL) -- via its own minimal, unwrapped
- * prompt. HARDWIRE-22 stays relaxed for exactly this named call site and step 3's, nowhere else
- * (see this file's header, HARDWIRE-23 section).
+ * `transport` SELECTS THE SOURCE. ATTRIBUTED (D-BP151-032): Founder, relayed BP151 addendum, "I
+ * want to always run it on google, which should be the default that can be changed in Mnemosynec
+ * at will." Resolved upstream by liana_terminal_engine.ts's resolveAmbiguityQueryTransport() and
+ * threaded through founderStep2Survey() -> here; this function does not itself default anything
+ * beyond its own parameter's declared default (kept only so a DIRECT unit-test call needs no
+ * fourth argument -- callers reachable from the terminal always pass an explicit, resolved value).
  *
- * THE SOURCE NAMES THE TERMS; THIS FUNCTION PICKS NONE OF THEM. Every term the model returns is
- * reported verbatim (standard meaning, alternative meaning, impact); founderStep2Survey() decides
- * how many to survey next (all of them, source order -- see its own comment), never this function.
- * `isNegation` is asked OF THE MODEL per term, not matched against a word list here.
+ * 'google' (the default): issues the SAME injected `askGoogle` channel every other Survey element
+ * already uses, via `googleBlocks()` (methods/comparative_cascade.ts, already wired elsewhere in
+ * this file's own header table) -- NOT a new transport. Google supplies a REAL passage; that
+ * passage is then structured into `AmbiguityTermFinding[]` by `gemmaExtract()` UNRELAXED
+ * (HARDWIRE-22 untouched on this branch -- see the file header's D-BP151-032 section for why this
+ * is ordinary extraction, not the reasoning-with-no-passage judgment call the 'gemma' branch
+ * below still is). Google being unreachable REFUSES; it never silently falls back to 'gemma'.
+ *
+ * 'gemma' (the selectable alternative, D-BP151-031's ORIGINAL implementation, UNCHANGED): there is
+ * no fixed passage to extract this from -- the question text itself is what is being reasoned
+ * about, exactly the shape of judgment gemmaExtract()'s own wrapper ("report only what it
+ * states... never guess") was MEASURED (D-BP151-025, groupViaModel()'s header) to suppress. This
+ * reuses the SAME relaxation groupOptionsByPredicate() already established for step 3 -- same
+ * local Ollama instance (OLLAMA_API_BASE), same model (GROUPING_MODEL) -- via its own minimal,
+ * unwrapped prompt. HARDWIRE-22 stays relaxed for exactly this named call site and step 3's,
+ * nowhere else (see this file's header, HARDWIRE-23 section).
+ *
+ * THE SOURCE NAMES THE TERMS; THIS FUNCTION PICKS NONE OF THEM, on EITHER transport. Every term
+ * the source returns is reported verbatim (standard meaning, alternative meaning, impact);
+ * founderStep2Survey() decides how many to survey next (all of them, source order -- see its own
+ * comment), never this function. `isNegation` is asked OF THE SOURCE per term, not matched against
+ * a word list here.
  */
-async function askAmbiguityViaModel(askText: string): Promise<AmbiguityQueryResult> {
+async function askAmbiguity(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<AmbiguityQueryResult> {
   const askedText = 'what words or phrases in this question could be understood with a different '
     + 'meaning that would fundamentally change the meaning of what is being asked?';
-  const prompt = `You are analyzing a multiple-choice question for ambiguous words or phrases, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
+
+  if (transport === 'gemma') {
+    const prompt = `You are analyzing a multiple-choice question for ambiguous words or phrases, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
 
 QUESTION:
 ${askText}
@@ -285,44 +390,73 @@ For each word or phrase you name, give its standard/expected meaning in this que
 Return ONLY JSON in this shape, no prose, no fence:
 {"terms":[{"term":"the exact word or phrase named","standardMeaning":"...","alternativeMeaning":"...","impact":"...","isNegation":true}]}
 If nothing in the question could reasonably be understood differently, return {"terms":[]}. Do not guess an answer to the underlying question itself -- name ambiguous terms only.`;
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60_000);
-    const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: GROUPING_MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 768 } }),
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timeout));
-    const j = (await res.json()) as { response?: string };
-    const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-    const parsed = JSON.parse(t) as { terms?: unknown };
-    const rawTerms = Array.isArray(parsed.terms) ? (parsed.terms as Array<Record<string, unknown>>) : [];
-    const terms: AmbiguityTermFinding[] = [];
-    for (const rt of rawTerms) {
-      const term = typeof rt?.term === 'string' ? rt.term.trim() : '';
-      if (!term) continue;
-      terms.push({
-        term,
-        standardMeaning: typeof rt?.standardMeaning === 'string' ? rt.standardMeaning.trim() : '',
-        alternativeMeaning: typeof rt?.alternativeMeaning === 'string' ? rt.alternativeMeaning.trim() : '',
-        impact: typeof rt?.impact === 'string' ? rt.impact.trim() : '',
-        isNegation: rt?.isNegation === true,
-      });
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60_000);
+      const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: GROUPING_MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 768 } }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+      const j = (await res.json()) as { response?: string };
+      const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+      const parsed = JSON.parse(t) as { terms?: unknown };
+      const terms = parseAmbiguityTerms(parsed.terms);
+      const why = terms.length
+        ? `${terms.length} term(s) named by the local model (gemma, selected transport) as potentially `
+          + 'ambiguous, each reported verbatim (standard meaning, alternative meaning, impact) -- the '
+          + 'source names, this function picks none'
+        : 'the local model ran and named nothing usable -- an honest empty result, not a fabrication';
+      return { askedText, terms, modelUnreachable: false, transport: 'gemma', citations: [], why };
+    } catch {
+      return {
+        askedText,
+        terms: [],
+        modelUnreachable: true,
+        transport: 'gemma',
+        citations: [],
+        why: 'the local model call for the ambiguity query returned nothing (unreachable or failed) -- an honest empty result, not a fabrication',
+      };
     }
-    const why = terms.length
-      ? `${terms.length} term(s) named by the source as potentially ambiguous, each reported verbatim `
-        + '(standard meaning, alternative meaning, impact) -- the source names, this function picks none'
-      : 'the model ran and named nothing usable -- an honest empty result, not a fabrication';
-    return { askedText, terms, modelUnreachable: false, why };
-  } catch {
+  }
+
+  // transport === 'google' (the Founder-ordered default). Google is the SOURCE; gemmaExtract()
+  // (unrelaxed) STRUCTURES what Google actually said; this function decides nothing about which
+  // terms matter. Same sentence as the 'gemma' branch, templated only with the question text
+  // (FD-BP151-08) -- sent as a single Google query, not a JSON-forcing prompt (Google is a search
+  // surface, not a constrained API).
+  const query = `${askText}\n\n${askedText}`;
+  const google = await googleBlocks(ctx.askGoogle, query);
+  if (!google.ok || !google.text.trim()) {
     return {
       askedText,
       terms: [],
       modelUnreachable: true,
-      why: 'the model call for the ambiguity query returned nothing (unreachable or failed) -- an honest empty result, not a fabrication',
+      transport: 'google',
+      citations: [],
+      why: `Google was unreachable for the ambiguity query (${google.via}) -- refusing rather than `
+        + 'silently falling back to the local model (ATTRIBUTED, Founder, relayed BP151 addendum: a '
+        + 'silent transport swap would make two runs incomparable with no visible signal); an honest '
+        + 'empty result, not a fabrication',
     };
   }
+  const instruction = 'List every word or phrase the passage names as something that could be understood '
+    + 'with a different meaning that would fundamentally change the meaning of what is being asked. For '
+    + 'each, report its standard meaning, an alternative meaning, and the impact of that alternative '
+    + 'meaning, exactly as the passage states them. Also report, per term, whether the passage states it '
+    + 'functions as a negation, exclusion, or restriction word (such as "not", "except", "least") whose '
+    + 'presence or absence would flip which option is correct.';
+  const shape = '{"terms":[{"term":"the exact word or phrase named","standardMeaning":"...","alternativeMeaning":"...","impact":"...","isNegation":true}]}';
+  const ex = await gemmaExtract(instruction, google.text, shape);
+  const terms = parseAmbiguityTerms((ex as { terms?: unknown } | null)?.terms);
+  const why = terms.length
+    ? `${terms.length} term(s) named by Google's own answer (${google.via}) as potentially ambiguous, `
+      + 'extracted verbatim by gemmaExtract() (extraction only, HARDWIRE-22 unrelaxed) -- the source '
+      + 'names, this function picks none'
+    : `Google answered (${google.via}) but nothing usable could be extracted from it -- an honest empty `
+      + 'result, not a fabrication';
+  return { askedText, terms, modelUnreachable: false, transport: 'google', citations: google.sources, why };
 }
 
 /**
@@ -338,15 +472,21 @@ If nothing in the question could reasonably be understood differently, return {"
  *
  * D-BP151-031 AMENDMENT, ADDITIVE ONLY: when `term` is null, this function no longer only
  * refuses. `askText` (the raw question, passed by runSurveyStage() below) is handed to
- * askAmbiguityViaModel() -- the Founder's own ambiguity query (that function's own ATTRIBUTED
+ * askAmbiguity() -- the Founder's own ambiguity query (that function's own ATTRIBUTED
  * comment) -- INSTEAD of guessing a term. THE SOURCE NAMES THE TERMS; every term it names is
  * surveyed here via the SAME surveyAskNested() the quoted/cued path already uses, in the order the
  * source returned them (no ranking or selection rule was invented -- surveying every named term,
  * source order, needs none). If `askText` is empty/omitted, or the ambiguity query itself returns
  * nothing usable, this function still refuses exactly as it did before this ticket -- refusing
  * beats guessing, unchanged.
+ *
+ * `ambiguityQueryTransport` (D-BP151-032, ADDITIVE): threaded straight to askAmbiguity() -- see
+ * its own header for what each value does. Default 'google' exists only so this function is
+ * callable with three arguments in a direct unit test; every reachable-from-the-terminal caller
+ * (runSurveyStage() below) passes the ALREADY-RESOLVED value from
+ * liana_terminal_engine.ts's resolveAmbiguityQueryTransport().
  */
-export async function founderStep2Survey(term: string | null, ctx: MethodRunContext, askText?: string): Promise<FounderStep2Result> {
+export async function founderStep2Survey(term: string | null, ctx: MethodRunContext, askText?: string, ambiguityQueryTransport: 'google' | 'gemma' = 'google'): Promise<FounderStep2Result> {
   const { emit } = ctx;
   emit({
     kind: 'stage',
@@ -364,17 +504,23 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
 
     // D-BP151-031. ATTRIBUTED: Founder, BP151, verbatim: "what words or phrases in this question
     // could be understood with a different meaning that would fundamentally change the meaning of
-    // what is being asked?" -- issued instead of guessing a term. See askAmbiguityViaModel()'s own
+    // what is being asked?" -- issued instead of guessing a term. See askAmbiguity()'s own
     // header for the full ruling and why the local model, not gemmaExtract(), answers it.
     emit({
       kind: 'note',
-      text: '   no quoted/cued term -- issuing the Founder\'s ambiguity query instead of guessing one '
-        + '(ATTRIBUTED: Founder, BP151, verbatim: "what words or phrases in this question could be understood '
-        + 'with a different meaning that would fundamentally change the meaning of what is being asked?")',
+      text: `   no quoted/cued term -- issuing the Founder's ambiguity query instead of guessing one, `
+        + `via ${ambiguityQueryTransport.toUpperCase()} (ATTRIBUTED: Founder, BP151, verbatim: "what words or `
+        + 'phrases in this question could be understood with a different meaning that would fundamentally '
+        + 'change the meaning of what is being asked?"; transport ATTRIBUTED: Founder, relayed BP151 addendum, '
+        + '"I want to always run it on google, which should be the default that can be changed in Mnemosynec '
+        + 'at will.")',
       ts: nowIso(),
     });
-    const ambiguity = await askAmbiguityViaModel(askText);
-    emit({ kind: 'note', text: `   ${ambiguity.why}`, ts: nowIso() });
+    const ambiguity = await askAmbiguity(askText, ctx, ambiguityQueryTransport);
+    emit({ kind: 'note', text: `   [transport: ${ambiguity.transport.toUpperCase()}] ${ambiguity.why}`, ts: nowIso() });
+    if (ambiguity.citations.length) {
+      emit({ kind: 'note', text: `   citation(s) from Google: ${ambiguity.citations.join(', ')}`, ts: nowIso() });
+    }
 
     if (!ambiguity.terms.length) {
       const why = `${whyNoTerm}; ambiguity query issued but returned nothing usable (${ambiguity.why}) -- `
@@ -403,13 +549,14 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
         ts: nowIso(),
       });
     }
-    const why = 'no quoted/cued term -- issued the Founder\'s ambiguity query instead; '
+    const why = `no quoted/cued term -- issued the Founder's ambiguity query instead, via ${ambiguity.transport.toUpperCase()}; `
       + `${ambiguity.terms.length} term(s) named by the source ("${ambiguity.terms.map((t) => t.term).join('", "')}"), `
       + `all surveyed (source order, no ranking rule invented)${negationNamed ? '; NEGATION NAMED by the source' : ''}`;
     emit({
       kind: 'result',
-      text: `SURVEY STEP 2: no quoted/cued term -- ${ambiguity.terms.length} term(s) named by the ambiguity query, `
-        + `${ambiguityNested.length} surveyed${negationNamed ? ', negation named' : ''}`,
+      text: `SURVEY STEP 2: no quoted/cued term -- ${ambiguity.terms.length} term(s) named by the ambiguity `
+        + `query [transport: ${ambiguity.transport.toUpperCase()}], ${ambiguityNested.length} surveyed`
+        + `${negationNamed ? ', negation named' : ''}`,
       ts: nowIso(),
     });
     return { term: null, nested: null, ambiguity, ambiguityNested, negationNamed, why };
@@ -877,6 +1024,12 @@ export interface SurveyStageOpts {
   /** Passthrough to founderStep3CategorizeOptions()'s own cost bound -- see that parameter's own
    *  comment. Not a decision rule; unset leaves survey_answers.ts's own default (1) unchanged. */
   maxCatalystWordsPerOption?: number;
+  /** D-BP151-032. Passthrough to founderStep2Survey()'s ambiguity-query transport, ALREADY
+   *  RESOLVED by the caller (liana_terminal_engine.ts's resolveAmbiguityQueryTransport()) --
+   *  ATTRIBUTED, Founder, relayed BP151 addendum: "I want to always run it on google, which should
+   *  be the default that can be changed in Mnemosynec at will." Omitted = founderStep2Survey()'s
+   *  own default ('google') applies, matching that Founder-ordered polarity. */
+  ambiguityQueryTransport?: 'google' | 'gemma';
 }
 
 /**
@@ -924,7 +1077,7 @@ export async function runSurveyStage(
 
   // D-BP151-031: askText is now passed through so step 2's no-term path can issue the Founder's
   // ambiguity query instead of only refusing. See founderStep2Survey()'s own comment.
-  const step2 = await founderStep2Survey(term, ctx, askText);
+  const step2 = await founderStep2Survey(term, ctx, askText, opts.ambiguityQueryTransport);
   const step3 = await founderStep3CategorizeOptions(options, ctx, opts.sharedFrame, opts.maxCatalystWordsPerOption);
   const step4 = await founderStep4DetermineRegister(term, askText, options, ctx);
   const step6 = await founderStep6JarMethod(opts.jarSourceGroups ?? [], options, ctx);

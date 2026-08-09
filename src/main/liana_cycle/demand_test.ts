@@ -263,3 +263,90 @@ export function determineDemandFromSurveyedAsk(nested: SurveyAskNestedResult): D
     derivedFrom: 'surveyed-ask',
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP151-032 -- THE AMBIGUITY PATH'S ADAPTER. REUSES determineDemandFromSurveyedAsk() ABOVE. IT
+// IS NOT A SECOND DEMAND DERIVATION.
+//
+// THE MEASURED FAILURE THIS CLOSES. survey_stage.ts's D-BP151-031 amendment gave Step 2's no-term
+// path a way to produce a demand-shaped result even without a single quoted/cued term: when the
+// source names one or more ambiguous terms (FounderStep2Result.ambiguityNested, survey_stage.ts),
+// EACH is surveyed via the same surveyAskNested() the quoted/cued path already uses -- but nothing
+// consumed that array. liana_terminal_engine.ts's one call site
+// (`surveyResult.step2.nested ? determineDemandFromSurveyedAsk(...) : ...`) keyed off `step2.nested`
+// alone, which stays null on the ambiguity path BY DESIGN (there is no single term to hand it --
+// there can be several). qid 98 names no quoted/cued term, so it always took the null branch and
+// abstained with `error: "demand_unknown"` even after D-BP151-031 landed. See that ticket's own
+// return, "THINGS I NOTICED AND DID NOT DO", item 1, for the same finding stated at landing time.
+//
+// WHAT THIS FUNCTION ADAPTS, EXACTLY. `ambiguityNested` is `Array<{term, nested}>` --
+// determineDemandFromSurveyedAsk()'s declared parameter type is a single `SurveyAskNestedResult`.
+// Each `ambiguityNested[i].nested` already IS that exact type (surveyAskNested()'s own return
+// value, unmodified -- see survey_stage.ts's own doc comment on the field). So the only adaptation
+// needed is ITERATION: call the existing function once per named term's nested result. No demand
+// logic (no cue table, no denotation reading, no kind-checking) is written in this function --
+// every actual demand judgment still happens exactly once, inside determineDemandFromSurveyedAsk().
+//
+// THE ONE DECISION THIS FUNCTION DOES MAKE, AND WHY IT IS NOT A TARE. When more than one term is
+// named, their surveyed asks can each independently produce a demand, and those demands can
+// DISAGREE. HARDWIRE-23 Law 1 names a tie-break or priority list among competing signals as
+// exactly the shape of unordered rule that is forbidden -- no Founder order picks a "most
+// important" ambiguity-named term, and inventing one here (first-named wins, longest-denotation
+// wins, any of it) would be exactly that tare. So this function makes NO CHOICE among competing
+// demands: it accepts a result only when every term that produced ANY demand agrees on the SAME
+// one (vacuously true when there is only one non-null result, which is what qid 98's live run
+// measured -- D-BP151-031 test 1f named exactly one term). On disagreement, or when nothing usable
+// came back from any term, it reports UNKNOWN -- canon R-5's own "refuse rather than guess" rule
+// applied to more than one candidate instead of one, never inferred as a new rule of its own. See
+// this ticket's return, "ANY FORK YOU STOPPED ON", for the open question this leaves for the
+// Founder if disagreement is ever actually measured on live data.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+export function determineDemandFromAmbiguityNested(
+  ambiguityNested: Array<{ term: string; nested: SurveyAskNestedResult }>,
+): DemandResult {
+  if (!ambiguityNested.length) {
+    return {
+      demand: null,
+      why: 'the surveyed ask\'s ambiguity path named no terms to survey -- nothing to derive a demand from',
+      derivedFrom: 'surveyed-ask',
+    };
+  }
+
+  // Reuse only. determineDemandFromSurveyedAsk() is called unmodified, once per named term.
+  const perTerm = ambiguityNested.map((e) => ({ term: e.term, result: determineDemandFromSurveyedAsk(e.nested) }));
+  const withDemand = perTerm.filter((p) => p.result.demand !== null);
+
+  if (!withDemand.length) {
+    return {
+      demand: null,
+      why: `ambiguity path named ${ambiguityNested.length} term(s) `
+        + `(${ambiguityNested.map((e) => `"${e.term}"`).join(', ')}); each was run through `
+        + 'determineDemandFromSurveyedAsk() unmodified and none produced a determinable demand -- '
+        + 'this is a teaching prompt (canon R-5), not a fabricated guess',
+      derivedFrom: 'surveyed-ask',
+    };
+  }
+
+  const distinctDemands = new Set(withDemand.map((p) => p.result.demand));
+  if (distinctDemands.size > 1) {
+    return {
+      demand: null,
+      why: `ambiguity path named ${ambiguityNested.length} term(s); ${withDemand.length} of them produced a `
+        + `demand via determineDemandFromSurveyedAsk() and they DISAGREE `
+        + `(${withDemand.map((p) => `"${p.term}" -> ${p.result.demand}`).join('; ')}) -- no priority rule among `
+        + 'ambiguity-named terms has been ordered (HARDWIRE-23 Law 1), so this reports UNKNOWN rather than '
+        + 'picking a winner; see this ticket\'s return for the open fork',
+      derivedFrom: 'surveyed-ask',
+    };
+  }
+
+  const winner = withDemand[0];
+  return {
+    demand: winner.result.demand,
+    why: `ambiguity path named ${ambiguityNested.length} term(s) `
+      + `(${ambiguityNested.map((e) => `"${e.term}"`).join(', ')}); ${withDemand.length} of them produced a `
+      + `demand via determineDemandFromSurveyedAsk() ${withDemand.length > 1 ? 'and they agree' : '(the only one that did)'} `
+      + `-- "${winner.term}" -> ${winner.result.demand}: ${winner.result.why}`,
+    derivedFrom: 'surveyed-ask',
+  };
+}
