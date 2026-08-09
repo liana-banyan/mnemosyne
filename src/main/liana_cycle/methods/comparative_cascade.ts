@@ -84,20 +84,66 @@ export function toLetters(items: unknown[] | undefined, OPT: Record<string, stri
 }
 
 const SQMI_PER_SQKM = 2.589988;
-/** Unit normalization, in code, never asked of the model -- ported verbatim from
- *  qid98_his_words.mjs's toPerSqKm(). Covers the measured case (per sq mile vs per sq km);
- *  a property whose unit is neither passes through unchanged, clearly marked "assumed". */
-function toPerSqKm(value: number, unit?: string): { value: number; unit: string; assumed: boolean } {
-  const u = norm(unit);
-  if (!u) return { value, unit: 'as given (no unit stated, assumed unconverted)', assumed: true };
-  if (/(sq|square)\s*(mi|mile|miles)/.test(u) || /mi2/.test(u)) {
-    return { value: value / SQMI_PER_SQKM, unit: 'per km2 (converted from per sq mi)', assumed: false };
-  }
-  if (/(sq|square)\s*(km|kilometer|kilometre|kilometers|kilometres)/.test(u) || /km2/.test(u)) {
-    return { value, unit: 'per km2', assumed: false };
-  }
-  return { value, unit: `as given (unit "${unit}" not a recognized area rate, assumed unconverted)`, assumed: true };
+const CALENDAR_YEAR_MIN = 1000;
+const CALENDAR_YEAR_MAX = 2100;
+
+/** Folds the superscript "²" (U+00B2) to ascii "2" before the shared norm() strips every
+ *  non-alphanumeric character -- norm() alone drops U+00B2 with nothing left in its place, which
+ *  silently turned "per km²" into "per km" and made the unit unrecognizable (a prior session
+ *  logged this exact miss; FIX 2, D-BP151-013, ticket instruction: "handle it"). Scoped to this
+ *  one check -- norm() itself stays byte-identical for the option-text/sentence matching every
+ *  other call site in this file depends on. */
+function normUnitText(s: unknown): string {
+  return norm(String(s == null ? '' : s).replace(/\u00b2/g, '2'));
 }
+
+/** FIX 2 (D-BP151-013, "a quantity must prove it is the right kind of quantity"), TIGHTENED per
+ *  the Founder's read of scripts/register_gate.mjs-era transcript
+ *  (C:\Users\Administrator\Downloads\LianaCyleActualReasoningQid98.md, lines 269 and 280): the
+ *  OLD toPerSqKm() already detected that "to 2022" and "none" are not recognized area-rate units
+ *  -- it said so in its own returned string ("not a recognized area rate, assumed unconverted")
+ *  -- and then used the bare year anyway. THAT assumed-unconverted passthrough was the fail-open,
+ *  not a missing check. This version keeps the exact same unit-recognition test (sq mi / sq km /
+ *  km2, now also tolerant of a space or the folded superscript before the trailing digit -- "km
+ *  2", "km²" -- and, per FIX 2's second finding this pass, requires a RATE marker ("per", "/",
+ *  "each") next to the area unit so a bare AREA figure sharing the same "km2" suffix -- e.g. a
+ *  region's total 469,630 km2 -- cannot be mistaken for a density just because the digits after
+ *  "km" match) but returns an HONEST NULL instead of a passthrough whenever that test fails.
+ *  A bare 4-digit integer with no recognized unit that also falls in a plausible-calendar-year
+ *  range (1000-2100) gets a more specific rejection reason naming that -- but this is a NAMED
+ *  ILLUSTRATION of the general rule, never a second, looser gate: a genuinely rate-carrying value
+ *  in that same numeric range is accepted exactly like any other, magnitude alone is never by
+ *  itself a rejection reason. */
+// Exported (was module-private) so this ticket's unit tests (comparative_cascade.test.ts) can
+// call it directly against the exact literal strings from the qid 98 receipt, same convention as
+// this file's other exported pure helpers (norm, appearsIn, toLetters) -- zero behavior change.
+export function toPerSqKm(
+  value: number,
+  unit: string | undefined,
+  context: string,
+): { ok: true; value: number; unit: string } | { ok: false; reason: string } {
+  const hay = `${normUnitText(unit)} ${normUnitText(context)}`;
+  const RATE_MARKER_RE = /\b(per|each)\b/;
+  const hasRateMarker = RATE_MARKER_RE.test(hay) || /\//.test(`${unit ?? ''} ${context ?? ''}`);
+  if (hasRateMarker && (/(sq|square)\s*(mi|mile|miles)/.test(hay) || /mi\s*2/.test(hay))) {
+    return { ok: true, value: value / SQMI_PER_SQKM, unit: 'per km2 (converted from per sq mi)' };
+  }
+  if (hasRateMarker && (/(sq|square)\s*(km|kilometer|kilometre|kilometers|kilometres)/.test(hay) || /km\s*2/.test(hay))) {
+    return { ok: true, value, unit: 'per km2' };
+  }
+  if (Number.isInteger(value) && value >= CALENDAR_YEAR_MIN && value <= CALENDAR_YEAR_MAX) {
+    return {
+      ok: false,
+      reason: `no recognized area-RATE unit anywhere in the unit field or surrounding text, and the bare integer ${value} falls in the plausible-calendar-year range (${CALENDAR_YEAR_MIN}-${CALENDAR_YEAR_MAX}) -- rejected rather than guessed as a density`,
+    };
+  }
+  return {
+    ok: false,
+    reason: `no recognized area-RATE unit ("${unit || 'none stated'}") anywhere in the unit field or surrounding text -- rejected rather than assumed`,
+  };
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ─────────────────────────── shared stages 0/1/2 (D-BP149-043, METHOD 2 reuse) ───────────────────────────
 // definitional_cascade.ts (METHOD 2) reuses these three exports verbatim for its own "stages 0,
@@ -108,11 +154,34 @@ function toPerSqKm(value: number, unit?: string): { value: number; unit: string;
 // same outputs, same printed transcript text. qid 98 was re-verified live after this extraction
 // (see this ticket's return) to confirm the answer is still A.
 
+/** FIX 1 (D-BP151-013): thrown when stage 0 (the register gate) cannot execute after bounded
+ *  retries -- see runStage0RegisterGate() below. This estate forbids a gate that cannot run from
+ *  failing open; every caller of runStage0RegisterGate() must catch this and ABSTAIN rather than
+ *  produce a verdict from an unvetted pool. Its own class (same idiom as audible.ts's
+ *  AudibleAbandoned) so a caller can tell "stage 0 never ran" apart from any other exception
+ *  without parsing a message string. */
+export class RegisterGateUnavailableError extends Error {}
+
+// Same bounded-retry idiom as googleBlocks() below (tries=3, i*4000ms settling delay between
+// attempts) -- FIX 1 applies it to the register gate call itself. The qid 98 receipt shows this
+// call failing with a bare "fetch failed" (register_gate.mjs's pickTarget() dials the CDP port
+// via a plain fetch -- see register_gate_loader.ts's own doc comment for why that dial can be a
+// transient main-process timing issue, not a permanent one), so a bounded retry with a settling
+// delay is the honest thing to try before concluding the gate truly cannot run.
+const REGISTER_GATE_RETRY_TRIES = 3;
+
 /** STAGE 0, register gate. Shared, not reproduced -- see this file's own header ("Google is the
  *  only source ... Gemma extracts only ... Unit normalization happens in code") and
  *  register_gate_loader.ts's doc comment for the two runtime shims that make importing
  *  scripts/register_gate.mjs work inside Electron's main process. `pool` in, filtered pool out;
- *  every line this prints is identical to what this stage always printed inline. */
+ *  every line this prints on a SUCCESSFUL run is identical to what this stage always printed
+ *  inline. FIX 1 (D-BP151-013): a transient failure is now retried up to
+ *  REGISTER_GATE_RETRY_TRIES times with a settling delay before it is treated as real; if it
+ *  still cannot run, this THROWS RegisterGateUnavailableError instead of returning the pool
+ *  unfiltered -- the old catch-and-continue-with-the-full-pool behavior was the gate-fails-open
+ *  defect that let three category errors (Arctic Circle, Amazon Rainforest, Sahara Desert -- the
+ *  BP149 register gate's own removals) survive into the qid 98 terminator. Callers MUST catch
+ *  RegisterGateUnavailableError and abstain; it must never propagate into a verdict. */
 export async function runStage0RegisterGate(
   OPT: Record<string, string>,
   pool: string[],
@@ -124,25 +193,39 @@ export async function runStage0RegisterGate(
   const fact = (text: string) => emit({ kind: 'fact', text: `+ ${text}`, ts: nowIso() });
 
   step('STAGE 0  register gate -- is each option a member of the category at all?');
-  let next = [...pool];
-  try {
-    const regMod = await loadRegisterGate();
-    const { notRegions, report } = await regMod.runRegisterGate(OPT, { verbose: false });
-    for (const [L, r] of Object.entries(report)) {
-      const ev = r.evidence ? `about=${r.evidence.about} feature=${r.evidence.featureHits.length} region=${r.evidence.regionHits.length}` : '(no evidence)';
-      note(`   ${L}) ${OPT[L]}: ${r.verdict}  [${ev}]${r.scope ? `  scope: ${r.scope.why}` : ''}`);
+  let lastErrMsg = '';
+  for (let attempt = 1; attempt <= REGISTER_GATE_RETRY_TRIES; attempt++) {
+    try {
+      const regMod = await loadRegisterGate();
+      const { notRegions, report } = await regMod.runRegisterGate(OPT, { verbose: false });
+      for (const [L, r] of Object.entries(report)) {
+        const ev = r.evidence ? `about=${r.evidence.about} feature=${r.evidence.featureHits.length} region=${r.evidence.regionHits.length}` : '(no evidence)';
+        note(`   ${L}) ${OPT[L]}: ${r.verdict}  [${ev}]${r.scope ? `  scope: ${r.scope.why}` : ''}`);
+      }
+      let next = [...pool];
+      if (notRegions.length) {
+        const before = next.length;
+        next = next.filter((L) => !notRegions.includes(L));
+        fact(`register gate removed ${notRegions.join(', ')}   pool ${before} -> ${next.length}`);
+      } else {
+        note('   register gate removed nothing');
+      }
+      return next;
+    } catch (e) {
+      lastErrMsg = e instanceof Error ? e.message : String(e);
+      if (attempt < REGISTER_GATE_RETRY_TRIES) {
+        note(`   register gate attempt ${attempt}/${REGISTER_GATE_RETRY_TRIES} failed (${lastErrMsg}) -- retrying after a settling delay, not yet treated as a permanent failure`);
+        await sleep(attempt * 4000);
+      }
     }
-    if (notRegions.length) {
-      const before = next.length;
-      next = next.filter((L) => !notRegions.includes(L));
-      fact(`register gate removed ${notRegions.join(', ')}   pool ${before} -> ${next.length}`);
-    } else {
-      note('   register gate removed nothing');
-    }
-  } catch (e) {
-    note(`   register gate unavailable (${e instanceof Error ? e.message : String(e)}) -- continuing with the full pool; register stage skipped honestly rather than guessing`);
   }
-  return next;
+  // FIX 1: the gate cannot run after every retry. It must NOT fail open -- see the class doc
+  // above. This is the fix for the qid 98 receipt's line 111: "register gate unavailable (fetch
+  // failed) -- continuing with the full pool" is exactly the sentence this throw replaces.
+  note(`   register gate unavailable after ${REGISTER_GATE_RETRY_TRIES} attempts (${lastErrMsg}) -- ABSTAINING rather than continuing with an unvetted pool`);
+  throw new RegisterGateUnavailableError(
+    `stage 0 register gate could not execute after ${REGISTER_GATE_RETRY_TRIES} attempts (${lastErrMsg})`,
+  );
 }
 
 export interface AssertedMention { L: string; sentence: string; }
@@ -207,7 +290,9 @@ function deriveCategoryAndProperty(question: string): { category: string; proper
 export interface GoogleBlock { title: string; body: string; url: string; kind: string; }
 export interface GoogleAnswer { ok: boolean; text: string; blocks: GoogleBlock[]; sources: string[]; via: string; }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// sleep() is now declared once, earlier in this file (near toPerSqKm/runStage0RegisterGate,
+// D-BP151-013 FIX 1), so both the register gate retry and this file's own googleBlocks() below
+// share the exact same helper instead of two separate copies.
 
 /** Ported from qid98_his_words.mjs's google(): keeps result BLOCKS (title + body), never
  *  flattens to one string -- see this file's header. Reached via the injected in-process
@@ -366,8 +451,30 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   const densities: Record<string, number> = {};
 
   // STAGE 0: register gate -- extracted to runStage0RegisterGate() above (D-BP149-043) so
-  // definitional_cascade.ts can share this exact code; behavior and printed output unchanged.
-  pool = await runStage0RegisterGate(OPT, pool, ctx);
+  // definitional_cascade.ts can share this exact code; behavior and printed output unchanged on
+  // a successful run. FIX 1 (D-BP151-013): this can now THROW RegisterGateUnavailableError when
+  // stage 0 could not execute after its retries -- caught here and turned into an honest abstain,
+  // never allowed to reach the terminator with an unvetted pool (the qid 98 defect).
+  try {
+    pool = await runStage0RegisterGate(OPT, pool, ctx);
+  } catch (e) {
+    if (!(e instanceof RegisterGateUnavailableError)) throw e;
+    const elapsedS = ((Date.now() - t0) / 1000).toFixed(1);
+    emit({ kind: 'result', text: `ABSTAIN   stage 0 register gate unavailable${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    note(`   ${e.message}`);
+    note('   this estate does not allow a gate to fail open (FIX 1, D-BP151-013): rather than continue with an unvetted option pool -- the qid 98 defect -- this run abstains instead of producing a verdict.');
+    note(`   ${elapsedS}s   $0`);
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: 'stage 0 register gate unavailable after retries -- abstained rather than continue with an unvetted pool',
+      error: 'register_gate_unavailable',
+    };
+  }
 
   const inverseQuestion = /\bNOT\b/i.test(input.question)
     ? input.question.replace(/\bNOT\s+/i, ' ').replace(/\s+/g, ' ').trim()
@@ -434,10 +541,17 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
         const ctx2 = norm(String(f.context || ''));
         for (const L of ALL) {
           if (ctx2.includes(norm(OPT[L])) && densities[L] === undefined) {
-            const c = toPerSqKm(f.value, f.unit);
-            densities[L] = c.value;
-            n++;
-            note(`      ${OPT[L]} = ${c.value.toFixed(2)} ${c.unit}`);
+            // FIX 2 (D-BP151-013): the value must prove it carries a real area-RATE unit before
+            // it is trusted -- see toPerSqKm()'s own doc comment. A rejection is logged with the
+            // raw text, the reason, and the option it belonged to, never silently dropped.
+            const c = toPerSqKm(f.value, f.unit, f.context);
+            if (c.ok) {
+              densities[L] = c.value;
+              n++;
+              note(`      ${OPT[L]} = ${c.value.toFixed(2)} ${c.unit}`);
+            } else {
+              note(`      rejected candidate for ${OPT[L]}: ${f.value} ${f.unit ? `(unit field: "${f.unit}")` : '(no unit field)'} -- ${c.reason}   raw: "${f.context}"`);
+            }
           }
         }
       }
@@ -470,9 +584,19 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
       if (norm(String(f.context || '')).includes(wanted)) { picked = f; break; }
     }
     if (picked) {
-      const conv = toPerSqKm(picked.value, picked.unit);
-      densities[L] = conv.value;
-      note(`   >> ${OPT[L]} = ${conv.value.toFixed(2)} ${conv.unit}  (as written: ${picked.value} ${picked.unit || 'no unit'})`);
+      // FIX 2 (D-BP151-013): same unit-RATE proof as the stage-5 bulk pass above. This also
+      // closes the overwrite this ticket's amendment found (stage 5b unconditionally overwrote a
+      // good stage-5 value, e.g. Europe's real "72 per km2" from Q10, with a unit-less candidate,
+      // e.g. "2012"): a rejected candidate is never assigned, so an earlier real value in
+      // `densities[L]` (if any) survives untouched.
+      const conv = toPerSqKm(picked.value, picked.unit, picked.context);
+      if (conv.ok) {
+        densities[L] = conv.value;
+        note(`   >> ${OPT[L]} = ${conv.value.toFixed(2)} ${conv.unit}  (as written: ${picked.value} ${picked.unit || 'no unit'})`);
+      } else {
+        note(`   rejected candidate for ${OPT[L]}: ${picked.value} ${picked.unit ? `(unit field: "${picked.unit}")` : '(no unit field)'} -- ${conv.reason}   raw: "${picked.context}"`);
+        note(`   no figure for ${OPT[L]} in this passage (honest null, not a guess)`);
+      }
     } else {
       note(`   no figure for ${OPT[L]} in this passage (honest null, not a guess)`);
     }
@@ -493,11 +617,37 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   let verdict: string | null = null;
   let basis = '';
   const inPool = Object.keys(densities).filter((L) => pool.includes(L));
-  if (inPool.length >= 2) {
+
+  // FIX 3 (D-BP151-013): COVERAGE PRECONDITION. The hard-number branch may rank the pool only
+  // when it actually COVERS the pool's real contenders. qid 98: H and I (Amazon Rainforest,
+  // Sahara Desert) were each voted least-${property} TWICE by stages 3/4 -- they were the
+  // elimination stages' actual answer -- yet both ended stage 5b as an honest null, and the old
+  // code still ranked the {A, E, F} subset it happened to have numbers for and answered A.
+  // Ranking a subset the parser succeeded on is not ranking the pool. This is a structural
+  // precondition, not a softened threshold: if ANY option the elimination stages voted for as
+  // least-${property} lacks a resolved value, the branch may not fire at all, regardless of how
+  // clean the separation looks among the options that do have one.
+  const votedLeast = Object.keys(leastVotes).filter((L) => pool.includes(L) && leastVotes[L] >= 1);
+  const votedWithValue = votedLeast.filter((L) => densities[L] !== undefined);
+  const votedWithoutValue = votedLeast.filter((L) => densities[L] === undefined);
+  if (votedLeast.length) {
+    note(`   coverage check for the hard-number branch: voted least-${property} = ${votedLeast.join(', ')}   have a value: ${votedWithValue.join(', ') || '(none)'}   no value (honest null or unresolved): ${votedWithoutValue.join(', ') || '(none)'}`);
+  }
+  if (votedWithoutValue.length) {
+    note(`   hard-number branch: WITHHELD -- ${votedWithoutValue.join(', ')} ${votedWithoutValue.length === 1 ? 'was' : 'were'} voted least-${property} by stages 3/4 but ${votedWithoutValue.length === 1 ? 'has' : 'have'} no resolved value; ranking only the subset the parser succeeded on is not ranking the pool`);
+  } else if (inPool.length >= 2) {
     const sorted = [...inPool].sort((a, b) => densities[a] - densities[b]);
     const sep = densities[sorted[0]] === 0 ? Infinity : densities[sorted[1]] / densities[sorted[0]];
     note(`   ascending: ${sorted.map((L) => `${L}=${densities[L]}`).join(' < ')}   separation ${sep.toFixed(2)}x`);
-    if (sep >= 1.5) { verdict = sorted[0]; basis = `lowest ${property} among survivors, ${sep.toFixed(1)}x clear of the runner-up`; }
+    if (sep >= 1.5) {
+      verdict = sorted[0];
+      basis = `lowest ${property} among survivors, ${sep.toFixed(1)}x clear of the runner-up`;
+      note(`   hard-number branch: FIRED -- coverage satisfied and separation ${sep.toFixed(2)}x >= 1.5x`);
+    } else {
+      note(`   hard-number branch: covered, but separation ${sep.toFixed(2)}x < 1.5x -- not fired`);
+    }
+  } else {
+    note('   hard-number branch: covered, but fewer than two survivors carry a resolved value -- not fired');
   }
   if (!verdict) {
     const ranked = Object.keys(leastVotes).filter((L) => pool.includes(L)).sort((a, b) => leastVotes[b] - leastVotes[a]);
