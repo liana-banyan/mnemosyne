@@ -32,10 +32,12 @@
 //     convergence gating a hard number. Founder Ruling 2, BP151, corrects this: the referent was
 //     his VALUE agreeing with itself (South America's density figure repeating), not an option
 //     winning a vote count -- see evaluateComparativeTerminator()'s own doc comment below for the
-//     full citation and the fork this ticket did NOT resolve):
+//     full citation. "Agree" was originally left as an open fork (no invented tolerance); the
+//     Founder ANSWERED it same ticket -- verbatim: "Order of magnitude works as the basis" -- see
+//     orderOfMagnitude() and detectValueConvergence() below):
 //       1. VALUE CONVERGENCE fires first -- ATTRIBUTED, Founder Ruling 2, BP151, verbatim: "Value
-//          convergence is undeniable, so that one". Only the SAME option's resolved value from
-//          more than one framing (see detectValueConvergence() below).
+//          convergence is undeniable, so that one". The SAME option's resolved value from more
+//          than one framing, sharing an order of magnitude (see detectValueConvergence() below).
 //       2. VOTES fire only when value convergence is non-existent -- ATTRIBUTED precedence,
 //          Founder Ruling 2, BP151, verbatim: "only if value convergence is non-existent, it
 //          trumps vote convergence every time". The vote machinery itself is the pre-existing
@@ -498,7 +500,25 @@ export interface ValueConvergenceResult {
   notes: string[];
 }
 
-/** D-BP151-024/BISHOP/seg-value-convergence.
+/** D-BP151-024/BISHOP/seg-value-convergence. Computes the order of magnitude of a resolved
+ *  density value: floor(log10(|value|)) -- 22 and 33 are both 10^1 ("tens"), 175 and 999 are both
+ *  10^2 ("hundreds"), 99 and 101 are DIFFERENT (10^1 vs 10^2, a strict boundary -- see
+ *  detectValueConvergence()'s own doc comment for why that boundary is left strict, not smoothed).
+ *  Returns null for 0 or non-finite input (no magnitude is defined); toPerSqKm() never produces
+ *  either, this is a defensive guard only. */
+export function orderOfMagnitude(value: number): number | null {
+  if (!Number.isFinite(value) || value === 0) return null;
+  // FLOATING-POINT GUARD, not a second tolerance on the agreement rule: Math.log10 at an exact
+  // power of ten (e.g. 100) can return a value fractionally below the integer
+  // (1.9999999999999998) due to IEEE-754 rounding, which would floor to the WRONG magnitude
+  // (10^1 instead of 10^2). The 1e-9 epsilon corrects only that representational artifact; it
+  // does not widen or narrow which values agree beyond fixing it.
+  return Math.floor(Math.log10(Math.abs(value)) + 1e-9);
+}
+
+/** D-BP151-024/BISHOP/seg-value-convergence, AMENDED same ticket after the Founder answered the
+ *  fork this function originally left open (see git history for the exact-equality-only version
+ *  this superseded, same commit lineage).
  *
  *  // ATTRIBUTED: Founder, BP151, verbatim: "Value convergence is undeniable, so that one. Votes
  *  // are not unimportant, but only if value convergence is non-existent, it trumps vote
@@ -512,27 +532,49 @@ export interface ValueConvergenceResult {
  *  questions" (his qid-98 conclusion, line 264) names the VALUE agreeing with itself, not an
  *  option winning a vote count.
  *
- *  THE FORK THIS FUNCTION DOES NOT RESOLVE: his five figures are NOT numerically identical (22 to
- *  33 is a real spread) and he still called them "the same figure" -- so "agree" is looser than
- *  exact equality in his own head, and HOW MUCH looser is not stated anywhere in his words. Per
- *  HARDWIRE-23 Law 2 ("stop and ask, do not implement and disclose") and this ticket's explicit
- *  instruction, no tolerance/variance/rounding rule is invented here. This function implements
- *  ONLY the one case that is true under every possible resolution of that fork: two or more
- *  observations for the SAME option that are EXACTLY equal (after the unit normalization
- *  toPerSqKm() already performs) always count as agreeing, no matter how loose or tight the
- *  eventual rule turns out to be. Two of his own five qid-98 readings (25, 25) are an exact match
- *  -- this floor is not invented data, it is the one pair of his own numbers that requires no
- *  invented tolerance to recognize. An option whose observations differ AT ALL is left
- *  UNDETERMINED (neither counted as agreeing nor as non-agreeing) -- see the `notes` this function
- *  returns; a run whose only multi-framing option lands here falls through to the vote fallback
- *  (branch 2, below), not because the Founder ruled votes should win, but because branch 1 cannot
- *  honestly reach a verdict without a rule nobody has ordered.
+ *  THE FORK, AND HOW IT WAS ANSWERED. His five figures are NOT numerically identical (22 to 33 is
+ *  a real spread) and he still called them "the same figure" -- so exact equality was too strict.
+ *  Rather than invent a tolerance, this ticket stopped and asked. The Founder answered, BP151,
+ *  verbatim: "Since every source calculates differently, this becomes a SigFig (Significant
+ *  Figures) issue. Like how my 12" ruler is good enough measurement to fit my foot into a shoe...
+ *  So. 'pretty close' is a good indicator, since we literally apply it in EVERY discipline that
+ *  uses measurements at all, in real life. Order of magnitude works as the basis." This composes
+ *  with his standing significant-figures rule (BP141, THE_FOUNDERS_PROCESS_ORDERED_BP151.md step
+ *  15): "My 12\" ruler is not actually 12 inches... my inaccurate 12\" + X ruler is close enough
+ *  to figure out if my foot is bigger than the shoe I want to fit it in."
  *
- *  THE EXACT QUESTION FOR THE FOUNDER, so branch 1 can be completed: when two resolved readings
- *  for the same option disagree numerically (e.g. his own 22 vs 33 -- roughly a 50% spread, which
- *  he still called consistent), what test decides they "agree"? A percent tolerance? Same order
- *  of magnitude? Same rounded leading digit? Until he answers, any such case is reported, never
- *  guessed. */
+ *  VERIFIED against his own qid-98 data before implementing, not taken on faith (re-read of
+ *  RECOVERED_BP144.md Excerpt 2, all nine options, every cited figure): South America (his answer)
+ *  reads 22 / 24 / 24 / 25 / 25 / 26-33 across six framings -- every one 10^1 ("tens"). Western
+ *  Europe 160-199 / 175 / 181 / 184 / 184, South Asia 303 / 329 / 329, East Asia 143 / 143 / 143,
+ *  Southeast Asia 155 / 155 / 145-160 / 162 / 162, Northeast US 120-359 / 150-200 / 135-350 -- all
+ *  10^2 ("hundreds"). Java 1,100-1,192 -- all 10^3 ("thousands"). South America never shares a
+ *  magnitude with any other option, and none of A-F ever crosses its own boundary -- the rule
+ *  reproduces his qid-98 answer.
+ *
+ *  TWO PARTIAL EXCEPTIONS, reported rather than smoothed away: Nile Valley's very first reading
+ *  (line 72) gives "~1,000 to over 40,000 people per km2 in urban centers like Cairo" -- that
+ *  SINGLE framing's own stated range spans 10^3 to 10^4 (a hyper-local Cairo-core figure folded
+ *  into a region range -- arguably a different quantity, not a second comparable reading, and this
+ *  file's own numeric extraction only ever captures ONE number+unit per candidate, never a stated
+ *  range, so this specific text would not itself become a densityObservations entry under the real
+ *  pipeline). Ganges Valley's readings move from 390-520 (10^2, lines 221/248) to "500-1,000+ ...
+ *  exceed 1,200" (10^3, line 232) across SEPARATE framings -- a genuine cross-boundary case by this
+ *  rule's own strict test. Neither Nile Valley nor Ganges Valley is ever a value-convergence
+ *  candidate for the winning answer (both are eliminated in stage 1 as asserted-high-density
+ *  before the terminator runs), so this does not change qid 98's outcome, but the Founder's
+ *  premise that NO option crosses a boundary is not fully borne out by his own transcript for
+ *  those two -- filed as a finding per his own instruction to report a contradiction, not silently
+ *  agree with it.
+ *
+ *  BOUNDARY BEHAVIOR, STRICT, NOT SMOOTHED: 99 and 101 straddle the 10^2 power-of-ten boundary and
+ *  do NOT agree under this rule, even though they are numerically closer to each other (~2%
+ *  apart) than 22 and 33 are (~50% apart, and DO agree, both 10^1). This is the literal reading of
+ *  "order of magnitude" and is intentionally not corrected with a second rule layered on top (a
+ *  percent band, a log-midpoint rounding, a "within N of a boundary" carve-out) -- the Founder's
+ *  own instruction: "Order of magnitude works as the basis," and this ticket's own constraint:
+ *  "Do not add a second tolerance on top." A future question that turns on this exact boundary is
+ *  a fork of its own, to be raised the same way this one was -- not pre-empted here. */
 export function detectValueConvergence(
   pool: string[],
   observations: Record<string, number[]>,
@@ -547,11 +589,13 @@ export function detectValueConvergence(
       notes.push(`   value convergence: ${L} has only 1 resolved observation (${vals[0]}) -- self-agreement needs more than one framing, not evaluated`);
       continue;
     }
-    if (vals.every((v) => v === vals[0])) {
-      agreeing[L] = vals[0];
-      notes.push(`   value convergence: ${L} has ${vals.length} observations, ALL EXACTLY ${vals[0]} ${property} -- self-agreeing`);
+    const orders = vals.map(orderOfMagnitude);
+    const sameOrder = orders[0] !== null && orders.every((o) => o === orders[0]);
+    if (sameOrder) {
+      agreeing[L] = Math.min(...vals);
+      notes.push(`   value convergence: ${L} has ${vals.length} observations (${vals.join(', ')}), ALL order of magnitude 10^${orders[0]} -- self-agreeing (ATTRIBUTED, Founder, BP151: "Order of magnitude works as the basis")`);
     } else {
-      notes.push(`   value convergence: ${L} has ${vals.length} observations that differ (${vals.join(', ')}) -- FORK, no Founder-ordered agreement rule exists to say whether these "agree" (see this function's own doc comment); NOT counted as convergent -- undetermined, not guessed`);
+      notes.push(`   value convergence: ${L} has ${vals.length} observations (${vals.join(', ')}) spanning DIFFERENT orders of magnitude (${orders.map((o) => (o === null ? 'undefined' : `10^${o}`)).join(', ')}) -- NOT self-agreeing (ATTRIBUTED test, Founder, BP151: "Order of magnitude works as the basis")`);
     }
   }
   const agreeingOptions = Object.keys(agreeing);
@@ -569,7 +613,7 @@ export function detectValueConvergence(
     notes.push(`   value convergence: more than one option self-agreed (${agreeingOptions.join(', ')}) -- lowest self-agreeing value selected: ${winner}`);
   }
   if (winner) {
-    notes.push(`   value convergence winner: ${winner}  (self-agreed at ${agreeing[winner]} ${property} -- ATTRIBUTED, Founder Ruling 2, BP151)`);
+    notes.push(`   value convergence winner: ${winner}  (self-agreed, lowest reading ${agreeing[winner]} ${property} -- ATTRIBUTED, Founder Ruling 2, BP151)`);
   }
   return { winner, agreeing, notes };
 }
@@ -581,8 +625,8 @@ export function detectValueConvergence(
  *  TWO BRANCHES, IN ORDER, PLUS ABSTAIN -- REPLACES D-BP151-020's three-branch design per two
  *  Founder rulings, BP151 (both filed BISHOP_DROPZONE\FOUNDER_DECISIONS_BP151.md):
  *
- *  1. VALUE CONVERGENCE (see detectValueConvergence() above for the full citation and the fork it
- *     leaves open).
+ *  1. VALUE CONVERGENCE (see detectValueConvergence() above for the full citation and the order-
+ *     of-magnitude agreement test the Founder ordered to resolve what "agree" means).
  *     // ATTRIBUTED: Founder, BP151, verbatim: "Value convergence is undeniable, so that one."
  *  2. VOTES, ONLY IF VALUE CONVERGENCE IS NON-EXISTENT -- reuses the pre-existing cross-framing
  *     convergenceWinner computation (tare-sweep D-BP151-019 row #10), UNCHANGED semantics. Its
@@ -625,7 +669,8 @@ export function evaluateComparativeTerminator(
   }
 
   // BRANCH 1: VALUE CONVERGENCE -- ATTRIBUTED, Founder Ruling 2, BP151. See
-  // detectValueConvergence()'s own doc comment for the full citation and the open fork.
+  // detectValueConvergence()'s own doc comment for the full citation and the order-of-magnitude
+  // agreement test the Founder ordered (BP151, verbatim: "Order of magnitude works as the basis").
   if (votedWithoutValue.length) {
     notes.push(`   value-convergence branch: WITHHELD -- ${votedWithoutValue.join(', ')} ${votedWithoutValue.length === 1 ? 'was' : 'were'} voted least-${property} by stages 3/4 but ${votedWithoutValue.length === 1 ? 'has' : 'have'} no resolved value; ranking only the subset the parser succeeded on is not ranking the pool`);
   } else {
@@ -633,7 +678,8 @@ export function evaluateComparativeTerminator(
     notes.push(...vc.notes);
     if (vc.winner) {
       verdict = vc.winner;
-      basis = `value convergence: ${property} self-agreed at ${vc.agreeing[vc.winner]} across ${(densityObservations[vc.winner] ?? []).length} framings -- ATTRIBUTED, Founder Ruling 2, BP151, verbatim: "Value convergence is undeniable, so that one"`;
+      const winnerVals = densityObservations[vc.winner] ?? [];
+      basis = `value convergence: ${property} readings (${winnerVals.join(', ')}) across ${winnerVals.length} framings share order of magnitude 10^${orderOfMagnitude(vc.agreeing[vc.winner])} -- ATTRIBUTED, Founder Ruling 2, BP151, verbatim: "Value convergence is undeniable, so that one" (agreement test itself ATTRIBUTED, Founder, BP151: "Order of magnitude works as the basis")`;
       notes.push(`   BRANCH FIRED: value convergence (${vc.winner}) -- ATTRIBUTED, Founder Ruling 2, BP151`);
     }
   }
