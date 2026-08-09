@@ -39,8 +39,17 @@ import type { LianaTerminalEvent, LianaTerminalOutcome } from '../../shared/lian
 import { explainSelection, listMethods, selectMethod } from './method_registry';
 // D-BP150-003 -- the Demand Test. Runs before method selection; see its own header for exactly
 // which half of the canon it implements and which half is still a scaffold.
-import { describeDemand, determineDemand } from './demand_test';
+import { describeDemand, determineDemand, determineDemandFromSurveyedAsk } from './demand_test';
+import type { DemandResult } from './demand_test';
 import type { AskGoogleFn, EmitFn, MethodQuestionInput, MethodRunContext } from './method_registry';
+// D-BP151-026/BISHOP/seg-contingency-operator (Contingency Operator: Survey Splice). Founder,
+// BP151, Q-20: "This is a case for Contingency Operators. Do it, and see if it works before I
+// ratify." runSurveyStage() (Founder steps 2, 3, 4, 6) was built D-BP151-025 but never spliced
+// into this dispatcher -- see survey_stage.ts's own header, "NOT WIRED INTO
+// liana_terminal_engine.ts's DISPATCH BY THIS TICKET". This import is that splice, gated by
+// isContingencyOperatorSurveySpliceEnabled() below.
+import { runSurveyStage } from './survey_stage';
+import type { SurveyStageResult } from './survey_stage';
 // D-BP150-001 (Call an Audible). See audible.ts's header for why this is a decorator around the
 // injected askGoogle rather than a restructuring of the method modules.
 import { AudibleAbandoned, AudibleLog, wrapAskGoogleWithAudible } from './audible';
@@ -70,6 +79,24 @@ function say(emit: EmitFn, text: string): void {
 }
 function note(emit: EmitFn, text: string): void {
   emit({ kind: 'note', text, ts: nowIso() });
+}
+
+/** D-BP151-026/BISHOP/seg-contingency-operator: resolves the CONTINGENCY OPERATOR SURVEY SPLICE
+ *  variant gate. Same isXModeEnabled() resolver shape the Founder named as the pattern to match --
+ *  isAdjudicationAlwaysModeEnabled() (plow_mc_answerer.ts:6205), itself mirroring
+ *  isAnswerCacheModeEnabled()/isSemanticSoccerballModeEnabled()/isEscalationLadderModeEnabled()
+ *  (ai_dispatch_ipc.ts): a boolean param plus an env-var escape hatch, one resolver per gate.
+ *
+ *  THE POLARITY IS FLIPPED, ON PURPOSE -- the one deliberate deviation from that cited pattern.
+ *  Every cited example defaults ON (undefined/true = on, explicit false = the opt-out). This gate
+ *  defaults OFF. Founder, BP151, verbatim: "This is a case for Contingency Operators. Do it, and
+ *  see if it works before I ratify" -- and: "A Contingency Operator... is not ratified by
+ *  existing." Defaulting this ON would make it the shipped behavior the moment it lands, which is
+ *  exactly what he ordered NOT to happen; the env var (CONTINGENCY_OPERATOR_SURVEY_SPLICE=1)
+ *  exists for the same quick-local-testing purpose the cited resolvers' own env vars serve. */
+function isContingencyOperatorSurveySpliceEnabled(contingencyOperatorSurvey: boolean | undefined): boolean {
+  if (contingencyOperatorSurvey === true) return true;
+  return process.env.CONTINGENCY_OPERATOR_SURVEY_SPLICE === '1';
 }
 
 // ─────────────────────────── bundle lookup (unchanged convention) ───────────────────────────
@@ -171,8 +198,26 @@ export async function runLianaCycleQuestion(
    *  and behaving identically. Independent of `audible` above -- either, both, or neither may be
    *  armed; see stepped_audible.ts's header for what combining them does and does not change. */
   steppedAudible?: SteppedAudibleChannel | null,
+  /** D-BP151-026 (Contingency Operator: Survey Splice), ADDITIVE/OPTIONAL. undefined/false (and
+   *  no CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 env override -- see
+   *  isContingencyOperatorSurveySpliceEnabled() above) = variant OFF, in which case this run takes
+   *  the ORIGINAL, untouched code path below -- the exact `determineDemand(methodInput)` call and
+   *  its two surrounding emit lines this file has run since D-BP150-003, byte-for-byte, nothing
+   *  added, removed, or reordered. Every pre-existing caller (which passes nothing for this
+   *  parameter) gets that exact path. true = the variant Founder BP151 Q-20 ordered built and
+   *  tested, NOT ratified by existing: SURVEY (Founder steps 2/3/4/6, survey_stage.ts) runs before
+   *  method selection, and DEMAND is derived from the surveyed ask
+   *  (demand_test.ts's determineDemandFromSurveyedAsk()) instead of the CUES table. */
+  contingencyOperatorSurvey?: boolean,
 ): Promise<LianaTerminalOutcome> {
   const trimmed = input.trim();
+  const contingencyOperatorSurveyOn = isContingencyOperatorSurveySpliceEnabled(contingencyOperatorSurvey);
+  // D-BP151-026: present on EVERY outcome this function returns, including an early/abstained/
+  // thrown one, so the receipt always states which variant produced the run -- undefined (and
+  // therefore omitted from the outcome object entirely, see liana_terminal_types.ts's own doc
+  // comment on this field) whenever the variant is off, which keeps every OFF-path outcome object
+  // identical to what this function produced before this ticket.
+  const variant = contingencyOperatorSurveyOn ? ('contingency-operator-survey-splice' as const) : undefined;
   // Declared outside the try so the catch below can still return everything the operator typed
   // before they abandoned -- Founder, BP149: "a walk that throws away your annotations because
   // you quit early is worse than no walk."
@@ -184,7 +229,7 @@ export async function runLianaCycleQuestion(
       parsed = parseQid(Number(trimmed));
       if (parsed.qidNotFound) {
         emit({ kind: 'error', text: `qid ${parsed.qid} not found in the bundled corpus (resources/mmlu_pro_bundled/questions.jsonl)`, ts: nowIso() });
-        return { qid: parsed.qid, question: '', verdict: null, abstain: true, freeText: false, error: 'qid not in bundle', options: null };
+        return { qid: parsed.qid, question: '', verdict: null, abstain: true, freeText: false, error: 'qid not in bundle', options: null, ...(variant ? { variant } : {}) };
       }
     } else {
       parsed = parseFreeText(trimmed);
@@ -206,14 +251,74 @@ export async function runLianaCycleQuestion(
       note(emit, '   (no lettered option list -- typed as a bare question)');
     }
 
-    // D-BP150-003 -- THE DEMAND TEST runs BEFORE method selection. Founder, BP150: determine
-    // "WHICH METHOD of DATA needs to apply to the question in question... so we DON'T use it
-    // wrongly." Canon: canon_the_demand_test_selects_by_operation_not_by_regex_bp150.
-    // NOTE the placement is not yet the ruled one: canon R-2 puts this AFTER Survey the ASK, and
-    // Survey is unbuilt, so the derivation reads the question string and says so in its own output.
-    emit({ kind: 'stage', text: '-> DEMAND TEST -- what operation must this answer perform?', ts: nowIso() });
-    const demandResult = determineDemand(methodInput);
-    note(emit, `   ${describeDemand(demandResult)}`);
+    // D-BP151-026 (Contingency Operator: Survey Splice). OFF (the default -- see
+    // isContingencyOperatorSurveySpliceEnabled() above) takes the `else` branch immediately below,
+    // which is the untouched D-BP150-003 code this file has run since that ticket: the same two
+    // emit lines, the same determineDemand(methodInput) call, nothing added, removed, or
+    // reordered. ON runs SURVEY (Founder steps 2, 3, 4, 6) before method selection and derives
+    // DEMAND from the surveyed ask instead.
+    let demandResult: DemandResult;
+    let surveyResult: SurveyStageResult | null = null;
+    if (contingencyOperatorSurveyOn) {
+      emit({
+        kind: 'stage',
+        text: '-> CONTINGENCY OPERATOR: SURVEY SPLICE is ON for this run -- Survey (Founder steps 2, 3, 4, 6) runs before method selection, and DEMAND is derived from the surveyed ask, not the CUES table (Founder, BP151, Q-20: "Splice into a Contingency Operator Variant so we can test")',
+        ts: nowIso(),
+      });
+      // Survey's own MethodRunContext. Reuses the SAME injected askGoogle by reference (raw, not
+      // wrapped by wrapAskGoogleWithAudible -- see this ticket's return, THINGS I NOTICED AND DID
+      // NOT DO, for why Call an Audible's per-call pause was not extended to cover Survey's own
+      // Google calls; that was not ordered here). wrapForSteppedAudible('survey', ...) below IS
+      // wired -- that is Part 3's own requirement, not an extra.
+      const surveyCtx: MethodRunContext = { askGoogle, emit };
+      const surveyStepWrap = wrapForSteppedAudible('survey', surveyCtx, steppedAudible ?? null, steppedLog);
+      if (steppedAudible) {
+        const surveyStepDefs = buildUpfrontStepList('survey');
+        if (surveyStepDefs) {
+          emit({ kind: 'stage', text: `-> STEPPED AUDIBLE -- SURVEY: ${surveyStepDefs.length} step(s) this phase will execute, listed before the first one starts`, ts: nowIso() });
+          surveyStepDefs.forEach((d, i) => {
+            const head = d.attribution === 'ATTRIBUTED'
+              ? `step ${i + 1}/${surveyStepDefs.length}: ${d.codeLabel}  ->  Founder step ${d.founderStepNumber}, verbatim: "${d.founderWords}"  (${d.founderSource})`
+              : `step ${i + 1}/${surveyStepDefs.length}: ${d.codeLabel}  ->  UNATTRIBUTED -- TARE, no Founder order`;
+            note(emit, `   ${head}`);
+          });
+        }
+      }
+      surveyResult = await runSurveyStage(parsed.question, parsed.options, surveyStepWrap.ctx);
+      try {
+        await surveyStepWrap.finish();
+      } catch (e) {
+        if (e instanceof SteppedAudibleAbandoned) {
+          note(emit, '   STEPPED AUDIBLE abandoned during SURVEY -- Survey\'s own findings above are unaffected; every step response up to and including this one is kept.');
+        } else {
+          throw e;
+        }
+      }
+      // PART 2: demand comes from the surveyed ask, WIRED not rewritten. Step 2's own output
+      // (SurveyAskNestedResult) is exactly determineDemandFromSurveyedAsk()'s expected input
+      // (demand_test.ts:222). When Step 2 found no term to survey, there is nothing to feed it --
+      // reported honestly as demand unknown (canon R-5: a teaching prompt, not a fabricated
+      // guess), the same refusal shape survey_stage.ts's own steps already use throughout.
+      demandResult = surveyResult.step2.nested
+        ? determineDemandFromSurveyedAsk(surveyResult.step2.nested)
+        : {
+            demand: null,
+            why: `SURVEY STEP 2 did not resolve a term to survey (${surveyResult.step2.why}) -- nothing to derive DEMAND from via the surveyed ask; this is a teaching prompt (canon R-5), not a fabricated guess`,
+            derivedFrom: 'surveyed-ask',
+          };
+      emit({ kind: 'stage', text: '-> DEMAND TEST (SURVEYED ASK) -- what operation must this answer perform?', ts: nowIso() });
+      note(emit, `   ${describeDemand(demandResult)}`);
+    } else {
+      // D-BP150-003 -- THE DEMAND TEST runs BEFORE method selection. Founder, BP150: determine
+      // "WHICH METHOD of DATA needs to apply to the question in question... so we DON'T use it
+      // wrongly." Canon: canon_the_demand_test_selects_by_operation_not_by_regex_bp150.
+      // NOTE the placement is not yet the ruled one: canon R-2 puts this AFTER Survey the ASK, and
+      // Survey is unbuilt on THIS path, so the derivation reads the question string and says so in
+      // its own output.
+      emit({ kind: 'stage', text: '-> DEMAND TEST -- what operation must this answer perform?', ts: nowIso() });
+      demandResult = determineDemand(methodInput);
+      note(emit, `   ${describeDemand(demandResult)}`);
+    }
 
     emit({ kind: 'stage', text: '-> METHOD SELECTION -- checking every method on file', ts: nowIso() });
     const methods = listMethods();
@@ -242,6 +347,7 @@ export async function runLianaCycleQuestion(
         freeText,
         error: demandResult.demand ? 'no_method_matched' : 'demand_unknown',
         options: parsed.options,
+        ...(variant ? { variant } : {}),
       };
     }
 
@@ -253,7 +359,7 @@ export async function runLianaCycleQuestion(
     if (!method.run) {
       emit({ kind: 'result', text: `NOT YET TAUGHT -- ${method.name} is a registered method whose shape matched, but it has no runner yet.`, ts: nowIso() });
       note(emit, '   This is a known shape, not an unknown one -- the Founder has not walked a case for it yet. That is the next teaching session.');
-      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'method_not_yet_taught', method: method.id, options: parsed.options };
+      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'method_not_yet_taught', method: method.id, options: parsed.options, ...(variant ? { variant } : {}) };
     }
 
     if (audible) {
@@ -307,6 +413,7 @@ export async function runLianaCycleQuestion(
       options: parsed.options,
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
       ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
+      ...(variant ? { variant } : {}),
     };
   } catch (e) {
     // THE OPERATOR ENDING A RUN IS NOT AN ERROR, and must not be transcribed as one. It is an
@@ -322,6 +429,7 @@ export async function runLianaCycleQuestion(
         options: null,
         audibleLog: audibleLog.all(),
         ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
+        ...(variant ? { variant } : {}),
       };
     }
     // D-BP151-023 -- an EARLY step-pause abandon (any pause before the final one, thrown from
@@ -339,6 +447,7 @@ export async function runLianaCycleQuestion(
         options: null,
         ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
         steppedLog: steppedLog.all(),
+        ...(variant ? { variant } : {}),
       };
     }
     const msg = e instanceof Error ? e.message : String(e);
@@ -352,6 +461,7 @@ export async function runLianaCycleQuestion(
       options: null,
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
       ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
+      ...(variant ? { variant } : {}),
     };
   }
 }
