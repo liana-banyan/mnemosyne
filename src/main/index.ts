@@ -268,9 +268,13 @@ import { runLianaCycleQuestion } from './liana_cycle/liana_terminal_engine';
 // implemented over IPC in the 'liana-terminal-run' handler below; audible.ts itself has no
 // Electron dependency, which is why the interface lives there and the wiring lives here.
 import type { AudibleChannel } from './liana_cycle/audible';
+// D-BP151-023 (Stepped Audible) -- the operator-facing side of the PER-FOUNDER-STEP pause. Same
+// convention as AudibleChannel above: SteppedAudibleChannel is implemented over IPC in the
+// 'liana-terminal-run' handler below; stepped_audible.ts itself has no Electron dependency.
+import type { SteppedAudibleChannel } from './liana_cycle/stepped_audible';
 // D-BP150-002 -- reading the operator's already-written teaching notes back into a live pause.
 import { listTeachingFiles } from './liana_cycle/teaching_notes';
-import type { LianaAudibleResponse, LianaTerminalEvent } from '../shared/liana_cycle/liana_terminal_types';
+import type { LianaAudibleResponse, LianaSteppedResponse, LianaTerminalEvent } from '../shared/liana_cycle/liana_terminal_types';
 import { _paths as YOKE_PATHS } from './resident/yoke_watcher';
 // BP037 ? On-Deck Master-of-Ceremonies
 import { listOnDeck } from './on_deck/on_deck_bridge';
@@ -3433,6 +3437,15 @@ function registerIPCHandlers(): void {
     { resolve: (r: LianaAudibleResponse) => void; reject: (e: Error) => void }
   >();
 
+  // D-BP151-023/BISHOP/seg-stepped-audible -- STEPPED AUDIBLE, the pending-pause table. Same
+  // convention as PENDING_AUDIBLE_PAUSES above (keyed by pauseId, no timer -- see this ticket's
+  // "no timeout, ever" rule in stepped_audible.ts's header): entries are removed only by the
+  // operator answering, the operator's window being destroyed, or the run ending.
+  const PENDING_STEPPED_PAUSES = new Map<
+    string,
+    { resolve: (r: LianaSteppedResponse) => void; reject: (e: Error) => void }
+  >();
+
   // D-BP149-034/BISHOP/S34/seg-lianaterminal -- the Liana Cycle terminal. `askGoogle` is a
   // one-line closure around the SAME runBrowserAuthorityQueryFromMain() the line above uses (and
   // plow_mc_answerer.ts's Stage F2/F3 use) -- this is dependency injection so
@@ -3440,13 +3453,17 @@ function registerIPCHandlers(): void {
   // Streams every stage/fact/note/result line to the caller's own window as it happens
   // (event.sender.send, same push convention as 'ask-engine-progress') so the Founder watches the
   // cascade live instead of pasting console output back into a chat window.
-  safeHandle('liana-terminal-run', async (event, { input, audible }: { input: string; audible?: boolean }) => {
+  safeHandle('liana-terminal-run', async (event, { input, audible, steppedAudible }: { input: string; audible?: boolean; steppedAudible?: boolean }) => {
     // D-BP150-001 (Call an Audible). `audible` is OPTIONAL and defaults to off: an older
     // renderer, or the Founder simply not toggling it, produces exactly the run this handler
     // produced before this parameter existed (wrapAskGoogleWithAudible returns the unwrapped
     // function by reference when the channel is null -- see audible.ts).
+    // D-BP151-023 (Stepped Audible). `steppedAudible` is likewise OPTIONAL/OFF-by-default and
+    // independent of `audible` -- see stepped_audible.ts's header for what happens when both are
+    // armed on the same run.
     const sender = event.sender;
     const runPauseIds = new Set<string>();
+    const runSteppedPauseIds = new Set<string>();
 
     // A pause that outlives its window would hang the run forever with nothing to answer it.
     // This is the ONLY non-operator way a pause ends -- there is deliberately no timer, per the
@@ -3458,6 +3475,11 @@ function registerIPCHandlers(): void {
         if (p) { PENDING_AUDIBLE_PAUSES.delete(id); p.reject(new Error(why)); }
       }
       runPauseIds.clear();
+      for (const id of runSteppedPauseIds) {
+        const p = PENDING_STEPPED_PAUSES.get(id);
+        if (p) { PENDING_STEPPED_PAUSES.delete(id); p.reject(new Error(why)); }
+      }
+      runSteppedPauseIds.clear();
     };
     const onSenderGone = () => releasePending('window_closed');
     sender.once('destroyed', onSenderGone);
@@ -3474,6 +3496,26 @@ function registerIPCHandlers(): void {
               } catch {
                 PENDING_AUDIBLE_PAUSES.delete(pause.pauseId);
                 runPauseIds.delete(pause.pauseId);
+                reject(new Error('window_closed'));
+              }
+            }),
+        }
+      : null;
+
+    // D-BP151-023/BISHOP/seg-stepped-audible -- same shape as `channel` above, one level up
+    // (per-step, not per-call).
+    const steppedChannel: SteppedAudibleChannel | null = steppedAudible
+      ? {
+          requestStepPause: (pause) =>
+            new Promise<LianaSteppedResponse>((resolve, reject) => {
+              if (sender.isDestroyed()) { reject(new Error('window_closed')); return; }
+              runSteppedPauseIds.add(pause.pauseId);
+              PENDING_STEPPED_PAUSES.set(pause.pauseId, { resolve, reject });
+              try {
+                sender.send('liana-stepped-pause', pause);
+              } catch {
+                PENDING_STEPPED_PAUSES.delete(pause.pauseId);
+                runSteppedPauseIds.delete(pause.pauseId);
                 reject(new Error('window_closed'));
               }
             }),
@@ -3507,6 +3549,7 @@ function registerIPCHandlers(): void {
           try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ }
         },
         channel,
+        steppedChannel,
       );
     } finally {
       sender.removeListener('destroyed', onSenderGone);
@@ -3558,6 +3601,8 @@ function registerIPCHandlers(): void {
         error: outcome.error ?? null,
         audibleMode: Boolean(audible),
         audibleLog: outcome.audibleLog ?? null,
+        steppedAudibleMode: Boolean(steppedAudible),
+        steppedLog: outcome.steppedLog ?? null,
         eventCount: events.length,
         transcript: events,
       };
@@ -3579,6 +3624,17 @@ function registerIPCHandlers(): void {
     const pending = PENDING_AUDIBLE_PAUSES.get(response.pauseId);
     if (!pending) return { ok: false, reason: 'no_such_pause' as const };
     PENDING_AUDIBLE_PAUSES.delete(response.pauseId);
+    pending.resolve(response);
+    return { ok: true as const };
+  });
+
+  // D-BP151-023/BISHOP/seg-stepped-audible -- the operator answering one STEP pause. Same
+  // no-throw-on-unknown-pauseId convention as 'liana-audible-respond' above, same reason: a
+  // response for a pause already settled is an ordinary condition, not an error.
+  safeHandle('liana-stepped-respond', async (_event, response: LianaSteppedResponse) => {
+    const pending = PENDING_STEPPED_PAUSES.get(response.pauseId);
+    if (!pending) return { ok: false, reason: 'no_such_pause' as const };
+    PENDING_STEPPED_PAUSES.delete(response.pauseId);
     pending.resolve(response);
     return { ok: true as const };
   });

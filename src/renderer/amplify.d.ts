@@ -344,6 +344,9 @@ declare global {
         /** D-BP150-001 (Call an Audible), ADDITIVE/OPTIONAL. Omitted or false = the run this
          *  function has always produced, byte for byte. */
         audible?: boolean,
+        /** D-BP151-023 (Stepped Audible), ADDITIVE/OPTIONAL, independent of `audible`. Omitted or
+         *  false = no per-step pausing. */
+        steppedAudible?: boolean,
       ) => Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome>;
       onLianaTerminalEvent?: (
         cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
@@ -358,6 +361,15 @@ declare global {
       ) => () => void;
       lianaAudibleRespond?: (
         response: import('../shared/liana_cycle/liana_terminal_types').LianaAudibleResponse,
+      ) => Promise<{ ok: boolean; reason?: string }>;
+      // D-BP151-023/BISHOP/seg-stepped-audible -- STEPPED AUDIBLE. One pause per Founder-mapped
+      // step (see stepped_audible.ts) rather than one pause per Google call -- a separate control
+      // from Call an Audible above, not a replacement for it.
+      onLianaSteppedPause?: (
+        cb: (pause: import('../shared/liana_cycle/liana_terminal_types').LianaSteppedPause) => void,
+      ) => () => void;
+      lianaSteppedRespond?: (
+        response: import('../shared/liana_cycle/liana_terminal_types').LianaSteppedResponse,
       ) => Promise<{ ok: boolean; reason?: string }>;
       // D-BP150-002 -- his earlier teaching notes, read back into a live pause. Read-only.
       lianaNotesList?: (

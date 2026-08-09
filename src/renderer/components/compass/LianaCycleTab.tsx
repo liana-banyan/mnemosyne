@@ -26,6 +26,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   LianaAudibleAction,
   LianaAudiblePause,
+  LianaSteppedAction,
+  LianaSteppedPause,
   LianaTeachingFile,
   LianaTerminalEvent,
   LianaTerminalOutcome,
@@ -252,6 +254,20 @@ export function LianaCycleTab() {
   const pauseQueryRef = useRef<HTMLTextAreaElement>(null);
   const pauseNoteRef = useRef<HTMLTextAreaElement>(null);
 
+  // D-BP151-023/BISHOP/seg-stepped-audible -- STEPPED AUDIBLE. Founder, BP151, verbatim: "I want
+  // it to list my steps, and then show it happen, then stop before the next step and shows
+  // suggestions, for me to respond to or correct."
+  //
+  // A SEPARATE CONTROL FROM CALL AN AUDIBLE ABOVE, same reason those and Audit the Run stay
+  // separate: this pauses once per Founder-mapped STEP (comparative-cascade only -- see
+  // stepped_audible.ts's header), not once per Google call. Either, both, or neither may be armed.
+  const [steppedMode, setSteppedMode] = useState<boolean>(() => localStorage.getItem('liana.steppedAudible') === '1');
+  useEffect(() => { localStorage.setItem('liana.steppedAudible', steppedMode ? '1' : '0'); }, [steppedMode]);
+  const [activeSteppedPause, setActiveSteppedPause] = useState<LianaSteppedPause | null>(null);
+  const [steppedResponseText, setSteppedResponseText] = useState('');
+  const [steppedAnswering, setSteppedAnswering] = useState(false);
+  const steppedResponseRef = useRef<HTMLTextAreaElement>(null);
+
   // D-BP150-002/BISHOP/S02/seg-notesrecall -- HIS EARLIER NOTES, AVAILABLE MID-PAUSE.
   // Founder, BP150: "post whichever of my notes I want into the textbox I'm typing in, so I don't
   // have to go read it, or do it from memory." His qid 85 walk notes ARE the spec for the method
@@ -382,6 +398,61 @@ export function LianaCycleTab() {
     return () => { unsub?.(); };
   }, []);
 
+  // D-BP151-023 -- same push convention, one level up (per-step, not per-call).
+  useEffect(() => {
+    if (!window.amplify?.onLianaSteppedPause) return;
+    const unsub = window.amplify.onLianaSteppedPause((pause) => {
+      setActiveSteppedPause(pause);
+      setSteppedResponseText('');
+    });
+    return () => { unsub?.(); };
+  }, []);
+
+  useEffect(() => {
+    if (activeSteppedPause) steppedResponseRef.current?.focus();
+  }, [activeSteppedPause]);
+
+  // THE ONLY WAY A STEP PAUSE ENDS FROM THIS SIDE. Per HARDWIRE-23 ("this build adds no decision
+  // rule"), `approve`/`correct`/`redirect` are recorded and change nothing about how the run
+  // proceeds -- see stepped_audible.ts's header. Only `abandon` has a real effect.
+  const answerSteppedPause = useCallback(async (action: LianaSteppedAction) => {
+    const pause = activeSteppedPause;
+    if (!pause || steppedAnswering) return;
+    if (!window.amplify?.lianaSteppedRespond) {
+      setTranscript((prev) => [...prev, {
+        kind: 'error',
+        text: 'Preload bridge missing (lianaSteppedRespond) -- rebuild main and restart the app.',
+        ts: new Date().toISOString(),
+      }]);
+      return;
+    }
+    setSteppedAnswering(true);
+    try {
+      await window.amplify.lianaSteppedRespond({
+        pauseId: pause.pauseId,
+        action,
+        text: steppedResponseText || undefined,   // VERBATIM -- never trimmed, reformatted, or summarized
+      });
+      const bits = [`stepped audible: step ${pause.stepIndex}/${pause.stepTotal} (${pause.step.codeLabel}): ${action}`];
+      if (steppedResponseText.trim()) bits.push(`response saved (${steppedResponseText.trim().length} chars)`);
+      setTranscript((prev) => [...prev, {
+        kind: 'fact', text: `  ${bits.join(' · ')}`, ts: new Date().toISOString(),
+      }]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setTranscript((prev) => [...prev, { kind: 'error', text: `stepped audible respond threw: ${msg}`, ts: new Date().toISOString() }]);
+    } finally {
+      setSteppedAnswering(false);
+      setActiveSteppedPause(null);
+      setSteppedResponseText('');
+    }
+  }, [activeSteppedPause, steppedAnswering, steppedResponseText]);
+
+  // Enter makes a newline. Only a button acts -- same rule as the audible boxes.
+  const handleSteppedResponseKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void answerSteppedPause('approve'); }
+  };
+
   // Focus whichever box the operator will actually type in at this phase: the query on the way
   // out (the one he can change), the note on the way back (the query is history by then).
   useEffect(() => {
@@ -470,16 +541,22 @@ export function LianaCycleTab() {
     // one. Its pauseId is already dead in main's table, but leaving it on screen would invite a
     // click that silently does nothing.
     setActivePause(null);
+    // D-BP151-023: same reasoning, for a stepped pause left over from a previous run.
+    setActiveSteppedPause(null);
     setTranscript((prev) => [
       ...prev,
-      { kind: 'header', text: `═══ RUN  "${text}"${audibleMode ? '   [CALL AN AUDIBLE ON]' : ''}`, ts: new Date().toISOString() },
+      {
+        kind: 'header',
+        text: `═══ RUN  "${text}"${audibleMode ? '   [CALL AN AUDIBLE ON]' : ''}${steppedMode ? '   [STEPPED AUDIBLE ON]' : ''}`,
+        ts: new Date().toISOString(),
+      },
     ]);
     const nextRecent = [text, ...recent.filter((r) => r !== text)].slice(0, MAX_RECENT);
     setRecent(nextRecent);
     saveRecent(nextRecent);
     setInput('');
     try {
-      const outcome = await window.amplify.lianaTerminalRun(text, audibleMode);
+      const outcome = await window.amplify.lianaTerminalRun(text, audibleMode, steppedMode);
       setLastOutcome(outcome);
       setLastRunEvents(runEventsRef.current.slice());
     } catch (err) {
@@ -490,9 +567,10 @@ export function LianaCycleTab() {
       // A run that ended (resolved, threw, or was abandoned from inside a pause) leaves no pause
       // to answer. Main has already released it; this clears the panel to match.
       setActivePause(null);
+      setActiveSteppedPause(null);
       inputRef.current?.focus();
     }
-  }, [input, running, recent, audibleMode, walkHasUnsavedWork, pendingDiscard]);
+  }, [input, running, recent, audibleMode, steppedMode, walkHasUnsavedWork, pendingDiscard]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') { e.preventDefault(); void handleRun(); }
@@ -693,6 +771,26 @@ export function LianaCycleTab() {
         >
           Call an Audible{audibleMode ? ' · ARMED' : ''}
         </button>
+        {/* D-BP151-023/BISHOP/seg-stepped-audible -- STEPPED AUDIBLE. Founder, BP151: "list my
+            steps, and then show it happen, then stop before the next step and shows suggestions,
+            for me to respond to or correct." Separate control from Call an Audible above --
+            per-STEP, not per-call, and only comparative-cascade runs are mapped (see
+            stepped_audible.ts's header). */}
+        <button
+          type="button"
+          onClick={() => setSteppedMode((v) => !v)}
+          disabled={running}
+          title={'List the run\'s steps up front, then stop once per step -- after it completes, before the next begins -- until you respond.\nOnly comparative-cascade questions (e.g. qid 98) are mapped; other methods run unaffected, same as OFF.'}
+          style={{
+            background: steppedMode ? 'linear-gradient(135deg, #7c3aed, #a78bfa)' : 'none',
+            border: `1px solid ${steppedMode ? '#a78bfa' : '#334155'}`, borderRadius: 5,
+            color: running ? '#334155' : steppedMode ? '#0d1117' : '#94a3b8',
+            fontSize: 11, fontWeight: 700, padding: '3px 9px',
+            cursor: running ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+          }}
+        >
+          Stepped Audible{steppedMode ? ' · ARMED' : ''}
+        </button>
         <button
           type="button"
           onClick={handleClear}
@@ -723,6 +821,20 @@ export function LianaCycleTab() {
           NEXT run you start. Type a question or qid and press Enter; the run will stop before every
           Google query, and again on what comes back, and wait until you press a button. It does
           nothing to a run that has already finished — for that, use Audit the Run.
+        </div>
+      )}
+
+      {steppedMode && !activeSteppedPause && (
+        <div style={{
+          margin: '0 16px 8px', padding: '7px 12px', background: '#2a1b47',
+          border: '1px solid #7c3aed', borderRadius: 6, color: '#c4b5fd', fontSize: 12,
+          fontFamily: 'system-ui, sans-serif',
+        }}>
+          <strong>Stepped Audible is ARMED — nothing is paused yet.</strong> On the NEXT run, the
+          full step list prints first (each step is his own numbered step, verbatim, or marked
+          UNATTRIBUTED — TARE), then the run stops once per step — after it completes, before the
+          next begins — and waits until you respond. Only comparative-cascade questions (e.g. qid
+          98) are mapped; any other method runs unaffected, exactly as if this were off.
         </div>
       )}
 
@@ -1040,6 +1152,145 @@ export function LianaCycleTab() {
               <div style={{ fontSize: 10, color: '#475569', fontFamily: 'system-ui, sans-serif' }}>
                 Ending keeps every note you have typed so far. Skipping is not an error -- the
                 methods already handle a call that returns nothing.
+              </div>
+            </div>
+          </>
+        ) : activeSteppedPause ? (
+          <>
+            {/* D-BP151-023/BISHOP/seg-stepped-audible -- STEPPED AUDIBLE, THE LIVE PER-STEP
+                PAUSE. The run is STOPPED right now, inside the engine, waiting on this panel --
+                no timer, same rule as Call an Audible. LEFT: everything the just-completed step
+                actually emitted, verbatim (TranscriptLine, same component the plain transcript
+                uses -- nothing here is truncated or re-derived). RIGHT: which of the Founder's
+                steps this was (or TARE), the process document's own lettered suggestions (no
+                authority), and his response. */}
+            <div style={{
+              flex: 1.6, minWidth: 0, background: '#05080d', overflowY: 'auto', padding: '10px 14px',
+              fontFamily: 'Consolas, "Courier New", monospace', fontSize: 12, lineHeight: 1.5,
+            }}>
+              <div style={{ color: '#c4b5fd', fontWeight: 700, marginBottom: 8, fontFamily: 'system-ui, sans-serif', fontSize: 13 }}>
+                STEPPED AUDIBLE -- step {activeSteppedPause.stepIndex} of {activeSteppedPause.stepTotal} just completed: {activeSteppedPause.step.codeLabel}
+              </div>
+              {activeSteppedPause.events.map((evt, i) => <TranscriptLine key={i} evt={evt} />)}
+            </div>
+
+            <div style={{ width: 6, flexShrink: 0, background: '#1e2a38' }} />
+
+            <div style={{ width: rightW || 280, flexShrink: 0, background: '#0d1117', padding: 14, display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto' }}>
+              <div style={{ color: '#c4b5fd', fontWeight: 700, fontFamily: 'system-ui, sans-serif', fontSize: 13 }}>
+                STEP {activeSteppedPause.stepIndex}/{activeSteppedPause.stepTotal} -- {activeSteppedPause.step.attribution === 'ATTRIBUTED' ? `Founder step ${activeSteppedPause.step.founderStepNumber}` : 'UNATTRIBUTED — TARE'}
+              </div>
+              <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'system-ui, sans-serif' }}>
+                The run is stopped inside the engine right now. It waits until you press a button --
+                there is no timer.
+              </div>
+
+              {activeSteppedPause.step.attribution === 'ATTRIBUTED' ? (
+                <div style={{
+                  background: '#111827', border: '1px solid #334155', borderRadius: 6, padding: '8px 10px',
+                  fontSize: 12, color: '#e2e8f0', fontFamily: 'Consolas, monospace', lineHeight: 1.5, whiteSpace: 'pre-wrap',
+                }}>
+                  “{activeSteppedPause.step.founderWords}”
+                  <div style={{ marginTop: 6, fontSize: 10, color: '#64748b', fontFamily: 'system-ui, sans-serif' }}>
+                    — {activeSteppedPause.step.founderSource}
+                  </div>
+                </div>
+              ) : (
+                <div style={{
+                  background: '#2a1414', border: '1px solid #7f1d1d', borderRadius: 6, padding: '8px 10px',
+                  fontSize: 12, color: '#fca5a5', fontFamily: 'system-ui, sans-serif', lineHeight: 1.5,
+                }}>
+                  This step has NO Founder order behind it. It is not one of his numbered steps --
+                  surfaced here rather than silently mapped to one it does not fit (HARDWIRE-23).
+                </div>
+              )}
+
+              {activeSteppedPause.suggestions.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif', fontWeight: 700, marginBottom: 4 }}>
+                    Bishop suggestions — NO authority, may be struck without consequence:
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {activeSteppedPause.suggestions.map((s, i) => (
+                      <li key={i} style={{ fontSize: 11, color: '#a1a1aa', fontFamily: 'system-ui, sans-serif', lineHeight: 1.4 }}>{s}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <label style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif' }}>
+                Your response or correction (recorded verbatim as the authority record; blank is fine)
+              </label>
+              <textarea
+                ref={steppedResponseRef}
+                value={steppedResponseText}
+                onChange={(e) => setSteppedResponseText(e.target.value)}
+                onKeyDown={handleSteppedResponseKeyDown}
+                disabled={steppedAnswering}
+                rows={8}
+                wrap="soft"
+                placeholder={'Type as much as you want. Enter makes a new line.\nNothing advances until you press a button (or Ctrl+Enter for Approve).'}
+                style={{
+                  background: '#05080d', border: '1px solid #334155', borderRadius: 6, color: '#e2e8f0',
+                  padding: '8px 10px', fontSize: 13, fontFamily: 'Consolas, monospace', outline: 'none',
+                  width: '100%', boxSizing: 'border-box', minHeight: 160, resize: 'vertical',
+                  whiteSpace: 'pre-wrap', overflowWrap: 'break-word', lineHeight: 1.5,
+                }}
+              />
+
+              <button
+                type="button"
+                onClick={() => void answerSteppedPause('approve')}
+                disabled={steppedAnswering}
+                style={{
+                  background: steppedAnswering ? '#1e2a38' : 'linear-gradient(135deg, #059669, #10b981)',
+                  color: steppedAnswering ? '#64748b' : '#fff', border: 'none', borderRadius: 6,
+                  padding: '8px 10px', fontSize: 13, fontWeight: 700, cursor: steppedAnswering ? 'default' : 'pointer',
+                  fontFamily: 'system-ui, sans-serif', outline: 'none',
+                }}
+              >
+                {steppedAnswering ? 'Sending…' : 'Approve — next step ▸'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void answerSteppedPause('correct')}
+                disabled={steppedAnswering}
+                style={{
+                  background: 'none', border: '1px solid #a78bfa', borderRadius: 6,
+                  color: steppedAnswering ? '#334155' : '#c4b5fd', padding: '7px 10px', fontSize: 12, fontWeight: 700,
+                  cursor: steppedAnswering ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+                }}
+              >
+                Correct — record this as a correction, next step ▸
+              </button>
+              <button
+                type="button"
+                onClick={() => void answerSteppedPause('redirect')}
+                disabled={steppedAnswering}
+                style={{
+                  background: 'none', border: '1px solid #334155', borderRadius: 6,
+                  color: steppedAnswering ? '#334155' : '#94a3b8', padding: '7px 10px', fontSize: 12,
+                  cursor: steppedAnswering ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+                }}
+              >
+                Redirect — record for a future build, next step ▸
+              </button>
+              <button
+                type="button"
+                onClick={() => void answerSteppedPause('abandon')}
+                disabled={steppedAnswering}
+                style={{
+                  background: 'none', border: '1px solid #7f1d1d', borderRadius: 6,
+                  color: steppedAnswering ? '#334155' : '#fca5a5', padding: '7px 10px', fontSize: 12, fontWeight: 700,
+                  cursor: steppedAnswering ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+                }}
+              >
+                End the run
+              </button>
+              <div style={{ fontSize: 10, color: '#475569', fontFamily: 'system-ui, sans-serif' }}>
+                None of these four buttons change what the method already did or does next — this
+                panel only observes and records (HARDWIRE-23). Ending keeps every response typed so
+                far.
               </div>
             </div>
           </>
