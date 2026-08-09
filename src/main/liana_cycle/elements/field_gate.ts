@@ -495,16 +495,38 @@ export async function askFields(
   const byName = new Map<string, FieldCandidate>();
   const discarded: FieldDiscardedBlock[] = [];
 
-  for (const q of queries) {
+  // D-BP151-006 PARSER INSTRUMENT (OBSERVATION ONLY -- no rule/threshold/order below this line is
+  // changed by this ticket). Answers ONE question: when the field gate asks Google for the field
+  // of study, does "statistics" come back and get lost, or does it never come back at all? Every
+  // note() below is emitted via ctx.emit, exactly like every other note()/fact()/step() already in
+  // this file, so it lands in the run receipt's `transcript` array (main/index.ts, D-BP150-015)
+  // through the SAME mechanism -- no parallel logging path is invented.
+  note(`   PARSER INSTRUMENT: ${queries.length} field quer(y/ies) queued to send, in order: `
+    + queries.map((q, i) => `[q${i}] "${q}"`).join(' | '));
+
+  for (const [qIndex, q] of queries.entries()) {
     step(`field ask -- ${q}`);
-    note(`   ${q}`);
+    note(`   [q${qIndex}] ${q}`);
     // eslint-disable-next-line no-await-in-loop -- two queries, sequential, same pattern as survey_ask.ts
     const res = await googleBlocks(askGoogle, q);
     if (!res.ok) {
       note(`   no answer (${res.via})`);
+      note(`   PARSER INSTRUMENT [q${qIndex}] RAW RETURN: res.ok=false, via=${res.via} -- no blocks to log`);
       continue;
     }
     fact(`Google [${res.via}]: ${res.blocks.length} block(s) returned for "${q}"`);
+
+    // PARSER INSTRUMENT -- the RAW, UNTRUNCATED (unless noted) text/blocks returned for this
+    // query, logged BEFORE any extraction touches them. A separate read-only pass over res.blocks
+    // so it cannot perturb the extraction loop below in any way.
+    res.blocks.forEach((block, bi) => {
+      const rawBody = block.body ?? '';
+      const isTrunc = rawBody.length > 4000;
+      const bodyLogged = isTrunc ? `${rawBody.slice(0, 4000)}` : rawBody;
+      note(`   PARSER INSTRUMENT [q${qIndex}][block${bi}] RAW GOOGLE RETURN -- kind=${block.kind || '(none)'} `
+        + `url=${block.url || '(no url)'} title="${block.title || '(no title)'}" `
+        + `body${isTrunc ? ' (TRUNCATED at 4000 chars, full untruncated length was ' + rawBody.length + ')' : ' (untruncated, verbatim)'}="${bodyLogged}"`);
+    });
 
     for (const block of res.blocks) {
       const passage = [block.title, block.body].filter(Boolean).join(' -- ');
@@ -512,6 +534,11 @@ export async function askFields(
         discarded.push({ query: q, sourceUrl: block.url, sourceTitle: block.title, why: 'block carried no text (title and body both empty)' });
         continue;
       }
+
+      // PARSER INSTRUMENT -- the exact input handed to gemmaExtract(), verbatim, before any
+      // parsing/normalization happens to it.
+      const passageForLog = passage.length > 4000 ? passage.slice(0, 4000) : passage;
+      note(`   PARSER INSTRUMENT [q${qIndex}] gemmaExtract INPUT -- passage${passage.length > 4000 ? ' (TRUNCATED at 4000 chars, full untruncated length was ' + passage.length + ')' : ' (untruncated, verbatim)'}="${passageForLog}"`);
 
       // eslint-disable-next-line no-await-in-loop -- one Gemma call per block, same as survey_ask.ts
       const ex = await gemmaExtract(
@@ -522,6 +549,10 @@ export async function askFields(
         passage,
         '{"fields":["a field or subject name copied verbatim from the passage, or empty list if none is named"]}',
       );
+
+      // PARSER INSTRUMENT -- the exact raw output of gemmaExtract(), before ANY parsing or
+      // normalization (rawFields below is the first thing that touches it).
+      note(`   PARSER INSTRUMENT [q${qIndex}] gemmaExtract RAW OUTPUT -- ${JSON.stringify(ex)}`);
 
       const rawFields = Array.isArray(ex?.fields) ? (ex!.fields as unknown[]) : [];
       let verifiedAny = false;
@@ -621,6 +652,17 @@ export async function fieldGate(
 
   const { queries, candidates, discarded } = await askFields(term, ctx, options);
 
+  // PARSER INSTRUMENT -- the candidate list immediately after extraction (askFields(), including
+  // its FIX3 near-duplicate pooling), BEFORE eliminateByVocabulary() (STEP 2) runs below. This is
+  // the single most decisive readout for the boundary question this ticket exists to answer: if
+  // "statistics" (or any expected name) is not in this list, it was lost at or before extraction,
+  // not by elimination.
+  note(`   PARSER INSTRUMENT: candidate list immediately after extraction, BEFORE any elimination rule runs -- `
+    + `${candidates.length} candidate(s): `
+    + (candidates.length
+      ? candidates.map((c) => `"${c.name}" (${c.passages.length} sourced passage(s), source=${c.sourceUrl || '(no url)'})`).join(' | ')
+      : '(none)'));
+
   if (!candidates.length) {
     const why = `no verifiable field/subject name found for "${term}" across ${queries.length} quer(y/ies) `
       + `(${discarded.length} source block(s) consulted and discarded) -- falling back to the unconstrained survey, not eliminating anything`;
@@ -640,6 +682,16 @@ export async function fieldGate(
 
   for (const o of outcomes) {
     note(`   field "${o.name}": ${o.why}`);
+    // PARSER INSTRUMENT -- for each elimination rule application: candidate, rule, decision,
+    // reason, laid out as discrete labeled fields (the line above carries the same information in
+    // prose; this line is the machine-greppable form). Rule is named explicitly because
+    // eliminateByVocabulary() is the ONLY place a candidate is removed from `survivors` in this
+    // file (STEP 2) -- the structural discards (FIX 2's containsTermAsWholeWord/
+    // isSourceNameArtifact) happen earlier, inside askFields(), and are already logged there at
+    // the point they fire.
+    note(`   PARSER INSTRUMENT elimination -- candidate="${o.name}" rule=eliminateByVocabulary(STEP2 vocabulary-overlap) `
+      + `decision=${o.survives ? 'SURVIVES' : 'ELIMINATED'} `
+      + `candidateVocabWordCount=${o.vocabulary.length} supportingWords=[${o.supportingWords.join(', ')}] reason="${o.why}"`);
   }
 
   // D-BP150-019 correction, item 3. CONFIRMATION, not elimination -- see confirmsFieldOfStudy()'s
