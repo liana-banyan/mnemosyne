@@ -193,6 +193,22 @@ export function LianaCycleTab() {
   const [walkResult, setWalkResult] = useState<{ ok: boolean; filePath?: string; bytes?: number; error?: string } | null>(null);
   const walkInputRef = useRef<HTMLTextAreaElement>(null);
 
+  // D-BP150-009 -- WARN BEFORE DISCARDING A WALK IN PROGRESS. Founder, BP150: "Warn before
+  // restarting."
+  //
+  // The Audit button itself is already guarded (`!walkActive`), so restarting from THERE cannot
+  // lose anything -- the previous walk had already submitted. The real discard path is handleRun:
+  // starting a NEW run while a walk is open calls setWalkActive(false) and the collected responses
+  // are simply dropped, with no write and no acknowledgement. Same defect class the Founder
+  // reported at BP149 ("a walk that throws away your annotations because you quit early is worse
+  // than no walk"), reached by a different door.
+  //
+  // The warning OFFERS TO SAVE rather than only warning -- a dialog that can only say "you are
+  // about to lose this" is barely better than losing it.
+  const [pendingDiscard, setPendingDiscard] = useState<null | { kind: 'run'; text: string }>(null);
+  /** True when the walk holds anything the operator typed that has not reached disk. */
+  const walkHasUnsavedWork = walkActive && (Object.values(walkResponses).some((r) => r.trim()) || walkInput.trim().length > 0);
+
   // D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE. Founder, BP149: "a button or toggle
   // to 'let me redirect it before the next Google Call'."
   //
@@ -408,6 +424,14 @@ export function LianaCycleTab() {
       setBridgeMissing(true);
       return;
     }
+    // D-BP150-009: an open walk holding untyped-to-disk notes must not be silently wiped by
+    // starting a new run. Stop, hold the question, and let him choose. Bypassed by the banner's
+    // own buttons, which call runNow() directly.
+    if (walkHasUnsavedWork && !pendingDiscard) {
+      setPendingDiscard({ kind: 'run', text });
+      return;
+    }
+    setPendingDiscard(null);
     setRunning(true);
     setLastOutcome(null);
     setTeachText('');
@@ -444,7 +468,7 @@ export function LianaCycleTab() {
       setActivePause(null);
       inputRef.current?.focus();
     }
-  }, [input, running, recent, audibleMode]);
+  }, [input, running, recent, audibleMode, walkHasUnsavedWork, pendingDiscard]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') { e.preventDefault(); void handleRun(); }
@@ -675,6 +699,54 @@ export function LianaCycleTab() {
           NEXT run you start. Type a question or qid and press Enter; the run will stop before every
           Google query, and again on what comes back, and wait until you press a button. It does
           nothing to a run that has already finished — for that, use Audit the Run.
+        </div>
+      )}
+
+      {/* D-BP150-009 -- WARN BEFORE DISCARDING A WALK. Founder, BP150: "Warn before restarting."
+          Offers to SAVE, not merely to warn: a dialog whose only options are "lose it" and "go
+          back" is barely better than losing it. "Save them first" runs the same submit path the
+          End-the-audit button uses, so everything typed reaches disk before the new run starts. */}
+      {pendingDiscard && (
+        <div style={{
+          margin: '0 16px 8px', padding: '9px 12px', background: '#3b0d0d',
+          border: '1px solid #b91c1c', borderRadius: 6, color: '#fca5a5', fontSize: 12,
+          fontFamily: 'system-ui, sans-serif',
+        }}>
+          <strong>You have notes in the open audit that are not on disk yet.</strong> Starting
+          “{pendingDiscard.text}” would discard them.
+          <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => { const idx = walkIndex; void submitWalk({ ...walkResponses, [idx]: walkInput }, true, idx); setPendingDiscard(null); }}
+              style={{
+                background: 'linear-gradient(135deg, #059669, #10b981)', color: '#fff', border: 'none',
+                borderRadius: 5, padding: '5px 11px', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                fontFamily: 'system-ui, sans-serif', outline: 'none',
+              }}
+            >
+              Save them first, then run
+            </button>
+            <button
+              type="button"
+              onClick={() => { setWalkActive(false); setWalkResponses({}); setWalkInput(''); setPendingDiscard(null); void handleRun(); }}
+              style={{
+                background: 'none', border: '1px solid #7f1d1d', borderRadius: 5, color: '#fca5a5',
+                padding: '5px 11px', fontSize: 12, cursor: 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+              }}
+            >
+              Discard and run anyway
+            </button>
+            <button
+              type="button"
+              onClick={() => setPendingDiscard(null)}
+              style={{
+                background: 'none', border: '1px solid #334155', borderRadius: 5, color: '#94a3b8',
+                padding: '5px 11px', fontSize: 12, cursor: 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+              }}
+            >
+              Cancel, stay in the audit
+            </button>
+          </div>
         </div>
       )}
 
