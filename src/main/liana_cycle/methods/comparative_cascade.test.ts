@@ -52,7 +52,7 @@ const distPath = path.join(
 );
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const mod = require(distPath) as typeof import('./comparative_cascade');
-const { toPerSqKm, evaluateComparativeTerminator } = mod;
+const { toPerSqKm, evaluateComparativeTerminator, orderOfMagnitude } = mod;
 
 console.log('comparative_cascade.test.ts -- FIX 2 (D-BP151-013): toPerSqKm() unit-RATE proof\n');
 
@@ -150,18 +150,30 @@ console.log('comparative_cascade.test.ts -- FIX 2 (D-BP151-013): toPerSqKm() uni
 // SUPERSEDES the D-BP151-020/FIX-1-era tests below (that design gated a hard number on VOTE
 // convergence -- Founder Ruling 2, BP151, corrects the underlying reading of his qid-98
 // conclusion: "consistently across all questions" names his VALUE agreeing with itself, not an
-// option winning a vote count). Two Founder rulings tested here, both BP151, both filed
-// BISHOP_DROPZONE\FOUNDER_DECISIONS_BP151.md:
+// option winning a vote count). Three Founder rulings tested here, all BP151:
 //   Ruling 1 (Q-13a): "yes remove it" -- sole-survivor auto-declare no longer exists.
 //   Ruling 2: "Value convergence is undeniable, so that one ... only if value convergence is
 //   non-existent, it trumps vote convergence every time."
+//   Ruling 3 (the "agree" fork, answered same ticket): "Order of magnitude works as the basis" --
+//   see detectValueConvergence()'s and orderOfMagnitude()'s own doc comments in
+//   comparative_cascade.ts for the full citation and the verification against his own qid-98 data.
 
 console.log('\ncomparative_cascade.test.ts -- D-BP151-024: evaluateComparativeTerminator()\n');
 
-// 5a. (ticket item a) HIS REAL qid-98 CASE: A's value self-agrees EXACTLY across two framings
-// (25, 25 -- the one pair of his own five qid-98 readings, ~26-33/~24/~22/25/25, that requires no
-// invented tolerance to recognize as "the same figure" -- see detectValueConvergence()'s doc
-// comment for why the wider span is a fork this ticket does not resolve) while the VOTES are
+// 5a0. orderOfMagnitude() itself, direct: the exact numbers this ticket's own citations depend on,
+// plus the 99/101 boundary the ticket asked to be identified explicitly.
+{
+  assert(orderOfMagnitude(22) === 1, 'orderOfMagnitude(22) is 10^1 (tens)', String(orderOfMagnitude(22)));
+  assert(orderOfMagnitude(33) === 1, 'orderOfMagnitude(33) is 10^1 (tens) -- same as 22', String(orderOfMagnitude(33)));
+  assert(orderOfMagnitude(175) === 2, 'orderOfMagnitude(175) is 10^2 (hundreds)', String(orderOfMagnitude(175)));
+  assert(orderOfMagnitude(1192) === 3, 'orderOfMagnitude(1192) is 10^3 (thousands, Java\'s real qid-98 figure)', String(orderOfMagnitude(1192)));
+  assert(orderOfMagnitude(100) === 2, 'orderOfMagnitude(100) is exactly 10^2, not 10^1 -- the floating-point epsilon guard holds at an exact power of ten', String(orderOfMagnitude(100)));
+  assert(orderOfMagnitude(99) === 1, 'BOUNDARY: orderOfMagnitude(99) is 10^1', String(orderOfMagnitude(99)));
+  assert(orderOfMagnitude(101) === 2, 'BOUNDARY: orderOfMagnitude(101) is 10^2 -- DIFFERENT from 99 even though only 2 apart (strict reading, not smoothed)', String(orderOfMagnitude(101)));
+}
+
+// 5a. (ticket item a) HIS REAL qid-98 CASE: A's value self-agrees across two framings (25, 25 --
+// exact equality is a trivially passing case of "same order of magnitude") while the VOTES are
 // split and would, by themselves, favor B (2 votes vs A's 1). Value convergence must OVERRIDE the
 // vote signal -- exactly Ruling 2's "it trumps vote convergence every time".
 {
@@ -172,6 +184,47 @@ console.log('\ncomparative_cascade.test.ts -- D-BP151-024: evaluateComparativeTe
   const r = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated', densityObservations);
   assert(r.verdict === 'A', 'his real qid-98 exact-repeat (A: 25, 25) terminates on VALUE CONVERGENCE, overriding votes that favored B', JSON.stringify(r));
   assert(/value convergence/i.test(r.basis) && /Value convergence is undeniable/.test(r.basis), 'the verdict basis carries Founder Ruling 2\'s own words, not a vote-count claim', r.basis);
+}
+
+// 5a2. THE FORK, NOW ANSWERED: his own real 22-vs-33 spread (South America's own qid-98 figures,
+// RECOVERED_BP144.md lines 76/210) -- previously reported UNDETERMINED under the exact-equality
+// floor, now AGREES because 22 and 33 share order of magnitude 10^1. Votes are split (favor B,
+// same shape as 5a) -- value convergence must still override.
+{
+  const pool = ['A', 'B'];
+  const densities = { A: 22, B: 34 }; // both voted-least options covered, so the coverage precondition does not withhold branch 1
+  const leastVotes = { A: 1, B: 2 };
+  const densityObservations = { A: [22, 33], B: [34] }; // his own real spread for A
+  const r = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated', densityObservations);
+  assert(r.verdict === 'A', 'his real 22-vs-33 spread now AGREES (both 10^1) and terminates on value convergence -- the fork is resolved', JSON.stringify(r));
+  assert(/order of magnitude/i.test(r.basis) || r.notes.some((n) => /order of magnitude/i.test(n)), 'the receipt names order-of-magnitude as the agreement test that fired', JSON.stringify(r));
+}
+
+// 5a3. A GENUINE cross-magnitude disagreement (not the old undetermined-fork case -- an honest
+// NO under the now-answered rule): 25 (10^1) vs 250 (10^2) for the same option must NOT agree.
+// Falls through to the vote fallback since no value convergence exists.
+{
+  const pool = ['A', 'B'];
+  const densities = { A: 25, B: 500 }; // both voted-least options covered, so the coverage precondition does not withhold branch 1
+  const leastVotes = { B: 2, A: 0 };
+  const densityObservations = { A: [25, 250] }; // same option, two orders of magnitude apart
+  const r = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated', densityObservations);
+  assert(r.verdict === 'B', 'a genuine cross-magnitude spread (25 vs 250) does NOT self-agree -- falls through to the vote fallback (B)', JSON.stringify(r));
+  assert(r.notes.some((n) => /NOT self-agreeing/.test(n)), 'the receipt records that A was evaluated and found not to self-agree, not silently skipped', JSON.stringify(r.notes));
+}
+
+// 5a4. THE BOUNDARY CASE, exercised inside the real terminator: 99 and 101 for the same option
+// straddle the 10^2 power-of-ten boundary. Per the ticket's instruction, this is the STRICT
+// reading (not smoothed) -- they do NOT agree, even though the numeric gap (2) is far smaller than
+// 5a2's agreeing 22-vs-33 gap (11).
+{
+  const pool = ['A', 'B'];
+  const densities = { A: 99 };
+  const leastVotes: Record<string, number> = {};
+  const densityObservations = { A: [99, 101] };
+  const r = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated', densityObservations);
+  assert(r.verdict === null, 'the 99-vs-101 boundary case does NOT self-agree under the strict order-of-magnitude test, and nothing else fires -- ABSTAIN', JSON.stringify(r));
+  assert(r.notes.some((n) => /NOT self-agreeing/.test(n) && /10\^1, 10\^2/.test(n)), 'the receipt shows the two different orders of magnitude (10^1, 10^2) explicitly, not just a bare rejection', JSON.stringify(r.notes));
 }
 
 // 5b. (ticket item b) NO VALUES AT ALL -- falls back to votes. Coverage precondition (ATTRIBUTED,
@@ -219,19 +272,17 @@ console.log('\ncomparative_cascade.test.ts -- D-BP151-024: evaluateComparativeTe
   assert(/TARE/.test(r.basis), 'earned via the vote fallback (TARE), not the removed sole-survivor rule', r.basis);
 }
 
-// 5e. THE FORK, EXERCISED: two observations for the same option that do NOT exactly match (his
-// own real 22-vs-33 shape) must be reported UNDETERMINED, never guessed into agreement or
-// disagreement -- per this ticket's explicit instruction not to invent a tolerance. Falls through
-// to votes (none here either) and ABSTAINS, with the fork visible in the receipt (HARDWIRE-23 Law
-// 5: the receipt must show which rule decided, or that none could).
+// 5e. HIS REAL JAVA FIGURES (RECOVERED_BP144.md lines 98/220/233/245: "Exceeds 1,100", "~1,192",
+// "1,192", "~1,160+"), all thousands, all order of magnitude 10^3 -- self-agrees, same as South
+// America's own tens, at a completely different magnitude. Demonstrates the rule is not tuned to
+// one option's scale.
 {
-  const pool = ['A', 'B'];
-  const densities = { A: 22 };
+  const pool = ['H'];
+  const densities = { H: 1100 };
   const leastVotes: Record<string, number> = {};
-  const densityObservations = { A: [22, 33] }; // his own real spread -- not an exact match
+  const densityObservations = { H: [1100, 1192, 1192, 1160] };
   const r = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated', densityObservations);
-  assert(r.verdict === null, 'a non-exact multi-framing spread (22 vs 33) does not terminate -- the agreement rule for this case is an unresolved fork, not implemented', JSON.stringify(r));
-  assert(r.notes.some((n) => /FORK/.test(n)), 'the receipt names the fork explicitly rather than silently abstaining with no explanation', JSON.stringify(r.notes));
+  assert(r.verdict === 'H', 'Java\'s real qid-98 readings (1,100/1,192/1,192/1,160), all 10^3, self-agree independent of scale', JSON.stringify(r));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
