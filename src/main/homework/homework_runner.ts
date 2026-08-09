@@ -21,6 +21,7 @@
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
 import { basename, join, resolve } from 'path';
 import { homedir } from 'os';
+import { spawn } from 'child_process';
 import { app, powerMonitor } from 'electron';
 import { ollamaManager } from '../ollama_manager';
 import { FLOOR_MODEL } from '../../shared/floor-model';
@@ -189,6 +190,12 @@ interface ForageResult {
 // convention env_loader.ts's loadWorkingKeysEnv() already uses for the sibling LockBox path.
 
 function canonVaultDir(): string {
+  // Test-only escape hatch (D-BP151-021's own test writes here instead of the real Vault —
+  // LB-GOLD-0399 vault-sacrosanct, a test must never mint into Asteroid-ProofVault). Unset in
+  // production; same override convention canon_threshold_classifier.ts's own
+  // CANON_CLASSIFIER_VAULT_ROOT already uses.
+  const testOverride = process.env.HOMEWORK_TEST_CANON_VAULT_DIR;
+  if (testOverride && testOverride.trim() !== '') return resolve(testOverride);
   return resolve(homedir(), 'Documents', 'Asteroid-ProofVault', 'state', 'eblets', 'CANON');
 }
 
@@ -200,6 +207,170 @@ function slugifyForForage(label: string): string {
   return slug.length > 0 ? slug : 'source';
 }
 
+// ─── CANON classification AT MINT TIME (D-BP151-021/BISHOP/seg-classify-at-mint) ──────
+//
+// ATTRIBUTED: Founder, BP151, verbatim (filed FD-BP151-09,
+// LianaBanyanPlatform\BISHOP_DROPZONE\FOUNDER_DECISIONS_BP151.md): "And lets just start
+// classifying minted eblets WHEN WE MINT THEM, from now on. I'm SICK of fixing old crap -
+// it's repainting the same 5 miles of highway, all over again. I yearn for the horizon.
+// Let's get there." Forward-looking only — this wires classification into the ONE live
+// code path in this repo (and librarian-mcp) confirmed to mint a new *.eblet.md file into
+// Asteroid-ProofVault\state\eblets\CANON\ (see mintForageEblet() below). No existing
+// eblet is read, reclassified, or touched by this block.
+//
+// Reuses librarian-mcp's proven canon_threshold_classifier.ts (Young Red Queen: 943/945
+// classified, pilot 39/40, fresh 30-sample 30/30 — D-BP149-020 applied its output to 852
+// eblets with zero conflicts on read-back) via mint_classify_bridge.mjs, a thin
+// child-process transport shim living in librarian-mcp/scripts/ (see that file's own
+// header for why a subprocess bridge is required rather than a static import: this app's
+// tsconfig is CommonJS/rootDir-src-main, the classifier is ESM and uses
+// import.meta.url). No classification judgment is reimplemented here or in the bridge —
+// both merely relay a call to the real, unmodified proposeEbletTags().
+//
+// HARD RULES, all from FD-BP151-09 / the ticket that ordered this wiring:
+//   - The classifier PROPOSES, never ratifies. machine_classified/human_ratified below
+//     are always true/false — a human ratifying this is a separate, later step this code
+//     never performs.
+//   - If the classifier refuses, is unreachable, times out, or errors, classifyForMint()
+//     resolves to the 'unclassified' status — it NEVER throws, and mintForageEblet()'s
+//     write proceeds exactly as if this block were absent. A refusal is a real result,
+//     never guessed into a type.
+//   - Confidence is NEVER read for any gating/ordering/filtering purpose here (per the
+//     Young Red Queen ratification note: 794 of 943 of her confidence scores sit at
+//     exactly 1.0 — not usable signal). This block does not forward confidence into the
+//     mint receipt at all.
+
+// Margin only — canon_threshold_classifier.ts's own DEFAULT_CLASSIFIER_CONFIG.timeout_ms
+// is 45000 for the Ollama call itself; this outer timeout exists solely to catch a hung
+// subprocess and never races the classifier's own internal timeout.
+const CLASSIFIER_BRIDGE_TIMEOUT_MS = 60_000;
+
+export interface MintClassificationReceipt {
+  metadata_type_status: 'proposal' | 'unclassified';
+  metadata_type: string | null;
+  metadata_type_reason: string;
+  metadata_type_classifier: string;
+  metadata_type_model: string;
+  metadata_type_machine_classified: true;
+  metadata_type_human_ratified: false;
+}
+
+function classifierBridgePath(): string {
+  return resolve(homedir(), 'Documents', 'LianaBanyanPlatform', 'librarian-mcp', 'scripts', 'mint_classify_bridge.mjs');
+}
+
+const CLASSIFIER_NAME = 'canon_threshold_classifier.ts/proposeEbletTags';
+
+function unclassifiedReceipt(reason: string, model = 'none'): MintClassificationReceipt {
+  return {
+    metadata_type_status: 'unclassified',
+    metadata_type: null,
+    metadata_type_reason: reason,
+    metadata_type_classifier: CLASSIFIER_NAME,
+    metadata_type_model: model,
+    metadata_type_machine_classified: true,
+    metadata_type_human_ratified: false,
+  };
+}
+
+/** Calls the real Young Red Queen classifier on content about to be minted, via the
+ *  child-process bridge (see file-header block above). Never throws; never blocks past
+ *  CLASSIFIER_BRIDGE_TIMEOUT_MS; any refusal/error/timeout resolves to the honest
+ *  'unclassified' status, never a guessed type — mintForageEblet()'s caller must proceed
+ *  with the mint regardless of what this function returns. */
+// Exported for homework_runner.test.ts (D-BP151-021) only — same "export the pure/testable
+// unit" convention this repo's other *.test.ts idiom relies on (e.g. comparative_cascade.ts's
+// toPerSqKm). No other caller outside this file and its test exists.
+export async function classifyForMint(candidate: {
+  relPath: string;
+  absPath: string;
+  currentFrontmatter: string;
+  bodyExcerpt: string;
+}): Promise<MintClassificationReceipt> {
+  const bridgePath = classifierBridgePath();
+  if (!existsSync(bridgePath)) {
+    return unclassifiedReceipt(`classifier bridge not found at ${bridgePath}`);
+  }
+
+  return new Promise<MintClassificationReceipt>((resolvePromise) => {
+    let settled = false;
+    const done = (result: MintClassificationReceipt) => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(result);
+    };
+
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn('node', [bridgePath], { stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (e) {
+      done(unclassifiedReceipt(`failed to spawn classifier bridge: ${String(e)}`));
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* non-fatal */ }
+      done(unclassifiedReceipt('classifier bridge timed out'));
+    }, CLASSIFIER_BRIDGE_TIMEOUT_MS);
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      done(unclassifiedReceipt(`classifier bridge process error: ${String(e)}`));
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        done(unclassifiedReceipt(`classifier bridge exited ${code}: ${stderr.slice(0, 300)}`));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout) as {
+          error?: string;
+          proposed_metadata_type?: string | null;
+          reason?: string;
+          model?: string;
+          degraded?: boolean;
+        };
+        if (parsed && parsed.error) {
+          done(unclassifiedReceipt(`classifier bridge reported: ${String(parsed.error).slice(0, 300)}`));
+          return;
+        }
+        if (!parsed || typeof parsed.proposed_metadata_type === 'undefined') {
+          done(unclassifiedReceipt('classifier bridge returned an unrecognized shape'));
+          return;
+        }
+        if (parsed.degraded || !parsed.proposed_metadata_type) {
+          done(unclassifiedReceipt(
+            String(parsed.reason ?? 'classifier returned no proposal'),
+            String(parsed.model ?? 'unknown'),
+          ));
+          return;
+        }
+        done({
+          metadata_type_status: 'proposal',
+          metadata_type: String(parsed.proposed_metadata_type),
+          metadata_type_reason: String(parsed.reason ?? ''),
+          metadata_type_classifier: CLASSIFIER_NAME,
+          metadata_type_model: String(parsed.model ?? 'unknown'),
+          metadata_type_machine_classified: true,
+          metadata_type_human_ratified: false,
+        });
+      } catch (e) {
+        done(unclassifiedReceipt(`classifier bridge output unparseable: ${String(e)}`));
+      }
+    });
+
+    child.stdin?.write(JSON.stringify(candidate));
+    child.stdin?.end();
+  });
+}
+
 /** Mint a CANON *.eblet.md file for one forage_eblet run. Additive only — filename embeds a
  *  fresh Date.now() timestamp so two runs (even on the same source file) can never collide and
  *  never overwrite an earlier mint; the CANON dir is created if missing (defensive — it should
@@ -207,14 +378,21 @@ function slugifyForForage(label: string): string {
  *  frontmatter + body shape of the hand-authored *.eblet.md files already in that directory
  *  (see canon_eblet_maturity_states_ratcheted_not_iron_cast_bp140.eblet.md), but honestly
  *  self-describes as unverified/Provisional per that same maturity-states canon — an unattended
- *  background summarization has no human/corroboration signal behind it. */
-function mintForageEblet(params: {
+ *  background summarization has no human/corroboration signal behind it.
+ *
+ *  D-BP151-021: now ADDITIVELY calls classifyForMint() (above) before writing, and folds its
+ *  MintClassificationReceipt into the frontmatter as metadata_type/metadata_type_status/etc.
+ *  Classification failure of any kind never prevents the mint — see classifyForMint()'s own
+ *  contract.
+ *
+ *  Exported for homework_runner.test.ts (D-BP151-021) only. */
+export async function mintForageEblet(params: {
   sourceLabel: string;
   sourcePath: string;
   model: string;
   summary: string;
   provenance: string;
-}): { ok: true; path: string } | { ok: false; reason: string } {
+}): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
   try {
     const canonDir = canonVaultDir();
     if (!existsSync(canonDir)) {
@@ -226,6 +404,15 @@ function mintForageEblet(params: {
     const filename = `forage_${slug}_${timestamp}.eblet.md`;
     const filePath = join(canonDir, filename);
     const nowIso = new Date(timestamp).toISOString();
+
+    // D-BP151-021: classify BEFORE writing (single write, no read-modify-write pass over
+    // an existing file) — the candidate body is exactly what is about to be written below.
+    const classification = await classifyForMint({
+      relPath: filename,
+      absPath: filePath,
+      currentFrontmatter: '',
+      bodyExcerpt: params.summary.slice(0, 1200),
+    });
 
     const body = [
       '---',
@@ -240,6 +427,14 @@ function mintForageEblet(params: {
       `model: ${params.model}`,
       `source_path: "${params.sourcePath}"`,
       `minted_at: ${nowIso}`,
+      // D-BP151-021/FD-BP151-09: additive-only fields, a PROPOSAL never a ratification.
+      `metadata_type: ${classification.metadata_type ?? 'unclassified'}`,
+      `metadata_type_status: ${classification.metadata_type_status}`,
+      `metadata_type_reason: "${classification.metadata_type_reason.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`,
+      `metadata_type_classifier: ${classification.metadata_type_classifier}`,
+      `metadata_type_model: ${classification.metadata_type_model}`,
+      `metadata_type_machine_classified: ${classification.metadata_type_machine_classified}`,
+      `metadata_type_human_ratified: ${classification.metadata_type_human_ratified}`,
       '---',
       '',
       `# Forage: ${params.sourceLabel}`,
@@ -258,7 +453,9 @@ function mintForageEblet(params: {
         "background substrate worker. Honest per computeHonestVerification()'s contract: an " +
         'unattended background summarization has no human/corroboration signal, so this eblet ' +
         'is truthfully **unverified** / **Provisional** maturity until independently ' +
-        'corroborated (see canon_eblet_maturity_states_ratcheted_not_iron_cast_bp140).',
+        'corroborated (see canon_eblet_maturity_states_ratcheted_not_iron_cast_bp140). ' +
+        'metadata_type above is a MACHINE PROPOSAL (canon_threshold_classifier.ts, D-BP151-021) ' +
+        '— not human-ratified; see metadata_type_status.',
       '',
     ].join('\n');
 
@@ -324,7 +521,7 @@ async function runForageEbletJob(item: HomeworkItem): Promise<ForageResult> {
 
   const provenance = `homework:forage_eblet:${label}:${Date.now()}`;
 
-  const mintResult = mintForageEblet({
+  const mintResult = await mintForageEblet({
     sourceLabel: label,
     sourcePath: source_path,
     model,
