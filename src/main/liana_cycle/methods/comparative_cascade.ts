@@ -27,9 +27,13 @@
 //     with re-inclusion (both halves always drawn from the FULL option set, never the narrowed
 //     pool -- see buildFounderQuestions() Q6/Q7 below, both list(ALL)), hard number per-option,
 //     then the terminator.
-//   - Terminator order: hard-number ranking at >=1.5x separation, then cross-framing
-//     convergence (leastVotes), then SOLE SURVIVOR (elimination leaving exactly one option IS
-//     the answer -- its absence is what made a correct BP149 run abstain before that fix).
+//   - Terminator order (D-BP151-020, FIX 1, replaces the removed 1.5x separation gate):
+//     hard-number ranking fires only when the lowest-value survivor is ALSO the cross-framing
+//     convergence winner (ATTRIBUTED -- Founder, qid-98 hand-worked conclusion, verbatim:
+//     "consistently across all questions" -- see the terminator block below for the full
+//     citation); then the pre-existing convergence-only fallback (TARE, strict majority required,
+//     ties abstain, tare-sweep D-BP151-019 row #10, unattributed, left unchanged by this ticket);
+//     then SOLE SURVIVOR (TARE, tare-sweep row #11, unattributed, left unchanged by this ticket).
 //
 // WHAT IS GENERALIZED, AND WHY IT HAS TO BE: qid98_his_words.mjs's own header says "this file
 // contains NO TEMPLATE" -- true for that file, whose entire purpose was proving the Founder's
@@ -370,7 +374,17 @@ interface FounderQuestion { n: number; stage: 1 | 3 | 4 | 5; why: string; text: 
  *  each alternating-direction pass starts from the full option set again as a control, per
  *  canon_cake_cut_half_alternating_bp141 ("re-including just-eliminated options as a
  *  control"). qid98_his_words.mjs already does this (both its Q6 and Q7 use list(ALL)); this
- *  port preserves it exactly. */
+ *  port preserves it exactly.
+ *
+ *  FIX 2 (D-BP151-020/BISHOP/seg-98-three-fixes): every question text below is restored to the
+ *  Founder's OWN wording, taken verbatim from
+ *  C:\Users\Administrator\Documents\LianaBanyanPlatform\BISHOP_DROPZONE\
+ *  FOUNDER_CASCADE_WORKED_BY_HAND_VERBATIM_RECOVERED_BP144.md (identical text also at
+ *  C:\Users\Administrator\Downloads\FounderCascadeWorkedByHand.txt), Excerpt 2, with only the
+ *  category/property/option-list slots his own sentences already have templated -- sentence
+ *  structure and word choice otherwise unchanged. Per-question sourcing is in each entry's
+ *  attribution comment below. Q1 was never rewritten (it sends the actual question text, already
+ *  his own words) and needed no change. */
 function buildFounderQuestions(
   category: string,
   property: string,
@@ -380,16 +394,55 @@ function buildFounderQuestions(
   OPT: Record<string, string>,
 ): FounderQuestion[] {
   return [
+    // ATTRIBUTED: this already sends the actual question (or its inverse with "NOT" stripped) --
+    // for qid 98 that is word-for-word his own line 43 ("Which of the following world regions is
+    // considered one of the world's most densely populated regions?"). No template, no rewrite.
     { n: 1, stage: 1, why: 'the inverse', text: `${inverseQuestion} ${list(ALL, OPT)}` },
+    // ATTRIBUTED: RECOVERED_BP144.md line 67, verbatim structure: "Please put these regions in
+    // order of most densely to least densely populated." -- category/property substituted at his
+    // own "regions"/"densely" slots. Already matched this structure before this ticket; unchanged.
     { n: 2, stage: 3, why: `most ${property} to least ${property}, survivors`, text: `Please put these ${category} in order of most ${property} to least ${property}. ${list(pool, OPT)}` },
+    // ATTRIBUTED: RECOVERED_BP144.md line 80, verbatim structure: "Please put these regions in
+    // order of least densely to most densely populated." Unchanged (already matched).
     { n: 3, stage: 3, why: `least ${property} to most ${property}, survivors (opposite framing)`, text: `Please put these ${category} in order of least ${property} to most ${property}. ${list(pool, OPT)}` },
+    // ATTRIBUTED: RECOVERED_BP144.md line 93 -- the SAME sentence as Q2, re-asked over the full
+    // 9-option list as quality control (his own "as a quality control", line 64). Unchanged.
     { n: 4, stage: 3, why: `most ${property} to least ${property}, ALL options as quality control`, text: `Please put these ${category} in order of most ${property} to least ${property}. ${list(ALL, OPT)}` },
+    // ATTRIBUTED: RECOVERED_BP144.md line 115 -- the SAME sentence as Q3, re-asked over the full
+    // option list, same quality-control rationale. Unchanged.
     { n: 5, stage: 3, why: `least ${property} to most ${property}, ALL options as quality control`, text: `Please put these ${category} in order of least ${property} to most ${property}. ${list(ALL, OPT)}` },
-    { n: 6, stage: 4, why: `Cake Cut Half, remove the half that is least ${property}`, text: `From the following ${category} listed, please remove the half that are least ${property}: ${list(ALL, OPT)}` },
-    { n: 7, stage: 4, why: `Cake Cut Half, remove the half that is MOST ${property} (re-including all options, opposite direction)`, text: `From the following ${category} listed, please remove the half that are MOST ${property}: ${list(ALL, OPT)}` },
-    { n: 8, stage: 5, why: 'the hard number, all options', text: `What are the numeric values or rates associated with "${property}" for each of the following ${category}?: ${list(ALL, OPT)}` },
-    { n: 9, stage: 5, why: `sort by ${property}, most to least`, text: `Please sort the following ${category} by exact order or provide numeric values for each, in order of most ${property} to least ${property}: ${list(ALL, OPT)}` },
-    { n: 10, stage: 5, why: `sort by ${property}, least to most`, text: `Please sort the following ${category} by exact order or provide numeric values for each, in order of least ${property} to most ${property}: ${list(ALL, OPT)}` },
+    // ATTRIBUTED, RESTORED: RECOVERED_BP144.md line 137, verbatim: "From the following world
+    // regions listed, please remove the half that are least populated:". His Cake Cut Half asks
+    // about total POPULATION (a fixed word, "populated") as the coarse elimination heuristic --
+    // NOT the ranking property (density) the other stages use; his own worked numbers here are
+    // millions-of-people counts (line 144-153), never a density figure. The prior code had
+    // substituted "${property}" ("densely populated") in place of his fixed word "populated",
+    // which is the exact kind of rewrite this ticket exists to reverse. Restored to his literal
+    // word; only ${category} is substituted, at his own "world regions" slot.
+    { n: 6, stage: 4, why: 'Cake Cut Half, remove the half that is least populated (his word, total population -- not the ranking property)', text: `From the following ${category} listed, please remove the half that are least populated: ${list(ALL, OPT)}` },
+    // ATTRIBUTED, RESTORED: RECOVERED_BP144.md line 172, verbatim: "From the following world
+    // regions listed, please remove the half that are MOST populated:" -- same restoration as Q6,
+    // same fixed word "populated" (his own capitalization of MOST preserved).
+    { n: 7, stage: 4, why: 'Cake Cut Half, remove the half that is MOST populated (his word; re-including all options, opposite direction)', text: `From the following ${category} listed, please remove the half that are MOST populated: ${list(ALL, OPT)}` },
+    // ATTRIBUTED, RESTORED: RECOVERED_BP144.md line 206, verbatim: "What are the population
+    // densities of each of the following world regions?:". The prior code sent "What are the
+    // numeric values or rates associated with ... for each of the following ..." -- a full
+    // rewrite, and the one this ticket's own text names as the cause of the 52.9-vs-25 defect.
+    // Restored to his sentence shape; ${property}/${category} substituted at his own "population
+    // densities"/"world regions" slots.
+    { n: 8, stage: 5, why: `the hard number, all options`, text: `What are the ${property} of each of the following ${category}?: ${list(ALL, OPT)}` },
+    // ATTRIBUTED, RESTORED: RECOVERED_BP144.md line 224, verbatim: "Please sort the following
+    // world regions by exact population order or provide density numbers for each, in order of
+    // most to least:". The prior code said "by exact order or provide numeric values for each, in
+    // order of most ${property} to least ${property}" -- both a rewrite of the middle clause AND
+    // an addition (repeating ${property} in the trailing "most/least" clause) that is not in his
+    // sentence at all; he says plainly "in order of most to least". Restored on both counts.
+    { n: 9, stage: 5, why: `sort by ${property}, most to least`, text: `Please sort the following ${category} by exact ${property} order or provide ${property} numbers for each, in order of most to least: ${list(ALL, OPT)}` },
+    // ATTRIBUTED, RESTORED: RECOVERED_BP144.md line 238, verbatim (his own "And for posterity:"
+    // bonus question, not one of the seven core numbered-stage framings but present in his file
+    // word for word): "Please sort the following world regions by exact population order or
+    // provide density numbers for each, in order of least to most:". Same restoration as Q9.
+    { n: 10, stage: 5, why: `sort by ${property}, least to most`, text: `Please sort the following ${category} by exact ${property} order or provide ${property} numbers for each, in order of least to most: ${list(ALL, OPT)}` },
   ];
 }
 
@@ -422,6 +475,111 @@ function shapeTest(input: MethodQuestionInput): ShapeTestResult {
     matches: true,
     reason: `options are short (avg ${avgWords.toFixed(1)} words) and the question asks to rank by "${supMatch[0]}"`,
   };
+}
+
+// ─────────────────────────── terminator (FIX 1, D-BP151-020) ───────────────────────────
+
+export interface ComparativeTerminatorResult { verdict: string | null; basis: string; notes: string[]; }
+
+/** FIX 1 (D-BP151-020/BISHOP/seg-98-three-fixes). Extracted out of run() as a pure function --
+ *  no askGoogle, no emit, no network, no register gate -- with NO BEHAVIOR CHANGE from the inline
+ *  version it replaces, so it is independently unit-testable the same way toPerSqKm() already is
+ *  (this file's own header note under "DO NOT RUN THE PIPELINE": the full run() pipeline needs a
+ *  live register gate / CDP dial this ticket forbids touching). This is a mechanical
+ *  implementation choice -- HARDWIRE-23's own carve-out: "It does not apply to mechanical
+ *  implementation choices with no effect on which answer comes out." The decision content itself
+ *  is unchanged by the extraction.
+ *
+ *  THREE BRANCHES, IN ORDER, PER THE BP151 TARE SWEEP (D-BP151-019):
+ *
+ *  1. HARD-NUMBER BRANCH, gated on cross-framing convergence. REPLACES the removed, unattributed
+ *     1.5x separation threshold (tare-sweep row #1, comparative_cascade.ts:642 before this
+ *     ticket).
+ *     ATTRIBUTED: Founder, qid-98 hand-worked conclusion, verbatim
+ *     (C:\Users\Administrator\Documents\LianaBanyanPlatform\BISHOP_DROPZONE\
+ *     FOUNDER_CASCADE_WORKED_BY_HAND_VERBATIM_RECOVERED_BP144.md, line 264): "The answer is A.
+ *     South America, because it is Density: 25 people per km2, consistently across all
+ *     questions." His terminator is that the SAME option wins across the framings, not that the
+ *     hard-number margin is large -- his own 25-vs-34 figures are 1.36x apart, which the removed
+ *     1.5x gate would have blocked. The convergence winner is computed from leastVotes, the same
+ *     votes/orderings the cascade already collects in stages 1/3/4 -- no new data source, no
+ *     invented percentage, minimum framing count, or quorum.
+ *  2. CONVERGENCE-ONLY FALLBACK (pre-existing, tare-sweep row #10, was inline at
+ *     comparative_cascade.ts:653-654 before this ticket) -- UNCHANGED semantics, reusing the same
+ *     convergenceWinner computation instead of recomputing it. Its "strict majority required, a
+ *     tie yields no winner" rule is ITSELF an UNATTRIBUTED TARE -- surfaced again here, NOT fixed
+ *     by this ticket (BP151 amendment: "you must not silently inherit :653-654's strict-majority
+ *     rule as if it were ordered... mark :653-654 ... as pre-existing TAREs you did not order and
+ *     did not fix").
+ *  3. SOLE SURVIVOR (pre-existing, tare-sweep row #11, was at comparative_cascade.ts:662-665
+ *     before this ticket) -- UNCHANGED, unattributed, not fixed by this ticket.
+ *
+ *  Branch 1's coverage precondition (votedWithoutValue) is ATTRIBUTED per tare-sweep row #12 --
+ *  it landed as D-BP151-013's own "FIX 3" and this ticket was ordered to KEEP it, unchanged. */
+export function evaluateComparativeTerminator(
+  pool: string[],
+  densities: Record<string, number>,
+  leastVotes: Record<string, number>,
+  property: string,
+): ComparativeTerminatorResult {
+  const notes: string[] = [];
+  let verdict: string | null = null;
+  let basis = '';
+  const inPool = Object.keys(densities).filter((L) => pool.includes(L));
+
+  // FIX 3 (D-BP151-013): COVERAGE PRECONDITION. See this function's own doc comment above --
+  // ATTRIBUTED per tare-sweep row #12, kept exactly as it was.
+  const votedLeast = Object.keys(leastVotes).filter((L) => pool.includes(L) && leastVotes[L] >= 1);
+  const votedWithValue = votedLeast.filter((L) => densities[L] !== undefined);
+  const votedWithoutValue = votedLeast.filter((L) => densities[L] === undefined);
+  if (votedLeast.length) {
+    notes.push(`   coverage check for the hard-number branch: voted least-${property} = ${votedLeast.join(', ')}   have a value: ${votedWithValue.join(', ') || '(none)'}   no value (honest null or unresolved): ${votedWithoutValue.join(', ') || '(none)'}`);
+  }
+
+  // The cross-framing convergence winner, computed ONCE so both branch 1 and branch 2 share it --
+  // see this function's own doc comment for the full attribution/TARE breakdown.
+  const convergenceRanked = Object.keys(leastVotes).filter((L) => pool.includes(L)).sort((a, b) => leastVotes[b] - leastVotes[a]);
+  const convergenceWinner = convergenceRanked.length && (convergenceRanked.length === 1 || leastVotes[convergenceRanked[0]] > leastVotes[convergenceRanked[1]])
+    ? convergenceRanked[0]
+    : null;
+  if (convergenceWinner) {
+    notes.push(`   cross-framing convergence winner: ${convergenceWinner}  (${leastVotes[convergenceWinner]} vote(s) under the pre-existing strict-majority rule, TARE, unchanged by this ticket)`);
+  } else {
+    notes.push('   cross-framing convergence: no winner under the pre-existing strict-majority rule (tie or no votes)');
+  }
+
+  if (votedWithoutValue.length) {
+    notes.push(`   hard-number branch: WITHHELD -- ${votedWithoutValue.join(', ')} ${votedWithoutValue.length === 1 ? 'was' : 'were'} voted least-${property} by stages 3/4 but ${votedWithoutValue.length === 1 ? 'has' : 'have'} no resolved value; ranking only the subset the parser succeeded on is not ranking the pool`);
+  } else if (inPool.length >= 2) {
+    const sorted = [...inPool].sort((a, b) => densities[a] - densities[b]);
+    const hardLow = sorted[0];
+    notes.push(`   ascending: ${sorted.map((L) => `${L}=${densities[L]}`).join(' < ')}`);
+    if (convergenceWinner && hardLow === convergenceWinner) {
+      verdict = hardLow;
+      basis = `lowest ${property} among survivors (${densities[hardLow]}) AND the same option converged as least ${property} across the framings (${leastVotes[hardLow]} vote(s)) -- ATTRIBUTED, Founder qid-98 hand-worked conclusion: "consistently across all questions"`;
+      notes.push(`   hard-number branch: FIRED -- coverage satisfied and ${hardLow} is both the lowest hard number and the cross-framing convergence winner`);
+    } else if (!convergenceWinner) {
+      notes.push(`   hard-number branch: covered, lowest by value is ${hardLow}, but no cross-framing convergence winner exists (tie or no votes under the pre-existing strict-majority rule) -- not fired, refusing rather than guessing`);
+    } else {
+      notes.push(`   hard-number branch: covered, but lowest-by-value (${hardLow}) does not match the cross-framing convergence winner (${convergenceWinner}) -- genuine non-convergence, not fired, refusing rather than guessing`);
+    }
+  } else {
+    notes.push('   hard-number branch: covered, but fewer than two survivors carry a resolved value -- not fired');
+  }
+  // Branch 2: pre-existing convergence-only fallback (tare-sweep row #10). UNCHANGED semantics.
+  // TARE: "strict majority, ties abstain" is not ordered by the Founder -- not fixed by this
+  // ticket, left exactly as found.
+  if (!verdict && convergenceWinner) {
+    verdict = convergenceWinner;
+    basis = `converged across framings as least ${property} (${leastVotes[convergenceWinner]} votes) -- TARE: strict-majority rule, unattributed, pre-existing (tare-sweep row #10), not ordered or changed by this ticket`;
+  }
+  // Branch 3: SOLE SURVIVOR (tare-sweep row #11). UNCHANGED, unattributed, not fixed by this
+  // ticket.
+  if (!verdict && pool.length === 1) {
+    verdict = pool[0];
+    basis = 'sole survivor of elimination -- every other option was ruled out by register, inverse or value -- TARE: unattributed, pre-existing (tare-sweep row #11), not ordered or changed by this ticket';
+  }
+  return { verdict, basis, notes };
 }
 
 // ─────────────────────────── run ───────────────────────────
@@ -535,25 +693,49 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
         `{"figures":[{"value":number,"unit":"the unit as written","context":"the verbatim surrounding text"}]}`,
       );
       let n = 0;
+      // FIX 3 (D-BP151-020/BISHOP/seg-98-three-fixes): ADD LOGGING ONLY at this attribution
+      // boundary -- no filtering, binding, or rejection behavior below is changed by this fix.
+      // Measured defect (this ticket): real, unit-bearing densities present in the returned
+      // passages (South Asia "329 per Km2", Northeast US "120 people/km 2", Sahara Desert "10
+      // people per square kilometer") were logged as honest nulls with NO trace of the candidate
+      // that was seen and discarded -- specifically, the case where a candidate's context matched
+      // NO option at all (every `L` in the loop below fails `ctx2.includes(norm(OPT[L]))`) was
+      // previously silent; nothing in this file recorded that the candidate existed. Every
+      // candidate is now logged verbatim before the existing bind/reject logic runs, and an
+      // unresolved-attribution case is logged explicitly instead of vanishing.
       for (const f of (ex?.figures as Array<{ value: number; unit?: string; context: string }> | undefined) ?? []) {
         if (typeof f.value !== 'number') continue;
         if (!appearsIn(res.text, f.context)) { note(`      rejected figure ${f.value}: quoted context not found in the passage`); continue; }
         const ctx2 = norm(String(f.context || ''));
+        note(`      [attribution] candidate seen: value=${f.value}  unit=${f.unit ?? '(no unit field)'}  context="${f.context}"`);
+        let boundToAnyOption = false;
         for (const L of ALL) {
-          if (ctx2.includes(norm(OPT[L])) && densities[L] === undefined) {
-            // FIX 2 (D-BP151-013): the value must prove it carries a real area-RATE unit before
-            // it is trusted -- see toPerSqKm()'s own doc comment. A rejection is logged with the
-            // raw text, the reason, and the option it belonged to, never silently dropped.
-            const c = toPerSqKm(f.value, f.unit, f.context);
-            if (c.ok) {
-              densities[L] = c.value;
-              n++;
-              note(`      ${OPT[L]} = ${c.value.toFixed(2)} ${c.unit}`);
+          const contextNamesThisOption = ctx2.includes(norm(OPT[L]));
+          if (contextNamesThisOption) {
+            boundToAnyOption = true;
+            if (densities[L] === undefined) {
+              // FIX 2 (D-BP151-013): the value must prove it carries a real area-RATE unit before
+              // it is trusted -- see toPerSqKm()'s own doc comment. A rejection is logged with the
+              // raw text, the reason, and the option it belonged to, never silently dropped.
+              const c = toPerSqKm(f.value, f.unit, f.context);
+              if (c.ok) {
+                densities[L] = c.value;
+                n++;
+                note(`      [attribution] option=${OPT[L]}  candidate value=${f.value} unit=${f.unit ?? '(no unit field)'}  -> BOUND: ${c.value.toFixed(2)} ${c.unit}`);
+              } else {
+                note(`      [attribution] option=${OPT[L]}  candidate value=${f.value} unit=${f.unit ?? '(no unit field)'}  -> REJECTED: ${c.reason}`);
+              }
             } else {
-              note(`      rejected candidate for ${OPT[L]}: ${f.value} ${f.unit ? `(unit field: "${f.unit}")` : '(no unit field)'} -- ${c.reason}   raw: "${f.context}"`);
+              note(`      [attribution] option=${OPT[L]}  candidate value=${f.value} unit=${f.unit ?? '(no unit field)'}  -> not evaluated, ${OPT[L]} already has a bound value`);
             }
           }
         }
+        if (!boundToAnyOption) {
+          note(`      [attribution] candidate value=${f.value} unit=${f.unit ?? '(no unit field)'} context="${f.context}"  -> REJECTED: context does not name any listed option -- unresolved, not bound to any option`);
+        }
+      }
+      for (const L of ALL) {
+        note(`      [attribution] final for ${OPT[L]}: ${densities[L] !== undefined ? `${densities[L]}` : 'honest null (no bound value)'}`);
       }
       effect = n ? `values attributed by context match: ${Object.entries(densities).map(([L, d]) => `${L}=${d}`).join('  ')}` : "no figure's context named a listed option";
     }
@@ -563,6 +745,13 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   // STAGE 5b: one option per question -- ported rationale from qid98_his_words.mjs (bulk
   // multi-option queries can return context about the WRONG scale and attribute a number to the
   // wrong option; one option per question makes attribution unambiguous).
+  // TARE (D-BP151-020, FIX 2 disclosure, per HARDWIRE-23 Law 2/4): this question's wording ("What
+  // is the numeric value or rate associated with X? Report the number and its unit.") has NO
+  // literal counterpart anywhere in RECOVERED_BP144.md or FounderCascadeWorkedByHand.txt -- his
+  // hand-worked walkthrough never asks a single-option follow-up in this shape. Per this ticket's
+  // own instruction ("If a framing the code sends has no counterpart in his file, report it and
+  // leave it alone"), this wording is UNCHANGED and left exactly as found, surfaced here for the
+  // Founder's ruling rather than silently rewritten or silently left undisclosed.
   const survivors = ALL.filter((L) => pool.includes(L));
   step(`STAGE 5b  one option per question -- ${survivors.length} surviving option(s)`);
   for (const L of survivors) {
@@ -578,10 +767,24 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
     );
     const wanted = norm(OPT[L]);
     let picked: { value: number; unit?: string; context: string } | null = null;
+    // FIX 3 (D-BP151-020/BISHOP/seg-98-three-fixes): ADD LOGGING ONLY -- every candidate is now
+    // logged before the pre-existing first-match selection runs. `picked` still resolves to
+    // EXACTLY the same candidate as before this fix (the first whose context names this option);
+    // the loop no longer stops there via `break` so later candidates can still be logged, but no
+    // later candidate is ever assigned to `picked`. CHANGE NO BEHAVIOR, LOOSEN NOTHING.
     for (const f of (ex?.figures as Array<{ value: number; unit?: string; context: string }> | undefined) ?? []) {
       if (typeof f.value !== 'number') continue;
       if (!appearsIn(res.text, f.context)) { note(`      rejected ${f.value}: quoted context not in the passage`); continue; }
-      if (norm(String(f.context || '')).includes(wanted)) { picked = f; break; }
+      note(`      [attribution] option=${OPT[L]}  candidate seen: value=${f.value}  unit=${f.unit ?? '(no unit field)'}  context="${f.context}"`);
+      const contextNamesThisOption = norm(String(f.context || '')).includes(wanted);
+      if (contextNamesThisOption && !picked) {
+        picked = f;
+        note(`      [attribution] option=${OPT[L]}  candidate value=${f.value}  -> BOUND (first context match; pre-existing selection rule, unchanged by this fix)`);
+      } else if (contextNamesThisOption) {
+        note(`      [attribution] option=${OPT[L]}  candidate value=${f.value}  -> context matches ${OPT[L]}, but a candidate was already bound (first-match rule, pre-existing, unchanged) -- not selected`);
+      } else {
+        note(`      [attribution] option=${OPT[L]}  candidate value=${f.value}  -> REJECTED: context does not name ${OPT[L]}`);
+      }
     }
     if (picked) {
       // FIX 2 (D-BP151-013): same unit-RATE proof as the stage-5 bulk pass above. This also
@@ -600,6 +803,7 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
     } else {
       note(`   no figure for ${OPT[L]} in this passage (honest null, not a guess)`);
     }
+    note(`      [attribution] final for ${OPT[L]} (stage 5b): ${densities[L] !== undefined ? `${densities[L]}` : 'honest null (no bound value)'}`);
   }
 
   // TERMINATOR. Arithmetic only, no model below this line.
@@ -614,55 +818,16 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   note(`   least-${property} votes across stages 3 and 4: ${Object.entries(leastVotes).map(([L, n]) => `${L}x${n}`).join('  ') || '(none)'}`);
   note(`   hard values: ${Object.entries(densities).map(([L, d]) => `${L}=${d}`).join('  ') || '(none)'}`);
 
-  let verdict: string | null = null;
-  let basis = '';
-  const inPool = Object.keys(densities).filter((L) => pool.includes(L));
-
-  // FIX 3 (D-BP151-013): COVERAGE PRECONDITION. The hard-number branch may rank the pool only
-  // when it actually COVERS the pool's real contenders. qid 98: H and I (Amazon Rainforest,
-  // Sahara Desert) were each voted least-${property} TWICE by stages 3/4 -- they were the
-  // elimination stages' actual answer -- yet both ended stage 5b as an honest null, and the old
-  // code still ranked the {A, E, F} subset it happened to have numbers for and answered A.
-  // Ranking a subset the parser succeeded on is not ranking the pool. This is a structural
-  // precondition, not a softened threshold: if ANY option the elimination stages voted for as
-  // least-${property} lacks a resolved value, the branch may not fire at all, regardless of how
-  // clean the separation looks among the options that do have one.
-  const votedLeast = Object.keys(leastVotes).filter((L) => pool.includes(L) && leastVotes[L] >= 1);
-  const votedWithValue = votedLeast.filter((L) => densities[L] !== undefined);
-  const votedWithoutValue = votedLeast.filter((L) => densities[L] === undefined);
-  if (votedLeast.length) {
-    note(`   coverage check for the hard-number branch: voted least-${property} = ${votedLeast.join(', ')}   have a value: ${votedWithValue.join(', ') || '(none)'}   no value (honest null or unresolved): ${votedWithoutValue.join(', ') || '(none)'}`);
-  }
-  if (votedWithoutValue.length) {
-    note(`   hard-number branch: WITHHELD -- ${votedWithoutValue.join(', ')} ${votedWithoutValue.length === 1 ? 'was' : 'were'} voted least-${property} by stages 3/4 but ${votedWithoutValue.length === 1 ? 'has' : 'have'} no resolved value; ranking only the subset the parser succeeded on is not ranking the pool`);
-  } else if (inPool.length >= 2) {
-    const sorted = [...inPool].sort((a, b) => densities[a] - densities[b]);
-    const sep = densities[sorted[0]] === 0 ? Infinity : densities[sorted[1]] / densities[sorted[0]];
-    note(`   ascending: ${sorted.map((L) => `${L}=${densities[L]}`).join(' < ')}   separation ${sep.toFixed(2)}x`);
-    if (sep >= 1.5) {
-      verdict = sorted[0];
-      basis = `lowest ${property} among survivors, ${sep.toFixed(1)}x clear of the runner-up`;
-      note(`   hard-number branch: FIRED -- coverage satisfied and separation ${sep.toFixed(2)}x >= 1.5x`);
-    } else {
-      note(`   hard-number branch: covered, but separation ${sep.toFixed(2)}x < 1.5x -- not fired`);
-    }
-  } else {
-    note('   hard-number branch: covered, but fewer than two survivors carry a resolved value -- not fired');
-  }
-  if (!verdict) {
-    const ranked = Object.keys(leastVotes).filter((L) => pool.includes(L)).sort((a, b) => leastVotes[b] - leastVotes[a]);
-    if (ranked.length && (ranked.length === 1 || leastVotes[ranked[0]] > leastVotes[ranked[1]])) {
-      verdict = ranked[0];
-      basis = `converged across framings as least ${property} (${leastVotes[ranked[0]]} votes)`;
-    }
-  }
-  // SOLE SURVIVOR. If elimination has left exactly one option standing, that IS the answer.
-  // Ported verbatim as a rule (not just a fallback of convenience) -- its absence is what made a
-  // correct BP149 run abstain before this fix; see this file's header.
-  if (!verdict && pool.length === 1) {
-    verdict = pool[0];
-    basis = 'sole survivor of elimination -- every other option was ruled out by register, inverse or value';
-  }
+  // FIX 1 (D-BP151-020/BISHOP/seg-98-three-fixes): the verdict computation below is now the pure,
+  // exported evaluateComparativeTerminator() (see its own doc comment above run()) -- extracted
+  // out of this function with NO BEHAVIOR CHANGE so it can be unit-tested directly (no live
+  // askGoogle, no register gate, no network), the same way toPerSqKm() already is. Every note it
+  // would have emitted inline is returned in .notes and emitted here in the same order, so the
+  // printed transcript is byte-identical to the pre-extraction inline version.
+  const termResult = evaluateComparativeTerminator(pool, densities, leastVotes, property);
+  for (const n of termResult.notes) note(n);
+  const verdict = termResult.verdict;
+  const basis = termResult.basis;
 
   const elapsedS = ((Date.now() - t0) / 1000).toFixed(1);
   if (verdict) {
