@@ -27,13 +27,24 @@
 //     with re-inclusion (both halves always drawn from the FULL option set, never the narrowed
 //     pool -- see buildFounderQuestions() Q6/Q7 below, both list(ALL)), hard number per-option,
 //     then the terminator.
-//   - Terminator order (D-BP151-020, FIX 1, replaces the removed 1.5x separation gate):
-//     hard-number ranking fires only when the lowest-value survivor is ALSO the cross-framing
-//     convergence winner (ATTRIBUTED -- Founder, qid-98 hand-worked conclusion, verbatim:
-//     "consistently across all questions" -- see the terminator block below for the full
-//     citation); then the pre-existing convergence-only fallback (TARE, strict majority required,
-//     ties abstain, tare-sweep D-BP151-019 row #10, unattributed, left unchanged by this ticket);
-//     then SOLE SURVIVOR (TARE, tare-sweep row #11, unattributed, left unchanged by this ticket).
+//   - Terminator order (D-BP151-024, SUPERSEDES D-BP151-020's FIX 1 -- that FIX 1 read "the same
+//     option wins across the framings" (his "consistently across all questions") as VOTE
+//     convergence gating a hard number. Founder Ruling 2, BP151, corrects this: the referent was
+//     his VALUE agreeing with itself (South America's density figure repeating), not an option
+//     winning a vote count -- see evaluateComparativeTerminator()'s own doc comment below for the
+//     full citation and the fork this ticket did NOT resolve):
+//       1. VALUE CONVERGENCE fires first -- ATTRIBUTED, Founder Ruling 2, BP151, verbatim: "Value
+//          convergence is undeniable, so that one". Only the SAME option's resolved value from
+//          more than one framing (see detectValueConvergence() below).
+//       2. VOTES fire only when value convergence is non-existent -- ATTRIBUTED precedence,
+//          Founder Ruling 2, BP151, verbatim: "only if value convergence is non-existent, it
+//          trumps vote convergence every time". The vote machinery itself is the pre-existing
+//          cross-framing convergence-only fallback (TARE, strict majority required, ties abstain,
+//          tare-sweep D-BP151-019 row #10, unattributed, left unchanged by this ticket).
+//       3. Otherwise ABSTAIN. SOLE SURVIVOR IS REMOVED -- ATTRIBUTED, Founder Ruling 1 (Q-13a),
+//          BP151, verbatim: "yes remove it". A pool narrowed to one option no longer
+//          auto-declares it; it must still earn the verdict from branch 1 or 2, or the run
+//          abstains (tare-sweep row #11, this rule no longer exists in any form).
 //
 // WHAT IS GENERALIZED, AND WHY IT HAS TO BE: qid98_his_words.mjs's own header says "this file
 // contains NO TEMPLATE" -- true for that file, whose entire purpose was proving the Founder's
@@ -477,107 +488,179 @@ function shapeTest(input: MethodQuestionInput): ShapeTestResult {
   };
 }
 
-// ─────────────────────────── terminator (FIX 1, D-BP151-020) ───────────────────────────
+// ─────────────────────────── terminator (D-BP151-024, supersedes D-BP151-020's FIX 1) ───────────
 
 export interface ComparativeTerminatorResult { verdict: string | null; basis: string; notes: string[]; }
 
-/** FIX 1 (D-BP151-020/BISHOP/seg-98-three-fixes). Extracted out of run() as a pure function --
- *  no askGoogle, no emit, no network, no register gate -- with NO BEHAVIOR CHANGE from the inline
- *  version it replaces, so it is independently unit-testable the same way toPerSqKm() already is
- *  (this file's own header note under "DO NOT RUN THE PIPELINE": the full run() pipeline needs a
- *  live register gate / CDP dial this ticket forbids touching). This is a mechanical
- *  implementation choice -- HARDWIRE-23's own carve-out: "It does not apply to mechanical
- *  implementation choices with no effect on which answer comes out." The decision content itself
- *  is unchanged by the extraction.
+export interface ValueConvergenceResult {
+  winner: string | null;
+  agreeing: Record<string, number>;
+  notes: string[];
+}
+
+/** D-BP151-024/BISHOP/seg-value-convergence.
  *
- *  THREE BRANCHES, IN ORDER, PER THE BP151 TARE SWEEP (D-BP151-019):
+ *  // ATTRIBUTED: Founder, BP151, verbatim: "Value convergence is undeniable, so that one. Votes
+ *  // are not unimportant, but only if value convergence is non-existent, it trumps vote
+ *  // convergence every time (especially since the voters are suspect actors anyway)"
  *
- *  1. HARD-NUMBER BRANCH, gated on cross-framing convergence. REPLACES the removed, unattributed
- *     1.5x separation threshold (tare-sweep row #1, comparative_cascade.ts:642 before this
- *     ticket).
- *     ATTRIBUTED: Founder, qid-98 hand-worked conclusion, verbatim
- *     (C:\Users\Administrator\Documents\LianaBanyanPlatform\BISHOP_DROPZONE\
- *     FOUNDER_CASCADE_WORKED_BY_HAND_VERBATIM_RECOVERED_BP144.md, line 264): "The answer is A.
- *     South America, because it is Density: 25 people per km2, consistently across all
- *     questions." His terminator is that the SAME option wins across the framings, not that the
- *     hard-number margin is large -- his own 25-vs-34 figures are 1.36x apart, which the removed
- *     1.5x gate would have blocked. The convergence winner is computed from leastVotes, the same
- *     votes/orderings the cascade already collects in stages 1/3/4 -- no new data source, no
- *     invented percentage, minimum framing count, or quorum.
- *  2. CONVERGENCE-ONLY FALLBACK (pre-existing, tare-sweep row #10, was inline at
- *     comparative_cascade.ts:653-654 before this ticket) -- UNCHANGED semantics, reusing the same
- *     convergenceWinner computation instead of recomputing it. Its "strict majority required, a
- *     tie yields no winner" rule is ITSELF an UNATTRIBUTED TARE -- surfaced again here, NOT fixed
- *     by this ticket (BP151 amendment: "you must not silently inherit :653-654's strict-majority
- *     rule as if it were ordered... mark :653-654 ... as pre-existing TAREs you did not order and
- *     did not fix").
- *  3. SOLE SURVIVOR (pre-existing, tare-sweep row #11, was at comparative_cascade.ts:662-665
- *     before this ticket) -- UNCHANGED, unattributed, not fixed by this ticket.
+ *  His own qid-98 evidence for what "value convergence" means
+ *  (BISHOP_DROPZONE\FOUNDER_CASCADE_WORKED_BY_HAND_VERBATIM_RECOVERED_BP144.md, Excerpt 2):
+ *  South America's VALUE came back ~26-33, ~24, ~22, 25, 25 across five differently-shaped
+ *  questions -- HIS words, "the same figure, five times" -- while the VOTE for "least" moved
+ *  around (A; then E and A; then F and A; then F and G; then F alone). "Consistently across all
+ *  questions" (his qid-98 conclusion, line 264) names the VALUE agreeing with itself, not an
+ *  option winning a vote count.
  *
- *  Branch 1's coverage precondition (votedWithoutValue) is ATTRIBUTED per tare-sweep row #12 --
- *  it landed as D-BP151-013's own "FIX 3" and this ticket was ordered to KEEP it, unchanged. */
+ *  THE FORK THIS FUNCTION DOES NOT RESOLVE: his five figures are NOT numerically identical (22 to
+ *  33 is a real spread) and he still called them "the same figure" -- so "agree" is looser than
+ *  exact equality in his own head, and HOW MUCH looser is not stated anywhere in his words. Per
+ *  HARDWIRE-23 Law 2 ("stop and ask, do not implement and disclose") and this ticket's explicit
+ *  instruction, no tolerance/variance/rounding rule is invented here. This function implements
+ *  ONLY the one case that is true under every possible resolution of that fork: two or more
+ *  observations for the SAME option that are EXACTLY equal (after the unit normalization
+ *  toPerSqKm() already performs) always count as agreeing, no matter how loose or tight the
+ *  eventual rule turns out to be. Two of his own five qid-98 readings (25, 25) are an exact match
+ *  -- this floor is not invented data, it is the one pair of his own numbers that requires no
+ *  invented tolerance to recognize. An option whose observations differ AT ALL is left
+ *  UNDETERMINED (neither counted as agreeing nor as non-agreeing) -- see the `notes` this function
+ *  returns; a run whose only multi-framing option lands here falls through to the vote fallback
+ *  (branch 2, below), not because the Founder ruled votes should win, but because branch 1 cannot
+ *  honestly reach a verdict without a rule nobody has ordered.
+ *
+ *  THE EXACT QUESTION FOR THE FOUNDER, so branch 1 can be completed: when two resolved readings
+ *  for the same option disagree numerically (e.g. his own 22 vs 33 -- roughly a 50% spread, which
+ *  he still called consistent), what test decides they "agree"? A percent tolerance? Same order
+ *  of magnitude? Same rounded leading digit? Until he answers, any such case is reported, never
+ *  guessed. */
+export function detectValueConvergence(
+  pool: string[],
+  observations: Record<string, number[]>,
+  property: string,
+): ValueConvergenceResult {
+  const notes: string[] = [];
+  const agreeing: Record<string, number> = {};
+  for (const L of pool) {
+    const vals = observations[L] ?? [];
+    if (vals.length === 0) continue;
+    if (vals.length === 1) {
+      notes.push(`   value convergence: ${L} has only 1 resolved observation (${vals[0]}) -- self-agreement needs more than one framing, not evaluated`);
+      continue;
+    }
+    if (vals.every((v) => v === vals[0])) {
+      agreeing[L] = vals[0];
+      notes.push(`   value convergence: ${L} has ${vals.length} observations, ALL EXACTLY ${vals[0]} ${property} -- self-agreeing`);
+    } else {
+      notes.push(`   value convergence: ${L} has ${vals.length} observations that differ (${vals.join(', ')}) -- FORK, no Founder-ordered agreement rule exists to say whether these "agree" (see this function's own doc comment); NOT counted as convergent -- undetermined, not guessed`);
+    }
+  }
+  const agreeingOptions = Object.keys(agreeing);
+  let winner: string | null = null;
+  if (agreeingOptions.length === 1) {
+    winner = agreeingOptions[0];
+  } else if (agreeingOptions.length > 1) {
+    // More than one option self-agrees -- this ticket's own instruction: "the option whose
+    // self-agreeing value is lowest ... is the answer". Direction (lowest) is NOT a new choice --
+    // it carries forward the same ascending-sort convention this file's pre-existing hard-number
+    // logic already used (unchanged scope; direction-awareness for a "most X" question is a
+    // separate, pre-existing gap this ticket was not asked to fix -- see the SEG return).
+    const sorted = [...agreeingOptions].sort((a, b) => agreeing[a] - agreeing[b]);
+    winner = sorted[0];
+    notes.push(`   value convergence: more than one option self-agreed (${agreeingOptions.join(', ')}) -- lowest self-agreeing value selected: ${winner}`);
+  }
+  if (winner) {
+    notes.push(`   value convergence winner: ${winner}  (self-agreed at ${agreeing[winner]} ${property} -- ATTRIBUTED, Founder Ruling 2, BP151)`);
+  }
+  return { winner, agreeing, notes };
+}
+
+/** D-BP151-024/BISHOP/seg-value-convergence. Extracted (D-BP151-020's FIX 1) pure function, still
+ *  no askGoogle, no emit, no network, no register gate -- unit-testable the same way toPerSqKm()
+ *  already is (this file's own header note under "DO NOT RUN THE PIPELINE").
+ *
+ *  TWO BRANCHES, IN ORDER, PLUS ABSTAIN -- REPLACES D-BP151-020's three-branch design per two
+ *  Founder rulings, BP151 (both filed BISHOP_DROPZONE\FOUNDER_DECISIONS_BP151.md):
+ *
+ *  1. VALUE CONVERGENCE (see detectValueConvergence() above for the full citation and the fork it
+ *     leaves open).
+ *     // ATTRIBUTED: Founder, BP151, verbatim: "Value convergence is undeniable, so that one."
+ *  2. VOTES, ONLY IF VALUE CONVERGENCE IS NON-EXISTENT -- reuses the pre-existing cross-framing
+ *     convergenceWinner computation (tare-sweep D-BP151-019 row #10), UNCHANGED semantics. Its
+ *     "strict majority required, a tie yields no winner" rule is ITSELF an UNATTRIBUTED TARE, left
+ *     exactly as found -- what changed is ONLY that it now fires solely as a fallback, never a
+ *     gate on a hard number.
+ *     // ATTRIBUTED (the precedence, not the vote rule itself): Founder, BP151, verbatim: "only
+ *     // if value convergence is non-existent, it trumps vote convergence every time (especially
+ *     // since the voters are suspect actors anyway)"
+ *  3. Otherwise ABSTAIN.
+ *
+ *  SOLE SURVIVOR IS REMOVED, NOT A THIRD BRANCH. Elimination leaving one option in the pool no
+ *  longer auto-declares it; that option must still earn the verdict from branch 1 or 2 above.
+ *  // ATTRIBUTED: Founder, BP151, verbatim, in answer to Bishop's Q-13a ("The sole-survivor rule
+ *  // at comparative_cascade.ts:662-665 declares an answer when elimination leaves one option.
+ *  // Your qid-98 walkthrough never reduced to one survivor before the hard number. Yours or a
+ *  // tare?"): "Q-13a yes remove it"
+ *
+ *  The coverage precondition (votedWithoutValue) is ATTRIBUTED per tare-sweep row #12 (D-BP151-013
+ *  FIX 3) and stays, unchanged, now gating branch 1 (its logical successor -- both are value-based
+ *  branches; the vote-only branch 2 never looked at densities and is unaffected either way). */
 export function evaluateComparativeTerminator(
   pool: string[],
   densities: Record<string, number>,
   leastVotes: Record<string, number>,
   property: string,
+  densityObservations: Record<string, number[]> = {},
 ): ComparativeTerminatorResult {
   const notes: string[] = [];
   let verdict: string | null = null;
   let basis = '';
-  const inPool = Object.keys(densities).filter((L) => pool.includes(L));
 
-  // FIX 3 (D-BP151-013): COVERAGE PRECONDITION. See this function's own doc comment above --
-  // ATTRIBUTED per tare-sweep row #12, kept exactly as it was.
+  // ATTRIBUTED per tare-sweep row #12 (D-BP151-013 FIX 3), kept exactly as it was -- now gates
+  // branch 1 (value convergence) instead of the removed hard-number branch it used to gate.
   const votedLeast = Object.keys(leastVotes).filter((L) => pool.includes(L) && leastVotes[L] >= 1);
   const votedWithValue = votedLeast.filter((L) => densities[L] !== undefined);
   const votedWithoutValue = votedLeast.filter((L) => densities[L] === undefined);
   if (votedLeast.length) {
-    notes.push(`   coverage check for the hard-number branch: voted least-${property} = ${votedLeast.join(', ')}   have a value: ${votedWithValue.join(', ') || '(none)'}   no value (honest null or unresolved): ${votedWithoutValue.join(', ') || '(none)'}`);
+    notes.push(`   coverage check for the value-convergence branch: voted least-${property} = ${votedLeast.join(', ')}   have a value: ${votedWithValue.join(', ') || '(none)'}   no value (honest null or unresolved): ${votedWithoutValue.join(', ') || '(none)'}`);
   }
 
-  // The cross-framing convergence winner, computed ONCE so both branch 1 and branch 2 share it --
-  // see this function's own doc comment for the full attribution/TARE breakdown.
-  const convergenceRanked = Object.keys(leastVotes).filter((L) => pool.includes(L)).sort((a, b) => leastVotes[b] - leastVotes[a]);
-  const convergenceWinner = convergenceRanked.length && (convergenceRanked.length === 1 || leastVotes[convergenceRanked[0]] > leastVotes[convergenceRanked[1]])
-    ? convergenceRanked[0]
-    : null;
-  if (convergenceWinner) {
-    notes.push(`   cross-framing convergence winner: ${convergenceWinner}  (${leastVotes[convergenceWinner]} vote(s) under the pre-existing strict-majority rule, TARE, unchanged by this ticket)`);
-  } else {
-    notes.push('   cross-framing convergence: no winner under the pre-existing strict-majority rule (tie or no votes)');
-  }
-
+  // BRANCH 1: VALUE CONVERGENCE -- ATTRIBUTED, Founder Ruling 2, BP151. See
+  // detectValueConvergence()'s own doc comment for the full citation and the open fork.
   if (votedWithoutValue.length) {
-    notes.push(`   hard-number branch: WITHHELD -- ${votedWithoutValue.join(', ')} ${votedWithoutValue.length === 1 ? 'was' : 'were'} voted least-${property} by stages 3/4 but ${votedWithoutValue.length === 1 ? 'has' : 'have'} no resolved value; ranking only the subset the parser succeeded on is not ranking the pool`);
-  } else if (inPool.length >= 2) {
-    const sorted = [...inPool].sort((a, b) => densities[a] - densities[b]);
-    const hardLow = sorted[0];
-    notes.push(`   ascending: ${sorted.map((L) => `${L}=${densities[L]}`).join(' < ')}`);
-    if (convergenceWinner && hardLow === convergenceWinner) {
-      verdict = hardLow;
-      basis = `lowest ${property} among survivors (${densities[hardLow]}) AND the same option converged as least ${property} across the framings (${leastVotes[hardLow]} vote(s)) -- ATTRIBUTED, Founder qid-98 hand-worked conclusion: "consistently across all questions"`;
-      notes.push(`   hard-number branch: FIRED -- coverage satisfied and ${hardLow} is both the lowest hard number and the cross-framing convergence winner`);
-    } else if (!convergenceWinner) {
-      notes.push(`   hard-number branch: covered, lowest by value is ${hardLow}, but no cross-framing convergence winner exists (tie or no votes under the pre-existing strict-majority rule) -- not fired, refusing rather than guessing`);
-    } else {
-      notes.push(`   hard-number branch: covered, but lowest-by-value (${hardLow}) does not match the cross-framing convergence winner (${convergenceWinner}) -- genuine non-convergence, not fired, refusing rather than guessing`);
-    }
+    notes.push(`   value-convergence branch: WITHHELD -- ${votedWithoutValue.join(', ')} ${votedWithoutValue.length === 1 ? 'was' : 'were'} voted least-${property} by stages 3/4 but ${votedWithoutValue.length === 1 ? 'has' : 'have'} no resolved value; ranking only the subset the parser succeeded on is not ranking the pool`);
   } else {
-    notes.push('   hard-number branch: covered, but fewer than two survivors carry a resolved value -- not fired');
+    const vc = detectValueConvergence(pool, densityObservations, property);
+    notes.push(...vc.notes);
+    if (vc.winner) {
+      verdict = vc.winner;
+      basis = `value convergence: ${property} self-agreed at ${vc.agreeing[vc.winner]} across ${(densityObservations[vc.winner] ?? []).length} framings -- ATTRIBUTED, Founder Ruling 2, BP151, verbatim: "Value convergence is undeniable, so that one"`;
+      notes.push(`   BRANCH FIRED: value convergence (${vc.winner}) -- ATTRIBUTED, Founder Ruling 2, BP151`);
+    }
   }
-  // Branch 2: pre-existing convergence-only fallback (tare-sweep row #10). UNCHANGED semantics.
-  // TARE: "strict majority, ties abstain" is not ordered by the Founder -- not fixed by this
-  // ticket, left exactly as found.
-  if (!verdict && convergenceWinner) {
-    verdict = convergenceWinner;
-    basis = `converged across framings as least ${property} (${leastVotes[convergenceWinner]} votes) -- TARE: strict-majority rule, unattributed, pre-existing (tare-sweep row #10), not ordered or changed by this ticket`;
+
+  // BRANCH 2: VOTES, ONLY IF VALUE CONVERGENCE IS NON-EXISTENT.
+  // // ATTRIBUTED (precedence only): Founder, BP151, verbatim: "only if value convergence is
+  // // non-existent, it trumps vote convergence every time"
+  if (!verdict) {
+    const convergenceRanked = Object.keys(leastVotes).filter((L) => pool.includes(L)).sort((a, b) => leastVotes[b] - leastVotes[a]);
+    const convergenceWinner = convergenceRanked.length && (convergenceRanked.length === 1 || leastVotes[convergenceRanked[0]] > leastVotes[convergenceRanked[1]])
+      ? convergenceRanked[0]
+      : null;
+    if (convergenceWinner) {
+      notes.push(`   cross-framing convergence winner: ${convergenceWinner}  (${leastVotes[convergenceWinner]} vote(s) under the pre-existing strict-majority rule, TARE, unchanged by this ticket)`);
+      verdict = convergenceWinner;
+      basis = `converged across framings as least ${property} (${leastVotes[convergenceWinner]} votes) -- TARE: strict-majority rule, unattributed, pre-existing (tare-sweep row #10), fired here only as the FALLBACK because branch 1 (value convergence) found nothing -- ATTRIBUTED precedence, Founder Ruling 2, BP151, not ordered or changed by this ticket otherwise`;
+      notes.push(`   BRANCH FIRED: vote fallback (${convergenceWinner}) -- vote rule itself is TARE, unattributed; the PRECEDENCE that lets it fire only here is ATTRIBUTED, Founder Ruling 2, BP151`);
+    } else {
+      notes.push('   cross-framing convergence: no winner under the pre-existing strict-majority rule (tie or no votes)');
+    }
   }
-  // Branch 3: SOLE SURVIVOR (tare-sweep row #11). UNCHANGED, unattributed, not fixed by this
-  // ticket.
-  if (!verdict && pool.length === 1) {
-    verdict = pool[0];
-    basis = 'sole survivor of elimination -- every other option was ruled out by register, inverse or value -- TARE: unattributed, pre-existing (tare-sweep row #11), not ordered or changed by this ticket';
+
+  // SOLE SURVIVOR REMOVED -- ATTRIBUTED, Founder Ruling 1 (Q-13a), BP151, verbatim: "yes remove
+  // it". No third branch here: a pool of one option that reached neither branch 1 nor branch 2
+  // above ABSTAINS, it is not auto-declared. (tare-sweep row #11, this rule no longer exists.)
+  if (!verdict) {
+    notes.push('   BRANCH: none fired -- ABSTAIN. Sole-survivor auto-declare is REMOVED (ATTRIBUTED, Founder Ruling 1/Q-13a, BP151: "yes remove it") -- a narrowed pool no longer auto-answers itself.');
   }
   return { verdict, basis, notes };
 }
@@ -607,6 +690,14 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   const leastVotes: Record<string, number> = {};
   const denseVotes: Record<string, number> = {};
   const densities: Record<string, number> = {};
+  // D-BP151-024: every resolved (toPerSqKm-ok) value bound to an option, from EVERY framing that
+  // resolves one -- not just the single representative value `densities` keeps. This is new
+  // storage, not a new query/framing/stage (HARDWIRE-23's own carve-out: "It does not apply to
+  // mechanical implementation choices with no effect on which answer comes out" does not quite
+  // cover this, since it DOES feed a new decision rule -- see evaluateComparativeTerminator()'s
+  // doc comment for the ATTRIBUTED rule this collection exists to serve). `densities` itself, and
+  // every note describing it, is unchanged by this addition.
+  const densityObservations: Record<string, number[]> = {};
 
   // STAGE 0: register gate -- extracted to runStage0RegisterGate() above (D-BP149-043) so
   // definitional_cascade.ts can share this exact code; behavior and printed output unchanged on
@@ -721,12 +812,23 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
               if (c.ok) {
                 densities[L] = c.value;
                 n++;
+                (densityObservations[L] ??= []).push(c.value);
                 note(`      [attribution] option=${OPT[L]}  candidate value=${f.value} unit=${f.unit ?? '(no unit field)'}  -> BOUND: ${c.value.toFixed(2)} ${c.unit}`);
               } else {
                 note(`      [attribution] option=${OPT[L]}  candidate value=${f.value} unit=${f.unit ?? '(no unit field)'}  -> REJECTED: ${c.reason}`);
               }
             } else {
               note(`      [attribution] option=${OPT[L]}  candidate value=${f.value} unit=${f.unit ?? '(no unit field)'}  -> not evaluated, ${OPT[L]} already has a bound value`);
+              // D-BP151-024: `densities[L]` keeps only the first-bound value (unchanged above),
+              // but a SECOND framing resolving the SAME option is exactly what the value
+              // convergence rule (Founder Ruling 2) needs to check self-agreement -- so this
+              // candidate is ALSO proven and, if it is a real rate, recorded as an additional
+              // observation. This does not bind, overwrite, or otherwise touch `densities[L]`.
+              const c2 = toPerSqKm(f.value, f.unit, f.context);
+              if (c2.ok) {
+                (densityObservations[L] ??= []).push(c2.value);
+                note(`      [value-convergence] additional observation for ${OPT[L]}: ${c2.value.toFixed(2)} ${c2.unit}  (as written: ${f.value} ${f.unit ?? 'no unit'}; does not replace the bound value)`);
+              }
             }
           }
         }
@@ -795,6 +897,11 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
       const conv = toPerSqKm(picked.value, picked.unit, picked.context);
       if (conv.ok) {
         densities[L] = conv.value;
+        // D-BP151-024: stage 5b is a DISTINCT framing (its own one-option-per-question query,
+        // never asked in the stage-5 bulk loop above) -- its resolved value is recorded as an
+        // additional observation for the value-convergence check, same as the bulk loop's second
+        // fix above. Does not change which value `densities[L]` ends up holding.
+        (densityObservations[L] ??= []).push(conv.value);
         note(`   >> ${OPT[L]} = ${conv.value.toFixed(2)} ${conv.unit}  (as written: ${picked.value} ${picked.unit || 'no unit'})`);
       } else {
         note(`   rejected candidate for ${OPT[L]}: ${picked.value} ${picked.unit ? `(unit field: "${picked.unit}")` : '(no unit field)'} -- ${conv.reason}   raw: "${picked.context}"`);
@@ -818,13 +925,13 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   note(`   least-${property} votes across stages 3 and 4: ${Object.entries(leastVotes).map(([L, n]) => `${L}x${n}`).join('  ') || '(none)'}`);
   note(`   hard values: ${Object.entries(densities).map(([L, d]) => `${L}=${d}`).join('  ') || '(none)'}`);
 
-  // FIX 1 (D-BP151-020/BISHOP/seg-98-three-fixes): the verdict computation below is now the pure,
-  // exported evaluateComparativeTerminator() (see its own doc comment above run()) -- extracted
-  // out of this function with NO BEHAVIOR CHANGE so it can be unit-tested directly (no live
-  // askGoogle, no register gate, no network), the same way toPerSqKm() already is. Every note it
-  // would have emitted inline is returned in .notes and emitted here in the same order, so the
-  // printed transcript is byte-identical to the pre-extraction inline version.
-  const termResult = evaluateComparativeTerminator(pool, densities, leastVotes, property);
+  // D-BP151-024/BISHOP/seg-value-convergence: the verdict computation below is the pure, exported
+  // evaluateComparativeTerminator() (see its own doc comment above run() for the two-branch
+  // design this ticket replaced D-BP151-020's three-branch design with). Extracted out of this
+  // function so it can be unit-tested directly (no live askGoogle, no register gate, no network),
+  // the same way toPerSqKm() already is. Every note it emits is returned in .notes and emitted
+  // here in the same order.
+  const termResult = evaluateComparativeTerminator(pool, densities, leastVotes, property, densityObservations);
   for (const n of termResult.notes) note(n);
   const verdict = termResult.verdict;
   const basis = termResult.basis;
