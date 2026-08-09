@@ -117,8 +117,24 @@ function shapeTestSummaryFor(outcome: LianaTerminalOutcome): string {
 // named cases (ABSTAIN from a method's own run, no_method_matched, method_not_yet_taught) in one
 // check -- a clean correct (or even a clean wrong-but-answered) run stays a single fast run, per
 // the ticket's own instruction not to force this on a resolved outcome.
+// D-BP150-015 -- THE AUDIT GATE WAS ASYMMETRIC AND THAT WAS BACKWARD.
+//
+// Founder, BP150: "Then write it so that all of that is saved, especially when it works. Fix the
+// audit gate."
+//
+// This returned `outcome.abstain === true`, so Audit the Run appeared ONLY after a run that failed
+// to resolve. A run that WORKED could not be walked and could not be written to disk -- the estate
+// kept its failures and discarded its successes.
+//
+// It bit immediately. qid 98 answered A with basis "lowest densely populated among survivors, 38.0x
+// clear of the runner-up" -- the hard-number branch, which is the first evidence since BP146 that
+// stages 3, 4 and 5 return data at all. That run could not be audited. The proof of the most
+// important result of the session was unsaveable BECAUSE it succeeded.
+//
+// A successful run is MORE worth walking, not less: it is where the method that worked can be read
+// step by step and taught from. Now any completed run offers the walk.
 function offersSteppedWalk(outcome: LianaTerminalOutcome | null): boolean {
-  return outcome != null && outcome.abstain === true;
+  return outcome != null;
 }
 
 /** A general-outcome shape-test summary for the walk's teaching file -- shapeTestSummaryFor()
@@ -127,6 +143,14 @@ function offersSteppedWalk(outcome: LianaTerminalOutcome | null): boolean {
  *  cascade's honest D5 abstain) sets no `error` at all, so it needs its own honest description
  *  here rather than falling into shapeTestSummaryFor()'s "(unknown shape-test outcome)" catch-all. */
 function walkOutcomeSummary(outcome: LianaTerminalOutcome): string {
+  // D-BP150-015: a RESOLVED run now reaches this too, and its summary must say what it decided and
+  // on what basis -- the basis string is the load-bearing part. qid 98's "lowest densely populated
+  // among survivors, 38.0x clear of the runner-up" is what proves which terminator fired.
+  if (!outcome.abstain && outcome.verdict) {
+    const scored = outcome.correct != null ? `  key=${outcome.correct}  ${outcome.ok ? 'CORRECT' : 'WRONG'}` : '';
+    const via = outcome.method ? ` via method "${outcome.method}"` : '';
+    return `RESOLVED ${outcome.verdict}${scored}${via}.${outcome.basis ? `  basis: ${outcome.basis}` : ''}`;
+  }
   if (outcome.error === 'no_method_matched' || outcome.error === 'method_not_yet_taught') {
     return shapeTestSummaryFor(outcome);
   }
@@ -1194,11 +1218,13 @@ export function LianaCycleTab() {
             </div>
           )}
 
-          {/* D-BP149-044/BISHOP/S44/seg-steppedmode -- offered whenever the run did NOT
-              deterministically resolve (ABSTAIN / no_method_matched / method_not_yet_taught, all
-              covered by outcome.abstain). Never forced -- a clean correct or clean-wrong-but-
-              answered run has no stepped-walk offer at all, per the ticket's own instruction to
-              keep those a single fast run. */}
+          {/* D-BP149-044, GATE WIDENED BY D-BP150-015. This comment previously read "a clean
+              correct or clean-wrong-but-answered run has no stepped-walk offer at all", which was
+              the BP149 instruction and was BACKWARD. A run that WORKED is more worth walking, not
+              less: it is where the method that succeeded can be read step by step and taught from.
+              Founder, BP150: "write it so that all of that is saved, especially when it works."
+              Now offered on ANY completed run. Still never forced -- it is an offer, and a
+              resolved run remains a single fast run unless the operator asks to walk it. */}
           {offersSteppedWalk(lastOutcome) && lastRunEvents.length > 0 && !walkActive && (
             <button
               type="button"
