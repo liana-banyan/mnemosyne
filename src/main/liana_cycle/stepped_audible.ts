@@ -72,6 +72,36 @@
 // effect (it stops the walk), and it is a mechanical stop, not a new answer-selection rule. What
 // the method asks, in what order, and how it terminates are BYTE-IDENTICAL to a run with stepped
 // audible off, module the pauses themselves.
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP151-026/BISHOP/seg-contingency-operator -- EXTENDED TO RECOGNIZE SURVEY'S OWN STAGES.
+//
+// Founder, BP151, Q-20: "Splice into a Contingency Operator Variant so we can test." SEG return
+// BP151-025 built survey_stage.ts's runSurveyStage() (Founder steps 2, 3, 4, 6) but did not touch
+// this file (out of scope for that ticket) and left it unable to pause on Survey's own
+// `kind:'stage'` events -- see its own return, fork 4(c). This ticket wires that gap, ADDITIVELY:
+// a second, parallel step-def table (SURVEY_STEP_DEFS, below) alongside COMPARATIVE_CASCADE_STEP_
+// DEFS, selected by a new `methodId === 'survey'` case everywhere this file branches on methodId
+// (the gate in wrapForSteppedAudible(), buildUpfrontStepList()). classifyStageText() and
+// findStepDef() now take the applicable table as a parameter so the SAME matching logic serves
+// both tables rather than a second copy being written -- their DEFAULT parameter value is
+// COMPARATIVE_CASCADE_STEP_DEFS, so every existing single-argument call site (this file's own
+// wrapForSteppedAudible() before this edit, and every test that called classifyStageText(text)
+// with one argument) resolves to the IDENTICAL table it always did -- an additive parameter, not
+// a behavior change, per this file's own requirement F discipline.
+//
+// SURVEY_STEP_DEFS' four entries (steps 2, 3, 4, 6) are ATTRIBUTED with the SAME verbatim Founder
+// quotes survey_stage.ts's own file header already carries (Excerpt 7 rule 12/13, Excerpt 2 rule
+// 2, THE_FOUNDERS_PROCESS_ORDERED_BP151.md) -- copied, not re-derived, so this table cannot drift
+// from the citations survey_stage.ts itself already carries. No new attribution is invented here.
+//
+// Survey never emits a stage with no Founder counterpart of its own (all four of its `kind:
+// 'stage'` events map to Founder steps 2/3/4/6, per survey_stage.ts's own header) -- so
+// SURVEY_STEP_DEFS has no TARE entry the way STAGE 5b is one for comparative-cascade. The TARE
+// mechanism itself is unchanged and still fires for STAGE 5b exactly as before (regression-tested
+// below) -- this ticket does not invent a Survey TARE entry where the Founder's own record gives
+// none, per HARDWIRE-23 ("do not stretch one of his steps... and do not manufacture a TARE
+// finding for a stage nobody has actually checked against his words").
 
 import type {
   LianaSteppedAction,
@@ -268,37 +298,122 @@ const SUGGESTIONS_BY_KEY: Record<string, string[]> = {
     '11.a -- the removed >=1.5x separation gate is gone (D-BP151-020); the current terminator (see the notes above, if TERMINATOR ran) fires on cross-framing convergence instead, per your own qid-98 words: "consistently across all questions."',
     '11.b -- a convergence branch requiring a strict majority, and a sole-survivor rule, both remain unattributed TAREs inside the terminator -- see this run\'s own TERMINATOR notes above for which one (if either) fired.',
   ],
+  // D-BP151-026 -- the lettered sub-items THE_FOUNDERS_PROCESS_ORDERED_BP151.md already gives for
+  // steps 2/3/4/6, copied verbatim (not invented here). Same "Bishop suggestion, no authority"
+  // status as every other entry in this map.
+  survey2: [
+    '2.a -- the survey must enumerate every sense, never collapse to one. Your own run surfaced sewing, electronics and K-pop for "bias" before statistics was reached.',
+    '2.b -- this is where the sources get captured (see step 11), because the survey is the first step that produces citable text.',
+  ],
+  survey3: [
+    '3.a -- the live code clusters on a 2-shared-non-stopword-token threshold (definitional_cascade.ts:144). That number is not yours and does not do what you did.',
+    '3.b -- your "G does not" is the odd-one-out signal doing real work. Recording why an option is unlike its neighbours may matter more than the grouping itself.',
+  ],
+  survey4: [
+    '4.a -- the guess comes from the options\' own vocabulary ("sample", "too high on average", "represents"). The live field gate asks Google what field the term is in and never uses your route.',
+    '4.b -- "a field name that contains the term is not a field -- it is a variety of the term" (your BP150 words) is the one rule in the live path that is fully yours and running.',
+  ],
+  survey6: [
+    '6.a -- the live rule eliminates on one match against a generic word-list (comparative_cascade.ts:607, definitional_cascade.ts:242). That is not what you did. You removed what a source named with certainty; the code removes what a regex touches.',
+  ],
 };
 
+// ─────────────────────────── D-BP151-026: SURVEY'S OWN STEP-DEF TABLE ───────────────────────────
+//
+// Source read in full before this table was written (same source COMPARATIVE_CASCADE_STEP_DEFS
+// above was built from): BISHOP_DROPZONE\THE_FOUNDERS_PROCESS_ORDERED_BP151.md. Every
+// founderWords string below is copied character for character from survey_stage.ts's OWN file
+// header (lines 16-31 as filed at commit 37399af6), which itself copied them character for
+// character from the process document -- no re-derivation, no paraphrase. Order matches
+// runSurveyStage()'s own order exactly: step2, step3, step4, step6 (survey_stage.ts:469-472).
+export const SURVEY_STEP_DEFS: LianaSteppedStepDef[] = [
+  {
+    key: 'survey2',
+    attribution: 'ATTRIBUTED',
+    founderStepNumber: 2,
+    founderWords: 'If I look up the definition of bias in google, perfunctorily, I get this... That doesn\'t answer my question, it\'s just a fact to eblet for component factor foundation for reasoning. So keeping those definitions in mind, but not bound by them.',
+    founderSource: 'Excerpt 7, BP141 -- THE_FOUNDERS_PROCESS_ORDERED_BP151.md, step 2',
+    codeLabel: 'SURVEY STEP 2 -- define the term, perfunctorily, then keep looking',
+  },
+  {
+    key: 'survey3',
+    attribution: 'ATTRIBUTED',
+    founderStepNumber: 3,
+    founderWords: 'Well, first, I categorize the possible answers. I note that A, B, sorta C but more to that, D, E same as C... F, H is like C and E, I, and J all have to do with what answer it results in. G does not.',
+    founderSource: 'Excerpt 7, BP141, rule 12 -- THE_FOUNDERS_PROCESS_ORDERED_BP151.md, step 3',
+    codeLabel: 'SURVEY STEP 3 -- categorize the options by shared predicate, before eliminating anything',
+  },
+  {
+    key: 'survey4',
+    attribution: 'ATTRIBUTED',
+    founderStepNumber: 4,
+    founderWords: 'So I need to define what CONTEXT the question is being asked in. I would guess from \'sample\' being used in A, B, C, D, E, H, I questions... then it has to do with statistics. How do I know that? I don\'t, I\'m guessing. So I\'ll check:',
+    founderSource: 'Excerpt 7, BP141, rule 13 -- THE_FOUNDERS_PROCESS_ORDERED_BP151.md, step 4',
+    codeLabel: 'SURVEY STEP 4 -- determine the register: guess out loud, then check it',
+  },
+  {
+    key: 'survey6',
+    attribution: 'ATTRIBUTED',
+    founderStepNumber: 6,
+    founderWords: 'Note that we got rid of four answers with one google search - I like to call this the Jar Method... First we take out the Softballs, because we KNOW they are not the answer.',
+    founderSource: 'Excerpt 2, BP141, rule 2 -- THE_FOUNDERS_PROCESS_ORDERED_BP151.md, step 6',
+    codeLabel: 'SURVEY STEP 6 -- THE JAR METHOD: report what a source NAMED, never what a word list matched',
+  },
+];
+
 /** Matches a RUNTIME `kind:'stage'` event's text (e.g. "-> Q6  stage 4 -- Cake Cut Half, remove
- *  the half that are least populated: A) ...") back to one of this table's static keys, using
- *  only the fixed prefix comparative_cascade.ts's own step()/say() calls always produce
- *  (comparative_cascade.ts:199 "STAGE 0 ...", :644 "Q<n>  stage <n> -- ...", :756 "STAGE 5b
- *  ..."). The dynamic suffix (category/property/option text) is deliberately NOT matched against
- *  -- only the prefix, which is static regardless of the question this run answers. Returns null
- *  for any stage text this table does not recognize (a future stage, a different method) rather
- *  than guessing. */
-export function classifyStageText(text: string): string | null {
+ *  the half that are least populated: A) ...") back to one of `stepDefs`' static keys, using only
+ *  the fixed prefix the emitting code always produces (comparative_cascade.ts:199 "STAGE 0 ...",
+ *  :644 "Q<n>  stage <n> -- ...", :756 "STAGE 5b ..."; survey_stage.ts's own "SURVEY STEP <n> --
+ *  ..." stage lines). The dynamic suffix (category/property/option text) is deliberately NOT
+ *  matched against -- only the prefix, which is static regardless of the question this run
+ *  answers. Returns null for any stage text `stepDefs` does not recognize (a future stage, a
+ *  different method) rather than guessing.
+ *
+ *  D-BP151-026: `stepDefs` is a NEW, additive parameter, defaulted to
+ *  COMPARATIVE_CASCADE_STEP_DEFS -- every pre-existing single-argument call
+ *  (`classifyStageText(text)`) resolves to the exact same table and the exact same behavior it
+ *  always did; only a caller that explicitly passes SURVEY_STEP_DEFS gets the new SURVEY STEP
+ *  branch. */
+export function classifyStageText(
+  text: string,
+  stepDefs: LianaSteppedStepDef[] = COMPARATIVE_CASCADE_STEP_DEFS,
+): string | null {
   const body = text.replace(/^->\s*/, '').trimStart();
-  if (/^STAGE 0\b/.test(body)) return 'stage0';
-  if (/^STAGE 5b\b/.test(body)) return 'stage5b';
-  const m = /^Q(\d{1,2})\b/.exec(body);
-  if (m && COMPARATIVE_CASCADE_STEP_DEFS.some((d) => d.key === `q${m[1]}`)) return `q${m[1]}`;
+  if (/^STAGE 0\b/.test(body)) return stepDefs.some((d) => d.key === 'stage0') ? 'stage0' : null;
+  if (/^STAGE 5b\b/.test(body)) return stepDefs.some((d) => d.key === 'stage5b') ? 'stage5b' : null;
+  const mq = /^Q(\d{1,2})\b/.exec(body);
+  if (mq && stepDefs.some((d) => d.key === `q${mq[1]}`)) return `q${mq[1]}`;
+  const ms = /^SURVEY STEP (\d{1,2})\b/.exec(body);
+  if (ms && stepDefs.some((d) => d.key === `survey${ms[1]}`)) return `survey${ms[1]}`;
   return null;
 }
 
-function findStepDef(key: string): LianaSteppedStepDef | null {
-  return COMPARATIVE_CASCADE_STEP_DEFS.find((d) => d.key === key) ?? null;
+function findStepDef(key: string, stepDefs: LianaSteppedStepDef[]): LianaSteppedStepDef | null {
+  return stepDefs.find((d) => d.key === key) ?? null;
+}
+
+/** Resolves which static table applies to a methodId, per D-BP151-026 -- 'comparative-cascade'
+ *  (unchanged) or the new 'survey' phase-id runSurveyStage() is wrapped under (NOT a registered
+ *  LianaMethod id -- Survey is not in the method registry, see survey_ask.ts's own header on why
+ *  a registry entry for Survey would be a loop; 'survey' here is only this decorator's own key for
+ *  selecting a step-def table). Returns null for anything else -- unchanged out-of-scope
+ *  behavior. */
+function resolveStepDefsForMethodId(methodId: string): LianaSteppedStepDef[] | null {
+  if (methodId === 'comparative-cascade') return COMPARATIVE_CASCADE_STEP_DEFS;
+  if (methodId === 'survey') return SURVEY_STEP_DEFS;
+  return null;
 }
 
 /** Builds the full ordered step list for the up-front display (requirement A). Static -- does
  *  not depend on any live run or any Google call, so it can be, and must be, shown before the
  *  first query goes out. Returns null for a method this ticket did not map (see this file's
  *  header) -- the caller must not invent a list for a method with no table rather than silently
- *  showing an empty or wrong one. */
+ *  showing an empty or wrong one. D-BP151-026: now also resolves methodId === 'survey' to
+ *  SURVEY_STEP_DEFS; 'comparative-cascade' is unaffected. */
 export function buildUpfrontStepList(methodId: string): LianaSteppedStepDef[] | null {
-  if (methodId !== 'comparative-cascade') return null;
-  return COMPARATIVE_CASCADE_STEP_DEFS.slice();
+  const stepDefs = resolveStepDefsForMethodId(methodId);
+  return stepDefs ? stepDefs.slice() : null;
 }
 
 interface PendingFlush {
@@ -320,8 +435,12 @@ export interface SteppedAudibleWrap {
  * method emits, rather than once per Google call (that is audible.ts, unaffected by this file).
  *
  * Returns `{ ctx, finish }` where `ctx === ctx` (the SAME object passed in, by reference) and
- * `finish` is a true no-op whenever `channel` is null or `methodId` is not a method this ticket
+ * `finish` is a true no-op whenever `channel` is null or `methodId` is not a phase this ticket
  * mapped -- see this file's header, requirement F.
+ *
+ * D-BP151-026: `methodId` now also accepts `'survey'` (runSurveyStage()'s own phase-id, see
+ * resolveStepDefsForMethodId() above) in addition to `'comparative-cascade'`, unchanged. Every
+ * other methodId still gets the same untouched no-op this function always returned for it.
  */
 export function wrapForSteppedAudible(
   methodId: string,
@@ -329,7 +448,8 @@ export function wrapForSteppedAudible(
   channel: SteppedAudibleChannel | null,
   log: SteppedAudibleLog,
 ): SteppedAudibleWrap {
-  if (!channel || methodId !== 'comparative-cascade') {
+  const stepDefs = resolveStepDefsForMethodId(methodId);
+  if (!channel || !stepDefs) {
     return { ctx, finish: async () => { /* never armed for this run -- nothing to flush */ } };
   }
 
@@ -338,7 +458,7 @@ export function wrapForSteppedAudible(
   let currentKey: string | null = null;
   let currentBuffer: LianaTerminalEvent[] = [];
   let pending: PendingFlush | null = null;
-  const totalSteps = COMPARATIVE_CASCADE_STEP_DEFS.length;
+  const totalSteps = stepDefs.length;
 
   const wrappedEmit: EmitFn = (event) => {
     // Always forward first -- this decorator only OBSERVES the emit stream to find step
@@ -346,7 +466,7 @@ export function wrapForSteppedAudible(
     // the operator already watches (the same left-pane feed audible.ts's per-call pause reuses).
     ctx.emit(event);
     if (event.kind === 'stage') {
-      const key = classifyStageText(event.text);
+      const key = classifyStageText(event.text, stepDefs);
       if (key) {
         if (currentKey !== null) {
           pending = { key: currentKey, events: currentBuffer };
@@ -355,7 +475,7 @@ export function wrapForSteppedAudible(
         currentBuffer = [event];
         return;
       }
-      // An unrecognized 'stage' event (should not happen for comparative-cascade -- see
+      // An unrecognized 'stage' event (should not happen for a mapped phase -- see
       // classifyStageText's own doc comment) is buffered into whichever step is already open,
       // exactly like a 'note'/'fact' event, rather than silently mapped to a guess.
     }
@@ -363,12 +483,12 @@ export function wrapForSteppedAudible(
   };
 
   const runStepPause = async (flush: PendingFlush): Promise<void> => {
-    const def = findStepDef(flush.key);
+    const def = findStepDef(flush.key, stepDefs);
     if (!def) return; // cannot occur: classifyStageText only ever returns a key findStepDef resolves
     const pauseId = nextPauseId();
     const pause: LianaSteppedPause = {
       pauseId,
-      stepIndex: COMPARATIVE_CASCADE_STEP_DEFS.findIndex((d) => d.key === flush.key) + 1,
+      stepIndex: stepDefs.findIndex((d) => d.key === flush.key) + 1,
       stepTotal: totalSteps,
       step: def,
       events: flush.events.slice(),

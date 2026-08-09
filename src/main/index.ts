@@ -3453,7 +3453,7 @@ function registerIPCHandlers(): void {
   // Streams every stage/fact/note/result line to the caller's own window as it happens
   // (event.sender.send, same push convention as 'ask-engine-progress') so the Founder watches the
   // cascade live instead of pasting console output back into a chat window.
-  safeHandle('liana-terminal-run', async (event, { input, audible, steppedAudible }: { input: string; audible?: boolean; steppedAudible?: boolean }) => {
+  safeHandle('liana-terminal-run', async (event, { input, audible, steppedAudible, contingencyOperatorSurvey }: { input: string; audible?: boolean; steppedAudible?: boolean; contingencyOperatorSurvey?: boolean }) => {
     // D-BP150-001 (Call an Audible). `audible` is OPTIONAL and defaults to off: an older
     // renderer, or the Founder simply not toggling it, produces exactly the run this handler
     // produced before this parameter existed (wrapAskGoogleWithAudible returns the unwrapped
@@ -3461,6 +3461,13 @@ function registerIPCHandlers(): void {
     // D-BP151-023 (Stepped Audible). `steppedAudible` is likewise OPTIONAL/OFF-by-default and
     // independent of `audible` -- see stepped_audible.ts's header for what happens when both are
     // armed on the same run.
+    // D-BP151-026 (Contingency Operator: Survey Splice). `contingencyOperatorSurvey` is likewise
+    // OPTIONAL/OFF-by-default, same threading convention as the two above -- an older renderer
+    // (or the Founder not opting in) produces exactly the run this handler produced before this
+    // parameter existed. See liana_terminal_engine.ts's isContingencyOperatorSurveySpliceEnabled()
+    // for the gate (which also honors CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 as an env override, the
+    // same escape hatch its cited pattern's own resolvers use). No renderer UI control was added
+    // by this ticket -- see this ticket's return, THINGS I NOTICED AND DID NOT DO.
     const sender = event.sender;
     const runPauseIds = new Set<string>();
     const runSteppedPauseIds = new Set<string>();
@@ -3550,6 +3557,7 @@ function registerIPCHandlers(): void {
         },
         channel,
         steppedChannel,
+        contingencyOperatorSurvey,
       );
     } finally {
       sender.removeListener('destroyed', onSenderGone);
@@ -3603,6 +3611,13 @@ function registerIPCHandlers(): void {
         audibleLog: outcome.audibleLog ?? null,
         steppedAudibleMode: Boolean(steppedAudible),
         steppedLog: outcome.steppedLog ?? null,
+        // D-BP151-026: named so a receipt on disk states which variant produced the run without
+        // needing to cross-reference the request that triggered it. outcome.variant is the
+        // engine's own report (absent when off, per liana_terminal_types.ts); requestedMode is
+        // what THIS call asked for, kept alongside it so a request that asked for the variant but
+        // threw before reaching it (outcome.variant absent) is still visible in the receipt.
+        contingencyOperatorSurveyRequested: Boolean(contingencyOperatorSurvey),
+        variant: outcome.variant ?? null,
         eventCount: events.length,
         transcript: events,
       };
