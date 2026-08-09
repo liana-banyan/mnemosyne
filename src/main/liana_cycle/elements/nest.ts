@@ -43,6 +43,36 @@
 //     -- it does NOT walk forward to try a later "of" that might have been meaningful ("...examples
 //     of mitotic cell divisions"). That is a real limitation, not a hidden one; see this ticket's
 //     return for how often it matters across the bundled corpus.
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP150-012 FIX 3 -- STRUCTURAL REFUSAL GATE, PER THE KIND-CHECK CANON'S NONSENSE TEST:
+//   Asteroid-ProofVault/state/eblets/CANON/canon_kind_check_first_and_the_types_are_finite_bp150.eblet.md
+//
+// THE DEFECT: measured across the bundled 140-question corpus, 47 of 91 depth>1 nests were garbage
+// (D-BP150-010's own heuristic scan). qid 46's " of " split lands inside an embedded "a) ... b) ...
+// c) ..." bundled-answer blob and produces "deal of the orange crop..." as a "part" level; qid 72's
+// split lands on "analysis" and produces a truncated half-sentence. Both are long, multi-clause
+// scenario/passage questions -- not the short definitional/framework ask (qid 92, one sentence, 11
+// words) the Nest Method was taught on. THE SPLITTER ITSELF IS NOT MADE CLEVERER (per this ticket's
+// explicit instruction) -- a step that cannot judge its own output well-formed must REFUSE rather
+// than emit nonsense (canon R-2), so the gate runs on the INPUT, before decomposition is attempted.
+//
+// STRUCTURAL PRECONDITIONS ONLY -- no topical/lexical tuning, same discipline as
+// FUNCTION_ONLY/FRAME_RE above:
+//   1. more than one sentence in the input -- Nest was taught on a single-sentence ask; a
+//      multi-sentence input is a passage or scenario stem.
+//   2. an embedded lettered option marker ("a)", "b)", ...) -- a bundled multi-part answer, the
+//      same shape kind_check.ts's LETTERED_SUBCLAUSE_RE reports as unrecognized on the option side.
+//   3. more than WORD_COUNT_CEILING words (see that constant's own comment for how the number was
+//      picked from the corpus).
+//
+// Any one of the three refuses the WHOLE decomposition: buildNest() returns a single whole-phrase
+// level (the trimmed input, unsplit) plus a stated reason, and NestResult.refused is true. This is
+// a PASS, not a gap (canon: "an unrecognized type is a gap in an enumeration, not a failure of the
+// frame") -- see this ticket's return for the corpus-wide before/after count, including the honest
+// report of which previously-garbage cases still do NOT trip this gate (the rule is not tuned to
+// force every named example to refuse; see the ceiling's own comment).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /** Capitalized multi-word span after a within/in/according-to/under preposition. Capitalization is
  *  load-bearing and matched WITHOUT the /i flag on the span itself, for the same reason
@@ -66,6 +96,79 @@ const FUNCTION_ONLY = new Set([
   'which', 'what', 'who', 'any', 'some', 'each', 'both', 'all', 'none', 'it', 'this', 'that',
   'these', 'those', 'the', 'a', 'an',
 ]);
+
+// ── D-BP150-012 FIX 3 -- structural refusal signals, see file header. Grammatical/structural only,
+//    same curation discipline as FUNCTION_ONLY above: no domain vocabulary, nothing tuned to any
+//    one question's content.
+
+/** A sentence terminator (.!?) followed by whitespace and a capital letter -- the interior boundary
+ *  between two sentences. A trailing terminator at the very end of the string is counted separately
+ *  below (a single well-formed question ends with exactly one, and that one alone must not count as
+ *  "more than one sentence"). */
+const SENTENCE_INTERIOR_RE = /[.!?]+(?=\s+[A-Z])/g;
+const TRAILING_TERMINATOR_RE = /[.!?]\s*$/;
+
+function countSentences(text: string): number {
+  const interior = text.match(SENTENCE_INTERIOR_RE);
+  const interiorCount = interior ? interior.length : 0;
+  return interiorCount + (TRAILING_TERMINATOR_RE.test(text) ? 1 : 0);
+}
+
+/** An embedded lettered option marker ("a)", "b)", ...), preceded by punctuation/whitespace/start of
+ *  string -- NOT by an open parenthesis. Measured against the bundled corpus (this ticket's own
+ *  analysis script): requiring the punctuation/whitespace/start prefix (mirroring kind_check.ts's
+ *  LETTERED_SUBCLAUSE_RE exactly) is what keeps this from false-firing on chemistry/physics notation
+ *  that happens to look similar -- "SO_2 (g)" (gas-phase notation, qid 24/30) and "(D)" (the debye
+ *  unit, qid 29) are all preceded by "(", not by whitespace/punctuation/start, and do not match. The
+ *  one genuine hit in the bundled corpus is qid 46's " a) Cold weather..." -- a real bundled
+ *  multi-part answer embedded in the question text. Paren-prefixed lists like qid 53/115's
+ *  "(a) ... (b) ..." are not caught by this rule specifically, but both are also multi-sentence and
+ *  therefore already refused by the sentence check above -- this rule does not need to catch every
+ *  list shape on its own. */
+const OPTION_MARKER_RE = /(?:^|[,;.\s])[a-jA-J]\)\s/;
+
+/** D-BP150-012 FIX 3 -- word-count ceiling, picked from the bundled 140-question corpus (this
+ *  ticket's own analysis script, not from the six locked benchmark qids -- see below). The corpus-
+ *  wide median question length is 27 words. Restricting to single-sentence, no-option-marker
+ *  questions (the ones the two checks above do NOT already catch), every verified-good short nest
+ *  case tops out at 26 words (qid 23, "of"-split produces a sensible part/existence-check pair) and
+ *  every case ABOVE 30 words is a multi-clause vignette, data table, or quoted passage (qid 7, 28,
+ *  54, 104, 110, 130 -- six cases, none of them one of the six locked benchmark qids and none tuned
+ *  to individually). 30 is a round number sitting a few words above the highest verified-good case
+ *  and at the corpus median, so it excludes the six known-bad stragglers without touching the
+ *  verified-good short end. NOT tuned to 46/66/72/85/92/98: none of those six sits in the 27-30 word
+ *  band where this ceiling's exact value would matter (qid 92 is 11 words, qid 72 is 21 -- BELOW
+ *  this ceiling, and remains un-refused by this rule specifically; see this ticket's return, which
+ *  reports that honestly rather than lowering the ceiling to force qid 72 to refuse). */
+const WORD_COUNT_CEILING = 30;
+
+/** Checks the three structural preconditions, in the order they are cheapest/most decisive to
+ *  evaluate. Returns the refusal reason string, or null when the input passes all three and
+ *  decomposition may proceed. */
+function checkStructuralPreconditions(text: string): string | null {
+  const t = text.trim();
+  const words = t.split(/\s+/).filter(Boolean).length;
+
+  if (OPTION_MARKER_RE.test(t)) {
+    return 'input contains an embedded lettered option marker (e.g. "a)", "b)") -- a bundled '
+      + 'multi-part answer/scenario, not a single decomposable ask-phrase';
+  }
+
+  const sentences = countSentences(t);
+  if (sentences > 1) {
+    return `input spans ${sentences} sentences -- Nest was taught on a single-sentence ask (qid 92, `
+      + '11 words); a multi-sentence input is a passage or scenario stem, and mechanically splitting '
+      + 'it on the first " of " produces mid-sentence garbage rather than a real decomposition';
+  }
+
+  if (words > WORD_COUNT_CEILING) {
+    return `input is ${words} words, over the ${WORD_COUNT_CEILING}-word ceiling (corpus median 27 `
+      + 'words; every verified-good short nest case in the bundled corpus sits at or below 26) -- too '
+      + 'long to be the short definitional/framework ask Nest was taught on';
+  }
+
+  return null;
+}
 
 export interface FrameMatch {
   /** The frame name, e.g. "Critical Security Studies" -- capitalization preserved as matched. */
@@ -104,6 +207,12 @@ export interface NestResult {
   input: string;
   /** Ordered outermost-first, per canon. Always at least one level (whole-phrase). */
   levels: NestLevel[];
+  /** D-BP150-012 FIX 3. True when the structural refusal gate fired -- `levels` is then always
+   *  exactly one whole-phrase level (the input, unsplit), and `why` names which structural
+   *  precondition tripped. Mirrors AspectElimination's `eliminated_any` / SubstitutionResult's
+   *  `formed_any`: a caller that ignores this and reads `levels` directly still gets a valid,
+   *  well-formed single-level result, never a decomposition wearing the same shape as a real one. */
+  refused: boolean;
   /** Always present -- the top-line honest summary for the transcript. */
   why: string;
 }
@@ -135,6 +244,13 @@ function stripLeadWords(phrase: string): { cleaned: string; stripped: string | n
  * Depth-1 (a single whole-phrase level, nothing nested) is the correct, expected output for most
  * questions -- canon says the prior single-term signature "is a special case of the nest with depth
  * 1", not a failure of this function.
+ *
+ * D-BP150-012 FIX 3: before any of the above, the input is checked against three structural
+ * preconditions (see checkStructuralPreconditions() and this file's header). Failing any one of
+ * them REFUSES the decomposition outright -- `levels` is a single whole-phrase level (the trimmed
+ * input, unsplit) and `refused` is true. This is the kind-check canon's nonsense test applied to
+ * this element's own output: a step that cannot judge its result well-formed must refuse rather
+ * than emit it.
  */
 export function buildNest(phrase: string): NestResult {
   const input = String(phrase);
@@ -142,6 +258,19 @@ export function buildNest(phrase: string): NestResult {
 
   // Strip a trailing "?" before any other processing -- it carries no content.
   let working = input.trim().replace(/\?+\s*$/, '').trim();
+
+  const structuralRefusal = checkStructuralPreconditions(working);
+  if (structuralRefusal) {
+    const why = `REFUSED decomposition: ${structuralRefusal} -- returning a single whole-phrase `
+      + 'level per D-BP150-012 FIX 3 (canon: a step that cannot judge its own output well-formed '
+      + 'must refuse rather than emit nonsense)';
+    return {
+      input,
+      levels: [{ label: 'whole-phrase', text: working, why }],
+      refused: true,
+      why,
+    };
+  }
 
   const frameMatch = findFrame(working);
   if (frameMatch) {
@@ -201,5 +330,5 @@ export function buildNest(phrase: string): NestResult {
   });
 
   const why = `${levels.length} level(s): ${levels.map((l) => l.label).join(' -> ')}`;
-  return { input, levels, why };
+  return { input, levels, refused: false, why };
 }
