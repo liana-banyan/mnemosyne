@@ -52,7 +52,7 @@ const distPath = path.join(
 );
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const mod = require(distPath) as typeof import('./comparative_cascade');
-const { toPerSqKm, evaluateComparativeTerminator, orderOfMagnitude } = mod;
+const { toPerSqKm, evaluateComparativeTerminator, orderOfMagnitude, isAbstainCluesModeEnabled, buildAbstainCluesReport } = mod;
 
 console.log('comparative_cascade.test.ts -- FIX 2 (D-BP151-013): toPerSqKm() unit-RATE proof\n');
 
@@ -283,6 +283,149 @@ console.log('\ncomparative_cascade.test.ts -- D-BP151-024: evaluateComparativeTe
   const densityObservations = { H: [1100, 1192, 1192, 1160] };
   const r = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated', densityObservations);
   assert(r.verdict === 'H', 'Java\'s real qid-98 readings (1,100/1,192/1,192/1,160), all 10^3, self-agree independent of scale', JSON.stringify(r));
+}
+
+// ── 6. D-BP151-027/BISHOP/seg-abstain-clues: isAbstainCluesModeEnabled() + buildAbstainCluesReport() ──
+//
+// Contingency Operator, Founder's own design (FD-BP151-26). Pure-function tests only, same reason
+// section 5's own header gives for not exercising run() directly: no live askGoogle reachable from
+// this same-process test, and this ticket's own "DO NOT RUN THE PIPELINE" rule. Every fixture below
+// re-derives its expected evaluateComparativeTerminator() outcome from the SAME rules section 5
+// already tests (untouched by this ticket) so each case is provably a genuine abstain first, before
+// asserting anything about the clues report built from it.
+
+console.log('\ncomparative_cascade.test.ts -- D-BP151-027: Contingency Operator, abstain clues\n');
+
+// 6a. OFF BY DEFAULT: undefined param, no env var set.
+{
+  delete process.env.COMPARATIVE_ABSTAIN_CLUES;
+  assert(isAbstainCluesModeEnabled(undefined) === false, 'CO defaults OFF: undefined param, no env var');
+  assert(isAbstainCluesModeEnabled(false) === false, 'CO stays OFF: explicit false param, no env var');
+}
+
+// 6b. env var escape hatch, same convention as isContingencyOperatorSurveySpliceEnabled()
+// (D-BP151-026, liana_terminal_engine.ts) and isAdjudicationAlwaysModeEnabled() before it.
+{
+  process.env.COMPARATIVE_ABSTAIN_CLUES = '1';
+  assert(isAbstainCluesModeEnabled(undefined) === true, 'CO turns ON via COMPARATIVE_ABSTAIN_CLUES=1 env var when the param is undefined');
+  delete process.env.COMPARATIVE_ABSTAIN_CLUES;
+  assert(isAbstainCluesModeEnabled(undefined) === false, 'CO returns OFF once the env var is unset again (no sticky state)');
+}
+
+// 6c. explicit param true turns it on regardless of env var.
+{
+  assert(isAbstainCluesModeEnabled(true) === true, 'CO turns ON via explicit true param');
+}
+
+// 6d. SIGNAL 1 (sole-survivor): the EXACT fixture as test 5d (a sole survivor, no value/vote
+// signal, that ABSTAINS per Ruling 1/Q-13a).
+{
+  const pool = ['G'];
+  const OPT = { G: 'Sahara Desert' };
+  const densities: Record<string, number> = {};
+  const leastVotes: Record<string, number> = {};
+  const term = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated');
+  assert(term.verdict === null, 'sanity: the 5d fixture still abstains (untouched by this ticket)');
+  const report = buildAbstainCluesReport(pool, OPT, densities, leastVotes, 'densely populated', {}, term.notes);
+  assert(report.runnersUp.length === 1, 'sole-survivor fixture yields exactly one runner-up', JSON.stringify(report));
+  assert(report.runnersUp[0].letter === 'G' && report.runnersUp[0].signal === 'sole-survivor', 'the one runner-up is G, labeled sole-survivor', JSON.stringify(report.runnersUp));
+  assert(/^GUESS:/.test(report.runnersUp[0].guess), 'the runner-up is labeled a GUESS, verbatim per the Founder\'s own instruction', report.runnersUp[0].guess);
+  assert(/Q-13a/.test(report.runnersUp[0].basis) && /yes remove it/.test(report.runnersUp[0].basis), 'the basis names Ruling 1/Q-13a, the sole-survivor removal, by name', report.runnersUp[0].basis);
+}
+
+// 6e. SIGNALS 2 + 3 on the same pool: a tied, non-majority vote (A=1, B=1 -- no strict majority,
+// same shape as section 5's own tie handling) where B never resolves a value, so the coverage
+// precondition withholds branch 1 for the WHOLE pool -- A and C's resolved values are both
+// reported coverage-incomplete, and A/B are both reported vote-count.
+{
+  const pool = ['A', 'B', 'C'];
+  const OPT = { A: 'South America', B: 'Western Europe', C: 'Java' };
+  const densities = { A: 25, C: 1150 }; // B never resolves a value
+  const leastVotes = { A: 1, B: 1 }; // tie -- no strict majority
+  const densityObservations = { A: [25, 250], C: [1150, 1192] };
+  const term = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated', densityObservations);
+  assert(term.verdict === null, 'tie vote (A=1,B=1) with B uncovered -- neither branch fires, genuine ABSTAIN', JSON.stringify(term));
+  const report = buildAbstainCluesReport(pool, OPT, densities, leastVotes, 'densely populated', densityObservations, term.notes);
+  const bySignal = (s: string) => report.runnersUp.filter((c) => c.signal === s);
+  assert(bySignal('vote-count').length === 2, 'both A and B (tied, 1 vote each) are reported as vote-count clues', JSON.stringify(report.runnersUp));
+  const covInc = bySignal('coverage-incomplete');
+  assert(
+    covInc.length === 2 && covInc.some((c) => c.letter === 'A') && covInc.some((c) => c.letter === 'C'),
+    'A and C (both have resolved values, but branch 1 was withheld because B never resolved one) are BOTH reported coverage-incomplete',
+    JSON.stringify(report.runnersUp),
+  );
+  assert(!bySignal('value-no-convergence').length, 'value-no-convergence does not fire when branch 1 was WITHHELD -- coverage-incomplete is the correct signal instead, never both for the same withheld run', JSON.stringify(report.runnersUp));
+  for (const c of report.runnersUp) {
+    assert(/^GUESS:/.test(c.guess), `runner-up ${c.letter}/${c.signal} is labeled a GUESS`, c.guess);
+    assert(typeof c.basis === 'string' && c.basis.length > 0, `runner-up ${c.letter}/${c.signal} carries a non-empty basis`, JSON.stringify(c));
+  }
+}
+
+// 6f. SIGNAL 4 (value-no-convergence): coverage IS complete (both options have a resolved value)
+// and there are NO votes at all (so branch 2 cannot fire either), but neither option self-agrees
+// across framings -- the LOWEST resolved value is named, per the Founder's own example wording
+// ("its value was lowest but did not converge").
+{
+  const pool = ['A', 'B'];
+  const OPT = { A: 'South America', B: 'Western Europe' };
+  const densities = { A: 25, B: 500 };
+  const leastVotes = { A: 0, B: 0 };
+  const densityObservations = { A: [25, 250], B: [500, 5000] }; // BOTH span magnitudes -- neither self-agrees
+  const term = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated', densityObservations);
+  assert(term.verdict === null, 'no votes, no self-agreement -- genuine ABSTAIN', JSON.stringify(term));
+  const report = buildAbstainCluesReport(pool, OPT, densities, leastVotes, 'densely populated', densityObservations, term.notes);
+  const vnc = report.runnersUp.filter((c) => c.signal === 'value-no-convergence');
+  assert(vnc.length === 1 && vnc[0].letter === 'A', 'A (lowest resolved value, 25) is the value-no-convergence clue, not B (500)', JSON.stringify(report.runnersUp));
+  assert(/Order of magnitude works as the basis/.test(vnc[0].basis), 'the basis cites the Founder\'s own order-of-magnitude ruling', vnc[0].basis);
+}
+
+// 6g. NO INVENTED RANKING: every clue object carries exactly the five documented fields (letter,
+// optionText, signal, guess, basis) -- no score/rank/weight field anywhere, on a fixture that
+// abstains via a genuine tie (both branches decline) so multiple signal types fire together.
+{
+  const pool = ['A', 'B'];
+  const OPT = { A: 'South America', B: 'Western Europe' };
+  const densities = { A: 25, B: 500 };
+  const leastVotes = { A: 1, B: 1 }; // tie -- branch 2 finds no winner
+  const term = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated', {});
+  assert(term.verdict === null, 'tied votes, no observations -- genuine ABSTAIN', JSON.stringify(term));
+  const report = buildAbstainCluesReport(pool, OPT, densities, leastVotes, 'densely populated', {}, term.notes);
+  assert(report.runnersUp.length > 1, 'sanity: more than one clue fired on this fixture (vote-count x2 plus value-no-convergence)', JSON.stringify(report.runnersUp));
+  for (const c of report.runnersUp) {
+    const keys = Object.keys(c).sort();
+    assert(JSON.stringify(keys) === JSON.stringify(['basis', 'guess', 'letter', 'optionText', 'signal']), `clue for ${c.letter}/${c.signal} carries exactly the five documented fields, no invented score/rank field`, JSON.stringify(keys));
+  }
+}
+
+// 6h. whyAbstained is HARVESTED VERBATIM from the terminator's own notes, never synthesized: every
+// string in it must already be present (by value) in term.notes.
+{
+  const pool = ['G'];
+  const OPT = { G: 'Sahara Desert' };
+  const densities: Record<string, number> = {};
+  const leastVotes: Record<string, number> = {};
+  const term = evaluateComparativeTerminator(pool, densities, leastVotes, 'densely populated');
+  const report = buildAbstainCluesReport(pool, OPT, densities, leastVotes, 'densely populated', {}, term.notes);
+  assert(report.whyAbstained.length > 0, 'whyAbstained is non-empty for a genuine abstain', JSON.stringify(report));
+  assert(report.whyAbstained.every((n: string) => term.notes.includes(n)), 'every whyAbstained line is HARVESTED VERBATIM from term.notes, not synthesized', JSON.stringify(report.whyAbstained));
+}
+
+// 6i. OFF-IDENTITY PROOF: the exact conditional-spread expression run() uses (see
+// comparative_cascade.ts run(), the ABSTAIN return statement) to attach the CO's extra fields onto
+// the returned LianaTerminalOutcome, mirrored here verbatim -- run() itself cannot be exercised
+// without a live askGoogle (this ticket's own "DO NOT RUN THE PIPELINE" rule). When OFF, the spread
+// contributes ZERO keys: the returned object's shape is identical to every pre-BP151-027 abstain
+// return, and verdict/abstain/basis are untouched either way.
+{
+  function buildOutcomeTail(abstainCluesOn: boolean, abstainClues: unknown) {
+    const base = { qid: undefined, question: 'q', verdict: null, correct: undefined, abstain: true, freeText: true, basis: 'no terminator condition met' };
+    return { ...base, ...(abstainCluesOn ? { variant: 'contingency-operator-abstain-clues' as const, abstainClues } : {}) };
+  }
+  const off = buildOutcomeTail(false, { runnersUp: [{ letter: 'X' }] });
+  const on = buildOutcomeTail(true, { runnersUp: [{ letter: 'X' }] });
+  assert(!('variant' in off) && !('abstainClues' in off), 'CO OFF: the outcome carries no variant/abstainClues keys at all -- byte-identical shape to every pre-existing abstain return', JSON.stringify(Object.keys(off)));
+  assert('variant' in on && on.variant === 'contingency-operator-abstain-clues' && 'abstainClues' in on, 'CO ON: the outcome carries the variant tag and the report', JSON.stringify(Object.keys(on)));
+  assert(off.verdict === null && off.abstain === true, 'CO OFF: verdict/abstain fields are untouched (null/true), same as always', JSON.stringify(off));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

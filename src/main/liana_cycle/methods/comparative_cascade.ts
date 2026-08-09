@@ -48,6 +48,14 @@
 //          auto-declares it; it must still earn the verdict from branch 1 or 2, or the run
 //          abstains (tare-sweep row #11, this rule no longer exists in any form).
 //
+// D-BP151-027/BISHOP/seg-abstain-clues (Contingency Operator, OFF BY DEFAULT, Founder's own CO,
+// FD-BP151-26): on an abstain, isAbstainCluesModeEnabled() + buildAbstainCluesReport() (see their
+// own doc comments below, just above run()) turn the same pool/densities/leastVotes/
+// densityObservations the three branches above already computed into a labeled, unranked
+// "runners-up" report -- sole survivor, non-majority vote count, coverage-incomplete resolved
+// values, and lowest-non-converging value are the Founder's own four named clues. Nothing here
+// changes verdict/ok/abstain above; this only decorates a null verdict with why it stayed null.
+//
 // WHAT IS GENERALIZED, AND WHY IT HAS TO BE: qid98_his_words.mjs's own header says "this file
 // contains NO TEMPLATE" -- true for that file, whose entire purpose was proving the Founder's
 // EXACT thirteen questions work on the EXACT qid 98 option set. This file is a REGISTRY method:
@@ -61,7 +69,11 @@
 
 import { avgOptionWordCount, registerMethod } from '../method_registry';
 import type { LianaMethod, MethodQuestionInput, MethodRunContext, ShapeTestResult } from '../method_registry';
-import type { LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
+import type {
+  ComparativeAbstainClue,
+  ComparativeAbstainCluesReport,
+  LianaTerminalOutcome,
+} from '../../../shared/liana_cycle/liana_terminal_types';
 import { loadRegisterGate } from '../register_gate_loader';
 
 const OLLAMA_API_BASE = process.env.OLLAMA_API_BASE ?? 'http://127.0.0.1:11434';
@@ -711,9 +723,176 @@ export function evaluateComparativeTerminator(
   return { verdict, basis, notes };
 }
 
+// ─────────────────────────── D-BP151-027: abstain clues (Contingency Operator) ───────────────
+
+/** D-BP151-027/BISHOP/seg-abstain-clues: resolves the ABSTAIN CLUES Contingency Operator gate.
+ *  Same isXModeEnabled() resolver shape the Founder named as the pattern to match --
+ *  isAdjudicationAlwaysModeEnabled() (plow_mc_answerer.ts:6205) -- a boolean param plus an
+ *  env-var escape hatch, ONE RESOLVER PER GATE.
+ *
+ *  THE POLARITY IS FLIPPED, ON PURPOSE, same deviation D-BP151-026's
+ *  isContingencyOperatorSurveySpliceEnabled() (liana_terminal_engine.ts:97) already made and
+ *  documented for the identical reason: isAdjudicationAlwaysModeEnabled() and its own cited
+ *  siblings (isAnswerCacheModeEnabled/isSemanticSoccerballModeEnabled/
+ *  isEscalationLadderModeEnabled, ai_dispatch_ipc.ts) all default ON (undefined/true = on,
+ *  explicit false = the opt-out). This gate defaults OFF.
+ *  // ATTRIBUTED: Founder, BP151 (FD-BP151-23/FD-BP151-26), verbatim: "This is a case for
+ *  // Contingency Operators. Do it, and see if it works before I ratify" -- and: "A Contingency
+ *  // Operator... is not ratified by existing." Defaulting this ON would make it the shipped
+ *  // behavior the moment it lands, which is exactly what he ordered NOT to happen; the env var
+ *  // (COMPARATIVE_ABSTAIN_CLUES=1) exists for the same quick-local-testing purpose the cited
+ *  // resolvers' own env vars serve. */
+export function isAbstainCluesModeEnabled(abstainCluesCO: boolean | undefined): boolean {
+  if (abstainCluesCO === true) return true;
+  return process.env.COMPARATIVE_ABSTAIN_CLUES === '1';
+}
+
+/** D-BP151-027/BISHOP/seg-abstain-clues. Pure function -- no askGoogle, no emit, no network, same
+ *  unit-testable convention as toPerSqKm()/detectValueConvergence() above (this file's own header
+ *  under "DO NOT RUN THE PIPELINE"). Takes ONLY values the terminator already computed and was
+ *  about to discard on an abstain -- pool (survivor pool), OPT (option text), densities (the
+ *  first-bound resolved value per option), leastVotes (the vote tally), densityObservations
+ *  (every resolved value per option across every framing that resolved one) -- see run()'s own
+ *  call site below for the exact path:line each is harvested from, and this ticket's SEG return
+ *  for the full inventory. NEVER touches `verdict` -- this is only ever called from run() AFTER
+ *  evaluateComparativeTerminator() has already returned verdict:null; nothing here can promote a
+ *  guess to an answer because nothing here is consulted by the branches that decide the verdict.
+ *
+ *  FOUR SIGNALS, AND ONLY FOUR -- the Founder's own worked examples (FD-BP151-26, verbatim: "Like
+ *  the sole-survivor - not definitive on it's own, but there are other rules and principles we
+ *  can apply that, combined with it, ARE definitive"), no fifth invented:
+ *   1. sole-survivor        -- pool narrowed to exactly one option. ATTRIBUTED, Founder Ruling
+ *      1/Q-13a, BP151: "yes remove it" removed this as a terminator branch; FD-BP151-26
+ *      reintroduces it here, and ONLY here, as a labeled clue -- his own worked example.
+ *   2. vote-count            -- carried >=1 "least" vote across framings. Guaranteed NOT a strict
+ *      majority here (a majority would already have produced a non-null verdict via branch 2 and
+ *      this function would never run) -- the vote rule itself is TARE, unattributed, pre-existing
+ *      (tare-sweep row #10); reporting a non-winning vote count as a clue is REPORTING only, not
+ *      a new decision rule.
+ *   3. coverage-incomplete   -- has a resolved value, but branch 1 (value convergence) was
+ *      WITHHELD entirely because the coverage precondition failed for the voted-least set
+ *      (ATTRIBUTED per tare-sweep row #12, D-BP151-013 FIX 3) -- every resolved value in the pool
+ *      is affected when this withholds, not only the voted-least ones (the withheld note's own
+ *      words: "ranking only the subset the parser succeeded on is not ranking the pool").
+ *   4. value-no-convergence  -- branch 1 ran (coverage was complete) but no option self-agreed
+ *      (detectValueConvergence() returned no winner); among resolved values, the LOWEST is named
+ *      per the Founder's own example wording ("its value was lowest but did not converge across
+ *      framings"). Calls detectValueConvergence() a SECOND time here, over the SAME
+ *      densityObservations branch 1 already collected -- the SAME already-exported pure function
+ *      and the SAME order-of-magnitude rule, not a new one; "lowest" is the SAME ascending
+ *      comparison detectValueConvergence()'s own tie-break already uses (line ~611 above), not an
+ *      invented weight.
+ *
+ *  NO RANKING ACROSS SIGNALS OR OPTIONS BEYOND WHAT ALREADY EXISTED. Per this ticket's own hard
+ *  constraint ("DO NOT INVENT A RANKING NUMBER... reporting them unranked, each with its named
+ *  signal, is an acceptable and honest outcome"), `runnersUp` is NOT sorted into one combined
+ *  cross-signal order: the vote-count group keeps the SAME descending-by-vote-count sort branch 2
+ *  already uses (evaluateComparativeTerminator's own convergenceRanked); every other group is
+ *  emitted in pool order. No clue object carries a score, weight, or rank field -- see
+ *  ComparativeAbstainClue's own five named fields, shared/liana_cycle/liana_terminal_types.ts. */
+export function buildAbstainCluesReport(
+  pool: string[],
+  OPT: Record<string, string>,
+  densities: Record<string, number>,
+  leastVotes: Record<string, number>,
+  property: string,
+  densityObservations: Record<string, number[]>,
+  terminatorNotes: string[],
+): ComparativeAbstainCluesReport {
+  const runnersUp: ComparativeAbstainClue[] = [];
+
+  // SIGNAL 1: sole survivor -- ATTRIBUTED, Founder Ruling 1/Q-13a, BP151 (removal) + FD-BP151-26
+  // (reintroduction as a clue, his own worked example).
+  if (pool.length === 1) {
+    const L = pool[0];
+    runnersUp.push({
+      letter: L,
+      optionText: OPT[L],
+      signal: 'sole-survivor',
+      guess: `GUESS: ${OPT[L]} -- guessing from being the sole survivor of elimination.`,
+      basis: 'sole survivor of elimination, NOT definitive alone -- ATTRIBUTED, Founder Ruling 1/Q-13a, BP151: "yes remove it" (removed as a terminator branch); reintroduced ONLY as a labeled clue per FD-BP151-26, Founder, BP151, verbatim: "Like the sole-survivor - not definitive on its own, but there are other rules and principles we can apply that, combined with it, ARE definitive."',
+    });
+  }
+
+  // SIGNAL 2: vote count, not a strict majority (guaranteed true here -- see this function's own
+  // doc comment). SAME descending-by-count sort branch 2 already uses -- harvested, not invented.
+  const votedLeast = Object.keys(leastVotes).filter((L) => pool.includes(L) && leastVotes[L] >= 1);
+  const voteRanked = [...votedLeast].sort((a, b) => leastVotes[b] - leastVotes[a]);
+  for (const L of voteRanked) {
+    runnersUp.push({
+      letter: L,
+      optionText: OPT[L],
+      signal: 'vote-count',
+      guess: `GUESS: ${OPT[L]} -- guessing from carrying ${leastVotes[L]} "least ${property}" vote(s) across framings, not a strict majority.`,
+      basis: `cross-framing vote count = ${leastVotes[L]}, NOT a strict majority -- the vote rule itself is TARE, unattributed, pre-existing (tare-sweep row #10); its precedence as a fallback-only signal is ATTRIBUTED, Founder Ruling 2, BP151: "only if value convergence is non-existent, it trumps vote convergence every time"`,
+    });
+  }
+
+  // Coverage gate -- IDENTICAL filter to evaluateComparativeTerminator's own (this file, votedLeast/
+  // votedWithoutValue just above BRANCH 1), reused rather than re-derived differently.
+  const votedWithoutValue = votedLeast.filter((L) => densities[L] === undefined);
+
+  if (votedWithoutValue.length) {
+    // SIGNAL 3: coverage incomplete -- branch 1 was withheld entirely, so every resolved value in
+    // the pool (not only the voted-least ones) never got evaluated for value convergence.
+    for (const L of pool) {
+      if (densities[L] !== undefined) {
+        runnersUp.push({
+          letter: L,
+          optionText: OPT[L],
+          signal: 'coverage-incomplete',
+          guess: `GUESS: ${OPT[L]} -- guessing from a resolved ${property} value (${densities[L]}) that branch 1 never evaluated, because coverage of the voted-least set was incomplete.`,
+          basis: `resolved value present (${densities[L]}), but the value-convergence branch WITHHELD -- ${votedWithoutValue.map((x) => OPT[x]).join(', ')} ${votedWithoutValue.length === 1 ? 'was' : 'were'} voted least-${property} with no resolved value -- ATTRIBUTED per tare-sweep row #12, D-BP151-013 FIX 3: "ranking only the subset the parser succeeded on is not ranking the pool"`,
+        });
+      }
+    }
+  } else {
+    // SIGNAL 4: branch 1 ran (coverage complete) but nobody self-agreed. Reuses
+    // detectValueConvergence() -- the SAME pure function branch 1 already calls, over the SAME
+    // densityObservations -- guaranteed winner === null here (a winner would have produced a
+    // non-null verdict, and this function is only ever called on a genuine abstain).
+    const vc = detectValueConvergence(pool, densityObservations, property);
+    if (!vc.winner) {
+      const resolved = pool.filter((L) => densities[L] !== undefined);
+      if (resolved.length) {
+        const lowestVal = Math.min(...resolved.map((L) => densities[L]));
+        const lowestLetters = resolved.filter((L) => densities[L] === lowestVal);
+        for (const L of lowestLetters) {
+          runnersUp.push({
+            letter: L,
+            optionText: OPT[L],
+            signal: 'value-no-convergence',
+            guess: `GUESS: ${OPT[L]} -- guessing from having the lowest resolved ${property} value (${densities[L]}) among the pool, though it did not self-agree (order of magnitude) across framings.`,
+            basis: `lowest resolved value in the pool (${densities[L]}), but NOT self-agreeing across framings -- ATTRIBUTED test, Founder, BP151: "Order of magnitude works as the basis" (the same order-of-magnitude rule branch 1 uses; here it found no winner, so this is reported as a clue, not a verdict)`,
+          });
+        }
+      }
+    }
+  }
+
+  // "Why the run abstained" -- HARVESTED VERBATIM from the terminator's own notes, never
+  // re-derived or paraphrased (per HARDWIRE-23 Law 5: the receipt names which rule fired, and its
+  // attribution status -- evaluateComparativeTerminator's notes already carry both).
+  const whyAbstained = terminatorNotes.filter((n) => /BRANCH|WITHHELD|value.convergence|coverage check|cross-framing convergence/i.test(n));
+
+  return { runnersUp, whyAbstained };
+}
+
 // ─────────────────────────── run ───────────────────────────
 
-async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<LianaTerminalOutcome> {
+// D-BP151-027/BISHOP/seg-abstain-clues: `abstainCluesCO` is a THIRD, OPTIONAL parameter -- the
+// LianaMethod.run field type (method_registry.ts) is `(input, ctx) => Promise<LianaTerminalOutcome>`
+// and is NOT changed by this ticket (that file is not in this ticket's scope). A function with an
+// additional OPTIONAL parameter is assignable to that narrower type (TS function-type
+// compatibility: every existing caller going through the registry -- comparativeCascadeMethod.run
+// at the bottom of this file, called with exactly 2 args -- still type-checks and still always
+// passes `undefined` here, same as isContingencyOperatorSurveySpliceEnabled()'s own boolean param
+// in liana_terminal_engine.ts is threaded in from OUTSIDE the method registry today). This is
+// PROOF, not assertion, of "off by default": no caller reachable through the registry can ever
+// pass anything but `undefined` for this parameter today, so isAbstainCluesModeEnabled() falls
+// through to the env-var check every single time unless a caller (e.g. this ticket's own test)
+// invokes run() directly with a third argument.
+async function run(input: MethodQuestionInput, ctx: MethodRunContext, abstainCluesCO?: boolean): Promise<LianaTerminalOutcome> {
   const { askGoogle, emit } = ctx;
   const OPT = input.options as Record<string, string>;
   const ALL = Object.keys(OPT);
@@ -991,8 +1170,40 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
     return { qid: input.qid, question: input.question, verdict, correct: KEY, ok, basis, abstain: false, freeText: input.qid == null };
   }
   emit({ kind: 'result', text: `ABSTAIN   pool=${pool.join(',')}${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+
+  // D-BP151-027/BISHOP/seg-abstain-clues: OFF BY DEFAULT (isAbstainCluesModeEnabled(), see its own
+  // doc comment above for the flipped-polarity idiom and why). When OFF, this block calls nothing,
+  // builds nothing, emits nothing, and the return statement below spreads in ZERO extra keys -- the
+  // outcome object is byte-identical in shape to every pre-BP151-027 abstain return. When ON, it
+  // builds the report from ONLY the values already computed above (pool, densities, leastVotes,
+  // densityObservations, termResult.notes) -- no new Google call, no new model call, no new
+  // decision rule -- and attaches it beside the untouched verdict:null/abstain:true/basis above.
+  const abstainCluesOn = isAbstainCluesModeEnabled(abstainCluesCO);
+  let abstainClues: ComparativeAbstainCluesReport | undefined;
+  if (abstainCluesOn) {
+    abstainClues = buildAbstainCluesReport(pool, OPT, densities, leastVotes, property, densityObservations, termResult.notes);
+    note('   CONTINGENCY OPERATOR (D-BP151-027, abstain-clues) ON -- runners-up follow. None of these are promoted to an answer; the verdict stays ABSTAIN.');
+    if (abstainClues.runnersUp.length) {
+      for (const c of abstainClues.runnersUp) {
+        note(`   ${c.guess}`);
+        note(`      basis: ${c.basis}`);
+      }
+    } else {
+      note('   no runners-up -- none of the four known signals (sole-survivor, vote-count, coverage-incomplete, value-no-convergence) fired for this pool');
+    }
+  }
+
   note(`   ${elapsedS}s   $0`);
-  return { qid: input.qid, question: input.question, verdict: null, correct: KEY, abstain: true, freeText: input.qid == null, basis: 'no terminator condition met' };
+  return {
+    qid: input.qid,
+    question: input.question,
+    verdict: null,
+    correct: KEY,
+    abstain: true,
+    freeText: input.qid == null,
+    basis: 'no terminator condition met',
+    ...(abstainCluesOn ? { variant: 'contingency-operator-abstain-clues' as const, abstainClues } : {}),
+  };
 }
 
 export const comparativeCascadeMethod: LianaMethod = {

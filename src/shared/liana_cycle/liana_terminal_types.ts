@@ -63,6 +63,88 @@ export interface LianaTerminalOutcome {
    *  ON and reached at least one pause. ADDITIVE/OPTIONAL, same convention as audibleLog above --
    *  a normal run, and a run whose audible mode is the per-call one, both omit it entirely. */
   steppedLog?: LianaSteppedRecord[];
+  /** D-BP151-026 (Contingency Operator: Survey Splice), ADDITIVE/OPTIONAL, same "a normal run
+   *  omits it entirely" convention as audibleLog/steppedLog above. Present ONLY when the
+   *  Contingency Operator Survey Splice variant was ON for this run (Founder, BP151, Q-20: "This
+   *  is a case for Contingency Operators. Do it, and see if it works before I ratify" -- a
+   *  Contingency Operator "is not ratified by existing"), so the receipt always states which
+   *  variant produced it. Absent on every run with the variant off, which is every run before
+   *  this ticket and every run after it that does not opt in -- the shipped/default path is
+   *  identified by the field's ABSENCE, exactly the way audible/stepped-audible mode being off is
+   *  identified by audibleLog/steppedLog's absence, not by a separate "off" value. See
+   *  liana_terminal_engine.ts's isContingencyOperatorSurveySpliceEnabled() for the gate.
+   *
+   *  D-BP151-027 (Contingency Operator: Abstain Clues) ADDS its own literal to this same union --
+   *  see comparative_cascade.ts's isAbstainCluesModeEnabled() for that gate. The two variants are
+   *  independent (different tickets, different files, different SEGs live at the same time this
+   *  literal was added -- D-BP151-025/026 own survey_stage.ts/elements/liana_terminal_engine.ts;
+   *  this ticket touches ONLY this shared type file, additively, and comparative_cascade.ts). */
+  variant?: 'contingency-operator-survey-splice' | 'contingency-operator-abstain-clues';
+  /** D-BP151-027 (Contingency Operator: Abstain Clues), ADDITIVE/OPTIONAL, same "a normal run
+   *  omits it entirely" convention as audibleLog/steppedLog/variant above. Present ONLY when the
+   *  Abstain Clues variant was ON for this run AND the run actually abstained -- Founder, BP151
+   *  (FD-BP151-26), verbatim: "If abstain happens, give the runners-up based on exactly what
+   *  isn't authoritative, but gives clues... Just identify every guess as such, with what it is
+   *  using to guess." Absent on every run with the variant off (every run before this ticket and
+   *  every run after that does not opt in) AND absent on any run that answers instead of
+   *  abstaining -- this field NEVER accompanies a non-null `verdict`, and its presence or absence
+   *  never changes `verdict`/`ok`/`abstain` above, which this Contingency Operator does not touch.
+   *  See comparative_cascade.ts's isAbstainCluesModeEnabled() for the gate and
+   *  buildAbstainCluesReport() for what this contains and where each signal is harvested from. */
+  abstainClues?: ComparativeAbstainCluesReport;
+}
+
+// ─────────────────────────── D-BP151-027: ABSTAIN CLUES (Contingency Operator) ───────────────────────────
+//
+// Founder, BP151 (FD-BP151-26), verbatim, positing this Contingency Operator himself: "And I want
+// to know the WHY of abstain. So we can make it not, with deterministic reasons. Actually -
+// instead, I'd like to posit a CO of my own: If abstain happens, give the runners-up based on
+// exactly what isn't authoritative, but gives clues. Like the sole-survivor - not definitive on
+// it's own, but there are other rules and principles we can apply that, combined with it, ARE
+// definitive. Just identify every guess as such, with what it is using to guess."
+//
+// Defined HERE, not in comparative_cascade.ts, for the same reason LianaAudibleRecord/
+// LianaSteppedRecord are defined here rather than in the method file that produces them: this
+// file is shared main+renderer (tsconfig.main.json AND tsconfig.renderer.json), a method file is
+// main-only, and LianaTerminalOutcome (which carries this report) is itself defined here.
+
+/** The exact non-authoritative signal a guess is based on -- the Founder's own four worked
+ *  examples (FD-BP151-26) and no fifth invented. See comparative_cascade.ts's
+ *  buildAbstainCluesReport() for exactly how each one is detected, all four from values the
+ *  terminator already computed and was about to discard. */
+export type ComparativeAbstainSignal =
+  | 'sole-survivor'
+  | 'vote-count'
+  | 'coverage-incomplete'
+  | 'value-no-convergence';
+
+/** One runner-up, labeled a GUESS, with the exact signal it is guessing from -- his own words:
+ *  "identify every guess as such, with what it is using to guess." NEVER an answer: this type
+ *  only ever appears inside LianaTerminalOutcome.abstainClues, which itself only ever appears
+ *  alongside `verdict: null`. */
+export interface ComparativeAbstainClue {
+  letter: string;
+  optionText: string;
+  signal: ComparativeAbstainSignal;
+  /** Always starts with "GUESS:" and always names the signal in plain language, per his
+   *  instruction to identify every guess as such. */
+  guess: string;
+  /** The rule this clue leans on and its attribution status (HARDWIRE-23 Law 5: "the receipt
+   *  names which rule fired, and who ordered it"). */
+  basis: string;
+}
+
+/** The structured report attached to an abstain when the Abstain Clues Contingency Operator is
+ *  ON. `runnersUp` is intentionally UNRANKED across signal types (this ticket's own hard
+ *  constraint: "DO NOT INVENT A RANKING NUMBER... reporting them unranked, each with its named
+ *  signal, is an acceptable and honest outcome") -- the only ordering preserved is the ONE that
+ *  already existed in the terminator's own vote-count sort, reused verbatim for the vote-count
+ *  group. */
+export interface ComparativeAbstainCluesReport {
+  runnersUp: ComparativeAbstainClue[];
+  /** Which branch withheld and why, harvested VERBATIM from the terminator's own notes
+   *  (evaluateComparativeTerminator's return, .notes) -- never re-derived or paraphrased. */
+  whyAbstained: string[];
 }
 
 // ─────────────────────────── D-BP150-001: CALL AN AUDIBLE ───────────────────────────
