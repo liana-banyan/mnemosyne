@@ -58,6 +58,10 @@
 import type { MethodRunContext } from '../method_registry';
 import { appearsIn, gemmaExtract, googleBlocks, norm, type GoogleBlock } from '../methods/comparative_cascade';
 import { tagAspect, type AspectTag } from './aspect_tag';
+// D-BP150-019 FIX 1 -- answer-key contamination guard, reused not reimplemented. See that file's
+// own header for the two measured leaks this closes (qid 85 denotations 32 and 33) and why both
+// checks are needed (a marker phrase and a near-verbatim option match catch different leaks).
+import { findAnswerKeyMarker, findNearVerbatimOptionMatch } from './answer_key_guard';
 // D-BP150-014 -- THE NEST METHOD's decomposition half, reused not reimplemented. Ratified canon:
 //   Asteroid-ProofVault/state/eblets/CANON/canon_the_nest_method_bp150.eblet.md
 // "E-SURVEY-ASK must gain decomposition: take a phrase, produce the nest, survey each level in
@@ -128,6 +132,15 @@ export interface SurveyAskOpts {
    *  blocks are pushed through the exact same extractDenotationFromBlock()/appearsIn()
    *  verification every query-derived block gets -- no new Google call, no relaxed verification. */
   extraBlockSources?: Array<{ query: string; blocks: GoogleBlock[] }>;
+  /** D-BP150-019 FIX 1(b). The question's own option set, so every candidate denotation -- from
+   *  EVERY source, freshly queried or reused -- can be checked for near-verbatim reproduction of an
+   *  option's text (isNearVerbatimOptionMatch(), answer_key_guard.ts) before it is trusted. The
+   *  marker check (FIX 1(a)) alone does not catch every leak: a source can restate an option's
+   *  substance without ever using a phrase like "the correct answer is" (measured case: qid 85
+   *  denotation 32, homework.study.com). Optional/null-safe -- a caller with no options in scope
+   *  (surveyAskNested()'s per-level calls, surveyAnswers()'s per-catalyst-word calls) simply skips
+   *  this check, exactly as before this ticket. */
+  options?: Record<string, string> | null;
 }
 
 /** D2 reuses this exact query text ("define <term>"). Survey reuses it too, verbatim, so the two
@@ -165,10 +178,27 @@ async function extractDenotationFromBlock(
   term: string,
   block: GoogleBlock,
   query: string,
+  options: Record<string, string> | null | undefined,
 ): Promise<{ denotation: SurveyDenotation | null; discardReason: string | null }> {
   const passage = [block.title, block.body].filter(Boolean).join(' -- ');
   if (!passage.trim()) {
     return { denotation: null, discardReason: 'block carried no text (title and body both empty)' };
+  }
+
+  // D-BP150-019 FIX 1(a). Reject the WHOLE PASSAGE, before any extraction is even attempted, when
+  // it contains an answer-declaring phrase. Checked here, not just against the sentence Gemma would
+  // extract below, because extraction can cleanly strip a marker's own wording while still
+  // laundering through a sentence lifted from an answer-key page -- measured case: qid 85 denotation
+  // 32's source passage read "...True or False? 1 answer -- Top answer: The given statement is
+  // true: bias describes a process..."; the marker never appears in the sentence Gemma would copy,
+  // only in the passage it was cut from. See answer_key_guard.ts's own header for every marker and
+  // where each was observed.
+  const marker = findAnswerKeyMarker(passage);
+  if (marker) {
+    return {
+      denotation: null,
+      discardReason: `passage discarded before extraction -- contains answer-declaring phrase "${marker.label}" (answer-key contamination, D-BP150-019 FIX 1a)`,
+    };
   }
 
   const ex = await gemmaExtract(
@@ -189,6 +219,21 @@ async function extractDenotationFromBlock(
       discardReason: rawSentence
         ? 'extracted sentence could not be verified verbatim against the passage it claimed to come from'
         : 'no defining sentence for the term could be extracted from this passage',
+    };
+  }
+
+  // D-BP150-019 FIX 1(b). The extracted sentence may still reproduce one of THIS question's own
+  // options near-verbatim even with no marker phrase anywhere in the passage -- measured case: qid
+  // 85 denotation 32, "Bias describes a process that results in a sample that does not represent
+  // the population." (homework.study.com), reproduces option A ("It describes a process that
+  // results in a sample that does not represent the population.") with only the leading frame and
+  // one article differing. See answer_key_guard.ts's isNearVerbatimOptionMatch() for the
+  // stripped/normalized substring test and its measured threshold.
+  const nearVerbatim = findNearVerbatimOptionMatch(rawSentence, options);
+  if (nearVerbatim) {
+    return {
+      denotation: null,
+      discardReason: `extracted sentence discarded -- near-verbatim reproduction of option ${nearVerbatim.letter}'s text ("${nearVerbatim.optionText}") once the leading frame and articles are stripped (answer-key contamination, D-BP150-019 FIX 1b)`,
     };
   }
 
@@ -257,7 +302,7 @@ export async function surveyAsk(term: string, ctx: MethodRunContext, opts: Surve
    *  blocks (further below), so a block runs through IDENTICAL extraction/verification/dedup
    *  regardless of which path fetched it. */
   async function handleBlock(block: GoogleBlock, sourceLabel: string): Promise<void> {
-    const { denotation, discardReason } = await extractDenotationFromBlock(term, block, sourceLabel);
+    const { denotation, discardReason } = await extractDenotationFromBlock(term, block, sourceLabel, opts.options);
     if (!denotation) {
       discarded.push({
         query: sourceLabel,

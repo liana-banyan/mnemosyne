@@ -317,6 +317,12 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   note(`   term: "${term}"`);
   const survey = await surveyAsk(term, ctx, {
     scopeFields: scopeFieldNames,
+    // D-BP150-019 FIX 1(b). Every denotation -- freshly queried or reused from Stage 1 -- now gets
+    // checked for near-verbatim reproduction of one of these OPTIONS, on top of the pre-existing
+    // exact-match filter below (kept: it is a cheap, coarse pre-filter that saves a wasted Gemma
+    // call on obviously-contaminated Stage-1 blocks; the hardened check inside surveyAsk() is the
+    // authoritative, comprehensive guard that runs regardless of source).
+    options: OPT,
     extraBlockSources: stage1BlocksForSurvey.length
       ? [{ query: `STAGE 1 reused (ask the inverse): ${q1Text}`, blocks: stage1BlocksForSurvey }]
       : [],
