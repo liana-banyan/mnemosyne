@@ -8,7 +8,8 @@
 // Run (after `npm run build:main`):
 //   node src\main\liana_cycle\survey_stage.test.ts
 //
-// WHAT THIS TESTS, per this ticket's VERIFICATION section:
+// WHAT THIS TESTS, per this ticket's VERIFICATION section (amended, D-BP151-025 second pass --
+// steps 3 and 6 completed per the Founder's rulings on both forks the first pass stopped at):
 //   1. Survey emits its own kind:'stage' boundaries -- one per Founder step (2, 3, 4, 6), plus the
 //      overall SURVEY header -- so a future stepped-audible extension has real boundaries to pause
 //      on (see this ticket's return for why wiring that pause support is out of scope: it needs
@@ -18,16 +19,32 @@
 //      NO_CANDIDATES, and founderStep4DetermineRegister()'s own `verified` flag must be false --
 //      never true on an unverified decision.
 //   3. Survey never returns an answer to the question: the SurveyStageResult object carries no
-//      `verdict`/`answer`/`correct` field anywhere, and `neverAnswersTheQuestion` is always `true`.
+//      `verdict`/`answer`/`correct` field anywhere, and `neverAnswersTheQuestion` is always `true`
+//      -- true even now that step 6 performs a real (Founder-ordered) elimination, because
+//      narrowing the OPTION POOL is not picking a final verdict letter.
 //   4. Step 2 and step 4 refuse cleanly (do not throw, do not guess) when no term can be derived.
 //   5. Step 3 and step 6 refuse cleanly when no options are supplied.
-//   6. Step 6 refuses cleanly (returns `named: []`, does not throw) when no source blocks are
-//      supplied -- it issues no Google query of its own, per this file's own header.
+//   6. Step 6 refuses cleanly (returns `named: []`, `eliminated: []`, does not throw) when no
+//      source groups are supplied -- it issues no Google query of its own, per this file's own
+//      header.
 //   7. The orchestrator runs steps in the Founder's order (2, 3, 4, 6) as emitted stage events.
+//   8. STEP 3 GROUPS VIA THE REAL MODEL CALL (D-BP151-025 amendment), and the grouping is
+//      recorded as a PROPOSAL: every returned letter is a real option letter (a hallucinated one
+//      would be dropped, never trusted -- this is the only mechanical check performed), and
+//      nothing about the call picks a "right" group or an answer to the question.
+//   9. STEP 6 ELIMINATES BY THE QUERY'S KNOWN DIRECTION (D-BP151-025 amendment): a source that
+//      names an option in a query group declared 'answers-eliminate' causes that option to be
+//      eliminated; a source in a group declared 'answers-keep' is named but NOT eliminated. No
+//      word list is used anywhere in this decision.
 //
-// No network reachable in this test run (askGoogle is a fake returning null for every call, per
-// the same convention stepped_audible.test.ts's fake MethodRunContext already uses) -- every
-// assertion below holds regardless of whether a real Google/Gemma backend is reachable.
+// THIS RUN USES THE REAL LOCAL OLLAMA MODEL (measured reachable at the default
+// http://127.0.0.1:11434 on this machine, model gemma4:12b -- the SAME instance
+// comparative_cascade.ts's gemmaExtract() already talks to) for steps 3's grouping call and 6's
+// extraction call. `askGoogle` (the GOOGLE SEARCH channel) is still a fake returning null for
+// every call -- no Google/internet network is reached anywhere in this file. Model-call cases
+// below assert MECHANICAL invariants (every letter is real, an eliminated option was actually
+// named, a kept-direction mention is not eliminated) rather than exact model wording, since a
+// live model's phrasing can vary even at temperature 0 across machine/driver versions.
 
 (async function main(): Promise<void> {
 
@@ -91,7 +108,7 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
   const { ctx, events } = fakeCtx();
   const r = await founderStep3CategorizeOptions(null, ctx);
   assert(r.perOption === null, 'step3(no options): perOption stays null');
-  assert(typeof r.fork === 'string' && r.fork.length > 0, 'step3: the categorization fork is ALWAYS stated, even on refusal');
+  assert(r.grouping === null, 'step3(no options): grouping stays null -- the model call is never made with nothing to group');
   assert(events.some((e) => e.kind === 'stage' && /SURVEY STEP 3/.test(e.text)), 'step3(no options): still emits its own kind:\'stage\' boundary');
 }
 
@@ -109,8 +126,32 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
   assert(r.perOption!.options.A.kind !== undefined, 'step3: option A carries a KIND from checkKind() (elements/kind_check.ts, wired for the first time)');
   assert(r.perOption!.options.A.aspect !== undefined, 'step3: option A carries an ASPECT from tagAspect()');
   assert(Array.isArray(r.perOption!.options.A.catalystWords), 'step3: option A carries its own catalyst words from findCatalystWords()');
-  assert(/threshold/i.test(r.fork), 'step3: the fork explicitly names the D1 shared-token-threshold tare it refuses to repeat', r.fork);
-  assert(/semantic judgment|read meaning|meaning/i.test(r.fork), 'step3: the fork explicitly names the semantic-judgment gap it stopped at', r.fork);
+  assert(r.grouping !== null, 'step3(options given): grouping is populated -- the model call ran');
+}
+
+// ── 3b. STEP 3 GROUPS VIA THE REAL MODEL CALL, PROPOSAL ONLY (D-BP151-025 amendment) ───────────
+// Real local Ollama (gemma4:12b), no fabrication -- asserting MECHANICAL invariants only, since
+// exact model phrasing can vary: every letter the model returns is a REAL option letter (a
+// hallucinated one is dropped, never trusted -- the only post-call check this function performs),
+// and the model never answers the underlying question or picks a "right" group.
+{
+  const { ctx } = fakeCtx();
+  const options = {
+    A: 'It describes a process that results in a non-representative sample.',
+    B: 'It describes a process that results in a skewed estimate.',
+    C: 'A method uses a small sample size.',
+  };
+  const r = await founderStep3CategorizeOptions(options, ctx);
+  assert(r.grouping !== null, 'step3(grouping): grouping result is present');
+  const g = r.grouping!;
+  assert(g.modelUnreachable === false, 'step3(grouping): the local model WAS reachable for this run (measured, not assumed)', JSON.stringify(g));
+  const validLetters = new Set(Object.keys(options));
+  const everyLetterReal = g.groups.every((grp) => grp.letters.every((L) => validLetters.has(L)));
+  assert(everyLetterReal, 'step3(grouping): every letter in every proposed group is a REAL option letter -- no hallucination trusted', JSON.stringify(g.groups));
+  const ungroupedAreReal = g.ungrouped.every((L) => validLetters.has(L));
+  assert(ungroupedAreReal, 'step3(grouping): every ungrouped letter reported is a real option letter');
+  assert(!('verdict' in g) && !('answer' in g) && !('correct' in g), 'step3(grouping): the grouping result carries no verdict/answer/correct field -- the model never answers the question');
+  assert(/PROPOSAL|proposed/i.test(g.why), 'step3(grouping): why explicitly frames this as a PROPOSAL, not a decision', g.why);
 }
 
 // ── 4. STEP 4: AN UNVERIFIED REGISTER GUESS IS NEVER ACTED ON ──────────────────────────────────
@@ -137,56 +178,110 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
   assert(r.verified === false, 'step4(no term): verified is false');
 }
 
-// ── 5. STEP 6: REFUSES CLEANLY WITH NO SOURCE BLOCKS -- issues no query of its own ─────────────
+// ── 5. STEP 6: REFUSES CLEANLY WITH NO SOURCE GROUPS -- issues no query of its own ─────────────
 {
   const { ctx, events } = fakeCtx();
   const options = { A: 'South America', B: 'Western Europe' };
   const r = await founderStep6JarMethod([], options, ctx);
-  assert(r.named.length === 0, 'step6(no source blocks): named is empty');
-  assert(typeof r.fork === 'string' && /polarity|word-list/i.test(r.fork), 'step6: the elimination-polarity fork is always stated', r.fork);
-  assert(events.some((e) => e.kind === 'stage' && /SURVEY STEP 6/.test(e.text)), 'step6(no blocks): still emits its own kind:\'stage\' boundary');
+  assert(r.named.length === 0, 'step6(no source groups): named is empty');
+  assert(r.eliminated.length === 0, 'step6(no source groups): eliminated is empty');
+  assert(events.some((e) => e.kind === 'stage' && /SURVEY STEP 6/.test(e.text)), 'step6(no groups): still emits its own kind:\'stage\' boundary');
 }
 {
   const { ctx } = fakeCtx();
-  const r = await founderStep6JarMethod([{ query: 'x', blocks: [] }], null, ctx);
+  const r = await founderStep6JarMethod([{ query: 'x', blocks: [], direction: 'answers-eliminate' }], null, ctx);
   assert(r.named.length === 0, 'step6(no options): named is empty, refuses before touching any block');
 }
+
+// ── 5b. STEP 6 ELIMINATES BY THE QUERY'S KNOWN DIRECTION (D-BP151-025 amendment) ────────────────
+// Real local Ollama (gemma4:12b) via extractAssertedMentions() -- unmodified, extraction-only.
+// Passage unambiguously names option A in an asserted sentence. Direction is declared
+// 'answers-eliminate' (the caller's own knowledge of which query this was, e.g. the inverse) --
+// so A must be eliminated. No word list anywhere in this decision.
 {
-  // Given real blocks but no reachable Gemma backend, this must DEGRADE GRACEFULLY (empty result,
-  // no throw) rather than crash the whole Survey stage -- gemmaExtract() (methods/
-  // comparative_cascade.ts) already catches every network failure and returns null; this proves
-  // that discipline survives being called through founderStep6JarMethod()'s wiring.
+  const { ctx } = fakeCtx();
+  const options = { A: 'South America', B: 'Western Europe' };
+  const r = await founderStep6JarMethod(
+    [{
+      query: 'Which of the following regions IS considered one of the most densely populated?',
+      blocks: [{ title: '', body: 'South America is one of the most densely populated regions.', url: '', kind: 'organic' }],
+      direction: 'answers-eliminate',
+    }],
+    options,
+    ctx,
+  );
+  assert(r.named.some((m) => m.letter === 'A'), 'step6(eliminate direction): option A was named by the source, verified verbatim', JSON.stringify(r.named));
+  assert(r.eliminatedLetters.includes('A'), 'step6(eliminate direction): option A, named under an "answers-eliminate" query, IS eliminated', JSON.stringify(r));
+  assert(!r.eliminatedLetters.includes('B'), 'step6(eliminate direction): option B, never named by any source, is NOT eliminated');
+  assert(r.eliminated.every((e) => /answers-eliminate|mechanical|query/i.test(e.why)), 'step6(eliminate direction): every elimination states the mechanical, direction-based reason -- no word-list language', JSON.stringify(r.eliminated));
+}
+
+// ── 5c. A "answers-keep" DIRECTION NAMES BUT DOES NOT ELIMINATE ─────────────────────────────────
+{
+  const { ctx } = fakeCtx();
+  const options = { A: 'South America', B: 'Western Europe' };
+  const r = await founderStep6JarMethod(
+    [{
+      query: 'Which region has the property the original ask wants?',
+      blocks: [{ title: '', body: 'South America has that property.', url: '', kind: 'organic' }],
+      direction: 'answers-keep',
+    }],
+    options,
+    ctx,
+  );
+  assert(r.named.some((m) => m.letter === 'A' && m.direction === 'answers-keep'), 'step6(keep direction): option A is named, with direction recorded as answers-keep', JSON.stringify(r.named));
+  assert(!r.eliminatedLetters.includes('A'), 'step6(keep direction): option A is NOT eliminated -- a "keep" direction never eliminates');
+  assert(r.eliminated.length === 0, 'step6(keep direction): eliminated stays empty for an all-"answers-keep" run');
+}
+
+{
+  // A source that names NOTHING (no option text appears in the passage) must still degrade
+  // gracefully to an honest empty result -- no throw, no fabricated elimination.
   const { ctx } = fakeCtx();
   const options = { A: 'South America', B: 'Western Europe' };
   let threw = false;
   let r: Awaited<ReturnType<typeof founderStep6JarMethod>> | null = null;
   try {
     r = await founderStep6JarMethod(
-      [{ query: 'test query', blocks: [{ title: 'test', body: 'South America is not the answer.', url: '', kind: 'organic' }] }],
+      [{ query: 'irrelevant query', blocks: [{ title: 'test', body: 'This passage mentions neither option at all.', url: '', kind: 'organic' }], direction: 'answers-eliminate' }],
       options,
       ctx,
     );
   } catch {
     threw = true;
   }
-  assert(threw === false, 'step6(blocks supplied, no reachable Gemma): does not throw -- degrades to an honest empty/partial result');
-  assert(r !== null && Array.isArray(r.named), 'step6(blocks supplied, no reachable Gemma): still returns a well-formed result shape');
+  assert(threw === false, 'step6(no mentions in passage): does not throw');
+  assert(r !== null && r.named.length === 0 && r.eliminated.length === 0, 'step6(no mentions in passage): an honest empty result, not a fabrication');
 }
 
-// ── 6. THE ORCHESTRATOR: RUNS STEPS 2, 3, 4, 6 IN THE FOUNDER'S ORDER, PROPOSAL ONLY ───────────
+// ── 6. THE ORCHESTRATOR: RUNS STEPS 2, 3, 4, 6 IN THE FOUNDER'S ORDER; STEP 6 ELIMINATES,
+//      SURVEY STILL NEVER ANSWERS THE QUESTION ───────────────────────────────────────────────
 {
   const { ctx, events } = fakeCtx();
   const askText = 'What is a "referent object" in this framework?';
   const options = { A: 'a bare noun phrase', B: 'a full clause asserting something' };
-  // maxCatalystWordsPerOption: 0 keeps this integration test's own network cost to step2's and
-  // step4's real (retry-bearing) googleBlocks() calls only -- see the step3 unit test above for
-  // why the catalyst-word I/O half is not re-exercised here too.
-  const result = await runSurveyStage(askText, options, ctx, { maxCatalystWordsPerOption: 0 });
+  const result = await runSurveyStage(askText, options, ctx, {
+    // maxCatalystWordsPerOption: 0 keeps this integration test's own network cost to step2's and
+    // step4's real (retry-bearing) googleBlocks() calls, plus step3's/step6's real model calls,
+    // without ALSO paying for step3's per-option catalyst-word survey -- see the step3 unit test
+    // above for why that I/O half is not re-exercised here too.
+    maxCatalystWordsPerOption: 0,
+    // Exercises step 6's real elimination end-to-end through the orchestrator: option A is named
+    // by a source in an 'answers-eliminate' group, so it must come back eliminated -- proving the
+    // pool-narrowing act runs through runSurveyStage(), not only through founderStep6JarMethod()
+    // called directly.
+    jarSourceGroups: [{
+      query: 'a query whose direction is known to eliminate what it names',
+      blocks: [{ title: '', body: 'a bare noun phrase is named here.', url: '', kind: 'organic' }],
+      direction: 'answers-eliminate',
+    }],
+  });
 
-  assert(result.neverAnswersTheQuestion === true, 'orchestrator: neverAnswersTheQuestion is always true');
+  assert(result.neverAnswersTheQuestion === true, 'orchestrator: neverAnswersTheQuestion is always true, even though step 6 eliminated an option');
   assert(!('verdict' in result), 'orchestrator: the result object carries NO verdict field -- Survey never answers the question');
   assert(!('answer' in result), 'orchestrator: the result object carries NO answer field');
   assert(!('correct' in result), 'orchestrator: the result object carries NO correct field');
+  assert(result.step6.eliminatedLetters.includes('A'), 'orchestrator: step 6\'s real elimination reaches the top-level result', JSON.stringify(result.step6));
 
   const stageTexts = events.filter((e) => e.kind === 'stage').map((e) => e.text);
   const idx2 = stageTexts.findIndex((t) => /SURVEY STEP 2/.test(t));
@@ -197,7 +292,7 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
   assert(idx2 < idx3 && idx3 < idx4 && idx4 < idx6, 'orchestrator: steps run in the Founder\'s own order -- 2, then 3, then 4, then 6', stageTexts.join(' | '));
 
   assert(events.some((e) => e.kind === 'header' && /SURVEY -- the Lieutenant/.test(e.text)), 'orchestrator: emits the overall SURVEY header naming it the Lieutenant');
-  assert(events.some((e) => e.kind === 'result' && /PROPOSAL ONLY/.test(e.text)) || /PROPOSAL ONLY/.test(result.why), 'orchestrator: the final line states PROPOSAL ONLY, not a verdict');
+  assert(/SURVEY NEVER ANSWERS THE QUESTION/.test(result.why), 'orchestrator: the final line explicitly states Survey never answers the question, even with a real elimination in this run', result.why);
 }
 
 // ── 7. THE ORCHESTRATOR: explicitTerm OVERRIDE SKIPS findAskCatalyst() DERIVATION ──────────────
