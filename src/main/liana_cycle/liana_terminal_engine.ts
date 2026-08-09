@@ -40,11 +40,16 @@ import { explainSelection, listMethods, selectMethod } from './method_registry';
 // D-BP150-003 -- the Demand Test. Runs before method selection; see its own header for exactly
 // which half of the canon it implements and which half is still a scaffold.
 import { describeDemand, determineDemand } from './demand_test';
-import type { AskGoogleFn, EmitFn, MethodQuestionInput } from './method_registry';
+import type { AskGoogleFn, EmitFn, MethodQuestionInput, MethodRunContext } from './method_registry';
 // D-BP150-001 (Call an Audible). See audible.ts's header for why this is a decorator around the
 // injected askGoogle rather than a restructuring of the method modules.
 import { AudibleAbandoned, AudibleLog, wrapAskGoogleWithAudible } from './audible';
 import type { AudibleChannel } from './audible';
+// D-BP151-023 (Stepped Audible). See stepped_audible.ts's header for why this is a SECOND,
+// separate decorator (per-Founder-step granularity) rather than a replacement for the per-call
+// one above, and for why it is scoped to the comparative-cascade method only.
+import { SteppedAudibleAbandoned, SteppedAudibleLog, buildUpfrontStepList, wrapForSteppedAudible } from './stepped_audible';
+import type { SteppedAudibleChannel } from './stepped_audible';
 // Registering a method is a side effect of importing its module (see each file's own
 // `registerMethod(...)` call at the bottom). Both are imported here, and ONLY here, so the
 // registry is fully populated before the first `runLianaCycleQuestion` call, regardless of
@@ -159,12 +164,20 @@ export async function runLianaCycleQuestion(
    *  byte-for-byte the run it would have been before this parameter existed. Every pre-audible
    *  caller keeps compiling and behaving identically. */
   audible?: AudibleChannel | null,
+  /** D-BP151-023 (Stepped Audible), ADDITIVE/OPTIONAL. Null or omitted = stepped mode OFF, in
+   *  which case wrapForSteppedAudible() returns the SAME MethodRunContext object by reference and
+   *  this run is byte-for-byte the run it would have been before this parameter existed. Every
+   *  pre-stepped-audible caller (including one that only ever passed `audible`) keeps compiling
+   *  and behaving identically. Independent of `audible` above -- either, both, or neither may be
+   *  armed; see stepped_audible.ts's header for what combining them does and does not change. */
+  steppedAudible?: SteppedAudibleChannel | null,
 ): Promise<LianaTerminalOutcome> {
   const trimmed = input.trim();
   // Declared outside the try so the catch below can still return everything the operator typed
   // before they abandoned -- Founder, BP149: "a walk that throws away your annotations because
   // you quit early is worse than no walk."
   const audibleLog = new AudibleLog();
+  const steppedLog = new SteppedAudibleLog();
   try {
     let parsed: ParsedInput;
     if (/^\d+$/.test(trimmed)) {
@@ -246,15 +259,54 @@ export async function runLianaCycleQuestion(
     if (audible) {
       note(emit, '   CALL AN AUDIBLE is ON -- this run stops before every Google query and again on what comes back. It waits until you say go; there is no timer.');
     }
-    const outcome = await method.run(methodInput, {
+    // D-BP151-023 -- REQUIREMENT A: THE STEP LIST, SHOWN UP FRONT, BEFORE THE FIRST STEP RUNS.
+    // Static per method (buildUpfrontStepList() reads no live state) so it can be printed here,
+    // before `method.run()` is even called. A method this ticket did not map (see
+    // stepped_audible.ts's header) gets an honest "not covered" line instead of an invented list.
+    if (steppedAudible) {
+      const stepDefs = buildUpfrontStepList(method.id);
+      if (stepDefs) {
+        emit({ kind: 'stage', text: `-> STEPPED AUDIBLE -- ${stepDefs.length} steps this run will execute, listed before the first one starts`, ts: nowIso() });
+        stepDefs.forEach((d, i) => {
+          const head = d.attribution === 'ATTRIBUTED'
+            ? `step ${i + 1}/${stepDefs.length}: ${d.codeLabel}  ->  Founder step ${d.founderStepNumber}, verbatim: "${d.founderWords}"  (${d.founderSource})`
+            : `step ${i + 1}/${stepDefs.length}: ${d.codeLabel}  ->  UNATTRIBUTED -- TARE, no Founder order`;
+          note(emit, `   ${head}`);
+        });
+        note(emit, '   STEPPED AUDIBLE is ON -- this run stops once per step above, after it completes and before the next begins. It waits until you respond; there is no timer.');
+      } else {
+        note(emit, `   STEPPED AUDIBLE has no step map for method "${method.id}" -- this run proceeds WITHOUT per-step pausing (same as stepped audible OFF). See stepped_audible.ts's header for why (scoped to comparative-cascade only).`);
+      }
+    }
+    const baseCtx: MethodRunContext = {
       askGoogle: wrapAskGoogleWithAudible(askGoogle, audible ?? null, emit, audibleLog),
       emit,
-    });
+    };
+    const stepWrap = wrapForSteppedAudible(method.id, baseCtx, steppedAudible ?? null, steppedLog);
+    const outcome = await method.run(methodInput, stepWrap.ctx);
+    try {
+      // D-BP151-023 -- flushes the trailing step buffer (STAGE 5b + the TERMINATOR notes that
+      // follow it with no further 'stage' event in between -- see stepped_audible.ts's header,
+      // "THE ONE GAP THIS DOES LEAVE"). A true no-op when stepped audible never armed.
+      await stepWrap.finish();
+    } catch (e) {
+      if (e instanceof SteppedAudibleAbandoned) {
+        // The method has ALREADY resolved `outcome` by the time this final pause fires (finish()
+        // only runs after `await method.run()` above returns) -- abandoning the final review does
+        // not retroactively un-produce a verdict the cascade already reached. "Abandoning keeps
+        // every note" (Founder, BP149) is honored here by keeping BOTH the real outcome and the
+        // stepped log up to and including this abandon record, rather than discarding either.
+        note(emit, '   STEPPED AUDIBLE abandoned at the final review pause -- the run\'s own outcome above is unaffected; every step response up to and including this one is kept.');
+      } else {
+        throw e;
+      }
+    }
     return {
       ...outcome,
       method: method.id,
       options: parsed.options,
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
+      ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
     };
   } catch (e) {
     // THE OPERATOR ENDING A RUN IS NOT AN ERROR, and must not be transcribed as one. It is an
@@ -269,6 +321,24 @@ export async function runLianaCycleQuestion(
         error: 'audible_abandoned',
         options: null,
         audibleLog: audibleLog.all(),
+        ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
+      };
+    }
+    // D-BP151-023 -- an EARLY step-pause abandon (any pause before the final one, thrown from
+    // inside the wrapped askGoogle mid-run) propagates up through `method.run()` exactly like
+    // AudibleAbandoned above, since comparative_cascade.ts catches neither. Distinct branch, same
+    // "keeps every note" guarantee.
+    if (e instanceof SteppedAudibleAbandoned) {
+      emit({ kind: 'result', text: 'STEPPED AUDIBLE ABANDONED -- run stopped by operator. Everything you typed is kept.', ts: nowIso() });
+      return {
+        question: trimmed,
+        verdict: null,
+        abstain: true,
+        freeText: !/^\d+$/.test(trimmed),
+        error: 'stepped_audible_abandoned',
+        options: null,
+        ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
+        steppedLog: steppedLog.all(),
       };
     }
     const msg = e instanceof Error ? e.message : String(e);
@@ -281,6 +351,7 @@ export async function runLianaCycleQuestion(
       error: msg,
       options: null,
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
+      ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
     };
   }
 }

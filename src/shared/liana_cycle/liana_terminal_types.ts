@@ -58,6 +58,11 @@ export interface LianaTerminalOutcome {
    *  keeps compiling. This is the record that makes an audible a TEACHING event rather than a
    *  one-off steer: a rewritten query that worked is a candidate method revision. */
   audibleLog?: LianaAudibleRecord[];
+  /** D-BP151-023 (Stepped Audible): every PER-FOUNDER-STEP pause the operator was shown and what
+   *  they did about it, in order, verbatim. Present only on a run that had stepped-audible mode
+   *  ON and reached at least one pause. ADDITIVE/OPTIONAL, same convention as audibleLog above --
+   *  a normal run, and a run whose audible mode is the per-call one, both omit it entirely. */
+  steppedLog?: LianaSteppedRecord[];
 }
 
 // ─────────────────────────── D-BP150-001: CALL AN AUDIBLE ───────────────────────────
@@ -193,5 +198,98 @@ export interface LianaAudibleRecord {
   effectiveQuery: string;
   action: LianaAudibleAction;
   note?: string;
+  ts: string;
+}
+
+// ─────────────────────────── D-BP151-023: STEPPED AUDIBLE (per-Founder-step pause) ───────────────────────────
+//
+// Founder, BP151, verbatim: "I want it to list my steps, and then show it happen, then stop
+// before the next step and shows suggestions, for me to respond to or correct."
+//
+// NOT THE SAME AS D-BP150-001 (CALL AN AUDIBLE, above), and the two must stay separate the same
+// way Call an Audible stayed separate from Audit the Run (see that feature's own header). Call an
+// Audible pauses on BOTH SIDES OF EVERY GOOGLE CALL -- per-call granularity. This pauses ONCE PER
+// STAGE the running method emits (`kind:'stage'`) -- per-Founder-step granularity, with each stage
+// mapped to one of his 18 numbered steps in
+// BISHOP_DROPZONE\THE_FOUNDERS_PROCESS_ORDERED_BP151.md, or marked TARE (HARDWIRE-23) when the
+// stage is not his. See src/main/liana_cycle/stepped_audible.ts for the decorator, the mapping
+// table, and why it is scoped to the comparative-cascade method only.
+
+/** A stage in the running method traces to one of the Founder's numbered steps, verbatim and
+ *  cited, or it does not -- HARDWIRE-23 Law 1: "there is no third category." */
+export type LianaSteppedAttribution = 'ATTRIBUTED' | 'TARE';
+
+/** One entry in the step list shown BEFORE the run starts (requirement A of D-BP151-023), and
+ *  reused as the `step` field of every pause for that same stage (requirement C.1). Static per
+ *  method -- built once from the Founder's process document, not derived from a live run, so it
+ *  can be shown before the first Google call goes out. */
+export interface LianaSteppedStepDef {
+  /** Stable key this decorator matches a runtime `kind:'stage'` event's text against, e.g.
+   *  'stage0', 'q1', 'stage5b'. Never shown to the operator directly -- `codeLabel` is. */
+  key: string;
+  attribution: LianaSteppedAttribution;
+  /** Present ONLY when `attribution === 'ATTRIBUTED'` -- HARDWIRE-23 Law 4: a TARE entry must
+   *  never carry an attribution string that could be mistaken for one. */
+  founderStepNumber?: number;
+  /** His exact words, verbatim, quoted or paraphrased NOWHERE -- present only when ATTRIBUTED. */
+  founderWords?: string;
+  /** Where founderWords is from, e.g. "Excerpt 2, BP141, rule 1 -- ...process...BP151.md step
+   *  5". Present only when ATTRIBUTED. */
+  founderSource?: string;
+  /** Bishop's own one-line label for what the code stage does -- always present, ATTRIBUTED or
+   *  TARE alike. This is a label for the STAGE, never a paraphrase of the Founder's words (those,
+   *  when they exist, are carried verbatim in founderWords instead). */
+  codeLabel: string;
+}
+
+/** What the operator is shown at one step pause (requirement C). */
+export interface LianaSteppedPause {
+  /** Unique within a run -- same stale-reply-cannot-resolve-a-later-pause guarantee as
+   *  LianaAudiblePause.pauseId above. */
+  pauseId: string;
+  /** 1-based index of this step within the FULL step list shown up front (requirement A), so the
+   *  operator can see "step 6 of 12" and match it to the list already shown. */
+  stepIndex: number;
+  stepTotal: number;
+  step: LianaSteppedStepDef;
+  /** Every transcript event emitted during the step that JUST COMPLETED, verbatim and
+   *  untruncated -- reused from the existing emit/receipt path (requirement C.2), never
+   *  re-derived or summarized by a second reporting mechanism. */
+  events: LianaTerminalEvent[];
+  /** Lettered sub-items from the process document for this Founder step, shown at the pause and
+   *  labeled Bishop suggestions carrying NO authority (requirement C.3). Empty for a TARE step:
+   *  a stage with no Founder order has no Founder sub-items to suggest against. */
+  suggestions: string[];
+  ts: string;
+}
+
+/** What the operator can do at a step pause. Per HARDWIRE-23 ("this build adds no decision
+ *  rule"), NONE of these change what the method already did or will do next -- see
+ *  stepped_audible.ts's own header. `approve`/`correct`/`redirect` are recorded verbatim as the
+ *  authority record for whatever gets BUILT from this later (requirement E); `abandon` is the one
+ *  action with a real effect -- it stops the walk from advancing further, same "keeps every note"
+ *  guarantee as LianaAudibleAction's `abandon`. */
+export type LianaSteppedAction = 'approve' | 'correct' | 'redirect' | 'abandon';
+
+/** The operator's answer to one step pause. */
+export interface LianaSteppedResponse {
+  pauseId: string;
+  action: LianaSteppedAction;
+  /** VERBATIM. Never parsed, normalized, re-templated, or acted on automatically. */
+  text?: string;
+}
+
+/** One step pause and its answer, joined -- the provenance/authority record (requirement E).
+ *  Founder, BP151: "EVERYTHING DONE has a provenance authority receipt attached to it." Written
+ *  by the main process from what actually happened, never reconstructed in the renderer. */
+export interface LianaSteppedRecord {
+  pauseId: string;
+  stepIndex: number;
+  stepKey: string;
+  founderStepNumber?: number;
+  attribution: LianaSteppedAttribution;
+  action: LianaSteppedAction;
+  /** His exact words, verbatim -- present only when he typed something. */
+  text?: string;
   ts: string;
 }

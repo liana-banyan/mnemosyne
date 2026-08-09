@@ -758,8 +758,13 @@ contextBridge.exposeInMainWorld('amplify', {
      *  has always produced. True = the run stops before every Google query and again on what
      *  comes back, until the operator says go. */
     audible?: boolean,
+    /** D-BP151-023 (Stepped Audible), ADDITIVE/OPTIONAL, independent of `audible` above. Omitted
+     *  or false = no per-step pausing. True = the run stops once per Founder-mapped step
+     *  (comparative-cascade only -- see stepped_audible.ts's header), after it completes and
+     *  before the next begins, until the operator responds. */
+    steppedAudible?: boolean,
   ): Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome> =>
-    ipcRenderer.invoke('liana-terminal-run', { input, audible }),
+    ipcRenderer.invoke('liana-terminal-run', { input, audible, steppedAudible }),
 
   onLianaTerminalEvent: (
     cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
@@ -791,6 +796,22 @@ contextBridge.exposeInMainWorld('amplify', {
     response: import('../shared/liana_cycle/liana_terminal_types').LianaAudibleResponse,
   ): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('liana-audible-respond', response),
+
+  // D-BP151-023/BISHOP/seg-stepped-audible -- STEPPED AUDIBLE, one pause per Founder-mapped step
+  // rather than one pause per Google call. Same push/respond convention as onLianaAudiblePause /
+  // lianaAudibleRespond above, one level up.
+  onLianaSteppedPause: (
+    cb: (pause: import('../shared/liana_cycle/liana_terminal_types').LianaSteppedPause) => void,
+  ): (() => void) => {
+    const h = (_event: Electron.IpcRendererEvent, pause: import('../shared/liana_cycle/liana_terminal_types').LianaSteppedPause) => cb(pause);
+    ipcRenderer.on('liana-stepped-pause', h);
+    return () => ipcRenderer.removeListener('liana-stepped-pause', h);
+  },
+
+  lianaSteppedRespond: (
+    response: import('../shared/liana_cycle/liana_terminal_types').LianaSteppedResponse,
+  ): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('liana-stepped-respond', response),
 
   // D-BP150-002/BISHOP/S02/seg-notesrecall -- the operator's already-written teaching notes,
   // readable from inside a live pause so he can insert one instead of retyping it from memory.
