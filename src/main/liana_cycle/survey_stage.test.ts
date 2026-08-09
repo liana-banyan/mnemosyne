@@ -99,8 +99,129 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
   const r = await founderStep2Survey(null, ctx);
   assert(r.term === null, 'step2(null term): term stays null');
   assert(r.nested === null, 'step2(null term): nested stays null, surveyAskNested() never called');
+  assert(r.ambiguity === null, 'step2(null term, no askText): ambiguity stays null -- no askText to query with');
+  assert(r.ambiguityNested.length === 0, 'step2(null term, no askText): ambiguityNested stays empty');
+  assert(r.negationNamed === false, 'step2(null term, no askText): negationNamed stays false');
   assert(events.some((e) => e.kind === 'stage' && /SURVEY STEP 2/.test(e.text)), 'step2(null term): still emits its own kind:\'stage\' boundary');
   assert(events.some((e) => e.kind === 'result'), 'step2(null term): still emits a kind:\'result\' line, not a silent no-op');
+}
+
+// ── 1a. D-BP151-031: WITH A QUOTED/CUED TERM PRESENT, BEHAVIOR IS UNCHANGED ─────────────────────
+// The existing path must be provably untouched: ambiguity/ambiguityNested/negationNamed stay
+// null/empty/false even when an askText is supplied, because findAskCatalyst() already resolved a
+// term -- the ambiguity query must never be issued when there is a term to survey directly.
+{
+  const { ctx } = fakeCtx();
+  const r = await founderStep2Survey('bias', ctx, 'What is bias?');
+  assert(r.term === 'bias', 'step2(term present, askText also given): term path taken, unchanged');
+  assert(r.nested !== null, 'step2(term present): nested populated via the existing surveyAskNested() path');
+  assert(r.ambiguity === null, 'step2(term present): ambiguity stays null -- the ambiguity query is never issued when a term was already resolved');
+  assert(r.ambiguityNested.length === 0, 'step2(term present): ambiguityNested stays empty');
+  assert(r.negationNamed === false, 'step2(term present): negationNamed stays false');
+}
+
+// ── 1b. D-BP151-031: NO TERM, ASK TEXT GIVEN, MODEL CALL FAILS -- STILL REFUSES CLEANLY ─────────
+// Monkey-patches the global fetch() askAmbiguityViaModel() uses (same technique any test in this
+// process can use -- fetch is looked up at call time, not captured at module load) to simulate the
+// local model being unreachable. No real network/Ollama call happens in this block.
+{
+  const originalFetch = global.fetch;
+  (global as any).fetch = async () => { throw new Error('simulated network failure'); };
+  let r: Awaited<ReturnType<typeof founderStep2Survey>>;
+  try {
+    const { ctx, events } = fakeCtx();
+    r = await founderStep2Survey(null, ctx, 'Which of the following world regions is NOT considered one of the most densely populated?');
+    assert(r.ambiguity !== null, 'step2(model unreachable): ambiguity query was issued (askText was present)');
+    assert(r.ambiguity!.modelUnreachable === true, 'step2(model unreachable): modelUnreachable is true, measured via a failing fetch', JSON.stringify(r.ambiguity));
+    assert(r.ambiguity!.terms.length === 0, 'step2(model unreachable): terms is empty');
+    assert(r.ambiguityNested.length === 0, 'step2(model unreachable): ambiguityNested stays empty -- nothing to survey');
+    assert(r.nested === null, 'step2(model unreachable): nested stays null -- refuses exactly as the no-term path always has');
+    assert(r.negationNamed === false, 'step2(model unreachable): negationNamed stays false');
+    assert(events.some((e) => e.kind === 'result' && /no term/.test(e.text)), 'step2(model unreachable): still reports "no term" -- refusing beats guessing, unchanged', events.map((e) => e.text).join(' | '));
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 1c. D-BP151-031: NO TERM, ASK TEXT GIVEN, MODEL RUNS BUT NAMES NOTHING -- STILL REFUSES ─────
+{
+  const originalFetch = global.fetch;
+  (global as any).fetch = async () => ({ json: async () => ({ response: '{"terms":[]}' }) });
+  let r: Awaited<ReturnType<typeof founderStep2Survey>>;
+  try {
+    const { ctx } = fakeCtx();
+    r = await founderStep2Survey(null, ctx, 'A plain question with nothing ambiguous in it.');
+    assert(r.ambiguity !== null, 'step2(model names nothing): ambiguity query was issued');
+    assert(r.ambiguity!.modelUnreachable === false, 'step2(model names nothing): the model call itself succeeded');
+    assert(r.ambiguity!.terms.length === 0, 'step2(model names nothing): terms is empty -- an honest empty result');
+    assert(r.ambiguityNested.length === 0, 'step2(model names nothing): ambiguityNested stays empty');
+    assert(r.nested === null, 'step2(model names nothing): nested stays null -- refuses, does not guess a term from an empty ambiguity result');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 1d. D-BP151-031: NAMED TERMS BECOME THE SURVEYED TERMS, ALL OF THEM, SOURCE ORDER ───────────
+// Deterministic mock: the model names two terms, one flagged isNegation. Proves (a) every named
+// term is surveyed (ambiguityNested), (b) the exact Founder wording was sent as `askedText`, (c)
+// the negation flag is set ONLY when the source names it -- never inferred from a word list here.
+{
+  const originalFetch = global.fetch;
+  const mockResponse = {
+    terms: [
+      { term: 'densely populated', standardMeaning: 'people per square mile', alternativeMeaning: 'total absolute population count', impact: 'changes which region qualifies', isNegation: false },
+      { term: 'NOT', standardMeaning: 'exclusion from the top group', alternativeMeaning: 'a misread double negative', impact: 'flips the correct choice to its exact opposite', isNegation: true },
+    ],
+  };
+  (global as any).fetch = async () => ({ json: async () => ({ response: JSON.stringify(mockResponse) }) });
+  let r: Awaited<ReturnType<typeof founderStep2Survey>>;
+  try {
+    const { ctx } = fakeCtx();
+    r = await founderStep2Survey(null, ctx, "Which of the following world regions is NOT considered one of the world's most densely populated regions?");
+    assert(
+      r.ambiguity!.askedText === 'what words or phrases in this question could be understood with a different meaning that would fundamentally change the meaning of what is being asked?',
+      'step2(named terms): the ambiguity query used the Founder\'s exact verbatim wording',
+      r.ambiguity!.askedText,
+    );
+    assert(r.ambiguity!.terms.length === 2, 'step2(named terms): both source-named terms are reported');
+    assert(r.ambiguityNested.length === 2, 'step2(named terms): every named term was surveyed -- no selection/ranking rule dropped one', JSON.stringify(r.ambiguityNested.map((a) => a.term)));
+    assert(r.ambiguityNested[0].term === 'densely populated' && r.ambiguityNested[1].term === 'NOT', 'step2(named terms): surveyed in the order the source returned them', JSON.stringify(r.ambiguityNested.map((a) => a.term)));
+    assert(r.ambiguityNested.every((a) => a.nested !== null && Array.isArray(a.nested.levels)), 'step2(named terms): each named term went through the SAME surveyAskNested() the quoted/cued path uses');
+    assert(r.negationNamed === true, 'step2(named terms): negationNamed is true -- the source flagged "NOT" as a negation term');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 1e. D-BP151-031: NEGATION FLAG IS NEVER SET WHEN NO SOURCE-NAMED TERM FLAGS IT ───────────────
+{
+  const originalFetch = global.fetch;
+  const mockResponse = { terms: [{ term: 'regions', standardMeaning: 'broad geographic zones', alternativeMeaning: 'specific political borders', impact: 'changes scope', isNegation: false }] };
+  (global as any).fetch = async () => ({ json: async () => ({ response: JSON.stringify(mockResponse) }) });
+  let r: Awaited<ReturnType<typeof founderStep2Survey>>;
+  try {
+    const { ctx } = fakeCtx();
+    r = await founderStep2Survey(null, ctx, 'A question with one ambiguous but non-negating term.');
+    assert(r.negationNamed === false, 'step2(no negation named): negationNamed stays false when no source-named term flags isNegation');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 1f. D-BP151-031: THE REAL LOCAL MODEL, LIVE, ON THE ACTUAL qid 98 QUESTION TEXT ──────────────
+// Real local Ollama (gemma4:12b) -- the measured failure this ticket fixes, replayed directly.
+// Asserts MECHANICAL invariants only (a real response was usable, every named term was surveyed),
+// not exact model wording, since live phrasing can vary even at temperature 0 across machine/
+// driver versions -- same convention as the 3b/5b model-call tests already in this file.
+{
+  const { ctx } = fakeCtx();
+  const qid98Text = "Which of the following world regions is NOT considered one of the world's most densely populated regions?";
+  const r = await founderStep2Survey(null, ctx, qid98Text);
+  assert(r.ambiguity !== null, 'step2(qid98, live model): ambiguity query was issued');
+  assert(r.ambiguity!.modelUnreachable === false, 'step2(qid98, live model): the local model WAS reachable for this run (measured, not assumed)', JSON.stringify(r.ambiguity));
+  assert(r.ambiguity!.terms.length > 0, 'step2(qid98, live model): the source named at least one ambiguous term for this question', JSON.stringify(r.ambiguity));
+  assert(r.ambiguityNested.length === r.ambiguity!.terms.length, 'step2(qid98, live model): every named term was surveyed, none dropped', JSON.stringify({ named: r.ambiguity!.terms.length, surveyed: r.ambiguityNested.length }));
+  console.log(`  [INFO] qid98 live ambiguity query named: ${r.ambiguity!.terms.map((t) => t.term).join(', ')}${r.negationNamed ? ' (negation named)' : ' (no negation named)'}`);
 }
 
 // ── 2. STEP 3 REFUSES CLEANLY WITH NO OPTIONS ────────────────────────────────────────────────
