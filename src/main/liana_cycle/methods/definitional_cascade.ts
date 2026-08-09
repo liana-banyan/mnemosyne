@@ -23,35 +23,47 @@
 // D1 THROUGH D5, HIS RULES 12/13/11 -- new to this file, the actual Method 2 machinery:
 //   D1 categorize options by shared predicate (rule 12) -- mechanical vocabulary clustering, no
 //      model call anywhere.
-//   D2 look up the bare term -- one Google search, recorded as a FACT, not an answer.
-//   D3 establish the register (rule 13) -- GUESS the register from the options' own vocabulary
-//      (code, a small keyword lexicon -- not a model judgment call), then VERIFY with a second,
-//      separate Google search ("what is <term> in <register>", his own literal phrasing on
-//      qid 85). Guess-then-check; the check is not optional.
-//   D4 reduce to core sense -- HARDWIRE-22 extraction only: Gemma copies the single defining
-//      sentence out of the register-verification passage, verbatim, never summarized, verified
-//      against the passage before being trusted (appearsIn check, same discipline every other
-//      extraction in this estate uses).
-//   D5 match on sense -- DELIBERATELY NOT IMPLEMENTED. HARDWIRE-22 + this ticket's own
-//      instruction: no bigram overlap, no embedding distance, no forced pick. Measured this
+//   D2-D4 (D-BP150-016, SUPERSEDES the original D2/D3/D4 below) -- SURVEY THE ASK instead of
+//      collapsing it. The original D2/D3/D4 each independently CHOSE a single sense of the term:
+//      D2 looked the bare term up once, D3 GUESSED one register from option vocabulary and
+//      verified only that guess, D4 reduced the verified passage to ONE core sense. Canon F-1
+//      (canon_liana_methods_are_compositions_of_named_elements_bp150.eblet.md) is the measured
+//      failure this caused: on qid 85, Stage 1's inverse call fetched the SAMPLING fold of "bias"
+//      ("A sampling method is called biased if it systematically favors some outcomes over
+//      others") and discarded it against every option, then D2/D3/D4 independently re-fetched
+//      and silently carried forward the ESTIMATOR fold instead ("bias is the tendency of a
+//      statistic to overestimate or underestimate the population parameter") -- two different
+//      folds inside ONE register (statistics), picked between with no record that a choice had
+//      even been made. qid 85's key (E) lives in the SAMPLING fold; the ESTIMATOR fold points at
+//      J. Had D5 been implemented against the collapsed sense, it would have answered confidently
+//      and wrongly. surveyAsk() (elements/survey_ask.ts, E-SURVEY-ASK) replaces D2/D3/D4's
+//      collapse: it enumerates every verified denotation of the term, unranked, each carried
+//      forward with its verbatim sentence, source, source-stated register and aspect. It picks
+//      nothing. D1 (mechanical clustering) is untouched below; it is not part of the collapse.
+//   D5 match on sense (E-MATCH-UP) -- DELIBERATELY NOT IMPLEMENTED. HARDWIRE-22 + this ticket's
+//      own instruction: no bigram overlap, no embedding distance, no forced pick. Measured this
 //      session: a bigram scorer gave all ten of qid 46's options an identical 0.35; a narrow
 //      YES/NO to the local model scored 1 of 4 and flipped its own answer at temperature 0.
-//      This stage ends in an HONEST ABSTAIN carrying the core sense forward as a sourced fact
-//      plus the surviving candidate pool. An abstain at D5 is a PASS for this ticket -- nothing
-//      here is tuned to reach the answer key.
+//      This stage ends in an HONEST ABSTAIN carrying EVERY surveyed denotation forward as a
+//      sourced fact, plus the surviving candidate pool -- not one collapsed core sense. An
+//      abstain at D5 is a PASS for this ticket -- nothing here is tuned to reach the answer key,
+//      and canon marks E-MATCH-UP UNSOLVED: implementing it here would smuggle the unsolved
+//      sense-matching problem in disguised, and on qid 85 itself it would answer J and be wrong.
 
 import { avgOptionWordCount, registerMethod } from '../method_registry';
 import type { LianaMethod, MethodQuestionInput, MethodRunContext, ShapeTestResult } from '../method_registry';
 import type { LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
 import {
-  appearsIn,
   extractAssertedMentions,
-  gemmaExtract,
   googleBlocks,
   HIGH_WORDS,
   LOW_WORDS,
   runStage0RegisterGate,
 } from './comparative_cascade';
+// D-BP150-016 -- E-SURVEY-ASK, wired in to replace D2/D3/D4's collapse. Ratified canon:
+//   Asteroid-ProofVault/state/eblets/CANON/
+//     canon_liana_methods_are_compositions_of_named_elements_bp150.eblet.md
+import { surveyAsk } from '../elements/survey_ask';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -167,34 +179,10 @@ function extractBareTerm(question: string): string {
   return words[words.length - 1] || stripped;
 }
 
-// ─────────────────────────── D3: establish the register (rule 13) ───────────────────────────
-
-/** A small, honest keyword lexicon for the handful of registers a single ambiguous English term
- *  commonly straddles (this is exactly what D2's "Other Meanings" Google lookup surfaces for
- *  "bias" -- statistics, sewing, electronics, K-pop/pop-culture). This is a lookup TABLE, not a
- *  model judgment call: matching option vocabulary against a fixed word list is arithmetic, the
- *  same category of operation HARDWIRE-22 permits (classification by code over extracted/known
- *  words), never asked of Gemma. */
-const REGISTER_LEXICON: Record<string, string[]> = {
-  statistics: ['sample', 'population', 'random', 'estimate', 'estimates', 'average', 'representative', 'data', 'variance', 'randomization', 'sampling', 'survey', 'error'],
-  sewing: ['fabric', 'cloth', 'stitch', 'seam', 'hem', 'textile', 'weave', 'thread', 'grain'],
-  electronics: ['voltage', 'circuit', 'current', 'resistor', 'diode', 'transistor', 'amplifier', 'signal'],
-  'pop culture': ['idol', 'fandom', 'member', 'favorite', 'group', 'celebrity', 'fan'],
-};
-
-/** D3, rule 13: "I would guess from 'sample' being used in A, B, C, D, E, H, I questions...
- *  then it has to do with statistics. How do I know that? I don't, I'm guessing." Reads the
- *  candidate register off the OPTIONS' own pooled vocabulary against the lexicon above; the
- *  guess is checked (never trusted alone) by a second, separate Google query in run() below. */
-function guessRegisterFromOptions(OPT: Record<string, string>): { register: string; score: number; hits: string[] } {
-  const pooled = Object.values(OPT).join(' ').toLowerCase();
-  let best = { register: 'general', score: 0, hits: [] as string[] };
-  for (const [register, words] of Object.entries(REGISTER_LEXICON)) {
-    const hits = words.filter((w) => pooled.includes(w));
-    if (hits.length > best.score) best = { register, score: hits.length, hits };
-  }
-  return best;
-}
+// D3's original register-guess lexicon (guessRegisterFromOptions/REGISTER_LEXICON) is REMOVED as
+// of D-BP150-016 -- it guessed exactly one register from option vocabulary, which is the collapse
+// this ticket replaces. surveyAsk()'s own per-source register extraction (source-stated, verified
+// verbatim, never guessed from option vocabulary) supersedes it; see survey_ask.ts's own header.
 
 // ─────────────────────────── run ───────────────────────────
 
@@ -263,74 +251,44 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   }
   note(`   odd one out (${d1.oddOneOutBasis === 'isolated' ? 'shares no significant vocabulary with anything else' : 'fewest shared-vocabulary connections of the set'}): ${d1.oddOneOut.join(', ') || '(none)'}`);
 
-  // ── D2: look up the bare term -- a fact, not an answer ──
-  say('D2  LOOK UP THE BARE TERM -- a fact, not an answer');
+  // ── D2-D4 REPLACED: SURVEY THE ASK -- enumerate denotations, do not collapse (E-SURVEY-ASK) ──
+  // D-BP150-016, see this file's header for the qid 85 failure this closes. Term extraction off
+  // the definitional cue phrase stays here (mechanical, code -- E-CATALYST-WORDS/D2's own job);
+  // surveyAsk() takes the extracted term and does its OWN Google queries ("define <term>" and
+  // "other meanings of <term>"), emitting every verified denotation to the transcript itself, on
+  // its own line, sourced -- that visibility is half the deliverable, per this ticket.
+  say('D2  SURVEY THE ASK -- enumerate denotations, do not collapse (E-SURVEY-ASK, wired D-BP150-016)');
   const term = extractBareTerm(input.question);
   note(`   term: "${term}"`);
-  const d2Query = `define ${term}`;
-  note(`   ${d2Query}`);
-  const res2 = await googleBlocks(askGoogle, d2Query);
-  if (res2.ok) {
-    fact(`Google [${res2.via}]: ${res2.text}`);
-    note("   that doesn't answer the question -- it's just a fact to carry forward for component-factor reasoning; the register is still unknown");
-  } else {
-    note(`   no answer (${res2.via})`);
-  }
+  const survey = await surveyAsk(term, ctx);
 
-  // ── D3: establish the register, guess then verify ──
-  say("D3  ESTABLISH THE REGISTER (rule 13) -- guess from the options' own vocabulary, then verify");
-  const guess = guessRegisterFromOptions(survivingOPT);
-  note(`   guess: "${guess.register}" (matched option vocabulary: ${guess.hits.join(', ') || '(none, defaulted to general)'})`);
-  note("   how do I know that? I don't, I'm guessing. so I'll check:");
-  const d3Query = `what is ${term} in ${guess.register}`;
-  note(`   ${d3Query}`);
-  const res3 = await googleBlocks(askGoogle, d3Query);
-  let registerPassage = '';
-  if (res3.ok) {
-    fact(`Google [${res3.via}]: ${res3.text}`);
-    registerPassage = res3.text;
-  } else {
-    note(`   no answer (${res3.via})`);
-  }
-
-  // ── D4: reduce to core sense -- extraction only, HARDWIRE-22 ──
-  say('D4  REDUCE TO CORE SENSE -- extraction only (HARDWIRE-22), copy verbatim, never summarize');
-  let coreSense: string | null = null;
-  if (registerPassage) {
-    const ex = await gemmaExtract(
-      `Copy the single sentence in this passage that most directly states what "${term}" means in the register of ${guess.register}. Copy it exactly as it appears, word for word. Do not summarize. Do not combine sentences. Do not choose between any list of options.`,
-      registerPassage,
-      `{"sentence":"the verbatim defining sentence, or null if none states it"}`,
-    );
-    const s = ex && typeof ex.sentence === 'string' ? ex.sentence.trim() : '';
-    if (s && appearsIn(registerPassage, s)) {
-      coreSense = s;
-      fact(`core sense (verbatim from the passage): "${coreSense}"`);
-    } else {
-      note('   no verbatim definitional sentence could be verified against the passage -- an honest gap, not a fabrication');
-    }
-  } else {
-    note('   no register-verification passage to extract from');
-  }
-
-  // ── D5: match on sense -- DO NOT FAKE THIS. Honest abstain. ──
-  say('D5  MATCH ON SENSE -- NOT IMPLEMENTED, HONEST ABSTAIN');
+  // ── D5: match on sense (E-MATCH-UP) -- DO NOT FAKE THIS. Honest abstain. ──
+  say('D5  MATCH ON SENSE -- NOT IMPLEMENTED, HONEST ABSTAIN (E-MATCH-UP is UNSOLVED per canon)');
   note('   no bigram overlap, no embedding distance, no forced pick, no "here are the options, pick one"');
   note('   measured this session: a bigram scorer gave all ten of qid 46\'s options an identical 0.35; a narrow YES/NO to the local model scored 1 of 4 and flipped its own answer at temperature 0');
   note(`   surviving candidate pool: ${pool.join(', ')}`);
-  if (coreSense) note(`   core sense carried forward as a sourced fact: "${coreSense}"`);
-  note('   sense-matching is not yet solved -- this is the exact case the Language Matrix exists to close, per the teaching');
+  if (survey.denotations.length) {
+    note(`   ${survey.denotations.length} surveyed denotation(s) carried forward, UNRESOLVED -- comparing these against the options is E-MATCH-UP, not run here:`);
+    survey.denotations.forEach((d, i) => {
+      note(`      denotation ${i + 1} [${d.aspect.aspect}${d.register ? `, register: ${d.register}` : ', register: unstated'}]: "${d.sentence}" (${d.sourceUrl || d.sourceTitle || 'source unknown'})`);
+    });
+  } else {
+    note('   survey found no verifiable denotation to carry forward -- an honest empty result, not a fabrication');
+  }
+  note('   sense-matching is not yet solved -- this is the exact case the Language Matrix / E-MATCH-UP exists to close, per the teaching');
 
   const elapsedS = ((Date.now() - t0) / 1000).toFixed(1);
-  emit({ kind: 'result', text: `ABSTAIN (D5 not implemented)   pool=${pool.join(',')}${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+  emit({ kind: 'result', text: `ABSTAIN (D5/E-MATCH-UP not implemented)   pool=${pool.join(',')}${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
   note(`   ${elapsedS}s`);
 
+  const denotationBasisParts = survey.denotations.map((d, i) =>
+    `denotation ${i + 1} [${d.aspect.aspect}${d.register ? `, register: ${d.register}` : ', register: unstated'}]: "${d.sentence}"`,
+  );
   const basisParts = [
     `D1 clustered ${Object.keys(survivingOPT).length} options (odd one out: ${d1.oddOneOut.join(', ') || 'none'})`,
-    `D2 looked up "${term}"`,
-    `D3 established register "${guess.register}" and verified it`,
-    coreSense ? `D4 core sense: "${coreSense}"` : 'D4 no core sense verified',
-    'D5 sense-matching not implemented -- deliberate honest abstain per the BP149 teaching and HARDWIRE-22',
+    `D2 surveyed "${term}" via E-SURVEY-ASK (does not collapse): ${survey.denotations.length} denotation(s) found, ${survey.discarded.length} block(s) discarded`,
+    ...denotationBasisParts,
+    'D5 sense-matching (E-MATCH-UP) not implemented -- deliberate honest abstain per the BP149 teaching, HARDWIRE-22 and canon (E-MATCH-UP UNSOLVED)',
   ];
   return {
     qid: input.qid,
@@ -349,7 +307,7 @@ export const definitionalCascadeMethod: LianaMethod = {
   // D-BP150-003: this method resolves what a term MEANS. Its answer is a meaning, so its demand
   // is DEFINE. It must not run on a question that demands anything else.
   demand: 'DEFINE',
-  taughtBy: "the Founder's qid 85 walkthrough (bias), FounderCascadeWorkedByHand.txt Excerpt 7 -- D1-D4 built BP149 (D-BP149-043), D5 (sense-matching) deliberately left an honest abstain, not yet solved",
+  taughtBy: "the Founder's qid 85 walkthrough (bias), FounderCascadeWorkedByHand.txt Excerpt 7 -- D1 built BP149 (D-BP149-043); D2-D4's collapse replaced by E-SURVEY-ASK's enumeration BP150 (D-BP150-016) after qid 85's own two-fold defect; D5 (sense-matching / E-MATCH-UP) deliberately left an honest abstain, not yet solved",
   shapeDescription: 'the question turns on what a term means and the options are competing statements of that meaning',
   shapeTest,
   run,
