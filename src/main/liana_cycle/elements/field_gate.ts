@@ -64,6 +64,23 @@
 //   - It does not special-case qid 85 or any other bundled qid. FIELD_GATE_STOPWORDS below is
 //     generic English function-word grammar, the same non-domain discipline nest.ts's
 //     FUNCTION_ONLY set and definitional_cascade.ts's D1_STOPWORDS already keep.
+//
+// D-BP150-019 CORRECTION (Founder ruling, mid-ticket): "a field is NOT always what answer options
+// have in common, field means a field of study, like medicine or law or physics... using the answer
+// options to glean what that is, is very valid [as evidence]." This file's STEP 1 query-building
+// was conflating the two -- treating the option set's own shared vocabulary AS the field. Corrected:
+// the option vocabulary is now explicitly measured as a COHESION NUMBER (computeThemeCohesion(),
+// below) and used only as EVIDENCE to build a CONFIRMATION query ("what subject or field of study
+// uses <shared words>", the Founder's own phrasing) -- Google still names the candidates (STEP 1 is
+// unchanged in that respect), but a new structural signal (confirmsFieldOfStudy(), below) reports,
+// per candidate, whether its OWN sourced text actually uses a "field of X"/"study of X" construction
+// -- reported, not an eliminator, because this session had no live Google to measure its recall
+// against real data (see that function's own header). A themeless option set (cohesion 0 or 1,
+// e.g. a ranking question's short proper nouns) now explicitly skips the confirmation query rather
+// than building one from noise -- a ROUTING signal per the Founder, not an error.
+//
+// D-BP150-019 FIX 2 (structural field-vs-variety) and FIX 3 (vocabulary pooling across
+// near-duplicate names) are documented at their own definitions below, near where they run.
 
 import { appearsIn, gemmaExtract, googleBlocks, norm } from '../methods/comparative_cascade';
 import type { MethodRunContext } from '../method_registry';
@@ -75,7 +92,9 @@ import type { SurveyDenotation } from './survey_ask';
 // "statistics" never entered any candidate set. findCatalystWords() (elements/catalyst_words.ts,
 // D-BP150-004) already computes the register signal the Founder pointed at directly -- the
 // question's OWN answer set states it ("sample / population / representative / randomization /
-// estimates" for qid 85). Reused here, not reimplemented -- see deriveOptionVocabWords() below.
+// estimates" for qid 85). Reused here, not reimplemented -- see computeThemeCohesion() below
+// (D-BP150-019 correction renamed/extended this from the original deriveOptionVocabWords(), which
+// named words but never measured how SHARED they were -- see that section's own header).
 import { findCatalystWords } from './catalyst_words';
 
 function nowIso(): string {
@@ -211,44 +230,229 @@ function decide(survivorCount: number, candidateCount: number): GateDecision {
  *  list are sent, same discipline survey_answers.ts's own maxCatalystWordsPerOption documents. */
 const FIELD_VOCAB_QUERY_MAX_WORDS = 8;
 
-function deriveOptionVocabWords(options: Record<string, string> | null, term: string): string[] {
-  if (!options || Object.keys(options).length < 2) return [];
+// ─────────────────────────── D-BP150-019 correction (Founder ruling) ───────────────────────────
+// Founder, verbatim: "a field is NOT always what answer options have in common, field means a
+// field of study, like medicine or law or physics, but using the answer options to glean what that
+// is, is very valid." THE CHAIN this section implements: derive the shared THEME from the options
+// (evidence, not the field itself) -> ask Google to CONFIRM what field of study that theme belongs
+// to (Google's role is confirmation, not naming) -> only THEN treat a name as a field. The old
+// single-function deriveOptionVocabWords() named the words; computeThemeCohesion() below keeps
+// that exact word-selection logic (unchanged in substance) but also measures and reports HOW
+// SHARED the words actually are, because a themeless option set (a ranking question's short proper
+// nouns) must route around this query entirely rather than build one from noise.
+
+/** Words shared by only 1 option are not a "theme" -- they are that one option's OWN vocabulary
+ *  (exactly what catalyst_words.ts's own header defines a catalyst to be: a word whose PRESENCE
+ *  VARIES). A theme requires at least 2 options in agreement. Below this, the option set is
+ *  reported as themeless/disjoint and no theme-confirmation query is sent -- not an error, per the
+ *  Founder's own correction: qid 98/92-shaped ranking questions have ZERO shared words by
+ *  construction (short proper nouns), and that is a ROUTING signal (this shape belongs to a
+ *  different method, comparative_cascade.ts, untouched), not a defect to work around here. */
+const MIN_COHESION_FOR_THEME_QUERY = 2;
+
+export interface ThemeCohesion {
+  /** How many of the options the single most-shared word (after excluding the term's own words) is
+   *  present in. 0 when the option set shares nothing -- a themeless set, reported honestly. */
+  topCount: number;
+  optionCount: number;
+  /** Words available to build the theme-confirmation query, universal-first then most-shared-first,
+   *  already excluding the term's own words -- the same ordering deriveOptionVocabWords() always
+   *  used. Non-empty even when topCount < MIN_COHESION_FOR_THEME_QUERY (the words themselves are
+   *  not wrong; there just are not enough of them shared to call it a theme). */
+  words: string[];
+  why: string;
+}
+
+/** Measures the option set's OWN shared vocabulary and reports it as a COHESION NUMBER, per the
+ *  Founder's correction ("report the cohesion number and let it route; do not make a themeless
+ *  option set an error"). Mechanical, no model call -- findCatalystWords() (elements/
+ *  catalyst_words.ts), unmodified, reused not reimplemented, exactly as before this correction. */
+export function computeThemeCohesion(options: Record<string, string> | null, term: string): ThemeCohesion {
+  const optionCount = options ? Object.keys(options).length : 0;
+  if (!options || optionCount < 2) {
+    return { topCount: 0, optionCount, words: [], why: 'fewer than 2 options -- no shared theme is even definable' };
+  }
   const { catalysts, universal } = findCatalystWords(options);
   const termWords = significantWords(term);
   const seen = new Set<string>();
   const ordered: string[] = [];
-  for (const w of universal) {
-    if (termWords.has(w) || seen.has(w)) continue;
+  const universalContent = universal.filter((w) => !termWords.has(w));
+  for (const w of universalContent) {
+    if (seen.has(w)) continue;
     seen.add(w);
     ordered.push(w);
   }
-  const byShareDesc = [...catalysts].sort((a, b) => b.count - a.count || a.word.localeCompare(b.word));
+  const byShareDesc = [...catalysts]
+    .filter((c) => !termWords.has(c.word))
+    .sort((a, b) => b.count - a.count || a.word.localeCompare(b.word));
   for (const c of byShareDesc) {
-    if (termWords.has(c.word) || seen.has(c.word)) continue;
+    if (seen.has(c.word)) continue;
     seen.add(c.word);
     ordered.push(c.word);
   }
-  return ordered.slice(0, FIELD_VOCAB_QUERY_MAX_WORDS);
+  // A universal (non-term) word is shared by literally every option -- maximal cohesion. Otherwise
+  // the strongest signal is the top catalyst's own share count.
+  const topCount = universalContent.length ? optionCount : (byShareDesc[0]?.count ?? 0);
+  const words = ordered.slice(0, FIELD_VOCAB_QUERY_MAX_WORDS);
+  const why = topCount >= MIN_COHESION_FOR_THEME_QUERY
+    ? `cohesion ${topCount}/${optionCount} -- top shared word(s) [${words.slice(0, 5).join(', ')}${words.length > 5 ? ', ...' : ''}] present in ${topCount} of ${optionCount} options, a real shared theme worth confirming as a field of study`
+    : `cohesion ${topCount}/${optionCount} -- no word shared by more than 1 option (a themeless/disjoint option set -- e.g. a ranking question's short proper nouns, which belongs to a different method entirely) -- theme-confirmation query not sent, not an error`;
+  return { topCount, optionCount, words, why };
 }
 
-/** STEP 1's queries. The original two plain-words phrasings of the Founder's own question ("what
- *  field is it in?") are KEPT -- they still run and still contribute candidates, `askFields()`
- *  unions everything every query finds. D-BP150-018 ADDS a third: when the option set supplies
- *  discriminating vocabulary (`vocabWords`), a query built from THAT vocabulary rather than the
- *  bare term -- "what field or subject studies <vocab words>" -- because the bare-term queries
- *  measured on qid 85 both returned pages about the everyday sense of a common English word
- *  ("bias" the personal-prejudice sense) and never surfaced the technical register at all. Adding
- *  a query only ever grows the candidate set that STEP 2's elimination then filters; it cannot
- *  remove anything a caller previously found. */
-function fieldQueries(term: string, vocabWords: string[]): string[] {
+/** STEP 1's queries. The two plain-words phrasings of the Founder's own question ("what field is
+ *  it in?") are KEPT -- they still run and still contribute candidates, `askFields()` unions
+ *  everything every query finds. A third is added ONLY when `cohesion.topCount` clears
+ *  MIN_COHESION_FOR_THEME_QUERY: "what subject or field of study uses <words>" -- the Founder's own
+ *  phrasing, verbatim ("asking 'what subject or field of study uses sample, population, sampling'
+ *  asks Google to CONFIRM a theme you already hold"), deliberately not "what field studies X" (the
+ *  old wording, which measured on qid 85 returned pages about VARIETIES of the term -- "types of
+ *  bias" -- rather than confirming the field of study the theme belongs to). Adding a query only
+ *  ever grows the candidate set that STEP 2's elimination then filters; it cannot remove anything a
+ *  caller previously found. */
+function fieldQueries(term: string, cohesion: ThemeCohesion): string[] {
   const queries = [
     `what field is "${term}" in`,
     `what subject or field does "${term}" belong to`,
   ];
-  if (vocabWords.length) {
-    queries.push(`what field or subject studies ${vocabWords.join(' ')}`);
+  if (cohesion.topCount >= MIN_COHESION_FOR_THEME_QUERY && cohesion.words.length) {
+    queries.push(`what subject or field of study uses ${cohesion.words.join(' ')}`);
   }
   return queries;
+}
+
+// ─────────────────────────── D-BP150-019 FIX 2 -- structural field-vs-variety rules ───────────────────────────
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** FIX 2(i). The Founder's exact wording, BP150 (in the correction governing this ticket, restated
+ *  from the original dispatch): "a field name that contains the term is not a field -- it is a
+ *  variety of the term." "Name bias" contains "bias" -- it is a KIND of bias, not a FIELD bias
+ *  belongs to. Grammar, not domain knowledge: this tests the candidate name against the term this
+ *  gate itself is asking about, using only word-boundary substring containment on normalized text
+ *  -- no list of "types of X" was authored anywhere in this file. Confirmed still standing by the
+ *  Founder's correction ("YOUR STRUCTURAL RULE STILL STANDS and is now better motivated... Keep it"). */
+function containsTermAsWholeWord(name: string, term: string): boolean {
+  const nTerm = norm(term);
+  if (!nTerm) return false;
+  const nName = norm(name);
+  return new RegExp(`\\b${escapeRegex(nTerm)}\\b`).test(nName);
+}
+
+/** FIX 2(ii). A second structural rule: a "field" whose entire name IS the hostname of the page it
+ *  was extracted from is a source-name artifact ("Wikipedia" extracted from a page at
+ *  en.wikipedia.org) -- the passage named its OWN SITE, not a subject the term belongs to.
+ *  Mechanical: parses the block's URL, strips "www.", drops trailing labels that are generic
+ *  top-/second-level domain suffixes (a closed, syntactic list of TLD strings -- URL grammar, not
+ *  the content-domain vocabulary this file's header forbids authoring), and rejects a candidate
+ *  name that equals any remaining host label. Generalizes to any site name (Reddit, CNN, Quizlet),
+ *  never hand-authored per-site. */
+const GENERIC_TLD_LABELS = new Set([
+  'com', 'org', 'net', 'edu', 'gov', 'co', 'io', 'info', 'biz', 'us', 'uk', 'ca', 'au', 'de',
+  'me', 'app', 'dev',
+]);
+
+function hostLabels(url: string): string[] {
+  if (!url) return [];
+  try {
+    const host = new URL(url).hostname.replace(/^www\./i, '');
+    const labels = host.split('.').filter(Boolean);
+    while (labels.length > 1 && GENERIC_TLD_LABELS.has(labels[labels.length - 1].toLowerCase())) {
+      labels.pop();
+    }
+    return labels;
+  } catch {
+    return [];
+  }
+}
+
+function isSourceNameArtifact(name: string, url: string): string | null {
+  const nName = norm(name);
+  if (!nName) return null;
+  for (const label of hostLabels(url)) {
+    if (norm(label) === nName) return label;
+  }
+  return null;
+}
+
+// ─────────────────────────── D-BP150-019 correction, item 3 -- "field of X" confirmation ───────────────────────────
+
+/** Founder: "a field of study is the kind of thing that completes 'the field of X' or 'the study of
+ *  X' -- test it against retrieved text rather than a list you write." Generic English constructions
+ *  for naming an academic field, tested against the candidate's OWN sourced passages -- not a list
+ *  of field names, a list of the SENTENCE SHAPES that name one.
+ *
+ *  REPORTED, NOT AN ELIMINATOR: this session had no live Google (the ticket's own testing
+ *  constraint), so there is no real captured text this session to measure how often a genuine
+ *  field's own sourced passage happens to use this exact phrasing (recall is unmeasured). Treating
+ *  its absence as proof a candidate is NOT a field would risk exactly the over-elimination this
+ *  ticket's hard guards warn against ("do not tune... if a rule only works because you looked at
+ *  one, say so"), on a rule I cannot verify against real data this session. So `confirmed: false` is
+ *  reported alongside every survivor, never subtracted from `survivors` -- eliminateByVocabulary()
+ *  remains the only thing that removes a candidate, unchanged, per the hard guard. Promoting this to
+ *  a hard filter is future work, once it can be measured against real captured text. */
+function confirmsFieldOfStudy(name: string, passages: string[]): { confirmed: boolean; why: string } {
+  const rawName = name.trim();
+  if (!rawName) return { confirmed: false, why: 'empty name' };
+  const escName = escapeRegex(rawName).replace(/\s+/g, '\\s+');
+  const patterns = [
+    new RegExp(`\\b(field|study|discipline|branch)\\s+of\\s+${escName}\\b`, 'i'),
+    new RegExp(`\\b${escName}\\s+is\\s+(a|an)\\s+(field|discipline|branch)\\b`, 'i'),
+  ];
+  for (const p of passages) {
+    for (const re of patterns) {
+      if (re.test(p)) {
+        return { confirmed: true, why: `sourced passage names it as a field of study ("field of X"/"study of X"/"X is a field" construction found)` };
+      }
+    }
+  }
+  return {
+    confirmed: false,
+    why: 'no sourced passage for this candidate uses a "field of X"/"study of X"/"X is a field" construction -- '
+      + 'NOT rejected on that basis (unverified against real data this session, see this function\'s own header) -- reported as unconfirmed',
+  };
+}
+
+// ─────────────────────────── D-BP150-019 FIX 3 -- pool vocabulary across near-duplicate names ───────────────────────────
+
+/** Diagnosis (see this ticket's return for the full writeup): `askFields()`'s per-block loop below
+ *  merges candidates by EXACT normalized-string equality only (`byName.get(norm(name))`). The SAME
+ *  true field named with different verbatim wording across different sourced blocks -- "statistics"
+ *  in one block's passage, "Descriptive statistics" or "the study of statistics" in another --
+ *  becomes MULTIPLE separate candidates, each carrying only its OWN block's vocabulary. Because
+ *  `eliminateByVocabulary()` (STEP 2, unmodified, per the hard guard) requires a SINGLE candidate's
+ *  OWN vocabulary to overlap the ASK/options, a field's true supporting vocabulary can be split
+ *  across siblings such that no single fragment survives even though their UNION would. This
+ *  function pools that vocabulary BEFORE elimination runs, by folding a candidate into an
+ *  already-kept candidate when one name is a whole-word substring of the other -- "statistics" and
+ *  "Descriptive statistics" are the SAME field at different specificity, not two competing fields.
+ *  Processes shortest names first so the more general name anchors the merge. Names shorter than
+ *  MIN_MERGE_NAME_LEN are never merge targets or donors -- containment on a 1-3 letter fragment is
+ *  not a meaningful structural signal. eliminateByVocabulary() itself is NOT touched -- this only
+ *  changes what counts as ONE candidate before it runs. */
+const MIN_MERGE_NAME_LEN = 4;
+
+function mergeContainedFieldNames(entries: FieldCandidate[]): FieldCandidate[] {
+  const sorted = [...entries].sort((a, b) => norm(a.name).length - norm(b.name).length);
+  const kept: FieldCandidate[] = [];
+  for (const cand of sorted) {
+    const nName = norm(cand.name);
+    if (nName.length < MIN_MERGE_NAME_LEN) { kept.push(cand); continue; }
+    const parent = kept.find((k) => {
+      const nk = norm(k.name);
+      return nk.length >= MIN_MERGE_NAME_LEN && nk !== nName && new RegExp(`\\b${escapeRegex(nk)}\\b`).test(nName);
+    });
+    if (parent) {
+      for (const p of cand.passages) if (!parent.passages.includes(p)) parent.passages.push(p);
+      parent.why += `; also named "${cand.name}" (${cand.sourceUrl || cand.sourceTitle || 'source unknown'}) -- `
+        + `merged in, same field at different specificity (name contains "${parent.name}")`;
+    } else {
+      kept.push(cand);
+    }
+  }
+  return kept;
 }
 
 export interface FieldCandidate {
@@ -273,23 +477,21 @@ export interface FieldDiscardedBlock {
 /** STEP 1. Asks Google directly what field(s) `term` belongs to and extracts every verified field
  *  name. Never picks one -- returns everything found, verified, unranked, exactly survey_ask.ts's
  *  own discipline for denotations. `options`, when supplied, is used ONLY to derive the extra
- *  vocabulary-scoped query (D-BP150-018 FIX A, `deriveOptionVocabWords()` above) -- the
- *  elimination arithmetic below this function is unchanged. */
+ *  theme-confirmation query's vocabulary (`computeThemeCohesion()` above, D-BP150-018 FIX A +
+ *  D-BP150-019 correction) -- the elimination arithmetic below this function is unchanged. */
 export async function askFields(
   term: string,
   ctx: MethodRunContext,
   options: Record<string, string> | null = null,
-): Promise<{ queries: string[]; candidates: FieldCandidate[]; discarded: FieldDiscardedBlock[] }> {
+): Promise<{ queries: string[]; candidates: FieldCandidate[]; discarded: FieldDiscardedBlock[]; cohesion: ThemeCohesion }> {
   const { askGoogle, emit } = ctx;
   const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
   const fact = (text: string) => emit({ kind: 'fact', text: `+ ${text}`, ts: nowIso() });
   const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
 
-  const vocabWords = deriveOptionVocabWords(options, term);
-  if (vocabWords.length) {
-    note(`   option-set vocabulary (findCatalystWords(), most-shared first): ${vocabWords.join(', ')}`);
-  }
-  const queries = fieldQueries(term, vocabWords);
+  const cohesion = computeThemeCohesion(options, term);
+  note(`   theme cohesion (options' own shared vocabulary, evidence pointing at a field, not the field itself): ${cohesion.why}`);
+  const queries = fieldQueries(term, cohesion);
   const byName = new Map<string, FieldCandidate>();
   const discarded: FieldDiscardedBlock[] = [];
 
@@ -330,6 +532,15 @@ export async function askFields(
           note(`      discarded field name "${name}" -- could not be verified verbatim against the passage it claimed to come from`);
           continue;
         }
+        if (containsTermAsWholeWord(name, term)) {
+          note(`      discarded field name "${name}" -- contains the term "${term}" itself, so it is a VARIETY of the term, not a field it belongs to (structural rule, D-BP150-019 FIX 2)`);
+          continue;
+        }
+        const hostArtifact = isSourceNameArtifact(name, block.url);
+        if (hostArtifact) {
+          note(`      discarded field name "${name}" -- matches the source's own hostname label "${hostArtifact}" (${block.url || '(no url)'}) -- a site-name artifact, not a subject (structural rule, D-BP150-019 FIX 2)`);
+          continue;
+        }
         verifiedAny = true;
         const key = norm(name);
         const existing = byName.get(key);
@@ -356,7 +567,16 @@ export async function askFields(
     }
   }
 
-  return { queries, candidates: [...byName.values()], discarded };
+  // D-BP150-019 FIX 3. Pool vocabulary across near-duplicate names ("statistics" / "Descriptive
+  // statistics") BEFORE eliminateByVocabulary() runs -- see mergeContainedFieldNames()'s own header
+  // for the diagnosis this addresses. eliminateByVocabulary() itself, below in fieldGate(), is
+  // unchanged; this only changes what counts as one candidate going into it.
+  const mergedCandidates = mergeContainedFieldNames([...byName.values()]);
+  if (mergedCandidates.length !== byName.size) {
+    note(`   FIX 3: pooled ${byName.size - mergedCandidates.length} near-duplicate name(s) into a broader candidate by name containment (e.g. "Descriptive statistics" folded into "statistics") before elimination`);
+  }
+
+  return { queries, candidates: mergedCandidates, discarded, cohesion };
 }
 
 // ─────────────────────────── STEPs 2 & 4 -- eliminate, report, never pick ───────────────────────────
@@ -376,6 +596,10 @@ export interface FieldGateResult {
    *  term unconstrained, per STEP 4's refusal to force a pick. */
   scopedTerm: string;
   why: string;
+  /** D-BP150-019 correction, item 3. Per-survivor field-of-study confirmation (keyed by
+   *  `FieldCandidate.name`) -- see confirmsFieldOfStudy()'s own header. Reported, never used to
+   *  remove a survivor. */
+  confirmations: Record<string, { confirmed: boolean; why: string }>;
 }
 
 /**
@@ -402,7 +626,7 @@ export async function fieldGate(
       + `(${discarded.length} source block(s) consulted and discarded) -- falling back to the unconstrained survey, not eliminating anything`;
     note(`   ${why}`);
     emit({ kind: 'result', text: `FIELD GATE (${term}): 0 candidate(s) -- unconstrained`, ts: nowIso() });
-    return { term, queries, candidates, discarded, outcomes: [], survivors: [], eliminated: [], decision: 'NO_CANDIDATES', scopedTerm: term, why };
+    return { term, queries, candidates, discarded, outcomes: [], survivors: [], eliminated: [], decision: 'NO_CANDIDATES', scopedTerm: term, why, confirmations: {} };
   }
 
   const optionTexts = options ? Object.values(options) : [];
@@ -418,16 +642,24 @@ export async function fieldGate(
     note(`   field "${o.name}": ${o.why}`);
   }
 
+  // D-BP150-019 correction, item 3. CONFIRMATION, not elimination -- see confirmsFieldOfStudy()'s
+  // own header for why this is reported and never subtracted from `survivors`.
+  const confirmations: Record<string, { confirmed: boolean; why: string }> = {};
+  for (const s of survivors) {
+    confirmations[s.name] = confirmsFieldOfStudy(s.name, s.passages);
+    note(`   field "${s.name}" field-of-study confirmation: ${confirmations[s.name].confirmed ? 'CONFIRMED' : 'unconfirmed'} -- ${confirmations[s.name].why}`);
+  }
+
   const decision = decide(survivors.length, candidates.length);
   let scopedTerm = term;
   let why: string;
   if (decision === 'ONE_SURVIVOR') {
     scopedTerm = `${term} in ${survivors[0].name}`;
     why = `${candidates.length} field(s) asked for, ${eliminated.length} eliminated (zero sourced-vocabulary support in the ASK/options), `
-      + `ONE survivor: "${survivors[0].name}" -- by elimination, what it HAS to be. Subsequent survey queries scoped to "${scopedTerm}".`;
+      + `ONE survivor: "${survivors[0].name}" (field-of-study ${confirmations[survivors[0].name].confirmed ? 'CONFIRMED' : 'unconfirmed'}) -- by elimination, what it HAS to be. Subsequent survey queries scoped to "${scopedTerm}".`;
   } else if (decision === 'MULTIPLE_SURVIVORS') {
     why = `${candidates.length} field(s) asked for, ${eliminated.length} eliminated, ${survivors.length} SURVIVE: `
-      + `${survivors.map((s) => `"${s.name}"`).join(', ')} -- reported together, NONE chosen (forcing a single winner here is E-MATCH-UP, canon UNSOLVED). Term left unconstrained.`;
+      + `${survivors.map((s) => `"${s.name}"${confirmations[s.name].confirmed ? ' [CONFIRMED field of study]' : ''}`).join(', ')} -- reported together, NONE chosen (forcing a single winner here is E-MATCH-UP, canon UNSOLVED). Term left unconstrained.`;
   } else {
     why = `${candidates.length} field(s) asked for, ALL eliminated -- zero survivors. Falling back to the unconstrained survey rather than eliminating everything.`;
   }
@@ -438,7 +670,7 @@ export async function fieldGate(
     ts: nowIso(),
   });
 
-  return { term, queries, candidates, discarded, outcomes, survivors, eliminated, decision, scopedTerm, why };
+  return { term, queries, candidates, discarded, outcomes, survivors, eliminated, decision, scopedTerm, why, confirmations };
 }
 
 // ─────────────────────────── STEP 3 -- drop already-surveyed denotations from eliminated fields ───────────────────────────
