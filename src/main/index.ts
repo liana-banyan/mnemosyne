@@ -3660,6 +3660,35 @@ ${args.teachingText}
       }
       writeFileSync(filePath, content, 'utf-8');
       const bytes = Buffer.byteLength(content, 'utf-8');
+
+      // D-BP150-008 -- THE TEACHING IS THE WAKE.
+      //
+      // Founder, BP150: "how do I ask the question I am asking you right now, from mnemosynec:
+      // 'Please take what I wrote and apply it'". Until this line, the answer was that he could
+      // not: a teaching file landed on disk and NOTHING told Bishop it had arrived. He wrote a
+      // full method spec for qid 92 at 23:58Z and Bishop only found it because he mentioned it
+      // in chat -- which is the exact thing this channel exists to make unnecessary.
+      //
+      // The mechanism is already here and was simply never pointed at this event. 'liana-terminal
+      // -run' above writes a beat into the SAME yoke HEARTBEAT directory Bishop's Mic polls
+      // (yoke_watch_v4.sh). A submitted teaching is at least as much a beat as a completed run.
+      // Estate doctrine, proven BP147: THE FILE IS THE WAKE -- writing it IS notifying the other
+      // actor, and Bishop must never ask the Founder to relay.
+      //
+      // Non-fatal by construction: a teaching that was written to disk must never be reported as
+      // failed because a notification could not be appended. The file is the deliverable; the
+      // beat is the courtesy.
+      try {
+        mkdirSync(YOKE_PATHS.HEARTBEAT_DIR, { recursive: true });
+        appendFileSync(
+          join(YOKE_PATHS.HEARTBEAT_DIR, 'D-BP150-TEACH.beat'),
+          `${new Date().toISOString()}  LIANA-TEACHING  ${args.qid != null ? `qid=${args.qid}` : 'qid=free-text'}  ${bytes}B  ${filePath}\n`,
+          'utf8',
+        );
+      } catch (e) {
+        console.warn('[liana-teach] beat write failed (non-fatal, the teaching file is already on disk):', e);
+      }
+
       return { ok: true, filePath, bytes };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
