@@ -59,6 +59,52 @@
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP151-031 AMENDMENT -- STEP 2's NO-TERM PATH: ASK THE SOURCE WHICH TERMS ARE AMBIGUOUS.
+//
+// MEASURED FAILURE THIS CLOSES. Live run LIANA_RUN_qid98_2026-08-09T22-37-19-658Z.json (qid 98,
+// "Which of the following world regions is NOT considered one of the world's most densely
+// populated regions?"): findAskCatalyst() correctly found no quoted or cued term (transcript line
+// 75, verbatim: "SURVEY STEP 2: no term, not run"), so step 2 refused, so DEMAND came back
+// UNKNOWN, so no method could run and the whole question abstained with `error: "demand_unknown"`.
+// Refusing was correct -- there was nothing to extract a term FROM. But refusing was also the only
+// option available, because nothing offered step 2 another way to find a term.
+//
+// THE FOUNDER'S FIX, run by hand, worked first try: instead of extracting a term from the question,
+// ASK THE SOURCE which words or phrases in the question could be understood with a different
+// meaning that would change what is being asked. His own qid-98 walkthrough named "regions",
+// "densely populated" (the exact ambiguity that produces the wrong South America figure -- total
+// population vs. true density) and "NOT" (a negation the Liana Cycle never previously tracked
+// anywhere) -- each with a standard meaning, an alternative meaning, and the impact of the
+// alternative, IN THE SOURCE'S OWN WORDS.
+//
+// WHAT WAS BUILT: askAmbiguityViaModel() (below) issues his query, verbatim, templated only with
+// the question text (HARDWIRE-23 Law 4, ATTRIBUTED at its own call site). It runs ONLY when
+// findAskCatalyst() found nothing -- the existing quoted/cued path is untouched, additive only.
+// THE SOURCE NAMES THE TERMS; founderStep2Survey() SURVEYS EVERY ONE OF THEM, in the order the
+// source returned them -- no ranking or picking rule was invented (the Founder's own order allowed
+// either "all named terms" or "source order"; this ticket chose both at once, since they coincide
+// when nothing is dropped). If the ambiguity query itself returns nothing usable, step 2 still
+// refuses exactly as before -- refusing beats guessing, unchanged.
+//
+// THE NEGATION FLAG. Nothing in the Liana Cycle previously registered that an ASK is itself
+// negated (Step 6's inverse-query direction is a caller-declared fact about a QUERY, never a fact
+// about the original ASK). `AmbiguityTermFinding.isNegation` is asked OF THE MODEL, per named
+// term ("does this term function as a negation/exclusion/restriction word whose presence or
+// absence would flip which option is correct") -- never checked here against a hardcoded word list
+// (a word list here would be exactly the kind of tare HARDWIRE-23 forbids). `negationNamed` on
+// FounderStep2Result, and `askNegated` on the top-level SurveyStageResult, are true only when the
+// SOURCE flagged a term this way.
+//
+// NOT WIRED TO DEMAND. demand_test.ts's determineDemandFromSurveyedAsk() and its one call site
+// (liana_terminal_engine.ts, `surveyResult.step2.nested ? determineDemandFromSurveyedAsk(...) :
+// ...`) both still key off `step2.nested` alone -- unchanged by this ticket, and `step2.nested`
+// stays null on the ambiguity path by design (there is no single term to hand it; there are
+// several, in `ambiguityNested`). This ticket does not touch demand_test.ts or
+// liana_terminal_engine.ts -- see this ticket's return, "THINGS I NOTICED AND DID NOT DO", for
+// exactly what that means for qid 98's live abstain.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // WIRE IT, DO NOT REWRITE IT. Every phase below composes an EXISTING element. Nothing in this
 // file re-implements a classifier, a query template, or an elimination rule another file already
 // owns. The tare sweep (`TARE_SWEEP_BP151.md`) found the following already built and simply not
@@ -97,17 +143,30 @@
 //   ALSO WIRED: findAskCatalyst() (elements/catalyst_words.ts) -- DEAD before this file (only
 //             substitution_search.ts, itself dead, called it). WIRED HERE, FIRST LIVE CALLER, to
 //             derive the term steps 2 and 4 need from the raw question text.
+//   STEP 2's NO-TERM PATH (D-BP151-031) -> askAmbiguityViaModel() (this file, below) -- a NEW
+//             minimal function, same reasoning as groupViaModel() (step 3): there is no passage to
+//             extract this from, so gemmaExtract()'s extraction-only wrapper would suppress the
+//             answer the same way it was measured to for step 3's grouping call. Reuses the SAME
+//             local Ollama instance and model (OLLAMA_API_BASE, GROUPING_MODEL, already declared
+//             below for step 3) via its own prompt -- not a second transport. See its own
+//             ATTRIBUTED comment.
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // HARDWIRE-23 (THE TARE RULE) -- HOW THIS FILE STAYS CLEAN.
 //
-// This file introduces exactly TWO decision rules of its own, and both are ATTRIBUTED at their
-// own call site, per Law 4 -- no other decision rule (threshold, cutoff, ratio, tie-break, word
-// list) exists anywhere in this file:
+// This file introduces exactly THREE decision/relaxation rules of its own (D-BP151-031 adds the
+// third to the two D-BP151-025 introduced), and all three are ATTRIBUTED at their own call site,
+// per Law 4 -- no other decision rule (threshold, cutoff, ratio, tie-break, word list) exists
+// anywhere in this file:
 //   1. groupOptionsByPredicate()'s model call (step 3) -- HARDWIRE-22 relaxed, Founder-ordered,
 //      scoped to this one call only.
 //   2. founderStep6JarMethod()'s direction-driven elimination (step 6) -- mechanical, driven by a
 //      caller-declared query direction, never a word list or a model judgment.
+//   3. askAmbiguityViaModel()'s ambiguity query (step 2's no-term path, D-BP151-031) -- HARDWIRE-22
+//      relaxed a second time, Founder-ordered, scoped to this one call only. It PICKS NOTHING: the
+//      source names candidate ambiguous terms and, per term, whether it is a negation -- this
+//      function reports every one of them, unranked; founderStep2Survey() surveys all of them,
+//      inventing no selection rule among them.
 // Every OTHER phase still either (a) delegates entirely to an existing element and reports its
 // result unmodified, or (b) reports raw, unranked facts with no decision made here.
 //
@@ -128,9 +187,46 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** methods/comparative_cascade.ts declares its Ollama endpoint/model as MODULE-PRIVATE constants
+ *  (`OLLAMA_API_BASE`, `MODEL` -- not exported, so this file cannot import them). Read here with
+ *  the IDENTICAL env-var names and defaults, so the SAME local Ollama instance and the SAME model
+ *  answer every call in this file that talks to it directly -- gemmaExtract()'s own calls (via
+ *  survey_ask.ts/survey_answers.ts/comparative_cascade.ts), step 3's groupViaModel(), AND (D-BP151-
+ *  031) step 2's askAmbiguityViaModel() -- a config convention, not a second system. See
+ *  groupViaModel()'s and askAmbiguityViaModel()'s own headers for why each CALL ITSELF cannot
+ *  reuse gemmaExtract(). */
+const OLLAMA_API_BASE = process.env.OLLAMA_API_BASE ?? 'http://127.0.0.1:11434';
+const GROUPING_MODEL = process.env.CASCADE_MODEL ?? 'gemma4:12b';
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // STEP 2 -- SURVEY: enumerate denotations of the ASK's own term, perfunctorily, then keep looking.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** D-BP151-031. One term the SOURCE named as potentially ambiguous, in answer to the Founder's
+ *  own query (askAmbiguityViaModel()'s own ATTRIBUTED comment) -- every field copied from the
+ *  model's response, never summarized. `isNegation` is likewise ASKED OF THE SOURCE per term,
+ *  never checked here against a hardcoded word list (HARDWIRE-23 -- a word list here would be
+ *  exactly the tare this file's own rule forbids). */
+export interface AmbiguityTermFinding {
+  term: string;
+  standardMeaning: string;
+  alternativeMeaning: string;
+  impact: string;
+  isNegation: boolean;
+}
+
+/** D-BP151-031. The full result of issuing the Founder's ambiguity query once. `terms` is
+ *  deliberately UNRANKED -- see askAmbiguityViaModel()'s own header for why nothing here picks
+ *  one. */
+export interface AmbiguityQueryResult {
+  /** The Founder's own query text actually sent (verbatim; see askAmbiguityViaModel()). */
+  askedText: string;
+  terms: AmbiguityTermFinding[];
+  /** True exactly when the model call itself produced nothing (unreachable/failed/unparseable) --
+   *  distinguishes "no live model, not run" from "model ran and named nothing". */
+  modelUnreachable: boolean;
+  why: string;
+}
 
 export interface FounderStep2Result {
   term: string | null;
@@ -139,7 +235,94 @@ export interface FounderStep2Result {
    *  determineDemandFromSurveyedAsk() (demand_test.ts) -- not wired here, see this ticket's
    *  return, "THINGS I NOTICED AND DID NOT DO". */
   nested: SurveyAskNestedResult | null;
+  /** D-BP151-031. Present only on the NO-TERM path -- askAmbiguityViaModel()'s raw result, issued
+   *  instead of guessing a term. Null on the existing quoted/cued-term path (additive, unchanged
+   *  behavior there). */
+  ambiguity: AmbiguityQueryResult | null;
+  /** D-BP151-031. One nested survey (surveyAskNested(), UNMODIFIED, same as the quoted/cued path)
+   *  per term the SOURCE named as ambiguous, in the order the source returned them. Empty when
+   *  `ambiguity` is null or named nothing usable. */
+  ambiguityNested: Array<{ term: string; nested: SurveyAskNestedResult }>;
+  /** D-BP151-031. True only when the SOURCE flagged at least one named term as a negation/
+   *  exclusion/restriction word -- never inferred here from a word list. */
+  negationNamed: boolean;
   why: string;
+}
+
+/**
+ * D-BP151-031. ATTRIBUTED: Founder, BP151, verbatim: "what words or phrases in this question
+ * could be understood with a different meaning that would fundamentally change the meaning of
+ * what is being asked?" -- his own fix for SURVEY STEP 2's no-term path, run by hand, worked first
+ * try. See this file's own header, "D-BP151-031 AMENDMENT", for the measured failure this closes
+ * (qid 98, LIANA_RUN_qid98_2026-08-09T22-37-19-658Z.json, transcript line 75).
+ *
+ * WHY THE LOCAL MODEL, NOT gemmaExtract(): there is no fixed passage to extract this from -- the
+ * question text itself is what is being reasoned about, exactly the shape of judgment
+ * gemmaExtract()'s own wrapper ("report only what it states... never guess") was MEASURED (this
+ * ticket's own predecessor, D-BP151-025, groupViaModel()'s header) to suppress. This reuses the
+ * SAME relaxation groupOptionsByPredicate() already established for step 3 -- same local Ollama
+ * instance (OLLAMA_API_BASE), same model (GROUPING_MODEL) -- via its own minimal, unwrapped
+ * prompt. HARDWIRE-22 stays relaxed for exactly this named call site and step 3's, nowhere else
+ * (see this file's header, HARDWIRE-23 section).
+ *
+ * THE SOURCE NAMES THE TERMS; THIS FUNCTION PICKS NONE OF THEM. Every term the model returns is
+ * reported verbatim (standard meaning, alternative meaning, impact); founderStep2Survey() decides
+ * how many to survey next (all of them, source order -- see its own comment), never this function.
+ * `isNegation` is asked OF THE MODEL per term, not matched against a word list here.
+ */
+async function askAmbiguityViaModel(askText: string): Promise<AmbiguityQueryResult> {
+  const askedText = 'what words or phrases in this question could be understood with a different '
+    + 'meaning that would fundamentally change the meaning of what is being asked?';
+  const prompt = `You are analyzing a multiple-choice question for ambiguous words or phrases, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
+
+QUESTION:
+${askText}
+
+TASK: ${askedText}
+
+For each word or phrase you name, give its standard/expected meaning in this question, an alternative meaning that would change what is being asked, and a short statement of the impact of that alternative meaning. Also state whether it functions as a negation, exclusion, or restriction word (such as "not", "except", "least") whose presence or absence would flip which option is correct.
+
+Return ONLY JSON in this shape, no prose, no fence:
+{"terms":[{"term":"the exact word or phrase named","standardMeaning":"...","alternativeMeaning":"...","impact":"...","isNegation":true}]}
+If nothing in the question could reasonably be understood differently, return {"terms":[]}. Do not guess an answer to the underlying question itself -- name ambiguous terms only.`;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60_000);
+    const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: GROUPING_MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 768 } }),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+    const j = (await res.json()) as { response?: string };
+    const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    const parsed = JSON.parse(t) as { terms?: unknown };
+    const rawTerms = Array.isArray(parsed.terms) ? (parsed.terms as Array<Record<string, unknown>>) : [];
+    const terms: AmbiguityTermFinding[] = [];
+    for (const rt of rawTerms) {
+      const term = typeof rt?.term === 'string' ? rt.term.trim() : '';
+      if (!term) continue;
+      terms.push({
+        term,
+        standardMeaning: typeof rt?.standardMeaning === 'string' ? rt.standardMeaning.trim() : '',
+        alternativeMeaning: typeof rt?.alternativeMeaning === 'string' ? rt.alternativeMeaning.trim() : '',
+        impact: typeof rt?.impact === 'string' ? rt.impact.trim() : '',
+        isNegation: rt?.isNegation === true,
+      });
+    }
+    const why = terms.length
+      ? `${terms.length} term(s) named by the source as potentially ambiguous, each reported verbatim `
+        + '(standard meaning, alternative meaning, impact) -- the source names, this function picks none'
+      : 'the model ran and named nothing usable -- an honest empty result, not a fabrication';
+    return { askedText, terms, modelUnreachable: false, why };
+  } catch {
+    return {
+      askedText,
+      terms: [],
+      modelUnreachable: true,
+      why: 'the model call for the ambiguity query returned nothing (unreachable or failed) -- an honest empty result, not a fabrication',
+    };
+  }
 }
 
 /**
@@ -152,8 +335,18 @@ export interface FounderStep2Result {
  * its nested form, which itself wires elements/nest.ts (buildNest/findFrame), also dead before
  * this ticket. `term` is REQUIRED to already be resolved by the caller (runSurveyStage() below
  * derives it via findAskCatalyst()); this function never guesses one itself.
+ *
+ * D-BP151-031 AMENDMENT, ADDITIVE ONLY: when `term` is null, this function no longer only
+ * refuses. `askText` (the raw question, passed by runSurveyStage() below) is handed to
+ * askAmbiguityViaModel() -- the Founder's own ambiguity query (that function's own ATTRIBUTED
+ * comment) -- INSTEAD of guessing a term. THE SOURCE NAMES THE TERMS; every term it names is
+ * surveyed here via the SAME surveyAskNested() the quoted/cued path already uses, in the order the
+ * source returned them (no ranking or selection rule was invented -- surveying every named term,
+ * source order, needs none). If `askText` is empty/omitted, or the ambiguity query itself returns
+ * nothing usable, this function still refuses exactly as it did before this ticket -- refusing
+ * beats guessing, unchanged.
  */
-export async function founderStep2Survey(term: string | null, ctx: MethodRunContext): Promise<FounderStep2Result> {
+export async function founderStep2Survey(term: string | null, ctx: MethodRunContext, askText?: string): Promise<FounderStep2Result> {
   const { emit } = ctx;
   emit({
     kind: 'stage',
@@ -161,15 +354,70 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
     ts: nowIso(),
   });
   if (!term) {
-    const why = 'no term to survey -- refusing rather than guessing one from the raw question text (refusing beats guessing)';
-    emit({ kind: 'note', text: `   ${why}`, ts: nowIso() });
-    emit({ kind: 'result', text: 'SURVEY STEP 2: no term, not run', ts: nowIso() });
-    return { term: null, nested: null, why };
+    const whyNoTerm = 'no term to survey -- refusing rather than guessing one from the raw question text (refusing beats guessing)';
+    emit({ kind: 'note', text: `   ${whyNoTerm}`, ts: nowIso() });
+
+    if (!askText || !askText.trim()) {
+      emit({ kind: 'result', text: 'SURVEY STEP 2: no term, not run', ts: nowIso() });
+      return { term: null, nested: null, ambiguity: null, ambiguityNested: [], negationNamed: false, why: whyNoTerm };
+    }
+
+    // D-BP151-031. ATTRIBUTED: Founder, BP151, verbatim: "what words or phrases in this question
+    // could be understood with a different meaning that would fundamentally change the meaning of
+    // what is being asked?" -- issued instead of guessing a term. See askAmbiguityViaModel()'s own
+    // header for the full ruling and why the local model, not gemmaExtract(), answers it.
+    emit({
+      kind: 'note',
+      text: '   no quoted/cued term -- issuing the Founder\'s ambiguity query instead of guessing one '
+        + '(ATTRIBUTED: Founder, BP151, verbatim: "what words or phrases in this question could be understood '
+        + 'with a different meaning that would fundamentally change the meaning of what is being asked?")',
+      ts: nowIso(),
+    });
+    const ambiguity = await askAmbiguityViaModel(askText);
+    emit({ kind: 'note', text: `   ${ambiguity.why}`, ts: nowIso() });
+
+    if (!ambiguity.terms.length) {
+      const why = `${whyNoTerm}; ambiguity query issued but returned nothing usable (${ambiguity.why}) -- `
+        + 'refusing rather than guessing (refusing beats guessing)';
+      emit({ kind: 'result', text: 'SURVEY STEP 2: no term, ambiguity query returned nothing usable, not run', ts: nowIso() });
+      return { term: null, nested: null, ambiguity, ambiguityNested: [], negationNamed: false, why };
+    }
+
+    // THE SOURCE NAMES THE TERMS; THIS SURVEYS ALL OF THEM, IN THE ORDER THE SOURCE RETURNED
+    // THEM. No ranking or picking rule was invented among source-named terms -- the Founder's own
+    // order allowed either "survey all named terms" or "survey them in the order the source gave";
+    // this ticket does both at once, since they coincide when nothing is dropped.
+    const ambiguityNested: Array<{ term: string; nested: SurveyAskNestedResult }> = [];
+    for (const t of ambiguity.terms) {
+      // eslint-disable-next-line no-await-in-loop -- one nested survey per named term, sequential
+      // by design, same pattern as surveyAskNested()'s own level loop.
+      const nested = await surveyAskNested(t.term, ctx);
+      ambiguityNested.push({ term: t.term, nested });
+    }
+    const negationNamed = ambiguity.terms.some((t) => t.isNegation);
+    if (negationNamed) {
+      const namedList = ambiguity.terms.filter((t) => t.isNegation).map((t) => t.term).join(', ');
+      emit({
+        kind: 'note',
+        text: `   NEGATION NAMED by the source: ${namedList} -- flagged on the ASK (never inferred from a word list here)`,
+        ts: nowIso(),
+      });
+    }
+    const why = 'no quoted/cued term -- issued the Founder\'s ambiguity query instead; '
+      + `${ambiguity.terms.length} term(s) named by the source ("${ambiguity.terms.map((t) => t.term).join('", "')}"), `
+      + `all surveyed (source order, no ranking rule invented)${negationNamed ? '; NEGATION NAMED by the source' : ''}`;
+    emit({
+      kind: 'result',
+      text: `SURVEY STEP 2: no quoted/cued term -- ${ambiguity.terms.length} term(s) named by the ambiguity query, `
+        + `${ambiguityNested.length} surveyed${negationNamed ? ', negation named' : ''}`,
+      ts: nowIso(),
+    });
+    return { term: null, nested: null, ambiguity, ambiguityNested, negationNamed, why };
   }
   const nested = await surveyAskNested(term, ctx);
   const why = `surveyed "${term}" via E-SURVEY-ASK's nested form (wired, not rewritten): ${nested.why}`;
   emit({ kind: 'result', text: `SURVEY STEP 2: "${term}" -- ${nested.levels.length} level(s) surveyed`, ts: nowIso() });
-  return { term, nested, why };
+  return { term, nested, ambiguity: null, ambiguityNested: [], negationNamed: false, why };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -207,14 +455,6 @@ export interface FounderStep3Result {
   grouping: FounderStep3GroupingResult | null;
   why: string;
 }
-
-/** methods/comparative_cascade.ts declares its Ollama endpoint/model as MODULE-PRIVATE constants
- *  (`OLLAMA_API_BASE`, `MODEL` -- not exported, so this file cannot import them). Read here with
- *  the IDENTICAL env-var names and defaults, so the SAME local Ollama instance and the SAME model
- *  answer both this call and every gemmaExtract() call -- a config convention, not a second
- *  system. See groupViaModel()'s own header for why the CALL ITSELF cannot reuse gemmaExtract(). */
-const OLLAMA_API_BASE = process.env.OLLAMA_API_BASE ?? 'http://127.0.0.1:11434';
-const GROUPING_MODEL = process.env.CASCADE_MODEL ?? 'gemma4:12b';
 
 /**
  * MEASURED FINDING, this ticket: `gemmaExtract()` (methods/comparative_cascade.ts) cannot be
@@ -614,6 +854,11 @@ export interface SurveyStageResult {
   step3: FounderStep3Result;
   step4: FounderStep4Result;
   step6: FounderStep6Result;
+  /** D-BP151-031. Mirrors step2.negationNamed at the top level -- true only when SURVEY STEP 2's
+   *  ambiguity query (no-term path) had the SOURCE itself name a negation/exclusion/restriction
+   *  term. Nothing else in the Liana Cycle currently tracks negation on the ASK; see this file's
+   *  header, "D-BP151-031 AMENDMENT". Always false on the quoted/cued-term path. */
+  askNegated: boolean;
   /** ALWAYS true -- structural guard so a caller cannot mistake this result for a verdict. Survey
    *  never sets a `verdict`/`answer` field anywhere in this file. */
   neverAnswersTheQuestion: true;
@@ -677,19 +922,27 @@ export async function runSurveyStage(
   }
   emit({ kind: 'note', text: `   term: ${term ? `"${term}"` : '(none -- ' + termWhy + ')'}`, ts: nowIso() });
 
-  const step2 = await founderStep2Survey(term, ctx);
+  // D-BP151-031: askText is now passed through so step 2's no-term path can issue the Founder's
+  // ambiguity query instead of only refusing. See founderStep2Survey()'s own comment.
+  const step2 = await founderStep2Survey(term, ctx, askText);
   const step3 = await founderStep3CategorizeOptions(options, ctx, opts.sharedFrame, opts.maxCatalystWordsPerOption);
   const step4 = await founderStep4DetermineRegister(term, askText, options, ctx);
   const step6 = await founderStep6JarMethod(opts.jarSourceGroups ?? [], options, ctx);
 
+  const step2Summary = step2.nested
+    ? `${step2.nested.levels.length} level(s) surveyed`
+    : step2.ambiguityNested.length
+      ? `no quoted/cued term -- ambiguity query named ${step2.ambiguity?.terms.length ?? 0} term(s), ${step2.ambiguityNested.length} surveyed`
+      : 'not run';
   const why = `SURVEY complete -- term ${term ? `"${term}" (${termWhy})` : `unresolved (${termWhy})`}; `
-    + `step2: ${step2.nested ? `${step2.nested.levels.length} level(s) surveyed` : 'not run'}; `
+    + `step2: ${step2Summary}; `
     + `step3: ${step3.perOption ? `${step3.perOption.letters.length} option(s) surveyed, ${step3.grouping?.groups.length ?? 0} group(s) proposed` : 'not run'}; `
     + `step4: ${step4.verified ? 'VERIFIED register' : 'unverified/unresolved'}; `
-    + `step6: ${step6.named.length} named mention(s), ${step6.eliminatedLetters.length} option(s) eliminated by known query direction. `
+    + `step6: ${step6.named.length} named mention(s), ${step6.eliminatedLetters.length} option(s) eliminated by known query direction`
+    + `${step2.negationNamed ? '; ASK NEGATED (source-named, step 2 ambiguity query)' : ''}. `
     + 'SURVEY NEVER ANSWERS THE QUESTION -- step 6\'s elimination narrows the option POOL (Founder-ordered, mechanical), '
     + 'no final verdict letter was ever picked by this stage.';
   emit({ kind: 'result', text: `SURVEY: ${why}`, ts: nowIso() });
 
-  return { askText, term, termWhy, step2, step3, step4, step6, neverAnswersTheQuestion: true, why };
+  return { askText, term, termWhy, step2, step3, step4, step6, askNegated: step2.negationNamed, neverAnswersTheQuestion: true, why };
 }
