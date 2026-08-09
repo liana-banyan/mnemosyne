@@ -3534,7 +3534,11 @@ function registerIPCHandlers(): void {
     // error. Carries the verbatim event transcript, which is the only place the per-stage queries,
     // returned facts and elimination reasons are recorded.
     try {
-      const runsDir = join(YOKE_PATHS.HEARTBEAT_DIR, '..', 'LIANA_RUNS');
+      // Sibling of RETURNS at the LEDGER root, NOT inside YOKE. A run receipt is an estate record
+      // like a dispatch return, not a yoke dispatch artifact. Derived from RETURNS_DIR (which is
+      // join(LEDGER_ROOT,'RETURNS')) so '..' lands on LEDGER; the first version derived it from
+      // HEARTBEAT_DIR, whose '..' is YOKE, and put receipts a level too deep.
+      const runsDir = join(YOKE_PATHS.RETURNS_DIR, '..', 'LIANA_RUNS');
       mkdirSync(runsDir, { recursive: true });
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const slug = outcome.qid != null ? `qid${outcome.qid}` : 'free-text';
