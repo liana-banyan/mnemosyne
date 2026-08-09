@@ -64,6 +64,16 @@ import {
 //   Asteroid-ProofVault/state/eblets/CANON/
 //     canon_liana_methods_are_compositions_of_named_elements_bp150.eblet.md
 import { surveyAsk } from '../elements/survey_ask';
+// D-BP150-017 -- E-FIELD-GATE, the Founder's own qid 85 proof procedure: ask what FIELD the term
+// is in, eliminate by co-occurring vocabulary, and (when the elimination is unambiguous) scope
+// the survey and drop denotations belonging to eliminated fields. Wired HERE, at the call site,
+// rather than inside surveyAsk() itself -- surveyAsk() is a general-purpose element used by other
+// callers (surveyAskNested's per-level calls) that do not necessarily have an ASK/options pair to
+// gate against yet; the cascade is the caller that actually holds `input.question` and `OPT`, so
+// it is the natural place to run the field ask before surveyAsk and to filter its output after.
+// See field_gate.ts's own header for the full procedure and its hard guard against ever picking
+// among survivors (that remains D5/E-MATCH-UP, still not implemented, still an honest abstain).
+import { dropDenotationsByEliminatedFields, fieldGate, foldGate } from '../elements/field_gate';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -251,26 +261,75 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   }
   note(`   odd one out (${d1.oddOneOutBasis === 'isolated' ? 'shares no significant vocabulary with anything else' : 'fewest shared-vocabulary connections of the set'}): ${d1.oddOneOut.join(', ') || '(none)'}`);
 
-  // ── D2-D4 REPLACED: SURVEY THE ASK -- enumerate denotations, do not collapse (E-SURVEY-ASK) ──
+  // ── D1.5: FIELD GATE (E-FIELD-GATE) -- ask what field the term is in, eliminate by vocabulary ──
+  // D-BP150-017. The Founder's own qid 85 proof: "Where did we ask Google, in survey, what field
+  // this was in? ... it would eliminate the other 3 ... by elimination, what it HAS to be." See
+  // field_gate.ts's header for the full procedure. Runs BEFORE D2/surveyAsk so a single surviving
+  // field can scope the survey query; runs again AFTER surveyAsk (below) at the fold level, inside
+  // whatever field survived, on the denotations surveyAsk actually found.
+  say('D1.5  FIELD GATE -- ask what field the term is in, eliminate by co-occurring vocabulary (E-FIELD-GATE, wired D-BP150-017)');
+  const term = extractBareTerm(input.question);
+  note(`   term: "${term}"`);
+  const fieldResult = await fieldGate(term, input.question, OPT, ctx);
+  note(`   ${fieldResult.why}`);
+
+  // ── D2: SURVEY THE ASK -- enumerate denotations, do not collapse (E-SURVEY-ASK) ──
   // D-BP150-016, see this file's header for the qid 85 failure this closes. Term extraction off
   // the definitional cue phrase stays here (mechanical, code -- E-CATALYST-WORDS/D2's own job);
   // surveyAsk() takes the extracted term and does its OWN Google queries ("define <term>" and
   // "other meanings of <term>"), emitting every verified denotation to the transcript itself, on
-  // its own line, sourced -- that visibility is half the deliverable, per this ticket.
-  say('D2  SURVEY THE ASK -- enumerate denotations, do not collapse (E-SURVEY-ASK, wired D-BP150-016)');
-  const term = extractBareTerm(input.question);
-  note(`   term: "${term}"`);
-  const survey = await surveyAsk(term, ctx);
+  // its own line, sourced -- that visibility is half the deliverable, per this ticket. STEP 3 of
+  // the field gate: when field elimination left exactly one survivor, the survey is scoped to it
+  // ("<term> in <field>"); otherwise (zero or multiple survivors) the term stays unconstrained --
+  // narrowing only happens when it is unambiguous.
+  say(`D2  SURVEY THE ASK -- enumerate denotations, do not collapse (E-SURVEY-ASK, wired D-BP150-016)${fieldResult.scopedTerm !== term ? ` -- scoped to "${fieldResult.scopedTerm}" by the field gate` : ''}`);
+  note(`   term: "${fieldResult.scopedTerm}"`);
+  const survey = await surveyAsk(fieldResult.scopedTerm, ctx);
+
+  // ── D2.5: drop any already-surveyed denotation whose source-stated register names a field the
+  // field gate ELIMINATED, then run the SAME elimination one level down, at the FOLD level, inside
+  // whatever field survived -- "THEN APPLY THE SAME ELIMINATION AT THE FOLD LEVEL", per this
+  // ticket. Never picks a single surviving fold; see field_gate.ts's foldGate() header.
+  const { kept: foldableDenotations, dropped: droppedDenotations } = dropDenotationsByEliminatedFields(survey.denotations, fieldResult);
+  if (droppedDenotations.length) {
+    say(`D2.5  DROP DENOTATIONS FROM ELIMINATED FIELDS -- ${droppedDenotations.length} dropped, ${foldableDenotations.length} kept`);
+    for (const { denotation, why } of droppedDenotations) {
+      note(`   dropped "${denotation.sentence}" -- ${why}`);
+    }
+  }
+  say('D2.6  FOLD GATE -- same elimination, one level down, inside the surviving field (E-FIELD-GATE, fold form)');
+  const foldResult = foldGate(
+    foldableDenotations,
+    term,
+    input.question,
+    OPT,
+    fieldResult.decision === 'ONE_SURVIVOR' ? fieldResult.survivors[0].name : 'unconstrained (field gate did not narrow to one)',
+  );
+  note(`   ${foldResult.why}`);
 
   // ── D5: match on sense (E-MATCH-UP) -- DO NOT FAKE THIS. Honest abstain. ──
+  // D-BP150-017 HARD GUARD: the field gate and fold gate above narrow candidate FIELDS and FOLDS
+  // (senses); neither ever narrows to an OPTION letter. Even when foldGate() leaves exactly one
+  // surviving fold, D5 -- matching that surviving sense to one of the ten OPTIONS -- remains
+  // unimplemented on purpose. Adding that step here would be E-MATCH-UP smuggled in under a
+  // different name, and canon still marks E-MATCH-UP UNSOLVED.
   say('D5  MATCH ON SENSE -- NOT IMPLEMENTED, HONEST ABSTAIN (E-MATCH-UP is UNSOLVED per canon)');
   note('   no bigram overlap, no embedding distance, no forced pick, no "here are the options, pick one"');
   note('   measured this session: a bigram scorer gave all ten of qid 46\'s options an identical 0.35; a narrow YES/NO to the local model scored 1 of 4 and flipped its own answer at temperature 0');
   note(`   surviving candidate pool: ${pool.join(', ')}`);
+  note(`   field gate [${fieldResult.decision}]: ${fieldResult.why}`);
+  note(`   fold gate [${foldResult.decision}]: ${foldResult.why}`);
   if (survey.denotations.length) {
     note(`   ${survey.denotations.length} surveyed denotation(s) carried forward, UNRESOLVED -- comparing these against the options is E-MATCH-UP, not run here:`);
     survey.denotations.forEach((d, i) => {
-      note(`      denotation ${i + 1} [${d.aspect.aspect}${d.register ? `, register: ${d.register}` : ', register: unstated'}]: "${d.sentence}" (${d.sourceUrl || d.sourceTitle || 'source unknown'})`);
+      // Matched by sentence, not index -- foldResult.outcomes is built from foldableDenotations,
+      // which is survey.denotations MINUS anything D2.5 dropped, so the two arrays can diverge.
+      const foldOutcome = foldResult.outcomes.find((o) => o.candidate.sentence === d.sentence);
+      const wasDropped = droppedDenotations.some((dd) => dd.denotation.sentence === d.sentence);
+      const foldNote = foldOutcome
+        ? `, fold gate: ${foldOutcome.survives ? 'SURVIVES' : 'ELIMINATED'} (${foldOutcome.why})`
+        : wasDropped ? ', fold gate: DROPPED before fold gate ran (register belonged to an eliminated field)' : '';
+      note(`      denotation ${i + 1} [${d.aspect.aspect}${d.register ? `, register: ${d.register}` : ', register: unstated'}]: "${d.sentence}" (${d.sourceUrl || d.sourceTitle || 'source unknown'})${foldNote}`);
     });
   } else {
     note('   survey found no verifiable denotation to carry forward -- an honest empty result, not a fabrication');
@@ -286,7 +345,10 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   );
   const basisParts = [
     `D1 clustered ${Object.keys(survivingOPT).length} options (odd one out: ${d1.oddOneOut.join(', ') || 'none'})`,
-    `D2 surveyed "${term}" via E-SURVEY-ASK (does not collapse): ${survey.denotations.length} denotation(s) found, ${survey.discarded.length} block(s) discarded`,
+    `D1.5 FIELD GATE [${fieldResult.decision}]: ${fieldResult.why}`,
+    `D2 surveyed "${fieldResult.scopedTerm}" via E-SURVEY-ASK (does not collapse): ${survey.denotations.length} denotation(s) found, ${survey.discarded.length} block(s) discarded`,
+    ...(droppedDenotations.length ? [`D2.5 dropped ${droppedDenotations.length} denotation(s) whose register belonged to an eliminated field`] : []),
+    `D2.6 FOLD GATE [${foldResult.decision}]: ${foldResult.why}`,
     ...denotationBasisParts,
     'D5 sense-matching (E-MATCH-UP) not implemented -- deliberate honest abstain per the BP149 teaching, HARDWIRE-22 and canon (E-MATCH-UP UNSOLVED)',
   ];
