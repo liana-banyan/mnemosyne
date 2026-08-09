@@ -54,6 +54,7 @@ import { avgOptionWordCount, registerMethod } from '../method_registry';
 import type { LianaMethod, MethodQuestionInput, MethodRunContext, ShapeTestResult } from '../method_registry';
 import type { LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
 import {
+  appearsIn,
   extractAssertedMentions,
   googleBlocks,
   HIGH_WORDS,
@@ -278,13 +279,48 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   // the definitional cue phrase stays here (mechanical, code -- E-CATALYST-WORDS/D2's own job);
   // surveyAsk() takes the extracted term and does its OWN Google queries ("define <term>" and
   // "other meanings of <term>"), emitting every verified denotation to the transcript itself, on
-  // its own line, sourced -- that visibility is half the deliverable, per this ticket. STEP 3 of
-  // the field gate: when field elimination left exactly one survivor, the survey is scoped to it
-  // ("<term> in <field>"); otherwise (zero or multiple survivors) the term stays unconstrained --
-  // narrowing only happens when it is unambiguous.
-  say(`D2  SURVEY THE ASK -- enumerate denotations, do not collapse (E-SURVEY-ASK, wired D-BP150-016)${fieldResult.scopedTerm !== term ? ` -- scoped to "${fieldResult.scopedTerm}" by the field gate` : ''}`);
-  note(`   term: "${fieldResult.scopedTerm}"`);
-  const survey = await surveyAsk(fieldResult.scopedTerm, ctx);
+  // its own line, sourced -- that visibility is half the deliverable, per this ticket.
+  //
+  // D-BP150-018 (B): SCOPED, PLURAL. Measured on qid 85 (this ticket's governing evidence): when
+  // the field gate leaves MULTIPLE survivors (its ordinary case, not the rare ONE_SURVIVOR case),
+  // the old wiring left the survey term completely unconstrained and the SAMPLING register never
+  // got a scoped query at all. Every survivor the field gate reports now gets its own "<term> in
+  // <field>" query -- scoped like D3 was, across every survivor instead of one guess. Nothing here
+  // picks a field; `fieldResult.survivors` can be any length, including 0 (unconstrained, define/
+  // other-meanings only) or many (one scoped query each).
+  //
+  // D-BP150-018 (C): STAGE 1'S HAUL, REUSED. Stage 1 ("ask the inverse", above) already fetched
+  // Google blocks that may state a denotation of `term` -- Survey never saw them before this
+  // ticket because it only ran its own two queries. Reused here at zero extra Google cost, minus
+  // any block that reproduces one of THIS question's own options verbatim (answer-key
+  // contamination -- see stage1BlocksForSurvey below), through the identical verification
+  // extractDenotationFromBlock()/appearsIn() every other denotation gets.
+  const scopeFieldNames = fieldResult.survivors.map((s) => s.name);
+  const stage1BlocksForSurvey: typeof res1.blocks = [];
+  if (res1.ok) {
+    for (const block of res1.blocks) {
+      const passage = [block.title, block.body].filter(Boolean).join(' -- ');
+      const contaminatingOption = Object.entries(OPT).find(([, optText]) => appearsIn(passage, optText));
+      if (contaminatingOption) {
+        note(`   excluding Stage 1 block [${block.url || block.title || '(no url)'}] from Survey reuse -- reproduces option ${contaminatingOption[0]}'s text verbatim (answer-key contamination)`);
+        continue;
+      }
+      stage1BlocksForSurvey.push(block);
+    }
+  }
+  say(
+    `D2  SURVEY THE ASK -- enumerate denotations, do not collapse (E-SURVEY-ASK, wired D-BP150-016; `
+      + `scoped-plural + Stage-1 reuse, D-BP150-018)`
+      + (scopeFieldNames.length ? ` -- scoped to ${scopeFieldNames.length} surviving field(s): ${scopeFieldNames.join(', ')}` : ' -- no surviving field, unconstrained')
+      + (stage1BlocksForSurvey.length ? `; reusing ${stage1BlocksForSurvey.length} Stage 1 block(s)` : ''),
+  );
+  note(`   term: "${term}"`);
+  const survey = await surveyAsk(term, ctx, {
+    scopeFields: scopeFieldNames,
+    extraBlockSources: stage1BlocksForSurvey.length
+      ? [{ query: `STAGE 1 reused (ask the inverse): ${q1Text}`, blocks: stage1BlocksForSurvey }]
+      : [],
+  });
 
   // ── D2.5: drop any already-surveyed denotation whose source-stated register names a field the
   // field gate ELIMINATED, then run the SAME elimination one level down, at the FOLD level, inside
@@ -346,7 +382,7 @@ async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<L
   const basisParts = [
     `D1 clustered ${Object.keys(survivingOPT).length} options (odd one out: ${d1.oddOneOut.join(', ') || 'none'})`,
     `D1.5 FIELD GATE [${fieldResult.decision}]: ${fieldResult.why}`,
-    `D2 surveyed "${fieldResult.scopedTerm}" via E-SURVEY-ASK (does not collapse): ${survey.denotations.length} denotation(s) found, ${survey.discarded.length} block(s) discarded`,
+    `D2 surveyed "${term}" via E-SURVEY-ASK (does not collapse), scoped to ${scopeFieldNames.length} field(s) [${scopeFieldNames.join(', ') || 'none'}] plus ${survey.reusedSources.length} reused Stage-1 source(s) (D-BP150-018): ${survey.denotations.length} denotation(s) found, ${survey.discarded.length} block(s) discarded`,
     ...(droppedDenotations.length ? [`D2.5 dropped ${droppedDenotations.length} denotation(s) whose register belonged to an eliminated field`] : []),
     `D2.6 FOLD GATE [${foldResult.decision}]: ${foldResult.why}`,
     ...denotationBasisParts,

@@ -68,6 +68,15 @@
 import { appearsIn, gemmaExtract, googleBlocks, norm } from '../methods/comparative_cascade';
 import type { MethodRunContext } from '../method_registry';
 import type { SurveyDenotation } from './survey_ask';
+// D-BP150-018 -- THE FIELD GATE'S OWN QUESTION WAS UNSCOPED. Measured on qid 85 (this ticket's
+// governing evidence): "what field is bias in" and "what subject or field does bias belong to"
+// are BOTH bare-term queries against a common English word, so Google returned pages about the
+// EVERYDAY sense (types of bias -- "Name bias", "Study Bias", "confirmation bias") and the word
+// "statistics" never entered any candidate set. findCatalystWords() (elements/catalyst_words.ts,
+// D-BP150-004) already computes the register signal the Founder pointed at directly -- the
+// question's OWN answer set states it ("sample / population / representative / randomization /
+// estimates" for qid 85). Reused here, not reimplemented -- see deriveOptionVocabWords() below.
+import { findCatalystWords } from './catalyst_words';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -187,14 +196,59 @@ function decide(survivorCount: number, candidateCount: number): GateDecision {
 
 // ─────────────────────────── STEP 1 -- ASK the field, Google, plain words ───────────────────────────
 
-/** Two plain-words phrasings of the Founder's own question ("what field is it in?"), the same
- *  two-angle pattern survey_ask.ts's defineQuery()/otherMeaningsQuery() already use to surface
- *  more than one source block per term. */
-function fieldQueries(term: string): string[] {
-  return [
+/** D-BP150-018 FIX (A). The option set's OWN discriminating vocabulary, via findCatalystWords()
+ *  (elements/catalyst_words.ts) -- mechanical, no domain word list authored here, exactly the
+ *  discipline this file's own header already requires ("no hand-tuning, no domain word list
+ *  authored here"). This is the register signal the Founder pointed at in his own qid 85 proof:
+ *  the question's ANSWER SET states the register, so asking Google what field uses THAT
+ *  vocabulary returns pages about the technical register instead of the bare word's everyday
+ *  sense. `universal` words (shared by every option) lead, because a word every option shares is
+ *  the strongest single signal of the set's shared subject; the remaining catalyst words are
+ *  ordered MOST-SHARED-FIRST (not most-discriminating-first) -- a word one option alone uses
+ *  (e.g. "beliefs") describes that one option, not the field the whole set sits in. Bounded to
+ *  FIELD_VOCAB_QUERY_MAX_WORDS so the query stays a plausible Google search string, not a word
+ *  dump; the bound does not change WHICH words are chosen, only how many of the already-ordered
+ *  list are sent, same discipline survey_answers.ts's own maxCatalystWordsPerOption documents. */
+const FIELD_VOCAB_QUERY_MAX_WORDS = 8;
+
+function deriveOptionVocabWords(options: Record<string, string> | null, term: string): string[] {
+  if (!options || Object.keys(options).length < 2) return [];
+  const { catalysts, universal } = findCatalystWords(options);
+  const termWords = significantWords(term);
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const w of universal) {
+    if (termWords.has(w) || seen.has(w)) continue;
+    seen.add(w);
+    ordered.push(w);
+  }
+  const byShareDesc = [...catalysts].sort((a, b) => b.count - a.count || a.word.localeCompare(b.word));
+  for (const c of byShareDesc) {
+    if (termWords.has(c.word) || seen.has(c.word)) continue;
+    seen.add(c.word);
+    ordered.push(c.word);
+  }
+  return ordered.slice(0, FIELD_VOCAB_QUERY_MAX_WORDS);
+}
+
+/** STEP 1's queries. The original two plain-words phrasings of the Founder's own question ("what
+ *  field is it in?") are KEPT -- they still run and still contribute candidates, `askFields()`
+ *  unions everything every query finds. D-BP150-018 ADDS a third: when the option set supplies
+ *  discriminating vocabulary (`vocabWords`), a query built from THAT vocabulary rather than the
+ *  bare term -- "what field or subject studies <vocab words>" -- because the bare-term queries
+ *  measured on qid 85 both returned pages about the everyday sense of a common English word
+ *  ("bias" the personal-prejudice sense) and never surfaced the technical register at all. Adding
+ *  a query only ever grows the candidate set that STEP 2's elimination then filters; it cannot
+ *  remove anything a caller previously found. */
+function fieldQueries(term: string, vocabWords: string[]): string[] {
+  const queries = [
     `what field is "${term}" in`,
     `what subject or field does "${term}" belong to`,
   ];
+  if (vocabWords.length) {
+    queries.push(`what field or subject studies ${vocabWords.join(' ')}`);
+  }
+  return queries;
 }
 
 export interface FieldCandidate {
@@ -218,17 +272,24 @@ export interface FieldDiscardedBlock {
 
 /** STEP 1. Asks Google directly what field(s) `term` belongs to and extracts every verified field
  *  name. Never picks one -- returns everything found, verified, unranked, exactly survey_ask.ts's
- *  own discipline for denotations. */
+ *  own discipline for denotations. `options`, when supplied, is used ONLY to derive the extra
+ *  vocabulary-scoped query (D-BP150-018 FIX A, `deriveOptionVocabWords()` above) -- the
+ *  elimination arithmetic below this function is unchanged. */
 export async function askFields(
   term: string,
   ctx: MethodRunContext,
+  options: Record<string, string> | null = null,
 ): Promise<{ queries: string[]; candidates: FieldCandidate[]; discarded: FieldDiscardedBlock[] }> {
   const { askGoogle, emit } = ctx;
   const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
   const fact = (text: string) => emit({ kind: 'fact', text: `+ ${text}`, ts: nowIso() });
   const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
 
-  const queries = fieldQueries(term);
+  const vocabWords = deriveOptionVocabWords(options, term);
+  if (vocabWords.length) {
+    note(`   option-set vocabulary (findCatalystWords(), most-shared first): ${vocabWords.join(', ')}`);
+  }
+  const queries = fieldQueries(term, vocabWords);
   const byName = new Map<string, FieldCandidate>();
   const discarded: FieldDiscardedBlock[] = [];
 
@@ -334,7 +395,7 @@ export async function fieldGate(
 
   say(`E-FIELD-GATE -- what field is "${term}" in, and what does that eliminate?`);
 
-  const { queries, candidates, discarded } = await askFields(term, ctx);
+  const { queries, candidates, discarded } = await askFields(term, ctx, options);
 
   if (!candidates.length) {
     const why = `no verifiable field/subject name found for "${term}" across ${queries.length} quer(y/ies) `
