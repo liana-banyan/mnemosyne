@@ -270,7 +270,7 @@ import { runLianaCycleQuestion } from './liana_cycle/liana_terminal_engine';
 import type { AudibleChannel } from './liana_cycle/audible';
 // D-BP150-002 -- reading the operator's already-written teaching notes back into a live pause.
 import { listTeachingFiles } from './liana_cycle/teaching_notes';
-import type { LianaAudibleResponse } from '../shared/liana_cycle/liana_terminal_types';
+import type { LianaAudibleResponse, LianaTerminalEvent } from '../shared/liana_cycle/liana_terminal_types';
 import { _paths as YOKE_PATHS } from './resident/yoke_watcher';
 // BP037 ? On-Deck Master-of-Ceremonies
 import { listOnDeck } from './on_deck/on_deck_bridge';
@@ -3480,12 +3480,32 @@ function registerIPCHandlers(): void {
         }
       : null;
 
+    // D-BP150-015 -- EVERY RUN IS PERSISTED, ESPECIALLY THE ONES THAT WORK.
+    //
+    // Founder, BP150: "Then write it so that all of that is saved, especially when it works."
+    //
+    // Until this, a run left exactly one line in a beat file: the verdict. The stage-by-stage
+    // transcript -- every query sent, every fact returned, every elimination and its reason --
+    // existed ONLY in the renderer's memory. Close the window and the evidence was gone.
+    //
+    // That bit at BP150. qid 98 answered A with basis "lowest densely populated among survivors,
+    // 38.0x clear of the runner-up" -- the hard-number branch, which proves stages 3/4/5 returned
+    // data for the first time since BP146. The proof of that was one sentence in a chat window.
+    //
+    // Worse, it was ASYMMETRIC: Audit the Run only offered itself on an abstain, so a FAILED run
+    // could be walked and written to disk while a SUCCESSFUL one could not. The estate kept its
+    // failures and discarded its successes.
+    const events: LianaTerminalEvent[] = [];
+
     let outcome;
     try {
       outcome = await runLianaCycleQuestion(
         input,
         (question) => runBrowserAuthorityQueryFromMain({ question, authority: 'user_google' }),
-        (evt) => { try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ } },
+        (evt) => {
+          events.push(evt);
+          try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ }
+        },
         channel,
       );
     } finally {
@@ -3507,6 +3527,43 @@ function registerIPCHandlers(): void {
     } catch (e) {
       console.warn('[liana-terminal] heartbeat write failed (non-fatal):', e);
     }
+
+    // D-BP150-015: the full receipt. Written for EVERY run, resolved or abstained, so a result
+    // never again exists only in a window. Non-fatal by construction -- the answer was already
+    // produced and the beat already written; a failed receipt must not turn a good run into an
+    // error. Carries the verbatim event transcript, which is the only place the per-stage queries,
+    // returned facts and elimination reasons are recorded.
+    try {
+      const runsDir = join(YOKE_PATHS.HEARTBEAT_DIR, '..', 'LIANA_RUNS');
+      mkdirSync(runsDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const slug = outcome.qid != null ? `qid${outcome.qid}` : 'free-text';
+      const receipt = {
+        schema: 'liana-run-receipt/1',
+        writtenAt: new Date().toISOString(),
+        input,
+        qid: outcome.qid ?? null,
+        question: outcome.question,
+        options: outcome.options ?? null,
+        method: outcome.method ?? null,
+        verdict: outcome.verdict,
+        correct: outcome.correct ?? null,
+        ok: outcome.ok ?? null,
+        abstain: outcome.abstain,
+        basis: outcome.basis ?? null,
+        error: outcome.error ?? null,
+        audibleMode: Boolean(audible),
+        audibleLog: outcome.audibleLog ?? null,
+        eventCount: events.length,
+        transcript: events,
+      };
+      const rp = join(runsDir, `LIANA_RUN_${slug}_${stamp}.json`);
+      writeFileSync(rp, JSON.stringify(receipt, null, 2), 'utf8');
+      console.log(`[liana-terminal] receipt written: ${rp} (${events.length} events)`);
+    } catch (e) {
+      console.warn('[liana-terminal] receipt write failed (non-fatal, the answer and beat stand):', e);
+    }
+
     return outcome;
   });
 
