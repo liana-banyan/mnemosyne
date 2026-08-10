@@ -18,6 +18,9 @@ import { SubstrateAwakensJoinPanel } from './SubstrateAwakensJoinPanel';
 // component's file header for the full Bishop-audit rationale.
 import { NexusAuthoritySettings } from '../settings/NexusAuthoritySettings';
 import { NexusAuthoritySignInPanel } from '../settings/NexusAuthoritySignInPanel';
+// D-BP151-037/BISHOP/seg-query-capture-archive -- new section, self-contained (own state,
+// own IPC calls), same mounting convention as NexusAuthoritySettings above.
+import { QueryCaptureArchivePanel } from './QueryCaptureArchivePanel';
 
 interface SettingsTabProps {
   authState: AuthState | null;
@@ -1593,6 +1596,10 @@ export function SettingsTab({
 
       {/* BP137 0.9.12 Stage F1: Authorities (Nexus) sign-in panel — new section, self-contained */}
       <NexusAuthoritySignInPanel />
+
+      {/* D-BP151-037/BISHOP/seg-query-capture-archive: Query Capture Archive — new section,
+          self-contained (the consent switch + three-act list live entirely inside it). */}
+      <QueryCaptureArchivePanel />
 
       {/* Card 2: AI Capability (SEG-R-2) */}
       <section

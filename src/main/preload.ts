@@ -1310,6 +1310,24 @@ contextBridge.exposeInMainWorld('amplify', {
     }> => ipcRenderer.invoke('ai-dispatch:answer-cache-meter-summary'),
   },
 
+  // ── Query Capture Archive (D-BP151-037/BISHOP/seg-query-capture-archive) ──
+  // Local-only, same-machine, same-user IPC. Never reaches federation/relay code -- see
+  // query_capture_ipc.ts's own header for why that boundary is deliberate.
+  queryCapture: {
+    getEnabled: (): Promise<{ ok: boolean; enabled?: boolean; error?: string }> =>
+      ipcRenderer.invoke('query-capture:get-enabled'),
+    setEnabled: (enabled: boolean): Promise<{ ok: boolean; enabled?: boolean; error?: string }> =>
+      ipcRenderer.invoke('query-capture:set-enabled', enabled),
+    list: (status?: 'active' | 'cleared' | 'archived'): Promise<{ ok: boolean; entries?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('query-capture:list', status),
+    find: (searchText: string): Promise<{ ok: boolean; entries?: unknown[]; error?: string }> =>
+      ipcRenderer.invoke('query-capture:find', searchText),
+    setStatus: (id: string, status: 'active' | 'cleared' | 'archived'): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('query-capture:set-status', id, status),
+    remove: (id: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('query-capture:delete', id),
+  },
+
   // ── BP087 Brain Registry (Brain Swap) ────────────────────────────────────
   brainRegistry: {
     list: (): Promise<{ ok: boolean; brains?: unknown[]; active_brain_id?: string; error?: string }> =>

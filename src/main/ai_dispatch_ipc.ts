@@ -22,6 +22,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { app } from 'electron';
 import { FLOOR_MODEL } from '../shared/floor-model';
+// D-BP151-037/BISHOP/seg-query-capture-archive
+import { captureQuery } from './query_capture/query_capture_store';
 import {
   queryEbletStore,
   queryVerifiedEblets,
@@ -656,6 +658,22 @@ export function registerAiDispatchIPC(): void {
       // with the user's live Ask for the shared Ollama daemon). Renewed again at every
       // streamed token below; cleared at each of this handler's completion points.
       markAppBusy();
+
+      // D-BP151-037/BISHOP/seg-query-capture-archive: capture the query the Founder just
+      // composed and sent, so it can be found again without retyping it (the felt problem
+      // this ticket exists to fix). Fire-and-forget, non-blocking, never throws into the real
+      // Ask flow below: captureQuery() checks the Substrate Processing switch first
+      // (query_capture_settings.ts) and writes nothing at all when it is off (the default).
+      // Captures the LAST user-role message only -- this handler's `messages` array is a
+      // single fresh turn per KN-BP144-8's own scope-limit comment further down this file
+      // ("the engine takes a single free-text question, not this tab's multi-turn history"),
+      // so the last user message IS this turn's composed query.
+      try {
+        const lastUserMsg = [...args.messages].reverse().find((m) => m.role === 'user');
+        if (lastUserMsg?.content) {
+          captureQuery({ question: lastUserMsg.content, source: 'ask_tab' });
+        }
+      } catch { /* never blocks the real Ask flow */ }
       // BP136 Yoke: query-start timestamp for the meter's latency_ms across every routing
       // branch (served_verbatim / rag / local_generate / flagship).
       const tQueryStart = Date.now();
