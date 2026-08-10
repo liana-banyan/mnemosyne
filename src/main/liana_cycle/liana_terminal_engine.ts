@@ -407,7 +407,16 @@ export async function runLianaCycleQuestion(
     if (steppedAudible) {
       note(emitStep0, '   STEPPED AUDIBLE is ON -- this run stops at STEP 0, before any query is issued, so you can see the question and its state before anything else happens. It waits until you respond; there is no timer.');
     }
-    await requestStepZeroPause(steppedAudible ?? null, steppedLog, step0Events);
+    // D-BP152-021/BISHOP/seg-ask-google-this -- `askGoogle` (the raw, unwrapped injected
+    // function -- the SAME channel every method call and Survey call already resolves to; Call an
+    // Audible's per-call wrapper is applied later, only around the selected method's own context,
+    // and is irrelevant here since Step 0 precedes method selection entirely), `emit` (so an
+    // ask_google exchange reaches the SAME live transcript/receipt every other line already does),
+    // and `parsed.options` (Step 0's own option pool, for the FD-BP152-15 contamination flag) are
+    // all additive -- see requestStepZeroPause()'s own doc comment for why none of the three is
+    // ever touched on the `steppedAudible == null` no-op path or on a run that never types
+    // `ask_google`.
+    await requestStepZeroPause(steppedAudible ?? null, steppedLog, step0Events, askGoogle, emit, parsed.options);
 
     // D-BP151-026 (Contingency Operator: Survey Splice). OFF (the default -- see
     // isContingencyOperatorSurveySpliceEnabled() above) takes the `else` branch immediately below,

@@ -1215,7 +1215,9 @@ export function LianaCycleTab() {
               )}
 
               <label style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif' }}>
-                Your response or correction (recorded verbatim as the authority record; blank is fine)
+                {activeSteppedPause.step.key === 'step0'
+                  ? 'Your response or correction, OR a query for "Send to Google" below (recorded/sent verbatim; blank is fine)'
+                  : 'Your response or correction (recorded verbatim as the authority record; blank is fine)'}
               </label>
               <textarea
                 ref={steppedResponseRef}
@@ -1233,6 +1235,28 @@ export function LianaCycleTab() {
                   whiteSpace: 'pre-wrap', overflowWrap: 'break-word', lineHeight: 1.5,
                 }}
               />
+
+              {/* D-BP152-021/BISHOP/seg-ask-google-this -- ATTRIBUTED, FD-BP152-15. ONLY shown at
+                  the Step 0 pause (`step.key === 'step0'`) -- this is the one pause
+                  requestStepZeroPause() (stepped_audible.ts) actually executes 'ask_google' at.
+                  Showing this button anywhere else would be exactly the defect class the Founder
+                  named at BP148: "A button that looks like it steers and only annotates." The box
+                  above is sent VERBATIM -- nothing here trims, templates, or rewrites it; that
+                  happens once, centrally, in requestStepZeroPause() (whitespace at the ends only). */}
+              {activeSteppedPause.step.key === 'step0' && (
+                <button
+                  type="button"
+                  onClick={() => void answerSteppedPause('ask_google')}
+                  disabled={steppedAnswering}
+                  style={{
+                    background: 'none', border: '1px solid #38bdf8', borderRadius: 6,
+                    color: steppedAnswering ? '#334155' : '#7dd3fc', padding: '8px 10px', fontSize: 13, fontWeight: 700,
+                    cursor: steppedAnswering ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+                  }}
+                >
+                  Send to Google — sends the box above verbatim, pauses again with the raw response
+                </button>
+              )}
 
               <button
                 type="button"
@@ -1284,9 +1308,15 @@ export function LianaCycleTab() {
                 End the run
               </button>
               <div style={{ fontSize: 10, color: '#475569', fontFamily: 'system-ui, sans-serif' }}>
-                None of these four buttons change what the method already did or does next — this
-                panel only observes and records (HARDWIRE-23). Ending keeps every response typed so
-                far.
+                {activeSteppedPause.step.key === 'step0'
+                  ? 'Approve / Correct / Redirect / End the run change nothing about what the method '
+                    + 'already did or does next — this panel only observes and records (HARDWIRE-23). '
+                    + 'Send to Google is the one exception (D-BP152-021, FD-BP152-15): it sends the box '
+                    + 'above to Google, verbatim, and pauses again with the raw response. Ending keeps '
+                    + 'every response typed so far, including every Send to Google exchange.'
+                  : 'None of these four buttons change what the method already did or does next — this '
+                    + 'panel only observes and records (HARDWIRE-23). Ending keeps every response typed so '
+                    + 'far.'}
               </div>
             </div>
           </>

@@ -402,18 +402,32 @@ export interface LianaSteppedPause {
 }
 
 /** What the operator can do at a step pause. Per HARDWIRE-23 ("this build adds no decision
- *  rule"), NONE of these change what the method already did or will do next -- see
- *  stepped_audible.ts's own header. `approve`/`correct`/`redirect` are recorded verbatim as the
- *  authority record for whatever gets BUILT from this later (requirement E); `abandon` is the one
- *  action with a real effect -- it stops the walk from advancing further, same "keeps every note"
- *  guarantee as LianaAudibleAction's `abandon`. */
-export type LianaSteppedAction = 'approve' | 'correct' | 'redirect' | 'abandon';
+ *  rule"), `approve`/`correct`/`redirect` are recorded verbatim as the authority record for
+ *  whatever gets BUILT from this later (requirement E) and change NOTHING about what the method
+ *  already did or will do next -- see stepped_audible.ts's own header. `abandon` is the one of
+ *  the original four with a real effect -- it stops the walk from advancing further, same "keeps
+ *  every note" guarantee as LianaAudibleAction's `abandon`.
+ *
+ *  `ask_google` -- D-BP152-021/BISHOP/seg-ask-google-this, ATTRIBUTED to `FD-BP152-15` (Founder,
+ *  BP152, typed verbatim at a live Step 0 pause: "Send this query to Google and return the
+ *  response: ..."). The one action that EXECUTES rather than only records: `text` (below) is sent
+ *  to Google VERBATIM, through the existing `askGoogle` channel, and the pause fires AGAIN with
+ *  the raw response as state -- see requestStepZeroPause() (stepped_audible.ts) for the loop.
+ *  Lawful under HARDWIRE-22 because `text` is a PARAMETER to an existing primitive ("ask Google
+ *  this"), never a free-form instruction construed into behavior -- FD-BP152-15's own test:
+ *  "could a reader holding the typed text and the machine's action verify the action was right,
+ *  by looking?" Yes, for "send exactly this text". EPHEMERAL by default (`FD-BP152-07`) -- `keep`
+ *  is Founder-ruled OUT OF SCOPE for this action and is not built here. */
+export type LianaSteppedAction = 'approve' | 'correct' | 'redirect' | 'abandon' | 'ask_google';
 
 /** The operator's answer to one step pause. */
 export interface LianaSteppedResponse {
   pauseId: string;
   action: LianaSteppedAction;
-  /** VERBATIM. Never parsed, normalized, re-templated, or acted on automatically. */
+  /** VERBATIM. Never parsed, normalized, re-templated, or acted on automatically -- EXCEPT
+   *  `action === 'ask_google'`, where this IS the query and is sent to Google after trimming only
+   *  the whitespace at its very ends (no templating, no prefix/suffix, no reformatting -- see
+   *  requestStepZeroPause(), stepped_audible.ts). */
   text?: string;
 }
 
