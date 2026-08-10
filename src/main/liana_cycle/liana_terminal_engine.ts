@@ -39,7 +39,7 @@ import type { LianaTerminalEvent, LianaTerminalOutcome } from '../../shared/lian
 import { explainSelection, listMethods, selectMethod } from './method_registry';
 // D-BP150-003 -- the Demand Test. Runs before method selection; see its own header for exactly
 // which half of the canon it implements and which half is still a scaffold.
-import { describeDemand, determineDemand, determineDemandFromAmbiguityNested, determineDemandFromSurveyedAsk } from './demand_test';
+import { describeDemand, determineDemand, determineDemandFromAmbiguityNested, determineDemandFromOperationAnswer, determineDemandFromSurveyedAsk } from './demand_test';
 import type { DemandResult } from './demand_test';
 import type { AskGoogleFn, EmitFn, MethodQuestionInput, MethodRunContext } from './method_registry';
 // D-BP151-026/BISHOP/seg-contingency-operator (Contingency Operator: Survey Splice). Founder,
@@ -328,37 +328,61 @@ export async function runLianaCycleQuestion(
           throw e;
         }
       }
-      // PART 2: demand comes from the surveyed ask, WIRED not rewritten. Step 2's own output
-      // (SurveyAskNestedResult) is exactly determineDemandFromSurveyedAsk()'s expected input
-      // (demand_test.ts). D-BP151-032: when Step 2 took the NO-TERM/ambiguity path instead
-      // (step2.nested stays null there BY DESIGN -- see survey_stage.ts's own doc comment on that
-      // field), step2.ambiguityNested carries one nested survey per source-named term; that is fed
-      // to determineDemandFromAmbiguityNested() (demand_test.ts), which itself calls
+      // D-BP152-005, PART 2 -- the operation query (FD-BP152-05) is the DIRECT signal for exactly
+      // this value: Founder, BP152, verbatim, quoted at askOperation()'s own header
+      // (survey_stage.ts). Computed once, here, so demandPath and demandResult below never call
+      // determineDemandFromOperationAnswer() twice. Tried BEFORE the indirect ambiguityNested
+      // derivation, since determineDemandFromAmbiguityNested()'s own header already says
+      // RANK/CLASSIFY/IDENTIFY/INFER are "NOT YET DERIVABLE" from that path alone -- operation
+      // asks for the demand directly; ambiguityNested infers it from denotations of OTHER terms.
+      // Canon R-5 governs the operation answer itself (demand_test.ts's own function): an
+      // unmappable or absent answer yields `demand: null`, never a guess, and never a silent fall
+      // back to determineDemand()'s CUES table -- that table is not called anywhere on this
+      // branch; a null operation result only ever falls through to the pre-existing ambiguityNested
+      // derivation, named explicitly in demandPath below.
+      const operationDemandResult = surveyResult.step2.operation
+        ? determineDemandFromOperationAnswer(surveyResult.step2.operation.rawAnswer)
+        : null;
+
+      // PART 2 (pre-existing, D-BP151-032): demand comes from the surveyed ask, WIRED not
+      // rewritten. Step 2's own output (SurveyAskNestedResult) is exactly
+      // determineDemandFromSurveyedAsk()'s expected input (demand_test.ts). When Step 2 took the
+      // NO-TERM/ambiguity path instead (step2.nested stays null there BY DESIGN -- see
+      // survey_stage.ts's own doc comment on that field), D-BP152-005's operation answer is tried
+      // first (see immediately above); only when THAT produced no demand does step2.ambiguityNested
+      // carry the fallback -- one nested survey per source-named term, fed to
+      // determineDemandFromAmbiguityNested() (demand_test.ts), which itself calls
       // determineDemandFromSurveyedAsk() -- the SAME function -- once per named term and reports
       // UNKNOWN rather than choosing among them if they disagree (that function's own header). Only
-      // when STEP 2 found NEITHER a term NOR any ambiguity-named term is there nothing to derive a
-      // demand from at all -- reported honestly as demand unknown (canon R-5: a teaching prompt,
-      // not a fabricated guess), the same refusal shape survey_stage.ts's own steps already use.
+      // when STEP 2 found NEITHER a term NOR a usable operation answer NOR any ambiguity-named term
+      // is there nothing to derive a demand from at all -- reported honestly as demand unknown
+      // (canon R-5: a teaching prompt, not a fabricated guess), the same refusal shape
+      // survey_stage.ts's own steps already use.
       //
       // LAW 5 (HARDWIRE-23): the receipt names which path produced the demand -- 'nested',
-      // 'ambiguity', or 'none' -- in the transcript line emitted immediately below, independent of
-      // demandResult.derivedFrom (which stays 'surveyed-ask' for both paths; the PATH distinction
-      // is a finer-grained fact than the derivedFrom enum currently carries).
-      const demandPath: 'nested' | 'ambiguity' | 'none' = surveyResult.step2.nested
+      // 'operation', 'ambiguity', or 'none' -- in the transcript line emitted immediately below,
+      // independent of demandResult.derivedFrom (which stays 'surveyed-ask' for all three
+      // surveyed-ask-derived paths; the PATH distinction is a finer-grained fact than the
+      // derivedFrom enum currently carries).
+      const demandPath: 'nested' | 'operation' | 'ambiguity' | 'none' = surveyResult.step2.nested
         ? 'nested'
-        : surveyResult.step2.ambiguityNested.length
-          ? 'ambiguity'
-          : 'none';
+        : operationDemandResult?.demand
+          ? 'operation'
+          : surveyResult.step2.ambiguityNested.length
+            ? 'ambiguity'
+            : 'none';
       note(emit, `   DEMAND PATH: ${demandPath} (Law 5, HARDWIRE-23 -- names which SURVEY STEP 2 result produced the demand below)`);
       demandResult = surveyResult.step2.nested
         ? determineDemandFromSurveyedAsk(surveyResult.step2.nested)
-        : surveyResult.step2.ambiguityNested.length
-          ? determineDemandFromAmbiguityNested(surveyResult.step2.ambiguityNested)
-          : {
-            demand: null,
-            why: `SURVEY STEP 2 did not resolve a term to survey (${surveyResult.step2.why}) -- nothing to derive DEMAND from via the surveyed ask; this is a teaching prompt (canon R-5), not a fabricated guess`,
-            derivedFrom: 'surveyed-ask',
-          };
+        : operationDemandResult?.demand
+          ? operationDemandResult
+          : surveyResult.step2.ambiguityNested.length
+            ? determineDemandFromAmbiguityNested(surveyResult.step2.ambiguityNested)
+            : {
+              demand: null,
+              why: `SURVEY STEP 2 did not resolve a term to survey (${surveyResult.step2.why}) -- nothing to derive DEMAND from via the surveyed ask; this is a teaching prompt (canon R-5), not a fabricated guess`,
+              derivedFrom: 'surveyed-ask',
+            };
       emit({ kind: 'stage', text: '-> DEMAND TEST (SURVEYED ASK) -- what operation must this answer perform?', ts: nowIso() });
       note(emit, `   ${describeDemand(demandResult)}`);
     } else {
