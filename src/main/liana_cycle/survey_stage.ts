@@ -555,6 +555,17 @@ If nothing in the question could reasonably be understood differently, return {"
   // (FD-BP151-08) -- sent as a single Google query, not a JSON-forcing prompt (Google is a search
   // surface, not a constrained API).
   const query = `${askText}\n\n${askedText}`;
+  // D-BP152-007, INSTRUMENT ONLY -- the exact query string about to be handed to googleBlocks(),
+  // verbatim, emitted immediately BEFORE the call so it reaches the run receipt through the same
+  // emit() mechanism D-BP152-004's passage-received instrument (below) already uses. Untruncated:
+  // D-BP152-006 refuted a bad diagnosis (LIANA_RUN_qid98_2026-08-10T04-41-30-227Z.json) that was
+  // reachable only because the sent query was invisible -- this closes that visibility gap without
+  // changing what is sent or how it is built.
+  ctx.emit({
+    kind: 'note',
+    text: `   PARSER INSTRUMENT [ambiguity] query SENT to Google (untruncated, verbatim)="${query}"`,
+    ts: nowIso(),
+  });
   const google = await googleBlocks(ctx.askGoogle, query);
   if (!google.ok || !google.text.trim()) {
     return {
@@ -746,6 +757,13 @@ Do not guess an answer to the underlying multiple-choice question itself -- name
   // transport === 'google' (the Founder-ordered default, REUSED from Part 1's already-resolved
   // value). Same shape as askAmbiguity()'s own 'google' branch.
   const query = `${askText}\n\n${askedText}`;
+  // D-BP152-007, same INSTRUMENT ONLY convention as askAmbiguity()'s own copy above -- built here,
+  // not duplicated from there, for this second call site.
+  ctx.emit({
+    kind: 'note',
+    text: `   PARSER INSTRUMENT [operation] query SENT to Google (untruncated, verbatim)="${query}"`,
+    ts: nowIso(),
+  });
   const google = await googleBlocks(ctx.askGoogle, query);
   if (!google.ok || !google.text.trim()) {
     return {
