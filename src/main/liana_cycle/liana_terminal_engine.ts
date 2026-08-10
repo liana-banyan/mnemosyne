@@ -35,7 +35,7 @@
 import fs from 'node:fs';
 import { join, resolve } from 'node:path';
 import { app } from 'electron';
-import type { LianaTerminalEvent, LianaTerminalOutcome } from '../../shared/liana_cycle/liana_terminal_types';
+import type { LianaSc01Result, LianaTerminalEvent, LianaTerminalOutcome } from '../../shared/liana_cycle/liana_terminal_types';
 import { explainSelection, listMethods, selectMethod } from './method_registry';
 // D-BP150-003 -- the Demand Test. Runs before method selection; see its own header for exactly
 // which half of the canon it implements and which half is still a scaffold.
@@ -50,6 +50,10 @@ import type { AskGoogleFn, EmitFn, MethodQuestionInput, MethodRunContext } from 
 // isContingencyOperatorSurveySpliceEnabled() below.
 import { runSurveyStage } from './survey_stage';
 import type { SurveyStageResult } from './survey_stage';
+// D-BP152-016/BISHOP/seg-sc01-wire-and-score. Scores what Survey (immediately above) already
+// produced -- no new query, no model call, no altered control flow. REUSED, not forked: this is
+// the exact scoreSc01PivotTerms() built and committed at D-BP152-015 (f66c4386), unmodified.
+import { scoreSc01PivotTerms } from './sc01_pivot_terms_scorer';
 // D-BP150-001 (Call an Audible). See audible.ts's header for why this is a decorator around the
 // injected askGoogle rather than a restructuring of the method modules.
 import { AudibleAbandoned, AudibleLog, wrapAskGoogleWithAudible } from './audible';
@@ -348,6 +352,12 @@ export async function runLianaCycleQuestion(
     // DEMAND from the surveyed ask instead.
     let demandResult: DemandResult;
     let surveyResult: SurveyStageResult | null = null;
+    // D-BP152-016. Populated (or explicitly errored) only when Survey Splice is ON below -- SC-01
+    // scores FounderStep2Result, which only Survey produces. Declared here, outside the if, so
+    // every return statement below this point can carry it forward regardless of which path the
+    // run takes afterward (demand-unknown abstain, method-not-taught abstain, or a real verdict).
+    let sc01Result: LianaSc01Result | null = null;
+    let sc01ScoringError: string | null = null;
     if (contingencyOperatorSurveyOn) {
       emit({
         kind: 'stage',
@@ -386,6 +396,36 @@ export async function runLianaCycleQuestion(
         } else {
           throw e;
         }
+      }
+      // D-BP152-016/BISHOP/seg-sc01-wire-and-score. SC-01 scores what Survey (immediately above)
+      // already produced -- no new query, no model call, control flow below this block is
+      // byte-identical whether scoring succeeds, finds nothing, or throws. GATED so a throw here
+      // can never abort the run: "A scorer that can kill a run is worse than no scorer" (dispatch).
+      // Emitted via the SAME emit()/note() mechanism every other transcript line uses, so it lands
+      // in the run receipt automatically -- no new receipt field written from here, no new file.
+      try {
+        const scored = scoreSc01PivotTerms(parsed.qid ?? -1, parsed.question, surveyResult.step2);
+        sc01Result = scored;
+        emit({ kind: 'result', text: `SC-01 (pivot terms named and defined): ${scored.why}`, ts: nowIso() });
+        for (const t of scored.terms) {
+          note(
+            emit,
+            `   SC-01 term "${t.term}": verbatimInQuestion=${t.verbatimInQuestion}, carriesTriple=${t.carriesTriple}, `
+              + `hasNamedSourceDefinition=${t.hasNamedSourceDefinition}, countsTowardStrictCount=${t.countsTowardStrictCount}`,
+          );
+          // FD-BP152-12: every distinct meaning, in full and uncollapsed -- never truncated, never
+          // reduced to a count.
+          t.enumeratedMeanings.forEach((m, i) => {
+            note(
+              emit,
+              `      meaning ${i + 1}/${t.enumeratedMeanings.length} [from ${m.fromLevel}, register: ${m.register ?? 'unstated'}, `
+                + `source: ${m.sourceTitle || m.sourceUrl || '(no named source)'}]: "${m.sentence}"`,
+            );
+          });
+        }
+      } catch (e) {
+        sc01ScoringError = e instanceof Error ? e.message : String(e);
+        emit({ kind: 'note', text: `   SC-01 SCORING ERRORED (non-fatal, run continues unaffected): ${sc01ScoringError}`, ts: nowIso() });
       }
       // D-BP152-005, PART 2 -- the operation query (FD-BP152-05) is the DIRECT signal for exactly
       // this value: Founder, BP152, verbatim, quoted at askOperation()'s own header
@@ -484,6 +524,8 @@ export async function runLianaCycleQuestion(
         error: demandResult.demand ? 'no_method_matched' : 'demand_unknown',
         options: parsed.options,
         ...(variant ? { variant } : {}),
+        ...(sc01Result ? { sc01: sc01Result } : {}),
+        ...(sc01ScoringError ? { sc01ScoringError } : {}),
       };
     }
 
@@ -495,7 +537,7 @@ export async function runLianaCycleQuestion(
     if (!method.run) {
       emit({ kind: 'result', text: `NOT YET TAUGHT -- ${method.name} is a registered method whose shape matched, but it has no runner yet.`, ts: nowIso() });
       note(emit, '   This is a known shape, not an unknown one -- the Founder has not walked a case for it yet. That is the next teaching session.');
-      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'method_not_yet_taught', method: method.id, options: parsed.options, ...(variant ? { variant } : {}) };
+      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'method_not_yet_taught', method: method.id, options: parsed.options, ...(variant ? { variant } : {}), ...(sc01Result ? { sc01: sc01Result } : {}), ...(sc01ScoringError ? { sc01ScoringError } : {}) };
     }
 
     if (audible) {
@@ -550,6 +592,8 @@ export async function runLianaCycleQuestion(
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
       ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
       ...(variant ? { variant } : {}),
+      ...(sc01Result ? { sc01: sc01Result } : {}),
+      ...(sc01ScoringError ? { sc01ScoringError } : {}),
     };
   } catch (e) {
     // THE OPERATOR ENDING A RUN IS NOT AN ERROR, and must not be transcribed as one. It is an
