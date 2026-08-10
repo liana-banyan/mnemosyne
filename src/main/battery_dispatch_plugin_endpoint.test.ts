@@ -36,6 +36,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const http = require('http');
+const crypto = require('crypto');
 
 let passed = 0;
 let failed = 0;
@@ -290,6 +291,96 @@ console.log('\n=== battery_dispatch_plugin_endpoint harness (D-BP151-042) ===\n'
 
   await new Promise<void>((r) => server.close(() => r()));
   restore();
+}
+
+// ── 5: D-BP151-042 CORRECTION -- imported auth, but the two token files/values stay SEPARATE ──
+// Founder ruling, relayed BP151 verbatim: "YES please fix the Battery Dispatch endpoint to
+// import the function but still keep the tokens separate, agreed." This proves BOTH halves with
+// real files on real disk (same fake userData dir both modules share) -- not just that imports
+// resolve, but that the two servers' credentials are genuinely independent secrets.
+{
+  const OPENAI_DIST_PATH = path.join(__dirname, '..', '..', 'dist', 'main', 'openai_compat_server');
+  if (!fs.existsSync(OPENAI_DIST_PATH + '.js')) {
+    console.error(`FATAL: ${OPENAI_DIST_PATH}.js does not exist -- run npm run build:main first.`);
+    failed++;
+  } else {
+    const openaiResolvedPath = require.resolve(OPENAI_DIST_PATH);
+    const savedElectronEntry = require.cache[electronResolvedPath];
+    const savedOpenaiEntry = require.cache[openaiResolvedPath];
+    const savedDistEntry = require.cache[distResolvedPath];
+    delete require.cache[openaiResolvedPath];
+    delete require.cache[distResolvedPath];
+    require.cache[electronResolvedPath] = {
+      id: electronResolvedPath,
+      filename: electronResolvedPath,
+      loaded: true,
+      exports: { app: { getPath: (_name: string) => fakeUserDataDir, isPackaged: false } },
+    } as any;
+
+    const bde = require(DIST_MODULE_PATH);
+    const openai = require(OPENAI_DIST_PATH);
+
+    // Force both token files into existence.
+    bde.ensureTokenFileExists();
+    // openai_compat_server.ts's own ensureTokenFileExists() is not exported (private) -- but
+    // readCurrentToken() returning non-null after a real server start (section 3 above already
+    // ran one full battery-dispatch server lifecycle) is not enough to prove THIS server's own
+    // file; use the shared generic primitive directly, exactly as openai_compat_server.ts's own
+    // module-private wrapper does, to materialize ITS file under its OWN filename.
+    openai.ensureBearerTokenFileExists(openai.getTokenFilePath(), '[openai_compat_server]');
+
+    const bdePath = bde.getTokenFilePath();
+    const openaiPath = openai.getTokenFilePath();
+    assert(bdePath !== openaiPath, 'the two servers resolve to DIFFERENT token file paths', `${bdePath} vs ${openaiPath}`);
+    assert(path.basename(bdePath) === 'battery_dispatch_endpoint_token.txt', 'battery dispatch token filename is battery_dispatch_endpoint_token.txt', bdePath);
+    assert(path.basename(openaiPath) === 'openai_compat_server_token.txt', 'openai-compat token filename is openai_compat_server_token.txt', openaiPath);
+
+    const bdeToken1 = bde.readCurrentToken();
+    const openaiToken1 = openai.readCurrentToken();
+    assert(typeof bdeToken1 === 'string' && bdeToken1.length >= 32, 'battery dispatch token exists on disk');
+    assert(typeof openaiToken1 === 'string' && openaiToken1.length >= 32, 'openai-compat token exists on disk');
+    assert(bdeToken1 !== openaiToken1, 'the two token VALUES are different (never the same secret)', `${bdeToken1?.slice(0, 6)}... vs ${openaiToken1?.slice(0, 6)}...`);
+
+    // Cross-auth must fail: a real request bearing the OPENAI token must NOT authorize against
+    // the battery-dispatch path, and vice versa (isAuthorizedBearer is path-scoped).
+    const fakeReqWithOpenaiToken = { headers: { authorization: `Bearer ${openaiToken1}` } } as any;
+    const fakeReqWithBdeToken = { headers: { authorization: `Bearer ${bdeToken1}` } } as any;
+    assert(
+      bde.isAuthorized(fakeReqWithOpenaiToken) === false,
+      "the openai-compat server's token does NOT authorize against the battery dispatch endpoint's own path",
+    );
+    assert(
+      openai.isAuthorizedBearer(fakeReqWithBdeToken, openaiPath, '[test]') === false,
+      "the battery dispatch endpoint's token does NOT authorize against the openai-compat server's own path",
+    );
+    assert(
+      bde.isAuthorized(fakeReqWithBdeToken) === true,
+      'the battery dispatch endpoint DOES authorize its own correct token (sanity check)',
+    );
+
+    // Rotate ONLY the battery-dispatch token (simulate a manual on-disk rotation) and confirm the
+    // openai-compat token is completely unaffected -- independent blast radius, not shared state.
+    fs.writeFileSync(bdePath, crypto.randomBytes(32).toString('hex'), { encoding: 'utf8', mode: 0o600 });
+    const bdeToken2 = bde.readCurrentToken();
+    const openaiToken2 = openai.readCurrentToken();
+    assert(bdeToken2 !== bdeToken1, 'rotating the battery dispatch token file changes what readCurrentToken() returns for IT', undefined);
+    assert(openaiToken2 === openaiToken1, "rotating the battery dispatch token left the openai-compat server's token COMPLETELY UNCHANGED", `before=${openaiToken1?.slice(0,6)}... after=${openaiToken2?.slice(0,6)}...`);
+    assert(
+      bde.isAuthorized({ headers: { authorization: `Bearer ${bdeToken2}` } } as any) === true,
+      'the battery dispatch endpoint works with its NEW rotated token',
+    );
+    assert(
+      openai.isAuthorizedBearer({ headers: { authorization: `Bearer ${openaiToken2}` } } as any, openaiPath, '[test]') === true,
+      "the openai-compat server still works with its OWN (never-rotated) token -- rotating one file never breaks the other",
+    );
+
+    delete require.cache[openaiResolvedPath];
+    delete require.cache[distResolvedPath];
+    if (savedElectronEntry) require.cache[electronResolvedPath] = savedElectronEntry;
+    else delete require.cache[electronResolvedPath];
+    if (savedOpenaiEntry) require.cache[openaiResolvedPath] = savedOpenaiEntry;
+    if (savedDistEntry) require.cache[distResolvedPath] = savedDistEntry;
+  }
 }
 
 // ── Summary ─────────────────────────────────────────────────────────────────────────────

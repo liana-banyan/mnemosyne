@@ -25,13 +25,29 @@
 // plugin" is true because the capability to reach one does not exist in this file at all, not
 // because a runtime filter blocks it. A plugin can never receive what this file never has.
 //
-// AUTH: a single local Bearer-token file, generated on first run, read fresh on every request --
-// same mechanism and same file-format as openai_compat_server.ts (KN-BP145-M3) and mcp_server.ts
-// (BP081 K-2), both already-shipped local-HTTP precedents in this tree. A local plugin process
-// obtains the token the same way those two servers' own callers do: by reading the token file
-// directly off disk (it already has filesystem access -- it is a local process on this machine).
-// A missing or wrong token gets a 401 JSON error and the request is rejected before any verb
-// handler runs; the presented value is never logged, only whether it matched.
+// AUTH: D-BP151-042 CORRECTION -- Founder ruling, relayed BP151 verbatim, on being shown that
+// openai_compat_server.ts (KN-BP145-M3) already implements and EXPORTS this exact Bearer/
+// timingSafeEqual logic, and that file's own header (line 20) already says "Do not build
+// authentication beyond the local Bearer file": "YES please fix the Battery Dispatch endpoint to
+// import the function but still keep the tokens separate, agreed." So: this file IMPORTS
+// ensureBearerTokenFileExists() / readBearerToken() / isAuthorizedBearer() from
+// openai_compat_server.ts -- ONE implementation of the auth logic in the tree, not two -- and
+// calls them with THIS server's own, distinct token file path
+// (battery_dispatch_endpoint_token.txt, never openai_compat_server_token.txt).
+//
+// ATTRIBUTED (HARDWIRE-23 Law 4), Founder BP151 verbatim ruling above: the tokens stay SEPARATE
+// on purpose -- separate blast radius. A compromised local plugin presenting a stolen Battery
+// Dispatch token must never also authenticate against THE NEXUS (openai_compat_server.ts), and
+// vice versa; rotating one token file must never rotate or invalidate the other. Do not
+// "helpfully" consolidate these two files into one -- that would silently widen the blast radius
+// the Founder explicitly ordered kept narrow.
+//
+// Generated on first run, read fresh on every request (no in-memory caching -- an on-disk
+// rotation of EITHER file takes effect immediately, independently of the other). A local plugin
+// process obtains ITS token the same way openai_compat_server.ts's own callers do: by reading the
+// token file directly off disk (it already has filesystem access -- it is a local process on this
+// machine). A missing or wrong token gets a 401 JSON error and the request is rejected before any
+// verb handler runs; the presented value is never logged, only whether it matched.
 //
 // LOOPBACK ONLY, FAIL-CLOSED: startBatteryDispatchPluginEndpoint() throws synchronously, before
 // any net.Server is constructed, if asked to bind anywhere but 127.0.0.1 -- the exact bind-time
@@ -63,8 +79,12 @@
 import { app } from 'electron';
 import * as http from 'node:http';
 import * as crypto from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+// D-BP151-042 CORRECTION: import the ONE Bearer-auth implementation in the tree (see this file's
+// header) rather than reimplementing it. openai_compat_server.ts owns these three primitives;
+// this file only ever calls them with ITS OWN token file path (see getTokenFilePath() below).
+import { ensureBearerTokenFileExists, readBearerToken, isAuthorizedBearer } from './openai_compat_server';
 
 // ─── Ports/host ─────────────────────────────────────────────────────────────────────────────────
 
@@ -110,45 +130,35 @@ function resolveUserDataDir(): string {
   throw new Error('[battery_dispatch_plugin_endpoint] app.getPath unavailable -- not a real Electron process and no fake app injected');
 }
 
+const AUTH_LOG_PREFIX = '[battery_dispatch_plugin_endpoint]';
+
+/** THIS server's OWN token file path -- battery_dispatch_endpoint_token.txt, distinct from
+ *  openai_compat_server.ts's openai_compat_server_token.txt. Never the same file, never the same
+ *  value (see this file's header, D-BP151-042 CORRECTION, for why that separation is a deliberate
+ *  Founder decision, not an accident). */
 export function getTokenFilePath(): string {
   return join(resolveUserDataDir(), TOKEN_FILENAME);
 }
 
-/** Generates a fresh token on first run. Never logs the value -- only ever the file path. */
+/** Generates a fresh token on first run, at THIS server's own path. Delegates to
+ *  openai_compat_server.ts's shared primitive -- see this file's header for why there is exactly
+ *  one implementation of this logic in the tree. */
 export function ensureTokenFileExists(): void {
-  const filePath = getTokenFilePath();
-  if (existsSync(filePath)) return;
-  const token = crypto.randomBytes(32).toString('hex');
-  mkdirSync(join(filePath, '..'), { recursive: true });
-  writeFileSync(filePath, token, { encoding: 'utf8', mode: 0o600 });
-  console.log(`[battery_dispatch_plugin_endpoint] generated a new Bearer token at ${filePath} (value never logged)`);
+  ensureBearerTokenFileExists(getTokenFilePath(), AUTH_LOG_PREFIX);
 }
 
-/** Reads the token fresh on every call -- a manual on-disk rotation takes effect immediately,
- *  same convention as openai_compat_server.ts's readCurrentToken(). Never logs the value. */
+/** Reads THIS server's own token fresh on every call -- a manual on-disk rotation of this file
+ *  takes effect immediately, independently of openai_compat_server.ts's own token file. Delegates
+ *  to the shared primitive; never logs the value. */
 export function readCurrentToken(): string | null {
-  try {
-    const filePath = getTokenFilePath();
-    if (!existsSync(filePath)) return null;
-    return readFileSync(filePath, 'utf8').trim();
-  } catch (err) {
-    console.error('[battery_dispatch_plugin_endpoint] failed to read token file:', err instanceof Error ? err.message : String(err));
-    return null;
-  }
+  return readBearerToken(getTokenFilePath(), AUTH_LOG_PREFIX);
 }
 
-/** Constant-time compare, only after a length check (timingSafeEqual throws on length mismatch)
- *  -- identical shape to openai_compat_server.ts's isAuthorized(). */
+/** Constant-time Bearer check against THIS server's own token file. Delegates to the shared
+ *  primitive with getTokenFilePath() (this file's own path) -- never openai_compat_server.ts's
+ *  path, so the two servers' credentials can never cross-authenticate each other. */
 export function isAuthorized(req: http.IncomingMessage): boolean {
-  const header = req.headers['authorization'];
-  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
-  const presented = header.slice('Bearer '.length).trim();
-  const current = readCurrentToken();
-  if (!current || !presented) return false;
-  const a = Buffer.from(presented, 'utf8');
-  const b = Buffer.from(current, 'utf8');
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
+  return isAuthorizedBearer(req, getTokenFilePath(), AUTH_LOG_PREFIX);
 }
 
 // ─── Plugin registry -- capability announcement only, never a session/credential carrier ────────
