@@ -422,6 +422,7 @@ import { startResidentWatcher } from './resident'; // KN-BP147-M2: THE RESIDENT 
 import type { BindingTarget, MutationReason, BindResult, ResolvedChonk } from './crystal/crystal_types';
 import { initCdpGuard } from './cdp_guard'; // D-BP151-038/BISHOP/seg-cdp-guard -- Founder BP151 "Build the guard." on D-BP151-034's named CDP-9333 gap
 import { initBatteryDispatchPluginEndpoint } from './battery_dispatch_plugin_endpoint'; // D-BP151-042/BISHOP/seg-battery-dispatch-endpoint -- Founder BP151 "Battery Dispatch is local plugins, so build the endpoint"; off by default, loopback-only, Bearer-authenticated
+import { saveLaboratoryStep, listLaboratorySteps } from './liana_cycle/library/laboratory_store'; // D-BP152-022/BISHOP/seg-laboratory-and-keep -- FD-BP152-10 tier 1 (the Laboratory); FD-BP152-07 ephemeral-unless-"keep"
 // --- END APPEND ZONE: IMPORT -------------------------------------------------
 
 // --- Constants --------------------------------------------------------------
@@ -7555,6 +7556,47 @@ ${args.teachingText}
       return { ok: true, stats: store.crystalStats() };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // D-BP152-022/BISHOP/seg-laboratory-and-keep -- THE LABORATORY (FD-BP152-10 tier 1) AND KEEP
+  // (FD-BP152-07: ephemeral unless he says "keep"). A channel wholly separate from
+  // 'liana-stepped-respond' above -- saving a query never flows through the stepped-pause action
+  // union (approve/correct/redirect/ask_google), so those four are untouched by this addition.
+  // See laboratory_store.ts's own header for the chosen on-disk path and why.
+  safeHandle('liana-laboratory-save', async (_event, args: {
+    name: string;
+    queryTextVerbatim: string;
+    provenance: { runInput: string };
+  }) => {
+    try {
+      return saveLaboratoryStep({
+        name: args?.name ?? '',
+        queryTextVerbatim: args?.queryTextVerbatim ?? '',
+        provenance: args?.provenance ?? { runInput: '' },
+      });
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // READ-ONLY: nothing on this channel writes, edits, or deletes a Laboratory file. Returns the
+  // renderer-facing summary shape (LianaLaboratoryStepSummary) -- the full on-disk record (the
+  // reused StepDeclaration) stays on disk for a human to read directly, per this ticket's own
+  // "he can find and read it without the app" criterion.
+  safeHandle('liana-laboratory-list', async () => {
+    try {
+      const steps = listLaboratorySteps().map((r) => ({
+        name: r.name,
+        version: r.declaration.version,
+        queryTextVerbatim: r.queryTextVerbatim,
+        savedBy: r.savedBy,
+        savedAt: r.savedAt,
+        provenance: r.provenance,
+      }));
+      return { ok: true as const, steps };
+    } catch (e) {
+      return { ok: false as const, steps: [], error: e instanceof Error ? e.message : String(e) };
     }
   });
   // --- END APPEND ZONE: IPC-HANDLER --------------------------------------

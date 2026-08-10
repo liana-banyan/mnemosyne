@@ -445,3 +445,36 @@ export interface LianaSteppedRecord {
   text?: string;
   ts: string;
 }
+
+// ─────────────────────────── D-BP152-022: THE LABORATORY, AND KEEP ───────────────────────────
+//
+// FD-BP152-10, Tier 1 of the three folders (LABORATORY -> CONTINGENCY OPERATORS -> PLAYBOOK):
+// "a folder with all the step files and scripts and partial scripts etc that I as a user make in
+// the Laboratory and save for another day." FD-BP152-07: ephemeral by default, persisted only on
+// the literal word "keep". This is the RENDERER-FACING shape only -- a summary of one saved step,
+// for the "list saved steps, load one into the box" panel at the Step 0 pause. The full,
+// hand-editable on-disk record (which wraps step_declaration.ts's StepDeclaration, per this
+// ticket's own instruction to reuse that shape rather than invent a second one) lives in
+// src/main/liana_cycle/library/laboratory_store.ts and is deliberately NOT re-exported here --
+// this type carries only what the renderer actually needs to list and load.
+//
+// SAVING IS A CHANNEL SEPARATE FROM THE STEPPED-PAUSE ACTIONS ABOVE. "Keep" never flows through
+// LianaSteppedAction/LianaSteppedResponse -- it is its own IPC round trip
+// (lianaLaboratorySave/lianaLaboratoryList, preload.ts), precisely so that approve/correct/
+// redirect/ask_google (and the loop requestStepZeroPause() runs them through) are untouched by
+// this ticket, per its own "add alongside, do not change" instruction.
+export interface LianaLaboratoryStepSummary {
+  /** His name for the step, verbatim as typed. */
+  name: string;
+  /** Rule 66 plain-integer version, as a string ("1", "2", ...) -- NOT the "19:1"/"19:2"
+   *  bench-scrubbing notation FD-BP152-13 describes for a different, out-of-scope mechanism. */
+  version: string;
+  /** Byte-identical to what was sent to Google (end-whitespace trimmed only). Load fills the
+   *  Step 0 text box with exactly this string and nothing else -- it never auto-sends it. */
+  queryTextVerbatim: string;
+  savedBy: string;
+  savedAt: string;
+  /** Which qid/run this step was authored during, e.g. "98" or a free-text question -- this
+   *  ticket's requirement 2, literal. */
+  provenance: { runInput: string };
+}
