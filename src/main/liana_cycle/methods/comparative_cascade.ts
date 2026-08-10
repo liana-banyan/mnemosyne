@@ -375,7 +375,20 @@ export async function googleBlocks(
 
 // ─────────────────────────── Gemma, extraction only (HARDWIRE-22) ───────────────────────────
 
-export async function gemmaExtract(instruction: string, passage: string, shape: string): Promise<Record<string, unknown> | null> {
+export async function gemmaExtract(
+  instruction: string,
+  passage: string,
+  shape: string,
+  // D-BP152-004, INSTRUMENT ONLY: optional out-param. When present, mutated with the model's raw
+  // pre-JSON-parse text (same string the parse below is attempted on) BEFORE the parse is
+  // attempted, so a caller whose parse fails is not left with nothing -- see D-BP152-003's
+  // Predicate A finding (SEG_RETURN_BP152_003_AMBIGUITY_EXTRACTION.md): today that text exists
+  // only inside this function's local scope for the duration of one try block, then is gone.
+  // Optional and additive: every existing call site that does not pass a fourth argument compiles
+  // unchanged, and this function's return type and null-on-failure semantics are untouched -- no
+  // caller's accept/reject behavior changes.
+  rawOut?: { text?: string },
+): Promise<Record<string, unknown> | null> {
   const prompt = `Read the passage and report only what it states. Do not reason about which answer is correct. Do not choose between options.
 
 PASSAGE:
@@ -397,6 +410,7 @@ Use null where the passage does not state it. Never guess.`;
     }).finally(() => clearTimeout(timeout));
     const j = (await res.json()) as { response?: string };
     const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    if (rawOut) rawOut.text = t;
     return JSON.parse(t) as Record<string, unknown>;
   } catch {
     return null;

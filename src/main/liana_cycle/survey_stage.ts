@@ -344,6 +344,20 @@ export interface AmbiguityQueryResult {
    *  the source away", Founder, relayed BP151 addendum). Always empty on the 'gemma' transport (no
    *  web source exists on that path). */
   citations: string[];
+  /** D-BP152-004, INSTRUMENT ONLY: the raw Google passage (`googleBlocks()`'s own `text`,
+   *  unmodified) this call was built from -- populated only when transport === 'google' AND
+   *  Google answered; empty string on the 'gemma' transport (no Google passage exists on that
+   *  path) or when Google itself was unreachable. Persisted so a discard is diagnosable after the
+   *  fact instead of only reportable by hand off a live terminal -- D-BP152-003's central finding
+   *  was that this text previously existed nowhere once this function returned. Never used to
+   *  change which answer is accepted or rejected; diagnostic only. */
+  rawGooglePassage: string;
+  /** D-BP152-004, INSTRUMENT ONLY: the model's raw pre-JSON-parse text, captured ONLY when
+   *  `gemmaExtract()` (comparative_cascade.ts) failed to parse its own output as JSON
+   *  (D-BP152-003's Predicate A) -- null whenever extraction succeeded, was never attempted, or
+   *  ran on the 'gemma' transport (which does not call `gemmaExtract()`). Never used to change
+   *  which answer is accepted or rejected; diagnostic only. */
+  rawModelOutput: string | null;
   why: string;
 }
 
@@ -402,12 +416,27 @@ export interface SurveyConstraint {
  *  rule of any kind (HARDWIRE-23's own carve-out: "mechanical implementation choices with no
  *  effect on which answer comes out"): this only reshapes already-decided model/source output into
  *  `AmbiguityTermFinding[]`, dropping only entries with no `term` at all. */
-function parseAmbiguityTerms(raw: unknown): AmbiguityTermFinding[] {
+function parseAmbiguityTerms(raw: unknown, emit?: MethodRunContext['emit']): AmbiguityTermFinding[] {
   const rawTerms = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
   const terms: AmbiguityTermFinding[] = [];
   for (const rt of rawTerms) {
     const term = typeof rt?.term === 'string' ? rt.term.trim() : '';
-    if (!term) continue;
+    if (!term) {
+      // D-BP152-004, INSTRUMENT ONLY: the predicate itself is UNCHANGED -- this entry is still
+      // dropped, exactly as before. This only makes an already-made reject decision visible (same
+      // 'note' style every other line in this file already uses) instead of silent, per
+      // D-BP152-003's Predicate B finding: an entry could carry a fully-populated
+      // standardMeaning/alternativeMeaning/impact and still vanish with no trace because the key
+      // wasn't literally "term".
+      if (emit) {
+        emit({
+          kind: 'note',
+          text: `   ambiguity term entry DROPPED -- no non-empty string at key "term" (entry verbatim: ${JSON.stringify(rt)})`,
+          ts: nowIso(),
+        });
+      }
+      continue;
+    }
     terms.push({
       term,
       standardMeaning: typeof rt?.standardMeaning === 'string' ? rt.standardMeaning.trim() : '',
@@ -485,13 +514,13 @@ If nothing in the question could reasonably be understood differently, return {"
       const j = (await res.json()) as { response?: string };
       const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
       const parsed = JSON.parse(t) as { terms?: unknown };
-      const terms = parseAmbiguityTerms(parsed.terms);
+      const terms = parseAmbiguityTerms(parsed.terms, ctx.emit);
       const why = terms.length
         ? `${terms.length} term(s) named by the local model (gemma, selected transport) as potentially `
           + 'ambiguous, each reported verbatim (standard meaning, alternative meaning, impact) -- the '
           + 'source names, this function picks none'
         : 'the local model ran and named nothing usable -- an honest empty result, not a fabrication';
-      return { askedText, terms, modelUnreachable: false, transport: 'gemma', citations: [], why };
+      return { askedText, terms, modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, why };
     } catch {
       return {
         askedText,
@@ -499,6 +528,8 @@ If nothing in the question could reasonably be understood differently, return {"
         modelUnreachable: true,
         transport: 'gemma',
         citations: [],
+        rawGooglePassage: '',
+        rawModelOutput: null,
         why: 'the local model call for the ambiguity query returned nothing (unreachable or failed) -- an honest empty result, not a fabrication',
       };
     }
@@ -518,12 +549,29 @@ If nothing in the question could reasonably be understood differently, return {"
       modelUnreachable: true,
       transport: 'google',
       citations: [],
+      rawGooglePassage: '',
+      rawModelOutput: null,
       why: `Google was unreachable for the ambiguity query (${google.via}) -- refusing rather than `
         + 'silently falling back to the local model (ATTRIBUTED, Founder, relayed BP151 addendum: a '
         + 'silent transport swap would make two runs incomparable with no visible signal); an honest '
         + 'empty result, not a fabrication',
     };
   }
+  // D-BP152-004, INSTRUMENT ONLY -- the raw passage about to be handed to gemmaExtract(), verbatim,
+  // emitted BEFORE extraction runs so it survives into the transcript (and so the run receipt,
+  // HARDWIRE\LEDGER\LIANA_RUNS\, same mechanism every other note in this file already reaches it
+  // through) regardless of what extraction does with it. Same "PARSER INSTRUMENT" label/style
+  // field_gate.ts already established for this exact purpose (log the exact input before any
+  // parsing touches it). D-BP152-003 found this text was previously read, used, and discarded with
+  // no trace anywhere on disk.
+  const googlePassageForLog = google.text.length > 4000 ? google.text.slice(0, 4000) : google.text;
+  ctx.emit({
+    kind: 'note',
+    text: `   PARSER INSTRUMENT [ambiguity] Google passage handed to gemmaExtract()`
+      + `${google.text.length > 4000 ? ` (TRUNCATED at 4000 chars, full untruncated length was ${google.text.length})` : ' (untruncated, verbatim)'}`
+      + `="${googlePassageForLog}"`,
+    ts: nowIso(),
+  });
   const instruction = 'List every word or phrase the passage names as something that could be understood '
     + 'with a different meaning that would fundamentally change the meaning of what is being asked. For '
     + 'each, report its standard meaning, an alternative meaning, and the impact of that alternative '
@@ -531,15 +579,38 @@ If nothing in the question could reasonably be understood differently, return {"
     + 'functions as a negation, exclusion, or restriction word (such as "not", "except", "least") whose '
     + 'presence or absence would flip which option is correct.';
   const shape = '{"terms":[{"term":"the exact word or phrase named","standardMeaning":"...","alternativeMeaning":"...","impact":"...","isNegation":true}]}';
-  const ex = await gemmaExtract(instruction, google.text, shape);
-  const terms = parseAmbiguityTerms((ex as { terms?: unknown } | null)?.terms);
+  const rawOut: { text?: string } = {};
+  const ex = await gemmaExtract(instruction, google.text, shape, rawOut);
+  if (ex === null && rawOut.text !== undefined) {
+    // D-BP152-004, INSTRUMENT ONLY -- gemmaExtract() failed to parse its own output as JSON
+    // (D-BP152-003's Predicate A); the raw pre-JSON text that failed the parse now survives here
+    // instead of being thrown away inside gemmaExtract()'s own catch block.
+    const rawModelForLog = rawOut.text.length > 4000 ? rawOut.text.slice(0, 4000) : rawOut.text;
+    ctx.emit({
+      kind: 'note',
+      text: `   PARSER INSTRUMENT [ambiguity] gemmaExtract() RAW OUTPUT (JSON parse FAILED)`
+        + `${rawOut.text.length > 4000 ? ` (TRUNCATED at 4000 chars, full untruncated length was ${rawOut.text.length})` : ' (untruncated, verbatim)'}`
+        + `="${rawModelForLog}"`,
+      ts: nowIso(),
+    });
+  }
+  const terms = parseAmbiguityTerms((ex as { terms?: unknown } | null)?.terms, ctx.emit);
   const why = terms.length
     ? `${terms.length} term(s) named by Google's own answer (${google.via}) as potentially ambiguous, `
       + 'extracted verbatim by gemmaExtract() (extraction only, HARDWIRE-22 unrelaxed) -- the source '
       + 'names, this function picks none'
     : `Google answered (${google.via}) but nothing usable could be extracted from it -- an honest empty `
       + 'result, not a fabrication';
-  return { askedText, terms, modelUnreachable: false, transport: 'google', citations: google.sources, why };
+  return {
+    askedText,
+    terms,
+    modelUnreachable: false,
+    transport: 'google',
+    citations: google.sources,
+    rawGooglePassage: google.text,
+    rawModelOutput: ex === null ? (rawOut.text ?? null) : null,
+    why,
+  };
 }
 
 /**
