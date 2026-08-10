@@ -886,6 +886,15 @@ declare global {
     };
     // SEG-V0150-P0-DIAGNOSE-BRIDGE: sentinel -- set by preload before main bridge wires up
     __preloadLoaded?: boolean;
+    // Query Capture Archive (D-BP151-037/BISHOP/seg-query-capture-archive)
+    queryCapture?: {
+      getEnabled: () => Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
+      setEnabled: (enabled: boolean) => Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
+      list: (status?: 'active' | 'cleared' | 'archived') => Promise<{ ok: boolean; entries?: QueryCaptureEntry[]; error?: string }>;
+      find: (searchText: string) => Promise<{ ok: boolean; entries?: QueryCaptureEntry[]; error?: string }>;
+      setStatus: (id: string, status: 'active' | 'cleared' | 'archived') => Promise<{ ok: boolean; error?: string }>;
+      remove: (id: string) => Promise<{ ok: boolean; error?: string }>;
+    };
     // BP087 Brain Swap -- brain registry hot-swap
     brainRegistry?: {
       list: () => Promise<{ ok: boolean; brains?: unknown[]; active_brain_id?: string; error?: string }>;
@@ -894,6 +903,18 @@ declare global {
       smokeTest: (brain_id: string) => Promise<{ ok: boolean; content?: string; brain_id?: string; kind?: string; latency_ms?: number; error?: string }>;
     };
   }
+}
+
+// Query Capture Archive entry type (mirrored from main process; no import) --
+// D-BP151-037/BISHOP/seg-query-capture-archive
+export interface QueryCaptureEntry {
+  id: string;
+  question: string;
+  source: 'ask_tab' | 'ask_google';
+  authority?: string;
+  status: 'active' | 'cleared' | 'archived';
+  capturedAt: string;
+  filePath: string;
 }
 
 // On-Deck item type (mirrored from main process; no import)
