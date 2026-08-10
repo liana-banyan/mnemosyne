@@ -235,16 +235,45 @@ export function LianaCycleTab() {
   /** True when the walk holds anything the operator typed that has not reached disk. */
   const walkHasUnsavedWork = walkActive && (Object.values(walkResponses).some((r) => r.trim()) || walkInput.trim().length > 0);
 
-  // D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE. Founder, BP149: "a button or toggle
-  // to 'let me redirect it before the next Google Call'."
+  // D-BP152-012/BISHOP/seg-one-audible-button -- ONE BUTTON: CALL AN AUDIBLE. Supersedes the
+  // three separate controls that used to live here (D-BP150-001 Call an Audible, D-BP151-023
+  // Stepped Audible, D-BP152-011 Survey Splice + a transport dropdown).
   //
-  // THIS IS NOT THE WALK ABOVE, AND THE TWO CONTROLS STAY SEPARATE ON PURPOSE. Audit the Run
-  // paces a run that has ALREADY FINISHED (see offersSteppedWalk's header). Call an Audible stops
-  // a LIVE run at a real decision point and changes what happens next. Founder ruling, carried in
-  // bishop_coffee.BP149_close_BP150_open.md: "A button that looks like it steers and only
-  // annotates is the exact defect class this session spent twelve hours removing."
-  const [audibleMode, setAudibleMode] = useState<boolean>(() => localStorage.getItem('liana.audible') === '1');
-  useEffect(() => { localStorage.setItem('liana.audible', audibleMode ? '1' : '0'); }, [audibleMode]);
+  // Founder ruling, BP152, first pass: "I don't need all four 'call an audible' 'Stepped
+  // audible' - because they are the same thing... and survey slice ON is automatic when I click
+  // stepped audible." Founder ruling, BP152, SECOND pass (this is the one this build follows):
+  // "we don't need the survey splice button, because having it repeats an action we already
+  // have - with Call an Audible, or NOT. If NOT, then an accepted script runs... simply clicking
+  // Call an Audible reframes that same... script into a stepped script that I can change." I.e.
+  // the survey splice is NOT a control the operator sets and NOT something this button turns on
+  // -- it is (or will become, under a separate ticket) part of the accepted script either way.
+  // This button's only job is stepped-vs-straight-through.
+  //
+  // ON sends steppedAudible:true to the same unchanged IPC call (lianaTerminalRun) -- per-stage
+  // pausing. OFF sends false, byte-for-byte the request this tab has always made when nothing
+  // was touched. `contingencyOperatorSurvey` is NOT read, NOT set, and NOT surfaced by this
+  // button in either state -- D-BP152-013 (a separate dispatch) owns making Survey part of the
+  // default script and removing that gate from liana_terminal_engine.ts; this ticket does not
+  // touch that file, its gate, survey_stage.ts, or any default.
+  //
+  // THE OLD PER-GOOGLE-CALL PAUSE (`audible`, audible.ts) IS NOT WIRED TO THIS BUTTON either.
+  // Per the first-pass ticket: "If per-call pausing cannot be reached from this button, that is
+  // fine and expected." audible.ts and stepped_audible.ts stay separate, untouched modules with
+  // separate params (their own header comments explain why) -- this ticket collapses the UI
+  // surface only, never the engine. `false` is sent for `audible` below; the live per-call pause
+  // panel further down this file (activePause and everything under it) is therefore unreachable
+  // from this tab now, left in place rather than deleted since removing working,
+  // independently-headed plumbing is not this ticket's scope.
+  //
+  // THE TRANSPORT SELECTOR AND THE SPLICE CONTROL ARE BOTH REMOVED FROM THIS SURFACE, not
+  // folded into this button. Their defaults ('google' / off), resolveAmbiguityQueryTransport(),
+  // isContingencyOperatorSurveySpliceEnabled(), and the AMBIGUITY_QUERY_TRANSPORT /
+  // CONTINGENCY_OPERATOR_SURVEY_SPLICE env vars are all unchanged and untouched by this file --
+  // `undefined` is sent for both IPC params below, always, which is exactly what an operator who
+  // never touched either removed control already sent.
+  const [oneAudibleMode, setOneAudibleMode] = useState<boolean>(() => localStorage.getItem('liana.callAnAudible') === '1');
+  useEffect(() => { localStorage.setItem('liana.callAnAudible', oneAudibleMode ? '1' : '0'); }, [oneAudibleMode]);
+
   const [activePause, setActivePause] = useState<LianaAudiblePause | null>(null);
   // The query the operator is editing. Seeded from the pause's own literal query, so leaving it
   // untouched and pressing Go sends EXACTLY what the method generated.
@@ -254,59 +283,10 @@ export function LianaCycleTab() {
   const pauseQueryRef = useRef<HTMLTextAreaElement>(null);
   const pauseNoteRef = useRef<HTMLTextAreaElement>(null);
 
-  // D-BP151-023/BISHOP/seg-stepped-audible -- STEPPED AUDIBLE. Founder, BP151, verbatim: "I want
-  // it to list my steps, and then show it happen, then stop before the next step and shows
-  // suggestions, for me to respond to or correct."
-  //
-  // A SEPARATE CONTROL FROM CALL AN AUDIBLE ABOVE, same reason those and Audit the Run stay
-  // separate: this pauses once per Founder-mapped STEP (comparative-cascade only -- see
-  // stepped_audible.ts's header), not once per Google call. Either, both, or neither may be armed.
-  const [steppedMode, setSteppedMode] = useState<boolean>(() => localStorage.getItem('liana.steppedAudible') === '1');
-  useEffect(() => { localStorage.setItem('liana.steppedAudible', steppedMode ? '1' : '0'); }, [steppedMode]);
   const [activeSteppedPause, setActiveSteppedPause] = useState<LianaSteppedPause | null>(null);
   const [steppedResponseText, setSteppedResponseText] = useState('');
   const [steppedAnswering, setSteppedAnswering] = useState(false);
   const steppedResponseRef = useRef<HTMLTextAreaElement>(null);
-
-  // D-BP152-011/BISHOP/seg-splice-toggle -- SURVEY SPLICE + AMBIGUITY TRANSPORT. Founder, BP152,
-  // verbatim: "so can you make the one line change. or tell me what button to push to make it
-  // so." Two Contingency Operator gates (D-BP151-026/D-BP151-032, liana_terminal_engine.ts) have
-  // existed since BP151 with no renderer control at all -- CONTINGENCY_OPERATOR_SURVEY_SPLICE=1
-  // and AMBIGUITY_QUERY_TRANSPORT=gemma, typed by hand, were the only way in. This is that
-  // control, not a new decision: both gates, their defaults, and their env-var precedence are
-  // completely unchanged (see liana_terminal_engine.ts's isContingencyOperatorSurveySpliceEnabled/
-  // resolveAmbiguityQueryTransport) -- flipping either DEFAULT is the Founder's own ratification
-  // act (BP151: "A Contingency Operator... is not ratified by existing"), not this ticket's.
-  //
-  // spliceUi starts false and transportUi starts '' (untouched) -- an operator who never opens
-  // this panel sends exactly `contingencyOperatorSurvey: false, ambiguityQueryTransport:
-  // undefined`, byte-for-byte the request this tab has always made. transportUi is a THREE-value
-  // state, not a two-value one, on purpose: sending a literal 'google' to mean "off" would
-  // short-circuit resolveAmbiguityQueryTransport()'s own env-var check (an explicit value always
-  // wins there, by design), silently breaking AMBIGUITY_QUERY_TRANSPORT=gemma for anyone who set
-  // it and never touched this dropdown. Only `undefined` (transportUi === '') preserves that.
-  const [spliceUi, setSpliceUi] = useState<boolean>(() => localStorage.getItem('liana.contingencyOperatorSurvey') === '1');
-  useEffect(() => { localStorage.setItem('liana.contingencyOperatorSurvey', spliceUi ? '1' : '0'); }, [spliceUi]);
-  const [transportUi, setTransportUi] = useState<'' | 'google' | 'gemma'>(() => {
-    const saved = localStorage.getItem('liana.ambiguityQueryTransport');
-    return saved === 'google' || saved === 'gemma' ? saved : '';
-  });
-  useEffect(() => { localStorage.setItem('liana.ambiguityQueryTransport', transportUi); }, [transportUi]);
-  // Read once on mount: which env vars are live, so the control shows the EFFECTIVE state
-  // (requirement 3 of this ticket) BEFORE any run happens rather than only after the first
-  // transcript line reports it. Founder ticket: "A toggle that reads OFF while the run is
-  // spliced is worse than no toggle -- it would make him misread a receipt." Env vars are
-  // main-process-only; this is the one way the renderer can know ahead of a run.
-  const [gateEnvState, setGateEnvState] = useState<{ contingencyOperatorSurveyEnvOn: boolean; ambiguityQueryTransportEnv: 'gemma' | null } | null>(null);
-  useEffect(() => {
-    if (!window.amplify?.lianaTerminalGateEnvState) return;
-    window.amplify.lianaTerminalGateEnvState().then(setGateEnvState).catch(() => { /* stays null -- treated as no env override below */ });
-  }, []);
-  const spliceEnvOn = gateEnvState?.contingencyOperatorSurveyEnvOn ?? false;
-  const spliceEffective = spliceUi || spliceEnvOn;
-  const spliceSource: 'ui' | 'env' | 'default' = spliceUi ? 'ui' : spliceEnvOn ? 'env' : 'default';
-  const transportEffective: 'google' | 'gemma' = transportUi || gateEnvState?.ambiguityQueryTransportEnv || 'google';
-  const transportSource: 'ui' | 'env' | 'default' = transportUi ? 'ui' : gateEnvState?.ambiguityQueryTransportEnv ? 'env' : 'default';
 
   // D-BP150-002/BISHOP/S02/seg-notesrecall -- HIS EARLIER NOTES, AVAILABLE MID-PAUSE.
   // Founder, BP150: "post whichever of my notes I want into the textbox I'm typing in, so I don't
@@ -587,11 +567,10 @@ export function LianaCycleTab() {
       ...prev,
       {
         kind: 'header',
-        // D-BP152-011: the header line names the SOURCE too, not just ON/OFF -- an env-driven
-        // splice must never look identical to a run where nobody touched anything.
-        text: `═══ RUN  "${text}"${audibleMode ? '   [CALL AN AUDIBLE ON]' : ''}${steppedMode ? '   [STEPPED AUDIBLE ON]' : ''}`
-          + `${spliceEffective ? `   [SURVEY SPLICE ${spliceSource === 'env' ? 'ON (env)' : 'ON'}]` : ''}`
-          + `${transportSource !== 'default' ? `   [TRANSPORT ${transportEffective} (${transportSource})]` : ''}`,
+        // D-BP152-012: the header line still records the effective state of the one gate this
+        // button drives (source is always 'ui' -- no env override reaches steppedAudible), the
+        // same receipt discipline 46a87505 applied to its own toggles.
+        text: `═══ RUN  "${text}"${oneAudibleMode ? '   [CALL AN AUDIBLE ON]' : ''}`,
         ts: new Date().toISOString(),
       },
     ]);
@@ -600,12 +579,11 @@ export function LianaCycleTab() {
     saveRecent(nextRecent);
     setInput('');
     try {
-      // D-BP152-011: spliceUi/transportUi are sent as-is, never "helpfully" upgraded to their
-      // effective values -- e.g. transportUi stays '' (-> undefined) even when an env var is
-      // already forcing gemma, because sending a literal here would short-circuit that env
-      // override inside resolveAmbiguityQueryTransport(). The engine resolves the same way either
-      // way; only the SOURCE the receipt reports would change, wrongly, to 'ui'.
-      const outcome = await window.amplify.lianaTerminalRun(text, audibleMode, steppedMode, spliceUi, transportUi || undefined);
+      // D-BP152-012, SECOND-PASS SCOPE: `oneAudibleMode` drives ONLY `steppedAudible`.
+      // `contingencyOperatorSurvey` and `ambiguityQueryTransport` are `undefined` here, always --
+      // this button does not read, set, or surface either. `false` for the old per-call `audible`
+      // param (not wired to this button either, see the state comment above).
+      const outcome = await window.amplify.lianaTerminalRun(text, false, oneAudibleMode, undefined, undefined);
       setLastOutcome(outcome);
       setLastRunEvents(runEventsRef.current.slice());
     } catch (err) {
@@ -619,7 +597,7 @@ export function LianaCycleTab() {
       setActiveSteppedPause(null);
       inputRef.current?.focus();
     }
-  }, [input, running, recent, audibleMode, steppedMode, spliceUi, transportUi, spliceEffective, spliceSource, transportEffective, transportSource, walkHasUnsavedWork, pendingDiscard]);
+  }, [input, running, recent, oneAudibleMode, walkHasUnsavedWork, pendingDiscard]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') { e.preventDefault(); void handleRun(); }
@@ -802,91 +780,29 @@ export function LianaCycleTab() {
         <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
           Google is the only source · Gemma extracts · the code decides · $0
         </span>
-        {/* D-BP150-001 -- CALL AN AUDIBLE. Deliberately a separate control from Audit the Run,
-            which appears after a run that did not resolve. Audit annotates what already happened;
-            this steers what happens next. Founder ruling: do not merge them. */}
+        {/* D-BP152-012/BISHOP/seg-one-audible-button -- ONE BUTTON: CALL AN AUDIBLE. Collapses
+            the three controls that used to sit here (Call an Audible / Stepped Audible / Survey
+            Splice) plus a transport dropdown into one toggle, per Founder ruling BP152 (full
+            quote on the oneAudibleMode state declaration above). This button drives ONLY
+            steppedAudible -- Survey is not read, set, or shown here (see the state comment's
+            SECOND-PASS note). Deliberately a separate control from Audit the Run, which appears
+            after a run that did not resolve -- Audit annotates what already happened, this
+            steers what happens next. */}
         <button
           type="button"
-          onClick={() => setAudibleMode((v) => !v)}
+          onClick={() => setOneAudibleMode((v) => !v)}
           disabled={running}
-          title={'Stop before every Google query and again on what comes back, until you say go.\nOff: the run is exactly the run it has always been.'}
+          title={'Off: the run is exactly the run it has always been.\nOn: stops once per step -- after it completes, before the next begins -- until you respond.'}
           style={{
-            background: audibleMode ? 'linear-gradient(135deg, #b45309, #f59e0b)' : 'none',
-            border: `1px solid ${audibleMode ? '#f59e0b' : '#334155'}`, borderRadius: 5,
-            color: running ? '#334155' : audibleMode ? '#0d1117' : '#94a3b8',
+            background: oneAudibleMode ? 'linear-gradient(135deg, #7c3aed, #a78bfa)' : 'none',
+            border: `1px solid ${oneAudibleMode ? '#a78bfa' : '#334155'}`, borderRadius: 5,
+            color: running ? '#334155' : oneAudibleMode ? '#0d1117' : '#94a3b8',
             fontSize: 11, fontWeight: 700, padding: '3px 9px',
             cursor: running ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
           }}
         >
-          Call an Audible{audibleMode ? ' · ARMED' : ''}
+          Call an Audible{oneAudibleMode ? ' · ARMED' : ''}
         </button>
-        {/* D-BP151-023/BISHOP/seg-stepped-audible -- STEPPED AUDIBLE. Founder, BP151: "list my
-            steps, and then show it happen, then stop before the next step and shows suggestions,
-            for me to respond to or correct." Separate control from Call an Audible above --
-            per-STEP, not per-call, and only comparative-cascade runs are mapped (see
-            stepped_audible.ts's header). */}
-        <button
-          type="button"
-          onClick={() => setSteppedMode((v) => !v)}
-          disabled={running}
-          title={'List the run\'s steps up front, then stop once per step -- after it completes, before the next begins -- until you respond.\nOnly comparative-cascade questions (e.g. qid 98) are mapped; other methods run unaffected, same as OFF.'}
-          style={{
-            background: steppedMode ? 'linear-gradient(135deg, #7c3aed, #a78bfa)' : 'none',
-            border: `1px solid ${steppedMode ? '#a78bfa' : '#334155'}`, borderRadius: 5,
-            color: running ? '#334155' : steppedMode ? '#0d1117' : '#94a3b8',
-            fontSize: 11, fontWeight: 700, padding: '3px 9px',
-            cursor: running ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
-          }}
-        >
-          Stepped Audible{steppedMode ? ' · ARMED' : ''}
-        </button>
-        {/* D-BP152-011/BISHOP/seg-splice-toggle -- SURVEY SPLICE (D-BP151-026). Founder, BP152:
-            "so can you make the one line change. or tell me what button to push to make it so."
-            This is that button. The label states the SOURCE, not just ON/OFF, so an env-driven
-            splice can never read the same as an untouched default -- requirement 3 of this
-            ticket. */}
-        <button
-          type="button"
-          onClick={() => setSpliceUi((v) => !v)}
-          disabled={running}
-          title={
-            spliceSource === 'env'
-              ? 'ON because the CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 environment variable is set -- this button cannot turn it off; unset the env var and restart to turn it off.\nWhen on: Survey (Founder steps 2, 3, 4, 6) runs before method selection and DEMAND is derived from the surveyed ask, not the CUES table.'
-              : 'Off (the shipped default): the run is exactly the run it has always been.\nOn: Survey (Founder steps 2, 3, 4, 6) runs before method selection and DEMAND is derived from the surveyed ask, not the CUES table. Founder, BP151, Q-20: "Do it, and see if it works before I ratify."'
-          }
-          style={{
-            background: spliceEffective ? 'linear-gradient(135deg, #065f46, #10b981)' : 'none',
-            border: `1px solid ${spliceEffective ? '#10b981' : '#334155'}`, borderRadius: 5,
-            color: running ? '#334155' : spliceEffective ? '#0d1117' : '#94a3b8',
-            fontSize: 11, fontWeight: 700, padding: '3px 9px',
-            cursor: running ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
-          }}
-        >
-          Survey Splice{spliceEffective ? ` · ${spliceSource === 'env' ? 'ON (env)' : 'ARMED'}` : ''}
-        </button>
-        {/* D-BP152-011 -- AMBIGUITY TRANSPORT (D-BP151-032). Only consulted when Survey Splice is
-            on; shown always so the effective/default value ('google') is never hidden. Founder,
-            BP151, relayed addendum: "I want to always run it on google, which should be the
-            default that can be changed in Mnemosynec at will." '' = untouched -- sent as
-            `undefined`, never a literal 'google', so an AMBIGUITY_QUERY_TRANSPORT=gemma env
-            override still works exactly as before for an operator who never opens this select. */}
-        <select
-          value={transportUi}
-          onChange={(e) => setTransportUi(e.target.value as '' | 'google' | 'gemma')}
-          disabled={running}
-          title={`Which transport SURVEY STEP 2's ambiguity query uses. Only consulted when Survey Splice is on.\nEffective now: ${transportEffective} (source: ${transportSource}).\n"Default" sends nothing, which honors the AMBIGUITY_QUERY_TRANSPORT env var if set, or 'google' otherwise -- it never forces 'google', which would silently override that env var.`}
-          style={{
-            background: transportSource === 'default' ? 'none' : '#0d1117',
-            border: `1px solid ${transportSource === 'default' ? '#334155' : transportSource === 'env' ? '#10b981' : '#38bdf8'}`,
-            borderRadius: 5, color: transportSource === 'default' ? '#94a3b8' : '#e2e8f0',
-            fontSize: 11, fontWeight: 700, padding: '3px 6px',
-            cursor: running ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
-          }}
-        >
-          <option value="">Transport: default ({transportEffective}{transportSource === 'env' ? ' · env' : ''})</option>
-          <option value="google">Transport: google</option>
-          <option value="gemma">Transport: gemma</option>
-        </select>
         <button
           type="button"
           onClick={handleClear}
@@ -901,53 +817,20 @@ export function LianaCycleTab() {
         </button>
       </div>
 
-      {/* D-BP150-001 -- THE TOGGLE HAS TO SAY WHAT IT WILL DO, AND WHEN.
-          Founder, BP150, on first use: "I clicked 'Call an Audible' and now it says 'On' but what
-          does that mean?" He had it on while looking at an already-finished run, so nothing
-          happened and nothing explained why. A state label with no statement of effect is the
-          defect his own BP148 ruling names: "which means what to who about why? no one knows."
-          This banner states the effect, and that it applies to the NEXT run, not this one. */}
-      {audibleMode && !activePause && (
-        <div style={{
-          margin: '0 16px 8px', padding: '7px 12px', background: '#3b2508',
-          border: '1px solid #b45309', borderRadius: 6, color: '#fbbf24', fontSize: 12,
-          fontFamily: 'system-ui, sans-serif',
-        }}>
-          <strong>Call an Audible is ARMED — nothing is paused yet.</strong> It takes effect on the
-          NEXT run you start. Type a question or qid and press Enter; the run will stop before every
-          Google query, and again on what comes back, and wait until you press a button. It does
-          nothing to a run that has already finished — for that, use Audit the Run.
-        </div>
-      )}
-
-      {steppedMode && !activeSteppedPause && (
+      {/* D-BP152-012 -- THE TOGGLE HAS TO SAY WHAT IT WILL DO, AND WHEN. Founder, BP150, on the
+          original toggle: "I clicked 'Call an Audible' and now it says 'On' but what does that
+          mean?" A state label with no statement of effect is the defect his own BP148 ruling
+          names: "which means what to who about why? no one knows." This banner states the
+          effect in plain words, at most two sentences (his own complaint about the old copy:
+          "That.. will confuse anyone reading it."), and that it applies to the NEXT run. */}
+      {oneAudibleMode && !activePause && !activeSteppedPause && (
         <div style={{
           margin: '0 16px 8px', padding: '7px 12px', background: '#2a1b47',
           border: '1px solid #7c3aed', borderRadius: 6, color: '#c4b5fd', fontSize: 12,
           fontFamily: 'system-ui, sans-serif',
         }}>
-          <strong>Stepped Audible is ARMED — nothing is paused yet.</strong> On the NEXT run, the
-          full step list prints first (each step is his own numbered step, verbatim, or marked
-          UNATTRIBUTED — TARE), then the run stops once per step — after it completes, before the
-          next begins — and waits until you respond. Only comparative-cascade questions (e.g. qid
-          98) are mapped; any other method runs unaffected, exactly as if this were off.
-        </div>
-      )}
-
-      {/* D-BP152-011 -- SAME "STATE THE EFFECT" RULE AS THE TWO BANNERS ABOVE, and doubly so
-          here: this one can be ON from an env var the operator never touched in this window at
-          all. It says so explicitly rather than only showing a color. */}
-      {spliceEffective && (
-        <div style={{
-          margin: '0 16px 8px', padding: '7px 12px', background: '#052e22',
-          border: '1px solid #10b981', borderRadius: 6, color: '#6ee7b7', fontSize: 12,
-          fontFamily: 'system-ui, sans-serif',
-        }}>
-          <strong>Survey Splice is {spliceSource === 'env' ? 'ON — set by the CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 environment variable, not by this button' : 'ARMED'}.</strong>{' '}
-          On the NEXT run, Survey (Founder steps 2, 3, 4, 6) runs before method selection and
-          DEMAND is derived from the surveyed ask instead of the CUES table. Ambiguity transport
-          for that survey: <strong>{transportEffective}</strong> (source: {transportSource}).
-          {spliceSource === 'env' && ' This button cannot turn the splice off while that env var is set.'}
+          <strong>Call an Audible is ON, nothing is paused yet.</strong> Your next run will stop once
+          per step so you can respond, then continue when you say go.
         </div>
       )}
 
