@@ -95,7 +95,7 @@ console.log('\n=== cdp_guard harness (D-BP151-038) ===\n');
 {
   const { isCdpRequested, getRequestedCdpPort, CDP_PORT } = require(DIST_MODULE_PATH);
 
-  assert(CDP_PORT === 9333, 'CDP_PORT constant matches package.json:12 and register_gate.mjs (9333)', String(CDP_PORT));
+  assert(CDP_PORT === 9333, 'CDP_PORT constant matches package.json:12\'s --remote-debugging-port value (9333)', String(CDP_PORT));
 
   assert(
     isCdpRequested(['electron', '.', '--remote-debugging-port=9333']) === true,
@@ -158,13 +158,15 @@ console.log('\n=== cdp_guard harness (D-BP151-038) ===\n');
   }
 
   // 2c: NOT packaged, CDP requested -> does NOT refuse (this is npm run dev:main:cdp exactly --
-  //     the register gate's own path -- MUST stay untouched)
+  //     the dev debug/inspect path -- MUST stay untouched. As of D-BP151-041/56afd84f this is no
+  //     longer the register gate's path -- register_gate.mjs no longer uses CDP at all -- but the
+  //     guard's dev-launch shape is still tested here for its own sake)
   {
     const exitCalls: number[] = [];
     const { mod, restore } = freshCdpGuardWithFakeApp({ isPackaged: false, exit: (code: number) => exitCalls.push(code) });
     const refused = mod.enforcePackagedCdpRefusal(CDP_ARGV);
     restore();
-    assert(refused === false, 'enforcePackagedCdpRefusal: false for dev (isPackaged=false) + CDP requested -- THIS IS `npm run dev:main:cdp`, the register gate\'s only path to Google, and it must never refuse');
+    assert(refused === false, 'enforcePackagedCdpRefusal: false for dev (isPackaged=false) + CDP requested -- THIS IS `npm run dev:main:cdp`, and it must never refuse');
     assert(exitCalls.length === 0, 'enforcePackagedCdpRefusal: never calls app.exit in the dev:main:cdp shape', JSON.stringify(exitCalls));
   }
 

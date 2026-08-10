@@ -10,6 +10,26 @@
 // top-frame context. D-BP151-034 verified the port is dev-only and loopback-only TODAY, but
 // named no mechanism in this repo that keeps either of those true. This file is that mechanism.
 //
+// AMENDED 2026-08-09 (D-BP151-043, correcting the paragraph below): no production code path in
+// this repo requires CDP any more. `D-BP151-041` (commit `56afd84f`) rewired
+// scripts/register_gate.mjs onto the in-process `ctx.askGoogle` bridge already in scope at its
+// call site (comparative_cascade.ts) and deleted register_gate.mjs's own CDP dial
+// (`pickTarget()`, `askGoogleBlocks()`, the `PORT` constant) along with its standalone debug CLI
+// -- see SEG_RETURN_BP151_041_REGISTER_GATE_INPROCESS.md. This guard's refusal below fires
+// exactly as before (ONLY when app.isPackaged is true) and needed no code change, but its REASON
+// is narrower than the paragraph below states: it is not "don't break the register gate's only
+// path to Google" any more. It exists because the `--remote-debugging-port` CLI flag can still
+// be handed to a packaged MnemosyneC.exe by any launcher, shortcut, or script (empirical finding
+// #3 below) -- CDP has no authentication, so that flag alone would expose the Nexus-Authority
+// webview's live logged-in sessions on an end-user machine. Refusing that flag in a packaged
+// build remains this file's entire job, independent of what the register gate does. Founder Step
+// 1 (the register gate) now HAS a real production implementation that needs no CDP, in dev or in
+// a packaged build (SEG_RETURN_BP151_041_REGISTER_GATE_INPROCESS.md, "Does anything in the
+// production path still need CDP? No.") -- the paragraph below's closing claim that it has none
+// is the specific thing this amendment corrects.
+//
+// [ORIGINAL, SUPERSEDED BY THE AMENDMENT ABOVE -- kept verbatim as the historical record of what
+// this guard was built against, per this ticket's own instruction not to strip attribution]
 // THE TENSION THIS TICKET NAMES, NOT SOLVES: scripts/register_gate.mjs reaches Google through
 // the Founder's own logged-in Nexus-Authority session BY CONNECTING TO THIS SAME PORT (see
 // register_gate.mjs pickTarget()/askGoogleBlocks(), ~line 162-206). So this guard must never
@@ -59,8 +79,9 @@
 //   - "Explicit opt-in in dev" is, in practice, ALREADY true: choosing to run `dev:main:cdp`
 //     instead of plain `dev:main` IS the explicit opt-in (two different npm scripts, a
 //     deliberate choice every time). Adding a second gate (an env var, a settings flag) on top
-//     of that would only risk breaking the one thing this ticket forbids breaking -- the
-//     register gate's sole path to Google -- for a decision that is already explicit. Instead
+//     of that would only risk breaking the one thing this ticket forbade breaking at the time --
+//     the register gate's sole path to Google, since `D-BP151-041`/`56afd84f` this is no longer
+//     true, see the header amendment above -- for a decision that is already explicit. Instead
 //     this file makes the existing implicit opt-in LOUD (logCdpDevExposureBanner) so it is
 //     never silently on, without adding a second switch that could silently be left off.
 //   - "Log every CDP attach" is built (startCdpAttachWatcher) as honestly as this protocol
@@ -78,9 +99,12 @@ import { app } from 'electron';
 import { request as httpRequest } from 'node:http';
 import { execFile } from 'node:child_process';
 
-/** The one CDP port this repo ever uses -- package.json:12 (`dev:main:cdp`) and
- *  scripts/register_gate.mjs:34 (`const PORT = 9333`) both hardcode this same number. This
- *  guard reads it, it does not choose it or change it (ticket's own hard constraint). */
+/** The one CDP port this repo ever uses -- package.json:12 (`dev:main:cdp`) hardcodes it as the
+ *  `--remote-debugging-port` value. (scripts/register_gate.mjs used to hardcode this same number
+ *  too, as its own `PORT` constant, when it dialed CDP directly -- that constant was deleted by
+ *  `D-BP151-041`/`56afd84f` when the register gate stopped using CDP; see the header amendment
+ *  above.) This guard reads it, it does not choose it or change it (ticket's own hard
+ *  constraint). */
 export const CDP_PORT = 9333;
 
 /** Guarded replacement for `app.isPackaged`, same shape as mnem_eblet_store.ts's
@@ -158,7 +182,7 @@ export function enforcePackagedCdpRefusal(argv: readonly string[] = process.argv
     '[cdp_guard] this named gap. A packaged build is an end-user machine; CDP must never be\n' +
     '[cdp_guard] reachable there. Exiting now, before any window or session is created.\n' +
     '[cdp_guard] Dev workflow is UNAFFECTED: `npm run dev:main:cdp` always runs unpackaged, so\n' +
-    '[cdp_guard] this refusal never fires there -- the register gate keeps working in dev.\n' +
+    '[cdp_guard] this refusal never fires there.\n' +
     '================================================================================\n';
   console.error(banner);
 
@@ -181,10 +205,12 @@ let _devBannerLoggedOnce = false;
  *
  * Choosing to run `npm run dev:main:cdp` instead of plain `npm run dev:main` already IS the
  * explicit opt-in -- two different scripts, a deliberate choice every launch. Adding a further
- * env-var/flag gate on top would risk breaking the one thing this ticket forbids breaking (the
- * register gate's only path to Google) for a decision that is already explicit. So this function
- * does not block anything; it makes the already-explicit choice IMPOSSIBLE to miss in the logs,
- * once per process, so CDP is never quietly on in a dev session someone forgot they started.
+ * env-var/flag gate on top would have risked breaking the one thing this ticket forbade breaking
+ * at the time (the register gate's only path to Google -- since `D-BP151-041`/`56afd84f` this is
+ * no longer true, see the header amendment above) for a decision that is already explicit. So
+ * this function does not block anything; it makes the already-explicit choice IMPOSSIBLE to miss
+ * in the logs, once per process, so CDP is never quietly on in a dev session someone forgot they
+ * started.
  */
 export function logCdpDevExposureBanner(argv: readonly string[] = process.argv): void {
   if (resolveIsPackaged() || !isCdpRequested(argv) || _devBannerLoggedOnce) return;
@@ -194,9 +220,9 @@ export function logCdpDevExposureBanner(argv: readonly string[] = process.argv):
     `\n[cdp_guard] CDP is ACTIVE this session: --remote-debugging-port=${port} (dev build). ` +
       'Chrome DevTools Protocol has no authentication -- any local process on this machine can ' +
       'run arbitrary JavaScript in any open MnemosyneC window via this port for as long as this ' +
-      'process runs (D-BP151-034). This is expected while the register gate (scripts/' +
-      'register_gate.mjs) is running, and is closed off automatically in packaged builds by ' +
-      'enforcePackagedCdpRefusal() in this same file. Founder BP151 order: "Build the guard."\n',
+      'process runs (D-BP151-034). This is expected while `dev:main:cdp` is the launch script in ' +
+      'use, and is closed off automatically in packaged builds by enforcePackagedCdpRefusal() ' +
+      'in this same file. Founder BP151 order: "Build the guard."\n',
   );
 }
 

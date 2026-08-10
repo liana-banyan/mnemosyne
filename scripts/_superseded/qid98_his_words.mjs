@@ -1,6 +1,26 @@
 #!/usr/bin/env node
 // qid98_his_words.mjs -- D-BP149-036/BISHOP/S36/seg-hiswords
 //
+// MOVED to scripts/_superseded/ 2026-08-09 (D-BP151-043), per Rule 66 ("version, never
+// overwrite; _superseded siblings mandatory"). NOT CALLED from anywhere: grepped the repo before
+// moving -- package.json has no script entry for it, no test imports it, and its only other
+// mentions are historical citations in comparative_cascade.ts and liana_terminal_engine.ts's own
+// comments (crediting this file as the hand-worked proof their generalized method was built
+// from). Nothing runs this file today.
+//
+// BROKEN as of `D-BP151-041`/`56afd84f`, independent of this move: line ~23's
+// `runRegisterGate(OPT)` call passes no `askGoogle`, and register_gate.mjs's `runRegisterGate()`
+// now throws a clear error rather than falling back to a CDP dial when `askGoogle` is omitted
+// (register_gate.mjs deleted its own CDP dial -- `pickTarget()`, `askGoogleBlocks()`, the `PORT`
+// constant -- entirely; see SEG_RETURN_BP151_041_REGISTER_GATE_INPROCESS.md). This is left
+// unfixed on purpose: this script is a one-time hand-worked proof superseded by
+// comparative_cascade.ts's generalized registry method, and an honest throw on an obsolete call
+// shape is arguably more correct than patching a script nothing runs. This file's OWN `google()`
+// function below still has its own independent raw-CDP client (`pickTarget`/`cdpEval`, its own
+// `PORT = 9333`) -- that part is untouched by the register-gate change and would still work
+// against a live `npm run dev:main:cdp` session if this script were ever run again; only the
+// `runRegisterGate(OPT)` call at Stage 0 is broken.
+//
 // THE FOUNDER'S THIRTEEN QUESTIONS, VERBATIM, ON THE REAL NINE OPTIONS.
 //
 // Founder, BP149: "I could literally write a batch file, that asks Google the questions I asked,
@@ -17,10 +37,11 @@
 //
 // GEMMA extracts. THE CODE decides. GOOGLE is the only source.
 //
-//   node scripts\qid98_his_words.mjs
+//   node scripts\qid98_his_words.mjs   (historical invocation; see "MOVED"/"BROKEN" notes above --
+//   this path is now scripts\_superseded\qid98_his_words.mjs and Stage 0 will throw if run)
 
 import fs from "fs";
-import { runRegisterGate } from "./register_gate.mjs";
+import { runRegisterGate } from "../register_gate.mjs";
 const PORT = 9333, OLLAMA = "http://127.0.0.1:11434/api/generate";
 const MODEL = process.env.CASCADE_MODEL ?? "gemma4:12b";
 const OUT = "C:/Users/Administrator/Documents/LianaBanyanPlatform/BISHOP_DROPZONE/QID98_HIS_WORDS_RESULTS.md";

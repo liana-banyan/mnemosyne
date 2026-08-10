@@ -192,11 +192,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export class RegisterGateUnavailableError extends Error {}
 
 // Same bounded-retry idiom as googleBlocks() below (tries=3, i*4000ms settling delay between
-// attempts) -- FIX 1 applies it to the register gate call itself. The qid 98 receipt shows this
-// call failing with a bare "fetch failed" (register_gate.mjs's pickTarget() dials the CDP port
-// via a plain fetch -- see register_gate_loader.ts's own doc comment for why that dial can be a
-// transient main-process timing issue, not a permanent one), so a bounded retry with a settling
-// delay is the honest thing to try before concluding the gate truly cannot run.
+// attempts) -- FIX 1 applies it to the register gate call itself. The qid 98 receipt (BP149, pre-
+// D-BP151-041) showed this call failing with a bare "fetch failed" -- at that time,
+// register_gate.mjs's own pickTarget() dialed the CDP port via a plain fetch, and that dial could
+// hit a transient main-process timing issue, not a permanent one. AMENDED 2026-08-09
+// (D-BP151-043): register_gate.mjs no longer dials CDP at all (`D-BP151-041`/`56afd84f` rewired
+// it onto ctx.askGoogle -- see gateAskGoogle below), so that specific CDP failure mode is gone,
+// but the same bounded retry still guards against ordinary transient failures in the in-process
+// askGoogle call (e.g. the live Nexus-Authority window not yet ready), so it stays. A bounded
+// retry with a settling delay is still the honest thing to try before concluding the gate truly
+// cannot run.
 const REGISTER_GATE_RETRY_TRIES = 3;
 
 /** STAGE 0, register gate. Shared, not reproduced -- see this file's own header ("Google is the
