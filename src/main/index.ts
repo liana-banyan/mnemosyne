@@ -327,6 +327,13 @@ import { registerDispatchIPC } from './dispatch/dispatch_ipc';
 // BP060 Application 002 Steps 3+4 ? AI Dispatch IPC (UI-8 backend)
 import { registerAiDispatchIPC } from './ai_dispatch_ipc';
 
+// D-BP151-037/BISHOP/seg-query-capture-archive -- Query Capture Archive (three acts: clear,
+// archive, delete). captureQuery is called directly (not just via IPC) at the ONE chokepoint
+// every askGoogle-shaped call funnels through (runBrowserAuthorityQueryFromMainObserved below,
+// see D-BP144-7 T1's own comment for why that is the one real chokepoint).
+import { registerQueryCaptureIPC } from './query_capture/query_capture_ipc';
+import { captureQuery } from './query_capture/query_capture_store';
+
 // BP087 Wave 3 SEG-C1 + SEG-E1 - Thunderclap trial fire + Gemma multi-seg dispatch
 import { registerThunderclapFireIPC } from './thunderclap_fire_ipc';
 import { registerGemmaMultiSegIPC } from './gemma_multi_seg_ipc';
@@ -413,9 +420,19 @@ import { startResidentWatcher } from './resident'; // KN-BP147-M2: THE RESIDENT 
 // before app.whenReady() runs, crashing the whole app before any window opens: exactly what
 // this ticket's FAIL OPEN rule forbids, and exactly what the fallback exists to avoid needing.
 import type { BindingTarget, MutationReason, BindResult, ResolvedChonk } from './crystal/crystal_types';
+import { initCdpGuard } from './cdp_guard'; // D-BP151-038/BISHOP/seg-cdp-guard -- Founder BP151 "Build the guard." on D-BP151-034's named CDP-9333 gap
 // --- END APPEND ZONE: IMPORT -------------------------------------------------
 
 // --- Constants --------------------------------------------------------------
+
+// D-BP151-038/BISHOP/seg-cdp-guard -- Founder BP151 "Build the guard." on D-BP151-034's named
+// gap (CHROME_IN_MNEMOSYNEC_PHASE_0_BP151.md, table B6: CDP port 9333's Runtime.evaluate
+// bypasses contextBridge, no preventing mechanism existed). Called here, as the very first
+// statement after the import block and before app.whenReady() (line ~8756+), so a PACKAGED
+// build launched with --remote-debugging-port refuses and exits before any BrowserWindow,
+// webview, or IPC handler is created. In dev (npm run dev:main:cdp) this is a no-op refusal
+// path -- see src/main/cdp_guard.ts's own header for the full guard shape and why.
+initCdpGuard();
 
 // MNEMOSYNE_PROD_LAUNCH=1 forces loadFile of built renderer even from source tree
 // (used for smoke-launch + two-instance tests without full packaging)
@@ -1976,6 +1993,18 @@ async function runInteractiveBrowserAuthorityQueryObserved(
 export async function runBrowserAuthorityQueryFromMainObserved(
   query: BrowserAuthorityQuery,
 ): Promise<BrowserAuthorityDispatchObservation> {
+  // D-BP151-037/BISHOP/seg-query-capture-archive: this is the ONE chokepoint every
+  // askGoogle-shaped call funnels through (see this function's own header comment above,
+  // "one shared wrapper... every runBrowserAuthorityQueryFromMain attempt"), so capturing here
+  // covers every caller (Liana Cycle, the Ask-tab lookup, mesh-synergy, decompose, the
+  // eliminator, the direct IPC handler) with one instrumentation point rather than one per
+  // call site. Fire-and-forget: captureQuery() internally checks the Substrate Processing
+  // switch FIRST (query_capture_settings.ts's isQueryCaptureEnabled()) and writes nothing at
+  // all when it is off (the default) -- this line never blocks, never throws into the real
+  // dispatch below, and never logs the question text (captureQuery's own contract). No
+  // console output is added here -- see query_capture_settings.ts's header for why even a
+  // diagnostic log line is out of bounds for anything touching this switch.
+  try { captureQuery({ question: query.question, source: 'ask_google', authority: query.authority }); } catch { /* never blocks the real dispatch */ }
   const runOnceObserved = async (): Promise<BrowserAuthorityDispatchObservation> => {
     const nexusWindow = ensureNexusAuthoritySession();
     if (!nexusWindow) {
@@ -4450,6 +4479,9 @@ ${args.teachingText}
 
   // -- AI Dispatch IPC (BP060 Application 002 Steps 3+4 ? UI-8 backend) ----
   registerAiDispatchIPC();
+
+  // -- Query Capture Archive IPC (D-BP151-037/BISHOP/seg-query-capture-archive) --
+  registerQueryCaptureIPC();
 
   // -- BP087 Wave 5: Alexandrian Catacombs IPC ----------------------------------
   void (async () => {
