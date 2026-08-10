@@ -46,12 +46,60 @@ export interface CatalystResult {
   perOption: Record<string, string[]>;
 }
 
+/**
+ * D-BP151-046. ATTRIBUTED: Founder, BP151, verbatim: "can we include in our language matrix that we
+ * consult and write to, that some words in that order would NEVER be by themselves. When, ever,
+ * would you ever use the word South without either another word or a punctuation mark directly
+ * after it? Never. So it would either be ...South. Or ...South America. Or ... South Pole. Or ...
+ * South Park. etc. Never just 'I was thinking about going South but..' or 'I was thinking South '
+ * without a period. or question mark. or exclamation point or ; or : or whatever. That IS
+ * indicative -- so it would in that sentence of the question asked, HAVE TO BE 'South America' and
+ * in my examples 'South Pole' and 'South Park'. etc. Never by itself. This is a rule we can apply to
+ * resolve the stupid parts."
+ *
+ * MEASURED, live qid 98 run (LIANA_RUN_qid98_2026-08-09T22-37-19-658Z.json and the Founder's
+ * follow-on live run): this was not one fragment, it was six of seven multi-word options --
+ * "South America" surveyed "america", "South Asia" surveyed "asia", "North Africa" surveyed
+ * "africa", "Northeast United States" surveyed "northeast", "Central Asia" surveyed "central",
+ * "Arctic Circle" surveyed "arctic". Only the single-word option ("Europe") survived intact. Every
+ * wrongly-surveyed fragment's denotation was for a DIFFERENT referent than the option itself.
+ *
+ * STRUCTURAL IMPLEMENTATION, NOT A WORD LIST. A dedicated list of "words that never stand alone"
+ * (south, north, united, arctic, central, ...) would be exactly the FEATURE_WORDS tare shape already
+ * found and rejected in REGISTER_GATE_AUDIT_BP151.md (12 of 15 rules there unattributed). This
+ * function detects the Founder's rule STRUCTURALLY instead: a run of 2+ consecutive capitalized
+ * words in the option's OWN pre-lowercase text is one referent's proper name and is never split --
+ * his own diagnostic ("would you ever use the word South... by itself?") applied mechanically to
+ * capitalization, English's own grammatical marker for a proper-noun sequence, not to a
+ * hand-authored vocabulary. No model call, no new list: FUNCTION_WORDS (already defined above, used
+ * elsewhere in this file for the identical purpose of excluding non-denotational words) trims a
+ * leading/trailing word that is capitalized only for sentence-position grammar (e.g. "The United
+ * States" -> "united states"), reusing that existing list rather than adding a new one. A run with
+ * fewer than 2 surviving non-function words is NOT a bound phrase -- it is left in `remainder` so
+ * the ordinary single-word tokenizer below handles it exactly as it did before this ticket.
+ */
+function extractBoundPhrases(text: string): { phrases: string[]; remainder: string } {
+  const CAPITALIZED_RUN_RE = /\b[A-Z][A-Za-z'-]*(?:\s+[A-Z][A-Za-z'-]*)+\b/g;
+  const phrases: string[] = [];
+  const remainder = text.replace(CAPITALIZED_RUN_RE, (m) => {
+    const survivors = m.split(/\s+/).filter((w) => !FUNCTION_WORDS.has(w.toLowerCase()));
+    if (survivors.length >= 2) {
+      phrases.push(survivors.join(' ').toLowerCase());
+      return ' ';
+    }
+    return ` ${m} `;
+  });
+  return { phrases, remainder };
+}
+
 function tokenize(text: string): string[] {
-  return String(text)
+  const { phrases, remainder } = extractBoundPhrases(String(text));
+  const rest = remainder
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, ' ')
     .split(/\s+/)
     .filter((w) => w.length > 2 && !FUNCTION_WORDS.has(w));
+  return [...phrases, ...rest];
 }
 
 /**
