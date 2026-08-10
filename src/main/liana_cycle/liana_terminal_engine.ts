@@ -336,10 +336,49 @@ export async function runLianaCycleQuestion(
     };
     const freeText = parsed.qid == null;
 
+    // D-BP152-019/BISHOP/seg-step-zero -- STEP 0: STATE THE QUESTION, FULLY (FD-BP152-14).
+    // Founder, BP152, verbatim: "Remember. the FIRST thing to do is to state the question,
+    // fully." Asked whether this is a new step before vetting or a correction to how step 1 was
+    // recorded, he ruled: "The first is correct" -- its own step, preceding vetting, numbered
+    // STEP 0 (not inserted as a new 1) so every existing Founder-step reference (STAGE 0 = step
+    // 1, stepped_audible.ts's COMPARATIVE_CASCADE_STEP_DEFS, steps 13-18, etc.) keeps its number.
+    //
+    // WAS PREAMBLE BEFORE THIS TICKET: the two say()/note() lines this replaces ran before the
+    // step list began, emitted no 'stage' boundary, and owned no state a scrub could return to.
+    // This is now a real step on the SAME kind:'stage' convention every other step boundary in
+    // this file already uses (e.g. '-> DEMAND TEST...' / '-> METHOD SELECTION...' below) -- no
+    // new event kind invented. Its state snapshot is the note() lines immediately below the stage
+    // line, the SAME emit()/note() mechanism every other transcript fact already uses to land in
+    // the run receipt (no new receipt field, file, or directory -- index.ts's
+    // 'liana-terminal-run' handler already writes the full `events` array as `transcript`).
+    //
+    // FD-BP152-14's minimum, and DELIBERATELY ONLY this much -- this does NOT design the general
+    // step-state shape (candidate pool / denotations / demand / eliminations / discards,
+    // LIANA_CYCLE_BENCH_SPEC.md §3.2); that is spec build item 4 and is out of this ticket's
+    // scope:
+    //   - the question text, verbatim and complete;
+    //   - the option list, verbatim and complete, AND an explicit boolean for whether options
+    //     exist at all -- Founder, FD-BP152-08: "with the question and the answer possibilties
+    //     (if they exist, which they do on this one but on others may not)". A question with no
+    //     options is a first-class case, handled explicitly below (OPTIONS EXIST: false plus the
+    //     honest "(no lettered option list...)" line), not an edge case and not a silent empty
+    //     list.
+    //   - the source of the question (qid + corpus, or free text).
+    const step0Source = parsed.qid != null
+      ? `qid ${parsed.qid} (bundled MMLU-Pro corpus, resources/mmlu_pro_bundled/questions.jsonl)`
+      : 'free text (not in the bundled corpus)';
+    const step0OptionsExist = parsed.options != null;
+    emit({
+      kind: 'stage',
+      text: '-> STEP 0 -- STATE THE QUESTION, FULLY (Founder, BP152, verbatim: "Remember. the FIRST thing to do is to state the question, fully." FD-BP152-14)',
+      ts: nowIso(),
+    });
     say(emit, parsed.qid != null ? `qid ${parsed.qid}` : 'free-text question');
-    note(emit, `   ${parsed.question}`);
+    note(emit, `   SOURCE: ${step0Source}`);
+    note(emit, `   QUESTION (verbatim, complete): ${parsed.question}`);
+    note(emit, `   OPTIONS EXIST: ${step0OptionsExist}`);
     if (parsed.options) {
-      note(emit, `   ${Object.entries(parsed.options).map(([k, v]) => `${k}) ${v}`).join('  ')}`);
+      note(emit, `   OPTIONS (verbatim, complete): ${Object.entries(parsed.options).map(([k, v]) => `${k}) ${v}`).join('  ')}`);
     } else {
       note(emit, '   (no lettered option list -- typed as a bare question)');
     }
