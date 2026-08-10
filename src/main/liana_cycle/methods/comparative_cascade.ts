@@ -216,17 +216,23 @@ export async function runStage0RegisterGate(
   pool: string[],
   ctx: MethodRunContext,
 ): Promise<string[]> {
-  const { emit } = ctx;
+  const { emit, askGoogle } = ctx;
   const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
   const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
   const fact = (text: string) => emit({ kind: 'fact', text: `+ ${text}`, ts: nowIso() });
 
   step('STAGE 0  register gate -- is each option a member of the category at all?');
+  // D-BP151-041/BISHOP/seg-register-gate-inprocess: register_gate.mjs no longer dials CDP for
+  // itself. ctx.askGoogle is the SAME in-process bridge (runBrowserAuthorityQueryFromMain) this
+  // file already injects into googleBlocks() for every other stage (see this file's header) --
+  // wrapped here only to reshape GoogleAnswer's {ok, blocks} down to register_gate.mjs's expected
+  // RegisterGateAskGoogle shape (register_gate_loader.ts). No second CDP dial, no new bridge.
+  const gateAskGoogle = (question: string) => googleBlocks(askGoogle, question);
   let lastErrMsg = '';
   for (let attempt = 1; attempt <= REGISTER_GATE_RETRY_TRIES; attempt++) {
     try {
       const regMod = await loadRegisterGate();
-      const { notRegions, report } = await regMod.runRegisterGate(OPT, { verbose: false });
+      const { notRegions, report } = await regMod.runRegisterGate(OPT, { verbose: false, askGoogle: gateAskGoogle });
       for (const [L, r] of Object.entries(report)) {
         const ev = r.evidence ? `about=${r.evidence.about} feature=${r.evidence.featureHits.length} region=${r.evidence.regionHits.length}` : '(no evidence)';
         note(`   ${L}) ${OPT[L]}: ${r.verdict}  [${ev}]${r.scope ? `  scope: ${r.scope.why}` : ''}`);

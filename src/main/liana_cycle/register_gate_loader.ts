@@ -1,11 +1,11 @@
-// register_gate_loader.ts -- D-BP149-041/BISHOP/S41/seg-methodregistry
+// register_gate_loader.ts -- D-BP149-041/BISHOP/S41/seg-methodregistry, revised D-BP151-041
 //
 // Loads scripts/register_gate.mjs -- a real, standalone ESM module -- into the Electron main
 // process. Ticket instruction: "Import it, do not reproduce it." This file makes that import
 // actually work at runtime; register_gate.mjs's own source is never read into another file or
 // edited.
 //
-// TWO PROBLEMS SOLVED HERE, NEITHER BY TOUCHING register_gate.mjs:
+// ONE PROBLEM SOLVED HERE, NOT BY TOUCHING register_gate.mjs:
 //
 // 1. tsc, under this repo's own tsconfig.json ("module": "CommonJS"), compiles a plain
 //    `await import(specifier)` down to `Promise.resolve().then(() => require(specifier))`
@@ -16,30 +16,24 @@
 //    loads ESM regardless of the calling module's type. This is the standard CJS-to-ESM
 //    interop technique, not novel to this file.
 //
-// 2. register_gate.mjs calls `new WebSocket(...)` as a bare global -- correct when it was run
-//    tonight as a standalone `node scripts\register_gate.mjs` script under the SYSTEM Node
-//    (measured here: v24.11.0, which has WebSocket built in). Electron 31.7.7's bundled
-//    main-process Node is v20.18.0 -- measured directly (ELECTRON_RUN_AS_NODE=1, `typeof
-//    WebSocket` -> 'undefined') before writing this file. Fix: install the `ws` package
-//    (already a repo dependency, used elsewhere for federation/relay) as globalThis.WebSocket
-//    before the dynamic import resolves. This is a runtime environment shim, not a file edit.
+// D-BP151-041/BISHOP/seg-register-gate-inprocess: problem 2 that used to be solved here --
+// polyfilling a global `WebSocket` (via the `ws` package) because register_gate.mjs called
+// `new WebSocket(...)` to dial CDP directly -- no longer applies. register_gate.mjs now reaches
+// Google through an injected `askGoogle` function (comparative_cascade.ts's own ctx.askGoogle,
+// the SAME in-process bridge, runBrowserAuthorityQueryFromMain, every other caller in this
+// estate uses) instead of a CDP round trip, so it never constructs a WebSocket at all. The
+// polyfill and its `ws` import are deleted, not left dormant -- see
+// REGISTER_GATE_WEBCONTENTS_FEASIBILITY_BP151.md (D-BP151-040) for the finding this implements.
 //
 // SCOPE: dev-path only. scripts/ is not in electron-builder's `files` allowlist
 // (package.json's `build.files`), so a packaged build has no register_gate.mjs on disk.
 // loadRegisterGate() throws a clear, honest error in that case rather than silently no-opping
-// the register gate -- out of scope for this ticket, which proves the terminal live in dev over
-// CDP 9333, same as liana_terminal_engine.ts's existing resolveBundledDatasetPath() dev-only
-// convention for resources/mmlu_pro_bundled/questions.jsonl.
+// the register gate.
 
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app } from 'electron';
-import WS from 'ws';
-
-if (typeof (globalThis as unknown as { WebSocket?: unknown }).WebSocket === 'undefined') {
-  (globalThis as unknown as { WebSocket: unknown }).WebSocket = WS;
-}
 
 // See problem 1 above -- this MUST stay a runtime-constructed Function, not a literal
 // `import(...)` expression, or tsc will downlevel it to `require()` again.
@@ -60,10 +54,19 @@ export interface RegisterGateReportEntry {
   blocks?: number;
 }
 
+/** D-BP151-041: the shape runRegisterGate() now requires an injected asker to match -- see
+ *  register_gate.mjs's own "Google, via the injected in-process bridge" doc comment. Deliberately
+ *  a subset of comparative_cascade.ts's GoogleAnswer (ok + blocks only, no text/sources/via), so
+ *  comparative_cascade.ts's own googleBlocks(ctx.askGoogle, question) return value satisfies this
+ *  type with no adapter needed beyond dropping the extra fields TypeScript already allows. */
+export type RegisterGateAskGoogle = (
+  question: string,
+) => Promise<{ ok: boolean; blocks: Array<{ title: string; body: string; url: string; kind: string }> }>;
+
 export interface RegisterGateModule {
   runRegisterGate: (
     options: Record<string, string>,
-    opts?: { verbose?: boolean },
+    opts: { verbose?: boolean; askGoogle: RegisterGateAskGoogle },
   ) => Promise<{ notRegions: string[]; report: Record<string, RegisterGateReportEntry> }>;
   isAssertion: (sentence: string) => boolean;
   mentions: (text: string, optionText: string, allOptionTexts: string[]) => boolean;

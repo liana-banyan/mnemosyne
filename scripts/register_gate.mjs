@@ -12,11 +12,15 @@
 // that was reasoning about a file from memory rather than from disk, and four consecutive "one more
 // fix" claims were wrong. A gate you cannot test in isolation is a gate you cannot debug.
 //
-// Run it alone, and it prints its own evidence:
-//   node scripts\register_gate.mjs
-//   node scripts\register_gate.mjs --only=I,H,G
+// D-BP151-041/BISHOP/seg-register-gate-inprocess: the standalone `node scripts\register_gate.mjs`
+// debug-CLI entry point that used to run alone via its own CDP dial is REMOVED (Founder order,
+// BP151: "drop the debug CLI"). This module now runs only imported, in-process, inside Electron's
+// main-process V8 isolate (register_gate_loader.ts's loadRegisterGate(), called from
+// comparative_cascade.ts's runStage0RegisterGate()). It reaches Google through an injected
+// askGoogle function, never CDP -- see runRegisterGate()'s own doc comment below. Tested via
+// scripts/register_gate.test.mjs, not by running this file directly.
 //
-// Or import { runRegisterGate } from it.
+// Import { runRegisterGate } from it.
 //
 // THE RULE IT IMPLEMENTS, and every step is code, no model anywhere:
 //   1. Ask Google, one option per question. (Bulk questions returned generic definitions and named
@@ -35,7 +39,6 @@
 
 import fs from "fs";
 
-const PORT = 9333;
 const C = { dim: "\x1b[2m", b: "\x1b[1m", g: "\x1b[32m", y: "\x1b[33m", r: "\x1b[31m", c: "\x1b[36m", x: "\x1b[0m" };
 const say = (s = "") => console.log(s);
 
@@ -124,11 +127,11 @@ export function classifyOption(optionText, blocks, allOptionTexts) {
 // looking it up, from a source, before it is used to judge anything.
 let continentSetCache = null;
 
-export async function defineContinents(verbose = true) {
+export async function defineContinents(askGoogle, verbose = true) {
   if (continentSetCache) return continentSetCache;
   const q = "What are the seven continents of the world?";
   if (verbose) say(`${C.dim}    [scope] ${q}${C.x}`);
-  const res = await askGoogleBlocks(q);
+  const res = await askGoogle(q);
   const text = (res.blocks || []).map((b) => `${b.title} ${b.body}`).join(" ");
   // The seven names are a closed set; the code checks which of them the SOURCE actually states.
   const CANDIDATES = ["Africa", "Antarctica", "Asia", "Australia", "Europe", "North America", "South America", "Oceania"];
@@ -138,15 +141,15 @@ export async function defineContinents(verbose = true) {
   return continentSetCache;
 }
 
-export async function resolveScope(optionText, allOptionTexts, verbose = true) {
-  const cont = await defineContinents(verbose);
+export async function resolveScope(askGoogle, optionText, allOptionTexts, verbose = true) {
+  const cont = await defineContinents(askGoogle, verbose);
   const isContinent = cont.names.some((c) => norm(c) === norm(optionText));
   if (isContinent) return { verdict: "world_region", why: `"${optionText}" is a member of the sourced continent set` };
 
   // Not a continent by name. Ask what contains it -- containment settles the scope.
   const q = `What continent is ${optionText} located in?`;
   if (verbose) say(`${C.dim}    [scope] ${q}${C.x}`);
-  const res = await askGoogleBlocks(q);
+  const res = await askGoogle(q);
   const text = (res.blocks || []).map((b) => `${b.title} ${b.body}`).join(" ");
   const containers = cont.names.filter((c) => norm(c) !== norm(optionText) && norm(text).includes(norm(c)));
   if (containers.length) {
@@ -155,70 +158,42 @@ export async function resolveScope(optionText, allOptionTexts, verbose = true) {
   return { verdict: "undetermined", why: `no containing continent stated for "${optionText}"` };
 }
 
-// ── Google, through the Founder's live logged-in session ──────────────────────
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let cachedWs = null;
+// ── Google, via the injected in-process bridge ─────────────────────────────────
+//
+// D-BP151-041/BISHOP/seg-register-gate-inprocess: this module no longer dials CDP itself. It
+// used to reach the Founder's live Google session through a WebSocket round trip to a
+// `--remote-debugging-port` (askGoogleBlocks()/pickTarget(), superseded) that called
+// `window.amplify.runBrowserAuthorityQuery` in a renderer -- itself nothing but
+// `ipcRenderer.invoke('nexus-browser-authority-run-query')` wired straight back to
+// `runBrowserAuthorityQueryFromMain()` in this SAME main-process V8 isolate (see
+// REGISTER_GATE_WEBCONTENTS_FEASIBILITY_BP151.md, D-BP151-040). The caller
+// (comparative_cascade.ts's runStage0RegisterGate()) already holds that function as
+// `ctx.askGoogle` and now passes an adapter for it into `runRegisterGate(options, { askGoogle })`
+// below -- the CDP round trip was a longer path back to a function this process already had in
+// hand, so it is deleted rather than kept as a fallback. `askGoogle` here is any function shaped
+// `(question: string) => Promise<{ ok: boolean, blocks: Array<{title,body,url,kind}> }>`; the
+// standalone-CLI mode that used to supply this via CDP has been removed (Founder order, BP151:
+// "drop the debug CLI") -- callers MUST inject one, there is no fallback dial.
 
-async function pickTarget() {
-  const r = await fetch(`http://127.0.0.1:${PORT}/json/list`);
-  const pages = (await r.json()).filter((t) => t.type === "page");
-  for (const p of pages) {
-    const ok = await new Promise((resolve) => {
-      let done = false;
-      const ws = new WebSocket(p.webSocketDebuggerUrl);
-      const t = setTimeout(() => { if (!done) { done = true; try { ws.close(); } catch {} resolve(false); } }, 8000);
-      ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: `typeof (window.amplify && window.amplify.runBrowserAuthorityQuery) === "function"`, returnByValue: true } }));
-      ws.onmessage = (m) => { if (done) return; done = true; clearTimeout(t); const d = JSON.parse(m.data); try { ws.close(); } catch {} resolve(Boolean(d.result && d.result.result && d.result.result.value)); };
-      ws.onerror = () => { if (!done) { done = true; clearTimeout(t); resolve(false); } };
-    });
-    if (ok) return p.webSocketDebuggerUrl;
+export async function runRegisterGate(options, { verbose = true, askGoogle } = {}) {
+  if (typeof askGoogle !== "function") {
+    throw new Error(
+      "runRegisterGate requires an injected askGoogle({question}) function -- register_gate.mjs no longer dials CDP itself (D-BP151-041). Pass the in-process bridge (ctx.askGoogle from MethodRunContext, adapted to return {ok, blocks})."
+    );
   }
-  throw new Error("no CDP page exposes runBrowserAuthorityQuery -- is MnemosyneC running?");
-}
-
-export async function askGoogleBlocks(question, tries = 3) {
-  if (!cachedWs) cachedWs = await pickTarget();
-  for (let i = 1; i <= tries; i++) {
-    let raw = null;
-    try {
-      raw = await new Promise((resolve, reject) => {
-        const ws = new WebSocket(cachedWs);
-        const timer = setTimeout(() => { try { ws.close(); } catch {} reject(new Error("CDP timeout")); }, 120000);
-        const expr = `(async()=>{ try { const r = await window.amplify.runBrowserAuthorityQuery({ authority:'user_google', question: ${JSON.stringify(question)} });
-          if (!r) return JSON.stringify({ nullReturn: true });
-          return JSON.stringify({ snippet: r.snippet||'', results: (r.results||[]).map(x => ({ title: x.title||'', body: x.snippet||x.description||'', url: x.url||'' })) });
-        } catch(e) { return JSON.stringify({ error: String(e && e.message || e) }); } })()`;
-        ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, awaitPromise: true, returnByValue: true } }));
-        ws.onmessage = (m) => { clearTimeout(timer); const d = JSON.parse(m.data); try { ws.close(); } catch {} resolve(d.result && d.result.result ? d.result.result.value : null); };
-        ws.onerror = () => { clearTimeout(timer); reject(new Error("CDP socket error")); };
-      });
-    } catch (e) { raw = null; }
-    let j = null; try { j = JSON.parse(raw); } catch {}
-    if (j && !j.error && !j.nullReturn) {
-      const blocks = [];
-      if (j.snippet && j.snippet.trim()) blocks.push({ title: "", body: j.snippet.trim(), url: "", kind: "answer_box" });
-      for (const r of j.results || []) blocks.push({ ...r, kind: "organic" });
-      if (blocks.length) return { ok: true, blocks };
-    }
-    if (i < tries) await sleep(i * 6000);
-  }
-  return { ok: false, blocks: [] };
-}
-
-export async function runRegisterGate(options, { verbose = true } = {}) {
   const allTexts = Object.values(options);
   const notRegions = [], report = {};
   for (const [L, text] of Object.entries(options)) {
     const q = `In geography, is ${text} classified as a world region, or as a desert, rainforest, biome or climate zone?`;
     if (verbose) say(`${C.dim}  ${q}${C.x}`);
-    const res = await askGoogleBlocks(q);
+    const res = await askGoogle(q);
     if (!res.ok) { if (verbose) say(`${C.y}    no answer${C.x}`); report[L] = { verdict: "no_answer" }; continue; }
     let { verdict, evidence } = classifyOption(text, res.blocks, allTexts);
     // THE FOUNDER'S CONDITIONAL: a term that gets two different classifications does not get
     // guessed at. Go define the terms and establish the relative scope.
     if (verdict === "conflict") {
       if (verbose) say(`${C.y}    ${text}: CONFLICT -- classified both ways, resolving scope${C.x}`);
-      const scoped = await resolveScope(text, allTexts, verbose);
+      const scoped = await resolveScope(askGoogle, text, allTexts, verbose);
       verdict = scoped.verdict;
       if (verbose) say(`${C.dim}    [scope] -> ${verdict}: ${scoped.why}${C.x}`);
       report[L] = { verdict, evidence, scope: scoped, blocks: res.blocks.length };
@@ -238,32 +213,15 @@ export async function runRegisterGate(options, { verbose = true } = {}) {
   return { notRegions, report };
 }
 
-// ── standalone ────────────────────────────────────────────────────────────────
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}` || process.argv[1].endsWith("register_gate.mjs")) {
-  const OPT = { A: "South America", B: "South Asia", C: "North Africa", D: "Northeast United States",
-                E: "Europe", F: "Central Asia", G: "Arctic Circle", H: "Amazon Rainforest", I: "Sahara Desert" };
-  const only = (process.argv.filter((a) => a.startsWith("--only="))[0] || "").split("=")[1];
-  const subset = only ? Object.fromEntries(Object.entries(OPT).filter(([L]) => only.split(",").includes(L))) : OPT;
-
-  // SELF-TEST FIRST, no network: the exact blocks that defeated the old gate.
-  say(`${C.b}SELF-TEST (no network) -- the real blocks that broke the previous gate${C.x}`);
-  const saharaBlocks = [
-    { title: "", body: "The core desert biome encompasses about half that area, while the greater Sahara includes a full range of semiarid and related ecosystems." },
-    { title: "Sahara -- Web results Sahara Wikipedia", body: "a desert spanning North Africa. it is the largest hot desert in the world. The desert covers much of North Africa, excluding the fertile region" },
-    { title: "Sahara | Geography and Cartography", body: "People also ask What is the Sahara Desert classified as? Is the Sahara Desert a biome or ecosystem?" },
-  ];
-  const samBlocks = [
-    { title: "", body: "South America, fourth largest of the world's continents. It is the southern portion of the landmass generally referred to as the New World." },
-    { title: "Climate and Biomes in South America", body: "South America features tropical, subtropical, temperate, and polar climate zones." },
-  ];
-  const all = Object.values(OPT);
-  for (const [name, blocks, expect] of [["Sahara Desert", saharaBlocks, "not_a_world_region"], ["South America", samBlocks, "world_region"]]) {
-    const { verdict, evidence } = classifyOption(name, blocks, all);
-    const ok = verdict === expect;
-    say(`  ${ok ? C.g + "PASS" : C.r + "FAIL"}${C.x}  ${name}: got ${verdict}, expected ${expect}   [about=${evidence.about} feature=${evidence.featureHits.length} region=${evidence.regionHits.length}]`);
-  }
-
-  say(""); say(`${C.b}LIVE (Google, ${Object.keys(subset).length} option(s))${C.x}`);
-  const { notRegions } = await runRegisterGate(subset);
-  say(""); say(`${C.b}NOT WORLD REGIONS: ${notRegions.join(", ") || "(none)"}${C.x}`);
-}
+// D-BP151-041/BISHOP/seg-register-gate-inprocess: the standalone `node scripts\register_gate.mjs`
+// debug-CLI mode (and its no-network self-test) that used to live here is REMOVED. Founder-ordered
+// (BP151, verbatim: "drop the debug CLI"). It only ever worked by dialing CDP directly (via the
+// now-deleted askGoogleBlocks()/pickTarget()), and this module no longer carries that dial -- a
+// bare `node` process has no in-process askGoogle to inject, so the entry point would be a
+// half-path that looks callable and isn't. The self-test's fixtures (the Sahara/South America
+// blocks that defeated the previous gate) now live as real, run assertions in
+// scripts/register_gate.test.mjs, alongside coverage for the injected-askGoogle wiring this
+// ticket adds. To exercise the gate live, run it the way production does: through
+// comparative_cascade.ts's Stage 0 inside the running Electron app (`npm run dev` /
+// `npm run dev:main`), which now injects ctx.askGoogle -- see register_gate_loader.ts and
+// comparative_cascade.ts's runStage0RegisterGate().
