@@ -26,6 +26,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   LianaAudibleAction,
   LianaAudiblePause,
+  LianaLaboratoryStepSummary,
   LianaSteppedAction,
   LianaSteppedPause,
   LianaTeachingFile,
@@ -288,6 +289,27 @@ export function LianaCycleTab() {
   const [steppedAnswering, setSteppedAnswering] = useState(false);
   const steppedResponseRef = useRef<HTMLTextAreaElement>(null);
 
+  // D-BP152-022/BISHOP/seg-laboratory-and-keep -- THE LABORATORY. FD-BP152-07: ephemeral by
+  // default, persisted only when the operator explicitly says "keep". Every one of these is
+  // wholly separate from the stepped-pause action union (approve/correct/redirect/ask_google) --
+  // keeping a step never flows through answerSteppedPause()/lianaSteppedRespond, so the four
+  // existing actions are untouched by this feature (see stepped_audible.ts's own header).
+  //
+  // lastAskGoogleQuery: exactly what was last sent via "Send to Google" in the CURRENT run's Step
+  // 0 pause chain -- captured in answerSteppedPause() below, at the moment it is sent, never
+  // re-derived from the transcript. null until a send happens; reset to null at the start of
+  // every new run (handleRun) so a stale run's query can never be Kept under a new one.
+  const [lastAskGoogleQuery, setLastAskGoogleQuery] = useState<string | null>(null);
+  // The raw text he typed to start the CURRENT run (e.g. "98"), captured once in handleRun --
+  // this ticket's "provenance (which qid/run it was authored during)".
+  const runInputRef = useRef<string>('');
+  const [laboratoryName, setLaboratoryName] = useState('');
+  const [laboratorySaving, setLaboratorySaving] = useState(false);
+  const [laboratoryResult, setLaboratoryResult] = useState<{ ok: boolean; path?: string; version?: string; error?: string } | null>(null);
+  const [laboratorySteps, setLaboratorySteps] = useState<LianaLaboratoryStepSummary[]>([]);
+  const [laboratoryListState, setLaboratoryListState] = useState<'idle' | 'loading' | 'loaded' | 'unavailable'>('idle');
+  const [laboratoryOpen, setLaboratoryOpen] = useState(false);
+
   // D-BP150-002/BISHOP/S02/seg-notesrecall -- HIS EARLIER NOTES, AVAILABLE MID-PAUSE.
   // Founder, BP150: "post whichever of my notes I want into the textbox I'm typing in, so I don't
   // have to go read it, or do it from memory." His qid 85 walk notes ARE the spec for the method
@@ -446,6 +468,13 @@ export function LianaCycleTab() {
       }]);
       return;
     }
+    // D-BP152-022: capture EXACTLY what is about to be sent, so "Keep" (a wholly separate,
+    // additive control below) can later save the SAME string ask_google itself sends -- never
+    // re-derived from the transcript. Captured here, before the next pause's own
+    // onLianaSteppedPause handler clears steppedResponseText.
+    if (action === 'ask_google' && pause.step.key === 'step0') {
+      setLastAskGoogleQuery(steppedResponseText);
+    }
     setSteppedAnswering(true);
     try {
       await window.amplify.lianaSteppedRespond({
@@ -472,6 +501,55 @@ export function LianaCycleTab() {
   const handleSteppedResponseKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void answerSteppedPause('approve'); }
   };
+
+  // D-BP152-022/BISHOP/seg-laboratory-and-keep -- LIST. Read-only; loaded on demand (opening the
+  // "Show saved steps" panel), not on mount -- same lazy-load reasoning loadNotes() above uses.
+  const loadLaboratorySteps = useCallback(async () => {
+    if (!window.amplify?.lianaLaboratoryList) { setLaboratoryListState('unavailable'); return; }
+    setLaboratoryListState('loading');
+    try {
+      const res = await window.amplify.lianaLaboratoryList();
+      setLaboratorySteps(res.steps ?? []);
+      setLaboratoryListState('loaded');
+    } catch {
+      setLaboratoryListState('unavailable');
+    }
+  }, []);
+
+  // KEEP. Only meaningful once lastAskGoogleQuery is set (a "Send to Google" round already
+  // happened this pause chain). Saving does NOT promote -- this writes a Tier 1 Laboratory
+  // record only; no Method, no Playbook entry, no success test runs against it (FD-BP152-10).
+  const handleKeepLaboratoryStep = useCallback(async () => {
+    if (!lastAskGoogleQuery || !laboratoryName.trim() || laboratorySaving) return;
+    if (!window.amplify?.lianaLaboratorySave) {
+      setLaboratoryResult({ ok: false, error: 'Preload bridge missing (lianaLaboratorySave) -- rebuild main and restart the app.' });
+      return;
+    }
+    setLaboratorySaving(true);
+    try {
+      const res = await window.amplify.lianaLaboratorySave({
+        name: laboratoryName.trim(),
+        queryTextVerbatim: lastAskGoogleQuery,
+        provenance: { runInput: runInputRef.current },
+      });
+      setLaboratoryResult(res);
+      if (res.ok) {
+        setLaboratoryName('');
+        if (laboratoryOpen) void loadLaboratorySteps();
+      }
+    } catch (err) {
+      setLaboratoryResult({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setLaboratorySaving(false);
+    }
+  }, [lastAskGoogleQuery, laboratoryName, laboratorySaving, laboratoryOpen, loadLaboratorySteps]);
+
+  // LOAD. Requirement 3: "Loading fills the box; it does NOT auto-execute -- he still presses
+  // send." This handler does exactly one thing -- setSteppedResponseText() -- and never calls
+  // answerSteppedPause()/window.amplify.lianaSteppedRespond, so nothing here can execute a query.
+  const handleLoadLaboratoryStep = useCallback((step: LianaLaboratoryStepSummary) => {
+    setSteppedResponseText(step.queryTextVerbatim);
+  }, []);
 
   // Focus whichever box the operator will actually type in at this phase: the query on the way
   // out (the one he can change), the note on the way back (the query is history by then).
@@ -563,6 +641,11 @@ export function LianaCycleTab() {
     setActivePause(null);
     // D-BP151-023: same reasoning, for a stepped pause left over from a previous run.
     setActiveSteppedPause(null);
+    // D-BP152-022: a Laboratory "Keep" from the PREVIOUS run must never attach to this one --
+    // reset before the new run's own provenance (runInputRef) is captured just below.
+    setLastAskGoogleQuery(null);
+    setLaboratoryResult(null);
+    runInputRef.current = text;
     setTranscript((prev) => [
       ...prev,
       {
@@ -1256,6 +1339,129 @@ export function LianaCycleTab() {
                 >
                   Send to Google — sends the box above verbatim, pauses again with the raw response
                 </button>
+              )}
+
+              {/* D-BP152-022/BISHOP/seg-laboratory-and-keep -- THE LABORATORY (FD-BP152-10 tier
+                  1) AND KEEP (FD-BP152-07: ephemeral unless he says "keep"). ONLY shown at Step 0
+                  -- same reasoning as the Send to Google button just above. This entire block is
+                  a channel separate from answerSteppedPause()/lianaSteppedRespond: naming and
+                  Keeping a query, and Loading a saved one, never touch the stepped-pause action
+                  union. Saving does NOT promote -- nothing here becomes a Method or a Playbook
+                  entry, and no success test runs against it. */}
+              {activeSteppedPause.step.key === 'step0' && (
+                <div style={{
+                  background: '#0d1524', border: '1px solid #1e3a5f', borderRadius: 6, padding: 10,
+                  display: 'flex', flexDirection: 'column', gap: 8,
+                }}>
+                  <div style={{ fontSize: 11, color: '#7dd3fc', fontWeight: 700, fontFamily: 'system-ui, sans-serif' }}>
+                    LABORATORY — ephemeral unless you Keep it
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ fontSize: 10, color: '#94a3b8', fontFamily: 'system-ui, sans-serif' }}>
+                      {lastAskGoogleQuery
+                        ? 'Name for the query you just sent — Keep saves it as a Laboratory step'
+                        : 'Send a query to Google above first — then you can name and Keep it'}
+                    </label>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <input
+                        value={laboratoryName}
+                        onChange={(e) => setLaboratoryName(e.target.value)}
+                        disabled={!lastAskGoogleQuery || laboratorySaving}
+                        placeholder="e.g. smallest question set"
+                        style={{
+                          flex: 1, background: '#05080d', border: '1px solid #334155', borderRadius: 6,
+                          color: '#e2e8f0', padding: '6px 8px', fontSize: 12, fontFamily: 'Consolas, monospace', outline: 'none',
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleKeepLaboratoryStep()}
+                        disabled={!lastAskGoogleQuery || !laboratoryName.trim() || laboratorySaving}
+                        style={{
+                          background: 'none', border: '1px solid #38bdf8', borderRadius: 6,
+                          color: (!lastAskGoogleQuery || !laboratoryName.trim() || laboratorySaving) ? '#334155' : '#7dd3fc',
+                          padding: '6px 10px', fontSize: 12, fontWeight: 700,
+                          cursor: (!lastAskGoogleQuery || !laboratoryName.trim() || laboratorySaving) ? 'default' : 'pointer',
+                          fontFamily: 'system-ui, sans-serif', outline: 'none', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {laboratorySaving ? 'Keeping…' : 'Keep'}
+                      </button>
+                    </div>
+                    {laboratoryResult && (
+                      <div style={{ fontSize: 10, fontFamily: 'monospace', color: laboratoryResult.ok ? '#86efac' : '#fca5a5', wordBreak: 'break-word' }}>
+                        {laboratoryResult.ok
+                          ? `saved: ${laboratoryResult.path} (version ${laboratoryResult.version})`
+                          : `NOT saved: ${laboratoryResult.error}`}
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !laboratoryOpen;
+                      setLaboratoryOpen(next);
+                      if (next && laboratoryListState === 'idle') void loadLaboratorySteps();
+                    }}
+                    style={{
+                      background: 'none', border: '1px solid #334155', borderRadius: 6, color: '#94a3b8',
+                      padding: '5px 8px', fontSize: 11, cursor: 'pointer', fontFamily: 'system-ui, sans-serif',
+                      outline: 'none', alignSelf: 'flex-start',
+                    }}
+                  >
+                    {laboratoryOpen ? 'Hide saved steps ▾' : 'Show saved steps ▸'}
+                  </button>
+                  {laboratoryOpen && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 180, overflowY: 'auto' }}>
+                      {laboratoryListState === 'loading' && (
+                        <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'system-ui, sans-serif' }}>loading…</div>
+                      )}
+                      {laboratoryListState === 'unavailable' && (
+                        <div style={{ fontSize: 11, color: '#fca5a5', fontFamily: 'system-ui, sans-serif' }}>
+                          Laboratory list unavailable — rebuild main and restart the app.
+                        </div>
+                      )}
+                      {laboratoryListState === 'loaded' && laboratorySteps.length === 0 && (
+                        <div style={{ fontSize: 11, color: '#475569', fontFamily: 'system-ui, sans-serif' }}>none saved yet</div>
+                      )}
+                      {laboratorySteps.map((step) => (
+                        <div key={`${step.name}::${step.version}`} style={{
+                          display: 'flex', alignItems: 'center', gap: 6, background: '#111827',
+                          border: '1px solid #1e293b', borderRadius: 6, padding: '5px 8px',
+                        }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{
+                              fontSize: 11, color: '#e2e8f0', fontFamily: 'system-ui, sans-serif', fontWeight: 700,
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>
+                              {step.name} <span style={{ color: '#64748b', fontWeight: 400 }}>v{step.version}</span>
+                            </div>
+                            <div style={{ fontSize: 10, color: '#64748b', fontFamily: 'system-ui, sans-serif' }}>
+                              {step.savedAt} · from {step.provenance.runInput || '(free text)'}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleLoadLaboratoryStep(step)}
+                            style={{
+                              background: 'none', border: '1px solid #475569', borderRadius: 6, color: '#a1a1aa',
+                              padding: '4px 8px', fontSize: 11, cursor: 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+                            }}
+                          >
+                            Load
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 10, color: '#475569', fontFamily: 'system-ui, sans-serif', lineHeight: 1.4 }}>
+                    Keeping saves this query only — nothing here becomes a Method or a Playbook
+                    entry, and no success test runs against it. Loading fills the box above; it
+                    never sends anything by itself.
+                  </div>
+                </div>
               )}
 
               <button

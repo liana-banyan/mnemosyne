@@ -418,6 +418,19 @@ declare global {
           abandonedAtStep?: number;
         };
       }) => Promise<{ ok: boolean; filePath?: string; bytes?: number; error?: string }>;
+      // D-BP152-022/BISHOP/seg-laboratory-and-keep -- THE LABORATORY (FD-BP152-10 tier 1) AND
+      // KEEP (FD-BP152-07). A channel separate from lianaSteppedRespond -- saving is never a
+      // stepped-pause action.
+      lianaLaboratorySave?: (args: {
+        name: string;
+        queryTextVerbatim: string;
+        provenance: { runInput: string };
+      }) => Promise<{ ok: boolean; path?: string; version?: string; supersededPath?: string | null; error?: string }>;
+      lianaLaboratoryList?: () => Promise<{
+        ok: boolean;
+        steps: import('../shared/liana_cycle/liana_terminal_types').LianaLaboratoryStepSummary[];
+        error?: string;
+      }>;
       // Nexus Authority persistent session (BP137 0.9.12 Stage F1)
       setNexusAuthorityBrowserFlags?: (
         researchArmMode: boolean,

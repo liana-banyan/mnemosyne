@@ -872,6 +872,24 @@ contextBridge.exposeInMainWorld('amplify', {
   }): Promise<{ ok: boolean; filePath?: string; bytes?: number; error?: string }> =>
     ipcRenderer.invoke('liana-teach-submit', args),
 
+  // D-BP152-022/BISHOP/seg-laboratory-and-keep -- THE LABORATORY (FD-BP152-10 tier 1) AND KEEP
+  // (FD-BP152-07). Wraps 'liana-laboratory-save'/'liana-laboratory-list' (index.ts, registered
+  // next to 'liana-teach-submit' above). A channel wholly separate from lianaSteppedRespond --
+  // saving a query is never a stepped-pause action.
+  lianaLaboratorySave: (args: {
+    name: string;
+    queryTextVerbatim: string;
+    provenance: { runInput: string };
+  }): Promise<{ ok: boolean; path?: string; version?: string; supersededPath?: string | null; error?: string }> =>
+    ipcRenderer.invoke('liana-laboratory-save', args),
+
+  // READ-ONLY: never writes, edits, or deletes a Laboratory file.
+  lianaLaboratoryList: (): Promise<{
+    ok: boolean;
+    steps: import('../shared/liana_cycle/liana_terminal_types').LianaLaboratoryStepSummary[];
+    error?: string;
+  }> => ipcRenderer.invoke('liana-laboratory-list'),
+
   // ── Nexus Authority persistent session (BP137 0.9.12 Stage F1) ─────────────
   // Thin wraps around the four IPC channels index.ts's registerIPCHandlers() registers next to
   // 'nexus-browser-authority-run-query' above -- see nexus_authority_persistent_session.ts's
