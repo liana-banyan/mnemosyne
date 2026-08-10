@@ -120,21 +120,20 @@
 // shape as `isContingencyOperatorSurveySpliceEnabled()`, polarity NOT flipped this time (Google
 // default matches the convention's usual "undefined = the shipped behavior" direction).
 //
-// WHY THIS DOES NOT RE-OPEN THE HARDWIRE-22 QUESTION D-BP151-031 ALREADY SETTLED. That ticket's
-// own header explains why gemmaExtract() could not answer the ambiguity query: there was no
-// PASSAGE, only the bare question, and asking a model to reason about a question with nothing to
-// extract from is exactly the judgment gemmaExtract()'s "report only what it states" wrapper was
-// measured to suppress -- so D-BP151-031 had the local model reason directly, a named, disclosed
-// relaxation (this file's HARDWIRE-23 section, item 3, below). Google changes what gets handed to
-// Gemma: `askGoogle(query)` returns a REAL passage (the Founder measured this himself, running the
-// query on Google by hand -- three named terms with standard meaning, alternative meaning, impact,
-// AND A CITATION, narrower on the local model's live run per D-BP151-031's own test 1f). Extracting
-// the same `{term, standardMeaning, alternativeMeaning, impact, isNegation}` shape OUT OF a real
-// Google passage is ordinary extraction -- `gemmaExtract()` answers it UNRELAXED, the same as every
-// other Survey element that reads a Google passage (elements/survey_ask.ts, elements/field_gate.ts,
-// methods/comparative_cascade.ts). The `transport === 'gemma'` branch below is untouched from
-// D-BP151-031 -- same prompt, same reasoning, still the one named relaxation this file already
-// disclosed; selectable, not removed.
+// WHY THE 'GOOGLE' BRANCH DOES NOT TOUCH THE HARDWIRE-22 QUESTION. `askGoogle(query)` returns a
+// REAL passage (the Founder measured this himself, running the query on Google by hand -- three
+// named terms with standard meaning, alternative meaning, impact, AND A CITATION). Extracting the
+// same `{term, standardMeaning, alternativeMeaning, impact, isNegation}` shape OUT OF a real Google
+// passage is ordinary extraction -- `gemmaExtract()` answers it UNRELAXED, the same as every other
+// Survey element that reads a Google passage (elements/survey_ask.ts, elements/field_gate.ts,
+// methods/comparative_cascade.ts).
+//
+// D-BP152-013 SUPERSEDES THIS SECTION'S ORIGINAL 'GEMMA' BRANCH DESCRIPTION. D-BP151-031 had the
+// local model reason directly about the bare question when no term was found, calling it "a named,
+// disclosed relaxation" -- but no Founder ruling ever granted that relaxation; it was self-declared.
+// ATTRIBUTED: Founder, BP152, verbatim: "strip out the authorization. Gemma will never be good
+// enough to make decisions, sadly." (FD-BP152). The `transport === 'gemma'` branch below now
+// REFUSES instead of calling the local model -- see askAmbiguity()'s own comment at its call site.
 //
 // IF GOOGLE IS UNREACHABLE, THIS REFUSES -- it does NOT silently fall back to the local model.
 // ATTRIBUTED (Founder, relayed BP151 addendum): a silent transport swap would make two runs
@@ -233,53 +232,50 @@
 //   ALSO WIRED: findAskCatalyst() (elements/catalyst_words.ts) -- DEAD before this file (only
 //             substitution_search.ts, itself dead, called it). WIRED HERE, FIRST LIVE CALLER, to
 //             derive the term steps 2 and 4 need from the raw question text.
-//   STEP 2's NO-TERM PATH (D-BP151-031, transport default changed D-BP151-032) -> askAmbiguity()
-//             (this file, below; renamed from askAmbiguityViaModel() -- D-BP151-032, the name went
-//             wrong the moment Google became the default transport). GOOGLE (askGoogle, the SAME
-//             channel every other Survey element already uses) is the default source;
-//             gemmaExtract() (unrelaxed) structures what Google said. The LOCAL model reasoning
-//             directly (D-BP151-031's original implementation) is the selectable alternative, same
-//             reasoning as groupViaModel() (step 3): there is no passage to extract from on THAT
-//             path, so gemmaExtract()'s extraction-only wrapper would suppress the answer the same
-//             way it was measured to for step 3's grouping call. See askAmbiguity()'s own
-//             ATTRIBUTED comment for both transports and the file header's D-BP151-032 section
-//             above for why Google-as-source does not reopen the HARDWIRE-22 question.
+//   STEP 2's NO-TERM PATH (D-BP151-031, transport default changed D-BP151-032, gemma branch
+//             removed D-BP152-013) -> askAmbiguity() (this file, below; renamed from
+//             askAmbiguityViaModel() -- D-BP151-032, the name went wrong the moment Google became
+//             the default transport). GOOGLE (askGoogle, the SAME channel every other Survey
+//             element already uses) is the ONLY source now: gemmaExtract() (unrelaxed) structures
+//             what Google said. The local model reasoning directly (D-BP151-031's original
+//             implementation) was removed by Founder ruling FD-BP152 (BP152, verbatim: "strip out
+//             the authorization. Gemma will never be good enough to make decisions, sadly.") -- the
+//             `transport === 'gemma'` branch now refuses rather than calling the model. See
+//             askAmbiguity()'s own comment for both branches.
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // HARDWIRE-23 (THE TARE RULE) -- HOW THIS FILE STAYS CLEAN.
 //
-// This file introduces exactly SIX decision/relaxation/routing rules of its own (D-BP152-005 adds
-// the sixth to the five D-BP151-025/031/032/035 introduced), and all six are ATTRIBUTED at their
-// own call site, per Law 4 -- no other decision rule (threshold, cutoff, ratio, tie-break, word
-// list) exists anywhere in this file:
+// This file carries THREE live decision/relaxation/routing rules of its own, each ATTRIBUTED at
+// its own call site, per Law 4 -- no other decision rule (threshold, cutoff, ratio, tie-break,
+// word list) exists anywhere in this file:
 //   1. groupOptionsByPredicate()'s model call (step 3) -- HARDWIRE-22 relaxed, Founder-ordered,
-//      scoped to this one call only.
+//      scoped to this one call only. ATTRIBUTED: Founder, BP151, verbatim: "Grouping requires a
+//      model call - like ALL judgements, and yes, relaxed for this one purpose."
 //   2. founderStep6JarMethod()'s direction-driven elimination (step 6) -- mechanical, driven by a
 //      caller-declared query direction, never a word list or a model judgment.
-//   3. askAmbiguity()'s `transport === 'gemma'` branch (step 2's no-term path, D-BP151-031) --
-//      HARDWIRE-22 relaxed a second time, Founder-ordered, scoped to this one call only. It PICKS
-//      NOTHING: the source names candidate ambiguous terms and, per term, whether it is a
-//      negation -- this function reports every one of them, unranked; founderStep2Survey() surveys
-//      all of them, inventing no selection rule among them.
-//   4. askAmbiguity()'s transport default (D-BP151-032) -- Google unless the caller (ultimately
-//      liana_terminal_engine.ts's resolveAmbiguityQueryTransport()) selects 'gemma', ATTRIBUTED:
-//      Founder, relayed BP151 addendum, "I want to always run it on google, which should be the
-//      default that can be changed in Mnemosynec at will." Unreachable Google refuses; it never
-//      silently substitutes the other transport (that would itself be an unattributed tare).
-//   5. askConstraint()'s `transport === 'gemma'` branch (D-BP151-035) -- HARDWIRE-22 relaxed a
-//      third time, scoped to this one call only, same shape as rule 3. It reuses rule 4's already-
-//      resolved transport value rather than adding a second resolver. ATTRIBUTED: Founder, BP151,
-//      ratified this ticket, "Yes agreed. Survey asks those, Cascade is still essential." Builds
-//      ONLY Google's form-1 question (definition/scale), pure term substitution, nothing invented;
-//      form 2 (threshold) is a stopped fork, not a rule -- see this file header's D-BP151-035
-//      section and askConstraint()'s own comment for the exact wording not sent.
-//   6. askOperation()'s `transport === 'gemma'` branch (step 2's no-term path, Part 2 of the
-//      opening query, D-BP152-005) -- HARDWIRE-22 relaxed a fourth time, scoped to this one call
-//      only, same shape as rules 3 and 5. It reuses rule 4's already-resolved transport value.
-//      ATTRIBUTED: Founder, BP152, verbatim (`FD-BP152-05`): "And then what operation does this
-//      question require in order to answer it: does it want things ranked, defined, classified, or
-//      inferred from evidence?" This function PICKS NOTHING: it reports the source's raw stated
-//      answer, uninterpreted -- mapping it onto a LianaDemand happens in demand_test.ts, not here.
+//   3. askAmbiguity()'s (and askOperation()'s, and askConstraint()'s) transport default -- Google
+//      unless the caller (ultimately liana_terminal_engine.ts's resolveAmbiguityQueryTransport())
+//      selects 'gemma', ATTRIBUTED: Founder, relayed BP151 addendum, "I want to always run it on
+//      google, which should be the default that can be changed in Mnemosynec at will." Unreachable
+//      Google refuses; it never silently substitutes the other transport (that would itself be an
+//      unattributed tare).
+//
+// D-BP152-013 REMOVAL -- THREE FORMER "RELAXATIONS" WERE NEVER FOUNDER-GRANTED, AND ARE GONE.
+// Earlier passes of this file (D-BP151-031, D-BP151-035, D-BP152-005) each added a `transport ===
+// 'gemma'` branch to askAmbiguity(), askConstraint(), and askOperation() respectively, calling
+// each one a "named HARDWIRE-22 relaxation." No Founder ruling ever granted any of the three --
+// each one's own comment either self-declared the relaxation (askAmbiguity()) or borrowed it from
+// another branch by resemblance (askConstraint(), askOperation()), and askOperation()'s citation
+// (`FD-BP152-05`) authorized the QUESTION TEXT being asked, not gemma reasoning freely in place of
+// extraction. ATTRIBUTED: Founder, BP152, verbatim: "strip out the authorization. Gemma will never
+// be good enough to make decisions, sadly." (FD-BP152). All three `transport === 'gemma'` branches
+// now REFUSE, naming HARDWIRE-22, and issue no model call -- see each function's own comment at its
+// call site. The `'google'` branch of all three is UNCHANGED: `googleBlocks()` supplies a real
+// passage and `gemmaExtract()` (unrelaxed) structures it, ordinary extraction, same as every other
+// Survey element that reads a Google passage. The `transport` parameter and
+// `resolveAmbiguityQueryTransport()`/`AMBIGUITY_QUERY_TRANSPORT` selector are UNCHANGED -- selecting
+// 'gemma' now yields an honest refusal instead of a violation.
 // Every OTHER phase still either (a) delegates entirely to an existing element and reports its
 // result unmodified, or (b) reports raw, unranked facts with no decision made here.
 //
@@ -495,20 +491,17 @@ function parseAmbiguityTerms(raw: unknown, emit?: MethodRunContext['emit']): Amb
  * is ordinary extraction, not the reasoning-with-no-passage judgment call the 'gemma' branch
  * below still is). Google being unreachable REFUSES; it never silently falls back to 'gemma'.
  *
- * 'gemma' (the selectable alternative, D-BP151-031's ORIGINAL implementation, UNCHANGED): there is
- * no fixed passage to extract this from -- the question text itself is what is being reasoned
- * about, exactly the shape of judgment gemmaExtract()'s own wrapper ("report only what it
- * states... never guess") was MEASURED (D-BP151-025, groupViaModel()'s header) to suppress. This
- * reuses the SAME relaxation groupOptionsByPredicate() already established for step 3 -- same
- * local Ollama instance (OLLAMA_API_BASE), same model (GROUPING_MODEL) -- via its own minimal,
- * unwrapped prompt. HARDWIRE-22 stays relaxed for exactly this named call site and step 3's,
- * nowhere else (see this file's header, HARDWIRE-23 section).
+ * 'gemma' -- D-BP152-013 REMOVAL: D-BP151-031's original implementation had the local model reason
+ * directly about the bare question text (no passage existed to extract from), calling it "a named,
+ * disclosed relaxation." No Founder ruling ever granted it. ATTRIBUTED: Founder, BP152, verbatim:
+ * "strip out the authorization. Gemma will never be good enough to make decisions, sadly."
+ * (FD-BP152). Selecting this transport now REFUSES -- no model call is made, and the refusal names
+ * HARDWIRE-22 in the transcript. It does not fall back to 'google'.
  *
- * THE SOURCE NAMES THE TERMS; THIS FUNCTION PICKS NONE OF THEM, on EITHER transport. Every term
- * the source returns is reported verbatim (standard meaning, alternative meaning, impact);
- * founderStep2Survey() decides how many to survey next (all of them, source order -- see its own
- * comment), never this function. `isNegation` is asked OF THE SOURCE per term, not matched against
- * a word list here.
+ * THE SOURCE NAMES THE TERMS; THIS FUNCTION PICKS NONE OF THEM. Every term Google's passage states
+ * is reported verbatim (standard meaning, alternative meaning, impact); founderStep2Survey() decides
+ * how many to survey next (all of them, source order -- see its own comment), never this function.
+ * `isNegation` is asked OF THE SOURCE per term, not matched against a word list here.
  */
 async function askAmbiguity(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<AmbiguityQueryResult> {
   // D-BP152-008. Query text moved to resources/liana_survey_queries.json (id
@@ -517,49 +510,23 @@ async function askAmbiguity(askText: string, ctx: MethodRunContext, transport: '
   const askedText = getQueryText('survey.ambiguity.askedText');
 
   if (transport === 'gemma') {
-    const prompt = `You are analyzing a multiple-choice question for ambiguous words or phrases, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
-
-QUESTION:
-${askText}
-
-TASK: ${askedText}
-
-For each word or phrase you name, give its standard/expected meaning in this question, an alternative meaning that would change what is being asked, and a short statement of the impact of that alternative meaning. Also state whether it functions as a negation, exclusion, or restriction word (such as "not", "except", "least") whose presence or absence would flip which option is correct.
-
-Return ONLY JSON in this shape, no prose, no fence:
-{"terms":[{"term":"the exact word or phrase named","standardMeaning":"...","alternativeMeaning":"...","impact":"...","isNegation":true}]}
-If nothing in the question could reasonably be understood differently, return {"terms":[]}. Do not guess an answer to the underlying question itself -- name ambiguous terms only.`;
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60_000);
-      const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: GROUPING_MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 768 } }),
-        signal: controller.signal,
-      }).finally(() => clearTimeout(timeout));
-      const j = (await res.json()) as { response?: string };
-      const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-      const parsed = JSON.parse(t) as { terms?: unknown };
-      const terms = parseAmbiguityTerms(parsed.terms, ctx.emit);
-      const why = terms.length
-        ? `${terms.length} term(s) named by the local model (gemma, selected transport) as potentially `
-          + 'ambiguous, each reported verbatim (standard meaning, alternative meaning, impact) -- the '
-          + 'source names, this function picks none'
-        : 'the local model ran and named nothing usable -- an honest empty result, not a fabrication';
-      return { askedText, terms, modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, why };
-    } catch {
-      return {
-        askedText,
-        terms: [],
-        modelUnreachable: true,
-        transport: 'gemma',
-        citations: [],
-        rawGooglePassage: '',
-        rawModelOutput: null,
-        why: 'the local model call for the ambiguity query returned nothing (unreachable or failed) -- an honest empty result, not a fabrication',
-      };
-    }
+    // D-BP152-013 REMOVAL. This branch used to ask gemma to reason directly about the bare
+    // question text (no passage existed to extract from) -- exactly the judgment HARDWIRE-22
+    // forbids. No Founder ruling ever authorized that; it was a self-declared "named HARDWIRE-22
+    // relaxation" this file's own header claimed without a matching order. ATTRIBUTED: Founder,
+    // BP152, verbatim: "strip out the authorization. Gemma will never be good enough to make
+    // decisions, sadly." (FD-BP152). This now REFUSES instead of calling the model -- no fetch to
+    // OLLAMA_API_BASE happens on this branch anymore -- and does NOT fall back to Google (a silent
+    // transport swap is its own unattributed tare, same rule askAmbiguity()'s 'google' branch
+    // already follows for an unreachable Google).
+    const why = 'REFUSED: HARDWIRE-22 ("a local model may only be asked to COPY OUT what is literally '
+      + 'present in a text it was given") forbids this call -- there is no passage here, only a bare '
+      + 'question to reason about, which is judgment, not extraction. Founder ruling FD-BP152 (BP152, '
+      + 'verbatim: "strip out the authorization. Gemma will never be good enough to make decisions, '
+      + 'sadly.") removed the relaxation this branch previously relied on; no Founder ruling ever '
+      + 'granted it. No model call was made, and this does not fall back to Google.';
+    ctx.emit({ kind: 'note', text: `   [transport: GEMMA] ${why}`, ts: nowIso() });
+    return { askedText, terms: [], modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, why };
   }
 
   // transport === 'google' (the Founder-ordered default). Google is the SOURCE; gemmaExtract()
@@ -716,10 +683,15 @@ export interface OperationQueryResult {
  * including D-BP152-004's raw-passage/raw-model-output instrumentation (built the same way here,
  * for this second call site, not duplicated from there) so a discard is diagnosable from the first
  * run.
- * 'gemma': the local model reasons about the question directly, the SAME named HARDWIRE-22
- * relaxation `askAmbiguity()`'s own 'gemma' branch already uses -- there is no passage to extract
- * this from. Google unreachable -> refuses; never silently falls back to 'gemma' (same rule as
- * Part 1).
+ * 'gemma' -- D-BP152-013 REMOVAL: this branch used to have the local model reason about the
+ * question directly, calling it "the SAME named HARDWIRE-22 relaxation `askAmbiguity()`'s own
+ * 'gemma' branch already uses." That borrowed relaxation was itself never Founder-granted --
+ * `FD-BP152-05` (quoted above) authorizes the QUESTION TEXT this function sends, not gemma
+ * reasoning freely in place of extraction. ATTRIBUTED: Founder, BP152, verbatim: "strip out the
+ * authorization. Gemma will never be good enough to make decisions, sadly." (FD-BP152). Selecting
+ * this transport now REFUSES -- no model call is made. Google unreachable -> refuses; never
+ * silently falls back to 'gemma' (same rule as Part 1); 'gemma' never silently falls back to
+ * 'google' either.
  */
 async function askOperation(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<OperationQueryResult> {
   // D-BP152-008. Query text moved to resources/liana_survey_queries.json (id
@@ -727,45 +699,21 @@ async function askOperation(askText: string, ctx: MethodRunContext, transport: '
   const askedText = getQueryText('survey.operation.askedText');
 
   if (transport === 'gemma') {
-    const prompt = `You are analyzing a multiple-choice question to name the operation its answer must perform, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
-
-QUESTION:
-${askText}
-
-TASK: ${askedText}
-
-Return ONLY JSON in this shape, no prose, no fence:
-{"answer":"the operation word you name, stated plainly (e.g. ranked, defined, classified, or inferred from evidence), or empty string if you cannot state one with confidence"}
-Do not guess an answer to the underlying multiple-choice question itself -- name the operation only.`;
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60_000);
-      const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: GROUPING_MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 256 } }),
-        signal: controller.signal,
-      }).finally(() => clearTimeout(timeout));
-      const j = (await res.json()) as { response?: string };
-      const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-      const parsed = JSON.parse(t) as { answer?: unknown };
-      const rawAnswer = typeof parsed.answer === 'string' && parsed.answer.trim() ? parsed.answer.trim() : null;
-      const why = rawAnswer
-        ? `answered by the local model (gemma, selected transport), reasoning directly: "${rawAnswer}" -- the source names, this function picks none`
-        : 'the local model ran and named nothing usable -- an honest empty result, not a fabrication';
-      return { askedText, rawAnswer, modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, why };
-    } catch {
-      return {
-        askedText,
-        rawAnswer: null,
-        modelUnreachable: true,
-        transport: 'gemma',
-        citations: [],
-        rawGooglePassage: '',
-        rawModelOutput: null,
-        why: 'the local model call for the operation query returned nothing (unreachable or failed) -- an honest empty result, not a fabrication',
-      };
-    }
+    // D-BP152-013 REMOVAL. Same shape as askAmbiguity()'s own removal, above -- this branch used
+    // to ask gemma to reason directly about the bare question text, a "named HARDWIRE-22
+    // relaxation" no Founder ruling ever granted (the ATTRIBUTED quote this file cited for it,
+    // FD-BP152-05, authorizes the QUESTION being asked, not gemma reasoning freely in place of
+    // extraction). ATTRIBUTED: Founder, BP152, verbatim: "strip out the authorization. Gemma will
+    // never be good enough to make decisions, sadly." (FD-BP152). No fetch to OLLAMA_API_BASE
+    // happens on this branch anymore, and it does NOT fall back to Google.
+    const why = 'REFUSED: HARDWIRE-22 ("a local model may only be asked to COPY OUT what is literally '
+      + 'present in a text it was given") forbids this call -- there is no passage here, only a bare '
+      + 'question to reason about, which is judgment, not extraction. Founder ruling FD-BP152 (BP152, '
+      + 'verbatim: "strip out the authorization. Gemma will never be good enough to make decisions, '
+      + 'sadly.") removed the relaxation this branch previously relied on; no Founder ruling ever '
+      + 'granted it. No model call was made, and this does not fall back to Google.';
+    ctx.emit({ kind: 'note', text: `   [transport: GEMMA] ${why}`, ts: nowIso() });
+    return { askedText, rawAnswer: null, modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, why };
   }
 
   // transport === 'google' (the Founder-ordered default, REUSED from Part 1's already-resolved
@@ -879,11 +827,15 @@ Do not guess an answer to the underlying multiple-choice question itself -- name
  * 'google' (the default): googleBlocks(ctx.askGoogle, question) -- the SAME channel every other
  * Survey element already uses -- then gemmaExtract() UNRELAXED structures the source's own stated
  * answer (ordinary extraction, HARDWIRE-22 untouched, same reasoning as askAmbiguity()'s own
- * 'google' branch). 'gemma': the local model reasons about the question directly, the SAME named
- * HARDWIRE-22 relaxation askAmbiguity()'s 'gemma' branch already uses (same Ollama instance, same
- * model), scoped to this one additional call site (HARDWIRE-23 section, rule 5). Google
- * unreachable -> refuses; it never silently falls back to 'gemma' (same rule, same ATTRIBUTION, as
- * askAmbiguity()).
+ * 'google' branch).
+ *
+ * 'gemma' -- D-BP152-013 REMOVAL: this branch used to have the local model reason about the
+ * question directly, calling it "the SAME named HARDWIRE-22 relaxation askAmbiguity()'s 'gemma'
+ * branch already uses" -- a relaxation borrowed by resemblance, never itself Founder-granted.
+ * ATTRIBUTED: Founder, BP152, verbatim: "strip out the authorization. Gemma will never be good
+ * enough to make decisions, sadly." (FD-BP152). Selecting this transport now REFUSES -- no model
+ * call is made. Google unreachable -> refuses; it never silently falls back to 'gemma' (same rule,
+ * same ATTRIBUTION, as askAmbiguity()); 'gemma' never silently falls back to 'google' either.
  *
  * SURVEY ASKS. IT NEVER APPLIES. This function stores the constraint (term, question, answer,
  * citation) for the receipt; it never judges the answer, never eliminates an option with it, never
@@ -899,47 +851,21 @@ async function askConstraint(term: string, ctx: MethodRunContext, transport: 'go
   const question = getQueryText('survey.constraint.definitionScale', { term });
 
   if (transport === 'gemma') {
-    const prompt = `You are answering a constraint question about a multiple-choice question, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
-
-CONSTRAINT QUESTION: ${question}
-
-Return ONLY JSON in this shape, no prose, no fence:
-{"answer":"the definition/scale you would use, stated plainly, or empty string if you cannot state one with confidence"}
-Do not guess an answer to the underlying multiple-choice question itself -- answer only the constraint question above.`;
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60_000);
-      const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: GROUPING_MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 256 } }),
-        signal: controller.signal,
-      }).finally(() => clearTimeout(timeout));
-      const j = (await res.json()) as { response?: string };
-      const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-      const parsed = JSON.parse(t) as { answer?: unknown };
-      const answer = typeof parsed.answer === 'string' ? parsed.answer.trim() : '';
-      const obtained = !!answer;
-      return {
-        term,
-        question,
-        answer: obtained ? answer : null,
-        citations: [],
-        obtained,
-        why: obtained
-          ? 'answered by the local model (gemma, selected transport), reasoning directly -- no web source, so no citation'
-          : 'the local model ran and returned nothing usable -- an honest null, not a fabrication',
-      };
-    } catch {
-      return {
-        term,
-        question,
-        answer: null,
-        citations: [],
-        obtained: false,
-        why: 'the local model call for this constraint question returned nothing (unreachable or failed) -- an honest null, not a fabrication',
-      };
-    }
+    // D-BP152-013 REMOVAL. Same shape as askAmbiguity()'s and askOperation()'s own removals --
+    // this branch's own header called it "the SAME named HARDWIRE-22 relaxation askAmbiguity()'s
+    // 'gemma' branch already uses," which makes explicit that it borrowed a relaxation no Founder
+    // ruling ever granted, rather than carrying one of its own. ATTRIBUTED: Founder, BP152,
+    // verbatim: "strip out the authorization. Gemma will never be good enough to make decisions,
+    // sadly." (FD-BP152). No fetch to OLLAMA_API_BASE happens on this branch anymore, and it does
+    // NOT fall back to Google.
+    const why = 'REFUSED: HARDWIRE-22 ("a local model may only be asked to COPY OUT what is literally '
+      + 'present in a text it was given") forbids this call -- there is no passage here, only a bare '
+      + 'question to reason about, which is judgment, not extraction. Founder ruling FD-BP152 (BP152, '
+      + 'verbatim: "strip out the authorization. Gemma will never be good enough to make decisions, '
+      + 'sadly.") removed the relaxation this branch previously relied on; no Founder ruling ever '
+      + 'granted it. No model call was made, and this does not fall back to Google.';
+    ctx.emit({ kind: 'note', text: `   [transport: GEMMA] ${why}`, ts: nowIso() });
+    return { term, question, answer: null, citations: [], obtained: false, why };
   }
 
   // transport === 'google' (the Founder-ordered default, REUSED from askAmbiguity()'s already-
