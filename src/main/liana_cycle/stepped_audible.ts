@@ -113,6 +113,14 @@ import type {
   LianaTerminalEvent,
 } from '../../shared/liana_cycle/liana_terminal_types';
 import type { AskGoogleFn, EmitFn, MethodRunContext } from './method_registry';
+// D-BP152-021/BISHOP/seg-ask-google-this -- reused, not forked. googleBlocks() is the SAME
+// primitive Survey (survey_stage.ts's askAmbiguity()/askOperation()) and comparative_cascade.ts's
+// own Q1-Q10 already send every Google query through -- "the EXISTING askGoogle channel", per this
+// ticket's own requirement 2. survey_stage.ts already imports gemmaExtract/googleBlocks from this
+// same file (methods/comparative_cascade.ts), so this import introduces no new circularity: that
+// file imports only from method_registry.ts and register_gate_loader.ts, neither of which imports
+// this one.
+import { googleBlocks } from './methods/comparative_cascade';
 
 /** How the engine reaches the operator for a step pause. Implemented over IPC in index.ts (same
  *  convention as AudibleChannel in audible.ts); kept as an interface here so this module has no
@@ -590,60 +598,192 @@ export const STEP_ZERO_STEP_DEF: LianaSteppedStepDef = {
   codeLabel: 'STEP 0 -- STATE THE QUESTION, FULLY: question, options, options-exist flag, and source, before any query is issued',
 };
 
+// ─────────────────────────── D-BP152-021/BISHOP/seg-ask-google-this ───────────────────────────
+//
+// ASK GOOGLE THIS. Founder, FD-BP152-15, typed verbatim at a live Step 0 pause: "Send this query
+// to Google and return the response: ...". Closed the open question of what a bench box may
+// lawfully TYPE, under HARDWIRE-22: a PARAMETER to an existing primitive ("ask Google this"),
+// never free prose construed into behavior. Ruled "go" -- this is the first executable Library
+// Step (FD-BP152-15's own naming).
+//
+// `keep` (FD-BP152-07) is explicitly NOT built here. This action is ephemeral in EVERY sense that
+// matters: the typed query is never written to resources/liana_survey_queries.json, never written
+// to any method file, never written to the Library (which does not exist yet, D-BP152-018). It
+// exists for exactly the run it was typed in, and is recorded in that run's own receipt (steppedLog
+// + transcript below) so an ephemeral override still leaves a trace -- FD-BP152-07's own
+// requirement: "An override that changes a run and leaves no trace makes the receipt a lie."
+
+/** Plain string containment, per FD-BP152-15: "the receipt must record that the
+ *  operator-authored query contained option strings, so a later reader can see that contamination
+ *  was possible on that run." NEVER used to block or edit the query -- flag only. Returns the
+ *  "LETTER) text" of every option whose full text appears verbatim inside `query`; `[]` when there
+ *  is no options pool (a free-text question with no lettered options) or no match. */
+function detectOptionContamination(query: string, options: Record<string, string> | null): string[] {
+  if (!options) return [];
+  const hits: string[] = [];
+  for (const letterKey of Object.keys(options)) {
+    const text = options[letterKey].trim();
+    if (text && query.includes(text)) hits.push(`${letterKey}) ${text}`);
+  }
+  return hits;
+}
+
 /**
- * Pauses once, before any query is issued, presenting Step 0's own state -- the exact events
+ * Pauses at Step 0, before any query is issued, presenting Step 0's own state -- the exact events
  * liana_terminal_engine.ts already emitted for it (SOURCE, QUESTION verbatim and complete,
  * OPTIONS EXIST, OPTIONS verbatim and complete or the honest no-options line). A true no-op
- * (returns immediately, resolves with no pause shown, nothing added to `log`) when `channel` is
- * null -- the SAME OFF-stays-identical guarantee wrapForSteppedAudible() and
- * wrapAskGoogleWithAudible() already give, so a caller may call this UNCONDITIONALLY (as
- * liana_terminal_engine.ts does) without its own if-guard duplicating the one already inside this
- * function.
+ * (returns immediately, resolves with no pause shown, nothing added to `log`, no call to
+ * `askGoogle`) when `channel` is null -- the SAME OFF-stays-identical guarantee
+ * wrapForSteppedAudible() and wrapAskGoogleWithAudible() already give, so a caller may call this
+ * UNCONDITIONALLY (as liana_terminal_engine.ts does) without its own if-guard duplicating the one
+ * already inside this function.
  *
- * `events` is the caller's own captured Step 0 event list, reused verbatim -- this function does
- * not re-derive, re-emit, or re-order anything; it only packages what already happened into a
- * pause and waits.
+ * D-BP152-021: NOW A LOOP, not a single pause. `approve` / `correct` / `redirect` / `abandon`
+ * behave EXACTLY as before this ticket (requirement: "add alongside them; they must behave
+ * exactly as today") -- `approve`/`correct`/`redirect` return (falling through to the rest of the
+ * run, unchanged), `abandon` throws SteppedAudibleAbandoned, unchanged. The one new branch,
+ * `ask_google` (FD-BP152-15): the operator's `response.text` is sent to Google VERBATIM (only
+ * surrounding whitespace trimmed -- no templating, no prefix, no suffix, no reformatting, no
+ * substitution) through `askGoogle`, the SAME channel every method already calls (via
+ * `googleBlocks()`, comparative_cascade.ts -- no second transport, `resolveAmbiguityQueryTransport()`
+ * untouched), the query and the raw, untruncated response are both emitted to the live transcript
+ * (PARSER INSTRUMENT convention, `field_gate.ts`/`survey_stage.ts`'s own label/style, reused not
+ * reinvented) so they land in the on-disk receipt the same way every other query/response in this
+ * estate already does, and the pause fires AGAIN with the accumulated state (original Step 0 state
+ * plus every ask_google exchange so far) so the operator can send another query or continue. This
+ * is the whole reason it is a loop and not a second one-shot function: "Pause again after the
+ * result... Do not auto-advance."
  *
- * Throws SteppedAudibleAbandoned on an 'abandon' response, exactly like runStepPause() above --
- * the caller's existing catch block (liana_terminal_engine.ts, the same one every other
- * SteppedAudibleAbandoned already lands in) converts it into an honest abstain that keeps every
- * note typed on the way to it, including this one. MUST NOT resolve on its own -- see this file's
- * header, "NO TIMEOUT, EVER" -- channel.requestStepPause() itself carries that constraint; this
- * function adds no timer of its own.
+ * `events` is the caller's own captured Step 0 event list, reused verbatim as the loop's starting
+ * state -- this function does not re-derive, re-emit, or re-order anything that was already
+ * emitted before it was called; it only packages what already happened (plus, now, what happens
+ * during any `ask_google` round) into a pause and waits.
+ *
+ * `askGoogle`/`emit`/`options` are ADDITIVE parameters this ticket adds. Every one is used ONLY
+ * inside the `ask_google` branch below (and `options` only for the contamination flag) -- on the
+ * `channel === null` no-op path, and on every OFF-run that never types `ask_google`, none of the
+ * three is ever touched, so behavior for every response type that existed before this ticket is
+ * byte-identical to before it.
+ *
+ * Throws SteppedAudibleAbandoned on an 'abandon' response, exactly as before -- the caller's
+ * existing catch block (liana_terminal_engine.ts, the same one every other SteppedAudibleAbandoned
+ * already lands in) converts it into an honest abstain that keeps every note typed on the way to
+ * it, including every ask_google exchange. MUST NOT resolve on its own -- see this file's header,
+ * "NO TIMEOUT, EVER" -- channel.requestStepPause() itself carries that constraint; this function
+ * adds no timer of its own, on any iteration of the loop.
  */
 export async function requestStepZeroPause(
   channel: SteppedAudibleChannel | null,
   log: SteppedAudibleLog,
   events: LianaTerminalEvent[],
+  askGoogle: AskGoogleFn,
+  emit: EmitFn,
+  options: Record<string, string> | null,
 ): Promise<void> {
   if (!channel) return;
-  const pause: LianaSteppedPause = {
-    pauseId: 'sp0',
-    stepIndex: 0,
-    // The full step count is genuinely not known yet -- Step 0 precedes method selection
-    // (liana_terminal_engine.ts runs Survey/the Demand Test/selectMethod() AFTER this point), so
-    // no per-method step-def table (buildUpfrontStepList()) has been consulted. 0 states "not yet
-    // known" honestly rather than fabricating a count before the method that would produce one has
-    // even been chosen.
-    stepTotal: 0,
-    step: STEP_ZERO_STEP_DEF,
-    events: events.slice(),
-    suggestions: [],
-    ts: nowIso(),
-  };
-  const response = await channel.requestStepPause(pause);
-  log.add({
-    pauseId: pause.pauseId,
-    stepIndex: 0,
-    stepKey: STEP_ZERO_STEP_DEF.key,
-    founderStepNumber: STEP_ZERO_STEP_DEF.founderStepNumber,
-    attribution: STEP_ZERO_STEP_DEF.attribution,
-    action: response.action,
-    text: response.text,
-    ts: nowIso(),
-  });
-  if (response.action === 'abandon') throw new SteppedAudibleAbandoned();
-  // 'approve' / 'correct' / 'redirect' are recorded above and change NOTHING about this run --
-  // requirement C.4/E and HARDWIRE-23, same as runStepPause() above: his response is the
-  // authority record for what gets built next, not a live steering control.
+  let stateEvents = events.slice();
+  let round = 0;
+  for (;;) {
+    const pauseId = round === 0 ? 'sp0' : `sp0-google${round}`;
+    const pause: LianaSteppedPause = {
+      pauseId,
+      stepIndex: 0,
+      // The full step count is genuinely not known yet -- Step 0 precedes method selection
+      // (liana_terminal_engine.ts runs Survey/the Demand Test/selectMethod() AFTER this point), so
+      // no per-method step-def table (buildUpfrontStepList()) has been consulted. 0 states "not yet
+      // known" honestly rather than fabricating a count before the method that would produce one has
+      // even been chosen.
+      stepTotal: 0,
+      step: STEP_ZERO_STEP_DEF,
+      events: stateEvents.slice(),
+      suggestions: [],
+      ts: nowIso(),
+    };
+    const response: LianaSteppedResponse = await channel.requestStepPause(pause);
+    log.add({
+      pauseId,
+      stepIndex: 0,
+      stepKey: STEP_ZERO_STEP_DEF.key,
+      founderStepNumber: STEP_ZERO_STEP_DEF.founderStepNumber,
+      attribution: STEP_ZERO_STEP_DEF.attribution,
+      action: response.action,
+      text: response.text,
+      ts: nowIso(),
+    });
+    if (response.action === 'abandon') throw new SteppedAudibleAbandoned();
+    if (response.action !== 'ask_google') {
+      // 'approve' / 'correct' / 'redirect' -- recorded above and change NOTHING about this run,
+      // UNCHANGED from before this ticket -- requirement C.4/E and HARDWIRE-23: his response is
+      // the authority record for what gets built next, not a live steering control.
+      return;
+    }
+
+    // D-BP152-021 -- FD-BP152-15: THE QUERY IS VERBATIM. Only whitespace at the very ends is
+    // trimmed; nothing else touches it -- no templating, no prefix, no suffix, no substitution, no
+    // reformatting. An operator-authored query is his to write and must never be blocked or
+    // edited (FD-BP152-15) -- an empty typed box is the one case there is nothing to send, handled
+    // honestly below without calling Google on an empty string.
+    const query = (response.text ?? '').trim();
+    round += 1;
+    if (!query) {
+      const emptyEvent: LianaTerminalEvent = {
+        kind: 'note',
+        text: '   ASK GOOGLE THIS: no query typed -- nothing sent, nothing to record.',
+        ts: nowIso(),
+      };
+      emit(emptyEvent);
+      stateEvents = [...stateEvents, emptyEvent];
+      continue;
+    }
+
+    // FD-BP152-15's own guard, Bishop's, labeled as such: an operator-authored query deliberately
+    // MAY carry the option list (his own worked example does) -- this never blocks or edits it.
+    // Flag only, so a later reader of the receipt can see contamination was possible on this run
+    // rather than discovering it by surprise.
+    const contamination = detectOptionContamination(query, options);
+
+    // PARSER INSTRUMENT convention -- same label/style field_gate.ts (D-BP151-006) and
+    // survey_stage.ts's askAmbiguity()/askOperation() (D-BP152-004/007) already established for
+    // "log the exact input before any parsing touches it". UNLIKE those two call sites, this one
+    // carries NO length cap on either side (requirement 3: "No length cap. This is the whole
+    // reason we can diagnose anything.") -- neither the query nor the response is ever truncated
+    // here, at any length.
+    const queryEvent: LianaTerminalEvent = {
+      kind: 'note',
+      text: `   PARSER INSTRUMENT [ask-google-this, OPERATOR OVERRIDE, FD-BP152-15] query SENT to Google (untruncated, verbatim)="${query}"`,
+      ts: nowIso(),
+    };
+    emit(queryEvent);
+    stateEvents = [...stateEvents, queryEvent];
+
+    if (contamination.length) {
+      const contamEvent: LianaTerminalEvent = {
+        kind: 'note',
+        text: `   CONTAMINATION FLAG (FD-BP152-15): the operator-authored query contains option string(s) verbatim: ${contamination.join('; ')} -- flagged, never blocked or edited; recorded so a later reader can see contamination was possible on this run.`,
+        ts: nowIso(),
+      };
+      emit(contamEvent);
+      stateEvents = [...stateEvents, contamEvent];
+    }
+
+    // THE EXISTING askGoogle CHANNEL, not a new one. googleBlocks() is the exact function every
+    // method (comparative_cascade.ts's Q1-Q10) and Survey (survey_stage.ts's askAmbiguity()/
+    // askOperation()) already send every query through -- requirement 2, "do not open a second
+    // path to Google, do not add a transport, do not touch resolveAmbiguityQueryTransport()".
+    const google = await googleBlocks(askGoogle, query);
+    const responseEvent: LianaTerminalEvent = {
+      kind: 'note',
+      text: google.ok
+        ? `   PARSER INSTRUMENT [ask-google-this, OPERATOR OVERRIDE, FD-BP152-15] RAW RESPONSE from Google (${google.via}) (untruncated, verbatim, no length cap)="${google.text}"`
+        : `   PARSER INSTRUMENT [ask-google-this, OPERATOR OVERRIDE, FD-BP152-15] Google UNREACHABLE (${google.via}) -- an honest empty result, not a fabrication`,
+      ts: nowIso(),
+    };
+    emit(responseEvent);
+    stateEvents = [...stateEvents, responseEvent];
+
+    // D-BP152-021 requirement 4: PAUSE AGAIN, presenting the response as state -- do not
+    // auto-advance. Loops back to the top with `stateEvents` carrying the full accumulated
+    // history (original Step 0 state plus every ask_google exchange so far), so the operator sees
+    // everything, not only the newest exchange, at the next pause.
+  }
 }
