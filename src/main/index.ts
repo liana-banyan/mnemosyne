@@ -421,6 +421,7 @@ import { startResidentWatcher } from './resident'; // KN-BP147-M2: THE RESIDENT 
 // this ticket's FAIL OPEN rule forbids, and exactly what the fallback exists to avoid needing.
 import type { BindingTarget, MutationReason, BindResult, ResolvedChonk } from './crystal/crystal_types';
 import { initCdpGuard } from './cdp_guard'; // D-BP151-038/BISHOP/seg-cdp-guard -- Founder BP151 "Build the guard." on D-BP151-034's named CDP-9333 gap
+import { initBatteryDispatchPluginEndpoint } from './battery_dispatch_plugin_endpoint'; // D-BP151-042/BISHOP/seg-battery-dispatch-endpoint -- Founder BP151 "Battery Dispatch is local plugins, so build the endpoint"; off by default, loopback-only, Bearer-authenticated
 // --- END APPEND ZONE: IMPORT -------------------------------------------------
 
 // --- Constants --------------------------------------------------------------
@@ -9068,6 +9069,13 @@ app.whenReady().then(async () => {
   // above). Never insert a new call between the init() calls above; always append here instead.
   // (currently empty -- the next new registration init() call lands here)
   initOpenAiCompatServer(); // KN-BP145-M3: THE NEXUS, local OpenAI-compat substrate-injecting server, 127.0.0.1 only
+
+  // D-BP151-042/BISHOP/seg-battery-dispatch-endpoint -- Founder BP151: "Battery Dispatch is local
+  // plugins, so build the endpoint." Off by default (isBatteryDispatchPluginEndpointEnabled()
+  // reads BATTERY_DISPATCH_ENDPOINT=1); when off this is a single no-op function call that opens
+  // no socket. See battery_dispatch_plugin_endpoint.ts's own header for the full verb set, auth,
+  // and session-isolation mechanism.
+  initBatteryDispatchPluginEndpoint();
 
   // KN-BP147-M2: THE RESIDENT CONSUMER, OD-04, THE RED QUEEN. Reads the persisted WATCH-armed
   // switch (resident/resident_settings.ts, app.getPath('userData')) FIRST -- if the user has
