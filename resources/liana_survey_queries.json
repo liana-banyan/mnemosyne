@@ -1,0 +1,84 @@
+{
+  "_comment": [
+    "MnemosyneC -- Liana Cycle SURVEY stage Google query text, D-BP152-008/BISHOP/seg-runtime-query-file.",
+    "Founder, BP152, verbatim: 'I just want to fly through the iterations, without having to pay for",
+    "rebuilding every brick every time. How about we have a script loading file, and we change the file",
+    "as we go for fast iterations?' EDIT THIS FILE, SAVE IT, RE-RUN THE QUESTION -- no restart, no",
+    "`npm run build`, no repackage. It is re-read fresh from disk on EVERY survey run.",
+    "",
+    "EACH ENTRY: id (do not rename without also updating its caller in the TypeScript source --",
+    "see 'usedBy' below for which file:function reads it), template (the EXACT string sent to Google,",
+    "with ${name} standing in for a value the code supplies), placeholders (every ${name} the code",
+    "MUST supply -- an id with placeholders NOT covered by the caller's values will make the run",
+    "refuse rather than send a malformed query), attribution (HARDWIRE-23, THE TARE RULE: who authored",
+    "this exact wording and when -- 'TARE - unattributed' where no Founder/source ruling exists).",
+    "",
+    "A MISSING FILE, UNPARSEABLE JSON, OR AN ABSENT id MAKES THE RUN REFUSE WITH AN EXPLICIT ERROR --",
+    "it never silently falls back to a hardcoded guess. Refusing beats guessing."
+  ],
+  "queries": [
+    {
+      "id": "survey.ambiguity.askedText",
+      "usedBy": "src/main/liana_cycle/survey_stage.ts askAmbiguity()",
+      "template": "what words or phrases in this question could be understood with a different meaning that would fundamentally change the meaning of what is being asked?",
+      "placeholders": [],
+      "attribution": "Founder, BP151, verbatim (D-BP151-031)"
+    },
+    {
+      "id": "survey.operation.askedText",
+      "usedBy": "src/main/liana_cycle/survey_stage.ts askOperation()",
+      "template": "And then what operation does this question require in order to answer it: does it want things ranked, defined, classified, or inferred from evidence?",
+      "placeholders": [],
+      "attribution": "Founder, BP152, verbatim, FD-BP152-05 (D-BP152-005)"
+    },
+    {
+      "id": "survey.constraint.definitionScale",
+      "usedBy": "src/main/liana_cycle/survey_stage.ts askConstraint()",
+      "template": "What specific definition and scale of '${term}' is this question using?",
+      "placeholders": ["term"],
+      "attribution": "Google's own form-1 question wording, quoted verbatim by the Founder, BP151, who ratified this ticket: 'Yes agreed. Survey asks those, Cascade is still essential.' (D-BP151-035); only term-substitution is this file's own, not Founder-authored wording"
+    },
+    {
+      "id": "survey.ask.define",
+      "usedBy": "src/main/liana_cycle/elements/survey_ask.ts defineQuery()",
+      "template": "define ${term}",
+      "placeholders": ["term"],
+      "attribution": "TARE - unattributed (D2's own query text, reused verbatim by E-SURVEY-ASK per that function's own comment, D-BP150-005)"
+    },
+    {
+      "id": "survey.ask.otherMeanings",
+      "usedBy": "src/main/liana_cycle/elements/survey_ask.ts otherMeaningsQuery()",
+      "template": "other meanings of ${term}",
+      "placeholders": ["term"],
+      "attribution": "TARE - unattributed (E-SURVEY-ASK's own second query, D-BP150-005)"
+    },
+    {
+      "id": "survey.ask.scoped",
+      "usedBy": "src/main/liana_cycle/elements/survey_ask.ts scopedQuery()",
+      "template": "${term} in ${field}",
+      "placeholders": ["term", "field"],
+      "attribution": "TARE - unattributed query shape, restored scoped-not-collapsed from D3's REGISTER_LEXICON guess query by D-BP150-018 (B)"
+    },
+    {
+      "id": "survey.fieldGate.whatFieldIsIn",
+      "usedBy": "src/main/liana_cycle/elements/field_gate.ts fieldQueries()",
+      "template": "what field is \"${term}\" in",
+      "placeholders": ["term"],
+      "attribution": "Founder, BP150, verbatim ('what field this was in'), D-BP150-017"
+    },
+    {
+      "id": "survey.fieldGate.whatSubjectBelongsTo",
+      "usedBy": "src/main/liana_cycle/elements/field_gate.ts fieldQueries()",
+      "template": "what subject or field does \"${term}\" belong to",
+      "placeholders": ["term"],
+      "attribution": "TARE - unattributed second phrasing, D-BP150-017 (kept because 'it still runs and still contributes candidates')"
+    },
+    {
+      "id": "survey.fieldGate.themeConfirmation",
+      "usedBy": "src/main/liana_cycle/elements/field_gate.ts fieldQueries()",
+      "template": "what subject or field of study uses ${words}",
+      "placeholders": ["words"],
+      "attribution": "Founder, BP150, verbatim ('asking \"what subject or field of study uses sample, population, sampling\" asks Google to CONFIRM a theme you already hold'), D-BP150-019 correction"
+    }
+  ]
+}

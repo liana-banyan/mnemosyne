@@ -69,6 +69,10 @@ import { findAnswerKeyMarker, findNearVerbatimOptionMatch } from './answer_key_g
 // signature is a special case of the nest with depth 1." See surveyAskNested() at the bottom of
 // this file for the general form; surveyAsk() above is UNCHANGED and remains the depth-1 case.
 import { buildNest, type NestLevel, type NestResult } from './nest';
+// D-BP152-008. defineQuery()/otherMeaningsQuery()/scopedQuery()'s literal Google query text now
+// lives in resources/liana_survey_queries.json, re-read fresh on every call -- see
+// query_text_loader.ts's own header.
+import { getQueryText } from '../query_text_loader';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -147,7 +151,8 @@ export interface SurveyAskOpts {
  *  elements are asking Google the same first question -- Survey just does not stop at one block
  *  of the answer the way D2 does. */
 function defineQuery(term: string): string {
-  return `define ${term}`;
+  // D-BP152-008. Moved to resources/liana_survey_queries.json, id "survey.ask.define".
+  return getQueryText('survey.ask.define', { term });
 }
 
 /** A second, differently-angled query aimed squarely at surfacing OTHER senses -- this is the
@@ -156,7 +161,8 @@ function defineQuery(term: string): string {
  *  electronics, K-pop). Asking for it directly, rather than hoping D2's single "define" query
  *  happens to surface it, is the concrete mechanism behind "enumerate, don't collapse". */
 function otherMeaningsQuery(term: string): string {
-  return `other meanings of ${term}`;
+  // D-BP152-008. Moved to resources/liana_survey_queries.json, id "survey.ask.otherMeanings".
+  return getQueryText('survey.ask.otherMeanings', { term });
 }
 
 /** D-BP150-018 (B). Scoped like D3 was, but for EVERY surviving field, not one guess: "<term> in
@@ -165,7 +171,8 @@ function otherMeaningsQuery(term: string): string {
  *  per field the caller passes in `SurveyAskOpts.scopeFields`; every one of them is enumerated,
  *  none is picked. */
 function scopedQuery(term: string, field: string): string {
-  return `${term} in ${field}`;
+  // D-BP152-008. Moved to resources/liana_survey_queries.json, id "survey.ask.scoped".
+  return getQueryText('survey.ask.scoped', { term, field });
 }
 
 /** One Gemma call per source block, extraction only, HARDWIRE-22. Copies the defining sentence
