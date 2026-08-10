@@ -130,6 +130,10 @@
         "to": "supabase_public.env"
       },
       {
+        "from": "resources/liana_survey_queries.json",
+        "to": "liana_survey_queries.json"
+      },
+      {
         "from": "resources/eblets_default",
         "to": "eblets_default",
         "filter": [

@@ -96,6 +96,10 @@ import type { SurveyDenotation } from './survey_ask';
 // (D-BP150-019 correction renamed/extended this from the original deriveOptionVocabWords(), which
 // named words but never measured how SHARED they were -- see that section's own header).
 import { findCatalystWords } from './catalyst_words';
+// D-BP152-008. fieldQueries()'s three literal Google query strings now live in
+// resources/liana_survey_queries.json, re-read fresh on every call -- see query_text_loader.ts's
+// own header.
+import { getQueryText } from '../query_text_loader';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -311,12 +315,16 @@ export function computeThemeCohesion(options: Record<string, string> | null, ter
  *  ever grows the candidate set that STEP 2's elimination then filters; it cannot remove anything a
  *  caller previously found. */
 function fieldQueries(term: string, cohesion: ThemeCohesion): string[] {
+  // D-BP152-008. All three query strings moved to resources/liana_survey_queries.json (ids
+  // "survey.fieldGate.whatFieldIsIn", "survey.fieldGate.whatSubjectBelongsTo",
+  // "survey.fieldGate.themeConfirmation") -- the cohesion threshold/word-selection LOGIC below is
+  // unchanged; only the query TEXT itself was relocated.
   const queries = [
-    `what field is "${term}" in`,
-    `what subject or field does "${term}" belong to`,
+    getQueryText('survey.fieldGate.whatFieldIsIn', { term }),
+    getQueryText('survey.fieldGate.whatSubjectBelongsTo', { term }),
   ];
   if (cohesion.topCount >= MIN_COHESION_FOR_THEME_QUERY && cohesion.words.length) {
-    queries.push(`what subject or field of study uses ${cohesion.words.join(' ')}`);
+    queries.push(getQueryText('survey.fieldGate.themeConfirmation', { words: cohesion.words.join(' ') }));
   }
   return queries;
 }

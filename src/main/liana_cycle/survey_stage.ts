@@ -295,6 +295,11 @@ import { surveyAnswers, type SurveyAnswersResult } from './elements/survey_answe
 import { fieldGate, type FieldGateResult } from './elements/field_gate';
 import { findAskCatalyst } from './elements/catalyst_words';
 import { extractAssertedMentions, gemmaExtract, googleBlocks, type AssertedMention, type GoogleBlock } from './methods/comparative_cascade';
+// D-BP152-008. Every literal Google query string this file sends (askAmbiguity()'s askedText,
+// askOperation()'s askedText, askConstraint()'s question) now lives in
+// resources/liana_survey_queries.json, re-read fresh on every call -- see query_text_loader.ts's
+// own header for the full ruling and why it does not import 'electron'.
+import { getQueryText } from './query_text_loader';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -500,8 +505,10 @@ function parseAmbiguityTerms(raw: unknown, emit?: MethodRunContext['emit']): Amb
  * a word list here.
  */
 async function askAmbiguity(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<AmbiguityQueryResult> {
-  const askedText = 'what words or phrases in this question could be understood with a different '
-    + 'meaning that would fundamentally change the meaning of what is being asked?';
+  // D-BP152-008. Query text moved to resources/liana_survey_queries.json (id
+  // "survey.ambiguity.askedText") -- no placeholders, so this is the exact static sentence, read
+  // fresh on every call. Throws (never guesses) if the file/id is missing.
+  const askedText = getQueryText('survey.ambiguity.askedText');
 
   if (transport === 'gemma') {
     const prompt = `You are analyzing a multiple-choice question for ambiguous words or phrases, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
@@ -709,8 +716,9 @@ export interface OperationQueryResult {
  * Part 1).
  */
 async function askOperation(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<OperationQueryResult> {
-  const askedText = 'And then what operation does this question require in order to answer it: does it want '
-    + 'things ranked, defined, classified, or inferred from evidence?';
+  // D-BP152-008. Query text moved to resources/liana_survey_queries.json (id
+  // "survey.operation.askedText") -- no placeholders, read fresh on every call.
+  const askedText = getQueryText('survey.operation.askedText');
 
   if (transport === 'gemma') {
     const prompt = `You are analyzing a multiple-choice question to name the operation its answer must perform, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
@@ -879,7 +887,10 @@ Do not guess an answer to the underlying multiple-choice question itself -- name
  * caller.
  */
 async function askConstraint(term: string, ctx: MethodRunContext, transport: 'google' | 'gemma'): Promise<SurveyConstraint> {
-  const question = `What specific definition and scale of '${term}' is this question using?`;
+  // D-BP152-008. Query text moved to resources/liana_survey_queries.json (id
+  // "survey.constraint.definitionScale"), term-substituted the same way as before, read fresh on
+  // every call.
+  const question = getQueryText('survey.constraint.definitionScale', { term });
 
   if (transport === 'gemma') {
     const prompt = `You are answering a constraint question about a multiple-choice question, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
