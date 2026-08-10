@@ -367,33 +367,49 @@ export function determineDemandFromAmbiguityNested(
 //
 // THIS FUNCTION MAPS, IT NEVER GUESSES. `rawAnswer` (survey_stage.ts's OperationQueryResult, the
 // source's own stated answer to Part 2, copied verbatim, never interpreted there) is matched
-// against ONLY the four words Part 2 itself offered -- this is NOT a cue table read off the
+// against ONLY the words/phrases Part 2 itself offered -- this is NOT a cue table read off the
 // question string (the thing this file's own header says dies when Survey lands): it is a closed
-// lookup over an answer the SOURCE gave to a question WE constrained to exactly four choices.
+// lookup over an answer the SOURCE gave to a question WE constrained to exactly six choices.
 //
-// GAP 1 (FD-BP152-05), LEFT OPEN, NOT CLOSED HERE: his wording offers ranked/defined/classified/
-// inferred-from-evidence -- four of the six LianaDemand types. IDENTIFY and LOCATE-IN-FRAMEWORK
-// are NOT offered, so they can never be returned by this function, and this function does not
-// infer them from an unmapped answer, add them to the query text, or otherwise close GAP 1 --
-// that is an open Founder call (add the two missing words to the query, or rule that four is the
-// intended set), not a decision this ticket makes.
+// GAP 1 (FD-BP152-05) -- CLOSED, D-BP152-023, per FD-BP152-16 ("part two should offer all six
+// demand types"). His original wording offered ranked/defined/classified/inferred-from-evidence --
+// four of the six LianaDemand types; IDENTIFY and LOCATE-IN-FRAMEWORK could never be returned. The
+// query text in `resources/liana_survey_queries.json` (`survey.operation.askedText`) now offers
+// all six -- his four words unchanged, plus a TARE-flagged addition ('identified', 'placed within
+// a framework') so the two remaining types can be returned. See that file's own `attribution`
+// field for which words are his and which are not.
 //
-// CANON R-5, UNCHANGED. An answer that names none of the four words, or more than one of them, or
-// is absent, returns `demand: null` -- never a default, never a guess. This function never falls
-// back to determineDemand()'s CUES table (that table is not imported into or referenced by this
-// function at all); liana_terminal_engine.ts's own call site names, in its own transcript line,
-// which path (nested / operation / ambiguity / none) produced the demand it acted on.
+// CANON R-5, UNCHANGED. An answer that names none of the six words/phrases, or more than one of
+// them, or is absent, returns `demand: null` -- never a default, never a guess. This function
+// never falls back to determineDemand()'s CUES table (that table is not imported into or
+// referenced by this function at all); liana_terminal_engine.ts's own call site names, in its own
+// transcript line, which path (nested / operation / ambiguity / none) produced the demand it
+// acted on.
+//
+// GAP 1 CLOSED, D-BP152-023, per FD-BP152-16 ("part two should offer all six demand types").
+// `resources/liana_survey_queries.json`'s `survey.operation.askedText` now offers all six; the two
+// FOUNDER words below (ranked/defined/classified/inferred from evidence) are unchanged from
+// D-BP152-005 -- their four regex entries are untouched, byte-for-byte, from before this ticket.
+// The two new entries (IDENTIFY, LOCATE-IN-FRAMEWORK) map the TARE wording the JSON file's own
+// `attribution` field flags as Bishop's, not the Founder's -- see that file for the exact words and
+// why. This function still picks nothing: it is the same closed lookup over an answer the SOURCE
+// gave to a question WE constrained, now to six choices instead of four.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/** The four words Part 2 itself offers, mapped onto the four LianaDemand types a method already
- *  exists (or is named as a gap) for. Order does not matter for a match -- `hits` below reports
- *  every match, not just the first, so an answer naming more than one word is caught as ambiguous
- *  rather than silently resolved by array order. */
+/** The six words/phrases Part 2 itself now offers (FD-BP152-16), mapped onto the six LianaDemand
+ *  types. Order does not matter for a match -- `hits` below reports every match, not just the
+ *  first, so an answer naming more than one word/phrase is caught as ambiguous rather than
+ *  silently resolved by array order. RANK/DEFINE/CLASSIFY/INFER are the Founder's own four words,
+ *  regexes unchanged from D-BP152-005. IDENTIFY and LOCATE-IN-FRAMEWORK are new, D-BP152-023,
+ *  matching the TARE wording added to `survey.operation.askedText` -- distinct stems, no overlap
+ *  with the four Founder words or each other. */
 const OPERATION_ANSWER_MAP: Array<{ demand: LianaDemand; re: RegExp }> = [
   { demand: 'RANK', re: /\brank/ },
   { demand: 'DEFINE', re: /\bdefin/ },
   { demand: 'CLASSIFY', re: /\bclassif/ },
   { demand: 'INFER', re: /\binfer/ },
+  { demand: 'IDENTIFY', re: /\bidentif/ },
+  { demand: 'LOCATE-IN-FRAMEWORK', re: /\bframework/ },
 ];
 
 /**
@@ -416,25 +432,26 @@ export function determineDemandFromOperationAnswer(rawAnswer: string | null): De
     return {
       demand: hits[0].demand,
       why: `the operation query's answer ("${rawAnswer}") named "${hits[0].demand.toLowerCase()}" -- one `
-        + 'of the four words Part 2 itself offered (ranked/defined/classified/inferred from evidence); '
-        + 'IDENTIFY and LOCATE-IN-FRAMEWORK are not offered and were not inferred (GAP 1, FD-BP152-05, '
-        + 'open Founder call)',
+        + 'of the six words/phrases Part 2 now offers (ranked/defined/classified/inferred from evidence, '
+        + 'his four words, plus identified/placed within a framework, TARE-flagged, FD-BP152-16, '
+        + 'D-BP152-023)',
       derivedFrom: 'surveyed-ask',
     };
   }
   if (hits.length > 1) {
     return {
       demand: null,
-      why: `the operation query's answer ("${rawAnswer}") matched more than one of the four offered `
-        + `words (${hits.map((h) => h.demand).join(', ')}) -- ambiguous, reporting UNKNOWN rather than `
-        + 'picking one',
+      why: `the operation query's answer ("${rawAnswer}") matched more than one of the six offered `
+        + `words/phrases (${hits.map((h) => h.demand).join(', ')}) -- ambiguous, reporting UNKNOWN rather `
+        + 'than picking one',
       derivedFrom: 'surveyed-ask',
     };
   }
   return {
     demand: null,
-    why: `the operation query's answer ("${rawAnswer}") did not name any of the four words Part 2 `
-      + 'offered (ranked/defined/classified/inferred from evidence) -- an honest null, not a fabrication',
+    why: `the operation query's answer ("${rawAnswer}") did not name any of the six words/phrases Part 2 `
+      + 'offers (ranked/defined/classified/inferred from evidence/identified/placed within a framework) '
+      + '-- an honest null, not a fabrication',
     derivedFrom: 'surveyed-ask',
   };
 }

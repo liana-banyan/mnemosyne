@@ -27,9 +27,9 @@
     {
       "id": "survey.operation.askedText",
       "usedBy": "src/main/liana_cycle/survey_stage.ts askOperation()",
-      "template": "And then what operation does this question require in order to answer it: does it want things ranked, defined, classified, or inferred from evidence?",
+      "template": "And then what operation does this question require in order to answer it: does it want things ranked, defined, classified, or inferred from evidence? Or does it want something identified, or placed within a framework?",
       "placeholders": [],
-      "attribution": "Founder, BP152, verbatim, FD-BP152-05 (D-BP152-005)"
+      "attribution": "FOUNDER-ATTRIBUTED PORTION, verbatim, unaltered, unreordered, FD-BP152-05 (D-BP152-005): 'And then what operation does this question require in order to answer it: does it want things ranked, defined, classified, or inferred from evidence?' -- covers RANK/DEFINE/CLASSIFY/INFER. TARE PORTION, HARDWIRE-23, per FD-BP152-16 (D-BP152-023): 'Or does it want something identified, or placed within a framework?' is Bishop's wording, NOT the Founder's -- covers IDENTIFY ('identified') and LOCATE-IN-FRAMEWORK ('placed within a framework', taxonomy comment demand_test.ts:50 'the answer is a term's role inside a named theory'). Interim only; overwrite this template string in this file if the Founder disagrees with either word."
     },
     {
       "id": "survey.constraint.definitionScale",
