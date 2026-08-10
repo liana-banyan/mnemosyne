@@ -119,6 +119,42 @@ function resolveAmbiguityQueryTransport(ambiguityQueryTransport: 'google' | 'gem
   return 'google';
 }
 
+/** D-BP152-011/BISHOP/seg-splice-toggle -- WHICH OF THE THREE INPUTS ACTUALLY GOVERNED THIS RUN.
+ *  Founder, BP152, verbatim ask: "so can you make the one line change. or tell me what button to
+ *  push to make it so." Neither gate above tracked this before this ticket -- they only ever
+ *  returned the resolved value, not which precedence rung produced it. FD-BP152-07 requires every
+ *  run to record what governed it; against a 44% single-run noise floor (feedback_never_cite_a_
+ *  single_run_receipt_noise_floor_bp149.md) nobody could otherwise tell a UI toggle from drift.
+ *  Read-only -- mirrors each resolver's own precedence exactly and calls neither resolver's
+ *  behavior into question. `uiExplicit` is true only when the caller passed a value the resolver
+ *  itself treats as an override (contingencyOperatorSurvey===true; ambiguityQueryTransport==='google'
+ *  or 'gemma'); `envOn` is the resolver's own env-var check, reused verbatim. */
+function resolveGateSource(uiExplicit: boolean, envOn: boolean): 'ui' | 'env' | 'default' {
+  if (uiExplicit) return 'ui';
+  if (envOn) return 'env';
+  return 'default';
+}
+
+/** D-BP152-011: read-only introspection of the env-var side of the two gates above, for a
+ *  renderer control to show the EFFECTIVE state (including an env var the operator never touched
+ *  in the UI) BEFORE a run ever happens. Founder, BP152 ticket requirement 3: "A toggle that
+ *  reads OFF while the run is spliced is worse than no toggle -- it would make him misread a
+ *  receipt." Reuses isContingencyOperatorSurveySpliceEnabled(undefined) verbatim -- that is
+ *  exactly "what would this gate resolve to if the UI sent nothing", i.e. env-or-default -- so
+ *  this can never drift from the real gate's own precedence. Reads live process.env on every
+ *  call (not memoized): an env var set after app launch is picked up on the next query. Changes
+ *  neither gate's default or precedence in any way; this is introspection layered on top of both,
+ *  not a third resolver. */
+export function getLianaTerminalGateEnvState(): {
+  contingencyOperatorSurveyEnvOn: boolean;
+  ambiguityQueryTransportEnv: 'gemma' | null;
+} {
+  return {
+    contingencyOperatorSurveyEnvOn: isContingencyOperatorSurveySpliceEnabled(undefined),
+    ambiguityQueryTransportEnv: process.env.AMBIGUITY_QUERY_TRANSPORT === 'gemma' ? 'gemma' : null,
+  };
+}
+
 // ─────────────────────────── bundle lookup (unchanged convention) ───────────────────────────
 
 interface BundledQuestion {
@@ -248,12 +284,35 @@ export async function runLianaCycleQuestion(
   // comment on this field) whenever the variant is off, which keeps every OFF-path outcome object
   // identical to what this function produced before this ticket.
   const variant = contingencyOperatorSurveyOn ? ('contingency-operator-survey-splice' as const) : undefined;
+  // D-BP152-011/BISHOP/seg-splice-toggle -- WHICH RUNG OF EACH GATE'S PRECEDENCE GOVERNED THIS
+  // RUN. Computed once, here, from the exact same conditions each resolver above already checked
+  // (not re-derived by a second precedence table) so this can never disagree with what
+  // isContingencyOperatorSurveySpliceEnabled()/resolveAmbiguityQueryTransport() actually did.
+  const contingencyOperatorSurveySource = resolveGateSource(
+    contingencyOperatorSurvey === true,
+    process.env.CONTINGENCY_OPERATOR_SURVEY_SPLICE === '1',
+  );
+  const ambiguityQueryTransportSource = resolveGateSource(
+    ambiguityQueryTransport === 'google' || ambiguityQueryTransport === 'gemma',
+    process.env.AMBIGUITY_QUERY_TRANSPORT === 'gemma',
+  );
   // Declared outside the try so the catch below can still return everything the operator typed
   // before they abandoned -- Founder, BP149: "a walk that throws away your annotations because
   // you quit early is worse than no walk."
   const audibleLog = new AudibleLog();
   const steppedLog = new SteppedAudibleLog();
   try {
+    // D-BP152-011: THE RECEIPT LINE. Emitted on EVERY run, on the same emit()/note() mechanism
+    // every other transcript line uses (no new receipt field, no new file -- index.ts's
+    // 'liana-terminal-run' handler already writes the full `events` array into the on-disk
+    // receipt as `transcript`). Founder's ask was "tell me what button to push" -- this is the
+    // other half: once pushed (or left alone), the receipt states what actually governed the run
+    // and why, so a toggle can never silently disagree with an env var nobody looked at.
+    note(
+      emit,
+      `   GATES -- Survey Splice: ${contingencyOperatorSurveyOn ? 'ON' : 'OFF'} (source: ${contingencyOperatorSurveySource}) `
+      + `· Ambiguity Transport: ${resolvedAmbiguityQueryTransport} (source: ${ambiguityQueryTransportSource})`,
+    );
     let parsed: ParsedInput;
     if (/^\d+$/.test(trimmed)) {
       parsed = parseQid(Number(trimmed));
