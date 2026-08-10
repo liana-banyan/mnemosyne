@@ -347,7 +347,22 @@ declare global {
         /** D-BP151-023 (Stepped Audible), ADDITIVE/OPTIONAL, independent of `audible`. Omitted or
          *  false = no per-step pausing. */
         steppedAudible?: boolean,
+        /** D-BP151-026 (Contingency Operator: Survey Splice), THREADED BY D-BP152-011. Omitted/
+         *  false (and no CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 env override) = OFF, unchanged
+         *  default. */
+        contingencyOperatorSurvey?: boolean,
+        /** D-BP151-032 (Ambiguity Query Transport), THREADED BY D-BP152-011. Only consulted when
+         *  contingencyOperatorSurvey is on. Omitted = the resolver's own default (env var or
+         *  'google') -- never pass an explicit 'google' to represent "untouched", it would
+         *  short-circuit the env override. */
+        ambiguityQueryTransport?: 'google' | 'gemma',
       ) => Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome>;
+      // D-BP152-011/BISHOP/seg-splice-toggle -- READ-ONLY. Effective env-var state for the two
+      // gates above, so the renderer control can show ON-via-env before any run happens.
+      lianaTerminalGateEnvState?: () => Promise<{
+        contingencyOperatorSurveyEnvOn: boolean;
+        ambiguityQueryTransportEnv: 'gemma' | null;
+      }>;
       onLianaTerminalEvent?: (
         cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
       ) => () => void;

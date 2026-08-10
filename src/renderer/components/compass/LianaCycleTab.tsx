@@ -268,6 +268,46 @@ export function LianaCycleTab() {
   const [steppedAnswering, setSteppedAnswering] = useState(false);
   const steppedResponseRef = useRef<HTMLTextAreaElement>(null);
 
+  // D-BP152-011/BISHOP/seg-splice-toggle -- SURVEY SPLICE + AMBIGUITY TRANSPORT. Founder, BP152,
+  // verbatim: "so can you make the one line change. or tell me what button to push to make it
+  // so." Two Contingency Operator gates (D-BP151-026/D-BP151-032, liana_terminal_engine.ts) have
+  // existed since BP151 with no renderer control at all -- CONTINGENCY_OPERATOR_SURVEY_SPLICE=1
+  // and AMBIGUITY_QUERY_TRANSPORT=gemma, typed by hand, were the only way in. This is that
+  // control, not a new decision: both gates, their defaults, and their env-var precedence are
+  // completely unchanged (see liana_terminal_engine.ts's isContingencyOperatorSurveySpliceEnabled/
+  // resolveAmbiguityQueryTransport) -- flipping either DEFAULT is the Founder's own ratification
+  // act (BP151: "A Contingency Operator... is not ratified by existing"), not this ticket's.
+  //
+  // spliceUi starts false and transportUi starts '' (untouched) -- an operator who never opens
+  // this panel sends exactly `contingencyOperatorSurvey: false, ambiguityQueryTransport:
+  // undefined`, byte-for-byte the request this tab has always made. transportUi is a THREE-value
+  // state, not a two-value one, on purpose: sending a literal 'google' to mean "off" would
+  // short-circuit resolveAmbiguityQueryTransport()'s own env-var check (an explicit value always
+  // wins there, by design), silently breaking AMBIGUITY_QUERY_TRANSPORT=gemma for anyone who set
+  // it and never touched this dropdown. Only `undefined` (transportUi === '') preserves that.
+  const [spliceUi, setSpliceUi] = useState<boolean>(() => localStorage.getItem('liana.contingencyOperatorSurvey') === '1');
+  useEffect(() => { localStorage.setItem('liana.contingencyOperatorSurvey', spliceUi ? '1' : '0'); }, [spliceUi]);
+  const [transportUi, setTransportUi] = useState<'' | 'google' | 'gemma'>(() => {
+    const saved = localStorage.getItem('liana.ambiguityQueryTransport');
+    return saved === 'google' || saved === 'gemma' ? saved : '';
+  });
+  useEffect(() => { localStorage.setItem('liana.ambiguityQueryTransport', transportUi); }, [transportUi]);
+  // Read once on mount: which env vars are live, so the control shows the EFFECTIVE state
+  // (requirement 3 of this ticket) BEFORE any run happens rather than only after the first
+  // transcript line reports it. Founder ticket: "A toggle that reads OFF while the run is
+  // spliced is worse than no toggle -- it would make him misread a receipt." Env vars are
+  // main-process-only; this is the one way the renderer can know ahead of a run.
+  const [gateEnvState, setGateEnvState] = useState<{ contingencyOperatorSurveyEnvOn: boolean; ambiguityQueryTransportEnv: 'gemma' | null } | null>(null);
+  useEffect(() => {
+    if (!window.amplify?.lianaTerminalGateEnvState) return;
+    window.amplify.lianaTerminalGateEnvState().then(setGateEnvState).catch(() => { /* stays null -- treated as no env override below */ });
+  }, []);
+  const spliceEnvOn = gateEnvState?.contingencyOperatorSurveyEnvOn ?? false;
+  const spliceEffective = spliceUi || spliceEnvOn;
+  const spliceSource: 'ui' | 'env' | 'default' = spliceUi ? 'ui' : spliceEnvOn ? 'env' : 'default';
+  const transportEffective: 'google' | 'gemma' = transportUi || gateEnvState?.ambiguityQueryTransportEnv || 'google';
+  const transportSource: 'ui' | 'env' | 'default' = transportUi ? 'ui' : gateEnvState?.ambiguityQueryTransportEnv ? 'env' : 'default';
+
   // D-BP150-002/BISHOP/S02/seg-notesrecall -- HIS EARLIER NOTES, AVAILABLE MID-PAUSE.
   // Founder, BP150: "post whichever of my notes I want into the textbox I'm typing in, so I don't
   // have to go read it, or do it from memory." His qid 85 walk notes ARE the spec for the method
@@ -547,7 +587,11 @@ export function LianaCycleTab() {
       ...prev,
       {
         kind: 'header',
-        text: `═══ RUN  "${text}"${audibleMode ? '   [CALL AN AUDIBLE ON]' : ''}${steppedMode ? '   [STEPPED AUDIBLE ON]' : ''}`,
+        // D-BP152-011: the header line names the SOURCE too, not just ON/OFF -- an env-driven
+        // splice must never look identical to a run where nobody touched anything.
+        text: `═══ RUN  "${text}"${audibleMode ? '   [CALL AN AUDIBLE ON]' : ''}${steppedMode ? '   [STEPPED AUDIBLE ON]' : ''}`
+          + `${spliceEffective ? `   [SURVEY SPLICE ${spliceSource === 'env' ? 'ON (env)' : 'ON'}]` : ''}`
+          + `${transportSource !== 'default' ? `   [TRANSPORT ${transportEffective} (${transportSource})]` : ''}`,
         ts: new Date().toISOString(),
       },
     ]);
@@ -556,7 +600,12 @@ export function LianaCycleTab() {
     saveRecent(nextRecent);
     setInput('');
     try {
-      const outcome = await window.amplify.lianaTerminalRun(text, audibleMode, steppedMode);
+      // D-BP152-011: spliceUi/transportUi are sent as-is, never "helpfully" upgraded to their
+      // effective values -- e.g. transportUi stays '' (-> undefined) even when an env var is
+      // already forcing gemma, because sending a literal here would short-circuit that env
+      // override inside resolveAmbiguityQueryTransport(). The engine resolves the same way either
+      // way; only the SOURCE the receipt reports would change, wrongly, to 'ui'.
+      const outcome = await window.amplify.lianaTerminalRun(text, audibleMode, steppedMode, spliceUi, transportUi || undefined);
       setLastOutcome(outcome);
       setLastRunEvents(runEventsRef.current.slice());
     } catch (err) {
@@ -570,7 +619,7 @@ export function LianaCycleTab() {
       setActiveSteppedPause(null);
       inputRef.current?.focus();
     }
-  }, [input, running, recent, audibleMode, steppedMode, walkHasUnsavedWork, pendingDiscard]);
+  }, [input, running, recent, audibleMode, steppedMode, spliceUi, transportUi, spliceEffective, spliceSource, transportEffective, transportSource, walkHasUnsavedWork, pendingDiscard]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') { e.preventDefault(); void handleRun(); }
@@ -791,6 +840,53 @@ export function LianaCycleTab() {
         >
           Stepped Audible{steppedMode ? ' · ARMED' : ''}
         </button>
+        {/* D-BP152-011/BISHOP/seg-splice-toggle -- SURVEY SPLICE (D-BP151-026). Founder, BP152:
+            "so can you make the one line change. or tell me what button to push to make it so."
+            This is that button. The label states the SOURCE, not just ON/OFF, so an env-driven
+            splice can never read the same as an untouched default -- requirement 3 of this
+            ticket. */}
+        <button
+          type="button"
+          onClick={() => setSpliceUi((v) => !v)}
+          disabled={running}
+          title={
+            spliceSource === 'env'
+              ? 'ON because the CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 environment variable is set -- this button cannot turn it off; unset the env var and restart to turn it off.\nWhen on: Survey (Founder steps 2, 3, 4, 6) runs before method selection and DEMAND is derived from the surveyed ask, not the CUES table.'
+              : 'Off (the shipped default): the run is exactly the run it has always been.\nOn: Survey (Founder steps 2, 3, 4, 6) runs before method selection and DEMAND is derived from the surveyed ask, not the CUES table. Founder, BP151, Q-20: "Do it, and see if it works before I ratify."'
+          }
+          style={{
+            background: spliceEffective ? 'linear-gradient(135deg, #065f46, #10b981)' : 'none',
+            border: `1px solid ${spliceEffective ? '#10b981' : '#334155'}`, borderRadius: 5,
+            color: running ? '#334155' : spliceEffective ? '#0d1117' : '#94a3b8',
+            fontSize: 11, fontWeight: 700, padding: '3px 9px',
+            cursor: running ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+          }}
+        >
+          Survey Splice{spliceEffective ? ` · ${spliceSource === 'env' ? 'ON (env)' : 'ARMED'}` : ''}
+        </button>
+        {/* D-BP152-011 -- AMBIGUITY TRANSPORT (D-BP151-032). Only consulted when Survey Splice is
+            on; shown always so the effective/default value ('google') is never hidden. Founder,
+            BP151, relayed addendum: "I want to always run it on google, which should be the
+            default that can be changed in Mnemosynec at will." '' = untouched -- sent as
+            `undefined`, never a literal 'google', so an AMBIGUITY_QUERY_TRANSPORT=gemma env
+            override still works exactly as before for an operator who never opens this select. */}
+        <select
+          value={transportUi}
+          onChange={(e) => setTransportUi(e.target.value as '' | 'google' | 'gemma')}
+          disabled={running}
+          title={`Which transport SURVEY STEP 2's ambiguity query uses. Only consulted when Survey Splice is on.\nEffective now: ${transportEffective} (source: ${transportSource}).\n"Default" sends nothing, which honors the AMBIGUITY_QUERY_TRANSPORT env var if set, or 'google' otherwise -- it never forces 'google', which would silently override that env var.`}
+          style={{
+            background: transportSource === 'default' ? 'none' : '#0d1117',
+            border: `1px solid ${transportSource === 'default' ? '#334155' : transportSource === 'env' ? '#10b981' : '#38bdf8'}`,
+            borderRadius: 5, color: transportSource === 'default' ? '#94a3b8' : '#e2e8f0',
+            fontSize: 11, fontWeight: 700, padding: '3px 6px',
+            cursor: running ? 'default' : 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+          }}
+        >
+          <option value="">Transport: default ({transportEffective}{transportSource === 'env' ? ' · env' : ''})</option>
+          <option value="google">Transport: google</option>
+          <option value="gemma">Transport: gemma</option>
+        </select>
         <button
           type="button"
           onClick={handleClear}
@@ -835,6 +931,23 @@ export function LianaCycleTab() {
           UNATTRIBUTED — TARE), then the run stops once per step — after it completes, before the
           next begins — and waits until you respond. Only comparative-cascade questions (e.g. qid
           98) are mapped; any other method runs unaffected, exactly as if this were off.
+        </div>
+      )}
+
+      {/* D-BP152-011 -- SAME "STATE THE EFFECT" RULE AS THE TWO BANNERS ABOVE, and doubly so
+          here: this one can be ON from an env var the operator never touched in this window at
+          all. It says so explicitly rather than only showing a color. */}
+      {spliceEffective && (
+        <div style={{
+          margin: '0 16px 8px', padding: '7px 12px', background: '#052e22',
+          border: '1px solid #10b981', borderRadius: 6, color: '#6ee7b7', fontSize: 12,
+          fontFamily: 'system-ui, sans-serif',
+        }}>
+          <strong>Survey Splice is {spliceSource === 'env' ? 'ON — set by the CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 environment variable, not by this button' : 'ARMED'}.</strong>{' '}
+          On the NEXT run, Survey (Founder steps 2, 3, 4, 6) runs before method selection and
+          DEMAND is derived from the surveyed ask instead of the CUES table. Ambiguity transport
+          for that survey: <strong>{transportEffective}</strong> (source: {transportSource}).
+          {spliceSource === 'env' && ' This button cannot turn the splice off while that env var is set.'}
         </div>
       )}
 
