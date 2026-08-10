@@ -248,10 +248,10 @@
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // HARDWIRE-23 (THE TARE RULE) -- HOW THIS FILE STAYS CLEAN.
 //
-// This file introduces exactly FIVE decision/relaxation/routing rules of its own (D-BP151-035 adds
-// the fifth to the four D-BP151-025/031/032 introduced), and all five are ATTRIBUTED at their own
-// call site, per Law 4 -- no other decision rule (threshold, cutoff, ratio, tie-break, word list)
-// exists anywhere in this file:
+// This file introduces exactly SIX decision/relaxation/routing rules of its own (D-BP152-005 adds
+// the sixth to the five D-BP151-025/031/032/035 introduced), and all six are ATTRIBUTED at their
+// own call site, per Law 4 -- no other decision rule (threshold, cutoff, ratio, tie-break, word
+// list) exists anywhere in this file:
 //   1. groupOptionsByPredicate()'s model call (step 3) -- HARDWIRE-22 relaxed, Founder-ordered,
 //      scoped to this one call only.
 //   2. founderStep6JarMethod()'s direction-driven elimination (step 6) -- mechanical, driven by a
@@ -273,6 +273,13 @@
 //      ONLY Google's form-1 question (definition/scale), pure term substitution, nothing invented;
 //      form 2 (threshold) is a stopped fork, not a rule -- see this file header's D-BP151-035
 //      section and askConstraint()'s own comment for the exact wording not sent.
+//   6. askOperation()'s `transport === 'gemma'` branch (step 2's no-term path, Part 2 of the
+//      opening query, D-BP152-005) -- HARDWIRE-22 relaxed a fourth time, scoped to this one call
+//      only, same shape as rules 3 and 5. It reuses rule 4's already-resolved transport value.
+//      ATTRIBUTED: Founder, BP152, verbatim (`FD-BP152-05`): "And then what operation does this
+//      question require in order to answer it: does it want things ranked, defined, classified, or
+//      inferred from evidence?" This function PICKS NOTHING: it reports the source's raw stated
+//      answer, uninterpreted -- mapping it onto a LianaDemand happens in demand_test.ts, not here.
 // Every OTHER phase still either (a) delegates entirely to an existing element and reports its
 // result unmodified, or (b) reports raw, unranked facts with no decision made here.
 //
@@ -383,6 +390,13 @@ export interface FounderStep2Result {
    *  comments. SURVEY ASKS; IT NEVER APPLIES -- nothing in this array is judged, ranked, or used
    *  to eliminate an option here. */
   constraints: SurveyConstraint[];
+  /** D-BP152-005. PART 2 of the Founder's opening query (`FD-BP152-05`) -- askOperation()'s raw
+   *  result, issued IMMEDIATELY AFTER the ambiguity query (Part 1) on the NO-TERM path only, same
+   *  call chain. Null on the existing quoted/cued-term path (that path never calls askAmbiguity()
+   *  either, so Part 2 has nothing to follow). `operation.rawAnswer` is deliberately
+   *  UNINTERPRETED here -- see `determineDemandFromOperationAnswer()` (demand_test.ts) for where
+   *  it is mapped onto a `LianaDemand`. */
+  operation: OperationQueryResult | null;
   why: string;
 }
 
@@ -613,6 +627,185 @@ If nothing in the question could reasonably be understood differently, return {"
   };
 }
 
+/** D-BP152-005. The result of issuing PART 2 of the Founder's opening query (FD-BP152-05) --
+ *  see askOperation()'s own ATTRIBUTED comment below for the exact wording. `rawAnswer` is
+ *  deliberately UNINTERPRETED: mapping it onto a `LianaDemand` is demand_test.ts's job
+ *  (determineDemandFromOperationAnswer()), same separation every other Survey element already
+ *  keeps -- Survey reports what the source said, it never decides what that means. */
+export interface OperationQueryResult {
+  /** The Founder's own Part 2 query text actually sent (verbatim; see askOperation()). */
+  askedText: string;
+  /** The source's raw stated operation word/phrase, copied verbatim. Null when the query itself
+   *  produced nothing usable -- an honest null, never a fabrication. */
+  rawAnswer: string | null;
+  /** True exactly when the query itself produced nothing (transport unreachable/failed/
+   *  unparseable) -- distinguishes "no live source, not run" from "source ran and said nothing". */
+  modelUnreachable: boolean;
+  /** Which transport actually answered THIS call -- REUSES the already-resolved value
+   *  askAmbiguity() (Part 1) was called with; this function adds no second resolver. */
+  transport: 'google' | 'gemma';
+  /** googleBlocks()'s own `sources`, unmodified, unscored -- same convention as
+   *  AmbiguityQueryResult.citations. Empty on the 'gemma' transport or when `rawAnswer` is null. */
+  citations: string[];
+  /** D-BP152-005, same INSTRUMENT-ONLY convention D-BP152-004 established for askAmbiguity() (see
+   *  that ticket's own header, "D-BP152-004 AMENDMENT" -- not present in this file, see
+   *  comparative_cascade.ts's `gemmaExtract()` `rawOut` out-param): the raw Google passage this
+   *  call was built from, so a discard is diagnosable from the first run instead of only
+   *  reportable by hand. Empty on the 'gemma' transport or when Google was unreachable. */
+  rawGooglePassage: string;
+  /** D-BP152-005, same convention: the model's raw pre-JSON-parse text, captured ONLY when
+   *  `gemmaExtract()` failed to parse its own output as JSON -- null whenever extraction
+   *  succeeded, was never attempted, or ran on the 'gemma' transport. */
+  rawModelOutput: string | null;
+  why: string;
+}
+
+/**
+ * D-BP152-005. ATTRIBUTED: Founder, BP152, verbatim -- PART 2 of the query he opens every question
+ * with (`FD-BP152-05`), the second half of the SAME instrument `askAmbiguity()` (Part 1, above)
+ * already issues:
+ *
+ *   "And then what operation does this question require in order to answer it: does it want
+ *   things ranked, defined, classified, or inferred from evidence?"
+ *
+ * ISSUED IMMEDIATELY AFTER PART 1, SAME TRANSPORT, SAME CALL CHAIN. `founderStep2Survey()`'s
+ * no-term branch (below) calls this right after `askAmbiguity()` returns, passing the SAME
+ * already-resolved `transport` value -- this function adds no second resolver, same convention
+ * `askConstraint()` (D-BP151-035) already established. It runs regardless of what Part 1 came
+ * back with: it is an INDEPENDENT instrument, not conditioned on Part 1's success, because the
+ * measured failure this closes (`LIANA_RUN_qid98_2026-08-10T03-53-08-736Z.json`, `FD-BP152-05`)
+ * is a run where Part 1 ALSO returned nothing usable.
+ *
+ * NEVER CARRIES THE OPTION LIST. `askText` is the raw question text ALONE -- same contamination
+ * mitigation as Part 1 (this file's `askAmbiguity()` convention): sending the option list is the
+ * demonstrated answer-key leak vector this design avoids on both halves of the opening query.
+ *
+ * THIS FUNCTION PICKS NOTHING. It reports the source's own stated answer verbatim in `rawAnswer`,
+ * the same shape `askConstraint()` already uses for its own single-answer question -- interpreting
+ * that answer onto the `LianaDemand` enum is `demand_test.ts`'s
+ * `determineDemandFromOperationAnswer()`, never this function ("Survey asks; it never applies" --
+ * same standing rule `askConstraint()`'s own header cites, `FD` BP151).
+ *
+ * 'google' (the default, REUSED from Part 1's already-resolved value): `googleBlocks()` supplies a
+ * real passage; `gemmaExtract()` (unrelaxed, HARDWIRE-22 untouched) structures the source's stated
+ * operation out of it -- ordinary extraction, same shape as `askAmbiguity()`'s own 'google' branch,
+ * including D-BP152-004's raw-passage/raw-model-output instrumentation (built the same way here,
+ * for this second call site, not duplicated from there) so a discard is diagnosable from the first
+ * run.
+ * 'gemma': the local model reasons about the question directly, the SAME named HARDWIRE-22
+ * relaxation `askAmbiguity()`'s own 'gemma' branch already uses -- there is no passage to extract
+ * this from. Google unreachable -> refuses; never silently falls back to 'gemma' (same rule as
+ * Part 1).
+ */
+async function askOperation(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<OperationQueryResult> {
+  const askedText = 'And then what operation does this question require in order to answer it: does it want '
+    + 'things ranked, defined, classified, or inferred from evidence?';
+
+  if (transport === 'gemma') {
+    const prompt = `You are analyzing a multiple-choice question to name the operation its answer must perform, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
+
+QUESTION:
+${askText}
+
+TASK: ${askedText}
+
+Return ONLY JSON in this shape, no prose, no fence:
+{"answer":"the operation word you name, stated plainly (e.g. ranked, defined, classified, or inferred from evidence), or empty string if you cannot state one with confidence"}
+Do not guess an answer to the underlying multiple-choice question itself -- name the operation only.`;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60_000);
+      const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: GROUPING_MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 256 } }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+      const j = (await res.json()) as { response?: string };
+      const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+      const parsed = JSON.parse(t) as { answer?: unknown };
+      const rawAnswer = typeof parsed.answer === 'string' && parsed.answer.trim() ? parsed.answer.trim() : null;
+      const why = rawAnswer
+        ? `answered by the local model (gemma, selected transport), reasoning directly: "${rawAnswer}" -- the source names, this function picks none`
+        : 'the local model ran and named nothing usable -- an honest empty result, not a fabrication';
+      return { askedText, rawAnswer, modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, why };
+    } catch {
+      return {
+        askedText,
+        rawAnswer: null,
+        modelUnreachable: true,
+        transport: 'gemma',
+        citations: [],
+        rawGooglePassage: '',
+        rawModelOutput: null,
+        why: 'the local model call for the operation query returned nothing (unreachable or failed) -- an honest empty result, not a fabrication',
+      };
+    }
+  }
+
+  // transport === 'google' (the Founder-ordered default, REUSED from Part 1's already-resolved
+  // value). Same shape as askAmbiguity()'s own 'google' branch.
+  const query = `${askText}\n\n${askedText}`;
+  const google = await googleBlocks(ctx.askGoogle, query);
+  if (!google.ok || !google.text.trim()) {
+    return {
+      askedText,
+      rawAnswer: null,
+      modelUnreachable: true,
+      transport: 'google',
+      citations: [],
+      rawGooglePassage: '',
+      rawModelOutput: null,
+      why: `Google was unreachable for the operation query (${google.via}) -- refusing rather than `
+        + 'silently falling back to the local model (same rule as askAmbiguity()); an honest empty '
+        + 'result, not a fabrication',
+    };
+  }
+  // D-BP152-005, same INSTRUMENT ONLY convention D-BP152-004 established for askAmbiguity() --
+  // built here, not duplicated from there, for this second call site.
+  const googlePassageForLog = google.text.length > 4000 ? google.text.slice(0, 4000) : google.text;
+  ctx.emit({
+    kind: 'note',
+    text: `   PARSER INSTRUMENT [operation] Google passage handed to gemmaExtract()`
+      + `${google.text.length > 4000 ? ` (TRUNCATED at 4000 chars, full untruncated length was ${google.text.length})` : ' (untruncated, verbatim)'}`
+      + `="${googlePassageForLog}"`,
+    ts: nowIso(),
+  });
+  const instruction = 'Report, verbatim, what the passage states as the single operation this question\'s '
+    + 'answer must perform -- ranked, defined, classified, or inferred from evidence. Copy the stated '
+    + 'operation exactly as the passage gives it -- do not summarize, infer, or add anything the passage '
+    + 'does not state.';
+  const shape = '{"answer":"the operation exactly as the passage states it, or empty string if the passage does not state one"}';
+  const rawOut: { text?: string } = {};
+  const ex = await gemmaExtract(instruction, google.text, shape, rawOut);
+  if (ex === null && rawOut.text !== undefined) {
+    const rawModelForLog = rawOut.text.length > 4000 ? rawOut.text.slice(0, 4000) : rawOut.text;
+    ctx.emit({
+      kind: 'note',
+      text: `   PARSER INSTRUMENT [operation] gemmaExtract() RAW OUTPUT (JSON parse FAILED)`
+        + `${rawOut.text.length > 4000 ? ` (TRUNCATED at 4000 chars, full untruncated length was ${rawOut.text.length})` : ' (untruncated, verbatim)'}`
+        + `="${rawModelForLog}"`,
+      ts: nowIso(),
+    });
+  }
+  const rawAnswer = typeof (ex as { answer?: unknown } | null)?.answer === 'string' && (ex as { answer: string }).answer.trim()
+    ? (ex as { answer: string }).answer.trim()
+    : null;
+  const why = rawAnswer
+    ? `answered by Google's own passage (${google.via}); gemmaExtract() (extraction only, HARDWIRE-22 unrelaxed) reported the stated operation verbatim: "${rawAnswer}"`
+    : `Google answered (${google.via}) but nothing usable could be extracted from it -- an honest empty result, not a fabrication`;
+  return {
+    askedText,
+    rawAnswer,
+    modelUnreachable: false,
+    transport: 'google',
+    citations: rawAnswer ? google.sources : [],
+    rawGooglePassage: google.text,
+    rawModelOutput: ex === null ? (rawOut.text ?? null) : null,
+    why,
+  };
+}
+
 /**
  * D-BP151-035. ATTRIBUTED: Founder, BP151, ratified this ticket, verbatim: "Yes agreed. Survey
  * asks those, Cascade is still essential." The Founder, from his own logged-in browser, asked
@@ -787,7 +980,7 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
 
     if (!askText || !askText.trim()) {
       emit({ kind: 'result', text: 'SURVEY STEP 2: no term, not run', ts: nowIso() });
-      return { term: null, nested: null, ambiguity: null, ambiguityNested: [], negationNamed: false, constraints: [], why: whyNoTerm };
+      return { term: null, nested: null, ambiguity: null, ambiguityNested: [], negationNamed: false, constraints: [], operation: null, why: whyNoTerm };
     }
 
     // D-BP151-031. ATTRIBUTED: Founder, BP151, verbatim: "what words or phrases in this question
@@ -810,11 +1003,23 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
       emit({ kind: 'note', text: `   citation(s) from Google: ${ambiguity.citations.join(', ')}`, ts: nowIso() });
     }
 
+    // D-BP152-005, PART 2 of the SAME opening query (FD-BP152-05), issued IMMEDIATELY AFTER
+    // PART 1, regardless of what Part 1 came back with -- it is an independent instrument, asked
+    // about the question text alone, never the option list (same contamination mitigation as
+    // Part 1). ATTRIBUTED: Founder, BP152, verbatim: "And then what operation does this question
+    // require in order to answer it: does it want things ranked, defined, classified, or inferred
+    // from evidence?" See askOperation()'s own header for the full ruling.
+    const operation = await askOperation(askText, ctx, ambiguityQueryTransport);
+    emit({ kind: 'note', text: `   [transport: ${operation.transport.toUpperCase()}] PART 2 (operation): ${operation.why}`, ts: nowIso() });
+    if (operation.citations.length) {
+      emit({ kind: 'note', text: `   citation(s) from Google (operation query): ${operation.citations.join(', ')}`, ts: nowIso() });
+    }
+
     if (!ambiguity.terms.length) {
       const why = `${whyNoTerm}; ambiguity query issued but returned nothing usable (${ambiguity.why}) -- `
         + 'refusing rather than guessing (refusing beats guessing)';
       emit({ kind: 'result', text: 'SURVEY STEP 2: no term, ambiguity query returned nothing usable, not run', ts: nowIso() });
-      return { term: null, nested: null, ambiguity, ambiguityNested: [], negationNamed: false, constraints: [], why };
+      return { term: null, nested: null, ambiguity, ambiguityNested: [], negationNamed: false, constraints: [], operation, why };
     }
 
     // THE SOURCE NAMES THE TERMS; THIS SURVEYS ALL OF THEM, IN THE ORDER THE SOURCE RETURNED
@@ -874,12 +1079,12 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
         + `${negationNamed ? ', negation named' : ''}`,
       ts: nowIso(),
     });
-    return { term: null, nested: null, ambiguity, ambiguityNested, negationNamed, constraints, why };
+    return { term: null, nested: null, ambiguity, ambiguityNested, negationNamed, constraints, operation, why };
   }
   const nested = await surveyAskNested(term, ctx);
   const why = `surveyed "${term}" via E-SURVEY-ASK's nested form (wired, not rewritten): ${nested.why}`;
   emit({ kind: 'result', text: `SURVEY STEP 2: "${term}" -- ${nested.levels.length} level(s) surveyed`, ts: nowIso() });
-  return { term, nested, ambiguity: null, ambiguityNested: [], negationNamed: false, constraints: [], why };
+  return { term, nested, ambiguity: null, ambiguityNested: [], negationNamed: false, constraints: [], operation: null, why };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
