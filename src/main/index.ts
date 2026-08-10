@@ -3670,12 +3670,69 @@ function registerIPCHandlers(): void {
         // Google default still applies inside the engine; this field only records an explicit ask).
         ambiguityQueryTransportRequested: ambiguityQueryTransport ?? null,
         variant: outcome.variant ?? null,
+        // D-BP152-016: SC-01 (pivot terms named and defined) already landed in `transcript` above
+        // via the engine's own emit()/note() calls (same mechanism every other transcript line
+        // uses) -- these two fields additionally carry the STRUCTURED result (or the scoring
+        // error, mutually exclusive) so a reader does not have to re-parse transcript text to get
+        // the numbers. null/absent whenever Survey Splice was off this run (SC-01 has nothing to
+        // score) -- same "field's absence identifies the default path" convention `variant` above
+        // already uses. Scoring cannot fail this write: outcome.sc01/.sc01ScoringError are already
+        // resolved values by the time this handler runs; nothing here calls the scorer again.
+        sc01: outcome.sc01 ?? null,
+        sc01ScoringError: outcome.sc01ScoringError ?? null,
         eventCount: events.length,
         transcript: events,
       };
       const rp = join(runsDir, `LIANA_RUN_${slug}_${stamp}.json`);
       writeFileSync(rp, JSON.stringify(receipt, null, 2), 'utf8');
       console.log(`[liana-terminal] receipt written: ${rp} (${events.length} events)`);
+
+      // D-BP152-016: the standalone SC-01 file, next to the run receipt it belongs to. Written
+      // ONLY when a real (non-errored) SC-01 result exists for this run -- Survey Splice off, or a
+      // thrown scorer, both produce nothing to write, not a fabricated empty file. Fully wrapped
+      // in the SAME non-fatal try/catch as the receipt above: a failure here must not turn a good
+      // run into an error, and must not affect the JSON receipt already written immediately above.
+      if (outcome.sc01) {
+        const sc01 = outcome.sc01;
+        const lines: string[] = [];
+        lines.push(`# SC-01 -- pivot terms named and defined -- qid ${sc01.qid} -- ${new Date().toISOString()}`);
+        lines.push('');
+        lines.push('No pass/fail, no promotion, no verdict -- numbers and the full, uncollapsed enumeration only (FD-BP152-10, FD-BP152-12).');
+        lines.push('');
+        lines.push(`Question: ${sc01.questionText}`);
+        lines.push('');
+        lines.push(`Strict count: ${sc01.strictCount}`);
+        lines.push(`Diagnostics: named=${sc01.diagnostics.namedCount}  carried-triple=${sc01.diagnostics.tripleCount}  defined=${sc01.diagnostics.definedCount}`);
+        lines.push(`Ambiguity query unusable: ${sc01.ambiguityQueryUnusable}`);
+        lines.push('');
+        lines.push(sc01.why);
+        lines.push('');
+        if (!sc01.terms.length) {
+          lines.push('No terms named this run.');
+        }
+        for (const t of sc01.terms) {
+          lines.push(`## "${t.term}"`);
+          lines.push('');
+          lines.push(`- verbatimInQuestion: ${t.verbatimInQuestion}`);
+          lines.push(`- carriesTriple: ${t.carriesTriple}`);
+          lines.push(`- hasNamedSourceDefinition: ${t.hasNamedSourceDefinition}`);
+          lines.push(`- countsTowardStrictCount: ${t.countsTowardStrictCount}`);
+          lines.push('');
+          lines.push(`Enumerated meanings (${t.enumeratedMeanings.length}, full and uncollapsed):`);
+          lines.push('');
+          if (!t.enumeratedMeanings.length) {
+            lines.push('(none found)');
+          }
+          t.enumeratedMeanings.forEach((m, i) => {
+            lines.push(`${i + 1}. [from ${m.fromLevel}, register: ${m.register ?? 'unstated'}, source: ${m.sourceTitle || m.sourceUrl || '(no named source)'}]`);
+            lines.push(`   "${m.sentence}"`);
+          });
+          lines.push('');
+        }
+        const sp = join(runsDir, `SC01_${slug}_${stamp}.md`);
+        writeFileSync(sp, lines.join('\n'), 'utf8');
+        console.log(`[liana-terminal] SC-01 file written: ${sp}`);
+      }
     } catch (e) {
       console.warn('[liana-terminal] receipt write failed (non-fatal, the answer and beat stand):', e);
     }

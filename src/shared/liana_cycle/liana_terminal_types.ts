@@ -92,6 +92,62 @@ export interface LianaTerminalOutcome {
    *  See comparative_cascade.ts's isAbstainCluesModeEnabled() for the gate and
    *  buildAbstainCluesReport() for what this contains and where each signal is harvested from. */
   abstainClues?: ComparativeAbstainCluesReport;
+  /** D-BP152-016 (SC-01 wiring: score every future run, not just qid-98 receipts on disk).
+   *  ADDITIVE/OPTIONAL, same "a normal run omits it entirely" convention as audibleLog/steppedLog/
+   *  variant/abstainClues above. Present ONLY when the Contingency Operator Survey Splice variant
+   *  was ON for this run (SC-01 scores `FounderStep2Result`, which only Survey produces) AND
+   *  scoring itself did not throw. `LianaSc01Result` below structurally mirrors `SC01Result`
+   *  (sc01_pivot_terms_scorer.ts, main-only -- not imported here, same reason
+   *  ComparativeAbstainCluesReport is DEFINED here rather than in its main-only producer file, see
+   *  that type's own header immediately below). No pass/fail, no promotion, no verdict anywhere in
+   *  this shape (FD-BP152-10) -- numbers and the full, uncollapsed enumeration only (FD-BP152-12).
+   *  Scoring reads what Survey already produced; it issues no query and changes no control flow. */
+  sc01?: LianaSc01Result;
+  /** D-BP152-016. Present ONLY when SC-01 scoring itself threw -- the run's own verdict/abstain
+   *  above is UNAFFECTED either way ("A scorer that can kill a run is worse than no scorer.").
+   *  Mutually exclusive with `sc01` above (a thrown scoring attempt produces no result to report). */
+  sc01ScoringError?: string;
+}
+
+// ─────────────────────────── D-BP152-016: SC-01 (Contingency Operator: Survey Splice only) ───────────────────────────
+//
+// Structural mirror of SC01Result/SC01TermScore/SC01EnumeratedMeaning
+// (src/main/liana_cycle/sc01_pivot_terms_scorer.ts) -- NOT imported from there, for the same
+// cross-boundary reason ComparativeAbstainCluesReport above is defined here rather than in
+// comparative_cascade.ts: this file is shared main+renderer, the scorer file is main-only. The
+// real scorer function (scoreSc01PivotTerms(), unmodified, un-forked) is the only thing that ever
+// constructs a value of this shape; every field name and type below is copied from it verbatim.
+
+/** One enumerated denotation for one pivot term, kept in full -- never summarized, never
+ *  deduplicated (FD-BP152-12). Mirrors SC01EnumeratedMeaning. */
+export interface LianaSc01EnumeratedMeaning {
+  sentence: string;
+  sourceUrl: string;
+  sourceTitle: string;
+  register: string | null;
+  fromLevel: string;
+}
+
+/** Mirrors SC01TermScore -- every predicate broken out so the receipt shows WHICH of the three
+ *  SC-01 conditions failed, not only a final boolean. */
+export interface LianaSc01TermScore {
+  term: string;
+  verbatimInQuestion: boolean;
+  carriesTriple: boolean;
+  hasNamedSourceDefinition: boolean;
+  countsTowardStrictCount: boolean;
+  enumeratedMeanings: LianaSc01EnumeratedMeaning[];
+}
+
+/** Mirrors SC01Result. */
+export interface LianaSc01Result {
+  qid: number;
+  questionText: string;
+  strictCount: number;
+  diagnostics: { namedCount: number; tripleCount: number; definedCount: number };
+  terms: LianaSc01TermScore[];
+  ambiguityQueryUnusable: boolean;
+  why: string;
 }
 
 // ─────────────────────────── D-BP151-027: ABSTAIN CLUES (Contingency Operator) ───────────────────────────
