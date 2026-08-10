@@ -5,9 +5,10 @@
 // Taught by qid 98 (population density), Founder hand-worked BP149, proven live via
 // scripts/qid98_his_words.mjs (D-BP149-036) -- CORRECT, A, sole survivor, Google only, $0,
 // 183s. This file ports that script's mechanism into a registry method callable on any
-// comparative question, not just qid 98. Read scripts/qid98_his_words.mjs in full before
-// touching this file -- its stage order, verification rules, terminator, and comments are the
-// specification this file stays faithful to.
+// comparative question, not just qid 98. Read scripts/_superseded/qid98_his_words.mjs (moved
+// there 2026-08-09, D-BP151-043, per Rule 66 -- historical, no caller, broken by D-BP151-041's
+// register-gate CLI removal) in full before touching this file -- its stage order, verification
+// rules, terminator, and comments are the specification this file stays faithful to.
 //
 // WHAT IS PORTED, unchanged in substance:
 //   - Google is the only source, via the injected askGoogle (AskGoogleFn) -- the SAME
@@ -1223,7 +1224,7 @@ export const comparativeCascadeMethod: LianaMethod = {
   // D-BP150-003: this method orders options by a property. Its answer is a position in an
   // ordering, so its demand is RANK. It must not run on a question that demands anything else.
   demand: 'RANK',
-  taughtBy: 'qid 98 (population density), Founder hand-worked BP149, proven live BP149 (scripts/qid98_his_words.mjs, D-BP149-036: A, sole survivor, Google only, $0, 183s)',
+  taughtBy: 'qid 98 (population density), Founder hand-worked BP149, proven live BP149 (scripts/_superseded/qid98_his_words.mjs, D-BP149-036: A, sole survivor, Google only, $0, 183s)',
   shapeDescription: 'options are members of one category and the question turns on ranking them by a property',
   shapeTest,
   run,
