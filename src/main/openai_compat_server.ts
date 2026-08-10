@@ -60,6 +60,64 @@ const TOKEN_FILENAME = 'openai_compat_server_token.txt';
 const REAL_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
 
 // ─── Bearer token (local-only secret, this app's own making) ──────────────────────────────────
+//
+// D-BP151-042 CORRECTION, Founder ruling verbatim (relayed BP151, on being shown this was a
+// second implementation of the same auth logic): "YES please fix the Battery Dispatch endpoint
+// to import the function but still keep the tokens separate, agreed." HARDWIRE-23 Law 4
+// attribution: the four functions below are exported, path-parameterized primitives so any other
+// local-only server in this tree (today: battery_dispatch_plugin_endpoint.ts, D-BP151-042) can
+// IMPORT this one auth implementation rather than writing a second one -- this file's own header
+// (line 20) already says "Do not build authentication beyond the local Bearer file," and line
+// 81-82 (below) already documents the "without a second token-file implementation" intent for
+// in-process callers; this generalizes that same intent to a second local HTTP server. Each
+// caller still gets and keeps its OWN token FILE and VALUE (never shared, never merged) --
+// ATTRIBUTED, Founder BP151 verbatim ruling above: separate blast radius. A compromised plugin
+// token must never also open this server, and vice versa; rotating one must never rotate the
+// other. This server's own THE_NEXUS_TOKEN_FILENAME constant and its own getTokenFilePath()/
+// readCurrentToken() below are UNCHANGED in behavior -- they now simply delegate to the generic
+// primitives with THIS server's own path, so nothing about how THE NEXUS authenticates changed.
+
+/** Generates a fresh token at `filePath` on first run. Never logs the value, only the path.
+ *  `logPrefix` (e.g. "[openai_compat_server]") tags the one log line so two callers using this
+ *  same function for two different token files remain distinguishable in the log. */
+export function ensureBearerTokenFileExists(filePath: string, logPrefix: string): void {
+  if (existsSync(filePath)) return;
+  const token = crypto.randomBytes(32).toString('hex');
+  mkdirSync(join(filePath, '..'), { recursive: true });
+  writeFileSync(filePath, token, { encoding: 'utf8', mode: 0o600 });
+  console.log(`${logPrefix} generated a new Bearer token at ${filePath} (value never logged)`);
+}
+
+/** Reads the token at `filePath` fresh on every call -- a manual on-disk rotation takes effect
+ *  immediately, no restart needed. Never logs the value. */
+export function readBearerToken(filePath: string, logPrefix: string): string | null {
+  try {
+    if (!existsSync(filePath)) return null;
+    return readFileSync(filePath, 'utf8').trim();
+  } catch (err) {
+    console.error(`${logPrefix} failed to read token file:`, err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+/** Constant-time Bearer check against whatever token currently lives at `filePath`. Shared by
+ *  every local-only server in this tree that needs Bearer auth -- see this section's header for
+ *  why this is the ONE implementation rather than one per server. */
+export function isAuthorizedBearer(req: http.IncomingMessage, filePath: string, logPrefix: string): boolean {
+  const header = req.headers['authorization'];
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+  const presented = header.slice('Bearer '.length).trim();
+  const current = readBearerToken(filePath, logPrefix);
+  if (!current || !presented) return false;
+  // Constant-time comparison, only when lengths already match (timingSafeEqual throws otherwise).
+  const a = Buffer.from(presented, 'utf8');
+  const b = Buffer.from(current, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+// ─── THE NEXUS's own token -- unchanged behavior, now a thin wrapper over the generic primitives
+//     above with THIS server's own file path (openai_compat_server_token.txt, never shared) ────
 
 export function getTokenFilePath(): string {
   return join(app.getPath('userData'), TOKEN_FILENAME);
@@ -67,12 +125,7 @@ export function getTokenFilePath(): string {
 
 /** Generates a fresh token on first run. Never logs the value. */
 function ensureTokenFileExists(): void {
-  const filePath = getTokenFilePath();
-  if (existsSync(filePath)) return;
-  const token = crypto.randomBytes(32).toString('hex');
-  mkdirSync(join(filePath, '..'), { recursive: true });
-  writeFileSync(filePath, token, { encoding: 'utf8', mode: 0o600 });
-  console.log(`[openai_compat_server] generated a new Bearer token at ${filePath} (value never logged)`);
+  ensureBearerTokenFileExists(getTokenFilePath(), '[openai_compat_server]');
 }
 
 /**
@@ -82,27 +135,11 @@ function ensureTokenFileExists(): void {
  * token-file implementation. Never logs the value.
  */
 export function readCurrentToken(): string | null {
-  try {
-    const filePath = getTokenFilePath();
-    if (!existsSync(filePath)) return null;
-    return readFileSync(filePath, 'utf8').trim();
-  } catch (err) {
-    console.error('[openai_compat_server] failed to read token file:', err instanceof Error ? err.message : String(err));
-    return null;
-  }
+  return readBearerToken(getTokenFilePath(), '[openai_compat_server]');
 }
 
 function isAuthorized(req: http.IncomingMessage): boolean {
-  const header = req.headers['authorization'];
-  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
-  const presented = header.slice('Bearer '.length).trim();
-  const current = readCurrentToken();
-  if (!current || !presented) return false;
-  // Constant-time comparison, only when lengths already match (timingSafeEqual throws otherwise).
-  const a = Buffer.from(presented, 'utf8');
-  const b = Buffer.from(current, 'utf8');
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
+  return isAuthorizedBearer(req, getTokenFilePath(), '[openai_compat_server]');
 }
 
 // ─── Request/response helpers ──────────────────────────────────────────────────────────────────
