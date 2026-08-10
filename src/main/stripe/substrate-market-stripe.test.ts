@@ -1,7 +1,16 @@
 // substrate-market-stripe.test.ts
 // Unit tests for substrate-market-stripe canonical fee computation
+//
+// NOTE ON require() vs import (D-BP151-039): this file previously used ESM `import` syntax
+// against an extensionless sibling path (`from './substrate-market-stripe'`). Node's native
+// TypeScript type-stripping resolves `import` via strict ESM rules, which do NOT probe the
+// `.ts` extension the way tsc's own moduleResolution does -- this threw ERR_MODULE_NOT_FOUND
+// on every run (confirmed empirically this session), even though `substrate-market-stripe.ts`
+// itself has zero sibling .ts imports and is otherwise directly `require()`-able with zero
+// build step. Mirrors this tree's own prior-art convention (src/main/crystal/crystal_store.test.ts,
+// src/main/rooting_rule.test.ts): plain `require()` with an explicit `.ts` extension.
 
-import { computeApplicationFee } from './substrate-market-stripe';
+const { computeApplicationFee } = require('./substrate-market-stripe.ts') as typeof import('./substrate-market-stripe');
 
 // Assert: computeApplicationFee(10000) === 1670 (16.7% of $100.00)
 const result = computeApplicationFee(10000);
