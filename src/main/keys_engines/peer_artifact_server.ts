@@ -14,6 +14,13 @@ import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+// D-BP151-045: sign the hash this server serves, using the SAME Thorax Ed25519 primitives and
+// the SAME keypair mechanism (thorax/ed25519_keypair.ts, mechanism 1 of the three the BP151-044
+// sweep found) that federation/announce_frame.ts already uses to sign control-plane frames --
+// no new crypto, no new keypair, no new identity mechanism. See peer_artifact_client.ts's
+// downloadFromPeer() for the receive-side verification this signature exists to satisfy.
+import { getOrCreateKeypair } from '../thorax/ed25519_keypair';
+import { signFrame } from '../thorax/sign_verify';
 
 const PEER_ARTIFACT_PORT = parseInt(process.env.PEER_ARTIFACT_PORT ?? '47213', 10);
 const ARTIFACT_CACHE_DIR = join(homedir(), '.lb_substrate', 'artifact_cache');
@@ -28,6 +35,28 @@ function computeLocalHash(version: string): string | null {
   if (!existsSync(artifactPath)) return null;
   const bytes = readFileSync(artifactPath);
   return createHash('sha512').update(bytes).digest('hex');
+}
+
+/**
+ * D-BP151-045: sign `${version}:${hash}` with this machine's Thorax Ed25519 private key so a
+ * receiving peer can verify the hash was not substituted in transit or by a hostile intermediary
+ * -- the hash alone (already served, pre-existing) is self-reported and was explicitly documented
+ * elsewhere in this codebase as untrusted on its own (mesh_update_propagation.ts's header
+ * comment). `signFrame` is reused exactly as announce_frame.ts uses it -- it signs whatever
+ * string it is given; no wire-format encoding is needed for a two-field canonical string.
+ * Fails soft (returns null, same convention as signAnnouncePayload) if the keypair is
+ * unavailable -- the receiving side fails CLOSED on a missing signature, not this side.
+ */
+function signArtifactHash(version: string, hash: string): { publicKeyHex: string; signedHex: string } | null {
+  try {
+    const { public_key_hex, private_key_hex } = getOrCreateKeypair();
+    const canonical = `${version}:${hash}`;
+    const signedHex = signFrame(canonical, private_key_hex);
+    return { publicKeyHex: public_key_hex, signedHex };
+  } catch (err) {
+    console.warn('[PeerArtifactServer] Thorax keypair unavailable -- serving hash unsigned (receiver will refuse it):', err);
+    return null;
+  }
 }
 
 // BP138 Yoke 0.9.13 F4 item 3: how many additional ports to try (47214, 47215, ...) before
@@ -55,8 +84,15 @@ export function startPeerArtifactServer(): void {
         res.end(JSON.stringify({ error: 'artifact not in local cache' }));
         return;
       }
+      // D-BP151-045: additive fields only -- publicKeyHex/signedHex are new, peerId/hash are
+      // unchanged, so this stays backward compatible with anything that only reads peerId/hash.
+      const sig = signArtifactHash(version, hash);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ peerId: FRAME_ID, hash }));
+      res.end(JSON.stringify({
+        peerId: FRAME_ID,
+        hash,
+        ...(sig ? { publicKeyHex: sig.publicKeyHex, signedHex: sig.signedHex } : {}),
+      }));
       return;
     }
 
