@@ -148,6 +148,53 @@
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP151-035 AMENDMENT -- SURVEY ASKS A CONSTRAINT QUESTION PER SOURCE-NAMED TERM. IT NEVER
+// APPLIES ONE. Founder, BP151, ratified: "Yes agreed. Survey asks those, Cascade is still
+// essential."
+//
+// WHAT PROMPTED THIS. The Founder, from his own logged-in browser, asked Google the smallest set
+// of questions that would tell him HOW to determine qid 98's answer -- never the answer itself.
+// Google returned exactly two question forms:
+//   1. "What specific definition and scale of 'world region' is this question using?" -- because
+//      the choices mix vastly different geographic scales.
+//   2. "What is the specific population density threshold (people per square kilometer) used to
+//      qualify as 'one of the world's most densely populated'?" -- because population density is
+//      relative and needs a firm baseline.
+// These replace what `register_gate.mjs`'s FEATURE_WORDS/REGION_WORDS word lists and the removed
+// 1.5x separation threshold (`FD-BP151-13`) were standing in for -- an ASKED scale/threshold
+// instead of a hardcoded or invented one. See `REGISTER_GATE_AUDIT_BP151.md` (12 of 15 rules in
+// that gate are unattributed TAREs) and `HARDWIRE-23_THE_TARE_RULE.md`.
+//
+// THE LINE THIS AMENDMENT DOES NOT CROSS. Google itself offered to "apply these two baseline rules
+// to the list of choices now." Survey does not do that here, and never will: `askConstraint()`
+// below stores a constraint (term, question, answer, source); it does not judge the answer, does
+// not eliminate an option with it, does not rank anything. Applying a constraint is the cascade's
+// job, per the Founder's own ratification of this ticket ("Cascade is still essential") --
+// `comparative_cascade.ts`, `stepped_audible.ts`, and `register_gate.mjs` are untouched.
+//
+// WHAT WAS BUILT, AND THE FORK STOPPED ON INSTEAD OF INVENTING PAST IT. `askConstraint()` (below)
+// builds ONLY Google's form-1 question, templated with pure term substitution and nothing else:
+// "What specific definition and scale of '{term}' is this question using?" -- issued once per term
+// the ambiguity query named, inside `founderStep2Survey()`'s existing per-term loop. Form 2 could
+// not be templated the same way: "population density" and "(people per square kilometer)" are not
+// present in a named term's own text, so producing them for an arbitrary term would require either
+// inventing domain-specific phrasing this file has no authorized source for, or inventing a
+// selection rule for WHICH named terms even warrant a threshold-style question -- exactly the
+// FEATURE_WORDS/REGION_WORDS shape `REGISTER_GATE_AUDIT_BP151.md` already found and named a tare.
+// Per this ticket's own instruction ("if templating requires inventing phrasing beyond substituting
+// the term, STOP AND REPORT THE FORK... do not invent a question and proceed"), form 2 is reported
+// as a stopped fork, not built -- see `askConstraint()`'s own header for the exact reduced wording
+// this function would send if the Founder authorizes it, and this ticket's own SEG return for the
+// question put to him.
+//
+// TRANSPORT IS REUSED, NOT RE-RESOLVED. `askConstraint()` takes the SAME already-resolved
+// `'google' | 'gemma'` value `askAmbiguity()` was called with (`liana_terminal_engine.ts`'s
+// `resolveAmbiguityQueryTransport()`, threaded through unchanged) -- no second transport resolver
+// was added. Google unreachable refuses, exactly as `askAmbiguity()` already does; no silent
+// fallback to the local model.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // WIRE IT, DO NOT REWRITE IT. Every phase below composes an EXISTING element. Nothing in this
 // file re-implements a classifier, a query template, or an elimination rule another file already
 // owns. The tare sweep (`TARE_SWEEP_BP151.md`) found the following already built and simply not
@@ -201,10 +248,10 @@
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // HARDWIRE-23 (THE TARE RULE) -- HOW THIS FILE STAYS CLEAN.
 //
-// This file introduces exactly FOUR decision/relaxation/routing rules of its own (D-BP151-032
-// adds the fourth to the three D-BP151-025/031 introduced), and all four are ATTRIBUTED at their
-// own call site, per Law 4 -- no other decision rule (threshold, cutoff, ratio, tie-break, word
-// list) exists anywhere in this file:
+// This file introduces exactly FIVE decision/relaxation/routing rules of its own (D-BP151-035 adds
+// the fifth to the four D-BP151-025/031/032 introduced), and all five are ATTRIBUTED at their own
+// call site, per Law 4 -- no other decision rule (threshold, cutoff, ratio, tie-break, word list)
+// exists anywhere in this file:
 //   1. groupOptionsByPredicate()'s model call (step 3) -- HARDWIRE-22 relaxed, Founder-ordered,
 //      scoped to this one call only.
 //   2. founderStep6JarMethod()'s direction-driven elimination (step 6) -- mechanical, driven by a
@@ -219,6 +266,13 @@
 //      Founder, relayed BP151 addendum, "I want to always run it on google, which should be the
 //      default that can be changed in Mnemosynec at will." Unreachable Google refuses; it never
 //      silently substitutes the other transport (that would itself be an unattributed tare).
+//   5. askConstraint()'s `transport === 'gemma'` branch (D-BP151-035) -- HARDWIRE-22 relaxed a
+//      third time, scoped to this one call only, same shape as rule 3. It reuses rule 4's already-
+//      resolved transport value rather than adding a second resolver. ATTRIBUTED: Founder, BP151,
+//      ratified this ticket, "Yes agreed. Survey asks those, Cascade is still essential." Builds
+//      ONLY Google's form-1 question (definition/scale), pure term substitution, nothing invented;
+//      form 2 (threshold) is a stopped fork, not a rule -- see this file header's D-BP151-035
+//      section and askConstraint()'s own comment for the exact wording not sent.
 // Every OTHER phase still either (a) delegates entirely to an existing element and reports its
 // result unmodified, or (b) reports raw, unranked facts with no decision made here.
 //
@@ -310,6 +364,35 @@ export interface FounderStep2Result {
   /** D-BP151-031. True only when the SOURCE flagged at least one named term as a negation/
    *  exclusion/restriction word -- never inferred here from a word list. */
   negationNamed: boolean;
+  /** D-BP151-035. One constraint per term in `ambiguity.terms` (empty when `ambiguity` is null or
+   *  named nothing usable) -- see `SurveyConstraint`'s and `askConstraint()`'s own ATTRIBUTED
+   *  comments. SURVEY ASKS; IT NEVER APPLIES -- nothing in this array is judged, ranked, or used
+   *  to eliminate an option here. */
+  constraints: SurveyConstraint[];
+  why: string;
+}
+
+/** D-BP151-035. ATTRIBUTED: Founder, BP151, ratified: "Yes agreed. Survey asks those, Cascade is
+ *  still essential." One constraint question SURVEY asked about ONE source-named ambiguous term
+ *  (`AmbiguityTermFinding`, above) -- never a verdict, never a ranking, never an elimination. See
+ *  `askConstraint()`'s own header for exactly which of Google's two question forms this builds
+ *  (form 1 only) and the fork stopped on for the other (form 2). */
+export interface SurveyConstraint {
+  term: string;
+  /** The templated question actually sent, verbatim (Google's own form-1 question, substituted
+   *  only with `term` -- see `askConstraint()`'s own ATTRIBUTED comment). */
+  question: string;
+  /** The source's stated answer, copied verbatim (gemmaExtract(), extraction only, HARDWIRE-22
+   *  unrelaxed, on the 'google' branch) -- null when the constraint could not be obtained. An
+   *  honest null is never converted into a guessed scale or threshold. */
+  answer: string | null;
+  /** Citation URL(s) the source returned alongside its answer (googleBlocks()'s own `sources`,
+   *  unmodified), unscored -- same convention as `AmbiguityQueryResult.citations`. Always empty on
+   *  the 'gemma' transport (no web source exists on that path) or when `answer` is null. */
+  citations: string[];
+  /** True exactly when `answer` is non-null -- distinguishes "asked and the source answered" from
+   *  "asked, but nothing usable came back" (Law 5, HARDWIRE-23: the receipt must show which). */
+  obtained: boolean;
   why: string;
 }
 
@@ -460,6 +543,140 @@ If nothing in the question could reasonably be understood differently, return {"
 }
 
 /**
+ * D-BP151-035. ATTRIBUTED: Founder, BP151, ratified this ticket, verbatim: "Yes agreed. Survey
+ * asks those, Cascade is still essential." The Founder, from his own logged-in browser, asked
+ * Google the smallest set of questions that would tell him HOW to determine qid 98's answer --
+ * never the answer itself -- and Google returned exactly two question forms, quoted verbatim:
+ *
+ *   1. "What specific definition and scale of 'world region' is this question using?" -- because
+ *      "the provided choices mix vastly different geographic scales."
+ *   2. "What is the specific population density threshold (people per square kilometer) used to
+ *      qualify as 'one of the world's most densely populated'?" -- because "Population density is
+ *      relative... Without a firm baseline, you cannot accurately separate the 'most densely
+ *      populated' clusters from the rest."
+ *
+ * ONLY FORM 1 IS BUILT HERE, templated with pure term substitution and nothing else: "What
+ * specific definition and scale of '{term}' is this question using?" -- issued once per term the
+ * ambiguity query named, from founderStep2Survey()'s own per-term loop, below.
+ *
+ * FORM 2 IS A STOPPED FORK, NOT BUILT -- REPORTED, PER THIS TICKET'S OWN INSTRUCTION ("if
+ * templating requires inventing phrasing beyond substituting the term, STOP AND REPORT THE FORK...
+ * do not invent a question and proceed"). Form 1 substitutes cleanly into Google's own sentence
+ * with nothing added or removed -- any named term slots directly into "definition and scale of
+ * '{term}'". Form 2 does not: "population density" and "(people per square kilometer)" are NOT
+ * present in a named term's own text (the ambiguity query names a TERM -- e.g. "densely populated"
+ * -- never the measurable quantity or unit that quantifies it). Producing them for an arbitrary
+ * term would require either (a) inventing domain-specific phrasing this file has no authorized
+ * source for, or (b) inventing a selection rule for WHICH named terms even warrant a
+ * threshold-style question as opposed to a scale-style one -- exactly the FEATURE_WORDS/
+ * REGION_WORDS shape `REGISTER_GATE_AUDIT_BP151.md` already found and named a tare (rules #2/#3,
+ * 8 of 10 terms unattributed). The exact reduced wording this function WOULD send, if the Founder
+ * authorizes it -- "What is the specific threshold used to qualify as '{term}'?", dropping
+ * "population density"/"(people per square kilometer)" as non-substitutable elaboration -- is
+ * stated here and in this ticket's own SEG return, as the open question put to him. Nothing below
+ * builds it.
+ *
+ * `transport` IS NOT A SECOND RESOLVER. Per this ticket's own instruction ("Reuse it -- do not add
+ * a second transport path"), this takes the SAME already-resolved `'google' | 'gemma'` value
+ * askAmbiguity() (above) was called with -- liana_terminal_engine.ts's own
+ * resolveAmbiguityQueryTransport(), threaded through founderStep2Survey() -> here, unchanged.
+ * 'google' (the default): googleBlocks(ctx.askGoogle, question) -- the SAME channel every other
+ * Survey element already uses -- then gemmaExtract() UNRELAXED structures the source's own stated
+ * answer (ordinary extraction, HARDWIRE-22 untouched, same reasoning as askAmbiguity()'s own
+ * 'google' branch). 'gemma': the local model reasons about the question directly, the SAME named
+ * HARDWIRE-22 relaxation askAmbiguity()'s 'gemma' branch already uses (same Ollama instance, same
+ * model), scoped to this one additional call site (HARDWIRE-23 section, rule 5). Google
+ * unreachable -> refuses; it never silently falls back to 'gemma' (same rule, same ATTRIBUTION, as
+ * askAmbiguity()).
+ *
+ * SURVEY ASKS. IT NEVER APPLIES. This function stores the constraint (term, question, answer,
+ * citation) for the receipt; it never judges the answer, never eliminates an option with it, never
+ * ranks anything. Applying a constraint is the cascade's job -- Founder, BP151, ratified this
+ * ticket: "Cascade is still essential." `comparative_cascade.ts`, `stepped_audible.ts`, and
+ * `register_gate.mjs` are not imported, read for editing, or modified by this function or its
+ * caller.
+ */
+async function askConstraint(term: string, ctx: MethodRunContext, transport: 'google' | 'gemma'): Promise<SurveyConstraint> {
+  const question = `What specific definition and scale of '${term}' is this question using?`;
+
+  if (transport === 'gemma') {
+    const prompt = `You are answering a constraint question about a multiple-choice question, using your own judgment. This is NOT extraction from a passage -- there is no source text to copy from; you must reason about the question itself.
+
+CONSTRAINT QUESTION: ${question}
+
+Return ONLY JSON in this shape, no prose, no fence:
+{"answer":"the definition/scale you would use, stated plainly, or empty string if you cannot state one with confidence"}
+Do not guess an answer to the underlying multiple-choice question itself -- answer only the constraint question above.`;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60_000);
+      const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: GROUPING_MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 256 } }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+      const j = (await res.json()) as { response?: string };
+      const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+      const parsed = JSON.parse(t) as { answer?: unknown };
+      const answer = typeof parsed.answer === 'string' ? parsed.answer.trim() : '';
+      const obtained = !!answer;
+      return {
+        term,
+        question,
+        answer: obtained ? answer : null,
+        citations: [],
+        obtained,
+        why: obtained
+          ? 'answered by the local model (gemma, selected transport), reasoning directly -- no web source, so no citation'
+          : 'the local model ran and returned nothing usable -- an honest null, not a fabrication',
+      };
+    } catch {
+      return {
+        term,
+        question,
+        answer: null,
+        citations: [],
+        obtained: false,
+        why: 'the local model call for this constraint question returned nothing (unreachable or failed) -- an honest null, not a fabrication',
+      };
+    }
+  }
+
+  // transport === 'google' (the Founder-ordered default, REUSED from askAmbiguity()'s already-
+  // resolved value -- not a second transport path).
+  const google = await googleBlocks(ctx.askGoogle, question);
+  if (!google.ok || !google.text.trim()) {
+    return {
+      term,
+      question,
+      answer: null,
+      citations: [],
+      obtained: false,
+      why: `Google was unreachable for this constraint question (${google.via}) -- refusing rather than `
+        + 'silently falling back to the local model (same rule as askAmbiguity()); an honest null, not a fabrication',
+    };
+  }
+  const instruction = 'Report, verbatim, what the passage states as the specific definition and scale being '
+    + 'used to answer this constraint question. Copy the stated definition/scale exactly as the passage '
+    + 'gives it -- do not summarize, infer, or add anything the passage does not state.';
+  const shape = '{"answer":"the definition/scale exactly as the passage states it, or empty string if the passage does not state one"}';
+  const ex = await gemmaExtract(instruction, google.text, shape);
+  const answer = typeof (ex as { answer?: unknown } | null)?.answer === 'string' ? (ex as { answer: string }).answer.trim() : '';
+  const obtained = !!answer;
+  return {
+    term,
+    question,
+    answer: obtained ? answer : null,
+    citations: obtained ? google.sources : [],
+    obtained,
+    why: obtained
+      ? `answered by Google's own passage (${google.via}); gemmaExtract() (extraction only, HARDWIRE-22 unrelaxed) reported the stated definition/scale verbatim`
+      : `Google answered (${google.via}) but nothing usable could be extracted from it -- an honest null, not a fabrication`,
+  };
+}
+
+/**
  * FOUNDER STEP 2. Founder, Excerpt 7, BP141: "If I look up the definition of bias in google,
  * perfunctorily, I get this... That doesn't answer my question, it's just a fact to eblet for
  * component factor foundation for reasoning. So keeping those definitions in mind, but not bound
@@ -499,7 +716,7 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
 
     if (!askText || !askText.trim()) {
       emit({ kind: 'result', text: 'SURVEY STEP 2: no term, not run', ts: nowIso() });
-      return { term: null, nested: null, ambiguity: null, ambiguityNested: [], negationNamed: false, why: whyNoTerm };
+      return { term: null, nested: null, ambiguity: null, ambiguityNested: [], negationNamed: false, constraints: [], why: whyNoTerm };
     }
 
     // D-BP151-031. ATTRIBUTED: Founder, BP151, verbatim: "what words or phrases in this question
@@ -526,7 +743,7 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
       const why = `${whyNoTerm}; ambiguity query issued but returned nothing usable (${ambiguity.why}) -- `
         + 'refusing rather than guessing (refusing beats guessing)';
       emit({ kind: 'result', text: 'SURVEY STEP 2: no term, ambiguity query returned nothing usable, not run', ts: nowIso() });
-      return { term: null, nested: null, ambiguity, ambiguityNested: [], negationNamed: false, why };
+      return { term: null, nested: null, ambiguity, ambiguityNested: [], negationNamed: false, constraints: [], why };
     }
 
     // THE SOURCE NAMES THE TERMS; THIS SURVEYS ALL OF THEM, IN THE ORDER THE SOURCE RETURNED
@@ -549,22 +766,49 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
         ts: nowIso(),
       });
     }
+
+    // D-BP151-035. ATTRIBUTED: Founder, BP151, ratified: "Yes agreed. Survey asks those, Cascade
+    // is still essential." One constraint question per source-named term, askConstraint()'s own
+    // form-1 (definition/scale) template only -- see that function's own header for the form-2
+    // fork stopped on. SURVEY ASKS; IT NEVER APPLIES -- nothing below judges, ranks, or eliminates
+    // with a constraint's answer.
+    const constraints: SurveyConstraint[] = [];
+    for (const t of ambiguity.terms) {
+      // eslint-disable-next-line no-await-in-loop -- one constraint question per named term,
+      // sequential by design, same pattern as the ambiguityNested loop immediately above.
+      const constraint = await askConstraint(t.term, ctx, ambiguityQueryTransport);
+      constraints.push(constraint);
+      // Law 5, HARDWIRE-23: the receipt (this transcript) shows each constraint, its question, its
+      // answer, and its source, without needing to read the returned object.
+      emit({
+        kind: 'note',
+        text: `   CONSTRAINT for "${t.term}": "${constraint.question}" -> `
+          + `${constraint.obtained ? `"${constraint.answer}"` : 'null (unobtained -- honest, not fabricated)'}`
+          + `${constraint.citations.length ? ` [source: ${constraint.citations.join(', ')}]` : ' [no source]'}`,
+        ts: nowIso(),
+      });
+    }
+    const obtainedCount = constraints.filter((c) => c.obtained).length;
+
     const why = `no quoted/cued term -- issued the Founder's ambiguity query instead, via ${ambiguity.transport.toUpperCase()}; `
       + `${ambiguity.terms.length} term(s) named by the source ("${ambiguity.terms.map((t) => t.term).join('", "')}"), `
-      + `all surveyed (source order, no ranking rule invented)${negationNamed ? '; NEGATION NAMED by the source' : ''}`;
+      + `all surveyed (source order, no ranking rule invented)${negationNamed ? '; NEGATION NAMED by the source' : ''}; `
+      + `${constraints.length} constraint question(s) asked (form-1/definition-scale template only, form-2/threshold `
+      + `is a stopped fork -- see this file's own D-BP151-035 header), ${obtainedCount} answered`;
     emit({
       kind: 'result',
       text: `SURVEY STEP 2: no quoted/cued term -- ${ambiguity.terms.length} term(s) named by the ambiguity `
-        + `query [transport: ${ambiguity.transport.toUpperCase()}], ${ambiguityNested.length} surveyed`
+        + `query [transport: ${ambiguity.transport.toUpperCase()}], ${ambiguityNested.length} surveyed, `
+        + `${constraints.length} constraint(s) asked (${obtainedCount} answered)`
         + `${negationNamed ? ', negation named' : ''}`,
       ts: nowIso(),
     });
-    return { term: null, nested: null, ambiguity, ambiguityNested, negationNamed, why };
+    return { term: null, nested: null, ambiguity, ambiguityNested, negationNamed, constraints, why };
   }
   const nested = await surveyAskNested(term, ctx);
   const why = `surveyed "${term}" via E-SURVEY-ASK's nested form (wired, not rewritten): ${nested.why}`;
   emit({ kind: 'result', text: `SURVEY STEP 2: "${term}" -- ${nested.levels.length} level(s) surveyed`, ts: nowIso() });
-  return { term, nested, ambiguity: null, ambiguityNested: [], negationNamed: false, why };
+  return { term, nested, ambiguity: null, ambiguityNested: [], negationNamed: false, constraints: [], why };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -1085,7 +1329,8 @@ export async function runSurveyStage(
   const step2Summary = step2.nested
     ? `${step2.nested.levels.length} level(s) surveyed`
     : step2.ambiguityNested.length
-      ? `no quoted/cued term -- ambiguity query named ${step2.ambiguity?.terms.length ?? 0} term(s), ${step2.ambiguityNested.length} surveyed`
+      ? `no quoted/cued term -- ambiguity query named ${step2.ambiguity?.terms.length ?? 0} term(s), ${step2.ambiguityNested.length} surveyed, `
+        + `${step2.constraints.length} constraint(s) asked (${step2.constraints.filter((c) => c.obtained).length} answered)`
       : 'not run';
   const why = `SURVEY complete -- term ${term ? `"${term}" (${termWhy})` : `unresolved (${termWhy})`}; `
     + `step2: ${step2Summary}; `
