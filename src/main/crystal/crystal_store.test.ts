@@ -34,7 +34,27 @@
 // compiling to a CommonJS target, so this file uses plain `require()` instead -- it is
 // valid TypeScript, compiles unchanged under `tsc -p tsconfig.main.json`, and runs
 // unmodified under Node's native type-stripping in CommonJS mode.
-const { existsSync, readFileSync, readdirSync } = require("fs");
+const { existsSync, readFileSync, readdirSync, rmSync } = require("fs");
+
+// D-BP151-039: this harness's own header (above) has always DOCUMENTED that it "needs a
+// clean, disposable directory to make its additive/reject assertions deterministic run over
+// run" -- but until this fix, nothing ENFORCED that; it only checked that MNEM_CRYSTAL_DIR was
+// SET (below), never that it was actually empty. crystal_store.ts's mintChonk/bindChonk are
+// content-addressed and additive-by-default (Test 3/5/6/7's whole point), so re-running this
+// harness a second time against a directory a PRIOR run already populated reproduces the exact
+// same fixed pearl sets (SID_A = mintChonk(["pearl_A1","pearl_A2"]), key "workspace_root")
+// against already-existing records -- "first mint increases minted count by exactly 1" and the
+// bindChonk tests then correctly fail, because the store correctly refuses/no-ops on data that
+// already matches or conflicts with a prior run. Confirmed by direct repro this session: a
+// fresh MNEM_CRYSTAL_DIR yields 31 passed/0 failed; the SAME dir run again yields exactly
+// 22 passed/9 failed (matching D-BP151-038's measured numbers verbatim) -- this is the store's
+// additive-only gate working as designed against stale state, not a defect in the store or in
+// the assertions. The store itself is not touched by this fix; only this harness now makes its
+// own documented precondition true instead of trusting the caller to have honored it.
+if (process.env.MNEM_CRYSTAL_DIR && existsSync(process.env.MNEM_CRYSTAL_DIR)) {
+  rmSync(process.env.MNEM_CRYSTAL_DIR, { recursive: true, force: true });
+}
+
 const {
   mintChonk,
   resolveChonk,

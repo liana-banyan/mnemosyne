@@ -1,8 +1,17 @@
 // BP087 MAMBA-δ1: unit test for hex wire format v1
-// Run: npx ts-node --esm src/main/wire/hex-encode.test.ts
-//   or: npx tsx src/main/wire/hex-encode.test.ts
+// Run: node src/main/wire/hex-encode.test.ts
+//
+// NOTE ON require() vs import (D-BP151-039): this file previously used ESM `import` syntax
+// against an extensionless sibling path (`from './hex-encode'`). TypeScript's `import` is
+// ESM-shaped even under a CommonJS compile target, so Node's native type-stripping resolved
+// it via strict ESM rules, which do NOT probe the `.ts` extension the way tsc's own
+// moduleResolution does -- this threw ERR_MODULE_NOT_FOUND on every run (confirmed empirically
+// this session), even though `hex-encode.ts` itself has zero sibling .ts imports and is
+// otherwise directly `require()`-able with zero build step. Mirrors this tree's own prior-art
+// convention (src/main/crystal/crystal_store.test.ts, src/main/rooting_rule.test.ts): plain
+// `require()` with an explicit `.ts` extension, not `import`.
 
-import { encodeFrame, decodeFrame, FRAME_TYPE_MAP } from './hex-encode';
+const { encodeFrame, decodeFrame, FRAME_TYPE_MAP } = require('./hex-encode.ts') as typeof import('./hex-encode');
 
 let passed = 0;
 let failed = 0;
