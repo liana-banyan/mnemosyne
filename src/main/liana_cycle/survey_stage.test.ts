@@ -36,6 +36,13 @@
 //      names an option in a query group declared 'answers-eliminate' causes that option to be
 //      eliminated; a source in a group declared 'answers-keep' is named but NOT eliminated. No
 //      word list is used anywhere in this decision.
+//   10. D-BP151-035: SURVEY ASKS A CONSTRAINT QUESTION PER NAMED TERM, FORM-1 ONLY, AND NEVER
+//      APPLIES ONE. A named ambiguous term produces a constraint question (Google's own form-1
+//      sentence, pure term substitution); the answer is stored verbatim with its source; an
+//      unobtainable constraint is an honest null, never fabricated; the constraint question's own
+//      Google call can fail independently of the ambiguity query's; a constraint object carries no
+//      verdict/rank/elimination field; the existing quoted/cued-term path is unchanged (constraints
+//      stays empty there).
 //
 // THIS RUN USES THE REAL LOCAL OLLAMA MODEL (measured reachable at the default
 // http://127.0.0.1:11434 on this machine, model gemma4:12b -- the SAME instance
@@ -297,6 +304,180 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
   }
 }
 
+// ── 1i. D-BP151-035: TRANSPORT='gemma' -- ONE CONSTRAINT QUESTION PER NAMED TERM, FORM-1 ONLY ────
+// Mocked local model: distinguishes the ambiguity-naming call from the per-term constraint call by
+// inspecting the outgoing prompt (same technique 1d/1h already use to keep this suite network-free
+// and deterministic). Proves: one constraint per named term, the templated question is Google's
+// own form-1 sentence with pure term substitution and nothing invented, the answer is stored
+// verbatim, and NO citation exists on the gemma transport (no web source on that path).
+{
+  const originalFetch = global.fetch;
+  const mockAmbiguity = {
+    terms: [{ term: 'densely populated', standardMeaning: 'people per square mile', alternativeMeaning: 'total absolute population', impact: 'changes which region qualifies', isNegation: false }],
+  };
+  (global as any).fetch = async (_url: unknown, opts: any) => {
+    const body = JSON.parse(opts.body);
+    const prompt: string = body.prompt || '';
+    if (/CONSTRAINT QUESTION:/.test(prompt)) {
+      return { json: async () => ({ response: JSON.stringify({ answer: 'people per square kilometer, top quartile of world regions' }) }) };
+    }
+    return { json: async () => ({ response: JSON.stringify(mockAmbiguity) }) };
+  };
+  let r: Awaited<ReturnType<typeof founderStep2Survey>>;
+  try {
+    const { ctx } = fakeCtx();
+    r = await founderStep2Survey(null, ctx, "Which of the following world regions is NOT considered one of the world's most densely populated regions?", 'gemma');
+    assert(r.constraints.length === 1, 'step2(gemma, constraints): one constraint asked per named term', JSON.stringify(r.constraints));
+    assert(r.constraints[0].term === 'densely populated', 'step2(gemma, constraints): constraint carries the named term');
+    assert(
+      r.constraints[0].question === "What specific definition and scale of 'densely populated' is this question using?",
+      'step2(gemma, constraints): the templated question is Google\'s own form-1 sentence, pure term substitution, nothing invented',
+      r.constraints[0].question,
+    );
+    assert(r.constraints[0].obtained === true, 'step2(gemma, constraints): the constraint was obtained');
+    assert(r.constraints[0].answer === 'people per square kilometer, top quartile of world regions', 'step2(gemma, constraints): the answer is stored verbatim', r.constraints[0].answer ?? '(null)');
+    assert(r.constraints[0].citations.length === 0, 'step2(gemma, constraints): no citation on the gemma transport (no web source)');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 1j. D-BP151-035: TRANSPORT='gemma' -- AN UNOBTAINABLE CONSTRAINT IS AN HONEST NULL ───────────
+{
+  const originalFetch = global.fetch;
+  const mockAmbiguity = { terms: [{ term: 'regions', standardMeaning: 'x', alternativeMeaning: 'y', impact: 'z', isNegation: false }] };
+  (global as any).fetch = async (_url: unknown, opts: any) => {
+    const body = JSON.parse(opts.body);
+    const prompt: string = body.prompt || '';
+    if (/CONSTRAINT QUESTION:/.test(prompt)) {
+      return { json: async () => ({ response: JSON.stringify({ answer: '' }) }) };
+    }
+    return { json: async () => ({ response: JSON.stringify(mockAmbiguity) }) };
+  };
+  let r: Awaited<ReturnType<typeof founderStep2Survey>>;
+  try {
+    const { ctx } = fakeCtx();
+    r = await founderStep2Survey(null, ctx, 'A question with an ambiguous but unanswerable term.', 'gemma');
+    assert(r.constraints.length === 1, 'step2(gemma, unobtained constraint): one constraint was still asked, refusing beats guessing');
+    assert(r.constraints[0].obtained === false, 'step2(gemma, unobtained constraint): obtained is false');
+    assert(r.constraints[0].answer === null, 'step2(gemma, unobtained constraint): answer is an honest null, never fabricated');
+    assert(r.constraints[0].citations.length === 0, 'step2(gemma, unobtained constraint): citations stays empty');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 1k. D-BP151-035: TRANSPORT='google' -- THE CONSTRAINT'S OWN GOOGLE CALL FAILS INDEPENDENTLY ──
+// The ambiguity query succeeds (askGoogle answers it), but the constraint question's OWN Google
+// call fails (askGoogle returns null for it) -- proves the constraint refuses on its own, exactly
+// like askAmbiguity() does, rather than reusing a cached/prior Google answer.
+{
+  const originalFetch = global.fetch;
+  (global as any).fetch = async () => ({ json: async () => ({ response: JSON.stringify({ terms: [{ term: 'densely populated', standardMeaning: 'a', alternativeMeaning: 'b', impact: 'c', isNegation: false }] }) }) });
+  const flakyGoogleCtx = {
+    askGoogle: async (query: string) => {
+      if (query.includes('could be understood with a different meaning')) {
+        return {
+          snippet: '"densely populated" standardly means people per square mile.',
+          sourceUrl: 'https://example.com/ambiguity',
+          authority: 'user_google' as const,
+          selectorUsed: 'answer_box',
+          citations: [{ url: 'https://example.com/ambiguity', label: 'x', category: 'example.com' }],
+        };
+      }
+      return null; // the constraint question's own Google call -- unreachable
+    },
+    emit: (_e: TerminalEvent) => {},
+  };
+  let r: Awaited<ReturnType<typeof founderStep2Survey>>;
+  try {
+    r = await founderStep2Survey(null, flakyGoogleCtx as any, "Which of the following world regions is NOT considered one of the world's most densely populated regions?", 'google');
+    assert(r.ambiguity!.terms.length === 1, 'step2(google, constraint refuses independently): ambiguity itself still succeeded');
+    assert(r.constraints.length === 1, 'step2(google, constraint refuses independently): one constraint was attempted');
+    assert(r.constraints[0].obtained === false, 'step2(google, constraint refuses independently): obtained is false -- the constraint\'s own Google call failed');
+    assert(r.constraints[0].answer === null, 'step2(google, constraint refuses independently): answer is an honest null');
+    assert(r.constraints[0].citations.length === 0, 'step2(google, constraint refuses independently): no citation when unobtained');
+    assert(/unreachable/.test(r.constraints[0].why), 'step2(google, constraint refuses independently): why states Google was unreachable for THIS constraint', r.constraints[0].why);
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 1l. D-BP151-035: TRANSPORT='google' -- CONSTRAINT ANSWERED, ITS OWN CITATION CAPTURED ────────
+{
+  const originalFetch = global.fetch;
+  (global as any).fetch = async (_url: unknown, opts: any) => {
+    const body = JSON.parse(opts.body);
+    const prompt: string = body.prompt || '';
+    if (/specific definition and scale being/.test(prompt)) {
+      return { json: async () => ({ response: JSON.stringify({ answer: 'measured in people per square kilometer, top quartile globally' }) }) };
+    }
+    return { json: async () => ({ response: JSON.stringify({ terms: [{ term: 'densely populated', standardMeaning: 'a', alternativeMeaning: 'b', impact: 'c', isNegation: false }] }) }) };
+  };
+  const bothSucceedCtx = {
+    askGoogle: async (query: string) => {
+      if (query.includes('could be understood with a different meaning')) {
+        return {
+          snippet: '"densely populated" standardly means people per square mile.',
+          sourceUrl: 'https://example.com/ambiguity',
+          authority: 'user_google' as const,
+          selectorUsed: 'answer_box',
+          citations: [{ url: 'https://example.com/ambiguity', label: 'x', category: 'example.com' }],
+        };
+      }
+      return {
+        snippet: 'This question uses population density measured in people per square kilometer, top quartile globally.',
+        sourceUrl: 'https://example.com/constraint',
+        authority: 'user_google' as const,
+        selectorUsed: 'answer_box',
+        citations: [{ url: 'https://example.com/constraint', label: 'y', category: 'example.com' }],
+      };
+    },
+    emit: (_e: TerminalEvent) => {},
+  };
+  let r: Awaited<ReturnType<typeof founderStep2Survey>>;
+  try {
+    r = await founderStep2Survey(null, bothSucceedCtx as any, "Which of the following world regions is NOT considered one of the world's most densely populated regions?", 'google');
+    assert(r.constraints.length === 1, 'step2(google, constraint answered): one constraint asked');
+    assert(r.constraints[0].obtained === true, 'step2(google, constraint answered): obtained is true');
+    assert(r.constraints[0].answer === 'measured in people per square kilometer, top quartile globally', 'step2(google, constraint answered): answer extracted verbatim by gemmaExtract() (unrelaxed)', r.constraints[0].answer ?? '(null)');
+    assert(r.constraints[0].citations.length === 1 && r.constraints[0].citations[0] === 'https://example.com/constraint', 'step2(google, constraint answered): the constraint\'s OWN citation is captured, not the ambiguity query\'s', JSON.stringify(r.constraints[0].citations));
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 1m. THE QUOTED/CUED-TERM PATH IS UNCHANGED -- constraints stays empty ────────────────────────
+{
+  const { ctx } = fakeCtx();
+  const r = await founderStep2Survey('bias', ctx, 'What is bias?');
+  assert(r.constraints.length === 0, 'step2(term present): constraints stays empty -- the constraint mechanism only runs on the no-term/ambiguity path');
+}
+
+// ── 1n. A CONSTRAINT OBJECT CARRIES NO VERDICT/RANK/ELIMINATION FIELD -- SURVEY ASKS, NEVER
+//       APPLIES ──────────────────────────────────────────────────────────────────────────────────
+{
+  const originalFetch = global.fetch;
+  (global as any).fetch = async (_url: unknown, opts: any) => {
+    const body = JSON.parse(opts.body);
+    const prompt: string = body.prompt || '';
+    if (/CONSTRAINT QUESTION:/.test(prompt)) {
+      return { json: async () => ({ response: JSON.stringify({ answer: 'a stated scale' }) }) };
+    }
+    return { json: async () => ({ response: JSON.stringify({ terms: [{ term: 'regions', standardMeaning: 'a', alternativeMeaning: 'b', impact: 'c', isNegation: false }] }) }) };
+  };
+  try {
+    const { ctx } = fakeCtx();
+    const r = await founderStep2Survey(null, ctx, 'A plain ambiguous question.', 'gemma');
+    const c = r.constraints[0];
+    const keys = Object.keys(c).sort().join(',');
+    assert(keys === ['answer', 'citations', 'obtained', 'question', 'term', 'why'].sort().join(','), 'step2(constraint shape): a constraint carries only term/question/answer/citations/obtained/why', keys);
+    assert(!('verdict' in c) && !('eliminated' in c) && !('rank' in c) && !('correct' in c), 'step2(constraint shape): no verdict/eliminated/rank/correct field exists on a constraint -- Survey asks, it never applies');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
 // ── 2. STEP 3 REFUSES CLEANLY WITH NO OPTIONS ────────────────────────────────────────────────
 {
   const { ctx, events } = fakeCtx();
@@ -503,6 +684,7 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
   assert(result.term === null, 'orchestrator: no term derivable -- term stays null, never guessed from the raw question');
   assert(result.step2.nested === null, 'orchestrator: step2 did not run without a term');
   assert(result.step4.field === null, 'orchestrator: step4 did not run without a term');
+  assert(result.step2.constraints.length === 0, 'orchestrator: step2.constraints stays empty when the ambiguity query itself found no term to name (Google unreachable, fakeCtx)');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
