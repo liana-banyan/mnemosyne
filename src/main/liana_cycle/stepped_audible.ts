@@ -121,6 +121,13 @@ import type { AskGoogleFn, EmitFn, MethodRunContext } from './method_registry';
 // file imports only from method_registry.ts and register_gate_loader.ts, neither of which imports
 // this one.
 import { googleBlocks } from './methods/comparative_cascade';
+// D-BP152-025/BISHOP/seg-nexus-returns-answer -- appearance-only source logging, Founder-ratified
+// (BP152: "sources just make an appearance ... correctness score gets moved only from the correct
+// answer traced back to the provenance sources"). See specialist_adapters.ts's own "Source
+// Appearance Log" section header for why this is a SEPARATE map from sourceCredibilityLedger and
+// never touches scoreValue/observedN. No circularity: specialist_adapters.ts imports nothing from
+// this file or from liana_cycle/ at all.
+import { recordSourceAppearance } from '../plow/specialist_adapters';
 
 /** How the engine reaches the operator for a step pause. Implemented over IPC in index.ts (same
  *  convention as AudibleChannel in audible.ts); kept as an interface here so this module has no
@@ -711,6 +718,124 @@ export async function requestStepZeroPause(
       ts: nowIso(),
     });
     if (response.action === 'abandon') throw new SteppedAudibleAbandoned();
+
+    // D-BP152-025/BISHOP/seg-nexus-returns-answer -- THE NEXUS SURFACE RETURNS WHAT HE TYPED.
+    // Inserted BEFORE the 'ask_google' gate below so every OTHER action ('approve'/'correct'/
+    // 'redirect', and 'ask_google' itself) is completely unaffected -- this branch only fires on
+    // the one new action index.ts's 'nexus-authority-capture' handler produces, which itself only
+    // fires on the operator's own explicit "Capture -> Liana Cycle" button press in the Nexus
+    // window (nexus_authority_persistent_session.ts). Nothing here calls askGoogle, types,
+    // navigates, or auto-advances -- the captured text arrives already resolved on `response`.
+    if (response.action === 'nexus_capture') {
+      round += 1;
+      const capturedText = (response.nexusCapturedText ?? '').trim();
+      const surface = response.nexusSurface ?? 'unknown';
+      const url = response.nexusUrl ?? '';
+      const containerUsed = response.nexusContainerUsed ?? 'unknown';
+      const runContext = response.nexusRunContext ?? '';
+
+      // Provenance FIRST, unconditionally -- requirement 4: "an answer whose source is unrecorded
+      // is worthless to [the cascade's independence doctrine]." Recorded even on an empty capture,
+      // so a later reader always sees which surface/URL a capture attempt targeted.
+      const contextEvent: LianaTerminalEvent = {
+        kind: 'note',
+        text: `   PARSER INSTRUMENT [nexus-capture, OPERATOR OVERRIDE, D-BP152-025] capture context: surface="${surface}" url="${url}" container="${containerUsed}" run="${runContext}"`,
+        ts: nowIso(),
+      };
+      emit(contextEvent);
+      stateEvents = [...stateEvents, contextEvent];
+
+      if (!capturedText) {
+        const emptyEvent: LianaTerminalEvent = {
+          kind: 'note',
+          text: '   NEXUS CAPTURE: no visible text found on the page at capture time -- nothing recorded as an answer.',
+          ts: nowIso(),
+        };
+        emit(emptyEvent);
+        stateEvents = [...stateEvents, emptyEvent];
+        continue;
+      }
+
+      // FD-BP152-15's same guard, reused (this ticket's requirement 6): flag only, never block or
+      // edit. The captured text is the one artifact available here -- his own typed query is not
+      // passed to us separately (he typed it directly on the visible page, not into this pause's
+      // box), but whatever he typed is itself part of what got captured (a visible search
+      // box/composer is part of the page), so checking capturedText covers both cases in practice.
+      const contamination = detectOptionContamination(capturedText, options);
+      if (contamination.length) {
+        const contamEvent: LianaTerminalEvent = {
+          kind: 'note',
+          text: `   CONTAMINATION FLAG (FD-BP152-15): the captured Nexus text contains option string(s) verbatim: ${contamination.join('; ')} -- flagged, never blocked or edited; recorded so a later reader can see contamination was possible on this run.`,
+          ts: nowIso(),
+        };
+        emit(contamEvent);
+        stateEvents = [...stateEvents, contamEvent];
+      }
+
+      // PARSER INSTRUMENT convention, no length cap -- requirement 2/5: verbatim, untruncated,
+      // nothing beyond end-whitespace trimmed (already done above), nothing summarized or parsed.
+      const capturedEvent: LianaTerminalEvent = {
+        kind: 'note',
+        text: `   PARSER INSTRUMENT [nexus-capture, OPERATOR OVERRIDE, D-BP152-025] CAPTURED TEXT from Nexus (${surface}) (untruncated, verbatim, no length cap)="${capturedText}"`,
+        ts: nowIso(),
+      };
+      emit(capturedEvent);
+      stateEvents = [...stateEvents, capturedEvent];
+
+      // D-BP152-025 SCOPE ADDITION -- Founder: "include the reference sources that the answer
+      // gives ... to add to our sources ... it has to make a new source if not in there already,
+      // and add to the existing if it is," then, on the correctness trap: "sources just make an
+      // appearance ... correctness score gets moved only from the correct answer traced back to
+      // the provenance sources." recordSourceAppearance() (specialist_adapters.ts) is exactly
+      // that: create-or-append by the citation's own domain, NEVER touching scoreValue/observedN.
+      // The traceback itself (moving a correctness score from a graded answer back to the sources
+      // it rested on) is NOT built here -- out of this ticket's scope per the same ruling.
+      const citations = response.nexusCitations ?? [];
+      if (citations.length > 0) {
+        let newDomains = 0;
+        let existingDomains = 0;
+        const skipped: string[] = [];
+        const capturedAt = nowIso();
+        for (const c of citations) {
+          if (!c.domain) { skipped.push(c.href); continue; }
+          const { isNewDomain } = recordSourceAppearance({
+            sourceDomain: c.domain,
+            url: c.href,
+            linkText: c.text,
+            surface: response.nexusSurface ?? null,
+            runContext,
+            capturedAt,
+          });
+          if (isNewDomain) newDomains += 1; else existingDomains += 1;
+        }
+        const citationsEvent: LianaTerminalEvent = {
+          kind: 'note',
+          text:
+            `   PARSER INSTRUMENT [nexus-capture, OPERATOR OVERRIDE, D-BP152-025] CITATIONS captured from Nexus (${surface}) ` +
+            `(${citations.length} found, untruncated, verbatim) = ${JSON.stringify(citations)}`,
+          ts: nowIso(),
+        };
+        emit(citationsEvent);
+        stateEvents = [...stateEvents, citationsEvent];
+        const ledgerEvent: LianaTerminalEvent = {
+          kind: 'note',
+          text:
+            `   SOURCE APPEARANCE LOG (D-BP152-025, Founder-ratified appearance-only write): ` +
+            `${newDomains} new source domain(s), ${existingDomains} existing-source appearance(s) recorded` +
+            `${skipped.length ? `, ${skipped.length} citation(s) skipped (unparseable domain: ${skipped.join('; ')})` : ''}. ` +
+            `NO correctness score moved -- scoreValue/observedN (specialist_adapters.ts, sourceCredibilityLedger) untouched by this capture; ` +
+            `the correctness traceback from a graded answer back to these sources is a separate, unbuilt mechanism.`,
+          ts: nowIso(),
+        };
+        emit(ledgerEvent);
+        stateEvents = [...stateEvents, ledgerEvent];
+      }
+
+      // Requirement 5: PAUSE AGAIN rather than auto-advance -- identical discipline to the
+      // ask_google loop below.
+      continue;
+    }
+
     if (response.action !== 'ask_google') {
       // 'approve' / 'correct' / 'redirect' -- recorded above and change NOTHING about this run,
       // UNCHANGED from before this ticket -- requirement C.4/E and HARDWIRE-23: his response is

@@ -254,6 +254,9 @@ import {
   probeNexusAuthoritySignInStatus,
   setNexusAuthorityBrowserFlags,
   showNexusAuthoritySessionForSignIn,
+  // D-BP152-025/BISHOP/seg-nexus-returns-answer -- additive; see that file's own "Operator
+  // capture" section header for the full mechanism.
+  captureNexusAuthorityVisibleText,
 } from './plow/nexus_authority_persistent_session';
 import { querySagaState, recordWaveDispatch, recordWaveComplete } from './hearth/drekaskip_status/drekaskip_bridge';
 import { pollWatchdogStatus, getSubjectHistory } from './hearth/active_substrate/watchdog_bridge';
@@ -3472,9 +3475,14 @@ function registerIPCHandlers(): void {
   // convention as PENDING_AUDIBLE_PAUSES above (keyed by pauseId, no timer -- see this ticket's
   // "no timeout, ever" rule in stepped_audible.ts's header): entries are removed only by the
   // operator answering, the operator's window being destroyed, or the run ending.
+  // `runInputRaw` (D-BP152-025/BISHOP/seg-nexus-returns-answer) is ADDITIVE: the raw `input`
+  // string ('liana-terminal-run''s own argument) this pause's run was started with, stashed
+  // alongside resolve/reject so the 'nexus-authority-capture' handler below can label a capture
+  // with "the run/qid it was captured during" without re-deriving or guessing it -- reused, not
+  // re-parsed. Never read by the pre-existing 'liana-stepped-respond' handler, which is untouched.
   const PENDING_STEPPED_PAUSES = new Map<
     string,
-    { resolve: (r: LianaSteppedResponse) => void; reject: (e: Error) => void }
+    { resolve: (r: LianaSteppedResponse) => void; reject: (e: Error) => void; runInputRaw: string }
   >();
 
   // D-BP152-011/BISHOP/seg-splice-toggle -- READ-ONLY, so the renderer's two new gate controls
@@ -3564,7 +3572,7 @@ function registerIPCHandlers(): void {
             new Promise<LianaSteppedResponse>((resolve, reject) => {
               if (sender.isDestroyed()) { reject(new Error('window_closed')); return; }
               runSteppedPauseIds.add(pause.pauseId);
-              PENDING_STEPPED_PAUSES.set(pause.pauseId, { resolve, reject });
+              PENDING_STEPPED_PAUSES.set(pause.pauseId, { resolve, reject, runInputRaw: input });
               try {
                 sender.send('liana-stepped-pause', pause);
               } catch {
@@ -4218,6 +4226,54 @@ ${args.teachingText}
   safeHandle('nexus-authority-check-signin-status', async () => {
     const statuses = await probeAllNexusAuthorityStatuses();
     return { enabled: isNexusAuthorityFlagEnabled(), statuses };
+  });
+
+  // D-BP152-025/BISHOP/seg-nexus-returns-answer -- THE OPERATOR PRESSED CAPTURE.
+  //
+  // Founder, BP152, ruled "do the second one, make the nexus surface return what I type." This is
+  // the one new side-effecting channel that ticket adds: fires ONLY when the Nexus window's own
+  // "Capture -> Liana Cycle" button is clicked (nexus_authority_persistent_session.ts's embedder
+  // script) -- never on a timer, never on navigation, never speculatively.
+  //
+  // Resolves the CURRENTLY-PENDING Step 0 pause (the same ask-google-this loop,
+  // requestStepZeroPause(), stepped_audible.ts -- pauseIds 'sp0'/'sp0-google<N>') with a
+  // 'nexus_capture' response, exactly the way 'liana-stepped-respond' resolves one from the
+  // renderer's own Step 0 text box for 'ask_google'. Deliberately conservative about WHICH pause
+  // to resolve: if none is waiting, or if more than one is (two concurrent runs both mid-loop --
+  // pauseId collision risk this ticket does not own or fix, see PROCESS SAFETY note in its own
+  // deliverable), this refuses rather than guessing which run to feed captured data into --
+  // feeding the wrong run would be worse than feeding none.
+  safeHandle('nexus-authority-capture', async () => {
+    const capture = await captureNexusAuthorityVisibleText();
+    if (!capture.ok) {
+      return { ok: false, reason: capture.reason ?? 'capture_failed' };
+    }
+    const stepZeroPauseIds = Array.from(PENDING_STEPPED_PAUSES.keys()).filter(
+      (k) => k === 'sp0' || k.startsWith('sp0-google'),
+    );
+    if (stepZeroPauseIds.length === 0) {
+      return { ok: false, reason: 'no_paused_run' };
+    }
+    if (stepZeroPauseIds.length > 1) {
+      return { ok: false, reason: 'ambiguous_multiple_paused_runs' };
+    }
+    const pauseId = stepZeroPauseIds[0];
+    const pending = PENDING_STEPPED_PAUSES.get(pauseId);
+    if (!pending) {
+      return { ok: false, reason: 'no_such_pause' };
+    }
+    PENDING_STEPPED_PAUSES.delete(pauseId);
+    pending.resolve({
+      pauseId,
+      action: 'nexus_capture',
+      nexusCapturedText: capture.text,
+      nexusSurface: capture.authority,
+      nexusUrl: capture.url,
+      nexusContainerUsed: capture.containerUsed,
+      nexusCitations: capture.citations,
+      nexusRunContext: pending.runInputRaw,
+    });
+    return { ok: true };
   });
 
   // BP041 SAGA 3 ? Watch View toggle

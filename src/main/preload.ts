@@ -913,6 +913,15 @@ contextBridge.exposeInMainWorld('amplify', {
   hideNexusAuthoritySession: (): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('nexus-authority-hide-signin'),
 
+  // D-BP152-025/BISHOP/seg-nexus-returns-answer -- thin trigger only. Called directly by the
+  // persistent session's own inline embedder-page script (its new "Capture -> Liana Cycle"
+  // button, nexus_authority_persistent_session.ts's buildEmbedderHtml()), same convention as
+  // hideNexusAuthoritySession() just above (its "Done -- hide" button). All extraction logic
+  // lives in main (captureNexusAuthorityVisibleText()) -- this call carries no payload; main reads
+  // the window's current on-screen state itself at the moment of the call.
+  nexusAuthorityCapture: (): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('nexus-authority-capture'),
+
   checkNexusAuthoritySignInStatus: (): Promise<{
     enabled: boolean;
     statuses: Array<{ authority: import('../shared/plow/browser_authority_types').BrowserAuthorityName; signedIn: boolean; reason: string; checkedAt: string }>;
@@ -2557,6 +2566,9 @@ declare global {
         authority: 'user_google' | 'user_perplexity' | 'user_claude',
       ) => Promise<{ ok: boolean; reason: string | null }>;
       hideNexusAuthoritySession?: () => Promise<{ ok: boolean }>;
+      // D-BP152-025/BISHOP/seg-nexus-returns-answer -- see the real ipcRenderer.invoke-typed
+      // declaration above for the full explanation this ambient block mirrors.
+      nexusAuthorityCapture?: () => Promise<{ ok: boolean; reason?: string }>;
       checkNexusAuthoritySignInStatus?: () => Promise<{
         enabled: boolean;
         statuses: Array<{ authority: 'user_google' | 'user_perplexity' | 'user_claude'; signedIn: boolean; reason: string; checkedAt: string }>;
