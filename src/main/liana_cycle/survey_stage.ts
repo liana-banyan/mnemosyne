@@ -300,6 +300,12 @@ import { extractAssertedMentions, gemmaExtract, googleBlocks, type AssertedMenti
 // resources/liana_survey_queries.json, re-read fresh on every call -- see query_text_loader.ts's
 // own header for the full ruling and why it does not import 'electron'.
 import { getQueryText } from './query_text_loader';
+// D-BP152-009. IMPORTED, NOT REWRITTEN -- reused ONLY to gate SURVEY STEP 3 (see
+// runSurveyStage()'s own comment at its call site, below). demand_test.ts is not modified by this
+// ticket; this is the SAME function liana_terminal_engine.ts already calls on
+// `surveyResult.step2.operation.rawAnswer` to compute its own `DEMAND PATH: operation` line, so
+// the gate here and that transcript line can never disagree about what "resolved" means.
+import { determineDemandFromOperationAnswer } from './demand_test';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -1627,7 +1633,62 @@ export async function runSurveyStage(
   // D-BP151-031: askText is now passed through so step 2's no-term path can issue the Founder's
   // ambiguity query instead of only refusing. See founderStep2Survey()'s own comment.
   const step2 = await founderStep2Survey(term, ctx, askText, opts.ambiguityQueryTransport);
-  const step3 = await founderStep3CategorizeOptions(options, ctx, opts.sharedFrame, opts.maxCatalystWordsPerOption);
+
+  // ───────────────────────────────────────────────────────────────────────────────────────────
+  // D-BP152-009. ATTRIBUTED: Founder, BP152, verbatim (`FD-BP152-01`): "I think survey goes too
+  // far, more than needed, for the value of the denotations of every phrase and word. We REALLY
+  // need to have it ask the two part google question I did last time. That saves a BUNCH of time.
+  // THen maybe if it doesn't come up with the answer, we THEN do a phrase denotation for more."
+  //
+  // MEASURED COST THIS CLOSES: receipt LIANA_RUN_qid98_2026-08-10T16-13-26-122Z.json -- SURVEY
+  // STEP 2's operation query (Part 2, FD-BP152-05) already reached `DEMAND PATH: operation`,
+  // `DEMAND: CLASSIFY`, and SURVEY STEP 3 (the per-option denotation sweep, 9 options x 2 Google
+  // queries = 18 queries) ran anyway and contributed nothing to the verdict.
+  //
+  // THE PREDICATE, stated once, exactly: SURVEY STEP 3 runs only when SURVEY STEP 2's operation
+  // query (Part 2) did NOT resolve a non-null demand; it is SKIPPED when Part 2 already resolved
+  // one (the same `DEMAND PATH: operation` case liana_terminal_engine.ts's own demandPath
+  // computation names at its call site). `determineDemandFromOperationAnswer()` (demand_test.ts,
+  // imported, not rewritten) is the SAME function that produces that engine-level demandPath, so
+  // this gate and that transcript line can never disagree about what "resolved" means.
+  //
+  // WHAT THIS DOES NOT CHANGE: askAmbiguity()/askOperation() (Part 1/Part 2 themselves), the
+  // demand mapping in demand_test.ts, and founderStep3CategorizeOptions() itself are all
+  // byte-identical to before this ticket -- ONLY WHEN step 3 is called changes, never what it
+  // does when it runs.
+  const operationDemandForGate = step2.operation
+    ? determineDemandFromOperationAnswer(step2.operation.rawAnswer)
+    : null;
+  const step3ShouldRun = !operationDemandForGate?.demand;
+  if (step3ShouldRun) {
+    emit({
+      kind: 'note',
+      text: '   SURVEY STEP 3 GATE: RUNNING as the fallback -- SURVEY STEP 2\'s operation query did not '
+        + `resolve a demand (${operationDemandForGate ? operationDemandForGate.why : 'no operation query was issued -- a quoted/cued term was found, so Part 2 never ran'}), `
+        + 'so the per-option denotation sweep proceeds (ATTRIBUTED, FD-BP152-01: "...maybe if it doesn\'t '
+        + 'come up with the answer, we THEN do a phrase denotation for more.")',
+      ts: nowIso(),
+    });
+  } else {
+    emit({
+      kind: 'note',
+      text: `   SURVEY STEP 3 GATE: SKIPPED -- SURVEY STEP 2's operation query already resolved DEMAND: `
+        + `${operationDemandForGate!.demand} (DEMAND PATH: operation), so the per-option denotation sweep `
+        + 'is not needed (ATTRIBUTED, FD-BP152-01: "We REALLY need to have it ask the two part google '
+        + 'question I did last time. That saves a BUNCH of time.")',
+      ts: nowIso(),
+    });
+  }
+  const step3: FounderStep3Result = step3ShouldRun
+    ? await founderStep3CategorizeOptions(options, ctx, opts.sharedFrame, opts.maxCatalystWordsPerOption)
+    : {
+        perOption: null,
+        grouping: null,
+        why: `SKIPPED (FD-BP152-01) -- SURVEY STEP 2's operation query already resolved DEMAND: `
+          + `${operationDemandForGate!.demand} (DEMAND PATH: operation); the per-option denotation sweep `
+          + 'is a fallback, run only when Step 2 does not resolve a demand',
+      };
+  // ───────────────────────────────────────────────────────────────────────────────────────────
   const step4 = await founderStep4DetermineRegister(term, askText, options, ctx);
   const step6 = await founderStep6JarMethod(opts.jarSourceGroups ?? [], options, ctx);
 
