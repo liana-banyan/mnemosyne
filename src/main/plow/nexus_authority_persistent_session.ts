@@ -153,6 +153,11 @@ function buildEmbedderHtml(): string {
     <button id="btn-chatgpt" title="Navigate the persistent session to chatgpt.com sign-in">ChatGPT</button>
     <button id="btn-gemini" title="Navigate the persistent session to gemini.google.com sign-in">Gemini</button>
     <span id="status">Nexus Authority -- persistent session (persist:nexus-authority)</span>
+    <!-- D-BP152-025/BISHOP/seg-nexus-returns-answer -- Founder, BP152, ruled "make the nexus
+         surface return what I type." Operator-triggered ONLY: type and submit your own query on
+         this visible page exactly as before, then press this button when the answer you want is
+         on screen. Never auto-typed, never auto-submitted, never auto-captured. -->
+    <button id="btn-capture" title="Capture what is on screen right now and send it to the paused Liana Cycle run">Capture -&gt; Liana Cycle</button>
     <button id="btn-done" title="Hide this window (the session stays alive in the background)">Done -- hide</button>
   </div>
   <div id="wvwrap">
@@ -161,22 +166,45 @@ function buildEmbedderHtml(): string {
   <script>
     var wv = document.getElementById('nexus-authority-webview');
     var statusEl = document.getElementById('status');
+    // D-BP152-025 -- which of the 5 surfaces is currently loaded, tracked ONLY so a capture can
+    // record honest provenance ("which surface was active"). Never read by any navigation logic,
+    // never sent anywhere except as a label on a capture the operator explicitly triggers.
+    // Declared with 'var' at this top-level script scope, so it is reachable from a SEPARATE
+    // executeJavaScript() call (captureNexusAuthorityVisibleText(), this file's Node side) as
+    // window.currentNexusAuthority -- the same cross-call-reads-window-var mechanism this file
+    // already documents nowhere else because nothing else needed it before this ticket.
+    var currentNexusAuthority = null;
     document.getElementById('btn-google').addEventListener('click', function () {
+      currentNexusAuthority = 'google';
       wv.loadURL('https://accounts.google.com/');
     });
     document.getElementById('btn-perplexity').addEventListener('click', function () {
+      currentNexusAuthority = 'perplexity';
       wv.loadURL('https://www.perplexity.ai/');
     });
     document.getElementById('btn-claude').addEventListener('click', function () {
+      currentNexusAuthority = 'claude';
       wv.loadURL('https://claude.ai/new');
     });
     // BP140-K4: chatgpt.com/gemini.google.com sign-in buttons -- same one-time-visible manual
     // login pattern as the three buttons above; the app never sees the password either way.
     document.getElementById('btn-chatgpt').addEventListener('click', function () {
+      currentNexusAuthority = 'chatgpt';
       wv.loadURL('https://chatgpt.com/auth/login');
     });
     document.getElementById('btn-gemini').addEventListener('click', function () {
+      currentNexusAuthority = 'gemini';
       wv.loadURL('https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fgemini.google.com%2Fapp');
+    });
+    // D-BP152-025 -- the ONLY new side-effecting control this ticket adds. Fires exactly one IPC
+    // round trip on click and nothing else; all extraction logic lives in main
+    // (captureNexusAuthorityVisibleText(), below) so this handler stays a thin trigger, same
+    // "thin forward, no logic in the button handler" discipline the other buttons already follow
+    // (their own loadURL calls are the one exception, pre-existing, untouched by this ticket).
+    document.getElementById('btn-capture').addEventListener('click', function () {
+      if (window.amplify && window.amplify.nexusAuthorityCapture) {
+        window.amplify.nexusAuthorityCapture();
+      }
     });
     document.getElementById('btn-done').addEventListener('click', function () {
       if (window.amplify && window.amplify.hideNexusAuthoritySession) {
@@ -501,4 +529,166 @@ export async function probeAllNexusAuthorityStatuses(): Promise<NexusAuthoritySi
   const chatgpt = await probeNexusAuthoritySignInStatus('user_chatgpt');
   const gemini = await probeNexusAuthoritySignInStatus('user_gemini');
   return [google, perplexity, claude, chatgpt, gemini];
+}
+
+// ─── Operator capture: return what the operator typed to the paused Liana Cycle run ────────────
+//
+// D-BP152-025/BISHOP/seg-nexus-returns-answer. Founder, BP152, verbatim: "why can't we pull up
+// the headless google I am signed into on the nexus tab, as in, let that 5 tabbed interface come
+// up and I literally just use that to ask the question, and the response comes back to the liana
+// cycle?" Ruled: "do the second one, make the nexus surface return what I type."
+//
+// HE TYPES AND SUBMITS HIMSELF, on the visible surface above, exactly as before this ticket. This
+// section adds exactly one new capability: read what is CURRENTLY on screen when he presses the
+// new "Capture -> Liana Cycle" button (buildEmbedderHtml() above) and hand it to the caller
+// (index.ts's 'nexus-authority-capture' handler, which resolves the paused Step 0 pause with it --
+// see stepped_audible.ts's requestStepZeroPause(), 'nexus_capture' branch). Nothing here types,
+// submits, navigates, or waits on the operator's behalf -- see getNexusAuthorityWindow() below,
+// which is read-only and never creates a window (a capture with no window open has nothing to
+// capture and returns ok:false honestly, matching this file's existing HONESTY FIREWALL
+// convention).
+//
+// GENERIC EXTRACTION, NOT SELECTORS. D-BP152-024 (the SEG return this ticket acts on) measured
+// that no selector in this codebase targets a generative answer, and that the five surfaces share
+// no common DOM structure. So this reads the page's own visible main text -- `main`, else
+// `article`, else `body` -- and returns it verbatim, untruncated, with no length cap and no
+// vendor-specific selector list, matching webview_preload.ts's OWN extraction pattern
+// (executeJavaScript into the guest page) without touching or importing anything from that file.
+
+/** One reference link found inside the captured container -- generic `http(s)` anchor scrape,
+ *  same "no selector guessing" discipline as the main-text extraction. `domain` is a mechanical
+ *  hostname parse of `href` (never an interpretation of the link), null on an unparseable href. */
+export interface NexusAuthorityCaptureCitation {
+  href: string;
+  text: string;
+  domain: string | null;
+}
+
+export interface NexusAuthorityCaptureResult {
+  ok: boolean;
+  /** Which of the 5 chrome-bar buttons was last clicked ('google'|'perplexity'|'claude'|
+   *  'chatgpt'|'gemini'), or null if none has been clicked yet this session. */
+  authority: string | null;
+  url: string;
+  text: string;
+  containerUsed: 'main' | 'article' | 'body' | 'none';
+  citations: NexusAuthorityCaptureCitation[];
+  reason?: string;
+}
+
+/** Pure, unit-testable: normalizes a citation href to its hostname (the "domain" the Founder's
+ *  D-BP152-025 scope addition asked for -- "normalize to a domain for ledger keying... while
+ *  retaining the full URL verbatim"). Returns null on an unparseable URL rather than throwing --
+ *  malformed markup in a captured page must never crash a capture. */
+export function normalizeCitationDomain(href: string): string | null {
+  try {
+    return new URL(href).hostname || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Runs INSIDE the guest webview's own page context (via wv.executeJavaScript below) -- same
+ *  execution boundary webview_preload.ts's own extraction functions use, just invoked from this
+ *  file's outer script instead of from that preload. Deliberately generic: `main`, else
+ *  `article`, else `document.body` -- no vendor-specific selector anywhere. */
+const CAPTURE_EXTRACT_SCRIPT = `
+  (function () {
+    try {
+      var container = document.querySelector('main') || document.querySelector('article');
+      var containerUsed = container ? (container.tagName && container.tagName.toLowerCase() === 'main' ? 'main' : 'article') : 'body';
+      var root = container || document.body;
+      var text = (root && root.innerText) || '';
+      var anchors = root ? root.querySelectorAll('a[href]') : [];
+      var citations = [];
+      for (var i = 0; i < anchors.length; i++) {
+        var href = anchors[i].getAttribute('href') || '';
+        if (!/^https?:\\/\\//i.test(href)) continue;
+        citations.push({ href: href, text: (anchors[i].textContent || '').trim() });
+      }
+      return { text: text, containerUsed: containerUsed, citations: citations };
+    } catch (e) {
+      return { text: '', containerUsed: 'none', citations: [] };
+    }
+  })()
+`;
+
+/**
+ * Captures the Nexus window's CURRENT on-screen state: generic visible text (main/article/body,
+ * verbatim, untruncated), the page URL, which of the 5 surfaces was last selected, and any
+ * `http(s)` reference links inside the captured container. Fires exactly once, synchronously with
+ * the operator's own button press -- never on a timer, never on navigation, never speculatively.
+ *
+ * Returns `ok: false` (never throws, never fabricates content) when: the window does not exist
+ * (getNexusAuthorityWindow() is read-only and does not create one -- a capture attempted before
+ * the operator has ever opened the Nexus window has nothing to read), the guest `<webview>` is
+ * not present, or the in-page extraction itself throws. Same HONESTY FIREWALL convention as
+ * probeNexusAuthoritySignInStatus() above: a failure is reported as a labeled `reason`, never
+ * coerced into an empty-but-successful result.
+ */
+export async function captureNexusAuthorityVisibleText(): Promise<NexusAuthorityCaptureResult> {
+  const win = getNexusAuthorityWindow();
+  if (!win) {
+    return { ok: false, authority: null, url: '', text: '', containerUsed: 'none', citations: [], reason: 'no_window' };
+  }
+
+  const script = `
+    (function () {
+      return new Promise(function (resolve) {
+        try {
+          var wv = document.querySelector('webview');
+          if (!wv) { resolve({ ok: false, reason: 'no-webview' }); return; }
+          var authority = (typeof currentNexusAuthority !== 'undefined' && currentNexusAuthority) ? currentNexusAuthority : null;
+          var url = '';
+          try { url = wv.getURL ? wv.getURL() : ''; } catch (e) { /* non-fatal */ }
+          var extractScript = ${JSON.stringify(CAPTURE_EXTRACT_SCRIPT)};
+          wv.executeJavaScript(extractScript).then(function (result) {
+            resolve({
+              ok: true,
+              authority: authority,
+              url: url,
+              text: (result && result.text) || '',
+              containerUsed: (result && result.containerUsed) || 'none',
+              citations: (result && result.citations) || [],
+            });
+          }).catch(function () {
+            resolve({ ok: false, reason: 'extract-threw' });
+          });
+        } catch (err) {
+          resolve({ ok: false, reason: 'outer-threw' });
+        }
+      });
+    })()
+  `;
+
+  try {
+    const result = await win.webContents.executeJavaScript(script);
+    const r = result as {
+      ok?: boolean;
+      authority?: string | null;
+      url?: string;
+      text?: string;
+      containerUsed?: string;
+      citations?: Array<{ href: string; text: string }>;
+      reason?: string;
+    } | null;
+    if (!r || r.ok !== true) {
+      return { ok: false, authority: null, url: '', text: '', containerUsed: 'none', citations: [], reason: r?.reason ?? 'bad-capture-result' };
+    }
+    const rawCitations = Array.isArray(r.citations) ? r.citations : [];
+    const citations: NexusAuthorityCaptureCitation[] = rawCitations
+      .filter((c) => c && typeof c.href === 'string')
+      .map((c) => ({ href: c.href, text: (c.text ?? '').trim(), domain: normalizeCitationDomain(c.href) }));
+    return {
+      ok: true,
+      authority: r.authority ?? null,
+      url: r.url ?? '',
+      text: r.text ?? '',
+      containerUsed: (r.containerUsed as NexusAuthorityCaptureResult['containerUsed']) ?? 'none',
+      citations,
+    };
+  } catch (err) {
+    console.warn('[nexus-authority-session] capture executeJavaScript failed (non-fatal, honest empty):', (err as Error)?.message ?? err);
+    return { ok: false, authority: null, url: '', text: '', containerUsed: 'none', citations: [], reason: 'execute-failed' };
+  }
 }

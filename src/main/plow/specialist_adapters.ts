@@ -203,6 +203,90 @@ export function getSourceCredibilityRecord(sourceId: string, domainId: string): 
   return sourceCredibilityLedger.get(sourceCredibilityKey(sourceId, domainId));
 }
 
+// ─── Source Appearance Log (D-BP152-025 scope addition) ────────────────────────
+//
+// Founder, BP152, verbatim (asking for the Nexus-capture ticket to also feed this ledger):
+// "include the reference sources that the answer gives in the filtering once I press capture - to
+// add to our sources and start the BM score and rating for each - it has to make a new source if
+// not in there already, and add to the existing if it is." Then, on the trap raised back to him
+// (a citation appearing in an answer is not evidence it was correct): "Yes agreed sources just
+// make an appearance, ... all what you said. The correctness score gets moved only from the
+// correct answer traced back to the provenance sources."
+//
+// THIS IS DELIBERATELY A SEPARATE MAP, NOT A NEW WRITE PATH INTO sourceCredibilityLedger ABOVE.
+// recordSourceObservation() (above) unconditionally folds a `wasCorrect` boolean into
+// scoreValue/observedN on every call -- there is no way to call it and record "this source merely
+// appeared" without moving the correctness mean. Extending THAT function's semantics to accept an
+// appearance with no correctness signal was flagged back to the Founder as a fork rather than
+// built unilaterally (HARDWIRE-23); his ruling above is what authorizes this section. So: an
+// appearance NEVER touches SourceCredibilityRecord, scoreValue, observedN, or
+// resolveSourceWeight()'s gating -- confirmed by inspection, nothing below this line reads or
+// writes sourceCredibilityLedger.
+//
+// KEYING NOTE: sourceCredibilityLedger above is keyed by (sourceId, SUBJECT-MATTER domainId) --
+// e.g. recordSourceObservationsForClaims()'s `domainId` is the QUESTION's category, not the
+// source's own web domain (see `citation:<hostname>` as sourceId there, with a separate subject
+// domainId alongside it). A Nexus capture happens at Step 0, before Survey/method selection ever
+// classifies a question's subject-matter category (liana_terminal_engine.ts runs Survey/Demand
+// Test/selectMethod() AFTER Step 0) -- there is no real subject-matter domain available to key by
+// at capture time, and inventing one would be a fabrication. This log is therefore keyed by the
+// CITATION'S OWN hostname (the "source" in the Founder's literal sense -- "make a new source if
+// not in there already") -- a different, and deliberately separate, axis from the correctness
+// ledger's subject-domain keying above.
+//
+// THE TRACEBACK ITSELF IS NOT BUILT HERE, ON PURPOSE. "Correctness moves only from a KNOWN-CORRECT
+// ANSWER, traced back to the provenance sources that answer actually rested on" (Founder ruling,
+// same message) is a separate, later mechanism -- this section only records enough on each
+// appearance (domain, full URL verbatim, link text, which surface, which run/qid) that a future
+// traceback COULD be built from it. No caller anywhere moves scoreValue from an appearance.
+
+/** One raw appearance of a source -- a citation link a Nexus capture found on a page, with
+ *  everything a later correctness traceback (out of this ticket's scope, per the Founder's own
+ *  ruling above) would need to use it. Recording too little here would make that future trace
+ *  impossible to build; this is deliberately the full set the Founder named. */
+export interface SourceAppearanceRecord {
+  /** The citation's own hostname (e.g. "en.wikipedia.org") -- the keying "domain" for this log,
+   *  distinct from sourceCredibilityLedger's subject-matter domainId (see header above). */
+  sourceDomain: string;
+  /** Full URL, verbatim, untruncated -- never just the hostname. */
+  url: string;
+  /** The citation link's visible text, verbatim. */
+  linkText: string;
+  /** Which of the five Nexus surfaces the capture was taken from ('google' | 'perplexity' |
+   *  'claude' | 'chatgpt' | 'gemini'), or null if undetermined. */
+  surface: string | null;
+  /** The raw run input (qid or free text) this capture was attached to. */
+  runContext: string;
+  /** ISO-8601 timestamp of the capture. */
+  capturedAt: string;
+}
+
+const sourceAppearanceLog = new Map<string, SourceAppearanceRecord[]>();
+
+/**
+ * Records ONE raw appearance, keyed by the citation's own hostname (`appearance.sourceDomain`):
+ * creates that domain's appearance list if it does not exist yet, appends to it if it does --
+ * exactly the Founder's "make a new source if not in there already, and add to the existing if it
+ * is," scoped to appearances only. Returns whether this was a brand-new domain (for the "N new
+ * vs. M existing" report the Founder's own ticket asked for) and the domain's running appearance
+ * count. NEVER touches sourceCredibilityLedger, scoreValue, or observedN -- see this section's
+ * header.
+ */
+export function recordSourceAppearance(appearance: SourceAppearanceRecord): { isNewDomain: boolean; appearanceCountForDomain: number } {
+  const key = appearance.sourceDomain;
+  const existing = sourceAppearanceLog.get(key);
+  const isNewDomain = !existing;
+  const list = existing ? existing.slice() : [];
+  list.push(appearance);
+  sourceAppearanceLog.set(key, list);
+  return { isNewDomain, appearanceCountForDomain: list.length };
+}
+
+/** Inspection/test hook -- every appearance recorded so far for one source domain, oldest first. */
+export function getSourceAppearances(sourceDomain: string): SourceAppearanceRecord[] {
+  return sourceAppearanceLog.get(sourceDomain) ?? [];
+}
+
 /**
  * BP149 D-BP149-016 (Founder ruling R1, verbatim: "per-claim attribution" -- "A source earns or
  * loses standing on EACH FACT it supplies, never on the answer the fact fed into. ... the

@@ -417,8 +417,32 @@ export interface LianaSteppedPause {
  *  this"), never a free-form instruction construed into behavior -- FD-BP152-15's own test:
  *  "could a reader holding the typed text and the machine's action verify the action was right,
  *  by looking?" Yes, for "send exactly this text". EPHEMERAL by default (`FD-BP152-07`) -- `keep`
- *  is Founder-ruled OUT OF SCOPE for this action and is not built here. */
-export type LianaSteppedAction = 'approve' | 'correct' | 'redirect' | 'abandon' | 'ask_google';
+ *  is Founder-ruled OUT OF SCOPE for this action and is not built here.
+ *
+ *  `nexus_capture` -- D-BP152-025/BISHOP/seg-nexus-returns-answer. Founder, BP152, verbatim: "why
+ *  can't we pull up the headless google I am signed into on the nexus tab, as in, let that 5
+ *  tabbed interface come up and I literally just use that to ask the question, and the response
+ *  comes back to the liana cycle?" then, ruled: "do the second one, make the nexus surface return
+ *  what I type." Unlike `ask_google`, the operator's query is never typed into THIS pause's own
+ *  text box -- he types and submits it himself, directly on the visible Nexus surface (Google /
+ *  Perplexity / Claude / ChatGPT / Gemini, `nexus_authority_persistent_session.ts`'s 5-button
+ *  chrome bar), and presses a "Capture" action on THAT window when the answer he wants is on
+ *  screen. Main resolves the currently-pending Step 0 pause with this action, carrying the
+ *  generic, verbatim, untruncated visible text it just read off the page -- no model, no
+ *  parsing, no summarizing (HARDWIRE-22: extraction only, never judgment). Never automated: fires
+ *  ONLY on the operator's own explicit button press, never on his typing or the page navigating. */
+export type LianaSteppedAction = 'approve' | 'correct' | 'redirect' | 'abandon' | 'ask_google' | 'nexus_capture';
+
+/** One reference/citation link found in a Nexus-captured page, generic (any `http(s)` anchor
+ *  inside the captured container) -- D-BP152-025 scope addition (Founder: "include the reference
+ *  sources that the answer gives in the filtering once I press capture"). `href`/`text` are
+ *  verbatim from the page; `domain` is the mechanical hostname parse of `href` (never an
+ *  interpretation of the link's meaning), null when `href` does not parse as a URL. */
+export interface LianaNexusCaptureCitation {
+  href: string;
+  text: string;
+  domain: string | null;
+}
 
 /** The operator's answer to one step pause. */
 export interface LianaSteppedResponse {
@@ -429,6 +453,26 @@ export interface LianaSteppedResponse {
    *  the whitespace at its very ends (no templating, no prefix/suffix, no reformatting -- see
    *  requestStepZeroPause(), stepped_audible.ts). */
   text?: string;
+  /** Present only when `action === 'nexus_capture'` -- see that action's own doc comment above.
+   *  Every field below is populated by main (`captureNexusAuthorityVisibleText()`,
+   *  nexus_authority_persistent_session.ts) at the moment the operator pressed Capture; none of
+   *  it is supplied or editable by the renderer that shows the Step 0 pause. */
+  /** The page's generic visible text (a `main`/`article` container if present, else `body`),
+   *  verbatim, untruncated -- never summarized or parsed. */
+  nexusCapturedText?: string;
+  /** Which of the five Nexus surfaces was active at capture time ('google' | 'perplexity' |
+   *  'claude' | 'chatgpt' | 'gemini'), or null if the embedder page could not determine one. */
+  nexusSurface?: string | null;
+  /** The captured page's URL at capture time. */
+  nexusUrl?: string;
+  /** Which DOM region the capture used -- 'main' | 'article' | 'body' | 'none' (a failed capture). */
+  nexusContainerUsed?: string;
+  /** Reference links found inside the captured container, generic `http(s)` anchors only -- see
+   *  LianaNexusCaptureCitation above. D-BP152-025 scope addition. */
+  nexusCitations?: LianaNexusCaptureCitation[];
+  /** The raw run input (qid or free text) this capture was attached to, for provenance -- "the
+   *  run/qid it was captured during" (D-BP152-025 scope addition). */
+  nexusRunContext?: string;
 }
 
 /** One step pause and its answer, joined -- the provenance/authority record (requirement E).
