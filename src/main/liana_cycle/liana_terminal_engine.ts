@@ -61,7 +61,7 @@ import type { AudibleChannel } from './audible';
 // D-BP151-023 (Stepped Audible). See stepped_audible.ts's header for why this is a SECOND,
 // separate decorator (per-Founder-step granularity) rather than a replacement for the per-call
 // one above, and for why it is scoped to the comparative-cascade method only.
-import { SteppedAudibleAbandoned, SteppedAudibleLog, buildUpfrontStepList, wrapForSteppedAudible } from './stepped_audible';
+import { SteppedAudibleAbandoned, SteppedAudibleLog, buildUpfrontStepList, requestStepZeroPause, wrapForSteppedAudible } from './stepped_audible';
 import type { SteppedAudibleChannel } from './stepped_audible';
 // Registering a method is a side effect of importing its module (see each file's own
 // `registerMethod(...)` call at the bottom). Both are imported here, and ONLY here, so the
@@ -368,20 +368,46 @@ export async function runLianaCycleQuestion(
       ? `qid ${parsed.qid} (bundled MMLU-Pro corpus, resources/mmlu_pro_bundled/questions.jsonl)`
       : 'free text (not in the bundled corpus)';
     const step0OptionsExist = parsed.options != null;
-    emit({
+    // D-BP152-020/BISHOP/seg-pause-at-step-zero -- captured locally, in addition to being forwarded
+    // to `emit` as always, so the STEP 0 pause below (when Call an Audible/Stepped Audible is on)
+    // can present exactly the events this block produced -- the SAME verbatim/options-exist/source
+    // state the transcript already carries, reused rather than re-derived a second time. `emitStep0`
+    // changes NOTHING about what reaches the live transcript or the receipt: every event still goes
+    // through the same `emit` this block always called, in the same order.
+    const step0Events: LianaTerminalEvent[] = [];
+    const emitStep0: EmitFn = (evt) => { step0Events.push(evt); emit(evt); };
+    emitStep0({
       kind: 'stage',
       text: '-> STEP 0 -- STATE THE QUESTION, FULLY (Founder, BP152, verbatim: "Remember. the FIRST thing to do is to state the question, fully." FD-BP152-14)',
       ts: nowIso(),
     });
-    say(emit, parsed.qid != null ? `qid ${parsed.qid}` : 'free-text question');
-    note(emit, `   SOURCE: ${step0Source}`);
-    note(emit, `   QUESTION (verbatim, complete): ${parsed.question}`);
-    note(emit, `   OPTIONS EXIST: ${step0OptionsExist}`);
+    say(emitStep0, parsed.qid != null ? `qid ${parsed.qid}` : 'free-text question');
+    note(emitStep0, `   SOURCE: ${step0Source}`);
+    note(emitStep0, `   QUESTION (verbatim, complete): ${parsed.question}`);
+    note(emitStep0, `   OPTIONS EXIST: ${step0OptionsExist}`);
     if (parsed.options) {
-      note(emit, `   OPTIONS (verbatim, complete): ${Object.entries(parsed.options).map(([k, v]) => `${k}) ${v}`).join('  ')}`);
+      note(emitStep0, `   OPTIONS (verbatim, complete): ${Object.entries(parsed.options).map(([k, v]) => `${k}) ${v}`).join('  ')}`);
     } else {
-      note(emit, '   (no lettered option list -- typed as a bare question)');
+      note(emitStep0, '   (no lettered option list -- typed as a bare question)');
     }
+
+    // D-BP152-020/BISHOP/seg-pause-at-step-zero -- PAUSE AT STEP 0, BEFORE ANY WORK HAPPENS.
+    // Founder, FD-BP152-08, verbatim: "it loads the question first. Then it tells me what the
+    // next step WILL be." Nothing above this point has issued a Google call (Step 0 states the
+    // question straight from parseQid()/parseFreeText(); Survey, the Demand Test and method
+    // selection all run AFTER this point) -- so this is a genuine step boundary with no askGoogle
+    // call for stepped_audible.ts's own buffer-then-flush mechanism to hang a pause on. See
+    // requestStepZeroPause()'s own doc comment (stepped_audible.ts) for why it is a direct,
+    // top-level `await` here instead of routed through wrapForSteppedAudible()/classifyStageText().
+    // A true no-op (returns immediately, logs nothing) when `steppedAudible` is null -- the
+    // OFF-stays-identical guarantee every other stepped/audible decorator in this file already
+    // gives; every downstream line, branch and return statement is byte-identical whether this
+    // call paused or not. Throws SteppedAudibleAbandoned on an 'abandon' response, caught by this
+    // function's own existing catch block below (no new catch branch was added).
+    if (steppedAudible) {
+      note(emitStep0, '   STEPPED AUDIBLE is ON -- this run stops at STEP 0, before any query is issued, so you can see the question and its state before anything else happens. It waits until you respond; there is no timer.');
+    }
+    await requestStepZeroPause(steppedAudible ?? null, steppedLog, step0Events);
 
     // D-BP151-026 (Contingency Operator: Survey Splice). OFF (the default -- see
     // isContingencyOperatorSurveySpliceEnabled() above) takes the `else` branch immediately below,

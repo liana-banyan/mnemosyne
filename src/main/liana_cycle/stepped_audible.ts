@@ -534,3 +534,116 @@ export function wrapForSteppedAudible(
 
   return { ctx: { askGoogle: wrappedAskGoogle, emit: wrappedEmit }, finish };
 }
+
+// ─────────────────────────── D-BP152-020/BISHOP/seg-pause-at-step-zero ───────────────────────────
+//
+// PAUSE AT STEP 0. Founder, FD-BP152-08, verbatim: "it loads the question first. Then it tells me
+// what the next step WILL be." He must be able to stop AT Step 0 -- before any work happens -- and
+// see the question and its options as state.
+//
+// THE OBSTACLE, AND WHY THIS IS A SEPARATE ENTRY POINT RATHER THAN A NEW ROW IN A STEP-DEF TABLE:
+// every pause above fires from inside wrappedAskGoogle (see this file's header, "WHY EMIT IS ALSO
+// WRAPPED, NOT ONLY askGoogle") because emit() is never awaited by its callers -- a Promise
+// returned from a wrapped emit() would be silently dropped, and nothing would actually block.
+// Step 0 issues NO Google call at all: liana_terminal_engine.ts states the question straight from
+// parseQid()/parseFreeText(), before Survey, the Demand Test, or method selection ever run --
+// there is no following askGoogle call anywhere near it for the buffer-then-flush mechanism above
+// to hang a pause on. Registering 'step0' as an entry in COMPARATIVE_CASCADE_STEP_DEFS or
+// SURVEY_STEP_DEFS and routing it through wrapForSteppedAudible()/classifyStageText() would not
+// produce a pause AT Step 0 -- classifyStageText() only fires when a BUFFERED 'stage' event is
+// followed by an askGoogle call, so the buffer opened at 'step0' would sit unflushed until
+// whichever method's FIRST Google call finally triggers it, i.e. AFTER Survey, the Demand Test and
+// method selection have already run. That is precisely the "tells me what the next step WILL be"
+// (late) outcome FD-BP152-08 says is wrong, not a step boundary this file's existing mechanism can
+// reach.
+//
+// THE FIX: requestStepZeroPause() is a direct, top-level `await` -- called by
+// liana_terminal_engine.ts itself, in place, immediately after Step 0's own state lines are
+// emitted and before anything else in the run happens (no Survey, no Demand Test, no askGoogle
+// call precedes it there). This is not a value returned from a bare `emit()` call the way every
+// other pause in this file is reached; it is an ordinary awaited async function call inside an
+// already-async function, so it genuinely blocks. Reuses the SAME SteppedAudibleChannel /
+// SteppedAudibleLog / LianaSteppedPause / LianaSteppedResponse / LianaSteppedRecord types and the
+// SAME index.ts IPC convention ('liana-stepped-pause', PENDING_STEPPED_PAUSES keyed by pauseId,
+// destroyed-sender rejection, no timeout) as every pause wrapForSteppedAudible() already produces
+// -- NOTHING in index.ts, wrapForSteppedAudible(), classifyStageText(), or either step-def table
+// was changed to build this. Not a fork of the shared mechanism; an additional, independent
+// entry point into the same channel and the same log.
+//
+// NOT added to COMPARATIVE_CASCADE_STEP_DEFS or SURVEY_STEP_DEFS. Those tables classify a RUNTIME
+// 'stage' event's TEXT back to a static key (classifyStageText()) for stages a METHOD emits
+// mid-run, through the buffered path. STEP 0 precedes method selection entirely -- it is not a
+// method stage, has no runtime 'stage' text a method emits, and does not need a place in either
+// table.
+
+/** The one step-def STEP 0's pause carries. Not part of either per-method table above -- see this
+ *  section's header for why. ATTRIBUTED to FD-BP152-14 (RULINGS_BP152.md, BP152): "STEP 0: STATE
+ *  THE QUESTION, FULLY. IT COMES BEFORE VETTING." founderStepNumber is 0, matching that ruling's
+ *  own renumbering ("It is numbered STEP 0, not inserted as a new 1... Step 0 preserves the
+ *  existing numbering exactly"). */
+export const STEP_ZERO_STEP_DEF: LianaSteppedStepDef = {
+  key: 'step0',
+  attribution: 'ATTRIBUTED',
+  founderStepNumber: 0,
+  founderWords: 'Remember. the FIRST thing to do is to state the question, fully.',
+  founderSource: 'FD-BP152-14, RULINGS_BP152.md (BP152) -- "STEP 0: STATE THE QUESTION, FULLY. IT COMES BEFORE VETTING."',
+  codeLabel: 'STEP 0 -- STATE THE QUESTION, FULLY: question, options, options-exist flag, and source, before any query is issued',
+};
+
+/**
+ * Pauses once, before any query is issued, presenting Step 0's own state -- the exact events
+ * liana_terminal_engine.ts already emitted for it (SOURCE, QUESTION verbatim and complete,
+ * OPTIONS EXIST, OPTIONS verbatim and complete or the honest no-options line). A true no-op
+ * (returns immediately, resolves with no pause shown, nothing added to `log`) when `channel` is
+ * null -- the SAME OFF-stays-identical guarantee wrapForSteppedAudible() and
+ * wrapAskGoogleWithAudible() already give, so a caller may call this UNCONDITIONALLY (as
+ * liana_terminal_engine.ts does) without its own if-guard duplicating the one already inside this
+ * function.
+ *
+ * `events` is the caller's own captured Step 0 event list, reused verbatim -- this function does
+ * not re-derive, re-emit, or re-order anything; it only packages what already happened into a
+ * pause and waits.
+ *
+ * Throws SteppedAudibleAbandoned on an 'abandon' response, exactly like runStepPause() above --
+ * the caller's existing catch block (liana_terminal_engine.ts, the same one every other
+ * SteppedAudibleAbandoned already lands in) converts it into an honest abstain that keeps every
+ * note typed on the way to it, including this one. MUST NOT resolve on its own -- see this file's
+ * header, "NO TIMEOUT, EVER" -- channel.requestStepPause() itself carries that constraint; this
+ * function adds no timer of its own.
+ */
+export async function requestStepZeroPause(
+  channel: SteppedAudibleChannel | null,
+  log: SteppedAudibleLog,
+  events: LianaTerminalEvent[],
+): Promise<void> {
+  if (!channel) return;
+  const pause: LianaSteppedPause = {
+    pauseId: 'sp0',
+    stepIndex: 0,
+    // The full step count is genuinely not known yet -- Step 0 precedes method selection
+    // (liana_terminal_engine.ts runs Survey/the Demand Test/selectMethod() AFTER this point), so
+    // no per-method step-def table (buildUpfrontStepList()) has been consulted. 0 states "not yet
+    // known" honestly rather than fabricating a count before the method that would produce one has
+    // even been chosen.
+    stepTotal: 0,
+    step: STEP_ZERO_STEP_DEF,
+    events: events.slice(),
+    suggestions: [],
+    ts: nowIso(),
+  };
+  const response = await channel.requestStepPause(pause);
+  log.add({
+    pauseId: pause.pauseId,
+    stepIndex: 0,
+    stepKey: STEP_ZERO_STEP_DEF.key,
+    founderStepNumber: STEP_ZERO_STEP_DEF.founderStepNumber,
+    attribution: STEP_ZERO_STEP_DEF.attribution,
+    action: response.action,
+    text: response.text,
+    ts: nowIso(),
+  });
+  if (response.action === 'abandon') throw new SteppedAudibleAbandoned();
+  // 'approve' / 'correct' / 'redirect' are recorded above and change NOTHING about this run --
+  // requirement C.4/E and HARDWIRE-23, same as runStepPause() above: his response is the
+  // authority record for what gets built next, not a live steering control.
+}
