@@ -119,24 +119,112 @@ function webviewPreloadPath(): string {
   return join(__dirname, '..', 'hearth', 'embedded_browser', 'webview_preload.js');
 }
 
+// ─── D-BP152-028/BISHOP/seg-nexus-browser-bar -- the 5 surfaces, as DATA ──────────────────────
+//
+// Founder, BP152, verbatim: "keep the 5 tabs we have at the top (which we will add to based on
+// what users have access to)." This ticket's item 5: make the button list DATA rather than five
+// hardcoded button blocks, so adding a surface later is one entry in this array. No UI to EDIT
+// this list is built (not ordered) -- only the hardcoding is removed.
+//
+// URLs are byte-identical to what D-BP152-025/D-BP152-027 already shipped (Google's URL carries
+// D-BP152-027's own fix: plain https://www.google.com, not the account page -- see that ticket's
+// SEG return for the live defect this closes). This ticket changed none of the 5 URLs.
+export interface NexusAuthoritySurface {
+  id: string;
+  label: string;
+  url: string;
+  title: string;
+}
+
+export const NEXUS_SURFACES: NexusAuthoritySurface[] = [
+  { id: 'google', label: 'Google', url: 'https://www.google.com', title: 'Navigate the persistent session to Google search' },
+  { id: 'perplexity', label: 'Perplexity', url: 'https://www.perplexity.ai/', title: 'Navigate the persistent session to Perplexity' },
+  { id: 'claude', label: 'Claude', url: 'https://claude.ai/new', title: 'Navigate the persistent session to claude.ai/new sign-in' },
+  { id: 'chatgpt', label: 'ChatGPT', url: 'https://chatgpt.com/auth/login', title: 'Navigate the persistent session to chatgpt.com sign-in' },
+  { id: 'gemini', label: 'Gemini', url: 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fgemini.google.com%2Fapp', title: 'Navigate the persistent session to gemini.google.com sign-in' },
+];
+
+/**
+ * Pure address-bar resolution -- decides what a typed address-bar value means. Exported so it is
+ * directly unit-testable (VERIFY item (a)); ITS OWN `.toString()` is embedded verbatim into
+ * buildEmbedderHtml()'s inline script below, so the code that actually runs inside the browser
+ * window IS the exact function this file's test suite exercises -- never a hand-duplicated copy
+ * that could drift. Deliberately self-contained (no closures, no reference to anything outside
+ * its own parameter) so `.toString()` produces valid standalone script.
+ *
+ * ATTRIBUTED: dispatch D-BP152-028, item 1, verbatim: "Type a URL or a search term, press Enter,
+ * it navigates ... A bare term that is not a URL goes to a Google search for it."
+ *
+ * SECURITY DECISION (D-BP152-028's own SECURITY section, verbatim ask: "Navigating to a file://
+ * or about: URL from the address bar: decide, state your decision and its reason ... and default
+ * to refusing rather than silently allowing"). DECISION: REFUSE file:/about:/javascript:/data:/
+ * chrome:/view-source:. REASON: the Founder's ask was "run the Google Chrome Browser" -- the web
+ * -- and none of these schemes are the web. file:// specifically would let a typed address read
+ * the local filesystem through a <webview> that already carries a preload script; the others are
+ * the same class of risk (internal pages, script/markup injection, opaque payloads). Refusing is
+ * the smaller, safer reading of the ask, not a widened gate -- no existing capability is removed,
+ * only a new one that the ask did not request is withheld.
+ */
+export function resolveNexusAddressBarInput(raw: string): { blocked: boolean; reason?: string; url?: string } {
+  var text = (raw || '').trim();
+  if (!text) {
+    return { blocked: false };
+  }
+  var blockedSchemeRe = /^(file|about|javascript|data|chrome|view-source):/i;
+  if (blockedSchemeRe.test(text)) {
+    return { blocked: true, reason: 'blocked-scheme' };
+  }
+  var hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text);
+  if (hasScheme) {
+    return { blocked: false, url: text };
+  }
+  var looksLikeHost = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d+)?([/?#].*)?$/i.test(text);
+  var looksLikeLocalhost = /^localhost(:\d+)?([/?#].*)?$/i.test(text);
+  if ((looksLikeHost || looksLikeLocalhost) && !/\s/.test(text)) {
+    return { blocked: false, url: 'https://' + text };
+  }
+  return { blocked: false, url: 'https://www.google.com/search?q=' + encodeURIComponent(text) };
+}
+
 /** Builds the embedder page as an inline `data:` URL -- deliberately NOT a new renderer route
  *  (avoids touching App.tsx's routing table / any concurrent renderer work) and NOT the
  *  previously-rejected dotted-line transparent overlay. Escaping note: the only
  *  dynamically-interpolated value is a local filesystem path (never user-controlled text), and
  *  it is passed through encodeURIComponent() as part of the whole-document data: URL encoding
- *  below, so no separate HTML-attribute escaping is required. */
-function buildEmbedderHtml(): string {
+ *  below, so no separate HTML-attribute escaping is required.
+ *
+ *  D-BP152-028: this page now also carries an editable address bar, back/forward/reload/stop
+ *  history controls, and a bookmarks bar -- all standard <webview>-tag/DOM operations, requiring
+ *  no change to this window's webPreferences (see ensureNexusAuthoritySession() below,
+ *  UNTOUCHED by this ticket: no nodeIntegration, contextIsolation stays true, webSecurity stays
+ *  on). Bookmarks persistence goes through window.amplify.nexusAuthorityBookmarks*() (thin
+ *  preload wraps, see preload.ts) because this page's own script has no fs access. */
+export function buildEmbedderHtml(): string {
   const preloadPath = webviewPreloadPath();
+  const surfacesJson = JSON.stringify(NEXUS_SURFACES);
   const html = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
   html, body { margin: 0; padding: 0; height: 100vh; width: 100vw; display: flex; flex-direction: column; background: #0f0f1a; font-family: -apple-system, "Segoe UI", Arial, sans-serif; overflow: hidden; }
-  #bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: #1a1a2e; border-bottom: 1px solid #2d3748; box-sizing: border-box; height: 38px; flex: 0 0 38px; }
-  button { background: #2d3748; color: #e2e8f0; border: 1px solid #4a5568; border-radius: 4px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+  #bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: #1a1a2e; border-bottom: 1px solid #2d3748; box-sizing: border-box; height: 40px; flex: 0 0 40px; }
+  button { background: #2d3748; color: #e2e8f0; border: 1px solid #4a5568; border-radius: 4px; padding: 5px 10px; font-size: 12px; cursor: pointer; flex: 0 0 auto; }
   button:hover { background: #374151; }
-  #status { color: #94a3b8; font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button:disabled:hover { background: #2d3748; }
+  #navgroup { display: flex; gap: 3px; flex: 0 0 auto; }
+  #navgroup button { padding: 5px 8px; }
+  #addressbar { flex: 1 1 auto; min-width: 60px; background: #0f0f1a; color: #e2e8f0; border: 1px solid #4a5568; border-radius: 4px; padding: 5px 8px; font-size: 12px; font-family: monospace; }
+  #addressbar:focus { outline: 1px solid #63b3ed; }
+  #surfaces { display: flex; gap: 6px; flex: 0 0 auto; }
+  #bookmarksbar { display: flex; gap: 6px; align-items: center; padding: 3px 8px; background: #161625; border-bottom: 1px solid #2d3748; box-sizing: border-box; height: 26px; flex: 0 0 26px; overflow-x: auto; white-space: nowrap; }
+  #bookmarksbar:empty::before { content: 'No bookmarks yet -- click "+ Bookmark" to add this page.'; color: #4a5568; font-size: 10px; font-family: monospace; }
+  .bmchip { display: inline-flex; align-items: center; gap: 2px; background: #232338; border: 1px solid #383854; border-radius: 12px; padding: 1px 2px 1px 4px; flex: 0 0 auto; }
+  .bmlink { background: transparent; border: none; color: #94a3b8; font-size: 10px; padding: 2px 4px; cursor: pointer; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bmlink:hover { color: #e2e8f0; }
+  .bmremove { background: transparent; border: none; color: #64748b; font-size: 12px; line-height: 1; padding: 0 5px; cursor: pointer; }
+  .bmremove:hover { color: #fc8181; }
   /* min-height:0 lets this flex child actually grow to fill; without it a flex item defaults to
      min-height:auto and the webview collapses to a fraction of the window (the 0.9.14 sliver). */
   #wvwrap { flex: 1 1 auto; position: relative; overflow: hidden; min-height: 0; }
@@ -147,69 +235,163 @@ function buildEmbedderHtml(): string {
 </head>
 <body>
   <div id="bar">
-    <!-- D-BP152-027/BISHOP/seg-open-nexus-from-pause -- Founder, BP152, testing capture live:
-         "it is on My account page, and I need it to be on just normal google search page ...
-         I'm just trying to search google." This button is a working search surface now, not
-         only a one-time sign-in screen -- points at plain Google search; sign-in is still
-         reachable from there (this session is persist:nexus-authority, and the probe below its
-         own "Check status" path already navigates the same google.com page to look for the
-         signed-in marker). The other 4 buttons are untouched. -->
-    <button id="btn-google" title="Navigate the persistent session to Google search">Google</button>
-    <button id="btn-perplexity" title="Navigate the persistent session to Perplexity">Perplexity</button>
-    <button id="btn-claude" title="Navigate the persistent session to claude.ai/new sign-in">Claude</button>
-    <button id="btn-chatgpt" title="Navigate the persistent session to chatgpt.com sign-in">ChatGPT</button>
-    <button id="btn-gemini" title="Navigate the persistent session to gemini.google.com sign-in">Gemini</button>
-    <span id="status">Nexus Authority -- persistent session (persist:nexus-authority)</span>
+    <div id="navgroup">
+      <button id="btn-back" title="Back" disabled>&#8592;</button>
+      <button id="btn-forward" title="Forward" disabled>&#8594;</button>
+      <button id="btn-reload" title="Reload">&#8635;</button>
+      <button id="btn-stop" title="Stop" disabled>&#10005;</button>
+    </div>
+    <input id="addressbar" type="text" placeholder="Search Google or type a web address" autocomplete="off" spellcheck="false" />
+    <button id="btn-go" title="Go">Go</button>
+    <button id="btn-bookmark-add" title="Bookmark this page">&#9733; Bookmark</button>
+    <!-- D-BP152-028 item 5: the 5 surface buttons are rendered by a loop over NEXUS_SURFACES
+         below, not five hardcoded blocks -- adding a surface is one entry in that array. -->
+    <span id="surfaces"></span>
     <!-- D-BP152-025/BISHOP/seg-nexus-returns-answer -- Founder, BP152, ruled "make the nexus
          surface return what I type." Operator-triggered ONLY: type and submit your own query on
          this visible page exactly as before, then press this button when the answer you want is
-         on screen. Never auto-typed, never auto-submitted, never auto-captured. -->
+         on screen. Never auto-typed, never auto-submitted, never auto-captured. UNCHANGED by
+         D-BP152-028. -->
     <button id="btn-capture" title="Capture what is on screen right now and send it to the paused Liana Cycle run">Capture -&gt; Liana Cycle</button>
     <button id="btn-done" title="Hide this window (the session stays alive in the background)">Done -- hide</button>
   </div>
+  <div id="bookmarksbar"></div>
   <div id="wvwrap">
     <webview id="nexus-authority-webview" src="about:blank" partition="${NEXUS_AUTHORITY_PARTITION}" preload="${preloadPath}"></webview>
   </div>
   <script>
     var wv = document.getElementById('nexus-authority-webview');
-    var statusEl = document.getElementById('status');
+    var addressbar = document.getElementById('addressbar');
+    var btnBack = document.getElementById('btn-back');
+    var btnForward = document.getElementById('btn-forward');
+    var btnReload = document.getElementById('btn-reload');
+    var btnStop = document.getElementById('btn-stop');
+    var btnGo = document.getElementById('btn-go');
+    var btnBookmarkAdd = document.getElementById('btn-bookmark-add');
+    var surfacesEl = document.getElementById('surfaces');
+    var bookmarksBarEl = document.getElementById('bookmarksbar');
+
     // D-BP152-025 -- which of the 5 surfaces is currently loaded, tracked ONLY so a capture can
     // record honest provenance ("which surface was active"). Never read by any navigation logic,
     // never sent anywhere except as a label on a capture the operator explicitly triggers.
     // Declared with 'var' at this top-level script scope, so it is reachable from a SEPARATE
     // executeJavaScript() call (captureNexusAuthorityVisibleText(), this file's Node side) as
-    // window.currentNexusAuthority -- the same cross-call-reads-window-var mechanism this file
-    // already documents nowhere else because nothing else needed it before this ticket.
+    // window.currentNexusAuthority. UNCHANGED by D-BP152-028.
     var currentNexusAuthority = null;
-    document.getElementById('btn-google').addEventListener('click', function () {
-      currentNexusAuthority = 'google';
-      // D-BP152-027: plain search, not the account/sign-in page -- see the button's own comment
-      // above this script block.
-      wv.loadURL('https://www.google.com');
+
+    // ── D-BP152-028 item 5: the 5 surfaces, rendered from data ──────────────────────────────
+    var NEXUS_SURFACES = ${surfacesJson};
+    NEXUS_SURFACES.forEach(function (surface) {
+      var b = document.createElement('button');
+      b.id = 'btn-' + surface.id;
+      b.title = surface.title;
+      b.textContent = surface.label;
+      b.addEventListener('click', function () {
+        currentNexusAuthority = surface.id;
+        wv.loadURL(surface.url);
+      });
+      surfacesEl.appendChild(b);
     });
-    document.getElementById('btn-perplexity').addEventListener('click', function () {
-      currentNexusAuthority = 'perplexity';
-      wv.loadURL('https://www.perplexity.ai/');
+
+    // ── D-BP152-028 item 1: address bar (this IS resolveNexusAddressBarInput()'s own compiled
+    // body, embedded verbatim via .toString() -- see that function's own comment in
+    // nexus_authority_persistent_session.ts for the full attribution and security reasoning). ──
+    ${resolveNexusAddressBarInput.toString()}
+
+    function navigateFromAddressBar() {
+      var resolved = resolveNexusAddressBarInput(addressbar.value);
+      if (resolved.blocked) {
+        addressbar.value = 'Blocked (' + resolved.reason + ') -- this address bar only opens http/https pages.';
+        return;
+      }
+      if (resolved.url) {
+        wv.loadURL(resolved.url);
+      }
+    }
+    addressbar.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { navigateFromAddressBar(); }
     });
-    document.getElementById('btn-claude').addEventListener('click', function () {
-      currentNexusAuthority = 'claude';
-      wv.loadURL('https://claude.ai/new');
+    btnGo.addEventListener('click', navigateFromAddressBar);
+
+    // ── D-BP152-028 item 1 (sync half) + item 2 (history) ────────────────────────────────────
+    function updateAddressBarFromUrl(url) {
+      // Never clobber what the operator is currently typing.
+      if (document.activeElement !== addressbar) {
+        addressbar.value = url || '';
+      }
+    }
+    function updateNavButtons() {
+      try { btnBack.disabled = !(wv.canGoBack && wv.canGoBack()); } catch (e) { btnBack.disabled = true; }
+      try { btnForward.disabled = !(wv.canGoForward && wv.canGoForward()); } catch (e) { btnForward.disabled = true; }
+    }
+    function onNavigate(e) {
+      updateAddressBarFromUrl(e.url);
+      updateNavButtons();
+    }
+    btnBack.addEventListener('click', function () { if (wv.canGoBack && wv.canGoBack()) { wv.goBack(); } });
+    btnForward.addEventListener('click', function () { if (wv.canGoForward && wv.canGoForward()) { wv.goForward(); } });
+    btnReload.addEventListener('click', function () { wv.reload(); });
+    btnStop.addEventListener('click', function () { wv.stop(); });
+    wv.addEventListener('did-navigate', onNavigate);
+    wv.addEventListener('did-navigate-in-page', onNavigate);
+    wv.addEventListener('dom-ready', updateNavButtons);
+    wv.addEventListener('did-start-loading', function () { btnStop.disabled = false; });
+    wv.addEventListener('did-stop-loading', function () { btnStop.disabled = true; updateNavButtons(); });
+
+    // ── D-BP152-028 item 3: bookmarks (persisted to disk by main -- see
+    // nexus_authority_bookmarks_store.ts for the chosen path and why) ───────────────────────────
+    function renderBookmarks(list) {
+      bookmarksBarEl.innerHTML = '';
+      (list || []).forEach(function (bm) {
+        var chip = document.createElement('span');
+        chip.className = 'bmchip';
+        var link = document.createElement('button');
+        link.className = 'bmlink';
+        link.textContent = bm.title || bm.url;
+        link.title = bm.url;
+        link.addEventListener('click', function () { wv.loadURL(bm.url); });
+        var rm = document.createElement('button');
+        rm.className = 'bmremove';
+        rm.title = 'Remove bookmark';
+        rm.textContent = '\\u00d7';
+        rm.addEventListener('click', function () {
+          if (window.amplify && window.amplify.nexusAuthorityBookmarksRemove) {
+            window.amplify.nexusAuthorityBookmarksRemove(bm.id).then(function (res) {
+              renderBookmarks(res && res.bookmarks ? res.bookmarks : []);
+            });
+          }
+        });
+        chip.appendChild(link);
+        chip.appendChild(rm);
+        bookmarksBarEl.appendChild(chip);
+      });
+    }
+    function loadBookmarks() {
+      if (window.amplify && window.amplify.nexusAuthorityBookmarksList) {
+        window.amplify.nexusAuthorityBookmarksList().then(function (res) {
+          renderBookmarks(res && res.bookmarks ? res.bookmarks : []);
+        });
+      }
+    }
+    btnBookmarkAdd.addEventListener('click', function () {
+      var url = '';
+      try { url = wv.getURL ? wv.getURL() : ''; } catch (e) { /* non-fatal */ }
+      if (!url || url === 'about:blank') { return; }
+      var title = url;
+      try { title = (wv.getTitle && wv.getTitle()) || url; } catch (e) { /* non-fatal */ }
+      if (window.amplify && window.amplify.nexusAuthorityBookmarksAdd) {
+        window.amplify.nexusAuthorityBookmarksAdd(url, title).then(function (res) {
+          renderBookmarks(res && res.bookmarks ? res.bookmarks : []);
+        });
+      }
     });
-    // BP140-K4: chatgpt.com/gemini.google.com sign-in buttons -- same one-time-visible manual
-    // login pattern as the three buttons above; the app never sees the password either way.
-    document.getElementById('btn-chatgpt').addEventListener('click', function () {
-      currentNexusAuthority = 'chatgpt';
-      wv.loadURL('https://chatgpt.com/auth/login');
-    });
-    document.getElementById('btn-gemini').addEventListener('click', function () {
-      currentNexusAuthority = 'gemini';
-      wv.loadURL('https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fgemini.google.com%2Fapp');
-    });
-    // D-BP152-025 -- the ONLY new side-effecting control this ticket adds. Fires exactly one IPC
+    loadBookmarks();
+
+    // D-BP152-025 -- the ONLY new side-effecting control that ticket added. Fires exactly one IPC
     // round trip on click and nothing else; all extraction logic lives in main
     // (captureNexusAuthorityVisibleText(), below) so this handler stays a thin trigger, same
     // "thin forward, no logic in the button handler" discipline the other buttons already follow
-    // (their own loadURL calls are the one exception, pre-existing, untouched by this ticket).
+    // (their own loadURL calls are the one exception, pre-existing). UNCHANGED by D-BP152-028.
     document.getElementById('btn-capture').addEventListener('click', function () {
       if (window.amplify && window.amplify.nexusAuthorityCapture) {
         window.amplify.nexusAuthorityCapture();
@@ -220,8 +402,6 @@ function buildEmbedderHtml(): string {
         window.amplify.hideNexusAuthoritySession();
       }
     });
-    wv.addEventListener('did-navigate', function (e) { statusEl.textContent = e.url; });
-    wv.addEventListener('did-navigate-in-page', function (e) { statusEl.textContent = e.url; });
   </script>
 </body>
 </html>`;

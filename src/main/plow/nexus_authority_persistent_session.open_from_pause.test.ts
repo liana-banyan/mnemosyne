@@ -170,7 +170,15 @@ describe('D-BP152-027 -- (a)/(b) the pause action reuses the EXISTING open path 
   test('(a continued) index.ts still registers exactly the pre-existing 5 nexus-authority-* channels -- no new one added by this ticket', () => {
     const matches = indexSrc.match(/safeHandle\(\s*'nexus-authority-[a-z-]+'/g) ?? [];
     const names = Array.from(new Set(matches.map((m) => m.match(/'nexus-authority-[a-z-]+'/)![0]))).sort();
+    // D-BP152-028/BISHOP/seg-nexus-browser-bar added 3 additive bookmarks channels (list/add/
+    // remove) -- the ONLY new main-process IPC surface that ticket introduced (its address bar
+    // and back/forward/reload/stop controls call the <webview> tag's own methods directly, no
+    // channel needed). This assertion's job -- catching an UNEXPECTED new channel -- still holds;
+    // its expected set was simply widened to match that one, named, in-scope addition.
     expect(names).toEqual([
+      "'nexus-authority-bookmarks-add'",
+      "'nexus-authority-bookmarks-list'",
+      "'nexus-authority-bookmarks-remove'",
       "'nexus-authority-capture'",
       "'nexus-authority-check-signin-status'",
       "'nexus-authority-hide-signin'",
