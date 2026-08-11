@@ -300,7 +300,7 @@ import { getQueryText } from './query_text_loader';
 // (FD-BP152-03) from Part 1's own named terms plus the question text. This file's own
 // askThreshold(), below, is the only caller that ISSUES what it generates; the generator itself
 // decides no wording beyond what elements/method_question_generator.ts's own header documents.
-import { generateMethodQuestions, type GeneratedMethodQuestion } from './elements/method_question_generator';
+import { generateMethodQuestions, literalSubjectSpan, type GeneratedMethodQuestion } from './elements/method_question_generator';
 // D-BP152-009. IMPORTED, NOT REWRITTEN -- reused ONLY to gate SURVEY STEP 3 (see
 // runSurveyStage()'s own comment at its call site, below). demand_test.ts is not modified by this
 // ticket; this is the SAME function liana_terminal_engine.ts already calls on
@@ -348,6 +348,18 @@ export interface AmbiguityQueryResult {
   /** The Founder's own query text actually sent (verbatim; see askAmbiguity()). */
   askedText: string;
   terms: AmbiguityTermFinding[];
+  /** D-BP152-052. Terms the source named that FAILED `literalSubjectSpan()` (elements/
+   *  method_question_generator.ts, reused unmodified -- the SAME gate
+   *  generateScaleDefinitionQuestion()/generateThresholdQuestion() already apply) against the
+   *  QUESTION text -- never a span of our own ambiguity QUERY. THE MEASURED FAILURE THIS CLOSES:
+   *  latestTest.md line 561 -- "words", "phrases", "meaning", "fundamentally" are all four words
+   *  FROM the Founder's own ambiguity query ("what words or phrases in this question could be
+   *  understood with a different meaning that would fundamentally change...") echoed back by the
+   *  source, not terms from the QUESTION itself. Dropped in parseAmbiguityTerms(), before `terms`
+   *  above is even populated -- kept here, separately, so a reader can see what was thrown out and
+   *  why, distinct from the separate FD-BP152-20 sig-figs "no stated impact" drop (which only ever
+   *  sees terms that already survived THIS check). */
+  termsDroppedNotInQuestion: AmbiguityTermFinding[];
   /** True exactly when the query itself produced nothing (transport unreachable/failed/
    *  unparseable) -- distinguishes "no live source, not run" from "source ran and named nothing".
    *  Name kept from D-BP151-031 (was 'local model'-specific then); now covers either transport,
@@ -458,15 +470,37 @@ export interface SurveyConstraint {
   why: string;
 }
 
+/** D-BP152-052. Result of parseAmbiguityTerms() -- `terms` are the ones VERIFIED as a literal span
+ *  of the QUESTION (literalSubjectSpan(), reused unmodified); `droppedNotInQuestion` are the ones
+ *  the source named that failed that check, kept here (not thrown away) so the caller can report
+ *  the count and the exact terms, distinct from the separate FD-BP152-20 sig-figs drop. */
+interface ParsedAmbiguityTerms {
+  terms: AmbiguityTermFinding[];
+  droppedNotInQuestion: AmbiguityTermFinding[];
+}
+
 /** Shared parser for the ambiguity query's JSON term list, used by BOTH transports below (google's
  *  gemmaExtract() output and gemma's own direct-reasoning output are the SAME declared shape) --
  *  one parsing routine, not two, so a shape change only has to be made once. Not a demand/decision
  *  rule of any kind (HARDWIRE-23's own carve-out: "mechanical implementation choices with no
  *  effect on which answer comes out"): this only reshapes already-decided model/source output into
- *  `AmbiguityTermFinding[]`, dropping only entries with no `term` at all. */
-function parseAmbiguityTerms(raw: unknown, emit?: MethodRunContext['emit']): AmbiguityTermFinding[] {
+ *  `AmbiguityTermFinding[]`, dropping entries with no `term` at all, OR (D-BP152-052) whose `term`
+ *  is not a literal span of `questionText`.
+ *
+ *  D-BP152-052. ATTRIBUTED (this ticket's own dispatch, quoting the measured failure verbatim):
+ *  latestTest.md line 561 named "words", "phrases", "meaning", "fundamentally" as the question's
+ *  ambiguous terms -- every one of those four is a word FROM the Founder's own ambiguity QUERY
+ *  ("what words or phrases in this question could be understood with a different meaning that
+ *  would fundamentally change the meaning of what is being asked?"), not a word from the QUESTION
+ *  the source was actually asked about. "A named ambiguous term MUST be a literal span of the
+ *  QUESTION, never of our query" (this ticket's own dispatch). `literalSubjectSpan()`
+ *  (elements/method_question_generator.ts) already implements exactly this gate for
+ *  generateScaleDefinitionQuestion()/generateThresholdQuestion() -- REUSED here unmodified, not a
+ *  second span checker. */
+function parseAmbiguityTerms(raw: unknown, questionText: string, emit?: MethodRunContext['emit']): ParsedAmbiguityTerms {
   const rawTerms = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
   const terms: AmbiguityTermFinding[] = [];
+  const droppedNotInQuestion: AmbiguityTermFinding[] = [];
   for (const rt of rawTerms) {
     const term = typeof rt?.term === 'string' ? rt.term.trim() : '';
     if (!term) {
@@ -485,15 +519,43 @@ function parseAmbiguityTerms(raw: unknown, emit?: MethodRunContext['emit']): Amb
       }
       continue;
     }
-    terms.push({
+    const finding: AmbiguityTermFinding = {
       term,
       standardMeaning: typeof rt?.standardMeaning === 'string' ? rt.standardMeaning.trim() : '',
       alternativeMeaning: typeof rt?.alternativeMeaning === 'string' ? rt.alternativeMeaning.trim() : '',
       impact: typeof rt?.impact === 'string' ? rt.impact.trim() : '',
       isNegation: rt?.isNegation === true,
+    };
+    // D-BP152-052. THE SPAN GATE -- see this function's own header. A distinct drop reason from
+    // the "no non-empty term" drop above, and distinct from the separate FD-BP152-20 sig-figs "no
+    // stated impact" drop applied later (founderStep2Survey()) -- a reader must be able to tell the
+    // three apart, never conflated into one generic "dropped".
+    if (literalSubjectSpan(finding.term, questionText) === null) {
+      droppedNotInQuestion.push(finding);
+      if (emit) {
+        emit({
+          kind: 'note',
+          text: `   ambiguity term "${finding.term}" DROPPED -- not a literal span of the QUESTION `
+            + '(literalSubjectSpan(), elements/method_question_generator.ts, reused unmodified) -- the '
+            + 'source named a word/phrase from our OWN ambiguity QUERY, not from the question itself '
+            + '(D-BP152-052; distinct from the separate FD-BP152-20 "no stated impact" sig-figs drop)',
+          ts: nowIso(),
+        });
+      }
+      continue;
+    }
+    terms.push(finding);
+  }
+  if (emit && rawTerms.length) {
+    emit({
+      kind: 'note',
+      text: `   TERM SPAN CHECK [ambiguity, D-BP152-052] kept ${terms.length} of ${terms.length + droppedNotInQuestion.length} `
+        + `term(s) named as a literal span of the question, dropped ${droppedNotInQuestion.length} not found in the `
+        + 'question text (echoed from our own ambiguity query, not the question)',
+      ts: nowIso(),
     });
   }
-  return terms;
+  return { terms, droppedNotInQuestion };
 }
 
 /**
@@ -645,7 +707,7 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
       + 'sadly.") removed the relaxation this branch previously relied on; no Founder ruling ever '
       + 'granted it. No model call was made, and this does not fall back to Google.';
     ctx.emit({ kind: 'note', text: `   [transport: GEMMA] ${why}`, ts: nowIso() });
-    return { askedText, terms: [], modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, answeredByAuthority: null, why };
+    return { askedText, terms: [], termsDroppedNotInQuestion: [], modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, answeredByAuthority: null, why };
   }
 
   // transport === 'google' (the Founder-ordered default). D-BP152-044: for THIS query only (one of
@@ -661,6 +723,7 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
     return {
       askedText,
       terms: [],
+      termsDroppedNotInQuestion: [],
       modelUnreachable: true,
       transport: 'google',
       citations: [],
@@ -712,16 +775,26 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
       ts: nowIso(),
     });
   }
-  const terms = parseAmbiguityTerms((ex as { terms?: unknown } | null)?.terms, ctx.emit);
-  const why = terms.length
-    ? `${terms.length} term(s) named by ${passage.answeredBy}'s own answer (${passage.via}) as potentially `
-      + 'ambiguous, extracted verbatim by gemmaExtract() (extraction only, HARDWIRE-22 unrelaxed) -- the '
-      + 'source names, this function picks none'
+  // D-BP152-052: `askText` (this function's own first parameter) IS the question -- the same text
+  // `query` (above) prefixes with the Founder's ambiguity query text. The span check below verifies
+  // each named term against THIS, never against `query` (which contains our own query's words).
+  const parsed = parseAmbiguityTerms((ex as { terms?: unknown } | null)?.terms, askText, ctx.emit);
+  const terms = parsed.terms;
+  const namedTotal = terms.length + parsed.droppedNotInQuestion.length;
+  const droppedNotInQuestionNote = parsed.droppedNotInQuestion.length
+    ? `, of which ${parsed.droppedNotInQuestion.length} DROPPED (D-BP152-052: not a literal span of `
+      + `the question -- "${parsed.droppedNotInQuestion.map((t) => t.term).join('", "')}")`
+    : '';
+  const why = namedTotal
+    ? `${namedTotal} term(s) named by ${passage.answeredBy}'s own answer (${passage.via}) as potentially `
+      + `ambiguous, extracted verbatim by gemmaExtract() (extraction only, HARDWIRE-22 unrelaxed)${droppedNotInQuestionNote} -- `
+      + 'the source names, this function picks none'
     : `${passage.answeredBy} answered (${passage.via}) but nothing usable could be extracted from it -- an `
       + 'honest empty result, not a fabrication';
   return {
     askedText,
     terms,
+    termsDroppedNotInQuestion: parsed.droppedNotInQuestion,
     modelUnreachable: false,
     transport: 'google',
     citations: passage.sources,
@@ -1187,9 +1260,26 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
     }
 
     if (!ambiguity.terms.length) {
-      const why = `${whyNoTerm}; ambiguity query issued but returned nothing usable (${ambiguity.why}) -- `
+      // D-BP152-052: distinguish "the source named nothing at all" from "the source named
+      // something, but every one of those terms failed the literal-span check against the
+      // question" (this ticket's own measured failure -- latestTest.md line 561: 4 term(s) named,
+      // all 4 were words from OUR OWN ambiguity query, none from the question). Report BOTH counts
+      // -- dropped-not-in-question here, dropped-no-stated-impact (FD-BP152-20 sig figs) never even
+      // ran on this path because zero terms survived the span check to reach it.
+      const droppedNotInQuestionCount = ambiguity.termsDroppedNotInQuestion.length;
+      const droppedNote = droppedNotInQuestionCount
+        ? ` (${droppedNotInQuestionCount} term(s) WERE named by the source but DROPPED, D-BP152-052: `
+          + `not a literal span of the question -- "${ambiguity.termsDroppedNotInQuestion.map((t) => t.term).join('", "')}"; `
+          + '0 dropped for no stated impact, FD-BP152-20 sig figs, since none survived the span check to reach it)'
+        : '';
+      const why = `${whyNoTerm}; ambiguity query issued but returned nothing usable (${ambiguity.why})${droppedNote} -- `
         + 'refusing rather than guessing (refusing beats guessing)';
-      emit({ kind: 'result', text: 'SURVEY STEP 2: no term, ambiguity query returned nothing usable, not run', ts: nowIso() });
+      emit({
+        kind: 'result',
+        text: 'SURVEY STEP 2: no term, ambiguity query returned nothing usable'
+          + `${droppedNotInQuestionCount ? ` (${droppedNotInQuestionCount} dropped as not a literal span of the question, D-BP152-052)` : ''}, not run`,
+        ts: nowIso(),
+      });
       return { term: null, nested: null, ambiguity, ambiguityNested: [], negationNamed: false, constraints: [], operation, thresholdQuestions: [], why };
     }
 
@@ -1329,8 +1419,17 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
     }
     const thresholdObtainedCount = thresholdQuestions.filter((c) => c.obtained).length;
 
+    // D-BP152-052. `ambiguity.terms.length` here already excludes terms dropped for failing the
+    // literal-span check (parseAmbiguityTerms(), above) -- report that count too, distinct from
+    // the sig-figs "no stated impact" drop, so both are visible together (this ticket's own
+    // requirement).
+    const droppedNotInQuestionCount = ambiguity.termsDroppedNotInQuestion.length;
+    const droppedNotInQuestionWhy = droppedNotInQuestionCount
+      ? `; ${droppedNotInQuestionCount} more term(s) named by the source but DROPPED before this point `
+        + `(D-BP152-052: not a literal span of the question -- "${ambiguity.termsDroppedNotInQuestion.map((t) => t.term).join('", "')}")`
+      : '';
     const why = `no quoted/cued term -- issued the Founder's ambiguity query instead, via ${ambiguity.transport.toUpperCase()}; `
-      + `${ambiguity.terms.length} term(s) named by the source ("${ambiguity.terms.map((t) => t.term).join('", "')}"), `
+      + `${ambiguity.terms.length} term(s) named by the source ("${ambiguity.terms.map((t) => t.term).join('", "')}")${droppedNotInQuestionWhy}, `
       + `${sigFigsKeptTerms.length} surveyed further (FD-BP152-20 sig figs: stated impact, source order, no ranking rule `
       + `invented among kept terms), ${sigFigsDroppedTerms.length} dropped (no stated impact)`
       + `${negationNamed ? '; NEGATION NAMED by the source' : ''}; `
@@ -1343,7 +1442,8 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
     emit({
       kind: 'result',
       text: `SURVEY STEP 2: no quoted/cued term -- ${ambiguity.terms.length} term(s) named by the ambiguity `
-        + `query [transport: ${ambiguity.transport.toUpperCase()}], ${sigFigsKeptTerms.length} kept `
+        + `query [transport: ${ambiguity.transport.toUpperCase()}], ${droppedNotInQuestionCount} dropped `
+        + `(not a literal span of the question, D-BP152-052) / ${sigFigsKeptTerms.length} kept `
         + `(stated impact, FD-BP152-20 sig figs) / ${sigFigsDroppedTerms.length} dropped (no stated impact), `
         + `${ambiguityNested.length} surveyed, `
         + `${constraints.length} constraint(s) asked (${obtainedCount} answered), `
