@@ -258,6 +258,14 @@ import {
   // capture" section header for the full mechanism.
   captureNexusAuthorityVisibleText,
 } from './plow/nexus_authority_persistent_session';
+// D-BP152-028/BISHOP/seg-nexus-browser-bar -- ADDITIVE. Bookmarks persistence for the Nexus
+// Authority window's new address bar; see nexus_authority_bookmarks_store.ts's own header for
+// the chosen on-disk path and why.
+import {
+  listNexusAuthorityBookmarks,
+  addNexusAuthorityBookmark,
+  removeNexusAuthorityBookmark,
+} from './plow/nexus_authority_bookmarks_store';
 import { querySagaState, recordWaveDispatch, recordWaveComplete } from './hearth/drekaskip_status/drekaskip_bridge';
 import { pollWatchdogStatus, getSubjectHistory } from './hearth/active_substrate/watchdog_bridge';
 import { toggleMonitor, getMetrics, getAllMonitorStates } from './hearth/active_substrate/scribe_monitor';
@@ -4275,6 +4283,28 @@ ${args.teachingText}
     });
     return { ok: true };
   });
+
+  // D-BP152-028/BISHOP/seg-nexus-browser-bar -- ADDRESS BAR, HISTORY, BOOKMARKS. Founder,
+  // BP152, verbatim: "it would be most useful ... if we put in the browser Bar and bookmarks ...
+  // just run the Google Chrome Browser." The address bar and back/forward/reload/stop controls
+  // need NO new IPC channel at all -- they call the <webview> tag's own loadURL/goBack/
+  // goForward/reload/stop/canGoBack/canGoForward directly from the embedder page's own script
+  // (nexus_authority_persistent_session.ts's buildEmbedderHtml()). Bookmarks persist to disk
+  // (see nexus_authority_bookmarks_store.ts's own header for the chosen path and why), so they
+  // are the only piece that needs a main-process round trip: the embedder page's script has no
+  // fs access (nodeIntegration stays false on this window, unchanged by this ticket).
+  safeHandle('nexus-authority-bookmarks-list', async () => ({
+    ok: true,
+    bookmarks: listNexusAuthorityBookmarks(),
+  }));
+
+  safeHandle('nexus-authority-bookmarks-add', async (_event, { url, title }: { url: string; title: string }) => (
+    addNexusAuthorityBookmark(url, title)
+  ));
+
+  safeHandle('nexus-authority-bookmarks-remove', async (_event, { id }: { id: string }) => (
+    removeNexusAuthorityBookmark(id)
+  ));
 
   // BP041 SAGA 3 ? Watch View toggle
   // hideToWatchView: hides the conjunction window while keeping the overlay + substrate alive.

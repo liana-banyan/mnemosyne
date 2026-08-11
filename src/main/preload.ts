@@ -922,6 +922,29 @@ contextBridge.exposeInMainWorld('amplify', {
   nexusAuthorityCapture: (): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('nexus-authority-capture'),
 
+  // D-BP152-028/BISHOP/seg-nexus-browser-bar -- bookmarks for the Nexus Authority window's new
+  // address bar. Called directly by that window's own inline embedder-page script
+  // (nexus_authority_persistent_session.ts's buildEmbedderHtml()), same convention as
+  // nexusAuthorityCapture/hideNexusAuthoritySession just above. See
+  // nexus_authority_bookmarks_store.ts for the on-disk shape these three thin wraps forward to.
+  nexusAuthorityBookmarksList: (): Promise<{
+    ok: boolean;
+    bookmarks: Array<{ id: string; url: string; title: string; addedAt: string }>;
+    error?: string;
+  }> => ipcRenderer.invoke('nexus-authority-bookmarks-list'),
+
+  nexusAuthorityBookmarksAdd: (url: string, title: string): Promise<{
+    ok: boolean;
+    bookmarks: Array<{ id: string; url: string; title: string; addedAt: string }>;
+    error?: string;
+  }> => ipcRenderer.invoke('nexus-authority-bookmarks-add', { url, title }),
+
+  nexusAuthorityBookmarksRemove: (id: string): Promise<{
+    ok: boolean;
+    bookmarks: Array<{ id: string; url: string; title: string; addedAt: string }>;
+    error?: string;
+  }> => ipcRenderer.invoke('nexus-authority-bookmarks-remove', { id }),
+
   checkNexusAuthoritySignInStatus: (): Promise<{
     enabled: boolean;
     statuses: Array<{ authority: import('../shared/plow/browser_authority_types').BrowserAuthorityName; signedIn: boolean; reason: string; checkedAt: string }>;
@@ -2569,6 +2592,23 @@ declare global {
       // D-BP152-025/BISHOP/seg-nexus-returns-answer -- see the real ipcRenderer.invoke-typed
       // declaration above for the full explanation this ambient block mirrors.
       nexusAuthorityCapture?: () => Promise<{ ok: boolean; reason?: string }>;
+      // D-BP152-028/BISHOP/seg-nexus-browser-bar -- see the real ipcRenderer.invoke-typed
+      // declarations above for the full explanation this ambient block mirrors.
+      nexusAuthorityBookmarksList?: () => Promise<{
+        ok: boolean;
+        bookmarks: Array<{ id: string; url: string; title: string; addedAt: string }>;
+        error?: string;
+      }>;
+      nexusAuthorityBookmarksAdd?: (url: string, title: string) => Promise<{
+        ok: boolean;
+        bookmarks: Array<{ id: string; url: string; title: string; addedAt: string }>;
+        error?: string;
+      }>;
+      nexusAuthorityBookmarksRemove?: (id: string) => Promise<{
+        ok: boolean;
+        bookmarks: Array<{ id: string; url: string; title: string; addedAt: string }>;
+        error?: string;
+      }>;
       checkNexusAuthoritySignInStatus?: () => Promise<{
         enabled: boolean;
         statuses: Array<{ authority: 'user_google' | 'user_perplexity' | 'user_claude'; signedIn: boolean; reason: string; checkedAt: string }>;
