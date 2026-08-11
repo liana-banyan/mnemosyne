@@ -203,14 +203,22 @@ import { buildSubstrateContext } from './hearth/embedded_browser/substrate_conte
 // as the COMPOSER payload instead (claude.ai has no query-URL form at all -- see
 // buildBrowserAuthorityQueryUrl's own user_claude branch, which always returns the fixed
 // https://claude.ai/new landing URL regardless of question/options).
+// D-BP152-030R: decideNexusThreadContinuation/NexusLiveThreadState added -- the pure decision
+// point for whether an interactive (conversational) browser-authority call reuses the shared
+// nexus <webview>'s already-live page or must force a fresh navigation. See
+// runInteractiveBrowserAuthorityQueryObserved below and nexusLiveThread (module-level state) for
+// the wiring; browser_authority_types.thread.test.ts unit-tests the decision function itself.
 import {
   buildBrowserAuthorityQueryUrl,
   buildMcAwareQueryText,
+  decideNexusThreadContinuation,
   isInteractiveBrowserAuthority,
   type BrowserAuthorityDispatchOutcome,
   type BrowserAuthorityName,
   type BrowserAuthorityQuery,
   type BrowserAuthorityRawExtraction,
+  type NexusLiveThreadState,
+  type NexusThreadDecision,
 } from '../shared/plow/browser_authority_types';
 // BP138 Yoke 0.9.15 FIX 4: Ask-tab wiring. classifyAnswerType is the SAME existing classifier
 // plow_mc_answerer.ts's Stage F2 already uses (answer_type_classifier.ts, pure/dependency-free
@@ -1827,6 +1835,14 @@ const BROWSER_AUTHORITY_INTERACTIVE_LOAD_SETTLE_DELAY_MS = 2_000;
 // bound and the chain always advances to the next queued caller.
 let browserAuthorityInFlightChain: Promise<unknown> = Promise.resolve();
 
+// D-BP152-030R: what the shared nexus <webview> currently has live, per decideNexusThreadContinuation
+// (browser_authority_types.ts). null means "nothing tracked" -- either no interactive query has
+// run yet, or the last thing that ran was a static (Google/Perplexity) query, or the caller never
+// supplied a threadId. Read/written ONLY inside runOnceObserved below, which is itself always
+// serialized onto browserAuthorityInFlightChain (one call to the shared webview at a time), so no
+// lock is needed here beyond that existing serialization.
+let nexusLiveThread: NexusLiveThreadState | null = null;
+
 // BP139 root-cause (prior SEG diagnosis, verdict c): the old `browserAuthorityMainCallInFlight`
 // boolean guard made a second/third concurrent call resolve null IMMEDIATELY instead of waiting
 // its turn, silently dropping legitimate lookups (observed live: 3 rapid-fire Ask-tab questions,
@@ -1881,9 +1897,15 @@ function classifyInteractiveDispatchReason(reason: string | undefined): BrowserA
   return 'no_result';
 }
 
+// D-BP152-030R: same "additional settle before doing anything" rationale as
+// BROWSER_AUTHORITY_INTERACTIVE_LOAD_SETTLE_DELAY_MS above, reused (not a new invented
+// magnitude) for the CONTINUING branch below -- there is no did-finish-load event to hang the
+// send off of when no navigation happens, so the send is deferred one macrotask via setTimeout
+// with the same constant rather than firing perfectly synchronously.
 async function runInteractiveBrowserAuthorityQueryObserved(
   nexusWindow: BrowserWindow,
   query: BrowserAuthorityQuery,
+  threadDecision: NexusThreadDecision,
 ): Promise<BrowserAuthorityDispatchObservation> {
   const navigateUrl = buildBrowserAuthorityQueryUrl(query); // fixed landing URL for interactive authorities
   // The question (with its MC options, if any) travels as the COMPOSER payload, not the URL --
@@ -1910,7 +1932,57 @@ async function runInteractiveBrowserAuthorityQueryObserved(
   // `${logPrefix}:` prefix webview_preload.ts's own stage logs use, in the console stream this
   // main process actually writes to (not the guest webview's own devtools console, which this
   // outer script does NOT run in -- it runs in nexusWindow's page context).
-  const script = `
+  // D-BP152-030R: CONTINUING branch -- deliberately NO wv.loadURL / no did-finish-load wait.
+  // The shared webview already has THIS SAME authority's live conversation loaded (guaranteed by
+  // decideNexusThreadContinuation's exact authority+threadId match, computed by the caller
+  // BEFORE this function runs); navigating again would start a fresh chat, which is exactly the
+  // one-shot behavior this branch exists to avoid. Sends directly into the already-mounted
+  // composer after one deferred tick. Every reason string, the timeout budget, and the
+  // ipc-message handling are byte-identical to the FRESH branch below -- only the
+  // navigate-and-wait-for-load prelude is removed.
+  const continuingScript = `
+    (function() {
+      return new Promise(function(resolve) {
+        try {
+          var wv = document.querySelector('webview');
+          if (!wv) { resolve({ success: false, reason: 'no_webview_element' }); return; }
+          var settled = false;
+          var timeoutId = setTimeout(function() {
+            if (settled) return;
+            settled = true;
+            wv.removeEventListener('ipc-message', onMsg);
+            resolve({ success: false, reason: 'outer_script_timeout' });
+          }, ${BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS});
+          function onMsg(e) {
+            if (!e || e.channel !== 'browser-authority-interactive-result') return;
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            wv.removeEventListener('ipc-message', onMsg);
+            var payload = e.args && e.args[0] ? e.args[0] : null;
+            resolve(payload || { success: false, reason: 'empty_ipc_payload' }); // honest pass-through
+          }
+          wv.addEventListener('ipc-message', onMsg);
+          setTimeout(function() {
+            try {
+              wv.send('browser-authority-run-interactive-query', { query: ${JSON.stringify(promptText)}, authority: ${JSON.stringify(query.authority)} });
+            } catch (sendErr) {
+              if (!settled) { settled = true; clearTimeout(timeoutId); resolve({ success: false, reason: 'webview_send_failed' }); }
+            }
+          }, ${BROWSER_AUTHORITY_INTERACTIVE_LOAD_SETTLE_DELAY_MS});
+        } catch (err) {
+          resolve({ success: false, reason: 'outer_script_exception' });
+        }
+      });
+    })()
+  `;
+
+  // FRESH branch -- byte-identical to this function's pre-existing (pre-threading) behavior:
+  // always navigates to the authority's landing URL first. Used both for a genuinely new
+  // question AND for any mismatched continuation request (decideNexusThreadContinuation's
+  // "never trust a mismatch" rule) -- a full navigation is what guarantees no DOM/JS state from
+  // a prior question survives.
+  const freshScript = `
     (function() {
       return new Promise(function(resolve) {
         try {
@@ -1954,6 +2026,21 @@ async function runInteractiveBrowserAuthorityQueryObserved(
     })()
   `;
 
+  const script = threadDecision.continuing ? continuingScript : freshScript;
+
+  // D-BP152-030R: the navigation decision (or its absence) has already happened, or is about to
+  // happen, inside the script this call is about to execute -- the shared webview's real page
+  // state is determined by THAT, not by whether the scrape below succeeds. Apply the state
+  // transition now (unconditionally, before we know success/failure) so a caller that retries
+  // after a timeout/no_result on the SAME threadId still correctly sees "continuing" next time
+  // rather than the machine believing a page reload happened when it did not.
+  nexusLiveThread = threadDecision.nextState;
+  console.log(
+    `${logPrefix}: PARSER INSTRUMENT [nexus-thread] threadId=${query.threadId ?? '(none)'} ` +
+    `status=${threadDecision.threadStatus} position=${threadDecision.threadPosition ?? 'n/a'} ` +
+    `continuing=${threadDecision.continuing}`,
+  );
+
   try {
     const result = await nexusWindow.webContents.executeJavaScript(script);
     if (!result || typeof result !== 'object') {
@@ -1986,6 +2073,11 @@ async function runInteractiveBrowserAuthorityQueryObserved(
         selectorUsed: r.selectorUsed ?? null,
         // BP149 D-BP149-016: carried through now instead of discarded.
         citations: r.citations ?? [],
+        // D-BP152-030R: additive, both present or both absent together -- absent whenever no
+        // threadId was supplied (an untracked, legacy-shaped call has no position to report).
+        ...(threadDecision.threadPosition !== null
+          ? { threadStatus: threadDecision.threadStatus, threadPosition: threadDecision.threadPosition }
+          : {}),
       },
       dispatchOutcome: 'dispatched',
     };
@@ -2025,6 +2117,12 @@ export async function runBrowserAuthorityQueryFromMainObserved(
       return { raw: null, dispatchOutcome: 'disabled' };
     }
 
+    // D-BP152-030R: computed BEFORE the sign-in probe below, because the probe itself navigates
+    // the shared webview (see the next comment block) -- if this call is a verified CONTINUATION
+    // of an already-live conversation, running the probe would silently destroy the very thread
+    // this function exists to preserve, before the interactive branch even runs.
+    const threadDecision = decideNexusThreadContinuation(query, nexusLiveThread);
+
     // BP139 FIX: the marker-based sign-in probe produces FALSE NEGATIVES, confirmed live -- the
     // Proof panel showed "Not signed in: Perplexity (no-marker-found)" while the SAME authority
     // returned a real, sourced answer ("The Berlin Wall fell in 1989", perplexity.ai/search/...)
@@ -2035,9 +2133,19 @@ export async function runBrowserAuthorityQueryFromMainObserved(
     // no extraction and returns null at the end of this function anyway. So the probe is now
     // ADVISORY (logged for diagnosis, never blocking) -- no fabrication risk, since only a genuine
     // extracted answer is ever returned.
-    const signInStatus = await probeNexusAuthoritySignInStatus(query.authority);
-    if (!signInStatus.signedIn) {
-      console.warn(`[browser-authority-main] ${query.authority} sign-in probe returned not-signed-in (${signInStatus.reason}) -- proceeding anyway; the query's own extraction is the real arbiter (BP139: probe is advisory, false-negatives confirmed live).`);
+    // D-BP152-030R: SKIPPED when continuing a live thread -- probeNexusAuthoritySignInStatus()
+    // (nexus_authority_persistent_session.ts) unconditionally navigates the shared <webview> to
+    // the authority's landing page before its DOM check runs (MEASURED this pass, that file's
+    // own `wv.loadURL(url)` call). Running it here would erase the live conversation this exact
+    // call is trying to continue. Safe to skip: a thread only reaches `continuing: true` after at
+    // least one prior dispatch on this same authority already ran (a signed-out session could
+    // never have produced a live composer to continue from in the first place), so the probe has
+    // nothing new to tell us on a continuation.
+    if (!threadDecision.continuing) {
+      const signInStatus = await probeNexusAuthoritySignInStatus(query.authority);
+      if (!signInStatus.signedIn) {
+        console.warn(`[browser-authority-main] ${query.authority} sign-in probe returned not-signed-in (${signInStatus.reason}) -- proceeding anyway; the query's own extraction is the real arbiter (BP139: probe is advisory, false-negatives confirmed live).`);
+      }
     }
 
     // (this build pass) claude.ai/new has no query-URL form -- route interactive authorities to
@@ -2046,8 +2154,13 @@ export async function runBrowserAuthorityQueryFromMainObserved(
     // window unavailable, in-flight serialization) already ran before this point and applies
     // identically to both branches; only the on-page mechanism differs from here down.
     if (isInteractiveBrowserAuthority(query.authority)) {
-      return await runInteractiveBrowserAuthorityQueryObserved(nexusWindow, query);
+      return await runInteractiveBrowserAuthorityQueryObserved(nexusWindow, query, threadDecision);
     }
+
+    // D-BP152-030R: the static (Google/Perplexity) branch always fully navigates the shared
+    // webview to a plain search URL -- that unconditionally invalidates whatever interactive
+    // thread (if any) was previously tracked, since the page it was live on is gone.
+    nexusLiveThread = null;
 
     const navigateUrl = buildBrowserAuthorityQueryUrl(query);
     // Executed directly in the persistent nexus-authority window's page context (same mechanism
