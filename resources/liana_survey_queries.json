@@ -39,6 +39,20 @@
       "attribution": "Google's own form-1 question wording, quoted verbatim by the Founder, BP151, who ratified this ticket: 'Yes agreed. Survey asks those, Cascade is still essential.' (D-BP151-035); only term-substitution is this file's own, not Founder-authored wording"
     },
     {
+      "id": "survey.constraint.threshold",
+      "usedBy": "src/main/liana_cycle/elements/method_question_generator.ts generateThresholdQuestion(), issued by src/main/liana_cycle/survey_stage.ts askThreshold()",
+      "template": "What is the specific threshold used to qualify as '${term}'?",
+      "placeholders": ["term"],
+      "attribution": "TARE, HARDWIRE-23 (D-BP152-032). Reduced from the Founder's own Q2 wording, FD-BP152-03, verbatim: 'What is the specific population density threshold (people per square kilometer) used to qualify as \"one of the world's most densely populated\"?' -- 'threshold' and 'used to qualify as' are his words; the reduction to a domain-generic sentence (dropping 'population density') is Bishop's, first proposed as the exact fork stopped on in survey_stage.ts's own D-BP151-035 header ('Form 2 IS A STOPPED FORK'), now built. Used when the question text names no unit adjacent to the subject -- see 'survey.constraint.thresholdWithUnit' for the unit-bearing sibling."
+    },
+    {
+      "id": "survey.constraint.thresholdWithUnit",
+      "usedBy": "src/main/liana_cycle/elements/method_question_generator.ts generateThresholdQuestion(), issued by src/main/liana_cycle/survey_stage.ts askThreshold()",
+      "template": "What is the specific threshold ${unit} used to qualify as '${term}'?",
+      "placeholders": ["term", "unit"],
+      "attribution": "TARE, HARDWIRE-23 (D-BP152-032), same wording and same Founder source quote as 'survey.constraint.threshold' immediately above. Used only when the question text itself names a unit adjacent to the subject (structural detection, elements/method_question_generator.ts detectAdjacentUnit() -- position only, never the unit's own words), carried verbatim per FD-BP152-03's interim ruling: 'carry his parenthetical verbatim when the question itself names the quantity's unit, and omit it otherwise so Google names the unit rather than being fed one.'"
+    },
+    {
       "id": "survey.ask.define",
       "usedBy": "src/main/liana_cycle/elements/survey_ask.ts defineQuery()",
       "template": "define ${term}",
