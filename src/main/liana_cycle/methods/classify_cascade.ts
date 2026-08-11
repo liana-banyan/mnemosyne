@@ -76,6 +76,11 @@ import { avgOptionWordCount, registerMethod } from '../method_registry';
 import type { LianaMethod, MethodQuestionInput, MethodRunContext, ShapeTestResult } from '../method_registry';
 import type { LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
 import { appearsIn, gemmaExtract, googleBlocks } from './comparative_cascade';
+// STAGE 2 -- the litmus-strip loop reuses this generator UNCHANGED. It already builds both his
+// FD-BP152-03 question shapes (SCALE/DEFINITION and THRESHOLD) off a literal span of the question
+// text; this file writes no second wording and no second gate on what may be asked.
+import { generateScaleDefinitionQuestion, generateThresholdQuestion, literalSubjectSpan } from '../elements/method_question_generator';
+import type { GeneratedMethodQuestion } from '../elements/method_question_generator';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -244,6 +249,192 @@ export async function applyOccamElimination(
   return { survivors, eliminations, unknowns };
 }
 
+// ─────────────────────────── STAGE 2: the litmus-strip loop ───────────────────────────
+//
+// D-BP152-035 STAGE 2/3. His words: "If more than one survives, add another litmus strip -- a
+// NEW axis, never a reweighting of existing criteria." This section is what adds one.
+
+/** THE CEILING. His own worked qid 98 example -- the four major population clusters, four climate
+ *  exclusions (too dry / too wet / too cold / too high), then one scale-and-kind axis (world
+ *  region vs biome) -- names SIX independent litmus strips before reaching a single survivor. A
+ *  run that needs MORE axes than his own worked example used, before narrowing to one option,
+ *  signals the criteria stack itself is underspecified for this question -- the honest move is to
+ *  stop and report the surviving set (STAGE 3's abstain), not to keep inventing axes indefinitely.
+ *  Named constant, not a magic number buried in a loop condition, so the cap and this reasoning
+ *  are visible without reading the loop body. */
+export const LITMUS_STRIP_CEILING = 6;
+
+const NEGATION_RE = /\bNOT\b/i;
+
+/** Structural NOT-detection -- the identical one-line mechanic `definitional_cascade.ts`'s own
+ *  `run()` already uses inline to build its inverse question (`/\bNOT\b/i.test(input.question)`),
+ *  not imported (it is not exported there either -- same reuse ceiling `comparative_cascade.ts`'s
+ *  SEG_RETURN_034 read already documented for that exact transform) but the same mechanic,
+ *  reimplemented here for CLASSIFY's own use. When true, the question demands the COMPLEMENT of
+ *  whatever a criterion's own aspect literally names -- see sourceNextLitmusStrip() below for how
+ *  this sets the new criterion's polarity. */
+export function questionDemandsComplement(question: string): boolean {
+  return NEGATION_RE.test(question);
+}
+
+/** Mechanical, structural candidate-term extraction -- no word list, no model call, three
+ *  patterns read off the QUESTION'S OWN GRAMMAR (never the option text). Mirrors the shape
+ *  `comparative_cascade.ts`'s own (non-exported, RANK-specific) `deriveCategoryAndProperty()`
+ *  reads for RANK; not imported (that function is not exported and is RANK-shaped), reimplemented
+ *  narrowly here for CLASSIFY. Every candidate is verified as a literal span of the question text
+ *  via `literalSubjectSpan()` (elements/method_question_generator.ts, unchanged) before use -- a
+ *  candidate that is not a literal span is dropped, never guessed into one (FD-BP152-03: "Both
+ *  subjects are literal spans of the question text"). */
+export function extractClassifyCandidateTerms(question: string): string[] {
+  const patterns: RegExp[] = [
+    // "the following X is/are" -- the category noun phrase itself (qid 98: "world regions").
+    /following\s+([a-z][a-z\s]*?)\s+(?:is|are)\b/i,
+    // "considered/classified as/qualify as (one of (the))? X" -- the categorical predicate.
+    /(?:considered|classified as|categorized as|qualify as|qualifies as)\s+(?:one of\s+)?(?:the\s+)?([a-z][a-z0-9\s'-]{2,60}?)(?:[.?!]|$)/i,
+    // "most/least ADJECTIVE" -- the superlative property phrase (qid 98: "most densely populated").
+    /\b(?:most|least)\s+([a-z][a-z\s-]*?)(?:\s+(?:regions?|options?|choices?|items?|of\b)|[.?!]|$)/i,
+  ];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const re of patterns) {
+    const m = re.exec(question);
+    if (!m || !m[1]) continue;
+    const term = m[1].trim();
+    if (!term) continue;
+    const span = literalSubjectSpan(term, question);
+    if (!span) continue;
+    const key = span.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(span);
+  }
+  return out;
+}
+
+/** Sources ONE new litmus strip's boundary/definition -- reuses method_question_generator.ts's
+ *  own SCALE_DEFINITION/THRESHOLD wording UNCHANGED (no second query text invented here), prefers
+ *  THRESHOLD (a numeric/definitional cutoff is the more directly testable aspect), falls back to
+ *  SCALE_DEFINITION when THRESHOLD could not be generated for this term, and refuses (returns
+ *  null, never a guess) when neither shape could be generated or the sourcing query returned
+ *  nothing usable. `complement` (from questionDemandsComplement()) sets the new criterion's
+ *  polarity -- this is the ONE judgment this loop makes about a freshly-sourced criterion, and it
+ *  is a structural mapping (NOT-detected -> disqualifying), never a per-term guess. */
+async function sourceNextLitmusStrip(
+  candidateTerm: string,
+  questionText: string,
+  complement: boolean,
+  ctx: MethodRunContext,
+  index: number,
+  note: (text: string) => void,
+): Promise<ClassifyCriterion | null> {
+  const thresholdQ = generateThresholdQuestion(candidateTerm, questionText);
+  const scaleQ = generateScaleDefinitionQuestion(candidateTerm, questionText);
+  const primary: GeneratedMethodQuestion | null =
+    'questionText' in thresholdQ ? thresholdQ : ('questionText' in scaleQ ? scaleQ : null);
+  if (!primary) {
+    note(
+      `   litmus strip ${index}: "${candidateTerm}" refused both shapes -- `
+        + `${'why' in thresholdQ ? thresholdQ.why : ''} / ${'why' in scaleQ ? scaleQ.why : ''}`,
+    );
+    return null;
+  }
+  note(`   litmus strip ${index}: sourcing "${candidateTerm}" via ${primary.shape} (${primary.queryId})`);
+  note(`      ${primary.questionText}`);
+  const res = await googleBlocks(ctx.askGoogle, primary.questionText);
+  if (!res.ok) {
+    note(`   litmus strip ${index}: "${candidateTerm}" -- no usable answer, refusing to source a criterion from nothing`);
+    return null;
+  }
+  const cited = res.text.length > 300 ? `${res.text.slice(0, 300)}...` : res.text;
+  note(`   litmus strip ${index}: sourced -- ${cited}`);
+  return {
+    id: `litmus-${index}`,
+    description: `meets "${candidateTerm}" per the sourced ${primary.shape === 'THRESHOLD' ? 'threshold' : 'scale/definition'}`,
+    polarity: complement ? 'disqualifying' : 'qualifying',
+    aspect: `${candidateTerm}, per this sourced answer: "${cited}"`,
+    source: `${primary.questionText} -- Google [${res.via}]`,
+  };
+}
+
+export interface LitmusStripLoopResult {
+  survivors: string[];
+  criteria: ClassifyCriterion[];
+  eliminations: EliminationRecord[];
+  unknowns: UnknownRecord[];
+  stoppedReason: 'definitive' | 'zero-survivors' | 'ceiling' | 'terms-exhausted';
+}
+
+/** THE LOOP. Applies `seedCriteria` first (Stage 1's typed-parameter entry point, still lawful,
+ *  still usable directly per FD-BP152-15), then -- while more than one option survives -- sources
+ *  and applies ONE MORE litmus strip at a time, up to LITMUS_STRIP_CEILING, each one a NEW axis (a
+ *  freshly extracted candidate term never used by an earlier strip in this run), never a
+ *  reweighting of a criterion already on the stack. Stops the instant the pool narrows to 0 or 1,
+ *  or the ceiling is reached, or there are no more candidate terms to source a strip from --
+ *  whichever comes first -- and reports exactly which via `stoppedReason`, never silently. */
+export async function runLitmusStripLoop(
+  input: MethodQuestionInput,
+  ctx: MethodRunContext,
+  seedCriteria: ClassifyCriterion[],
+  note: (text: string) => void,
+): Promise<LitmusStripLoopResult> {
+  const OPT = input.options as Record<string, string>;
+  const ALL = Object.keys(OPT);
+  const complement = questionDemandsComplement(input.question);
+  note(`   question ${complement ? 'DEMANDS THE COMPLEMENT (NOT detected)' : 'demands direct membership (no NOT detected)'}`);
+
+  const allCriteria: ClassifyCriterion[] = [...seedCriteria];
+  const seedRound = await applyOccamElimination(ALL, OPT, seedCriteria, ctx, note);
+  let survivors = seedRound.survivors;
+  let eliminations = seedRound.eliminations;
+  let unknowns = seedRound.unknowns;
+
+  if (!survivors.length) {
+    return { survivors, criteria: allCriteria, eliminations, unknowns, stoppedReason: 'zero-survivors' };
+  }
+  if (survivors.length === 1) {
+    return { survivors, criteria: allCriteria, eliminations, unknowns, stoppedReason: 'definitive' };
+  }
+
+  const usedAspects = new Set(seedCriteria.map((c) => c.aspect.toLowerCase()));
+  const candidateTerms = extractClassifyCandidateTerms(input.question).filter(
+    (t) => ![...usedAspects].some((a) => a.startsWith(t.toLowerCase())),
+  );
+  let termIndex = 0;
+  let stripsAdded = 0;
+
+  while (survivors.length > 1) {
+    if (stripsAdded >= LITMUS_STRIP_CEILING) {
+      return { survivors, criteria: allCriteria, eliminations, unknowns, stoppedReason: 'ceiling' };
+    }
+    if (termIndex >= candidateTerms.length) {
+      return { survivors, criteria: allCriteria, eliminations, unknowns, stoppedReason: 'terms-exhausted' };
+    }
+    const term = candidateTerms[termIndex];
+    termIndex++;
+    // eslint-disable-next-line no-await-in-loop -- each strip's query depends on the PRIOR strip's
+    // narrowed survivor pool; strips are sourced one at a time by design (each is a NEW axis
+    // evaluated against the current state), not fired in parallel.
+    const criterion = await sourceNextLitmusStrip(term, input.question, complement, ctx, allCriteria.length + 1, note);
+    if (!criterion) continue; // refused this term -- try the next one; does not count against the ceiling
+    stripsAdded++;
+    allCriteria.push(criterion);
+    // eslint-disable-next-line no-await-in-loop -- see above
+    const round = await applyOccamElimination(survivors, OPT, [criterion], ctx, note);
+    survivors = round.survivors;
+    eliminations = eliminations.concat(round.eliminations);
+    unknowns = unknowns.concat(round.unknowns);
+    note(`   after litmus strip "${criterion.id}": pool -> ${survivors.length} (${survivors.join(', ') || 'none'})`);
+  }
+
+  return {
+    survivors,
+    criteria: allCriteria,
+    eliminations,
+    unknowns,
+    stoppedReason: survivors.length === 0 ? 'zero-survivors' : 'definitive',
+  };
+}
+
 // ─────────────────────────── shapeTest ───────────────────────────
 
 /** Demand PRECEDES shape (method_registry.ts's own R-6 comment: "demand is checked first because
@@ -327,13 +518,72 @@ export async function runClassifyCascadeWithSeedCriteria(
   };
 }
 
+// ─────────────────────────── run (STAGE 2: seed criteria + the litmus-strip loop) ───────────────────────────
+
+/** STAGE 2 ORCHESTRATOR, exported for direct testing the same way Stage 1's entry point is.
+ *  Wraps runLitmusStripLoop() with the same transcript/emit conventions every other method in
+ *  this registry uses. STILL ABSTAINS UNCONDITIONALLY -- STAGE 3 is what turns a definitive
+ *  single survivor into a published verdict with its Banyan Metric score; until it lands, this
+ *  stage reports the loop's own outcome (survivors + why it stopped) honestly, never publishes a
+ *  verdict on its own authority. */
+export async function runClassifyCascade(
+  input: MethodQuestionInput,
+  ctx: MethodRunContext,
+  seedCriteria: ClassifyCriterion[],
+): Promise<LianaTerminalOutcome> {
+  const { emit } = ctx;
+  const OPT = input.options as Record<string, string>;
+  const ALL = Object.keys(OPT);
+  const KEY = input.correctAnswer;
+  const t0 = Date.now();
+
+  const say = (text: string) => emit({ kind: 'header', text, ts: nowIso() });
+  const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
+  const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
+
+  say(`METHOD classify-cascade -- ${input.qid != null ? `qid ${input.qid}` : 'free-text'}`);
+  note(`   ${input.question}`);
+  note(`   ${ALL.map((L) => `${L}) ${OPT[L]}`).join('  ')}`);
+
+  step(`STAGE 1+2  Occam elimination + litmus-strip loop (ceiling ${LITMUS_STRIP_CEILING}) -- ${seedCriteria.length} seed criterion/criteria`);
+  const loop = await runLitmusStripLoop(input, ctx, seedCriteria, note);
+  note(
+    `   loop stopped: ${loop.stoppedReason}   criteria applied: ${loop.criteria.length}   `
+      + `eliminations: ${loop.eliminations.length}   unknowns: ${loop.unknowns.length}   survivors: ${loop.survivors.join(', ') || '(none)'}`,
+  );
+
+  const elapsedS = ((Date.now() - t0) / 1000).toFixed(1);
+  const basisParts = [
+    `STAGE 1+2 (Occam elimination + litmus-strip loop -- STAGE 3's Banyan-Metric publish/abstain `
+      + `rule is not yet wired into this entry point) applied ${loop.criteria.length} criterion/criteria, `
+      + `loop stopped: ${loop.stoppedReason}`,
+    `eliminations: ${loop.eliminations.map((e) => `${e.option} broke "${e.criterionId}"`).join('; ') || 'none'}`,
+    `survivors: ${loop.survivors.join(', ') || '(none)'}`,
+  ];
+  emit({
+    kind: 'result',
+    text: `STAGE 1+2 ONLY -- stopped:${loop.stoppedReason}  survivors: ${loop.survivors.join(',') || '(none)'}${KEY != null ? `  key=${KEY}` : ''}`,
+    ts: nowIso(),
+  });
+  note(`   ${elapsedS}s`);
+
+  return {
+    qid: input.qid,
+    question: input.question,
+    verdict: null,
+    correct: KEY,
+    abstain: true,
+    freeText: input.qid == null,
+    basis: basisParts.join('; '),
+  };
+}
+
 async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<LianaTerminalOutcome> {
-  // Registered entry point, general case: no seed criteria hardcoded for any specific question.
-  // STAGE 2 replaces this empty array with automatically-generated litmus strips (reusing
-  // elements/method_question_generator.ts) and a ceiling; until that lands, this stage always
-  // reports the full, unnarrowed pool as survivors -- an honest "nothing has been tested yet",
-  // never a fabricated verdict.
-  return runClassifyCascadeWithSeedCriteria(input, ctx, []);
+  // Registered entry point, general case: no seed criteria hardcoded for any specific question --
+  // the litmus-strip loop (STAGE 2) sources every criterion automatically from the question's own
+  // structurally-extracted candidate terms. STAGE 3 adds the Banyan-Metric publish/abstain rule;
+  // until it lands, this always abstains, reporting the loop's own survivor set honestly.
+  return runClassifyCascade(input, ctx, []);
 }
 
 export const classifyCascadeMethod: LianaMethod = {
