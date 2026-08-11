@@ -175,9 +175,12 @@ export interface RunScriptOptions<S> {
    *  query, not this extraction). */
   extractResult?: (state: S, identity: MethodIdentity) => string;
   /** D-BP152-046 STAGE 1/2: the character ceiling past which a SUBSTITUTED query is refused rather
-   *  than silently truncated (requirement 6). TARE -- see stored_results.ts's own
-   *  DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH doc for why this number is unattributed and reused from
-   *  an existing convention rather than Founder-ordered. Defaults to that constant. */
+   *  than silently truncated (requirement 6). D-BP152-049: ATTRIBUTED, Founder BP152 -- see
+   *  stored_results.ts's own DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH doc for his verbatim ruling.
+   *  Defaults to that constant (now 20,000). A substitution over
+   *  stored_results.ts's DEFAULT_WARN_SUBSTITUTED_QUERY_LENGTH (10,000) but at or under this
+   *  ceiling still succeeds and is logged via instrumentLines -- see stored_results.ts's own
+   *  formatParserInstrumentLines(). */
   maxSubstitutedQueryLength?: number;
   /** D-BP152-046 STAGE 2/2, FD-BP152-21: the "source" executor (e.g. Google) for a step whose
    *  ScriptStepRef.bothApply is true. This function's own 4th positional argument, `execute`,

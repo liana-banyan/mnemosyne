@@ -6,6 +6,7 @@
 import { describe, test, expect } from 'vitest';
 import {
   DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH,
+  DEFAULT_WARN_SUBSTITUTED_QUERY_LENGTH,
   formatParserInstrumentLines,
   ResultStore,
   substitutePlaceholders,
@@ -169,6 +170,61 @@ describe('substitutePlaceholders -- requirement 6: an unusably long substitution
     store.store({ position: 2, id: 'OverLimit:1', result: overDefault });
     expect(substitutePlaceholders('[insert stored result from 1.]', store).ok).toBe(true);
     expect(substitutePlaceholders('[insert stored result from 2.]', store).ok).toBe(false);
+  });
+});
+
+describe('D-BP152-049 STAGE 1: ceiling raised to 20,000, warning logged over 10,000 (Founder, BP152, verbatim: "Make the 4,000-character ceiling into 20,000, and then log if it goes over 10,000, on an oversized substitution")', () => {
+  test('the default ceiling is 20,000 and the default warning threshold is 10,000', () => {
+    expect(DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH).toBe(20000);
+    expect(DEFAULT_WARN_SUBSTITUTED_QUERY_LENGTH).toBe(10000);
+  });
+
+  test('a 15,000-char substitution succeeds and carries a warning over the 10,000-char threshold', () => {
+    const store = new ResultStore();
+    const fifteenThousand = 'a'.repeat(15000);
+    store.store({ position: 1, id: 'A:1', result: fifteenThousand });
+    const result = substitutePlaceholders('[insert stored result from 1.]', store);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.after.length).toBe(15000);
+      expect(result.warning).toBeDefined();
+      expect(result.warning).toContain('15000 chars');
+      expect(result.warning).toContain('10000-char');
+    }
+  });
+
+  test('formatParserInstrumentLines() logs the WARNING line for an over-10,000 substitution', () => {
+    const lines = formatParserInstrumentLines('Categorize:3', {
+      ok: true,
+      before: 'raw text',
+      after: 'substituted text',
+      warning: 'substituted query is 15000 chars, over the 10000-char warning threshold (ceiling is 20000 chars) -- proceeding, flagged for review',
+    });
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toContain('PARSER INSTRUMENT [Categorize:3] WARNING:');
+    expect(lines[2]).toContain('15000 chars');
+  });
+
+  test('a 25,000-char substitution reports and stops rather than truncating -- no warning field, no partial substitution', () => {
+    const store = new ResultStore();
+    const twentyFiveThousand = 'z'.repeat(25000);
+    store.store({ position: 1, id: 'A:1', result: twentyFiveThousand });
+    const result = substitutePlaceholders('[insert stored result from 1.]', store);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('25000 chars');
+      expect(result.error).toContain('20000-char limit');
+      expect((result as { after?: string }).after).toBeUndefined();
+    }
+  });
+
+  test('a substitution at or under 10,000 chars succeeds with no warning at all', () => {
+    const store = new ResultStore();
+    const tenThousand = 'a'.repeat(10000);
+    store.store({ position: 1, id: 'A:1', result: tenThousand });
+    const result = substitutePlaceholders('[insert stored result from 1.]', store);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.warning).toBeUndefined();
   });
 });
 
