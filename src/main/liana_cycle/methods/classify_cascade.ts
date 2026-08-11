@@ -81,6 +81,11 @@ import { appearsIn, gemmaExtract, googleBlocks } from './comparative_cascade';
 // text; this file writes no second wording and no second gate on what may be asked.
 import { generateScaleDefinitionQuestion, generateThresholdQuestion, literalSubjectSpan } from '../elements/method_question_generator';
 import type { GeneratedMethodQuestion } from '../elements/method_question_generator';
+// STAGE 3 -- the Banyan Metric Standard axis, a faithful port of truth_single_bp076.py:1010-1174
+// (dimensions, weights, bands unchanged -- see that file's own header for what "faithful" means
+// here and what is deliberately NOT ported).
+import { computeBanyanMetricStandard, renderBanyanMetricLines } from '../elements/banyan_metric_standard';
+import type { BanyanConfidenceLabel, BanyanMetricInputs } from '../elements/banyan_metric_standard';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -150,6 +155,20 @@ export interface UnknownRecord {
   query: string;
 }
 
+/** STAGE 3 addition: the audit trail's third row-type, symmetric with EliminationRecord and
+ *  UnknownRecord. A verified 'pass' is exactly as citable as a 'fail' -- same shape, same
+ *  fields -- and STAGE 3's Banyan-Metric inputs need it: "how many independent aspects did the
+ *  eventual answer actually verify" is read directly off this array for the winning option (see
+ *  buildBanyanMetricInputs() below), not re-derived or guessed. */
+export interface PassRecord {
+  option: string;
+  criterionId: string;
+  criterionDescription: string;
+  source: string;
+  query: string;
+  evidence: string;
+}
+
 /** Sends ONE sourced query about ONE option against ONE criterion, extracts a verbatim
  *  supporting sentence (never a summary, never a paraphrase), verifies that sentence actually
  *  appears in the returned passage, and only THEN maps the extracted yes/no reading through the
@@ -196,6 +215,7 @@ export interface OccamEliminationResult {
   survivors: string[];
   eliminations: EliminationRecord[];
   unknowns: UnknownRecord[];
+  passes: PassRecord[];
 }
 
 /** THE TERMINATOR'S FIRST HALF: Occam elimination. Applies criteria to the pool IN ORDER, one at
@@ -215,6 +235,7 @@ export async function applyOccamElimination(
   let survivors = [...pool];
   const eliminations: EliminationRecord[] = [];
   const unknowns: UnknownRecord[] = [];
+  const passes: PassRecord[] = [];
   for (const criterion of criteria) {
     if (!survivors.length) break; // requirement 2: never relax a criterion to revive a pool -- if
     // the pool is already empty, later criteria have nothing left to test and are skipped, not
@@ -240,13 +261,21 @@ export async function applyOccamElimination(
         note(`   UNKNOWN ${option} on criterion "${criterion.id}" -- not eliminated (unknown is unmeasured, never bad)`);
         stillIn.push(option);
       } else {
+        passes.push({
+          option,
+          criterionId: criterion.id,
+          criterionDescription: criterion.description,
+          source: criterion.source,
+          query: result.query,
+          evidence: result.evidence,
+        });
         note(`   PASS ${option} on criterion "${criterion.id}" -- evidence: "${result.evidence}"`);
         stillIn.push(option);
       }
     }
     survivors = stillIn;
   }
-  return { survivors, eliminations, unknowns };
+  return { survivors, eliminations, unknowns, passes };
 }
 
 // ─────────────────────────── STAGE 2: the litmus-strip loop ───────────────────────────
@@ -318,7 +347,23 @@ export function extractClassifyCandidateTerms(question: string): string[] {
  *  null, never a guess) when neither shape could be generated or the sourcing query returned
  *  nothing usable. `complement` (from questionDemandsComplement()) sets the new criterion's
  *  polarity -- this is the ONE judgment this loop makes about a freshly-sourced criterion, and it
- *  is a structural mapping (NOT-detected -> disqualifying), never a per-term guess. */
+ *  is a structural mapping (NOT-detected -> disqualifying), never a per-term guess.
+ *
+ *  A DISCLOSED LIMITATION OF THAT MAPPING, FOUND BY THE qid 98 DRY RUN
+ *  (SEG_RETURN_BP152_035_CLASSIFY_METHOD.md, Stage 3 verification). The mapping is correct when
+ *  the candidate term IS the question's own target property (e.g. "densely populated" on qid 98
+ *  -- a NOT-question should disqualify options the source confirms have that property). It is
+ *  NOT necessarily correct when the candidate term is instead an ELIGIBILITY/scope term (e.g.
+ *  "world regions" -- whether an option qualifies as a legitimate candidate AT ALL, independent
+ *  of the NOT). The live dry run's real gemma extraction read a genuinely-worded "is this a
+ *  world region" passage as affirmatively "yes" for BOTH surviving options, and the blanket
+ *  complement-derived DISQUALIFYING polarity then eliminated both -- an honest zero-survivor
+ *  abstain, not a crash or a silent wrong answer, but a real over-elimination relative to the
+ *  historically correct key. This function has no way to structurally distinguish "target
+ *  property" from "eligibility term" among the candidates extractClassifyCandidateTerms()
+ *  returns -- disambiguating that would be exactly the kind of judgment call HARDWIRE-23 reserves
+ *  for the Founder, not something to invent here on initiative. Flagged in the deliverable as a
+ *  known gap for his ruling, not silently patched. */
 async function sourceNextLitmusStrip(
   candidateTerm: string,
   questionText: string,
@@ -361,6 +406,7 @@ export interface LitmusStripLoopResult {
   criteria: ClassifyCriterion[];
   eliminations: EliminationRecord[];
   unknowns: UnknownRecord[];
+  passes: PassRecord[];
   stoppedReason: 'definitive' | 'zero-survivors' | 'ceiling' | 'terms-exhausted';
 }
 
@@ -387,12 +433,13 @@ export async function runLitmusStripLoop(
   let survivors = seedRound.survivors;
   let eliminations = seedRound.eliminations;
   let unknowns = seedRound.unknowns;
+  let passes = seedRound.passes;
 
   if (!survivors.length) {
-    return { survivors, criteria: allCriteria, eliminations, unknowns, stoppedReason: 'zero-survivors' };
+    return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'zero-survivors' };
   }
   if (survivors.length === 1) {
-    return { survivors, criteria: allCriteria, eliminations, unknowns, stoppedReason: 'definitive' };
+    return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'definitive' };
   }
 
   const usedAspects = new Set(seedCriteria.map((c) => c.aspect.toLowerCase()));
@@ -404,10 +451,10 @@ export async function runLitmusStripLoop(
 
   while (survivors.length > 1) {
     if (stripsAdded >= LITMUS_STRIP_CEILING) {
-      return { survivors, criteria: allCriteria, eliminations, unknowns, stoppedReason: 'ceiling' };
+      return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'ceiling' };
     }
     if (termIndex >= candidateTerms.length) {
-      return { survivors, criteria: allCriteria, eliminations, unknowns, stoppedReason: 'terms-exhausted' };
+      return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'terms-exhausted' };
     }
     const term = candidateTerms[termIndex];
     termIndex++;
@@ -423,6 +470,7 @@ export async function runLitmusStripLoop(
     survivors = round.survivors;
     eliminations = eliminations.concat(round.eliminations);
     unknowns = unknowns.concat(round.unknowns);
+    passes = passes.concat(round.passes);
     note(`   after litmus strip "${criterion.id}": pool -> ${survivors.length} (${survivors.join(', ') || 'none'})`);
   }
 
@@ -431,6 +479,7 @@ export async function runLitmusStripLoop(
     criteria: allCriteria,
     eliminations,
     unknowns,
+    passes,
     stoppedReason: survivors.length === 0 ? 'zero-survivors' : 'definitive',
   };
 }
@@ -552,37 +601,179 @@ export async function runClassifyCascade(
       + `eliminations: ${loop.eliminations.length}   unknowns: ${loop.unknowns.length}   survivors: ${loop.survivors.join(', ') || '(none)'}`,
   );
 
-  const elapsedS = ((Date.now() - t0) / 1000).toFixed(1);
-  const basisParts = [
-    `STAGE 1+2 (Occam elimination + litmus-strip loop -- STAGE 3's Banyan-Metric publish/abstain `
-      + `rule is not yet wired into this entry point) applied ${loop.criteria.length} criterion/criteria, `
-      + `loop stopped: ${loop.stoppedReason}`,
-    `eliminations: ${loop.eliminations.map((e) => `${e.option} broke "${e.criterionId}"`).join('; ') || 'none'}`,
-    `survivors: ${loop.survivors.join(', ') || '(none)'}`,
-  ];
+  const elapsedS = (Date.now() - t0) / 1000;
+  const eliminationsSummary = loop.eliminations.map((e) => `${e.option} broke "${e.criterionId}"`).join('; ') || 'none';
+
+  // ── STAGE 3: THE BANYAN METRIC + THE PUBLISH/ABSTAIN RULE ──────────────────────────────────
+  // His words, FD-BP152-19: "Apply criteria as hard pass/fail... If more than one survives, add
+  // another litmus strip... Score the answer on the Banyan Metric Standard axis and publish it
+  // with its score, down to LOW. INSUFFICIENT alone abstains, reporting the surviving set."
+  //
+  // NO TIE-BREAK, STILL. Zero survivors and more-than-one survivors (loop exhausted its ceiling
+  // or its candidate terms without narrowing further) BOTH abstain here -- neither branch picks a
+  // winner. Only `loop.survivors.length === 1` (the loop's OWN "definitive" outcome, reached with
+  // no forcing) ever reaches the Banyan Metric at all.
+  step('STAGE 3  Banyan Metric Standard scoring + publish/abstain rule');
+  if (loop.survivors.length === 0) {
+    // Requirement 2: no constraint relaxation. Report zero survivors honestly, not a guess.
+    step('   zero survivors -- every option broke at least one criterion; refusing to relax any of them (his "Don\'t do rule 2")');
+    emit({ kind: 'result', text: `ABSTAIN (zero survivors)   eliminations: ${eliminationsSummary}${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `zero survivors after ${loop.criteria.length} criterion/criteria (loop stopped: ${loop.stoppedReason}); `
+        + `eliminations: ${eliminationsSummary}; no relaxation applied`,
+    };
+  }
+  if (loop.survivors.length > 1) {
+    step(
+      `   more than one survivor (${loop.survivors.join(', ')}), loop stopped (${loop.stoppedReason}) before reaching definitiveness -- `
+        + 'abstaining and reporting the surviving set, never picking among them (no tie-breaker exists in this code)',
+    );
+    emit({
+      kind: 'result',
+      text: `ABSTAIN (${loop.survivors.length} survivors, loop stopped: ${loop.stoppedReason})   survivors: ${loop.survivors.join(',')}${KEY != null ? `  key=${KEY}` : ''}`,
+      ts: nowIso(),
+    });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `${loop.survivors.length} survivor(s) remain after ${loop.criteria.length} criterion/criteria, loop stopped: `
+        + `${loop.stoppedReason} -- survivors: ${loop.survivors.join(', ')}; eliminations: ${eliminationsSummary}; no tie-breaker applied`,
+    };
+  }
+
+  const winner = loop.survivors[0];
+  const bmInputs = buildBanyanMetricInputs(loop, winner, elapsedS);
+  const bm = computeBanyanMetricStandard(bmInputs);
+  for (const line of renderBanyanMetricLines(bm)) note(line);
+
+  if (bm.band === 'INSUFFICIENT') {
+    step(`   single survivor ${winner}, but Banyan Metric ${bm.composite}/100 is INSUFFICIENT -- his rule: "INSUFFICIENT alone abstains"`);
+    emit({ kind: 'result', text: `ABSTAIN (INSUFFICIENT, ${bm.composite}/100)   sole survivor was ${winner}${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `sole survivor ${winner} after ${loop.criteria.length} criterion/criteria, but Banyan Metric Standard `
+        + `${bm.composite}/100 is INSUFFICIENT -- abstaining per his rule ("INSUFFICIENT alone abstains"); `
+        + `eliminations: ${eliminationsSummary}`,
+    };
+  }
+
+  // PUBLISH, floor LOW. "Low is definitive, specifically BECAUSE it also comes with a Banyan
+  // Metric Score... one source, they let it exist, but they tell you it might be wrong."
+  const ok = KEY != null ? winner === KEY : undefined;
+  step(`   single survivor ${winner} -- Banyan Metric ${bm.composite}/100 (${bm.band}) -- publishing WITH its score, per his floor-is-LOW rule`);
   emit({
     kind: 'result',
-    text: `STAGE 1+2 ONLY -- stopped:${loop.stoppedReason}  survivors: ${loop.survivors.join(',') || '(none)'}${KEY != null ? `  key=${KEY}` : ''}`,
+    text: `${KEY != null ? (ok ? 'CORRECT' : 'WRONG') : 'ANSWER'}  ${winner} (${OPT[winner]})  BM ${bm.composite}/100 ${bm.band}${KEY != null ? `  key=${KEY}` : ''}`,
     ts: nowIso(),
   });
-  note(`   ${elapsedS}s`);
-
+  note(`   ${elapsedS.toFixed(1)}s`);
   return {
     qid: input.qid,
     question: input.question,
-    verdict: null,
+    verdict: winner,
     correct: KEY,
-    abstain: true,
+    ok,
+    abstain: false,
     freeText: input.qid == null,
-    basis: basisParts.join('; '),
+    basis: `sole survivor after ${loop.criteria.length} criterion/criteria (loop stopped: ${loop.stoppedReason}); `
+      + `Banyan Metric Standard ${bm.composite}/100 (${bm.band}), published per his floor-is-LOW rule; `
+      + `eliminations: ${eliminationsSummary}`,
+  };
+}
+
+/** STAGE 3. Maps this run's own measurements onto the ported Banyan Metric Standard's 10 inputs
+ *  (`elements/banyan_metric_standard.ts`, itself a faithful, unrescaled port of
+ *  `truth_single_bp076.py:1010-1134` -- see that file's own header). SOME MAPPINGS ARE DIRECT AND
+ *  FAITHFUL to the Python dimension's own stated meaning; OTHERS ARE REASONED PROXIES, TARE-
+ *  labeled below, because this method's own run produces different raw material than the
+ *  multi-specialist retrieval pipeline truth_single_bp076.py was built to score. Every TARE is
+ *  disclosed here AND in the deliverable -- none is silently smoothed to look better than it is. */
+function buildBanyanMetricInputs(
+  loop: LitmusStripLoopResult,
+  winner: string,
+  elapsedS: number,
+): BanyanMetricInputs {
+  // TARE: "specialists consulted" in the Python source means DRT specialists, a different
+  // pipeline's concept entirely. Here it stands in for "distinct sourced queries this run
+  // actually issued" -- the nearest analogous meaning, not the literal one.
+  const distinctQueries = new Set<string>([
+    ...loop.eliminations.map((e) => e.query),
+    ...loop.unknowns.map((u) => u.query),
+    ...loop.passes.map((p) => p.query),
+  ]);
+
+  const winnerUnknowns = loop.unknowns.filter((u) => u.option === winner);
+  const winnerPasses = loop.passes.filter((p) => p.option === winner);
+  const anyUnknownAnywhere = loop.unknowns.length > 0;
+
+  // ATTRIBUTED, not a TARE: "independent aspects tested" is exactly what a criterion IS in this
+  // file. Directly implements his own instruction: "if all of them pass, that's VERY definitive
+  // ... the score rises with the aspects tested." Counts only criteria the WINNER verifiably
+  // PASSED (a criterion the winner never faced, e.g. it was eliminated before reaching it, is not
+  // counted -- only Occam elimination never runs a criterion against an option already removed,
+  // so this can only undercount, never inflate).
+  const independentClustersForAnswer = winnerPasses.length;
+
+  // TARE, reasoned, disclosed: no dedicated confidence-label input exists for this method (unlike
+  // the Python pipeline's own upstream step that assigns one independently). Derived here from
+  // whether the winner AND the run as a whole hit any 'unknown' reading: zero unknowns anywhere
+  // -> ABSOLUTE (every aspect tested resolved cleanly); winner itself fully resolved but some
+  // OTHER option had an unknown along the way -> HIGH; the winner survived a criterion only
+  // because that criterion came back unknown for it -> MEDIUM. This is Bishop's interpretation of
+  // his Rover/planets reasoning, not his own words, and is flagged as such in the deliverable.
+  let confidence: BanyanConfidenceLabel;
+  if (!anyUnknownAnywhere) confidence = 'ABSOLUTE';
+  else if (winnerUnknowns.length === 0) confidence = 'HIGH';
+  else confidence = 'MEDIUM';
+
+  return {
+    specialists_consulted: distinctQueries.size,
+    eblets_gathered_raw: loop.eliminations.length + loop.unknowns.length + loop.passes.length,
+    // TARE: no derivative-source/dedup detection is built anywhere in this file -- honestly
+    // reported as 0 (never measured), not fabricated. See the deliverable's "known gaps".
+    derivative_pairs_collapsed: 0,
+    independent_clusters_for_answer: independentClustersForAnswer,
+    primary_text_present: winnerPasses.some((p) => !!p.evidence),
+    confidence_label_calibration: confidence,
+    // Direct, faithful mapping -- the Python dimension's own description ("Truth-Always: tool
+    // honestly flags what it couldn't consult") is exactly what an UnknownRecord anywhere in this
+    // run IS.
+    stubbed_gap_acknowledged: anyUnknownAnywhere ? 1 : 0,
+    // TARE: no independent, second derivation exists for this method to cross-validate against --
+    // honestly 0, not fabricated. Structurally caps this dimension's score at 0/100 until a real
+    // cross-validation mechanism is built; disclosed, not smoothed over.
+    manual_llm_concordance: 0,
+    // Direct, faithful mapping -- actual measured wall-clock elapsed time for this run.
+    wall_clock_latency_s: elapsedS,
+    // Structural, ATTRIBUTED to this method's own architecture (Stages 1-3 of this ticket), not
+    // invented per-run: every run of this method (a) never eliminates on 'unknown', (b) never
+    // tie-breaks, (c) requires a cited, verified source for every elimination, (d) publishes its
+    // answer WITH its Banyan Metric score (his Wikipedia-banner model) -- four guardrails
+    // guaranteed by construction, so this is a constant, not a per-run count.
+    anti_popularity_guardrails_count: 4,
   };
 }
 
 async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<LianaTerminalOutcome> {
   // Registered entry point, general case: no seed criteria hardcoded for any specific question --
   // the litmus-strip loop (STAGE 2) sources every criterion automatically from the question's own
-  // structurally-extracted candidate terms. STAGE 3 adds the Banyan-Metric publish/abstain rule;
-  // until it lands, this always abstains, reporting the loop's own survivor set honestly.
+  // structurally-extracted candidate terms, and STAGE 3's Banyan-Metric rule decides publish vs
+  // abstain from the loop's own outcome.
   return runClassifyCascade(input, ctx, []);
 }
 
