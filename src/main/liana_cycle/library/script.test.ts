@@ -225,7 +225,38 @@ describe('script.ts -- D-BP152-046 STAGE 1/2: ScriptStepRef.queryText parses and
   });
 });
 
-describe('script.ts -- validateScript rejects queryText on a nested-script reference', () => {
+describe('script.ts -- D-BP152-046 STAGE 2/2: ScriptStepRef.bothApply parses and validates', () => {
+  const resolve = makeCatalog(['denotation:1'], []);
+  const workedExampleRaw = {
+    identity: { name: 'both-apply-demo', number: 1, id: 'both-apply-demo:1' },
+    description: 'exercises the new optional bothApply field',
+    steps: [{ id: 'denotation:1', attribution: ATTRIBUTED_TEST }],
+    savedBy: 'test',
+    savedAt: '2026-08-11T00:00:00.000Z',
+  };
+
+  test('parses and round-trips bothApply: true', () => {
+    const raw = { ...workedExampleRaw, steps: [{ id: 'denotation:1', attribution: ATTRIBUTED_TEST, bothApply: true }] };
+    const result = parseScript(raw, resolve);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.script.steps[0].bothApply).toBe(true);
+  });
+
+  test('a step with no bothApply leaves the field undefined -- unchanged from before this ticket', () => {
+    const result = parseScript(workedExampleRaw, resolve);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.script.steps[0].bothApply).toBeUndefined();
+  });
+
+  test('rejects a non-boolean bothApply', () => {
+    const raw = { ...workedExampleRaw, steps: [{ id: 'denotation:1', attribution: ATTRIBUTED_TEST, bothApply: 'yes' }] };
+    const result = parseScript(raw, resolve);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('bothApply');
+  });
+});
+
+describe('script.ts -- validateScript rejects queryText/bothApply on a nested-script reference', () => {
   const leaf: Script = {
     identity: makeMethodIdentity('leaf-script', 1),
     description: 'a small reusable sequence',
@@ -251,11 +282,28 @@ describe('script.ts -- validateScript rejects queryText on a nested-script refer
     }
   });
 
-  test('queryText on a step resolving to a real method still validates fine', () => {
+  test('rejects bothApply on a step whose id resolves to a nested script', () => {
     const top: Script = {
-      identity: makeMethodIdentity('top-with-query-on-method', 1),
-      description: 'valid: queryText on a leaf method step',
-      steps: [{ id: 'denotation:1', attribution: ATTRIBUTED_TEST, queryText: 'ask something' }],
+      identity: makeMethodIdentity('top-with-bothapply-on-script', 1),
+      description: 'invalid: bothApply on a nested-script step',
+      steps: [{ id: 'leaf-script:1', attribution: ATTRIBUTED_TEST, bothApply: true }],
+      savedBy: 'test',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['denotation:1'], [leaf]);
+    const result = validateScript(top, resolve);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('bothApply');
+      expect(result.error).toContain('nested script');
+    }
+  });
+
+  test('queryText and bothApply on a step resolving to a real method still validate fine', () => {
+    const top: Script = {
+      identity: makeMethodIdentity('top-with-both-on-method', 1),
+      description: 'valid: both fields on a leaf method step',
+      steps: [{ id: 'denotation:1', attribution: ATTRIBUTED_TEST, queryText: 'ask something', bothApply: true }],
       savedBy: 'test',
       savedAt: '2026-08-11T00:00:00.000Z',
     };

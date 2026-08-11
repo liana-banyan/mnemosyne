@@ -54,17 +54,18 @@
 // shape -- the same discipline laboratory_store.ts already follows for its own saved records.
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// D-BP152-046/BISHOP/seg-stored-results-and-both-apply, STAGE 1/2 -- ADDED HERE.
+// D-BP152-046/BISHOP/seg-stored-results-and-both-apply, STAGE 1/2 AND STAGE 2/2 -- ADDED HERE.
 //
 // FD-BP152-21, Founder verbatim: "build the stored results... on your point about step 4, I want
 // both - I want to be able to ask Google, and I also want the Cascade to apply, as a check on each
-// other, so just make both results stored." This is stage 1 of 2: ScriptStepRef gains one new
-// OPTIONAL field, `queryText` -- this step's editable query template, which may reference an
-// earlier step's stored result via stored_results.ts's placeholder syntax. Additive: every field
-// that already existed keeps its exact prior meaning, and a ScriptStepRef built before this ticket
-// (no queryText) parses and runs exactly as it did before. See stored_results.ts and
-// script_runner.ts for the substitution mechanics. Stage 2 (his own "I want both" -- the source's
-// and the Cascade's own application both stored) is a separate commit, on top of this one.
+// other, so just make both results stored." ScriptStepRef gains two new OPTIONAL fields --
+// `queryText` (stage 1, commit 38416c66: this step's editable query template, which may reference
+// an earlier step's stored result via stored_results.ts's placeholder syntax) and `bothApply`
+// (stage 2, this commit: marks a step where the source's and the Cascade's own application both
+// run and both are stored). Both are additive: every field that already existed keeps its exact
+// prior meaning, and a ScriptStepRef built before this ticket (no queryText, no bothApply) parses
+// and runs exactly as it did before. See stored_results.ts and script_runner.ts for the
+// substitution/dual-apply mechanics.
 
 import { readFileSync } from 'node:fs';
 import type { StepAttribution } from './step_declaration';
@@ -91,6 +92,13 @@ export interface ScriptStepRef {
    *  resolves to a nested Script, since a saved sequence has no single query text of its own.
    *  Optional: a step with no queryText runs exactly as it did before this ticket. */
   queryText?: string;
+  /** D-BP152-046 STAGE 2/2, FD-BP152-21: true only for a step that asks its source to APPLY the
+   *  running criteria (eliminate / classify / select) -- see script_runner.ts's own header for
+   *  what running such a step does (both the source's and the Cascade's own application run, and
+   *  both are stored). Only meaningful on a step that resolves to a primitive METHOD, same
+   *  restriction as queryText above. Optional, defaults to false/absent -- a step that omits this
+   *  runs exactly as it did before this ticket. */
+  bothApply?: boolean;
 }
 
 /** A SCRIPT IS AN ORDERED LIST OF Name:Number REFERENCES. Human-readable, hand-editable on disk,
@@ -171,6 +179,14 @@ function walkForCycles(
             + 'single query text of its own',
         };
       }
+      if (stepRef.bothApply) {
+        return {
+          ok: false,
+          error: `script "${script.identity.id}" step ${i + 1} ("${stepRef.id}") carries `
+            + '"bothApply" but resolves to a nested script, not a primitive method -- a saved '
+            + 'sequence has no single source/Cascade application of its own',
+        };
+      }
       const nestedId = resolved.script.identity.id;
       if (ancestors.includes(nestedId)) {
         const cycle = [...ancestors, nestedId].join(' -> ');
@@ -239,11 +255,15 @@ export function parseScript(raw: unknown, resolve: ScriptResolver): ScriptParseR
     if (raw_i.queryText !== undefined && typeof raw_i.queryText !== 'string') {
       return { ok: false, error: `script step ${i + 1} ("${raw_i.id}") has a non-string "queryText"` };
     }
+    if (raw_i.bothApply !== undefined && typeof raw_i.bothApply !== 'boolean') {
+      return { ok: false, error: `script step ${i + 1} ("${raw_i.id}") has a non-boolean "bothApply"` };
+    }
     steps.push({
       id: raw_i.id,
       attribution,
       note: typeof raw_i.note === 'string' ? raw_i.note : undefined,
       queryText: typeof raw_i.queryText === 'string' ? raw_i.queryText : undefined,
+      bothApply: typeof raw_i.bothApply === 'boolean' ? raw_i.bothApply : undefined,
     });
   }
 

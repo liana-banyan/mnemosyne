@@ -209,13 +209,16 @@ describe('script_runner.ts -- assertion (f): importing this module executes noth
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// D-BP152-046/BISHOP/seg-stored-results-and-both-apply, STAGE 1/2 -- THIS TICKET'S OWN
-// ASSERTIONS (a)-(d) (the "stored results" half). Assertions (e)/(f) ("both apply") and (g) (the
-// three cascade files byte-identical) belong to stage 2, a separate commit on top of this one.
+// D-BP152-046/BISHOP/seg-stored-results-and-both-apply -- THIS TICKET'S OWN SEVEN ASSERTIONS.
+// (a)-(d) landed in stage 1 (commit 38416c66, the "stored results" half); (e)/(f) ("both apply")
+// are added here in stage 2. (g) (the three cascade files byte-identical) is proven by `git diff`,
+// not a unit test -- see the SEG return.
 //   (a) a stored result is retrievable by position and by id.
 //   (b) a placeholder is substituted literally, before/after both recorded.
 //   (c) a reference to a non-existent or not-yet-run step errors and names it.
 //   (d) an oversized substitution reports rather than truncates.
+//   (e) both applications are stored side by side and neither overwrites the other.
+//   (f) disagreement is surfaced as a finding with no winner picked.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 function extractLog(state: DemoState): string {
@@ -419,6 +422,123 @@ describe('D-BP152-046 assertion (d): an oversized substitution reports rather th
       // The oversized stored result itself was recorded, untruncated, before the refusal.
       expect(result.storedResults[0]).toEqual({ position: 1, id: 'step-a:1', result: hugeResult });
       expect(result.storedResults[0].result.length).toBe(1000);
+    }
+  });
+});
+
+describe('D-BP152-046 assertion (e): both applications are stored side by side, neither overwrites the other', () => {
+  test('a bothApply step runs sourceExecute and execute (the Cascade) independently and stores both', async () => {
+    const script: Script = {
+      identity: makeMethodIdentity('both-apply-agree', 1),
+      description: 'the source and the Cascade both apply the same criteria',
+      steps: [{ id: 'ApplyFilter:1', attribution: ATTRIBUTED_TEST, bothApply: true }],
+      savedBy: 'Founder',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['ApplyFilter:1']);
+    const sourceExecute: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, 'SOURCE'], total: 1 });
+    const cascadeExecute: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, 'CASCADE'], total: 2 });
+
+    const result = await runScript<DemoState>(
+      script,
+      { log: [], total: 0 },
+      resolve,
+      cascadeExecute,
+      { extractResult: (s) => s.log[s.log.length - 1], sourceExecute },
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Neither side's own state mutation leaked into the other: current state continues from the
+      // Cascade's own output (total 2), never the source's (total 1) -- BP151 not overturned.
+      expect(result.finalState.total).toBe(2);
+      expect(result.finalState.log).toEqual(['CASCADE']);
+      const record = result.steps[0];
+      expect(record.bothApply).toBeDefined();
+      expect(record.bothApply?.sourceResult).toBe('SOURCE');
+      expect(record.bothApply?.cascadeResult).toBe('CASCADE');
+      // Both stored side by side, retrievable -- neither is missing, neither overwrote the other.
+      expect(record.bothApply?.sourceResult).not.toBe(record.bothApply?.cascadeResult);
+    }
+  });
+
+  test('a bothApply step with no sourceExecute supplied fails loudly rather than silently running one side', async () => {
+    const script: Script = {
+      identity: makeMethodIdentity('both-apply-misconfigured', 1),
+      description: 'bothApply true but no sourceExecute given to runScript()',
+      steps: [{ id: 'ApplyFilter:1', attribution: ATTRIBUTED_TEST, bothApply: true }],
+      savedBy: 'test',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['ApplyFilter:1']);
+    const cascadeExecute: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, 'CASCADE'], total: 1 });
+
+    const result = await runScript<DemoState>(script, { log: [], total: 0 }, resolve, cascadeExecute);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('bothApply');
+      expect(result.error).toContain('sourceExecute');
+    }
+  });
+});
+
+describe('D-BP152-046 assertion (f): disagreement is surfaced as a finding, no winner picked', () => {
+  test('sourceExecute and execute disagreeing sets agree: false, and the run continues (no automatic abstain)', async () => {
+    const script: Script = {
+      identity: makeMethodIdentity('both-apply-disagree', 1),
+      description: 'source says eliminate A, Cascade says eliminate B',
+      steps: [{ id: 'ApplyFilter:1', attribution: ATTRIBUTED_TEST, bothApply: true }],
+      savedBy: 'Founder',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['ApplyFilter:1']);
+    const sourceExecute: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, 'eliminate A'], total: 0 });
+    const cascadeExecute: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, 'eliminate B'], total: 0 });
+
+    const result = await runScript<DemoState>(
+      script,
+      { log: [], total: 0 },
+      resolve,
+      cascadeExecute,
+      { extractResult: (s) => s.log[s.log.length - 1], sourceExecute },
+    );
+
+    expect(result.ok).toBe(true); // disagreement never aborts the run automatically
+    if (result.ok) {
+      const record = result.steps[0];
+      expect(record.bothApply?.agree).toBe(false);
+      expect(record.bothApply?.note).toContain('DISAGREEMENT');
+      expect(record.bothApply?.note).toContain('no winner picked');
+      // Neither side's text was declared "correct" or "chosen" -- a comparison, not a decision.
+      expect(record.bothApply?.note).not.toMatch(/is correct|is chosen|selected as/i);
+      // The Cascade's result is still what state continued from -- disagreement did not pick a winner
+      // by silently swapping it either.
+      expect(result.finalState.log).toEqual(['eliminate B']);
+    }
+  });
+
+  test('agreement is recorded as corroboration, not silently discarded', async () => {
+    const script: Script = {
+      identity: makeMethodIdentity('both-apply-agree-note', 1),
+      description: 'source and Cascade reach the same result',
+      steps: [{ id: 'ApplyFilter:1', attribution: ATTRIBUTED_TEST, bothApply: true }],
+      savedBy: 'Founder',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['ApplyFilter:1']);
+    const sameBoth: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, 'same answer'], total: 0 });
+
+    const result = await runScript<DemoState>(
+      script,
+      { log: [], total: 0 },
+      resolve,
+      sameBoth,
+      { extractResult: (s) => s.log[s.log.length - 1], sourceExecute: sameBoth },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.steps[0].bothApply?.agree).toBe(true);
+      expect(result.steps[0].bothApply?.note).toContain('corroboration');
     }
   });
 });
