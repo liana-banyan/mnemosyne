@@ -278,6 +278,11 @@ import {
   // queries" section header for the full mechanism. This ticket's only use of it is the thin glue
   // wrapper (runMachineDrivenNexusQueryFromMain) defined just below runBrowserAuthorityQueryFromMain.
   runMachineDrivenNexusQuery,
+  // D-BP152-048/BISHOP/seg-webview-collision -- additive; see that file's own "the machine-query
+  // window" section header for the full mechanism. Used ONLY by the static (Google/Perplexity)
+  // branch of runBrowserAuthorityQueryFromMainObserved below, so askGoogle-shaped queries never
+  // navigate the operator's own shared Nexus window.
+  ensureNexusMachineQuerySession,
 } from './plow/nexus_authority_persistent_session';
 // D-BP152-028/BISHOP/seg-nexus-browser-bar -- ADDITIVE. Bookmarks persistence for the Nexus
 // Authority window's new address bar; see nexus_authority_bookmarks_store.ts's own header for
@@ -2153,7 +2158,7 @@ export async function runBrowserAuthorityQueryFromMainObserved(
     // BP139 FIX: the marker-based sign-in probe produces FALSE NEGATIVES, confirmed live -- the
     // Proof panel showed "Not signed in: Perplexity (no-marker-found)" while the SAME authority
     // returned a real, sourced answer ("The Berlin Wall fell in 1989", perplexity.ai/search/...)
-    // seconds later. The probe navigates the shared webview and checks fragile, timing-sensitive
+    // seconds later. The probe navigates the target webview and checks fragile, timing-sensitive
     // DOM markers, so gating the query on it silently DROPPED real signed-in queries (this was the
     // 2-of-5 benchmark inconsistency). The query's own extraction is the honest arbiter: a real
     // logged-in result page yields a real extracted answer (used); a logged-out/empty page yields
@@ -2161,15 +2166,27 @@ export async function runBrowserAuthorityQueryFromMainObserved(
     // ADVISORY (logged for diagnosis, never blocking) -- no fabrication risk, since only a genuine
     // extracted answer is ever returned.
     // D-BP152-030R: SKIPPED when continuing a live thread -- probeNexusAuthoritySignInStatus()
-    // (nexus_authority_persistent_session.ts) unconditionally navigates the shared <webview> to
+    // (nexus_authority_persistent_session.ts) unconditionally navigates its target <webview> to
     // the authority's landing page before its DOM check runs (MEASURED this pass, that file's
     // own `wv.loadURL(url)` call). Running it here would erase the live conversation this exact
     // call is trying to continue. Safe to skip: a thread only reaches `continuing: true` after at
     // least one prior dispatch on this same authority already ran (a signed-out session could
     // never have produced a live composer to continue from in the first place), so the probe has
     // nothing new to tell us on a continuation.
+    //
+    // D-BP152-048/BISHOP/seg-webview-collision: only interactive authorities (Claude/ChatGPT/
+    // Gemini) still probe the OPERATOR's shared window -- that branch below still runs against it
+    // (untouched by this ticket). Static authorities (Google/Perplexity, the two askGoogle-shaped
+    // callers use) now probe the dedicated machine-query window instead
+    // (ensureNexusMachineQuerySession(), same partition/cookies, separate instance -- see that
+    // function's own header for the measured collision this closes), so this probe can no longer
+    // navigate whatever surface the operator has the shared window open on.
+    const isInteractive = isInteractiveBrowserAuthority(query.authority);
     if (!threadDecision.continuing) {
-      const signInStatus = await probeNexusAuthoritySignInStatus(query.authority);
+      const signInStatus = await probeNexusAuthoritySignInStatus(
+        query.authority,
+        isInteractive ? ensureNexusAuthoritySession : ensureNexusMachineQuerySession,
+      );
       if (!signInStatus.signedIn) {
         console.warn(`[browser-authority-main] ${query.authority} sign-in probe returned not-signed-in (${signInStatus.reason}) -- proceeding anyway; the query's own extraction is the real arbiter (BP139: probe is advisory, false-negatives confirmed live).`);
       }
@@ -2180,18 +2197,38 @@ export async function runBrowserAuthorityQueryFromMainObserved(
     // DOM-query script below. Every HONEST NULL PATH documented above this function (flag off,
     // window unavailable, in-flight serialization) already ran before this point and applies
     // identically to both branches; only the on-page mechanism differs from here down.
-    if (isInteractiveBrowserAuthority(query.authority)) {
+    if (isInteractive) {
       return await runInteractiveBrowserAuthorityQueryObserved(nexusWindow, query, threadDecision);
     }
 
-    // D-BP152-030R: the static (Google/Perplexity) branch always fully navigates the shared
+    // D-BP152-030R: the static (Google/Perplexity) branch always fully navigates its target
     // webview to a plain search URL -- that unconditionally invalidates whatever interactive
     // thread (if any) was previously tracked, since the page it was live on is gone.
     nexusLiveThread = null;
 
+    // D-BP152-048/BISHOP/seg-webview-collision: THE FIX. Static queries (askGoogle's own
+    // authority, plus Perplexity, since both share this exact branch) now run against a
+    // dedicated, always-hidden machine-query window instead of `nexusWindow` (the operator's
+    // shared, sometimes-visible Nexus window) -- see ensureNexusMachineQuerySession()'s own header
+    // (nexus_authority_persistent_session.ts) for the measured live collision this replaces.
+    // Honest, DISTINCT failure reason when this session specifically is unavailable (flag flipped
+    // off mid-run, or window construction failed) -- 'disabled', never conflated with the
+    // downstream 'no_result'/'timeout' outcomes a genuinely-empty or slow Google response
+    // produces. This is the reporting fix this ticket's dispatch also asked for: the two facts
+    // ("this machine session could not run at all" vs "it ran and Google had nothing") now stay
+    // distinguishable at the source, even though they still surface the same-shaped null to
+    // googleBlocks() (comparative_cascade.ts, out of this ticket's FORBIDDEN scope) three attempts
+    // later -- the PARSER INSTRUMENT line above and this console line are where the real, distinct
+    // reason lives.
+    const machineWindow = ensureNexusMachineQuerySession();
+    if (!machineWindow) {
+      console.warn('[browser-authority-main] machine-query session unavailable (flag off, or window could not be created) -- resolving null (honest, never fabricated, distinct from a genuine empty Google/Perplexity result).');
+      return { raw: null, dispatchOutcome: 'disabled' };
+    }
+
     const navigateUrl = buildBrowserAuthorityQueryUrl(query);
-    // Executed directly in the persistent nexus-authority window's page context (same mechanism
-    // as the preload-smoke-test above, just against a different window instance).
+    // Executed directly in the machine-query window's page context (same mechanism as the
+    // preload-smoke-test above, just against a different window instance than the operator's).
     // query.question/query.authority are interpolated via JSON.stringify below, which produces a
     // safe, quote-escaped JS string literal -- never raw string concatenation of user-controlled
     // text into the script source.
@@ -2271,7 +2308,7 @@ export async function runBrowserAuthorityQueryFromMainObserved(
   `;
 
     try {
-      const result = await nexusWindow.webContents.executeJavaScript(script);
+      const result = await machineWindow.webContents.executeJavaScript(script);
       if (!result || typeof result !== 'object') return { raw: null, dispatchOutcome: 'no_result' };
       const r = result as {
         success?: boolean; snippet?: string; sourceUrl?: string | null; selectorUsed?: string | null; reason?: string;
