@@ -306,6 +306,23 @@ export function questionDemandsComplement(question: string): boolean {
   return NEGATION_RE.test(question);
 }
 
+/** Which structural role a candidate term plays in the question's own grammar.
+ *
+ *  'scope'     -- the category/eligibility noun phrase (pattern 1, "the following X is/are").
+ *                 Being IN the scope is what makes an option ELIGIBLE to be considered at all; a
+ *                 NOT elsewhere in the question negates the PREDICATE, never the scope an option
+ *                 must occupy to be a candidate in the first place. A scope term can therefore
+ *                 never be disqualifying -- see sourceNextLitmusStrip() below.
+ *  'predicate' -- the categorical predicate (pattern 2) or the superlative target property
+ *                 (pattern 3) -- the thing the question is actually asking whether an option
+ *                 satisfies (or, on a NOT-question, does NOT satisfy). This is what a NOT governs. */
+export type ClassifyCandidateRole = 'scope' | 'predicate';
+
+export interface ClassifyCandidateTerm {
+  term: string;
+  role: ClassifyCandidateRole;
+}
+
 /** Mechanical, structural candidate-term extraction -- no word list, no model call, three
  *  patterns read off the QUESTION'S OWN GRAMMAR (never the option text). Mirrors the shape
  *  `comparative_cascade.ts`'s own (non-exported, RANK-specific) `deriveCategoryAndProperty()`
@@ -313,19 +330,23 @@ export function questionDemandsComplement(question: string): boolean {
  *  narrowly here for CLASSIFY. Every candidate is verified as a literal span of the question text
  *  via `literalSubjectSpan()` (elements/method_question_generator.ts, unchanged) before use -- a
  *  candidate that is not a literal span is dropped, never guessed into one (FD-BP152-03: "Both
- *  subjects are literal spans of the question text"). */
-export function extractClassifyCandidateTerms(question: string): string[] {
-  const patterns: RegExp[] = [
-    // "the following X is/are" -- the category noun phrase itself (qid 98: "world regions").
-    /following\s+([a-z][a-z\s]*?)\s+(?:is|are)\b/i,
+ *  subjects are literal spans of the question text").
+ *
+ *  Each pattern carries a fixed, structural role (see ClassifyCandidateRole above) -- pattern 1
+ *  produces 'scope', patterns 2 and 3 produce 'predicate' -- read off WHICH PATTERN matched, never
+ *  guessed from the term's own text. */
+export function extractClassifyCandidateTerms(question: string): ClassifyCandidateTerm[] {
+  const patterns: Array<{ re: RegExp; role: ClassifyCandidateRole }> = [
+    // "the following X is/are" -- the category/scope noun phrase itself (qid 98: "world regions").
+    { re: /following\s+([a-z][a-z\s]*?)\s+(?:is|are)\b/i, role: 'scope' },
     // "considered/classified as/qualify as (one of (the))? X" -- the categorical predicate.
-    /(?:considered|classified as|categorized as|qualify as|qualifies as)\s+(?:one of\s+)?(?:the\s+)?([a-z][a-z0-9\s'-]{2,60}?)(?:[.?!]|$)/i,
+    { re: /(?:considered|classified as|categorized as|qualify as|qualifies as)\s+(?:one of\s+)?(?:the\s+)?([a-z][a-z0-9\s'-]{2,60}?)(?:[.?!]|$)/i, role: 'predicate' },
     // "most/least ADJECTIVE" -- the superlative property phrase (qid 98: "most densely populated").
-    /\b(?:most|least)\s+([a-z][a-z\s-]*?)(?:\s+(?:regions?|options?|choices?|items?|of\b)|[.?!]|$)/i,
+    { re: /\b(?:most|least)\s+([a-z][a-z\s-]*?)(?:\s+(?:regions?|options?|choices?|items?|of\b)|[.?!]|$)/i, role: 'predicate' },
   ];
   const seen = new Set<string>();
-  const out: string[] = [];
-  for (const re of patterns) {
+  const out: ClassifyCandidateTerm[] = [];
+  for (const { re, role } of patterns) {
     const m = re.exec(question);
     if (!m || !m[1]) continue;
     const term = m[1].trim();
@@ -335,7 +356,7 @@ export function extractClassifyCandidateTerms(question: string): string[] {
     const key = span.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(span);
+    out.push({ term: span, role });
   }
   return out;
 }
@@ -345,27 +366,30 @@ export function extractClassifyCandidateTerms(question: string): string[] {
  *  THRESHOLD (a numeric/definitional cutoff is the more directly testable aspect), falls back to
  *  SCALE_DEFINITION when THRESHOLD could not be generated for this term, and refuses (returns
  *  null, never a guess) when neither shape could be generated or the sourcing query returned
- *  nothing usable. `complement` (from questionDemandsComplement()) sets the new criterion's
- *  polarity -- this is the ONE judgment this loop makes about a freshly-sourced criterion, and it
- *  is a structural mapping (NOT-detected -> disqualifying), never a per-term guess.
+ *  nothing usable.
  *
- *  A DISCLOSED LIMITATION OF THAT MAPPING, FOUND BY THE qid 98 DRY RUN
- *  (SEG_RETURN_BP152_035_CLASSIFY_METHOD.md, Stage 3 verification). The mapping is correct when
- *  the candidate term IS the question's own target property (e.g. "densely populated" on qid 98
- *  -- a NOT-question should disqualify options the source confirms have that property). It is
- *  NOT necessarily correct when the candidate term is instead an ELIGIBILITY/scope term (e.g.
- *  "world regions" -- whether an option qualifies as a legitimate candidate AT ALL, independent
- *  of the NOT). The live dry run's real gemma extraction read a genuinely-worded "is this a
- *  world region" passage as affirmatively "yes" for BOTH surviving options, and the blanket
- *  complement-derived DISQUALIFYING polarity then eliminated both -- an honest zero-survivor
- *  abstain, not a crash or a silent wrong answer, but a real over-elimination relative to the
- *  historically correct key. This function has no way to structurally distinguish "target
- *  property" from "eligibility term" among the candidates extractClassifyCandidateTerms()
- *  returns -- disambiguating that would be exactly the kind of judgment call HARDWIRE-23 reserves
- *  for the Founder, not something to invent here on initiative. Flagged in the deliverable as a
- *  known gap for his ruling, not silently patched. */
+ *  D-BP152-036 FIX. Polarity now follows `role` (from extractClassifyCandidateTerms(), carried
+ *  through by the caller), not a blanket read of `complement` against every term. A 'scope' term
+ *  is always 'qualifying' -- being IN the category is what makes an option ELIGIBLE to be
+ *  considered at all, and can never be what a NOT disqualifies. A 'predicate' term (the
+ *  categorical predicate or the superlative target property) still inherits `complement` exactly
+ *  as before: NOT-detected -> disqualifying, otherwise qualifying. This is READ OFF THE
+ *  QUESTION'S OWN GRAMMAR (which pattern matched), never a per-term guess, never a word list.
+ *
+ *  THE DEFECT THIS REPLACES, FOUND BY THE qid 98 DRY RUN (SEG_RETURN_BP152_035_CLASSIFY_METHOD.md,
+ *  Stage 3 verification, and confirmed by D-BP152-035's own return). The old blanket mapping
+ *  (`complement ? 'disqualifying' : 'qualifying'` applied to EVERY sourced term regardless of what
+ *  it was) is correct for a target-property term (e.g. "densely populated" on qid 98 -- a
+ *  NOT-question should disqualify options the source confirms have that property) but wrong for a
+ *  scope/eligibility term (e.g. "world regions" -- whether an option qualifies as a legitimate
+ *  candidate AT ALL, independent of the NOT). The live dry run's real gemma extraction read a
+ *  genuinely-worded "is this a world region" passage as affirmatively "yes" for BOTH surviving
+ *  options, and the blanket complement-derived DISQUALIFYING polarity then eliminated both -- an
+ *  honest zero-survivor abstain, not a crash, but a real over-elimination relative to the
+ *  historically correct key. */
 async function sourceNextLitmusStrip(
   candidateTerm: string,
+  role: ClassifyCandidateRole,
   questionText: string,
   complement: boolean,
   ctx: MethodRunContext,
@@ -392,10 +416,19 @@ async function sourceNextLitmusStrip(
   }
   const cited = res.text.length > 300 ? `${res.text.slice(0, 300)}...` : res.text;
   note(`   litmus strip ${index}: sourced -- ${cited}`);
+  // D-BP152-036: polarity follows the matched pattern's ROLE, not a blanket read of `complement`.
+  // 'scope' (pattern 1, "the following X is/are") is always qualifying -- eligibility for the
+  // category can never be what a NOT disqualifies. 'predicate' (patterns 2/3) still inherits
+  // `complement` exactly as before.
+  const polarity: CriterionPolarity = role === 'scope' ? 'qualifying' : (complement ? 'disqualifying' : 'qualifying');
+  note(
+    `   litmus strip ${index}: "${candidateTerm}" role=${role} -- polarity=${polarity}`
+      + (role === 'scope' ? ' (scope term, always qualifying)' : ` (predicate term, inherits complement=${complement})`),
+  );
   return {
     id: `litmus-${index}`,
-    description: `meets "${candidateTerm}" per the sourced ${primary.shape === 'THRESHOLD' ? 'threshold' : 'scale/definition'}`,
-    polarity: complement ? 'disqualifying' : 'qualifying',
+    description: `meets "${candidateTerm}" per the sourced ${primary.shape === 'THRESHOLD' ? 'threshold' : 'scale/definition'} (role=${role})`,
+    polarity,
     aspect: `${candidateTerm}, per this sourced answer: "${cited}"`,
     source: `${primary.questionText} -- Google [${res.via}]`,
   };
@@ -444,7 +477,7 @@ export async function runLitmusStripLoop(
 
   const usedAspects = new Set(seedCriteria.map((c) => c.aspect.toLowerCase()));
   const candidateTerms = extractClassifyCandidateTerms(input.question).filter(
-    (t) => ![...usedAspects].some((a) => a.startsWith(t.toLowerCase())),
+    (t) => ![...usedAspects].some((a) => a.startsWith(t.term.toLowerCase())),
   );
   let termIndex = 0;
   let stripsAdded = 0;
@@ -461,7 +494,7 @@ export async function runLitmusStripLoop(
     // eslint-disable-next-line no-await-in-loop -- each strip's query depends on the PRIOR strip's
     // narrowed survivor pool; strips are sourced one at a time by design (each is a NEW axis
     // evaluated against the current state), not fired in parallel.
-    const criterion = await sourceNextLitmusStrip(term, input.question, complement, ctx, allCriteria.length + 1, note);
+    const criterion = await sourceNextLitmusStrip(term.term, term.role, input.question, complement, ctx, allCriteria.length + 1, note);
     if (!criterion) continue; // refused this term -- try the next one; does not count against the ceiling
     stripsAdded++;
     allCriteria.push(criterion);
