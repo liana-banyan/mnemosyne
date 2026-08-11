@@ -628,6 +628,24 @@ async function obtainMetaQuestionPassage(
         + 'window, never hang the run)',
       ts: nowIso(),
     });
+  } else {
+    // D-BP152-052. MINIMUM FIX: "'via GOOGLE' must be accompanied by ... because it was not wired
+    // for this call" (this ticket's own dispatch) -- a silent fallback reads as a deliberate
+    // choice, and this branch is what makes it silent: `ctx.askConversationalAuthority` is
+    // undefined for every caller that never threads it (e.g. library/script_bridge.ts's Composer
+    // path, D-BP152-044's own header), so the block above never runs and, before this line,
+    // nothing said why. THE MEASURED FAILURE THIS CLOSES did NOT take this branch (index.ts's
+    // 'liana-terminal-run' handler always constructs `askConversationalAuthority` -- see that
+    // file's own D-BP152-044 comment); it took the OTHER silent path, stepped_audible.ts's
+    // wrapForSteppedAudible() dropping an already-wired field -- fixed separately, this file's own
+    // D-BP152-052 comment there. This `else` covers the remaining, distinct way the same symptom
+    // ("via GOOGLE", no reason given) can occur, so neither cause is ever silent again.
+    ctx.emit({
+      kind: 'note',
+      text: `   PARSER INSTRUMENT [${label}] no conversational authority is wired for this call `
+        + '(ctx.askConversationalAuthority is undefined for this caller) -- falling back to Google',
+      ts: nowIso(),
+    });
   }
   ctx.emit({
     kind: 'note',
