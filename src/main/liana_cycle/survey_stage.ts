@@ -999,7 +999,11 @@ async function askConstraint(term: string, ctx: MethodRunContext, transport: 'go
       answer: null,
       citations: [],
       obtained: false,
-      why: `Google was unreachable for this constraint question (${google.via}) -- refusing rather than `
+      // D-BP152-050: "unreachable" removed -- google.via (comparative_cascade.ts's googleBlocks(),
+      // same ticket) now names the real reason (a structural verification/rate-limit challenge,
+      // window/session unavailable, a network timeout, or a genuinely empty page), which is not
+      // always "unreachable" -- a challenge means Google answered and refused.
+      why: `Google query failed for this constraint question (${google.via}) -- refusing rather than `
         + 'silently falling back to the local model (same rule as askAmbiguity()); an honest null, not a fabrication',
     };
   }
@@ -1079,7 +1083,9 @@ async function askThreshold(
       answer: null,
       citations: [],
       obtained: false,
-      why: `${tag} Google was unreachable for this threshold question (${google.via}) -- refusing `
+      // D-BP152-050: "unreachable" removed -- same reasoning as askConstraint()'s own why-string,
+      // above; google.via now names the real reason instead of a blanket claim of unreachability.
+      why: `${tag} Google query failed for this threshold question (${google.via}) -- refusing `
         + 'rather than silently falling back to the local model (same rule as askConstraint()); an '
         + 'honest null, not a fabrication',
     };

@@ -337,12 +337,32 @@ export interface GoogleAnswer { ok: boolean; text: string; blocks: GoogleBlock[]
 
 /** Ported from qid98_his_words.mjs's google(): keeps result BLOCKS (title + body), never
  *  flattens to one string -- see this file's header. Reached via the injected in-process
- *  askGoogle (AskGoogleFn), not a second CDP dial. */
+ *  askGoogle (AskGoogleFn), not a second CDP dial.
+ *
+ *  D-BP152-050/BISHOP/seg-honest-failure-reasons -- RETRY/MESSAGE LINES ONLY, everything else in
+ *  this function byte-identical to before this ticket. Founder, BP152, live: hit a Google
+ *  verification/rate-limit page ("we have detected unusual activity...",
+ *  https://www.google.com/sorry/index) while his own window was elsewhere; the old code called
+ *  it "UNREACHABLE (no answer after 3 attempts)" -- the SAME wrong reason this function reported
+ *  for every failure mode (window unavailable, a network timeout, a genuinely empty page, or
+ *  this). `lastFailureReason` (new, loop-scoped) tracks index.ts's buildLianaAskGoogle() own
+ *  `raw.dispatchOutcome` across attempts so the FINAL message (once retries are exhausted) can
+ *  name the real cause instead of a blanket "no answer" -- "no answer" is now reserved for the
+ *  one case it is actually true (no_result/dispatched: asked, a page loaded, nothing usable).
+ *  On `raw.challengeDetected` (structural, URL-only -- see webview_preload.ts's
+ *  isGoogleChallengeUrl()), this returns IMMEDIATELY -- ZERO further retries -- because retrying
+ *  into a detected rate-limit/verification page is more automated traffic aimed at the exact
+ *  thing already refusing us. Every ordinary transient failure (window unavailable, timeout, a
+ *  genuinely empty page, or askGoogle throwing) keeps the SAME 3-try / sleep(i*4000) retry
+ *  behavior as before this ticket -- unchanged. No word list, no new hardcoded numbers beyond the
+ *  pre-existing retry counts, no bypass/evasion/solving of the challenge -- only stop, and report
+ *  honestly. */
 export async function googleBlocks(
   askGoogle: MethodRunContext['askGoogle'],
   query: string,
   tries = 3,
 ): Promise<GoogleAnswer> {
+  let lastFailureReason: import('../../../shared/plow/browser_authority_types').BrowserAuthorityDispatchOutcome | 'unknown' = 'unknown';
   for (let i = 1; i <= tries; i++) {
     try {
       const raw = await askGoogle(query);
@@ -364,13 +384,31 @@ export async function googleBlocks(
           const sources = (raw.citations || []).map((c) => c.url).concat(rs.map((r) => r.url).filter(Boolean));
           return { ok: true, text: parts.join('\n'), blocks, sources, via: `${raw.snippet ? 'box' : 'nobox'}+organic(${rs.length})` };
         }
+        // Structural verification/rate-limit challenge -- HALT, zero further retries (attempt
+        // #${i} of ${tries} was the last one that will ever run for this query).
+        if (raw.challengeDetected) {
+          return {
+            ok: false, text: '', blocks: [], sources: [],
+            via: `Google verification/rate-limit challenge detected (structural: google.com/sorry/) on attempt ${i} of ${tries} -- halted, 0 further retries`,
+          };
+        }
+        lastFailureReason = raw.dispatchOutcome ?? 'no_result';
       }
     } catch {
-      // fall through to retry
+      // fall through to retry -- an ordinary transient exception, not a classified reason.
     }
     if (i < tries) await sleep(i * 4000);
   }
-  return { ok: false, text: '', blocks: [], sources: [], via: 'no answer after 3 attempts' };
+  const reasonText = lastFailureReason === 'disabled'
+    ? "the operator's browser window/session was unavailable"
+    : lastFailureReason === 'not_signed_in'
+      ? 'the session was not signed in'
+      : lastFailureReason === 'timeout'
+        ? 'a network/navigation timeout'
+        : lastFailureReason === 'no_result' || lastFailureReason === 'dispatched'
+          ? 'the page loaded and genuinely contained no usable answer'
+          : 'unknown -- the real cause could not be classified from what askGoogle returned';
+  return { ok: false, text: '', blocks: [], sources: [], via: `${reasonText} (${tries} of ${tries} attempts)` };
 }
 
 // ─────────────────────────── Gemma, extraction only (HARDWIRE-22) ───────────────────────────

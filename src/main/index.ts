@@ -322,7 +322,10 @@ import type { SteppedAudibleChannel } from './liana_cycle/stepped_audible';
 // META-questions (the ambiguity query, the operation query) to Gemini via runMachineDrivenNexusQuery
 // (D-BP152-033, already imported above) before falling back to Google. method_registry.ts's own
 // header explains why this is NOT the same shape as AskGoogleFn.
-import type { ConversationalAuthorityFn } from './liana_cycle/method_registry';
+// D-BP152-050/BISHOP/seg-honest-failure-reasons -- type-only. AskGoogleFn is buildLianaAskGoogle()'s
+// (below) own return shape -- the SAME type MethodRunContext.askGoogle already declares, imported
+// here only so that closure can be typed explicitly rather than left to structural inference.
+import type { ConversationalAuthorityFn, AskGoogleFn } from './liana_cycle/method_registry';
 // D-BP150-002 -- reading the operator's already-written teaching notes back into a live pause.
 import { listTeachingFiles } from './liana_cycle/teaching_notes';
 import type { LianaAudibleResponse, LianaSteppedResponse, LianaTerminalEvent } from '../shared/liana_cycle/liana_terminal_types';
@@ -1909,6 +1912,15 @@ let nexusLiveThread: NexusLiveThreadState | null = null;
 interface BrowserAuthorityDispatchObservation {
   raw: BrowserAuthorityRawExtraction | null;
   dispatchOutcome: BrowserAuthorityDispatchOutcome;
+  /** D-BP152-050/BISHOP/seg-honest-failure-reasons, ADDITIVE/OPTIONAL -- true only when the
+   *  static (Google/Perplexity) branch's own structural URL check (webview_preload.ts's
+   *  isGoogleChallengeUrl(), via the `r.challenge` field on its extraction-result message)
+   *  identified the landed page as a verification/rate-limit challenge. Deliberately NOT folded
+   *  into `dispatchOutcome`'s closed vocabulary above -- see that field's own header. Absent
+   *  (never false) everywhere this check does not run (the interactive branch, or a genuine
+   *  extraction). Read only by buildLianaAskGoogle() below and, through it,
+   *  comparative_cascade.ts's googleBlocks(). */
+  challengeDetected?: boolean;
 }
 
 /** T2's own literal example vocabulary for the interactive path's `reason` field
@@ -2319,7 +2331,27 @@ export async function runBrowserAuthorityQueryFromMainObserved(
         // TypeScript and dropped on the floor by the `raw: {...}` object literal below.
         citations?: import('../shared/plow/browser_authority_types').CitationRecord[];
         results?: import('../shared/plow/browser_authority_types').SearchResultCandidate[];
+        // D-BP152-050: webview_preload.ts's own structural (URL-only) verification/rate-limit
+        // challenge verdict -- see extractBrowserAuthorityAnswer()'s and
+        // BrowserAuthorityExtractionResultMessage.challenge's headers there.
+        challenge?: boolean;
       };
+      // D-BP152-050/BISHOP/seg-honest-failure-reasons -- CHECKED FIRST, ahead of the hasResults
+      // gate below. Founder, BP152, live report: "Our systems have detected unusual traffic from
+      // your computer network... IP address:... URL: https://www.google.com/sorry/index" --
+      // hit while this app had issued repeated automated Google queries. The OLD code called
+      // every failure mode "UNREACHABLE... no answer after 3 attempts", including this one.
+      // `dispatchOutcome` intentionally stays 'no_result' here (still honest: asked, got a
+      // response, nothing usable) so every OTHER, pre-existing caller of this function
+      // (unchanged by this ticket) keeps seeing exactly the outcome it always did;
+      // `challengeDetected` is the new, separate signal (see this file's own
+      // BrowserAuthorityDispatchObservation.challengeDetected header) that lets
+      // buildLianaAskGoogle() -> comparative_cascade.ts's googleBlocks() halt retries instead of
+      // sending more automated traffic at a page that just told us to stop.
+      if (r.challenge) {
+        console.warn('[browser-authority-main] structural verification/rate-limit challenge detected (google.com/sorry/) -- resolving null, reporting challengeDetected:true, not retrying from this leg.');
+        return { raw: null, dispatchOutcome: 'no_result', challengeDetected: true };
+      }
       // BP149 D-BP149-037: RESULTS-ONLY EXTRACTIONS ARE REAL EXTRACTIONS.
       //
       // This gate used to require a `snippet` -- Google's ANSWER BOX -- and returned null the
@@ -2405,6 +2437,54 @@ export async function runBrowserAuthorityQueryFromMain(
 ): Promise<BrowserAuthorityRawExtraction | null> {
   const observed = await runBrowserAuthorityQueryFromMainObserved(query);
   return observed.raw;
+}
+
+// D-BP152-050/BISHOP/seg-honest-failure-reasons -- THE LIANA CYCLE'S OWN askGoogle, distinct from
+// the byte-identical-unchanged runBrowserAuthorityQueryFromMain() immediately above.
+//
+// WHY THIS EXISTS: runBrowserAuthorityQueryFromMain() collapses every non-dispatched outcome
+// (verification/rate-limit challenge, window/session unavailable, a network/navigation timeout,
+// or a genuinely empty page) into the exact same bare `null` -- comparative_cascade.ts's
+// googleBlocks() (the Liana Cycle's retry loop) could not tell "Google refused us" from "Google
+// answered and had nothing" from that null alone. That is the defect the Founder hit live
+// (BP152): a Google rate-limit/verification page ("we have detected unusual activity...",
+// https://www.google.com/sorry/index) reported as "UNREACHABLE (no answer after 3 attempts)",
+// then retried 3 more times -- more automated traffic aimed at the thing already rate-limiting
+// this app's IP.
+//
+// SCOPE: used ONLY at this ticket's two Liana Cycle askGoogle construction sites below
+// ('liana-terminal-run', 'liana-script-run'). Every OTHER caller of
+// runBrowserAuthorityQueryFromMain/runBrowserAuthorityQueryFromMainObserved (Stage F3
+// mesh-synergy, decompose, the eliminator, the Ask-tab lookup, the direct IPC handler,
+// plow_mc_answerer.ts) is untouched -- this function does not change what either of those two
+// shared functions returns to anyone else.
+//
+// HONESTY FIREWALL UNCHANGED: on a genuine extraction (`observed.raw` truthy) this returns it
+// unchanged, byte-identical to what the old inline closures returned. Only on failure does this
+// now resolve a non-null but still-honestly-EMPTY BrowserAuthorityRawExtraction (snippet: '',
+// sourceUrl: null -- never a fabricated fact, exactly the same "absence must surface as empty,
+// never as a fake-success object" contract this file's HONESTY FIREWALL comment already
+// documents) carrying the real dispatchOutcome/challengeDetected so googleBlocks() can classify
+// WHY instead of guessing. No new answer text, source, or citation is ever invented here.
+function buildLianaAskGoogle(runThreadContext: NexusRunThreadContext): AskGoogleFn {
+  return async (question: string): Promise<BrowserAuthorityRawExtraction | null> => {
+    const observed = await runBrowserAuthorityQueryFromMainObserved({
+      question,
+      authority: 'user_google',
+      ...runThreadContext.forQuery('user_google'),
+    });
+    if (observed.raw) return observed.raw;
+    return {
+      snippet: '',
+      sourceUrl: null,
+      authority: 'user_google',
+      selectorUsed: null,
+      citations: [],
+      results: [],
+      dispatchOutcome: observed.dispatchOutcome,
+      challengeDetected: observed.challengeDetected,
+    };
+  };
 }
 
 // D-BP152-033/BISHOP/seg-machine-drives-nexus: the one piece of glue this ticket adds to
@@ -3871,11 +3951,11 @@ function registerIPCHandlers(): void {
         // { threadId: undefined, continueThread: false } -- byte-identical, spread-in, to what
         // this call site sent before this ticket (the two fields simply did not exist on the
         // query object). No query text, authority, ordering, or verdict logic changed.
-        (question) => runBrowserAuthorityQueryFromMain({
-          question,
-          authority: 'user_google',
-          ...runThreadContext.forQuery('user_google'),
-        }),
+        // D-BP152-050: buildLianaAskGoogle(runThreadContext) replaces the old inline
+        // runBrowserAuthorityQueryFromMain(...) closure -- same question/authority/thread
+        // wiring, byte-identical on a genuine extraction; only the failure path now carries a
+        // real reason instead of a bare null (see that function's own header, above).
+        buildLianaAskGoogle(runThreadContext),
         (evt) => {
           events.push(evt);
           try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ }
@@ -4042,11 +4122,9 @@ function registerIPCHandlers(): void {
     // D-BP152-031 convention (see 'liana-terminal-run' above): ONE thread-identity space per run
     // (per IPC call), not re-minted per query.
     const runThreadContext = createNexusRunThreadContext();
-    const askGoogle = (question: string) => runBrowserAuthorityQueryFromMain({
-      question,
-      authority: 'user_google',
-      ...runThreadContext.forQuery('user_google'),
-    });
+    // D-BP152-050: buildLianaAskGoogle(runThreadContext) replaces the old inline
+    // runBrowserAuthorityQueryFromMain(...) closure -- see that function's own header, above.
+    const askGoogle = buildLianaAskGoogle(runThreadContext);
     const emit = (evt: LianaTerminalEvent) => {
       try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ }
     };
