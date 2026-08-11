@@ -147,7 +147,14 @@ function buildEmbedderHtml(): string {
 </head>
 <body>
   <div id="bar">
-    <button id="btn-google" title="Navigate the persistent session to Google sign-in">Google</button>
+    <!-- D-BP152-027/BISHOP/seg-open-nexus-from-pause -- Founder, BP152, testing capture live:
+         "it is on My account page, and I need it to be on just normal google search page ...
+         I'm just trying to search google." This button is a working search surface now, not
+         only a one-time sign-in screen -- points at plain Google search; sign-in is still
+         reachable from there (this session is persist:nexus-authority, and the probe below its
+         own "Check status" path already navigates the same google.com page to look for the
+         signed-in marker). The other 4 buttons are untouched. -->
+    <button id="btn-google" title="Navigate the persistent session to Google search">Google</button>
     <button id="btn-perplexity" title="Navigate the persistent session to Perplexity">Perplexity</button>
     <button id="btn-claude" title="Navigate the persistent session to claude.ai/new sign-in">Claude</button>
     <button id="btn-chatgpt" title="Navigate the persistent session to chatgpt.com sign-in">ChatGPT</button>
@@ -176,7 +183,9 @@ function buildEmbedderHtml(): string {
     var currentNexusAuthority = null;
     document.getElementById('btn-google').addEventListener('click', function () {
       currentNexusAuthority = 'google';
-      wv.loadURL('https://accounts.google.com/');
+      // D-BP152-027: plain search, not the account/sign-in page -- see the button's own comment
+      // above this script block.
+      wv.loadURL('https://www.google.com');
     });
     document.getElementById('btn-perplexity').addEventListener('click', function () {
       currentNexusAuthority = 'perplexity';
@@ -283,7 +292,13 @@ export function showNexusAuthoritySessionForSignIn(authority: BrowserAuthorityNa
         // page a human can log into" contract as the three branches above.
         : authority === 'user_chatgpt' ? 'https://chatgpt.com/auth/login'
           : authority === 'user_gemini' ? 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fgemini.google.com%2Fapp'
-            : 'https://accounts.google.com/';
+            // D-BP152-027: this 'user_google' default is the SAME operator-facing path as the
+            // embedder's own Google chrome-bar button (buildEmbedderHtml() above) -- both are
+            // what the Founder reaches via "Open Google"/the new pause action. Founder, live:
+            // "it is on My account page ... I'm just trying to search google." Plain search, not
+            // the account/sign-in page. Sign-in is still reachable from google.com itself if
+            // needed again (persist:nexus-authority keeps the session alive either way).
+            : 'https://www.google.com';
   win.webContents.executeJavaScript(`
     (function () {
       try {

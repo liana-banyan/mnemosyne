@@ -326,17 +326,22 @@ export function NexusAuthoritySignInPanel() {
                       {enabled ? `Enabled ✓ (${armCount})` : 'Enabled ☐'}
                     </button>
                   )}
+                  {/* D-BP152-027/BISHOP/seg-open-nexus-from-pause -- RELABELED, same handler.
+                      Founder, live report: "the only way I know how to get to that five tab is by
+                      clicking the 'sign in' button" -- "Sign in" undersold what this button does
+                      every day after the first time (open the shared 5-tab window). Label only;
+                      handleOpenSignIn/onClick/openNexusAuthoritySignIn below are byte-unchanged. */}
                   <button
                     style={s.actionBtn}
                     disabled={!flagsEnabled || busy}
                     onClick={() => handleOpenSignIn(authority)}
                     title={
                       flagsEnabled
-                        ? `Open a visible window to sign into ${AUTHORITY_LABELS[authority]}`
+                        ? `Opens the 5 tabs we use, starting on ${AUTHORITY_LABELS[authority]} -- signs you in the first time`
                         : "Enable Research Arm + User's Browser Session above first"
                     }
                   >
-                    Sign in to {AUTHORITY_LABELS[authority]}
+                    Open {AUTHORITY_LABELS[authority]}
                   </button>
                 </div>
                 {disagrees && (
