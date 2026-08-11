@@ -18,16 +18,16 @@
 // no step, opens no file, makes no call.
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// D-BP152-046/BISHOP/seg-stored-results-and-both-apply, STAGE 1/2 -- ADDED HERE.
+// D-BP152-046/BISHOP/seg-stored-results-and-both-apply, STAGE 1/2 AND STAGE 2/2 -- ADDED HERE.
 //
 // FD-BP152-21, Founder verbatim: "build the stored results... on your point about step 4, I want
 // both - I want to be able to ask Google, and I also want the Cascade to apply, as a check on each
-// other, so just make both results stored." This is stage 1 of 2, the "stored results" half; stage
-// 2 (his own "I want both") is a separate commit on top of this one.
+// other, so just make both results stored." Stage 1 (commit 38416c66) built the "stored results"
+// half below; this stage adds the "I want both" half on top of it, as its own commit.
 //
-// Every step that runs stores its result (stored_results.ts's ResultStore), addressable by its
-// 1-based POSITION in the run's own flattened execution order and by its Name:Number id. The
-// position counter is GLOBAL across the whole run -- including inside a nested script, per
+// STAGE 1: every step that runs stores its result (stored_results.ts's ResultStore), addressable
+// by its 1-based POSITION in the run's own flattened execution order and by its Name:Number id.
+// The position counter is GLOBAL across the whole run -- including inside a nested script, per
 // FD-BP152-09's own recursion -- because his worked stack (steps 2, 3, 4) treats the run as one
 // flat numbered sequence, and "results persist for the whole run" (this ticket's own requirement
 // 1) reads as one run-wide store, not one store per nested script. A step's `queryText` (script.ts,
@@ -36,10 +36,24 @@
 // its StepRunRecord (`querySubstitution`, `instrumentLines`) before the step's own effect is known
 // -- so a reader can always see what was inserted, per requirement 5, even if the step then fails.
 //
-// ADDITIVE to the existing MethodExecutor/StepRunRecord/RunResult/runScript contracts: every new
-// field and parameter is optional, so a caller that never sets `queryText` on any ScriptStepRef,
-// and never passes the new `options` argument, sees byte-identical behavior to this file before
-// this ticket (proven by script_runner.test.ts's own pre-existing assertions (a)-(f), unmodified).
+// STAGE 2: a step whose ScriptStepRef.bothApply is true runs TWO executors from the SAME prior
+// state -- `options.sourceExecute` (the source being asked to apply, e.g. Google) and `execute`
+// (this function's own 4th positional argument, which for a bothApply step means the Cascade's own
+// application -- see RunScriptOptions.sourceExecute's own doc for why `execute` keeps this
+// meaning). BOTH results are stored, neither ever overwrites the other, and `current` state always
+// continues from the CASCADE's (`execute`'s) result -- BP151 is not overturned, "the Cascade still
+// applies and is still essential" (FD-BP152-21). The two are compared (plain string equality on
+// their extracted result text) and the comparison is recorded on the StepRunRecord as `bothApply`:
+// agreement is corroboration, disagreement is a FINDING surfaced as `agree: false` -- this
+// comparison never picks a winner, never weights, never abstains automatically. A bothApply step
+// reached with no `sourceExecute` supplied fails loudly (an Error, caught the same way any other
+// step failure is) rather than silently running only the Cascade's side.
+//
+// Both additions are ADDITIVE to the existing MethodExecutor/StepRunRecord/RunResult/runScript
+// contracts: every new field and parameter is optional, so a caller that never sets `queryText` or
+// `bothApply` on any ScriptStepRef, and never passes the new `options` argument, sees byte-
+// identical behavior to this file before this ticket (proven by script_runner.test.ts's own
+// pre-existing assertions (a)-(f), unmodified).
 
 import type { MethodIdentity, ResolvedRef, Script, ScriptResolver } from './script';
 import {
@@ -110,6 +124,19 @@ export interface StepRunRecord {
    *  formatParserInstrumentLines() for the exact convention this reuses) -- generated here so a
    *  future wiring ticket can forward them to a real MethodRunContext's ctx.emit() unchanged. */
   instrumentLines?: string[];
+  /** D-BP152-046 STAGE 2/2, FD-BP152-21: present only when this step's ScriptStepRef.bothApply is
+   *  true. Both the source's and the Cascade's own application of this step's criteria, run
+   *  independently from the same prior state -- NEITHER ever overwrites the other, both are always
+   *  present here side by side. `agree` is a plain comparison, never a decision: it does not pick a
+   *  winner, weight either side, or cause an automatic abstain. A disagreement (`agree: false`) is
+   *  a FINDING, surfaced here, and the run continues normally -- `current` state after this step
+   *  always comes from `cascadeResult` (see this file's own header). */
+  bothApply?: {
+    sourceResult: string;
+    cascadeResult: string;
+    agree: boolean;
+    note: string;
+  };
 }
 
 export type RunResult<S> =
@@ -152,6 +179,18 @@ export interface RunScriptOptions<S> {
    *  DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH doc for why this number is unattributed and reused from
    *  an existing convention rather than Founder-ordered. Defaults to that constant. */
   maxSubstitutedQueryLength?: number;
+  /** D-BP152-046 STAGE 2/2, FD-BP152-21: the "source" executor (e.g. Google) for a step whose
+   *  ScriptStepRef.bothApply is true. This function's own 4th positional argument, `execute`,
+   *  keeps its existing meaning for every non-bothApply step and, ON a bothApply step specifically,
+   *  is read as the Cascade's own application -- chosen because `execute` is already what a caller
+   *  wires as the authoritative "this is what actually decides" executor (see script_bridge.ts's
+   *  own `runOneStep()`, which already resolves a step id to the real Cascade methods), and BP151
+   *  ("the Cascade still applies and is still essential") means the Cascade's result is what
+   *  `current` state must continue from. `sourceExecute` is the SECOND, additional opinion this
+   *  ticket adds -- required only for a script that actually contains a bothApply step; reaching
+   *  one with no `sourceExecute` supplied fails that step loudly rather than silently running only
+   *  the Cascade's side. */
+  sourceExecute?: MethodExecutor<S>;
 }
 
 function defaultExtractResult<S>(state: S): string {
@@ -241,6 +280,7 @@ export async function runScript<S>(
     position,
     extractResult,
     maxSubstitutedQueryLength,
+    options.sourceExecute,
   );
   if (outcome.status === 'ok') {
     return { ok: true, finalState: outcome.state, steps: outcome.records, storedResults: resultStore.all() };
@@ -271,6 +311,7 @@ async function runSteps<S>(
   position: { next: number },
   extractResult: (state: S, identity: MethodIdentity) => string,
   maxSubstitutedQueryLength: number,
+  sourceExecute: MethodExecutor<S> | undefined,
 ): Promise<StepsOutcome<S>> {
   const records: StepRunRecord[] = [];
   let current = state;
@@ -332,7 +373,43 @@ async function runSteps<S>(
       const before = current;
       const t0 = clock();
       try {
-        const after = await execute(resolved.identity, current, resolvedQueryText);
+        let after: S;
+        let bothApplyRecord: StepRunRecord['bothApply'] = undefined;
+
+        if (stepRef.bothApply) {
+          // D-BP152-046 STAGE 2/2, FD-BP152-21: BOTH the source and the Cascade apply, from the
+          // SAME prior state ("as a check on each other" -- neither is derived from the other's
+          // output). Neither ever overwrites the other; `current` continues from the Cascade's
+          // result only (`execute`'s own doc, RunScriptOptions.sourceExecute).
+          if (!sourceExecute) {
+            throw new Error(
+              `step "${resolved.identity.id}" is marked bothApply but no sourceExecute was `
+              + 'supplied to runScript() -- refusing to run only the Cascade\'s side of a '
+              + 'dual-apply step (FD-BP152-21)',
+            );
+          }
+          const [sourceAfter, cascadeAfter] = await Promise.all([
+            Promise.resolve(sourceExecute(resolved.identity, current, resolvedQueryText)),
+            Promise.resolve(execute(resolved.identity, current, resolvedQueryText)),
+          ]);
+          after = cascadeAfter;
+          const sourceResultText = extractResult(sourceAfter, resolved.identity);
+          const cascadeResultText = extractResult(cascadeAfter, resolved.identity);
+          const agree = sourceResultText.trim() === cascadeResultText.trim();
+          bothApplyRecord = {
+            sourceResult: sourceResultText,
+            cascadeResult: cascadeResultText,
+            agree,
+            note: agree
+              ? 'agreement -- independent corroboration; the source and the Cascade applied the '
+                + 'same criteria and reached the same result'
+              : 'DISAGREEMENT -- surfaced as a finding, not resolved (FD-BP152-21): no winner '
+                + 'picked, no weighting, no automatic abstain',
+          };
+        } else {
+          after = await execute(resolved.identity, current, resolvedQueryText);
+        }
+
         const durationMs = clock() - t0;
         const resultText = extractResult(after, resolved.identity);
         resultStore.store({ position: stepPosition, id: resolved.identity.id, result: resultText });
@@ -345,6 +422,7 @@ async function runSteps<S>(
           durationMs,
           position: stepPosition,
           ...(querySubstitution ? { querySubstitution, instrumentLines } : {}),
+          ...(bothApplyRecord ? { bothApply: bothApplyRecord } : {}),
         });
         current = after;
       } catch (err) {
@@ -399,6 +477,7 @@ async function runSteps<S>(
       position,
       extractResult,
       maxSubstitutedQueryLength,
+      sourceExecute,
     );
     const durationMs = clock() - t0;
 
