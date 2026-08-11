@@ -347,9 +347,9 @@ declare global {
         /** D-BP151-023 (Stepped Audible), ADDITIVE/OPTIONAL, independent of `audible`. Omitted or
          *  false = no per-step pausing. */
         steppedAudible?: boolean,
-        /** D-BP151-026 (Contingency Operator: Survey Splice), THREADED BY D-BP152-011. Omitted/
-         *  false (and no CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 env override) = OFF, unchanged
-         *  default. */
+        /** D-BP152-039 REMOVAL, ATTRIBUTED (FD-BP152-20/FD-BP152-09). ACCEPTED-AND-IGNORED -- the
+         *  gate this used to feed no longer exists; Survey now runs unconditionally on every
+         *  call. Kept in the declared shape only to stay in lockstep with preload.ts/index.ts. */
         contingencyOperatorSurvey?: boolean,
         /** D-BP151-032 (Ambiguity Query Transport), THREADED BY D-BP152-011. Only consulted when
          *  contingencyOperatorSurvey is on. Omitted = the resolver's own default (env var or
@@ -357,12 +357,9 @@ declare global {
          *  short-circuit the env override. */
         ambiguityQueryTransport?: 'google' | 'gemma',
       ) => Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome>;
-      // D-BP152-011/BISHOP/seg-splice-toggle -- READ-ONLY. Effective env-var state for the two
-      // gates above, so the renderer control can show ON-via-env before any run happens.
-      lianaTerminalGateEnvState?: () => Promise<{
-        contingencyOperatorSurveyEnvOn: boolean;
-        ambiguityQueryTransportEnv: 'gemma' | null;
-      }>;
+      // D-BP152-039 REMOVAL -- `lianaTerminalGateEnvState` used to be declared here (effective
+      // env-var state for a Survey Splice toggle that D-BP152-012 already removed, and whose
+      // underlying gate FD-BP152-20 now removes too). Zero renderer callers confirmed by grep.
       onLianaTerminalEvent?: (
         cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
       ) => () => void;

@@ -763,11 +763,12 @@ contextBridge.exposeInMainWorld('amplify', {
      *  (comparative-cascade only -- see stepped_audible.ts's header), after it completes and
      *  before the next begins, until the operator responds. */
     steppedAudible?: boolean,
-    /** D-BP151-026 (Contingency Operator: Survey Splice), THREADED FOR THE FIRST TIME BY
-     *  D-BP152-011 -- this parameter existed on index.ts's handler since D-BP151-026 but this
-     *  bridge never forwarded it, so no renderer caller could reach it. Omitted/false (and no
-     *  CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 env override) = OFF, the unchanged default -- see
-     *  liana_terminal_engine.ts's isContingencyOperatorSurveySpliceEnabled(). */
+    /** D-BP152-039 REMOVAL, ATTRIBUTED (FD-BP152-20/FD-BP152-09). ACCEPTED-AND-IGNORED -- the
+     *  gate this parameter used to feed (isContingencyOperatorSurveySpliceEnabled(),
+     *  liana_terminal_engine.ts) no longer exists; Survey now runs unconditionally on every call.
+     *  Kept in the signature (rather than removed) only because doing so keeps this bridge, its
+     *  caller (LianaCycleTab.tsx), and amplify.d.ts's matching declaration all in lockstep without
+     *  a renderer-wide edit this ticket did not need to make. */
     contingencyOperatorSurvey?: boolean,
     /** D-BP151-032 (Ambiguity Query Transport), THREADED FOR THE FIRST TIME BY D-BP152-011, same
      *  reason as contingencyOperatorSurvey immediately above. Only consulted when
@@ -779,15 +780,11 @@ contextBridge.exposeInMainWorld('amplify', {
   ): Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome> =>
     ipcRenderer.invoke('liana-terminal-run', { input, audible, steppedAudible, contingencyOperatorSurvey, ambiguityQueryTransport }),
 
-  // D-BP152-011/BISHOP/seg-splice-toggle -- READ-ONLY. Lets a renderer control show the
-  // EFFECTIVE state of an env var it never touched, before any run happens (requirement 3: "A
-  // toggle that reads OFF while the run is spliced is worse than no toggle"). Computed in main
-  // from the same gate resolvers the run itself uses -- see liana_terminal_engine.ts's
-  // getLianaTerminalGateEnvState().
-  lianaTerminalGateEnvState: (): Promise<{
-    contingencyOperatorSurveyEnvOn: boolean;
-    ambiguityQueryTransportEnv: 'gemma' | null;
-  }> => ipcRenderer.invoke('liana-terminal-gate-env-state'),
+  // D-BP152-039 REMOVAL -- `lianaTerminalGateEnvState` used to live here, bridging
+  // 'liana-terminal-gate-env-state' so a renderer toggle could show the Survey Splice env var's
+  // effective state before a run. That toggle was already removed by D-BP152-012 (zero renderer
+  // callers confirmed by grep), and the underlying gate itself is now removed (FD-BP152-20) --
+  // removed together rather than left bridging to a main-process handler that no longer exists.
 
   onLianaTerminalEvent: (
     cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,

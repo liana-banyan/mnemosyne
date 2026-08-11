@@ -39,15 +39,21 @@ import type { LianaSc01Result, LianaTerminalEvent, LianaTerminalOutcome } from '
 import { explainSelection, listMethods, selectMethod } from './method_registry';
 // D-BP150-003 -- the Demand Test. Runs before method selection; see its own header for exactly
 // which half of the canon it implements and which half is still a scaffold.
-import { describeDemand, determineDemand, determineDemandFromAmbiguityNested, determineDemandFromOperationAnswer, determineDemandFromSurveyedAsk } from './demand_test';
+// D-BP152-039 REMOVAL: `determineDemand` (the CUES-table lookup) is no longer imported here -- its
+// only call site in this file was the removed `else` branch (see runLianaCycleQuestion()'s own
+// D-BP152-039 comment, below); demand_test.ts itself is untouched, and other callers of
+// determineDemand() elsewhere in the estate are unaffected.
+import { describeDemand, determineDemandFromAmbiguityNested, determineDemandFromOperationAnswer, determineDemandFromSurveyedAsk } from './demand_test';
 import type { DemandResult } from './demand_test';
 import type { AskGoogleFn, EmitFn, MethodQuestionInput, MethodRunContext } from './method_registry';
-// D-BP151-026/BISHOP/seg-contingency-operator (Contingency Operator: Survey Splice). Founder,
-// BP151, Q-20: "This is a case for Contingency Operators. Do it, and see if it works before I
-// ratify." runSurveyStage() (Founder steps 2, 3, 4, 6) was built D-BP151-025 but never spliced
-// into this dispatcher -- see survey_stage.ts's own header, "NOT WIRED INTO
-// liana_terminal_engine.ts's DISPATCH BY THIS TICKET". This import is that splice, gated by
-// isContingencyOperatorSurveySpliceEnabled() below.
+// D-BP151-026/BISHOP/seg-contingency-operator (Contingency Operator: Survey Splice), ORIGIN.
+// Founder, BP151, Q-20: "This is a case for Contingency Operators. Do it, and see if it works
+// before I ratify." runSurveyStage() (Founder steps 2, 3, 4, 6) was built D-BP151-025 but never
+// spliced into this dispatcher -- see survey_stage.ts's own header, "NOT WIRED INTO
+// liana_terminal_engine.ts's DISPATCH BY THIS TICKET". D-BP152-039 REMOVAL: this import used to
+// be gated by isContingencyOperatorSurveySpliceEnabled() (a boolean param + env-var gate that
+// defaulted OFF); per FD-BP152-20/FD-BP152-09 that gate is REMOVED and runSurveyStage() is now
+// called unconditionally, every run -- see runLianaCycleQuestion()'s own D-BP152-039 comment.
 import { runSurveyStage } from './survey_stage';
 import type { SurveyStageResult } from './survey_stage';
 // D-BP152-016/BISHOP/seg-sc01-wire-and-score. Scores what Survey (immediately above) already
@@ -90,23 +96,24 @@ function note(emit: EmitFn, text: string): void {
   emit({ kind: 'note', text, ts: nowIso() });
 }
 
-/** D-BP151-026/BISHOP/seg-contingency-operator: resolves the CONTINGENCY OPERATOR SURVEY SPLICE
- *  variant gate. Same isXModeEnabled() resolver shape the Founder named as the pattern to match --
- *  isAdjudicationAlwaysModeEnabled() (plow_mc_answerer.ts:6205), itself mirroring
- *  isAnswerCacheModeEnabled()/isSemanticSoccerballModeEnabled()/isEscalationLadderModeEnabled()
- *  (ai_dispatch_ipc.ts): a boolean param plus an env-var escape hatch, one resolver per gate.
- *
- *  THE POLARITY IS FLIPPED, ON PURPOSE -- the one deliberate deviation from that cited pattern.
- *  Every cited example defaults ON (undefined/true = on, explicit false = the opt-out). This gate
- *  defaults OFF. Founder, BP151, verbatim: "This is a case for Contingency Operators. Do it, and
- *  see if it works before I ratify" -- and: "A Contingency Operator... is not ratified by
- *  existing." Defaulting this ON would make it the shipped behavior the moment it lands, which is
- *  exactly what he ordered NOT to happen; the env var (CONTINGENCY_OPERATOR_SURVEY_SPLICE=1)
- *  exists for the same quick-local-testing purpose the cited resolvers' own env vars serve. */
-function isContingencyOperatorSurveySpliceEnabled(contingencyOperatorSurvey: boolean | undefined): boolean {
-  if (contingencyOperatorSurvey === true) return true;
-  return process.env.CONTINGENCY_OPERATOR_SURVEY_SPLICE === '1';
-}
+// D-BP152-039/BISHOP/seg-gate-removal-and-sigfigs, STAGE 1 -- THE GATE IS REMOVED, NOT DEFAULTED
+// ON. Founder, BP152, verbatim (FD-BP152-20): "fix the gate properly so survey doesn't need the
+// env var." And, the architecture ruling that makes it a removal rather than a flip:
+// FD-BP152-09, verbatim: "Survey needs to just be a method step, that I can apply or not, as part
+// of a script that is applied... There are no modes and no flags."
+//
+// WHAT USED TO LIVE HERE: isContingencyOperatorSurveySpliceEnabled(contingencyOperatorSurvey),
+// a boolean-param-plus-CONTINGENCY_OPERATOR_SURVEY_SPLICE-env-var gate that defaulted OFF.
+// D-BP152-012 removed its UI control per the Founder's ruling that the splice is not a button --
+// which left a flag with no switch, reachable only by hand-typing the env var. Per FD-BP152-09
+// (no modes, no flags) SURVEY IS SIMPLY PART OF THE ACCEPTED SCRIPT: it runs on every run, always.
+// The function, the env var, and every read of either are REMOVED, not renamed and left OFF.
+//
+// DISCLOSED REGRESSION RISK (carried from the earlier pass of this ruling and still true):
+// turning Survey on for every run may change results on questions that previously reached a
+// method via the CUES table (determineDemand(), demand_test.ts) -- the OFF path below (which used
+// to call that table INSTEAD of Survey) no longer exists; every run now derives DEMAND from the
+// surveyed ask. A regression risk the Founder has been told about, not hidden.
 
 /** D-BP151-032/BISHOP/seg-ambiguity-to-demand: resolves SURVEY STEP 2's ambiguity-query transport.
  *  Same param+env-var `isXEnabled()` shape as isContingencyOperatorSurveySpliceEnabled() above --
@@ -117,10 +124,12 @@ function isContingencyOperatorSurveySpliceEnabled(contingencyOperatorSurvey: boo
  *  ATTRIBUTED: Founder, BP151, relayed addendum, verbatim: "I want to always run it on google,
  *  which should be the default that can be changed in Mnemosynec at will." An explicit `'gemma'`
  *  argument (only reachable today via index.ts's IPC parameter -- see this ticket's return,
- *  "THINGS I NOTICED AND DID NOT DO", for why no renderer UI control was added, matching
- *  isContingencyOperatorSurveySpliceEnabled()'s own precedent) or the env override selects the
- *  local model instead. This function only routes; it never falls back on its own -- if Google is
- *  unreachable, askAmbiguity() (survey_stage.ts) refuses rather than silently trying 'gemma'. */
+ *  "THINGS I NOTICED AND DID NOT DO", for why no renderer UI control was added) or the env
+ *  override selects the local model instead. This function only routes; it never falls back on
+ *  its own -- if Google is unreachable, askAmbiguity() (survey_stage.ts) refuses rather than
+ *  silently trying 'gemma'. UNCHANGED by D-BP152-039 -- that ticket removes the OTHER gate
+ *  (Survey Splice, below this function's former neighbor) per FD-BP152-20; this transport gate
+ *  and its env var are explicitly out of that ticket's scope ("Do NOT touch... the transports"). */
 function resolveAmbiguityQueryTransport(ambiguityQueryTransport: 'google' | 'gemma' | undefined): 'google' | 'gemma' {
   if (ambiguityQueryTransport === 'gemma') return 'gemma';
   if (ambiguityQueryTransport === 'google') return 'google';
@@ -144,25 +153,15 @@ function resolveGateSource(uiExplicit: boolean, envOn: boolean): 'ui' | 'env' | 
   return 'default';
 }
 
-/** D-BP152-011: read-only introspection of the env-var side of the two gates above, for a
- *  renderer control to show the EFFECTIVE state (including an env var the operator never touched
- *  in the UI) BEFORE a run ever happens. Founder, BP152 ticket requirement 3: "A toggle that
- *  reads OFF while the run is spliced is worse than no toggle -- it would make him misread a
- *  receipt." Reuses isContingencyOperatorSurveySpliceEnabled(undefined) verbatim -- that is
- *  exactly "what would this gate resolve to if the UI sent nothing", i.e. env-or-default -- so
- *  this can never drift from the real gate's own precedence. Reads live process.env on every
- *  call (not memoized): an env var set after app launch is picked up on the next query. Changes
- *  neither gate's default or precedence in any way; this is introspection layered on top of both,
- *  not a third resolver. */
-export function getLianaTerminalGateEnvState(): {
-  contingencyOperatorSurveyEnvOn: boolean;
-  ambiguityQueryTransportEnv: 'gemma' | null;
-} {
-  return {
-    contingencyOperatorSurveyEnvOn: isContingencyOperatorSurveySpliceEnabled(undefined),
-    ambiguityQueryTransportEnv: process.env.AMBIGUITY_QUERY_TRANSPORT === 'gemma' ? 'gemma' : null,
-  };
-}
+// D-BP152-039 REMOVAL -- getLianaTerminalGateEnvState() used to live here: read-only
+// introspection of the Survey Splice env var (removed above, FD-BP152-20) plus the ambiguity
+// transport env var, for a renderer toggle to show effective env state before a run. Its own UI
+// control (D-BP151-026's Survey Splice toggle) was already removed by D-BP152-012, and grep
+// confirms no renderer file ever called `window.electronAPI.lianaTerminalGateEnvState()` --
+// zero callers, so removing it breaks nothing. Removed together with its 'liana-terminal-run'
+// sibling IPC handler ('liana-terminal-gate-env-state', index.ts) and its preload.ts/amplify.d.ts
+// declarations, rather than left calling a gate that no longer exists (that would itself be the
+// "dead flag left behind" this stage's own VERIFY section forbids).
 
 // ─────────────────────────── bundle lookup (unchanged convention) ───────────────────────────
 
@@ -263,16 +262,21 @@ export async function runLianaCycleQuestion(
    *  and behaving identically. Independent of `audible` above -- either, both, or neither may be
    *  armed; see stepped_audible.ts's header for what combining them does and does not change. */
   steppedAudible?: SteppedAudibleChannel | null,
-  /** D-BP151-026 (Contingency Operator: Survey Splice), ADDITIVE/OPTIONAL. undefined/false (and
-   *  no CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 env override -- see
-   *  isContingencyOperatorSurveySpliceEnabled() above) = variant OFF, in which case this run takes
-   *  the ORIGINAL, untouched code path below -- the exact `determineDemand(methodInput)` call and
-   *  its two surrounding emit lines this file has run since D-BP150-003, byte-for-byte, nothing
-   *  added, removed, or reordered. Every pre-existing caller (which passes nothing for this
-   *  parameter) gets that exact path. true = the variant Founder BP151 Q-20 ordered built and
-   *  tested, NOT ratified by existing: SURVEY (Founder steps 2/3/4/6, survey_stage.ts) runs before
-   *  method selection, and DEMAND is derived from the surveyed ask
-   *  (demand_test.ts's determineDemandFromSurveyedAsk()) instead of the CUES table. */
+  /** D-BP152-039 REMOVAL, ATTRIBUTED (FD-BP152-20: "fix the gate properly so survey doesn't need
+   *  the env var"; FD-BP152-09: "no modes and no flags"). ACCEPTED-AND-IGNORED -- this parameter
+   *  is NO LONGER READ ANYWHERE IN THIS FUNCTION. Survey (Founder steps 2/3/4/6, survey_stage.ts)
+   *  now runs on EVERY call, unconditionally, and DEMAND is always derived from the surveyed ask
+   *  (demand_test.ts's determineDemandFromSurveyedAsk()/determineDemandFromOperationAnswer()/
+   *  determineDemandFromAmbiguityNested()), never from the old CUES-table `determineDemand()` path
+   *  that used to run when this was false/omitted -- that path is REMOVED, not merely unreached.
+   *  The parameter itself is kept, rather than deleted from the signature, because removing it
+   *  would require editing every caller in lockstep (index.ts's 'liana-terminal-run' handler,
+   *  preload.ts, amplify.d.ts, LianaCycleTab.tsx, and this file's own contingency-operator test),
+   *  several of them renderer files this ticket's own process-safety instruction says to avoid
+   *  touching without cause -- see this ticket's own return, "THINGS I NOTICED AND DID NOT DO".
+   *  Every existing caller keeps compiling and passing whatever it already passes; the value is
+   *  simply never consulted now. DISCLOSED REGRESSION RISK: turning Survey on for every run may
+   *  change results on questions that previously reached a method via the CUES table. */
   contingencyOperatorSurvey?: boolean,
   /** D-BP151-032, ADDITIVE/OPTIONAL. Only consulted when `contingencyOperatorSurvey` is on (SURVEY
    *  STEP 2's ambiguity query does not run at all otherwise). undefined = resolveAmbiguityQueryTransport()'s
@@ -285,22 +289,16 @@ export async function runLianaCycleQuestion(
   ambiguityQueryTransport?: 'google' | 'gemma',
 ): Promise<LianaTerminalOutcome> {
   const trimmed = input.trim();
-  const contingencyOperatorSurveyOn = isContingencyOperatorSurveySpliceEnabled(contingencyOperatorSurvey);
   const resolvedAmbiguityQueryTransport = resolveAmbiguityQueryTransport(ambiguityQueryTransport);
-  // D-BP151-026: present on EVERY outcome this function returns, including an early/abstained/
-  // thrown one, so the receipt always states which variant produced the run -- undefined (and
-  // therefore omitted from the outcome object entirely, see liana_terminal_types.ts's own doc
-  // comment on this field) whenever the variant is off, which keeps every OFF-path outcome object
-  // identical to what this function produced before this ticket.
-  const variant = contingencyOperatorSurveyOn ? ('contingency-operator-survey-splice' as const) : undefined;
-  // D-BP152-011/BISHOP/seg-splice-toggle -- WHICH RUNG OF EACH GATE'S PRECEDENCE GOVERNED THIS
-  // RUN. Computed once, here, from the exact same conditions each resolver above already checked
-  // (not re-derived by a second precedence table) so this can never disagree with what
-  // isContingencyOperatorSurveySpliceEnabled()/resolveAmbiguityQueryTransport() actually did.
-  const contingencyOperatorSurveySource = resolveGateSource(
-    contingencyOperatorSurvey === true,
-    process.env.CONTINGENCY_OPERATOR_SURVEY_SPLICE === '1',
-  );
+  // D-BP152-039 REMOVAL -- `contingencyOperatorSurveyOn`/`variant`/`contingencyOperatorSurveySource`
+  // used to live here, gating Survey behind a boolean. Per FD-BP152-20/FD-BP152-09 the gate is
+  // removed, not defaulted on: Survey runs unconditionally below, so there is nothing left to
+  // resolve, source, or tag a `variant` literal with. `outcome.variant` on the RETURN statements
+  // below is no longer ever forced to `'contingency-operator-survey-splice'` by this function --
+  // it is left to whatever the selected method itself set (e.g. comparative_cascade.ts's OWN,
+  // separate 'contingency-operator-abstain-clues' variant, untouched by this ticket) via the
+  // `...outcome` spread each return already does; a run that reaches no method carries no variant
+  // at all, honestly, since there is no longer a splice decision to report.
   const ambiguityQueryTransportSource = resolveGateSource(
     ambiguityQueryTransport === 'google' || ambiguityQueryTransport === 'gemma',
     process.env.AMBIGUITY_QUERY_TRANSPORT === 'gemma',
@@ -311,23 +309,23 @@ export async function runLianaCycleQuestion(
   const audibleLog = new AudibleLog();
   const steppedLog = new SteppedAudibleLog();
   try {
-    // D-BP152-011: THE RECEIPT LINE. Emitted on EVERY run, on the same emit()/note() mechanism
-    // every other transcript line uses (no new receipt field, no new file -- index.ts's
-    // 'liana-terminal-run' handler already writes the full `events` array into the on-disk
-    // receipt as `transcript`). Founder's ask was "tell me what button to push" -- this is the
-    // other half: once pushed (or left alone), the receipt states what actually governed the run
-    // and why, so a toggle can never silently disagree with an env var nobody looked at.
+    // D-BP152-039 -- THE RECEIPT LINE, kept per Law 5 (HARDWIRE-23: the receipt shows which rule
+    // fired) even though Survey is no longer optional: the transcript must still state that
+    // Survey ran, so a reader never has to infer it from the absence of a "SURVEY SPLICE: OFF"
+    // line that no longer exists. Ambiguity Transport (a SEPARATE, still-live gate, untouched by
+    // this ticket) keeps its own source line exactly as before.
     note(
       emit,
-      `   GATES -- Survey Splice: ${contingencyOperatorSurveyOn ? 'ON' : 'OFF'} (source: ${contingencyOperatorSurveySource}) `
-      + `· Ambiguity Transport: ${resolvedAmbiguityQueryTransport} (source: ${ambiguityQueryTransportSource})`,
+      '   GATES -- Survey: ALWAYS ON (gate removed, FD-BP152-20 -- "fix the gate properly so survey '
+      + `doesn't need the env var") · Ambiguity Transport: ${resolvedAmbiguityQueryTransport} `
+      + `(source: ${ambiguityQueryTransportSource})`,
     );
     let parsed: ParsedInput;
     if (/^\d+$/.test(trimmed)) {
       parsed = parseQid(Number(trimmed));
       if (parsed.qidNotFound) {
         emit({ kind: 'error', text: `qid ${parsed.qid} not found in the bundled corpus (resources/mmlu_pro_bundled/questions.jsonl)`, ts: nowIso() });
-        return { qid: parsed.qid, question: '', verdict: null, abstain: true, freeText: false, error: 'qid not in bundle', options: null, ...(variant ? { variant } : {}) };
+        return { qid: parsed.qid, question: '', verdict: null, abstain: true, freeText: false, error: 'qid not in bundle', options: null };
       }
     } else {
       parsed = parseFreeText(trimmed);
@@ -423,24 +421,26 @@ export async function runLianaCycleQuestion(
     // `ask_google`.
     await requestStepZeroPause(steppedAudible ?? null, steppedLog, step0Events, askGoogle, emit, parsed.options);
 
-    // D-BP151-026 (Contingency Operator: Survey Splice). OFF (the default -- see
-    // isContingencyOperatorSurveySpliceEnabled() above) takes the `else` branch immediately below,
-    // which is the untouched D-BP150-003 code this file has run since that ticket: the same two
-    // emit lines, the same determineDemand(methodInput) call, nothing added, removed, or
-    // reordered. ON runs SURVEY (Founder steps 2, 3, 4, 6) before method selection and derives
-    // DEMAND from the surveyed ask instead.
+    // D-BP152-039 REMOVAL -- this used to branch on `contingencyOperatorSurveyOn` (Contingency
+    // Operator: Survey Splice), with an `else` running the untouched D-BP150-003 CUES-table path
+    // (`determineDemand(methodInput)`) when the gate was off. Per FD-BP152-20 ("fix the gate
+    // properly so survey doesn't need the env var") and FD-BP152-09 ("no modes and no flags"),
+    // SURVEY IS SIMPLY PART OF THE ACCEPTED SCRIPT: it runs on EVERY call, unconditionally, below
+    // -- the `else` branch (and the `determineDemand()` CUES-table call it made) is REMOVED, not
+    // merely unreached. DISCLOSED REGRESSION RISK: turning Survey on for every run may change
+    // results on questions that previously reached a method via the CUES table.
     let demandResult: DemandResult;
-    let surveyResult: SurveyStageResult | null = null;
-    // D-BP152-016. Populated (or explicitly errored) only when Survey Splice is ON below -- SC-01
-    // scores FounderStep2Result, which only Survey produces. Declared here, outside the if, so
-    // every return statement below this point can carry it forward regardless of which path the
-    // run takes afterward (demand-unknown abstain, method-not-taught abstain, or a real verdict).
+    let surveyResult: SurveyStageResult;
+    // D-BP152-016. Populated (or explicitly errored) below -- SC-01 scores FounderStep2Result,
+    // which only Survey produces. Declared here so every return statement below this point can
+    // carry it forward regardless of which path the run takes afterward (demand-unknown abstain,
+    // method-not-taught abstain, or a real verdict).
     let sc01Result: LianaSc01Result | null = null;
     let sc01ScoringError: string | null = null;
-    if (contingencyOperatorSurveyOn) {
+    {
       emit({
         kind: 'stage',
-        text: '-> CONTINGENCY OPERATOR: SURVEY SPLICE is ON for this run -- Survey (Founder steps 2, 3, 4, 6) runs before method selection, and DEMAND is derived from the surveyed ask, not the CUES table (Founder, BP151, Q-20: "Splice into a Contingency Operator Variant so we can test")',
+        text: '-> SURVEY -- Survey (Founder steps 2, 3, 4, 6) runs before method selection, and DEMAND is derived from the surveyed ask (FD-BP152-20/FD-BP152-09: Survey is part of the accepted script, no longer a gated splice)',
         ts: nowIso(),
       });
       // Survey's own MethodRunContext. Reuses the SAME injected askGoogle by reference (raw, not
@@ -563,16 +563,6 @@ export async function runLianaCycleQuestion(
             };
       emit({ kind: 'stage', text: '-> DEMAND TEST (SURVEYED ASK) -- what operation must this answer perform?', ts: nowIso() });
       note(emit, `   ${describeDemand(demandResult)}`);
-    } else {
-      // D-BP150-003 -- THE DEMAND TEST runs BEFORE method selection. Founder, BP150: determine
-      // "WHICH METHOD of DATA needs to apply to the question in question... so we DON'T use it
-      // wrongly." Canon: canon_the_demand_test_selects_by_operation_not_by_regex_bp150.
-      // NOTE the placement is not yet the ruled one: canon R-2 puts this AFTER Survey the ASK, and
-      // Survey is unbuilt on THIS path, so the derivation reads the question string and says so in
-      // its own output.
-      emit({ kind: 'stage', text: '-> DEMAND TEST -- what operation must this answer perform?', ts: nowIso() });
-      demandResult = determineDemand(methodInput);
-      note(emit, `   ${describeDemand(demandResult)}`);
     }
 
     emit({ kind: 'stage', text: '-> METHOD SELECTION -- checking every method on file', ts: nowIso() });
@@ -602,7 +592,6 @@ export async function runLianaCycleQuestion(
         freeText,
         error: demandResult.demand ? 'no_method_matched' : 'demand_unknown',
         options: parsed.options,
-        ...(variant ? { variant } : {}),
         ...(sc01Result ? { sc01: sc01Result } : {}),
         ...(sc01ScoringError ? { sc01ScoringError } : {}),
       };
@@ -616,7 +605,7 @@ export async function runLianaCycleQuestion(
     if (!method.run) {
       emit({ kind: 'result', text: `NOT YET TAUGHT -- ${method.name} is a registered method whose shape matched, but it has no runner yet.`, ts: nowIso() });
       note(emit, '   This is a known shape, not an unknown one -- the Founder has not walked a case for it yet. That is the next teaching session.');
-      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'method_not_yet_taught', method: method.id, options: parsed.options, ...(variant ? { variant } : {}), ...(sc01Result ? { sc01: sc01Result } : {}), ...(sc01ScoringError ? { sc01ScoringError } : {}) };
+      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'method_not_yet_taught', method: method.id, options: parsed.options, ...(sc01Result ? { sc01: sc01Result } : {}), ...(sc01ScoringError ? { sc01ScoringError } : {}) };
     }
 
     if (audible) {
@@ -670,7 +659,6 @@ export async function runLianaCycleQuestion(
       options: parsed.options,
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
       ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
-      ...(variant ? { variant } : {}),
       ...(sc01Result ? { sc01: sc01Result } : {}),
       ...(sc01ScoringError ? { sc01ScoringError } : {}),
     };
@@ -688,7 +676,6 @@ export async function runLianaCycleQuestion(
         options: null,
         audibleLog: audibleLog.all(),
         ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
-        ...(variant ? { variant } : {}),
       };
     }
     // D-BP151-023 -- an EARLY step-pause abandon (any pause before the final one, thrown from
@@ -706,7 +693,6 @@ export async function runLianaCycleQuestion(
         options: null,
         ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
         steppedLog: steppedLog.all(),
-        ...(variant ? { variant } : {}),
       };
     }
     const msg = e instanceof Error ? e.message : String(e);
@@ -720,7 +706,6 @@ export async function runLianaCycleQuestion(
       options: null,
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
       ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
-      ...(variant ? { variant } : {}),
     };
   }
 }
