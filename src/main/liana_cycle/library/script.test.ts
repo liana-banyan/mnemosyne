@@ -190,6 +190,80 @@ describe('script.ts -- parseScript / loadScriptFromFile', () => {
   });
 });
 
+describe('script.ts -- D-BP152-046 STAGE 1/2: ScriptStepRef.queryText parses and validates', () => {
+  const workedExampleRaw = {
+    identity: { name: 'query-text-demo', number: 1, id: 'query-text-demo:1' },
+    description: 'exercises the new optional queryText field',
+    steps: [
+      { id: 'denotation:1', attribution: ATTRIBUTED_TEST, queryText: 'plain text, no placeholder' },
+    ],
+    savedBy: 'test',
+    savedAt: '2026-08-11T00:00:00.000Z',
+  };
+  const resolve = makeCatalog(['denotation:1'], []);
+
+  test('parses a step carrying queryText', () => {
+    const result = parseScript(workedExampleRaw, resolve);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.script.steps[0].queryText).toBe('plain text, no placeholder');
+  });
+
+  test('a step with no queryText leaves the field undefined -- unchanged from before this ticket', () => {
+    const result = parseScript(
+      { ...workedExampleRaw, steps: [{ id: 'denotation:1', attribution: ATTRIBUTED_TEST }] },
+      resolve,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.script.steps[0].queryText).toBeUndefined();
+  });
+
+  test('rejects a non-string queryText', () => {
+    const raw = { ...workedExampleRaw, steps: [{ id: 'denotation:1', attribution: ATTRIBUTED_TEST, queryText: 42 }] };
+    const result = parseScript(raw, resolve);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('queryText');
+  });
+});
+
+describe('script.ts -- validateScript rejects queryText on a nested-script reference', () => {
+  const leaf: Script = {
+    identity: makeMethodIdentity('leaf-script', 1),
+    description: 'a small reusable sequence',
+    steps: [method('denotation', 1)],
+    savedBy: 'test',
+    savedAt: '2026-08-11T00:00:00.000Z',
+  };
+
+  test('rejects queryText on a step whose id resolves to a nested script', () => {
+    const top: Script = {
+      identity: makeMethodIdentity('top-with-query-on-script', 1),
+      description: 'invalid: queryText on a nested-script step',
+      steps: [{ id: 'leaf-script:1', attribution: ATTRIBUTED_TEST, queryText: 'this should not be allowed' }],
+      savedBy: 'test',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['denotation:1'], [leaf]);
+    const result = validateScript(top, resolve);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('queryText');
+      expect(result.error).toContain('nested script');
+    }
+  });
+
+  test('queryText on a step resolving to a real method still validates fine', () => {
+    const top: Script = {
+      identity: makeMethodIdentity('top-with-query-on-method', 1),
+      description: 'valid: queryText on a leaf method step',
+      steps: [{ id: 'denotation:1', attribution: ATTRIBUTED_TEST, queryText: 'ask something' }],
+      savedBy: 'test',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['denotation:1'], []);
+    expect(validateScript(top, resolve)).toEqual({ ok: true });
+  });
+});
+
 describe('script.ts -- assertion (f): importing this module executes nothing', () => {
   test('exposes only functions/types -- module import performed no I/O and threw nothing', () => {
     // A module that executed something at import time (a Google call, a file write, a console

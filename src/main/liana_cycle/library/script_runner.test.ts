@@ -207,3 +207,218 @@ describe('script_runner.ts -- assertion (f): importing this module executes noth
     expect(typeof describeStateChange).toBe('function');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP152-046/BISHOP/seg-stored-results-and-both-apply, STAGE 1/2 -- THIS TICKET'S OWN
+// ASSERTIONS (a)-(d) (the "stored results" half). Assertions (e)/(f) ("both apply") and (g) (the
+// three cascade files byte-identical) belong to stage 2, a separate commit on top of this one.
+//   (a) a stored result is retrievable by position and by id.
+//   (b) a placeholder is substituted literally, before/after both recorded.
+//   (c) a reference to a non-existent or not-yet-run step errors and names it.
+//   (d) an oversized substitution reports rather than truncates.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+function extractLog(state: DemoState): string {
+  return state.log[state.log.length - 1] ?? '(no entries yet)';
+}
+
+describe('D-BP152-046 assertion (a): a stored result is retrievable by position and by Name:Number id', () => {
+  test('runScript() returns storedResults, addressable both ways, for every step that ran', async () => {
+    const script = scriptOf('stores-results', ['step-a:1', 'step-b:1', 'step-c:1']);
+    const resolve = makeCatalog(['step-a:1', 'step-b:1', 'step-c:1']);
+    const execute = makeAppendExecutor({ 'step-a:1': 1, 'step-b:1': 10, 'step-c:1': 100 });
+
+    const result = await runScript<DemoState>(
+      script, { log: [], total: 0 }, resolve, execute, { extractResult: extractLog },
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.storedResults).toEqual([
+        { position: 1, id: 'step-a:1', result: 'step-a:1' },
+        { position: 2, id: 'step-b:1', result: 'step-b:1' },
+        { position: 3, id: 'step-c:1', result: 'step-c:1' },
+      ]);
+    }
+  });
+
+  test('storedResults is present (up to the point of failure) even on a failed run', async () => {
+    const script = scriptOf('fails-after-one-store', ['step-a:1', 'step-fails:1']);
+    const resolve = makeCatalog(['step-a:1', 'step-fails:1']);
+    const execute: MethodExecutor<DemoState> = (identity, state) => {
+      if (identity.id === 'step-fails:1') throw new Error('boom');
+      return { log: [...state.log, identity.id], total: state.total };
+    };
+
+    const result = await runScript<DemoState>(
+      script, { log: [], total: 0 }, resolve, execute, { extractResult: extractLog },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // step-a:1 completed and stored before step-fails:1 broke the run.
+      expect(result.storedResults).toEqual([{ position: 1, id: 'step-a:1', result: 'step-a:1' }]);
+    }
+  });
+
+  test('with no extractResult supplied, a default (JSON.stringify) still stores SOMETHING', async () => {
+    const script = scriptOf('default-extractor', ['step-a:1']);
+    const resolve = makeCatalog(['step-a:1']);
+    const execute = makeAppendExecutor({ 'step-a:1': 1 });
+
+    const result = await runScript<DemoState>(script, { log: [], total: 0 }, resolve, execute);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.storedResults).toHaveLength(1);
+      expect(result.storedResults[0].result).toBe(JSON.stringify({ log: ['step-a:1'], total: 1 }));
+    }
+  });
+});
+
+describe('D-BP152-046 assertion (b): a placeholder substitutes literally, before/after both recorded', () => {
+  test('step 2 stores a result; step 3\'s queryText references it by position and the transcript shows before/after', async () => {
+    const stepIds = ['DefineTheTerm:1', 'ApplyFilter:1'];
+    const script: Script = {
+      identity: makeMethodIdentity('two-step-substitution', 1),
+      description: 'step 2 references step 1\'s stored result, his own [insert stored result from N.] syntax',
+      steps: [
+        { id: 'DefineTheTerm:1', attribution: ATTRIBUTED_TEST },
+        {
+          id: 'ApplyFilter:1',
+          attribution: ATTRIBUTED_TEST,
+          queryText: 'which of these qualify given [insert stored result from 1.]?',
+        },
+      ],
+      savedBy: 'Founder',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(stepIds);
+    const seenQueryTexts: Array<string | undefined> = [];
+    const execute: MethodExecutor<DemoState> = (identity, state, resolvedQueryText) => {
+      seenQueryTexts.push(resolvedQueryText);
+      return { log: [...state.log, identity.id], total: state.total };
+    };
+
+    const result = await runScript<DemoState>(
+      script,
+      { log: [], total: 0 },
+      resolve,
+      execute,
+      { extractResult: extractLog },
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // The literal substitution reached the executor as resolvedQueryText -- untouched by any
+      // model, verbatim splice only.
+      expect(seenQueryTexts).toEqual([
+        undefined, // DefineTheTerm:1 carried no queryText
+        'which of these qualify given DefineTheTerm:1?',
+      ]);
+      const applyRecord = result.steps[1];
+      expect(applyRecord.querySubstitution).toEqual({
+        before: 'which of these qualify given [insert stored result from 1.]?',
+        after: 'which of these qualify given DefineTheTerm:1?',
+      });
+      expect(applyRecord.instrumentLines?.some((l) => l.includes('PARSER INSTRUMENT'))).toBe(true);
+      expect(applyRecord.instrumentLines?.some((l) => l.includes('BEFORE substitution'))).toBe(true);
+      expect(applyRecord.instrumentLines?.some((l) => l.includes('AFTER substitution'))).toBe(true);
+    }
+  });
+
+  test('a queryText with no placeholder passes through untouched and is still recorded', async () => {
+    const script = scriptOf('plain-query-text', ['step-a:1']);
+    script.steps[0].queryText = 'a plain question, nothing to insert';
+    const resolve = makeCatalog(['step-a:1']);
+    const execute = makeAppendExecutor({});
+
+    const result = await runScript<DemoState>(script, { log: [], total: 0 }, resolve, execute, { extractResult: extractLog });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.steps[0].querySubstitution).toEqual({
+        before: 'a plain question, nothing to insert',
+        after: 'a plain question, nothing to insert',
+      });
+    }
+  });
+});
+
+describe('D-BP152-046 assertion (c): a reference to a non-existent or not-yet-run step errors and names it', () => {
+  test('a forward reference (to a step that has not run yet) stops the run and names the reference', async () => {
+    const script: Script = {
+      identity: makeMethodIdentity('forward-reference', 1),
+      description: 'step 1 references step 2, which has not run yet',
+      steps: [
+        { id: 'step-a:1', attribution: ATTRIBUTED_TEST, queryText: 'affected by [insert stored result from 2.]' },
+        { id: 'step-b:1', attribution: ATTRIBUTED_TEST },
+      ],
+      savedBy: 'test',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['step-a:1', 'step-b:1']);
+    const execute = makeAppendExecutor({});
+
+    const result = await runScript<DemoState>(script, { log: [], total: 0 }, resolve, execute, { extractResult: extractLog });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failedId).toBe('step-a:1');
+      expect(result.error).toContain('"[insert stored result from 2.]"');
+      expect(result.error).toContain('"2"');
+      // step-b:1 never ran -- the run stopped, it did not skip ahead or guess.
+      expect(result.steps.map((s) => s.id)).toEqual(['step-a:1']);
+      expect(result.steps[0].status).toBe('failed');
+    }
+  });
+
+  test('a reference to an id that never exists in this script errors and names it', async () => {
+    const script: Script = {
+      identity: makeMethodIdentity('nonexistent-reference', 1),
+      description: 'references an id nothing in this run will ever produce',
+      steps: [{ id: 'step-a:1', attribution: ATTRIBUTED_TEST, queryText: 'see [insert stored result from Ghost:9.]' }],
+      savedBy: 'test',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['step-a:1']);
+    const execute = makeAppendExecutor({});
+    const result = await runScript<DemoState>(script, { log: [], total: 0 }, resolve, execute, { extractResult: extractLog });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('Ghost:9');
+  });
+});
+
+describe('D-BP152-046 assertion (d): an oversized substitution reports rather than truncates', () => {
+  test('a substitution over the configured limit stops the run with a named error, and the stored result was never truncated', async () => {
+    const script: Script = {
+      identity: makeMethodIdentity('oversized-substitution', 1),
+      description: 'step 2 pulls in a very large stored result',
+      steps: [
+        { id: 'step-a:1', attribution: ATTRIBUTED_TEST },
+        { id: 'step-b:1', attribution: ATTRIBUTED_TEST, queryText: 'use [insert stored result from 1.]' },
+      ],
+      savedBy: 'test',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['step-a:1', 'step-b:1']);
+    const hugeResult = 'w'.repeat(1000);
+    const execute: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, identity.id], total: state.total });
+
+    const result = await runScript<DemoState>(
+      script,
+      { log: [], total: 0 },
+      resolve,
+      execute,
+      { extractResult: () => hugeResult, maxSubstitutedQueryLength: 100 },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failedId).toBe('step-b:1');
+      expect(result.error).toContain('1004 chars');
+      expect(result.error).toContain('100-char limit');
+      // The oversized stored result itself was recorded, untruncated, before the refusal.
+      expect(result.storedResults[0]).toEqual({ position: 1, id: 'step-a:1', result: hugeResult });
+      expect(result.storedResults[0].result.length).toBe(1000);
+    }
+  });
+});
