@@ -461,6 +461,118 @@ export function getNexusAuthorityWindow(): BrowserWindow | null {
   return nexusAuthorityWindow && !nexusAuthorityWindow.isDestroyed() ? nexusAuthorityWindow : null;
 }
 
+// ─── D-BP152-048/BISHOP/seg-webview-collision -- the machine-query window ──────────────────────
+//
+// THE LIVE FAILURE this section fixes: the Founder opened the Nexus window, navigated it to
+// Gemini, signed in, then ran a question with send-to-Google. Result: "Google UNREACHABLE (no
+// answer after 3 attempts)" (comparative_cascade.ts's googleBlocks(), after 3 real dispatch
+// attempts each returned nothing).
+//
+// MEASURED CAUSE (file:line): `ensureNexusAuthoritySession()` above creates exactly ONE
+// BrowserWindow holding exactly ONE <webview> (buildEmbedderHtml(), the `#wvwrap` element around
+// line 265). The 5 chrome-bar surface buttons (lines 289-299, `wv.loadURL(surface.url)`) and the
+// address bar (line 313) navigate THAT webview when the operator drives it by hand.
+// probeNexusAuthoritySignInStatus() (above) and index.ts's runBrowserAuthorityQueryFromMainObserved
+// -- the function askGoogle (index.ts) is a one-line closure around -- ALSO navigate that exact
+// same webview (via `ensureNexusAuthoritySession()` / `document.querySelector('webview')`) when a
+// machine-driven Google/Perplexity query runs. One webview, two purposes: when the operator had
+// it open on Gemini, the machine's own sign-in probe and query navigation collided with his live
+// page, on top of each other, on every one of googleBlocks()'s 3 attempts.
+//
+// FIX CHOSEN: a second, dedicated, ALWAYS-HIDDEN BrowserWindow/webview for machine-driven STATIC
+// (Google/Perplexity) queries -- the two authorities askGoogle-shaped callers use -- sharing the
+// SAME `persist:nexus-authority` partition (so the signed-in cookie jar is identical, per this
+// file's own header MECHANISM note) but a SEPARATE window/webview instance. A machine query can
+// then never navigate the page the operator is looking at, and the operator's own navigation can
+// never be interrupted by or made to interfere with a machine query -- the two simply no longer
+// share anything but cookies.
+//
+// REJECTED, and why:
+//   1. Navigate-and-restore on the shared webview (run the query, then put the operator's page
+//      back). Rejected per this ticket's own dispatch: it visibly steals his page mid-read and
+//      races his typing -- the exact failure mode the D-BP152-033 hijack guard below (a DIFFERENT
+//      shared-webview mechanism, for the conversational authorities) was built to prevent.
+//   2. A refuse-when-visible guard alone (D-BP152-033's own `probeNexusAuthorityOperatorEngagement`
+//      pattern, reused unchanged below for the Gemini meta-question path) applied to askGoogle
+//      too. Rejected: refusing would mean a Google query simply FAILS whenever the operator has
+//      the window open -- the opposite of the requirement that "the operator must be able to use
+//      the Nexus window on any surface while the run issues Google queries." A second, separate
+//      instance lets both happen concurrently instead of forcing a choice between them.
+//
+// webPreferences below are byte-identical to ensureNexusAuthoritySession()'s own (contextIsolation
+// true, nodeIntegration false, webviewTag true, same preload.js, devTools true) -- no security
+// setting is loosened or changed for this second window.
+
+let nexusMachineQueryWindow: BrowserWindow | null = null;
+
+/** Same minimal-chrome pattern as buildEmbedderHtml() above, stripped to just the one <webview>
+ *  element this window exists for -- no chrome bar, no address bar, no buttons, since nothing
+ *  here is ever shown to or driven by the operator. Same partition and same compiled preload
+ *  artifact as the operator's own window (webviewPreloadPath(), NEXUS_AUTHORITY_PARTITION) --
+ *  the SAME signed-in session, a DIFFERENT DOM. */
+function buildMachineQueryEmbedderHtml(): string {
+  const preloadPath = webviewPreloadPath();
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; height: 100vh; width: 100vw; overflow: hidden; }
+  webview { position: absolute; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; display: flex; }
+</style>
+</head>
+<body>
+  <webview id="nexus-machine-query-webview" src="about:blank" partition="${NEXUS_AUTHORITY_PARTITION}" preload="${preloadPath}"></webview>
+</body>
+</html>`;
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
+/**
+ * Creates the dedicated machine-query session if the flag is on and it doesn't already exist;
+ * returns the existing window if it does -- same idempotent, flag-gated, "null when off, never
+ * fabricated" contract as ensureNexusAuthoritySession() above, deliberately mirrored rather than
+ * reinvented. `show` is never set to true anywhere in this file for this window -- there is no
+ * code path, in this ticket or any other, that makes this window visible; it exists purely as a
+ * second execution context for the SAME session, never as a second surface a human could open.
+ */
+export function ensureNexusMachineQuerySession(): BrowserWindow | null {
+  if (!isNexusAuthorityFlagEnabled()) {
+    return null;
+  }
+  if (nexusMachineQueryWindow && !nexusMachineQueryWindow.isDestroyed()) {
+    return nexusMachineQueryWindow;
+  }
+
+  nexusMachineQueryWindow = new BrowserWindow({
+    width: 1024,
+    height: 800,
+    show: false,
+    title: 'Nexus Authority -- machine query session',
+    webPreferences: {
+      preload: join(__dirname, '..', 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      webviewTag: true,
+      devTools: true,
+    },
+  });
+
+  nexusMachineQueryWindow.loadURL(buildMachineQueryEmbedderHtml());
+
+  nexusMachineQueryWindow.on('closed', () => {
+    nexusMachineQueryWindow = null;
+  });
+
+  console.log(`[nexus-authority-session] machine-query session created (partition: ${NEXUS_AUTHORITY_PARTITION}).`);
+  return nexusMachineQueryWindow;
+}
+
+/** Read-only accessor -- never creates. Mirrors getNexusAuthorityWindow()'s own contract. */
+export function getNexusMachineQueryWindow(): BrowserWindow | null {
+  return nexusMachineQueryWindow && !nexusMachineQueryWindow.isDestroyed() ? nexusMachineQueryWindow : null;
+}
+
 /**
  * Item 3 (Sign-in UX): opens the persistent session VISIBLY, one time, navigated to the
  * requested authority's sign-in-friendly URL, so a human can interactively log in. Returns
@@ -627,19 +739,28 @@ const SIGN_IN_PROBE_TIMEOUT_MS = 15_000;
 const SIGN_IN_PROBE_SETTLE_DELAY_MS = 1_200;
 
 /**
- * Navigates the persistent session's shared <webview> to `authority`'s own page and runs a
- * cheap DOM probe for a known logged-in marker element. Returns `signedIn: false` (never
- * fabricated) for every failure mode: flag off, no window, navigation timeout, or no marker
- * found -- see this file's header "HONESTY FIREWALL" note. This mutates the persistent
- * session's current page (a side effect visible only if the sign-in window happens to be shown
- * at the same moment) -- same trade-off the existing runBrowserAuthorityQueryFromMain() already
- * accepts for its own query navigation.
+ * Navigates a Nexus session's shared <webview> to `authority`'s own page and runs a cheap DOM
+ * probe for a known logged-in marker element. Returns `signedIn: false` (never fabricated) for
+ * every failure mode: flag off, no window, navigation timeout, or no marker found -- see this
+ * file's header "HONESTY FIREWALL" note. This mutates the target session's current page (a side
+ * effect visible only if that window happens to be shown at the same moment) -- same trade-off
+ * the existing runBrowserAuthorityQueryFromMain() already accepts for its own query navigation.
+ *
+ * D-BP152-048/BISHOP/seg-webview-collision: `windowGetter` is ADDITIVE, defaulted to
+ * `ensureNexusAuthoritySession` -- every pre-existing caller (probeAllNexusAuthorityStatuses(),
+ * the Settings "Check status" action) that calls this with one argument gets byte-identical
+ * behavior, still probing the operator's own shared window. index.ts's static (Google/
+ * Perplexity) branch is the only caller that now passes `ensureNexusMachineQuerySession`
+ * instead, so that probe's navigation lands on the dedicated machine-query window (same
+ * partition, so the same signed-in cookies are visible) rather than colliding with whatever
+ * surface the operator has the shared window open on.
  */
 export async function probeNexusAuthoritySignInStatus(
   authority: BrowserAuthorityName,
+  windowGetter: () => BrowserWindow | null = ensureNexusAuthoritySession,
 ): Promise<NexusAuthoritySignInProbeResult> {
   const checkedAt = new Date().toISOString();
-  const win = ensureNexusAuthoritySession();
+  const win = windowGetter();
   if (!win) {
     return { authority, signedIn: false, reason: 'flag_off_or_unavailable', checkedAt };
   }
