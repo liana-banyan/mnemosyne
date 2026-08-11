@@ -47,6 +47,7 @@ import { parseFreeText, parseQid, runLianaCycleQuestion } from '../liana_termina
 import type { AskGoogleFn } from '../liana_terminal_engine';
 import type { LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
 import { listAllEntries, lookupById, registerKnownMethods } from './method_registry';
+import { registerSurveyParts } from './survey_steps';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
 import { runScript, type MethodExecutor, type RunResult, type StepRunRecord } from './script_runner';
@@ -60,9 +61,26 @@ import type { StepAttribution } from './step_declaration';
 // on every request; registerKnownMethods() does no I/O and no method file import (library/
 // method_registry.ts's own header: "importing this module cannot execute any of the code those
 // declarations describe").
+//
+// D-BP152-047/BISHOP/seg-wire-survey-parts-and-baseline -- ADDITIVE. registerSurveyParts()
+// (survey_steps.ts) existed, was tested, and was called from nowhere but its own test file before
+// this ticket -- this is the only call site this ticket adds. Same idempotent try/catch shape as
+// registerKnownMethods() above, for the same reason (a concurrent call, or an earlier IPC call in
+// this same process, may have already registered these six ids). Order relative to
+// registerKnownMethods() does not matter (survey_steps.test.ts's own "inert to call order" case),
+// and this does not touch, re-register, or collide with 'Survey:1' -- that id is registered only
+// by registerKnownMethods() above, unchanged. Registration remains inert: survey_steps.ts imports
+// nothing from survey_stage.ts/methods/*.ts/elements/*.ts, so calling this executes no query, no
+// model call, no Google fetch -- it only adds six more plain-object declarations to the same
+// in-memory Map registerKnownMethods() already writes to.
 function ensureRegistryPopulated(): void {
   try {
     registerKnownMethods();
+  } catch {
+    // already registered -- see comment above.
+  }
+  try {
+    registerSurveyParts();
   } catch {
     // already registered -- see comment above.
   }
