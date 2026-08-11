@@ -36,6 +36,22 @@
 // stored result's raw text in verbatim. No model call, no summarizing, no rewriting of either the
 // query text or the stored result. This module imports nothing that could call a model or issue a
 // network request -- confirmed by this file's own "inert" test.
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP152-049 STAGE 2/4 -- A BARE PLACEHOLDER ON A BOTH-APPLY STEP REFUSES.
+//
+// Founder, BP152, verbatim: "when a bare placeholder is used on a both-apply step, I want it to
+// refuse and make me say which, for the test runs and then we can make it one or the other as
+// results recommend." D-BP152-046 (STAGE 2/2, commit caf7b873) resolved a bare
+// `[insert stored result from <ref>.]` referencing a bothApply step to the Cascade's own result --
+// a documented interpretation, never his ruling. This ticket REMOVES that default: a bare
+// reference to a bothApply step's stored result is now refused, names the step, and states the
+// two explicit forms he must choose between:
+//   `[insert stored result from <ref> (source).]`   -- the source's own application (e.g. Google)
+//   `[insert stored result from <ref> (cascade).]`  -- the Cascade's own application
+// Neither is a default; both are typed choices. A qualifier on a step that was NOT bothApply is
+// likewise refused (rather than silently ignored) -- the same fail-loud discipline this file
+// already uses everywhere else (a false match never silently misreads, HARDWIRE-22).
 
 /** One step's result, stored for the rest of the run. `position` is this step's 1-based place in
  *  the RUN'S OWN execution order (a single, global, flattened counter -- see script_runner.ts's
@@ -45,8 +61,18 @@
 export interface StoredStepResult {
   position: number;
   id: string;
-  /** The literal, untruncated result text (requirement 6: "do not truncate it on storage"). */
+  /** The literal, untruncated result text (requirement 6: "do not truncate it on storage"). For a
+   *  step whose ScriptStepRef.bothApply is true, this is the Cascade's own result (the same value
+   *  `current` state continues from, script_runner.ts's own STAGE 2 header) -- kept for receipt
+   *  display and for `all()`/JSON extraction, but NOT what a bare placeholder resolves to; see
+   *  `bothApply` below and D-BP152-049 STAGE 2's own header on substitutePlaceholders(). */
   result: string;
+  /** D-BP152-049 STAGE 2/4. Present only when this step's ScriptStepRef.bothApply was true --
+   *  both results, stored side by side, exactly as script_runner.ts's own StepRunRecord.bothApply
+   *  already records them. Its PRESENCE (not its content) is what makes a BARE
+   *  `[insert stored result from <ref>.]` reference to this step refuse -- see
+   *  substitutePlaceholders() below. */
+  bothApply?: { sourceResult: string; cascadeResult: string };
 }
 
 /**
@@ -118,6 +144,31 @@ function resolveRef(ref: string, store: ResultStore): StoredStepResult | undefin
   return store.getById(ref);
 }
 
+/** D-BP152-049 STAGE 2/4. Matches an optional trailing `(source)`/`(cascade)` qualifier on a
+ *  reference, e.g. "2 (source)" or "DefineTheTerm:2 (cascade)" -- case-insensitive, same as the
+ *  outer PLACEHOLDER_RE. Group 1 is the base ref (still resolved exactly as before, by position
+ *  or by Name:Number id); group 2, when present, is 'source' or 'cascade' (lowercased below). */
+const QUALIFIER_RE = /^(.*?)\s*\((source|cascade)\)$/i;
+
+interface ParsedRef {
+  baseRef: string;
+  qualifier: 'source' | 'cascade' | undefined;
+}
+
+function parseRef(ref: string): ParsedRef {
+  const m = ref.match(QUALIFIER_RE);
+  if (!m) return { baseRef: ref, qualifier: undefined };
+  return { baseRef: m[1].trim(), qualifier: m[2].toLowerCase() as 'source' | 'cascade' };
+}
+
+/** D-BP152-049 STAGE 2/4. The two explicit forms an operator must choose between on a both-apply
+ *  step -- built here, once, so the refusal message and any future caller state the SAME syntax,
+ *  never two slightly-different renderings of it. */
+function explicitBothApplySyntax(baseRef: string): string {
+  return `"[insert stored result from ${baseRef} (source).]" for the source's result, or `
+    + `"[insert stored result from ${baseRef} (cascade).]" for the Cascade's result`;
+}
+
 /**
  * Substitutes every `[insert stored result from <ref>.]` placeholder in `queryText` with the
  * literal stored result it names. Per this ticket's requirements:
@@ -138,10 +189,32 @@ export function substitutePlaceholders(
   const after = queryText.replace(PLACEHOLDER_RE, (whole, refRaw: string) => {
     if (firstError) return whole; // an earlier reference in this same text already failed
     const ref = refRaw.trim();
-    const entry = resolveRef(ref, store);
+    const { baseRef, qualifier } = parseRef(ref);
+    const entry = resolveRef(baseRef, store);
     if (!entry) {
-      firstError = `placeholder "${whole}" references "${ref}", which has not run yet or does not `
-        + 'exist in this run -- refusing to substitute an empty string, skip the step, or guess';
+      firstError = `placeholder "${whole}" references "${baseRef}", which has not run yet or does `
+        + 'not exist in this run -- refusing to substitute an empty string, skip the step, or guess';
+      return whole;
+    }
+    if (entry.bothApply) {
+      // D-BP152-049 STAGE 2/4, Founder BP152 verbatim: "when a bare placeholder is used on a
+      // both-apply step, I want it to refuse and make me say which." A bare reference (no
+      // qualifier) refuses outright, naming the step and both explicit forms; a qualified
+      // reference resolves to exactly the named side, never a blend or a default.
+      if (!qualifier) {
+        firstError = `placeholder "${whole}" bare-references step ${entry.position} `
+          + `("${entry.id}"), which was a both-apply step -- both the source's and the Cascade's `
+          + 'results were stored, and a bare reference is refused rather than silently picking '
+          + 'one. Specify which result you want: use '
+          + `${explicitBothApplySyntax(baseRef)}.`;
+        return whole;
+      }
+      return qualifier === 'source' ? entry.bothApply.sourceResult : entry.bothApply.cascadeResult;
+    }
+    if (qualifier) {
+      firstError = `placeholder "${whole}" specifies "(${qualifier})" but step ${entry.position} `
+        + `("${entry.id}") was not a both-apply step -- only a both-apply step has separate `
+        + `source/cascade results; use "[insert stored result from ${baseRef}.]" instead`;
       return whole;
     }
     return entry.result;
