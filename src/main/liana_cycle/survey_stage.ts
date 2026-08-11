@@ -517,7 +517,13 @@ function parseAmbiguityTerms(raw: unknown, emit?: MethodRunContext['emit']): Amb
  * how many to survey next (all of them, source order -- see its own comment), never this function.
  * `isNegation` is asked OF THE SOURCE per term, not matched against a word list here.
  */
-async function askAmbiguity(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<AmbiguityQueryResult> {
+// D-BP152-042. EXPORTED (was module-private) so this primitive can be given its own NameNumbered
+// identity (library/survey_steps.ts, `AmbiguityQuery:1`) and be individually referenceable --
+// Founder, BP152, verbatim (FD-BP152-20): "I want to use it to stack methods in whatever order I
+// want... just want them NameNumbered... so that I can mix and match as I please." This export
+// keyword is the ONLY change made here: no line inside this function's body is touched, no
+// behavior changes -- see this file's own D-BP152-042 SEG return for the byte-identical proof.
+export async function askAmbiguity(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<AmbiguityQueryResult> {
   // D-BP152-008. Query text moved to resources/liana_survey_queries.json (id
   // "survey.ambiguity.askedText") -- no placeholders, so this is the exact static sentence, read
   // fresh on every call. Throws (never guesses) if the file/id is missing.
@@ -707,7 +713,10 @@ export interface OperationQueryResult {
  * silently falls back to 'gemma' (same rule as Part 1); 'gemma' never silently falls back to
  * 'google' either.
  */
-async function askOperation(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<OperationQueryResult> {
+// D-BP152-042. EXPORTED (was module-private) so this primitive can be given its own NameNumbered
+// identity (library/survey_steps.ts, `OperationQuery:1`) and be individually referenceable -- same
+// rationale and same ONE-LINE-ONLY change as askAmbiguity()'s own export, immediately above.
+export async function askOperation(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<OperationQueryResult> {
   // D-BP152-008. Query text moved to resources/liana_survey_queries.json (id
   // "survey.operation.askedText") -- no placeholders, read fresh on every call.
   const askedText = getQueryText('survey.operation.askedText');
