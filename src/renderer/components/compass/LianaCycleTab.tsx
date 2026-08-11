@@ -33,6 +33,8 @@ import type {
   LianaTerminalEvent,
   LianaTerminalOutcome,
 } from '../../../shared/liana_cycle/liana_terminal_types';
+// D-BP152-043/BISHOP/seg-scratch-composer -- type-only, see script_bridge.ts's own header.
+import type { ComposerRegistryEntry, ScriptRunResponse } from '../../../main/liana_cycle/library/script_bridge';
 
 const LS_LAST_RUNS_KEY = 'liana_terminal_recent_inputs';
 const MAX_RECENT = 12;
@@ -288,6 +290,20 @@ export function LianaCycleTab() {
   const [steppedResponseText, setSteppedResponseText] = useState('');
   const [steppedAnswering, setSteppedAnswering] = useState(false);
   const steppedResponseRef = useRef<HTMLTextAreaElement>(null);
+
+  // D-BP152-043/BISHOP/seg-scratch-composer -- THE COMPOSER ("the Scratch version"). Founder,
+  // BP152, verbatim (FD-BP152-20): "I want to use it to stack methods in whatever order I want -
+  // I don't need the lego shapes, I just want them NameNumbered... so that I can mix and match as
+  // I please." `composerStack` is the ordered list of ids he has picked, in the order he wants
+  // them to run -- reordering THIS array is the entire feature. Never persisted (no localStorage,
+  // unlike `recent`/`oneAudibleMode` above) -- this ticket's own FORBIDDEN list says no
+  // persistence for this UI.
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [composerRegistry, setComposerRegistry] = useState<ComposerRegistryEntry[]>([]);
+  const [composerRegistryState, setComposerRegistryState] = useState<'idle' | 'loading' | 'loaded' | 'unavailable'>('idle');
+  const [composerStack, setComposerStack] = useState<string[]>([]);
+  const [composerRunning, setComposerRunning] = useState(false);
+  const [composerResult, setComposerResult] = useState<ScriptRunResponse | null>(null);
 
   // D-BP152-022/BISHOP/seg-laboratory-and-keep -- THE LABORATORY. FD-BP152-07: ephemeral by
   // default, persisted only when the operator explicitly says "keep". Every one of these is
@@ -731,6 +747,83 @@ export function LianaCycleTab() {
     setTeachText('');
     setTeachResult(null);
   }, []);
+
+  // D-BP152-043/BISHOP/seg-scratch-composer -- loads the list of steps on file, lazily (on first
+  // opening the panel) rather than on every mount, since most runs never open it. Called again
+  // any time the panel is (re)opened, so a step a concurrent dispatch registers after this window
+  // was first opened still shows up without a restart.
+  const loadComposerRegistry = useCallback(async () => {
+    if (!window.amplify?.lianaScriptListRegistry) {
+      setComposerRegistryState('unavailable');
+      return;
+    }
+    setComposerRegistryState('loading');
+    try {
+      const entries = await window.amplify.lianaScriptListRegistry();
+      setComposerRegistry(entries);
+      setComposerRegistryState('loaded');
+    } catch {
+      setComposerRegistryState('unavailable');
+    }
+  }, []);
+
+  const toggleComposerOpen = useCallback(() => {
+    setComposerOpen((wasOpen) => {
+      const willOpen = !wasOpen;
+      if (willOpen) void loadComposerRegistry();
+      return willOpen;
+    });
+  }, [loadComposerRegistry]);
+
+  // Add / remove / move-up / move-down -- "That is the whole interaction" (this ticket's own
+  // words). Duplicates are allowed on purpose: the Founder's own ask is "iterations galore", and
+  // nothing here was ordered to forbid running the same step twice.
+  const addComposerStep = useCallback((id: string) => {
+    setComposerStack((prev) => [...prev, id]);
+  }, []);
+  const removeComposerStep = useCallback((index: number) => {
+    setComposerStack((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+  const moveComposerStepUp = useCallback((index: number) => {
+    setComposerStack((prev) => {
+      if (index <= 0 || index >= prev.length) return prev;
+      const next = prev.slice();
+      [next[index - 1], next[index]] = [next[index], next[index - 1]];
+      return next;
+    });
+  }, []);
+  const moveComposerStepDown = useCallback((index: number) => {
+    setComposerStack((prev) => {
+      if (index < 0 || index >= prev.length - 1) return prev;
+      const next = prev.slice();
+      [next[index], next[index + 1]] = [next[index + 1], next[index]];
+      return next;
+    });
+  }, []);
+
+  // Runs the authored stack (or, if empty, the default -- see script_bridge.ts's own header for
+  // why that branch is byte-identical to the plain Run button above) against whatever is
+  // currently typed in the SAME question box the plain Run button reads -- one question, either
+  // run plainly or run through the stack, never a second question field.
+  const runComposerStack = useCallback(async () => {
+    const text = input.trim();
+    if (!text || composerRunning) return;
+    if (!window.amplify?.lianaScriptRun) {
+      setComposerResult(null);
+      return;
+    }
+    setComposerRunning(true);
+    setComposerResult(null);
+    try {
+      const response = await window.amplify.lianaScriptRun(text, composerStack);
+      setComposerResult(response);
+      if (response.mode === 'default') {
+        setLastOutcome(response.outcome);
+      }
+    } finally {
+      setComposerRunning(false);
+    }
+  }, [input, composerStack, composerRunning]);
 
   // THE TEACH BOX submit. Writes the operator's `teachText` to disk EXACTLY as typed -- this
   // function never touches, trims (beyond the browser's own textarea value), reformats, or
@@ -1753,6 +1846,143 @@ export function LianaCycleTab() {
           >
             {running ? 'Running…' : 'Run ▸'}
           </button>
+
+          {/* D-BP152-043/BISHOP/seg-scratch-composer -- THE COMPOSER. Founder, BP152, verbatim
+              (FD-BP152-20): "I want to use it to stack methods in whatever order I want... I just
+              want them NameNumbered... so that I can mix and match as I please." Plain list, pick
+              steps, set the order -- no lego shapes, no drag-and-drop, per this ticket's own
+              instruction. */}
+          <div style={{ border: '1px solid #334155', borderRadius: 6, overflow: 'hidden' }}>
+            <button
+              type="button"
+              onClick={toggleComposerOpen}
+              style={{
+                width: '100%', textAlign: 'left', background: composerOpen ? '#1e2a38' : '#0d1117',
+                color: '#e2e8f0', border: 'none', padding: '8px 10px', fontSize: 12, fontWeight: 700,
+                cursor: 'pointer', fontFamily: 'system-ui, sans-serif', display: 'flex',
+                justifyContent: 'space-between', alignItems: 'center',
+              }}
+            >
+              <span>Composer{composerStack.length > 0 ? `  ·  ${composerStack.length} step${composerStack.length === 1 ? '' : 's'} in the stack` : ''}</span>
+              <span style={{ color: '#64748b' }}>{composerOpen ? '▾' : '▸'}</span>
+            </button>
+
+            {composerOpen && (
+              <div style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 10, background: '#05080d' }}>
+                <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'system-ui, sans-serif' }}>
+                  Pick steps from the list below, in whatever order you want. An empty stack just runs the normal way.
+                </div>
+
+                {/* Your stack, in run order. */}
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif', marginBottom: 4 }}>
+                    Your stack (runs top to bottom):
+                  </div>
+                  {composerStack.length === 0 && (
+                    <div style={{ fontSize: 11, color: '#475569', fontFamily: 'system-ui, sans-serif', fontStyle: 'italic' }}>
+                      Nothing added yet -- Run this stack below will just run the normal way.
+                    </div>
+                  )}
+                  {composerStack.map((id, i) => (
+                    <div key={`${id}-${i}`} style={{
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px', marginBottom: 3,
+                      background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 4,
+                    }}>
+                      <span style={{ color: '#475569', fontSize: 11, fontFamily: 'monospace', width: 18 }}>{i + 1}.</span>
+                      <span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace', flex: 1 }}>{id}</span>
+                      <button type="button" onClick={() => moveComposerStepUp(i)} disabled={i === 0} title="Move up"
+                        style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: i === 0 ? '#334155' : '#94a3b8', cursor: i === 0 ? 'default' : 'pointer', padding: '2px 6px', fontSize: 11 }}>
+                        ▲
+                      </button>
+                      <button type="button" onClick={() => moveComposerStepDown(i)} disabled={i === composerStack.length - 1} title="Move down"
+                        style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: i === composerStack.length - 1 ? '#334155' : '#94a3b8', cursor: i === composerStack.length - 1 ? 'default' : 'pointer', padding: '2px 6px', fontSize: 11 }}>
+                        ▼
+                      </button>
+                      <button type="button" onClick={() => removeComposerStep(i)} title="Remove"
+                        style={{ background: 'none', border: '1px solid #7f1d1d', borderRadius: 4, color: '#fca5a5', cursor: 'pointer', padding: '2px 6px', fontSize: 11 }}>
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void runComposerStack()}
+                  disabled={composerRunning || running || !input.trim()}
+                  style={{
+                    background: composerRunning || running || !input.trim() ? '#1e2a38' : 'linear-gradient(135deg, #7c3aed, #a78bfa)',
+                    color: composerRunning || running || !input.trim() ? '#64748b' : '#fff', border: 'none', borderRadius: 6,
+                    padding: '8px 10px', fontSize: 12, fontWeight: 700,
+                    cursor: composerRunning || running || !input.trim() ? 'default' : 'pointer',
+                    fontFamily: 'system-ui, sans-serif', outline: 'none',
+                  }}
+                >
+                  {composerRunning ? 'Running…' : 'Run this stack ▸'}
+                </button>
+
+                {/* What happened, step by step -- shown after a stack run. */}
+                {composerResult && composerResult.mode === 'stack' && (
+                  <div style={{ fontSize: 11, fontFamily: 'monospace', color: '#e2e8f0' }}>
+                    <div style={{ color: '#94a3b8', fontFamily: 'system-ui, sans-serif', marginBottom: 4 }}>
+                      What happened, step by step:
+                    </div>
+                    {composerResult.result.error && composerResult.result.steps.length === 0 && (
+                      <div style={{ color: '#fca5a5' }}>Could not run: {composerResult.result.error}</div>
+                    )}
+                    {composerResult.result.steps.map((s, i) => (
+                      <div key={i} style={{
+                        padding: '4px 6px', marginBottom: 3, borderRadius: 4,
+                        background: s.status === 'ok' ? '#052e1e' : '#3f0a0a',
+                        border: `1px solid ${s.status === 'ok' ? '#059669' : '#991b1b'}`,
+                      }}>
+                        <div>{i + 1}. {s.id}  ({s.durationMs}ms)  {s.status === 'ok' ? 'done' : 'did not finish'}</div>
+                        <div style={{ opacity: 0.85, marginTop: 2 }}>
+                          {composerResult.result.results[i]?.summary ?? s.error ?? s.whatChanged}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {composerResult && composerResult.mode === 'default' && (
+                  <div style={{ fontSize: 11, fontFamily: 'system-ui, sans-serif', color: '#64748b' }}>
+                    Ran the normal way (the stack was empty) -- see the answer above.
+                  </div>
+                )}
+
+                {/* Steps on file -- always the live list, so a step added elsewhere shows up here
+                    without reopening the app. */}
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif', marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Steps on file:</span>
+                    <button type="button" onClick={() => void loadComposerRegistry()} style={{ background: 'none', border: 'none', color: '#22d3ee', cursor: 'pointer', fontSize: 11 }}>
+                      refresh
+                    </button>
+                  </div>
+                  {composerRegistryState === 'loading' && <div style={{ fontSize: 11, color: '#475569' }}>Loading…</div>}
+                  {composerRegistryState === 'unavailable' && <div style={{ fontSize: 11, color: '#fca5a5' }}>Not available in this build.</div>}
+                  {composerRegistryState === 'loaded' && composerRegistry.map((entry) => (
+                    <div key={entry.id} style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 6, padding: '4px 6px', marginBottom: 3,
+                      background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 4,
+                    }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace' }}>
+                          {entry.id}
+                          {!entry.executable && <span style={{ color: '#a16207', marginLeft: 6, fontSize: 10 }}>(not runnable yet)</span>}
+                        </div>
+                        <div style={{ color: '#64748b', fontSize: 10.5, marginTop: 2 }}>{entry.whatItDoes}</div>
+                      </div>
+                      <button type="button" onClick={() => addComposerStep(entry.id)}
+                        style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: '#94a3b8', cursor: 'pointer', padding: '2px 8px', fontSize: 11, flexShrink: 0 }}>
+                        Add
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
 
           {lastOutcome && (
             <div style={{
