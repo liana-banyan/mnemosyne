@@ -547,7 +547,21 @@ export function wrapForSteppedAudible(
     }
   };
 
-  return { ctx: { askGoogle: wrappedAskGoogle, emit: wrappedEmit }, finish };
+  // D-BP152-052. `askConversationalAuthority` (D-BP152-044, method_registry.ts, OPTIONAL) is
+  // threaded through UNWRAPPED, by reference -- same convention askGoogle/emit already document at
+  // this file's own header ("this decorator wraps emit() ONLY TO BUFFER events... the real,
+  // blocking pause happens inside the wrapped askGoogle"). Before this line, THIS RETURN dropped
+  // the field entirely (the object literal below only ever named `askGoogle`/`emit`), which is
+  // exactly what silently sent SURVEY's two META-questions (askAmbiguity()/askOperation(),
+  // survey_stage.ts's obtainMetaQuestionPassage()) straight to Google with NO conversational-
+  // authority attempt and NO transcript line explaining why, on every run with Stepped Audible
+  // armed for 'survey' -- THE MEASURED FAILURE THIS CLOSES (latestTest.md, a Stepped Audible run:
+  // "STEPPED AUDIBLE is ON" at line 19, "PARSER INSTRUMENT [ambiguity] query SENT to Google" at
+  // line 45 with no preceding "query SENT to conversational authority" line at all). No pause
+  // behavior is added for it -- obtainMetaQuestionPassage() never calls it from inside a place this
+  // file's own pause mechanism (buffered emit + wrapped askGoogle) observes, so wrapping it the way
+  // askGoogle is wrapped would add a pause point this ticket was never asked for (THE TARE RULE).
+  return { ctx: { askGoogle: wrappedAskGoogle, emit: wrappedEmit, askConversationalAuthority: ctx.askConversationalAuthority }, finish };
 }
 
 // ─────────────────────────── D-BP152-020/BISHOP/seg-pause-at-step-zero ───────────────────────────

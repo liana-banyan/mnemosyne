@@ -174,7 +174,7 @@ describe('D-BP152-044 -- askAmbiguity(): the ambiguity meta-question tries a con
     expect(r.why).toMatch(/No source was reachable/);
   }, 15000);
 
-  test('undefined askConversationalAuthority -- byte-identical to the pre-existing Google-only path', async () => {
+  test('undefined askConversationalAuthority -- falls back to Google, and D-BP152-052 makes the fallback say why', async () => {
     const originalFetch = global.fetch;
     (global as any).fetch = mockOllamaFetch(
       [{ term: 'densely populated', standardMeaning: 'a', alternativeMeaning: 'b', impact: 'c', isNegation: false }],
@@ -200,7 +200,13 @@ describe('D-BP152-044 -- askAmbiguity(): the ambiguity meta-question tries a con
       expect(googleCalls).toBe(1);
       expect(r.answeredByAuthority).toBe('google');
       const notes = noteTexts(events);
-      expect(notes.some((t) => /conversational authority/i.test(t))).toBe(false);
+      // Never attempted -- there is nothing to try when the field itself is undefined.
+      expect(notes.some((t) => /query SENT to conversational authority/.test(t))).toBe(false);
+      expect(notes.some((t) => /ANSWERED BY:/.test(t))).toBe(false);
+      // D-BP152-052: the fallback is no longer silent -- it now says WHY, distinct from the
+      // "conversational authority UNAVAILABLE" wording used when it WAS tried and refused/failed
+      // (see the sibling test above, "conversational authority refuses...").
+      expect(notes.some((t) => /no conversational authority is wired for this call/.test(t))).toBe(true);
       expect(notes.some((t) => /query SENT to Google \(untruncated, verbatim\)/.test(t))).toBe(true);
     } finally {
       global.fetch = originalFetch;
