@@ -69,6 +69,11 @@ import type { SteppedAudibleChannel } from './stepped_audible';
 // which other file happens to import this one first.
 import './methods/comparative_cascade';
 import './methods/definitional_cascade';
+// D-BP152-035 (Stage 1/3) -- THE CLASSIFY CASCADE, demand: 'CLASSIFY'. Wired here so it is
+// reachable the same way as the other two methods (built but not wired is the Founder's own
+// standing complaint, FD-BP152-08); see classify_cascade.ts's own header for the ruling this
+// implements.
+import './methods/classify_cascade';
 
 // Re-exported so index.ts's existing closure (`(question) =>
 // runBrowserAuthorityQueryFromMain({...})`) keeps type-checking against exactly the same shape
