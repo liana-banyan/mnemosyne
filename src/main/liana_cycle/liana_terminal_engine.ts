@@ -69,6 +69,12 @@ import type { AudibleChannel } from './audible';
 // one above, and for why it is scoped to the comparative-cascade method only.
 import { SteppedAudibleAbandoned, SteppedAudibleLog, buildUpfrontStepList, requestStepZeroPause, wrapForSteppedAudible } from './stepped_audible';
 import type { SteppedAudibleChannel } from './stepped_audible';
+// D-BP152-051/BISHOP/seg-assisted-mode (Assisted Mode). See assisted_mode.ts's header for why
+// this is a THIRD, independent decorator around the same injected askGoogle parameter -- not a
+// combination of, or a replacement for, Call an Audible or Stepped Audible above. Founder ruling,
+// BP152, verbatim: "Yes make it a mode. But also, can we not automate WHILE using that mode?"
+import { AssistedModeAbandoned, AssistedModeLog, normalizeRunMode, wrapAskGoogleWithAssistedMode } from './assisted_mode';
+import type { RunMode } from './assisted_mode';
 // Registering a method is a side effect of importing its module (see each file's own
 // `registerMethod(...)` call at the bottom). Both are imported here, and ONLY here, so the
 // registry is fully populated before the first `runLianaCycleQuestion` call, regardless of
@@ -299,7 +305,7 @@ export function parseFreeText(input: string): ParsedInput {
  *  teach the next one. Never runs a method whose shape test failed. Never throws -- an internal
  *  failure is reported as an 'error' event plus an abstained outcome, matching this estate's
  *  honest-abstain-over-fabrication rule. */
-export async function runLianaCycleQuestion(
+async function runLianaCycleQuestionInner(
   input: string,
   askGoogle: AskGoogleFn,
   emit: EmitFn,
@@ -351,8 +357,41 @@ export async function runLianaCycleQuestion(
    *  own runScratchComposer() call site (library/script_bridge.ts, this ticket's own FORBIDDEN
    *  "script runner") is untouched and simply never passes it. */
   askConversationalAuthority?: ConversationalAuthorityFn,
+  /** D-BP152-051 (Assisted Mode), ADDITIVE/OPTIONAL. Undefined/omitted or 'automated' (the
+   *  default) = today's behavior, byte-identical to before this ticket -- see this file's own
+   *  runLianaCycleQuestion() wrapper (below) for the ONE place `mode` is normalized and stamped
+   *  onto the outcome, and assisted_mode.ts's header for why 'assisted' never falls back to
+   *  automated silently even if `assistedChannel` is missing (checked immediately below). */
+  mode?: RunMode,
+  /** D-BP152-051, ADDITIVE/OPTIONAL. The pause channel assisted mode raises its per-call pauses
+   *  on -- SAME SteppedAudibleChannel type and SAME IPC round trip `steppedAudible` above already
+   *  uses (see assisted_mode.ts's header: reused capture path, not a second one), but gated
+   *  INDEPENDENTLY of `steppedAudible` -- assisted mode must not silently depend on the Stepped
+   *  Audible bench toggle also being on. Only consulted when `mode === 'assisted'`. */
+  assistedChannel?: SteppedAudibleChannel | null,
 ): Promise<LianaTerminalOutcome> {
   const trimmed = input.trim();
+  const runMode = normalizeRunMode(mode);
+  // FOUNDER, BP152, verbatim: "if they can just turn off the spigot, then nothing works." A run
+  // ordered into assisted mode with no channel to pause on must NEVER silently continue as
+  // automated -- that would be exactly the silent degrade his ruling forbids. Fails loudly and
+  // honestly (an abstain naming why), never falls through to issuing a request itself.
+  if (runMode === 'assisted' && !assistedChannel) {
+    emit({
+      kind: 'error',
+      text: 'ASSISTED MODE requested but no assisted-mode channel is available -- refusing to fall back to automated mode (that would be the exact silent degrade the Founder\'s ruling forbids, RULINGS_BP152.md). Nothing was sent to Google.',
+      ts: nowIso(),
+    });
+    return {
+      question: trimmed,
+      verdict: null,
+      abstain: true,
+      freeText: !/^\d+$/.test(trimmed),
+      error: 'assisted_mode_channel_unavailable',
+      options: null,
+      mode: runMode,
+    };
+  }
   const resolvedAmbiguityQueryTransport = resolveAmbiguityQueryTransport(ambiguityQueryTransport);
   // D-BP152-039 REMOVAL -- `contingencyOperatorSurveyOn`/`variant`/`contingencyOperatorSurveySource`
   // used to live here, gating Survey behind a boolean. Per FD-BP152-20/FD-BP152-09 the gate is
@@ -372,7 +411,19 @@ export async function runLianaCycleQuestion(
   // you quit early is worse than no walk."
   const audibleLog = new AudibleLog();
   const steppedLog = new SteppedAudibleLog();
+  // D-BP152-051, ADDITIVE. Declared outside the try for the SAME reason audibleLog/steppedLog
+  // are -- "keeps every note" (Founder, BP149) applies to an assisted-mode abandon exactly as it
+  // does to the other two.
+  const assistedLog = new AssistedModeLog();
   try {
+    // D-BP152-051, LAW 5 (HARDWIRE-23: the receipt shows which rule fired). Requirement 2: "the
+    // mode is recorded on every run, in the transcript and the receipt" -- this line is the
+    // transcript half (index.ts's 'liana-terminal-run' handler already writes the full `events`
+    // array as the receipt's transcript); `mode` on the returned LianaTerminalOutcome (stamped by
+    // this file's own runLianaCycleQuestion() wrapper, below) is the receipt-field half. Emitted
+    // UNCONDITIONALLY, on every run, so a later reader never has to infer automated from the
+    // absence of an "assisted" line.
+    note(emit, `   MODE: ${runMode.toUpperCase()} (D-BP152-051 -- ${runMode === 'assisted' ? 'the operator issues every query on his own browser; this app never sends one' : "today's automated behavior, the default"})`);
     // D-BP152-039 -- THE RECEIPT LINE, kept per Law 5 (HARDWIRE-23: the receipt shows which rule
     // fired) even though Survey is no longer optional: the transcript must still state that
     // Survey ran, so a reader never has to infer it from the absence of a "SURVEY SPLICE: OFF"
@@ -402,6 +453,29 @@ export async function runLianaCycleQuestion(
       correctAnswer: parsed.correctAnswer,
     };
     const freeText = parsed.qid == null;
+
+    // D-BP152-051, THE ONE INJECTION POINT. Wrapping `askGoogle` HERE, before Step 0's pause,
+    // before Survey's own MethodRunContext, and before the selected method's baseCtx (all three
+    // below use `effectiveAskGoogle` from this point on, never the raw `askGoogle` parameter
+    // directly) guarantees NO outbound Google request escapes assisted mode anywhere in this run
+    // -- not the method's own queries, not Survey's two META-questions, not a Step-0 "ask Google
+    // this" round -- without editing Step 0, Survey, or any cascade file. This is the SAME
+    // decorator principle audible.ts's own header explains (D-BP149-041's MethodRunContext
+    // injection point); the only difference is WHERE this ticket applies it -- once, at the
+    // source, rather than only around the selected method's own context the way Call an Audible
+    // does (see that decorator's own narrower scope, line ~695 below, which is intentionally NOT
+    // extended to cover Survey -- not this ticket's concern, and not touched).
+    // OFF-STAYS-IDENTICAL: `mode !== 'assisted'` (the default) means `wrapAskGoogleWithAssistedMode`
+    // returns `askGoogle` ITSELF, by reference -- so `effectiveAskGoogle === askGoogle` on every
+    // automated run and every one of this file's existing automated-mode behaviors, byte for
+    // byte, is unchanged (see this ticket's own deliverable for the identity proof).
+    const effectiveAskGoogle = wrapAskGoogleWithAssistedMode(
+      askGoogle,
+      runMode === 'assisted' ? (assistedChannel ?? null) : null,
+      emit,
+      assistedLog,
+      parsed.options,
+    );
 
     // D-BP152-019/BISHOP/seg-step-zero -- STEP 0: STATE THE QUESTION, FULLY (FD-BP152-14).
     // Founder, BP152, verbatim: "Remember. the FIRST thing to do is to state the question,
@@ -474,7 +548,7 @@ export async function runLianaCycleQuestion(
     // all additive -- see requestStepZeroPause()'s own doc comment for why none of the three is
     // ever touched on the `steppedAudible == null` no-op path or on a run that never types
     // `ask_google`.
-    await requestStepZeroPause(steppedAudible ?? null, steppedLog, step0Events, askGoogle, emit, parsed.options);
+    await requestStepZeroPause(steppedAudible ?? null, steppedLog, step0Events, effectiveAskGoogle, emit, parsed.options);
 
     // D-BP152-039 REMOVAL -- this used to branch on `contingencyOperatorSurveyOn` (Contingency
     // Operator: Survey Splice), with an `else` running the untouched D-BP150-003 CUES-table path
@@ -509,7 +583,7 @@ export async function runLianaCycleQuestion(
       // { askGoogle, emit } (stepped_audible.ts, this ticket's own FORBIDDEN "pause plumbing", not
       // touched) -- on that combination the two META-questions honestly fall back to Google, same
       // as if this were never wired, rather than crashing or fabricating an authority.
-      const surveyCtx: MethodRunContext = { askGoogle, emit, askConversationalAuthority };
+      const surveyCtx: MethodRunContext = { askGoogle: effectiveAskGoogle, emit, askConversationalAuthority };
       const surveyStepWrap = wrapForSteppedAudible('survey', surveyCtx, steppedAudible ?? null, steppedLog);
       if (steppedAudible) {
         const surveyStepDefs = buildUpfrontStepList('survey');
@@ -692,7 +766,7 @@ export async function runLianaCycleQuestion(
       }
     }
     const baseCtx: MethodRunContext = {
-      askGoogle: wrapAskGoogleWithAudible(askGoogle, audible ?? null, emit, audibleLog),
+      askGoogle: wrapAskGoogleWithAudible(effectiveAskGoogle, audible ?? null, emit, audibleLog),
       emit,
     };
     const stepWrap = wrapForSteppedAudible(method.id, baseCtx, steppedAudible ?? null, steppedLog);
@@ -720,6 +794,7 @@ export async function runLianaCycleQuestion(
       options: parsed.options,
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
       ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
+      ...(assistedLog.length ? { assistedLog: assistedLog.all() } : {}),
       ...(sc01Result ? { sc01: sc01Result } : {}),
       ...(sc01ScoringError ? { sc01ScoringError } : {}),
     };
@@ -756,6 +831,25 @@ export async function runLianaCycleQuestion(
         steppedLog: steppedLog.all(),
       };
     }
+    // D-BP152-051 -- an assisted-mode pause abandon, same "keeps every note" guarantee as the two
+    // branches immediately above (audible.ts's AudibleAbandoned, stepped_audible.ts's
+    // SteppedAudibleAbandoned). Distinct branch, same discipline: the run's own outcome is an
+    // honest abstain, never a fabricated verdict, and every round typed on the way to the abandon
+    // is kept in `assistedLog`.
+    if (e instanceof AssistedModeAbandoned) {
+      emit({ kind: 'result', text: 'ASSISTED MODE ABANDONED -- run stopped by operator. Everything captured so far is kept.', ts: nowIso() });
+      return {
+        question: trimmed,
+        verdict: null,
+        abstain: true,
+        freeText: !/^\d+$/.test(trimmed),
+        error: 'assisted_mode_abandoned',
+        options: null,
+        ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
+        ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
+        assistedLog: assistedLog.all(),
+      };
+    }
     const msg = e instanceof Error ? e.message : String(e);
     emit({ kind: 'error', text: `terminal threw: ${msg}`, ts: nowIso() });
     return {
@@ -767,6 +861,52 @@ export async function runLianaCycleQuestion(
       options: null,
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
       ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
+      ...(assistedLog.length ? { assistedLog: assistedLog.all() } : {}),
     };
   }
+}
+
+// D-BP152-051, THIN WRAPPER -- THE ONE PLACE `mode` IS STAMPED, GUARANTEED ON EVERY EXIT PATH.
+//
+// `runLianaCycleQuestionInner` above has many return statements (the qid-not-found early exit,
+// the two mid-run abstains, three catch branches, the success path) -- editing `mode` into every
+// one individually would be exactly the kind of change HARDWIRE-23 LAW 5 exists to guard against
+// missing: "the receipt names the rule and its attribution status", on every run, and a single
+// forgotten return site would silently produce a receipt with no `mode` field at all. Wrapping the
+// whole function once, and spreading `mode` over whatever it returns, makes that structurally
+// impossible to miss rather than a discipline to remember at each of eight call sites.
+//
+// Public signature is otherwise BYTE-IDENTICAL to before this ticket: every parameter up to and
+// including `askConversationalAuthority` is unchanged, in the same order: existing callers
+// (index.ts's 'liana-terminal-run' handler, this file's own tests) that pass nothing for `mode`/
+// `assistedChannel` get `mode: 'automated'` stamped onto their outcome and nothing else different
+// -- the ONLY new externally-visible fact on an automated run is that `outcome.mode` is now
+// explicitly `'automated'` instead of absent, which is this ticket's own requirement 2 (a run
+// whose governing setting leaves no trace makes the receipt a lie) applied to the DEFAULT case
+// too, not only the assisted one.
+export async function runLianaCycleQuestion(
+  input: string,
+  askGoogle: AskGoogleFn,
+  emit: EmitFn,
+  audible?: AudibleChannel | null,
+  steppedAudible?: SteppedAudibleChannel | null,
+  contingencyOperatorSurvey?: boolean,
+  ambiguityQueryTransport?: 'google' | 'gemma',
+  askConversationalAuthority?: ConversationalAuthorityFn,
+  mode?: RunMode,
+  assistedChannel?: SteppedAudibleChannel | null,
+): Promise<LianaTerminalOutcome> {
+  const outcome = await runLianaCycleQuestionInner(
+    input,
+    askGoogle,
+    emit,
+    audible,
+    steppedAudible,
+    contingencyOperatorSurvey,
+    ambiguityQueryTransport,
+    askConversationalAuthority,
+    mode,
+    assistedChannel,
+  );
+  return { ...outcome, mode: normalizeRunMode(mode) };
 }

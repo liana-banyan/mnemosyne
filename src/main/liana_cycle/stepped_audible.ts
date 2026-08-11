@@ -625,7 +625,11 @@ export const STEP_ZERO_STEP_DEF: LianaSteppedStepDef = {
  *  was possible on that run." NEVER used to block or edit the query -- flag only. Returns the
  *  "LETTER) text" of every option whose full text appears verbatim inside `query`; `[]` when there
  *  is no options pool (a free-text question with no lettered options) or no match. */
-function detectOptionContamination(query: string, options: Record<string, string> | null): string[] {
+// D-BP152-051/BISHOP/seg-assisted-mode: exported (was module-private) so assisted_mode.ts's own
+// capture handling can reuse this EXACT function rather than a second copy of the same flag
+// logic -- "provenance, citations, contamination flag, all unchanged" is this ticket's own
+// requirement. Behavior and signature are otherwise byte-identical to before this ticket.
+export function detectOptionContamination(query: string, options: Record<string, string> | null): string[] {
   if (!options) return [];
   const hits: string[] = [];
   for (const letterKey of Object.keys(options)) {

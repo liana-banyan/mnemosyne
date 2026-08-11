@@ -107,6 +107,51 @@ export interface LianaTerminalOutcome {
    *  above is UNAFFECTED either way ("A scorer that can kill a run is worse than no scorer.").
    *  Mutually exclusive with `sc01` above (a thrown scoring attempt produces no result to report). */
   sc01ScoringError?: string;
+  /** D-BP152-051 (Assisted Mode). ALWAYS present, on EVERY run -- unlike audibleLog/steppedLog/
+   *  variant above, this is not an "absent means off" field, per FD-BP152-07's own requirement:
+   *  "an override that changes a run and leaves no trace makes the receipt a lie." A later reader
+   *  must always be able to tell an assisted run from an automated one WITHOUT inferring it from
+   *  another field's presence -- so `mode` is stamped on every outcome this file's own
+   *  runLianaCycleQuestion() wrapper returns, `'automated'` being the explicit, recorded default,
+   *  not merely the absence of `'assisted'`. */
+  mode?: RunMode;
+  /** D-BP152-051. Every per-call assisted-mode pause the operator was shown and what they did
+   *  about it, in order, verbatim -- same "keeps every note" convention as audibleLog/steppedLog
+   *  above. Present only on a run that had `mode: 'assisted'` and reached at least one pause. */
+  assistedLog?: LianaAssistedRecord[];
+}
+
+// ─────────────────────────── D-BP152-051: ASSISTED MODE ───────────────────────────
+//
+// Founder ruling, BP152 (RULINGS_BP152.md): "Yes make it a mode. But also, can we not automate
+// WHILE using that mode?" -- and the reasoning: "if they can just turn off the spigot, then
+// nothing works. It is better for us to put the browser that I actually use, and then take my
+// actual question, and put it in the actual box I would actually type it in, and then get the
+// answer and copy it to the right place."
+//
+// Same cross-boundary convention as LianaAudibleAction/LianaSteppedAction above: the enum lives
+// here (shared, main+renderer) and src/main/liana_cycle/assisted_mode.ts (main-only) imports it,
+// rather than the reverse -- a shared type file must never import a main-only module.
+
+/** `automated` is today's behavior and the default. `assisted` is the one this ticket adds. No
+ *  third value -- an absent/undefined mode on any pre-existing caller means `automated`. */
+export type RunMode = 'automated' | 'assisted';
+
+/** One assisted-mode pause and its answer, joined -- same provenance-receipt convention as
+ *  LianaAudibleRecord/LianaSteppedRecord above (Founder, BP151: "EVERYTHING DONE has a
+ *  provenance authority receipt attached to it."). Written by main from what actually happened. */
+export interface LianaAssistedRecord {
+  pauseId: string;
+  callIndex: number;
+  /** The query exactly as composed for this call -- identical to what automated mode would have
+   *  sent; this decorator never rewrites it. */
+  query: string;
+  action: LianaSteppedAction;
+  /** Which of the five Nexus surfaces the capture actually came from, when the response was a
+   *  capture -- undefined otherwise. */
+  capturedSurface?: string | null;
+  capturedUrl?: string;
+  ts: string;
 }
 
 // ─────────────────────────── D-BP152-016: SC-01 (Contingency Operator: Survey Splice only) ───────────────────────────
