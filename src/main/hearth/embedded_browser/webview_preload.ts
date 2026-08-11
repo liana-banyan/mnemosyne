@@ -280,6 +280,11 @@ interface BrowserAuthorityExtractionResultMessage {
    *  module recognizes, or when extraction found nothing -- same never-fabricate contract as
    *  `citations` above. */
   results: SearchResultCandidate[];
+  /** D-BP152-050/BISHOP/seg-honest-failure-reasons -- true only when isGoogleChallengeUrl()
+   *  structurally identified the landed page as a Google verification/rate-limit challenge
+   *  (URL-only check, never page prose). Always present (never omitted) on this static
+   *  (Google/Perplexity) extraction path -- see extractBrowserAuthorityAnswer()'s own header. */
+  challenge: boolean;
 }
 
 /** (KN-BP147-M2) One ranked candidate result independently listed by the underlying page for
@@ -331,14 +336,51 @@ function firstNonEmptyTextMatch(selectors: string[]): { text: string; selector: 
   return null;
 }
 
+// D-BP152-050/BISHOP/seg-honest-failure-reasons -- STRUCTURAL challenge detection, per the
+// Founder's own live report (BP152): a "checkmark the 'I am not a robot'" / "we have detected
+// unusual activity" page at the literal URL https://www.google.com/sorry/index. This checks WHAT
+// THE PAGE IS (its URL), never what it SAYS -- no word list of English phrases is matched
+// anywhere in this file. google.com/sorry/ is Google's own dedicated redirect target for a
+// verification/rate-limit challenge (this file's own R-MECHANISM-VERIFY comment above,
+// GOOGLE_ORGANIC_RESULT_CONTAINER_SELECTORS's header, already documented hitting exactly this
+// redirect live before this ticket existed) -- not a path any genuine search-result page ever
+// uses, so a URL match here cannot collide with a real answer page. Deliberately conservative:
+// this recognizes ONLY the one structural marker actually observed live; it does not attempt to
+// guess at other vendors' or other challenge shapes, per this ticket's own "an honest unknown
+// beats a confidently wrong reason" rule -- a challenge this function does not recognize simply
+// falls through to the existing (unchanged) success/no-match reporting below, not a fabricated
+// 'challenge' verdict. Parses the URL properly (new URL(), same primitive this file already uses
+// elsewhere -- extractCitationsFromElement/extractGoogleOrganicResults above) rather than
+// regex-matching the raw string, and anchors the FULL hostname with `$` -- this closes an exact
+// isolated-verification finding (D-BP152-050 own test pass): a naive
+// `/^https:\/\/(?:www\.)?google\.[a-z.]{2,24}\/sorry\//` would also match a lookalike hostname
+// like "google.com.attacker.net" (its `[a-z.]` class happily spans extra dot-separated labels).
+// Matching on the parsed `url.hostname` with a `$`-anchored pattern cannot be fooled the same way.
+function isGoogleChallengeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
+    if (!/^(?:www\.)?google\.[a-z]{2,3}(?:\.[a-z]{2})?$/i.test(parsed.hostname)) return false;
+    return parsed.pathname === '/sorry' || parsed.pathname.startsWith('/sorry/');
+  } catch {
+    return false;
+  }
+}
+
 function extractBrowserAuthorityAnswer(
   authority: BrowserAuthorityName,
 ): Omit<BrowserAuthorityExtractionResultMessage, 'results'> {
   const selectors = authority === 'user_perplexity' ? PERPLEXITY_ANSWER_SELECTORS : GOOGLE_ANSWER_SELECTORS;
   const match = firstNonEmptyTextMatch(selectors);
+  // Structural only, URL-based -- see isGoogleChallengeUrl()'s own header above. Computed for
+  // both branches below (checked regardless of whether a selector happened to match) because a
+  // challenge page's own UI chrome text ("Try again", a button label) could in principle satisfy
+  // firstNonEmptyTextMatch()'s length/denylist heuristics by accident; the structural URL fact
+  // takes priority over that best-effort text match either way.
+  const challenge = window.location.href ? isGoogleChallengeUrl(window.location.href) : false;
 
-  if (!match) {
-    return { success: false, authority, snippet: '', sourceUrl: null, selectorUsed: null, citations: [] };
+  if (!match || challenge) {
+    return { success: false, authority, snippet: '', sourceUrl: null, selectorUsed: null, citations: [], challenge };
   }
 
   return {
@@ -348,6 +390,7 @@ function extractBrowserAuthorityAnswer(
     sourceUrl: window.location.href,
     selectorUsed: match.selector,
     citations: extractCitationsFromElement(match.element),
+    challenge: false,
   };
 }
 

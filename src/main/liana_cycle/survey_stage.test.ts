@@ -397,7 +397,12 @@ console.log('survey_stage.test.ts -- D-BP151-025: Survey (steps 2, 3, 4, 6)\n');
     assert(r.constraints[0].obtained === false, 'step2(google, constraint refuses independently): obtained is false -- the constraint\'s own Google call failed');
     assert(r.constraints[0].answer === null, 'step2(google, constraint refuses independently): answer is an honest null');
     assert(r.constraints[0].citations.length === 0, 'step2(google, constraint refuses independently): no citation when unobtained');
-    assert(/unreachable/.test(r.constraints[0].why), 'step2(google, constraint refuses independently): why states Google was unreachable for THIS constraint', r.constraints[0].why);
+    // D-BP152-050: askConstraint()'s why-string wording changed ("Google query failed..." instead
+    // of "Google was unreachable...") -- google.via now names the real reason (here 'unknown',
+    // since this fixture's askGoogle returns a bare null with no dispatchOutcome) rather than
+    // asserting unreachability, which is not always true (e.g. a verification challenge means
+    // Google DID answer). Updated to match the new, more honest wording.
+    assert(/failed/.test(r.constraints[0].why), 'step2(google, constraint refuses independently): why states the Google query failed for THIS constraint', r.constraints[0].why);
   } finally {
     global.fetch = originalFetch;
   }

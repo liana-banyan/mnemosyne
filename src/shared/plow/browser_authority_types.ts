@@ -244,6 +244,28 @@ export interface BrowserAuthorityRawExtraction {
    *  INCLUDING this one. Absent whenever threadStatus is absent (no threadId was supplied, so no
    *  position is tracked). Counts attempts sent, not successful replies. */
   threadPosition?: number;
+  /** D-BP152-050/BISHOP/seg-honest-failure-reasons, ADDITIVE/OPTIONAL -- true only when the
+   *  static (Google/Perplexity) dispatch STRUCTURALLY identified the landed page as a
+   *  verification/rate-limit challenge (webview_preload.ts's isGoogleChallengeUrl(), a URL-only
+   *  check against window.location.href -- never a word-list match against page prose). Absent
+   *  (not false) on every pre-fix caller and on any extraction this check does not run for
+   *  (the interactive authorities, or a genuine successful extraction). Deliberately kept OUT of
+   *  the closed BrowserAuthorityAttemptOutcome/BrowserAuthorityDispatchOutcome vocabularies below
+   *  (KN-BP144-7's "exactly these seven values, no free text" contract, and T2's "strict subset
+   *  of the seven" contract) -- this ticket does not touch that ensemble-receipt instrumentation;
+   *  this is a separate, narrower signal read only by the Liana Cycle's own askGoogle wrapper
+   *  (index.ts) and comparative_cascade.ts's googleBlocks(). */
+  challengeDetected?: boolean;
+  /** D-BP152-050, ADDITIVE/OPTIONAL -- the Liana Cycle's own askGoogle wrapper (index.ts,
+   *  buildLianaAskGoogle()) re-exposes runBrowserAuthorityQueryFromMainObserved()'s ALREADY-
+   *  COMPUTED BrowserAuthorityDispatchOutcome here (same type, no new literals added to it) so
+   *  googleBlocks() can tell "window/session unavailable" (disabled) from "a network/navigation
+   *  timeout" (timeout) from "asked, returned, nothing usable" (no_result/dispatched), instead of
+   *  every non-answer collapsing into the same generic null. Absent on every OTHER caller of
+   *  runBrowserAuthorityQueryFromMain (Stage F3 mesh-synergy, decompose, the eliminator, the
+   *  Ask-tab lookup, the direct IPC handler, plow_mc_answerer.ts) -- none of them are touched by
+   *  this ticket and none of them populate this field. */
+  dispatchOutcome?: BrowserAuthorityDispatchOutcome;
 }
 
 /** BP137 Yoke v2b Stage C item 1's ProvenanceReceipt-compatible output shape. Field names/

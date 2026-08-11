@@ -900,7 +900,11 @@ export async function requestStepZeroPause(
       kind: 'note',
       text: google.ok
         ? `   PARSER INSTRUMENT [ask-google-this, OPERATOR OVERRIDE, FD-BP152-15] RAW RESPONSE from Google (${google.via}) (untruncated, verbatim, no length cap)="${google.text}"`
-        : `   PARSER INSTRUMENT [ask-google-this, OPERATOR OVERRIDE, FD-BP152-15] Google UNREACHABLE (${google.via}) -- an honest empty result, not a fabrication`,
+        // D-BP152-050: "UNREACHABLE" removed -- it asserted Google could not be reached, which
+        // was FALSE for a verification/rate-limit challenge (Google answered; it refused) and
+        // imprecise for every other failure mode too. google.via (comparative_cascade.ts's
+        // googleBlocks(), same ticket) now names the real reason; this line just reports it.
+        : `   PARSER INSTRUMENT [ask-google-this, OPERATOR OVERRIDE, FD-BP152-15] Google query FAILED (${google.via}) -- an honest empty result, not a fabrication`,
       ts: nowIso(),
     };
     emit(responseEvent);

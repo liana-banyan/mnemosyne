@@ -175,7 +175,12 @@ export async function runAnswerKeyExclusionTest(
   });
   const google = await googleBlocks(ctx.askGoogle, exclusionQuery);
   if (!google.ok || !google.text.trim()) {
-    const why = `the exclusion re-ask itself was unreachable (${google.via}) -- the FIRST answer is `
+    // D-BP152-050: "unreachable" removed -- google.via (comparative_cascade.ts's googleBlocks(),
+    // same ticket) now names the real reason, which is not always unreachability (a structural
+    // verification/rate-limit challenge means Google answered and refused). The
+    // NOT_RUN_REASK_UNREACHABLE outcome literal itself is left unchanged (out of this ticket's
+    // scope, and other code may switch on it) -- only this human-readable `why` string changed.
+    const why = `the exclusion re-ask itself failed (${google.via}) -- the FIRST answer is `
       + 'NOT replaced or treated as clean; nothing can be concluded about contamination from this '
       + 'attempt, an honest inconclusive result, not a fabrication';
     return {
