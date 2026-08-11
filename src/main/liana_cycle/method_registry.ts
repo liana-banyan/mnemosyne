@@ -49,6 +49,35 @@ export type AskGoogleFn = (question: string) => Promise<BrowserAuthorityRawExtra
 
 export type EmitFn = (event: LianaTerminalEvent) => void;
 
+/** D-BP152-044/BISHOP/seg-last-mile-gemini, ADDITIVE. Founder, BP152, verbatim ruling: "fix the
+ *  last mile - let the liana cycle ask gemini". What a conversational-authority call (Gemini, via
+ *  the machine-driven Nexus path, D-BP152-033 -- `runMachineDrivenNexusQueryFromMain`, index.ts)
+ *  returns to a caller that chose to try it. Deliberately NOT `BrowserAuthorityRawExtraction`
+ *  (`AskGoogleFn`'s own return shape, above): this is consumed directly by survey_stage.ts's
+ *  askAmbiguity()/askOperation(), never routed through `googleBlocks()` (methods/
+ *  comparative_cascade.ts, FORBIDDEN to modify) -- that function's own 3-try/backoff retry loop is
+ *  tuned for a flaky Google fetch, not for "the operator is looking at the window" or "the window
+ *  isn't open", which should fall back to Google immediately, not retry the same refusal 3 times.
+ *  `ok: false` covers EVERY non-answer case alike (window unavailable, operator visibly using it,
+ *  ceiling reached with no text, any other machine-driven failure) -- the caller (survey_stage.ts)
+ *  treats every `ok: false` identically: fall back to the existing Google path. `via` and
+ *  `authority` are diagnostic only (Law 5, HARDWIRE-23: the receipt names which surface answered),
+ *  never load-bearing for control flow. */
+export interface ConversationalAuthorityResult {
+  ok: boolean;
+  text: string;
+  citations: string[];
+  via: string;
+  authority: string;
+}
+
+/** D-BP152-044, ADDITIVE. One conversational-authority query: the FOUNDER'S OWN QUESTION TEXT
+ *  VERBATIM in (HARDWIRE-22 still binds -- this asks a source his question, exactly as his browser
+ *  did, never a rate/judge/decide prompt), a real answer or an honest refusal out. Never a second
+ *  askGoogle-shaped channel -- see ConversationalAuthorityResult's own header for why the return
+ *  shape differs from AskGoogleFn. */
+export type ConversationalAuthorityFn = (question: string) => Promise<ConversationalAuthorityResult>;
+
 /** What every method's shapeTest() and run() receive. `options` is null for a free-text
  *  question typed with no lettered option list -- most methods (which eliminate AMONG options)
  *  will correctly refuse to match that shape; a future free-text-only method could still match
@@ -73,6 +102,16 @@ export interface ShapeTestResult {
 export interface MethodRunContext {
   askGoogle: AskGoogleFn;
   emit: EmitFn;
+  /** D-BP152-044, ADDITIVE/OPTIONAL -- undefined on every pre-existing MethodRunContext
+   *  construction site (`{ askGoogle, emit }`, byte-identical elsewhere in this estate), so every
+   *  existing caller keeps compiling and behaving identically. Only survey_stage.ts's
+   *  askAmbiguity()/askOperation() (the Founder's own two META-questions -- "what words or phrases
+   *  in this question could be understood with a different meaning", "what operation does this
+   *  question require") ever read this field, and only try it BEFORE falling back to `askGoogle`
+   *  for those two queries specifically -- every other Survey/method query (denotation surveys,
+   *  constraint/threshold questions, the cascades) keeps going to Google exactly as before,
+   *  because nothing else in this estate reads this field. */
+  askConversationalAuthority?: ConversationalAuthorityFn;
 }
 
 export interface LianaMethod {

@@ -377,6 +377,19 @@ export interface AmbiguityQueryResult {
    *  ran on the 'gemma' transport (which does not call `gemmaExtract()`). Never used to change
    *  which answer is accepted or rejected; diagnostic only. */
   rawModelOutput: string | null;
+  /** D-BP152-044, ADDITIVE/OPTIONAL (kept optional, not required, specifically so a literal object
+   *  built before this field existed -- e.g. library/survey_script.test.ts's own fixtures, a file
+   *  this ticket's own FORBIDDEN list bars touching -- keeps type-checking with no edit there).
+   *  Which surface actually produced the passage this call structured -- 'google', or the
+   *  conversational authority's own BrowserAuthorityName (e.g. 'user_gemini') when
+   *  `ctx.askConversationalAuthority` answered instead. Undefined/null when nothing answered
+   *  (modelUnreachable) or on the 'gemma' transport (which asks no source at all). Law 5,
+   *  HARDWIRE-23: `transport` (above) is the outer 'google'|'gemma' SELECTOR, unchanged semantics;
+   *  this is the actual surface behind it -- see obtainMetaQuestionPassage()'s own header. Every
+   *  return statement THIS FILE's own askAmbiguity()/askOperation() produce still sets it
+   *  explicitly (never left implicitly undefined) -- optionality is for OTHER files' older
+   *  fixtures, not a license to omit it here. */
+  answeredByAuthority?: string | null;
   why: string;
 }
 
@@ -484,6 +497,92 @@ function parseAmbiguityTerms(raw: unknown, emit?: MethodRunContext['emit']): Amb
 }
 
 /**
+ * D-BP152-044/BISHOP/seg-last-mile-gemini. ATTRIBUTED: Founder, BP152, verbatim ruling: "fix the
+ * last mile - let the liana cycle ask gemini". THE MEASURED WALL THIS CLOSES: qid 98's ambiguity
+ * query went to Google and came back an off-topic passage ("Desertification in Sub-Saharan
+ * Africa... The Sahel", HARDWIRE\LEDGER\LIANA_RUNS\LIANA_RUN_qid98_2026-08-11T18-09-09-616Z.json)
+ * because a search index cannot answer a question ABOUT a question -- Google is a document
+ * lookup, not a source that can reason over the Founder's own two META-questions (askAmbiguity()'s
+ * "what words or phrases..." and askOperation()'s "what operation does this question require...").
+ * The Founder proved by hand that Gemini answers it correctly (D-BP152-025's own capture).
+ *
+ * SHARED BY askAmbiguity() AND askOperation() ONLY -- no other Survey element calls this (askConstraint()
+ * and askThreshold(), immediately below in this file, keep going straight to `googleBlocks(ctx.askGoogle, ...)`
+ * unchanged -- they are document lookups, not META-questions ABOUT the question, and this ticket's own
+ * dispatch is explicit: "ONLY those two"). Both callers send the FOUNDER'S OWN QUESTION TEXT VERBATIM
+ * to whichever surface answers -- HARDWIRE-22 still binds: this is a source being asked his question,
+ * exactly as his browser was; no rating, no judging, no deciding is ever asked of either surface here.
+ *
+ * TRIES `ctx.askConversationalAuthority` FIRST -- the machine-driven Nexus path (D-BP152-033's
+ * `runMachineDrivenNexusQueryFromMain`, index.ts), injected exactly as `ctx.askGoogle` already is,
+ * so this file never imports nexus_authority_persistent_session.ts or index.ts directly (the
+ * "never a second automation route" rule is structural, not caller discipline). `ctx.
+ * askConversationalAuthority` is undefined for every caller that does not wire it (every
+ * pre-existing MethodRunContext construction site, e.g. library/script_bridge.ts's Composer path)
+ * -- on that path this function goes straight to Google, BYTE-IDENTICAL to what askAmbiguity()/
+ * askOperation() did before this ticket.
+ *
+ * ANY non-ok conversational result -- window not open, operator visibly using it, ceiling reached
+ * with no text, any other refusal/failure (runMachineDrivenNexusQuery()'s own full vocabulary,
+ * never re-interpreted here) -- falls back to the EXISTING `googleBlocks(ctx.askGoogle, query)`
+ * call, UNCHANGED: never hangs the run, never hijacks a window the operator is looking at (the
+ * engagement guard lives inside the injected function itself, D-BP152-033, reused unmodified).
+ * THREADS NEVER CROSS AUTHORITIES: the injected `ctx.askConversationalAuthority` closure (built in
+ * index.ts) derives its own thread fields from the SAME per-run `NexusRunThreadContext`
+ * (D-BP152-031) `askGoogle`'s own 'user_google' calls already use -- keyed by authority inside
+ * that factory's own Map, so Gemini's thread and Google's calls can never share an identity even
+ * though they answer the same run.
+ *
+ * Law 5 (HARDWIRE-23): every attempt and its outcome is its own PARSER INSTRUMENT line -- the SAME
+ * labeled-note convention this file's own D-BP152-004/007 instruments already established for the
+ * Google-only path, extended here (not replaced) so a reader can always see which surface actually
+ * answered a given meta-question. */
+async function obtainMetaQuestionPassage(
+  ctx: MethodRunContext,
+  label: 'ambiguity' | 'operation',
+  query: string,
+): Promise<{ ok: boolean; text: string; via: string; sources: string[]; answeredBy: string }> {
+  if (ctx.askConversationalAuthority) {
+    ctx.emit({
+      kind: 'note',
+      text: `   PARSER INSTRUMENT [${label}] query SENT to conversational authority (D-BP152-044, `
+        + `machine-driven Nexus, D-BP152-033) (untruncated, verbatim)="${query}"`,
+      ts: nowIso(),
+    });
+    const convo = await ctx.askConversationalAuthority(query);
+    if (convo.ok && convo.text.trim()) {
+      ctx.emit({
+        kind: 'note',
+        text: `   PARSER INSTRUMENT [${label}] ANSWERED BY: ${convo.authority} (${convo.via}) -- a `
+          + 'conversational authority, not Google web search',
+        ts: nowIso(),
+      });
+      return { ok: true, text: convo.text, via: convo.via, sources: convo.citations, answeredBy: convo.authority };
+    }
+    ctx.emit({
+      kind: 'note',
+      text: `   PARSER INSTRUMENT [${label}] conversational authority UNAVAILABLE (${convo.via}) -- `
+        + 'falling back to Google (this ticket\'s own fallback rule: never hijack the operator\'s '
+        + 'window, never hang the run)',
+      ts: nowIso(),
+    });
+  }
+  ctx.emit({
+    kind: 'note',
+    text: `   PARSER INSTRUMENT [${label}] query SENT to Google (untruncated, verbatim)="${query}"`,
+    ts: nowIso(),
+  });
+  const google = await googleBlocks(ctx.askGoogle, query);
+  return {
+    ok: google.ok && !!google.text.trim(),
+    text: google.text,
+    via: google.via,
+    sources: google.sources,
+    answeredBy: 'google',
+  };
+}
+
+/**
  * D-BP151-031, transport split D-BP151-032. ATTRIBUTED: Founder, BP151, verbatim: "what words or
  * phrases in this question could be understood with a different meaning that would fundamentally
  * change the meaning of what is being asked?" -- his own fix for SURVEY STEP 2's no-term path, run
@@ -546,28 +645,19 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
       + 'sadly.") removed the relaxation this branch previously relied on; no Founder ruling ever '
       + 'granted it. No model call was made, and this does not fall back to Google.';
     ctx.emit({ kind: 'note', text: `   [transport: GEMMA] ${why}`, ts: nowIso() });
-    return { askedText, terms: [], modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, why };
+    return { askedText, terms: [], modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, answeredByAuthority: null, why };
   }
 
-  // transport === 'google' (the Founder-ordered default). Google is the SOURCE; gemmaExtract()
-  // (unrelaxed) STRUCTURES what Google actually said; this function decides nothing about which
-  // terms matter. Same sentence as the 'gemma' branch, templated only with the question text
-  // (FD-BP151-08) -- sent as a single Google query, not a JSON-forcing prompt (Google is a search
-  // surface, not a constrained API).
+  // transport === 'google' (the Founder-ordered default). D-BP152-044: for THIS query only (one of
+  // the Founder's own two META-questions), obtainMetaQuestionPassage() tries the conversational
+  // authority first (Gemini, via the machine-driven Nexus path, D-BP152-033) and falls back to
+  // Google -- see that function's own header for the full ruling and the fallback rule. Once a
+  // passage is in hand (from whichever surface answered), the rest of this branch is UNCHANGED:
+  // gemmaExtract() (unrelaxed) STRUCTURES what the surface actually said; this function decides
+  // nothing about which terms matter.
   const query = `${askText}\n\n${askedText}`;
-  // D-BP152-007, INSTRUMENT ONLY -- the exact query string about to be handed to googleBlocks(),
-  // verbatim, emitted immediately BEFORE the call so it reaches the run receipt through the same
-  // emit() mechanism D-BP152-004's passage-received instrument (below) already uses. Untruncated:
-  // D-BP152-006 refuted a bad diagnosis (LIANA_RUN_qid98_2026-08-10T04-41-30-227Z.json) that was
-  // reachable only because the sent query was invisible -- this closes that visibility gap without
-  // changing what is sent or how it is built.
-  ctx.emit({
-    kind: 'note',
-    text: `   PARSER INSTRUMENT [ambiguity] query SENT to Google (untruncated, verbatim)="${query}"`,
-    ts: nowIso(),
-  });
-  const google = await googleBlocks(ctx.askGoogle, query);
-  if (!google.ok || !google.text.trim()) {
+  const passage = await obtainMetaQuestionPassage(ctx, 'ambiguity', query);
+  if (!passage.ok) {
     return {
       askedText,
       terms: [],
@@ -576,7 +666,8 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
       citations: [],
       rawGooglePassage: '',
       rawModelOutput: null,
-      why: `Google was unreachable for the ambiguity query (${google.via}) -- refusing rather than `
+      answeredByAuthority: null,
+      why: `No source was reachable for the ambiguity query (${passage.via}) -- refusing rather than `
         + 'silently falling back to the local model (ATTRIBUTED, Founder, relayed BP151 addendum: a '
         + 'silent transport swap would make two runs incomparable with no visible signal); an honest '
         + 'empty result, not a fabrication',
@@ -588,12 +679,14 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
   // through) regardless of what extraction does with it. Same "PARSER INSTRUMENT" label/style
   // field_gate.ts already established for this exact purpose (log the exact input before any
   // parsing touches it). D-BP152-003 found this text was previously read, used, and discarded with
-  // no trace anywhere on disk.
-  const googlePassageForLog = google.text.length > 4000 ? google.text.slice(0, 4000) : google.text;
+  // no trace anywhere on disk. D-BP152-044: labeled with WHICH surface (`passage.answeredBy`,
+  // 'google' or a conversational authority's BrowserAuthorityName) produced it, not hardcoded to
+  // "Google" anymore.
+  const googlePassageForLog = passage.text.length > 4000 ? passage.text.slice(0, 4000) : passage.text;
   ctx.emit({
     kind: 'note',
-    text: `   PARSER INSTRUMENT [ambiguity] Google passage handed to gemmaExtract()`
-      + `${google.text.length > 4000 ? ` (TRUNCATED at 4000 chars, full untruncated length was ${google.text.length})` : ' (untruncated, verbatim)'}`
+    text: `   PARSER INSTRUMENT [ambiguity] ${passage.answeredBy} passage handed to gemmaExtract()`
+      + `${passage.text.length > 4000 ? ` (TRUNCATED at 4000 chars, full untruncated length was ${passage.text.length})` : ' (untruncated, verbatim)'}`
       + `="${googlePassageForLog}"`,
     ts: nowIso(),
   });
@@ -605,7 +698,7 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
     + 'presence or absence would flip which option is correct.';
   const shape = '{"terms":[{"term":"the exact word or phrase named","standardMeaning":"...","alternativeMeaning":"...","impact":"...","isNegation":true}]}';
   const rawOut: { text?: string } = {};
-  const ex = await gemmaExtract(instruction, google.text, shape, rawOut);
+  const ex = await gemmaExtract(instruction, passage.text, shape, rawOut);
   if (ex === null && rawOut.text !== undefined) {
     // D-BP152-004, INSTRUMENT ONLY -- gemmaExtract() failed to parse its own output as JSON
     // (D-BP152-003's Predicate A); the raw pre-JSON text that failed the parse now survives here
@@ -621,19 +714,20 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
   }
   const terms = parseAmbiguityTerms((ex as { terms?: unknown } | null)?.terms, ctx.emit);
   const why = terms.length
-    ? `${terms.length} term(s) named by Google's own answer (${google.via}) as potentially ambiguous, `
-      + 'extracted verbatim by gemmaExtract() (extraction only, HARDWIRE-22 unrelaxed) -- the source '
-      + 'names, this function picks none'
-    : `Google answered (${google.via}) but nothing usable could be extracted from it -- an honest empty `
-      + 'result, not a fabrication';
+    ? `${terms.length} term(s) named by ${passage.answeredBy}'s own answer (${passage.via}) as potentially `
+      + 'ambiguous, extracted verbatim by gemmaExtract() (extraction only, HARDWIRE-22 unrelaxed) -- the '
+      + 'source names, this function picks none'
+    : `${passage.answeredBy} answered (${passage.via}) but nothing usable could be extracted from it -- an `
+      + 'honest empty result, not a fabrication';
   return {
     askedText,
     terms,
     modelUnreachable: false,
     transport: 'google',
-    citations: google.sources,
-    rawGooglePassage: google.text,
+    citations: passage.sources,
+    rawGooglePassage: passage.text,
     rawModelOutput: ex === null ? (rawOut.text ?? null) : null,
+    answeredByAuthority: passage.answeredBy,
     why,
   };
 }
@@ -668,6 +762,12 @@ export interface OperationQueryResult {
    *  `gemmaExtract()` failed to parse its own output as JSON -- null whenever extraction
    *  succeeded, was never attempted, or ran on the 'gemma' transport. */
   rawModelOutput: string | null;
+  /** D-BP152-044, ADDITIVE/OPTIONAL, same convention (and same reason it is optional, not
+   *  required) as AmbiguityQueryResult.answeredByAuthority above -- 'google', or the
+   *  conversational authority's own BrowserAuthorityName (e.g. 'user_gemini') when
+   *  `ctx.askConversationalAuthority` answered instead. Undefined/null when nothing answered or on
+   *  the 'gemma' transport. */
+  answeredByAuthority?: string | null;
   why: string;
 }
 
@@ -736,21 +836,16 @@ export async function askOperation(askText: string, ctx: MethodRunContext, trans
       + 'sadly.") removed the relaxation this branch previously relied on; no Founder ruling ever '
       + 'granted it. No model call was made, and this does not fall back to Google.';
     ctx.emit({ kind: 'note', text: `   [transport: GEMMA] ${why}`, ts: nowIso() });
-    return { askedText, rawAnswer: null, modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, why };
+    return { askedText, rawAnswer: null, modelUnreachable: false, transport: 'gemma', citations: [], rawGooglePassage: '', rawModelOutput: null, answeredByAuthority: null, why };
   }
 
   // transport === 'google' (the Founder-ordered default, REUSED from Part 1's already-resolved
-  // value). Same shape as askAmbiguity()'s own 'google' branch.
+  // value). D-BP152-044: same obtainMetaQuestionPassage() helper askAmbiguity() now uses -- tries
+  // the conversational authority first (Gemini), falls back to Google. Same shape as askAmbiguity()'s
+  // own 'google' branch otherwise.
   const query = `${askText}\n\n${askedText}`;
-  // D-BP152-007, same INSTRUMENT ONLY convention as askAmbiguity()'s own copy above -- built here,
-  // not duplicated from there, for this second call site.
-  ctx.emit({
-    kind: 'note',
-    text: `   PARSER INSTRUMENT [operation] query SENT to Google (untruncated, verbatim)="${query}"`,
-    ts: nowIso(),
-  });
-  const google = await googleBlocks(ctx.askGoogle, query);
-  if (!google.ok || !google.text.trim()) {
+  const passage = await obtainMetaQuestionPassage(ctx, 'operation', query);
+  if (!passage.ok) {
     return {
       askedText,
       rawAnswer: null,
@@ -759,18 +854,20 @@ export async function askOperation(askText: string, ctx: MethodRunContext, trans
       citations: [],
       rawGooglePassage: '',
       rawModelOutput: null,
-      why: `Google was unreachable for the operation query (${google.via}) -- refusing rather than `
+      answeredByAuthority: null,
+      why: `No source was reachable for the operation query (${passage.via}) -- refusing rather than `
         + 'silently falling back to the local model (same rule as askAmbiguity()); an honest empty '
         + 'result, not a fabrication',
     };
   }
   // D-BP152-005, same INSTRUMENT ONLY convention D-BP152-004 established for askAmbiguity() --
-  // built here, not duplicated from there, for this second call site.
-  const googlePassageForLog = google.text.length > 4000 ? google.text.slice(0, 4000) : google.text;
+  // built here, not duplicated from there, for this second call site. D-BP152-044: labeled with
+  // WHICH surface produced it, same as askAmbiguity()'s own copy.
+  const googlePassageForLog = passage.text.length > 4000 ? passage.text.slice(0, 4000) : passage.text;
   ctx.emit({
     kind: 'note',
-    text: `   PARSER INSTRUMENT [operation] Google passage handed to gemmaExtract()`
-      + `${google.text.length > 4000 ? ` (TRUNCATED at 4000 chars, full untruncated length was ${google.text.length})` : ' (untruncated, verbatim)'}`
+    text: `   PARSER INSTRUMENT [operation] ${passage.answeredBy} passage handed to gemmaExtract()`
+      + `${passage.text.length > 4000 ? ` (TRUNCATED at 4000 chars, full untruncated length was ${passage.text.length})` : ' (untruncated, verbatim)'}`
       + `="${googlePassageForLog}"`,
     ts: nowIso(),
   });
@@ -780,7 +877,7 @@ export async function askOperation(askText: string, ctx: MethodRunContext, trans
     + 'does not state.';
   const shape = '{"answer":"the operation exactly as the passage states it, or empty string if the passage does not state one"}';
   const rawOut: { text?: string } = {};
-  const ex = await gemmaExtract(instruction, google.text, shape, rawOut);
+  const ex = await gemmaExtract(instruction, passage.text, shape, rawOut);
   if (ex === null && rawOut.text !== undefined) {
     const rawModelForLog = rawOut.text.length > 4000 ? rawOut.text.slice(0, 4000) : rawOut.text;
     ctx.emit({
@@ -795,16 +892,17 @@ export async function askOperation(askText: string, ctx: MethodRunContext, trans
     ? (ex as { answer: string }).answer.trim()
     : null;
   const why = rawAnswer
-    ? `answered by Google's own passage (${google.via}); gemmaExtract() (extraction only, HARDWIRE-22 unrelaxed) reported the stated operation verbatim: "${rawAnswer}"`
-    : `Google answered (${google.via}) but nothing usable could be extracted from it -- an honest empty result, not a fabrication`;
+    ? `answered by ${passage.answeredBy}'s own passage (${passage.via}); gemmaExtract() (extraction only, HARDWIRE-22 unrelaxed) reported the stated operation verbatim: "${rawAnswer}"`
+    : `${passage.answeredBy} answered (${passage.via}) but nothing usable could be extracted from it -- an honest empty result, not a fabrication`;
   return {
     askedText,
     rawAnswer,
     modelUnreachable: false,
     transport: 'google',
-    citations: rawAnswer ? google.sources : [],
-    rawGooglePassage: google.text,
+    citations: rawAnswer ? passage.sources : [],
+    rawGooglePassage: passage.text,
     rawModelOutput: ex === null ? (rawOut.text ?? null) : null,
+    answeredByAuthority: passage.answeredBy,
     why,
   };
 }
