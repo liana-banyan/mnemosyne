@@ -50,7 +50,12 @@
 import { app, BrowserWindow } from 'electron';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import type { BrowserAuthorityName } from '../../shared/plow/browser_authority_types';
+import type { BrowserAuthorityName, BrowserAuthorityQuery, BrowserAuthorityRawExtraction } from '../../shared/plow/browser_authority_types';
+// D-BP152-033/BISHOP/seg-machine-drives-nexus -- buildBrowserAuthorityQueryUrl/
+// isInteractiveBrowserAuthority are the SAME pure helpers index.ts's own static/interactive split
+// already uses (browser_authority_types.ts); reused here, not re-derived, for the machine-driven
+// query section near the end of this file.
+import { isInteractiveBrowserAuthority, buildBrowserAuthorityQueryUrl } from '../../shared/plow/browser_authority_types';
 
 // ─── Flag mirror (main-process-readable; renderer localStorage is the human-facing source) ────
 
@@ -886,4 +891,423 @@ export async function captureNexusAuthorityVisibleText(): Promise<NexusAuthority
     console.warn('[nexus-authority-session] capture executeJavaScript failed (non-fatal, honest empty):', (err as Error)?.message ?? err);
     return { ok: false, authority: null, url: '', text: '', containerUsed: 'none', citations: [], reason: 'execute-failed' };
   }
+}
+
+// ─── D-BP152-033/BISHOP/seg-machine-drives-nexus -- MACHINE-DRIVEN queries ─────────────────────
+//
+// Founder, BP152, verbatim, the whole mandate this section answers: "So make it talk to google
+// using the interface I just used of the 5 browsers." He drove Gemini by hand in this exact
+// window, got a real derived answer, and captured it (D-BP152-025's operator-capture section
+// above). This section is the machine doing that itself: given a question and one of the 5
+// surfaces, drive it, wait for the answer to actually finish, and extract it -- using the SAME
+// window/webview/partition the operator's own capture already reuses, never a second one.
+//
+// THIS OVERRIDES D-BP152-025's "operator-triggered ONLY" rule for CAPTURE (that rule existed
+// because auto-capture races a streaming answer -- see COMPLETION DETECTION below for how this
+// section closes that exact race instead of ignoring it). The override is granted by the
+// Founder's ruling above; it does NOT relax D-BP152-033's own NEW rule immediately below: a
+// machine-driven query must never run against a window the operator is actively using.
+//
+// NOT WIRED INTO THE LIANA CYCLE. Same discipline D-BP152-030R/032 already established for
+// threading and the answer-key exclusion re-ask: this section builds a standalone, directly
+// callable, exported capability. It is deliberately NOT invoked from stepped_audible.ts's Step 0
+// pause loop, any method's verdict logic, or demand_test.ts -- this ticket's own FORBIDDEN list
+// bars touching any of those, and the capability is correct and ready without them (a future
+// ticket decides which caller, if any, should be first to use it, mirroring the fork D-BP152-030R
+// itself flagged for conversational-authority threading).
+
+/** D-BP152-033. THE HIJACK GUARD. Founder's own bound on the override above: "NEVER HIJACK A
+ *  WINDOW THE OPERATOR IS USING... A machine query that erases his typing is worse than no
+ *  automation." Detection is deliberately the simplest MECHANICAL signal available, not a DOM
+ *  heuristic that could itself race his typing: ensureNexusAuthoritySession() creates this window
+ *  with `show: false` and it stays hidden for its entire lifetime unless the operator explicitly
+ *  opens it (showNexusAuthoritySessionForSignIn(), the Settings sign-in button, or he is mid
+ *  capture) -- no code path in this file, before or after this ticket, ever calls `.show()` on
+ *  the machine's own behalf. So "the window is currently visible" IS "a human deliberately has it
+ *  open" with no false-negative gap: a hidden window can never have his cursor or keyboard focus
+ *  in it. `getNexusAuthorityWindow()` (read-only, never creates) is used here rather than
+ *  ensureNexusAuthoritySession() so simply CHECKING engagement can never itself spin up a window
+ *  the operator hasn't opted into. No window at all -> nothing to hijack -> not engaged. */
+export interface NexusOperatorEngagementResult {
+  engaged: boolean;
+  reason: 'no_window' | 'window_hidden' | 'window_visible_operator_may_be_using_it';
+}
+
+export function probeNexusAuthorityOperatorEngagement(): NexusOperatorEngagementResult {
+  const win = getNexusAuthorityWindow();
+  if (!win) {
+    return { engaged: false, reason: 'no_window' };
+  }
+  if (win.isVisible()) {
+    return { engaged: true, reason: 'window_visible_operator_may_be_using_it' };
+  }
+  return { engaged: false, reason: 'window_hidden' };
+}
+
+// ─── Completion detection: the heart of this ticket ────────────────────────────────────────────
+//
+// Founder's dispatch, verbatim: "A generative answer streams. A fixed timeout reads a
+// half-written answer... Detect settlement mechanically: poll the container's text and treat it
+// as complete when it stops changing across a stability window. No model judges completion; it is
+// string comparison over time." D-BP152-024 (read first, per this ticket's own dispatch) measured
+// that the EXISTING static Google/Perplexity scrape (index.ts, untouched by this ticket) waits a
+// flat setTimeout and never polls at all -- this is the new mechanism that closes that gap,
+// additive and separate from that existing code.
+//
+// NAMED CONSTANTS, reasoning stated here (not buried in the helper below):
+/** How often to re-read the on-screen text while waiting for a machine-driven answer to settle.
+ *  900ms: close to webview_preload.ts's own CLAUDE_INTERACTIVE_POLL_MS (700ms), the precedent
+ *  this codebase already uses for the identical "has this generative reply stopped growing"
+ *  question for the composer-driven authorities (see the REUSE note below this section) --
+ *  widened slightly here because each tick is a MAIN-PROCESS -> embedder-page -> guest-webview
+ *  double executeJavaScript round trip (captureNexusAuthorityVisibleText's own boundary-crossing
+ *  pattern, reused unchanged below), which carries more overhead than webview_preload.ts's
+ *  in-page setInterval. */
+export const MACHINE_QUERY_POLL_INTERVAL_MS = 900;
+/** How many CONSECUTIVE unchanged, non-empty polls declare the answer settled. 3 -- the same
+ *  number webview_preload.ts's CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED uses for the identical
+ *  question: 3 ticks (2.7s of observed silence at this interval) is enough to distinguish
+ *  "finished" from "a brief pause mid-stream" without an arbitrary extra safety margin on top. */
+export const MACHINE_QUERY_STABLE_TICKS_REQUIRED = 3;
+/** Hard ceiling on total wait after navigation, independent of stability. 30s: longer than
+ *  index.ts's BROWSER_AUTHORITY_MAIN_TIMEOUT_MS (20s, sized for a near-instant static box/organic
+ *  scrape) because a generative "AI Overview"-style answer can render slower than that -- same
+ *  reasoning index.ts's own BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS already applied when
+ *  claude.ai's streamed replies needed more room. Still a FIRM ceiling: a page that never stops
+ *  mutating (an ad carousel, a live-updating widget) cannot hang a run forever -- see
+ *  decideNexusMachineQueryPollStep's 'ceiling' outcome below, which is ALWAYS reported as an
+ *  explicit incomplete-capture outcome, never silently upgraded to a clean settled answer. */
+export const MACHINE_QUERY_CEILING_MS = 30_000;
+/** Separate budget for the initial navigation (did-finish-load) BEFORE polling even starts --
+ *  20s, matching index.ts's own BROWSER_AUTHORITY_MAIN_TIMEOUT_MS for the same "a page load never
+ *  fires its load event" honest-failure case. Deliberately NOT the same constant as
+ *  MACHINE_QUERY_CEILING_MS: a navigation that never loads and a page that loads but never
+ *  settles are different failures with different, individually honest reasons. */
+export const MACHINE_QUERY_NAVIGATION_TIMEOUT_MS = 20_000;
+
+/**
+ * D-BP152-033. THE completion-detection decision itself -- a PURE function (no DOM, no Electron,
+ * no I/O) so it is directly unit-testable exactly like resolveNexusAddressBarInput() above (same
+ * file, same pattern: a pure decision function, tested for real, that production code calls
+ * directly -- never a hand-duplicated copy that could drift). "No model judges completion; it is
+ * string comparison over time" (dispatch, verbatim) -- this function does exactly that and
+ * nothing else: an equality check against the previous tick's text, a counter, and two threshold
+ * comparisons.
+ */
+export function decideNexusMachineQueryPollStep(
+  currentText: string,
+  lastText: string | null,
+  stableTicksSoFar: number,
+  ticksElapsed: number,
+  pollIntervalMs: number,
+  stableTicksRequired: number,
+  ceilingMs: number,
+): { action: 'continue' | 'settled' | 'ceiling'; nextStableTicks: number } {
+  const textNonEmpty = currentText.length > 0;
+  const unchanged = textNonEmpty && currentText === lastText;
+  const nextStableTicks = unchanged ? stableTicksSoFar + 1 : 0;
+  if (textNonEmpty && nextStableTicks >= stableTicksRequired) {
+    return { action: 'settled', nextStableTicks };
+  }
+  if (ticksElapsed * pollIntervalMs >= ceilingMs) {
+    return { action: 'ceiling', nextStableTicks };
+  }
+  return { action: 'continue', nextStableTicks };
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Navigates the shared webview and waits for `did-finish-load` before returning -- the SAME
+ *  navigate-then-wait idiom probeNexusAuthoritySignInStatus() above already uses (outer
+ *  executeJavaScript wrapping a Promise, an event listener, and a timeout fallback), reused here
+ *  rather than re-derived, so a machine-driven query's FIRST poll tick reads the NEW page's
+ *  content, never a stale pre-navigation page that merely happens to look "stable" because it
+ *  has not started loading yet. */
+async function navigateNexusSharedWebviewAndWaitForLoad(
+  win: BrowserWindow,
+  url: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  const script = `
+    (function () {
+      return new Promise(function (resolve) {
+        try {
+          var wv = document.querySelector('webview');
+          if (!wv) { resolve({ ok: false, reason: 'no-webview' }); return; }
+          var settled = false;
+          var timeoutId = setTimeout(function () {
+            if (settled) return;
+            settled = true;
+            wv.removeEventListener('did-finish-load', onLoad);
+            resolve({ ok: false, reason: 'load-timeout' });
+          }, ${MACHINE_QUERY_NAVIGATION_TIMEOUT_MS});
+          function onLoad() {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            wv.removeEventListener('did-finish-load', onLoad);
+            resolve({ ok: true });
+          }
+          wv.addEventListener('did-finish-load', onLoad);
+          wv.loadURL(${JSON.stringify(url)});
+        } catch (err) {
+          resolve({ ok: false, reason: 'outer-threw' });
+        }
+      });
+    })()
+  `;
+  try {
+    const result = await win.webContents.executeJavaScript(script);
+    const r = result as { ok?: boolean; reason?: string } | null;
+    return { ok: r?.ok === true, reason: r?.reason };
+  } catch (err) {
+    return { ok: false, reason: 'execute-failed' };
+  }
+}
+
+export interface NexusStaticMachineQueryResult {
+  ok: boolean;
+  url: string;
+  text: string;
+  citations: NexusAuthorityCaptureCitation[];
+  containerUsed: 'main' | 'article' | 'body' | 'none';
+  /** 'settled' -- text stability declared completion before the ceiling. 'ceiling' -- the hard
+   *  wait budget was reached with SOME non-empty text observed; `text` is whatever was last
+   *  captured, reported as an explicit INCOMPLETE outcome, never as a clean settled answer.
+   *  'failed' -- navigation never loaded, no webview, or the ceiling was reached with nothing
+   *  ever captured at all. */
+  outcome: 'settled' | 'ceiling' | 'failed';
+  reason?: string;
+  pollTicks: number;
+  waitedMs: number;
+}
+
+/**
+ * D-BP152-033. Google/Perplexity have no composer -- "asking" IS navigating to the query URL
+ * (buildBrowserAuthorityQueryUrl, reused unchanged from browser_authority_types.ts; this function
+ * never touches or calls index.ts's askGoogle closure or its static branch). What was missing per
+ * D-BP152-024's own measurement was readiness detection and generic (non-selector-based)
+ * extraction for whatever the page renders -- this function supplies both: navigate, wait for
+ * genuine page load, then poll captureFn (D-BP152-025's own captureNexusAuthorityVisibleText(),
+ * REUSED unmodified as the default, injected only so a test can supply a canned sequence) until
+ * decideNexusMachineQueryPollStep declares settled or the ceiling trips.
+ */
+async function runMachineDrivenStaticNexusQuery(
+  authority: 'user_google' | 'user_perplexity',
+  question: string,
+  mcOptions: string[] | undefined,
+  captureFn: () => Promise<NexusAuthorityCaptureResult> = captureNexusAuthorityVisibleText,
+): Promise<NexusStaticMachineQueryResult> {
+  const win = ensureNexusAuthoritySession();
+  if (!win) {
+    return { ok: false, url: '', text: '', citations: [], containerUsed: 'none', outcome: 'failed', reason: 'flag_off_or_unavailable', pollTicks: 0, waitedMs: 0 };
+  }
+
+  const query: BrowserAuthorityQuery = {
+    question,
+    authority,
+    ...(mcOptions && mcOptions.length ? { mcOptions, embedOptionsForGoogle: true } : {}),
+  };
+  const navigateUrl = buildBrowserAuthorityQueryUrl(query);
+
+  const startedAt = Date.now();
+  const navResult = await navigateNexusSharedWebviewAndWaitForLoad(win, navigateUrl);
+  if (!navResult.ok) {
+    return { ok: false, url: navigateUrl, text: '', citations: [], containerUsed: 'none', outcome: 'failed', reason: navResult.reason ?? 'navigation-failed', pollTicks: 0, waitedMs: Date.now() - startedAt };
+  }
+
+  let lastText: string | null = null;
+  let stableTicks = 0;
+  let ticks = 0;
+  let lastCapture: NexusAuthorityCaptureResult | null = null;
+
+  for (;;) {
+    await sleepMs(MACHINE_QUERY_POLL_INTERVAL_MS);
+    ticks++;
+    const capture = await captureFn();
+    lastCapture = capture;
+    const currentText = capture.ok ? capture.text : '';
+    const decision = decideNexusMachineQueryPollStep(
+      currentText, lastText, stableTicks, ticks,
+      MACHINE_QUERY_POLL_INTERVAL_MS, MACHINE_QUERY_STABLE_TICKS_REQUIRED, MACHINE_QUERY_CEILING_MS,
+    );
+    stableTicks = decision.nextStableTicks;
+    lastText = currentText;
+
+    if (decision.action === 'continue') continue;
+
+    const waitedMs = Date.now() - startedAt;
+    if (decision.action === 'settled') {
+      return {
+        ok: true, url: lastCapture.url || navigateUrl, text: lastCapture.text, citations: lastCapture.citations,
+        containerUsed: lastCapture.containerUsed, outcome: 'settled', pollTicks: ticks, waitedMs,
+      };
+    }
+    // 'ceiling' -- honest incomplete-capture outcome, NEVER reported as a clean answer.
+    const hasText = currentText.length > 0;
+    return {
+      ok: hasText, url: lastCapture.url || navigateUrl, text: lastCapture.text, citations: lastCapture.citations,
+      containerUsed: lastCapture.containerUsed, outcome: hasText ? 'ceiling' : 'failed',
+      reason: hasText ? 'ceiling_reached_with_partial_text' : 'no_text_at_ceiling',
+      pollTicks: ticks, waitedMs,
+    };
+  }
+}
+
+/** D-BP152-033. Duplicated from stepped_audible.ts:628's detectOptionContamination() -- that
+ *  function is a private, unexported helper inside a file this ticket's own FORBIDDEN list bars
+ *  touching ("Step 0, the pause plumbing"), so exporting it there was not an option. Same exact
+ *  contract, verbatim: plain string containment against a lettered options pool, flag only, NEVER
+ *  used to block or edit anything. Kept here (not skipped) so "the contamination guards stay on...
+ *  apply to machine-driven answers exactly as to operator captures" (this ticket's own dispatch,
+ *  s4) is true of THIS function's actual output, not merely compatible with a future wiring. */
+export function detectOptionContaminationForMachineQuery(
+  text: string,
+  options: Record<string, string> | null,
+): string[] {
+  if (!options) return [];
+  const hits: string[] = [];
+  for (const letterKey of Object.keys(options)) {
+    const optText = options[letterKey].trim();
+    if (optText && text.includes(optText)) hits.push(`${letterKey}) ${optText}`);
+  }
+  return hits;
+}
+
+export interface RunMachineDrivenNexusQueryOptions {
+  mcOptions?: string[];
+  /** D-BP152-033. Per-authority thread fields for THIS call, computed by the caller via
+   *  createNexusRunThreadContext().forQuery(authority) (D-BP152-031, reused unchanged). Passed in
+   *  as the two plain fields rather than a NexusRunThreadContext instance, so this function has no
+   *  dependency on that factory's shape beyond what BrowserAuthorityQuery already carries. THE
+   *  NEVER-SHARE-ACROSS-AUTHORITIES GUARANTEE lives in that factory (an internal Map keyed by
+   *  authority, D-BP152-031) -- this function only ever forwards what it is given for THIS
+   *  authority; see runMachineDrivenNexusQueryFromMain (index.ts) for the one call site that
+   *  actually derives these fields, always freshly, per authority, per call. */
+  threadFields?: { threadId: string | undefined; continueThread: boolean };
+  /** D-BP152-033. The ONLY way this function reaches an interactive (composer-driven) authority
+   *  (user_claude/user_chatgpt/user_gemini). Injected rather than imported directly so this file
+   *  never imports index.ts (index.ts already imports THIS file -- a direct import back would be
+   *  circular). index.ts supplies its own runBrowserAuthorityQueryFromMainObserved (UNCHANGED,
+   *  D-BP152-030R/031's existing full pipeline: thread-aware, sign-in-probe-skipping on a
+   *  continuation, and ALREADY text-stability-poll-based internally -- see webview_preload.ts's
+   *  CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED / isClaudeStillStreaming, read, not rebuilt, this
+   *  pass) as this argument. Tests inject a fake. Absent -> a conversational-authority call fails
+   *  honestly with reason 'no_interactive_driver_injected', never a fabricated result. */
+  runInteractiveQuery?: (query: BrowserAuthorityQuery) => Promise<{ raw: BrowserAuthorityRawExtraction | null; dispatchOutcome: string }>;
+}
+
+export interface MachineDrivenNexusQueryResult {
+  ok: boolean;
+  authority: BrowserAuthorityName;
+  question: string;
+  url: string;
+  text: string;
+  citations: NexusAuthorityCaptureCitation[];
+  outcome: 'settled' | 'ceiling' | 'refused' | 'failed';
+  reason?: string;
+  threadStatus: 'new' | 'continued' | null;
+  threadPosition: number | null;
+  optionContamination: string[];
+  machineDriven: true;
+}
+
+/**
+ * D-BP152-033. THE machine-driven query capability -- "let the Liana Cycle ask a question on a
+ * Nexus surface, wait for the answer to finish, and extract it" (dispatch, verbatim), the machine
+ * doing what the operator did by hand for Gemini. Standalone and directly callable; NOT wired
+ * into stepped_audible.ts/Step 0/any method's verdict logic (see this section's own header).
+ *
+ * `optionsRecord` mirrors stepped_audible.ts's own `options: Record<string, string> | null`
+ * shape exactly, so a caller holding the same Step 0 options pool an operator capture would see
+ * can pass it straight through for contamination flagging (detectOptionContaminationForMachineQuery
+ * above) with no adaptation.
+ *
+ * REUSE, not rebuild, at every step: extraction/provenance/citations for the static authorities
+ * come from captureNexusAuthorityVisibleText() (D-BP152-025, called via the default `captureFn`
+ * inside runMachineDrivenStaticNexusQuery); threading comes from createNexusRunThreadContext()/
+ * decideNexusThreadContinuation() (D-BP152-030R/031, via the caller-supplied threadFields and the
+ * injected runInteractiveQuery); the interactive authorities' own type/submit/completion/scrape
+ * sequence is runBrowserAuthorityQueryFromMainObserved() (index.ts, injected, unmodified).
+ *
+ * The returned shape ({ text, citations, url }) is deliberately compatible with
+ * elements/answer_key_exclusion_reask.ts's CapturedAnswer contract (originalQuery/answerText/
+ * sourcePassage/citations) -- a future caller holding a machine-driven result can run that
+ * differential test against it exactly as against an operator capture, with no adaptation layer.
+ * This function does not invoke it itself (that capability is Google-transport-specific and
+ * already deliberately standalone/unwired per D-BP152-032's own build).
+ */
+export async function runMachineDrivenNexusQuery(
+  authority: BrowserAuthorityName,
+  question: string,
+  optionsRecord: Record<string, string> | null,
+  opts: RunMachineDrivenNexusQueryOptions = {},
+): Promise<MachineDrivenNexusQueryResult> {
+  const empty = { url: '', text: '', citations: [] as NexusAuthorityCaptureCitation[] };
+
+  const engagement = probeNexusAuthorityOperatorEngagement();
+  if (engagement.engaged) {
+    console.log(`PARSER INSTRUMENT [nexus-machine-query, MACHINE-DRIVEN, D-BP152-033] authority=${authority} REFUSED reason=${engagement.reason}`);
+    return {
+      ok: false, authority, question, ...empty, outcome: 'refused', reason: engagement.reason,
+      threadStatus: null, threadPosition: null, optionContamination: [], machineDriven: true,
+    };
+  }
+
+  if (!isInteractiveBrowserAuthority(authority)) {
+    const r = await runMachineDrivenStaticNexusQuery(authority as 'user_google' | 'user_perplexity', question, opts.mcOptions);
+    const optionContamination = detectOptionContaminationForMachineQuery(r.text, optionsRecord);
+    console.log(
+      `PARSER INSTRUMENT [nexus-machine-query, MACHINE-DRIVEN, D-BP152-033] authority=${authority} outcome=${r.outcome} ` +
+      `pollTicks=${r.pollTicks} waitedMs=${r.waitedMs} url="${r.url}" contamination=${optionContamination.length}`,
+    );
+    return {
+      ok: r.ok, authority, question, url: r.url, text: r.text, citations: r.citations,
+      outcome: r.outcome, reason: r.reason, threadStatus: null, threadPosition: null,
+      optionContamination, machineDriven: true,
+    };
+  }
+
+  if (!opts.runInteractiveQuery) {
+    console.log(`PARSER INSTRUMENT [nexus-machine-query, MACHINE-DRIVEN, D-BP152-033] authority=${authority} FAILED reason=no_interactive_driver_injected`);
+    return {
+      ok: false, authority, question, ...empty, outcome: 'failed', reason: 'no_interactive_driver_injected',
+      threadStatus: null, threadPosition: null, optionContamination: [], machineDriven: true,
+    };
+  }
+
+  const threadFields = opts.threadFields ?? { threadId: undefined, continueThread: false };
+  const query: BrowserAuthorityQuery = {
+    question,
+    authority,
+    threadId: threadFields.threadId,
+    continueThread: threadFields.continueThread,
+    ...(opts.mcOptions && opts.mcOptions.length ? { mcOptions: opts.mcOptions } : {}),
+  };
+  const observation = await opts.runInteractiveQuery(query);
+  const raw = observation.raw;
+  if (!raw || !raw.snippet) {
+    console.log(`PARSER INSTRUMENT [nexus-machine-query, MACHINE-DRIVEN, D-BP152-033] authority=${authority} FAILED dispatchOutcome=${observation.dispatchOutcome}`);
+    return {
+      ok: false, authority, question, ...empty,
+      outcome: observation.dispatchOutcome === 'timeout' ? 'ceiling' : 'failed',
+      reason: observation.dispatchOutcome, threadStatus: null, threadPosition: null,
+      optionContamination: [], machineDriven: true,
+    };
+  }
+
+  const citations: NexusAuthorityCaptureCitation[] = (raw.citations ?? []).map((c) => ({
+    href: c.url, text: c.label, domain: normalizeCitationDomain(c.url),
+  }));
+  const optionContamination = detectOptionContaminationForMachineQuery(raw.snippet, optionsRecord);
+  console.log(
+    `PARSER INSTRUMENT [nexus-machine-query, MACHINE-DRIVEN, D-BP152-033] authority=${authority} outcome=settled ` +
+    `threadStatus=${raw.threadStatus ?? 'new'} threadPosition=${raw.threadPosition ?? 'n/a'} url="${raw.sourceUrl}" contamination=${optionContamination.length}`,
+  );
+  return {
+    ok: true, authority, question, url: raw.sourceUrl ?? '', text: raw.snippet, citations,
+    outcome: 'settled', threadStatus: raw.threadStatus ?? 'new', threadPosition: raw.threadPosition ?? null,
+    optionContamination, machineDriven: true,
+  };
 }

@@ -226,6 +226,8 @@ import {
   type BrowserAuthorityRawExtraction,
   type NexusLiveThreadState,
   type NexusThreadDecision,
+  // D-BP152-033/BISHOP/seg-machine-drives-nexus -- type-only, for the runMachineDrivenNexusQueryFromMain glue.
+  type NexusRunThreadContext,
 } from '../shared/plow/browser_authority_types';
 // BP138 Yoke 0.9.15 FIX 4: Ask-tab wiring. classifyAnswerType is the SAME existing classifier
 // plow_mc_answerer.ts's Stage F2 already uses (answer_type_classifier.ts, pure/dependency-free
@@ -272,6 +274,10 @@ import {
   // D-BP152-025/BISHOP/seg-nexus-returns-answer -- additive; see that file's own "Operator
   // capture" section header for the full mechanism.
   captureNexusAuthorityVisibleText,
+  // D-BP152-033/BISHOP/seg-machine-drives-nexus -- additive; see that file's own "MACHINE-DRIVEN
+  // queries" section header for the full mechanism. This ticket's only use of it is the thin glue
+  // wrapper (runMachineDrivenNexusQueryFromMain) defined just below runBrowserAuthorityQueryFromMain.
+  runMachineDrivenNexusQuery,
 } from './plow/nexus_authority_persistent_session';
 // D-BP152-028/BISHOP/seg-nexus-browser-bar -- ADDITIVE. Bookmarks persistence for the Nexus
 // Authority window's new address bar; see nexus_authority_bookmarks_store.ts's own header for
@@ -2348,6 +2354,30 @@ export async function runBrowserAuthorityQueryFromMain(
 ): Promise<BrowserAuthorityRawExtraction | null> {
   const observed = await runBrowserAuthorityQueryFromMainObserved(query);
   return observed.raw;
+}
+
+// D-BP152-033/BISHOP/seg-machine-drives-nexus: the one piece of glue this ticket adds to
+// index.ts. nexus_authority_persistent_session.ts's runMachineDrivenNexusQuery() needs a way to
+// reach the interactive (composer-driven) authorities without importing this file (index.ts
+// already imports THAT file -- a reverse import would be circular). This supplies
+// runBrowserAuthorityQueryFromMainObserved (immediately above, UNCHANGED by this ticket -- it is
+// still every pre-existing caller's exact same function) as the injected driver.
+// NOT WIRED TO ANY CALLER. Same "capability built, not wired" discipline D-BP152-030R/032 already
+// established: this ticket's own FORBIDDEN list bars touching Step 0/the pause plumbing/any
+// method's verdict logic/demand_test.ts, so nothing in the Liana Cycle calls this yet. A future
+// ticket decides which caller, if any, should be first to use it.
+export async function runMachineDrivenNexusQueryFromMain(
+  authority: BrowserAuthorityName,
+  question: string,
+  optionsRecord: Record<string, string> | null,
+  runThreadContext: NexusRunThreadContext,
+  mcOptions?: string[],
+) {
+  return runMachineDrivenNexusQuery(authority, question, optionsRecord, {
+    mcOptions,
+    threadFields: runThreadContext.forQuery(authority),
+    runInteractiveQuery: runBrowserAuthorityQueryFromMainObserved,
+  });
 }
 
 // --- IPC Handlers ------------------------------------------------------------
