@@ -363,6 +363,16 @@ declare global {
       onLianaTerminalEvent?: (
         cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
       ) => () => void;
+      // D-BP152-043/BISHOP/seg-scratch-composer -- THE SCRATCH COMPOSER. Founder, BP152, verbatim
+      // (FD-BP152-20): "I want to use it to stack methods in whatever order I want... mix and
+      // match as I please." lianaScriptListRegistry lists whatever library/method_registry.ts
+      // holds right now; lianaScriptRun's `steps` undefined/empty is THE DEFAULT (byte-identical
+      // to lianaTerminalRun -- see script_bridge.ts's own header).
+      lianaScriptListRegistry?: () => Promise<import('../main/liana_cycle/library/script_bridge').ComposerRegistryEntry[]>;
+      lianaScriptRun?: (
+        input: string,
+        steps?: string[],
+      ) => Promise<import('../main/liana_cycle/library/script_bridge').ScriptRunResponse>;
       // D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE. The engine stops before every
       // Google query and again on what comes back, and waits -- with no timer -- until the
       // operator answers. onLianaAudiblePause is the push; lianaAudibleRespond is the only way a

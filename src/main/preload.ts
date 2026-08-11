@@ -780,6 +780,21 @@ contextBridge.exposeInMainWorld('amplify', {
   ): Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome> =>
     ipcRenderer.invoke('liana-terminal-run', { input, audible, steppedAudible, contingencyOperatorSurvey, ambiguityQueryTransport }),
 
+  // D-BP152-043/BISHOP/seg-scratch-composer -- THE SCRATCH COMPOSER. Founder, BP152, verbatim
+  // (FD-BP152-20): "I want to use it to stack methods in whatever order I want... NameNumbered...
+  // mix and match as I please." lianaScriptListRegistry is a plain read (whatever
+  // library/method_registry.ts holds right now); lianaScriptRun accepts an ORDERED array of
+  // Name:Number ids -- an omitted or empty `steps` array is THE DEFAULT (byte-identical to
+  // lianaTerminalRun above; see script_bridge.ts's own header for why).
+  lianaScriptListRegistry: (): Promise<import('./liana_cycle/library/script_bridge').ComposerRegistryEntry[]> =>
+    ipcRenderer.invoke('liana-script-list-registry'),
+
+  lianaScriptRun: (
+    input: string,
+    steps?: string[],
+  ): Promise<import('./liana_cycle/library/script_bridge').ScriptRunResponse> =>
+    ipcRenderer.invoke('liana-script-run', { input, steps }),
+
   // D-BP152-039 REMOVAL -- `lianaTerminalGateEnvState` used to live here, bridging
   // 'liana-terminal-gate-env-state' so a renderer toggle could show the Survey Splice env var's
   // effective state before a run. That toggle was already removed by D-BP152-012 (zero renderer
@@ -2574,6 +2589,14 @@ declare global {
       lianaTerminalRun?: (
         input: string,
       ) => Promise<import('../shared/liana_cycle/liana_terminal_types').LianaTerminalOutcome>;
+      // D-BP152-043/BISHOP/seg-scratch-composer -- see the real ipcRenderer.invoke-typed
+      // declarations above (this file's exposeInMainWorld object) for the full explanation this
+      // ambient block mirrors.
+      lianaScriptListRegistry?: () => Promise<import('./liana_cycle/library/script_bridge').ComposerRegistryEntry[]>;
+      lianaScriptRun?: (
+        input: string,
+        steps?: string[],
+      ) => Promise<import('./liana_cycle/library/script_bridge').ScriptRunResponse>;
       onLianaTerminalEvent?: (
         cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
       ) => () => void;
