@@ -165,6 +165,18 @@ export interface BrowserAuthorityQuery {
    *  every pre-ensemble caller (Stage F2's legacy path, Stage F3 mesh-synergy) -- byte-identical
    *  Google-bare-search behavior for all of them. See buildBrowserAuthorityQueryUrl below. */
   embedOptionsForGoogle?: boolean;
+  /** D-BP152-030R, ADDITIVE/OPTIONAL. Identifies ONE question's worth of related queries for a
+   *  CONVERSATIONAL authority (isInteractiveBrowserAuthority() only -- see
+   *  decideNexusThreadContinuation below; 'user_google'/'user_perplexity' have no thread in this
+   *  codebase's driver and never consult this field). Absent on every pre-existing caller --
+   *  byte-identical one-shot behavior for all of them. */
+  threadId?: string;
+  /** D-BP152-030R, ADDITIVE/OPTIONAL. Explicit ask to continue `threadId`'s existing live
+   *  conversation rather than starting a fresh one. Absent/false ALWAYS starts fresh (the
+   *  pre-existing behavior), regardless of threadId. This is deliberately opt-IN, never inferred
+   *  from threadId's mere presence -- a caller that only wants to LABEL its calls with a
+   *  threadId (for receipts) without ever continuing must not accidentally trigger reuse. */
+  continueThread?: boolean;
 }
 
 /**
@@ -223,6 +235,15 @@ export interface BrowserAuthorityRawExtraction {
    *  user_gemini) -- their single-message thread has no independent multi-candidate structure to
    *  capture, per webview_preload.ts's own extractMultiResultCandidates() dispatch. */
   results?: SearchResultCandidate[];
+  /** D-BP152-030R, ADDITIVE/OPTIONAL -- 'new' when this call started (or was forced to start,
+   *  per decideNexusThreadContinuation's reset guarantee) a fresh conversation; 'continued' when
+   *  it reused an already-live one. Absent for authorities that never thread ('user_google',
+   *  'user_perplexity') and for any pre-fix caller. See decideNexusThreadContinuation below. */
+  threadStatus?: 'new' | 'continued';
+  /** D-BP152-030R, ADDITIVE/OPTIONAL -- 1-based count of queries sent in this thread so far,
+   *  INCLUDING this one. Absent whenever threadStatus is absent (no threadId was supplied, so no
+   *  position is tracked). Counts attempts sent, not successful replies. */
+  threadPosition?: number;
 }
 
 /** BP137 Yoke v2b Stage C item 1's ProvenanceReceipt-compatible output shape. Field names/
@@ -488,4 +509,87 @@ export function normalizeAuthorityAttemptOutcomes(
  *  parse_failed call site truncates identically instead of re-deriving the same slice(0,200). */
 export function truncateAuthorityPreview(text: string, maxChars = 200): string {
   return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
+// ─── D-BP152-030R ("make askGoogle keep the thread instead of one-shot") ──────────────────────
+//
+// ATTRIBUTED: Founder, BP152, verbatim: "make askGoogle keep the thread instead of one-shot."
+//
+// What the shared nexus <webview> currently has live, tracked by the ONE main-process module
+// (index.ts) that owns that webview. `position` is 1-based: how many queries have been SENT in
+// this thread so far, including whichever one is currently in flight.
+export interface NexusLiveThreadState {
+  authority: BrowserAuthorityName;
+  threadId: string;
+  position: number;
+}
+
+export interface NexusThreadDecision {
+  /** true = reuse the already-loaded page (skip navigation entirely) and type a follow-up into
+   *  the existing composer. false = perform a full page navigation to the authority's landing
+   *  URL first -- the only thing that can guarantee no DOM/JS state survives from a prior call. */
+  continuing: boolean;
+  /** State to store as `nexusLiveThread` AFTER this dispatch runs (regardless of whether the
+   *  scrape itself succeeds -- the navigation/reuse decision already determined what the shared
+   *  page now IS). null when nothing should be tracked (non-conversational authority, or no
+   *  threadId supplied at all). */
+  nextState: NexusLiveThreadState | null;
+  threadStatus: 'new' | 'continued';
+  /** null when no threadId was supplied (untracked, legacy-shaped call). */
+  threadPosition: number | null;
+}
+
+/**
+ * The ONE decision point for whether a query continues an existing live conversation or must
+ * start a fresh one. Pure, no I/O, no Electron import -- exhaustively unit-testable without a
+ * live window (see browser_authority_types.thread.test.ts).
+ *
+ * ATTRIBUTED (the reset guarantee): Dispatch D-BP152-030R, verbatim: "thread continuity is
+ * scoped to ONE question/run. A new question ALWAYS starts a new thread." Enforced here by
+ * requiring an EXACT match on both `authority` AND `threadId` against whatever is currently
+ * live -- any mismatch (a different question's threadId, a different authority, a caller that
+ * didn't ask to continue, or no threadId at all) always returns `continuing: false`, which the
+ * caller MUST use to force a full page navigation. A full navigation is the only mechanism that
+ * can guarantee zero DOM/JS state (text, prior answer, prior option list) survives into the next
+ * question -- there is deliberately no "partial reset" path.
+ *
+ * ATTRIBUTED (which surfaces thread at all): this dispatch's own instruction, verbatim: "A
+ * thread only exists where the surface has one." isInteractiveBrowserAuthority() above is this
+ * codebase's existing, single source of truth for which authorities actually have a live
+ * composer-driven page to continue -- 'user_google' (and, per this codebase's current driver,
+ * 'user_perplexity' -- see this ticket's SEG return for why the vendor having a thread does not
+ * mean this app's driver does) are never eligible, full stop, regardless of what the caller asks.
+ */
+export function decideNexusThreadContinuation(
+  query: Pick<BrowserAuthorityQuery, 'authority' | 'threadId' | 'continueThread'>,
+  current: NexusLiveThreadState | null,
+): NexusThreadDecision {
+  if (!isInteractiveBrowserAuthority(query.authority)) {
+    return { continuing: false, nextState: null, threadStatus: 'new', threadPosition: null };
+  }
+
+  const wantsContinue = !!(query.continueThread && query.threadId);
+  const matchesLiveThread =
+    wantsContinue &&
+    current !== null &&
+    current.authority === query.authority &&
+    current.threadId === query.threadId;
+
+  if (matchesLiveThread) {
+    const nextState: NexusLiveThreadState = {
+      authority: query.authority,
+      threadId: query.threadId as string,
+      position: (current as NexusLiveThreadState).position + 1,
+    };
+    return { continuing: true, nextState, threadStatus: 'continued', threadPosition: nextState.position };
+  }
+
+  // No match -- either this genuinely is a new question, or the caller asked to continue
+  // something that is NOT what the shared webview actually has live right now. Both are treated
+  // identically: never trust a mismatch, always force a fresh navigation.
+  if (query.threadId) {
+    const nextState: NexusLiveThreadState = { authority: query.authority, threadId: query.threadId, position: 1 };
+    return { continuing: false, nextState, threadStatus: 'new', threadPosition: 1 };
+  }
+  return { continuing: false, nextState: null, threadStatus: 'new', threadPosition: null };
 }
