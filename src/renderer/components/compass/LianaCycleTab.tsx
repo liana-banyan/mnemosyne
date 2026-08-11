@@ -300,6 +300,14 @@ export function LianaCycleTab() {
   // re-derived from the transcript. null until a send happens; reset to null at the start of
   // every new run (handleRun) so a stale run's query can never be Kept under a new one.
   const [lastAskGoogleQuery, setLastAskGoogleQuery] = useState<string | null>(null);
+
+  // D-BP152-027/BISHOP/seg-open-nexus-from-pause -- THE MISSING WAY IN. Founder, live report:
+  // "I thought we were going to have it come up with the 5 tabs that we already use? ... it's
+  // doing the same scrape thing it did before" -- he pressed Send to Google because nothing at
+  // this pause offered a way to reach the Nexus Authority window (the 5 Google/Perplexity/Claude/
+  // ChatGPT/Gemini tabs). Status text for the "open the 5 tabs" action below, reset per pause the
+  // same way steppedResponseText is (onLianaSteppedPause effect below).
+  const [nexusOpenStatus, setNexusOpenStatus] = useState<string | null>(null);
   // The raw text he typed to start the CURRENT run (e.g. "98"), captured once in handleRun --
   // this ticket's "provenance (which qid/run it was authored during)".
   const runInputRef = useRef<string>('');
@@ -446,6 +454,7 @@ export function LianaCycleTab() {
     const unsub = window.amplify.onLianaSteppedPause((pause) => {
       setActiveSteppedPause(pause);
       setSteppedResponseText('');
+      setNexusOpenStatus(null);
     });
     return () => { unsub?.(); };
   }, []);
@@ -496,6 +505,36 @@ export function LianaCycleTab() {
       setSteppedResponseText('');
     }
   }, [activeSteppedPause, steppedAnswering, steppedResponseText]);
+
+  // D-BP152-027/BISHOP/seg-open-nexus-from-pause -- OPEN THE 5 TABS, from the pause itself.
+  // Deliberately NOT routed through answerSteppedPause()/lianaSteppedRespond -- this never
+  // resolves the pause, so the run cannot advance, resume, or end as a side effect of pressing
+  // it. Reuses the EXACT existing open path the Founder already uses day to day (per his own
+  // report: "the only way I know how to get to that five tab is by clicking the 'sign in' button
+  // on the Nexus subtab of the Ask tab") -- window.amplify.openNexusAuthoritySignIn(), the same
+  // preload call NexusAuthoritySignInPanel.tsx's per-authority buttons make
+  // (src/renderer/settings/NexusAuthoritySignInPanel.tsx:182, handleOpenSignIn), which forwards to
+  // index.ts's 'nexus-authority-open-signin' handler (src/main/index.ts:4216) ->
+  // showNexusAuthoritySessionForSignIn() (nexus_authority_persistent_session.ts:284). No second
+  // open path is introduced here. That function's own ensureNexusAuthoritySession() singleton
+  // (nexus_authority_persistent_session.ts:240) already brings an existing window forward
+  // (win.show()/win.focus()) rather than ever constructing a second BrowserWindow -- unchanged by
+  // this ticket. getNexusAuthorityWindow() (read-only, used by capture) is untouched.
+  const openNexusTabsFromPause = useCallback(async () => {
+    if (!window.amplify?.openNexusAuthoritySignIn) {
+      setNexusOpenStatus('Not available -- rebuild main and restart the app.');
+      return;
+    }
+    setNexusOpenStatus(null);
+    try {
+      const res = await window.amplify.openNexusAuthoritySignIn('user_google');
+      if (!res?.ok) {
+        setNexusOpenStatus('Turn on Authorities (Nexus) in the Ask tab first, then try again.');
+      }
+    } catch {
+      setNexusOpenStatus('Could not open the window -- rebuild main and restart the app.');
+    }
+  }, []);
 
   // Enter makes a newline. Only a button acts -- same rule as the audible boxes.
   const handleSteppedResponseKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1318,6 +1357,34 @@ export function LianaCycleTab() {
                   whiteSpace: 'pre-wrap', overflowWrap: 'break-word', lineHeight: 1.5,
                 }}
               />
+
+              {/* D-BP152-027/BISHOP/seg-open-nexus-from-pause -- THE MISSING WAY IN. ONLY shown at
+                  the Step 0 pause, same scoping as the Send to Google button below. Opens/brings
+                  forward the 5-tab window (Google/Perplexity/Claude/ChatGPT/Gemini) so he can type
+                  and submit his own query there, then press Capture in that window -- this button
+                  itself never types, submits, or navigates on his behalf, and never resolves this
+                  pause (the run stays paused exactly as it is right now either way). */}
+              {activeSteppedPause.step.key === 'step0' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <button
+                    type="button"
+                    onClick={() => void openNexusTabsFromPause()}
+                    style={{
+                      background: 'none', border: '1px solid #a78bfa', borderRadius: 6,
+                      color: '#c4b5fd', padding: '8px 10px', fontSize: 13, fontWeight: 700,
+                      cursor: 'pointer', fontFamily: 'system-ui, sans-serif', outline: 'none',
+                    }}
+                    title="Opens the 5 tabs we already use (Google, Perplexity, Claude, ChatGPT, Gemini) -- type your query there yourself, then press Capture in that window."
+                  >
+                    Open the 5 tabs we already use
+                  </button>
+                  {nexusOpenStatus && (
+                    <div style={{ fontSize: 10, color: '#fca5a5', fontFamily: 'system-ui, sans-serif' }}>
+                      {nexusOpenStatus}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* D-BP152-021/BISHOP/seg-ask-google-this -- ATTRIBUTED, FD-BP152-15. ONLY shown at
                   the Step 0 pause (`step.key === 'step0'`) -- this is the one pause
