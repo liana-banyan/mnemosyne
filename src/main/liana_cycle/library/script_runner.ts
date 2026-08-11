@@ -415,7 +415,21 @@ async function runSteps<S>(
 
         const durationMs = clock() - t0;
         const resultText = extractResult(after, resolved.identity);
-        resultStore.store({ position: stepPosition, id: resolved.identity.id, result: resultText });
+        // D-BP152-049 STAGE 2/4: the stored entry itself carries `bothApply` (both texts) whenever
+        // this step was bothApply -- its PRESENCE is what makes stored_results.ts's
+        // substitutePlaceholders() refuse a BARE placeholder referencing this step and demand the
+        // explicit "(source)"/"(cascade)" form instead (Founder, BP152, verbatim: "I want it to
+        // refuse and make me say which"). `result` keeps carrying the Cascade's text unchanged --
+        // this is unrelated to which text `current` state continues from (still the Cascade's,
+        // unchanged, see this file's own header) -- it only concerns placeholder resolution.
+        resultStore.store({
+          position: stepPosition,
+          id: resolved.identity.id,
+          result: resultText,
+          ...(bothApplyRecord
+            ? { bothApply: { sourceResult: bothApplyRecord.sourceResult, cascadeResult: bothApplyRecord.cascadeResult } }
+            : {}),
+        });
         records.push({
           id: resolved.identity.id,
           kind: 'method',

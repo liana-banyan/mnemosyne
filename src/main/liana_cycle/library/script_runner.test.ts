@@ -542,3 +542,74 @@ describe('D-BP152-046 assertion (f): disagreement is surfaced as a finding, no w
     }
   });
 });
+
+describe('D-BP152-049 STAGE 2: a bare placeholder referencing a both-apply step\'s result refuses the run end-to-end (Founder, BP152, verbatim: "when a bare placeholder is used on a both-apply step, I want it to refuse and make me say which")', () => {
+  test('step 2\'s bare [insert stored result from 1.] referencing bothApply step 1 stops the run and states both explicit forms', async () => {
+    const script: Script = {
+      identity: makeMethodIdentity('both-apply-then-bare-reference', 1),
+      description: 'step 1 is bothApply; step 2 bare-references its stored result',
+      steps: [
+        { id: 'ApplyFilter:1', attribution: ATTRIBUTED_TEST, bothApply: true },
+        { id: 'step-b:1', attribution: ATTRIBUTED_TEST, queryText: 'given [insert stored result from 1.], what next?' },
+      ],
+      savedBy: 'Founder',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['ApplyFilter:1', 'step-b:1']);
+    const sourceExecute: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, 'SOURCE'], total: 0 });
+    const cascadeExecute: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, 'CASCADE'], total: 0 });
+
+    const result = await runScript<DemoState>(
+      script,
+      { log: [], total: 0 },
+      resolve,
+      cascadeExecute,
+      { extractResult: (s) => s.log[s.log.length - 1], sourceExecute },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failedId).toBe('step-b:1');
+      expect(result.error).toContain('both-apply step');
+      expect(result.error).toContain('[insert stored result from 1 (source).]');
+      expect(result.error).toContain('[insert stored result from 1 (cascade).]');
+      // step 1 itself completed and stored (both sides) before step 2's placeholder was refused.
+      expect(result.storedResults).toHaveLength(1);
+      expect(result.storedResults[0].bothApply).toEqual({ sourceResult: 'SOURCE', cascadeResult: 'CASCADE' });
+    }
+  });
+
+  test('the same run succeeds when step 2 uses the explicit "(cascade)" form instead of a bare reference', async () => {
+    const script: Script = {
+      identity: makeMethodIdentity('both-apply-then-qualified-reference', 1),
+      description: 'step 2 explicitly asks for the Cascade\'s own result',
+      steps: [
+        { id: 'ApplyFilter:1', attribution: ATTRIBUTED_TEST, bothApply: true },
+        { id: 'step-b:1', attribution: ATTRIBUTED_TEST, queryText: 'given [insert stored result from 1 (cascade).], what next?' },
+      ],
+      savedBy: 'Founder',
+      savedAt: '2026-08-11T00:00:00.000Z',
+    };
+    const resolve = makeCatalog(['ApplyFilter:1', 'step-b:1']);
+    const sourceExecute: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, 'SOURCE'], total: 0 });
+    const cascadeExecute: MethodExecutor<DemoState> = (identity, state) => ({ log: [...state.log, 'CASCADE'], total: 0 });
+    const seenQueryTexts: Array<string | undefined> = [];
+    const trackingCascadeExecute: MethodExecutor<DemoState> = (identity, state, resolvedQueryText) => {
+      seenQueryTexts.push(resolvedQueryText);
+      return cascadeExecute(identity, state);
+    };
+
+    const result = await runScript<DemoState>(
+      script,
+      { log: [], total: 0 },
+      resolve,
+      trackingCascadeExecute,
+      { extractResult: (s) => s.log[s.log.length - 1], sourceExecute },
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(seenQueryTexts).toEqual([undefined, 'given CASCADE, what next?']);
+    }
+  });
+});

@@ -228,6 +228,79 @@ describe('D-BP152-049 STAGE 1: ceiling raised to 20,000, warning logged over 10,
   });
 });
 
+describe('D-BP152-049 STAGE 2: a bare placeholder on a both-apply step refuses (Founder, BP152, verbatim: "when a bare placeholder is used on a both-apply step, I want it to refuse and make me say which")', () => {
+  function storeBothApply(store: ResultStore, position: number, id: string): void {
+    store.store({
+      position,
+      id,
+      result: 'CASCADE-TEXT', // the Cascade's text, kept for receipt/JSON parity (script_runner.ts)
+      bothApply: { sourceResult: 'SOURCE-TEXT', cascadeResult: 'CASCADE-TEXT' },
+    });
+  }
+
+  test('a bare reference to a both-apply step refuses, names the step, and states both explicit forms', () => {
+    const store = new ResultStore();
+    storeBothApply(store, 2, 'AskGoogle:1');
+    const result = substitutePlaceholders('affected by [insert stored result from 2.]', store);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('step 2');
+      expect(result.error).toContain('"AskGoogle:1"');
+      expect(result.error).toContain('both-apply step');
+      expect(result.error).toContain('[insert stored result from 2 (source).]');
+      expect(result.error).toContain('[insert stored result from 2 (cascade).]');
+      expect((result as { after?: string }).after).toBeUndefined();
+    }
+  });
+
+  test('never defaults to the Cascade\'s result -- the D-BP152-046 default is gone', () => {
+    const store = new ResultStore();
+    storeBothApply(store, 1, 'A:1');
+    const result = substitutePlaceholders('[insert stored result from 1.]', store);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).not.toContain('CASCADE-TEXT');
+  });
+
+  test('"(source)" resolves to the source\'s own result', () => {
+    const store = new ResultStore();
+    storeBothApply(store, 1, 'A:1');
+    const result = substitutePlaceholders('[insert stored result from 1 (source).]', store);
+    expect(result).toMatchObject({ ok: true, after: 'SOURCE-TEXT' });
+  });
+
+  test('"(cascade)" resolves to the Cascade\'s own result', () => {
+    const store = new ResultStore();
+    storeBothApply(store, 1, 'A:1');
+    const result = substitutePlaceholders('[insert stored result from 1 (cascade).]', store);
+    expect(result).toMatchObject({ ok: true, after: 'CASCADE-TEXT' });
+  });
+
+  test('the qualifier is case-insensitive and works by Name:Number id, not only by position', () => {
+    const store = new ResultStore();
+    storeBothApply(store, 3, 'DefineTheTerm:2');
+    const result = substitutePlaceholders('[INSERT STORED RESULT FROM DefineTheTerm:2 (SOURCE).]', store);
+    expect(result).toMatchObject({ ok: true, after: 'SOURCE-TEXT' });
+  });
+
+  test('a qualifier on a step that was NOT both-apply is refused, not silently ignored', () => {
+    const store = new ResultStore();
+    store.store({ position: 1, id: 'Plain:1', result: 'plain result' }); // no bothApply field
+    const result = substitutePlaceholders('[insert stored result from 1 (source).]', store);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('not a both-apply step');
+      expect(result.error).toContain('[insert stored result from 1.]');
+    }
+  });
+
+  test('a plain (non-both-apply) step is completely unaffected by this stage -- bare reference still substitutes', () => {
+    const store = new ResultStore();
+    store.store({ position: 1, id: 'Plain:1', result: 'plain result' });
+    const result = substitutePlaceholders('[insert stored result from 1.]', store);
+    expect(result).toMatchObject({ ok: true, after: 'plain result' });
+  });
+});
+
 describe('formatParserInstrumentLines -- the transcript convention (requirement 5)', () => {
   test('a successful substitution records both before and after, PARSER INSTRUMENT-labeled', () => {
     const lines = formatParserInstrumentLines('Categorize:3', { ok: true, before: 'raw text', after: 'substituted text' });
