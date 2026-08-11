@@ -52,6 +52,19 @@
 // ATTRIBUTION PER STEP. "Each entry carries its attribution (whose rule it is, or TARE)" reuses
 // StepAttribution (step_declaration.ts, D-BP152-018) rather than inventing a second attribution
 // shape -- the same discipline laboratory_store.ts already follows for its own saved records.
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP152-046/BISHOP/seg-stored-results-and-both-apply, STAGE 1/2 -- ADDED HERE.
+//
+// FD-BP152-21, Founder verbatim: "build the stored results... on your point about step 4, I want
+// both - I want to be able to ask Google, and I also want the Cascade to apply, as a check on each
+// other, so just make both results stored." This is stage 1 of 2: ScriptStepRef gains one new
+// OPTIONAL field, `queryText` -- this step's editable query template, which may reference an
+// earlier step's stored result via stored_results.ts's placeholder syntax. Additive: every field
+// that already existed keeps its exact prior meaning, and a ScriptStepRef built before this ticket
+// (no queryText) parses and runs exactly as it did before. See stored_results.ts and
+// script_runner.ts for the substitution mechanics. Stage 2 (his own "I want both" -- the source's
+// and the Cascade's own application both stored) is a separate commit, on top of this one.
 
 import { readFileSync } from 'node:fs';
 import type { StepAttribution } from './step_declaration';
@@ -70,6 +83,14 @@ export interface ScriptStepRef {
   /** Optional human note on why this step sits in this position. Documentation only -- never
    *  read by the runner, never a decision input. */
   note?: string;
+  /** D-BP152-046 STAGE 1/2, FD-BP152-21: this step's literal, editable query text template. May
+   *  contain zero or more `[insert stored result from <ref>.]` placeholders referencing an EARLIER
+   *  step's stored result (stored_results.ts owns the exact syntax and substitution rule --
+   *  literal text replacement only, HARDWIRE-22, nothing here interprets it). Only meaningful on a
+   *  step that resolves to a primitive METHOD -- validateScript() below rejects it on a step that
+   *  resolves to a nested Script, since a saved sequence has no single query text of its own.
+   *  Optional: a step with no queryText runs exactly as it did before this ticket. */
+  queryText?: string;
 }
 
 /** A SCRIPT IS AN ORDERED LIST OF Name:Number REFERENCES. Human-readable, hand-editable on disk,
@@ -138,6 +159,18 @@ function walkForCycles(
       };
     }
     if (resolved.kind === 'script') {
+      // D-BP152-046: a nested Script (a saved sequence used as a step, FD-BP152-09) has no single
+      // query text and no single "source vs Cascade" application of its own -- both fields below
+      // are meaningful only on a leaf method step. Rejected here, at validate time, rather than
+      // silently ignored at run time.
+      if (stepRef.queryText !== undefined) {
+        return {
+          ok: false,
+          error: `script "${script.identity.id}" step ${i + 1} ("${stepRef.id}") carries "queryText" `
+            + 'but resolves to a nested script, not a primitive method -- a saved sequence has no '
+            + 'single query text of its own',
+        };
+      }
       const nestedId = resolved.script.identity.id;
       if (ancestors.includes(nestedId)) {
         const cycle = [...ancestors, nestedId].join(' -> ');
@@ -203,10 +236,14 @@ export function parseScript(raw: unknown, resolve: ScriptResolver): ScriptParseR
           + `("${String((attribution as { kind?: unknown }).kind)}")`,
       };
     }
+    if (raw_i.queryText !== undefined && typeof raw_i.queryText !== 'string') {
+      return { ok: false, error: `script step ${i + 1} ("${raw_i.id}") has a non-string "queryText"` };
+    }
     steps.push({
       id: raw_i.id,
       attribution,
       note: typeof raw_i.note === 'string' ? raw_i.note : undefined,
+      queryText: typeof raw_i.queryText === 'string' ? raw_i.queryText : undefined,
     });
   }
 

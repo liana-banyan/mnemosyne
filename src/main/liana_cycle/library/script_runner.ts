@@ -16,15 +16,56 @@
 //
 // NOTHING IS INVOKED AT IMPORT. This file defines only types and functions -- importing it runs
 // no step, opens no file, makes no call.
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP152-046/BISHOP/seg-stored-results-and-both-apply, STAGE 1/2 -- ADDED HERE.
+//
+// FD-BP152-21, Founder verbatim: "build the stored results... on your point about step 4, I want
+// both - I want to be able to ask Google, and I also want the Cascade to apply, as a check on each
+// other, so just make both results stored." This is stage 1 of 2, the "stored results" half; stage
+// 2 (his own "I want both") is a separate commit on top of this one.
+//
+// Every step that runs stores its result (stored_results.ts's ResultStore), addressable by its
+// 1-based POSITION in the run's own flattened execution order and by its Name:Number id. The
+// position counter is GLOBAL across the whole run -- including inside a nested script, per
+// FD-BP152-09's own recursion -- because his worked stack (steps 2, 3, 4) treats the run as one
+// flat numbered sequence, and "results persist for the whole run" (this ticket's own requirement
+// 1) reads as one run-wide store, not one store per nested script. A step's `queryText` (script.ts,
+// this ticket) may reference an earlier stored result via stored_results.ts's placeholder syntax;
+// substitution happens here, immediately before that step's `execute()` call, and is recorded on
+// its StepRunRecord (`querySubstitution`, `instrumentLines`) before the step's own effect is known
+// -- so a reader can always see what was inserted, per requirement 5, even if the step then fails.
+//
+// ADDITIVE to the existing MethodExecutor/StepRunRecord/RunResult/runScript contracts: every new
+// field and parameter is optional, so a caller that never sets `queryText` on any ScriptStepRef,
+// and never passes the new `options` argument, sees byte-identical behavior to this file before
+// this ticket (proven by script_runner.test.ts's own pre-existing assertions (a)-(f), unmodified).
 
 import type { MethodIdentity, ResolvedRef, Script, ScriptResolver } from './script';
+import {
+  formatParserInstrumentLines,
+  ResultStore,
+  substitutePlaceholders,
+  DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH,
+  type StoredStepResult,
+} from './stored_results';
+
+export type { StoredStepResult } from './stored_results';
 
 /** Executes exactly one PRIMITIVE (leaf) step: takes the prior state, returns the next state.
  *  Supplied by the caller -- script_runner.ts never calls a real method itself (comparative
  *  cascade, survey, etc. are all out of this ticket's scope). May return a Promise so a future
  *  wiring of an async method (one that issues a Google query, for instance) needs no change to
- *  this file's own contract. */
-export type MethodExecutor<S> = (identity: MethodIdentity, state: S) => S | Promise<S>;
+ *  this file's own contract.
+ *
+ *  D-BP152-046: `resolvedQueryText` is the step's own `queryText` (script.ts) AFTER placeholder
+ *  substitution -- `undefined` when the step carries no `queryText` at all, exactly the same as
+ *  before this ticket. Appended as a third, optional parameter so an executor written against the
+ *  original two-parameter contract (e.g. script_bridge.ts's `runComposedStack()`, a concurrent
+ *  dispatch this ticket does not touch) remains valid without any change on its part -- JavaScript
+ *  ignores an argument a function does not declare, and TypeScript accepts a function with fewer
+ *  declared parameters wherever a function type with more is expected. */
+export type MethodExecutor<S> = (identity: MethodIdentity, state: S, resolvedQueryText?: string) => S | Promise<S>;
 
 export type StepRunStatus = 'ok' | 'failed';
 
@@ -53,10 +94,26 @@ export interface StepRunRecord {
    *  transcript, in its own authored order. This is what "the transcript must show the nesting"
    *  means: a composite entry carries its children inline, at depth + 1. */
   children?: StepRunRecord[];
+  /** D-BP152-046 STAGE 1/2: this step's 1-based position in the run's own flattened execution
+   *  order -- the SAME number `[insert stored result from N.]` addresses (stored_results.ts).
+   *  Present on every 'method' entry (leaf steps are what get stored/addressed, per this file's
+   *  own header); absent on a 'script' (composite) entry, which occupies no position of its own. */
+  position?: number;
+  /** D-BP152-046 STAGE 1/2: present only when this step's ScriptStepRef carried a `queryText`
+   *  template. The literal query text before and after placeholder substitution -- "a reader must
+   *  see what was inserted" (this ticket's own requirement 5). Present even when substitution
+   *  FAILED (status will be 'failed' in that case): `after` then equals `before` verbatim, since no
+   *  substitution actually took place -- `instrumentLines` and `error` carry the failure reason. */
+  querySubstitution?: { before: string; after: string };
+  /** D-BP152-046 STAGE 1/2: the same before/after, formatted as "PARSER INSTRUMENT"-labeled lines
+   *  in survey_stage.ts's own established style (see stored_results.ts's
+   *  formatParserInstrumentLines() for the exact convention this reuses) -- generated here so a
+   *  future wiring ticket can forward them to a real MethodRunContext's ctx.emit() unchanged. */
+  instrumentLines?: string[];
 }
 
 export type RunResult<S> =
-  | { ok: true; finalState: S; steps: StepRunRecord[] }
+  | { ok: true; finalState: S; steps: StepRunRecord[]; storedResults: StoredStepResult[] }
   | {
       ok: false;
       /** The id of the step that actually failed -- if it failed inside a nested script, this is
@@ -71,7 +128,35 @@ export type RunResult<S> =
       /** The state as it stood immediately before the failing step ran, kept only for
        *  diagnostics. The run itself never proceeds past this point on this state. */
       stateAtFailure: S;
+      /** D-BP152-046 STAGE 1/2: every step's stored result up to and including the last step that
+       *  actually completed before the failure -- "results persist for the whole run" holds even
+       *  on a failed run, so a reader can see exactly what was available for substitution at the
+       *  point it broke. */
+      storedResults: StoredStepResult[];
     };
+
+/** D-BP152-046: optional, additive capabilities runScript() accepts. Every field is optional and
+ *  every field's absence reproduces this file's exact pre-existing behavior -- see this file's own
+ *  header for the full accounting. Bundled into one options object (rather than more positional
+ *  parameters) so a caller opting into none of this ticket's features, like script_bridge.ts's
+ *  existing four-argument call, needs no change at all. */
+export interface RunScriptOptions<S> {
+  /** D-BP152-046 STAGE 1/2: extracts this step's own "result" as plain text from its output state,
+   *  for storage (requirement 1) and later placeholder substitution (requirement 2). Defaults to
+   *  `JSON.stringify(state)` when omitted -- always produces SOME storable text, never throws,
+   *  and never truncates what it extracts (requirement 6's truncation rule concerns a SUBSTITUTED
+   *  query, not this extraction). */
+  extractResult?: (state: S, identity: MethodIdentity) => string;
+  /** D-BP152-046 STAGE 1/2: the character ceiling past which a SUBSTITUTED query is refused rather
+   *  than silently truncated (requirement 6). TARE -- see stored_results.ts's own
+   *  DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH doc for why this number is unattributed and reused from
+   *  an existing convention rather than Founder-ordered. Defaults to that constant. */
+  maxSubstitutedQueryLength?: number;
+}
+
+function defaultExtractResult<S>(state: S): string {
+  return JSON.stringify(state);
+}
 
 /** Injectable clock, purely for deterministic tests -- defaults to the real one. Same pattern
  *  laboratory_store.ts's SaveLaboratoryStepInput.now already uses. */
@@ -137,11 +222,28 @@ export async function runScript<S>(
   initialState: S,
   resolve: ScriptResolver,
   execute: MethodExecutor<S>,
+  options: RunScriptOptions<S> = {},
   clock: Clock = REAL_CLOCK,
 ): Promise<RunResult<S>> {
-  const outcome = await runSteps(script, [script.identity.id], 0, initialState, resolve, execute, clock);
+  const resultStore = new ResultStore();
+  const position = { next: 1 };
+  const extractResult = options.extractResult ?? defaultExtractResult;
+  const maxSubstitutedQueryLength = options.maxSubstitutedQueryLength ?? DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH;
+  const outcome = await runSteps(
+    script,
+    [script.identity.id],
+    0,
+    initialState,
+    resolve,
+    execute,
+    clock,
+    resultStore,
+    position,
+    extractResult,
+    maxSubstitutedQueryLength,
+  );
   if (outcome.status === 'ok') {
-    return { ok: true, finalState: outcome.state, steps: outcome.records };
+    return { ok: true, finalState: outcome.state, steps: outcome.records, storedResults: resultStore.all() };
   }
   return {
     ok: false,
@@ -149,6 +251,7 @@ export async function runScript<S>(
     error: outcome.error,
     steps: outcome.records,
     stateAtFailure: outcome.state,
+    storedResults: resultStore.all(),
   };
 }
 
@@ -164,6 +267,10 @@ async function runSteps<S>(
   resolve: ScriptResolver,
   execute: MethodExecutor<S>,
   clock: Clock,
+  resultStore: ResultStore,
+  position: { next: number },
+  extractResult: (state: S, identity: MethodIdentity) => string,
+  maxSubstitutedQueryLength: number,
 ): Promise<StepsOutcome<S>> {
   const records: StepRunRecord[] = [];
   let current = state;
@@ -186,11 +293,49 @@ async function runSteps<S>(
     }
 
     if (resolved.kind === 'method') {
+      // D-BP152-046 STAGE 1/2: this step's position in the run's own flattened execution order --
+      // assigned as soon as the step is KNOWN to run (id resolved), before its own outcome is
+      // known, so "position N" always means "the Nth step actually attempted," matching what an
+      // operator sees scroll past on the bench.
+      const stepPosition = position.next;
+      position.next += 1;
+
+      let resolvedQueryText: string | undefined;
+      let querySubstitution: { before: string; after: string } | undefined;
+      let instrumentLines: string[] | undefined;
+
+      if (stepRef.queryText !== undefined) {
+        const sub = substitutePlaceholders(stepRef.queryText, resultStore, maxSubstitutedQueryLength);
+        instrumentLines = formatParserInstrumentLines(resolved.identity.id, sub);
+        querySubstitution = { before: sub.before, after: sub.ok ? sub.after : sub.before };
+        if (!sub.ok) {
+          // Requirement 4 (unresolved reference) and requirement 6 (oversized substitution) both
+          // land here -- substitutePlaceholders() names which one in `sub.error`. Either way: stop
+          // the run, name the reference/limit, never substitute empty, skip, guess, or truncate.
+          records.push({
+            id: resolved.identity.id,
+            kind: 'method',
+            depth,
+            status: 'failed',
+            whatChanged: 'not run -- query text placeholder substitution failed',
+            durationMs: 0,
+            error: sub.error,
+            position: stepPosition,
+            querySubstitution,
+            instrumentLines,
+          });
+          return { status: 'failed', state: current, failedId: resolved.identity.id, error: sub.error, records };
+        }
+        resolvedQueryText = sub.after;
+      }
+
       const before = current;
       const t0 = clock();
       try {
-        const after = await execute(resolved.identity, current);
+        const after = await execute(resolved.identity, current, resolvedQueryText);
         const durationMs = clock() - t0;
+        const resultText = extractResult(after, resolved.identity);
+        resultStore.store({ position: stepPosition, id: resolved.identity.id, result: resultText });
         records.push({
           id: resolved.identity.id,
           kind: 'method',
@@ -198,6 +343,8 @@ async function runSteps<S>(
           status: 'ok',
           whatChanged: describeStateChange(before, after),
           durationMs,
+          position: stepPosition,
+          ...(querySubstitution ? { querySubstitution, instrumentLines } : {}),
         });
         current = after;
       } catch (err) {
@@ -211,6 +358,8 @@ async function runSteps<S>(
           whatChanged: 'not applied -- step raised an error',
           durationMs,
           error,
+          position: stepPosition,
+          ...(querySubstitution ? { querySubstitution, instrumentLines } : {}),
         });
         return { status: 'failed', state: current, failedId: resolved.identity.id, error, records };
       }
@@ -246,6 +395,10 @@ async function runSteps<S>(
       resolve,
       execute,
       clock,
+      resultStore,
+      position,
+      extractResult,
+      maxSubstitutedQueryLength,
     );
     const durationMs = clock() - t0;
 
