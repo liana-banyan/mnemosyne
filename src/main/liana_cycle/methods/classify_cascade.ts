@@ -75,7 +75,15 @@
 import { avgOptionWordCount, registerMethod } from '../method_registry';
 import type { LianaMethod, MethodQuestionInput, MethodRunContext, ShapeTestResult } from '../method_registry';
 import type { LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
-import { appearsIn, gemmaExtract, googleBlocks } from './comparative_cascade';
+import {
+  appearsIn, evaluateComparativeTerminator, gemmaExtract, googleBlocks, list, norm, toLetters, toPerSqKm,
+} from './comparative_cascade';
+// D-BP152-038, ADDITIVE: the superlative-by-magnitude route (far below) imports ONLY these
+// already-exported primitives from comparative_cascade.ts -- evaluateComparativeTerminator() (the
+// ruled terminator, reused unchanged) plus the same googleBlocks/gemmaExtract/appearsIn/toLetters/
+// list/norm/toPerSqKm helpers definitional_cascade.ts already reuses. comparative_cascade.ts
+// itself is not modified anywhere by this ticket (verify by diff).
+import type { GoogleAnswer } from './comparative_cascade';
 // STAGE 2 -- the litmus-strip loop reuses this generator UNCHANGED. It already builds both his
 // FD-BP152-03 question shapes (SCALE/DEFINITION and THRESHOLD) off a literal span of the question
 // text; this file writes no second wording and no second gate on what may be asked.
@@ -356,6 +364,18 @@ export interface ClassifyCandidateTerm {
   role: ClassifyCandidateRole;
 }
 
+// D-BP152-038, factored out (no behavior change): these three pattern-literals used to live only
+// inline inside extractClassifyCandidateTerms()'s own `patterns` array below. Named here so the
+// superlative-by-magnitude route far below (extractSuperlativeMatch()) can test the EXACT SAME
+// regex SCOPE_PATTERN_RE/SUPERLATIVE_PROPERTY_RE already use for detection, with exactly one
+// definition of each -- never a second, hand-copied literal that could drift from this one.
+const SCOPE_PATTERN_RE = /following\s+([a-z][a-z\s]*?)\s+(?:is|are)\b/i;
+const PREDICATE_CATEGORICAL_RE = /(?:considered|classified as|categorized as|qualify as|qualifies as)\s+(?:one of\s+)?(?:the\s+)?([a-z][a-z0-9\s'-]{2,60}?)(?:[.?!]|$)/i;
+/** "most/least ADJECTIVE" -- the superlative property phrase (qid 98: "most densely populated").
+ *  THIS IS THE STRUCTURAL SIGNAL the superlative-by-magnitude route (far below) gates on -- no
+ *  word list, no second regex; extractSuperlativeMatch() tests this exact constant. */
+export const SUPERLATIVE_PROPERTY_RE = /\b(most|least)\s+([a-z][a-z\s-]*?)(?:\s+(?:regions?|options?|choices?|items?|of\b)|[.?!]|$)/i;
+
 /** Mechanical, structural candidate-term extraction -- no word list, no model call, three
  *  patterns read off the QUESTION'S OWN GRAMMAR (never the option text). Mirrors the shape
  *  `comparative_cascade.ts`'s own (non-exported, RANK-specific) `deriveCategoryAndProperty()`
@@ -369,20 +389,20 @@ export interface ClassifyCandidateTerm {
  *  produces 'scope', patterns 2 and 3 produce 'predicate' -- read off WHICH PATTERN matched, never
  *  guessed from the term's own text. */
 export function extractClassifyCandidateTerms(question: string): ClassifyCandidateTerm[] {
-  const patterns: Array<{ re: RegExp; role: ClassifyCandidateRole }> = [
+  const patterns: Array<{ re: RegExp; role: ClassifyCandidateRole; group: number }> = [
     // "the following X is/are" -- the category/scope noun phrase itself (qid 98: "world regions").
-    { re: /following\s+([a-z][a-z\s]*?)\s+(?:is|are)\b/i, role: 'scope' },
+    { re: SCOPE_PATTERN_RE, role: 'scope', group: 1 },
     // "considered/classified as/qualify as (one of (the))? X" -- the categorical predicate.
-    { re: /(?:considered|classified as|categorized as|qualify as|qualifies as)\s+(?:one of\s+)?(?:the\s+)?([a-z][a-z0-9\s'-]{2,60}?)(?:[.?!]|$)/i, role: 'predicate' },
+    { re: PREDICATE_CATEGORICAL_RE, role: 'predicate', group: 1 },
     // "most/least ADJECTIVE" -- the superlative property phrase (qid 98: "most densely populated").
-    { re: /\b(?:most|least)\s+([a-z][a-z\s-]*?)(?:\s+(?:regions?|options?|choices?|items?|of\b)|[.?!]|$)/i, role: 'predicate' },
+    { re: SUPERLATIVE_PROPERTY_RE, role: 'predicate', group: 2 },
   ];
   const seen = new Set<string>();
   const out: ClassifyCandidateTerm[] = [];
-  for (const { re, role } of patterns) {
+  for (const { re, role, group } of patterns) {
     const m = re.exec(question);
-    if (!m || !m[1]) continue;
-    const term = m[1].trim();
+    if (!m || !m[group]) continue;
+    const term = m[group].trim();
     if (!term) continue;
     const span = literalSubjectSpan(term, question);
     if (!span) continue;
@@ -1147,7 +1167,435 @@ function buildBanyanMetricInputs(
   };
 }
 
+// ─────────────────────────── THE SUPERLATIVE-BY-MAGNITUDE ROUTE ───────────────────────────
+//
+// D-BP152-038/BISHOP/seg-superlative-resolves-by-rank. THE FOUNDER'S RULING, BP152, VERBATIM, in
+// answer to "does a superlative membership question terminate on the RANK terminator applied to
+// the property the superlative names": "Yes. that. now code it, please."
+//
+// HIS OWN WALKTHROUGH IS THE SPECIFICATION (FOUNDER_CASCADE_WORKED_BY_HAND_VERBATIM_RECOVERED_
+// BP144.md, lines 35-100, EXCERPT 2). He solved the population-density membership question BY
+// RANKING, not by classifying: order the (already-narrowed) options by the property the
+// superlative names, asking BOTH directions as separate Google searches to check the engine
+// against itself, then a quality-control pass with every option -- including ones already
+// eliminated -- re-included, then read the answer off the SAME hard number his comparative
+// cascade already terminates on.
+//
+// STRUCTURAL DETECTION, NO WORD LIST. extractSuperlativeMatch() below tests SUPERLATIVE_PROPERTY_RE
+// -- the EXACT pattern 3 regex extractClassifyCandidateTerms() (above) also matches, factored into
+// one shared constant so there is exactly one definition, never two that could drift. If the
+// question carries no structural "most X" / "least X" span, this route never engages and run()
+// (bottom of this file) falls through to the unmodified criteria-stack path, behaving exactly as
+// it did at 1a9dd511.
+//
+// AN ADDITIONAL ROUTE, NOT A REPLACEMENT. runClassifyCascade() (Occam elimination + litmus strips
+// + Banyan Metric, Stages 1-3 above) is untouched by this section -- not one line inside it is
+// modified, and it remains the path every non-superlative CLASSIFY question runs. This route
+// REUSES runLitmusStripLoop() (Stage 2, unmodified) to get a survivor pool the same general,
+// no-word-list way every other CLASSIFY question gets one -- this section adds no second
+// elimination mechanism of its own.
+//
+// TERMINATE ON THE EXISTING HARD NUMBER, REUSED NOT COPIED. evaluateComparativeTerminator()'s
+// value-convergence branch (comparative_cascade.ts:689-750, order-of-magnitude self-agreement) is
+// imported and called directly below -- comparative_cascade.ts itself is not modified anywhere by
+// this ticket (verify by diff).
+//
+// A KNOWN, DISCLOSED GAP IN THE REUSED FUNCTION, NOT FIXED HERE (per this ticket's own FORBIDDEN
+// section: "do NOT modify comparative_cascade.ts"). detectValueConvergence()'s own doc comment
+// there states plainly that when more than one option self-agrees, it always picks the LOWEST
+// value -- "direction-awareness for a 'most X' question is a separate, pre-existing gap this
+// ticket was not asked to fix." That is exactly right for a NOT-question asking which option is
+// NOT among the superlative's own direction (qid 98: NOT the most densely populated => wants the
+// least-dense option, and the reused function's own lowest-wins rule lands on exactly that extreme
+// with no change needed here). It is NOT correct for a DIRECT "most X" question with no NOT (that
+// needs the HIGHEST self-agreeing value, which the reused function does not compute) -- this route
+// detects that case (targetExtreme === 'most') and ABSTAINS with the gap named, rather than either
+// modifying the reused function or inventing an unrequested workaround (an inversion/reciprocal
+// transform) that was never asked for and was never verified against his own worked examples.
+
+interface SuperlativeMatch { direction: 'most' | 'least'; property: string; }
+
+/** Structural detection -- tests SUPERLATIVE_PROPERTY_RE, the SAME regex
+ *  extractClassifyCandidateTerms()'s own pattern 3 matches (that match IS the signal, per this
+ *  ticket). Returns which direction word matched ('most'/'least') and the literal property span,
+ *  or null when the question carries no structural superlative -- the ONLY gate run() uses to
+ *  decide whether this route engages at all. */
+export function extractSuperlativeMatch(question: string): SuperlativeMatch | null {
+  const m = SUPERLATIVE_PROPERTY_RE.exec(question);
+  if (!m || !m[2]) return null;
+  const term = m[2].trim();
+  if (!term) return null;
+  const span = literalSubjectSpan(term, question);
+  if (!span) return null;
+  const direction = m[1].toLowerCase() as 'most' | 'least';
+  return { direction, property: span };
+}
+
+/** Pure two-value flip -- no lookup table, no word list. A NOT-question demands the complement of
+ *  the superlative's own direction (questionDemandsComplement(), already defined above). */
+function oppositeExtreme(direction: 'most' | 'least'): 'most' | 'least' {
+  return direction === 'most' ? 'least' : 'most';
+}
+
+interface OrderingQueryResult {
+  label: string;
+  query: string;
+  ok: boolean;
+  ordering: string[];
+  raw: GoogleAnswer | null;
+}
+
+/** Fires ONE ordering query, his own sentence structure verbatim
+ *  (FOUNDER_CASCADE_WORKED_BY_HAND_VERBATIM_RECOVERED_BP144.md lines 67/80: "Please put these
+ *  regions in order of most/least densely to least/most densely populated."), and extracts the
+ *  stated order the SAME way comparative_cascade.ts's own stage 3 already does (gemmaExtract +
+ *  toLetters + appearsIn verification against the passage). NEW CODE HERE, reusing only the
+ *  already-exported primitives (googleBlocks, gemmaExtract, appearsIn, toLetters, list) -- not a
+ *  copy of that file's run() body, and comparative_cascade.ts is not modified. */
+async function askOrdering(
+  askGoogle: MethodRunContext['askGoogle'],
+  category: string,
+  property: string,
+  direction: 'most-to-least' | 'least-to-most',
+  pool: string[],
+  OPT: Record<string, string>,
+  label: string,
+  note: (text: string) => void,
+): Promise<OrderingQueryResult> {
+  const [d1, d2] = direction === 'most-to-least' ? ['most', 'least'] : ['least', 'most'];
+  const query = `Please put these ${category} in order of ${d1} ${property} to ${d2} ${property}. ${list(pool, OPT)}`;
+  note(`   ${label}: ${query}`);
+  const res = await googleBlocks(askGoogle, query);
+  if (!res.ok) {
+    note(`   ${label}: no usable answer (${res.via})`);
+    return { label, query, ok: false, ordering: [], raw: res };
+  }
+  const ex = await gemmaExtract(
+    'If this passage states an explicit ranking or ordered list of any of these names, copy that '
+      + 'list out in exactly the order the passage gives it. If the passage does not state an order, '
+      + `return an empty list. Do not put them in order yourself. Names: ${pool.map((L) => OPT[L]).join('; ')}`,
+    res.text,
+    '{"order":["exact name, in the passage\'s stated order"],"order_stated_in_passage":true}',
+  );
+  let ordering = toLetters(ex?.order as unknown[] | undefined, OPT);
+  ordering = ordering.filter((L) => appearsIn(res.text, OPT[L]));
+  note(`   ${label}: stated order -- ${ordering.length ? ordering.map((L) => `${L}) ${OPT[L]}`).join(' > ') : '(none extracted)'}`);
+  return { label, query, ok: true, ordering, raw: res };
+}
+
+/** Reads the option sitting at a named extreme out of a most-to-least-worded ordering array
+ *  (index 0 = the "most" end, last index = the "least" end) -- structural index lookup only; the
+ *  CALLER supplies which array (mostToLeast-worded vs leastToMost-worded) so this stays a plain
+ *  lookup, never a guess at which end is which. */
+function extremeOf(ordering: string[], end: 'first' | 'last'): string | null {
+  if (!ordering.length) return null;
+  return end === 'first' ? ordering[0] : ordering[ordering.length - 1];
+}
+
+export interface ExtremeAgreementCheck {
+  targetExtreme: 'most' | 'least';
+  primaryCandidate: string | null;
+  qcCandidate: string | null;
+  contradictsElimination: boolean;
+  agrees: boolean;
+  candidate: string | null;
+  notes: string[];
+}
+
+/** His check, structurally. "Two ways to make sure it's correct... to check accuracy of the same
+ *  engine that I asked" (step 3) -- the two PRIMARY-direction queries (over the survivor pool) must
+ *  agree at the target extreme. "As a quality control" (step 4) -- the two QC-direction queries
+ *  (over EVERY option, including ones the litmus-strip loop already eliminated) must ALSO agree at
+ *  the target extreme, AND that QC extreme must not be an option the loop already eliminated -- if
+ *  it is, "that contradicts an earlier elimination and MUST be reported, not silently ignored."
+ *  Any of these three checks failing is reported as a disagreement; NONE of them force a winner --
+ *  "a disagreement here is a failure to report, never a tie to break." */
+function checkExtremeAgreement(
+  targetExtreme: 'most' | 'least',
+  pool: string[],
+  mostToLeast: OrderingQueryResult,
+  leastToMost: OrderingQueryResult,
+  mostToLeastQC: OrderingQueryResult,
+  leastToMostQC: OrderingQueryResult,
+): ExtremeAgreementCheck {
+  const notes: string[] = [];
+  const primaryReadings = [
+    { label: mostToLeast.label, L: extremeOf(mostToLeast.ordering, targetExtreme === 'most' ? 'first' : 'last') },
+    { label: leastToMost.label, L: extremeOf(leastToMost.ordering, targetExtreme === 'most' ? 'last' : 'first') },
+  ];
+  const qcReadings = [
+    { label: mostToLeastQC.label, L: extremeOf(mostToLeastQC.ordering, targetExtreme === 'most' ? 'first' : 'last') },
+    { label: leastToMostQC.label, L: extremeOf(leastToMostQC.ordering, targetExtreme === 'most' ? 'last' : 'first') },
+  ];
+  for (const r of [...primaryReadings, ...qcReadings]) {
+    notes.push(`   extreme-agreement reading (${targetExtreme}): ${r.label} -> ${r.L ?? '(no usable ordering)'}`);
+  }
+
+  const primaryUsable = primaryReadings.filter((r): r is { label: string; L: string } => r.L != null);
+  let primaryCandidate: string | null = null;
+  if (primaryUsable.length && new Set(primaryUsable.map((r) => r.L)).size === 1) {
+    primaryCandidate = primaryUsable[0].L;
+  } else if (primaryUsable.length > 1) {
+    notes.push(
+      `   DISAGREEMENT between the two primary directions at the ${targetExtreme} extreme -- `
+        + `${primaryUsable.map((r) => `${r.label}=${r.L}`).join(', ')} -- his words: "two ways to make sure it's `
+        + 'correct"; reported, not resolved',
+    );
+  }
+
+  const qcUsable = qcReadings.filter((r): r is { label: string; L: string } => r.L != null);
+  let qcCandidate: string | null = null;
+  if (qcUsable.length && new Set(qcUsable.map((r) => r.L)).size === 1) {
+    qcCandidate = qcUsable[0].L;
+  } else if (qcUsable.length > 1) {
+    notes.push(
+      `   DISAGREEMENT between the two quality-control directions at the ${targetExtreme} extreme -- `
+        + `${qcUsable.map((r) => `${r.label}=${r.L}`).join(', ')} -- reported, not resolved`,
+    );
+  }
+
+  const contradictsElimination = qcCandidate != null && !pool.includes(qcCandidate);
+  if (contradictsElimination) {
+    notes.push(
+      `   QC (all options re-included) puts ${qcCandidate} at the ${targetExtreme} extreme, but ${qcCandidate} was `
+        + `already eliminated by the litmus-strip loop (not in the survivor pool: ${pool.join(', ')}) -- this `
+        + 'CONTRADICTS the earlier elimination and is reported here, per his own quality-control step, never '
+        + 'silently ignored',
+    );
+  } else if (primaryCandidate != null && qcCandidate != null && primaryCandidate !== qcCandidate) {
+    notes.push(
+      `   DISAGREEMENT between the primary pass (${primaryCandidate}) and the quality-control pass (${qcCandidate}) `
+        + `at the ${targetExtreme} extreme -- reported, not resolved`,
+    );
+  }
+
+  const agrees = primaryCandidate != null && primaryCandidate === qcCandidate && !contradictsElimination;
+  if (agrees) {
+    notes.push(`   extreme-agreement: the primary pass and the quality-control pass agree -- ${targetExtreme} extreme is ${primaryCandidate}`);
+  }
+  return { targetExtreme, primaryCandidate, qcCandidate, contradictsElimination, agrees, candidate: agrees ? primaryCandidate : null, notes };
+}
+
+/** Numeric density figures per option, harvested from the SAME four ordering passages already
+ *  fetched above -- NO NEW askGoogle CALL, the identical "don't pay for evidence twice" discipline
+ *  THE CONVERGENCE (above) already established for the criteria-stack route. His own transcript
+ *  shows exactly this: the ordering answers themselves cite per-region figures ("G) Nile Valley:
+ *  ~1,000 to over 40,000 people per km2..."), never a separate numbers-only query at this stage.
+ *  Uses the SAME figure-extraction shape and toPerSqKm() unit-rate proof comparative_cascade.ts's
+ *  own stage 5 already uses (imported, not copied) -- a non-density superlative property will
+ *  simply fail toPerSqKm()'s unit-RATE test for every candidate and bind nothing, the honest,
+ *  conservative outcome (reported as zero observations, never guessed at). */
+async function harvestDensityObservations(
+  passages: OrderingQueryResult[],
+  pool: string[],
+  OPT: Record<string, string>,
+  note: (text: string) => void,
+): Promise<Record<string, number[]>> {
+  const densityObservations: Record<string, number[]> = {};
+  for (const p of passages) {
+    if (!p.ok || !p.raw || !p.raw.ok) continue;
+    const passageText = p.raw.text;
+    // eslint-disable-next-line no-await-in-loop -- extraction over one already-fetched passage at
+    // a time, same convention THE CONVERGENCE section above uses, for the identical reason.
+    const ex = await gemmaExtract(
+      'Copy out every number in this passage that appears together with a unit or rate (for example '
+        + '"per square kilometer", "%", "/km2", "per sq mi"). For each one, copy the surrounding words '
+        + 'exactly as they appear.',
+      passageText,
+      '{"figures":[{"value":number,"unit":"the unit as written","context":"the verbatim surrounding text"}]}',
+    );
+    for (const f of (ex?.figures as Array<{ value: number; unit?: string; context: string }> | undefined) ?? []) {
+      if (typeof f.value !== 'number') continue;
+      if (!appearsIn(passageText, f.context)) continue;
+      const ctxNorm = norm(String(f.context || ''));
+      for (const L of pool) {
+        if (!ctxNorm.includes(norm(OPT[L]))) continue;
+        const c = toPerSqKm(f.value, f.unit, f.context);
+        if (c.ok) {
+          (densityObservations[L] ??= []).push(c.value);
+          note(`   [${p.label}] harvested observation for ${OPT[L]}: ${c.value.toFixed(2)} ${c.unit} (as written: ${f.value} ${f.unit ?? 'no unit'})`);
+        } else {
+          note(`   [${p.label}] candidate for ${OPT[L]} rejected: ${f.value} ${f.unit ?? '(no unit field)'} -- ${c.reason}`);
+        }
+      }
+    }
+  }
+  return densityObservations;
+}
+
+/** THE ROUTE, end to end. Detection already happened in run() (extractSuperlativeMatch()) before
+ *  this is called -- `match` is passed in, never re-derived, so there is exactly one place in this
+ *  file that decides "is this a superlative question". */
+export async function runSuperlativeByMagnitude(
+  input: MethodQuestionInput,
+  ctx: MethodRunContext,
+  match: SuperlativeMatch,
+): Promise<LianaTerminalOutcome> {
+  const { emit, askGoogle } = ctx;
+  const OPT = input.options as Record<string, string>;
+  const ALL = Object.keys(OPT);
+  const KEY = input.correctAnswer;
+  const t0 = Date.now();
+
+  const say = (text: string) => emit({ kind: 'header', text, ts: nowIso() });
+  const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
+  const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
+
+  say(`METHOD classify-cascade / superlative-by-magnitude -- ${input.qid != null ? `qid ${input.qid}` : 'free-text'}`);
+  note(`   ${input.question}`);
+  note(`   ${ALL.map((L) => `${L}) ${OPT[L]}`).join('  ')}`);
+  note(
+    '   Founder ruling, BP152, verbatim: "Yes. that. now code it, please" -- a superlative membership question '
+      + 'resolves by ranking the options by the property the superlative names, per his own hand-worked '
+      + 'walkthrough (FOUNDER_CASCADE_WORKED_BY_HAND_VERBATIM_RECOVERED_BP144.md, lines 35-100)',
+  );
+
+  const complement = questionDemandsComplement(input.question);
+  const scopeTerm = extractClassifyCandidateTerms(input.question).find((t) => t.role === 'scope')?.term;
+  const category = scopeTerm ?? 'options';
+  const { property } = match;
+  const targetExtreme = complement ? oppositeExtreme(match.direction) : match.direction;
+  step(
+    `SUPERLATIVE DETECTED -- direction="${match.direction}" property="${property}" category="${category}" `
+      + `${complement ? 'NOT-question (complement demanded)' : 'direct question'} -- target extreme for membership: ${targetExtreme}`,
+  );
+
+  step('STAGE A  narrow the pool -- reuses runLitmusStripLoop() (Stage 2 above) UNCHANGED, no seed criteria');
+  const loop = await runLitmusStripLoop(input, ctx, [], note);
+  note(
+    `   loop stopped: ${loop.stoppedReason}   criteria applied: ${loop.criteria.length}   `
+      + `eliminations: ${loop.eliminations.length}   survivors: ${loop.survivors.join(', ') || '(none)'}`,
+  );
+  if (!loop.survivors.length) {
+    step('ABSTAIN -- zero survivors after the litmus-strip loop; nothing left to rank');
+    emit({ kind: 'result', text: `ABSTAIN (zero survivors)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `superlative-by-magnitude route: property="${property}" -- zero survivors after ${loop.criteria.length} `
+        + `criterion/criteria (loop stopped: ${loop.stoppedReason}); nothing left to order by magnitude`,
+    };
+  }
+  const pool = loop.survivors;
+
+  step('STAGE B  order the pool by the property, both directions, as separate queries (his own check on the engine)');
+  const mostToLeast = await askOrdering(askGoogle, category, property, 'most-to-least', pool, OPT, 'Q1 most-to-least', note);
+  const leastToMost = await askOrdering(askGoogle, category, property, 'least-to-most', pool, OPT, 'Q2 least-to-most', note);
+
+  step('STAGE C  quality control -- same two directions, re-asked, ALL options re-included (his own stages 4/5)');
+  const mostToLeastQC = await askOrdering(askGoogle, category, property, 'most-to-least', ALL, OPT, 'Q3 most-to-least (QC, all options)', note);
+  const leastToMostQC = await askOrdering(askGoogle, category, property, 'least-to-most', ALL, OPT, 'Q4 least-to-most (QC, all options)', note);
+
+  const agreement = checkExtremeAgreement(targetExtreme, pool, mostToLeast, leastToMost, mostToLeastQC, leastToMostQC);
+  for (const n of agreement.notes) note(n);
+
+  const elapsedS = () => (Date.now() - t0) / 1000;
+
+  if (!agreement.agrees) {
+    step('ABSTAIN -- orderings do not agree at the target extreme (or none was usable, or QC contradicted an elimination); reporting, not resolving');
+    emit({ kind: 'result', text: `ABSTAIN (ordering disagreement at ${targetExtreme} extreme)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `superlative-by-magnitude route: property="${property}" direction=${match.direction}`
+        + `${complement ? ' (complement demanded)' : ''} target extreme=${targetExtreme} -- orderings disagreed, were `
+        + `unusable, or the QC pass contradicted an earlier elimination at that extreme (primary=${agreement.primaryCandidate ?? 'none'}, `
+        + `qc=${agreement.qcCandidate ?? 'none'}, contradictsElimination=${agreement.contradictsElimination}); per his own `
+        + 'instruction, a disagreement here is reported, never resolved by force',
+    };
+  }
+
+  if (targetExtreme === 'most') {
+    step(
+      'ABSTAIN -- target extreme is "most", but the reused terminator (evaluateComparativeTerminator\'s value '
+        + 'convergence) always resolves to the LOWEST self-agreeing value -- comparative_cascade.ts\'s own documented, '
+        + 'pre-existing gap, not fixed here per this ticket\'s FORBIDDEN section -- reporting the gap rather than '
+        + 'publishing a verdict the reused function was never shown to get right in this direction',
+    );
+    emit({ kind: 'result', text: `ABSTAIN (reused terminator direction gap -- target extreme "most" not supported)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `superlative-by-magnitude route: orderings agreed (candidate ${agreement.candidate}), but target extreme `
+        + 'is "most" and the reused evaluateComparativeTerminator() value-convergence branch always picks the LOWEST '
+        + 'self-agreeing value (a documented, pre-existing gap in that reused function, not modified here) -- '
+        + 'abstaining and reporting the gap rather than publishing a direction the terminator was never shown to '
+        + `handle; ordering candidate for reference only: ${agreement.candidate}`,
+    };
+  }
+
+  step(`STAGE D  harvest density observations from the ${[mostToLeast, leastToMost, mostToLeastQC, leastToMostQC].filter((p) => p.ok).length} already-fetched passage(s) above -- no new query`);
+  const densityObservations = await harvestDensityObservations([mostToLeast, leastToMost, mostToLeastQC, leastToMostQC], pool, OPT, note);
+  note(`   observations: ${pool.map((L) => `${L}=${(densityObservations[L] ?? []).join('/') || '(none)'}`).join('  ')}`);
+
+  step('STAGE E  terminate -- evaluateComparativeTerminator() value-convergence branch, imported unchanged from comparative_cascade.ts');
+  const termResult = evaluateComparativeTerminator(pool, {}, {}, property, densityObservations);
+  for (const n of termResult.notes) note(n);
+  const verdict = termResult.verdict;
+
+  if (!verdict) {
+    step('ABSTAIN -- the hard number did not converge (no self-agreeing value); reporting, not forcing');
+    emit({ kind: 'result', text: `ABSTAIN (no value convergence)   ordering candidate: ${agreement.candidate}${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `superlative-by-magnitude route: orderings agreed at the ${targetExtreme} extreme (candidate `
+        + `${agreement.candidate}), but the reused hard-number terminator found no order-of-magnitude self-agreement `
+        + 'across observations -- abstaining rather than forcing the ordering candidate to stand in for the hard '
+        + "number the Founder's ruling requires",
+    };
+  }
+
+  const ok = KEY != null ? verdict === KEY : undefined;
+  step(`PUBLISH -- ${verdict} (${OPT[verdict]}), hard number self-agreed, ordering candidate was ${agreement.candidate === verdict ? 'the SAME option' : `DIFFERENT (${agreement.candidate})`}`);
+  emit({
+    kind: 'result',
+    text: `${KEY != null ? (ok ? 'CORRECT' : 'WRONG') : 'ANSWER'}  ${verdict} (${OPT[verdict]})${KEY != null ? `  key=${KEY}` : ''}`,
+    ts: nowIso(),
+  });
+  note(`   ${elapsedS().toFixed(1)}s`);
+  return {
+    qid: input.qid,
+    question: input.question,
+    verdict,
+    correct: KEY,
+    ok,
+    abstain: false,
+    freeText: input.qid == null,
+    basis: `superlative-by-magnitude route: property="${property}" target extreme=${targetExtreme}; orderings agreed `
+      + `(candidate ${agreement.candidate}); terminated on the reused hard-number rule (evaluateComparativeTerminator, `
+      + `comparative_cascade.ts, unmodified): ${termResult.basis}`,
+  };
+}
+
 async function run(input: MethodQuestionInput, ctx: MethodRunContext): Promise<LianaTerminalOutcome> {
+  // D-BP152-038/BISHOP/seg-superlative-resolves-by-rank. Founder, BP152, verbatim: "Yes. that. now
+  // code it, please" -- a superlative membership question resolves by ranking the options by the
+  // property the superlative names, terminating on the same hard-number rule the RANK method
+  // (comparative_cascade.ts) already uses. Structural gate only (extractSuperlativeMatch(), the
+  // SAME SUPERLATIVE_PROPERTY_RE extractClassifyCandidateTerms() already matches) -- a
+  // non-superlative CLASSIFY question never reaches this branch and runs the unmodified
+  // criteria-stack path below, exactly as it behaved at 1a9dd511.
+  const superlative = extractSuperlativeMatch(input.question);
+  if (superlative) {
+    return runSuperlativeByMagnitude(input, ctx, superlative);
+  }
   // Registered entry point, general case: no seed criteria hardcoded for any specific question --
   // the litmus-strip loop (STAGE 2) sources every criterion automatically from the question's own
   // structurally-extracted candidate terms, and STAGE 3's Banyan-Metric rule decides publish vs
