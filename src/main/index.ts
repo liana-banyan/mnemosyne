@@ -3790,7 +3790,13 @@ function registerIPCHandlers(): void {
   // Streams every stage/fact/note/result line to the caller's own window as it happens
   // (event.sender.send, same push convention as 'ask-engine-progress') so the Founder watches the
   // cascade live instead of pasting console output back into a chat window.
-  safeHandle('liana-terminal-run', async (event, { input, audible, steppedAudible, contingencyOperatorSurvey, ambiguityQueryTransport }: { input: string; audible?: boolean; steppedAudible?: boolean; contingencyOperatorSurvey?: boolean; ambiguityQueryTransport?: 'google' | 'gemma' }) => {
+  safeHandle('liana-terminal-run', async (event, { input, audible, steppedAudible, contingencyOperatorSurvey, ambiguityQueryTransport, mode }: { input: string; audible?: boolean; steppedAudible?: boolean; contingencyOperatorSurvey?: boolean; ambiguityQueryTransport?: 'google' | 'gemma'; mode?: 'automated' | 'assisted' }) => {
+    // D-BP152-051/BISHOP/seg-assisted-mode. `mode` is OPTIONAL and defaults to 'automated' --
+    // an older renderer, or the Founder simply not toggling it, produces exactly the run this
+    // handler produced before this parameter existed. See this ticket's own comment below (next
+    // to `assistedChannel`'s construction) for why it reuses the SAME pause map/IPC round trip as
+    // `steppedChannel` immediately below rather than opening a second one, but is gated
+    // INDEPENDENTLY of the `steppedAudible` boolean.
     // D-BP150-001 (Call an Audible). `audible` is OPTIONAL and defaults to off: an older
     // renderer, or the Founder simply not toggling it, produces exactly the run this handler
     // produced before this parameter existed (wrapAskGoogleWithAudible returns the unwrapped
@@ -3923,6 +3929,33 @@ function registerIPCHandlers(): void {
         }
       : null;
 
+    // D-BP152-051/BISHOP/seg-assisted-mode -- SAME SHAPE, SAME MAP, SAME IPC EVENTS as
+    // `steppedChannel` immediately above -- deliberately NOT a new pause map or a new IPC channel
+    // (this ticket's own "do not build a second intake" requirement). Assisted mode's own pauses
+    // carry a distinct pauseId prefix (`am-google<N>`, assisted_mode.ts) so they never collide
+    // with Stepped Audible's `sp<N>` / Step 0's `sp0`/`sp0-google<N>` pauses even though all three
+    // share this one map. GATED INDEPENDENTLY of `steppedAudible`: assisted mode must not silently
+    // depend on the Stepped Audible bench toggle also being on, or turning assisted mode on with
+    // steppedAudible off would silently degrade to automated (exactly what the Founder's ruling
+    // forbids -- see runLianaCycleQuestion()'s own safety check, liana_terminal_engine.ts).
+    const assistedChannel: SteppedAudibleChannel | null = mode === 'assisted'
+      ? {
+          requestStepPause: (pause) =>
+            new Promise<LianaSteppedResponse>((resolve, reject) => {
+              if (sender.isDestroyed()) { reject(new Error('window_closed')); return; }
+              runSteppedPauseIds.add(pause.pauseId);
+              PENDING_STEPPED_PAUSES.set(pause.pauseId, { resolve, reject, runInputRaw: input });
+              try {
+                sender.send('liana-stepped-pause', pause);
+              } catch {
+                PENDING_STEPPED_PAUSES.delete(pause.pauseId);
+                runSteppedPauseIds.delete(pause.pauseId);
+                reject(new Error('window_closed'));
+              }
+            }),
+        }
+      : null;
+
     // D-BP150-015 -- EVERY RUN IS PERSISTED, ESPECIALLY THE ONES THAT WORK.
     //
     // Founder, BP150: "Then write it so that all of that is saved, especially when it works."
@@ -3968,6 +4001,12 @@ function registerIPCHandlers(): void {
         // above -- see this handler's own D-BP152-044 comment (immediately below the
         // `runThreadContext` it reuses) for the full ruling.
         askConversationalAuthority,
+        // D-BP152-051: `mode`/`assistedChannel` -- undefined/null on every pre-existing caller,
+        // so this call site's behavior for every caller that does not pass `mode` is
+        // byte-identical to before this ticket (liana_terminal_engine.ts's own wrapper stamps
+        // 'automated' onto the outcome either way -- see that file's header for why).
+        mode,
+        assistedChannel,
       );
     } finally {
       sender.removeListener('destroyed', onSenderGone);
@@ -4630,16 +4669,22 @@ ${args.teachingText}
     if (!capture.ok) {
       return { ok: false, reason: capture.reason ?? 'capture_failed' };
     }
-    const stepZeroPauseIds = Array.from(PENDING_STEPPED_PAUSES.keys()).filter(
-      (k) => k === 'sp0' || k.startsWith('sp0-google'),
+    // D-BP152-051 WIDENED THIS FILTER, ATTRIBUTED (this ticket's own requirement 4: "receive the
+    // answer through the EXISTING capture path -- do not build a second intake"). Was
+    // `sp0`/`sp0-google*` only (Step 0's own loop); now also matches `am-google*`
+    // (assisted_mode.ts's per-call pauses) so the SAME "Capture -> Liana Cycle" button resolves
+    // whichever of the two is currently pending. Still refuses on more than one match rather than
+    // guessing which run to feed -- unchanged discipline, just a wider candidate set.
+    const capturablePauseIds = Array.from(PENDING_STEPPED_PAUSES.keys()).filter(
+      (k) => k === 'sp0' || k.startsWith('sp0-google') || k.startsWith('am-google'),
     );
-    if (stepZeroPauseIds.length === 0) {
+    if (capturablePauseIds.length === 0) {
       return { ok: false, reason: 'no_paused_run' };
     }
-    if (stepZeroPauseIds.length > 1) {
+    if (capturablePauseIds.length > 1) {
       return { ok: false, reason: 'ambiguous_multiple_paused_runs' };
     }
-    const pauseId = stepZeroPauseIds[0];
+    const pauseId = capturablePauseIds[0];
     const pending = PENDING_STEPPED_PAUSES.get(pauseId);
     if (!pending) {
       return { ok: false, reason: 'no_such_pause' };
