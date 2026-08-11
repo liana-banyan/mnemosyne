@@ -295,7 +295,7 @@ import { toggleMonitor, getMetrics, getAllMonitorStates } from './hearth/active_
 // is the ported cascade (scripts/founder_cascade_v2.mjs); _paths.HEARTBEAT_DIR is the EXISTING
 // yoke ledger directory yoke_watcher.ts already watches -- reused here rather than inventing a
 // second Mic mechanism, per this ticket's explicit instruction.
-import { runLianaCycleQuestion, getLianaTerminalGateEnvState } from './liana_cycle/liana_terminal_engine';
+import { runLianaCycleQuestion } from './liana_cycle/liana_terminal_engine';
 // D-BP150-001 (Call an Audible) -- the operator-facing side of the pause. AudibleChannel is
 // implemented over IPC in the 'liana-terminal-run' handler below; audible.ts itself has no
 // Electron dependency, which is why the interface lives there and the wiring lives here.
@@ -3643,12 +3643,14 @@ function registerIPCHandlers(): void {
     { resolve: (r: LianaSteppedResponse) => void; reject: (e: Error) => void; runInputRaw: string }
   >();
 
-  // D-BP152-011/BISHOP/seg-splice-toggle -- READ-ONLY, so the renderer's two new gate controls
-  // can show the EFFECTIVE state (including an env var the operator never touched) BEFORE any
-  // run happens. Founder ticket requirement 3: a toggle that reads OFF while the run is spliced
-  // "would make him misread a receipt". getLianaTerminalGateEnvState() (liana_terminal_engine.ts)
-  // reuses the real gates' own precedence -- this handler adds no logic of its own, only IPC.
-  safeHandle('liana-terminal-gate-env-state', async () => getLianaTerminalGateEnvState());
+  // D-BP152-039 REMOVAL -- the 'liana-terminal-gate-env-state' handler used to live here,
+  // wrapping getLianaTerminalGateEnvState() (liana_terminal_engine.ts) so the renderer's Survey
+  // Splice toggle could show the effective env-var state before a run. That toggle was already
+  // removed by D-BP152-012, and grep confirmed no renderer file ever called
+  // window.electronAPI.lianaTerminalGateEnvState() -- zero callers. Per FD-BP152-20 the underlying
+  // gate is removed (Survey now runs unconditionally, liana_terminal_engine.ts), so this
+  // introspection handler has nothing left to introspect; removed together with it rather than
+  // left wired to a function that no longer exists.
 
   // D-BP149-034/BISHOP/S34/seg-lianaterminal -- the Liana Cycle terminal. `askGoogle` is a
   // one-line closure around the SAME runBrowserAuthorityQueryFromMain() the line above uses (and
@@ -3665,17 +3667,18 @@ function registerIPCHandlers(): void {
     // D-BP151-023 (Stepped Audible). `steppedAudible` is likewise OPTIONAL/OFF-by-default and
     // independent of `audible` -- see stepped_audible.ts's header for what happens when both are
     // armed on the same run.
-    // D-BP151-026 (Contingency Operator: Survey Splice). `contingencyOperatorSurvey` is likewise
-    // OPTIONAL/OFF-by-default, same threading convention as the two above -- an older renderer
-    // (or the Founder not opting in) produces exactly the run this handler produced before this
-    // parameter existed. See liana_terminal_engine.ts's isContingencyOperatorSurveySpliceEnabled()
-    // for the gate (which also honors CONTINGENCY_OPERATOR_SURVEY_SPLICE=1 as an env override, the
-    // same escape hatch its cited pattern's own resolvers use). D-BP152-011 added the renderer
-    // control (LianaCycleTab.tsx's Survey Splice toggle) that sets this parameter -- an operator
-    // who never touches it still passes `undefined`/`false`, so the env override and the OFF
-    // default are both exactly as before.
-    // D-BP151-032 (Ambiguity Query Transport). `ambiguityQueryTransport` is likewise OPTIONAL, only
-    // consulted when `contingencyOperatorSurvey` is on -- see
+    // D-BP152-039 REMOVAL, ATTRIBUTED (FD-BP152-20: "fix the gate properly so survey doesn't need
+    // the env var"; FD-BP152-09: "no modes and no flags"). `contingencyOperatorSurvey` is now
+    // ACCEPTED-AND-IGNORED -- liana_terminal_engine.ts's runLianaCycleQuestion() no longer reads
+    // it at all; Survey (Founder steps 2/3/4/6) runs unconditionally on every call. The parameter
+    // is still threaded through here (rather than deleted from this handler's destructure) because
+    // this is one of several lockstep callers (preload.ts, amplify.d.ts, LianaCycleTab.tsx, this
+    // file's own contingency-operator test) and this ticket kept the parameter accepted rather
+    // than half-removing it piecemeal -- see liana_terminal_engine.ts's own D-BP152-039 comment.
+    // The formerly-cited isContingencyOperatorSurveySpliceEnabled()/CONTINGENCY_OPERATOR_SURVEY_
+    // SPLICE gate no longer exists.
+    // D-BP151-032 (Ambiguity Query Transport). `ambiguityQueryTransport` is likewise OPTIONAL --
+    // UNCHANGED by this ticket (a separate, still-live gate) -- see
     // liana_terminal_engine.ts's resolveAmbiguityQueryTransport() for the gate (undefined ->
     // 'google', the Founder-ordered default; 'gemma' or AMBIGUITY_QUERY_TRANSPORT=gemma selects the
     // local model). D-BP152-011 added the renderer control (LianaCycleTab.tsx's transport
