@@ -593,3 +593,77 @@ export function decideNexusThreadContinuation(
   }
   return { continuing: false, nextState: null, threadStatus: 'new', threadPosition: null };
 }
+
+// ─── D-BP152-031 ("I want it threaded") ────────────────────────────────────────────────────────
+//
+// ATTRIBUTED: Founder, BP152, verbatim: "I want it threaded" -- in answer to Bishop's own
+// disclosure that decideNexusThreadContinuation above (D-BP152-030R) is built but "no caller
+// passes threadId yet."
+//
+// THE PROBLEM THIS SOLVES: decideNexusThreadContinuation is a pure decision point -- it answers
+// "given a threadId and a continueThread flag, do I continue?" but does not itself say WHERE a
+// threadId comes from or WHEN continueThread should be true. Leaving that to each call site is
+// exactly the per-call-site discipline this ticket's own dispatch says not to rely on ("Do NOT
+// edit each call site to pass an id by hand... it makes the cross-question guarantee
+// structural"). This section is the one place that derives both, scoped to ONE RUN.
+//
+// A "run" here is one invocation of the object this factory returns -- concretely, ONE call to
+// createNexusRunThreadContext() per Liana Cycle question (see index.ts's 'liana-terminal-run'
+// handler, which creates exactly one per IPC call, before building the askGoogle closure it
+// injects into runLianaCycleQuestion). Every query issued through the SAME returned object, for
+// the SAME conversational authority, shares one threadId and continueThread flips
+// false-on-first-call -> true-thereafter. A DIFFERENT createNexusRunThreadContext() call (a new
+// run) mints its own id space -- see `seed` below -- so nothing from a prior run's thread state
+// can ever be reached through a fresh context, structurally, not by caller discipline.
+//
+// GOOGLE/PERPLEXITY: short-circuited here too, via the SAME isInteractiveBrowserAuthority() this
+// file already uses as its single source of truth (not a second, divergent test) -- belt and
+// suspenders with decideNexusThreadContinuation's own identical check, not a second source of
+// truth: this factory's correctness does not depend on a caller also getting the downstream gate
+// right. A non-conversational authority always gets `{ threadId: undefined, continueThread:
+// false }`, which is what pre-D-BP152-030R code already implicitly passed (the two fields did
+// not exist yet) -- so a Google/Perplexity query built through this factory is shaped identically
+// to one built without it.
+export interface NexusRunThreadQueryFields {
+  threadId: string | undefined;
+  continueThread: boolean;
+}
+
+export interface NexusRunThreadContext {
+  /** Call once per outgoing query, with the authority that query is about to be sent to. Returns
+   *  the `threadId`/`continueThread` pair to spread directly onto that query's
+   *  BrowserAuthorityQuery object. Stateful (tracks one threadId per authority, scoped to this
+   *  context instance/run) -- this is the ONLY stateful piece of this ticket's build; everything
+   *  else (decideNexusThreadContinuation, isInteractiveBrowserAuthority) stays pure, unchanged. */
+  forQuery(authority: BrowserAuthorityName): NexusRunThreadQueryFields;
+}
+
+/** Mints one run's thread-identity space. `seed` defaults to a fresh, effectively-unique string
+ *  (timestamp + random suffix) generated at CALL time -- i.e. once per run, not once per query --
+ *  so two runs created even in the same millisecond still get different seeds (Math.random's
+ *  contribution). Accepting an explicit `seed` is for tests ONLY (deterministic thread ids to
+ *  assert against); no production call site passes one. No I/O, no Electron import -- consistent
+ *  with this file's own header contract. */
+export function createNexusRunThreadContext(seed?: string): NexusRunThreadContext {
+  const runSeed = seed ?? `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const threadIdsByAuthority = new Map<BrowserAuthorityName, string>();
+  return {
+    forQuery(authority: BrowserAuthorityName): NexusRunThreadQueryFields {
+      // Same test this file's own decideNexusThreadContinuation runs first (isInteractiveBrowserAuthority) --
+      // never mints or tracks an id for a static (Google/Perplexity) authority. This is
+      // defense-in-depth, not the enforcement point (decideNexusThreadContinuation still gates
+      // continuation independently), so Google/Perplexity staying one-shot does not rely on this
+      // factory alone getting it right.
+      if (!isInteractiveBrowserAuthority(authority)) {
+        return { threadId: undefined, continueThread: false };
+      }
+      const existing = threadIdsByAuthority.get(authority);
+      if (existing !== undefined) {
+        return { threadId: existing, continueThread: true };
+      }
+      const minted = `${runSeed}:${authority}`;
+      threadIdsByAuthority.set(authority, minted);
+      return { threadId: minted, continueThread: false };
+    },
+  };
+}

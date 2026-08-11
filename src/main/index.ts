@@ -208,9 +208,16 @@ import { buildSubstrateContext } from './hearth/embedded_browser/substrate_conte
 // nexus <webview>'s already-live page or must force a fresh navigation. See
 // runInteractiveBrowserAuthorityQueryObserved below and nexusLiveThread (module-level state) for
 // the wiring; browser_authority_types.thread.test.ts unit-tests the decision function itself.
+// D-BP152-031: createNexusRunThreadContext added -- mints ONE thread-identity space per Liana
+// Cycle run (one 'liana-terminal-run' IPC call = one question), so the askGoogle closure built
+// below (near openHearthConjunctionWindow()) can pass threadId/continueThread derived from the
+// RUN rather than hand-edited per call site. See that closure's own comment and
+// browser_authority_types.ts's own D-BP152-031 section header for the full mechanism; unit-tested
+// in browser_authority_types.run_thread_context.test.ts.
 import {
   buildBrowserAuthorityQueryUrl,
   buildMcAwareQueryText,
+  createNexusRunThreadContext,
   decideNexusThreadContinuation,
   isInteractiveBrowserAuthority,
   type BrowserAuthorityDispatchOutcome,
@@ -3648,6 +3655,15 @@ function registerIPCHandlers(): void {
     const runPauseIds = new Set<string>();
     const runSteppedPauseIds = new Set<string>();
 
+    // D-BP152-031/BISHOP/seg-wire-threading-to-callers -- ATTRIBUTED, Founder, BP152, verbatim:
+    // "I want it threaded." Created ONCE here, per IPC call (i.e. per question) -- this IS the
+    // "run" createNexusRunThreadContext()'s own header describes. A new Founder question is a new
+    // 'liana-terminal-run' invocation, which creates a brand-new context with its own random
+    // seed, so a later question can never continue an earlier one's thread even if askGoogle is
+    // one day pointed at a conversational authority -- see that factory's own doc comment
+    // (browser_authority_types.ts) for why this is structural, not caller discipline.
+    const runThreadContext = createNexusRunThreadContext();
+
     // A pause that outlives its window would hang the run forever with nothing to answer it.
     // This is the ONLY non-operator way a pause ends -- there is deliberately no timer, per the
     // Founder's BP149 report that the previous box "assumes I abandoned" while he was still
@@ -3726,7 +3742,18 @@ function registerIPCHandlers(): void {
     try {
       outcome = await runLianaCycleQuestion(
         input,
-        (question) => runBrowserAuthorityQueryFromMain({ question, authority: 'user_google' }),
+        // D-BP152-031: threadId/continueThread now derived from runThreadContext (this run's own
+        // thread-identity space) instead of being absent entirely. 'user_google' is NOT a
+        // conversational authority (isInteractiveBrowserAuthority), so
+        // runThreadContext.forQuery('user_google') always returns
+        // { threadId: undefined, continueThread: false } -- byte-identical, spread-in, to what
+        // this call site sent before this ticket (the two fields simply did not exist on the
+        // query object). No query text, authority, ordering, or verdict logic changed.
+        (question) => runBrowserAuthorityQueryFromMain({
+          question,
+          authority: 'user_google',
+          ...runThreadContext.forQuery('user_google'),
+        }),
         (evt) => {
           events.push(evt);
           try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ }
