@@ -205,7 +205,14 @@ const letter = (i: number) => String.fromCharCode(65 + i);
 // matches" branch below, not silently answered as a bare fact lookup (that generic fallback is
 // exactly what the BP149 ruling replaces -- see this file's header).
 
-interface ParsedInput {
+// D-BP152-043/BISHOP/seg-scratch-composer -- EXPORT ONLY, ADDITIVE, NO BEHAVIOR CHANGE. `export`
+// added to this pre-existing interface and the two functions below it so
+// library/script_bridge.ts (the composer's IPC entry) can parse the operator's typed input the
+// SAME way runLianaCycleQuestion() always has, rather than re-deriving a second parser -- the
+// same "don't build a second one" discipline this ticket's dispatch was told to follow for
+// script.ts/script_runner.ts. Neither function's body, nor ParsedInput's shape, is touched; every
+// call site inside this file (parseQid/parseFreeText calls a few lines below) is unchanged.
+export interface ParsedInput {
   qid?: number;
   question: string;
   options: Record<string, string> | null;
@@ -213,7 +220,7 @@ interface ParsedInput {
   qidNotFound?: boolean;
 }
 
-function parseQid(qid: number): ParsedInput {
+export function parseQid(qid: number): ParsedInput {
   const q = loadQuestion(qid);
   if (!q) return { qid, question: '', options: null, qidNotFound: true };
   const opts: Record<string, string> = {};
@@ -221,7 +228,7 @@ function parseQid(qid: number): ParsedInput {
   return { qid, question: q.question, options: opts, correctAnswer: q.answer };
 }
 
-function parseFreeText(input: string): ParsedInput {
+export function parseFreeText(input: string): ParsedInput {
   const markerRe = /(?:^|\s)([A-J])\)\s*/g;
   const matches = [...input.matchAll(markerRe)];
   if (matches.length < 2) return { question: input, options: null };

@@ -296,6 +296,14 @@ import { toggleMonitor, getMetrics, getAllMonitorStates } from './hearth/active_
 // yoke ledger directory yoke_watcher.ts already watches -- reused here rather than inventing a
 // second Mic mechanism, per this ticket's explicit instruction.
 import { runLianaCycleQuestion } from './liana_cycle/liana_terminal_engine';
+// D-BP152-043/BISHOP/seg-scratch-composer -- THE SCRATCH COMPOSER. Founder, BP152, verbatim
+// (FD-BP152-20): "I want the updated Mnemosynec Liana Cycle - the Scratch version... I want to
+// use it to stack methods in whatever order I want... NameNumbered... mix and match as I please."
+// listComposerRegistry/runScratchComposer are the ONLY two new functions this ticket calls into;
+// see script_bridge.ts's own header for why the default (empty-stack) path is byte-identical to
+// the pre-existing 'liana-terminal-run' handler below (same runLianaCycleQuestion call, by
+// reference, untouched).
+import { listComposerRegistry, runScratchComposer } from './liana_cycle/library/script_bridge';
 // D-BP150-001 (Call an Audible) -- the operator-facing side of the pause. AudibleChannel is
 // implemented over IPC in the 'liana-terminal-run' handler below; audible.ts itself has no
 // Electron dependency, which is why the interface lives there and the wiring lives here.
@@ -3928,6 +3936,36 @@ function registerIPCHandlers(): void {
     }
 
     return outcome;
+  });
+
+  // D-BP152-043/BISHOP/seg-scratch-composer -- THE SCRATCH COMPOSER.
+  //
+  // 'liana-script-list-registry' is read-only: lists whatever library/method_registry.ts holds
+  // AT THE MOMENT OF THE CALL (no caching here), so the composer panel shows an id a concurrent
+  // dispatch registers after this ticket lands without this handler changing.
+  safeHandle('liana-script-list-registry', async () => listComposerRegistry());
+
+  // 'liana-script-run' is the ONE new run path. `steps` undefined/empty = THE DEFAULT, byte-
+  // identical to 'liana-terminal-run' above (see script_bridge.ts's runScratchComposer() header
+  // for exactly why: the same runLianaCycleQuestion() call, by reference, no wrapping). A
+  // non-empty `steps` array runs that authored stack instead, through script_runner.ts
+  // (D-BP152-041, unmodified). This handler does not write a run receipt or a heartbeat line --
+  // that persistence (D-BP150-015) belongs to the pre-existing default path above; adding it here
+  // too was not asked for by this ticket (HARDWIRE-23, "nothing more").
+  safeHandle('liana-script-run', async (event, { input, steps }: { input: string; steps?: string[] }) => {
+    const sender = event.sender;
+    // D-BP152-031 convention (see 'liana-terminal-run' above): ONE thread-identity space per run
+    // (per IPC call), not re-minted per query.
+    const runThreadContext = createNexusRunThreadContext();
+    const askGoogle = (question: string) => runBrowserAuthorityQueryFromMain({
+      question,
+      authority: 'user_google',
+      ...runThreadContext.forQuery('user_google'),
+    });
+    const emit = (evt: LianaTerminalEvent) => {
+      try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ }
+    };
+    return runScratchComposer(input, steps, askGoogle, emit);
   });
 
   // D-BP150-001/BISHOP/S01/seg-audible -- the operator answering one pause. Returns a plain

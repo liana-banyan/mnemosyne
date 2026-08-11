@@ -1,0 +1,299 @@
+// script_bridge.ts -- D-BP152-043/BISHOP/seg-scratch-composer, STAGE 1/2
+//
+// THE SCRATCH COMPOSER'S MAIN-PROCESS ENTRY. Founder, BP152, verbatim (FD-BP152-20): "I want the
+// updated Mnemosynec Liana Cycle - the Scratch version... I want to use it to stack methods in
+// whatever order I want - I don't need the lego shapes, I just want them NameNumbered (so that we
+// can have iterations galore) as methods so that I can mix and match as I please."
+//
+// This file is the ONLY new wiring this ticket adds. It does not modify script.ts,
+// script_runner.ts, method_registry.ts (library/ or the pre-existing liana_cycle/ one),
+// method_identity.ts, survey_stage.ts, or any file under methods/ -- it only IMPORTS their
+// already-exported functions/types and composes them. Per THE GROUND in this ticket's dispatch:
+// "DO NOT BUILD A SECOND ONE" -- the script format and its runner already exist
+// (library/script.ts, library/script_runner.ts, D-BP152-041) and are reused here unmodified.
+//
+// THE DEFAULT MUST NOT CHANGE. runScratchComposer()'s empty-stack branch calls
+// runLianaCycleQuestion() -- the SAME function, SAME arguments, that 'liana-terminal-run'
+// (index.ts) has always called for a plain run -- by direct reference, with no wrapping and no
+// transformation of its return value. There is no code path by which authoring a stack can alter
+// what an unauthored run produces; the two branches share no mutable state.
+//
+// WHAT IS ACTUALLY EXECUTABLE. library/method_registry.ts's ten entries are DECLARATIONS only
+// (that file's own header: "REGISTRATION IS INERT... does not order, run, or persist anything").
+// Turning a declared Name:Number id into a real, running step means resolving it against the
+// LIVE code that already exists elsewhere in this estate:
+//   - 'ComparativeCascade:1' / 'DefinitionalCascade:1' / 'ClassifyCascade:1' resolve to the three
+//     LianaMethod objects already registered (as a side effect of liana_terminal_engine.ts's own
+//     imports) in the PRE-EXISTING liana_cycle/method_registry.ts (not library/) -- found by id
+//     via that file's own listMethods(), never re-imported directly from methods/*.ts here.
+//   - 'Survey:1' resolves to survey_stage.ts's runSurveyStage(), imported (read-only) and called
+//     with the same MethodRunContext shape liana_terminal_engine.ts's own Survey call already
+//     uses.
+//   - The 6 verified-orphan ids (orphan_catalog.ts) are declared but have NO run() at all --
+//     "Making a declared step actually callable is spec item 12, BLOCKED on the Founder's
+//     HARDWIRE-22 'typed' ruling" (step_declaration.ts's own header). This file does not build
+//     that execution path; stacking an orphan id produces an honest "no runner wired yet" failure
+//     (script_runner.ts's own failure shape), never a silent skip and never a fabricated result.
+//   - Any id registered by a CONCURRENT dispatch (D-BP152-042, Survey's own parts) that is not one
+//     of the four above is likewise reported as "no runner wired yet" -- this file lists whatever
+//     the registry holds at runtime (listComposerRegistry(), below) but only ever EXECUTES the
+//     four ids named above, so a new declaration appearing in the registry can never silently
+//     start running real queries this ticket did not test.
+
+import type { EmitFn, MethodQuestionInput, MethodRunContext } from '../method_registry';
+import { listMethods } from '../method_registry';
+import { runSurveyStage } from '../survey_stage';
+import { parseFreeText, parseQid, runLianaCycleQuestion } from '../liana_terminal_engine';
+import type { AskGoogleFn } from '../liana_terminal_engine';
+import type { LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
+import { listAllEntries, lookupById, registerKnownMethods } from './method_registry';
+import { makeMethodIdentity } from './method_identity';
+import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
+import { runScript, type MethodExecutor, type RunResult, type StepRunRecord } from './script_runner';
+import type { StepAttribution } from './step_declaration';
+
+// ─────────────────────────────── registry population (idempotent) ───────────────────────────────
+// registerKnownMethods() throws on any id already present (Rule 66, "duplicate is an error" --
+// method_registry.ts's own registerNameNumbered()). That is the expected shape of "someone
+// already called this" -- either this function on an earlier IPC call, or a concurrent module
+// (D-BP152-042) that registered first -- never a new failure this file introduces. Safe to call
+// on every request; registerKnownMethods() does no I/O and no method file import (library/
+// method_registry.ts's own header: "importing this module cannot execute any of the code those
+// declarations describe").
+function ensureRegistryPopulated(): void {
+  try {
+    registerKnownMethods();
+  } catch {
+    // already registered -- see comment above.
+  }
+}
+
+// ─────────────────────────────── the UI-facing listing ───────────────────────────────
+
+export interface ComposerRegistryEntry {
+  /** The canonical Name:Number id, e.g. "ComparativeCascade:1". */
+  id: string;
+  name: string;
+  number: number;
+  /** Plain-language line on what this step does, read straight from the registry's own
+   *  declaration (StepDeclaration.whatItDoes) -- never re-derived or shortened here. */
+  whatItDoes: string;
+  /** True only for the four ids this file's executor actually knows how to run (see this file's
+   *  header). A registered-but-not-executable entry (an orphan, or a not-yet-mapped concurrent
+   *  registration) still lists -- it is simply marked so the composer panel can say so honestly
+   *  rather than let the operator discover it only after a failed run. */
+  executable: boolean;
+}
+
+/** The four Name:Number ids this file's executor can actually run. NOT a decision rule -- it
+ *  does not change which answer any of the four methods themselves produce, it only names which
+ *  of the registry's CURRENTLY DECLARED entries have a real function behind them today. See this
+ *  file's header for the full accounting. */
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1']);
+
+/** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
+ *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
+ *  automatically without this file changing, per this ticket's own instruction. */
+export function listComposerRegistry(): ComposerRegistryEntry[] {
+  ensureRegistryPopulated();
+  return listAllEntries().map((entry) => ({
+    id: entry.identity.id,
+    name: entry.identity.name,
+    number: entry.identity.number,
+    whatItDoes: entry.declaration.whatItDoes,
+    executable: EXECUTABLE_IDS.has(entry.identity.id),
+  }));
+}
+
+// ─────────────────────────────── executing one step ───────────────────────────────
+
+/** Maps the three cascade Name:Number ids to their id inside the PRE-EXISTING (non-library)
+ *  method_registry.ts, where the real LianaMethod objects (with a callable `run`) already live.
+ *  Plain lookup-table wiring -- see comparative_cascade.ts:1236 / definitional_cascade.ts:409 /
+ *  classify_cascade.ts:1607 for each cited `id: '...'` literal this table points at. */
+const CASCADE_LIVE_ID: Readonly<Record<string, string>> = {
+  'ComparativeCascade:1': 'comparative-cascade',
+  'DefinitionalCascade:1': 'definitional-cascade',
+  'ClassifyCascade:1': 'classify-cascade',
+};
+
+function summarizeOutcome(outcome: LianaTerminalOutcome): string {
+  if (outcome.abstain) {
+    return `ABSTAIN${outcome.error ? ` (${outcome.error})` : ''}`;
+  }
+  return `verdict ${outcome.verdict ?? '(none)'}${outcome.basis ? ` -- ${outcome.basis}` : ''}`;
+}
+
+/** Runs exactly one registered step's real code against the shared question. Throws (rather than
+ *  returning a fabricated result) for any id this file does not know how to execute -- caught by
+ *  script_runner.ts's own MethodExecutor contract, which marks the step 'failed' and stops the
+ *  run there; nothing after it runs on a partial/guessed state. */
+async function runOneStep(
+  id: string,
+  input: MethodQuestionInput,
+  ctx: MethodRunContext,
+): Promise<{ summary: string; raw: unknown }> {
+  if (id === 'Survey:1') {
+    const result = await runSurveyStage(input.question, input.options, ctx, {});
+    return { summary: `Survey: ${result.why}`, raw: result };
+  }
+  const liveId = CASCADE_LIVE_ID[id];
+  if (liveId) {
+    const method = listMethods().find((m) => m.id === liveId);
+    if (!method || !method.run) {
+      throw new Error(`step "${id}" resolves to method "${liveId}" but it has no runner registered -- this is a real gap, not the honest "not yet executable" case`);
+    }
+    const outcome = await method.run(input, ctx);
+    return { summary: summarizeOutcome(outcome), raw: outcome };
+  }
+  throw new Error(`step "${id}" is registered (declared) but has no runner wired in the composer yet -- see script_bridge.ts's header for exactly which ids are executable today`);
+}
+
+// ─────────────────────────────── running an authored stack ───────────────────────────────
+
+interface ComposerState {
+  input: MethodQuestionInput;
+  results: ComposerStepOutcome[];
+}
+
+export interface ComposerStepOutcome {
+  id: string;
+  summary: string;
+  raw: unknown;
+}
+
+export interface ComposedRunResult {
+  ok: boolean;
+  /** The runner's own per-step transcript (id, kind, depth, status, whatChanged, durationMs) --
+   *  produced by script_runner.ts unmodified, not re-derived here. */
+  steps: StepRunRecord[];
+  /** What each successfully-run step actually produced, in run order -- shorter than `steps` on
+   *  a failed run, since the failing step (and anything after it) contributes no result. */
+  results: ComposerStepOutcome[];
+  error?: string;
+  failedId?: string;
+}
+
+/** Per HARDWIRE-23 Law 4/5: the operator authoring/reordering a stack via the composer panel at
+ *  runtime IS the Founder's own act of "mix and match as I please" (FD-BP152-20) -- this
+ *  attribution is descriptive metadata on the Script format (script.ts: "never read by the
+ *  runner, never a decision input"), not a control-flow branch, so one constant attribution
+ *  covers every operator-authored step rather than inventing a per-step ruling that does not
+ *  exist. */
+const OPERATOR_STACK_ATTRIBUTION: StepAttribution = {
+  kind: 'ATTRIBUTED',
+  founderRuling: 'BP152',
+  quote:
+    'I want to use it to stack methods in whatever order I want - I don\'t need the lego shapes, '
+    + 'I just want them NameNumbered (so that we can have iterations galore) as methods so that I '
+    + 'can mix and match as I please.',
+  citedAt: 'LianaBanyanPlatform/BISHOP_DROPZONE/RULINGS_BP152.md FD-BP152-20',
+};
+
+function buildResolver(): ScriptResolver {
+  return (id: string): ResolvedRef => {
+    const entry = lookupById(id);
+    if (!entry) return { kind: 'unresolved' };
+    return { kind: 'method', identity: entry.identity };
+  };
+}
+
+/** Runs an operator-authored, in-memory stack (never saved to disk -- see this ticket's FORBIDDEN
+ *  list, "Do NOT add persistence") through the existing, unmodified script_runner.ts. */
+export async function runComposedStack(
+  stepIds: string[],
+  parsedInput: MethodQuestionInput,
+  ctx: MethodRunContext,
+): Promise<ComposedRunResult> {
+  ensureRegistryPopulated();
+  const script: Script = {
+    identity: makeMethodIdentity('AdHocComposerRun', 1),
+    description: 'Operator-composed stack, authored at runtime via the composer panel (not saved to disk).',
+    steps: stepIds.map((id): ScriptStepRef => ({ id, attribution: OPERATOR_STACK_ATTRIBUTION })),
+    savedBy: 'operator (ad hoc, unsaved)',
+    savedAt: new Date().toISOString(),
+  };
+  const resolve = buildResolver();
+  const validation = validateScript(script, resolve);
+  if (!validation.ok) {
+    return { ok: false, steps: [], results: [], error: validation.error };
+  }
+  const execute: MethodExecutor<ComposerState> = async (identity, state) => {
+    const { summary, raw } = await runOneStep(identity.id, state.input, ctx);
+    return { input: state.input, results: [...state.results, { id: identity.id, summary, raw }] };
+  };
+  const runResult: RunResult<ComposerState> = await runScript(
+    script,
+    { input: parsedInput, results: [] },
+    resolve,
+    execute,
+  );
+  if (runResult.ok) {
+    return { ok: true, steps: runResult.steps, results: runResult.finalState.results };
+  }
+  return {
+    ok: false,
+    steps: runResult.steps,
+    results: runResult.stateAtFailure.results,
+    error: runResult.error,
+    failedId: runResult.failedId,
+  };
+}
+
+// ─────────────────────────────── the one entry point index.ts calls ───────────────────────────────
+
+export type ScriptRunResponse =
+  | { mode: 'default'; outcome: LianaTerminalOutcome }
+  | {
+      mode: 'stack';
+      qid?: number;
+      question: string;
+      options: Record<string, string> | null;
+      result: ComposedRunResult;
+    };
+
+/**
+ * THE ONE NEW IPC-FACING ENTRY. `stepIds` undefined or empty means "no authored script" -- the
+ * default path: this branch calls runLianaCycleQuestion() DIRECTLY, by reference, with the exact
+ * arguments 'liana-terminal-run' has always passed for a plain run (no Call an Audible, no
+ * Stepped Audible, no Contingency Operator/ambiguity override -- the composer exposes none of
+ * those toggles). Nothing in this function transforms, wraps, or inspects that call's return
+ * value before handing it back -- THE DEFAULT MUST NOT CHANGE.
+ */
+export async function runScratchComposer(
+  input: string,
+  stepIds: string[] | undefined,
+  askGoogle: AskGoogleFn,
+  emit: EmitFn,
+): Promise<ScriptRunResponse> {
+  if (!stepIds || stepIds.length === 0) {
+    const outcome = await runLianaCycleQuestion(input, askGoogle, emit);
+    return { mode: 'default', outcome };
+  }
+
+  const trimmed = input.trim();
+  const parsed = /^\d+$/.test(trimmed) ? parseQid(Number(trimmed)) : parseFreeText(trimmed);
+  if (parsed.qidNotFound) {
+    return {
+      mode: 'stack',
+      qid: parsed.qid,
+      question: '',
+      options: null,
+      result: {
+        ok: false,
+        steps: [],
+        results: [],
+        error: `qid ${parsed.qid} not found in the bundled corpus (resources/mmlu_pro_bundled/questions.jsonl)`,
+      },
+    };
+  }
+  const methodInput: MethodQuestionInput = {
+    qid: parsed.qid,
+    question: parsed.question,
+    options: parsed.options,
+    correctAnswer: parsed.correctAnswer,
+  };
+  const ctx: MethodRunContext = { askGoogle, emit };
+  const result = await runComposedStack(stepIds, methodInput, ctx);
+  return { mode: 'stack', qid: parsed.qid, question: parsed.question, options: parsed.options, result };
+}
