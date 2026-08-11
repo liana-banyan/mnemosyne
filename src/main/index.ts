@@ -312,6 +312,12 @@ import type { AudibleChannel } from './liana_cycle/audible';
 // convention as AudibleChannel above: SteppedAudibleChannel is implemented over IPC in the
 // 'liana-terminal-run' handler below; stepped_audible.ts itself has no Electron dependency.
 import type { SteppedAudibleChannel } from './liana_cycle/stepped_audible';
+// D-BP152-044/BISHOP/seg-last-mile-gemini -- type-only. ConversationalAuthorityFn is the shape of
+// the closure built below (near the 'liana-terminal-run' handler) that routes SURVEY's two
+// META-questions (the ambiguity query, the operation query) to Gemini via runMachineDrivenNexusQuery
+// (D-BP152-033, already imported above) before falling back to Google. method_registry.ts's own
+// header explains why this is NOT the same shape as AskGoogleFn.
+import type { ConversationalAuthorityFn } from './liana_cycle/method_registry';
 // D-BP150-002 -- reading the operator's already-written teaching notes back into a live pause.
 import { listTeachingFiles } from './liana_cycle/teaching_notes';
 import type { LianaAudibleResponse, LianaSteppedResponse, LianaTerminalEvent } from '../shared/liana_cycle/liana_terminal_types';
@@ -3705,6 +3711,44 @@ function registerIPCHandlers(): void {
     // (browser_authority_types.ts) for why this is structural, not caller discipline.
     const runThreadContext = createNexusRunThreadContext();
 
+    // D-BP152-044/BISHOP/seg-last-mile-gemini -- ATTRIBUTED, Founder, BP152, verbatim: "fix the
+    // last mile - let the liana cycle ask gemini". THE MEASURED WALL: SURVEY's two META-questions
+    // (the ambiguity query, the operation query -- survey_stage.ts's askAmbiguity()/askOperation())
+    // went to Google, a document lookup that cannot answer a question ABOUT a question (qid 98,
+    // HARDWIRE\LEDGER\LIANA_RUNS\LIANA_RUN_qid98_2026-08-11T18-09-09-616Z.json, an off-topic
+    // passage came back). This closure is the ONLY new piece of glue: it calls the EXISTING
+    // runMachineDrivenNexusQueryFromMain() (D-BP152-033, defined above, itself unchanged by this
+    // ticket) against 'user_gemini', reusing the SAME `runThreadContext` this handler already
+    // creates (D-BP152-031, immediately above) so Gemini's own thread is keyed independently of
+    // 'user_google' inside that factory's own Map -- NEVER SHARE A THREAD ACROSS AUTHORITIES.
+    // `runMachineDrivenNexusQuery()` itself (nexus_authority_persistent_session.ts) already
+    // contains the operator-engagement guard (a visible window refuses immediately) and the
+    // text-stability completion detector with a firm ceiling -- REUSED UNCHANGED, not
+    // reimplemented here. Any non-ok outcome (refused, ceiling with no text, failed) maps to
+    // `ok: false`; survey_stage.ts's obtainMetaQuestionPassage() treats every `ok: false`
+    // identically: fall back to the existing Google path. No judgment/rating/evaluation prompt is
+    // ever built here -- `question` is passed through verbatim, exactly as
+    // runMachineDrivenNexusQuery() forwards it to the composer (HARDWIRE-22 unaffected).
+    const askConversationalAuthority: ConversationalAuthorityFn = async (question: string) => {
+      const result = await runMachineDrivenNexusQueryFromMain('user_gemini', question, null, runThreadContext);
+      if (!result.ok || !result.text.trim()) {
+        return {
+          ok: false,
+          text: '',
+          citations: [],
+          via: `user_gemini:${result.outcome}${result.reason ? `(${result.reason})` : ''}`,
+          authority: 'user_gemini',
+        };
+      }
+      return {
+        ok: true,
+        text: result.text,
+        citations: result.citations.map((c) => c.href),
+        via: `user_gemini:${result.outcome}`,
+        authority: 'user_gemini',
+      };
+    };
+
     // A pause that outlives its window would hang the run forever with nothing to answer it.
     // This is the ONLY non-operator way a pause ends -- there is deliberately no timer, per the
     // Founder's BP149 report that the previous box "assumes I abandoned" while he was still
@@ -3803,6 +3847,10 @@ function registerIPCHandlers(): void {
         steppedChannel,
         contingencyOperatorSurvey,
         ambiguityQueryTransport,
+        // D-BP152-044: SURVEY's two META-questions try this before falling back to `askGoogle`
+        // above -- see this handler's own D-BP152-044 comment (immediately below the
+        // `runThreadContext` it reuses) for the full ruling.
+        askConversationalAuthority,
       );
     } finally {
       sender.removeListener('destroyed', onSenderGone);

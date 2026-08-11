@@ -45,7 +45,7 @@ import { explainSelection, listMethods, selectMethod } from './method_registry';
 // determineDemand() elsewhere in the estate are unaffected.
 import { describeDemand, determineDemandFromAmbiguityNested, determineDemandFromOperationAnswer, determineDemandFromSurveyedAsk } from './demand_test';
 import type { DemandResult } from './demand_test';
-import type { AskGoogleFn, EmitFn, MethodQuestionInput, MethodRunContext } from './method_registry';
+import type { AskGoogleFn, ConversationalAuthorityFn, EmitFn, MethodQuestionInput, MethodRunContext } from './method_registry';
 // D-BP151-026/BISHOP/seg-contingency-operator (Contingency Operator: Survey Splice), ORIGIN.
 // Founder, BP151, Q-20: "This is a case for Contingency Operators. Do it, and see if it works
 // before I ratify." runSurveyStage() (Founder steps 2, 3, 4, 6) was built D-BP151-025 but never
@@ -294,6 +294,17 @@ export async function runLianaCycleQuestion(
    *  and gets the new Google default on the ON path -- there is no prior behavior to preserve here
    *  since this parameter and the ambiguity-to-demand wiring it feeds ship together. */
   ambiguityQueryTransport?: 'google' | 'gemma',
+  /** D-BP152-044/BISHOP/seg-last-mile-gemini, ADDITIVE/OPTIONAL. Founder, BP152, verbatim ruling:
+   *  "fix the last mile - let the liana cycle ask gemini". Undefined for every caller that does
+   *  not pass it (byte-identical to before this ticket -- SURVEY's own askAmbiguity()/
+   *  askOperation() (survey_stage.ts) go straight to Google when this is absent, exactly as they
+   *  always have). When present, threaded straight into SURVEY's own MethodRunContext (below) so
+   *  its two META-questions (the ambiguity query, the operation query) try this FIRST and fall
+   *  back to Google -- see survey_stage.ts's obtainMetaQuestionPassage() for the full ruling.
+   *  index.ts's 'liana-terminal-run' handler is the one caller that supplies this; the Composer's
+   *  own runScratchComposer() call site (library/script_bridge.ts, this ticket's own FORBIDDEN
+   *  "script runner") is untouched and simply never passes it. */
+  askConversationalAuthority?: ConversationalAuthorityFn,
 ): Promise<LianaTerminalOutcome> {
   const trimmed = input.trim();
   const resolvedAmbiguityQueryTransport = resolveAmbiguityQueryTransport(ambiguityQueryTransport);
@@ -455,7 +466,13 @@ export async function runLianaCycleQuestion(
       // NOT DO, for why Call an Audible's per-call pause was not extended to cover Survey's own
       // Google calls; that was not ordered here). wrapForSteppedAudible('survey', ...) below IS
       // wired -- that is Part 3's own requirement, not an extra.
-      const surveyCtx: MethodRunContext = { askGoogle, emit };
+      // D-BP152-044, ADDITIVE: `askConversationalAuthority` threaded straight through (undefined on
+      // every caller that omits it -- byte-identical then). NOTE: when Stepped Audible is ON for
+      // survey, wrapForSteppedAudible() below returns a NEW ctx object carrying only
+      // { askGoogle, emit } (stepped_audible.ts, this ticket's own FORBIDDEN "pause plumbing", not
+      // touched) -- on that combination the two META-questions honestly fall back to Google, same
+      // as if this were never wired, rather than crashing or fabricating an authority.
+      const surveyCtx: MethodRunContext = { askGoogle, emit, askConversationalAuthority };
       const surveyStepWrap = wrapForSteppedAudible('survey', surveyCtx, steppedAudible ?? null, steppedLog);
       if (steppedAudible) {
         const surveyStepDefs = buildUpfrontStepList('survey');
