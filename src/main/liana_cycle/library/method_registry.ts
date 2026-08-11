@@ -103,12 +103,14 @@ const COMPARATIVE_CASCADE_DECLARATION: StepDeclaration = {
   sourceLine: 1235,
   exportName: 'comparativeCascadeMethod',
   exportKind: 'const',
+  // D-BP152-045/BISHOP/seg-composer-ui-fixes -- rewritten to plain, operator-facing language.
+  // Founder, live report: he should never see "LianaMethod object" or a field list. This is a
+  // description-only change to a registry declaration string; comparativeCascadeMethod() itself
+  // (comparative_cascade.ts) is untouched.
   whatItDoes:
-    'METHOD 1 of the Liana Cycle method registry: a LianaMethod object (id, name, demand, '
-    + 'taughtBy, shapeTest, run) for questions whose options are short members of one category '
-    + 'and whose answer turns on ranking them by a named property -- register gate, inverse, '
-    + 'order-both-ways, Cake Cut Half, hard number per-option, then the terminator (value '
-    + 'convergence, then votes, then abstain).',
+    'Answers questions that ask you to rank a short list of similar items by some property, like '
+    + 'size or population -- it looks up a number for each option and gives you the one that '
+    + 'ranks highest or lowest, or says it cannot tell.',
   inputs: 'MethodQuestionInput (question, options, qid?, correctAnswer?) to shapeTest(); the same input plus MethodRunContext (askGoogle, emit) to run().',
   outputs: 'ShapeTestResult { matches, reason } from shapeTest(); Promise<LianaTerminalOutcome> from run().',
   decidesOrReports: 'DECIDES_AND_REFUSES',
@@ -143,12 +145,11 @@ const DEFINITIONAL_CASCADE_DECLARATION: StepDeclaration = {
   sourceLine: 408,
   exportName: 'definitionalCascadeMethod',
   exportKind: 'const',
+  // D-BP152-045: rewritten to plain language, description-only (see ComparativeCascade:1 above).
   whatItDoes:
-    'METHOD 2 of the Liana Cycle method registry: a LianaMethod object for questions that turn '
-    + 'on what a term MEANS, options being competing statements of that meaning -- reuses stages '
-    + '0/1/2 from comparative_cascade.ts, categorizes options by shared predicate (D1), surveys '
-    + 'every verified denotation of the term unranked via surveyAsk()/fieldGate() (D2-D4), and '
-    + 'deliberately does not implement sense-matching (D5) -- an honest abstain, not a guess.',
+    'Answers questions that ask what a term means, where the options are competing definitions -- '
+    + 'it looks up every verified meaning of the term, but honestly says it does not know rather '
+    + 'than guessing when it cannot match a meaning to one of the options.',
   inputs: 'MethodQuestionInput (question, options, qid?, correctAnswer?) to shapeTest(); the same input plus MethodRunContext (askGoogle, emit) to run().',
   outputs: 'ShapeTestResult { matches, reason } from shapeTest(); Promise<LianaTerminalOutcome> from run().',
   decidesOrReports: 'DECIDES_AND_REFUSES',
@@ -183,12 +184,11 @@ const CLASSIFY_CASCADE_DECLARATION: StepDeclaration = {
   sourceLine: 1606,
   exportName: 'classifyCascadeMethod',
   exportKind: 'const',
+  // D-BP152-045: rewritten to plain language, description-only (see ComparativeCascade:1 above).
   whatItDoes:
-    'METHOD 3 of the Liana Cycle method registry: a LianaMethod object for questions that sort '
-    + 'options into a named category and its complement, answer being which side an option falls '
-    + 'on -- Occam elimination on hard pass/fail criteria (Stage 1), a litmus-strip loop adding '
-    + 'axes when more than one option survives (Stage 2), and a Banyan-Metric publish/abstain '
-    + 'rule (Stage 3). No tie-breakers; unknown never counts as fail.',
+    'Answers questions that ask which category something belongs to -- it rules out options that '
+    + 'clearly fail a test, keeps checking with more tests until only one is left, and only gives '
+    + 'an answer once it is confident; it never guesses on a tie.',
   inputs: 'MethodQuestionInput (question, options, qid?, correctAnswer?) to shapeTest(); the same input plus MethodRunContext (askGoogle, emit) to run().',
   outputs: 'ShapeTestResult { matches, reason } from shapeTest(); Promise<LianaTerminalOutcome> from run().',
   decidesOrReports: 'DECIDES_AND_REFUSES',
@@ -224,13 +224,11 @@ const SURVEY_DECLARATION: StepDeclaration = {
   sourceLine: 1729,
   exportName: 'runSurveyStage',
   exportKind: 'function',
+  // D-BP152-045: rewritten to plain language, description-only (see ComparativeCascade:1 above).
   whatItDoes:
-    'THE SURVEY STAGE (E-SURVEY). Runs the Founder\'s steps 2, 3, 4 and 6, in his order, before '
-    + 'any elimination stage touches anything: step 2 resolves the term and surveys its meaning '
-    + '(founderStep2Survey), step 3 categorizes options (founderStep3CategorizeOptions), step 4 '
-    + 'determines the register (founderStep4DetermineRegister), step 6 runs the jar method '
-    + '(founderStep6JarMethod). Per FD-BP152-09/FD-BP152-20, Survey is simply a step -- no mode, '
-    + 'no flag gating whether it runs.',
+    'Does the groundwork before any answer is picked: looks up what the key term in the question '
+    + 'means, sorts the answer options into groups, checks whether that meaning is well '
+    + 'established, and rules out any option a source directly contradicts.',
   inputs: 'askText: string; options: Record<string,string> | null; ctx: MethodRunContext; opts: SurveyStageOpts (term hints, jarSourceGroups, ambiguityQueryTransport, etc).',
   outputs: 'Promise<SurveyStageResult>.',
   decidesOrReports: 'DECIDES_AND_REFUSES',

@@ -99,6 +99,17 @@ export interface StepDeclaration {
   /** One sentence, read from the CODE itself (the function body / const value), not copied from
    *  the file's comment header -- per this ticket's explicit instruction. */
   whatItDoes: string;
+  /** D-BP152-045/BISHOP/seg-composer-ui-fixes -- OPTIONAL PARENTAGE. Founder, BP152, verbatim:
+   *  "can you indicate with the NameNumbers if they are part of a script or method or whatever?
+   *  ... so that users know what each are a part of?" The canonical `Name:Number` id (this
+   *  declaration's own registered id, e.g. "DefineTheTerm:1") of the composite step this one is
+   *  a PART of, e.g. "Survey:1" -- undefined for a step that is not part of any composite. This
+   *  is display metadata only: it is never read by script_runner.ts, never a decision input, and
+   *  changing it cannot change which answer any step produces (same discipline as script.ts's own
+   *  `attribution` field on a ScriptStepRef, see that file's header). The minimum field needed to
+   *  let the composer panel render "Parent:N > Child:N" from real registry data instead of a
+   *  hardcoded UI map. */
+  parentId?: string;
   /** What this step reads: parameters and their shape. */
   inputs: string;
   /** What this step returns or produces. */

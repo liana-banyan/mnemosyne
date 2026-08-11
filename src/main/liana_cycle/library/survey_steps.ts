@@ -70,14 +70,15 @@ const DEFINE_THE_TERM_DECLARATION: StepDeclaration = {
   sourceLine: 1037,
   exportName: 'founderStep2Survey',
   exportKind: 'function',
+  // D-BP152-045/BISHOP/seg-composer-ui-fixes -- rewritten to plain, operator-facing language.
+  // Was developer prose naming internal functions (surveyAskNested(), AmbiguityQuery:1/
+  // OperationQuery:1 cross-refs) and a "sig-figs-filter" implementation detail; this is a
+  // description-only change to a registry declaration string, not to founderStep2Survey() itself.
   whatItDoes:
-    'FOUNDER STEP 2 ("SURVEY: DEFINE THE TERM, PERFUNCTORILY, THEN KEEP LOOKING"). Given an '
-    + 'already-resolved term, surveys it once via surveyAskNested() and returns; given no term but '
-    + 'a question, issues the ambiguity query (AmbiguityQuery:1) then the operation query '
-    + '(OperationQuery:1), sig-figs-filters the source-named terms to those with a stated impact, '
-    + 'then surveys each kept term nested, asks a constraint question and a machine-generated '
-    + 'threshold question per kept term; refuses cleanly (no term, no guess) when neither a term '
-    + 'nor usable ambiguity terms exist.',
+    'Looks up the key term in the question -- or, if no term is given outright, works out what it '
+    + 'likely is first -- then reads what it means from a source and checks whether any part of '
+    + 'the question could reasonably be read more than one way.',
+  parentId: 'Survey:1',
   inputs: 'term: string | null; ctx: MethodRunContext; askText?: string (used only on the no-term path); ambiguityQueryTransport?: \'google\' | \'gemma\'.',
   outputs: 'Promise<FounderStep2Result> -- term, nested survey, ambiguity findings, per-term nested surveys, negation flag, constraint/threshold questions and answers, why. Never a verdict/answer field.',
   decidesOrReports: 'REPORTS',
@@ -108,11 +109,11 @@ const CATEGORIZE_DECLARATION: StepDeclaration = {
   sourceLine: 1416,
   exportName: 'founderStep3CategorizeOptions',
   exportKind: 'function',
+  // D-BP152-045: rewritten to plain language, description-only (see DefineTheTerm:1 above).
   whatItDoes:
-    'FOUNDER STEP 3 ("first, I categorize the possible answers"). Refuses if options is null/'
-    + 'empty; otherwise calls surveyAnswers() (per-option kind/aspect/catalyst-word survey) and '
-    + 'groupOptionsByPredicate() (the one model call in this file that clusters options by shared '
-    + 'predicate, a PROPOSAL not a decision), independently, and concatenates their results.',
+    'Sorts the answer options into groups by what they have in common, without ruling any of '
+    + 'them out.',
+  parentId: 'Survey:1',
   inputs: 'options: Record<string,string> | null; ctx: MethodRunContext; sharedFrame?: RegExp; maxCatalystWordsPerOption?: number.',
   outputs: 'Promise<FounderStep3Result> -- { perOption, grouping, why }. No elimination performed.',
   decidesOrReports: 'REPORTS',
@@ -139,11 +140,11 @@ const DETERMINE_REGISTER_DECLARATION: StepDeclaration = {
   sourceLine: 1490,
   exportName: 'founderStep4DetermineRegister',
   exportKind: 'function',
+  // D-BP152-045: rewritten to plain language, description-only (see DefineTheTerm:1 above).
   whatItDoes:
-    'FOUNDER STEP 4 ("guess out loud, then check it"). Refuses if term is null; otherwise calls '
-    + 'fieldGate() once and reads off a single boolean, verified = (field.decision === '
-    + '\'ONE_SURVIVOR\') -- a direct, definitional readout of an already-decided upstream enum, no '
-    + 'new threshold or judgment of its own.',
+    'Checks whether the meaning found for the key term is the one clear match among the sources, '
+    + 'or whether more than one meaning is still in play.',
+  parentId: 'Survey:1',
   inputs: 'term: string | null; askText: string; options: Record<string,string> | null; ctx: MethodRunContext.',
   outputs: 'Promise<FounderStep4Result> -- { term, field, verified, why }.',
   decidesOrReports: 'REPORTS',
@@ -169,12 +170,11 @@ const JAR_METHOD_DECLARATION: StepDeclaration = {
   sourceLine: 1612,
   exportName: 'founderStep6JarMethod',
   exportKind: 'function',
+  // D-BP152-045: rewritten to plain language, description-only (see DefineTheTerm:1 above).
   whatItDoes:
-    'FOUNDER STEP 6, HIS OWN NAME: "the Jar Method". Refuses if options or sourceGroups is empty; '
-    + 'otherwise, for every caller-supplied source group (each pre-labeled answers-eliminate or '
-    + 'answers-keep), extracts which option letters each passage verbatim-asserts, and eliminates '
-    + 'exactly those named inside an answers-eliminate group -- a plain string-equality branch on a '
-    + 'caller-declared value, no word list, no model judgment, no Google query of its own.',
+    'Goes through the sources gathered so far and rules out any answer option that a source '
+    + 'directly and clearly contradicts.',
+  parentId: 'Survey:1',
   inputs: 'sourceGroups: JarSourceGroup[]; options: Record<string,string> | null; ctx: MethodRunContext.',
   outputs: 'Promise<FounderStep6Result> -- { named, eliminated, eliminatedLetters, why }. This is Survey\'s one true elimination primitive -- narrows the option pool, never picks a final verdict letter.',
   decidesOrReports: 'DECIDES_AND_REFUSES',
@@ -200,12 +200,11 @@ const AMBIGUITY_QUERY_DECLARATION: StepDeclaration = {
   sourceLine: 526,
   exportName: 'askAmbiguity',
   exportKind: 'function',
+  // D-BP152-045: rewritten to plain language, description-only (see DefineTheTerm:1 above).
   whatItDoes:
-    'PART 1 of the Founder\'s two-part opening query (FD-BP152-01). Issues "what words or phrases '
-    + 'in this question could be understood with a different meaning..." (Founder, BP151, '
-    + 'verbatim) via Google, then gemmaExtract() (unrelaxed) structures the source\'s own named '
-    + 'terms (standard meaning, alternative meaning, impact, negation flag) out of the returned '
-    + 'passage; picks no term itself, reports what the source named.',
+    'Asks whether any word or phrase in the question could reasonably be read more than one way, '
+    + 'and reports back what it finds -- it does not pick which meaning is right.',
+  parentId: 'Survey:1',
   inputs: 'askText: string; ctx: MethodRunContext; transport?: \'google\' | \'gemma\' (default \'google\').',
   outputs: 'Promise<AmbiguityQueryResult> -- { askedText, terms, modelUnreachable, transport, citations, rawGooglePassage, rawModelOutput, why }.',
   decidesOrReports: 'REPORTS',
@@ -238,12 +237,11 @@ const OPERATION_QUERY_DECLARATION: StepDeclaration = {
   sourceLine: 719,
   exportName: 'askOperation',
   exportKind: 'function',
+  // D-BP152-045: rewritten to plain language, description-only (see DefineTheTerm:1 above).
   whatItDoes:
-    'PART 2 of the Founder\'s two-part opening query (FD-BP152-05). Issues "what operation does '
-    + 'this question require... ranked, defined, classified, or inferred from evidence?" via '
-    + 'Google, then gemmaExtract() (unrelaxed) reports the source\'s own stated operation verbatim '
-    + '(rawAnswer); runs independently of Part 1\'s outcome; never carries the option list (avoids '
-    + 'an answer-key leak); picks nothing -- mapping rawAnswer onto a LianaDemand is demand_test.ts\'s job.',
+    'Asks what kind of task the question is actually asking for -- for example, ranking, '
+    + 'defining, classifying, or reasoning from evidence -- and reports what it finds.',
+  parentId: 'Survey:1',
   inputs: 'askText: string; ctx: MethodRunContext; transport?: \'google\' | \'gemma\' (default \'google\', REUSED from Part 1\'s already-resolved value by its caller).',
   outputs: 'Promise<OperationQueryResult> -- { askedText, rawAnswer, modelUnreachable, transport, citations, rawGooglePassage, rawModelOutput, why }.',
   decidesOrReports: 'REPORTS',

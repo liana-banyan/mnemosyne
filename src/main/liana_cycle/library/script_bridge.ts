@@ -78,6 +78,12 @@ export interface ComposerRegistryEntry {
   /** Plain-language line on what this step does, read straight from the registry's own
    *  declaration (StepDeclaration.whatItDoes) -- never re-derived or shortened here. */
   whatItDoes: string;
+  /** D-BP152-045/BISHOP/seg-composer-ui-fixes -- read straight from the registry's own
+   *  declaration (StepDeclaration.parentId, added by this ticket), never re-derived or set here.
+   *  The canonical id of the composite step this one is a part of (e.g. "Survey:1"), or `null`
+   *  when the step is not part of any composite. Lets the composer panel render
+   *  "Parent:N > Child:N" from real registry data instead of a hardcoded UI map. */
+  parentId: string | null;
   /** True only for the four ids this file's executor actually knows how to run (see this file's
    *  header). A registered-but-not-executable entry (an orphan, or a not-yet-mapped concurrent
    *  registration) still lists -- it is simply marked so the composer panel can say so honestly
@@ -101,6 +107,7 @@ export function listComposerRegistry(): ComposerRegistryEntry[] {
     name: entry.identity.name,
     number: entry.identity.number,
     whatItDoes: entry.declaration.whatItDoes,
+    parentId: entry.declaration.parentId ?? null,
     executable: EXECUTABLE_IDS.has(entry.identity.id),
   }));
 }

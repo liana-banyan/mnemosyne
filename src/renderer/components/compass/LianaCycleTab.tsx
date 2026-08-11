@@ -36,6 +36,15 @@ import type {
 // D-BP152-043/BISHOP/seg-scratch-composer -- type-only, see script_bridge.ts's own header.
 import type { ComposerRegistryEntry, ScriptRunResponse } from '../../../main/liana_cycle/library/script_bridge';
 
+// D-BP152-045/BISHOP/seg-composer-ui-fixes -- PARENTAGE LABEL. Founder, live report: "can you
+// indicate with the NameNumbers if they are part of a script or method or whatever? ... so that
+// users know what each are a part of?" `entry.parentId` is real registry data (StepDeclaration's
+// new optional field, script_bridge.ts's ComposerRegistryEntry -- see both files' headers), never
+// a map maintained in this file; a step with no parent renders exactly as before.
+function formatStepLabel(entry: ComposerRegistryEntry): string {
+  return entry.parentId ? `${entry.parentId} > ${entry.id}` : entry.id;
+}
+
 const LS_LAST_RUNS_KEY = 'liana_terminal_recent_inputs';
 const MAX_RECENT = 12;
 
@@ -1781,7 +1790,15 @@ export function LianaCycleTab() {
           </>
         ) : (
         <>
-        {/* LEFT: the live transcript */}
+        {/* LEFT: the live transcript. D-BP152-045/BISHOP/seg-composer-ui-fixes: already scrollable
+            (`overflowY: 'auto'`, unchanged) and already fills the full pane height, which the
+            existing horizontal divider (below) already lets the operator adjust. Deliberately NOT
+            given its own `resize: vertical` handle: this pane stretches to the full height of the
+            two-pane split by design (a live-running transcript should fill the space it has), and
+            adding a second, vertical resize handle on top of an already-stretched flex pane would
+            leave a visible gap when dragged short -- exactly the "build a layout engine" this
+            ticket forbids, for a box that was not reported as broken (only "Steps on file" and
+            "boxes" like it were). */}
         <div style={{
           flex: 1.6, minWidth: 0, background: '#05080d', overflowY: 'auto', padding: '10px 14px',
           fontFamily: 'Consolas, "Courier New", monospace', fontSize: 12, lineHeight: 1.5,
@@ -1873,7 +1890,14 @@ export function LianaCycleTab() {
                   Pick steps from the list below, in whatever order you want. An empty stack just runs the normal way.
                 </div>
 
-                {/* Your stack, in run order. */}
+                {/* Your stack, in run order. D-BP152-045/BISHOP/seg-composer-ui-fixes: wrapped in
+                    its own scrollable, vertically-resizable box. Founder, live report: "We should
+                    let users adjust the vertical size of each display box... like the Composer
+                    window, or the Steps on File Window - and make them scrollable vertically if
+                    they have more content than the resized window displays." `resize: vertical` +
+                    `overflowY: auto` is the simplest mechanism that satisfies both halves of that
+                    ask without building a layout engine -- the operator drags the bottom-right
+                    corner to grow or shrink the box, and whatever does not fit scrolls. */}
                 <div>
                   <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif', marginBottom: 4 }}>
                     Your stack (runs top to bottom):
@@ -1883,27 +1907,34 @@ export function LianaCycleTab() {
                       Nothing added yet -- Run this stack below will just run the normal way.
                     </div>
                   )}
-                  {composerStack.map((id, i) => (
-                    <div key={`${id}-${i}`} style={{
-                      display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px', marginBottom: 3,
-                      background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 4,
+                  {composerStack.length > 0 && (
+                    <div style={{
+                      maxHeight: 180, minHeight: 44, overflowY: 'auto', resize: 'vertical',
+                      border: '1px solid #1e2a38', borderRadius: 4, padding: 2,
                     }}>
-                      <span style={{ color: '#475569', fontSize: 11, fontFamily: 'monospace', width: 18 }}>{i + 1}.</span>
-                      <span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace', flex: 1 }}>{id}</span>
-                      <button type="button" onClick={() => moveComposerStepUp(i)} disabled={i === 0} title="Move up"
-                        style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: i === 0 ? '#334155' : '#94a3b8', cursor: i === 0 ? 'default' : 'pointer', padding: '2px 6px', fontSize: 11 }}>
-                        ▲
-                      </button>
-                      <button type="button" onClick={() => moveComposerStepDown(i)} disabled={i === composerStack.length - 1} title="Move down"
-                        style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: i === composerStack.length - 1 ? '#334155' : '#94a3b8', cursor: i === composerStack.length - 1 ? 'default' : 'pointer', padding: '2px 6px', fontSize: 11 }}>
-                        ▼
-                      </button>
-                      <button type="button" onClick={() => removeComposerStep(i)} title="Remove"
-                        style={{ background: 'none', border: '1px solid #7f1d1d', borderRadius: 4, color: '#fca5a5', cursor: 'pointer', padding: '2px 6px', fontSize: 11 }}>
-                        Remove
-                      </button>
+                      {composerStack.map((id, i) => (
+                        <div key={`${id}-${i}`} style={{
+                          display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px', marginBottom: 3,
+                          background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 4,
+                        }}>
+                          <span style={{ color: '#475569', fontSize: 11, fontFamily: 'monospace', width: 18 }}>{i + 1}.</span>
+                          <span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace', flex: 1 }}>{id}</span>
+                          <button type="button" onClick={() => moveComposerStepUp(i)} disabled={i === 0} title="Move up"
+                            style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: i === 0 ? '#334155' : '#94a3b8', cursor: i === 0 ? 'default' : 'pointer', padding: '2px 6px', fontSize: 11 }}>
+                            ▲
+                          </button>
+                          <button type="button" onClick={() => moveComposerStepDown(i)} disabled={i === composerStack.length - 1} title="Move down"
+                            style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: i === composerStack.length - 1 ? '#334155' : '#94a3b8', cursor: i === composerStack.length - 1 ? 'default' : 'pointer', padding: '2px 6px', fontSize: 11 }}>
+                            ▼
+                          </button>
+                          <button type="button" onClick={() => removeComposerStep(i)} title="Remove"
+                            style={{ background: 'none', border: '1px solid #7f1d1d', borderRadius: 4, color: '#fca5a5', cursor: 'pointer', padding: '2px 6px', fontSize: 11 }}>
+                            Remove
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
 
                 <button
@@ -1951,7 +1982,12 @@ export function LianaCycleTab() {
                 )}
 
                 {/* Steps on file -- always the live list, so a step added elsewhere shows up here
-                    without reopening the app. */}
+                    without reopening the app. D-BP152-045/BISHOP/seg-composer-ui-fixes: this is
+                    the box the Founder named directly -- "I can't scroll the steps, so I can't
+                    see all of them after 5, and the sixth one is just the top of the descriptive
+                    box so I can't read it." Now its own scrollable, vertically-resizable box
+                    (`resize: vertical` + `overflowY: auto`, same mechanism as "Your stack" above)
+                    instead of growing unbounded inside the panel. */}
                 <div>
                   <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif', marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
                     <span>Steps on file:</span>
@@ -1961,24 +1997,31 @@ export function LianaCycleTab() {
                   </div>
                   {composerRegistryState === 'loading' && <div style={{ fontSize: 11, color: '#475569' }}>Loading…</div>}
                   {composerRegistryState === 'unavailable' && <div style={{ fontSize: 11, color: '#fca5a5' }}>Not available in this build.</div>}
-                  {composerRegistryState === 'loaded' && composerRegistry.map((entry) => (
-                    <div key={entry.id} style={{
-                      display: 'flex', alignItems: 'flex-start', gap: 6, padding: '4px 6px', marginBottom: 3,
-                      background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 4,
+                  {composerRegistryState === 'loaded' && (
+                    <div style={{
+                      maxHeight: 260, minHeight: 90, overflowY: 'auto', resize: 'vertical',
+                      border: '1px solid #1e2a38', borderRadius: 4, padding: 2,
                     }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace' }}>
-                          {entry.id}
-                          {!entry.executable && <span style={{ color: '#a16207', marginLeft: 6, fontSize: 10 }}>(not runnable yet)</span>}
+                      {composerRegistry.map((entry) => (
+                        <div key={entry.id} style={{
+                          display: 'flex', alignItems: 'flex-start', gap: 6, padding: '4px 6px', marginBottom: 3,
+                          background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 4,
+                        }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace' }}>
+                              {formatStepLabel(entry)}
+                              {!entry.executable && <span style={{ color: '#a16207', marginLeft: 6, fontSize: 10 }}>(not runnable yet)</span>}
+                            </div>
+                            <div style={{ color: '#64748b', fontSize: 10.5, marginTop: 2 }}>{entry.whatItDoes}</div>
+                          </div>
+                          <button type="button" onClick={() => addComposerStep(entry.id)}
+                            style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: '#94a3b8', cursor: 'pointer', padding: '2px 8px', fontSize: 11, flexShrink: 0 }}>
+                            Add
+                          </button>
                         </div>
-                        <div style={{ color: '#64748b', fontSize: 10.5, marginTop: 2 }}>{entry.whatItDoes}</div>
-                      </div>
-                      <button type="button" onClick={() => addComposerStep(entry.id)}
-                        style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: '#94a3b8', cursor: 'pointer', padding: '2px 8px', fontSize: 11, flexShrink: 0 }}>
-                        Add
-                      </button>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
               </div>
             )}

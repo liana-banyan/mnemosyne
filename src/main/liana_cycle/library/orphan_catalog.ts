@@ -76,10 +76,13 @@ export const ORPHAN_STEP_CATALOG: StepDeclaration[] = [
     sourceLine: 100,
     exportName: 'partitionByAspect',
     exportKind: 'function',
+    // D-BP152-045/BISHOP/seg-composer-ui-fixes -- rewritten to plain, operator-facing language.
+    // Description-only change to a registry declaration string; partitionByAspect() itself
+    // (elements/aspect_tag.ts) is untouched.
     whatItDoes:
-      'Runs tagAspect() over every option in a letter-to-text map, groups the letters by the '
-      + 'resulting aspect (PROCESS/ATTEMPT/RESULT/NOMINAL), and sets discriminates=true iff more '
-      + 'than one aspect group exists.',
+      'Groups the answer options by the kind of claim each one makes -- for example, a process '
+      + 'versus a result -- and reports whether that grouping actually splits them into more than '
+      + 'one group.',
     inputs: 'options: Record<string,string> (letter -> option text); sharedFrame?: RegExp (an optional leading-frame stripper, e.g. /^It describes\\s+(.*)$/i).',
     outputs: 'AspectPartition { tags: Record<letter,AspectTag>, groups: Record<aspect,letter[]>, discriminates: boolean }.',
     decidesOrReports: 'REPORTS',
@@ -108,11 +111,11 @@ export const ORPHAN_STEP_CATALOG: StepDeclaration[] = [
     sourceLine: 128,
     exportName: 'eliminateByAspect',
     exportKind: 'function',
+    // D-BP152-045: rewritten to plain language, description-only (see partitionByAspect above).
     whatItDoes:
-      'Calls partitionByAspect(), then narrows the option set to the group matching askAspect '
-      + 'only when askAspect is non-null AND the partition discriminates AND that group is '
-      + 'non-empty; on any of the three unmet, it returns every option unchanged with a stated '
-      + 'refusal reason rather than falling back to a majority vote.',
+      'If the question clearly points to one specific kind of claim, narrows the answer options '
+      + 'down to just that kind -- but only when the grouping is genuinely clear; otherwise it '
+      + 'changes nothing and says why, rather than guessing.',
     inputs: 'options: Record<string,string>; askAspect: LianaAspect | null (the ASK\'s own aspect, sourced from Survey); sharedFrame?: RegExp.',
     outputs: 'AspectElimination { survivors: string[], eliminated: string[], reason: string, eliminated_any: boolean }.',
     decidesOrReports: 'DECIDES_AND_REFUSES',
@@ -147,9 +150,10 @@ export const ORPHAN_STEP_CATALOG: StepDeclaration[] = [
     sourceLine: 235,
     exportName: 'checkKindForAllOptions',
     exportKind: 'function',
+    // D-BP152-045: rewritten to plain language, description-only (see partitionByAspect above).
     whatItDoes:
-      'Loops checkKind() once per option in a letter-to-text map and returns the per-letter '
-      + 'results; adds no classification logic beyond what checkKind() itself does.',
+      'Checks each answer option to see what kind of statement it is -- a fact, a description, '
+      + 'and so on -- and flags any option that does not make sense as an answer.',
     inputs: 'options: Record<string,string> (letter -> option text).',
     outputs: 'Record<string, KindCheckResult> (letter -> the six-way kind classification, or a stated refusal, per option).',
     decidesOrReports: 'DECIDES',
@@ -184,10 +188,10 @@ export const ORPHAN_STEP_CATALOG: StepDeclaration[] = [
     sourceLine: 131,
     exportName: 'SERVED_DEMANDS',
     exportKind: 'const',
+    // D-BP152-045: rewritten to plain language, description-only (see partitionByAspect above).
     whatItDoes:
-      'A two-element array declaring the only two LianaDemand values (DEFINE, '
-      + 'LOCATE-IN-FRAMEWORK) this file\'s substitution logic is willing to run for; used as the '
-      + 'first gate in formSubstitutionQueries().',
+      'A short list naming the only two kinds of question -- defining a term, or placing '
+      + 'something within a bigger framework -- this step is willing to work on.',
     inputs: 'N/A -- module-level constant, not a function.',
     outputs: "LianaDemand[] = ['DEFINE', 'LOCATE-IN-FRAMEWORK'].",
     decidesOrReports: 'DECIDES',
@@ -218,12 +222,11 @@ export const ORPHAN_STEP_CATALOG: StepDeclaration[] = [
     sourceLine: 210,
     exportName: 'formSubstitutionQueries',
     exportKind: 'function',
+    // D-BP152-045: rewritten to plain language, description-only (see partitionByAspect above).
     whatItDoes:
-      'For one option, runs a demand gate (SERVED_DEMANDS) then a term-derivation gate '
-      + '(findAskCatalyst(), or an explicit override) then checkKind() on the option, and on a '
-      + 'THING forms three Google query strings (assertion/inverted/direct) from the Founder\'s '
-      + 'own verbatim templates, or one corroboration query for a PROPOSITION/ABSENCE-CLAIM, or '
-      + 'refuses (queries: []) for any other kind or gate failure -- never sending anything itself.',
+      'For one answer option, works out the right search questions to check whether that option '
+      + 'is actually true, phrased a few different ways so a search can confirm or rule it out -- '
+      + 'or refuses, with a stated reason, when the option is not the right kind to check this way.',
     inputs: 'question: string; demand: LianaDemand | null; option: string; explicitTerm?: string.',
     outputs:
       'SubstitutionResult { term, frame, kind, status: substituted|corroboration|refused, gate: '
@@ -273,9 +276,10 @@ export const ORPHAN_STEP_CATALOG: StepDeclaration[] = [
     sourceLine: 392,
     exportName: 'formSubstitutionQueriesForAllOptions',
     exportKind: 'function',
+    // D-BP152-045: rewritten to plain language, description-only (see partitionByAspect above).
     whatItDoes:
-      'Loops formSubstitutionQueries() once per option in a letter-to-text map; adds no logic '
-      + 'of its own beyond the loop.',
+      'Does the same search-question work as its sibling step, but for every answer option at '
+      + 'once instead of just one.',
     inputs: 'question: string; demand: LianaDemand | null; options: Record<string,string>; explicitTerm?: string.',
     outputs: 'Record<string, SubstitutionResult> (letter -> that option\'s SubstitutionResult).',
     decidesOrReports: 'DECIDES_AND_REFUSES',
