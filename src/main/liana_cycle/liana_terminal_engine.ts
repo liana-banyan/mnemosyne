@@ -96,6 +96,52 @@ function note(emit: EmitFn, text: string): void {
   emit({ kind: 'note', text, ts: nowIso() });
 }
 
+/** D-BP152-049 STAGE 3/4. What "state the question" produces -- extracted verbatim from STEP 0's
+ *  own inline block below (unchanged in content or order) so a NameNumbered 'StateTheQuestion:1'
+ *  Composer step (library/state_the_question_step.ts) can call the EXACT SAME logic rather than a
+ *  second transcription of it. Founder, BP152, verbatim: "I think we need to add a step 'State
+ *  the Question'... I still think we need it so I can add it to my stack, just in case I want to
+ *  go back to it in the same sequence script I make; or any other purpose." */
+export interface StateTheQuestionResult {
+  source: string;
+  question: string;
+  options: Record<string, string> | null;
+  optionsExist: boolean;
+  qid?: number;
+}
+
+/** Emits the SAME stage/say/note lines Step 0 always has, in the SAME order, and returns the SAME
+ *  state either caller reads: the question verbatim, its options verbatim (or an honest note that
+ *  none exist), the options-exist flag, and the source. Pure aside from the `emit` calls -- no
+ *  Google call, no pause, no mutation of anything outside the events it emits. `input` is
+ *  intentionally the same shape MethodQuestionInput already carries (qid?, question, options), so
+ *  script_bridge.ts's runOneStep() (which already has a MethodQuestionInput in hand) can call this
+ *  directly with no reshaping. */
+export function emitStateTheQuestion(
+  emit: EmitFn,
+  input: { qid?: number; question: string; options: Record<string, string> | null },
+): StateTheQuestionResult {
+  const source = input.qid != null
+    ? `qid ${input.qid} (bundled MMLU-Pro corpus, resources/mmlu_pro_bundled/questions.jsonl)`
+    : 'free text (not in the bundled corpus)';
+  const optionsExist = input.options != null;
+  emit({
+    kind: 'stage',
+    text: '-> STEP 0 -- STATE THE QUESTION, FULLY (Founder, BP152, verbatim: "Remember. the FIRST thing to do is to state the question, fully." FD-BP152-14)',
+    ts: nowIso(),
+  });
+  say(emit, input.qid != null ? `qid ${input.qid}` : 'free-text question');
+  note(emit, `   SOURCE: ${source}`);
+  note(emit, `   QUESTION (verbatim, complete): ${input.question}`);
+  note(emit, `   OPTIONS EXIST: ${optionsExist}`);
+  if (input.options) {
+    note(emit, `   OPTIONS (verbatim, complete): ${Object.entries(input.options).map(([k, v]) => `${k}) ${v}`).join('  ')}`);
+  } else {
+    note(emit, '   (no lettered option list -- typed as a bare question)');
+  }
+  return { source, question: input.question, options: input.options, optionsExist, qid: input.qid };
+}
+
 // D-BP152-039/BISHOP/seg-gate-removal-and-sigfigs, STAGE 1 -- THE GATE IS REMOVED, NOT DEFAULTED
 // ON. Founder, BP152, verbatim (FD-BP152-20): "fix the gate properly so survey doesn't need the
 // env var." And, the architecture ruling that makes it a removal rather than a flip:
@@ -385,10 +431,12 @@ export async function runLianaCycleQuestion(
     //     honest "(no lettered option list...)" line), not an edge case and not a silent empty
     //     list.
     //   - the source of the question (qid + corpus, or free text).
-    const step0Source = parsed.qid != null
-      ? `qid ${parsed.qid} (bundled MMLU-Pro corpus, resources/mmlu_pro_bundled/questions.jsonl)`
-      : 'free text (not in the bundled corpus)';
-    const step0OptionsExist = parsed.options != null;
+    // D-BP152-049 STAGE 3/4: the emit sequence and source/optionsExist computation below were
+    // extracted, unchanged, into emitStateTheQuestion() (this file, above) so a NameNumbered
+    // 'StateTheQuestion:1' Composer step can reuse the EXACT SAME logic rather than a second
+    // transcription of it. This call site's own behavior is byte-identical to before extraction:
+    // same events, same order, same `emitStep0` capture-then-forward wrapper below it.
+    //
     // D-BP152-020/BISHOP/seg-pause-at-step-zero -- captured locally, in addition to being forwarded
     // to `emit` as always, so the STEP 0 pause below (when Call an Audible/Stepped Audible is on)
     // can present exactly the events this block produced -- the SAME verbatim/options-exist/source
@@ -397,20 +445,9 @@ export async function runLianaCycleQuestion(
     // through the same `emit` this block always called, in the same order.
     const step0Events: LianaTerminalEvent[] = [];
     const emitStep0: EmitFn = (evt) => { step0Events.push(evt); emit(evt); };
-    emitStep0({
-      kind: 'stage',
-      text: '-> STEP 0 -- STATE THE QUESTION, FULLY (Founder, BP152, verbatim: "Remember. the FIRST thing to do is to state the question, fully." FD-BP152-14)',
-      ts: nowIso(),
-    });
-    say(emitStep0, parsed.qid != null ? `qid ${parsed.qid}` : 'free-text question');
-    note(emitStep0, `   SOURCE: ${step0Source}`);
-    note(emitStep0, `   QUESTION (verbatim, complete): ${parsed.question}`);
-    note(emitStep0, `   OPTIONS EXIST: ${step0OptionsExist}`);
-    if (parsed.options) {
-      note(emitStep0, `   OPTIONS (verbatim, complete): ${Object.entries(parsed.options).map(([k, v]) => `${k}) ${v}`).join('  ')}`);
-    } else {
-      note(emitStep0, '   (no lettered option list -- typed as a bare question)');
-    }
+    const step0State = emitStateTheQuestion(emitStep0, { qid: parsed.qid, question: parsed.question, options: parsed.options });
+    const step0Source = step0State.source;
+    const step0OptionsExist = step0State.optionsExist;
 
     // D-BP152-020/BISHOP/seg-pause-at-step-zero -- PAUSE AT STEP 0, BEFORE ANY WORK HAPPENS.
     // Founder, FD-BP152-08, verbatim: "it loads the question first. Then it tells me what the

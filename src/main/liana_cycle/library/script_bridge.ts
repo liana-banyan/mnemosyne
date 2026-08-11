@@ -48,6 +48,8 @@ import type { AskGoogleFn } from '../liana_terminal_engine';
 import type { LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
 import { listAllEntries, lookupById, registerKnownMethods } from './method_registry';
 import { registerSurveyParts } from './survey_steps';
+import { registerStateTheQuestionStep } from './state_the_question_step';
+import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
 import { runScript, type MethodExecutor, type RunResult, type StepRunRecord } from './script_runner';
@@ -84,6 +86,16 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP152-049 STAGE 3/4 -- ADDITIVE, same idempotent shape as the two calls above, for the same
+  // reason (a concurrent call, or an earlier IPC call in this same process, may have already
+  // registered this id). Does not touch, re-register, or collide with anything registerKnownMethods()
+  // registers -- 'StateTheQuestion' is a new name, method_registry.test.ts's own "exactly ten
+  // entries" assertion (D-BP152-040) is unaffected.
+  try {
+    registerStateTheQuestionStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -109,11 +121,13 @@ export interface ComposerRegistryEntry {
   executable: boolean;
 }
 
-/** The four Name:Number ids this file's executor can actually run. NOT a decision rule -- it
- *  does not change which answer any of the four methods themselves produce, it only names which
- *  of the registry's CURRENTLY DECLARED entries have a real function behind them today. See this
- *  file's header for the full accounting. */
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1']);
+/** The Name:Number ids this file's executor can actually run. NOT a decision rule -- it does not
+ *  change which answer any of these methods themselves produce, it only names which of the
+ *  registry's CURRENTLY DECLARED entries have a real function behind them today. See this file's
+ *  header for the full accounting. D-BP152-049 STAGE 3/4 adds 'StateTheQuestion:1' -- it calls
+ *  liana_terminal_engine.ts's emitStateTheQuestion(), the SAME function STEP 0 itself calls
+ *  automatically at the start of every run (see runOneStep() below). */
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -158,6 +172,13 @@ async function runOneStep(
   input: MethodQuestionInput,
   ctx: MethodRunContext,
 ): Promise<{ summary: string; raw: unknown }> {
+  if (id === 'StateTheQuestion:1') {
+    // D-BP152-049 STAGE 3/4: calls the SAME function STEP 0 itself calls automatically at the
+    // start of every run (liana_terminal_engine.ts) -- see this file's header and
+    // state_the_question_step.ts's own header for why there is exactly one implementation.
+    const state = emitStateTheQuestion(ctx.emit, input);
+    return { summary: `STATE THE QUESTION -- source: ${state.source}; options exist: ${state.optionsExist}`, raw: state };
+  }
   if (id === 'Survey:1') {
     const result = await runSurveyStage(input.question, input.options, ctx, {});
     return { summary: `Survey: ${result.why}`, raw: result };
