@@ -1080,12 +1080,65 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
       return { term: null, nested: null, ambiguity, ambiguityNested: [], negationNamed: false, constraints: [], operation, thresholdQuestions: [], why };
     }
 
-    // THE SOURCE NAMES THE TERMS; THIS SURVEYS ALL OF THEM, IN THE ORDER THE SOURCE RETURNED
+    // D-BP152-039/BISHOP/seg-gate-removal-and-sigfigs, STAGE 2 -- SIG FIGS ON THE AMBIGUITY STEP.
+    // ATTRIBUTED: Founder, BP152, verbatim (FD-BP152-20): "We need to apply the sigfigs principal
+    // to the ambiguity and survey steps. It isn't necessary to define every term, just terms whose
+    // different meaning might change the nature or purpose of the question or answer."
+    //
+    // THE FILTER IS EXTRACTION, NOT JUDGMENT (HARDWIRE-22, FD-BP152-20's own words: "The SOURCE
+    // states the impact; the code reads it. NO MODEL DECIDES WHAT MATTERS."). askAmbiguity()'s own
+    // prompt already asks the source for standardMeaning, alternativeMeaning, AND impact per term;
+    // parseAmbiguityTerms() (above) already parses `impact` onto every AmbiguityTermFinding. A term
+    // whose returned `impact` is non-empty SURVIVES into the three per-term Google calls below (the
+    // nested survey, the SCALE_DEFINITION constraint, the THRESHOLD question); a term with an
+    // absent or empty `impact` is DROPPED before any of those three calls is issued for it -- an
+    // absent/empty impact IS "no stated impact", never inferred or guessed at. No model is asked to
+    // rate relevance or importance and no word list is consulted anywhere in this filter.
+    //
+    // MEASURED WASTE THIS ANSWERS: qid 98's Step 3 (the per-option denotation sweep, gated
+    // separately below, UNCHANGED by this filter -- see D-BP152-009's own comment at that gate)
+    // spent 18 Google queries (9 options x 2) producing groups that contributed nothing to the
+    // verdict, while the term that mattered went unresolved (FD-BP152-01/FD-BP152-20). Applying the
+    // same discipline HERE keeps a source-named term's per-query cost (up to 3 further Google calls
+    // below) from being paid when the source itself never said that term's alternative reading
+    // changes the question's or answer's nature or purpose.
+    //
+    // LAW 5 (HARDWIRE-23): kept-vs-dropped is logged every run, and every drop carries its reason.
+    const sigFigsKeptTerms: AmbiguityTermFinding[] = [];
+    const sigFigsDroppedTerms: AmbiguityTermFinding[] = [];
+    for (const t of ambiguity.terms) {
+      if (t.impact && t.impact.trim().length > 0) {
+        sigFigsKeptTerms.push(t);
+      } else {
+        sigFigsDroppedTerms.push(t);
+      }
+    }
+    for (const t of sigFigsDroppedTerms) {
+      emit({
+        kind: 'note',
+        text: `   SIG FIGS [ambiguity, FD-BP152-20] DROPPED "${t.term}" -- no stated impact `
+          + `(standardMeaning=${JSON.stringify(t.standardMeaning)}, alternativeMeaning=`
+          + `${JSON.stringify(t.alternativeMeaning)}, impact=${JSON.stringify(t.impact)}); the source `
+          + 'never stated that this term\'s alternative reading changes the nature or purpose of the '
+          + 'question or answer, so it is not surveyed further',
+        ts: nowIso(),
+      });
+    }
+    emit({
+      kind: 'note',
+      text: `   SIG FIGS [ambiguity, FD-BP152-20] kept ${sigFigsKeptTerms.length} of ${ambiguity.terms.length} `
+        + `term(s) with a stated impact, dropped ${sigFigsDroppedTerms.length} with no stated impact -- `
+        + 'only kept terms proceed to the nested survey / constraint / threshold questions below',
+      ts: nowIso(),
+    });
+
+    // THE SOURCE NAMES THE TERMS; THIS SURVEYS EVERY KEPT ONE, IN THE ORDER THE SOURCE RETURNED
     // THEM. No ranking or picking rule was invented among source-named terms -- the Founder's own
     // order allowed either "survey all named terms" or "survey them in the order the source gave";
-    // this ticket does both at once, since they coincide when nothing is dropped.
+    // this ticket does both at once, since they coincide when nothing is dropped BY ORDER (sig figs
+    // above drops by stated impact, a separate, ATTRIBUTED filter -- not a ranking or pick).
     const ambiguityNested: Array<{ term: string; nested: SurveyAskNestedResult }> = [];
-    for (const t of ambiguity.terms) {
+    for (const t of sigFigsKeptTerms) {
       // eslint-disable-next-line no-await-in-loop -- one nested survey per named term, sequential
       // by design, same pattern as surveyAskNested()'s own level loop.
       const nested = await surveyAskNested(t.term, ctx);
@@ -1102,12 +1155,12 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
     }
 
     // D-BP151-035. ATTRIBUTED: Founder, BP151, ratified: "Yes agreed. Survey asks those, Cascade
-    // is still essential." One constraint question per source-named term, askConstraint()'s own
-    // form-1 (definition/scale) template only -- see that function's own header for the form-2
-    // fork stopped on. SURVEY ASKS; IT NEVER APPLIES -- nothing below judges, ranks, or eliminates
-    // with a constraint's answer.
+    // is still essential." One constraint question per KEPT source-named term (sig figs, above),
+    // askConstraint()'s own form-1 (definition/scale) template only -- see that function's own
+    // header for the form-2 fork stopped on. SURVEY ASKS; IT NEVER APPLIES -- nothing below judges,
+    // ranks, or eliminates with a constraint's answer.
     const constraints: SurveyConstraint[] = [];
-    for (const t of ambiguity.terms) {
+    for (const t of sigFigsKeptTerms) {
       // eslint-disable-next-line no-await-in-loop -- one constraint question per named term,
       // sequential by design, same pattern as the ambiguityNested loop immediately above.
       const constraint = await askConstraint(t.term, ctx, ambiguityQueryTransport);
@@ -1130,8 +1183,9 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
     // re-generated or re-asked here. Q2/THRESHOLD is what was named "a stopped fork, not built" in
     // this same file's D-BP151-035 header; this closes it. generateMethodQuestions() (pure, no I/O)
     // verifies every subject is a literal span of the question text and refuses, per-term, rather
-    // than guessing one that is not -- every refusal is emitted below, never silently dropped.
-    const methodQuestionGen = generateMethodQuestions(ambiguity.terms, askText, operation.rawAnswer);
+    // than guessing one that is not -- every refusal is emitted below, never silently dropped. Fed
+    // KEPT terms only (sig figs, above) -- a dropped term gets no threshold question either.
+    const methodQuestionGen = generateMethodQuestions(sigFigsKeptTerms, askText, operation.rawAnswer);
     for (const r of methodQuestionGen.refusals) {
       emit({
         kind: 'note',
@@ -1164,7 +1218,9 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
 
     const why = `no quoted/cued term -- issued the Founder's ambiguity query instead, via ${ambiguity.transport.toUpperCase()}; `
       + `${ambiguity.terms.length} term(s) named by the source ("${ambiguity.terms.map((t) => t.term).join('", "')}"), `
-      + `all surveyed (source order, no ranking rule invented)${negationNamed ? '; NEGATION NAMED by the source' : ''}; `
+      + `${sigFigsKeptTerms.length} surveyed further (FD-BP152-20 sig figs: stated impact, source order, no ranking rule `
+      + `invented among kept terms), ${sigFigsDroppedTerms.length} dropped (no stated impact)`
+      + `${negationNamed ? '; NEGATION NAMED by the source' : ''}; `
       + `${constraints.length} constraint question(s) [MACHINE-GENERATED, SCALE_DEFINITION shape, FD-BP152-03] `
       + `asked (form-1/definition-scale template), ${obtainedCount} answered; `
       + `${thresholdQuestions.length} threshold question(s) [MACHINE-GENERATED, THRESHOLD shape, FD-BP152-03] `
@@ -1174,7 +1230,9 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
     emit({
       kind: 'result',
       text: `SURVEY STEP 2: no quoted/cued term -- ${ambiguity.terms.length} term(s) named by the ambiguity `
-        + `query [transport: ${ambiguity.transport.toUpperCase()}], ${ambiguityNested.length} surveyed, `
+        + `query [transport: ${ambiguity.transport.toUpperCase()}], ${sigFigsKeptTerms.length} kept `
+        + `(stated impact, FD-BP152-20 sig figs) / ${sigFigsDroppedTerms.length} dropped (no stated impact), `
+        + `${ambiguityNested.length} surveyed, `
         + `${constraints.length} constraint(s) asked (${obtainedCount} answered), `
         + `${thresholdQuestions.length} threshold question(s) asked (${thresholdObtainedCount} answered)`
         + `${negationNamed ? ', negation named' : ''}`,
