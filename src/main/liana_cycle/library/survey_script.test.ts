@@ -278,7 +278,7 @@ describe('assertion (c), gate SKIP branch: the executor\'s D-BP152-009 mirror ma
     const synthetic: FounderStep2Result = {
       term: null,
       nested: null,
-      ambiguity: { askedText: 'x', terms: [], modelUnreachable: false, transport: 'google', citations: [], rawGooglePassage: 'p', rawModelOutput: null, why: 'w' },
+      ambiguity: { askedText: 'x', terms: [], termsDroppedNotInQuestion: [], modelUnreachable: false, transport: 'google', citations: [], rawGooglePassage: 'p', rawModelOutput: null, why: 'w' },
       ambiguityNested: [],
       negationNamed: false,
       constraints: [],
