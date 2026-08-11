@@ -135,6 +135,28 @@ export type SubstitutionResult =
   | { ok: true; before: string; after: string; warning?: string }
   | { ok: false; error: string; before: string };
 
+// D-BP152-051/BISHOP/seg-assisted-mode, ADDITIVE. Founder ruling, BP152: "a query carrying a
+// placeholder depends on an earlier step; a query with no placeholder depends on nothing."
+// query_batch_planner.ts needs to know WHICH refs a queryText names, WITHOUT resolving them
+// against a live ResultStore (batch planning happens before any step has run, so there is nothing
+// to resolve yet) -- this is that lookup, reusing PLACEHOLDER_RE (the SAME regex
+// substitutePlaceholders() above uses) rather than a second pattern. Pure text scan: no model, no
+// inference (HARDWIRE-22). Returns the BASE ref only (a "(source)"/"(cascade)" qualifier, when
+// present, names which SIDE of a bothApply step's result to use -- it does not change WHICH STEP
+// the dependency points at, so it is stripped here the same way parseRef() strips it above).
+// Duplicate refs in the same queryText are returned once each (a step depending on step 2 twice
+// still only waits on step 2 once).
+export function extractPlaceholderRefs(queryText: string): string[] {
+  const refs = new Set<string>();
+  // Reset lastIndex defensively -- PLACEHOLDER_RE carries the module-level `g` flag and matchAll()
+  // below takes its own copy per call, but this keeps the function safe even if that changes.
+  for (const m of queryText.matchAll(PLACEHOLDER_RE)) {
+    const { baseRef } = parseRef(m[1].trim());
+    refs.add(baseRef);
+  }
+  return [...refs];
+}
+
 /** Resolves one <ref> token (already trimmed) against the store -- a bare non-negative integer is
  *  a position, anything else (including a Name:Number id, which always contains ":") is an id. */
 function resolveRef(ref: string, store: ResultStore): StoredStepResult | undefined {
