@@ -149,10 +149,78 @@ describe('assertion (a): the panel lists every registry entry at runtime', () =>
 
   test('the six orphan ids are listed but NOT executable', () => {
     const entries = listComposerRegistry();
-    const orphanIds = entries.filter((e) => !['ComparativeCascade', 'DefinitionalCascade', 'ClassifyCascade', 'Survey'].includes(e.name));
+    // D-BP152-049 STAGE 3/4 adds a fifth non-orphan executable name, 'StateTheQuestion' --
+    // excluded here the same way the four pre-existing executable names always were, so this
+    // filter still isolates exactly the real orphans (never claims to be executable, per
+    // HARDWIRE-22) rather than sweeping the new step into "orphan".
+    const orphanIds = entries.filter((e) => !['ComparativeCascade', 'DefinitionalCascade', 'ClassifyCascade', 'Survey', 'StateTheQuestion'].includes(e.name));
     expect(orphanIds.length).toBeGreaterThanOrEqual(6);
     for (const e of orphanIds) {
       expect(e.executable, `${e.id} must not claim to be executable -- it is BLOCKED per HARDWIRE-22`).toBe(false);
     }
+  });
+});
+
+describe('D-BP152-049 STAGE 3/4: "State the Question" as a selectable NameNumbered step (Founder, BP152, verbatim: "I think we need to add a step \'State the Question\'... so I can add it to my stack")', () => {
+  test('StateTheQuestion:1 is listed in the Composer registry and marked executable', () => {
+    const entries = listComposerRegistry();
+    const entry = entries.find((e) => e.id === 'StateTheQuestion:1');
+    expect(entry, 'StateTheQuestion:1 should be listed').toBeTruthy();
+    expect(entry?.executable).toBe(true);
+  });
+
+  test('running StateTheQuestion:1 alone produces the same state STEP 0 produces -- source, question verbatim, options verbatim, options-exist flag', async () => {
+    const emit = vi.fn();
+    const askGoogle = vi.fn();
+    const response = await runScratchComposer(
+      'What is the capital of France? A) London B) Paris C) Berlin',
+      ['StateTheQuestion:1'],
+      askGoogle,
+      emit,
+    );
+
+    expect(response.mode).toBe('stack');
+    if (response.mode === 'stack') {
+      expect(response.result.ok).toBe(true);
+      expect(response.result.results).toHaveLength(1);
+      const raw = response.result.results[0].raw as {
+        source: string; question: string; options: Record<string, string> | null; optionsExist: boolean;
+      };
+      expect(raw.optionsExist).toBe(true);
+      expect(raw.options).toEqual({ A: 'London', B: 'Paris', C: 'Berlin' });
+      expect(raw.question).toBe('What is the capital of France?');
+      expect(raw.source).toContain('free text');
+    }
+    // The transcript itself carries the exact same STEP 0 stage line the automatic run always
+    // emits -- proving this is the SAME emitStateTheQuestion() call, not a re-derivation.
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'stage',
+      text: expect.stringContaining('STEP 0 -- STATE THE QUESTION, FULLY'),
+    }));
+    // A pure "state the question" step issues no Google call.
+    expect(askGoogle).not.toHaveBeenCalled();
+  });
+
+  test('running StateTheQuestion:1 on free text with NO option list carries optionsExist=false and the honest no-options note, exactly as STEP 0 does', async () => {
+    const emit = vi.fn();
+    const askGoogle = vi.fn();
+    const response = await runScratchComposer(
+      'A plain declarative sentence with nothing quoted and no lettered options.',
+      ['StateTheQuestion:1'],
+      askGoogle,
+      emit,
+    );
+
+    expect(response.mode).toBe('stack');
+    if (response.mode === 'stack') {
+      expect(response.result.ok).toBe(true);
+      const raw = response.result.results[0].raw as { optionsExist: boolean; options: Record<string, string> | null };
+      expect(raw.optionsExist).toBe(false);
+      expect(raw.options).toBeNull();
+    }
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'note',
+      text: expect.stringContaining('no lettered option list'),
+    }));
   });
 });
