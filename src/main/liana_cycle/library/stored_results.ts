@@ -89,17 +89,24 @@ export class ResultStore {
  *  fail to match. */
 const PLACEHOLDER_RE = /\[insert stored result from ([^\]]+?)\.?\]/gi;
 
-/** TARE -- no Founder ruling sets a number for "how long is an unusably long substituted query."
- *  Reuses this codebase's own established 4000-char convention (survey_stage.ts's PARSER
- *  INSTRUMENT truncation-for-LOGGING threshold, e.g. that file's `passage.text.length > 4000`
- *  checks) as the closest existing precedent on file, rather than inventing a fresh number. Kept
- *  as an overridable default (same pattern as script_runner.ts's own injectable Clock) for exactly
- *  the reason it is unattributed: one sentence from the Founder can change it. See this ticket's
- *  own deliverable, "THINGS I NOTICED AND DID NOT DO", for this flagged explicitly. */
-export const DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH = 4000;
+/** ATTRIBUTED: Founder, BP152, verbatim: "Make the 4,000-character ceiling into 20,000, and then
+ *  log if it goes over 10,000, on an oversized substitution." Supersedes the D-BP152-046 TARE
+ *  that set this ceiling to 4000 with no Founder order behind it (see that commit, 38416c66) --
+ *  this number is now his own, not a reused convention. Kept as an overridable default (same
+ *  pattern as script_runner.ts's own injectable Clock) so a caller can still override it, but the
+ *  DEFAULT itself is his own stated number, not invented. */
+export const DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH = 20000;
+
+/** ATTRIBUTED: Founder, BP152, verbatim, same sentence as DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH
+ *  above: "...and then log if it goes over 10,000, on an oversized substitution." A substitution
+ *  strictly over this length, but at or under the 20,000-char ceiling, still SUCCEEDS -- it is
+ *  logged (via formatParserInstrumentLines()'s WARNING line, the same "PARSER INSTRUMENT"
+ *  convention this file already uses for every other logged fact) rather than refused. Only going
+ *  over DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH itself is refused (requirement 6, unchanged). */
+export const DEFAULT_WARN_SUBSTITUTED_QUERY_LENGTH = 10000;
 
 export type SubstitutionResult =
-  | { ok: true; before: string; after: string }
+  | { ok: true; before: string; after: string; warning?: string }
   | { ok: false; error: string; before: string };
 
 /** Resolves one <ref> token (already trimmed) against the store -- a bare non-negative integer is
@@ -125,6 +132,7 @@ export function substitutePlaceholders(
   queryText: string,
   store: ResultStore,
   maxLength: number = DEFAULT_MAX_SUBSTITUTED_QUERY_LENGTH,
+  warnLength: number = DEFAULT_WARN_SUBSTITUTED_QUERY_LENGTH,
 ): SubstitutionResult {
   let firstError: string | null = null;
   const after = queryText.replace(PLACEHOLDER_RE, (whole, refRaw: string) => {
@@ -150,6 +158,17 @@ export function substitutePlaceholders(
       before: queryText,
     };
   }
+  // ATTRIBUTED: Founder, BP152 -- "log if it goes over 10,000, on an oversized substitution".
+  // Still a success (`ok: true`): only the ceiling above refuses; this only flags for review.
+  if (after.length > warnLength) {
+    return {
+      ok: true,
+      before: queryText,
+      after,
+      warning: `substituted query is ${after.length} chars, over the ${warnLength}-char `
+        + `warning threshold (ceiling is ${maxLength} chars) -- proceeding, flagged for review`,
+    };
+  }
   return { ok: true, before: queryText, after };
 }
 
@@ -169,6 +188,9 @@ export function formatParserInstrumentLines(stepLabel: string, sub: Substitution
     lines.push(
       `   PARSER INSTRUMENT [${stepLabel}] query text AFTER substitution (untruncated, verbatim)="${sub.after}"`,
     );
+    if (sub.warning) {
+      lines.push(`   PARSER INSTRUMENT [${stepLabel}] WARNING: ${sub.warning}`);
+    }
   } else {
     lines.push(`   PARSER INSTRUMENT [${stepLabel}] substitution FAILED: ${sub.error}`);
   }
