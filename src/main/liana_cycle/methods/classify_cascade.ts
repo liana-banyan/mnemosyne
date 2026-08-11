@@ -169,6 +169,25 @@ export interface PassRecord {
   evidence: string;
 }
 
+/** D-BP152-037. One already-received passage, banked at the moment it is fetched so a LATER pass
+ *  (THE CONVERGENCE, harvestCriteriaFromBankedPassages() far below) can mine it for more candidate
+ *  criteria WITHOUT a second askGoogle call. Banked at the only two googleBlocks() call sites this
+ *  file has: evaluateCriterionForOption() (a per-option/per-criterion check -- `option` and
+ *  `criterionId` are set) and sourceNextLitmusStrip() (a litmus strip's own SOURCING query, about
+ *  the candidate term itself, not yet about any specific option -- `option` and `criterionId` are
+ *  null). This second kind is where a passage like his own quoted live Gemini run ("recognized
+ *  macro-region cluster", "secondary cluster", "smaller biomes or sub-regions") actually lives --
+ *  today only its first 300 characters are logged and the rest is discarded once one aspect is
+ *  drawn from it; banking keeps the whole thing so nothing paid for is thrown away. */
+export interface BankedPassage {
+  query: string;
+  text: string;
+  sources: string[];
+  via: string;
+  option: string | null;
+  criterionId: string | null;
+}
+
 /** Sends ONE sourced query about ONE option against ONE criterion, extracts a verbatim
  *  supporting sentence (never a summary, never a paraphrase), verifies that sentence actually
  *  appears in the returned passage, and only THEN maps the extracted yes/no reading through the
@@ -182,9 +201,19 @@ export async function evaluateCriterionForOption(
   option: string,
   optionText: string,
   ctx: MethodRunContext,
+  // D-BP152-037, ADDITIVE/OPTIONAL: when a caller passes a bank, the fetched passage is recorded
+  // into it (query/text/sources/via/option/criterionId) so a LATER, SEPARATE pass -- THE
+  // CONVERGENCE, see harvestCriteriaFromBankedPassages() far below -- can mine already-received
+  // passages for more criteria without issuing a second askGoogle call. Every existing call site
+  // that omits this argument compiles and behaves exactly as before (runClassifyCascadeWithSeedCriteria,
+  // Stage 1's own entry point, does not pass one).
+  bank?: BankedPassage[],
 ): Promise<CriterionCheckResult> {
   const query = `Is ${optionText} ${criterion.aspect}? Answer plainly (yes or no) and cite evidence.`;
   const res = await googleBlocks(ctx.askGoogle, query);
+  if (bank && res.ok) {
+    bank.push({ query, text: res.text, sources: res.sources, via: res.via, option, criterionId: criterion.id });
+  }
   if (!res.ok) {
     return { option, verdict: 'unknown', evidence: '', query };
   }
@@ -231,6 +260,10 @@ export async function applyOccamElimination(
   criteria: ClassifyCriterion[],
   ctx: MethodRunContext,
   note: (text: string) => void,
+  // D-BP152-037, ADDITIVE/OPTIONAL -- see BankedPassage above and evaluateCriterionForOption()'s
+  // own note on this same parameter. Threaded through unchanged; this function's own elimination
+  // logic below is untouched by this ticket.
+  bank?: BankedPassage[],
 ): Promise<OccamEliminationResult> {
   let survivors = [...pool];
   const eliminations: EliminationRecord[] = [];
@@ -242,7 +275,7 @@ export async function applyOccamElimination(
     // used to somehow "un-eliminate" anything.
     const stillIn: string[] = [];
     for (const option of survivors) {
-      const result = await evaluateCriterionForOption(criterion, option, OPT[option], ctx);
+      const result = await evaluateCriterionForOption(criterion, option, OPT[option], ctx, bank);
       if (result.verdict === 'fail') {
         eliminations.push({
           option,
@@ -395,6 +428,9 @@ async function sourceNextLitmusStrip(
   ctx: MethodRunContext,
   index: number,
   note: (text: string) => void,
+  // D-BP152-037, ADDITIVE/OPTIONAL -- see BankedPassage above. This is the OTHER of this file's
+  // two googleBlocks() call sites; its passages are where his own quoted Gemini example lives.
+  bank?: BankedPassage[],
 ): Promise<ClassifyCriterion | null> {
   const thresholdQ = generateThresholdQuestion(candidateTerm, questionText);
   const scaleQ = generateScaleDefinitionQuestion(candidateTerm, questionText);
@@ -413,6 +449,9 @@ async function sourceNextLitmusStrip(
   if (!res.ok) {
     note(`   litmus strip ${index}: "${candidateTerm}" -- no usable answer, refusing to source a criterion from nothing`);
     return null;
+  }
+  if (bank) {
+    bank.push({ query: primary.questionText, text: res.text, sources: res.sources, via: res.via, option: null, criterionId: null });
   }
   const cited = res.text.length > 300 ? `${res.text.slice(0, 300)}...` : res.text;
   note(`   litmus strip ${index}: sourced -- ${cited}`);
@@ -441,6 +480,10 @@ export interface LitmusStripLoopResult {
   unknowns: UnknownRecord[];
   passes: PassRecord[];
   stoppedReason: 'definitive' | 'zero-survivors' | 'ceiling' | 'terms-exhausted';
+  /** D-BP152-037: every passage this run's seed-criteria checks and litmus-strip sourcing/checks
+   *  actually received from Google, banked as fetched -- the raw material THE CONVERGENCE (see
+   *  harvestCriteriaFromBankedPassages() far below) mines with no second askGoogle call. */
+  bank: BankedPassage[];
 }
 
 /** THE LOOP. Applies `seedCriteria` first (Stage 1's typed-parameter entry point, still lawful,
@@ -461,18 +504,23 @@ export async function runLitmusStripLoop(
   const complement = questionDemandsComplement(input.question);
   note(`   question ${complement ? 'DEMANDS THE COMPLEMENT (NOT detected)' : 'demands direct membership (no NOT detected)'}`);
 
+  // D-BP152-037: every passage fetched anywhere in this loop is banked here, in fetch order, so
+  // THE CONVERGENCE (harvestCriteriaFromBankedPassages(), called by the caller after this loop
+  // returns) can mine already-received text with no second askGoogle call.
+  const bank: BankedPassage[] = [];
+
   const allCriteria: ClassifyCriterion[] = [...seedCriteria];
-  const seedRound = await applyOccamElimination(ALL, OPT, seedCriteria, ctx, note);
+  const seedRound = await applyOccamElimination(ALL, OPT, seedCriteria, ctx, note, bank);
   let survivors = seedRound.survivors;
   let eliminations = seedRound.eliminations;
   let unknowns = seedRound.unknowns;
   let passes = seedRound.passes;
 
   if (!survivors.length) {
-    return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'zero-survivors' };
+    return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'zero-survivors', bank };
   }
   if (survivors.length === 1) {
-    return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'definitive' };
+    return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'definitive', bank };
   }
 
   const usedAspects = new Set(seedCriteria.map((c) => c.aspect.toLowerCase()));
@@ -484,22 +532,22 @@ export async function runLitmusStripLoop(
 
   while (survivors.length > 1) {
     if (stripsAdded >= LITMUS_STRIP_CEILING) {
-      return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'ceiling' };
+      return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'ceiling', bank };
     }
     if (termIndex >= candidateTerms.length) {
-      return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'terms-exhausted' };
+      return { survivors, criteria: allCriteria, eliminations, unknowns, passes, stoppedReason: 'terms-exhausted', bank };
     }
     const term = candidateTerms[termIndex];
     termIndex++;
     // eslint-disable-next-line no-await-in-loop -- each strip's query depends on the PRIOR strip's
     // narrowed survivor pool; strips are sourced one at a time by design (each is a NEW axis
     // evaluated against the current state), not fired in parallel.
-    const criterion = await sourceNextLitmusStrip(term.term, term.role, input.question, complement, ctx, allCriteria.length + 1, note);
+    const criterion = await sourceNextLitmusStrip(term.term, term.role, input.question, complement, ctx, allCriteria.length + 1, note, bank);
     if (!criterion) continue; // refused this term -- try the next one; does not count against the ceiling
     stripsAdded++;
     allCriteria.push(criterion);
     // eslint-disable-next-line no-await-in-loop -- see above
-    const round = await applyOccamElimination(survivors, OPT, [criterion], ctx, note);
+    const round = await applyOccamElimination(survivors, OPT, [criterion], ctx, note, bank);
     survivors = round.survivors;
     eliminations = eliminations.concat(round.eliminations);
     unknowns = unknowns.concat(round.unknowns);
@@ -514,7 +562,289 @@ export async function runLitmusStripLoop(
     unknowns,
     passes,
     stoppedReason: survivors.length === 0 ? 'zero-survivors' : 'definitive',
+    bank,
   };
+}
+
+// ─────────────────────────── THE CONVERGENCE: harvesting criteria from answers already in hand ───────────────────────────
+//
+// D-BP152-037/BISHOP/seg-harvest-criteria-convergence. THE FOUNDER'S RULING, BP152, VERBATIM:
+//   "YES build the harvesting the criteria out of answers already in hand. THE CONVERGENCE."
+//
+// THE DEFECT THIS CLOSES. extractClassifyCandidateTerms() (above) reads only the QUESTION's own
+// grammar. But every passage this run's seed-criteria checks and litmus-strip sourcing queries
+// already fetched (banked into LitmusStripLoopResult.bank, above) can carry richer criteria than
+// the question itself names -- his own live Gemini run stated "recognized macro-region cluster",
+// "secondary cluster", and "smaller biomes or sub-regions", none of which qid 98's question text
+// carries. Those passages were already paid for and, until this section, were discarded once one
+// aspect was drawn from each.
+//
+// THIS IS NOT A RE-ASK. Every function below reads ONLY `BankedPassage.text`, already sitting in
+// memory from when runLitmusStripLoop() fetched it earlier in this SAME run -- nothing in this
+// section calls ctx.askGoogle or googleBlocks(). The only network-shaped call anywhere below is
+// gemmaExtract(), which is a LOCAL Ollama call (extraction, HARDWIRE-22), never a second Google
+// query.
+//
+// HARDWIRE-22 IS THE BINDING CONSTRAINT. gemmaExtract() below copies out a verbatim span and
+// nothing else -- same unrelaxed extraction path evaluateCriterionForOption() already uses above,
+// same appearsIn() verification before anything extracted is trusted. No prompt below asks a
+// model to judge relevance, importance, or correctness; the code's own filtering (appearsIn(),
+// the dedup set, the applicability check, the exact-string convergence grouping) decides
+// everything that decides anything.
+//
+// POLARITY -- REFUSE RATHER THAN GUESS. extractClassifyCandidateTerms() reads a term's role
+// (scope vs predicate) off WHICH GRAMMAR PATTERN matched in the QUESTION. A harvested phrase comes
+// from an ANSWER, not the question -- there is no such pattern to read, for any harvested phrase,
+// in this build. Per his ruling: "if a harvested criterion's polarity cannot be established
+// structurally, RECORD IT BUT DO NOT LET IT ELIMINATE." Every HarvestedCriterion below is
+// therefore polarity 'undetermined' -- a DIFFERENT, narrower type than ClassifyCriterion's own
+// CriterionPolarity ('qualifying' | 'disqualifying'), so a harvested criterion cannot even be
+// PASSED to applyOccamElimination() without a type error. That is deliberate: it is the structural
+// guarantee (not a runtime check that could be forgotten) that a harvested criterion never
+// eliminates -- it never enters the Occam elimination path at all. Applicability is instead
+// checked below by a separate, additive pass that only ever records a reading, never removes an
+// option from `survivors`.
+//
+// CONVERGENCE -- RECORDED AND SHOWN, NEVER PROMOTED. Per his ruling, there is no weighting in this
+// method; a converged criterion is never auto-promoted to eliminate or to a higher weight. Two
+// harvested phrases converge only on an EXACT, normalized (trim + lowercase) text match -- a
+// fuzzy/semantic "these mean the same thing" judgment would itself be the kind of DECISION
+// HARDWIRE-22 forbids a model from making, so no such judgment is made here, by a model or by
+// this code. And per his qid-92 canon ("four vendors agreeing was one path counted four times"):
+// convergence is counted only across INDEPENDENT sources -- passageIndependenceKey() below treats
+// two banked passages as the SAME source when they share the same primary cited URL, so two
+// phrases surfacing from the same underlying authority (even via two different queries in this
+// run) collapse to ONE derivation path, not two.
+
+export interface HarvestedCriterion {
+  id: string;
+  /** The verbatim span copied out of the passage -- the candidate criterion itself, never a
+   *  paraphrase (verified with appearsIn() against its own source passage before being kept). */
+  aspect: string;
+  /** Always 'undetermined' -- see this section's header. A separate, narrower type from
+   *  ClassifyCriterion's own CriterionPolarity so a harvested criterion cannot type-check as an
+   *  input to applyOccamElimination(). */
+  polarity: 'undetermined';
+  /** The exact query whose ALREADY-RECEIVED passage this phrase was copied from. */
+  sourceQuery: string;
+  /** Which option's per-option check produced the source passage, or null when the source was a
+   *  litmus strip's own SOURCING query (about the candidate term itself, not yet about any
+   *  option). */
+  sourceOption: string | null;
+  /** The source passage's own first cited URL (GoogleAnswer.sources[0]), when it has one -- the
+   *  "which authority" half of provenance; null for an answer-box passage with no cited URL. */
+  sourceUrl: string | null;
+}
+
+/** One harvested criterion checked against ONE surviving option's OWN already-banked passage(s) --
+ *  extraction only, no new query. Recorded for the transcript/audit; never feeds
+ *  applyOccamElimination() or mutates `survivors`. */
+export interface HarvestApplicationRecord {
+  criterionId: string;
+  aspect: string;
+  option: string;
+  reading: 'yes' | 'no' | 'unclear';
+  evidence: string;
+  /** Which already-banked query's passage this reading was read from. */
+  bankedQuery: string;
+}
+
+export interface ConvergenceRecord {
+  aspectNormalized: string;
+  criterionIds: string[];
+  independentSourceKeys: string[];
+  independentSourceCount: number;
+}
+
+export interface HarvestResult {
+  harvested: HarvestedCriterion[];
+  applications: HarvestApplicationRecord[];
+  /** Ids of harvested criteria for which at least one surviving option's already-banked passages
+   *  yielded a verified yes/no reading. Per his ruling: "Report how many were harvested versus how
+   *  many were applicable -- that count is a finding either way." */
+  applicableCriterionIds: string[];
+  convergence: ConvergenceRecord[];
+}
+
+/** "SAME authority in the SAME thread is ONE derivation path" (his qid-92 canon). Thread = the
+ *  exact query text (this file never re-asks the same question, so distinct queries in one run
+ *  are already distinct threads by construction). Authority = the passage's own first cited
+ *  source URL (GoogleAnswer.sources, already returned by googleBlocks() -- not a new lookup).
+ *  Two banked passages collapse to the SAME independent source only when they share that same
+ *  primary URL; a passage with nothing in `sources` (a bare answer-box snippet) is its own
+ *  independent source by necessity -- there is nothing to compare it against. */
+function passageIndependenceKey(p: BankedPassage): string {
+  return p.sources.length ? `url:${p.sources[0]}` : `query:${p.query}`;
+}
+
+/** Extracts, from ONE already-banked passage, up to three verbatim phrases that name a category,
+ *  membership, cluster, or classification property -- copied out, never invented, verified with
+ *  appearsIn() before acceptance, exactly like evaluateCriterionForOption()'s own sentence
+ *  extraction above. NO NEW askGoogle CALL: gemmaExtract() reads only `passage.text`, already
+ *  sitting in memory from earlier in this run.
+ *
+ *  DEDUP SCOPE, DELIBERATELY NARROW -- this is the one place THE CONVERGENCE could quietly defeat
+ *  its own purpose, so it is spelled out here. `stackAspects` is READ-ONLY and fixed at call time
+ *  (the existing criteria stack -- seed criteria plus every litmus strip already sourced from the
+ *  QUESTION's grammar): a phrase that duplicates one of THOSE is dropped, because harvesting it
+ *  again would just re-add a criterion already being tested. A phrase is also dropped if it
+ *  duplicates another phrase from THIS SAME passage (three phrases from one gemmaExtract() call
+ *  occasionally repeat). Nothing here compares against phrases harvested from OTHER passages --
+ *  doing so would silently collapse the second of two independently-stated occurrences of the same
+ *  criterion before THE CONVERGENCE's own grouping step (harvestCriteriaFromBankedPassages() below)
+ *  ever saw it, which would make convergence structurally unobservable. Cross-passage repetition is
+ *  exactly the signal being harvested for -- it is grouped and counted later, never suppressed
+ *  here. */
+async function harvestPhrasesFromPassage(
+  passage: BankedPassage,
+  stackAspects: ReadonlySet<string>,
+  startIndex: number,
+): Promise<HarvestedCriterion[]> {
+  const ex = await gemmaExtract(
+    'Copy out up to three short verbatim phrases from the passage that each name a category, '
+      + 'membership, cluster, or classification property (the kind of phrase that could tell you '
+      + 'which named group or type something belongs to). Copy each phrase out exactly as written, '
+      + 'word for word from the passage -- do not summarize, paraphrase, or explain, and do not rank '
+      + 'or choose which one is most important. If none exist, return an empty list.',
+    passage.text,
+    '{"phrases":["verbatim phrase 1","verbatim phrase 2","verbatim phrase 3"]}',
+  );
+  const raw = Array.isArray(ex?.phrases) ? (ex!.phrases as unknown[]) : [];
+  const out: HarvestedCriterion[] = [];
+  const seenThisPassage = new Set<string>();
+  let i = startIndex;
+  for (const p of raw) {
+    const phrase = String(p ?? '').trim();
+    if (!phrase) continue;
+    if (!appearsIn(passage.text, phrase)) continue; // unverified copy -- refuse, never trust
+    const key = phrase.toLowerCase();
+    if (seenThisPassage.has(key)) continue; // this passage's own 3 phrases repeating each other
+    if (stackAspects.has(key)) continue; // already a criterion on the existing stack
+    if ([...stackAspects].some((a) => key.includes(a) || a.includes(key))) continue; // substring dup of the stack
+    seenThisPassage.add(key);
+    out.push({
+      id: `harvest-${i}`,
+      aspect: phrase,
+      polarity: 'undetermined',
+      sourceQuery: passage.query,
+      sourceOption: passage.option,
+      sourceUrl: passage.sources[0] ?? null,
+    });
+    i++;
+  }
+  return out;
+}
+
+/** THE CONVERGENCE, end to end. Runs over every passage already banked during this run's Occam
+ *  elimination + litmus-strip loop. NO NEW askGoogle CALL anywhere in this function or anything it
+ *  calls. Three passes:
+ *   1. Harvest candidate criteria (verbatim phrases) out of every banked passage.
+ *   2. For each harvested criterion, check whether a CURRENT survivor's OWN already-banked
+ *      passage(s) already speak to it -- extraction over already-banked text only.
+ *   3. Group harvested criteria by exact, normalized aspect text and count convergence across
+ *      INDEPENDENT sources only, guarding the false-consensus trap his qid-92 canon names.
+ *  Never eliminates, never reweights, never mutates `survivors` -- purely additive audit fed back
+ *  into the transcript and the outcome's `basis` by the caller. */
+export async function harvestCriteriaFromBankedPassages(
+  bank: BankedPassage[],
+  existingCriteria: ClassifyCriterion[],
+  survivors: string[],
+  OPT: Record<string, string>,
+  note: (text: string) => void,
+): Promise<HarvestResult> {
+  // Fixed for the whole pass, never mutated -- see harvestPhrasesFromPassage()'s own header for
+  // why cross-passage repetition must survive as separate HarvestedCriterion entries rather than
+  // being deduped away here (that repetition is exactly what the convergence grouping below counts).
+  const stackAspects = new Set(existingCriteria.map((c) => c.aspect.toLowerCase()));
+  const harvested: HarvestedCriterion[] = [];
+  let idx = 1;
+  for (const passage of bank) {
+    // eslint-disable-next-line no-await-in-loop -- extraction reads one already-banked passage at
+    // a time (a local Ollama call, not a network fan-out).
+    const found = await harvestPhrasesFromPassage(passage, stackAspects, idx);
+    idx += found.length;
+    for (const h of found) {
+      harvested.push(h);
+      note(
+        `   harvested "${h.aspect}" -- from ${h.sourceOption ? `option ${h.sourceOption}'s` : "the litmus-sourcing"} `
+          + `answer to "${h.sourceQuery.slice(0, 80)}${h.sourceQuery.length > 80 ? '...' : ''}"`,
+      );
+    }
+  }
+
+  const applications: HarvestApplicationRecord[] = [];
+  const applicableIds = new Set<string>();
+  for (const criterion of harvested) {
+    for (const option of survivors) {
+      const optionPassages = bank.filter((p) => p.option === null || p.option === option);
+      for (const passage of optionPassages) {
+        // eslint-disable-next-line no-await-in-loop -- extraction-only, over already-banked text,
+        // one passage at a time (same reasoning as the harvest loop above).
+        const ex = await gemmaExtract(
+          `Does the passage assert that "${OPT[option]}" ${criterion.aspect}, or that it does NOT? `
+            + 'Copy out the verbatim sentence that supports your reading, word for word from the '
+            + 'passage. If the passage does not address this at all, say "unclear" and leave the '
+            + 'sentence empty.',
+          passage.text,
+          '{"reading":"yes|no|unclear","sentence":"the verbatim sentence, or empty"}',
+        );
+        const reading = String((ex?.reading as string | undefined) || 'unclear').toLowerCase();
+        const sentence = String((ex?.sentence as string | undefined) || '');
+        if (!sentence || !appearsIn(passage.text, sentence)) continue;
+        if (reading !== 'yes' && reading !== 'no') continue;
+        applications.push({
+          criterionId: criterion.id,
+          aspect: criterion.aspect,
+          option,
+          reading: reading as 'yes' | 'no',
+          evidence: sentence,
+          bankedQuery: passage.query,
+        });
+        applicableIds.add(criterion.id);
+        note(
+          `   ${criterion.id} ("${criterion.aspect}") applied to ${option} (undetermined polarity -- `
+            + `recorded, never eliminates): ${reading} -- "${sentence}"`,
+        );
+        break; // one resolved reading for this option is enough to mark this criterion applicable
+      }
+    }
+  }
+
+  // Convergence: exact, normalized aspect-text match ONLY (see this section's header). Counted
+  // across INDEPENDENT sources only.
+  const bankByQuery = new Map(bank.map((p) => [p.query, p] as const));
+  const groups = new Map<string, HarvestedCriterion[]>();
+  for (const h of harvested) {
+    const key = h.aspect.trim().toLowerCase();
+    const g = groups.get(key) ?? [];
+    g.push(h);
+    groups.set(key, g);
+  }
+  const convergence: ConvergenceRecord[] = [];
+  for (const [aspectNormalized, members] of groups) {
+    if (members.length < 2) continue; // stated once -- nothing to converge
+    const keys = new Set<string>();
+    for (const m of members) {
+      const passage = bankByQuery.get(m.sourceQuery);
+      keys.add(passage ? passageIndependenceKey(passage) : `query:${m.sourceQuery}`);
+    }
+    convergence.push({
+      aspectNormalized,
+      criterionIds: members.map((m) => m.id),
+      independentSourceKeys: [...keys],
+      independentSourceCount: keys.size,
+    });
+    if (keys.size >= 2) {
+      note(`   CONVERGENCE: "${aspectNormalized}" stated by ${keys.size} independent source(s) (criteria ${members.map((m) => m.id).join(', ')})`);
+    } else {
+      note(
+        `   NOT CONVERGENT: "${aspectNormalized}" stated ${members.length}x but from only ${keys.size} independent `
+          + 'source (same authority/thread repeated -- one derivation path, not counted as convergence)',
+      );
+    }
+  }
+
+  return { harvested, applications, applicableCriterionIds: [...applicableIds], convergence };
 }
 
 // ─────────────────────────── shapeTest ───────────────────────────
@@ -634,6 +964,20 @@ export async function runClassifyCascade(
       + `eliminations: ${loop.eliminations.length}   unknowns: ${loop.unknowns.length}   survivors: ${loop.survivors.join(', ') || '(none)'}`,
   );
 
+  // ── THE CONVERGENCE (D-BP152-037) ───────────────────────────────────────────────────────────
+  // His ruling: "YES build the harvesting the criteria out of answers already in hand. THE
+  // CONVERGENCE." Mines every passage this run ALREADY received (loop.bank) for more candidate
+  // criteria -- NO NEW askGoogle CALL. Purely additive: never touches `loop.survivors`, never
+  // changes which branch below fires, never alters the Banyan Metric inputs. See this file's own
+  // "THE CONVERGENCE" section header (above runLitmusStripLoop... below it, structurally) for the
+  // full rationale.
+  step(`THE CONVERGENCE  harvesting criteria from ${loop.bank.length} already-received passage(s) -- no new query issued`);
+  const harvest = await harvestCriteriaFromBankedPassages(loop.bank, loop.criteria, loop.survivors, OPT, note);
+  const harvestSummary = `harvested ${harvest.harvested.length} criterion/criteria from ${loop.bank.length} already-received `
+    + `passage(s), ${harvest.applicableCriterionIds.length} applicable (undetermined polarity -- recorded, none eliminate); `
+    + `convergence groups: ${harvest.convergence.length} (>=2 independent sources: ${harvest.convergence.filter((c) => c.independentSourceCount >= 2).length})`;
+  note(`   ${harvestSummary}`);
+
   const elapsedS = (Date.now() - t0) / 1000;
   const eliminationsSummary = loop.eliminations.map((e) => `${e.option} broke "${e.criterionId}"`).join('; ') || 'none';
 
@@ -659,7 +1003,7 @@ export async function runClassifyCascade(
       abstain: true,
       freeText: input.qid == null,
       basis: `zero survivors after ${loop.criteria.length} criterion/criteria (loop stopped: ${loop.stoppedReason}); `
-        + `eliminations: ${eliminationsSummary}; no relaxation applied`,
+        + `eliminations: ${eliminationsSummary}; no relaxation applied; ${harvestSummary}`,
     };
   }
   if (loop.survivors.length > 1) {
@@ -680,7 +1024,8 @@ export async function runClassifyCascade(
       abstain: true,
       freeText: input.qid == null,
       basis: `${loop.survivors.length} survivor(s) remain after ${loop.criteria.length} criterion/criteria, loop stopped: `
-        + `${loop.stoppedReason} -- survivors: ${loop.survivors.join(', ')}; eliminations: ${eliminationsSummary}; no tie-breaker applied`,
+        + `${loop.stoppedReason} -- survivors: ${loop.survivors.join(', ')}; eliminations: ${eliminationsSummary}; no tie-breaker applied; `
+        + `${harvestSummary}`,
     };
   }
 
@@ -701,7 +1046,7 @@ export async function runClassifyCascade(
       freeText: input.qid == null,
       basis: `sole survivor ${winner} after ${loop.criteria.length} criterion/criteria, but Banyan Metric Standard `
         + `${bm.composite}/100 is INSUFFICIENT -- abstaining per his rule ("INSUFFICIENT alone abstains"); `
-        + `eliminations: ${eliminationsSummary}`,
+        + `eliminations: ${eliminationsSummary}; ${harvestSummary}`,
     };
   }
 
@@ -725,7 +1070,7 @@ export async function runClassifyCascade(
     freeText: input.qid == null,
     basis: `sole survivor after ${loop.criteria.length} criterion/criteria (loop stopped: ${loop.stoppedReason}); `
       + `Banyan Metric Standard ${bm.composite}/100 (${bm.band}), published per his floor-is-LOW rule; `
-      + `eliminations: ${eliminationsSummary}`,
+      + `eliminations: ${eliminationsSummary}; ${harvestSummary}`,
   };
 }
 
