@@ -119,6 +119,30 @@ export interface MethodRunContext {
    *  constraint/threshold questions, the cascades) keeps going to Google exactly as before,
    *  because nothing else in this estate reads this field. */
   askConversationalAuthority?: ConversationalAuthorityFn;
+  /** FD-BP153-04, ADDITIVE/OPTIONAL -- undefined on every pre-existing MethodRunContext
+   *  construction site (`{ askGoogle, emit }`, byte-identical elsewhere in this estate, same
+   *  pattern D-BP152-044's `askConversationalAuthority` above already established), so every
+   *  existing caller keeps compiling and behaving identically.
+   *
+   *  THE FOUNDER'S RULING, BP153, verbatim: "Before a step issues a new query, it must first try
+   *  to answer that query by EXTRACTING from passages this run has already acquired. A new query
+   *  is spent only when the owned evidence does not contain the answer." Measured live, qid 98,
+   *  2026-08-12T16:04Z: the OPERATION query's own passage already stated the frame partition a
+   *  later step spent 62 more queries to re-derive, because nothing asked what this run already
+   *  had in hand before asking Google again.
+   *
+   *  When present, calling it returns the raw text of every passage THIS RUN has already fetched
+   *  (today: Survey's ambiguity/operation passages -- survey_stage.ts's own INSTRUMENT-ONLY
+   *  `rawGooglePassage` fields, D-BP152-004/005, unmodified -- populated by
+   *  liana_terminal_engine.ts where `baseCtx` is built, immediately after Survey returns). Non-
+   *  empty strings only; an empty array means nothing has been acquired yet, never a fabricated
+   *  placeholder. OWNED MEANS THIS RUN ONLY -- never the evidence store on disk, never a prior
+   *  acquisition; a caller must not reach across acquisitions to populate this.
+   *
+   *  Only classify_cascade.ts's establishFrame() reads this field today (D-BP153-04). Every other
+   *  Survey/method query keeps going to Google exactly as before, because nothing else in this
+   *  estate reads this field yet. */
+  ownedPassages?: () => string[];
 }
 
 export interface LianaMethod {

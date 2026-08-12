@@ -1283,7 +1283,7 @@ async function askOrdering(
   return { label, query, ok: true, ordering, raw: res };
 }
 
-interface FrameResult {
+export interface FrameResult {
   /** False = the authority gave no usable answer. Per FD-BP153-01 consequence 2 this ABSTAINS;
    *  it never falls back to ranking the unframed pool. */
   available: boolean;
@@ -1292,7 +1292,29 @@ interface FrameResult {
   excluded: string[];
   query: string;
   via: string;
+  /** FD-BP153-04 -- THE RECEIPT SAYS WHICH. "A saved query invisible in the transcript is
+   *  indistinguishable from a query that was never needed." 'owned-passage' when the frame
+   *  partition was extracted from a passage this run had already acquired, with NO new query
+   *  issued; 'new-query' when no owned passage contained it and establishFrame() fell through to
+   *  its existing googleBlocks() call, unchanged. */
+  answeredFrom: 'owned-passage' | 'new-query';
+  /** Index into the caller's ownedPassages() array that answered the frame, when answeredFrom is
+   *  'owned-passage'; null on 'new-query'. */
+  ownedPassageIndex: number | null;
 }
+
+/** THE SAME instruction and output shape both the owned-evidence extraction attempt (below) and
+ *  the fresh-query path (further below) use to read a frame partition out of a passage -- factored
+ *  into one function specifically so there is exactly ONE wording, never two that could drift.
+ *  EXTRACTION ONLY (HARDWIRE-22): asks the model to copy out names the passage ITSELF states are
+ *  excluded, never to judge whether a passage "answers" the question. */
+function frameExtractionInstruction(all: string[], OPT: Record<string, string>): string {
+  return 'If this passage states that any of these names is NOT one of the named category, copy out '
+    + 'exactly those names, spelled as the passage spells them. Copy only names the passage '
+    + 'itself excludes. If the passage excludes none of them, return an empty list. Do not '
+    + `decide yourself which ones qualify. Names: ${all.map((L) => OPT[L]).join('; ')}`;
+}
+const FRAME_EXTRACTION_SHAPE = '{"not_members":["exact name the passage says is not one"],"stated_in_passage":true}';
 
 /**
  * FD-BP153-01 -- THE FRAME. Establishes which options are legitimate members of the category the
@@ -1319,21 +1341,84 @@ interface FrameResult {
  * category test goes to the authority, and the local model only COPIES OUT the names the passage
  * itself excluded (extraction, unrelaxed), verified back against the passage text with appearsIn()
  * the same way askOrdering() already verifies an extracted ordering.
+ *
+ * FD-BP153-04 -- CONSULT FIRST, ADDED. THE FOUNDER'S RULING, BP153, verbatim: "Before a step
+ * issues a new query, it must first try to answer that query by EXTRACTING from passages this run
+ * has already acquired. A new query is spent only when the owned evidence does not contain the
+ * answer."
+ *
+ * THE MEASUREMENT BEHIND IT. Live run 2026-08-12T16:04Z, qid 98: the OPERATION query's own
+ * response already contained, verbatim, the FRAME partition this function exists to establish
+ * ("Options A..., C..., F..., G..., H..., and I... are all NOT considered among the world's most
+ * densely populated regions. Only B..., D..., and E... are recognized..."). gemmaExtract() had
+ * correctly taken only the operation word from that passage, because that is what the operation
+ * step asks -- the rest was discarded, and this function then spent a fresh query to re-derive
+ * something the run already had in hand, before 62 more queries hit google.com/sorry.
+ *
+ * WHAT THIS ADDS, BELOW. Before the existing query path (unchanged beneath this block), try the
+ * SAME extraction (frameExtractionInstruction(), one shared instruction/shape, no second wording)
+ * against every passage the caller says this run already owns. EXTRACTION ONLY, NEVER JUDGMENT
+ * (HARDWIRE-22, unrelaxed) -- exactly the same choke point the fresh-query path already used:
+ * gemmaExtract() copies out names the passage itself states are excluded, verified back against
+ * THAT owned passage's own text with appearsIn(), never inferred. OWNED MEANS THIS RUN ONLY: the
+ * `ownedPassages` accessor comes from MethodRunContext (method_registry.ts), populated by
+ * liana_terminal_engine.ts from live in-memory state, never the evidence store on disk. And
+ * D-BP153-010's rule extends here unchanged: an owned passage that yields NOTHING extractable is
+ * INCONCLUSIVE for this question, not "confirmed nothing excluded" -- it may simply not address
+ * the category at all -- so an empty extraction tries the next owned passage rather than being
+ * read as a frame.
+ *
+ * EXPORTED, D-BP153-011, same reason Stage 1's runClassifyCascadeWithSeedCriteria() and Stage 2's
+ * runLitmusStripLoop() are exported above: so this ticket's own verification can exercise the
+ * owned-evidence-first behavior directly (mocked askGoogle/gemmaExtract, no live Ollama or
+ * Electron browser automation) rather than only through the full superlative-by-magnitude route.
  */
-async function establishFrame(
+export async function establishFrame(
   askGoogle: MethodRunContext['askGoogle'],
   category: string,
   all: string[],
   OPT: Record<string, string>,
   note: (text: string) => void,
+  // FD-BP153-04, ADDITIVE/OPTIONAL -- see MethodRunContext.ownedPassages's own doc comment
+  // (method_registry.ts) for why this is optional and what "owned" means. Omitted (undefined)
+  // behaves exactly as before this ticket: straight to the query path below, no change.
+  ownedPassages?: () => string[],
 ): Promise<FrameResult> {
+  const owned = (ownedPassages ? ownedPassages() : []).filter((p) => !!p && !!p.trim());
+  for (let i = 0; i < owned.length; i++) {
+    const passage = owned[i];
+    // eslint-disable-next-line no-await-in-loop -- each owned passage is tried in turn, stopping at
+    // the first that yields a verified, non-empty exclusion set; this is extraction over text
+    // already sitting in memory (a local Ollama call), never a network fan-out, so there is nothing
+    // here to parallelize against.
+    const ex = await gemmaExtract(frameExtractionInstruction(all, OPT), passage, FRAME_EXTRACTION_SHAPE);
+    let excluded = toLetters(ex?.not_members as unknown[] | undefined, OPT);
+    excluded = excluded.filter((L) => appearsIn(passage, OPT[L]));
+    if (excluded.length) {
+      note(
+        `   FRAME: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already acquired `
+          + `this run -- NO NEW QUERY ISSUED) -- source excluded ${excluded.map((L) => `${L}) ${OPT[L]}`).join(', ')}`
+          + ` -- ${excluded.length} option(s) are not ${category} and will NOT be ranked`,
+      );
+      return {
+        available: true, excluded, query: `(owned passage ${i + 1} of ${owned.length}, no query issued)`,
+        via: 'owned-passage', answeredFrom: 'owned-passage', ownedPassageIndex: i,
+      };
+    }
+    // D-BP153-010's rule, extended: yielded nothing -- inconclusive for THIS passage, not "excluded
+    // nothing". Falls through to the next owned passage, then to the query path below.
+  }
+  if (owned.length) {
+    note(`   FRAME: ${owned.length} owned passage(s) already acquired this run did not contain a usable frame partition -- falling through to a NEW QUERY`);
+  }
+
   const query = `Which of these are ${category}, and which of them are not ${category}? `
     + `For each one that is not, say so explicitly and say what it is instead. ${list(all, OPT)}`;
   note(`   FRAME: ${query}`);
   const res = await googleBlocks(askGoogle, query);
   if (!res.ok) {
     note(`   FRAME: no usable answer (${res.via}) -- the frame is UNAVAILABLE, not empty`);
-    return { available: false, excluded: [], query, via: res.via };
+    return { available: false, excluded: [], query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null };
   }
   // D-BP153-010 -- AN EMPTY PASSAGE IS NOT AN EMPTY EXCLUSION LIST. Bishop's own bug, found in the
   // first live run of this function (2026-08-12T16:04Z, acquisition
@@ -1353,23 +1438,16 @@ async function establishFrame(
   // answers G on qid 98 against a key of A.
   if (!res.text || !res.text.trim()) {
     note(`   FRAME: the source returned an EMPTY passage (${res.via}) -- the frame is UNAVAILABLE, not "nothing excluded"`);
-    return { available: false, excluded: [], query, via: `${res.via} (empty passage)` };
+    return { available: false, excluded: [], query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null };
   }
-  const ex = await gemmaExtract(
-    'If this passage states that any of these names is NOT one of the named category, copy out '
-      + 'exactly those names, spelled as the passage spells them. Copy only names the passage '
-      + 'itself excludes. If the passage excludes none of them, return an empty list. Do not '
-      + `decide yourself which ones qualify. Names: ${all.map((L) => OPT[L]).join('; ')}`,
-    res.text,
-    '{"not_members":["exact name the passage says is not one"],"stated_in_passage":true}',
-  );
+  const ex = await gemmaExtract(frameExtractionInstruction(all, OPT), res.text, FRAME_EXTRACTION_SHAPE);
   let excluded = toLetters(ex?.not_members as unknown[] | undefined, OPT);
   excluded = excluded.filter((L) => appearsIn(res.text, OPT[L]));
   note(
-    `   FRAME: source excluded ${excluded.length ? excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'}`
+    `   FRAME: answered FROM A NEW QUERY -- source excluded ${excluded.length ? excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'}`
       + ` -- ${excluded.length} option(s) are not ${category} and will NOT be ranked`,
   );
-  return { available: true, excluded, query, via: res.via };
+  return { available: true, excluded, query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null };
 }
 
 /** Reads the option sitting at a named extreme out of a most-to-least-worded ordering array
@@ -1552,7 +1630,10 @@ export async function runSuperlativeByMagnitude(
   // FD-BP153-01 -- THE FRAME RUNS FIRST. See establishFrame()'s own header for the ruling, the
   // measurement behind it, and why a word list was not built here.
   step(`STAGE 0  THE FRAME (FD-BP153-01) -- which options are ${category} at all? Non-members are never ranked`);
-  const frame = await establishFrame(askGoogle, category, ALL, OPT, note);
+  // FD-BP153-04: `ctx.ownedPassages` (MethodRunContext, ADDITIVE/OPTIONAL) is threaded through here
+  // so establishFrame() tries extraction from evidence this run already owns before it spends a
+  // new query -- see establishFrame()'s own header for the ruling and the measurement behind it.
+  const frame = await establishFrame(askGoogle, category, ALL, OPT, note, ctx.ownedPassages);
   if (!frame.available) {
     // FD-BP153-01 consequence 2, verbatim: "A magnitude result with no frame is NOT definitive."
     // Falling back to ranking the unframed pool is exactly the confident-wrong-answer generator
