@@ -265,4 +265,32 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
       global.fetch = originalFetch;
     }
   });
+
+  // D-BP153-014/BISHOP/seg-classify-recall-fix, BUG-2. establishFrame()'s own D-BP153-010 fix
+  // (dc94891e) has only ever been exercised as a pure boolean lambda
+  // (classify_cascade.frame.test.ts's own "D-BP153-010" test) -- never as an end-to-end call to
+  // establishFrame() itself with a mocked googleBlocks() response, the way
+  // classify_cascade.membership_terminator.test.ts's sibling test for extractNamedSetMembers()
+  // already does ("D-BP153-010, mirrored: an EMPTY passage from a fresh query is UNAVAILABLE").
+  // That asymmetry is the gap this closes: the SAME reproduction (an askGoogle payload whose only
+  // organic result has empty title/snippet -- googleBlocks() joins that into a whitespace-only
+  // `text`, ok:true, per comparative_cascade.ts's own `parts.push()` which runs unconditionally for
+  // every organic result regardless of content) run against establishFrame() itself, not a lambda.
+  test('D-BP153-014 BUG-2 regression: an EMPTY passage from a fresh query is UNAVAILABLE, never "excluded nothing" -- establishFrame() end to end', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = queuedFetch([]); // must not even be reached -- the guard fires before gemmaExtract()
+    // Same reproduction classify_cascade.membership_terminator.test.ts's own D-BP153-010 mirror
+    // uses: an organic result with empty title/snippet makes googleBlocks() return ok:true with a
+    // blank-after-trim `text` in ONE attempt (no retry backoff needed here).
+    const askGoogle = vi.fn(async () => ({ results: [{ title: '', snippet: '' }] }));
+    try {
+      const { note } = notes();
+      const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
+      expect(frame.available).toBe(false);
+      expect(frame.excluded).toEqual([]);
+      expect(frame.via).toMatch(/empty passage/);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
 });
