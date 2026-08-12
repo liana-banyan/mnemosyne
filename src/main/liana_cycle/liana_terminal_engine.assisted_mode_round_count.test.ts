@@ -57,7 +57,12 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     // The hard cap below is a TEST SAFETY NET ONLY (never shipped code) -- if the real engine
     // ever loops past a sane bound that is itself a finding, reported as a thrown test failure
     // rather than a silently hung CI run.
-    const MAX_ROUNDS_SAFETY_NET = 60;
+    // RAISED AT BP153, D-BP153-001: was 60, which sat 6 rounds above the then-measured 20. The
+    // measured count is now 54, so a 60-cap would convert the next small shape change into an
+    // unhelpful throw instead of letting this instrument report the new number -- which is the
+    // whole purpose of the file. Still a TEST SAFETY NET ONLY, never shipped code: a genuine
+    // runaway loop still fails the test rather than hanging CI.
+    const MAX_ROUNDS_SAFETY_NET = 120;
     const assistedChannel: SteppedAudibleChannel = {
       requestStepPause: async (pause): Promise<LianaSteppedResponse> => {
         rounds += 1;
@@ -98,17 +103,42 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     console.log(`MEASURED qid 98 assisted-mode round count (synthetic-capture instrument): ${rounds}`);
     console.log(`MEASURED sample query text(s): ${JSON.stringify(capturedQueries.slice(0, 3))}`);
 
-    // PINNED, not just logged: 2 (the two-part ambiguity+operation query, FD-BP152-05) + 18
-    // (Survey's per-option denotation sweep, 9 options x 2 queries each, the FD-BP152-01
-    // fallback) = 20, ending in the SAME "demand_unknown" abstain RULINGS_BP152.md's own qid-98
-    // receipts report when the captured text carries nothing the ambiguity/operation parser can
-    // extract -- exactly what a synthetic, content-free capture honestly produces. This assertion
-    // is the instrument: if a future change to Survey/the demand test alters this run's shape,
-    // this test fails loudly and names the new number rather than silently going stale.
-    expect(rounds).toBe(20);
-    expect(outcome.abstain).toBe(true);
-    expect(outcome.error).toBe('demand_unknown');
-    expect(outcome.method).toBeUndefined();
+    // eslint-disable-next-line no-console
+    console.log(`MEASURED outcome: ${JSON.stringify({ abstain: outcome.abstain, error: outcome.error, method: outcome.method, verdict: outcome.verdict })}`);
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // RE-PINNED AT BP153, D-BP153-001. THE INSTRUMENT DID ITS JOB -- read this before changing it.
+    //
+    // The previous pin was `rounds === 20`, ending `demand_unknown`, `method === undefined`. That
+    // was an accurate measurement of a run that DIED at the demand test: SURVEY STEP 2 resolved no
+    // term, so no method could ever be selected, so 20 rounds was simply how far a dead run got.
+    // This file's own comment said it would "fail loudly and name the new number rather than
+    // silently going stale" if a change altered the run's shape. D-BP153-001 altered it on purpose,
+    // and this test failed loudly, exactly as designed. It is being re-pinned, not relaxed.
+    //
+    // WHAT CHANGED: DEMAND derivation now has a fourth, last-resort path that reads the question's
+    // own grammar (determineDemandFromQuestionStructure(), demand_test.ts) when all three
+    // surveyed-ask paths refuse. qid 98 carries a structural superlative ("most densely
+    // populated"), so DEMAND now resolves to CLASSIFY, classify-cascade is selected, and the run
+    // proceeds into the method instead of abstaining at the gate.
+    //
+    // WHY 54 AND NOT A ROUND NUMBER: measured, twice, in isolation, both runs identical (54, ~41s).
+    // It is not a target. If it moves again, this assertion should fail again.
+    //
+    // ABSTAIN IS STILL EXPECTED HERE AND IS NOT A DEFECT: `fakeAskGoogle` returns null and every
+    // capture is the synthetic content-free string above, so the cascade receives no real density
+    // data for any option. An honest abstain on content-free input is the correct behavior -- the
+    // point of this instrument is WHERE the run stops, not that it produces a verdict. What must
+    // never come back is `demand_unknown`: that is the specific failure D-BP153-001 closed.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    expect(rounds).toBe(54);
+    expect(outcome.error).not.toBe('demand_unknown');
+    expect(outcome.method).toBe('classify-cascade');
     expect(events.length).toBeGreaterThan(0);
-  }, 60000);
+    // TIMEOUT RAISED AT BP153, D-BP153-001: was 60000. The run is now 54 rounds and measured ~41s
+    // in isolation on this machine -- comfortable alone, but a BP153 verification SEG running the
+    // full liana_cycle suite concurrently saw this same test exhaust 60000ms under load. The
+    // failure was scheduling pressure, not logic. 120000 gives the measured ~41s real headroom so
+    // a loaded machine does not produce a phantom failure that reads like a regression.
+  }, 120000);
 });

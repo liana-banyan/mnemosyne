@@ -43,7 +43,9 @@ import { explainSelection, listMethods, selectMethod } from './method_registry';
 // only call site in this file was the removed `else` branch (see runLianaCycleQuestion()'s own
 // D-BP152-039 comment, below); demand_test.ts itself is untouched, and other callers of
 // determineDemand() elsewhere in the estate are unaffected.
-import { describeDemand, determineDemandFromAmbiguityNested, determineDemandFromOperationAnswer, determineDemandFromSurveyedAsk } from './demand_test';
+// D-BP153-001 adds determineDemandFromQuestionStructure -- the LAST-RESORT structural path, tried
+// only after all three surveyed-ask derivations refuse. See its own header in demand_test.ts.
+import { describeDemand, determineDemandFromAmbiguityNested, determineDemandFromOperationAnswer, determineDemandFromQuestionStructure, determineDemandFromSurveyedAsk } from './demand_test';
 import type { DemandResult } from './demand_test';
 import type { AskGoogleFn, ConversationalAuthorityFn, EmitFn, MethodQuestionInput, MethodRunContext } from './method_registry';
 // D-BP151-026/BISHOP/seg-contingency-operator (Contingency Operator: Survey Splice), ORIGIN.
@@ -677,13 +679,30 @@ async function runLianaCycleQuestionInner(
       // independent of demandResult.derivedFrom (which stays 'surveyed-ask' for all three
       // surveyed-ask-derived paths; the PATH distinction is a finer-grained fact than the
       // derivedFrom enum currently carries).
-      const demandPath: 'nested' | 'operation' | 'ambiguity' | 'none' = surveyResult.step2.nested
+      // D-BP153-001 -- THE STRUCTURAL PATH, LAST. Computed once, here, so demandPath and
+      // demandResult below never call determineDemandFromQuestionStructure() twice (the same shape
+      // operationDemandResult uses immediately above).
+      //
+      // ORDERING IS LOAD-BEARING: this is tried ONLY after all three surveyed-ask paths have
+      // produced nothing, so it can never override a demand the survey actually derived. It exists
+      // because qid 98 proved a run can die with every component behaving correctly: SURVEY STEP 2
+      // honestly found no term, the ambiguity query honestly returned terms that were not literal
+      // spans of the question, sig-figs honestly dropped all of them, and the run ended
+      // DEMAND: UNKNOWN before method selection -- while extractSuperlativeMatch(), which
+      // classify_cascade.ts's own run() already trusts to route this exact question, matched it the
+      // whole time. See determineDemandFromQuestionStructure()'s own header (demand_test.ts) for
+      // why calling that existing detector is a wiring fix and not a widened gate.
+      const structuralDemandResult = determineDemandFromQuestionStructure(parsed.question);
+
+      const demandPath: 'nested' | 'operation' | 'ambiguity' | 'structural' | 'none' = surveyResult.step2.nested
         ? 'nested'
         : operationDemandResult?.demand
           ? 'operation'
           : surveyResult.step2.ambiguityNested.length
             ? 'ambiguity'
-            : 'none';
+            : structuralDemandResult.demand
+              ? 'structural'
+              : 'none';
       note(emit, `   DEMAND PATH: ${demandPath} (Law 5, HARDWIRE-23 -- names which SURVEY STEP 2 result produced the demand below)`);
       demandResult = surveyResult.step2.nested
         ? determineDemandFromSurveyedAsk(surveyResult.step2.nested)
@@ -691,11 +710,13 @@ async function runLianaCycleQuestionInner(
           ? operationDemandResult
           : surveyResult.step2.ambiguityNested.length
             ? determineDemandFromAmbiguityNested(surveyResult.step2.ambiguityNested)
-            : {
-              demand: null,
-              why: `SURVEY STEP 2 did not resolve a term to survey (${surveyResult.step2.why}) -- nothing to derive DEMAND from via the surveyed ask; this is a teaching prompt (canon R-5), not a fabricated guess`,
-              derivedFrom: 'surveyed-ask',
-            };
+            : structuralDemandResult.demand
+              ? structuralDemandResult
+              : {
+                demand: null,
+                why: `SURVEY STEP 2 did not resolve a term to survey (${surveyResult.step2.why}) -- nothing to derive DEMAND from via the surveyed ask, and the question's own grammar carries no structural superlative either (${structuralDemandResult.why}); this is a teaching prompt (canon R-5), not a fabricated guess`,
+                derivedFrom: 'surveyed-ask',
+              };
       emit({ kind: 'stage', text: '-> DEMAND TEST (SURVEYED ASK) -- what operation must this answer perform?', ts: nowIso() });
       note(emit, `   ${describeDemand(demandResult)}`);
     }
