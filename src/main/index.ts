@@ -328,6 +328,12 @@ import type { SteppedAudibleChannel } from './liana_cycle/stepped_audible';
 import type { ConversationalAuthorityFn, AskGoogleFn } from './liana_cycle/method_registry';
 // D-BP150-002 -- reading the operator's already-written teaching notes back into a live pause.
 import { listTeachingFiles } from './liana_cycle/teaching_notes';
+// D-BP153-004/BISHOP/evidence-store -- records every authority query so the derivation can be
+// replayed offline over frozen evidence. See the block comment at its wiring site in the
+// 'liana-terminal-run' handler, and evidence/evidence_store.ts's own header, for why.
+import { newAcquisitionSession, recordingAskGoogle, recordingConversationalAuthority } from './liana_cycle/evidence/evidence_authority';
+import { newAcquisitionId } from './liana_cycle/evidence/evidence_store';
+import { deriveRunShape } from './liana_cycle/evidence/run_shape';
 import type { LianaAudibleResponse, LianaSteppedResponse, LianaTerminalEvent } from '../shared/liana_cycle/liana_terminal_types';
 import { _paths as YOKE_PATHS } from './resident/yoke_watcher';
 // BP037 ? On-Deck Master-of-Ceremonies
@@ -3973,6 +3979,38 @@ function registerIPCHandlers(): void {
     // failures and discarded its successes.
     const events: LianaTerminalEvent[] = [];
 
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // D-BP153-004 -- THE EVIDENCE STORE, WIRED. Every authority query this run issues is recorded
+    // to an append-only, content-addressed ledger, so the DERIVATION can later be replayed over
+    // this frozen evidence with no network at all.
+    //
+    // WHY, IN THE FOUNDER'S OWN CORRECTION (BP153): "if no model can be deterministic, then can't
+    // we provide the framework that makes it impossible for them to NOT be? My adage is true - if
+    // anyone can figure out the answer, then we can too." The ANSWER is a fact and does not vary;
+    // the CHANNEL varies. This store is not a concession about the answer, it is the instrument
+    // that proves the framework squeezed the channel out: acquire the same question independently
+    // several times, replay the derivation over each, and measure whether the verdict holds
+    // (evidence/run_shape.ts, measureConvergence()).
+    //
+    // BOTH AUTHORITIES ARE WRAPPED, AND THAT IS THE WHOLE POINT OF DOING IT HERE. Wrapping only
+    // askGoogle would have produced a store that reports success and is silently missing every
+    // Gemini answer, because `askConversationalAuthority` (built at this file's own line ~3855)
+    // never passes through the askGoogle decorator chain -- Survey's two meta-questions try it
+    // FIRST and fall back to Google only on ok:false. A replay built from a google-only store
+    // would diverge from the recorded run with nothing anywhere saying why. That is this estate's
+    // signature defect ("a value exists, one hop fails to carry it, and the result reads like a
+    // decision") and it is closed here by construction.
+    //
+    // NON-FATAL: a ledger write failure never fails the run (see record()'s own header in
+    // evidence_authority.ts), but it is never silent either -- it lands on
+    // evidenceSession.writeFailures, reported below.
+    const evidenceQid = /^\d+$/.test(input.trim()) ? Number(input.trim()) : null;
+    const evidenceSession = newAcquisitionSession({
+      acquisitionId: newAcquisitionId(new Date().toISOString(), String(process.pid)),
+      qid: evidenceQid,
+    });
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
     let outcome;
     try {
       outcome = await runLianaCycleQuestion(
@@ -3988,7 +4026,10 @@ function registerIPCHandlers(): void {
         // runBrowserAuthorityQueryFromMain(...) closure -- same question/authority/thread
         // wiring, byte-identical on a genuine extraction; only the failure path now carries a
         // real reason instead of a bare null (see that function's own header, above).
-        buildLianaAskGoogle(runThreadContext),
+        // D-BP153-004: recorded. `recordingAskGoogle` is transparent -- it returns exactly what
+        // the inner function returned, including null, and never swallows a throw -- so this run
+        // behaves byte-identically to the same run before this ticket.
+        recordingAskGoogle(buildLianaAskGoogle(runThreadContext), evidenceSession),
         (evt) => {
           events.push(evt);
           try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ }
@@ -4000,7 +4041,9 @@ function registerIPCHandlers(): void {
         // D-BP152-044: SURVEY's two META-questions try this before falling back to `askGoogle`
         // above -- see this handler's own D-BP152-044 comment (immediately below the
         // `runThreadContext` it reuses) for the full ruling.
-        askConversationalAuthority,
+        // D-BP153-004: recorded, and NOT optional. See the evidence-store block above for why
+        // omitting this one wrapper would have produced a store that looks complete and is not.
+        recordingConversationalAuthority(askConversationalAuthority, evidenceSession),
         // D-BP152-051: `mode`/`assistedChannel` -- undefined/null on every pre-existing caller,
         // so this call site's behavior for every caller that does not pass `mode` is
         // byte-identical to before this ticket (liana_terminal_engine.ts's own wrapper stamps
@@ -4042,10 +4085,29 @@ function registerIPCHandlers(): void {
       mkdirSync(runsDir, { recursive: true });
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const slug = outcome.qid != null ? `qid${outcome.qid}` : 'free-text';
+      // D-BP153-004 -- THE RECEIPT NOW NAMES ITS OWN EVIDENCE AND ITS OWN SHAPE.
+      //
+      // `evidence.acquisitionId` is the link that makes replay possible at all: without it, a
+      // receipt and the ledger records it produced are two piles of files with no edge between
+      // them. `evidence.writeFailures` is carried because an acquisition with any failed write is
+      // INCOMPLETE, and a replay over it would be quietly missing a query -- exactly the silence
+      // this whole ticket exists to remove.
+      //
+      // `shape` is the compact, diffable summary (demand path, method, last stage, stop point,
+      // counts). It is derived from `events`, which this receipt already carried in full, so this
+      // adds no new source of truth -- it adds a form of the same truth you can diff two of
+      // without reading two transcripts.
+      const evidenceShape = deriveRunShape(events, outcome);
       const receipt = {
         schema: 'liana-run-receipt/1',
         writtenAt: new Date().toISOString(),
         input,
+        evidence: {
+          acquisitionId: evidenceSession.acquisitionId,
+          recordsWritten: evidenceSession.written.length,
+          writeFailures: evidenceSession.writeFailures,
+        },
+        shape: evidenceShape,
         qid: outcome.qid ?? null,
         question: outcome.question,
         options: outcome.options ?? null,
