@@ -1430,6 +1430,93 @@ function extractSpannedLetters(
   return { letters: [...new Set(letters)], spans, discarded };
 }
 
+// ─────────────────────────── D-BP153-018: A PROPERTY SPAN IS NOT A MEMBERSHIP SPAN ───────────────────────────
+//
+// D-BP153-018/BISHOP/seg-classify-018. THE MEASURED FAILURE (live run 2026-08-12T22:32Z, receipt
+// LIANA_RUN_qid98_2026-08-12T22-32-08-512Z.json). THE SOFTBALLS (establishFrame(), QUESTION 1 --
+// "what IS a legitimate world region?") extracted its exclusion set from this sentence:
+//   "Options A, C, F, G, H, I are all NOT considered among the world's most densely populated
+//   regions."
+// That sentence answers QUESTION 2 (THE NAMED SET -- "which options SCORE as densely populated?"),
+// not QUESTION 1. Both questions returned the SAME set, legitimate-regions MINUS named-set-members
+// left ZERO, and the run fell through to the magnitude route and burned 53 queries.
+//
+// THE RULE, Founder's own diagnosis: a span that asserts the SUPERLATIVE PROPERTY is not evidence
+// about CATEGORY MEMBERSHIP. A span stating how a thing SCORES on a property may never answer what
+// a thing IS.
+//
+// MECHANICAL, NOT A WORD LIST. `property` is the literal string extractSuperlativeMatch() already
+// read off the question's own grammar (SUPERLATIVE_PROPERTY_RE) -- for qid 98, "densely populated",
+// verbatim. This check is a case-insensitive, whitespace-normalized substring test of THAT string
+// against a value's own verified supporting span (D-BP153-016's span, already verbatim-checked
+// above) -- nothing here reads input.correctAnswer, and nothing here can be tuned toward a
+// particular letter. Satisfies FD-BP153-06: "would this rule survive on a question whose answer we
+// do not know?" Yes -- it fires on the SHAPE of the span, never its content's relation to any key.
+function normalizePropertyForMatch(property: string): string {
+  return normalizeSpanWhitespace(property).toLowerCase();
+}
+
+/** THE HARD RULE, establishFrame() ONLY. Given a span-verified {letters, spans} extraction (either
+ *  direction -- the direct exclusion read or its complement, both are claims about CATEGORY
+ *  MEMBERSHIP), DISCARD any value whose own supporting span contains the superlative property
+ *  string. `property` empty/blank (no superlative in play, or a caller that predates this ticket)
+ *  is a no-op -- nothing to check a span against, so every pre-existing call site that never passed
+ *  a property keeps behaving exactly as it did before this ticket. Every discard is counted AND
+ *  noted individually, naming the option and quoting the offending span (never silent). */
+function discardPropertyContaminatedSpans(
+  entry: { letters: string[]; spans: Record<string, string> },
+  property: string,
+  OPT: Record<string, string>,
+  note: (text: string) => void,
+  label: string,
+): { letters: string[]; spans: Record<string, string>; discardedCount: number } {
+  const propNorm = normalizePropertyForMatch(property);
+  if (!propNorm) return { letters: entry.letters, spans: entry.spans, discardedCount: 0 };
+  const letters: string[] = [];
+  const spans: Record<string, string> = {};
+  let discardedCount = 0;
+  for (const L of entry.letters) {
+    const span = entry.spans[L] ?? '';
+    if (normalizeSpanWhitespace(span).toLowerCase().includes(propNorm)) {
+      discardedCount++;
+      note(
+        `   ${label}: DISCARDED ${L}) ${OPT[L]} (D-BP153-018) -- its supporting span asserts the `
+          + `SUPERLATIVE PROPERTY ("${property}"), not category membership: "${span}"`,
+      );
+    } else {
+      letters.push(L);
+      spans[L] = span;
+    }
+  }
+  return { letters, spans, discardedCount };
+}
+
+/** THE SYMMETRIC CHECK, extractNamedSetMembers() ONLY -- REPORT, NEVER ENFORCE. A named-set
+ *  member's span SHOULD be about the property (QUESTION 2 is literally "which options ARE
+ *  `property`"), but a source may state membership without repeating the property phrase verbatim
+ *  (e.g. "Only B, D, and E qualify" immediately after the property was named in the prior
+ *  sentence) -- rejecting on that basis would manufacture exactly the kind of confident-wrong
+ *  elimination D-BP153-018 exists to close, on the OTHER side. This only counts and notes, so a
+ *  future run can measure whether the signal is worth enforcing (ticket's own words: "report, do
+ *  not enforce"). Never mutates the member list this was handed. */
+function reportMembersMissingProperty(
+  entry: { letters: string[]; spans: Record<string, string> },
+  property: string,
+  OPT: Record<string, string>,
+  note: (text: string) => void,
+): void {
+  const propNorm = normalizePropertyForMatch(property);
+  if (!propNorm) return;
+  const missing = entry.letters.filter((L) => !normalizeSpanWhitespace(entry.spans[L] ?? '').toLowerCase().includes(propNorm));
+  if (missing.length) {
+    note(
+      `   NAMED SET (D-BP153-018, symmetric check, REPORT ONLY, not enforced): ${missing.length} `
+        + `member span(s) do not mention the property ("${property}") -- `
+        + `${missing.map((L) => `${L}) ${OPT[L]}`).join(', ')} -- counted, not rejected`,
+    );
+  }
+}
+
 export interface FrameResult {
   /** False = the authority gave no usable answer. Per FD-BP153-01 consequence 2 this ABSTAINS;
    *  it never falls back to ranking the unframed pool. */
@@ -1547,11 +1634,19 @@ const FRAME_COMPLEMENT_EXTRACTION_SHAPE = '{"members":[{"name":"exact name the p
 async function extractFrameBothSides(
   passage: string,
   category: string,
+  property: string,
   all: string[],
   OPT: Record<string, string>,
+  note: (text: string) => void,
 ): Promise<{
   excluded: string[]; rawExcluded: string[]; excludedSpans: Record<string, string>;
   included: string[]; conflicts: string[]; partitionComplete: boolean; why: string; discarded: number;
+  /** D-BP153-018: true when EITHER direction extracted a value BEFORE the property-contamination
+   *  filter ran -- the signal establishFrame() must gate "did this passage answer anything" on,
+   *  NOT `rawExcluded.length || included.length` (which are POST-filter and can legitimately be
+   *  zero when discarding empties an otherwise-real answer -- see this file's own D-BP153-018
+   *  section header for why that is a different fact than "this passage had nothing to extract"). */
+  extractedAnything: boolean;
 }> {
   const exNot = await gemmaExtract(frameExtractionInstruction(category, all, OPT), passage, FRAME_EXTRACTION_SHAPE);
   const direct = extractSpannedLetters(exNot?.not_members, passage, OPT);
@@ -1559,16 +1654,33 @@ async function extractFrameBothSides(
   const exIs = await gemmaExtract(frameComplementExtractionInstruction(category, all, OPT), passage, FRAME_COMPLEMENT_EXTRACTION_SHAPE);
   const complement = extractSpannedLetters(exIs?.members, passage, OPT);
 
-  const reconciliation = reconcileNamedSet(all, direct.letters, complement.letters, OPT);
+  const extractedAnything = direct.letters.length > 0 || complement.letters.length > 0;
+
+  // D-BP153-018, AFTER span verification, BOTH directions: a value whose own verified span asserts
+  // the superlative property is not evidence about category membership, in EITHER direction (the
+  // measured bug was on the exclusion side; the inclusion side is checked the same way on general
+  // principle -- the rule is about what kind of claim a span supports, not which side it landed on).
+  const directFiltered = discardPropertyContaminatedSpans(direct, property, OPT, note, 'FRAME / QUESTION 1 (exclusion read)');
+  const complementFiltered = discardPropertyContaminatedSpans(complement, property, OPT, note, 'FRAME / QUESTION 1 (inclusion read)');
+  const propertyDiscarded = directFiltered.discardedCount + complementFiltered.discardedCount;
+  if (propertyDiscarded) {
+    note(
+      `   FRAME: discarded ${propertyDiscarded} value(s) whose supporting span asserts the SUPERLATIVE `
+        + `PROPERTY ("${property}"), not category membership (D-BP153-018)`,
+    );
+  }
+
+  const reconciliation = reconcileNamedSet(all, directFiltered.letters, complementFiltered.letters, OPT);
   return {
     excluded: reconciliation.members, // the reconciled EXCLUDED set -- see this function's own header
-    rawExcluded: direct.letters,
-    excludedSpans: direct.spans,
-    included: complement.letters,
+    rawExcluded: directFiltered.letters,
+    excludedSpans: directFiltered.spans,
+    included: complementFiltered.letters,
     conflicts: reconciliation.conflicts,
     partitionComplete: reconciliation.partitionComplete,
     why: reconciliation.why,
     discarded: direct.discarded + complement.discarded,
+    extractedAnything,
   };
 }
 
@@ -1641,7 +1753,13 @@ export async function establishFrame(
   // D-BP153-016, FIX 1: now typed OwnedPassage[], not bare string[] -- see this file's own
   // "TYPED OWNED PASSAGES, AND VERIFY-THE-SPAN" section header, above, for the ruling.
   ownedPassages?: () => OwnedPassage[],
+  // D-BP153-018, ADDITIVE/OPTIONAL, placed AFTER `ownedPassages` so no existing call site (which
+  // never passes a 7th argument) shifts meaning -- see this function's own D-BP153-018 section
+  // header (above establishFrame() in this file) for the ruling. Undefined/blank behaves exactly as
+  // before this ticket: discardPropertyContaminatedSpans() no-ops on an empty property string.
+  property?: string,
 ): Promise<FrameResult> {
+  const prop = property ?? '';
   const rawOwned = ownedPassages ? ownedPassages() : [];
   const owned = filterUsableOwnedPassages(rawOwned, all, OPT, 'FRAME', note);
   for (let i = 0; i < owned.length; i++) {
@@ -1650,14 +1768,18 @@ export async function establishFrame(
     // the first that yields a verified, non-empty read on either side; this is extraction over text
     // already sitting in memory (a local Ollama call), never a network fan-out, so there is nothing
     // here to parallelize against.
-    const both = await extractFrameBothSides(passage, category, all, OPT);
+    const both = await extractFrameBothSides(passage, category, prop, all, OPT, note);
     if (both.discarded) {
       note(`   FRAME: discarded ${both.discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
     }
     // D-BP153-017: answered when EITHER direction extracted something -- mirrors
     // extractNamedSetMembers()'s own extension of this same rule (D-BP153-014), for the identical
     // reason: the complement can be the more directly-stated side.
-    if (both.rawExcluded.length || both.included.length) {
+    // D-BP153-018: gated on PRE-property-filter extraction (`extractedAnything`), not the (now
+    // possibly post-filter-empty) `rawExcluded`/`included` -- a passage that extracted something
+    // real, all of which was then discarded as property-not-membership, DID answer the frame (with
+    // zero exclusions, a legitimate outcome, not "nothing here, try the next passage").
+    if (both.extractedAnything) {
       note(
         `   FRAME: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already acquired `
           + `this run -- NO NEW QUERY ISSUED) -- direct extraction excludes `
@@ -1735,7 +1857,7 @@ export async function establishFrame(
       reconciliationWhy: 'unavailable -- no option named', query, via: `${res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
     };
   }
-  const both = await extractFrameBothSides(res.text, category, all, OPT);
+  const both = await extractFrameBothSides(res.text, category, prop, all, OPT, note);
   if (both.discarded) {
     note(`   FRAME: discarded ${both.discarded} value(s) with no verbatim supporting span (fresh query)`);
   }
@@ -2000,11 +2122,16 @@ async function extractNamedSetBothSides(
   OPT: Record<string, string>,
   direction: 'most' | 'least',
   property: string,
+  note: (text: string) => void,
 ): Promise<NamedSetReconciliation & { rawMembers: string[]; memberSpans: Record<string, string>; discarded: number }> {
   const exMembers = await gemmaExtract(namedSetExtractionInstruction(all, OPT, direction, property), passage, NAMED_SET_EXTRACTION_SHAPE);
   // D-BP153-016, FIX 2: verify the SPAN, not the string -- see extractSpannedLetters() (above) for
   // the discard rule this replaces bare toLetters()+appearsIn() with.
   const direct = extractSpannedLetters(exMembers?.members, passage, OPT);
+  // D-BP153-018, THE SYMMETRIC CHECK -- REPORT ONLY, never a rejection here (see
+  // reportMembersMissingProperty()'s own header, above, for why this side does not enforce what
+  // establishFrame()'s side discards outright).
+  reportMembersMissingProperty(direct, property, OPT, note);
 
   const exNon = await gemmaExtract(
     namedSetComplementExtractionInstruction(all, OPT, direction, property), passage, NAMED_SET_COMPLEMENT_EXTRACTION_SHAPE,
@@ -2060,7 +2187,7 @@ export async function extractNamedSetMembers(
     // the first that yields a verified, non-empty read on either side; extraction over text already
     // sitting in memory (a local Ollama call), never a network fan-out, so nothing here to
     // parallelize.
-    const both = await extractNamedSetBothSides(passage, all, OPT, direction, property);
+    const both = await extractNamedSetBothSides(passage, all, OPT, direction, property, note);
     if (both.discarded) {
       note(`   NAMED SET: discarded ${both.discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
     }
@@ -2131,7 +2258,7 @@ export async function extractNamedSetMembers(
       reconciliationWhy: 'unavailable -- no option named', query, via: `${res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
     };
   }
-  const both = await extractNamedSetBothSides(res.text, all, OPT, direction, property);
+  const both = await extractNamedSetBothSides(res.text, all, OPT, direction, property, note);
   if (both.discarded) {
     note(`   NAMED SET: discarded ${both.discarded} value(s) with no verbatim supporting span (fresh query)`);
   }
@@ -2756,7 +2883,7 @@ export async function runSuperlativeByMagnitude(
   // FD-BP153-04: `ctx.ownedPassages` (MethodRunContext, ADDITIVE/OPTIONAL) is threaded through here
   // so establishFrame() tries extraction from evidence this run already owns before it spends a
   // new query -- see establishFrame()'s own header for the ruling and the measurement behind it.
-  const frame = await establishFrame(countedAskGoogle, category, ALL, OPT, note, ctx.ownedPassages);
+  const frame = await establishFrame(countedAskGoogle, category, ALL, OPT, note, ctx.ownedPassages, property);
   if (frame.answeredFrom === 'owned-passage') answeredFromOwned.push('THE SOFTBALLS');
   if (!frame.available) {
     // FD-BP153-01 consequence 2, verbatim: "A magnitude result with no frame is NOT definitive."
