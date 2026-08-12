@@ -1335,6 +1335,26 @@ async function establishFrame(
     note(`   FRAME: no usable answer (${res.via}) -- the frame is UNAVAILABLE, not empty`);
     return { available: false, excluded: [], query, via: res.via };
   }
+  // D-BP153-010 -- AN EMPTY PASSAGE IS NOT AN EMPTY EXCLUSION LIST. Bishop's own bug, found in the
+  // first live run of this function (2026-08-12T16:04Z, acquisition
+  // EVIDENCE_qid98_2026-08-12T15-51-57-546Z_23720): googleBlocks() returned ok:true with EMPTY
+  // text, gemmaExtract() then found nothing in nothing, and this function reported
+  // "source excluded (nothing) -- 9 of 9 option(s) remain in frame". That reads identically to
+  // "the source examined all nine and said every one is a world region", which is a completely
+  // different fact.
+  //
+  // This is the exact defect class this session spent itself closing, rebuilt by hand inside the
+  // fix for it. evidence_store.ts's own header states the rule this violated: a recorded null is
+  // a FACT ("we asked and got nothing") and is NOT the same as an absent record. Same distinction,
+  // same failure to honor it.
+  //
+  // An unusable frame must abstain (FD-BP153-01 consequence 2), never silently pass every option
+  // through to the ranking -- because passing all nine through is precisely the unframed pool that
+  // answers G on qid 98 against a key of A.
+  if (!res.text || !res.text.trim()) {
+    note(`   FRAME: the source returned an EMPTY passage (${res.via}) -- the frame is UNAVAILABLE, not "nothing excluded"`);
+    return { available: false, excluded: [], query, via: `${res.via} (empty passage)` };
+  }
   const ex = await gemmaExtract(
     'If this passage states that any of these names is NOT one of the named category, copy out '
       + 'exactly those names, spelled as the passage spells them. Copy only names the passage '
