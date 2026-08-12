@@ -38,6 +38,12 @@ import type { MethodQuestionInput } from './method_registry';
 // safe).
 import { checkKind } from './elements/kind_check';
 import type { SurveyAskNestedResult } from './elements/survey_ask';
+// D-BP153-001 -- THE STRUCTURAL PATH (see determineDemandFromQuestionStructure()'s own header,
+// bottom of this file). VALUE import, deliberately: the whole point is to call the SAME detector
+// classify_cascade.ts's run() already gates its superlative route on, rather than write a second
+// one here. No cycle: classify_cascade.ts imports method_registry and its own elements, never this
+// module (verified by reading its import block, BP153).
+import { extractSuperlativeMatch } from './methods/classify_cascade';
 
 /** The six demand types read off the BP150 benchmark corpus. THE LIST IS OPEN, but per canon R-7
  *  a new type is a Founder act -- never inferred here from a question that matched nothing. */
@@ -453,5 +459,86 @@ export function determineDemandFromOperationAnswer(rawAnswer: string | null): De
       + 'offers (ranked/defined/classified/inferred from evidence/identified/placed within a framework) '
       + '-- an honest null, not a fabrication',
     derivedFrom: 'surveyed-ask',
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP153-001 -- THE STRUCTURAL PATH. LAST RESORT, AFTER ALL THREE SURVEYED-ASK PATHS REFUSE.
+//
+// THE MEASURED FAILURE THIS CLOSES. Live run, Downloads\latestTest.md (qid 98, confirmed by that
+// file's own SOURCE header): SURVEY STEP 2 found no cued term, so the ambiguity query ran; Google
+// answered the GENERIC ambiguity query rather than the question, returning "words", "phrases",
+// "meaning", "fundamentally"; the sig-figs rule correctly dropped all four (they are not literal
+// spans of qid 98 -- the rule D-BP152-052/e41ff93d added). That left ZERO surviving terms, so the
+// ternary in liana_terminal_engine.ts fell to its `'none'` branch and the whole run ended
+// `DEMAND: UNKNOWN` at latestTest.md:561 -- before method selection, before classify-cascade,
+// before North Africa's density was ever asked about. Every component behaved correctly. The run
+// still could not start.
+//
+// WHAT WAS ACTUALLY WRONG. Two components already agreed on this question's shape and were not
+// connected to each other. `run()` in methods/classify_cascade.ts:1595 gates its entire
+// superlative-by-magnitude route -- the route built at D-BP152-038/c2b6524c to replicate the
+// Founder's own hand-worked qid-98 resolution -- on `extractSuperlativeMatch()`, which matches
+// "most densely populated" in qid 98 today. But nothing could ever REACH `run()`, because DEMAND
+// derivation, which decides whether classify-cascade is selected at all, consulted only the survey
+// and never the question's own grammar. A detector that correctly identifies the question is
+// useless downstream of a gate that refuses before it is called.
+//
+// WHY THIS IS A LOGIC FIX AND NOT GATE-WIDENING. It does not relax the sig-figs rule, does not
+// widen findAskCatalyst() to swallow the question's subject noun phrase, does not lower a
+// threshold, and does not add a cue table. It writes NO new detector: it calls
+// `extractSuperlativeMatch()`, the exact function `run()` already trusts to route this question,
+// which itself tests SUPERLATIVE_PROPERTY_RE, the exact regex extractClassifyCandidateTerms()
+// already matches. Nothing here is tuned toward qid 98's answer key, and this function never sees
+// an option list or an answer -- only the question's grammar.
+//
+// WHY CLASSIFY. The Founder ruled it by name: FD-BP152-06, "qid 98 IS CLASSIFY", already cited at
+// classifyCascadeMethod's own `taughtBy` (classify_cascade.ts:1611). `classifyCascadeMethod.demand`
+// is 'CLASSIFY', and its `run()` sends a structural superlative to runSuperlativeByMagnitude().
+// Returning CLASSIFY here is what connects his ruling to the route built to serve it. NOTE the
+// stale comment at LianaDemand's own 'RANK' line above, which still annotates RANK with "(qid 98)"
+// from the BP150 corpus reading -- that predates FD-BP152-06 and is not what governs.
+//
+// WHY 'question-string' AND NOT 'surveyed-ask'. That field exists so a reader can tell a derivation
+// that came from the survey from one that did not, WITHOUT reading this file. This one did not come
+// from the survey -- the survey refused, honestly, three times over. Labeling it 'surveyed-ask'
+// would launder a structural inference as a surveyed finding. It is the ONLY path in this file that
+// reports 'question-string', and that is the point.
+//
+// WHAT IT STILL REFUSES. A question with no structural superlative gets `demand: null` exactly as
+// before. Refusing still beats guessing (canon R-5). This path can only ever fire where the
+// question's own grammar carries the signal, and it runs LAST, so it can never override a demand
+// the survey actually derived.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Derives DEMAND from the question's own grammar, using the SAME structural detector
+ * `classify_cascade.ts`'s `run()` uses to route the question. See this section's header for why
+ * this is a wiring fix rather than a widened gate, and for what it still refuses.
+ *
+ * MUST be called only after `determineDemandFromSurveyedAsk()`,
+ * `determineDemandFromOperationAnswer()`, and `determineDemandFromAmbiguityNested()` have all
+ * failed to produce a demand -- it is a last resort, never a first opinion.
+ */
+export function determineDemandFromQuestionStructure(question: string): DemandResult {
+  const superlative = extractSuperlativeMatch(question);
+  if (!superlative) {
+    return {
+      demand: null,
+      why: 'the question carries no structural superlative (SUPERLATIVE_PROPERTY_RE did not match a '
+        + 'literal span of it), so there is nothing in its own grammar to derive a demand from '
+        + 'either -- reporting UNKNOWN, which is a teaching prompt (canon R-5), not a guess',
+      derivedFrom: 'question-string',
+    };
+  }
+  return {
+    demand: 'CLASSIFY',
+    why: `the question's own grammar carries a structural superlative ("${superlative.direction} `
+      + `${superlative.property}", a literal span of the question) -- the SAME signal `
+      + 'extractSuperlativeMatch() gives classify_cascade.ts\'s run() to route this question to its '
+      + 'superlative-by-magnitude path. CLASSIFY per FD-BP152-06 ("qid 98 is classify"). Derived '
+      + 'structurally because SURVEY STEP 2 produced no term, no usable operation answer, and no '
+      + 'surviving ambiguity-named term',
+    derivedFrom: 'question-string',
   };
 }
