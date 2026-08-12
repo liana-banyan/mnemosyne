@@ -125,13 +125,22 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     // WHY 54 AND NOT A ROUND NUMBER: measured, twice, in isolation, both runs identical (54, ~41s).
     // It is not a target. If it moves again, this assertion should fail again.
     //
+    // RE-PINNED AGAIN, 54 -> 55, D-BP153-006 (THE FRAME). It moved again, and again on purpose.
+    // FD-BP153-01 ("make the ruling that a superlative resolves by magnitude RIGHT by making it
+    // complete with the frame") added ONE query ahead of the ranking: establishFrame(), which asks
+    // which options are members of the question's category at all, so biomes are never ranked
+    // against continents. Exactly +1 round, which is itself the confirmation that the frame is one
+    // query and not one per option -- the Founder's own rule, BP151: "we got rid of four answers
+    // with ONE google search." A frame that cost 9 rounds here would mean it had been built
+    // per-option and would need rejecting on volume grounds alone.
+    //
     // ABSTAIN IS STILL EXPECTED HERE AND IS NOT A DEFECT: `fakeAskGoogle` returns null and every
     // capture is the synthetic content-free string above, so the cascade receives no real density
     // data for any option. An honest abstain on content-free input is the correct behavior -- the
     // point of this instrument is WHERE the run stops, not that it produces a verdict. What must
     // never come back is `demand_unknown`: that is the specific failure D-BP153-001 closed.
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    expect(rounds).toBe(54);
+    expect(rounds).toBe(55);
     expect(outcome.error).not.toBe('demand_unknown');
     expect(outcome.method).toBe('classify-cascade');
     expect(events.length).toBeGreaterThan(0);
