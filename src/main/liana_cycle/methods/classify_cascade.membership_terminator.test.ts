@@ -280,12 +280,13 @@ describe('extractNamedSetMembers() -- STEP 2, owned-evidence-first (mirrors esta
 describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, and falls through cleanly', () => {
   test('THE HEADLINE, end to end: real passage as owned evidence for BOTH frame and named set -> UNIQUE verdict A, ZERO askGoogle calls, orderings never issued', async () => {
     const originalFetch = global.fetch;
-    // Two gemmaExtract() calls total for this run: the frame's own extraction (Step 1, already
-    // built, unmodified), then the named set's own DIRECT extraction (Step 2, this ticket) -- BOTH
-    // read from the SAME single owned passage, exactly the way the real qid 98 evidence store held
-    // one passage answering both. The named set's own COMPLEMENT call finds the queue exhausted and
-    // fails silently (gemmaExtract()'s own catch-and-return-null), which is fine: the direct read
-    // alone already resolves this test's own arithmetic.
+    // THREE gemmaExtract() calls total for this run: the frame's own direct exclusion extraction
+    // (Step 1, unmodified) and its D-BP153-017 complement (both empty of anything new -- the
+    // direct read alone resolves the frame), then the named set's own DIRECT extraction (Step 2,
+    // D-BP153-014) -- all read from the SAME single owned passage, exactly the way the real qid 98
+    // evidence store held one passage answering both. The named set's own COMPLEMENT call finds
+    // the queue exhausted and fails silently (gemmaExtract()'s own catch-and-return-null), which is
+    // fine: the direct read alone already resolves this test's own arithmetic.
     global.fetch = queuedFetch([
       // Frame extraction (establishFrame(), unmodified) -- the real BP153 frame result: only
       // South America, South Asia, Northeast US, Europe were named legitimate world regions.
@@ -294,6 +295,10 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
           .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
         stated_in_passage: true,
       }),
+      // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement extraction against the
+      // SAME owned passage -- empty (nothing stated in that shape); the direct exclusion read
+      // above already resolved the frame.
+      JSON.stringify({ members: [], stated_in_passage: false }),
       // Named-set extraction (extractNamedSetMembers(), this ticket).
       JSON.stringify({
         members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: REAL_PASSAGE_S2 })),
@@ -346,6 +351,9 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
           .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
         stated_in_passage: true,
       }),
+      // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement extraction against the
+      // same owned passage -- empty; the direct exclusion read above already resolved the frame.
+      JSON.stringify({ members: [], stated_in_passage: false }),
       // Named-set direct extraction: only TWO of the three members named -- not unique (candidates {A,E}).
       JSON.stringify({
         members: ['South Asia', 'Northeast United States'].map((name) => ({ name, span: REAL_PASSAGE_S2 })),
@@ -399,6 +407,9 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
           .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
         stated_in_passage: true,
       }),
+      // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement extraction against the
+      // same owned passage -- empty; the direct exclusion read above already resolved the frame.
+      JSON.stringify({ members: [], stated_in_passage: false }),
       // Named-set extraction (Step 2) tries the SAME owned passage per FD-BP153-04's contract (each
       // stage tries owned evidence independently) but this time the extraction honestly finds
       // nothing -- D-BP153-010's rule: inconclusive, not "no members". Falls through to a fresh

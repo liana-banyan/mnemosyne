@@ -199,8 +199,42 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     // have supported an answer -- the same direction every prior STAGE-D-class re-pin in this file
     // has moved (fewer wasted rounds on content-free evidence is the intended shape of this whole
     // BP153 arc, not a defect in the instrument).
+    //
+    // RE-PINNED AGAIN, 21 -> 3, D-BP153-017 (THE THREE QUESTIONS AND THE DOUBLECHECK). THIS IS THE
+    // WHOLE POINT OF THIS TICKET, NOT AN INCIDENTAL SIDE EFFECT. Measured TWICE in isolation on this
+    // build, both runs identical (3). BUILD ITEM 1 gates SURVEY STEP 3's per-option denotation sweep
+    // (rounds 3-20 under the previous pin -- 9 options x 2 Google queries, FD-BP152-01's fallback)
+    // OFF the superlative-by-magnitude route: qid 98 carries a structural superlative
+    // (extractSuperlativeMatch() matches, the SAME regex classify_cascade.ts's own run() tests to
+    // ROUTE this exact question), so the gate now fires BEFORE Step 3 ever issues a single query for
+    // it. The 18-query sweep this ticket's own measurement named ("12 of the first 14 evidence
+    // records were the per-option denotation sweep... not one contributed to a derivation") is gone
+    // from this run entirely, not merely deferred.
+    //   Round 1: SURVEY STEP 2's ambiguity query (Part 1, FD-BP151 addendum) -- unchanged.
+    //   Round 2: SURVEY STEP 2's operation query (Part 2, FD-BP152-05) -- unchanged; still resolves
+    //     no demand under this instrument's content-free capture, so SURVEY STEP 3's PRE-EXISTING
+    //     predicate (`!operationDemandForGate?.demand`) would ALSO have let the sweep run here --
+    //     it is the NEW superlative gate, not the old one, that skips it (see
+    //     survey_stage.superlative_sweep_gate.test.ts's own SCOPE GUARD test for the isolated proof
+    //     that the OLD predicate is untouched and still fires on a non-superlative question).
+    //   Round 3: establishFrame()'s own fresh query ("Which of these are world regions...") -- THE
+    //     SOFTBALLS, QUESTION 1. Same content-free synthetic capture as every prior re-pin, so FIX 3
+    //     ("reject a passage that cannot source the claim", D-BP153-016, unchanged by this ticket)
+    //     rejects it before gemmaExtract() is ever called -- frame.available:false, honestly
+    //     UNAVAILABLE, ABSTAIN IMMEDIATELY. Per FD-BP153-01 consequence 2 ("a magnitude result with
+    //     no frame is NOT definitive"), STAGE M (THE NAMED SET, QUESTION 2) and STAGE D (THE
+    //     DISCRIMINATOR, QUESTION 3) are never reached -- the SAME shape the 21-round baseline's own
+    //     round 21 already had, just reached 18 rounds sooner. THE DOUBLECHECK's own complement
+    //     extraction (establishFrame()'s second gemmaExtract() call, D-BP153-017 BUILD ITEM 3) is
+    //     ALSO never reached here: FIX 3's guard runs BEFORE extractFrameBothSides() is even called,
+    //     so this instrument cannot show it firing -- see
+    //     classify_cascade.softballs_doublecheck_and_query_bill.test.ts's own ITEM 3 tests for the
+    //     isolated, real-content proof of the complement direction and its conflict-reporting.
+    // ABSTAIN IS STILL EXPECTED HERE, unchanged from every prior re-pin's own note above: this
+    // instrument's content-free capture can never name an option, so an honest abstain is correct.
+    // What must never come back is `demand_unknown` -- outcome.method stays 'classify-cascade' below.
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    expect(rounds).toBe(21);
+    expect(rounds).toBe(3);
     expect(outcome.error).not.toBe('demand_unknown');
     expect(outcome.method).toBe('classify-cascade');
     expect(events.length).toBeGreaterThan(0);

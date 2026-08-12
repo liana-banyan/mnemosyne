@@ -1434,9 +1434,29 @@ export interface FrameResult {
   /** False = the authority gave no usable answer. Per FD-BP153-01 consequence 2 this ABSTAINS;
    *  it never falls back to ranking the unframed pool. */
   available: boolean;
-  /** Option letters the SOURCE stated are not members of the category. May be empty, which is a
-   *  valid frame meaning "the source excluded nothing", NOT the same as unavailable. */
+  /** Option letters the SOURCE stated are not members of the category -- RECONCILED (see
+   *  reconcileNamedSet(), reused by extractFrameBothSides() below) with the complement
+   *  (which-ARE-`category`) extraction when the two sides form a clean, conflict-free reading;
+   *  otherwise this is the direct exclusion extraction alone, unreconciled. May be empty, which is
+   *  a valid frame meaning "the source excluded nothing", NOT the same as unavailable. */
   excluded: string[];
+  /** D-BP153-017, THE DOUBLECHECK applied to THE SOFTBALLS: option letters the SAME passage
+   *  states ARE `category` -- the complementary direction, extracted from the identical
+   *  already-fetched text, no new query. Empty when the complement extracted nothing (the passage
+   *  may simply not use that shape). */
+  included: string[];
+  /** Option letters extracted as BOTH excluded and included by the two independent extractions --
+   *  a FINDING, reported and never silently resolved (FD-BP153-07: "ask it both directions and
+   *  require agreement"; a disagreement is reported, never resolved by force). Empty when the two
+   *  extractions agree. */
+  conflicts: string[];
+  /** True when the direct exclusion set and the complement inclusion set together name every
+   *  option in `all`, with zero conflicts -- mirrors NamedSetResult.partitionComplete exactly. */
+  partitionComplete: boolean;
+  /** Plain-English rendering of the reconciliation arithmetic -- mirrors
+   *  NamedSetResult.reconciliationWhy, so a reader can audit this result without re-running
+   *  anything. */
+  reconciliationWhy: string;
   query: string;
   via: string;
   /** FD-BP153-04 -- THE RECEIPT SAYS WHICH. "A saved query invisible in the transcript is
@@ -1483,6 +1503,74 @@ function frameExtractionInstruction(category: string, all: string[], OPT: Record
 // extractSpannedLetters() (above) for the verification this shape exists to support.
 const FRAME_EXTRACTION_SHAPE = '{"not_members":[{"name":"exact name the passage says is not one",'
   + '"span":"the exact verbatim sentence from the passage"}],"stated_in_passage":true}';
+
+// ─────────────────────────── D-BP153-017: THE DOUBLECHECK, APPLIED TO THE SOFTBALLS ───────────────────────────
+//
+// TICKET_D-BP153-017_THE_THREE_QUESTIONS.md, ITEM 3: "Add the complementary direction to the
+// Softballs, reconciled the same way the named set already is." His own QC, FD-BP153-07, verbatim:
+// "ask it both directions and require agreement." D-BP153-014 already built exactly this pattern
+// for THE NAMED SET (namedSetComplementExtractionInstruction() / extractNamedSetBothSides() /
+// reconcileNamedSet(), above) -- this section is that SAME pattern, reused (reconcileNamedSet()
+// itself is called unchanged, not reimplemented), retargeted at THE SOFTBALLS (establishFrame()).
+
+/** The complementary direction of frameExtractionInstruction() above -- asks which of these names
+ *  the passage states ARE `category`, rather than which are NOT. EXTRACTION ONLY (HARDWIRE-22):
+ *  copies out names the passage itself states ARE the category, never judges which ones qualify. */
+function frameComplementExtractionInstruction(category: string, all: string[], OPT: Record<string, string>): string {
+  return `If this passage states that any of these names IS ${category} -- a legitimate member of `
+    + 'that category, stated directly by the source -- copy out exactly those names, spelled as the '
+    + `passage spells them. Copy only names the passage itself states ARE ${category}. If the passage `
+    + 'states that none of them are, return an empty list. Do not decide yourself which ones qualify '
+    + '-- copy only what the passage itself states. For EACH included name, also copy out the exact '
+    + 'verbatim sentence or clause from the passage that states its inclusion, word for word, into '
+    + `"span". Names: ${all.map((L) => OPT[L]).join('; ')}`;
+}
+const FRAME_COMPLEMENT_EXTRACTION_SHAPE = '{"members":[{"name":"exact name the passage says it is",'
+  + '"span":"the exact verbatim sentence from the passage"}],"stated_in_passage":true}';
+
+/** ONE passage, BOTH directions -- the exclusion read (direct, frameExtractionInstruction(),
+ *  unchanged) and its complement (the inclusion read, frameComplementExtractionInstruction(),
+ *  D-BP153-017), over the SAME already-in-hand text. NO NEW QUERY: two gemmaExtract() calls (local
+ *  Ollama), never a second googleBlocks() -- mirrors extractNamedSetBothSides() above
+ *  byte-for-byte.
+ *
+ *  REUSES reconcileNamedSet() UNCHANGED, roles swapped relative to the named set's own call: there,
+ *  `members` is the direct read and `nonMembers` is the complement, and the function returns the
+ *  reconciled MEMBER set. Here `members` is fed the direct EXCLUSION read and `nonMembers` is fed
+ *  the complement INCLUSION read -- the identical arithmetic ("trust the complement side when it
+ *  said something and the two sides do not conflict") then yields, in its own `.members` field, the
+ *  reconciled EXCLUDED set, because "all minus the trusted complement" is exactly the exclusion
+ *  arithmetic THE SOFTBALLS need. A conflict (a name BOTH extractions place on opposite sides) is
+ *  never silently resolved -- reconcileNamedSet() already falls back to the direct extraction,
+ *  unreconciled, and reports `conflicts` for the caller to note as a FINDING (FD-BP153-07: "a
+ *  disagreement here is reported, never resolved by force"). */
+async function extractFrameBothSides(
+  passage: string,
+  category: string,
+  all: string[],
+  OPT: Record<string, string>,
+): Promise<{
+  excluded: string[]; rawExcluded: string[]; excludedSpans: Record<string, string>;
+  included: string[]; conflicts: string[]; partitionComplete: boolean; why: string; discarded: number;
+}> {
+  const exNot = await gemmaExtract(frameExtractionInstruction(category, all, OPT), passage, FRAME_EXTRACTION_SHAPE);
+  const direct = extractSpannedLetters(exNot?.not_members, passage, OPT);
+
+  const exIs = await gemmaExtract(frameComplementExtractionInstruction(category, all, OPT), passage, FRAME_COMPLEMENT_EXTRACTION_SHAPE);
+  const complement = extractSpannedLetters(exIs?.members, passage, OPT);
+
+  const reconciliation = reconcileNamedSet(all, direct.letters, complement.letters, OPT);
+  return {
+    excluded: reconciliation.members, // the reconciled EXCLUDED set -- see this function's own header
+    rawExcluded: direct.letters,
+    excludedSpans: direct.spans,
+    included: complement.letters,
+    conflicts: reconciliation.conflicts,
+    partitionComplete: reconciliation.partitionComplete,
+    why: reconciliation.why,
+    discarded: direct.discarded + complement.discarded,
+  };
+}
 
 /**
  * FD-BP153-01 -- THE FRAME. Establishes which options are legitimate members of the category the
@@ -1559,29 +1647,46 @@ export async function establishFrame(
   for (let i = 0; i < owned.length; i++) {
     const passage = owned[i].text;
     // eslint-disable-next-line no-await-in-loop -- each owned passage is tried in turn, stopping at
-    // the first that yields a verified, non-empty exclusion set; this is extraction over text
+    // the first that yields a verified, non-empty read on either side; this is extraction over text
     // already sitting in memory (a local Ollama call), never a network fan-out, so there is nothing
     // here to parallelize against.
-    const ex = await gemmaExtract(frameExtractionInstruction(category, all, OPT), passage, FRAME_EXTRACTION_SHAPE);
-    // D-BP153-016, FIX 2: verify the SPAN, not the string -- replaces the old bare
-    // toLetters()+appearsIn(passage, OPT[L]) sufficiency test with extractSpannedLetters(), above.
-    const { letters: excluded, discarded } = extractSpannedLetters(ex?.not_members, passage, OPT);
-    if (discarded) {
-      note(`   FRAME: discarded ${discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
+    const both = await extractFrameBothSides(passage, category, all, OPT);
+    if (both.discarded) {
+      note(`   FRAME: discarded ${both.discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
     }
-    if (excluded.length) {
+    // D-BP153-017: answered when EITHER direction extracted something -- mirrors
+    // extractNamedSetMembers()'s own extension of this same rule (D-BP153-014), for the identical
+    // reason: the complement can be the more directly-stated side.
+    if (both.rawExcluded.length || both.included.length) {
       note(
         `   FRAME: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already acquired `
-          + `this run -- NO NEW QUERY ISSUED) -- source excluded ${excluded.map((L) => `${L}) ${OPT[L]}`).join(', ')}`
-          + ` -- ${excluded.length} option(s) are not ${category} and will NOT be ranked`,
+          + `this run -- NO NEW QUERY ISSUED) -- direct extraction excludes `
+          + `${both.rawExcluded.length ? both.rawExcluded.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(none)'}, `
+          + `complement states ${both.included.length ? both.included.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(none)'} `
+          + `IS ${category}`,
+      );
+      if (both.conflicts.length) {
+        note(
+          `   FRAME CONFLICT (D-BP153-017, THE DOUBLECHECK): ${both.conflicts.map((L) => `${L}) ${OPT[L]}`).join(', ')} `
+            + 'extracted as BOTH excluded and included by the two independent directions -- reported as a FINDING, '
+            + 'neither side is preferred (FD-BP153-07: "a disagreement here is reported, never resolved by force")',
+        );
+      }
+      note(`   FRAME RECONCILIATION: ${both.why}`);
+      note(
+        `   FRAME: ${both.excluded.length} option(s) are not ${category} and will NOT be ranked -- `
+          + `${both.excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') || '(none)'}`,
       );
       return {
-        available: true, excluded, query: `(owned passage ${i + 1} of ${owned.length}, no query issued)`,
+        available: true, excluded: both.excluded, included: both.included, conflicts: both.conflicts,
+        partitionComplete: both.partitionComplete, reconciliationWhy: both.why,
+        query: `(owned passage ${i + 1} of ${owned.length}, no query issued)`,
         via: 'owned-passage', answeredFrom: 'owned-passage', ownedPassageIndex: i,
       };
     }
-    // D-BP153-010's rule, extended: yielded nothing -- inconclusive for THIS passage, not "excluded
-    // nothing". Falls through to the next owned passage, then to the query path below.
+    // D-BP153-010's rule, extended: yielded nothing on EITHER side -- inconclusive for THIS
+    // passage, not "excluded nothing". Falls through to the next owned passage, then to the query
+    // path below.
   }
   if (owned.length) {
     note(`   FRAME: ${owned.length} owned passage(s) already acquired this run did not contain a usable frame partition -- falling through to a NEW QUERY`);
@@ -1593,7 +1698,10 @@ export async function establishFrame(
   const res = await googleBlocks(askGoogle, query);
   if (!res.ok) {
     note(`   FRAME: no usable answer (${res.via}) -- the frame is UNAVAILABLE, not empty`);
-    return { available: false, excluded: [], query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null };
+    return {
+      available: false, excluded: [], included: [], conflicts: [], partitionComplete: false,
+      reconciliationWhy: 'unavailable -- no usable answer', query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+    };
   }
   // D-BP153-010 -- AN EMPTY PASSAGE IS NOT AN EMPTY EXCLUSION LIST. Bishop's own bug, found in the
   // first live run of this function (2026-08-12T16:04Z, acquisition
@@ -1613,24 +1721,46 @@ export async function establishFrame(
   // answers G on qid 98 against a key of A.
   if (!res.text || !res.text.trim()) {
     note(`   FRAME: the source returned an EMPTY passage (${res.via}) -- the frame is UNAVAILABLE, not "nothing excluded"`);
-    return { available: false, excluded: [], query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null };
+    return {
+      available: false, excluded: [], included: [], conflicts: [], partitionComplete: false,
+      reconciliationWhy: 'unavailable -- empty passage', query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+    };
   }
   // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the options
   // cannot state anything about them -- same fact-class as the empty-passage check just above.
   if (!passageMentionsAnyLabel(res.text, all, OPT)) {
     note(`   FRAME: the source's passage (${res.via}) names NONE of the option(s) under test -- the frame is UNAVAILABLE, not "nothing excluded"`);
-    return { available: false, excluded: [], query, via: `${res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null };
+    return {
+      available: false, excluded: [], included: [], conflicts: [], partitionComplete: false,
+      reconciliationWhy: 'unavailable -- no option named', query, via: `${res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+    };
   }
-  const ex = await gemmaExtract(frameExtractionInstruction(category, all, OPT), res.text, FRAME_EXTRACTION_SHAPE);
-  const { letters: excluded, discarded } = extractSpannedLetters(ex?.not_members, res.text, OPT);
-  if (discarded) {
-    note(`   FRAME: discarded ${discarded} value(s) with no verbatim supporting span (fresh query)`);
+  const both = await extractFrameBothSides(res.text, category, all, OPT);
+  if (both.discarded) {
+    note(`   FRAME: discarded ${both.discarded} value(s) with no verbatim supporting span (fresh query)`);
   }
   note(
-    `   FRAME: answered FROM A NEW QUERY -- source excluded ${excluded.length ? excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'}`
-      + ` -- ${excluded.length} option(s) are not ${category} and will NOT be ranked`,
+    `   FRAME: answered FROM A NEW QUERY -- direct extraction excludes `
+      + `${both.rawExcluded.length ? both.rawExcluded.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'}, `
+      + `complement states ${both.included.length ? both.included.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'} IS ${category}`,
   );
-  return { available: true, excluded, query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null };
+  if (both.conflicts.length) {
+    note(
+      `   FRAME CONFLICT (D-BP153-017, THE DOUBLECHECK): ${both.conflicts.map((L) => `${L}) ${OPT[L]}`).join(', ')} `
+        + 'extracted as BOTH excluded and included by the two independent directions -- reported as a FINDING, '
+        + 'neither side is preferred (FD-BP153-07: "a disagreement here is reported, never resolved by force")',
+    );
+  }
+  note(`   FRAME RECONCILIATION: ${both.why}`);
+  note(
+    `   FRAME: ${both.excluded.length} option(s) are not ${category} and will NOT be ranked -- `
+      + `${both.excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') || '(none)'}`,
+  );
+  return {
+    available: true, excluded: both.excluded, included: both.included, conflicts: both.conflicts,
+    partitionComplete: both.partitionComplete, reconciliationWhy: both.why,
+    query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+  };
 }
 
 // ─────────────────────────── THE NAMED SET, and THE MEMBERSHIP TERMINATOR ───────────────────────────
@@ -2562,6 +2692,40 @@ export async function runSuperlativeByMagnitude(
   const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
   const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
 
+  // D-BP153-017, ITEM 4: THE QUERY BILL. Every query THIS route actually issues goes through this
+  // counted wrapper -- it is the SAME askGoogle the evidence-writing layer upstream of ctx already
+  // writes one evidence record per call for (evidence_authority.ts, not touched here), so this
+  // tally is never a second, independently-derived guess at what the ledger holds; it is a live
+  // count of the exact calls that produce it. `askGoogle` (destructured above) is not called
+  // directly again below this point -- every call site in this function goes through
+  // `countedAskGoogle` (or `countedCtx`, for runLitmusStripLoop()'s own internal calls) instead.
+  let queriesIssued = 0;
+  const countedAskGoogle: MethodRunContext['askGoogle'] = async (q) => {
+    queriesIssued++;
+    return askGoogle(q);
+  };
+  const countedCtx: MethodRunContext = { ...ctx, askGoogle: countedAskGoogle };
+  // THE THREE QUESTIONS THIS RUN ATTEMPTED, and which of them THE DOUBLECHECK/owned-evidence-first
+  // discipline (FD-BP153-04) resolved WITHOUT spending a query -- named as it happens below, read
+  // back by queryBillNote() at every exit point so the saving is visible without reading the
+  // ledger (ticket's own words).
+  const questionsAttempted: string[] = [];
+  const answeredFromOwned: string[] = [];
+  /** Emits ONE note naming: queries issued this run, how many of THE THREE QUESTIONS were answered
+   *  from owned evidence (no new query), and that the per-option denotation sweep (Survey's own
+   *  FD-BP152-01 fallback) was skipped on this route -- always true here, since this function only
+   *  ever runs when extractSuperlativeMatch() already matched (the SAME structural gate
+   *  survey_stage.ts's own Step 3 gate now tests, D-BP153-017, so this fact and that skip can never
+   *  disagree). Called at every exit point below, not only the final one, so an abstain's own
+   *  transcript states the bill too. */
+  const queryBillNote = () => note(
+    `   QUERY BILL: ${queriesIssued} quer${queriesIssued === 1 ? 'y' : 'ies'} issued this run -- `
+      + `${answeredFromOwned.length} of ${questionsAttempted.length} question(s) asked `
+      + `(${questionsAttempted.join(', ') || 'none'}) answered from OWNED EVIDENCE, no new query `
+      + `(${answeredFromOwned.join(', ') || 'none'}); 1 per-option denotation sweep SKIPPED -- redundant `
+      + 'by construction on the superlative path (FD-BP152-01 fallback; D-BP153-017)',
+  );
+
   say(`METHOD classify-cascade / superlative-by-magnitude -- ${input.qid != null ? `qid ${input.qid}` : 'free-text'}`);
   note(`   ${input.question}`);
   note(`   ${ALL.map((L) => `${L}) ${OPT[L]}`).join('  ')}`);
@@ -2583,17 +2747,24 @@ export async function runSuperlativeByMagnitude(
 
   // FD-BP153-01 -- THE FRAME RUNS FIRST. See establishFrame()'s own header for the ruling, the
   // measurement behind it, and why a word list was not built here.
-  step(`STAGE 0  THE FRAME (FD-BP153-01) -- which options are ${category} at all? Non-members are never ranked`);
+  // D-BP153-017, ITEM 2: THE THREE QUESTIONS, NAMED. This is QUESTION 1, THE SOFTBALLS -- "which
+  // of these are not <category> at all?" (TICKET_D-BP153-017_THE_THREE_QUESTIONS.md). "STAGE 0"
+  // is kept verbatim in the label (not just "QUESTION 1") so every pre-existing transcript/test
+  // assertion on that token is unaffected -- this is an ADDITIVE label, not a rename.
+  step(`STAGE 0 / QUESTION 1  THE SOFTBALLS (FD-BP153-01/FD-BP153-07) -- which options are NOT ${category} at all? Non-members are never ranked`);
+  questionsAttempted.push('THE SOFTBALLS');
   // FD-BP153-04: `ctx.ownedPassages` (MethodRunContext, ADDITIVE/OPTIONAL) is threaded through here
   // so establishFrame() tries extraction from evidence this run already owns before it spends a
   // new query -- see establishFrame()'s own header for the ruling and the measurement behind it.
-  const frame = await establishFrame(askGoogle, category, ALL, OPT, note, ctx.ownedPassages);
+  const frame = await establishFrame(countedAskGoogle, category, ALL, OPT, note, ctx.ownedPassages);
+  if (frame.answeredFrom === 'owned-passage') answeredFromOwned.push('THE SOFTBALLS');
   if (!frame.available) {
     // FD-BP153-01 consequence 2, verbatim: "A magnitude result with no frame is NOT definitive."
     // Falling back to ranking the unframed pool is exactly the confident-wrong-answer generator
     // this ruling exists to close -- on qid 98 that fallback answers G (Arctic Circle) against a
     // key of A, because it ranks biomes alongside continents.
     step('ABSTAIN -- the frame could not be established, and an UNFRAMED magnitude result is not definitive (FD-BP153-01)');
+    queryBillNote();
     emit({ kind: 'result', text: `ABSTAIN (frame unavailable -- ${frame.via})${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
     return {
       qid: input.qid,
@@ -2611,6 +2782,7 @@ export async function runSuperlativeByMagnitude(
   const framed = ALL.filter((L) => !frame.excluded.includes(L));
   if (!framed.length) {
     step(`ABSTAIN -- the frame excluded every option; nothing is a ${category} to rank`);
+    queryBillNote();
     emit({ kind: 'result', text: `ABSTAIN (frame excluded every option)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
     return {
       qid: input.qid,
@@ -2634,8 +2806,14 @@ export async function runSuperlativeByMagnitude(
   // (named set unavailable, or the difference is not exactly one option), this falls through to
   // the EXISTING magnitude path below, completely unchanged -- not one line of Stage A onward is
   // touched by this block.
-  step('STAGE M  THE MEMBERSHIP TERMINATOR (FD-BP152-19 x FD-BP153-01) -- does a NAMED SET resolve this without ranking?');
-  const namedSet = await extractNamedSetMembers(askGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages);
+  // D-BP153-017, ITEM 2: QUESTION 2, THE NAMED SET -- "which of these ARE <the superlative
+  // property>?" STAGE M (the membership terminator, below) is what PUTS the two questions
+  // together (frame minus named set); the question itself is asked here. "STAGE M" is kept
+  // verbatim (additive label, not a rename -- same reasoning as STAGE 0/QUESTION 1 above).
+  step(`STAGE M / QUESTION 2  THE NAMED SET (FD-BP152-19 x FD-BP153-01) -- which options ARE ${match.direction} ${property}? Does a NAMED SET resolve this without ranking?`);
+  questionsAttempted.push('THE NAMED SET');
+  const namedSet = await extractNamedSetMembers(countedAskGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages);
+  if (namedSet.answeredFrom === 'owned-passage') answeredFromOwned.push('THE NAMED SET');
   if (namedSet.available) {
     const termination = runMembershipTerminator(ALL, frame.excluded, namedSet.members, OPT);
     note(`   MEMBERSHIP TERMINATOR: ${termination.why}`);
@@ -2646,6 +2824,7 @@ export async function runSuperlativeByMagnitude(
         `PUBLISH -- ${winner} (${OPT[winner]}) -- the named set resolved uniquely; Stage A's litmus-strip loop `
           + 'and Stage B\'s four ordering queries were never issued',
       );
+      queryBillNote();
       emit({
         kind: 'result',
         text: `${KEY != null ? (ok ? 'CORRECT' : 'WRONG') : 'ANSWER'}  ${winner} (${OPT[winner]})  via membership terminator${KEY != null ? `  key=${KEY}` : ''}`,
@@ -2671,12 +2850,17 @@ export async function runSuperlativeByMagnitude(
     // single candidate (already returned above) this is never reached and nothing changes. See
     // this file's own "STAGE D: THE DISCRIMINATOR" section header (above) for the full derivation.
     if (termination.candidates.length > 1) {
+      // D-BP153-017, ITEM 2: QUESTION 3, THE DISCRIMINATOR -- "what kind is each survivor, and
+      // what kind does <category> denote?" Fires only here, per the ticket's own shape. "STAGE D"
+      // is kept verbatim (additive label, not a rename -- same reasoning as STAGE 0/1, STAGE M/2).
       step(
-        `STAGE D  THE DISCRIMINATOR (D-BP153-015) -- the membership terminator left `
-          + `${termination.candidates.length} candidates (${termination.candidates.join(', ')}); does a STATED `
-          + 'KIND distinction resolve it?',
+        `STAGE D / QUESTION 3  THE DISCRIMINATOR (D-BP153-015) -- what kind is each survivor, and what kind does `
+          + `${category} denote? The membership terminator left ${termination.candidates.length} candidates `
+          + `(${termination.candidates.join(', ')}); does a STATED KIND distinction resolve it?`,
       );
-      const discriminator = await runDiscriminator(askGoogle, category, termination.candidates, OPT, note, ctx.ownedPassages);
+      questionsAttempted.push('THE DISCRIMINATOR');
+      const discriminator = await runDiscriminator(countedAskGoogle, category, termination.candidates, OPT, note, ctx.ownedPassages);
+      if (discriminator.answeredFrom === 'owned-passage') answeredFromOwned.push('THE DISCRIMINATOR');
       if (discriminator.unique) {
         const winner = discriminator.unique;
         const ok = KEY != null ? winner === KEY : undefined;
@@ -2684,6 +2868,7 @@ export async function runSuperlativeByMagnitude(
           `PUBLISH -- ${winner} (${OPT[winner]}) -- the discriminator resolved uniquely on a STATED kind `
             + 'distinction; Stage A\'s litmus-strip loop and Stage B\'s four ordering queries were never issued',
         );
+        queryBillNote();
         emit({
           kind: 'result',
           text: `${KEY != null ? (ok ? 'CORRECT' : 'WRONG') : 'ANSWER'}  ${winner} (${OPT[winner]})  via discriminator${KEY != null ? `  key=${KEY}` : ''}`,
@@ -2710,6 +2895,7 @@ export async function runSuperlativeByMagnitude(
           + `${termination.candidates.length} candidates to a unique answer; naming the survivors, never picking `
           + 'among them (FD-BP152-19)',
       );
+      queryBillNote();
       emit({
         kind: 'result',
         text: `ABSTAIN (discriminator: ${discriminator.survivors.join(', ')})${KEY != null ? `  key=${KEY}` : ''}`,
@@ -2735,13 +2921,16 @@ export async function runSuperlativeByMagnitude(
   }
 
   step('STAGE A  narrow the pool -- reuses runLitmusStripLoop() (Stage 2 above) UNCHANGED, no seed criteria');
-  const loop = await runLitmusStripLoop(input, ctx, [], note);
+  // `countedCtx` (not the bare `ctx` this function received), so every query the litmus-strip loop
+  // itself issues (via ctx.askGoogle, internally) is counted into THE QUERY BILL too.
+  const loop = await runLitmusStripLoop(input, countedCtx, [], note);
   note(
     `   loop stopped: ${loop.stoppedReason}   criteria applied: ${loop.criteria.length}   `
       + `eliminations: ${loop.eliminations.length}   survivors: ${loop.survivors.join(', ') || '(none)'}`,
   );
   if (!loop.survivors.length) {
     step('ABSTAIN -- zero survivors after the litmus-strip loop; nothing left to rank');
+    queryBillNote();
     emit({ kind: 'result', text: `ABSTAIN (zero survivors)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
     return {
       qid: input.qid,
@@ -2765,6 +2954,7 @@ export async function runSuperlativeByMagnitude(
   }
   if (!pool.length) {
     step(`ABSTAIN -- every litmus-loop survivor was outside the frame; nothing that is a ${category} remains to rank`);
+    queryBillNote();
     emit({ kind: 'result', text: `ABSTAIN (no in-frame survivors)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
     return {
       qid: input.qid,
@@ -2779,16 +2969,16 @@ export async function runSuperlativeByMagnitude(
   }
 
   step('STAGE B  order the pool by the property, both directions, as separate queries (his own check on the engine)');
-  const mostToLeast = await askOrdering(askGoogle, category, property, 'most-to-least', pool, OPT, 'Q1 most-to-least', note);
-  const leastToMost = await askOrdering(askGoogle, category, property, 'least-to-most', pool, OPT, 'Q2 least-to-most', note);
+  const mostToLeast = await askOrdering(countedAskGoogle, category, property, 'most-to-least', pool, OPT, 'Q1 most-to-least', note);
+  const leastToMost = await askOrdering(countedAskGoogle, category, property, 'least-to-most', pool, OPT, 'Q2 least-to-most', note);
 
   // FD-BP153-01: QC re-includes every option the FRAME kept, not every option on the question.
   // His QC exists to check that an ELIMINATION was right, and a frame exclusion is not an
   // elimination -- re-including a biome here would reintroduce exactly the out-of-category
   // candidate the frame just removed, and on qid 98 that is the Arctic Circle walking back in.
   step(`STAGE C  quality control -- same two directions, re-asked, all IN-FRAME options re-included (his own stages 4/5)`);
-  const mostToLeastQC = await askOrdering(askGoogle, category, property, 'most-to-least', framed, OPT, 'Q3 most-to-least (QC, in-frame options)', note);
-  const leastToMostQC = await askOrdering(askGoogle, category, property, 'least-to-most', framed, OPT, 'Q4 least-to-most (QC, in-frame options)', note);
+  const mostToLeastQC = await askOrdering(countedAskGoogle, category, property, 'most-to-least', framed, OPT, 'Q3 most-to-least (QC, in-frame options)', note);
+  const leastToMostQC = await askOrdering(countedAskGoogle, category, property, 'least-to-most', framed, OPT, 'Q4 least-to-most (QC, in-frame options)', note);
 
   const agreement = checkExtremeAgreement(targetExtreme, pool, mostToLeast, leastToMost, mostToLeastQC, leastToMostQC);
   for (const n of agreement.notes) note(n);
@@ -2797,6 +2987,7 @@ export async function runSuperlativeByMagnitude(
 
   if (!agreement.agrees) {
     step('ABSTAIN -- orderings do not agree at the target extreme (or none was usable, or QC contradicted an elimination); reporting, not resolving');
+    queryBillNote();
     emit({ kind: 'result', text: `ABSTAIN (ordering disagreement at ${targetExtreme} extreme)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
     return {
       qid: input.qid,
@@ -2820,6 +3011,7 @@ export async function runSuperlativeByMagnitude(
         + 'pre-existing gap, not fixed here per this ticket\'s FORBIDDEN section -- reporting the gap rather than '
         + 'publishing a verdict the reused function was never shown to get right in this direction',
     );
+    queryBillNote();
     emit({ kind: 'result', text: `ABSTAIN (reused terminator direction gap -- target extreme "most" not supported)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
     return {
       qid: input.qid,
@@ -2847,6 +3039,7 @@ export async function runSuperlativeByMagnitude(
 
   if (!verdict) {
     step('ABSTAIN -- the hard number did not converge (no self-agreeing value); reporting, not forcing');
+    queryBillNote();
     emit({ kind: 'result', text: `ABSTAIN (no value convergence)   ordering candidate: ${agreement.candidate}${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
     return {
       qid: input.qid,
@@ -2864,6 +3057,7 @@ export async function runSuperlativeByMagnitude(
 
   const ok = KEY != null ? verdict === KEY : undefined;
   step(`PUBLISH -- ${verdict} (${OPT[verdict]}), hard number self-agreed, ordering candidate was ${agreement.candidate === verdict ? 'the SAME option' : `DIFFERENT (${agreement.candidate})`}`);
+  queryBillNote();
   emit({
     kind: 'result',
     text: `${KEY != null ? (ok ? 'CORRECT' : 'WRONG') : 'ANSWER'}  ${verdict} (${OPT[verdict]})${KEY != null ? `  key=${KEY}` : ''}`,

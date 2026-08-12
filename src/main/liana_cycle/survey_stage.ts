@@ -307,6 +307,15 @@ import { generateMethodQuestions, literalSubjectSpan, type GeneratedMethodQuesti
 // `surveyResult.step2.operation.rawAnswer` to compute its own `DEMAND PATH: operation` line, so
 // the gate here and that transcript line can never disagree about what "resolved" means.
 import { determineDemandFromOperationAnswer } from './demand_test';
+// D-BP153-017. IMPORTED, NOT REIMPLEMENTED -- reused ONLY to gate SURVEY STEP 3's per-option
+// denotation sweep off the CLASSIFY superlative-by-magnitude route (see runSurveyStage()'s own
+// comment at its call site, below). This is the SAME structural regex-only detector
+// classify_cascade.ts's own run() already tests to ROUTE this exact question
+// (runSuperlativeByMagnitude()), so this gate and that routing decision can never disagree about
+// what "is a superlative question" means. No cycle: classify_cascade.ts imports nothing from this
+// file (verified by reading its own imports; comparative_cascade.ts, method_registry.ts, and
+// elements/* only).
+import { extractSuperlativeMatch } from './methods/classify_cascade';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -2146,8 +2155,40 @@ export async function runSurveyStage(
   const operationDemandForGate = step2.operation
     ? determineDemandFromOperationAnswer(step2.operation.rawAnswer)
     : null;
-  const step3ShouldRun = !operationDemandForGate?.demand;
-  if (step3ShouldRun) {
+  // D-BP153-017, ADDITIVE, SCOPE: THE SUPERLATIVE PATH ONLY. THE THREE QUESTIONS
+  // (classify_cascade.ts's establishFrame()/extractNamedSetMembers()/runDiscriminator(), all
+  // wired into runSuperlativeByMagnitude()) already resolve DEMAND structurally (D-BP153-001) or
+  // from the operation query, and consult owned evidence FIRST (FD-BP153-04) before ever spending
+  // a query of their own. A per-option denotation sweep ahead of that route is REDUNDANT BY
+  // CONSTRUCTION -- measured live, 2026-08-12T20:34Z: 12 of the first 14 evidence records were
+  // this sweep (18 queries, 9 options x 2), and NONE contributed to the derivation
+  // (TICKET_D-BP153-017_THE_THREE_QUESTIONS.md).
+  //
+  // Gated on the question's OWN structural grammar (extractSuperlativeMatch(), imported above --
+  // the SAME regex classify_cascade.ts's own run() tests to ROUTE this exact question, so this
+  // gate and that routing decision can never disagree).
+  //
+  // SCOPE IS NARROW AND DELIBERATE (ticket's own instruction): this cuts the sweep ONLY on the
+  // superlative route. The pre-existing predicate (operationDemandForGate, immediately above) is
+  // UNTOUCHED -- every other CLASSIFY/RANK/etc. question is unaffected, and the sweep still runs
+  // wherever it ran before this ticket on any question that is not structurally a superlative.
+  // FD-BP152-01 (the sweep's own authorization) is not repealed; it is skipped only for the one
+  // path this ticket measured as wasteful.
+  const superlativeMatch = extractSuperlativeMatch(askText);
+  const step3ShouldRun = !operationDemandForGate?.demand && !superlativeMatch;
+  if (superlativeMatch) {
+    emit({
+      kind: 'note',
+      text: '   SURVEY STEP 3 GATE: SKIPPED -- the question resolves to the CLASSIFY superlative-by-magnitude '
+        + `route (structural match: direction="${superlativeMatch.direction}" property="${superlativeMatch.property}"). `
+        + 'THE THREE QUESTIONS (classify_cascade.ts runSuperlativeByMagnitude(), D-BP153-017) already resolve '
+        + 'DEMAND structurally or from the operation query and consult owned evidence before spending a query -- '
+        + 'the per-option denotation sweep is redundant by construction on this route (measured: 12 of 14 records, '
+        + '18 queries, none used -- TICKET_D-BP153-017_THE_THREE_QUESTIONS.md). SCOPE: superlative path ONLY, '
+        + 'every other question is unaffected.',
+      ts: nowIso(),
+    });
+  } else if (step3ShouldRun) {
     emit({
       kind: 'note',
       text: '   SURVEY STEP 3 GATE: RUNNING as the fallback -- SURVEY STEP 2\'s operation query did not '
@@ -2171,9 +2212,13 @@ export async function runSurveyStage(
     : {
         perOption: null,
         grouping: null,
-        why: `SKIPPED (FD-BP152-01) -- SURVEY STEP 2's operation query already resolved DEMAND: `
-          + `${operationDemandForGate!.demand} (DEMAND PATH: operation); the per-option denotation sweep `
-          + 'is a fallback, run only when Step 2 does not resolve a demand',
+        why: superlativeMatch
+          ? 'SKIPPED (D-BP153-017) -- the question resolves to the CLASSIFY superlative-by-magnitude route; THE '
+            + 'THREE QUESTIONS consult owned evidence before spending a query, so the per-option denotation sweep '
+            + 'is redundant by construction on this path'
+          : `SKIPPED (FD-BP152-01) -- SURVEY STEP 2's operation query already resolved DEMAND: `
+            + `${operationDemandForGate!.demand} (DEMAND PATH: operation); the per-option denotation sweep `
+            + 'is a fallback, run only when Step 2 does not resolve a demand',
       };
   // ───────────────────────────────────────────────────────────────────────────────────────────
   const step4 = await founderStep4DetermineRegister(term, askText, options, ctx);
