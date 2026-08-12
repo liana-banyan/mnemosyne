@@ -154,8 +154,25 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     // data for any option. An honest abstain on content-free input is the correct behavior -- the
     // point of this instrument is WHERE the run stops, not that it produces a verdict. What must
     // never come back is `demand_unknown`: that is the specific failure D-BP153-001 closed.
+    //
+    // RE-PINNED AGAIN, 56 -> 23, D-BP153-015 (THE DISCRIMINATOR). Measured, twice, in isolation,
+    // both runs identical (23). This is a DROP, not the +1 every prior stage added, and the
+    // direction is correct, not a regression: STAGE D fires whenever STAGE M leaves MORE THAN ONE
+    // candidate, and under THIS instrument's content-free stub, STAGE M's frame and named set both
+    // resolve to empty (nothing excluded, nothing named a member), so candidates = ALL NINE options
+    // -- exactly the "more than one" case STAGE D exists to intercept. STAGE D spends its own ONE
+    // query (same "one query, not one per option" discipline every stage here is held to), gets the
+    // same content-free capture back, states no distinction, and ABSTAINS -- honestly, and MUCH
+    // earlier than before. Before this ticket, that same 9-candidate non-unique result fell straight
+    // through to Stage A's litmus-strip loop and Stage B's four ordering queries, which is where the
+    // bulk of the old 56 rounds were actually spent (per-criterion, per-option evaluation). STAGE D
+    // now short-circuits that expensive, evidence-free ranking with a fast, honest abstain instead --
+    // fewer wasted rounds is the intended shape of this ticket, not a defect in the instrument. On
+    // REAL evidence (classify_cascade.discriminator.test.ts's own REQUIRED POSITIVE test) STAGE D
+    // resolves to the correct letter on a STATED kind distinction; this synthetic-content instrument
+    // still cannot show that direction, for the same reason noted above for STAGE M.
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    expect(rounds).toBe(56);
+    expect(rounds).toBe(23);
     expect(outcome.error).not.toBe('demand_unknown');
     expect(outcome.method).toBe('classify-cascade');
     expect(events.length).toBeGreaterThan(0);

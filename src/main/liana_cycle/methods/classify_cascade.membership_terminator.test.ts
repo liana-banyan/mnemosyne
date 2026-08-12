@@ -303,7 +303,15 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
     }
   });
 
-  test('not-unique named set -> falls through to the EXISTING magnitude path (Stage A runs), never picks among survivors', async () => {
+  // D-BP153-015, BEHAVIOR CHANGE FROM BEFORE THIS TICKET, RECORDED HERE. Before STAGE D existed, a
+  // non-unique, 2-candidate STAGE M result fell straight through to Stage A's litmus-strip loop
+  // (the title and assertions below used to say exactly that). STAGE D now fires in between --
+  // "fires ONLY when STAGE M leaves more than one candidate" -- and its own PUBLISH-or-ABSTAIN
+  // result is terminal, so Stage A is no longer reached for this case. See classify_cascade.ts's
+  // own "STAGE D: THE DISCRIMINATOR" section header for the full derivation, and
+  // classify_cascade.discriminator.test.ts for STAGE D's own dedicated coverage (owned-evidence-
+  // first, one query never one per candidate, the required POSITIVE/NEGATIVE tests).
+  test('D-BP153-015: not-unique named set -> STAGE D (the discriminator) fires and terminates the route; Stage A is no longer reached for this case', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
       // Frame extraction: same real frame as above.
@@ -311,14 +319,20 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
         not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'],
         stated_in_passage: true,
       }),
-      // Named-set extraction: only TWO of the three members named -- not unique (candidates {A,E}).
+      // Named-set direct extraction: only TWO of the three members named -- not unique (candidates {A,E}).
       JSON.stringify({ members: ['South Asia', 'Northeast United States'], stated_in_passage: true }),
+      // Named-set complement extraction (D-BP153-014's own second gemmaExtract() call): REAL_PASSAGE
+      // states nothing in complement shape for this reduced reading -- nothing stated.
+      JSON.stringify({ not_members: [], stated_in_passage: false }),
+      // STAGE D's own owned-evidence attempt against the SAME passage: REAL_PASSAGE is about
+      // density, not KIND -- nothing extractable, falls through to STAGE D's one query below.
+      JSON.stringify({ kinds: [], category_kind: null, stated_in_passage: false }),
     ]);
-    // Beyond this point (Stage A's litmus-strip loop) askGoogle is used and returns nothing usable,
-    // so the loop and the route abstain honestly rather than crash -- this test is only checking
-    // that STAGE A is REACHED, not what it concludes. challengeDetected short-circuits googleBlocks()
-    // to 0 retries per call (see the extractNamedSetMembers() tests above for why `null` would make
-    // every one of Stage A's several queries pay a 3x/backoff retry cost here).
+    // STAGE D spends its own ONE query here (never Stage A's several) -- askGoogle returns
+    // challengeDetected, so it aborts fast (0 retries) and ABSTAINS naming {A, E}. That abstain is
+    // now the terminal result of this route: Stage A's litmus-strip loop is never reached, which is
+    // the entire point of this ticket -- an honest ABSTAIN naming the survivors replaces the old
+    // silent fall-through into a magnitude ranking that had no principled distinction to rank on.
     const askGoogle = vi.fn(async () => ({ challengeDetected: true }));
     try {
       const events: LianaTerminalEvent[] = [];
@@ -333,10 +347,14 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
       const outcome = await runSuperlativeByMagnitude(input, ctx, match);
 
       expect(outcome.basis).not.toMatch(/MEMBERSHIP TERMINATOR/);
+      expect(outcome.basis).toMatch(/DISCRIMINATOR/);
+      expect(outcome.abstain).toBe(true);
+      expect(outcome.verdict).toBeNull();
       const stageNotes = events.filter((e) => e.kind === 'stage').map((e) => e.text);
       expect(stageNotes.some((t) => /STAGE M/.test(t))).toBe(true);
-      expect(stageNotes.some((t) => /STAGE A/.test(t))).toBe(true); // fell through, reached unchanged
-      expect(askGoogle).toHaveBeenCalled(); // Stage A's litmus loop DID issue queries -- unchanged path
+      expect(stageNotes.some((t) => /STAGE D/.test(t))).toBe(true);
+      expect(stageNotes.some((t) => /STAGE A/.test(t))).toBe(false); // no longer reached -- STAGE D terminates
+      expect(askGoogle).toHaveBeenCalledTimes(1); // STAGE D's own ONE query, never Stage A's several
     } finally {
       global.fetch = originalFetch;
     }
