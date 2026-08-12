@@ -1283,6 +1283,75 @@ async function askOrdering(
   return { label, query, ok: true, ordering, raw: res };
 }
 
+interface FrameResult {
+  /** False = the authority gave no usable answer. Per FD-BP153-01 consequence 2 this ABSTAINS;
+   *  it never falls back to ranking the unframed pool. */
+  available: boolean;
+  /** Option letters the SOURCE stated are not members of the category. May be empty, which is a
+   *  valid frame meaning "the source excluded nothing", NOT the same as unavailable. */
+  excluded: string[];
+  query: string;
+  via: string;
+}
+
+/**
+ * FD-BP153-01 -- THE FRAME. Establishes which options are legitimate members of the category the
+ * question names, before anything is ranked.
+ *
+ * THE FOUNDER'S RULING, BP153, verbatim: "So make the ruling that a superlative resolves by
+ * magnitude RIGHT by making it complete with the frame."
+ *
+ * WHY THIS EXISTS, MEASURED. FD-BP152-38 ruled that a superlative resolves by magnitude, and that
+ * ruling is correct and is not reversed. BP153 showed it was INCOMPLETE. Ranking qid 98's full
+ * option list by population density puts the Arctic Circle at the least extreme, so the magnitude
+ * route answers G. The key is A. The Founder's own hand-worked run had South America ranked LAST
+ * in every ordering, because he restricted the options to legitimate world regions BEFORE he
+ * ranked, and inside {South Asia, Northeast US, Europe, South America} it is last. He did the
+ * frame step in his head and never wrote it down as a step. The code ranked everything, so it
+ * ranked biomes against continents, which is a category error rather than a close call.
+ *
+ * ONE QUERY, NOT ONE PER OPTION. Founder, BP151, on the same principle: "we got rid of four
+ * answers with ONE google search." This also matters for volume: BP152 measured ~18 queries per
+ * run right before Google rate-limited this machine.
+ *
+ * ASKED, NEVER ASSUMED. No word list of "things that are biomes" is built here; that would be
+ * exactly the tare HARDWIRE-23 forbids and the judgment HARDWIRE-22 refuses to delegate. The
+ * category test goes to the authority, and the local model only COPIES OUT the names the passage
+ * itself excluded (extraction, unrelaxed), verified back against the passage text with appearsIn()
+ * the same way askOrdering() already verifies an extracted ordering.
+ */
+async function establishFrame(
+  askGoogle: MethodRunContext['askGoogle'],
+  category: string,
+  all: string[],
+  OPT: Record<string, string>,
+  note: (text: string) => void,
+): Promise<FrameResult> {
+  const query = `Which of these are ${category}, and which of them are not ${category}? `
+    + `For each one that is not, say so explicitly and say what it is instead. ${list(all, OPT)}`;
+  note(`   FRAME: ${query}`);
+  const res = await googleBlocks(askGoogle, query);
+  if (!res.ok) {
+    note(`   FRAME: no usable answer (${res.via}) -- the frame is UNAVAILABLE, not empty`);
+    return { available: false, excluded: [], query, via: res.via };
+  }
+  const ex = await gemmaExtract(
+    'If this passage states that any of these names is NOT one of the named category, copy out '
+      + 'exactly those names, spelled as the passage spells them. Copy only names the passage '
+      + 'itself excludes. If the passage excludes none of them, return an empty list. Do not '
+      + `decide yourself which ones qualify. Names: ${all.map((L) => OPT[L]).join('; ')}`,
+    res.text,
+    '{"not_members":["exact name the passage says is not one"],"stated_in_passage":true}',
+  );
+  let excluded = toLetters(ex?.not_members as unknown[] | undefined, OPT);
+  excluded = excluded.filter((L) => appearsIn(res.text, OPT[L]));
+  note(
+    `   FRAME: source excluded ${excluded.length ? excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'}`
+      + ` -- ${excluded.length} option(s) are not ${category} and will NOT be ranked`,
+  );
+  return { available: true, excluded, query, via: res.via };
+}
+
 /** Reads the option sitting at a named extreme out of a most-to-least-worded ordering array
  *  (index 0 = the "most" end, last index = the "least" end) -- structural index lookup only; the
  *  CALLER supplies which array (mostToLeast-worded vs leastToMost-worded) so this stays a plain
@@ -1460,6 +1529,47 @@ export async function runSuperlativeByMagnitude(
       + `${complement ? 'NOT-question (complement demanded)' : 'direct question'} -- target extreme for membership: ${targetExtreme}`,
   );
 
+  // FD-BP153-01 -- THE FRAME RUNS FIRST. See establishFrame()'s own header for the ruling, the
+  // measurement behind it, and why a word list was not built here.
+  step(`STAGE 0  THE FRAME (FD-BP153-01) -- which options are ${category} at all? Non-members are never ranked`);
+  const frame = await establishFrame(askGoogle, category, ALL, OPT, note);
+  if (!frame.available) {
+    // FD-BP153-01 consequence 2, verbatim: "A magnitude result with no frame is NOT definitive."
+    // Falling back to ranking the unframed pool is exactly the confident-wrong-answer generator
+    // this ruling exists to close -- on qid 98 that fallback answers G (Arctic Circle) against a
+    // key of A, because it ranks biomes alongside continents.
+    step('ABSTAIN -- the frame could not be established, and an UNFRAMED magnitude result is not definitive (FD-BP153-01)');
+    emit({ kind: 'result', text: `ABSTAIN (frame unavailable -- ${frame.via})${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `superlative-by-magnitude route: the frame query ("${frame.query}") returned no usable answer `
+        + `(${frame.via}). Per FD-BP153-01 a superlative resolves by magnitude INSIDE THE FRAME; with no frame `
+        + 'established, ranking the full option list would compare members of the category against things that '
+        + 'are not members of it at all, so this abstains rather than publishing an unframed extreme',
+    };
+  }
+  const framed = ALL.filter((L) => !frame.excluded.includes(L));
+  if (!framed.length) {
+    step(`ABSTAIN -- the frame excluded every option; nothing is a ${category} to rank`);
+    emit({ kind: 'result', text: `ABSTAIN (frame excluded every option)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `superlative-by-magnitude route: the frame excluded all ${ALL.length} options as not being ${category}; `
+        + 'nothing remains to order by magnitude',
+    };
+  }
+  note(`   FRAME: ${framed.length} of ${ALL.length} option(s) remain in frame -- ${framed.join(', ')}`);
+
   step('STAGE A  narrow the pool -- reuses runLitmusStripLoop() (Stage 2 above) UNCHANGED, no seed criteria');
   const loop = await runLitmusStripLoop(input, ctx, [], note);
   note(
@@ -1480,15 +1590,41 @@ export async function runSuperlativeByMagnitude(
         + `criterion/criteria (loop stopped: ${loop.stoppedReason}); nothing left to order by magnitude`,
     };
   }
-  const pool = loop.survivors;
+  // FD-BP153-01: the frame is applied to the ranking pool HERE, so nothing outside the category is
+  // ever ordered by magnitude. The litmus loop above is left UNCHANGED (it eliminates on criteria,
+  // a different job from deciding what is a candidate at all); the frame is intersected with its
+  // survivors rather than threaded through it, which keeps this ticket out of that function.
+  const pool = loop.survivors.filter((L) => framed.includes(L));
+  const droppedByFrame = loop.survivors.filter((L) => !framed.includes(L));
+  if (droppedByFrame.length) {
+    note(`   FRAME applied to the ranking pool: dropped ${droppedByFrame.map((L) => `${L}) ${OPT[L]}`).join(', ')} -- not ${category}, so never ranked`);
+  }
+  if (!pool.length) {
+    step(`ABSTAIN -- every litmus-loop survivor was outside the frame; nothing that is a ${category} remains to rank`);
+    emit({ kind: 'result', text: `ABSTAIN (no in-frame survivors)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `superlative-by-magnitude route: the litmus loop left survivors [${loop.survivors.join(', ')}], but the `
+        + `frame excluded all of them as not being ${category}; nothing in frame remains to order by magnitude`,
+    };
+  }
 
   step('STAGE B  order the pool by the property, both directions, as separate queries (his own check on the engine)');
   const mostToLeast = await askOrdering(askGoogle, category, property, 'most-to-least', pool, OPT, 'Q1 most-to-least', note);
   const leastToMost = await askOrdering(askGoogle, category, property, 'least-to-most', pool, OPT, 'Q2 least-to-most', note);
 
-  step('STAGE C  quality control -- same two directions, re-asked, ALL options re-included (his own stages 4/5)');
-  const mostToLeastQC = await askOrdering(askGoogle, category, property, 'most-to-least', ALL, OPT, 'Q3 most-to-least (QC, all options)', note);
-  const leastToMostQC = await askOrdering(askGoogle, category, property, 'least-to-most', ALL, OPT, 'Q4 least-to-most (QC, all options)', note);
+  // FD-BP153-01: QC re-includes every option the FRAME kept, not every option on the question.
+  // His QC exists to check that an ELIMINATION was right, and a frame exclusion is not an
+  // elimination -- re-including a biome here would reintroduce exactly the out-of-category
+  // candidate the frame just removed, and on qid 98 that is the Arctic Circle walking back in.
+  step(`STAGE C  quality control -- same two directions, re-asked, all IN-FRAME options re-included (his own stages 4/5)`);
+  const mostToLeastQC = await askOrdering(askGoogle, category, property, 'most-to-least', framed, OPT, 'Q3 most-to-least (QC, in-frame options)', note);
+  const leastToMostQC = await askOrdering(askGoogle, category, property, 'least-to-most', framed, OPT, 'Q4 least-to-most (QC, in-frame options)', note);
 
   const agreement = checkExtremeAgreement(targetExtreme, pool, mostToLeast, leastToMost, mostToLeastQC, leastToMostQC);
   for (const n of agreement.notes) note(n);
