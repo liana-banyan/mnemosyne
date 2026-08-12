@@ -134,13 +134,28 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     // with ONE google search." A frame that cost 9 rounds here would mean it had been built
     // per-option and would need rejecting on volume grounds alone.
     //
+    // RE-PINNED AGAIN, 55 -> 56, D-BP153-013 (THE MEMBERSHIP TERMINATOR). Wires STAGE M
+    // (extractNamedSetMembers() + runMembershipTerminator(), FD-BP152-19 applied to a NAMED SET)
+    // between the frame and Stage A/B, and it too spends exactly ONE query when it cannot resolve
+    // from owned evidence -- same "one query, not one per option" discipline the frame itself was
+    // held to above. THIS SPECIFIC INSTRUMENT is the one case where the terminator's own promise
+    // (save the ordering queries when it resolves) does NOT pay off: `assistedChannel` above hands
+    // back the SAME synthetic, content-free capture string for every pause, which never states a
+    // named-set member for anything, so STAGE M can never resolve here -- it always falls through
+    // to the EXISTING magnitude path unchanged, having spent its one query for nothing. On REAL
+    // evidence (qid 98's actual BP153 acquisition, see classify_cascade.membership_terminator.test.ts's
+    // own headline test) STAGE M resolves from OWNED evidence with ZERO new queries and skips Stage
+    // A/B's remaining rounds entirely -- the opposite direction this synthetic-content instrument
+    // cannot show, because "resolves" requires evidence that actually names members, and this stub
+    // never provides any.
+    //
     // ABSTAIN IS STILL EXPECTED HERE AND IS NOT A DEFECT: `fakeAskGoogle` returns null and every
     // capture is the synthetic content-free string above, so the cascade receives no real density
     // data for any option. An honest abstain on content-free input is the correct behavior -- the
     // point of this instrument is WHERE the run stops, not that it produces a verdict. What must
     // never come back is `demand_unknown`: that is the specific failure D-BP153-001 closed.
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    expect(rounds).toBe(55);
+    expect(rounds).toBe(56);
     expect(outcome.error).not.toBe('demand_unknown');
     expect(outcome.method).toBe('classify-cascade');
     expect(events.length).toBeGreaterThan(0);

@@ -1450,6 +1450,211 @@ export async function establishFrame(
   return { available: true, excluded, query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null };
 }
 
+// ─────────────────────────── THE NAMED SET, and THE MEMBERSHIP TERMINATOR ───────────────────────────
+//
+// D-BP153-013/BISHOP/seg-membership-terminator. Encodes Bishop's own hand derivation of qid 98
+// VERBATIM -- this section is a BUILD of what he already worked out, not a redesign:
+//
+//   Step 1 THE FRAME (establishFrame(), above -- NOT rebuilt here): which options are legitimate
+//   members of the category the question names ("world regions")? Biomes are not.
+//   Step 2 THE NAMED SET (extractNamedSetMembers(), below): the superlative phrase ("the world's
+//   most densely populated regions") can denote a NAMED SET, not a magnitude to rank -- the
+//   source NAMES its members directly, exactly the way establishFrame()'s source names its
+//   exclusions. qid 98's real evidence names exactly three: South Asia, Northeast US, Europe.
+//   Step 3 PUT THEM TOGETHER (runMembershipTerminator(), below): legitimate-regions (all, minus
+//   the frame's own exclusions) MINUS named-set-members = the answer candidates. Exactly one
+//   candidate is the answer.
+//   Step 4 If the difference is not exactly one option, ABSTAIN and name the survivors. Never
+//   pick among them -- this is FD-BP152-19 (the Membership Terminator: Occam elimination, break
+//   one rule and you are eliminated), the SAME "no tie-breaker, ever" rule this file's Stage 1
+//   already implements for criteria, applied here to a NAMED SET rather than a magnitude, and
+//   composed with FD-BP153-01 (frame first, above).
+//
+// THE MEASUREMENT THIS IS BUILT ON. qid 98's real evidence store, this run: the SAME passage
+// establishFrame() already fetches for the frame partition ALSO states, verbatim, "Only B (South
+// Asia), D (Northeast United States), and E (Europe) are recognized in human geography as major
+// global population clusters" -- the named set, sitting in evidence this run already owns, right
+// next to the frame partition. When BOTH resolve from owned evidence, this route answers with
+// ZERO new queries and never issues Stage B's four ordering queries at all -- the volume problem
+// that got this machine rate-limited (BP152: ~18 queries/run before google.com/sorry).
+//
+// NEVER TUNED TOWARD THE KEY. runMembershipTerminator() below is a pure function of (all,
+// frameExcluded, members) -- it can return any letter as the unique candidate, or none, and it
+// never breaks a tie. No branch in this section reads input.correctAnswer.
+
+export interface NamedSetResult {
+  /** False = the authority gave no usable answer -- the named set is UNAVAILABLE, not empty. See
+   *  FrameResult.available's own doc comment for why that distinction matters; the same reasoning
+   *  applies here symmetrically. */
+  available: boolean;
+  /** Option letters the SOURCE itself states ARE members of the named set. May be empty, which
+   *  (when `available` is true) is a valid reading meaning "the source named none of these as
+   *  members" -- not the same as unavailable. */
+  members: string[];
+  query: string;
+  via: string;
+  /** FD-BP153-04, mirrored from FrameResult -- THE RECEIPT SAYS WHICH. 'owned-passage' when the
+   *  named set was extracted from a passage this run had already acquired, NO new query issued;
+   *  'new-query' when no owned passage answered it and this fell through to its own googleBlocks()
+   *  call, exactly the same shape establishFrame() already uses. */
+  answeredFrom: 'owned-passage' | 'new-query';
+  /** Index into the caller's ownedPassages() array that answered the named set, when answeredFrom
+   *  is 'owned-passage'; null on 'new-query'. */
+  ownedPassageIndex: number | null;
+}
+
+/** THE SAME instruction/shape both the owned-evidence attempt and the fresh-query path below use
+ *  to read a named-set partition out of a passage -- one wording, mirroring
+ *  frameExtractionInstruction()'s own reason for existing (above). EXTRACTION ONLY (HARDWIRE-22):
+ *  asks the model to copy out names the passage ITSELF states ARE members, never to judge whether
+ *  an option belongs. */
+function namedSetExtractionInstruction(
+  all: string[],
+  OPT: Record<string, string>,
+  direction: 'most' | 'least',
+  property: string,
+): string {
+  return `If this passage states that any of these names IS one of the ${direction} ${property} -- a `
+    + 'named member the source itself calls out, not merely a plausible candidate -- copy out exactly '
+    + 'those names, spelled as the passage spells them. Copy only names the passage itself states ARE '
+    + 'members. If the passage states that none of them are members, return an empty list. Do not decide '
+    + `yourself which ones qualify. Names: ${all.map((L) => OPT[L]).join('; ')}`;
+}
+const NAMED_SET_EXTRACTION_SHAPE = '{"members":["exact name the passage says is one"],"stated_in_passage":true}';
+
+/**
+ * STEP 2, THE NAMED SET. Structurally, byte-for-byte, the same owned-evidence-first shape
+ * establishFrame() (above) already uses -- FD-BP153-04's ruling applies here exactly as it does
+ * there: "Before a step issues a new query, it must first try to answer that query by EXTRACTING
+ * from passages this run has already acquired. A new query is spent only when the owned evidence
+ * does not contain the answer." And D-BP153-010's rule extends here unchanged too: an owned
+ * passage yielding NOTHING extractable is INCONCLUSIVE for this passage, not "named zero
+ * members" -- tries the next owned passage, then the query path; and a query response with an
+ * EMPTY passage is UNAVAILABLE, never "the source named no members" (see the two D-BP153-010
+ * checks inline below, identical reasoning to establishFrame()'s own).
+ *
+ * EXPORTED for the same reason establishFrame() is exported: so this ticket's own verification
+ * can exercise the owned-evidence-first behavior directly (mocked askGoogle/gemmaExtract), no
+ * live Ollama or Electron browser automation required.
+ */
+export async function extractNamedSetMembers(
+  askGoogle: MethodRunContext['askGoogle'],
+  category: string,
+  direction: 'most' | 'least',
+  property: string,
+  all: string[],
+  OPT: Record<string, string>,
+  note: (text: string) => void,
+  // FD-BP153-04, ADDITIVE/OPTIONAL -- same contract as establishFrame()'s own `ownedPassages`
+  // parameter, same accessor.
+  ownedPassages?: () => string[],
+): Promise<NamedSetResult> {
+  const owned = (ownedPassages ? ownedPassages() : []).filter((p) => !!p && !!p.trim());
+  for (let i = 0; i < owned.length; i++) {
+    const passage = owned[i];
+    // eslint-disable-next-line no-await-in-loop -- each owned passage is tried in turn, stopping at
+    // the first that yields a verified, non-empty member set; extraction over text already sitting
+    // in memory (a local Ollama call), never a network fan-out, so nothing here to parallelize.
+    const ex = await gemmaExtract(namedSetExtractionInstruction(all, OPT, direction, property), passage, NAMED_SET_EXTRACTION_SHAPE);
+    let members = toLetters(ex?.members as unknown[] | undefined, OPT);
+    members = members.filter((L) => appearsIn(passage, OPT[L]));
+    if (members.length) {
+      note(
+        `   NAMED SET: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already acquired `
+          + `this run -- NO NEW QUERY ISSUED) -- source names ${members.map((L) => `${L}) ${OPT[L]}`).join(', ')} as members`,
+      );
+      return {
+        available: true, members, query: `(owned passage ${i + 1} of ${owned.length}, no query issued)`,
+        via: 'owned-passage', answeredFrom: 'owned-passage', ownedPassageIndex: i,
+      };
+    }
+    // D-BP153-010's rule, extended exactly as establishFrame() extends it: nothing extracted from
+    // THIS passage is inconclusive, not "the source named no members" -- fall through to the next
+    // owned passage, then the query path below.
+  }
+  if (owned.length) {
+    note(`   NAMED SET: ${owned.length} owned passage(s) already acquired this run did not name any members -- falling through to a NEW QUERY`);
+  }
+
+  // The estate's own query-generation style -- the exact wording this ticket specifies, the same
+  // list()/OPT convention every other query in this file already uses.
+  const query = `Which of these are ${category} that ARE ${direction} ${property}? Name each one that is. ${list(all, OPT)}`;
+  note(`   NAMED SET: ${query}`);
+  const res = await googleBlocks(askGoogle, query);
+  if (!res.ok) {
+    note(`   NAMED SET: no usable answer (${res.via}) -- the named set is UNAVAILABLE, not empty`);
+    return { available: false, members: [], query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null };
+  }
+  // D-BP153-010, mirrored: an EMPTY passage is not the same fact as "the source named zero
+  // members" -- it means nothing was asked at all. See establishFrame()'s own D-BP153-010 comment
+  // for the full incident this rule closes; the same failure mode is possible here.
+  if (!res.text || !res.text.trim()) {
+    note(`   NAMED SET: the source returned an EMPTY passage (${res.via}) -- the named set is UNAVAILABLE, not "no members"`);
+    return { available: false, members: [], query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null };
+  }
+  const ex = await gemmaExtract(namedSetExtractionInstruction(all, OPT, direction, property), res.text, NAMED_SET_EXTRACTION_SHAPE);
+  let members = toLetters(ex?.members as unknown[] | undefined, OPT);
+  members = members.filter((L) => appearsIn(res.text, OPT[L]));
+  note(
+    `   NAMED SET: answered FROM A NEW QUERY -- source names ${members.length ? members.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'} as members`,
+  );
+  return { available: true, members, query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null };
+}
+
+export interface MembershipTerminatorResult {
+  /** legitimate-regions (all, minus the frame's own exclusions) MINUS named-set-members. */
+  candidates: string[];
+  /** candidates[0] when candidates.length === 1, else null. NEVER a forced pick among more than
+   *  one survivor -- Step 4, verbatim: "If the difference is not exactly one option, ABSTAIN and
+   *  name the surviving candidates. Never pick among them." */
+  unique: string | null;
+  /** Plain-English rendering of the set arithmetic, for the transcript/basis -- a reader can
+   *  audit the verdict (or the abstain) without re-running anything. */
+  why: string;
+}
+
+/**
+ * STEP 3, PUT THEM TOGETHER. Pure function over already-computed inputs -- no I/O, fully
+ * testable in isolation. `all` is the FULL original option set (mirrors establishFrame()'s own
+ * `all` parameter); `frameExcluded` is Step 1's own exclusion list (FrameResult.excluded, already
+ * built, not touched by this ticket); `members` is Step 2's own named-set membership
+ * (NamedSetResult.members, extractNamedSetMembers() above).
+ *
+ * candidates = all MINUS frameExcluded MINUS members. unique = candidates.length === 1 ?
+ * candidates[0] : null. Nothing else -- no scoring, no weighting, no tiebreak. Same Occam
+ * discipline applyOccamElimination() (Stage 1, above) already enforces for criteria, restated
+ * here for a named set: a candidate that fails EITHER test (out of frame, or a named member) is
+ * eliminated; everything else survives, and a survivor set of size other than 1 abstains rather
+ * than being forced.
+ */
+export function runMembershipTerminator(
+  all: string[],
+  frameExcluded: string[],
+  members: string[],
+  OPT: Record<string, string>,
+): MembershipTerminatorResult {
+  const excludedSet = new Set(frameExcluded);
+  const memberSet = new Set(members);
+  const legitimate = all.filter((L) => !excludedSet.has(L));
+  const candidates = legitimate.filter((L) => !memberSet.has(L));
+  const unique = candidates.length === 1 ? candidates[0] : null;
+  const legitimateStr = `{${legitimate.map((L) => `${L}) ${OPT[L]}`).join(', ') || 'none'}}`;
+  const membersStr = `{${members.map((L) => `${L}) ${OPT[L]}`).join(', ') || 'none'}}`;
+  let why: string;
+  if (candidates.length === 1) {
+    why = `legitimate-regions ${legitimateStr} MINUS named-set-members ${membersStr} leaves exactly one `
+      + `candidate: ${candidates[0]}) ${OPT[candidates[0]]} -- UNIQUE`;
+  } else if (candidates.length === 0) {
+    why = `legitimate-regions ${legitimateStr} MINUS named-set-members ${membersStr} leaves ZERO candidates `
+      + '-- every legitimate option was also named a member; not unique, abstaining';
+  } else {
+    why = `legitimate-regions ${legitimateStr} MINUS named-set-members ${membersStr} leaves `
+      + `${candidates.length} candidates (${candidates.map((L) => `${L}) ${OPT[L]}`).join(', ')}) -- not `
+      + 'unique, abstaining and naming the survivors (Step 4: never pick among them)';
+  }
+  return { candidates, unique, why };
+}
+
 /** Reads the option sitting at a named extreme out of a most-to-least-worded ordering array
  *  (index 0 = the "most" end, last index = the "least" end) -- structural index lookup only; the
  *  CALLER supplies which array (mostToLeast-worded vs leastToMost-worded) so this stays a plain
@@ -1670,6 +1875,52 @@ export async function runSuperlativeByMagnitude(
     };
   }
   note(`   FRAME: ${framed.length} of ${ALL.length} option(s) remain in frame -- ${framed.join(', ')}`);
+
+  // ── STAGE M: THE MEMBERSHIP TERMINATOR (FD-BP152-19 x FD-BP153-01) ─────────────────────────
+  // See this file's own "THE NAMED SET, and THE MEMBERSHIP TERMINATOR" section header (above
+  // establishFrame()... below it, structurally) for the full derivation and the measurement
+  // behind it. Runs AFTER the frame (Step 1, above) and BEFORE Stage A/B (the litmus-strip loop
+  // and the four ordering queries) -- if it resolves, NEITHER of those ever runs, which is the
+  // whole point: it saves the queries that got this machine rate-limited. If it does not resolve
+  // (named set unavailable, or the difference is not exactly one option), this falls through to
+  // the EXISTING magnitude path below, completely unchanged -- not one line of Stage A onward is
+  // touched by this block.
+  step('STAGE M  THE MEMBERSHIP TERMINATOR (FD-BP152-19 x FD-BP153-01) -- does a NAMED SET resolve this without ranking?');
+  const namedSet = await extractNamedSetMembers(askGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages);
+  if (namedSet.available) {
+    const termination = runMembershipTerminator(ALL, frame.excluded, namedSet.members, OPT);
+    note(`   MEMBERSHIP TERMINATOR: ${termination.why}`);
+    if (termination.unique) {
+      const winner = termination.unique;
+      const ok = KEY != null ? winner === KEY : undefined;
+      step(
+        `PUBLISH -- ${winner} (${OPT[winner]}) -- the named set resolved uniquely; Stage A's litmus-strip loop `
+          + 'and Stage B\'s four ordering queries were never issued',
+      );
+      emit({
+        kind: 'result',
+        text: `${KEY != null ? (ok ? 'CORRECT' : 'WRONG') : 'ANSWER'}  ${winner} (${OPT[winner]})  via membership terminator${KEY != null ? `  key=${KEY}` : ''}`,
+        ts: nowIso(),
+      });
+      note(`   ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+      return {
+        qid: input.qid,
+        question: input.question,
+        verdict: winner,
+        correct: KEY,
+        ok,
+        abstain: false,
+        freeText: input.qid == null,
+        basis: `superlative-by-magnitude route, MEMBERSHIP TERMINATOR (FD-BP152-19's Occam elimination applied to a `
+          + `NAMED SET, FD-BP153-01 frame first): frame excluded [${frame.excluded.join(', ') || 'none'}] `
+          + `(${frame.answeredFrom}); named set of ${match.direction} ${property} members `
+          + `[${namedSet.members.join(', ') || 'none'}] (${namedSet.answeredFrom}); ${termination.why}`,
+      };
+    }
+    note('   MEMBERSHIP TERMINATOR did not resolve uniquely -- falling through to the magnitude route, unchanged');
+  } else {
+    note(`   NAMED SET unavailable (${namedSet.via}) -- falling through to the magnitude route, unchanged`);
+  }
 
   step('STAGE A  narrow the pool -- reuses runLitmusStripLoop() (Stage 2 above) UNCHANGED, no seed criteria');
   const loop = await runLitmusStripLoop(input, ctx, [], note);
