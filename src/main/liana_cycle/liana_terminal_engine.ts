@@ -617,7 +617,14 @@ async function runLianaCycleQuestionInner(
       // { askGoogle, emit } (stepped_audible.ts, this ticket's own FORBIDDEN "pause plumbing", not
       // touched) -- on that combination the two META-questions honestly fall back to Google, same
       // as if this were never wired, rather than crashing or fabricating an authority.
-      const surveyCtx: MethodRunContext = { askGoogle: effectiveAskGoogle, emit, askConversationalAuthority };
+      // FD-BP153-04, ADDITIVE: an honest empty accessor, not omitted -- Survey is about to fetch
+      // its own first passage, so nothing is owned yet at this point in the run. Present (not
+      // undefined) so a reader of this ctx does not need to guess whether ownedPassages is
+      // supported here at all; see MethodRunContext.ownedPassages's own doc comment
+      // (method_registry.ts) for the full ruling this field implements.
+      const surveyCtx: MethodRunContext = {
+        askGoogle: effectiveAskGoogle, emit, askConversationalAuthority, ownedPassages: () => [],
+      };
       const surveyStepWrap = wrapForSteppedAudible('survey', surveyCtx, steppedAudible ?? null, steppedLog);
       if (steppedAudible) {
         const surveyStepDefs = buildUpfrontStepList('survey');
@@ -818,9 +825,21 @@ async function runLianaCycleQuestionInner(
         note(emit, `   STEPPED AUDIBLE has no step map for method "${method.id}" -- this run proceeds WITHOUT per-step pausing (same as stepped audible OFF). See stepped_audible.ts's header for why (scoped to comparative-cascade only).`);
       }
     }
+    // FD-BP153-04, ADDITIVE: hands the selected method back the raw passages Survey (immediately
+    // above) already acquired THIS RUN -- the ambiguity query's and the operation query's own
+    // rawGooglePassage (survey_stage.ts's own INSTRUMENT-ONLY fields, D-BP152-004/005, unmodified)
+    // -- so a method's own query-issuing step can try extraction from OWNED evidence before
+    // spending a new query (the Founder's ruling; see MethodRunContext.ownedPassages's own doc
+    // comment, method_registry.ts, for the measurement behind it). Non-empty strings only. OWNED
+    // MEANS THIS RUN ONLY: read live off `surveyResult`, already sitting in memory from the block
+    // above -- never the evidence store on disk, never a prior acquisition.
     const baseCtx: MethodRunContext = {
       askGoogle: wrapAskGoogleWithAudible(effectiveAskGoogle, audible ?? null, emit, audibleLog),
       emit,
+      ownedPassages: () => [
+        surveyResult.step2.ambiguity?.rawGooglePassage,
+        surveyResult.step2.operation?.rawGooglePassage,
+      ].filter((p): p is string => !!p && !!p.trim()),
     };
     const stepWrap = wrapForSteppedAudible(method.id, baseCtx, steppedAudible ?? null, steppedLog);
     const outcome = await method.run(methodInput, stepWrap.ctx);
