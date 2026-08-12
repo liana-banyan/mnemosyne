@@ -1,10 +1,17 @@
 // classify_cascade.owned_evidence_frame.test.ts -- D-BP153-011/BISHOP/seg-frame-consults-owned-
-// evidence-first
+// evidence-first, UPDATED D-BP153-016/BISHOP/seg-classify-016 (typed passages, verify-the-span)
 //
 // THE RULING THIS TESTS (FD-BP153-04, RULINGS_BP153.md, Founder, verbatim): "Before a step issues
 // a new query, it must first try to answer that query by EXTRACTING from passages this run has
 // already acquired. A new query is spent only when the owned evidence does not contain the
 // answer."
+//
+// D-BP153-016 UPDATE. `ownedPassages()` now returns typed `OwnedPassage[]` (text + kind), not bare
+// strings (FD-BP153-07 FIX 1), and every extracted value must carry a verbatim SUPPORTING SPAN
+// (FIX 2) -- see classify_cascade.owned_evidence_typed_passages.test.ts for the dedicated coverage
+// of the kind-rejection, span-verification, and passage-cannot-source-the-claim behaviors this
+// ticket adds. This file is updated in place, same convention, so its pre-existing coverage of
+// establishFrame()'s owned-evidence-first contract keeps passing under the new shape.
 //
 // THE MEASUREMENT BEHIND IT (do not re-derive -- see establishFrame()'s own header,
 // classify_cascade.ts). Live run 2026-08-12T16:04Z, qid 98: the OPERATION query's own response
@@ -26,7 +33,7 @@
 
 import { describe, test, expect, vi } from 'vitest';
 import { establishFrame } from './classify_cascade';
-import type { MethodRunContext } from '../method_registry';
+import type { MethodRunContext, OwnedPassage } from '../method_registry';
 
 // qid 98's option letters, same fixture classify_cascade.frame.test.ts already uses.
 const OPT: Record<string, string> = {
@@ -42,6 +49,11 @@ const OPT: Record<string, string> = {
 };
 const ALL = Object.keys(OPT);
 const CATEGORY = 'world regions';
+
+// D-BP153-016: wraps a bare passage string as an OwnedPassage of kind 'operation' -- the same kind
+// liana_terminal_engine.ts tags the operation query's own passage with, and a kind establishFrame()
+// accepts (only 'ambiguity' is rejected, per FD-BP153-07 FIX 1).
+const owned = (text: string): OwnedPassage => ({ text, kind: 'operation' });
 
 function notes(): { note: (text: string) => void; log: string[] } {
   const log: string[] = [];
@@ -78,12 +90,17 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
     const originalFetch = global.fetch;
     // The exact shape of passage the live measurement found sitting in the OPERATION query's own
     // answer -- states the exclusion explicitly, in prose, never as a pre-parsed list.
-    const ownedPassage = "Options A (South America), C (North Africa), F (Central Asia), G (Arctic Circle), "
+    const firstSentence = "Options A (South America), C (North Africa), F (Central Asia), G (Arctic Circle), "
       + "H (Amazon Rainforest), and I (Sahara Desert) are all NOT considered among the world's most "
-      + 'densely populated regions. Only B (South Asia), D (Northeast United States), and E (Europe) are '
+      + 'densely populated regions.';
+    const ownedPassage = `${firstSentence} Only B (South Asia), D (Northeast United States), and E (Europe) are `
       + 'recognized in human geography as major global population clusters.';
     global.fetch = queuedFetch([
-      JSON.stringify({ not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'], stated_in_passage: true }),
+      JSON.stringify({
+        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
+          .map((name) => ({ name, span: firstSentence })),
+        stated_in_passage: true,
+      }),
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'this must never be reached' }));
     try {
@@ -94,7 +111,7 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
         ALL,
         OPT,
         note,
-        () => [ownedPassage],
+        () => [owned(ownedPassage)],
       );
 
       expect(askGoogle).not.toHaveBeenCalled(); // THE POINT OF THE RULING: no new query issued
@@ -113,10 +130,11 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
 
   test('absent ownedPassages (no accessor at all) falls through to the query path, unchanged from before this ticket', async () => {
     const originalFetch = global.fetch;
+    const freshPassage = 'Arctic Circle is a climatic zone, not a world region.';
     global.fetch = queuedFetch([
-      JSON.stringify({ not_members: ['Arctic Circle'], stated_in_passage: true }),
+      JSON.stringify({ not_members: [{ name: 'Arctic Circle', span: freshPassage }], stated_in_passage: true }),
     ]);
-    const askGoogle = vi.fn(async () => ({ snippet: 'Arctic Circle is a climatic zone, not a world region.' }));
+    const askGoogle = vi.fn(async () => ({ snippet: freshPassage }));
     try {
       const { note, log } = notes();
       // No sixth argument at all -- the exact call shape every pre-existing call site (before this
@@ -136,10 +154,11 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
 
   test('empty ownedPassages() (Survey ran but acquired nothing usable) falls through to the query path identically', async () => {
     const originalFetch = global.fetch;
+    const freshPassage = 'Arctic Circle is a climatic zone, not a world region.';
     global.fetch = queuedFetch([
-      JSON.stringify({ not_members: ['Arctic Circle'], stated_in_passage: true }),
+      JSON.stringify({ not_members: [{ name: 'Arctic Circle', span: freshPassage }], stated_in_passage: true }),
     ]);
-    const askGoogle = vi.fn(async () => ({ snippet: 'Arctic Circle is a climatic zone, not a world region.' }));
+    const askGoogle = vi.fn(async () => ({ snippet: freshPassage }));
     try {
       const { note } = notes();
       const frameWithEmptyAccessor = await establishFrame(
@@ -155,11 +174,12 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
 
   test('owned passages that are empty/whitespace-only are never sent to extraction -- D-BP153-010 extends to owned evidence', async () => {
     const originalFetch = global.fetch;
+    const realPassage = 'The Arctic Circle is a polar climatic zone, not a world region.';
     global.fetch = queuedFetch([
       // Only ONE response queued -- if the empty/whitespace passages were (wrongly) sent to
       // gemmaExtract() too, queuedFetch() throws on the second/third call and the test fails loudly
       // rather than silently passing.
-      JSON.stringify({ not_members: ['Arctic Circle'], stated_in_passage: true }),
+      JSON.stringify({ not_members: [{ name: 'Arctic Circle', span: realPassage }], stated_in_passage: true }),
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'must never be reached -- the real owned passage answers it' }));
     try {
@@ -170,7 +190,7 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
         ALL,
         OPT,
         note,
-        () => ['', '   \n  ', 'The Arctic Circle is a polar climatic zone, not a world region.'],
+        () => [owned(''), owned('   \n  '), owned(realPassage)],
       );
       expect(askGoogle).not.toHaveBeenCalled();
       expect(frame.answeredFrom).toBe('owned-passage');
@@ -184,26 +204,34 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
     }
   });
 
-  test('an extracted name NOT actually present in the owned passage text is rejected by appearsIn(), never trusted', async () => {
+  test('an extracted name whose span is not actually verbatim in the owned passage text is discarded, never trusted', async () => {
     const originalFetch = global.fetch;
     // The owned passage names Arctic Circle as excluded, but the model hallucinates an ADDITIONAL
-    // name ("Europe") the passage never states -- gemmaExtract()'s own JSON says so, but the
-    // passage text does not contain the word "Europe" anywhere.
+    // name ("Europe") the passage never states -- gemmaExtract()'s own JSON says so, but the only
+    // span it can offer for "Europe" is real passage text that does not actually mention Europe at
+    // all (D-BP153-016 FIX 2: the span must CONTAIN the value it is offered for).
     const ownedPassage = 'The Arctic Circle is a polar climatic zone, not a world region.';
     global.fetch = queuedFetch([
-      JSON.stringify({ not_members: ['Arctic Circle', 'Europe'], stated_in_passage: true }),
+      JSON.stringify({
+        not_members: [
+          { name: 'Arctic Circle', span: ownedPassage },
+          { name: 'Europe', span: ownedPassage }, // verbatim in the passage, but does not mention Europe
+        ],
+        stated_in_passage: true,
+      }),
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'must never be reached' }));
     try {
-      const { note } = notes();
+      const { note, log } = notes();
       const frame = await establishFrame(
-        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note, () => [ownedPassage],
+        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note, () => [owned(ownedPassage)],
       );
       expect(askGoogle).not.toHaveBeenCalled();
       expect(frame.answeredFrom).toBe('owned-passage');
-      // Europe (E) never appears in the owned text -- appearsIn() must strip it. Only G survives.
+      // Europe (E)'s "span" never actually contains the word Europe -- discarded. Only G survives.
       expect(frame.excluded).toEqual(['G']);
       expect(frame.excluded).not.toContain('E');
+      expect(log.some((l) => /discarded 1 value/.test(l))).toBe(true);
     } finally {
       global.fetch = originalFetch;
     }
@@ -211,14 +239,13 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
 
   test('an owned passage that yields NOTHING extractable is inconclusive, not "excluded nothing" -- tries the next passage, then the query path', async () => {
     const originalFetch = global.fetch;
-    // First owned passage is real text but never addresses the category at all (e.g. it answered a
-    // different question this run also asked) -- gemmaExtract() honestly returns an empty list for
-    // it. A second owned passage DOES contain the answer.
+    // First owned passage is real text but never mentions ANY option at all -- D-BP153-016 FIX 3
+    // rejects it mechanically, before extraction is even attempted (it cannot source a claim about
+    // options it never names). A second owned passage DOES contain the answer.
     const offTopicPassage = 'Population density is measured in people per square kilometer worldwide.';
     const onTopicPassage = 'The Sahara Desert is a desert biome, not a world region, and is excluded from the count.';
     global.fetch = queuedFetch([
-      JSON.stringify({ not_members: [], stated_in_passage: false }), // passage 1: nothing extractable
-      JSON.stringify({ not_members: ['Sahara Desert'], stated_in_passage: true }), // passage 2: answers it
+      JSON.stringify({ not_members: [{ name: 'Sahara Desert', span: onTopicPassage }], stated_in_passage: true }), // passage 2: answers it
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'must never be reached -- passage 2 answers it' }));
     try {
@@ -226,13 +253,16 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
       const frame = await establishFrame(
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, ALL, OPT, note,
-        () => [offTopicPassage, onTopicPassage],
+        () => [owned(offTopicPassage), owned(onTopicPassage)],
       );
       expect(askGoogle).not.toHaveBeenCalled();
       expect(frame.answeredFrom).toBe('owned-passage');
-      expect(frame.ownedPassageIndex).toBe(1); // the SECOND owned passage is the one that answered
+      // offTopicPassage was REJECTED mechanically (FIX 3, names no option) before ever reaching
+      // extraction -- onTopicPassage is the only one tried, so its index in the FILTERED array is 0.
+      expect(frame.ownedPassageIndex).toBe(0);
       expect(frame.excluded).toEqual(['I']);
-      expect(log.some((l) => /FROM OWNED EVIDENCE/.test(l) && /passage 2 of 2/.test(l))).toBe(true);
+      expect(log.some((l) => /REJECTED an owned passage/.test(l) && /FIX 3/.test(l))).toBe(true);
+      expect(log.some((l) => /FROM OWNED EVIDENCE/.test(l) && /passage 1 of 1/.test(l))).toBe(true);
     } finally {
       global.fetch = originalFetch;
     }
@@ -240,26 +270,27 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
 
   test('NONE of the owned passages contain the answer -- falls through to the query path, and the query still runs exactly as before', async () => {
     const originalFetch = global.fetch;
+    // Neither passage mentions ANY option -- both are REJECTED mechanically (FIX 3), so this run's
+    // owned evidence contributes ZERO gemmaExtract() calls, and falls straight to the fresh query.
     const offTopicPassage1 = 'Population density is measured in people per square kilometer worldwide.';
     const offTopicPassage2 = 'The question asks about geographic classification generally.';
+    const freshPassage = 'Arctic Circle is a climatic zone, not a world region.';
     global.fetch = queuedFetch([
-      JSON.stringify({ not_members: [], stated_in_passage: false }), // owned passage 1: nothing
-      JSON.stringify({ not_members: [], stated_in_passage: false }), // owned passage 2: nothing
-      JSON.stringify({ not_members: ['Arctic Circle'], stated_in_passage: true }), // the fresh query
+      JSON.stringify({ not_members: [{ name: 'Arctic Circle', span: freshPassage }], stated_in_passage: true }), // the fresh query
     ]);
-    const askGoogle = vi.fn(async () => ({ snippet: 'Arctic Circle is a climatic zone, not a world region.' }));
+    const askGoogle = vi.fn(async () => ({ snippet: freshPassage }));
     try {
       const { note, log } = notes();
       const frame = await establishFrame(
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, ALL, OPT, note,
-        () => [offTopicPassage1, offTopicPassage2],
+        () => [owned(offTopicPassage1), owned(offTopicPassage2)],
       );
-      expect(askGoogle).toHaveBeenCalledTimes(1); // owned evidence was tried FIRST, but exhausted
+      expect(askGoogle).toHaveBeenCalledTimes(1); // owned evidence was tried FIRST, but both rejected
       expect(frame.answeredFrom).toBe('new-query');
       expect(frame.ownedPassageIndex).toBeNull();
       expect(frame.excluded).toEqual(['G']);
-      expect(log.some((l) => /did not contain a usable frame partition -- falling through to a NEW QUERY/.test(l))).toBe(true);
+      expect(log.filter((l) => /REJECTED an owned passage/.test(l) && /FIX 3/.test(l)).length).toBe(2);
       expect(log.some((l) => /FROM A NEW QUERY/.test(l))).toBe(true);
     } finally {
       global.fetch = originalFetch;

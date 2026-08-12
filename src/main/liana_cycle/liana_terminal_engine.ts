@@ -47,7 +47,7 @@ import { explainSelection, listMethods, selectMethod } from './method_registry';
 // only after all three surveyed-ask derivations refuse. See its own header in demand_test.ts.
 import { describeDemand, determineDemandFromAmbiguityNested, determineDemandFromOperationAnswer, determineDemandFromQuestionStructure, determineDemandFromSurveyedAsk } from './demand_test';
 import type { DemandResult } from './demand_test';
-import type { AskGoogleFn, ConversationalAuthorityFn, EmitFn, MethodQuestionInput, MethodRunContext } from './method_registry';
+import type { AskGoogleFn, ConversationalAuthorityFn, EmitFn, MethodQuestionInput, MethodRunContext, OwnedPassage } from './method_registry';
 // D-BP151-026/BISHOP/seg-contingency-operator (Contingency Operator: Survey Splice), ORIGIN.
 // Founder, BP151, Q-20: "This is a case for Contingency Operators. Do it, and see if it works
 // before I ratify." runSurveyStage() (Founder steps 2, 3, 4, 6) was built D-BP151-025 but never
@@ -833,13 +833,30 @@ async function runLianaCycleQuestionInner(
     // comment, method_registry.ts, for the measurement behind it). Non-empty strings only. OWNED
     // MEANS THIS RUN ONLY: read live off `surveyResult`, already sitting in memory from the block
     // above -- never the evidence store on disk, never a prior acquisition.
+    //
+    // D-BP153-016, FIX 1, TYPED: each passage is now tagged with the QUESTION IT WAS ACQUIRED TO
+    // ANSWER -- 'ambiguity' for the ambiguity meta-question's own passage, 'operation' for the
+    // operation meta-question's own. THE RULING THIS CLOSES: the live 2026-08-12T20:39Z run pointed
+    // classify_cascade.ts's extractors at the ambiguity passage (which enumerates ALTERNATIVE
+    // meanings and is, by construction, full of counterfactuals) and mined a counterfactual clause
+    // as an assertion. `kind` is what lets an extractor refuse that passage outright, structurally,
+    // rather than by convention. `sourceQuery` carries the literal query text (Survey's own
+    // `askedText`) through for audit, when the caller has it.
     const baseCtx: MethodRunContext = {
       askGoogle: wrapAskGoogleWithAudible(effectiveAskGoogle, audible ?? null, emit, audibleLog),
       emit,
-      ownedPassages: () => [
-        surveyResult.step2.ambiguity?.rawGooglePassage,
-        surveyResult.step2.operation?.rawGooglePassage,
-      ].filter((p): p is string => !!p && !!p.trim()),
+      ownedPassages: (): OwnedPassage[] => {
+        const out: OwnedPassage[] = [];
+        const amb = surveyResult.step2.ambiguity;
+        if (amb && amb.rawGooglePassage && amb.rawGooglePassage.trim()) {
+          out.push({ text: amb.rawGooglePassage, kind: 'ambiguity', sourceQuery: amb.askedText });
+        }
+        const op = surveyResult.step2.operation;
+        if (op && op.rawGooglePassage && op.rawGooglePassage.trim()) {
+          out.push({ text: op.rawGooglePassage, kind: 'operation', sourceQuery: op.askedText });
+        }
+        return out;
+      },
     };
     const stepWrap = wrapForSteppedAudible(method.id, baseCtx, steppedAudible ?? null, steppedLog);
     const outcome = await method.run(methodInput, stepWrap.ctx);

@@ -1,17 +1,28 @@
 // classify_cascade.discriminator.test.ts -- D-BP153-015/BISHOP/seg-discriminator
+// UPDATED D-BP153-016/BISHOP/seg-classify-016 (typed passages, verify-the-span)
 //
 // STAGE D, THE DISCRIMINATOR. Fires ONLY when STAGE M (the membership terminator,
 // classify_cascade.membership_terminator.test.ts) leaves MORE THAN ONE candidate. See
 // classify_cascade.ts's own "STAGE D: THE DISCRIMINATOR" section header for the full derivation
 // and TICKET_D-BP153-015_THE_DISCRIMINATOR.md for the Founder's rulings this implements.
 //
+// D-BP153-016 UPDATE. `ownedPassages()` now returns typed `OwnedPassage[]` (text + kind), not bare
+// strings (FD-BP153-07 FIX 1), and every extracted kind (and category_kind) must carry a verbatim
+// SUPPORTING SPAN (FIX 2). A passage naming NONE of the candidates under test is rejected before
+// extraction is even attempted (FIX 3) -- FRAME_PASSAGE (below) never names South America, North
+// Africa, or Central Asia, so the wiring tests' own STAGE D owned-evidence attempt against it is
+// now a mechanical, no-query rejection rather than an extraction that honestly finds nothing; the
+// end-to-end outcomes are unchanged (see the inline notes at each wiring test).
+//
 // THE REAL FIXTURE, verbatim (never paraphrased, same passage
 // classify_cascade.named_set_recall.test.ts already quotes as its own REAL_PASSAGE, and the exact
 // passage the ticket's own "WHY THIS EXISTS" section quotes):
-const WHY_PASSAGE = 'Options A (South America), C (North Africa), F (Central Asia), G (Arctic Circle), '
+const WHY_PASSAGE_S1 = 'Options A (South America), C (North Africa), F (Central Asia), G (Arctic Circle), '
   + "H (Amazon Rainforest), and I (Sahara Desert) are all correct choices because none of them are "
-  + "considered major high-density global population clusters. Only B (South Asia), D (Northeast "
-  + 'United States), and E (Europe) qualify as densely populated regions on a global scale.';
+  + 'considered major high-density global population clusters.';
+const WHY_PASSAGE_S2 = 'Only B (South Asia), D (Northeast United States), and E (Europe) qualify as '
+  + 'densely populated regions on a global scale.';
+const WHY_PASSAGE = `${WHY_PASSAGE_S1} ${WHY_PASSAGE_S2}`;
 // A SEPARATE passage stating the frame's own biome exclusion -- the ticket's own WHY section notes
 // the live run's frame came from a DIFFERENT passage than the named-set passage above; this mirrors
 // that split rather than inventing a single passage that does both jobs.
@@ -22,7 +33,7 @@ import { describe, test, expect, vi } from 'vitest';
 import {
   runDiscriminator, applyDiscriminatorElimination, runSuperlativeByMagnitude, extractSuperlativeMatch,
 } from './classify_cascade';
-import type { MethodRunContext, MethodQuestionInput } from '../method_registry';
+import type { MethodRunContext, MethodQuestionInput, OwnedPassage } from '../method_registry';
 import type { LianaTerminalEvent } from '../../../shared/liana_cycle/liana_terminal_types';
 
 // qid 98's option letters, same fixture every classify_cascade.*.test.ts sibling already uses.
@@ -45,6 +56,9 @@ const CATEGORY = 'world regions';
 // what STAGE D does with it.
 const CANDIDATES = ['A', 'C', 'F'];
 const QUESTION = "Which of the following world regions is NOT considered one of the world's most densely populated regions?";
+
+// D-BP153-016: wraps a bare passage string as an OwnedPassage of kind 'operation'.
+const owned = (text: string): OwnedPassage => ({ text, kind: 'operation' });
 
 function notes(): { note: (text: string) => void; log: string[] } {
   const log: string[] = [];
@@ -173,18 +187,20 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
 
   test('TEST 2: an owned passage stating a distinction resolves with ZERO queries, receipt says FROM OWNED EVIDENCE', async () => {
     const originalFetch = global.fetch;
-    const ownedPassage = "According to Google's own entity classification, South America is labeled a "
-      + 'Continent. North Africa is labeled a Colloquial area, not a formally defined world region. '
-      + 'Central Asia is also labeled a Colloquial area. Only a Continent is properly considered a '
-      + 'world region.';
+    const s1 = "According to Google's own entity classification, South America is labeled a Continent.";
+    const s2 = 'North Africa is labeled a Colloquial area, not a formally defined world region.';
+    const s3 = 'Central Asia is also labeled a Colloquial area.';
+    const s4 = 'Only a Continent is properly considered a world region.';
+    const ownedPassage = `${s1} ${s2} ${s3} ${s4}`;
     global.fetch = queuedFetch([
       JSON.stringify({
         kinds: [
-          { name: 'South America', kind: 'Continent' },
-          { name: 'North Africa', kind: 'Colloquial area' },
-          { name: 'Central Asia', kind: 'Colloquial area' },
+          { name: 'South America', kind: 'Continent', span: s1 },
+          { name: 'North Africa', kind: 'Colloquial area', span: s2 },
+          { name: 'Central Asia', kind: 'Colloquial area', span: s3 },
         ],
         category_kind: 'Continent',
+        category_kind_span: s4,
         stated_in_passage: true,
       }),
     ]);
@@ -192,7 +208,7 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
     try {
       const { note, log } = notes();
       const result = await runDiscriminator(
-        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note, () => [ownedPassage],
+        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note, () => [owned(ownedPassage)],
       );
       expect(askGoogle).not.toHaveBeenCalled();
       expect(result.unique).toBe('A');
@@ -245,15 +261,17 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
 
   test('TEST 5: a distinction stated for only SOME survivors -- no elimination (partial information does not eliminate)', async () => {
     const originalFetch = global.fetch;
-    const passage = 'South America is a Continent. North Africa is a Colloquial area. Central Asia is not '
-      + 'characterized in this passage at all.';
+    const s1 = 'South America is a Continent.';
+    const s2 = 'North Africa is a Colloquial area.';
+    const passage = `${s1} ${s2} Central Asia is not characterized in this passage at all.`;
     global.fetch = queuedFetch([
       JSON.stringify({
         kinds: [
-          { name: 'South America', kind: 'Continent' },
-          { name: 'North Africa', kind: 'Colloquial area' },
+          { name: 'South America', kind: 'Continent', span: s1 },
+          { name: 'North Africa', kind: 'Colloquial area', span: s2 },
         ],
         category_kind: 'Continent',
+        category_kind_span: s1,
         stated_in_passage: true,
       }),
     ]);
@@ -261,7 +279,7 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
     try {
       const { note } = notes();
       const result = await runDiscriminator(
-        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note, () => [passage],
+        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note, () => [owned(passage)],
       );
       expect(askGoogle).not.toHaveBeenCalled();
       expect(result.unique).toBeNull();
@@ -273,18 +291,22 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
     }
   });
 
-  test('TEST 6: appearsIn() rejects a kind the passage does not actually contain -- never trusted', async () => {
+  test('TEST 6: a span that does not actually contain the hallucinated kind is discarded -- never trusted', async () => {
     const originalFetch = global.fetch;
-    const passage = 'South America is a Continent. North Africa is a Colloquial area.';
-    // Model hallucinates a kind for Central Asia ("Subcontinent") the passage never states.
+    const s1 = 'South America is a Continent.';
+    const s2 = 'North Africa is a Colloquial area.';
+    const passage = `${s1} ${s2}`;
+    // Model hallucinates a kind for Central Asia ("Subcontinent") the passage never states -- its
+    // only offered span is real passage text that never mentions "Subcontinent" at all.
     global.fetch = queuedFetch([
       JSON.stringify({
         kinds: [
-          { name: 'South America', kind: 'Continent' },
-          { name: 'North Africa', kind: 'Colloquial area' },
-          { name: 'Central Asia', kind: 'Subcontinent' },
+          { name: 'South America', kind: 'Continent', span: s1 },
+          { name: 'North Africa', kind: 'Colloquial area', span: s2 },
+          { name: 'Central Asia', kind: 'Subcontinent', span: s1 },
         ],
         category_kind: 'Continent',
+        category_kind_span: s1,
         stated_in_passage: true,
       }),
     ]);
@@ -292,13 +314,14 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
     try {
       const { note } = notes();
       const result = await runDiscriminator(
-        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note, () => [passage],
+        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note, () => [owned(passage)],
       );
       expect(result.kinds.F).toBeNull(); // "Subcontinent" never appears in the passage text -- rejected
       expect(result.kinds.A).toBe('Continent');
       expect(result.kinds.C).toBe('Colloquial area');
-      // F's kind ends up unknown (appearsIn() rejected the hallucination), so partial information
-      // does not eliminate -- proving the rejection actually propagates into the honest outcome.
+      // F's kind ends up unknown (span verification rejected the hallucination), so partial
+      // information does not eliminate -- proving the rejection actually propagates into the honest
+      // outcome.
       expect(result.unique).toBeNull();
       expect(result.eliminations).toEqual([]);
     } finally {
@@ -312,17 +335,27 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leave
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
       // STAGE 0 FRAME: owned[0]=FRAME_PASSAGE states the biomes explicitly -- resolves here.
-      JSON.stringify({ not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'], stated_in_passage: true }),
+      JSON.stringify({
+        not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: FRAME_PASSAGE })),
+        stated_in_passage: true,
+      }),
       // STAGE M NAMED SET: owned[0]=FRAME_PASSAGE tried first, direct+complement -- off-topic, nothing.
       JSON.stringify({ members: [], stated_in_passage: false }),
       JSON.stringify({ not_members: [], stated_in_passage: false }),
       // STAGE M NAMED SET: owned[1]=WHY_PASSAGE, direct+complement -- resolves reconciled {B,D,E}.
-      JSON.stringify({ members: ['South Asia', 'Northeast United States', 'Europe'], stated_in_passage: true }),
       JSON.stringify({
-        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'],
+        members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: WHY_PASSAGE_S2 })),
         stated_in_passage: true,
       }),
-      // STAGE D DISCRIMINATOR: owned[0]=FRAME_PASSAGE, owned[1]=WHY_PASSAGE -- neither states a kind.
+      JSON.stringify({
+        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
+          .map((name) => ({ name, span: WHY_PASSAGE_S1 })),
+        stated_in_passage: true,
+      }),
+      // STAGE D DISCRIMINATOR: owned[0]=FRAME_PASSAGE names NONE of the candidates {A,C,F} --
+      // D-BP153-016 FIX 3 rejects it mechanically before extraction, so this queued (empty) response
+      // is simply never consumed for it; owned[1]=WHY_PASSAGE DOES name all three candidates and
+      // consumes the next slot, honestly stating no kind.
       JSON.stringify({ kinds: [], category_kind: null, stated_in_passage: false }),
       JSON.stringify({ kinds: [], category_kind: null, stated_in_passage: false }),
       // STAGE D DISCRIMINATOR: the one fresh query also comes back with no stated kind distinction.
@@ -334,7 +367,7 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leave
       const ctx: MethodRunContext = {
         askGoogle: askGoogle as unknown as MethodRunContext['askGoogle'],
         emit: (e) => events.push(e),
-        ownedPassages: () => [FRAME_PASSAGE, WHY_PASSAGE],
+        ownedPassages: () => [owned(FRAME_PASSAGE), owned(WHY_PASSAGE)],
       };
       const input: MethodQuestionInput = { qid: 98, question: QUESTION, options: OPT, correctAnswer: 'A' };
       const match = extractSuperlativeMatch(QUESTION)!;
@@ -364,30 +397,40 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leave
 
   test('REQUIRED POSITIVE (FD-BP153-06, TRAIN ON TRUTH RUN BLIND): the real-fixture end-to-end run derives A, and the receipt shows a STATED basis -- a correct letter with an unstated basis fails this test', async () => {
     const originalFetch = global.fetch;
-    const discriminatorPassage = "According to Google's own entity classification, South America is labeled a "
-      + 'Continent. North Africa is labeled a Colloquial area, not a formally defined world region. '
-      + 'Central Asia is also labeled a Colloquial area. Only a Continent is properly considered a '
-      + 'world region.';
+    const ds1 = "According to Google's own entity classification, South America is labeled a Continent.";
+    const ds2 = 'North Africa is labeled a Colloquial area, not a formally defined world region.';
+    const ds3 = 'Central Asia is also labeled a Colloquial area.';
+    const ds4 = 'Only a Continent is properly considered a world region.';
+    const discriminatorPassage = `${ds1} ${ds2} ${ds3} ${ds4}`;
     global.fetch = queuedFetch([
-      JSON.stringify({ not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'], stated_in_passage: true }),
-      JSON.stringify({ members: [], stated_in_passage: false }),
-      JSON.stringify({ not_members: [], stated_in_passage: false }),
-      JSON.stringify({ members: ['South Asia', 'Northeast United States', 'Europe'], stated_in_passage: true }),
       JSON.stringify({
-        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'],
+        not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: FRAME_PASSAGE })),
         stated_in_passage: true,
       }),
-      // STAGE D DISCRIMINATOR: neither owned passage states a kind -- falls through to a NEW QUERY.
-      JSON.stringify({ kinds: [], category_kind: null, stated_in_passage: false }),
+      JSON.stringify({ members: [], stated_in_passage: false }),
+      JSON.stringify({ not_members: [], stated_in_passage: false }),
+      JSON.stringify({
+        members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: WHY_PASSAGE_S2 })),
+        stated_in_passage: true,
+      }),
+      JSON.stringify({
+        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
+          .map((name) => ({ name, span: WHY_PASSAGE_S1 })),
+        stated_in_passage: true,
+      }),
+      // STAGE D DISCRIMINATOR: owned[0]=FRAME_PASSAGE names none of {A,C,F} -- FIX 3 rejects it
+      // mechanically (no query consumed for it); owned[1]=WHY_PASSAGE names all three but states no
+      // kind -- falls through to a NEW QUERY.
       JSON.stringify({ kinds: [], category_kind: null, stated_in_passage: false }),
       // THE fresh query's own extraction -- this is where the STATED distinction comes from.
       JSON.stringify({
         kinds: [
-          { name: 'South America', kind: 'Continent' },
-          { name: 'North Africa', kind: 'Colloquial area' },
-          { name: 'Central Asia', kind: 'Colloquial area' },
+          { name: 'South America', kind: 'Continent', span: ds1 },
+          { name: 'North Africa', kind: 'Colloquial area', span: ds2 },
+          { name: 'Central Asia', kind: 'Colloquial area', span: ds3 },
         ],
         category_kind: 'Continent',
+        category_kind_span: ds4,
         stated_in_passage: true,
       }),
     ]);
@@ -397,7 +440,7 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leave
       const ctx: MethodRunContext = {
         askGoogle: askGoogle as unknown as MethodRunContext['askGoogle'],
         emit: (e) => events.push(e),
-        ownedPassages: () => [FRAME_PASSAGE, WHY_PASSAGE],
+        ownedPassages: () => [owned(FRAME_PASSAGE), owned(WHY_PASSAGE)],
       };
       const input: MethodQuestionInput = { qid: 98, question: QUESTION, options: OPT, correctAnswer: 'A' };
       const match = extractSuperlativeMatch(QUESTION)!;

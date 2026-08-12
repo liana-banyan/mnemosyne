@@ -1,4 +1,5 @@
 // classify_cascade.named_set_recall.test.ts -- D-BP153-014/BISHOP/seg-classify-recall-fix
+// UPDATED D-BP153-016/BISHOP/seg-classify-016 (typed passages, verify-the-span)
 //
 // THREE BUGS, ONE DISPATCH. Bishop's own diagnosis, not re-derived here:
 //
@@ -15,15 +16,21 @@
 //   the dedicated test below and its sibling for establishFrame() in
 //   classify_cascade.owned_evidence_frame.test.ts.
 //
+// D-BP153-016 UPDATE. `ownedPassages()` now returns typed `OwnedPassage[]` (text + kind), not bare
+// strings (FD-BP153-07 FIX 1), and every extracted value must carry a verbatim SUPPORTING SPAN
+// (FIX 2). This file's mocked gemmaExtract() JSON is updated in place to the new shape.
+//
 // THE REAL PASSAGE, verbatim from the live run (this ticket's own fixture, never paraphrased):
-const REAL_PASSAGE = 'Options A (South America), C (North Africa), F (Central Asia), G (Arctic Circle), '
+const REAL_PASSAGE_S1 = 'Options A (South America), C (North Africa), F (Central Asia), G (Arctic Circle), '
   + "H (Amazon Rainforest), and I (Sahara Desert) are all correct choices because none of them are "
-  + "considered major high-density global population clusters. Only B (South Asia), D (Northeast "
-  + 'United States), and E (Europe) qualify as densely populated regions on a global scale.';
+  + 'considered major high-density global population clusters.';
+const REAL_PASSAGE_S2 = 'Only B (South Asia), D (Northeast United States), and E (Europe) qualify as '
+  + 'densely populated regions on a global scale.';
+const REAL_PASSAGE = `${REAL_PASSAGE_S1} ${REAL_PASSAGE_S2}`;
 
 import { describe, test, expect, vi } from 'vitest';
 import { extractNamedSetMembers, reconcileNamedSet } from './classify_cascade';
-import type { MethodRunContext } from '../method_registry';
+import type { MethodRunContext, OwnedPassage } from '../method_registry';
 
 const OPT: Record<string, string> = {
   A: 'South America',
@@ -38,6 +45,9 @@ const OPT: Record<string, string> = {
 };
 const ALL = Object.keys(OPT);
 const CATEGORY = 'world regions';
+
+// D-BP153-016: wraps a bare passage string as an OwnedPassage of kind 'operation'.
+const owned = (text: string): OwnedPassage => ({ text, kind: 'operation' });
 
 function notes(): { note: (text: string) => void; log: string[] } {
   const log: string[] = [];
@@ -68,11 +78,15 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
     // defect, and the complement side is what the SAME passage states in its first sentence,
     // verbatim, which is exactly the corroboration BUG-1(b) exists to use.
     global.fetch = queuedFetch([
-      JSON.stringify({ members: ['South Asia', 'Europe'], stated_in_passage: true }), // direct: under-recalled, D dropped
       JSON.stringify({
-        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'],
+        members: ['South Asia', 'Europe'].map((name) => ({ name, span: REAL_PASSAGE_S2 })), // direct: under-recalled, D dropped
         stated_in_passage: true,
-      }), // complement: the passage's own first sentence, in full
+      }),
+      JSON.stringify({
+        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
+          .map((name) => ({ name, span: REAL_PASSAGE_S1 })), // complement: the passage's own first sentence, in full
+        stated_in_passage: true,
+      }),
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'this must never be reached' }));
     try {
@@ -80,7 +94,7 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
       const result = await extractNamedSetMembers(
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
-        () => [REAL_PASSAGE],
+        () => [owned(REAL_PASSAGE)],
       );
       expect(askGoogle).not.toHaveBeenCalled();
       expect(result.available).toBe(true);
@@ -101,9 +115,13 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
   test('complement extraction on the real passage yields non-members {A, C, F, G, H, I}, reconciling to a complete 9-option partition', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      JSON.stringify({ members: ['South Asia', 'Northeast United States', 'Europe'], stated_in_passage: true }),
       JSON.stringify({
-        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'],
+        members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: REAL_PASSAGE_S2 })),
+        stated_in_passage: true,
+      }),
+      JSON.stringify({
+        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
+          .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
         stated_in_passage: true,
       }),
     ]);
@@ -113,7 +131,7 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
       const result = await extractNamedSetMembers(
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
-        () => [REAL_PASSAGE],
+        () => [owned(REAL_PASSAGE)],
       );
       expect(new Set(result.nonMembers)).toEqual(new Set(['A', 'C', 'F', 'G', 'H', 'I']));
       expect(result.members.length + result.nonMembers.length).toBe(ALL.length);
@@ -140,11 +158,23 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
   test('an owned-evidence conflict end to end: extractNamedSetMembers() reports it via the transcript, not silently', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      JSON.stringify({ members: ['South Asia', 'Northeast United States', 'Europe'], stated_in_passage: true }),
       JSON.stringify({
-        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert', 'Europe'],
+        members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: REAL_PASSAGE_S2 })),
         stated_in_passage: true,
-      }), // hallucinated overlap: Europe named on BOTH sides
+      }),
+      // Hallucinated overlap: the complement extraction ALSO names Europe, citing the (real,
+      // verbatim, but semantically wrong for this purpose) membership sentence as though it
+      // supported exclusion -- span verification (D-BP153-016 FIX 2) checks verbatim-ness and value
+      // containment, not semantic direction, so this passes span verification and is caught instead
+      // by reconcileNamedSet()'s own conflict detection, one layer up.
+      JSON.stringify({
+        not_members: [
+          ...['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
+            .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
+          { name: 'Europe', span: REAL_PASSAGE_S2 },
+        ],
+        stated_in_passage: true,
+      }),
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'must never be reached' }));
     try {
@@ -152,7 +182,7 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
       const result = await extractNamedSetMembers(
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
-        () => [REAL_PASSAGE],
+        () => [owned(REAL_PASSAGE)],
       );
       expect(result.conflicts).toEqual(['E']);
       expect(log.some((l) => /NAMED SET CONFLICT/.test(l) && /Europe/.test(l))).toBe(true);
@@ -186,14 +216,15 @@ describe('D-BP153-014 BUG-2 regression: an empty passage never reaches extractio
   });
 });
 
-describe('appearsIn() still rejects a name the passage does not contain, on EITHER side', () => {
-  test('a hallucinated non-member not present in the passage is stripped, never trusted', async () => {
+describe('span verification still rejects a name whose span does not actually contain it, on EITHER side', () => {
+  test('a hallucinated non-member whose span does not contain it is stripped, never trusted', async () => {
     const originalFetch = global.fetch;
     const passage = 'Only South Asia is recognized as a major global population cluster.';
     global.fetch = queuedFetch([
-      JSON.stringify({ members: ['South Asia'], stated_in_passage: true }),
-      // Hallucinates "Arctic Circle" as excluded -- the word never appears in this short passage.
-      JSON.stringify({ not_members: ['Arctic Circle'], stated_in_passage: true }),
+      JSON.stringify({ members: [{ name: 'South Asia', span: passage }], stated_in_passage: true }),
+      // Hallucinates "Arctic Circle" as excluded, citing a real (verbatim) span that never mentions
+      // Arctic Circle at all.
+      JSON.stringify({ not_members: [{ name: 'Arctic Circle', span: passage }], stated_in_passage: true }),
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'must never be reached' }));
     try {
@@ -201,10 +232,10 @@ describe('appearsIn() still rejects a name the passage does not contain, on EITH
       const result = await extractNamedSetMembers(
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
-        () => [passage],
+        () => [owned(passage)],
       );
       expect(result.members).toEqual(['B']);
-      expect(result.nonMembers).toEqual([]); // "Arctic Circle" rejected -- not present in `passage`
+      expect(result.nonMembers).toEqual([]); // "Arctic Circle"'s span never mentions it -- discarded
       expect(result.nonMembers).not.toContain('G');
     } finally {
       global.fetch = originalFetch;
