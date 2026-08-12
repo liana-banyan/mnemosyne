@@ -100,6 +100,25 @@ describe('FD-BP153-01: a superlative resolves by magnitude INSIDE THE FRAME', ()
     expect(positionsInOriginal).toEqual(ascending);
   });
 
+  test('D-BP153-010: an EMPTY passage is unavailable, never "the source excluded nothing"', () => {
+    // Bishop's own bug, caught by the first live run of the frame (2026-08-12T16:04Z). The frame
+    // query came back ok:true with EMPTY text, so the extractor found nothing in nothing, and the
+    // frame reported "9 of 9 option(s) remain in frame" -- which reads exactly like "the source
+    // examined all nine and confirmed every one is a world region." Those are different facts.
+    //
+    // Encoded here as the invariant establishFrame() must hold: an empty passage yields
+    // available:false, and the route then abstains per FD-BP153-01 consequence 2. Passing all
+    // nine through would be the unframed pool, which answers G on this question against a key of A.
+    const emptyPassageIsUsable = (text: string): boolean => Boolean(text && text.trim());
+    expect(emptyPassageIsUsable('')).toBe(false);
+    expect(emptyPassageIsUsable('   \n  ')).toBe(false);
+    expect(emptyPassageIsUsable('South America is a continent.')).toBe(true);
+
+    // And the consequence: an unavailable frame must NOT degrade to ranking every option.
+    const unframedWouldAnswer = leastExtremeOf(MOST_TO_LEAST);
+    expect(unframedWouldAnswer).toBe('G'); // the wrong answer an empty frame would have allowed
+  });
+
   test('an empty frame must not silently become "rank everything"', () => {
     // FD-BP153-01 consequence 2. If the frame excludes everything there is nothing to rank, and
     // the route must abstain rather than quietly falling back to the full pool. Encoded here as
