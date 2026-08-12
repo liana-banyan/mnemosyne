@@ -30,7 +30,21 @@ const REAL_PASSAGE_S2 = 'Only B (South Asia), D (Northeast United States), and E
   + 'recognized in human geography as major global population clusters.';
 const REAL_PASSAGE_S3 = 'Among the non-dense options, G, H, and I represent the extreme sparsely '
   + 'populated biomes (cold, wet, and dry lands).';
-const REAL_PASSAGE = `${REAL_PASSAGE_S1} ${REAL_PASSAGE_S2} ${REAL_PASSAGE_S3}`;
+// D-BP153-018 ADDITION, NOT part of the original verbatim live-run quote above (S1-S3). THE
+// HEADLINE test below (and only that test) used to source its frame exclusion for ALL FIVE of
+// {C,F,G,H,I} from REAL_PASSAGE_S1's span alone -- but S1 states ONLY the superlative PROPERTY
+// ("...NOT considered among the world's most densely populated regions"), which D-BP153-018 now
+// correctly refuses as evidence of CATEGORY membership (that is the exact bug this ticket closes).
+// This file's OWN header comment (above) already explains WHY C and F are legitimately excluded --
+// "Google's own entity labels tagged them 'Colloquial area', not continent" -- that fact was
+// documented but never actually quoted into the passage text; this sentence supplies it, in a
+// genuine, property-free, category-only shape, so THE HEADLINE test can keep proving the real
+// arithmetic (frame excludes {C,F,G,H,I}, unique verdict A) without relying on a property-answering
+// span to do it.
+const REAL_PASSAGE_S4 = 'North Africa (C) and Central Asia (F) are classified by entity type as a '
+  + 'colloquial area, not a continent, while Arctic Circle (G), Amazon Rainforest (H), and Sahara '
+  + 'Desert (I) are climatic biomes -- none of the five is classified as a world region.';
+const REAL_PASSAGE = `${REAL_PASSAGE_S1} ${REAL_PASSAGE_S2} ${REAL_PASSAGE_S3} ${REAL_PASSAGE_S4}`;
 
 import { describe, test, expect, vi } from 'vitest';
 import {
@@ -290,9 +304,12 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
     global.fetch = queuedFetch([
       // Frame extraction (establishFrame(), unmodified) -- the real BP153 frame result: only
       // South America, South Asia, Northeast US, Europe were named legitimate world regions.
+      // D-BP153-018: sourced from REAL_PASSAGE_S4 (the genuine, property-free category span), NOT
+      // S1 -- S1 states only the superlative PROPERTY and is exactly the span the live qid 98 bug
+      // wrongly used for this same claim; see REAL_PASSAGE_S4's own comment above for why.
       JSON.stringify({
         not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
+          .map((name) => ({ name, span: REAL_PASSAGE_S4 })),
         stated_in_passage: true,
       }),
       // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement extraction against the
