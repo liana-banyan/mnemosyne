@@ -88,6 +88,12 @@ import './methods/definitional_cascade';
 // standing complaint, FD-BP152-08); see classify_cascade.ts's own header for the ruling this
 // implements.
 import './methods/classify_cascade';
+// D-BP153-008 -- the three demand types with no runner (IDENTIFY, INFER, LOCATE-IN-FRAMEWORK),
+// registered with `run: null` so a question demanding one of them reports "recognized shape, not
+// yet taught" instead of "no method matches". Those are different findings and this registry's own
+// header (method_registry.ts:30-35) requires keeping them apart. A live qid 98 run ended
+// `no_method_matched` on exactly this gap. See untaught_shapes.ts for why no runners were invented.
+import './methods/untaught_shapes';
 
 // Re-exported so index.ts's existing closure (`(question) =>
 // runBrowserAuthorityQueryFromMain({...})`) keeps type-checking against exactly the same shape
