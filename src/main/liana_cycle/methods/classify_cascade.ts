@@ -1307,12 +1307,28 @@ export interface FrameResult {
  *  the fresh-query path (further below) use to read a frame partition out of a passage -- factored
  *  into one function specifically so there is exactly ONE wording, never two that could drift.
  *  EXTRACTION ONLY (HARDWIRE-22): asks the model to copy out names the passage ITSELF states are
- *  excluded, never to judge whether a passage "answers" the question. */
-function frameExtractionInstruction(all: string[], OPT: Record<string, string>): string {
-  return 'If this passage states that any of these names is NOT one of the named category, copy out '
-    + 'exactly those names, spelled as the passage spells them. Copy only names the passage '
-    + 'itself excludes. If the passage excludes none of them, return an empty list. Do not '
-    + `decide yourself which ones qualify. Names: ${all.map((L) => OPT[L]).join('; ')}`;
+ *  excluded, never to judge whether a passage "answers" the question.
+ *
+ *  D-BP153-014, BUG-3 FIX. SHARPENED. Prior-run prose (Bishop's own dispatch, quoted verbatim):
+ *  "G, H, and I represent the extreme sparsely populated biomes" -- establishFrame() extracted
+ *  NOTHING from it. The old wording only asked for an explicit "NOT the category" statement; this
+ *  sentence never uses the word NOT -- it states a POSITIVE alternate classification ("represent...
+ *  biomes") instead, which is exactly as exclusionary but was outside what the old prompt looked
+ *  for. THE COMPARISON STAYS MECHANICAL, no word list built here (HARDWIRE-23): the model is told
+ *  to compare whatever classification the passage states against `category` -- the exact string
+ *  this function is now given, the same string the fresh-query path already sends the question
+ *  with -- and copy the name only when the STATED classification differs from that string. The
+ *  model still only copies verbatim text (HARDWIRE-22 unrelaxed); the code's own appearsIn() check
+ *  below still verifies every copy against the source passage, unchanged. */
+function frameExtractionInstruction(category: string, all: string[], OPT: Record<string, string>): string {
+  return `If this passage states that any of these names is NOT ${category}, copy out exactly those `
+    + 'names, spelled as the passage spells them. This exclusion may be worded as an explicit NOT, '
+    + `OR as a POSITIVE statement of what the name IS INSTEAD (for example, "X, Y, and Z represent `
+    + `biomes" or "X, Y, and Z are climatic zones" -- when the passage states a classification for a `
+    + `name that is DIFFERENT from "${category}", that name is excluded, even with no literal NOT). `
+    + 'Copy only names the passage itself excludes, by either wording. If the passage excludes none '
+    + 'of them, return an empty list. Do not decide yourself which ones qualify -- compare only '
+    + `against what the passage itself states the name is. Names: ${all.map((L) => OPT[L]).join('; ')}`;
 }
 const FRAME_EXTRACTION_SHAPE = '{"not_members":["exact name the passage says is not one"],"stated_in_passage":true}';
 
@@ -1391,7 +1407,7 @@ export async function establishFrame(
     // the first that yields a verified, non-empty exclusion set; this is extraction over text
     // already sitting in memory (a local Ollama call), never a network fan-out, so there is nothing
     // here to parallelize against.
-    const ex = await gemmaExtract(frameExtractionInstruction(all, OPT), passage, FRAME_EXTRACTION_SHAPE);
+    const ex = await gemmaExtract(frameExtractionInstruction(category, all, OPT), passage, FRAME_EXTRACTION_SHAPE);
     let excluded = toLetters(ex?.not_members as unknown[] | undefined, OPT);
     excluded = excluded.filter((L) => appearsIn(passage, OPT[L]));
     if (excluded.length) {
@@ -1440,7 +1456,7 @@ export async function establishFrame(
     note(`   FRAME: the source returned an EMPTY passage (${res.via}) -- the frame is UNAVAILABLE, not "nothing excluded"`);
     return { available: false, excluded: [], query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null };
   }
-  const ex = await gemmaExtract(frameExtractionInstruction(all, OPT), res.text, FRAME_EXTRACTION_SHAPE);
+  const ex = await gemmaExtract(frameExtractionInstruction(category, all, OPT), res.text, FRAME_EXTRACTION_SHAPE);
   let excluded = toLetters(ex?.not_members as unknown[] | undefined, OPT);
   excluded = excluded.filter((L) => appearsIn(res.text, OPT[L]));
   note(
@@ -1487,10 +1503,32 @@ export interface NamedSetResult {
    *  FrameResult.available's own doc comment for why that distinction matters; the same reasoning
    *  applies here symmetrically. */
   available: boolean;
-  /** Option letters the SOURCE itself states ARE members of the named set. May be empty, which
-   *  (when `available` is true) is a valid reading meaning "the source named none of these as
-   *  members" -- not the same as unavailable. */
+  /** Option letters the SOURCE itself states ARE members of the named set -- RECONCILED (see
+   *  reconcileNamedSet() below) with the complement extraction when the two sides form a clean,
+   *  conflict-free partition of `all`; otherwise this is the direct extraction alone, unreconciled.
+   *  May be empty, which (when `available` is true) is a valid reading meaning "the source named
+   *  none of these as members" -- not the same as unavailable. */
   members: string[];
+  /** The direct member-extraction, BEFORE reconciliation -- D-BP153-014. Kept separate from
+   *  `members` so a reader can see exactly what changed and why (reconciliation.why says the
+   *  rest). Always populated when `available`. */
+  rawMembers: string[];
+  /** D-BP153-014, BUG-1(b): the complement -- option letters the SAME passage states are NOT
+   *  members, extracted from the identical already-fetched text, no new query. Bishop's own
+   *  diagnosis: the passage states non-membership MORE directly than membership, so this extraction
+   *  can recover a name the direct member-list under-recalled. */
+  nonMembers: string[];
+  /** Option letters extracted as BOTH a member and a non-member by the two independent extractions
+   *  -- a FINDING, reported and never silently resolved one way or the other (his own words,
+   *  verbatim, D-BP153-014 dispatch: "if they conflict... report it and do not silently prefer
+   *  one"). Empty when the two extractions agree. */
+  conflicts: string[];
+  /** True when `rawMembers` and `nonMembers` together name every option in `all`, with zero
+   *  conflicts -- a complete, mutually-corroborating partition. See reconcileNamedSet() below. */
+  partitionComplete: boolean;
+  /** Plain-English rendering of the reconciliation arithmetic -- see reconcileNamedSet()'s own
+   *  `why`, threaded through so a reader can audit this result without re-running anything. */
+  reconciliationWhy: string;
   query: string;
   via: string;
   /** FD-BP153-04, mirrored from FrameResult -- THE RECEIPT SAYS WHICH. 'owned-passage' when the
@@ -1503,11 +1541,103 @@ export interface NamedSetResult {
   ownedPassageIndex: number | null;
 }
 
+/** D-BP153-014, BUG-1(b): pure set arithmetic, no I/O, mirrors runMembershipTerminator()'s own
+ *  discipline (Step 3, above) -- mechanical only, never a model call, never a guess, and never a
+ *  tie-break. Reconciles the direct member-extraction against the complement (non-member)
+ *  extraction over the SAME already-fetched passage.
+ *
+ *  A conflict (an option BOTH extractions name) is a FINDING. Reported and left UNRESOLVED --
+ *  never silently preferred one way or the other. His own dispatch, verbatim: "if they conflict...
+ *  report it and do not silently prefer one." On conflict, this falls back to the direct member
+ *  extraction, unreconciled -- the conflicting name(s) stay exactly where the direct extraction put
+ *  them, and `conflicts` says so.
+ *
+ *  WHEN THERE IS NO CONFLICT AND THE COMPLEMENT SAID SOMETHING, the complement is TRUSTED --
+ *  reconciled members = `all` minus non-members. This is deliberately NOT gated on the direct
+ *  member list also being complete: his own diagnosis is that the complement is stated MORE
+ *  directly in this shape of passage ("Options A, C, F... are all NOT considered... Only B, D, and
+ *  E... qualify"), and gating on direct-side completeness would defeat the whole point -- the
+ *  measured live bug is the direct extraction missing D while the complement names the other six
+ *  cleanly; requiring D to ALSO already be on the direct list before trusting the complement would
+ *  never fire on the one case this exists for. `partitionComplete` is still computed and reported
+ *  (true only when BOTH sides together, unaided, cover every option) as an honest, separate
+ *  finding -- it does not gate which set wins, per his own instruction that a conflict is reported,
+ *  not that a partial partition disqualifies the more-direct side.
+ *
+ *  When the complement extracted NOTHING (no non-members stated at all -- the passage may simply
+ *  not use that shape), there is nothing to reconcile against, and this falls back to the direct
+ *  member extraction alone -- refusing to invent a complement that was never stated. */
+export function reconcileNamedSet(
+  all: string[],
+  members: string[],
+  nonMembers: string[],
+  OPT: Record<string, string>,
+): NamedSetReconciliation {
+  const memberSet = new Set(members);
+  const nonMemberSet = new Set(nonMembers);
+  const conflicts = all.filter((L) => memberSet.has(L) && nonMemberSet.has(L));
+  const covered = new Set([...members, ...nonMembers]);
+  const partitionComplete = conflicts.length === 0 && all.every((L) => covered.has(L));
+  const label = (Ls: string[]) => `{${Ls.map((L) => `${L}) ${OPT[L]}`).join(', ') || 'none'}}`;
+  if (conflicts.length) {
+    return {
+      members,
+      nonMembers,
+      conflicts,
+      partitionComplete: false,
+      why: `CONFLICT: ${label(conflicts)} extracted as BOTH a member and a non-member by the two `
+        + 'independent extractions -- reported, neither side is preferred; using the direct member '
+        + 'extraction unreconciled',
+    };
+  }
+  if (nonMembers.length) {
+    const reconciledMembers = all.filter((L) => !nonMemberSet.has(L));
+    const unaddressedByDirect = reconciledMembers.filter((L) => !memberSet.has(L));
+    const completeNote = partitionComplete
+      ? `complete partition: members ${label(members)} and non-members ${label(nonMembers)} together `
+        + `account for all ${all.length} option(s), zero conflicts -- each side corroborates the other `
+        + `(reconciled members: ${label(reconciledMembers)})`
+      : `complement (non-members ${label(nonMembers)}) trusted despite an incomplete direct side -- `
+        + `${label(unaddressedByDirect)} implied a member by the complement but not named by the direct `
+        + `extraction (recovered, not assumed: HARDWIRE-22's own extraction-verified evidence, not a `
+        + `guess) -- reconciled members: ${label(reconciledMembers)}`;
+    return { members: reconciledMembers, nonMembers, conflicts, partitionComplete, why: completeNote };
+  }
+  return {
+    members,
+    nonMembers,
+    conflicts,
+    partitionComplete: false,
+    why: 'the complement extracted nothing -- no non-members stated in this passage to reconcile '
+      + 'against; using the direct member extraction alone',
+  };
+}
+
+export interface NamedSetReconciliation {
+  /** The reconciled member set -- see reconcileNamedSet()'s own header for exactly when this is the
+   *  complement-derived set vs. the direct extraction, unreconciled. */
+  members: string[];
+  nonMembers: string[];
+  conflicts: string[];
+  partitionComplete: boolean;
+  why: string;
+}
+
 /** THE SAME instruction/shape both the owned-evidence attempt and the fresh-query path below use
  *  to read a named-set partition out of a passage -- one wording, mirroring
  *  frameExtractionInstruction()'s own reason for existing (above). EXTRACTION ONLY (HARDWIRE-22):
  *  asks the model to copy out names the passage ITSELF states ARE members, never to judge whether
- *  an option belongs. */
+ *  an option belongs.
+ *
+ *  D-BP153-014, BUG-1(a) FIX. SHARPENED. The real qid 98 passage
+ *  ("Only B (South Asia), D (Northeast United States), and E (Europe) are recognized...") measured
+ *  gemma4:12b extracting only {B, E} -- D was dropped from a three-name list. The prior wording
+ *  never told the model a stated list is EXHAUSTIVE or that a partial copy is wrong; it is silent
+ *  on the exact failure mode measured. This version names the "Only X, Y, and Z" shape explicitly
+ *  and says a partial copy is wrong, twice, in different words -- still pure copying (HARDWIRE-22
+ *  unrelaxed: the model is told WHAT PATTERN to copy completely, never asked to judge which names
+ *  belong). See extractNamedSetMembers() below for the second, independent safety net (the
+ *  complement extraction + reconcileNamedSet()) this alone does not have to catch every case. */
 function namedSetExtractionInstruction(
   all: string[],
   OPT: Record<string, string>,
@@ -1516,11 +1646,64 @@ function namedSetExtractionInstruction(
 ): string {
   return `If this passage states that any of these names IS one of the ${direction} ${property} -- a `
     + 'named member the source itself calls out, not merely a plausible candidate -- copy out exactly '
-    + 'those names, spelled as the passage spells them. Copy only names the passage itself states ARE '
-    + 'members. If the passage states that none of them are members, return an empty list. Do not decide '
-    + `yourself which ones qualify. Names: ${all.map((L) => OPT[L]).join('; ')}`;
+    + 'those names, spelled as the passage spells them. THE PASSAGE MAY STATE THE MEMBERS AS A LIST, '
+    + 'often worded "Only X, Y, and Z..." or "X, Y, and Z are recognized/qualify/are considered...". '
+    + 'When it is worded that way, the list is EXHAUSTIVE -- copy out EVERY name in it, not just the '
+    + 'first one or two. If the passage names three members, your list must contain all three; copying '
+    + 'only one or two of a stated list is WRONG, even if the others are less prominent in the '
+    + 'sentence. Copy only names the passage itself states ARE members. If the passage states that '
+    + 'none of them are members, return an empty list. Do not decide yourself which ones qualify -- '
+    + `copy only what the passage itself states. Names: ${all.map((L) => OPT[L]).join('; ')}`;
 }
 const NAMED_SET_EXTRACTION_SHAPE = '{"members":["exact name the passage says is one"],"stated_in_passage":true}';
+
+/** D-BP153-014, BUG-1(b): the complement of namedSetExtractionInstruction() above -- same passage,
+ *  same names, asks the OPPOSITE question. His own diagnosis, verbatim: the passage states
+ *  non-membership MORE directly than membership ("Options A, C, F, G, H, I... are all correct
+ *  choices because none of them are considered... Only B, D, and E qualify"). Structurally the same
+ *  shape frameExtractionInstruction() (above) already uses for the FRAME's own exclusion read --
+ *  this is that shape, retargeted at the named set's own complement rather than the category. */
+function namedSetComplementExtractionInstruction(
+  all: string[],
+  OPT: Record<string, string>,
+  direction: 'most' | 'least',
+  property: string,
+): string {
+  return `If this passage states that any of these names is NOT one of the ${direction} ${property} -- `
+    + 'the source itself excludes it from that group, explicitly -- copy out exactly those names, '
+    + 'spelled as the passage spells them. THE PASSAGE MAY STATE THE EXCLUDED NAMES AS A LIST (for '
+    + 'example, worded "X, Y, and Z are all NOT..." or "none of X, Y, and Z are..."). When it is '
+    + 'worded that way, copy out EVERY excluded name in it, not just the first one or two. If the '
+    + 'passage excludes none of them, return an empty list. Do not decide yourself which ones qualify '
+    + `-- copy only what the passage itself states. Names: ${all.map((L) => OPT[L]).join('; ')}`;
+}
+const NAMED_SET_COMPLEMENT_EXTRACTION_SHAPE = '{"not_members":["exact name the passage says is not one"],"stated_in_passage":true}';
+
+/** One passage, BOTH extractions -- the direct member read and its complement, over the identical
+ *  already-in-hand text. NO NEW QUERY: two gemmaExtract() calls (local Ollama), never a second
+ *  googleBlocks(). Both extracted lists are appearsIn()-verified against `passage` before being
+ *  trusted, same choke point every other extraction in this file already uses. Returns the
+ *  RECONCILED result (reconcileNamedSet()) so callers never have to re-derive the arithmetic. */
+async function extractNamedSetBothSides(
+  passage: string,
+  all: string[],
+  OPT: Record<string, string>,
+  direction: 'most' | 'least',
+  property: string,
+): Promise<NamedSetReconciliation & { rawMembers: string[] }> {
+  const exMembers = await gemmaExtract(namedSetExtractionInstruction(all, OPT, direction, property), passage, NAMED_SET_EXTRACTION_SHAPE);
+  let rawMembers = toLetters(exMembers?.members as unknown[] | undefined, OPT);
+  rawMembers = rawMembers.filter((L) => appearsIn(passage, OPT[L]));
+
+  const exNon = await gemmaExtract(
+    namedSetComplementExtractionInstruction(all, OPT, direction, property), passage, NAMED_SET_COMPLEMENT_EXTRACTION_SHAPE,
+  );
+  let rawNonMembers = toLetters(exNon?.not_members as unknown[] | undefined, OPT);
+  rawNonMembers = rawNonMembers.filter((L) => appearsIn(passage, OPT[L]));
+
+  const reconciliation = reconcileNamedSet(all, rawMembers, rawNonMembers, OPT);
+  return { ...reconciliation, rawMembers };
+}
 
 /**
  * STEP 2, THE NAMED SET. Structurally, byte-for-byte, the same owned-evidence-first shape
@@ -1528,10 +1711,18 @@ const NAMED_SET_EXTRACTION_SHAPE = '{"members":["exact name the passage says is 
  * there: "Before a step issues a new query, it must first try to answer that query by EXTRACTING
  * from passages this run has already acquired. A new query is spent only when the owned evidence
  * does not contain the answer." And D-BP153-010's rule extends here unchanged too: an owned
- * passage yielding NOTHING extractable is INCONCLUSIVE for this passage, not "named zero
- * members" -- tries the next owned passage, then the query path; and a query response with an
- * EMPTY passage is UNAVAILABLE, never "the source named no members" (see the two D-BP153-010
- * checks inline below, identical reasoning to establishFrame()'s own).
+ * passage yielding NOTHING extractable from EITHER extraction is INCONCLUSIVE for this passage,
+ * not "named zero members" -- tries the next owned passage, then the query path; and a query
+ * response with an EMPTY passage is UNAVAILABLE, never "the source named no members" (see the two
+ * D-BP153-010 checks inline below, identical reasoning to establishFrame()'s own, and BUG-2 of
+ * D-BP153-014's own dispatch -- the same rule extended here, unchanged from before this ticket).
+ *
+ * D-BP153-014, BUG-1(b) ADDITION: each passage now yields BOTH the direct member extraction and
+ * its complement (extractNamedSetBothSides() above), reconciled before this function decides
+ * whether the passage "answered". A passage counts as having answered when EITHER side extracted
+ * something (not only when the direct member list is non-empty as before this ticket) -- his own
+ * diagnosis is that the complement can be the more directly-stated side, so requiring the direct
+ * list alone to be non-empty would miss exactly the passages this fix exists for.
  *
  * EXPORTED for the same reason establishFrame() is exported: so this ticket's own verification
  * can exercise the owned-evidence-first behavior directly (mocked askGoogle/gemmaExtract), no
@@ -1553,24 +1744,36 @@ export async function extractNamedSetMembers(
   for (let i = 0; i < owned.length; i++) {
     const passage = owned[i];
     // eslint-disable-next-line no-await-in-loop -- each owned passage is tried in turn, stopping at
-    // the first that yields a verified, non-empty member set; extraction over text already sitting
-    // in memory (a local Ollama call), never a network fan-out, so nothing here to parallelize.
-    const ex = await gemmaExtract(namedSetExtractionInstruction(all, OPT, direction, property), passage, NAMED_SET_EXTRACTION_SHAPE);
-    let members = toLetters(ex?.members as unknown[] | undefined, OPT);
-    members = members.filter((L) => appearsIn(passage, OPT[L]));
-    if (members.length) {
+    // the first that yields a verified, non-empty read on either side; extraction over text already
+    // sitting in memory (a local Ollama call), never a network fan-out, so nothing here to
+    // parallelize.
+    const both = await extractNamedSetBothSides(passage, all, OPT, direction, property);
+    if (both.rawMembers.length || both.nonMembers.length) {
       note(
         `   NAMED SET: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already acquired `
-          + `this run -- NO NEW QUERY ISSUED) -- source names ${members.map((L) => `${L}) ${OPT[L]}`).join(', ')} as members`,
+          + `this run -- NO NEW QUERY ISSUED) -- direct extraction names `
+          + `${both.rawMembers.length ? both.rawMembers.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(none)'} as members, `
+          + `complement names ${both.nonMembers.length ? both.nonMembers.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(none)'} as non-members`,
       );
+      if (both.conflicts.length) {
+        note(`   NAMED SET CONFLICT: ${both.conflicts.map((L) => `${L}) ${OPT[L]}`).join(', ')} extracted as BOTH member and non-member -- reported, not resolved`);
+      }
+      note(`   NAMED SET RECONCILIATION: ${both.why}`);
       return {
-        available: true, members, query: `(owned passage ${i + 1} of ${owned.length}, no query issued)`,
+        available: true,
+        members: both.members,
+        rawMembers: both.rawMembers,
+        nonMembers: both.nonMembers,
+        conflicts: both.conflicts,
+        partitionComplete: both.partitionComplete,
+        reconciliationWhy: both.why,
+        query: `(owned passage ${i + 1} of ${owned.length}, no query issued)`,
         via: 'owned-passage', answeredFrom: 'owned-passage', ownedPassageIndex: i,
       };
     }
     // D-BP153-010's rule, extended exactly as establishFrame() extends it: nothing extracted from
-    // THIS passage is inconclusive, not "the source named no members" -- fall through to the next
-    // owned passage, then the query path below.
+    // THIS passage (by EITHER side) is inconclusive, not "the source named no members" -- fall
+    // through to the next owned passage, then the query path below.
   }
   if (owned.length) {
     note(`   NAMED SET: ${owned.length} owned passage(s) already acquired this run did not name any members -- falling through to a NEW QUERY`);
@@ -1583,22 +1786,45 @@ export async function extractNamedSetMembers(
   const res = await googleBlocks(askGoogle, query);
   if (!res.ok) {
     note(`   NAMED SET: no usable answer (${res.via}) -- the named set is UNAVAILABLE, not empty`);
-    return { available: false, members: [], query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null };
+    return {
+      available: false, members: [], rawMembers: [], nonMembers: [], conflicts: [], partitionComplete: false,
+      reconciliationWhy: 'unavailable -- no usable answer', query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+    };
   }
   // D-BP153-010, mirrored: an EMPTY passage is not the same fact as "the source named zero
   // members" -- it means nothing was asked at all. See establishFrame()'s own D-BP153-010 comment
-  // for the full incident this rule closes; the same failure mode is possible here.
+  // for the full incident this rule closes; the same failure mode is possible here. BUG-2 of
+  // D-BP153-014's own dispatch: this check runs BEFORE either extraction below, so an empty
+  // passage never reaches gemmaExtract() at all -- verified by
+  // classify_cascade.membership_terminator.test.ts's own D-BP153-010 regression (unchanged by this
+  // ticket) and classify_cascade.owned_evidence_frame.test.ts's new sibling test for establishFrame().
   if (!res.text || !res.text.trim()) {
     note(`   NAMED SET: the source returned an EMPTY passage (${res.via}) -- the named set is UNAVAILABLE, not "no members"`);
-    return { available: false, members: [], query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null };
+    return {
+      available: false, members: [], rawMembers: [], nonMembers: [], conflicts: [], partitionComplete: false,
+      reconciliationWhy: 'unavailable -- empty passage', query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+    };
   }
-  const ex = await gemmaExtract(namedSetExtractionInstruction(all, OPT, direction, property), res.text, NAMED_SET_EXTRACTION_SHAPE);
-  let members = toLetters(ex?.members as unknown[] | undefined, OPT);
-  members = members.filter((L) => appearsIn(res.text, OPT[L]));
+  const both = await extractNamedSetBothSides(res.text, all, OPT, direction, property);
   note(
-    `   NAMED SET: answered FROM A NEW QUERY -- source names ${members.length ? members.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'} as members`,
+    `   NAMED SET: answered FROM A NEW QUERY -- direct extraction names `
+      + `${both.rawMembers.length ? both.rawMembers.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'} as members, `
+      + `complement names ${both.nonMembers.length ? both.nonMembers.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'} as non-members`,
   );
-  return { available: true, members, query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null };
+  if (both.conflicts.length) {
+    note(`   NAMED SET CONFLICT: ${both.conflicts.map((L) => `${L}) ${OPT[L]}`).join(', ')} extracted as BOTH member and non-member -- reported, not resolved`);
+  }
+  note(`   NAMED SET RECONCILIATION: ${both.why}`);
+  return {
+    available: true,
+    members: both.members,
+    rawMembers: both.rawMembers,
+    nonMembers: both.nonMembers,
+    conflicts: both.conflicts,
+    partitionComplete: both.partitionComplete,
+    reconciliationWhy: both.why,
+    query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+  };
 }
 
 export interface MembershipTerminatorResult {

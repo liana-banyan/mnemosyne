@@ -161,9 +161,16 @@ describe('extractNamedSetMembers() -- STEP 2, owned-evidence-first (mirrors esta
   test('an owned passage yielding nothing is inconclusive, not "no members" -- tries the next passage', async () => {
     const originalFetch = global.fetch;
     const offTopic = 'Population density is measured in people per square kilometer worldwide.';
+    // D-BP153-014: each owned passage now costs TWO gemmaExtract() calls (direct member extraction,
+    // then its complement) -- see extractNamedSetBothSides(). Passage 1 (off-topic) yields nothing
+    // on either side; passage 2 answers on the direct side, complement stays empty (not a complete
+    // partition, so reconciliation falls back to the direct extraction unreconciled -- unchanged
+    // result from before this ticket).
     global.fetch = queuedFetch([
-      JSON.stringify({ members: [], stated_in_passage: false }),
-      JSON.stringify({ members: ['South Asia'], stated_in_passage: true }),
+      JSON.stringify({ members: [], stated_in_passage: false }), // passage 1: direct
+      JSON.stringify({ not_members: [], stated_in_passage: false }), // passage 1: complement
+      JSON.stringify({ members: ['South Asia'], stated_in_passage: true }), // passage 2: direct
+      JSON.stringify({ not_members: [], stated_in_passage: false }), // passage 2: complement
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'must never be reached' }));
     try {
