@@ -1881,6 +1881,287 @@ export function runMembershipTerminator(
   return { candidates, unique, why };
 }
 
+// ─────────────────────────── STAGE D: THE DISCRIMINATOR ───────────────────────────
+//
+// D-BP153-015/BISHOP/seg-discriminator. Fires ONLY when STAGE M (the membership terminator, above)
+// leaves MORE THAN ONE candidate -- see runSuperlativeByMagnitude()'s own wiring, further below,
+// for exactly where this sits between STAGE M and the existing magnitude route (STAGE A onward).
+// Mirrors establishFrame()'s and extractNamedSetMembers()'s own shape byte-for-byte: owned evidence
+// tried first (FD-BP153-04), ONE query if nothing owned answers it -- never one per candidate,
+// Founder BP151 verbatim: "we got rid of four answers with ONE google search" -- extraction only
+// (HARDWIRE-22, unrelaxed), every extracted value appearsIn()-verified against its source passage,
+// and unique-or-abstain (FD-BP152-19's own "no tie-breakers, ever", restated here for a stated-kind
+// distinction rather than a magnitude or a named set).
+//
+// THE MEASUREMENT THIS CLOSES. Live run 2026-08-12T19:14Z, qid 98: with the frame correctly
+// removing the biomes and the named set correctly reconciling to {B, D, E}, the membership
+// terminator lands on {A, C, F} -- three legitimate world regions, none a dense cluster. That is a
+// CORRECT abstain on the evidence STAGE M alone has (TICKET_D-BP153-015_THE_DISCRIMINATOR.md quotes
+// the passage verbatim). His own hand derivation closed it with one more fact the source states:
+// the survivors sit at different REGISTERS -- Google's own entity labels call South America and
+// Europe "Continent" and North Africa and Central Asia "Colloquial area". This stage asks for
+// exactly that fact and extracts it; it never assumes it (that ticket's own "WHY THIS IS NOT A
+// TARE" section).
+//
+// THE ONE TEST FOR ANY RULE HERE (Founder, BP153, verbatim): "would this rule survive on a question
+// whose answer we do NOT know?" Eliminating a candidate because the source ITSELF states its kind
+// differs from the kind the source ITSELF says the category denotes passes that test. Nothing else
+// is built here -- no word list of "which kinds count", no preference for continents over colloquial
+// areas (that rule's only justification would be that it yields the known key, which is exactly the
+// tare the Founder named and rejected).
+
+/** THE SAME instruction/shape both the owned-evidence attempt and the fresh-query path below use to
+ *  read a stated-kind distinction out of a passage -- one wording, mirroring
+ *  frameExtractionInstruction()'s and namedSetExtractionInstruction()'s own reason for existing
+ *  (above). EXTRACTION ONLY (HARDWIRE-22): asks the model to copy out the passage's OWN
+ *  classification word for each survivor, and separately (never conflated into the same field) the
+ *  passage's OWN statement of which of those kinds properly denotes the category -- never to judge
+ *  which kind is correct itself. */
+function discriminatorExtractionInstruction(candidates: string[], OPT: Record<string, string>, category: string): string {
+  return 'For each of these names, copy out exactly what KIND of thing the passage states it is '
+    + '(for example "Continent", "Colloquial area", "Subcontinent", "Climatic zone") -- the '
+    + "passage's own classification word or phrase for that name, verbatim, spelled as the passage "
+    + 'spells it. Use null for a name whose kind the passage does not state. SEPARATELY, if the '
+    + `passage ALSO states which of those stated kinds properly counts as a ${category} -- the `
+    + 'formal or correct kind for that category, AS THE PASSAGE ITSELF SAYS SO, never your own '
+    + 'judgment -- copy that kind verbatim too, in category_kind. Use null there if the passage does '
+    + 'not state this. Do not decide yourself which kind is correct or which kind the category means '
+    + `-- copy only what the passage states. Names: ${candidates.map((L) => OPT[L]).join('; ')}`;
+}
+const DISCRIMINATOR_EXTRACTION_SHAPE = '{"kinds":[{"name":"exact name","kind":"exact kind as the '
+  + 'passage states it, or null"}],"category_kind":"the kind the passage states properly denotes '
+  + 'the category, or null","stated_in_passage":true}';
+
+/** One passage, the discriminator's own read -- appearsIn()-verified per candidate AND for
+ *  category_kind, exactly the same choke point every other extraction in this file already uses.
+ *  Matching an extracted `{name, kind}` entry back to a candidate letter is normalized-string
+ *  equality only (norm()), the same "similarity is not identity" discipline toLetters() already
+ *  enforces elsewhere in this estate -- never fuzzy. */
+async function extractDiscriminatorKinds(
+  passage: string,
+  candidates: string[],
+  OPT: Record<string, string>,
+  category: string,
+): Promise<{ kinds: Record<string, string | null>; categoryKind: string | null }> {
+  const ex = await gemmaExtract(
+    discriminatorExtractionInstruction(candidates, OPT, category), passage, DISCRIMINATOR_EXTRACTION_SHAPE,
+  );
+  const rawKinds = (ex?.kinds as Array<{ name?: unknown; kind?: unknown }> | undefined) ?? [];
+  const kinds: Record<string, string | null> = {};
+  for (const L of candidates) {
+    const entry = rawKinds.find((r) => norm(r?.name) === norm(OPT[L]));
+    const kindText = entry && typeof entry.kind === 'string' ? entry.kind.trim() : '';
+    kinds[L] = kindText && appearsIn(passage, OPT[L]) && appearsIn(passage, kindText) ? kindText : null;
+  }
+  const rawCategoryKind = typeof ex?.category_kind === 'string' ? ex.category_kind.trim() : '';
+  const categoryKind = rawCategoryKind && appearsIn(passage, rawCategoryKind) ? rawCategoryKind : null;
+  return { kinds, categoryKind };
+}
+
+export interface DiscriminatorElimination {
+  letter: string;
+  statedKind: string;
+  reason: string;
+}
+
+export interface DiscriminatorEliminationResult {
+  survivors: string[];
+  unique: string | null;
+  eliminations: DiscriminatorElimination[];
+  why: string;
+}
+
+/** Pure set arithmetic, no I/O -- mirrors runMembershipTerminator()'s own discipline (Step 3,
+ *  above): mechanical only, never a model call, never a guess, never a tie-break.
+ *
+ *  Eliminates a candidate ONLY when ALL THREE hold:
+ *   (a) EVERY candidate has a stated kind -- partial information does not eliminate. This is
+ *       UNKNOWN IS UNMEASURED, NEVER BAD (this file's own header rule, Stage 1), restated here: a
+ *       candidate this passage never characterized is not thereby cleared OR condemned, so this
+ *       refuses to act at all rather than eliminate around a gap.
+ *   (b) the survivors do not all share the same stated kind -- there must BE a distinction to act
+ *       on, or there is nothing for a category-kind statement to discriminate between.
+ *   (c) the passage states which kind properly denotes `category`, AND that stated kind is one of
+ *       the kinds actually present among the candidates (an unrecognized categoryKind names nothing
+ *       here and is not usable). Because (c) requires categoryKind to be one of the PRESENT kinds,
+ *       at least one candidate always matches it -- survivors can never be an empty set here.
+ *
+ *  When all three hold, every candidate whose stated kind does not match categoryKind is
+ *  eliminated. Otherwise nothing is eliminated and every original candidate survives, unresolved --
+ *  the honest abstain FD-BP152-19 already requires everywhere else in this file. Exported, same
+ *  reason runMembershipTerminator() is exported: so this ticket's own verification can exercise the
+ *  elimination arithmetic directly, without a mocked askGoogle/gemmaExtract round trip. */
+export function applyDiscriminatorElimination(
+  candidates: string[],
+  kinds: Record<string, string | null>,
+  categoryKind: string | null,
+  category: string,
+  OPT: Record<string, string>,
+): DiscriminatorEliminationResult {
+  const label = (Ls: string[]) => `{${Ls.map((L) => `${L}) ${OPT[L]}`).join(', ') || 'none'}}`;
+  const missingKind = candidates.filter((L) => !kinds[L]);
+  if (missingKind.length) {
+    return {
+      survivors: candidates,
+      unique: null,
+      eliminations: [],
+      why: `${missingKind.length} of ${candidates.length} candidate(s) have no STATED kind `
+        + `(${label(missingKind)}) -- partial information does not eliminate; no elimination performed, `
+        + `all ${candidates.length} candidate(s) survive`,
+    };
+  }
+  const presentKinds = [...new Set(candidates.map((L) => kinds[L] as string))];
+  if (presentKinds.length <= 1) {
+    return {
+      survivors: candidates,
+      unique: null,
+      eliminations: [],
+      why: `all ${candidates.length} candidates share the same stated kind ("${presentKinds[0] ?? 'none'}") `
+        + '-- no distinction to eliminate on',
+    };
+  }
+  if (!categoryKind || !presentKinds.includes(categoryKind)) {
+    return {
+      survivors: candidates,
+      unique: null,
+      eliminations: [],
+      why: categoryKind
+        ? `the survivors are stated to differ in kind (${presentKinds.map((k) => `"${k}"`).join(', ')}), but `
+          + `the stated category kind ("${categoryKind}") does not match any of them -- unusable, no `
+          + 'elimination performed'
+        : `the survivors are stated to differ in kind (${presentKinds.map((k) => `"${k}"`).join(', ')}), but `
+          + `the passage does not state which kind properly denotes "${category}" -- no elimination performed`,
+    };
+  }
+  // categoryKind is guaranteed to be one of presentKinds here, so survivors.length >= 1 always.
+  const survivors = candidates.filter((L) => kinds[L] === categoryKind);
+  const eliminations: DiscriminatorElimination[] = candidates
+    .filter((L) => kinds[L] !== categoryKind)
+    .map((L) => ({
+      letter: L,
+      statedKind: kinds[L] as string,
+      reason: `stated kind "${kinds[L]}" differs from "${categoryKind}", the kind the source states `
+        + `properly denotes ${category}`,
+    }));
+  const unique = survivors.length === 1 ? survivors[0] : null;
+  const why = unique
+    ? `stated kind "${categoryKind}" (the category's own kind, per the source) uniquely identifies `
+      + `${survivors[0]}) ${OPT[survivors[0]]} -- ${eliminations.map((e) => `${e.letter}) ${OPT[e.letter]} `
+        + `eliminated (${e.reason})`).join('; ')}`
+    : `${survivors.length} candidates share the category's stated kind ("${categoryKind}") `
+      + `${label(survivors)} -- not unique, abstaining and naming the survivors`;
+  return { survivors, unique, eliminations, why };
+}
+
+export interface DiscriminatorResult {
+  survivors: string[];
+  unique: string | null;
+  eliminations: DiscriminatorElimination[];
+  kinds: Record<string, string | null>;
+  categoryKind: string | null;
+  why: string;
+  query: string;
+  via: string;
+  answeredFrom: 'owned-passage' | 'new-query' | 'not-fired';
+  ownedPassageIndex: number | null;
+}
+
+/**
+ * STAGE D, THE DISCRIMINATOR. `candidates` is STAGE M's own non-unique survivor set
+ * (MembershipTerminatorResult.candidates, runMembershipTerminator() above) -- this function never
+ * re-derives it. Fires only on `candidates.length > 1` (guarded here too, defensively, not only by
+ * the caller -- see the early return below); on 0 or 1 nothing here runs and no query is issued.
+ *
+ * EXPORTED for the same reason establishFrame() and extractNamedSetMembers() are exported: so this
+ * ticket's own verification can exercise the owned-evidence-first behavior directly (mocked
+ * askGoogle/gemmaExtract), no live Ollama or Electron browser automation required.
+ */
+export async function runDiscriminator(
+  askGoogle: MethodRunContext['askGoogle'],
+  category: string,
+  candidates: string[],
+  OPT: Record<string, string>,
+  note: (text: string) => void,
+  // FD-BP153-04, ADDITIVE/OPTIONAL -- same contract as establishFrame()'s and
+  // extractNamedSetMembers()'s own `ownedPassages` parameter, same accessor.
+  ownedPassages?: () => string[],
+): Promise<DiscriminatorResult> {
+  if (candidates.length <= 1) {
+    return {
+      survivors: candidates,
+      unique: candidates[0] ?? null,
+      eliminations: [],
+      kinds: {},
+      categoryKind: null,
+      why: 'STAGE D never fires on 0 or 1 candidates (Founder, BP153: fires only when the membership '
+        + 'terminator leaves more than one) -- nothing changes here',
+      query: '(not issued -- candidates.length <= 1)',
+      via: 'not-fired',
+      answeredFrom: 'not-fired',
+      ownedPassageIndex: null,
+    };
+  }
+
+  const owned = (ownedPassages ? ownedPassages() : []).filter((p) => !!p && !!p.trim());
+  for (let i = 0; i < owned.length; i++) {
+    const passage = owned[i];
+    // eslint-disable-next-line no-await-in-loop -- each owned passage is tried in turn, stopping at
+    // the first that yields a verified, usable read; extraction over text already sitting in memory
+    // (a local Ollama call), never a network fan-out, so there is nothing here to parallelize
+    // against -- same convention establishFrame()/extractNamedSetMembers() already use.
+    const { kinds, categoryKind } = await extractDiscriminatorKinds(passage, candidates, OPT, category);
+    if (Object.values(kinds).some((k) => k != null) || categoryKind != null) {
+      const result = applyDiscriminatorElimination(candidates, kinds, categoryKind, category, OPT);
+      note(
+        `   DISCRIMINATOR: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already `
+          + `acquired this run -- NO NEW QUERY ISSUED) -- ${result.why}`,
+      );
+      return {
+        survivors: result.survivors, unique: result.unique, eliminations: result.eliminations, kinds, categoryKind,
+        why: result.why, query: `(owned passage ${i + 1} of ${owned.length}, no query issued)`,
+        via: 'owned-passage', answeredFrom: 'owned-passage', ownedPassageIndex: i,
+      };
+    }
+    // Nothing extractable from THIS passage (D-BP153-010's rule, extended exactly as
+    // establishFrame() and extractNamedSetMembers() extend it): inconclusive, not "no distinction
+    // stated" -- try the next owned passage, then the query path below.
+  }
+  if (owned.length) {
+    note(`   DISCRIMINATOR: ${owned.length} owned passage(s) already acquired this run did not state a usable kind -- falling through to a NEW QUERY`);
+  }
+
+  // ONE QUERY, over the survivors only -- never one per candidate. Founder, BP151, verbatim: "we
+  // got rid of four answers with ONE google search." Ticket's own example wording, used verbatim.
+  const query = `What kind of ${category} is each of these, and how do they differ from one another? ${list(candidates, OPT)}`;
+  note(`   DISCRIMINATOR: ${query}`);
+  const res = await googleBlocks(askGoogle, query);
+  if (!res.ok) {
+    note(`   DISCRIMINATOR: no usable answer (${res.via}) -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
+    return {
+      survivors: candidates, unique: null, eliminations: [],
+      kinds: Object.fromEntries(candidates.map((L) => [L, null])), categoryKind: null,
+      why: `no usable answer (${res.via}) -- ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
+      query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+    };
+  }
+  if (!res.text || !res.text.trim()) {
+    note(`   DISCRIMINATOR: the source returned an EMPTY passage (${res.via}) -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
+    return {
+      survivors: candidates, unique: null, eliminations: [],
+      kinds: Object.fromEntries(candidates.map((L) => [L, null])), categoryKind: null,
+      why: `empty passage (${res.via}) -- ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
+      query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+    };
+  }
+  const { kinds, categoryKind } = await extractDiscriminatorKinds(res.text, candidates, OPT, category);
+  const result = applyDiscriminatorElimination(candidates, kinds, categoryKind, category, OPT);
+  note(`   DISCRIMINATOR: answered FROM A NEW QUERY -- ${result.why}`);
+  return {
+    survivors: result.survivors, unique: result.unique, eliminations: result.eliminations, kinds, categoryKind,
+    why: result.why, query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+  };
+}
+
 /** Reads the option sitting at a named extreme out of a most-to-least-worded ordering array
  *  (index 0 = the "most" end, last index = the "least" end) -- structural index lookup only; the
  *  CALLER supplies which array (mostToLeast-worded vs leastToMost-worded) so this stays a plain
@@ -2141,6 +2422,69 @@ export async function runSuperlativeByMagnitude(
           + `NAMED SET, FD-BP153-01 frame first): frame excluded [${frame.excluded.join(', ') || 'none'}] `
           + `(${frame.answeredFrom}); named set of ${match.direction} ${property} members `
           + `[${namedSet.members.join(', ') || 'none'}] (${namedSet.answeredFrom}); ${termination.why}`,
+      };
+    }
+    // D-BP153-015 -- STAGE D, THE DISCRIMINATOR. Fires ONLY here: the membership terminator ran,
+    // named the survivors, and left MORE THAN ONE. On zero candidates (below, unchanged) or a
+    // single candidate (already returned above) this is never reached and nothing changes. See
+    // this file's own "STAGE D: THE DISCRIMINATOR" section header (above) for the full derivation.
+    if (termination.candidates.length > 1) {
+      step(
+        `STAGE D  THE DISCRIMINATOR (D-BP153-015) -- the membership terminator left `
+          + `${termination.candidates.length} candidates (${termination.candidates.join(', ')}); does a STATED `
+          + 'KIND distinction resolve it?',
+      );
+      const discriminator = await runDiscriminator(askGoogle, category, termination.candidates, OPT, note, ctx.ownedPassages);
+      if (discriminator.unique) {
+        const winner = discriminator.unique;
+        const ok = KEY != null ? winner === KEY : undefined;
+        step(
+          `PUBLISH -- ${winner} (${OPT[winner]}) -- the discriminator resolved uniquely on a STATED kind `
+            + 'distinction; Stage A\'s litmus-strip loop and Stage B\'s four ordering queries were never issued',
+        );
+        emit({
+          kind: 'result',
+          text: `${KEY != null ? (ok ? 'CORRECT' : 'WRONG') : 'ANSWER'}  ${winner} (${OPT[winner]})  via discriminator${KEY != null ? `  key=${KEY}` : ''}`,
+          ts: nowIso(),
+        });
+        note(`   ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+        return {
+          qid: input.qid,
+          question: input.question,
+          verdict: winner,
+          correct: KEY,
+          ok,
+          abstain: false,
+          freeText: input.qid == null,
+          basis: `superlative-by-magnitude route, THE DISCRIMINATOR (STAGE D, D-BP153-015 -- fires on the `
+            + `membership terminator's own ${termination.candidates.length}-candidate non-unique result): frame `
+            + `excluded [${frame.excluded.join(', ') || 'none'}] (${frame.answeredFrom}); named set `
+            + `[${namedSet.members.join(', ') || 'none'}] (${namedSet.answeredFrom}); STAGE M candidates `
+            + `[${termination.candidates.join(', ')}] (${termination.why}); ${discriminator.why}`,
+        };
+      }
+      step(
+        `ABSTAIN -- the discriminator could not resolve the membership terminator's `
+          + `${termination.candidates.length} candidates to a unique answer; naming the survivors, never picking `
+          + 'among them (FD-BP152-19)',
+      );
+      emit({
+        kind: 'result',
+        text: `ABSTAIN (discriminator: ${discriminator.survivors.join(', ')})${KEY != null ? `  key=${KEY}` : ''}`,
+        ts: nowIso(),
+      });
+      note(`   ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+      return {
+        qid: input.qid,
+        question: input.question,
+        verdict: null,
+        correct: KEY,
+        abstain: true,
+        freeText: input.qid == null,
+        basis: `superlative-by-magnitude route, THE DISCRIMINATOR (STAGE D, D-BP153-015): the membership `
+          + `terminator left ${termination.candidates.length} candidates [${termination.candidates.join(', ')}] `
+          + `(${termination.why}); ${discriminator.why} -- ABSTAIN naming `
+          + `[${discriminator.survivors.join(', ')}], never picking among survivors (FD-BP152-19)`,
       };
     }
     note('   MEMBERSHIP TERMINATOR did not resolve uniquely -- falling through to the magnitude route, unchanged');
