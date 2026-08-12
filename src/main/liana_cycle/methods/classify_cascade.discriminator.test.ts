@@ -339,6 +339,10 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leave
         not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: FRAME_PASSAGE })),
         stated_in_passage: true,
       }),
+      // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement (which-IS-the-category)
+      // extraction against the SAME owned[0]=FRAME_PASSAGE -- the passage states nothing in that
+      // shape, so this is empty; the direct exclusion read above already resolved the frame.
+      JSON.stringify({ members: [], stated_in_passage: false }),
       // STAGE M NAMED SET: owned[0]=FRAME_PASSAGE tried first, direct+complement -- off-topic, nothing.
       JSON.stringify({ members: [], stated_in_passage: false }),
       JSON.stringify({ not_members: [], stated_in_passage: false }),
@@ -407,6 +411,10 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leave
         not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: FRAME_PASSAGE })),
         stated_in_passage: true,
       }),
+      // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement extraction against the
+      // same owned[0]=FRAME_PASSAGE -- empty (nothing stated in that shape); the direct exclusion
+      // read above already resolved the frame.
+      JSON.stringify({ members: [], stated_in_passage: false }),
       JSON.stringify({ members: [], stated_in_passage: false }),
       JSON.stringify({ not_members: [], stated_in_passage: false }),
       JSON.stringify({
