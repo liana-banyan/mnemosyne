@@ -53,14 +53,24 @@ function notes(): { note: (text: string) => void; log: string[] } {
  *  gemmaExtract() itself parses (`{ response: "...json..." }`). Throws if the queue runs out, so a
  *  test that expects fewer gemmaExtract() calls than it queues for is caught rather than silently
  *  passing on a stale mock. */
-function queuedFetch(responses: string[]) {
+// D-BP153-012 -- the return is cast to `typeof fetch`. THE CAST IS THE POINT, and it is narrow:
+// gemmaExtract() reads exactly one thing off this object, `.json()`, so a stub that implements
+// only that is honest about what it stands in for. Building a full Response (headers, ok, status,
+// redirected, and 11 more members) would be ceremony that tests nothing.
+//
+// WHY IT WAS NEEDED, recorded so the next person does not re-learn it: without the cast this file
+// type-checked fine under `tsconfig.json` (what vitest and a plain `tsc --noEmit` use) and FAILED
+// under `tsconfig.main.json` (what `npm run build:main` uses, which includes test files and is
+// stricter). The two configs disagree, so "tsc is clean" from the wrong one is not evidence the
+// BUILD is clean. That gap silently produced a `dist:win` run that emitted no installer at all.
+function queuedFetch(responses: string[]): typeof fetch {
   let i = 0;
   return vi.fn(async () => {
     if (i >= responses.length) throw new Error(`queuedFetch: no more queued responses (called ${i + 1} times)`);
     const r = responses[i];
     i++;
     return { json: async () => ({ response: r }) };
-  });
+  }) as unknown as typeof fetch;
 }
 
 describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a new query', () => {
