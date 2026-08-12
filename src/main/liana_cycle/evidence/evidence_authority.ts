@@ -49,6 +49,10 @@ export interface AcquisitionSession {
   seq: number;
   /** Every record written this session, in order. */
   written: EvidenceRecord[];
+  /** Ledger writes that FAILED. Recording is non-fatal (see `record()` below), but a failure is
+   *  never silent: it lands here, and a caller that finds this non-empty must treat the
+   *  acquisition as INCOMPLETE and refuse to replay it as though it were whole. */
+  writeFailures: Array<{ query: string; authority: EvidenceAuthority; error: string }>;
   /** Wall-clock supplier, injectable so tests are not clock-dependent. */
   now?: () => string;
 }
@@ -59,23 +63,37 @@ export function newAcquisitionSession(init: {
   dir?: string;
   now?: () => string;
 }): AcquisitionSession {
-  return { ...init, seq: 0, written: [] };
+  return { ...init, seq: 0, written: [], writeFailures: [] };
 }
 
+/**
+ * NON-FATAL BY DESIGN, AND NEVER SILENT. A ledger write must not be able to turn a good run into
+ * a failed one -- the same principle the run-receipt writer already uses (index.ts:4089, whose
+ * surrounding comment says exactly this). But "non-fatal" must not become "invisible": a failure
+ * is pushed onto `session.writeFailures`, and an acquisition with any write failure is INCOMPLETE
+ * and must not be replayed as though it were whole.
+ *
+ * The sequence still advances on failure, deliberately. A gap in `seq` is a visible signal that
+ * something was issued and not captured; reusing the number would paper over the hole.
+ */
 function record(session: AcquisitionSession, authority: EvidenceAuthority, query: string, response: unknown): void {
   const ts = session.now ? session.now() : new Date().toISOString();
-  const written = appendEvidence({
-    authority,
-    query,
-    response,
-    acquisitionId: session.acquisitionId,
-    qid: session.qid,
-    seq: session.seq,
-    ts,
-    dir: session.dir,
-  });
+  try {
+    const written = appendEvidence({
+      authority,
+      query,
+      response,
+      acquisitionId: session.acquisitionId,
+      qid: session.qid,
+      seq: session.seq,
+      ts,
+      dir: session.dir,
+    });
+    session.written.push(written);
+  } catch (e) {
+    session.writeFailures.push({ query, authority, error: e instanceof Error ? e.message : String(e) });
+  }
   session.seq += 1;
-  session.written.push(written);
 }
 
 /**
