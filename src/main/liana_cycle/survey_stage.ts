@@ -290,7 +290,7 @@ import { surveyAskNested, type SurveyAskNestedResult } from './elements/survey_a
 import { surveyAnswers, type SurveyAnswersResult } from './elements/survey_answers';
 import { fieldGate, type FieldGateResult } from './elements/field_gate';
 import { findAskCatalyst } from './elements/catalyst_words';
-import { extractAssertedMentions, gemmaExtract, googleBlocks, type AssertedMention, type GoogleBlock } from './methods/comparative_cascade';
+import { extractAssertedMentions, gemmaExtract, googleBlocks, list, type AssertedMention, type GoogleBlock } from './methods/comparative_cascade';
 // D-BP152-008. Every literal Google query string this file sends (askAmbiguity()'s askedText,
 // askOperation()'s askedText, askConstraint()'s question) now lives in
 // resources/liana_survey_queries.json, re-read fresh on every call -- see query_text_loader.ts's
@@ -663,11 +663,58 @@ async function obtainMetaQuestionPassage(
 }
 
 /**
+ * D-BP153-007, FIX D2. ATTRIBUTED: Founder ruling FD-BP153-03
+ * (`BISHOP_DROPZONE\RULINGS_BP153.md`), against the measured failure named in
+ * `BISHOP_DROPZONE\BP153_LIVE_RUN_FINDING_META_QUERIES_OMIT_OPTIONS.md` -- a real qid 98 run sent
+ * askAmbiguity()/askOperation()'s query with NO OPTIONS attached (fixed separately, FIX D1,
+ * askAmbiguity()'s own header below). Gemini's reply to the option-less query opened, verbatim:
+ * "Because specific options were omitted from your prompt, here are the world's primary major
+ * population clusters..." -- a REFUSAL stating its own input was incomplete, not an answer to
+ * anything. gemmaExtract() was handed that refusal anyway and mined "identified" out of it, which
+ * mapped to DEMAND: IDENTIFY and died at method selection. A stated-incomplete-input passage must
+ * never be mined for an answer -- refusing beats guessing is this estate's existing doctrine
+ * (askAmbiguity()'s own "Google unreachable" branch already refuses rather than fabricates); this
+ * closes the second way the same principle was being violated: a REACHABLE source that explicitly
+ * declined to answer was still being extracted from as if it had answered.
+ *
+ * CONSERVATIVE / HIGH PRECISION BY DESIGN. This fires ONLY on an explicit statement that INPUT
+ * REQUIRED TO ANSWER WAS ABSENT (missing options/choices/list) -- it is NOT a general "the model
+ * sounds unsure" detector. A broad uncertainty detector would suppress real answers and would be
+ * exactly the kind of unattributed tare HARDWIRE-23 (`HARDWIRE-23_THE_TARE_RULE.md`) forbids, so it
+ * was not built. The first pattern below is the exact phrase measured, verbatim, in the live qid 98
+ * run; the rest are near neighbors of the SAME narrow claim (missing options), not a widened net.
+ */
+export function statesIncompleteInput(passage: string): { incomplete: boolean; matched: string | null } {
+  const INCOMPLETE_INPUT_PATTERNS: RegExp[] = [
+    // The exact phrase measured live: "Because specific options were omitted from your prompt".
+    /options?\s+(were|was)\s+(omitted|missing|not\s+(provided|included|listed))/i,
+    /you\s+(did\s?n[o']t|have\s+not)\s+(provide|include|list|specify)/i,
+    /no\s+options\s+(were\s+)?(provided|given|listed)/i,
+    /(cannot|can't|unable to)\s+answer\s+.{0,40}(without|because).{0,40}(options|list|choices)/i,
+  ];
+  for (const re of INCOMPLETE_INPUT_PATTERNS) {
+    const m = passage.match(re);
+    if (m) return { incomplete: true, matched: m[0] };
+  }
+  return { incomplete: false, matched: null };
+}
+
+/**
  * D-BP151-031, transport split D-BP151-032. ATTRIBUTED: Founder, BP151, verbatim: "what words or
  * phrases in this question could be understood with a different meaning that would fundamentally
  * change the meaning of what is being asked?" -- his own fix for SURVEY STEP 2's no-term path, run
  * by hand, worked first try. See this file's own header, "D-BP151-031 AMENDMENT", for the measured
  * failure this closes (qid 98, LIANA_RUN_qid98_2026-08-09T22-37-19-658Z.json, transcript line 75).
+ *
+ * D-BP153-007, FIX D1, ADDITIVE ONLY. Same measured failure named above (statesIncompleteInput()'s
+ * own header): the live query this function sent carried NO OPTIONS, so the authority answering it
+ * had nothing to answer ABOUT and refused (or, worse, hallucinated a passage about the bare
+ * category). The new, OPTIONAL trailing `options` parameter, when present and non-empty, renders
+ * the option list into the query BETWEEN the question and this function's own askedText, in letter
+ * order, via `list()` (methods/comparative_cascade.ts, the SAME letter-labeled rendering every other
+ * Google-facing query in this estate already uses -- no new formatter invented). Omitted/null/empty
+ * `options` produces the EXACT SAME query string as before this ticket -- every existing caller that
+ * does not pass `options` is byte-identical.
  *
  * `transport` SELECTS THE SOURCE. ATTRIBUTED (D-BP151-032): Founder, relayed BP151 addendum, "I
  * want to always run it on google, which should be the default that can be changed in Mnemosynec
@@ -702,7 +749,7 @@ async function obtainMetaQuestionPassage(
 // want... just want them NameNumbered... so that I can mix and match as I please." This export
 // keyword is the ONLY change made here: no line inside this function's body is touched, no
 // behavior changes -- see this file's own D-BP152-042 SEG return for the byte-identical proof.
-export async function askAmbiguity(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<AmbiguityQueryResult> {
+export async function askAmbiguity(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google', options?: Record<string, string> | null): Promise<AmbiguityQueryResult> {
   // D-BP152-008. Query text moved to resources/liana_survey_queries.json (id
   // "survey.ambiguity.askedText") -- no placeholders, so this is the exact static sentence, read
   // fresh on every call. Throws (never guesses) if the file/id is missing.
@@ -735,7 +782,14 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
   // passage is in hand (from whichever surface answered), the rest of this branch is UNCHANGED:
   // gemmaExtract() (unrelaxed) STRUCTURES what the surface actually said; this function decides
   // nothing about which terms matter.
-  const query = `${askText}\n\n${askedText}`;
+  // D-BP153-007, FIX D1 (see this function's own header, above): when `options` is present and
+  // non-empty, render it between the question and askedText, letter order, via list() -- the same
+  // "A) ... B) ..." shape every other Google-facing query in this estate already sends. Omitted/
+  // null/empty `options` leaves this line byte-identical to before this ticket.
+  const optionsBlock = options && Object.keys(options).length
+    ? `\n\n${list(Object.keys(options).sort(), options)}`
+    : '';
+  const query = `${askText}${optionsBlock}\n\n${askedText}`;
   const passage = await obtainMetaQuestionPassage(ctx, 'ambiguity', query);
   if (!passage.ok) {
     return {
@@ -771,6 +825,32 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
       + `="${googlePassageForLog}"`,
     ts: nowIso(),
   });
+  // D-BP153-007, FIX D2 (see statesIncompleteInput()'s own header, above, for the full ATTRIBUTED
+  // ruling and the exact live phrase this closes). A REACHABLE source that explicitly stated its
+  // own input was incomplete is a REFUSAL, never an answer -- gemmaExtract() is not called on this
+  // branch, so it cannot mine a demand-shaped word out of a sentence explaining why it couldn't
+  // answer (the qid 98 measured failure: "identified" mined from "Because specific options were
+  // omitted from your prompt...").
+  const ambiguityIncomplete = statesIncompleteInput(passage.text);
+  if (ambiguityIncomplete.incomplete) {
+    const why = `REFUSED: ${passage.answeredBy}'s own passage (${passage.via}) stated that required input `
+      + `was missing rather than answering -- matched phrase "${ambiguityIncomplete.matched}" (D2, `
+      + 'D-BP153-007/FD-BP153-03: a stated-incomplete-input passage is a refusal, not an answer). '
+      + 'gemmaExtract() was NOT called on this branch -- an honest refusal, not a mined guess.';
+    ctx.emit({ kind: 'note', text: `   [ambiguity] ${why}`, ts: nowIso() });
+    return {
+      askedText,
+      terms: [],
+      termsDroppedNotInQuestion: [],
+      modelUnreachable: false,
+      transport: 'google',
+      citations: passage.sources,
+      rawGooglePassage: passage.text,
+      rawModelOutput: null,
+      answeredByAuthority: passage.answeredBy,
+      why,
+    };
+  }
   const instruction = 'List every word or phrase the passage names as something that could be understood '
     + 'with a different meaning that would fundamentally change the meaning of what is being asked. For '
     + 'each, report its standard meaning, an alternative meaning, and the impact of that alternative '
@@ -878,9 +958,16 @@ export interface OperationQueryResult {
  * measured failure this closes (`LIANA_RUN_qid98_2026-08-10T03-53-08-736Z.json`, `FD-BP152-05`)
  * is a run where Part 1 ALSO returned nothing usable.
  *
- * NEVER CARRIES THE OPTION LIST. `askText` is the raw question text ALONE -- same contamination
- * mitigation as Part 1 (this file's `askAmbiguity()` convention): sending the option list is the
- * demonstrated answer-key leak vector this design avoids on both halves of the opening query.
+ * D-BP153-007, FIX D1 SUPERSEDES THIS SECTION'S ORIGINAL "NEVER CARRIES THE OPTION LIST" CLAIM.
+ * That claim was itself never Founder-attributed here -- it named a real risk (the option list is
+ * a demonstrated answer-key leak vector) but no ruling ever weighed that risk against the measured
+ * cost of NOT sending options: the live qid 98 run (statesIncompleteInput()'s own header, above)
+ * shows an authority that receives no options either refuses outright or fabricates a passage about
+ * the bare category, which is worse than the leak risk this omission was trying to avoid. Founder
+ * ruling FD-BP153-03 (`RULINGS_BP153.md`) orders options attached to BOTH halves of the opening
+ * query. The new, OPTIONAL trailing `options` parameter below (same shape and same byte-identical-
+ * when-omitted guarantee as `askAmbiguity()`'s own, see that function's header) is how this is done;
+ * omitted/null/empty `options` still sends askText alone, unchanged from before this ticket.
  *
  * THIS FUNCTION PICKS NOTHING. It reports the source's own stated answer verbatim in `rawAnswer`,
  * the same shape `askConstraint()` already uses for its own single-answer question -- interpreting
@@ -907,7 +994,7 @@ export interface OperationQueryResult {
 // D-BP152-042. EXPORTED (was module-private) so this primitive can be given its own NameNumbered
 // identity (library/survey_steps.ts, `OperationQuery:1`) and be individually referenceable -- same
 // rationale and same ONE-LINE-ONLY change as askAmbiguity()'s own export, immediately above.
-export async function askOperation(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google'): Promise<OperationQueryResult> {
+export async function askOperation(askText: string, ctx: MethodRunContext, transport: 'google' | 'gemma' = 'google', options?: Record<string, string> | null): Promise<OperationQueryResult> {
   // D-BP152-008. Query text moved to resources/liana_survey_queries.json (id
   // "survey.operation.askedText") -- no placeholders, read fresh on every call.
   const askedText = getQueryText('survey.operation.askedText');
@@ -934,7 +1021,13 @@ export async function askOperation(askText: string, ctx: MethodRunContext, trans
   // value). D-BP152-044: same obtainMetaQuestionPassage() helper askAmbiguity() now uses -- tries
   // the conversational authority first (Gemini), falls back to Google. Same shape as askAmbiguity()'s
   // own 'google' branch otherwise.
-  const query = `${askText}\n\n${askedText}`;
+  // D-BP153-007, FIX D1 (see this function's own header, above): same options-rendering as
+  // askAmbiguity() -- letter order, via list(), between askText and askedText. Omitted/null/empty
+  // `options` leaves this line byte-identical to before this ticket.
+  const optionsBlock = options && Object.keys(options).length
+    ? `\n\n${list(Object.keys(options).sort(), options)}`
+    : '';
+  const query = `${askText}${optionsBlock}\n\n${askedText}`;
   const passage = await obtainMetaQuestionPassage(ctx, 'operation', query);
   if (!passage.ok) {
     return {
@@ -962,6 +1055,28 @@ export async function askOperation(askText: string, ctx: MethodRunContext, trans
       + `="${googlePassageForLog}"`,
     ts: nowIso(),
   });
+  // D-BP153-007, FIX D2 (see statesIncompleteInput()'s own header, above askAmbiguity(), for the
+  // full ATTRIBUTED ruling). Same rule as askAmbiguity()'s own copy: a REACHABLE source that stated
+  // its own input was incomplete is a refusal, never an answer -- gemmaExtract() is not called.
+  const operationIncomplete = statesIncompleteInput(passage.text);
+  if (operationIncomplete.incomplete) {
+    const why = `REFUSED: ${passage.answeredBy}'s own passage (${passage.via}) stated that required input `
+      + `was missing rather than answering -- matched phrase "${operationIncomplete.matched}" (D2, `
+      + 'D-BP153-007/FD-BP153-03: a stated-incomplete-input passage is a refusal, not an answer). '
+      + 'gemmaExtract() was NOT called on this branch -- an honest refusal, not a mined guess.';
+    ctx.emit({ kind: 'note', text: `   [operation] ${why}`, ts: nowIso() });
+    return {
+      askedText,
+      rawAnswer: null,
+      modelUnreachable: false,
+      transport: 'google',
+      citations: passage.sources,
+      rawGooglePassage: passage.text,
+      rawModelOutput: null,
+      answeredByAuthority: passage.answeredBy,
+      why,
+    };
+  }
   const instruction = 'Report, verbatim, what the passage states as the single operation this question\'s '
     + 'answer must perform -- ranked, defined, classified, or inferred from evidence. Copy the stated '
     + 'operation exactly as the passage gives it -- do not summarize, infer, or add anything the passage '
@@ -1228,8 +1343,17 @@ async function askThreshold(
  * callable with three arguments in a direct unit test; every reachable-from-the-terminal caller
  * (runSurveyStage() below) passes the ALREADY-RESOLVED value from
  * liana_terminal_engine.ts's resolveAmbiguityQueryTransport().
+ *
+ * `options` (D-BP153-007, FIX D1, ADDITIVE, OPTIONAL, trailing): threaded straight to
+ * askAmbiguity()/askOperation() below -- this function does no rendering of its own, see those two
+ * functions' own headers. `runSurveyStage()` (below) already receives the question's own options as
+ * its own second positional parameter (every existing caller, `liana_terminal_engine.ts` and
+ * `library/script_bridge.ts`, already passes it) -- this parameter is that SAME value threaded one
+ * level deeper, not a new plumbing path or a second source of options. Omitted, exactly like
+ * `askText`/`ambiguityQueryTransport` above, keeps every existing 2/3-argument caller compiling and
+ * behaving byte-identically.
  */
-export async function founderStep2Survey(term: string | null, ctx: MethodRunContext, askText?: string, ambiguityQueryTransport: 'google' | 'gemma' = 'google'): Promise<FounderStep2Result> {
+export async function founderStep2Survey(term: string | null, ctx: MethodRunContext, askText?: string, ambiguityQueryTransport: 'google' | 'gemma' = 'google', options?: Record<string, string> | null): Promise<FounderStep2Result> {
   const { emit } = ctx;
   emit({
     kind: 'stage',
@@ -1259,7 +1383,9 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
         + 'at will.")',
       ts: nowIso(),
     });
-    const ambiguity = await askAmbiguity(askText, ctx, ambiguityQueryTransport);
+    // D-BP153-007, FIX D1: `options` threaded straight through -- see askAmbiguity()'s own header
+    // for what it does when present/absent.
+    const ambiguity = await askAmbiguity(askText, ctx, ambiguityQueryTransport, options);
     emit({ kind: 'note', text: `   [transport: ${ambiguity.transport.toUpperCase()}] ${ambiguity.why}`, ts: nowIso() });
     if (ambiguity.citations.length) {
       emit({ kind: 'note', text: `   citation(s) from Google: ${ambiguity.citations.join(', ')}`, ts: nowIso() });
@@ -1267,11 +1393,13 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
 
     // D-BP152-005, PART 2 of the SAME opening query (FD-BP152-05), issued IMMEDIATELY AFTER
     // PART 1, regardless of what Part 1 came back with -- it is an independent instrument, asked
-    // about the question text alone, never the option list (same contamination mitigation as
-    // Part 1). ATTRIBUTED: Founder, BP152, verbatim: "And then what operation does this question
-    // require in order to answer it: does it want things ranked, defined, classified, or inferred
-    // from evidence?" See askOperation()'s own header for the full ruling.
-    const operation = await askOperation(askText, ctx, ambiguityQueryTransport);
+    // about the question text alone. ATTRIBUTED: Founder, BP152, verbatim: "And then what operation
+    // does this question require in order to answer it: does it want things ranked, defined,
+    // classified, or inferred from evidence?" See askOperation()'s own header for the full ruling.
+    // D-BP153-007, FIX D1 SUPERSEDES "never the option list" (this comment's own former wording) --
+    // see askOperation()'s own header, "D-BP153-007, FIX D1 SUPERSEDES...", for the full ruling
+    // (FD-BP153-03) and why `options` is now threaded here too.
+    const operation = await askOperation(askText, ctx, ambiguityQueryTransport, options);
     emit({ kind: 'note', text: `   [transport: ${operation.transport.toUpperCase()}] PART 2 (operation): ${operation.why}`, ts: nowIso() });
     if (operation.citations.length) {
       emit({ kind: 'note', text: `   citation(s) from Google (operation query): ${operation.citations.join(', ')}`, ts: nowIso() });
@@ -1987,7 +2115,11 @@ export async function runSurveyStage(
 
   // D-BP151-031: askText is now passed through so step 2's no-term path can issue the Founder's
   // ambiguity query instead of only refusing. See founderStep2Survey()'s own comment.
-  const step2 = await founderStep2Survey(term, ctx, askText, opts.ambiguityQueryTransport);
+  // D-BP153-007, FIX D1: `options` (this function's own second parameter, already received from
+  // every existing caller -- liana_terminal_engine.ts, library/script_bridge.ts) is threaded one
+  // level deeper here, into founderStep2Survey() -> askAmbiguity()/askOperation(). No new plumbing
+  // path was added -- this is the SAME `options` value already flowing into this function.
+  const step2 = await founderStep2Survey(term, ctx, askText, opts.ambiguityQueryTransport, options);
 
   // ───────────────────────────────────────────────────────────────────────────────────────────
   // D-BP152-009. ATTRIBUTED: Founder, BP152, verbatim (`FD-BP152-01`): "I think survey goes too
