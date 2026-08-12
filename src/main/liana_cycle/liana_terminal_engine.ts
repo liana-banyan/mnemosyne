@@ -448,11 +448,37 @@ async function runLianaCycleQuestionInner(
       parsed = parseFreeText(trimmed);
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // D-BP153-003 -- THE KEY SPLIT. THE ANSWER KEY IS NOW STRUCTURALLY OUT OF THE METHOD'S REACH.
+    //
+    // `parseQid()` attaches the bundled corpus's `answer` field as `correctAnswer`, and this
+    // object used to carry it straight into every `shapeTest()` and every `run()`. The estate has
+    // a standing rule against tuning toward the key, and it has been honored -- a BP153 audit of
+    // all five `const KEY = input.correctAnswer` sites (classify_cascade.ts:914/969/1437,
+    // comparative_cascade.ts:963, definitional_cascade.ts:204) found KEY used in exactly three
+    // ways, ALL of them after the verdict already exists: printing `key=` in a result line,
+    // computing `ok = verdict === KEY`, and setting `correct` on the returned outcome. It never
+    // touched elimination, criteria selection, query construction, or pool filtering.
+    //
+    // So nothing is being fixed here. What is being removed is the POSSIBILITY. The rule was
+    // enforced by discipline, and discipline is the layer that fails silently -- which is the
+    // same lesson six days of silently-skipped commit guards taught this estate on the night this
+    // was written. A method can no longer read the key because it is no longer handed one.
+    //
+    // WHY NO METHOD FILE NEEDED EDITING: every KEY use site was already written
+    // `KEY != null ? ... : ...` to handle the free-text case, where there has never been a key.
+    // Blinding the input simply puts every run on the path free-text runs always took.
+    //
+    // WHERE THE KEY STILL LIVES: with the ENGINE, which needs it to score, and which only ever
+    // applies it AFTER `method.run()` has returned (see the reattachment at this function's
+    // return). Scoring after the fact is structurally safe; handing the key to the thing being
+    // scored is not.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
     const methodInput: MethodQuestionInput = {
       qid: parsed.qid,
       question: parsed.question,
       options: parsed.options,
-      correctAnswer: parsed.correctAnswer,
+      // correctAnswer deliberately NOT set. See the block comment above.
     };
     const freeText = parsed.qid == null;
 
@@ -809,8 +835,21 @@ async function runLianaCycleQuestionInner(
         throw e;
       }
     }
+    // D-BP153-003 -- THE KEY REJOINS HERE, AND ONLY HERE. `method.run()` has already returned;
+    // its verdict was produced by code that could not see the key (see the key-split block where
+    // `methodInput` is built). Scoring is therefore structurally after the fact, which is the
+    // whole point. The methods' own `ok`/`correct` fields now come back undefined (their
+    // `KEY != null` guards take the free-text branch), so these two lines are the sole source of
+    // both. Order matters: this must sit AFTER `...outcome` so it overrides rather than merges
+    // under it.
+    const scoredCorrect = parsed.correctAnswer;
+    const scoredOk = scoredCorrect != null && outcome.verdict != null
+      ? outcome.verdict === scoredCorrect
+      : undefined;
     return {
       ...outcome,
+      ...(scoredCorrect != null ? { correct: scoredCorrect } : {}),
+      ...(scoredOk !== undefined ? { ok: scoredOk } : {}),
       method: method.id,
       options: parsed.options,
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
