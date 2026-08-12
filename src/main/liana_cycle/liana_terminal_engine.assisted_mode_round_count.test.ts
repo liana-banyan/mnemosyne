@@ -171,8 +171,36 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     // REAL evidence (classify_cascade.discriminator.test.ts's own REQUIRED POSITIVE test) STAGE D
     // resolves to the correct letter on a STATED kind distinction; this synthetic-content instrument
     // still cannot show that direction, for the same reason noted above for STAGE M.
+    //
+    // RE-PINNED AGAIN, 23 -> 21, D-BP153-016 (TYPE THE PASSAGES, VERIFY THE SPAN). Measured TWICE
+    // in isolation (both the pre-ticket baseline and this ticket's own build), full query-by-query
+    // trace taken both times (a throwaway instrumented copy of this same test, deleted after use --
+    // not shipped). Rounds 1-20 are byte-identical either way (the 2 Survey meta-queries + the
+    // 18-query per-option denotation sweep, D-BP153-03's own "18 definitions nobody read"). Round 21
+    // (establishFrame()'s own fresh query, "Which of these are world regions...") is ALSO issued
+    // either way -- same query, same round. The divergence is what happens to round 21's ANSWER:
+    // this instrument's assisted channel hands back the SAME content-free synthetic capture string
+    // for every pause ("(test instrument: synthetic non-empty capture, no real search performed)"),
+    // which names NONE of the nine option labels.
+    //   BEFORE this ticket: that non-empty-but-off-topic text passed establishFrame()'s only guard
+    //   (D-BP153-010's "an empty passage is unavailable" check -- this text is not empty), reached
+    //   gemmaExtract(), and came back with nothing stated -- frame.available:true, excluded:[]. A
+    //   frame that examined nothing and a frame that confirmed nothing excluded read identically to
+    //   the caller, so the run proceeded into STAGE M (round 22, the named-set query) and then STAGE
+    //   D (round 23, the discriminator query), both doomed to the same "nothing stated" fate on the
+    //   same content-free evidence.
+    //   AFTER this ticket: FIX 3 ("reject a passage that cannot source the claim", applied to the
+    //   fresh-query path exactly as it is to owned evidence) recognizes BEFORE calling gemmaExtract()
+    //   at all that a passage naming none of the nine options cannot state anything about them --
+    //   frame.available:false, honestly UNAVAILABLE rather than "confirmed nothing excluded". Per
+    //   FD-BP153-01 consequence 2 ("a magnitude result with no frame is NOT definitive"), an
+    //   unavailable frame ABSTAINS IMMEDIATELY, right there -- STAGE M and STAGE D are never reached.
+    // Two fewer rounds is two fewer queries spent finishing an extraction whose evidence could never
+    // have supported an answer -- the same direction every prior STAGE-D-class re-pin in this file
+    // has moved (fewer wasted rounds on content-free evidence is the intended shape of this whole
+    // BP153 arc, not a defect in the instrument).
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    expect(rounds).toBe(23);
+    expect(rounds).toBe(21);
     expect(outcome.error).not.toBe('demand_unknown');
     expect(outcome.method).toBe('classify-cascade');
     expect(events.length).toBeGreaterThan(0);

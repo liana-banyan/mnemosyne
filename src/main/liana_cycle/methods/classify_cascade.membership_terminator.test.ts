@@ -1,4 +1,5 @@
 // classify_cascade.membership_terminator.test.ts -- D-BP153-013/BISHOP/seg-membership-terminator
+// UPDATED D-BP153-016/BISHOP/seg-classify-016 (typed passages, verify-the-span)
 //
 // THE HAND DERIVATION THIS PROVES, ENCODED VERBATIM (Bishop's dispatch, not re-derived here):
 // qid 98, key A. Step 1 THE FRAME (establishFrame(), already built, NOT re-tested here --
@@ -15,19 +16,27 @@
 // (runMembershipTerminator(), this ticket): legitimate-regions MINUS named-set-members = {A}
 // (South America), UNIQUE.
 //
+// D-BP153-016 UPDATE. `ownedPassages()` now returns typed `OwnedPassage[]` (text + kind), not bare
+// strings (FD-BP153-07 FIX 1), and every extracted value must carry a verbatim SUPPORTING SPAN
+// (FIX 2). This file's fixtures and mocked gemmaExtract() JSON are updated in place to the new
+// shape; the arithmetic and derivation under test are unchanged.
+//
 // THE REAL EVIDENCE, verbatim from the live BP153 run's evidence store (this ticket's own
 // dispatch, quoted exactly, never paraphrased):
-const REAL_PASSAGE = 'Options A (South America), C (North Africa), F (Central Asia), G (Arctic Circle), '
+const REAL_PASSAGE_S1 = "Options A (South America), C (North Africa), F (Central Asia), G (Arctic Circle), "
   + "H (Amazon Rainforest), and I (Sahara Desert) are all NOT considered among the world's most "
-  + 'densely populated regions. Only B (South Asia), D (Northeast United States), and E (Europe) are '
-  + 'recognized in human geography as major global population clusters. Among the non-dense options, '
-  + 'G, H, and I represent the extreme sparsely populated biomes (cold, wet, and dry lands).';
+  + 'densely populated regions.';
+const REAL_PASSAGE_S2 = 'Only B (South Asia), D (Northeast United States), and E (Europe) are '
+  + 'recognized in human geography as major global population clusters.';
+const REAL_PASSAGE_S3 = 'Among the non-dense options, G, H, and I represent the extreme sparsely '
+  + 'populated biomes (cold, wet, and dry lands).';
+const REAL_PASSAGE = `${REAL_PASSAGE_S1} ${REAL_PASSAGE_S2} ${REAL_PASSAGE_S3}`;
 
 import { describe, test, expect, vi } from 'vitest';
 import {
   extractNamedSetMembers, runMembershipTerminator, runSuperlativeByMagnitude, extractSuperlativeMatch,
 } from './classify_cascade';
-import type { MethodRunContext, MethodQuestionInput } from '../method_registry';
+import type { MethodRunContext, MethodQuestionInput, OwnedPassage } from '../method_registry';
 import type { LianaTerminalEvent } from '../../../shared/liana_cycle/liana_terminal_types';
 
 // qid 98's option letters, same fixture classify_cascade.frame.test.ts and
@@ -49,6 +58,9 @@ const CATEGORY = 'world regions';
 // (['A','B','D','E']) -- NOT re-derived here, only its exclusion complement is restated:
 const FRAME_EXCLUDED_REAL = ['C', 'F', 'G', 'H', 'I'];
 const QUESTION = "Which of the following world regions is NOT considered one of the world's most densely populated regions?";
+
+// D-BP153-016: wraps a bare passage string as an OwnedPassage of kind 'operation'.
+const owned = (text: string): OwnedPassage => ({ text, kind: 'operation' });
 
 function notes(): { note: (text: string) => void; log: string[] } {
   const log: string[] = [];
@@ -115,7 +127,10 @@ describe('extractNamedSetMembers() -- STEP 2, owned-evidence-first (mirrors esta
   test('an owned passage stating explicit members answers with ZERO queries issued', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      JSON.stringify({ members: ['South Asia', 'Northeast United States', 'Europe'], stated_in_passage: true }),
+      JSON.stringify({
+        members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: REAL_PASSAGE_S2 })),
+        stated_in_passage: true,
+      }),
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'this must never be reached' }));
     try {
@@ -123,7 +138,7 @@ describe('extractNamedSetMembers() -- STEP 2, owned-evidence-first (mirrors esta
       const result = await extractNamedSetMembers(
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
-        () => [REAL_PASSAGE],
+        () => [owned(REAL_PASSAGE)],
       );
       expect(askGoogle).not.toHaveBeenCalled();
       expect(result.available).toBe(true);
@@ -136,12 +151,19 @@ describe('extractNamedSetMembers() -- STEP 2, owned-evidence-first (mirrors esta
     }
   });
 
-  test('appearsIn() rejects a member the passage does not actually contain -- never trusted', async () => {
+  test('a span that does not actually contain the hallucinated member is discarded -- never trusted', async () => {
     const originalFetch = global.fetch;
     const passage = 'Only B (South Asia) is recognized as a major global population cluster.';
-    // Model hallucinates an ADDITIONAL member ("Europe") the passage never states.
+    // Model hallucinates an ADDITIONAL member ("Europe") the passage never states -- its only
+    // offered span is real passage text that does not mention Europe at all.
     global.fetch = queuedFetch([
-      JSON.stringify({ members: ['South Asia', 'Europe'], stated_in_passage: true }),
+      JSON.stringify({
+        members: [
+          { name: 'South Asia', span: passage },
+          { name: 'Europe', span: passage },
+        ],
+        stated_in_passage: true,
+      }),
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'must never be reached' }));
     try {
@@ -149,7 +171,7 @@ describe('extractNamedSetMembers() -- STEP 2, owned-evidence-first (mirrors esta
       const result = await extractNamedSetMembers(
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
-        () => [passage],
+        () => [owned(passage)],
       );
       expect(result.members).toEqual(['B']);
       expect(result.members).not.toContain('E');
@@ -158,18 +180,14 @@ describe('extractNamedSetMembers() -- STEP 2, owned-evidence-first (mirrors esta
     }
   });
 
-  test('an owned passage yielding nothing is inconclusive, not "no members" -- tries the next passage', async () => {
+  test('an owned passage that yields NOTHING extractable is inconclusive, not "no members" -- tries the next passage', async () => {
     const originalFetch = global.fetch;
+    // Names NO option at all -- D-BP153-016 FIX 3 rejects it mechanically, before extraction, so it
+    // contributes ZERO gemmaExtract() calls.
     const offTopic = 'Population density is measured in people per square kilometer worldwide.';
-    // D-BP153-014: each owned passage now costs TWO gemmaExtract() calls (direct member extraction,
-    // then its complement) -- see extractNamedSetBothSides(). Passage 1 (off-topic) yields nothing
-    // on either side; passage 2 answers on the direct side, complement stays empty (not a complete
-    // partition, so reconciliation falls back to the direct extraction unreconciled -- unchanged
-    // result from before this ticket).
+    const onTopicPassage = 'Only South Asia is a major global population cluster.';
     global.fetch = queuedFetch([
-      JSON.stringify({ members: [], stated_in_passage: false }), // passage 1: direct
-      JSON.stringify({ not_members: [], stated_in_passage: false }), // passage 1: complement
-      JSON.stringify({ members: ['South Asia'], stated_in_passage: true }), // passage 2: direct
+      JSON.stringify({ members: [{ name: 'South Asia', span: onTopicPassage }], stated_in_passage: true }), // passage 2: direct
       JSON.stringify({ not_members: [], stated_in_passage: false }), // passage 2: complement
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'must never be reached' }));
@@ -178,13 +196,16 @@ describe('extractNamedSetMembers() -- STEP 2, owned-evidence-first (mirrors esta
       const result = await extractNamedSetMembers(
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
-        () => [offTopic, 'Only South Asia is a major global population cluster.'],
+        () => [owned(offTopic), owned(onTopicPassage)],
       );
       expect(askGoogle).not.toHaveBeenCalled();
       expect(result.answeredFrom).toBe('owned-passage');
-      expect(result.ownedPassageIndex).toBe(1);
+      // offTopic was REJECTED mechanically (FIX 3) before ever reaching extraction -- onTopicPassage
+      // is the only one tried, so its index in the FILTERED array is 0.
+      expect(result.ownedPassageIndex).toBe(0);
       expect(result.members).toEqual(['B']);
-      expect(log.some((l) => /did not name any members -- falling through/.test(l))).toBe(false); // only one owned passage failed, not all
+      expect(log.some((l) => /REJECTED an owned passage/.test(l) && /FIX 3/.test(l))).toBe(true);
+      expect(log.some((l) => /did not name any members -- falling through/.test(l))).toBe(false); // the surviving passage answered
     } finally {
       global.fetch = originalFetch;
     }
@@ -192,10 +213,11 @@ describe('extractNamedSetMembers() -- STEP 2, owned-evidence-first (mirrors esta
 
   test('no owned passages at all falls straight to the query path, unchanged from establishFrame()\'s own contract', async () => {
     const originalFetch = global.fetch;
+    const freshPassage = 'Arctic Circle is stated as a member here.';
     global.fetch = queuedFetch([
-      JSON.stringify({ members: ['Arctic Circle'], stated_in_passage: true }),
+      JSON.stringify({ members: [{ name: 'Arctic Circle', span: freshPassage }], stated_in_passage: true }),
     ]);
-    const askGoogle = vi.fn(async () => ({ snippet: 'Arctic Circle is stated as a member here.' }));
+    const askGoogle = vi.fn(async () => ({ snippet: freshPassage }));
     try {
       const { note } = notes();
       const result = await extractNamedSetMembers(
@@ -259,20 +281,24 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
   test('THE HEADLINE, end to end: real passage as owned evidence for BOTH frame and named set -> UNIQUE verdict A, ZERO askGoogle calls, orderings never issued', async () => {
     const originalFetch = global.fetch;
     // Two gemmaExtract() calls total for this run: the frame's own extraction (Step 1, already
-    // built, unmodified), then the named set's own extraction (Step 2, this ticket) -- BOTH read
-    // from the SAME single owned passage, exactly the way the real qid 98 evidence store held one
-    // passage answering both. No THIRD call happens, because Stage A's litmus loop and Stage B's
-    // four ordering queries never run -- the queuedFetch() queue running dry would fail this test
-    // loudly if they did.
+    // built, unmodified), then the named set's own DIRECT extraction (Step 2, this ticket) -- BOTH
+    // read from the SAME single owned passage, exactly the way the real qid 98 evidence store held
+    // one passage answering both. The named set's own COMPLEMENT call finds the queue exhausted and
+    // fails silently (gemmaExtract()'s own catch-and-return-null), which is fine: the direct read
+    // alone already resolves this test's own arithmetic.
     global.fetch = queuedFetch([
       // Frame extraction (establishFrame(), unmodified) -- the real BP153 frame result: only
       // South America, South Asia, Northeast US, Europe were named legitimate world regions.
       JSON.stringify({
-        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'],
+        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
+          .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
         stated_in_passage: true,
       }),
       // Named-set extraction (extractNamedSetMembers(), this ticket).
-      JSON.stringify({ members: ['South Asia', 'Northeast United States', 'Europe'], stated_in_passage: true }),
+      JSON.stringify({
+        members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: REAL_PASSAGE_S2 })),
+        stated_in_passage: true,
+      }),
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'THIS MUST NEVER BE REACHED -- the whole point of the terminator' }));
     try {
@@ -280,7 +306,7 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
       const ctx: MethodRunContext = {
         askGoogle: askGoogle as unknown as MethodRunContext['askGoogle'],
         emit: (e) => events.push(e),
-        ownedPassages: () => [REAL_PASSAGE],
+        ownedPassages: () => [owned(REAL_PASSAGE)],
       };
       const input: MethodQuestionInput = { qid: 98, question: QUESTION, options: OPT, correctAnswer: 'A' };
       const match = extractSuperlativeMatch(QUESTION);
@@ -316,11 +342,15 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
     global.fetch = queuedFetch([
       // Frame extraction: same real frame as above.
       JSON.stringify({
-        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'],
+        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
+          .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
         stated_in_passage: true,
       }),
       // Named-set direct extraction: only TWO of the three members named -- not unique (candidates {A,E}).
-      JSON.stringify({ members: ['South Asia', 'Northeast United States'], stated_in_passage: true }),
+      JSON.stringify({
+        members: ['South Asia', 'Northeast United States'].map((name) => ({ name, span: REAL_PASSAGE_S2 })),
+        stated_in_passage: true,
+      }),
       // Named-set complement extraction (D-BP153-014's own second gemmaExtract() call): REAL_PASSAGE
       // states nothing in complement shape for this reduced reading -- nothing stated.
       JSON.stringify({ not_members: [], stated_in_passage: false }),
@@ -339,7 +369,7 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
       const ctx: MethodRunContext = {
         askGoogle: askGoogle as unknown as MethodRunContext['askGoogle'],
         emit: (e) => events.push(e),
-        ownedPassages: () => [REAL_PASSAGE],
+        ownedPassages: () => [owned(REAL_PASSAGE)],
       };
       const input: MethodQuestionInput = { qid: 98, question: QUESTION, options: OPT, correctAnswer: 'A' };
       const match = extractSuperlativeMatch(QUESTION)!;
@@ -365,7 +395,8 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
     global.fetch = queuedFetch([
       // Frame extraction (Step 1, unmodified): resolves fine from the owned passage, as always.
       JSON.stringify({
-        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'],
+        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
+          .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
         stated_in_passage: true,
       }),
       // Named-set extraction (Step 2) tries the SAME owned passage per FD-BP153-04's contract (each
@@ -382,7 +413,7 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
       const ctx: MethodRunContext = {
         askGoogle: askGoogle as unknown as MethodRunContext['askGoogle'],
         emit: (e) => events.push(e),
-        ownedPassages: () => [REAL_PASSAGE],
+        ownedPassages: () => [owned(REAL_PASSAGE)],
       };
       const input: MethodQuestionInput = { qid: 98, question: QUESTION, options: OPT, correctAnswer: 'A' };
       const match = extractSuperlativeMatch(QUESTION)!;

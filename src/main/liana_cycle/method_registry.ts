@@ -106,6 +106,26 @@ export interface ShapeTestResult {
   reason: string;
 }
 
+/** D-BP153-016, FIX 1 -- THE FOUNDER'S RULING (FD-BP153-07): "type the passages." Before this
+ *  ticket `MethodRunContext.ownedPassages` returned bare `string[]`, and the live 2026-08-12T20:39Z
+ *  run pointed classify_cascade.ts's extractors at the AMBIGUITY passage -- acquired to answer
+ *  "what is ambiguous here", by construction full of counterfactuals -- and mined a counterfactual
+ *  clause as an assertion (Amazon Rainforest, "the world's most densely populated regions"). A bare
+ *  string carries no signal of WHICH QUESTION a passage was acquired to answer, so nothing could
+ *  refuse it structurally.
+ *
+ *  `kind` names that question, truthfully, at the point the passage is banked (today:
+ *  liana_terminal_engine.ts, where `baseCtx` is built from Survey's own step2 results) -- 'ambiguity'
+ *  for the ambiguity meta-question's own passage, 'operation' for the operation meta-question's own
+ *  passage. `sourceQuery` is the literal query text this passage answers, when the caller has it
+ *  (Survey's own `askedText`), carried through for audit -- optional because not every future
+ *  producer of an owned passage will have a clean single query string to hand back. */
+export interface OwnedPassage {
+  text: string;
+  kind: string;
+  sourceQuery?: string;
+}
+
 export interface MethodRunContext {
   askGoogle: AskGoogleFn;
   emit: EmitFn;
@@ -139,10 +159,13 @@ export interface MethodRunContext {
    *  placeholder. OWNED MEANS THIS RUN ONLY -- never the evidence store on disk, never a prior
    *  acquisition; a caller must not reach across acquisitions to populate this.
    *
-   *  Only classify_cascade.ts's establishFrame() reads this field today (D-BP153-04). Every other
-   *  Survey/method query keeps going to Google exactly as before, because nothing else in this
-   *  estate reads this field yet. */
-  ownedPassages?: () => string[];
+   *  classify_cascade.ts's establishFrame(), extractNamedSetMembers(), and runDiscriminator() read
+   *  this field (D-BP153-04, extended D-BP153-016). Every other Survey/method query keeps going to
+   *  Google exactly as before, because nothing else in this estate reads this field.
+   *
+   *  D-BP153-016, FIX 1, TYPED: returns `OwnedPassage[]` (text + kind + optional sourceQuery), not
+   *  bare `string[]` -- see OwnedPassage's own doc comment, just above, for why. */
+  ownedPassages?: () => OwnedPassage[];
 }
 
 export interface LianaMethod {

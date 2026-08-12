@@ -73,7 +73,9 @@
 // text. Google is external evidence, not a judge; Gemma extracts, never chooses.
 
 import { avgOptionWordCount, registerMethod } from '../method_registry';
-import type { LianaMethod, MethodQuestionInput, MethodRunContext, ShapeTestResult } from '../method_registry';
+import type {
+  LianaMethod, MethodQuestionInput, MethodRunContext, OwnedPassage, ShapeTestResult,
+} from '../method_registry';
 import type { LianaTerminalOutcome } from '../../../shared/liana_cycle/liana_terminal_types';
 import {
   appearsIn, evaluateComparativeTerminator, gemmaExtract, googleBlocks, list, norm, toLetters, toPerSqKm,
@@ -1283,6 +1285,151 @@ async function askOrdering(
   return { label, query, ok: true, ordering, raw: res };
 }
 
+// ─────────────────────────── D-BP153-016: TYPED OWNED PASSAGES, AND VERIFY-THE-SPAN ───────────────────────────
+//
+// D-BP153-016/BISHOP/seg-classify-016. THE MEASURED FAILURE (live run 2026-08-12T20:39Z, receipt
+// LIANA_RUN_qid98_2026-08-12T20-39-01-893Z.json). All three owned-evidence extractors below ran from
+// OWNED EVIDENCE with zero queries and produced nonsense: establishFrame() excluded a real cluster
+// member, extractNamedSetMembers() returned "Amazon Rainforest" as a member of the world's most
+// densely populated regions, and the source of that value was the AMBIGUITY passage -- acquired to
+// answer "what is ambiguous here", and by construction full of counterfactuals:
+//   "If 'populated' is interpreted ecologically, the Amazon Rainforest flips from being one of the
+//   least human-populated regions to one of the most densely populated places on Earth..."
+// appearsIn() passed it because the words "Amazon Rainforest" literally appear in that sentence.
+// Presence is not assertion. The OTHER owned passage that run held was 197 characters of Gemini UI
+// chrome ("Interpreting the Prompt Gemini said Answer now Thinking...") -- a passage naming NONE of
+// the options at all, mined anyway.
+//
+// FD-BP153-07 (RULINGS_BP153.md), THE RULING, THREE FIXES:
+//   FIX 1 -- TYPE THE PASSAGES. `OwnedPassage.kind` (method_registry.ts) names WHAT QUESTION a
+//   passage was acquired to answer. An ambiguity passage may never source a claim about what IS --
+//   it exists to enumerate ALTERNATIVE meanings, and is rejected outright, before extraction is even
+//   attempted.
+//   FIX 2 -- VERIFY THE SPAN, NOT THE STRING. Every extraction that yields option letters (or a
+//   discriminator kind) must also return, per value, the verbatim SUPPORTING SPAN it was read from.
+//   The span must appear VERBATIM in the source passage (whitespace normalized only -- never fuzzy)
+//   AND must contain the value. A value with no span, or an unverifiable span, is DISCARDED and the
+//   discard is COUNTED and reported in a note. This REPLACES bare appearsIn(passage, value) as the
+//   sufficiency test -- appearsIn() is still run (against the span, and the passage), but presence
+//   alone is no longer enough.
+//   FIX 3 -- REJECT A PASSAGE THAT CANNOT SOURCE THE CLAIM. A passage naming NONE of the option
+//   labels this extraction is about cannot state anything about them. Mechanical (appearsIn() over
+//   the whole label set, the SAME choke point every other check in this file already uses), never a
+//   word list.
+//
+// THE ONE TEST FOR ANY RULE HERE (Founder, BP153, FD-BP153-06, verbatim): "would this rule survive
+// on a question whose answer we do NOT know?" Both fixes below are pure structural checks -- WHICH
+// KIND a passage carries, WHETHER a span is verbatim, WHETHER a passage names any option at all --
+// none of them read input.correctAnswer, and none of them can be tuned toward a particular letter.
+
+/** FIX 1. Owned-passage kinds no extractor in this file may EVER accept as a source. An ambiguity
+ *  passage exists to enumerate alternative meanings; it is, by construction, full of counterfactuals
+ *  ("if X is interpreted as Y, then..."), and a claim about what IS may never be sourced from one.
+ *  Named here once so establishFrame(), extractNamedSetMembers(), and runDiscriminator() all reject
+ *  the identical set, never three separately-worded copies that could drift. */
+const REJECTED_OWNED_PASSAGE_KINDS = new Set<string>(['ambiguity']);
+
+/** FIX 3, mechanical, general -- NOT a word list. A passage that names NONE of the option labels
+ *  this extraction is about cannot state anything about them (the measured case: 197 characters of
+ *  Gemini UI chrome, naming no option at all, mined anyway). Reuses appearsIn(), the SAME check
+ *  every extracted value in this file is already verified against. */
+function passageMentionsAnyLabel(passage: string, labels: string[], OPT: Record<string, string>): boolean {
+  return labels.some((L) => appearsIn(passage, OPT[L]));
+}
+
+/** FIX 1 + FIX 3, the SHARED CHOKE POINT. establishFrame(), extractNamedSetMembers(), and
+ *  runDiscriminator() all filter their `ownedPassages()` accessor through this ONE function before
+ *  trying anything else. Every rejection is noted (never silent); an owned passage that is empty or
+ *  whitespace-only is dropped exactly as before this ticket (D-BP153-010's own rule, unchanged --
+ *  that is a different fact than a wrong-kind or label-less passage, so it is not itself noted
+ *  here, matching every pre-existing call site's own `.filter((p) => !!p && !!p.trim())` idiom). */
+function filterUsableOwnedPassages(
+  owned: OwnedPassage[],
+  labels: string[],
+  OPT: Record<string, string>,
+  stageLabel: string,
+  note: (text: string) => void,
+): OwnedPassage[] {
+  const out: OwnedPassage[] = [];
+  for (const p of owned) {
+    if (!p || !p.text || !p.text.trim()) continue;
+    if (REJECTED_OWNED_PASSAGE_KINDS.has(p.kind)) {
+      note(
+        `   ${stageLabel}: REJECTED an owned passage of kind '${p.kind}' -- an ambiguity passage `
+          + 'enumerates ALTERNATIVE meanings and may never source a claim about what IS (FD-BP153-07 FIX 1)',
+      );
+      continue;
+    }
+    if (!passageMentionsAnyLabel(p.text, labels, OPT)) {
+      note(
+        `   ${stageLabel}: REJECTED an owned passage of kind '${p.kind}' -- it names NONE of the `
+          + 'option(s) under test and cannot source a claim about them (FD-BP153-07 FIX 3)',
+      );
+      continue;
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+/** FIX 2. Whitespace-only normalization -- collapse runs of whitespace to one space and trim,
+ *  nothing else. Deliberately NOT norm() (comparative_cascade.ts), which also lowercases and strips
+ *  punctuation -- that looseness is exactly what let "Amazon Rainforest" pass BUG-016's real
+ *  failure by bare presence. "Verbatim" means verbatim; case and punctuation are preserved. */
+function normalizeSpanWhitespace(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/** FIX 2. THE FOUNDER'S RULING, BP153, verbatim: "the span must appear VERBATIM in the source
+ *  passage (normalize whitespace only -- do not fuzzy match)". Exported so this ticket's own tests
+ *  can exercise it directly. */
+export function spanIsVerbatim(passage: string, span: string): boolean {
+  const s = normalizeSpanWhitespace(span);
+  if (!s) return false;
+  return normalizeSpanWhitespace(passage).includes(s);
+}
+
+/** One raw `{name, span}` (or `{name, kind, span}`) entry as a model may return it -- untyped on
+ *  purpose, this is exactly the shape gemmaExtract()'s JSON parse hands back before anything here
+ *  has verified a single field of it. */
+type RawSpannedEntry = { name?: unknown; span?: unknown };
+
+/** FIX 2, THE SHARED VERIFY-THE-SPAN CHOKE POINT. Reads a list of `{name, span}` entries out of a
+ *  model's JSON, and accepts a value ONLY when ALL of: (a) a non-empty `name` was given, (b) a
+ *  non-empty `span` was given (D-BP153-016 test 4: no span -> discard), (c) that span is VERBATIM in
+ *  `passage` per spanIsVerbatim() above (test 3: an unverifiable span -> discard), and (d) the span
+ *  itself contains the named value (appearsIn(span, name) -- the span must actually be ABOUT this
+ *  value, not merely some other verbatim sentence). Every failure of (b)/(c)/(d) is a DISCARD, and
+ *  the caller is handed the count so it can note it (FIX 2: "the discard is COUNTED and reported in
+ *  a note"). `name` is then mapped to a known option letter by toLetters()'s own exact-match
+ *  discipline (HARDWIRE-22: similarity is not identity) -- a `name` that names no known option is
+ *  simply not a match (not a "discard": nothing here was ever a candidate value to begin with). */
+function extractSpannedLetters(
+  raw: unknown,
+  passage: string,
+  OPT: Record<string, string>,
+): { letters: string[]; spans: Record<string, string>; discarded: number } {
+  const entries = Array.isArray(raw) ? (raw as RawSpannedEntry[]) : [];
+  const letters: string[] = [];
+  const spans: Record<string, string> = {};
+  let discarded = 0;
+  for (const entry of entries) {
+    const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+    const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
+    if (!name) continue; // nothing named at all -- not a value to discard, just an empty entry
+    if (!span || !spanIsVerbatim(passage, span) || !appearsIn(span, name)) {
+      discarded++;
+      continue;
+    }
+    const matched = toLetters([name], OPT);
+    for (const L of matched) {
+      letters.push(L);
+      spans[L] = span;
+    }
+  }
+  return { letters: [...new Set(letters)], spans, discarded };
+}
+
 export interface FrameResult {
   /** False = the authority gave no usable answer. Per FD-BP153-01 consequence 2 this ABSTAINS;
    *  it never falls back to ranking the unframed pool. */
@@ -1328,9 +1475,14 @@ function frameExtractionInstruction(category: string, all: string[], OPT: Record
     + `name that is DIFFERENT from "${category}", that name is excluded, even with no literal NOT). `
     + 'Copy only names the passage itself excludes, by either wording. If the passage excludes none '
     + 'of them, return an empty list. Do not decide yourself which ones qualify -- compare only '
-    + `against what the passage itself states the name is. Names: ${all.map((L) => OPT[L]).join('; ')}`;
+    + 'against what the passage itself states the name is. For EACH excluded name, also copy out the '
+    + 'exact verbatim sentence or clause from the passage that states the exclusion, word for word, '
+    + `into "span". Names: ${all.map((L) => OPT[L]).join('; ')}`;
 }
-const FRAME_EXTRACTION_SHAPE = '{"not_members":["exact name the passage says is not one"],"stated_in_passage":true}';
+// D-BP153-016, FIX 2: `not_members` is now a list of {name, span} objects, not bare strings -- see
+// extractSpannedLetters() (above) for the verification this shape exists to support.
+const FRAME_EXTRACTION_SHAPE = '{"not_members":[{"name":"exact name the passage says is not one",'
+  + '"span":"the exact verbatim sentence from the passage"}],"stated_in_passage":true}';
 
 /**
  * FD-BP153-01 -- THE FRAME. Establishes which options are legitimate members of the category the
@@ -1398,18 +1550,25 @@ export async function establishFrame(
   // FD-BP153-04, ADDITIVE/OPTIONAL -- see MethodRunContext.ownedPassages's own doc comment
   // (method_registry.ts) for why this is optional and what "owned" means. Omitted (undefined)
   // behaves exactly as before this ticket: straight to the query path below, no change.
-  ownedPassages?: () => string[],
+  // D-BP153-016, FIX 1: now typed OwnedPassage[], not bare string[] -- see this file's own
+  // "TYPED OWNED PASSAGES, AND VERIFY-THE-SPAN" section header, above, for the ruling.
+  ownedPassages?: () => OwnedPassage[],
 ): Promise<FrameResult> {
-  const owned = (ownedPassages ? ownedPassages() : []).filter((p) => !!p && !!p.trim());
+  const rawOwned = ownedPassages ? ownedPassages() : [];
+  const owned = filterUsableOwnedPassages(rawOwned, all, OPT, 'FRAME', note);
   for (let i = 0; i < owned.length; i++) {
-    const passage = owned[i];
+    const passage = owned[i].text;
     // eslint-disable-next-line no-await-in-loop -- each owned passage is tried in turn, stopping at
     // the first that yields a verified, non-empty exclusion set; this is extraction over text
     // already sitting in memory (a local Ollama call), never a network fan-out, so there is nothing
     // here to parallelize against.
     const ex = await gemmaExtract(frameExtractionInstruction(category, all, OPT), passage, FRAME_EXTRACTION_SHAPE);
-    let excluded = toLetters(ex?.not_members as unknown[] | undefined, OPT);
-    excluded = excluded.filter((L) => appearsIn(passage, OPT[L]));
+    // D-BP153-016, FIX 2: verify the SPAN, not the string -- replaces the old bare
+    // toLetters()+appearsIn(passage, OPT[L]) sufficiency test with extractSpannedLetters(), above.
+    const { letters: excluded, discarded } = extractSpannedLetters(ex?.not_members, passage, OPT);
+    if (discarded) {
+      note(`   FRAME: discarded ${discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
+    }
     if (excluded.length) {
       note(
         `   FRAME: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already acquired `
@@ -1456,9 +1615,17 @@ export async function establishFrame(
     note(`   FRAME: the source returned an EMPTY passage (${res.via}) -- the frame is UNAVAILABLE, not "nothing excluded"`);
     return { available: false, excluded: [], query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null };
   }
+  // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the options
+  // cannot state anything about them -- same fact-class as the empty-passage check just above.
+  if (!passageMentionsAnyLabel(res.text, all, OPT)) {
+    note(`   FRAME: the source's passage (${res.via}) names NONE of the option(s) under test -- the frame is UNAVAILABLE, not "nothing excluded"`);
+    return { available: false, excluded: [], query, via: `${res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null };
+  }
   const ex = await gemmaExtract(frameExtractionInstruction(category, all, OPT), res.text, FRAME_EXTRACTION_SHAPE);
-  let excluded = toLetters(ex?.not_members as unknown[] | undefined, OPT);
-  excluded = excluded.filter((L) => appearsIn(res.text, OPT[L]));
+  const { letters: excluded, discarded } = extractSpannedLetters(ex?.not_members, res.text, OPT);
+  if (discarded) {
+    note(`   FRAME: discarded ${discarded} value(s) with no verbatim supporting span (fresh query)`);
+  }
   note(
     `   FRAME: answered FROM A NEW QUERY -- source excluded ${excluded.length ? excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'}`
       + ` -- ${excluded.length} option(s) are not ${category} and will NOT be ranked`,
@@ -1513,6 +1680,11 @@ export interface NamedSetResult {
    *  `members` so a reader can see exactly what changed and why (reconciliation.why says the
    *  rest). Always populated when `available`. */
   rawMembers: string[];
+  /** D-BP153-016, FIX 2: the verbatim SUPPORTING SPAN each letter in `rawMembers` was extracted
+   *  from -- one entry per letter in `rawMembers`, keyed by option letter. This is what "verify the
+   *  span, not the string" actually produces, made visible on the result so a reader (or a test)
+   *  can audit it without re-running anything. */
+  memberSpans: Record<string, string>;
   /** D-BP153-014, BUG-1(b): the complement -- option letters the SAME passage states are NOT
    *  members, extracted from the identical already-fetched text, no new query. Bishop's own
    *  diagnosis: the passage states non-membership MORE directly than membership, so this extraction
@@ -1653,9 +1825,13 @@ function namedSetExtractionInstruction(
     + 'only one or two of a stated list is WRONG, even if the others are less prominent in the '
     + 'sentence. Copy only names the passage itself states ARE members. If the passage states that '
     + 'none of them are members, return an empty list. Do not decide yourself which ones qualify -- '
-    + `copy only what the passage itself states. Names: ${all.map((L) => OPT[L]).join('; ')}`;
+    + 'copy only what the passage itself states. For EACH member, also copy out the exact verbatim '
+    + 'sentence or clause from the passage that states its membership, word for word, into "span". '
+    + `Names: ${all.map((L) => OPT[L]).join('; ')}`;
 }
-const NAMED_SET_EXTRACTION_SHAPE = '{"members":["exact name the passage says is one"],"stated_in_passage":true}';
+// D-BP153-016, FIX 2: `members` is now a list of {name, span} objects, not bare strings.
+const NAMED_SET_EXTRACTION_SHAPE = '{"members":[{"name":"exact name the passage says is one",'
+  + '"span":"the exact verbatim sentence from the passage"}],"stated_in_passage":true}';
 
 /** D-BP153-014, BUG-1(b): the complement of namedSetExtractionInstruction() above -- same passage,
  *  same names, asks the OPPOSITE question. His own diagnosis, verbatim: the passage states
@@ -1675,9 +1851,13 @@ function namedSetComplementExtractionInstruction(
     + 'example, worded "X, Y, and Z are all NOT..." or "none of X, Y, and Z are..."). When it is '
     + 'worded that way, copy out EVERY excluded name in it, not just the first one or two. If the '
     + 'passage excludes none of them, return an empty list. Do not decide yourself which ones qualify '
-    + `-- copy only what the passage itself states. Names: ${all.map((L) => OPT[L]).join('; ')}`;
+    + '-- copy only what the passage itself states. For EACH excluded name, also copy out the exact '
+    + 'verbatim sentence or clause from the passage that states the exclusion, word for word, into '
+    + `"span". Names: ${all.map((L) => OPT[L]).join('; ')}`;
 }
-const NAMED_SET_COMPLEMENT_EXTRACTION_SHAPE = '{"not_members":["exact name the passage says is not one"],"stated_in_passage":true}';
+// D-BP153-016, FIX 2: `not_members` is now a list of {name, span} objects, not bare strings.
+const NAMED_SET_COMPLEMENT_EXTRACTION_SHAPE = '{"not_members":[{"name":"exact name the passage says is not one",'
+  + '"span":"the exact verbatim sentence from the passage"}],"stated_in_passage":true}';
 
 /** One passage, BOTH extractions -- the direct member read and its complement, over the identical
  *  already-in-hand text. NO NEW QUERY: two gemmaExtract() calls (local Ollama), never a second
@@ -1690,19 +1870,21 @@ async function extractNamedSetBothSides(
   OPT: Record<string, string>,
   direction: 'most' | 'least',
   property: string,
-): Promise<NamedSetReconciliation & { rawMembers: string[] }> {
+): Promise<NamedSetReconciliation & { rawMembers: string[]; memberSpans: Record<string, string>; discarded: number }> {
   const exMembers = await gemmaExtract(namedSetExtractionInstruction(all, OPT, direction, property), passage, NAMED_SET_EXTRACTION_SHAPE);
-  let rawMembers = toLetters(exMembers?.members as unknown[] | undefined, OPT);
-  rawMembers = rawMembers.filter((L) => appearsIn(passage, OPT[L]));
+  // D-BP153-016, FIX 2: verify the SPAN, not the string -- see extractSpannedLetters() (above) for
+  // the discard rule this replaces bare toLetters()+appearsIn() with.
+  const direct = extractSpannedLetters(exMembers?.members, passage, OPT);
 
   const exNon = await gemmaExtract(
     namedSetComplementExtractionInstruction(all, OPT, direction, property), passage, NAMED_SET_COMPLEMENT_EXTRACTION_SHAPE,
   );
-  let rawNonMembers = toLetters(exNon?.not_members as unknown[] | undefined, OPT);
-  rawNonMembers = rawNonMembers.filter((L) => appearsIn(passage, OPT[L]));
+  const complement = extractSpannedLetters(exNon?.not_members, passage, OPT);
 
-  const reconciliation = reconcileNamedSet(all, rawMembers, rawNonMembers, OPT);
-  return { ...reconciliation, rawMembers };
+  const reconciliation = reconcileNamedSet(all, direct.letters, complement.letters, OPT);
+  return {
+    ...reconciliation, rawMembers: direct.letters, memberSpans: direct.spans, discarded: direct.discarded + complement.discarded,
+  };
 }
 
 /**
@@ -1737,17 +1919,21 @@ export async function extractNamedSetMembers(
   OPT: Record<string, string>,
   note: (text: string) => void,
   // FD-BP153-04, ADDITIVE/OPTIONAL -- same contract as establishFrame()'s own `ownedPassages`
-  // parameter, same accessor.
-  ownedPassages?: () => string[],
+  // parameter, same accessor. D-BP153-016, FIX 1: now typed OwnedPassage[], not bare string[].
+  ownedPassages?: () => OwnedPassage[],
 ): Promise<NamedSetResult> {
-  const owned = (ownedPassages ? ownedPassages() : []).filter((p) => !!p && !!p.trim());
+  const rawOwned = ownedPassages ? ownedPassages() : [];
+  const owned = filterUsableOwnedPassages(rawOwned, all, OPT, 'NAMED SET', note);
   for (let i = 0; i < owned.length; i++) {
-    const passage = owned[i];
+    const passage = owned[i].text;
     // eslint-disable-next-line no-await-in-loop -- each owned passage is tried in turn, stopping at
     // the first that yields a verified, non-empty read on either side; extraction over text already
     // sitting in memory (a local Ollama call), never a network fan-out, so nothing here to
     // parallelize.
     const both = await extractNamedSetBothSides(passage, all, OPT, direction, property);
+    if (both.discarded) {
+      note(`   NAMED SET: discarded ${both.discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
+    }
     if (both.rawMembers.length || both.nonMembers.length) {
       note(
         `   NAMED SET: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already acquired `
@@ -1763,6 +1949,7 @@ export async function extractNamedSetMembers(
         available: true,
         members: both.members,
         rawMembers: both.rawMembers,
+        memberSpans: both.memberSpans,
         nonMembers: both.nonMembers,
         conflicts: both.conflicts,
         partitionComplete: both.partitionComplete,
@@ -1787,7 +1974,7 @@ export async function extractNamedSetMembers(
   if (!res.ok) {
     note(`   NAMED SET: no usable answer (${res.via}) -- the named set is UNAVAILABLE, not empty`);
     return {
-      available: false, members: [], rawMembers: [], nonMembers: [], conflicts: [], partitionComplete: false,
+      available: false, members: [], rawMembers: [], memberSpans: {}, nonMembers: [], conflicts: [], partitionComplete: false,
       reconciliationWhy: 'unavailable -- no usable answer', query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
     };
   }
@@ -1801,11 +1988,23 @@ export async function extractNamedSetMembers(
   if (!res.text || !res.text.trim()) {
     note(`   NAMED SET: the source returned an EMPTY passage (${res.via}) -- the named set is UNAVAILABLE, not "no members"`);
     return {
-      available: false, members: [], rawMembers: [], nonMembers: [], conflicts: [], partitionComplete: false,
+      available: false, members: [], rawMembers: [], memberSpans: {}, nonMembers: [], conflicts: [], partitionComplete: false,
       reconciliationWhy: 'unavailable -- empty passage', query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
     };
   }
+  // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the options
+  // cannot state anything about them.
+  if (!passageMentionsAnyLabel(res.text, all, OPT)) {
+    note(`   NAMED SET: the source's passage (${res.via}) names NONE of the option(s) under test -- the named set is UNAVAILABLE, not "no members"`);
+    return {
+      available: false, members: [], rawMembers: [], memberSpans: {}, nonMembers: [], conflicts: [], partitionComplete: false,
+      reconciliationWhy: 'unavailable -- no option named', query, via: `${res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+    };
+  }
   const both = await extractNamedSetBothSides(res.text, all, OPT, direction, property);
+  if (both.discarded) {
+    note(`   NAMED SET: discarded ${both.discarded} value(s) with no verbatim supporting span (fresh query)`);
+  }
   note(
     `   NAMED SET: answered FROM A NEW QUERY -- direct extraction names `
       + `${both.rawMembers.length ? both.rawMembers.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'} as members, `
@@ -1819,6 +2018,7 @@ export async function extractNamedSetMembers(
     available: true,
     members: both.members,
     rawMembers: both.rawMembers,
+    memberSpans: both.memberSpans,
     nonMembers: both.nonMembers,
     conflicts: both.conflicts,
     partitionComplete: both.partitionComplete,
@@ -1921,41 +2121,64 @@ function discriminatorExtractionInstruction(candidates: string[], OPT: Record<st
   return 'For each of these names, copy out exactly what KIND of thing the passage states it is '
     + '(for example "Continent", "Colloquial area", "Subcontinent", "Climatic zone") -- the '
     + "passage's own classification word or phrase for that name, verbatim, spelled as the passage "
-    + 'spells it. Use null for a name whose kind the passage does not state. SEPARATELY, if the '
+    + 'spells it, AND the exact verbatim sentence or clause the kind was read from, into "span". Use '
+    + 'null (and an empty span) for a name whose kind the passage does not state. SEPARATELY, if the '
     + `passage ALSO states which of those stated kinds properly counts as a ${category} -- the `
     + 'formal or correct kind for that category, AS THE PASSAGE ITSELF SAYS SO, never your own '
-    + 'judgment -- copy that kind verbatim too, in category_kind. Use null there if the passage does '
-    + 'not state this. Do not decide yourself which kind is correct or which kind the category means '
-    + `-- copy only what the passage states. Names: ${candidates.map((L) => OPT[L]).join('; ')}`;
+    + 'judgment -- copy that kind verbatim too, in category_kind, with its own verbatim sentence in '
+    + 'category_kind_span. Use null (and an empty span) there if the passage does not state this. Do '
+    + 'not decide yourself which kind is correct or which kind the category means -- copy only what '
+    + `the passage states. Names: ${candidates.map((L) => OPT[L]).join('; ')}`;
 }
+// D-BP153-016, FIX 2: each kind entry, and category_kind, now carries its own verbatim span.
 const DISCRIMINATOR_EXTRACTION_SHAPE = '{"kinds":[{"name":"exact name","kind":"exact kind as the '
-  + 'passage states it, or null"}],"category_kind":"the kind the passage states properly denotes '
-  + 'the category, or null","stated_in_passage":true}';
+  + 'passage states it, or null","span":"the exact verbatim sentence stating this name\'s kind, or '
+  + 'empty"}],"category_kind":"the kind the passage states properly denotes the category, or null",'
+  + '"category_kind_span":"the exact verbatim sentence stating which kind properly denotes the '
+  + 'category, or empty","stated_in_passage":true}';
 
 /** One passage, the discriminator's own read -- appearsIn()-verified per candidate AND for
  *  category_kind, exactly the same choke point every other extraction in this file already uses.
  *  Matching an extracted `{name, kind}` entry back to a candidate letter is normalized-string
  *  equality only (norm()), the same "similarity is not identity" discipline toLetters() already
- *  enforces elsewhere in this estate -- never fuzzy. */
+ *  enforces elsewhere in this estate -- never fuzzy.
+ *
+ *  D-BP153-016, FIX 2: a kind (or category_kind) is accepted only when its OWN span is verbatim in
+ *  `passage` (spanIsVerbatim(), above) and that span contains the kind text (appearsIn(span,
+ *  kindText)) -- bare presence of the kind text anywhere in the passage is no longer sufficient.
+ *  Every rejection for a name that DID carry a (non-null) kind is a DISCARD, counted and returned so
+ *  the caller can note it. */
 async function extractDiscriminatorKinds(
   passage: string,
   candidates: string[],
   OPT: Record<string, string>,
   category: string,
-): Promise<{ kinds: Record<string, string | null>; categoryKind: string | null }> {
+): Promise<{ kinds: Record<string, string | null>; categoryKind: string | null; discarded: number }> {
   const ex = await gemmaExtract(
     discriminatorExtractionInstruction(candidates, OPT, category), passage, DISCRIMINATOR_EXTRACTION_SHAPE,
   );
-  const rawKinds = (ex?.kinds as Array<{ name?: unknown; kind?: unknown }> | undefined) ?? [];
+  const rawKinds = (ex?.kinds as Array<{ name?: unknown; kind?: unknown; span?: unknown }> | undefined) ?? [];
   const kinds: Record<string, string | null> = {};
+  let discarded = 0;
   for (const L of candidates) {
     const entry = rawKinds.find((r) => norm(r?.name) === norm(OPT[L]));
     const kindText = entry && typeof entry.kind === 'string' ? entry.kind.trim() : '';
-    kinds[L] = kindText && appearsIn(passage, OPT[L]) && appearsIn(passage, kindText) ? kindText : null;
+    const span = entry && typeof entry.span === 'string' ? entry.span.trim() : '';
+    const verified = !!kindText && !!span && spanIsVerbatim(passage, span) && appearsIn(span, kindText) && appearsIn(passage, OPT[L]);
+    if (verified) {
+      kinds[L] = kindText;
+    } else {
+      kinds[L] = null;
+      if (kindText) discarded++; // a kind was stated but its span did not verify -- counted, not silently dropped
+    }
   }
   const rawCategoryKind = typeof ex?.category_kind === 'string' ? ex.category_kind.trim() : '';
-  const categoryKind = rawCategoryKind && appearsIn(passage, rawCategoryKind) ? rawCategoryKind : null;
-  return { kinds, categoryKind };
+  const categoryKindSpan = typeof ex?.category_kind_span === 'string' ? ex.category_kind_span.trim() : '';
+  const categoryKindVerified = !!rawCategoryKind && !!categoryKindSpan
+    && spanIsVerbatim(passage, categoryKindSpan) && appearsIn(categoryKindSpan, rawCategoryKind);
+  const categoryKind = categoryKindVerified ? rawCategoryKind : null;
+  if (rawCategoryKind && !categoryKindVerified) discarded++;
+  return { kinds, categoryKind, discarded };
 }
 
 export interface DiscriminatorElimination {
@@ -2083,8 +2306,9 @@ export async function runDiscriminator(
   OPT: Record<string, string>,
   note: (text: string) => void,
   // FD-BP153-04, ADDITIVE/OPTIONAL -- same contract as establishFrame()'s and
-  // extractNamedSetMembers()'s own `ownedPassages` parameter, same accessor.
-  ownedPassages?: () => string[],
+  // extractNamedSetMembers()'s own `ownedPassages` parameter, same accessor. D-BP153-016, FIX 1:
+  // now typed OwnedPassage[], not bare string[].
+  ownedPassages?: () => OwnedPassage[],
 ): Promise<DiscriminatorResult> {
   if (candidates.length <= 1) {
     return {
@@ -2102,14 +2326,18 @@ export async function runDiscriminator(
     };
   }
 
-  const owned = (ownedPassages ? ownedPassages() : []).filter((p) => !!p && !!p.trim());
+  const rawOwned = ownedPassages ? ownedPassages() : [];
+  const owned = filterUsableOwnedPassages(rawOwned, candidates, OPT, 'DISCRIMINATOR', note);
   for (let i = 0; i < owned.length; i++) {
-    const passage = owned[i];
+    const passage = owned[i].text;
     // eslint-disable-next-line no-await-in-loop -- each owned passage is tried in turn, stopping at
     // the first that yields a verified, usable read; extraction over text already sitting in memory
     // (a local Ollama call), never a network fan-out, so there is nothing here to parallelize
     // against -- same convention establishFrame()/extractNamedSetMembers() already use.
-    const { kinds, categoryKind } = await extractDiscriminatorKinds(passage, candidates, OPT, category);
+    const { kinds, categoryKind, discarded } = await extractDiscriminatorKinds(passage, candidates, OPT, category);
+    if (discarded) {
+      note(`   DISCRIMINATOR: discarded ${discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
+    }
     if (Object.values(kinds).some((k) => k != null) || categoryKind != null) {
       const result = applyDiscriminatorElimination(candidates, kinds, categoryKind, category, OPT);
       note(
@@ -2153,7 +2381,21 @@ export async function runDiscriminator(
       query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
     };
   }
-  const { kinds, categoryKind } = await extractDiscriminatorKinds(res.text, candidates, OPT, category);
+  // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the candidates
+  // cannot state anything about them.
+  if (!passageMentionsAnyLabel(res.text, candidates, OPT)) {
+    note(`   DISCRIMINATOR: the source's passage (${res.via}) names NONE of the candidate(s) under test -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
+    return {
+      survivors: candidates, unique: null, eliminations: [],
+      kinds: Object.fromEntries(candidates.map((L) => [L, null])), categoryKind: null,
+      why: `no candidate named (${res.via}) -- ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
+      query, via: `${res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+    };
+  }
+  const { kinds, categoryKind, discarded } = await extractDiscriminatorKinds(res.text, candidates, OPT, category);
+  if (discarded) {
+    note(`   DISCRIMINATOR: discarded ${discarded} value(s) with no verbatim supporting span (fresh query)`);
+  }
   const result = applyDiscriminatorElimination(candidates, kinds, categoryKind, category, OPT);
   note(`   DISCRIMINATOR: answered FROM A NEW QUERY -- ${result.why}`);
   return {
