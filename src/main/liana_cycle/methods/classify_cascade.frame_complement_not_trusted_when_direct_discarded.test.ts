@@ -165,17 +165,30 @@ describe('D-BP153-019 TEST 2: a genuine category exclusion still excludes from t
 });
 
 describe('D-BP153-019 TEST 3: a genuine category complement still works from the complement side', () => {
-  test('"South America, Europe, and South Asia are world regions; the Sahara Desert is a desert" -- the complement side is trusted, not rejected', async () => {
+  // D-BP153-020 UPDATE, RECORDED HERE EXPLICITLY. The original fixture named only ONE option
+  // directly (Sahara Desert) and THREE via the complement (South America, Europe, South Asia),
+  // leaving five of nine options (C, D, F, G, H) unaccounted for by EITHER extraction -- an
+  // incomplete partition. Under FD-BP153-07's completeness gate (D-BP153-020) that no longer trusts
+  // ANY exclusion, so the direct span now also states the remaining five explicitly, making this a
+  // genuine, complete 9-option partition split across both sides -- preserving this test's own
+  // point (a genuine complement is not wrongly rejected by D-BP153-019's FIX 2) without relying on
+  // the same incomplete-partition trust the live D-BP153-020 bug exploited.
+  test('"South America, Europe, and South Asia are world regions; the rest are not" -- a COMPLETE partition split across both sides is trusted, not rejected', async () => {
     const originalFetch = global.fetch;
     const complementSpan = 'South America, Europe, and South Asia are world regions;';
-    const directSpan = 'the Sahara Desert is a desert, not a world region.';
+    const directSpan = 'the Sahara Desert, North Africa, Northeast United States, Central Asia, and the '
+      + 'Arctic Circle and Amazon Rainforest are not world regions.';
     const passage = `${complementSpan} ${directSpan}`;
     global.fetch = queuedFetch([
-      // Direct read: only the Sahara Desert is stated as something else ("a desert, not a world
-      // region") -- one value, sourced from a span with NO property language at all (this
-      // fixture's own `property` argument below is empty, so the discard check no-ops regardless).
-      JSON.stringify({ not_members: [{ name: 'Sahara Desert', span: directSpan }], stated_in_passage: true }),
-      // Complement read: three values genuinely stated to BE world regions.
+      // Direct read: the OTHER six options, stated as NOT world regions -- one span, no property
+      // language at all (this fixture's own `property` argument below is empty, so D-BP153-018's
+      // discard check no-ops regardless).
+      JSON.stringify({
+        not_members: ['Sahara Desert', 'North Africa', 'Northeast United States', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest']
+          .map((name) => ({ name, span: directSpan })),
+        stated_in_passage: true,
+      }),
+      // Complement read: the remaining three values genuinely stated to BE world regions.
       JSON.stringify({
         members: ['South America', 'Europe', 'South Asia'].map((name) => ({ name, span: complementSpan })),
         stated_in_passage: true,
@@ -192,10 +205,11 @@ describe('D-BP153-019 TEST 3: a genuine category complement still works from the
       );
       expect(askGoogle).not.toHaveBeenCalled();
       expect(frame.available).toBe(true);
-      // The complement's three genuine members are reflected: the Sahara Desert is excluded, the
+      expect(frame.partitionComplete).toBe(true);
+      // The complement's three genuine members are reflected: the other six are excluded, the
       // reconciled set does not falsely re-exclude South America/Europe/South Asia.
       expect(frame.included).toEqual(expect.arrayContaining(['A', 'E', 'B']));
-      expect(frame.excluded).toContain('I');
+      expect(new Set(frame.excluded)).toEqual(new Set(['I', 'C', 'D', 'F', 'G', 'H']));
       expect(log.some((l) => /D-BP153-019, FIX 2.*REJECTED/.test(l))).toBe(false);
     } finally {
       global.fetch = originalFetch;
@@ -203,14 +217,30 @@ describe('D-BP153-019 TEST 3: a genuine category complement still works from the
   });
 });
 
-describe('D-BP153-019 TEST 4: case (a) preserved -- direct side genuinely empty, complement still trusted', () => {
-  test('the direct side extracts NOTHING (no discards at all) and a valid complement is still trusted, not rejected', async () => {
+describe('D-BP153-019 TEST 4: case (a) direct-genuinely-empty is preserved for a COMPLETE complement -- D-BP153-020 corrects the incomplete case', () => {
+  // D-BP153-020 UPDATE, RECORDED HERE EXPLICITLY. The original fixture had the direct side extract
+  // NOTHING and the complement name only THREE of nine options (South Asia, Northeast United
+  // States, Europe), then asserted the complement was "trusted exactly as it always has been" with
+  // the other six (A, C, F, G, H, I) reconciled as excluded. That is the IDENTICAL arithmetic and
+  // the IDENTICAL shape (direct silent, complement names a strict subset) as the live D-BP153-020
+  // bug this ticket closes -- the only difference is which two-or-three options the complement
+  // happened to name. It was never safe; it was untested against the case that actually broke,
+  // because "case (a)" (D-BP153-019) was only ever about protecting a genuine signal from FIX 2's
+  // own rejection, never about whether a genuine-but-PARTIAL signal should be trusted. This test now
+  // asserts the corrected behavior: case (a) (direct genuinely empty, never a discard) still
+  // reaches this branch and is still NOT wrongly discarded by D-BP153-019's own machinery, but
+  // FD-BP153-07's completeness gate (D-BP153-020) is a SEPARATE, later check that still applies --
+  // a partial complement establishes nothing. See TEST 3 (above) for the complete-partition sibling
+  // that DOES get trusted, and classify_cascade.complete_partition_required.test.ts for the
+  // dedicated gate coverage.
+  test('the direct side extracts NOTHING and the complement names only a strict subset -- NOTHING is trusted, not the six the old arithmetic derived from absence', async () => {
     const originalFetch = global.fetch;
     const passage = 'Only B (South Asia), D (Northeast United States), and E (Europe) are recognized as major population clusters.';
     global.fetch = queuedFetch([
       // Direct read: genuinely nothing extracted -- an empty list, not six discarded values.
       JSON.stringify({ not_members: [], stated_in_passage: true }),
-      // Complement read: three genuine members.
+      // Complement read: three genuine members -- but six of nine options (A, C, F, G, H, I) are
+      // never mentioned by EITHER extraction.
       JSON.stringify({
         members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: passage })),
         stated_in_passage: true,
@@ -226,11 +256,16 @@ describe('D-BP153-019 TEST 4: case (a) preserved -- direct side genuinely empty,
       expect(askGoogle).not.toHaveBeenCalled();
       expect(frame.available).toBe(true);
       expect(frame.answeredFrom).toBe('owned-passage');
-      // Case (a): the direct side found nothing at all (never discarded anything) -- the complement
-      // is trusted exactly as it always has been. Excluded = ALL minus the trusted complement.
-      expect(frame.included).toEqual(expect.arrayContaining(['B', 'D', 'E']));
-      expect(frame.excluded).toEqual(expect.arrayContaining(['A', 'C', 'F', 'G', 'H', 'I']));
+      // Case (a) still reaches reconciliation (never wrongly REJECTED by D-BP153-019's own FIX 2
+      // machinery, which is specific to case (b) -- all-direct-values-discarded-as-property).
       expect(log.some((l) => /D-BP153-019, FIX 2.*REJECTED/.test(l))).toBe(false);
+      // D-BP153-020: the complement named only three of nine options -- the union is incomplete, so
+      // NOTHING is trusted. Not the {A,C,F,G,H,I} the old, pre-D-BP153-020 arithmetic derived purely
+      // from those six options' absence on the complement's own (incomplete) list.
+      expect(frame.included).toEqual(expect.arrayContaining(['B', 'D', 'E']));
+      expect(frame.excluded).toEqual([]);
+      expect(frame.partitionComplete).toBe(false);
+      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /INCOMPLETE PARTITION/.test(l))).toBe(true);
     } finally {
       global.fetch = originalFetch;
     }

@@ -69,14 +69,26 @@ function queuedFetch(responses: string[]): typeof fetch {
 }
 
 describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () => {
-  test('HEADLINE: the real fixture passage yields named-set members EXACTLY {B, D, E}', async () => {
+  // D-BP153-020 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to assert that the complement
+  // recovered D purely because D was absent from the direct extraction -- i.e. that "D is a member"
+  // was DERIVED from D's absence on the complement's own non-member list, not from either extraction
+  // actually stating it. That is the identical arithmetic the live qid 98 bug (D-BP153-020's own
+  // ticket, receipt LIANA_RUN_qid98_2026-08-13T00-54-31-659Z.json) used to manufacture seven
+  // exclusions from a complement that named only two options. This fixture was encoding the bug it
+  // happened to get right by coincidence (the real passage genuinely does state D is a member,
+  // elsewhere) -- under FD-BP153-07's completeness gate, a direct+complement union that leaves D
+  // unaccounted for (8 of 9 covered, D missing from BOTH lists) trusts NOTHING, not "trust it anyway
+  // because it's probably right." See classify_cascade.complete_partition_required.test.ts for the
+  // dedicated coverage of the new gate; this test now asserts the corrected behavior on the SAME
+  // real fixture rather than re-deriving a different one.
+  test('HEADLINE, D-BP153-020 CORRECTED: the direct side under-recalls D and the complement does not name it either -- the union is incomplete (8 of 9), so NOTHING is trusted, not a coincidentally-correct {B, D, E}', async () => {
     const originalFetch = global.fetch;
     // Simulates the MEASURED live extraction (a partial copy, D dropped) on the direct-member side
     // -- exactly what BUG-1 reports gemma4:12b actually returned for this passage -- and the
     // passage's own, more-explicit complement statement on the non-member side. Neither mock is
     // hand-picked to make the test pass by construction: the direct side is the REAL measured
     // defect, and the complement side is what the SAME passage states in its first sentence,
-    // verbatim, which is exactly the corroboration BUG-1(b) exists to use.
+    // verbatim.
     global.fetch = queuedFetch([
       JSON.stringify({
         members: ['South Asia', 'Europe'].map((name) => ({ name, span: REAL_PASSAGE_S2 })), // direct: under-recalled, D dropped
@@ -98,15 +110,18 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
       );
       expect(askGoogle).not.toHaveBeenCalled();
       expect(result.available).toBe(true);
-      // THE BUG: the direct extraction alone (rawMembers) is the measured under-recall.
+      // THE BUG D-BP153-014 measured: the direct extraction alone (rawMembers) under-recalls.
       expect(new Set(result.rawMembers)).toEqual(new Set(['B', 'E']));
-      // THE FIX: reconciled against the complement, the result is the complete set -- even though
-      // D was never named by the direct extraction (partitionComplete is honestly false: the direct
-      // side alone did not cover D), the complement is trusted and recovers it.
-      expect(new Set(result.members)).toEqual(new Set(['B', 'D', 'E']));
+      // THE CORRECTED BEHAVIOR (D-BP153-020): D is unaccounted for by BOTH extractions (direct
+      // named {B,E}, complement named the OTHER six {A,C,F,G,H,I} -- neither list mentions D at
+      // all), so the union covers only 8 of 9 options and the reconciliation trusts NOTHING, not
+      // the coincidentally-correct {B,D,E} the old arithmetic derived from D's mere absence.
+      expect(result.members).toEqual([]);
       expect(result.partitionComplete).toBe(false);
       expect(result.conflicts).toEqual([]);
-      expect(result.reconciliationWhy).toMatch(/trusted despite an incomplete direct side/);
+      expect(result.reconciliationWhy).toMatch(/INCOMPLETE PARTITION/);
+      expect(result.reconciliationWhy).toContain('D) Northeast United States');
+      expect(result.reconciliationWhy).not.toMatch(/trusted despite an incomplete direct side/);
     } finally {
       global.fetch = originalFetch;
     }
