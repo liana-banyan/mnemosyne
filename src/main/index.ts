@@ -4050,6 +4050,12 @@ function registerIPCHandlers(): void {
         // 'automated' onto the outcome either way -- see that file's header for why).
         mode,
         assistedChannel,
+        // D-BP154-008/BISHOP/S8/seg-mortgage, ADDITIVE: THE MORTGAGE. This run's own acquisition id
+        // (already created above, evidenceSession), so the cross-acquisition lookup
+        // liana_terminal_engine.ts's own `ownedPassages()` builder now performs never "reuses" the
+        // record this run is itself in the middle of writing -- see cross_acquisition.ts's own
+        // header, `excludeAcquisitionId`.
+        evidenceSession.acquisitionId,
       );
     } finally {
       sender.removeListener('destroyed', onSenderGone);

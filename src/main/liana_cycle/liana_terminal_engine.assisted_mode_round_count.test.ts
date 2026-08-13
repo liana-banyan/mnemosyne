@@ -17,9 +17,39 @@
 // Deterministic, offline: no network call anywhere in this file -- the assisted-mode channel
 // stub below resolves every pause immediately and synchronously (no timers), so this test cannot
 // hang and needs no network.
+//
+// D-BP154-008/BISHOP/S8/seg-mortgage, ADDITIVE ISOLATION. THE MORTGAGE wires
+// liana_terminal_engine.ts's `ownedPassages()` builder to consult PRIOR acquisitions on disk for
+// qid 98 (cross_acquisition.ts) whenever `parsed.qid != null` -- true on every run this file
+// makes. Left unisolated, this instrument's own pinned number would silently depend on whatever
+// real qid-98 evidence happens to sit in the live HARDWIRE\LEDGER\LIANA_EVIDENCE store on
+// whichever machine runs it (23 acquisitions there as of this ticket, and growing every time
+// Bishop runs qid 98 live) -- exactly the kind of environment-dependent flake this file's own
+// header claims NOT to have ("Deterministic, offline"). `LB_EVIDENCE_DIR` is pointed at an empty,
+// per-test temp directory (evidence_store.ts's own `resolveEvidenceDir()` env override, the SAME
+// mechanism evidence_store.test.ts already relies on) so the lookup always finds nothing and this
+// instrument's number depends only on this file's own stub, exactly as before this ticket.
 
 import path from 'node:path';
-import { describe, test, expect, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  describe, test, expect, vi, beforeEach, afterEach,
+} from 'vitest';
+
+let isolatedEvidenceDir: string;
+let originalLbEvidenceDir: string | undefined;
+beforeEach(() => {
+  originalLbEvidenceDir = process.env.LB_EVIDENCE_DIR;
+  isolatedEvidenceDir = mkdtempSync(join(tmpdir(), 'lb-round-count-isolation-'));
+  process.env.LB_EVIDENCE_DIR = isolatedEvidenceDir;
+});
+afterEach(() => {
+  if (originalLbEvidenceDir === undefined) delete process.env.LB_EVIDENCE_DIR;
+  else process.env.LB_EVIDENCE_DIR = originalLbEvidenceDir;
+  rmSync(isolatedEvidenceDir, { recursive: true, force: true });
+});
 
 // SAME MOCK, SAME CONVENTION as liana_terminal_engine.ask_google_this.test.ts /
 // liana_terminal_engine.step_zero.test.ts (this file's own siblings) -- qid parsing
@@ -297,6 +327,19 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     // that DOES name an option (any real acquisition, or classify_cascade.repeated_draws.test.ts's
     // own fixtures), a single invalid draw is replaced ONCE and the run proceeds normally; this
     // instrument's worst case (every draw invalid, every time) is deliberately the cap's own ceiling.
+    //
+    // CHECKED AND CONFIRMED UNCHANGED AT 6, D-BP154-008 (THE MORTGAGE). Measured on this ticket's
+    // own build under the isolated, empty `LB_EVIDENCE_DIR` this file's own beforeEach now sets
+    // (see this file's header, D-BP154-008 paragraph) -- NOT re-pinned, because it did not move.
+    // liana_terminal_engine.ts's `ownedPassages()` builder now also consults PRIOR acquisitions
+    // (cross_acquisition.ts), but an EMPTY evidence directory has none to find, so the two Survey
+    // meta-questions and every downstream owned-passage check behave exactly as they did before
+    // this ticket -- the same content-free-capture, every-draw-invalid shape D-BP154-001's own
+    // paragraph above already documents, unaffected by a lookup that finds nothing. This is the
+    // instrument correctly reporting "no evidence owned, no evidence to reach across acquisitions
+    // for either" -- see classify_cascade.cross_acquisition_query_bill.test.ts and
+    // liana_terminal_engine.cross_acquisition_owned_evidence.test.ts for the isolated,
+    // REAL-evidence proof that a seeded prior acquisition DOES reduce this count.
     // ─────────────────────────────────────────────────────────────────────────────────────────
     expect(rounds).toBe(6);
     expect(outcome.error).not.toBe('demand_unknown');

@@ -356,6 +356,17 @@ export interface AmbiguityTermFinding {
 export interface AmbiguityQueryResult {
   /** The Founder's own query text actually sent (verbatim; see askAmbiguity()). */
   askedText: string;
+  /** D-BP154-008, ADDITIVE/OPTIONAL. THE MORTGAGE. `askedText` above is the STATIC clause alone
+   *  (resources/liana_survey_queries.json, "survey.ambiguity.askedText") -- what was ACTUALLY sent
+   *  to `obtainMetaQuestionPassage()`, and therefore what a prior acquisition's own recorded
+   *  `EvidenceRecord.query` holds, is `askText + optionsBlock + askedText` (this function's own
+   *  `query` local, D-BP153-007 FIX D1). Undefined on the 'gemma' transport (no query was ever
+   *  composed or sent there) and on any pre-D-BP154-008 caller/fixture that predates this field --
+   *  every existing consumer of `askedText` above is unaffected. cross_acquisition.ts's own
+   *  `findPriorAcquisitionMatch()` must match against THIS field, never the shorter `askedText`,
+   *  or it will search for a query string a live run never actually sent -- a silent, hard-to-spot
+   *  wrong-schema failure of exactly the shape this ticket's own header warns about. */
+  fullQueryText?: string;
   terms: AmbiguityTermFinding[];
   /** D-BP152-052. Terms the source named that FAILED `literalSubjectSpan()` (elements/
    *  method_question_generator.ts, reused unmodified -- the SAME gate
@@ -803,6 +814,7 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
   if (!passage.ok) {
     return {
       askedText,
+      fullQueryText: query,
       terms: [],
       termsDroppedNotInQuestion: [],
       modelUnreachable: true,
@@ -849,6 +861,7 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
     ctx.emit({ kind: 'note', text: `   [ambiguity] ${why}`, ts: nowIso() });
     return {
       askedText,
+      fullQueryText: query,
       terms: [],
       termsDroppedNotInQuestion: [],
       modelUnreachable: false,
@@ -900,6 +913,7 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
       + 'honest empty result, not a fabrication';
   return {
     askedText,
+    fullQueryText: query,
     terms,
     termsDroppedNotInQuestion: parsed.droppedNotInQuestion,
     modelUnreachable: false,
@@ -920,6 +934,11 @@ export async function askAmbiguity(askText: string, ctx: MethodRunContext, trans
 export interface OperationQueryResult {
   /** The Founder's own Part 2 query text actually sent (verbatim; see askOperation()). */
   askedText: string;
+  /** D-BP154-008, ADDITIVE/OPTIONAL. THE MORTGAGE -- same field, same reason, as
+   *  AmbiguityQueryResult.fullQueryText's own doc comment, above: `askedText` is the static clause
+   *  alone; this is `askText + optionsBlock + askedText`, the text ACTUALLY sent and therefore what
+   *  a prior acquisition's own recorded query text holds. Undefined on the 'gemma' transport. */
+  fullQueryText?: string;
   /** The source's raw stated operation word/phrase, copied verbatim. Null when the query itself
    *  produced nothing usable -- an honest null, never a fabrication. */
   rawAnswer: string | null;
@@ -1041,6 +1060,7 @@ export async function askOperation(askText: string, ctx: MethodRunContext, trans
   if (!passage.ok) {
     return {
       askedText,
+      fullQueryText: query,
       rawAnswer: null,
       modelUnreachable: true,
       transport: 'google',
@@ -1076,6 +1096,7 @@ export async function askOperation(askText: string, ctx: MethodRunContext, trans
     ctx.emit({ kind: 'note', text: `   [operation] ${why}`, ts: nowIso() });
     return {
       askedText,
+      fullQueryText: query,
       rawAnswer: null,
       modelUnreachable: false,
       transport: 'google',
@@ -1111,6 +1132,7 @@ export async function askOperation(askText: string, ctx: MethodRunContext, trans
     : `${passage.answeredBy} answered (${passage.via}) but nothing usable could be extracted from it -- an honest empty result, not a fabrication`;
   return {
     askedText,
+    fullQueryText: query,
     rawAnswer,
     modelUnreachable: false,
     transport: 'google',
