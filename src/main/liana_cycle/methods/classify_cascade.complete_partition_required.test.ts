@@ -113,13 +113,21 @@ describe('reconcileNamedSet() pure arithmetic -- D-BP153-020, the partition-comp
     expect(result.why).toMatch(/complement extracted nothing/);
   });
 
-  test('TEST 5: one option unaccounted for out of nine -> nothing trusted, that option named in the note', () => {
+  // D-BP153-029 UPDATE, RECORDED HERE EXPLICITLY. This test used to assert that a single
+  // unaccounted-for option (I) wiped the DIRECTLY STATED members {B,D,E} to `[]`, on the theory
+  // that "nothing trusted" meant literally nothing. That was the over-correction D-BP153-029
+  // closes: the rule is that the COMPLEMENT-DERIVED INFERENCE (the "all minus non-members"
+  // arithmetic the COMPLETE branch performs) is untrustworthy on an incomplete union -- it says
+  // nothing about the directly stated members themselves, which were never inferred from anyone's
+  // absence and stay trusted.
+  test('TEST 5: one option unaccounted for out of nine -> the complement-derived inference is discarded, the three DIRECTLY STATED members are RETAINED, that option named in the note', () => {
     // Direct names 3 {B,D,E}, complement names 5 of the remaining 6 {A,C,F,G,H} -- I (Sahara Desert)
     // is the ONE option neither side addresses.
     const result = reconcileNamedSet(ALL, ['B', 'D', 'E'], ['A', 'C', 'F', 'G', 'H'], OPT);
-    expect(result.members).toEqual([]);
+    expect(result.members).toEqual(['B', 'D', 'E']);
     expect(result.partitionComplete).toBe(false);
     expect(result.why).toMatch(/INCOMPLETE PARTITION/);
+    expect(result.why).toMatch(/RETAINED/);
     // The uncovered-options label names exactly {I) Sahara Desert} -- the ONE option, not a
     // false-positive substring match against the members/non-members labels also present in `why`.
     expect(result.why).toContain('{I) Sahara Desert}');

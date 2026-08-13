@@ -176,7 +176,16 @@ describe('D-BP153-026 TEST 2: the follow-up names ONLY the unaccounted-for optio
 });
 
 describe('D-BP153-026 TEST 3: AT MOST ONE follow-up -- a follow-up that is ALSO incomplete never triggers a second one', () => {
-  test('the follow-up names only A, answers only A, E stays unaccounted -- no third query, zero exclusions trusted', async () => {
+  // D-BP153-029 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to assert that the STILL-
+  // incomplete union (E remains unaccounted for) discarded EVERYTHING, including the four
+  // DIRECTLY STATED exclusions {D,G,H,I} the first pass's own verified spans established -- the
+  // exact over-correction D-BP153-029 closes (this is literally the live measured failure's own
+  // shape: a real dispatch, HEADLINE test below in this same file, differs only in which follow-up
+  // response was queued). The corrected rule: an incomplete union discards only the
+  // COMPLEMENT-DERIVED INFERENCE (the "all minus non-members" arithmetic), never the directly
+  // stated values -- {D,G,H,I} stay trusted, only E's status (and the complement's own inference)
+  // is withheld.
+  test('the follow-up names only A, answers only A, E stays unaccounted -- no third query, the four DIRECTLY STATED exclusions are retained, not a zero-credit wipe', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
       JSON.stringify({
@@ -210,8 +219,12 @@ describe('D-BP153-026 TEST 3: AT MOST ONE follow-up -- a follow-up that is ALSO 
       expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(log.filter((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l)).length).toBe(1); // exactly one follow-up issued
       expect(frame.partitionComplete).toBe(false);
-      expect(frame.excluded).toEqual([]); // the safety net: nothing trusted, not a partial credit
+      // D-BP153-029: the DIRECTLY STATED exclusions are retained -- the complement-derived inference
+      // (which would have put A and E's non-mentioned siblings back in, or wiped {D,G,H,I} out) is
+      // what is discarded, not the four spans the first pass itself verified.
+      expect(new Set(frame.excluded)).toEqual(new Set(['D', 'G', 'H', 'I']));
       expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /INCOMPLETE PARTITION/.test(l) && l.includes('E) Europe'))).toBe(true);
+      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /RETAINED/.test(l))).toBe(true);
     } finally {
       global.fetch = originalFetch;
     }
