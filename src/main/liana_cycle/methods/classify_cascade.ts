@@ -1585,6 +1585,16 @@ export interface FrameResult {
    *  never only the `drawRepeats` target. See drawWithAgreement() above. */
   drawRepeats?: number;
   drawsIssued?: number;
+  /** D-BP154-005, ADDITIVE/OPTIONAL -- undefined (falsy) on every return site that predates this
+   *  ticket, exactly like `drawRepeats`/`drawsIssued` above. True ONLY when establishFrame()'s own
+   *  terminal (fresh-query) read produced a DEGENERATE result -- a stated category kind that matched
+   *  NONE of the per-option stated kinds, keeping zero survivors, AFTER an owned-passage attempt at
+   *  the same shape already fell through once (see this file's own D-BP154-005 section header, at
+   *  applyFrameKindElimination(), for the full ruling and the measured qid-98 receipt this closes). A
+   *  zero-survivor read is a FAILED READ, never a finding that no option belongs to the category --
+   *  callers must name this DISTINCTLY from `available:false` (frame never established at all) and
+   *  from a genuine, partial exclusion (`excluded` non-empty, `included` non-empty). */
+  degenerate?: boolean;
 }
 
 // ─────────────────────────── D-BP153-032: THE SOFTBALLS, STATED KIND -- NEVER STATED MEMBERSHIP ───────────────────────────
@@ -1751,6 +1761,61 @@ export function applyFrameKindElimination(
   return {
     excluded, included, unaccounted, why,
   };
+}
+
+// ─────────────────────────── D-BP154-005: THE DEGENERATE FRAME ───────────────────────────
+//
+// THE MEASURED FAILURE (live run, LIANA_RUN_qid98_2026-08-13T20-06-45-304Z.json, build carrying
+// 769e0bd3). THE SOFTBALLS' owned "operation" passage GROUPS the nine options under three headings
+// ("Macro-Geographic Regions (Realms): South Asia, Europe, South America, Central Asia, North
+// Africa.", "Physical Biomes / Environmental Zones: ...", "Sub-National Regions: ...") and, in a
+// LATER, SEPARATE sentence, names the category's own denotation using a DIFFERENT verbatim string:
+// "If \"region\" is restricted strictly to macro-realms (e.g., UN world regions), options like the
+// Amazon Rainforest or Sahara Desert cease to qualify...". Reproduced directly against the real
+// Ollama channel (temperature 0, num_predict 1024, byte-identical prompt construction to
+// gemmaExtract()) on this exact passage, D-BP154-005/BISHOP/S5's own diagnosis run: every per-option
+// `kind` comes back copied VERBATIM from its heading ("Macro-Geographic Regions (Realms)",
+// "Physical Biomes / Environmental Zones", "Sub-National Regions"); `category_kind` comes back
+// "macro-realms" -- a DIFFERENT, shorter, verbatim string, copied faithfully from the LATER sentence.
+// Both extractions are CORRECT, faithful, verbatim copies (HARDWIRE-22 is not violated anywhere in
+// the extraction) -- the passage itself simply names the identical real-world concept two different
+// ways in two different sentences. applyFrameKindElimination()'s strict string equality
+// (`kinds[L] !== categoryKind`, above) then reads every one of the nine per-option kinds as
+// "differs from the category kind", because none of them is the literal substring "macro-realms" --
+// and records all nine as EXCLUDED, zero as INCLUDED. THIS IS CANDIDATE (a), VOCABULARY MISMATCH
+// (TICKET_D-BP154-005_THE_DEGENERATE_FRAME.md Part 2): the two fields are extracted faithfully from
+// the SAME passage but never share a common vocabulary to compare against, because the passage
+// itself does not restate the category denotation using the heading's own exact words.
+//
+// RULED OUT. (b) ABSENCE TREATED AS EXCLUSION does not apply -- every `kinds[L]` value here is
+// non-null, verified (span-checked) and genuinely STATED; nothing is being inferred from silence,
+// and D-BP153-020's own correction (extractNamedSetMembers()/reconcileNamedSet(), a wholly separate
+// function this ticket does not touch) is unrelated to this codepath and is proven still intact by
+// this ticket's own regression test (D-BP154-005 TEST 5). (c) WRONG PASSAGE does not apply either --
+// the passage is fully capable of answering (a human reading it identifies exactly which five
+// options are macro-realms), and filterUsableOwnedPassages()/passageMentionsAnyLabel() (FD-BP153-07
+// FIX 1/3) both accept it correctly; the passage is the right one, the STRING comparison against it
+// is what fails.
+//
+// THE FIX. HARDWIRE-22/HARDWIRE-23 forbid resolving the vocabulary gap itself (no synonym table, no
+// similarity score, no model call asking whether "macro-realms" and "Macro-Geographic Regions
+// (Realms)" mean the same thing -- see the ticket's own "THE BOUNDARY THAT MUST NOT BE CROSSED").
+// applyFrameKindElimination()'s pure-code comparison (above) is UNCHANGED -- a genuine, PARTIAL
+// mismatch (some options keep, some do not) remains exactly as correct and exactly as untouched as
+// D-BP153-032 built it (frame_stated_kind.test.ts TESTS 3/4, unmodified by this ticket, still pass).
+// What changes is what establishFrame() (below) is willing to TRUST: a ZERO-SURVIVOR result (every
+// stated kind read as "differs", nothing kept) is never a valid finding that no option belongs to
+// the category -- pure string comparison cannot distinguish "the source explicitly denies this kind
+// counts" from "the source names the same kind two different ways" -- so a zero-survivor read is
+// treated as a FAILED READ: the owned-passage path falls through exactly as an INCOMPLETE read
+// already does (D-BP153-023), and if the fresh query ALSO keeps zero, establishFrame() abstains with
+// a DISTINCT, honest reason (`degenerate: true`, FrameResult, above) naming that the READ failed,
+// never that the WORLD contains no options of that category.
+function isDegenerateFrameElimination(categoryKind: string | null, result: FrameKindElimination): boolean {
+  // A stated category kind that matched NOTHING it was compared against: at least one option had a
+  // stated kind (so this is a real comparison, not merely "nothing was ever stated" -- that case is
+  // already `categoryKind == null`, handled entirely separately, above), and NONE of them survived.
+  return categoryKind != null && result.included.length === 0 && result.excluded.length > 0;
 }
 
 // ─────────────────────────── D-BP153-024: CONVERSATIONAL AUTHORITY FIRST, THEN GOOGLE ───────────────────────────
@@ -2336,6 +2401,21 @@ export async function establishFrame(
     }
     if (anyKindOrCategory) {
       const result = applyFrameKindElimination(all, kinds, categoryKind, category, OPT);
+      // D-BP154-005, PART 1, THE GUARD -- BUILT REGARDLESS OF THE DIAGNOSIS (see this file's own
+      // D-BP154-005 section header, above applyFrameKindElimination()). A zero-survivor read (every
+      // stated kind compared as "differs from the category kind", nothing kept) has not established
+      // a frame -- it is a FAILED READ, never a finding that the world contains no member of the
+      // category. Never trust it; fall through exactly as an INCOMPLETE read already does
+      // (D-BP153-023), to the next owned passage or to a fresh query.
+      if (isDegenerateFrameElimination(categoryKind, result)) {
+        note(
+          `   FRAME: DEGENERATE READ on owned passage ${i + 1} of ${owned.length} (D-BP154-005) -- kept `
+            + `0 of ${all.length} option(s) against stated category kind "${categoryKind}"; a `
+            + 'zero-survivor read is a FAILED READ, not a finding that nothing belongs -- falling '
+            + `through to ${i + 1 < owned.length ? 'the next owned passage' : 'a fresh query'}`,
+        );
+        continue;
+      }
       note(
         `   FRAME: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already acquired `
           + `this run -- NO NEW QUERY ISSUED) -- ${result.why}`,
@@ -2567,6 +2647,33 @@ export async function establishFrame(
   // below) rather than publishing a zero-exclusion "answer" that was never actually established.
   const result = applyFrameKindElimination(all, effectiveKinds, effectiveCategoryKind, category, OPT);
   note(`   FRAME RECONCILIATION: ${result.why}`);
+  // D-BP154-005, PART 1, THE GUARD, applied to the TERMINAL (fresh-query) read. The owned-passage
+  // loop, above, already refused to trust a zero-survivor read and fell through to THIS fresh query
+  // instead (D-BP153-023's own fallthrough shape). If the fresh read ALSO keeps zero, there is
+  // nowhere left to fall through to -- abstain here, with a DISTINCT, honest reason (`degenerate`)
+  // naming that the READ failed, never that the category has no members (see this file's own
+  // D-BP154-005 section header, above applyFrameKindElimination(), for the full diagnosis).
+  if (isDegenerateFrameElimination(effectiveCategoryKind, result)) {
+    note(
+      `   FRAME: DEGENERATE READ on the fresh query (D-BP154-005) -- kept 0 of ${all.length} option(s) `
+        + `against stated category kind "${effectiveCategoryKind}"; the fresh read ALSO kept zero, so `
+        + 'this is reported as a FAILED READ (DEGENERATE FRAME), never as "nothing is a member"',
+    );
+    return {
+      available: false,
+      excluded: [],
+      included: [],
+      conflicts: [],
+      partitionComplete: false,
+      reconciliationWhy: `DEGENERATE FRAME (D-BP154-005): kept 0 of ${all.length} option(s) against `
+        + `stated category kind "${effectiveCategoryKind}" -- both the owned-passage and fresh-query `
+        + 'reads failed to establish any surviving member; this is a failed read, not a finding that '
+        + 'no option belongs to the category',
+      query, via: 'degenerate-frame', answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: frameDrawOutcome.draws.length,
+      degenerate: true,
+    };
+  }
   note(
     `   FRAME: ${result.excluded.length} option(s) are not ${category} and will NOT be ranked -- `
       + `${result.excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') || '(none)'}`,
@@ -4170,6 +4277,29 @@ export async function runSuperlativeByMagnitude(
   totalDrawsIssued += frame.drawsIssued ?? 0;
   totalReplacementDrawsIssued += replacementDrawsOf(frame.drawsIssued);
   if (frame.answeredFrom === 'owned-passage') answeredFromOwned.push('THE SOFTBALLS');
+  if (frame.degenerate) {
+    // D-BP154-005 -- checked BEFORE `!frame.available` (degenerate reads also set available:false,
+    // above) so this gets its OWN distinct, honest abstain reason rather than being folded into the
+    // generic "frame could not be established" text. A zero-survivor read is a FAILED READ (the
+    // stated category kind matched none of the per-option stated kinds), never a finding that no
+    // option belongs to the category -- see this file's own D-BP154-005 section header, above
+    // applyFrameKindElimination(), for the full diagnosis and the measured qid-98 receipt this closes.
+    step(
+      `ABSTAIN -- DEGENERATE FRAME (D-BP154-005): the frame's stated-kind comparison kept 0 of `
+        + `${ALL.length} option(s) -- a FAILED READ, never a finding that no option is a ${category}`,
+    );
+    queryBillNote();
+    emit({ kind: 'result', text: `ABSTAIN (degenerate frame)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    return {
+      qid: input.qid,
+      question: input.question,
+      verdict: null,
+      correct: KEY,
+      abstain: true,
+      freeText: input.qid == null,
+      basis: `superlative-by-magnitude route: DEGENERATE FRAME (D-BP154-005) -- ${frame.reconciliationWhy}`,
+    };
+  }
   if (!frame.available) {
     // FD-BP153-01 consequence 2, verbatim: "A magnitude result with no frame is NOT definitive."
     // Falling back to ranking the unframed pool is exactly the confident-wrong-answer generator
@@ -4193,9 +4323,14 @@ export async function runSuperlativeByMagnitude(
   }
   const framed = ALL.filter((L) => !frame.excluded.includes(L));
   if (!framed.length) {
-    step(`ABSTAIN -- the frame excluded every option; nothing is a ${category} to rank`);
+    // Defensive fallback only -- D-BP154-005's degenerate-read guard above means neither of
+    // establishFrame()'s two return sites that populate `excluded`/`included` can reach here with a
+    // zero-survivor result any more (both refuse to return one; see this file's own D-BP154-005
+    // section header). Kept, and kept HONEST rather than removed: if this is ever reached, it names
+    // the same DEGENERATE shape rather than the old, false "excluded all as not being category" claim.
+    step(`ABSTAIN -- DEGENERATE FRAME (D-BP154-005): the frame kept 0 of ${ALL.length} option(s) -- a FAILED READ, never a finding that no option is a ${category}`);
     queryBillNote();
-    emit({ kind: 'result', text: `ABSTAIN (frame excluded every option)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    emit({ kind: 'result', text: `ABSTAIN (degenerate frame)${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
     return {
       qid: input.qid,
       question: input.question,
@@ -4203,8 +4338,9 @@ export async function runSuperlativeByMagnitude(
       correct: KEY,
       abstain: true,
       freeText: input.qid == null,
-      basis: `superlative-by-magnitude route: the frame excluded all ${ALL.length} options as not being ${category}; `
-        + 'nothing remains to order by magnitude',
+      basis: `superlative-by-magnitude route: DEGENERATE FRAME (D-BP154-005) -- the frame kept 0 of `
+        + `${ALL.length} option(s); this is a failed read, never a finding that no option belongs to `
+        + `the ${category} category`,
     };
   }
   note(`   FRAME: ${framed.length} of ${ALL.length} option(s) remain in frame -- ${framed.join(', ')}`);
