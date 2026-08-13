@@ -88,7 +88,17 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
   // must fall through to a fresh query. This test now supplies a fresh-query response too (the SAME
   // under-recalled shape, still incomplete -- the safety net, D-BP153-020, unchanged) and asserts
   // the ONE query D-BP153-023 now spends where the old code spent zero.
-  test('HEADLINE, D-BP153-023 UPDATED: the direct side under-recalls D and the complement does not name it either -- INCOMPLETE (8 of 9), falls through to a fresh query that is ALSO incomplete, so NOTHING is trusted, not a coincidentally-correct {B, D, E}', async () => {
+  // D-BP153-026 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to assert exactly ONE fresh
+  // query -- the fresh query's own under-recalled result was the final word. D-BP153-026 now
+  // spends one targeted completion follow-up naming the ONE still-unaccounted option (D). Here
+  // askGoogle's mock always returns the full REAL_PASSAGE (which genuinely does state D's
+  // membership, in REAL_PASSAGE_S2's "Only B..., D..., and E..." sentence) -- but the follow-up's
+  // own gemmaExtract() calls re-hit the SAME under-recall the first pass measured (the queued
+  // response for the follow-up's direct read still drops D, exactly like the first pass, proving
+  // the defect is a recall problem, not a passage-availability one) -- so the union is STILL
+  // incomplete (D remains unaccounted for) and NOTHING is trusted, same as before this ticket,
+  // now over 2 queries instead of 1.
+  test('HEADLINE, D-BP153-026 UPDATED: the direct side under-recalls D and the complement does not name it either -- INCOMPLETE (8 of 9), falls through to a fresh query that is ALSO incomplete, so its one completion follow-up (D-BP153-026) is issued naming ONLY D, and it ALSO under-recalls D, so NOTHING is trusted, not a coincidentally-correct {B, D, E}', async () => {
     const originalFetch = global.fetch;
     // Simulates the MEASURED live extraction (a partial copy, D dropped) on the direct-member side
     // -- exactly what BUG-1 reports gemma4:12b actually returned for this passage -- and the
@@ -117,6 +127,12 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
           .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
         stated_in_passage: true,
       }),
+      // D-BP153-026's own ONE completion follow-up: uncovered = {D} only, so the follow-up asks
+      // ONLY about D. Its returned passage (askGoogle's mock, always REAL_PASSAGE) genuinely
+      // mentions D, so extraction DOES run this time -- and the SAME measured under-recall drops D
+      // again (direct: nothing; complement: nothing), leaving D still unaccounted for.
+      JSON.stringify({ members: [], stated_in_passage: false }),
+      JSON.stringify({ not_members: [], stated_in_passage: false }),
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: REAL_PASSAGE }));
     try {
@@ -126,10 +142,12 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
         () => [owned(REAL_PASSAGE)],
       );
-      // D-BP153-023: ONE query issued -- the owned passage's INCOMPLETE PARTITION did NOT answer,
-      // so it fell through instead of terminating with zero queries the way the old code did.
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-023: the owned passage's INCOMPLETE PARTITION did NOT answer, so it fell through
+      // instead of terminating with zero queries. TWO queries now: the main fresh query plus
+      // D-BP153-026's own one completion follow-up (never a third).
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(log.some((l) => /INCOMPLETE PARTITION on owned passage/.test(l) && /D-BP153-023/.test(l) && /falling through/.test(l))).toBe(true);
+      expect(log.some((l) => /NAMED SET FOLLOW-UP \(D-BP153-026\)/.test(l) && l.includes('D) Northeast United States'))).toBe(true);
       expect(result.available).toBe(true);
       expect(result.answeredFrom).toBe('new-query');
       // THE BUG D-BP153-014 measured: the direct extraction alone (rawMembers) under-recalls --

@@ -1843,6 +1843,81 @@ async function obtainCascadePassage(
   return googleBlocks(askGoogle, query);
 }
 
+// ─────────────────────────── D-BP153-026: THE COMPLETION FOLLOW-UP ───────────────────────────
+//
+// THE MEASURED FAILURE THIS CLOSES (live run, receipt LIANA_RUN_qid98_2026-08-13T02-58-52-307Z.json).
+// THE SOFTBALLS' fresh query finally reached user_gemini (D-BP153-024) and got a real, on-topic
+// answer -- but only for SEVEN of the nine options:
+//   FRAME: direct extraction excludes D) Northeast United States, G) Arctic Circle, H) Amazon
+//          Rainforest, I) Sahara Desert, complement states B) South Asia, C) North Africa,
+//          F) Central Asia
+//   FRAME RECONCILIATION: INCOMPLETE PARTITION -- {A) South America, E) Europe} unaccounted for
+//   FRAME: 0 option(s) are not world regions -- (none); 9 of 9 remain in frame
+// D-BP153-020's own gate correctly refused to trust a partial answer -- that gate is UNRELAXED by
+// this ticket -- but the run then just gave up on those two options entirely, even though the
+// question itself said "Answer for every one, in order, and do not skip any." A person reading a
+// seven-of-nine answer asks about the other two. Nothing here did.
+//
+// THE RULE (Founder, BP153, verbatim in this ticket's own dispatch): "When a partition comes back
+// INCOMPLETE from a fresh query, ask ONE targeted follow-up naming ONLY the unaccounted-for
+// options, then reconcile again." AT MOST ONE follow-up per question -- never a loop, never one
+// query per missing option -- and it fires ONLY after a FRESH query came back incomplete, never on
+// an owned-passage read (those already fall through to the next owned passage, then to the fresh
+// query, unchanged -- D-BP153-023's own rule, untouched here) and never a second time on its own
+// output (if the follow-up is ALSO incomplete, the existing safety net stands: zero exclusions,
+// the still-unaccounted options are named, the run proceeds).
+//
+// issueCompletionFollowUp(), below, is the ONE shared implementation establishFrame() and
+// extractNamedSetMembers() both call (never a second, parallel one) -- it composes the targeted
+// query, routes it through the SAME obtainCascadePassage() every other query in this file already
+// uses (conversational authority first, Google fallback -- never a third path), and hands the
+// returned passage back to the CALLER's own already-audited extractor (extractFrameBothSides() /
+// extractNamedSetBothSides(), unmodified) so every existing guard -- span verification, the
+// D-BP153-018 property-span discard, typed passages, appearsIn -- applies to the follow-up's own
+// extraction exactly as it does to the first pass. This function decides nothing (HARDWIRE-22
+// unrelaxed): it only fetches one more passage and reports whether it was usable.
+//
+// The caller (establishFrame() / extractNamedSetMembers()) is the one that UNIONS the follow-up's
+// raw direct/complement reads with the first pass's own raw reads and re-applies
+// reconcileNamedSet() to the union -- see each call site's own D-BP153-026 comment for that
+// arithmetic. The first pass's own reads are never discarded, only added to.
+async function issueCompletionFollowUp(
+  label: string,
+  buildQuery: (namesList: string) => string,
+  uncovered: string[],
+  all: string[],
+  OPT: Record<string, string>,
+  askGoogle: MethodRunContext['askGoogle'],
+  askConversationalAuthority: MethodRunContext['askConversationalAuthority'] | undefined,
+  note: (text: string) => void,
+): Promise<{ text: string; via: string } | null> {
+  const namesList = list(uncovered, OPT);
+  const query = buildQuery(namesList);
+  note(
+    `   ${label} FOLLOW-UP (D-BP153-026): the first pass left ${uncovered.length} of ${all.length} `
+      + `option(s) unaccounted for by either side -- ${namesList} -- issuing ONE targeted follow-up `
+      + 'naming ONLY these (AT MOST ONE follow-up per question, never a loop)',
+  );
+  const res = await obtainCascadePassage(askGoogle, askConversationalAuthority, `${label} FOLLOW-UP`, query, note);
+  if (!res.ok || !res.text || !res.text.trim()) {
+    note(
+      `   ${label} FOLLOW-UP: no usable answer (${res.via}) -- proceeding with the first pass's own `
+        + 'reconciliation, unchanged (D-BP153-020\'s safety net still applies)',
+    );
+    return null;
+  }
+  if (!passageMentionsAnyLabel(res.text, uncovered, OPT)) {
+    note(
+      `   ${label} FOLLOW-UP: the source's passage (${res.via}) names NONE of the `
+        + `${uncovered.length} still-unaccounted option(s) -- proceeding with the first pass's own `
+        + 'reconciliation, unchanged',
+    );
+    return null;
+  }
+  note(`   ${label} FOLLOW-UP: ANSWERED BY ${res.via}`);
+  return { text: res.text, via: res.via };
+}
+
 /**
  * FD-BP153-01 -- THE FRAME. Establishes which options are legitimate members of the category the
  * question names, before anything is ranked.
@@ -2081,14 +2156,57 @@ export async function establishFrame(
         + 'neither side is preferred (FD-BP153-07: "a disagreement here is reported, never resolved by force")',
     );
   }
-  note(`   FRAME RECONCILIATION: ${both.why}`);
+  // D-BP153-026, THE COMPLETION FOLLOW-UP -- see this file's own section header, above
+  // obtainCascadePassage(), for the full ruling. Fires ONLY here (a FRESH query's own reconciliation
+  // came back INCOMPLETE PARTITION), never on an owned-passage read (those fall through unchanged,
+  // D-BP153-023). AT MOST ONE: this branch runs once per establishFrame() call, is never re-entered
+  // on its own output, and `effective` -- not `both` -- is what the rest of this function logs and
+  // returns from here on.
+  let effective = both;
+  if (both.incompletePartition) {
+    const uncovered = all.filter((L) => !new Set([...both.rawExcluded, ...both.included]).has(L));
+    const followUp = await issueCompletionFollowUp(
+      'FRAME',
+      (namesList) => `For EACH of the following, state exactly what it is -- its actual classification `
+        + `or type -- rather than merely whether it is or is not ${category}. These are the ONLY `
+        + `option(s) the first pass left unaccounted for; answer for every one, in order, and do not `
+        + `skip any. ${namesList}`,
+      uncovered, all, OPT, askGoogle, askConversationalAuthority, note,
+    );
+    if (followUp) {
+      // The SAME extractor the first pass used, unmodified -- every guard (span verification,
+      // D-BP153-018's property-span discard, typed passages, appearsIn) applies to this passage
+      // exactly as it did to the first one.
+      const followUpBoth = await extractFrameBothSides(followUp.text, category, prop, all, OPT, note);
+      if (followUpBoth.discarded) {
+        note(`   FRAME FOLLOW-UP: discarded ${followUpBoth.discarded} value(s) with no verbatim supporting span`);
+      }
+      // Reconcile the follow-up's values TOGETHER WITH the first pass's values -- the first pass is
+      // never discarded, only added to -- then apply the complete-partition test to the union.
+      const unionExcluded = [...new Set([...both.rawExcluded, ...followUpBoth.rawExcluded])];
+      const unionIncluded = [...new Set([...both.included, ...followUpBoth.included])];
+      const merged = reconcileNamedSet(all, unionExcluded, unionIncluded, OPT);
+      note(`   FRAME FOLLOW-UP RECONCILIATION (D-BP153-026, union of first pass + follow-up): ${merged.why}`);
+      effective = {
+        ...both,
+        excluded: merged.members,
+        rawExcluded: unionExcluded,
+        included: unionIncluded,
+        conflicts: merged.conflicts,
+        partitionComplete: merged.partitionComplete,
+        why: merged.why,
+        incompletePartition: merged.incompletePartition,
+      };
+    }
+  }
+  note(`   FRAME RECONCILIATION: ${effective.why}`);
   note(
-    `   FRAME: ${both.excluded.length} option(s) are not ${category} and will NOT be ranked -- `
-      + `${both.excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') || '(none)'}`,
+    `   FRAME: ${effective.excluded.length} option(s) are not ${category} and will NOT be ranked -- `
+      + `${effective.excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') || '(none)'}`,
   );
   return {
-    available: true, excluded: both.excluded, included: both.included, conflicts: both.conflicts,
-    partitionComplete: both.partitionComplete, reconciliationWhy: both.why,
+    available: true, excluded: effective.excluded, included: effective.included, conflicts: effective.conflicts,
+    partitionComplete: effective.partitionComplete, reconciliationWhy: effective.why,
     query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
   };
 }
@@ -2563,16 +2681,56 @@ export async function extractNamedSetMembers(
   if (both.conflicts.length) {
     note(`   NAMED SET CONFLICT: ${both.conflicts.map((L) => `${L}) ${OPT[L]}`).join(', ')} extracted as BOTH member and non-member -- reported, not resolved`);
   }
-  note(`   NAMED SET RECONCILIATION: ${both.why}`);
+  // D-BP153-026, THE COMPLETION FOLLOW-UP -- mirrors establishFrame()'s own identical gate (above),
+  // see this file's own D-BP153-026 section header (above obtainCascadePassage()) for the full
+  // ruling. Fires ONLY here (a FRESH query's own reconciliation came back INCOMPLETE PARTITION),
+  // never on an owned-passage read. AT MOST ONE: this branch runs once per
+  // extractNamedSetMembers() call, never re-entered on its own output.
+  let effective = both;
+  if (both.incompletePartition) {
+    const uncovered = all.filter((L) => !new Set([...both.rawMembers, ...both.nonMembers]).has(L));
+    const followUp = await issueCompletionFollowUp(
+      'NAMED SET',
+      (namesList) => `Which of these are ${category} that ARE ${direction} ${property}? These are the `
+        + `ONLY option(s) the first pass left unaccounted for; name each one that is, and state what `
+        + `each one is otherwise. ${namesList}`,
+      uncovered, all, OPT, askGoogle, askConversationalAuthority, note,
+    );
+    if (followUp) {
+      // The SAME extractor the first pass used, unmodified -- every guard applies to this passage
+      // exactly as it did to the first one.
+      const followUpBoth = await extractNamedSetBothSides(followUp.text, all, OPT, direction, property, note);
+      if (followUpBoth.discarded) {
+        note(`   NAMED SET FOLLOW-UP: discarded ${followUpBoth.discarded} value(s) with no verbatim supporting span`);
+      }
+      // Reconcile the follow-up's values TOGETHER WITH the first pass's values -- the first pass is
+      // never discarded, only added to -- then apply the complete-partition test to the union.
+      const unionMembers = [...new Set([...both.rawMembers, ...followUpBoth.rawMembers])];
+      const unionNonMembers = [...new Set([...both.nonMembers, ...followUpBoth.nonMembers])];
+      const merged = reconcileNamedSet(all, unionMembers, unionNonMembers, OPT);
+      note(`   NAMED SET FOLLOW-UP RECONCILIATION (D-BP153-026, union of first pass + follow-up): ${merged.why}`);
+      effective = {
+        ...both,
+        members: merged.members,
+        rawMembers: unionMembers,
+        nonMembers: unionNonMembers,
+        conflicts: merged.conflicts,
+        partitionComplete: merged.partitionComplete,
+        why: merged.why,
+        incompletePartition: merged.incompletePartition,
+      };
+    }
+  }
+  note(`   NAMED SET RECONCILIATION: ${effective.why}`);
   return {
     available: true,
-    members: both.members,
-    rawMembers: both.rawMembers,
+    members: effective.members,
+    rawMembers: effective.rawMembers,
     memberSpans: both.memberSpans,
-    nonMembers: both.nonMembers,
-    conflicts: both.conflicts,
-    partitionComplete: both.partitionComplete,
-    reconciliationWhy: both.why,
+    nonMembers: effective.nonMembers,
+    conflicts: effective.conflicts,
+    partitionComplete: effective.partitionComplete,
+    reconciliationWhy: effective.why,
     query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
   };
 }

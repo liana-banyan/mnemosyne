@@ -214,7 +214,15 @@ describe('TEST 3: two owned passages, first INCOMPLETE, second COMPLETE -- the s
 });
 
 describe('TEST 4: owned INCOMPLETE and the fresh query is ALSO incomplete -- the safety net is unchanged', () => {
-  test('zero exclusions trusted, the unaccounted-for options are named, the run proceeds -- never a further fall-through past the one fresh query', async () => {
+  // D-BP153-026 UPDATE, RECORDED HERE EXPLICITLY. Before this ticket, a fresh query that came back
+  // INCOMPLETE was the final word -- "ONE query, never a second attempt." D-BP153-026 now spends
+  // exactly ONE targeted follow-up naming only the still-unaccounted options before giving up --
+  // here that follow-up (askGoogle's mocked response is the SAME passage every call, which never
+  // mentions any of the seven still-unaccounted options) finds nothing new, so the safety net's own
+  // OUTCOME is unchanged (zero exclusions, still-unaccounted options named) but the query count is
+  // now 2, not 1: the main fresh query plus the one follow-up D-BP153-026 always issues when a
+  // fresh query comes back incomplete.
+  test('zero exclusions trusted, the unaccounted-for options are named, the run proceeds -- never a further fall-through past the one fresh query PLUS its one completion follow-up', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
       JSON.stringify({
@@ -231,6 +239,10 @@ describe('TEST 4: owned INCOMPLETE and the fresh query is ALSO incomplete -- the
         members: ['South America', 'Europe'].map((name) => ({ name, span: 'South America and Europe are legitimate world regions.' })),
         stated_in_passage: true,
       }),
+      // D-BP153-026's own ONE follow-up never reaches extraction here: askGoogle's mock always
+      // returns the SAME passage, which names none of the seven still-unaccounted options, so the
+      // follow-up is abandoned by its own passageMentionsAnyLabel() guard before gemmaExtract() is
+      // ever called again -- no further queued responses are consumed.
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: 'South America and Europe are legitimate world regions.' }));
     try {
@@ -239,13 +251,15 @@ describe('TEST 4: owned INCOMPLETE and the fresh query is ALSO incomplete -- the
         askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note,
         () => [owned(INCOMPLETE_PASSAGE)],
       );
-      // ONE query, never a second attempt after the fresh query ALSO comes back incomplete -- the
-      // safety net (D-BP153-020) is unchanged by this ticket.
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // TWO queries: the main fresh query, plus D-BP153-026's own ONE completion follow-up -- never
+      // a THIRD attempt, and never one query per missing option.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(frame.answeredFrom).toBe('new-query');
       expect(frame.available).toBe(true); // answered -- with zero exclusions, a legitimate outcome
       expect(frame.excluded).toEqual([]);
       expect(frame.partitionComplete).toBe(false);
+      expect(log.some((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l))).toBe(true);
+      expect(log.some((l) => /FRAME FOLLOW-UP: the source's passage.*names NONE/.test(l))).toBe(true);
       expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /INCOMPLETE PARTITION/.test(l))).toBe(true);
       // The unaccounted-for options from the FRESH query's own incomplete reconciliation are named.
       for (const optLetter of ['B', 'C', 'D', 'F', 'G', 'H', 'I']) {

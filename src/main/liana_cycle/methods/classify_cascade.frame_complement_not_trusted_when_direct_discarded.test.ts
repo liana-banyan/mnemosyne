@@ -241,7 +241,14 @@ describe('D-BP153-019 TEST 4: case (a) direct-genuinely-empty is preserved for a
   // a fresh-query response too (the SAME shape, still incomplete -- proving D-BP153-020's safety net
   // is unchanged: an incomplete fresh query is still the final, "nothing trusted" answer) and asserts
   // the ONE query D-BP153-023 now spends, where the old code spent zero.
-  test('the direct side extracts NOTHING and the complement names only a strict subset -- INCOMPLETE, falls through to a fresh query (D-BP153-023); the fresh query is ALSO incomplete, so NOTHING is trusted (safety net unchanged)', async () => {
+  // D-BP153-026 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to assert exactly ONE fresh
+  // query -- the fresh query's own INCOMPLETE reconciliation was the final word. D-BP153-026 now
+  // always spends one targeted completion follow-up naming the still-unaccounted options before
+  // giving up; askGoogle's mock here always returns the SAME passage regardless of query text, so
+  // the follow-up's own returned passage names none of the six options it asked about (A, C, F, G,
+  // H, I) and is abandoned before extraction runs again -- the OUTCOME (nothing trusted) is
+  // unchanged, but the query count is now 2.
+  test('the direct side extracts NOTHING and the complement names only a strict subset -- INCOMPLETE, falls through to a fresh query (D-BP153-023); the fresh query is ALSO incomplete, so its one completion follow-up (D-BP153-026) is issued and also finds nothing new, so NOTHING is trusted (safety net unchanged)', async () => {
     const originalFetch = global.fetch;
     const passage = 'Only B (South Asia), D (Northeast United States), and E (Europe) are recognized as major population clusters.';
     global.fetch = queuedFetch([
@@ -260,6 +267,9 @@ describe('D-BP153-019 TEST 4: case (a) direct-genuinely-empty is preserved for a
         members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: passage })),
         stated_in_passage: true,
       }),
+      // D-BP153-026's own ONE follow-up never reaches extraction here: askGoogle's mock always
+      // returns the SAME passage, which names none of {A, C, F, G, H, I}, so the follow-up is
+      // abandoned by passageMentionsAnyLabel() before gemmaExtract() is called again.
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: passage }));
     try {
@@ -268,10 +278,12 @@ describe('D-BP153-019 TEST 4: case (a) direct-genuinely-empty is preserved for a
         askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note,
         () => [owned(passage)], PROPERTY,
       );
-      // D-BP153-023: ONE query issued -- the owned passage's INCOMPLETE PARTITION did NOT answer,
-      // so it fell through instead of terminating with zero queries the way the old code did.
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-023: the owned passage's INCOMPLETE PARTITION did NOT answer, so it fell through
+      // instead of terminating with zero queries the way the old code did. TWO queries now (the
+      // main fresh query plus D-BP153-026's own one completion follow-up), never a third.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(log.some((l) => /INCOMPLETE PARTITION on owned passage/.test(l) && /D-BP153-023/.test(l) && /falling through/.test(l))).toBe(true);
+      expect(log.some((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l))).toBe(true);
       expect(frame.available).toBe(true);
       expect(frame.answeredFrom).toBe('new-query');
       // Case (a) still reaches reconciliation (never wrongly REJECTED by D-BP153-019's own FIX 2
