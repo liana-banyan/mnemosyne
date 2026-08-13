@@ -35,9 +35,18 @@ const QUESTION = "Which of the following world regions is NOT considered one of 
 // states B, D, E are the densely-populated members. This is what produces the live contradiction:
 // the two independent extractions over the same evidence disagree about whether B and D belong to
 // the category at all.
+// D-BP153-032 EXTENSION. THE SOFTBALLS (establishFrame(), QUESTION 1) now extract a STATED KIND per
+// option plus a stated category denotation (extractFrameKinds()/applyFrameKindElimination()) -- see
+// classify_cascade.ts's own D-BP153-032 section header. Every frame passage below is extended with a
+// clause stating the REMAINING options' own kind too (a generic "candidate region", kept free of the
+// derived PROPERTY string so D-BP153-018's discard never fires), so establishFrame() reaches a
+// COMPLETE, single-owned-passage accounting -- isolating the ONE behavior this file is actually
+// about (cross-question consistency) from D-BP153-023's own separate incomplete-coverage
+// fall-through.
 const OVEREXCLUDING_FRAME_PASSAGE = 'Options B (South Asia), C (North Africa), D (Northeast United '
   + 'States), F (Central Asia), G (Arctic Circle), H (Amazon Rainforest), and I (Sahara Desert) are '
-  + 'all NOT considered world regions in the formal sense.';
+  + "all NOT considered world regions in the formal sense. South America (A) and Europe (E) are each "
+  + "classified as a 'candidate region', the proper denotation of a world region.";
 const NAMED_SET_PASSAGE = 'Only B (South Asia), D (Northeast United States), and E (Europe) are '
   + 'recognized in human geography as major global population clusters.';
 
@@ -48,13 +57,16 @@ const NAMED_SET_PASSAGE = 'Only B (South Asia), D (Northeast United States), and
 // members {B,D,E} = unique candidate A.
 const CONSISTENT_FRAME_PASSAGE = 'North Africa (C) and Central Asia (F) are classified by entity type '
   + 'as a colloquial area, not a continent, while Arctic Circle (G), Amazon Rainforest (H), and '
-  + 'Sahara Desert (I) are climatic biomes -- none of the five is classified as a world region.';
+  + "Sahara Desert (I) are climatic biomes -- none of the five is classified as a world region. South "
+  + "America (A), South Asia (B), Northeast United States (D), and Europe (E) are each classified as a "
+  + "'candidate region', the proper denotation of a world region.";
 
 // A SINGLE-OPTION contradiction shape: the frame over-excludes ONLY D (never B), so exactly one
 // named-set member (D) is contradicted.
 const SINGLE_CONTRADICTION_FRAME_PASSAGE = 'D (Northeast United States), G (Arctic Circle), H '
   + '(Amazon Rainforest), and I (Sahara Desert) are all NOT considered world regions in the formal '
-  + 'sense.';
+  + "sense. South America (A), South Asia (B), North Africa (C), Europe (E), and Central Asia (F) are "
+  + "each classified as a 'candidate region', the proper denotation of a world region.";
 
 import { describe, test, expect, vi } from 'vitest';
 import {
@@ -121,15 +133,24 @@ describe('runSuperlativeByMagnitude() wiring -- CROSS-QUESTION CONSISTENCY runs 
   test('TEST 1, THE HEADLINE (the exact live shape): frame excludes {G,H,I,B,C,D,F}, named set {B,D,E} -> ABSTAIN, both B and D named, terminator never runs, NOTHING published', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      // Frame direct extraction: over-excludes B, C, D, F in addition to the genuine biomes G, H, I
-      // -- reproduces the live shape exactly.
+      // THE SOFTBALLS, ONE call (D-BP153-032): over-excludes B, C, D, F in addition to the genuine
+      // biomes G, H, I -- reproduces the live shape exactly.
       JSON.stringify({
-        not_members: ['South Asia', 'North Africa', 'Northeast United States', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: OVEREXCLUDING_FRAME_PASSAGE })),
+        kinds: [
+          { name: 'South Asia', kind: 'NOT considered world regions in the formal sense', span: OVEREXCLUDING_FRAME_PASSAGE },
+          { name: 'North Africa', kind: 'NOT considered world regions in the formal sense', span: OVEREXCLUDING_FRAME_PASSAGE },
+          { name: 'Northeast United States', kind: 'NOT considered world regions in the formal sense', span: OVEREXCLUDING_FRAME_PASSAGE },
+          { name: 'Central Asia', kind: 'NOT considered world regions in the formal sense', span: OVEREXCLUDING_FRAME_PASSAGE },
+          { name: 'Arctic Circle', kind: 'NOT considered world regions in the formal sense', span: OVEREXCLUDING_FRAME_PASSAGE },
+          { name: 'Amazon Rainforest', kind: 'NOT considered world regions in the formal sense', span: OVEREXCLUDING_FRAME_PASSAGE },
+          { name: 'Sahara Desert', kind: 'NOT considered world regions in the formal sense', span: OVEREXCLUDING_FRAME_PASSAGE },
+          { name: 'South America', kind: 'candidate region', span: OVEREXCLUDING_FRAME_PASSAGE },
+          { name: 'Europe', kind: 'candidate region', span: OVEREXCLUDING_FRAME_PASSAGE },
+        ],
+        category_kind: 'candidate region',
+        category_kind_span: OVEREXCLUDING_FRAME_PASSAGE,
         stated_in_passage: true,
       }),
-      // Frame complement (D-BP153-017, THE DOUBLECHECK): nothing stated in that shape.
-      JSON.stringify({ members: [], stated_in_passage: false }),
       // Named-set direct extraction, from the SAME owned evidence: B, D, E are the densely
       // populated members.
       JSON.stringify({
@@ -184,14 +205,25 @@ describe('runSuperlativeByMagnitude() wiring -- CROSS-QUESTION CONSISTENCY runs 
   test('NO CONTRADICTION: every named-set member is in frame -> behavior completely unchanged, terminator runs and publishes', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      // Frame direct extraction: the three genuine biomes plus North Africa/Central Asia (their own
-      // "colloquial area" entity type, not a world region) -- legitimate regions reduce to {A,B,D,E}.
+      // THE SOFTBALLS, ONE call (D-BP153-032): the three genuine biomes plus North Africa/Central
+      // Asia (their own "colloquial area" entity type, not a world region) -- legitimate regions
+      // reduce to {A,B,D,E}.
       JSON.stringify({
-        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: CONSISTENT_FRAME_PASSAGE })),
+        kinds: [
+          { name: 'North Africa', kind: 'colloquial area', span: CONSISTENT_FRAME_PASSAGE },
+          { name: 'Central Asia', kind: 'colloquial area', span: CONSISTENT_FRAME_PASSAGE },
+          { name: 'Arctic Circle', kind: 'climatic biome', span: CONSISTENT_FRAME_PASSAGE },
+          { name: 'Amazon Rainforest', kind: 'climatic biome', span: CONSISTENT_FRAME_PASSAGE },
+          { name: 'Sahara Desert', kind: 'climatic biome', span: CONSISTENT_FRAME_PASSAGE },
+          { name: 'South America', kind: 'candidate region', span: CONSISTENT_FRAME_PASSAGE },
+          { name: 'South Asia', kind: 'candidate region', span: CONSISTENT_FRAME_PASSAGE },
+          { name: 'Northeast United States', kind: 'candidate region', span: CONSISTENT_FRAME_PASSAGE },
+          { name: 'Europe', kind: 'candidate region', span: CONSISTENT_FRAME_PASSAGE },
+        ],
+        category_kind: 'candidate region',
+        category_kind_span: CONSISTENT_FRAME_PASSAGE,
         stated_in_passage: true,
       }),
-      JSON.stringify({ members: [], stated_in_passage: false }),
       JSON.stringify({
         members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: NAMED_SET_PASSAGE })),
         stated_in_passage: true,
@@ -227,11 +259,21 @@ describe('runSuperlativeByMagnitude() wiring -- CROSS-QUESTION CONSISTENCY runs 
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
       JSON.stringify({
-        not_members: ['Northeast United States', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: SINGLE_CONTRADICTION_FRAME_PASSAGE })),
+        kinds: [
+          { name: 'Northeast United States', kind: 'NOT considered world regions in the formal sense', span: SINGLE_CONTRADICTION_FRAME_PASSAGE },
+          { name: 'Arctic Circle', kind: 'NOT considered world regions in the formal sense', span: SINGLE_CONTRADICTION_FRAME_PASSAGE },
+          { name: 'Amazon Rainforest', kind: 'NOT considered world regions in the formal sense', span: SINGLE_CONTRADICTION_FRAME_PASSAGE },
+          { name: 'Sahara Desert', kind: 'NOT considered world regions in the formal sense', span: SINGLE_CONTRADICTION_FRAME_PASSAGE },
+          { name: 'South America', kind: 'candidate region', span: SINGLE_CONTRADICTION_FRAME_PASSAGE },
+          { name: 'South Asia', kind: 'candidate region', span: SINGLE_CONTRADICTION_FRAME_PASSAGE },
+          { name: 'North Africa', kind: 'candidate region', span: SINGLE_CONTRADICTION_FRAME_PASSAGE },
+          { name: 'Europe', kind: 'candidate region', span: SINGLE_CONTRADICTION_FRAME_PASSAGE },
+          { name: 'Central Asia', kind: 'candidate region', span: SINGLE_CONTRADICTION_FRAME_PASSAGE },
+        ],
+        category_kind: 'candidate region',
+        category_kind_span: SINGLE_CONTRADICTION_FRAME_PASSAGE,
         stated_in_passage: true,
       }),
-      JSON.stringify({ members: [], stated_in_passage: false }),
       JSON.stringify({
         members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: NAMED_SET_PASSAGE })),
         stated_in_passage: true,

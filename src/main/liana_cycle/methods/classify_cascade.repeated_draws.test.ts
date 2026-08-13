@@ -364,19 +364,45 @@ describe('BOUNDARY: repeated draws can only ever cause an ABSTAIN or a trusted a
       + 'Northeast United States is a sub-national zone, Europe is a continent, North Africa is a '
       + 'continent, Central Asia is a colloquial area, Arctic Circle is a biome, Amazon Rainforest '
       + 'is a biome, Sahara Desert is a biome.';
+    // D-BP153-032: establishFrame() now extracts a STATED KIND per option plus a stated category
+    // denotation (extractFrameKinds()/applyFrameKindElimination()) in ONE gemmaExtract() call per
+    // draw, never a direct/complement pair -- see classify_cascade.ts's own D-BP153-032 section
+    // header. Draw 1 and draw 2 disagree on South America's and North Africa's own stated kind
+    // (continent vs biome, colloquial-area vs continent) -- exactly the DIFFERENT extracted result
+    // sets this BOUNDARY test needs to prove a disagreement aborts rather than picks a side.
     global.fetch = queuedFetch([
-      // Draw 1: direct exclusion read names the three biomes; complement silent.
       JSON.stringify({
-        not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: DRAW1 })),
+        kinds: [
+          { name: 'South America', kind: 'continent', span: DRAW1 },
+          { name: 'South Asia', kind: 'continent', span: DRAW1 },
+          { name: 'Northeast United States', kind: 'sub-national zone', span: DRAW1 },
+          { name: 'Europe', kind: 'continent', span: DRAW1 },
+          { name: 'North Africa', kind: 'colloquial area', span: DRAW1 },
+          { name: 'Central Asia', kind: 'colloquial area', span: DRAW1 },
+          { name: 'Arctic Circle', kind: 'biome', span: DRAW1 },
+          { name: 'Amazon Rainforest', kind: 'biome', span: DRAW1 },
+          { name: 'Sahara Desert', kind: 'biome', span: DRAW1 },
+        ],
+        category_kind: 'continent',
+        category_kind_span: DRAW1,
         stated_in_passage: true,
       }),
-      JSON.stringify({ members: [], stated_in_passage: false }),
-      // Draw 2: DIFFERENT exclusion set (South America now a biome, North Africa now a continent).
       JSON.stringify({
-        not_members: ['South America', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: DRAW2 })),
+        kinds: [
+          { name: 'South America', kind: 'biome', span: DRAW2 }, // DISAGREES with draw 1
+          { name: 'South Asia', kind: 'continent', span: DRAW2 },
+          { name: 'Northeast United States', kind: 'sub-national zone', span: DRAW2 },
+          { name: 'Europe', kind: 'continent', span: DRAW2 },
+          { name: 'North Africa', kind: 'continent', span: DRAW2 }, // DISAGREES with draw 1
+          { name: 'Central Asia', kind: 'colloquial area', span: DRAW2 },
+          { name: 'Arctic Circle', kind: 'biome', span: DRAW2 },
+          { name: 'Amazon Rainforest', kind: 'biome', span: DRAW2 },
+          { name: 'Sahara Desert', kind: 'biome', span: DRAW2 },
+        ],
+        category_kind: 'continent',
+        category_kind_span: DRAW2,
         stated_in_passage: true,
       }),
-      JSON.stringify({ members: [], stated_in_passage: false }),
     ]);
     const askGoogle = vi.fn()
       .mockResolvedValueOnce({ snippet: DRAW1 })

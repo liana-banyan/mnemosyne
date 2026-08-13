@@ -26,8 +26,24 @@ const WHY_PASSAGE = `${WHY_PASSAGE_S1} ${WHY_PASSAGE_S2}`;
 // A SEPARATE passage stating the frame's own biome exclusion -- the ticket's own WHY section notes
 // the live run's frame came from a DIFFERENT passage than the named-set passage above; this mirrors
 // that split rather than inventing a single passage that does both jobs.
+//
+// D-BP153-032 EXTENSION. THE SOFTBALLS (establishFrame(), QUESTION 1) now extract a STATED KIND per
+// option plus a stated category denotation (extractFrameKinds()/applyFrameKindElimination()) --
+// see classify_cascade.ts's own D-BP153-032 section header. A passage naming only the three biomes
+// (as this one did before this ticket) states no kind at all for the other six options, which is
+// now INCOMPLETE (D-BP153-023, restated for the stated-kind shape) and falls through rather than
+// resolving here -- so this passage is extended with a generic world-region classification for the
+// other six, kept DELIBERATELY free of the word "densely populated" (this file's own derived
+// PROPERTY string) so D-BP153-018's property-span discard never fires on it. It still names South
+// America, North Africa, and Central Asia now (a side effect of stating their kind) -- STAGE D
+// (below) is updated to reflect that this passage is no longer FIX-3-rejected for the discriminator
+// step either; it still states no DISTINGUISHING kind among {A, C, F} (they all share the same
+// generic "world-region classification"), so STAGE D still falls through to WHY_PASSAGE and then to
+// the fresh query exactly as before.
 const FRAME_PASSAGE = 'G (Arctic Circle), H (Amazon Rainforest), and I (Sahara Desert) represent the extreme '
-  + 'sparsely populated biomes (cold, wet, and dry lands), not world regions.';
+  + 'sparsely populated biomes (cold, wet, and dry lands), not world regions. South America, South Asia, '
+  + 'North Africa, Northeast United States, Europe, and Central Asia are each classified as a '
+  + 'world-region classification. A world region properly denotes a world-region classification.';
 
 import {
   describe, test, expect, vi, beforeEach, afterEach,
@@ -551,16 +567,28 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leave
   test('TEST 7, REAL-FIXTURE END TO END: frame excludes G/H/I, members {B,D,E}, STAGE M yields {A,C,F}, STAGE D runs -- resolves on a stated distinction or abstains naming {A,C,F}; NEVER asserts the letter is A', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      // STAGE 0 FRAME: owned[0]=FRAME_PASSAGE states the biomes explicitly -- resolves here.
+      // STAGE 0 FRAME: owned[0]=FRAME_PASSAGE states a stated kind for every one of the nine
+      // options PLUS a stated category denotation (D-BP153-032) -- resolves here in ONE call,
+      // excluding G, H, I.
       JSON.stringify({
-        not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: FRAME_PASSAGE })),
+        kinds: [
+          { name: 'South America', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'South Asia', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'North Africa', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'Northeast United States', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'Europe', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'Central Asia', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'Arctic Circle', kind: 'biome', span: FRAME_PASSAGE },
+          { name: 'Amazon Rainforest', kind: 'biome', span: FRAME_PASSAGE },
+          { name: 'Sahara Desert', kind: 'biome', span: FRAME_PASSAGE },
+        ],
+        category_kind: 'world-region classification',
+        category_kind_span: FRAME_PASSAGE,
         stated_in_passage: true,
       }),
-      // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement (which-IS-the-category)
-      // extraction against the SAME owned[0]=FRAME_PASSAGE -- the passage states nothing in that
-      // shape, so this is empty; the direct exclusion read above already resolved the frame.
-      JSON.stringify({ members: [], stated_in_passage: false }),
-      // STAGE M NAMED SET: owned[0]=FRAME_PASSAGE tried first, direct+complement -- off-topic, nothing.
+      // STAGE M NAMED SET (UNCHANGED, D-BP153-032 never touches extractNamedSetMembers()):
+      // owned[0]=FRAME_PASSAGE tried first, direct+complement -- off-topic for THE NAMED SET's own
+      // "which options score as densely populated" question, nothing extracted.
       JSON.stringify({ members: [], stated_in_passage: false }),
       JSON.stringify({ not_members: [], stated_in_passage: false }),
       // STAGE M NAMED SET: owned[1]=WHY_PASSAGE, direct+complement -- resolves reconciled {B,D,E}.
@@ -573,10 +601,11 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leave
           .map((name) => ({ name, span: WHY_PASSAGE_S1 })),
         stated_in_passage: true,
       }),
-      // STAGE D DISCRIMINATOR: owned[0]=FRAME_PASSAGE names NONE of the candidates {A,C,F} --
-      // D-BP153-016 FIX 3 rejects it mechanically before extraction, so this queued (empty) response
-      // is simply never consumed for it; owned[1]=WHY_PASSAGE DOES name all three candidates and
-      // consumes the next slot, honestly stating no kind.
+      // STAGE D DISCRIMINATOR: owned[0]=FRAME_PASSAGE now DOES name the candidates {A, C, F} (a side
+      // effect of D-BP153-032's extension, above) -- no longer FIX-3-rejected, so it consumes ONE
+      // call, honestly stating no DISTINGUISHING kind among the three (they all share the same
+      // generic "world-region classification"). owned[1]=WHY_PASSAGE also names all three candidates
+      // and consumes the next slot, honestly stating no kind either.
       JSON.stringify({ kinds: [], category_kind: null, stated_in_passage: false }),
       JSON.stringify({ kinds: [], category_kind: null, stated_in_passage: false }),
       // STAGE D DISCRIMINATOR: the one fresh query also comes back with no stated kind distinction.
@@ -624,14 +653,26 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leave
     const ds4 = 'Only a Continent is properly considered a world region.';
     const discriminatorPassage = `${ds1} ${ds2} ${ds3} ${ds4}`;
     global.fetch = queuedFetch([
+      // STAGE 0 FRAME: owned[0]=FRAME_PASSAGE, ONE call, complete stated-kind accounting +
+      // category denotation (D-BP153-032) -- resolves here, excluding G, H, I.
       JSON.stringify({
-        not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: FRAME_PASSAGE })),
+        kinds: [
+          { name: 'South America', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'South Asia', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'North Africa', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'Northeast United States', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'Europe', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'Central Asia', kind: 'world-region classification', span: FRAME_PASSAGE },
+          { name: 'Arctic Circle', kind: 'biome', span: FRAME_PASSAGE },
+          { name: 'Amazon Rainforest', kind: 'biome', span: FRAME_PASSAGE },
+          { name: 'Sahara Desert', kind: 'biome', span: FRAME_PASSAGE },
+        ],
+        category_kind: 'world-region classification',
+        category_kind_span: FRAME_PASSAGE,
         stated_in_passage: true,
       }),
-      // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement extraction against the
-      // same owned[0]=FRAME_PASSAGE -- empty (nothing stated in that shape); the direct exclusion
-      // read above already resolved the frame.
-      JSON.stringify({ members: [], stated_in_passage: false }),
+      // STAGE M NAMED SET (UNCHANGED): owned[0]=FRAME_PASSAGE off-topic, owned[1]=WHY_PASSAGE
+      // resolves reconciled {B,D,E}.
       JSON.stringify({ members: [], stated_in_passage: false }),
       JSON.stringify({ not_members: [], stated_in_passage: false }),
       JSON.stringify({
@@ -643,9 +684,11 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leave
           .map((name) => ({ name, span: WHY_PASSAGE_S1 })),
         stated_in_passage: true,
       }),
-      // STAGE D DISCRIMINATOR: owned[0]=FRAME_PASSAGE names none of {A,C,F} -- FIX 3 rejects it
-      // mechanically (no query consumed for it); owned[1]=WHY_PASSAGE names all three but states no
-      // kind -- falls through to a NEW QUERY.
+      // STAGE D DISCRIMINATOR: owned[0]=FRAME_PASSAGE now names {A, C, F} too (D-BP153-032's
+      // extension) -- no longer FIX-3-rejected, consumes ONE call, states no DISTINGUISHING kind
+      // among the three; owned[1]=WHY_PASSAGE names all three but states no kind either -- falls
+      // through to a NEW QUERY.
+      JSON.stringify({ kinds: [], category_kind: null, stated_in_passage: false }),
       JSON.stringify({ kinds: [], category_kind: null, stated_in_passage: false }),
       // THE fresh query's own extraction -- this is where the STATED distinction comes from.
       JSON.stringify({

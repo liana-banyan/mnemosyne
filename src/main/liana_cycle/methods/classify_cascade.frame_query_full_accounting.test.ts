@@ -14,19 +14,25 @@
 // instead." Asked that way, a source names a couple of examples and stops -- it did exactly that
 // twice on real live runs. No downstream logic can repair an answer that never covered the field.
 //
-// THE FIX (this ticket): reword the query establishFrame() sends on the FRESH-QUERY path (the
-// query used ONLY when no owned passage already answers THE SOFTBALLS -- see establishFrame() in
-// classify_cascade.ts) so it FORCES an accounting of EVERY option, in ONE query -- never a fan-out
-// to one query per option (Founder, BP151: "we got rid of four answers with ONE google search").
-// The wording now asks what each option IS (its stated classification), never whether it "is or is
-// not" the category -- that framing is what invited the partial list, and it is also exactly the
-// property/category conflation D-BP153-018 already guards against.
+// THE FIX (this ticket): reword the query establishFrame() sends on the FRESH-QUERY path so it
+// FORCES an accounting of EVERY option, in ONE query -- never a fan-out to one query per option
+// (Founder, BP151: "we got rid of four answers with ONE google search").
 //
-// WHAT THIS FILE DOES NOT TOUCH. reconcileNamedSet(), discardPropertyContaminatedSpans(),
-// extractFrameBothSides(), and the two extraction instructions (frameExtractionInstruction() /
-// frameComplementExtractionInstruction()) are all UNCHANGED by this ticket -- TEST 2 and TEST 3
-// below exist to prove the safety net (D-BP153-020's complete-partition requirement) still holds
-// exactly as before, over the NEW query's own fresh-query code path.
+// D-BP153-032, SUPERSEDING UPDATE, RECORDED HERE EXPLICITLY. THE MEASURED PROOF (D-BP153-032's own
+// dispatch): the D-BP153-021 query above STILL asked "state exactly what it is", but the
+// DOWNSTREAM EXTRACTION (frameExtractionInstruction()/frameComplementExtractionInstruction(),
+// RETIRED) then asked the LOCAL MODEL to JUDGE whether each stated classification counted as
+// `category` -- a judgment call that produced ~100% extraction variance on ~0% source variance
+// (two draws of essentially identical text, "excludes all nine" vs "excludes three"). D-BP153-032's
+// fix changes the query ONE MORE TIME (to match STAGE D's own query, dfe72680) to ALSO ask which
+// stated kind properly denotes the category, and changes the DOWNSTREAM extraction to pure copying
+// (extractFrameKinds(), reusing extractDiscriminatorKinds() unmodified) plus a PURE-CODE comparison
+// (applyFrameKindElimination()) -- see classify_cascade.ts's own D-BP153-032 section header for the
+// full ruling. TEST 1 (below) is rewritten against the query THIS ticket now sends; TESTS 2/3 are
+// rewritten against the stated-kind extraction shape. reconcileNamedSet(),
+// discardPropertyContaminatedSpans(), and the two RETIRED extraction instructions are UNCHANGED (the
+// first two still serve THE NAMED SET; the RETIRED two no longer exist -- extractFrameBothSides()
+// itself was removed by D-BP153-032, not merely superseded).
 
 import {
   describe, test, expect, vi, beforeEach, afterEach,
@@ -73,8 +79,8 @@ function queuedFetch(responses: string[]): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-describe('D-BP153-021 TEST 1 (HEADLINE): the composed FRAME query forces an accounting of every option', () => {
-  test('the query contains every option letter+label and an explicit demand to answer for each/all', async () => {
+describe('D-BP153-021/D-BP153-032 TEST 1 (HEADLINE): the composed FRAME query forces an accounting of every option, AND asks what kind denotes the category', () => {
+  test('the query contains every option letter+label, an explicit demand to answer for each/all, and a request for the category\'s own stated kind', async () => {
     // challengeDetected short-circuits googleBlocks() to ok:false on the FIRST attempt, no retry
     // sleeps -- this test only needs the COMPOSED query string, not a real answer.
     const askGoogle = vi.fn(async () => ({ challengeDetected: true }));
@@ -89,40 +95,44 @@ describe('D-BP153-021 TEST 1 (HEADLINE): the composed FRAME query forces an acco
     for (const [L, label] of Object.entries(OPT)) {
       expect(frame.query).toContain(`${L}) ${label}`);
     }
-    // An explicit, structural demand to answer for EVERY option -- not merely a two-part
-    // is/is-not ask a source can satisfy with two examples.
-    expect(frame.query).toMatch(/answer for every one/i);
-    expect(frame.query).toMatch(/do not skip any/i);
-    // The old two-part "is or is not" framing is gone as the query's OWN demand shape -- it may
-    // still be named once, structurally, as what NOT to merely answer (see the code's own comment),
-    // but the query must not repeat the old bare "which of these are X, and which of them are not
-    // X" sentence that invited a two-example answer.
+    // D-BP153-032: the query now asks what KIND each option is (mirrors STAGE D's own query,
+    // dfe72680) AND which of those kinds properly denotes the category -- never merely "is or is
+    // not", the framing that invited a two-example answer and left no chance for a category
+    // denotation to ever be stated at all.
+    expect(frame.query).toMatch(/what kind of .*world regions.* is each of these/i);
+    expect(frame.query).toMatch(/how do they differ from one another/i);
+    expect(frame.query).toMatch(/which of those kinds properly denotes/i);
     expect(frame.query).not.toMatch(/^Which of these are/);
+    expect(frame.query).not.toMatch(/is or is not/i);
   });
 });
 
-describe('D-BP153-021 TEST 2: a source that states a kind for ALL nine options -> complete partition -> exclusions trusted', () => {
+describe('D-BP153-032 TEST 2: a source that states a kind for ALL nine options AND the category denotation -> exclusions trusted', () => {
   test('fresh-query path, full accounting -> trusted exclusion set, exactly ONE query issued', async () => {
     const originalFetch = global.fetch;
-    // A source obeying the new wording: a stated classification for every one of the nine options.
+    // A source obeying the new wording: a stated classification for every one of the nine options,
+    // PLUS a stated denotation for the category itself.
     const passage = 'South America, South Asia, Northeast United States, and Europe are each classified as '
-      + 'continental or subcontinental world regions. North Africa and Central Asia are classified as '
-      + 'colloquial geographic areas, not world regions. Arctic Circle, Amazon Rainforest, and Sahara '
-      + 'Desert are each classified as biomes, not world regions.';
-    global.fetch = queuedFetch([
-      // Direct (NOT category): the five non-regions.
-      JSON.stringify({
-        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: passage })),
-        stated_in_passage: true,
-      }),
-      // Complement (IS category): the remaining four -- together the two sides name all nine.
-      JSON.stringify({
-        members: ['South America', 'South Asia', 'Northeast United States', 'Europe']
-          .map((name) => ({ name, span: passage })),
-        stated_in_passage: true,
-      }),
-    ]);
+      + 'continental or subcontinental world regions -- the proper denotation of a world region. North '
+      + 'Africa and Central Asia are classified as colloquial geographic areas, not world regions. Arctic '
+      + 'Circle, Amazon Rainforest, and Sahara Desert are each classified as biomes, not world regions.';
+    const REGION_KIND = 'continental or subcontinental world region';
+    global.fetch = queuedFetch([JSON.stringify({
+      kinds: [
+        { name: 'South America', kind: REGION_KIND, span: passage },
+        { name: 'South Asia', kind: REGION_KIND, span: passage },
+        { name: 'Northeast United States', kind: REGION_KIND, span: passage },
+        { name: 'Europe', kind: REGION_KIND, span: passage },
+        { name: 'North Africa', kind: 'colloquial geographic area', span: passage },
+        { name: 'Central Asia', kind: 'colloquial geographic area', span: passage },
+        { name: 'Arctic Circle', kind: 'biome', span: passage },
+        { name: 'Amazon Rainforest', kind: 'biome', span: passage },
+        { name: 'Sahara Desert', kind: 'biome', span: passage },
+      ],
+      category_kind: REGION_KIND,
+      category_kind_span: passage,
+      stated_in_passage: true,
+    })]);
     const askGoogle = vi.fn(async () => ({ snippet: passage }));
     try {
       const { note, log } = notes();
@@ -134,37 +144,37 @@ describe('D-BP153-021 TEST 2: a source that states a kind for ALL nine options -
       expect(frame.partitionComplete).toBe(true);
       expect(new Set(frame.excluded)).toEqual(new Set(['C', 'F', 'G', 'H', 'I']));
       expect(new Set(frame.included)).toEqual(new Set(['A', 'B', 'D', 'E']));
-      expect(frame.conflicts).toEqual([]);
-      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /complete partition/.test(l))).toBe(true);
+      expect(frame.conflicts).toEqual([]); // RETIRED shape (D-BP153-032): always empty from establishFrame() now
+      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /excludes/.test(l))).toBe(true);
     } finally {
       global.fetch = originalFetch;
     }
   });
 });
 
-describe('D-BP153-021 TEST 3: a source that only answers for two of nine -> STILL rejected (the safety net is unchanged)', () => {
-  // D-BP153-026 UPDATE, RECORDED HERE EXPLICITLY. This test used to assert exactly ONE query --
-  // before D-BP153-026, an incomplete fresh query was the final word. Now ONE completion follow-up
-  // is always issued naming the seven still-unaccounted options; askGoogle's mock here always
-  // returns the SAME two-option passage regardless of query text, so the follow-up's own returned
-  // passage names none of the seven it asked about and is abandoned before extraction -- the
-  // OUTCOME (zero exclusions, the safety net) is unchanged, but the query count is now 2.
-  test('fresh-query path, partial answer -> zero exclusions trusted despite the new wording demanding all, PLUS the one completion follow-up D-BP153-026 always spends on an incomplete fresh query', async () => {
+describe('D-BP153-032 TEST 3: a source that only states a kind for two of nine -> the other seven stay UNACCOUNTED, never guessed', () => {
+  // D-BP153-026, UNCHANGED BY D-BP153-032: an incomplete fresh query still spends exactly ONE
+  // completion follow-up naming only the still-unaccounted options; askGoogle's mock here always
+  // returns the SAME two-option passage regardless of query text, so the follow-up learns nothing
+  // new -- the OUTCOME (zero exclusions from the seven unaccounted options) is unchanged from
+  // D-BP153-021's own intent, restated for the stated-kind shape.
+  test('fresh-query path, partial stated-kind coverage -> zero exclusions among the unaccounted seven, PLUS the one completion follow-up D-BP153-026 always spends on an incomplete fresh query', async () => {
     const originalFetch = global.fetch;
-    // A source that, despite the new wording's explicit demand, still only names two of nine --
-    // the exact live-bug shape (LIANA_RUN_qid98_2026-08-13T01-30-04-993Z.json). D-BP153-020's
-    // complete-partition gate must still catch this; this ticket never touches that gate.
+    // A source that, despite the new wording's explicit demand, still only states a kind for two of
+    // nine -- the exact live-bug shape (LIANA_RUN_qid98_2026-08-13T01-30-04-993Z.json), restated:
+    // both options are given the SAME self-referential kind as the category itself, which is enough
+    // for applyFrameKindElimination() to include them, but says nothing about the other seven.
     const passage = 'South America and Europe are classified as legitimate world regions.';
-    global.fetch = queuedFetch([
-      JSON.stringify({ not_members: [], stated_in_passage: false }),
-      JSON.stringify({
-        members: ['South America', 'Europe'].map((name) => ({ name, span: passage })),
-        stated_in_passage: true,
-      }),
-      // D-BP153-026's own ONE follow-up never reaches extraction: askGoogle's mock always returns
-      // the SAME two-option passage, which names none of the seven still-unaccounted options, so
-      // the follow-up is abandoned by passageMentionsAnyLabel() before gemmaExtract() runs again.
-    ]);
+    const kindsResponse = JSON.stringify({
+      kinds: [
+        { name: 'South America', kind: 'world region', span: passage },
+        { name: 'Europe', kind: 'world region', span: passage },
+      ],
+      category_kind: 'world region',
+      category_kind_span: passage,
+      stated_in_passage: true,
+    });
+    global.fetch = queuedFetch([kindsResponse, kindsResponse]); // fresh query + D-BP153-026 follow-up, same reply both times
     const askGoogle = vi.fn(async () => ({ snippet: passage }));
     try {
       const { note, log } = notes();
@@ -172,15 +182,15 @@ describe('D-BP153-021 TEST 3: a source that only answers for two of nine -> STIL
 
       // TWO queries: the main fresh query, plus D-BP153-026's own ONE completion follow-up.
       expect(askGoogle).toHaveBeenCalledTimes(2);
-      expect(frame.available).toBe(true); // answered -- with zero exclusions, a legitimate outcome
+      expect(frame.available).toBe(true); // a category kind WAS stated -- answered, with zero exclusions among the unaccounted
       expect(frame.answeredFrom).toBe('new-query');
-      expect(frame.partitionComplete).toBe(false);
-      expect(frame.excluded).toEqual([]); // trusts nothing -- the safety net, unchanged
+      expect(frame.partitionComplete).toBe(false); // seven options never got a stated kind
+      expect(frame.excluded).toEqual([]); // trusts nothing that was never stated -- the safety net, unchanged
       expect(frame.included).toEqual(expect.arrayContaining(['A', 'E']));
       expect(log.some((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l))).toBe(true);
-      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /INCOMPLETE PARTITION/.test(l))).toBe(true);
+      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /UNACCOUNTED/.test(l))).toBe(true);
       for (const opt of ['B', 'C', 'D', 'F', 'G', 'H', 'I']) {
-        expect(log.some((l) => l.includes('INCOMPLETE PARTITION') && l.includes(`${opt}) ${OPT[opt]}`))).toBe(true);
+        expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && l.includes(`${opt}) ${OPT[opt]}`))).toBe(true);
       }
     } finally {
       global.fetch = originalFetch;

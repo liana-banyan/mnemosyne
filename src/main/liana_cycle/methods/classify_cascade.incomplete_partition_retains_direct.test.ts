@@ -85,34 +85,48 @@ function queuedFetch(responses: string[]): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-// THE EXACT LIVE SHAPE (receipt LIANA_RUN_qid98_2026-08-13T04-29-14-925Z.json): direct excludes
-// {G, H, I}, complement states nothing at all -- COMPLEMENT-SILENT, six of nine unaccounted for by
-// the direct side, triggering D-BP153-027's own follow-up.
-const FIRST_PASS_PASSAGE = 'G (Arctic Circle), H (Amazon Rainforest), and I (Sahara Desert) are '
-  + 'biomes, not world regions.';
-// The follow-up's own returned passage -- adds D as a direct exclusion and B, C, F as included, but
-// never mentions A or E at all -- the SAME "adding evidence made it worse" shape the live run hit.
-const FOLLOW_UP_PASSAGE = 'D (Northeast United States) is also not a world region. B (South Asia), '
-  + 'C (North Africa), and F (Central Asia) are legitimate world regions.';
+// THE EXACT LIVE SHAPE (receipt LIANA_RUN_qid98_2026-08-13T04-29-14-925Z.json), restated for
+// D-BP153-032's stated-kind shape: the first pass states a kind for G, H, I only (no category
+// denotation yet) -- six options (A, B, C, D, E, F) are unaccounted for, triggering D-BP153-026's
+// completion follow-up (D-BP153-032 collapses D-BP153-027's own separate "complement-silent-and-
+// partial" trigger into the SAME single `uncovered` gate every incomplete stated-kind read now
+// uses -- see classify_cascade.ts's own D-BP153-032 section header).
+const FIRST_PASS_PASSAGE = 'G (Arctic Circle), H (Amazon Rainforest), and I (Sahara Desert) are each a '
+  + '"biome", not world regions.';
+// The follow-up's own returned passage -- adds D as a directly stated exclusion and states the
+// category denotation, but never mentions A or E at all -- the SAME "adding evidence made it worse"
+// shape the live run hit (D-BP153-029's own fix proves it no longer does).
+const FOLLOW_UP_PASSAGE = 'D (Northeast United States) is also a "biome", not a world region. B (South '
+  + 'Asia), C (North Africa), and F (Central Asia) are each a "legitimate world region", the proper '
+  + 'denotation of a world region.';
 
-describe('D-BP153-029 TEST 1 (HEADLINE): the exact live shape -- a follow-up ADDS a direct exclusion but the union is STILL incomplete', () => {
-  test('FAIL-BEFORE / PASS-AFTER: the four DIRECTLY STATED exclusions {G,H,I,D} are RETAINED, the complement-derived inference is discarded, A and E are named unaccounted -- never the old zero-credit wipe', async () => {
+describe('D-BP153-029 TEST 1 (HEADLINE): the exact live shape -- a follow-up ADDS a directly stated exclusion but the union is STILL incomplete', () => {
+  test('FAIL-BEFORE / PASS-AFTER: the four DIRECTLY STATED exclusions {G,H,I,D} are RETAINED, no guessing is done for A and E, they are named unaccounted -- never the old zero-credit wipe', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      // First pass direct (frameExtractionInstruction, NOT category): G, H, I.
+      // First pass: states G, H, I's own kind ("biome"), no category denotation yet.
       JSON.stringify({
-        not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: FIRST_PASS_PASSAGE })),
+        kinds: [
+          { name: 'Arctic Circle', kind: 'biome', span: FIRST_PASS_PASSAGE },
+          { name: 'Amazon Rainforest', kind: 'biome', span: FIRST_PASS_PASSAGE },
+          { name: 'Sahara Desert', kind: 'biome', span: FIRST_PASS_PASSAGE },
+        ],
+        category_kind: null,
+        category_kind_span: '',
         stated_in_passage: true,
       }),
-      // First pass complement (frameComplementExtractionInstruction, IS category): COMPLEMENT-SILENT.
-      JSON.stringify({ members: [], stated_in_passage: false }),
-      // Follow-up direct: adds D.
-      JSON.stringify({ not_members: [{ name: 'Northeast United States', span: FOLLOW_UP_PASSAGE }], stated_in_passage: true }),
-      // Follow-up complement: names B, C, F -- but the follow-up query only ever asked about the six
-      // options the first pass's direct side left uncovered (A,B,C,D,E,F), and this source still
-      // never mentions A or E.
+      // Follow-up (targets the six unaccounted-for options): adds D's own kind ("biome"), states B,
+      // C, F's own kind ("legitimate world region"), AND the category denotation -- but this source
+      // still never mentions A or E.
       JSON.stringify({
-        members: ['South Asia', 'North Africa', 'Central Asia'].map((name) => ({ name, span: FOLLOW_UP_PASSAGE })),
+        kinds: [
+          { name: 'Northeast United States', kind: 'biome', span: FOLLOW_UP_PASSAGE },
+          { name: 'South Asia', kind: 'legitimate world region', span: FOLLOW_UP_PASSAGE },
+          { name: 'North Africa', kind: 'legitimate world region', span: FOLLOW_UP_PASSAGE },
+          { name: 'Central Asia', kind: 'legitimate world region', span: FOLLOW_UP_PASSAGE },
+        ],
+        category_kind: 'legitimate world region',
+        category_kind_span: FOLLOW_UP_PASSAGE,
         stated_in_passage: true,
       }),
     ]);
@@ -125,27 +139,25 @@ describe('D-BP153-029 TEST 1 (HEADLINE): the exact live shape -- a follow-up ADD
       const { note, log } = notes();
       const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
 
-      // The follow-up DID fire (D-BP153-027's own complement-silent-and-partial trigger, not
-      // D-BP153-026's incomplete-partition trigger -- the first pass's complement said nothing at
-      // all, it was never "incomplete", it was silent) and DID add D.
+      // The follow-up fired (D-BP153-026, the SAME single trigger every incomplete stated-kind read
+      // now uses) and DID add D.
       expect(askGoogle).toHaveBeenCalledTimes(2);
-      expect(log.some((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l) && /COMPLEMENT-SILENT-AND-PARTIAL/.test(l))).toBe(true);
-      expect(log.some((l) => /FRAME FOLLOW-UP RECONCILIATION \(D-BP153-026/.test(l) && /INCOMPLETE PARTITION/.test(l))).toBe(true);
+      expect(log.some((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l))).toBe(true);
+      expect(log.some((l) => /FRAME FOLLOW-UP RECONCILIATION \(D-BP153-026/.test(l))).toBe(true);
 
       // THE HEADLINE ASSERTION: the union is STILL incomplete (A, E unaccounted), and the OLD code
-      // (before this ticket) wiped `frame.excluded` to `[]` here -- "9 of 9 remain in frame", the
-      // exact live bug. The FIX retains the four directly stated exclusions.
+      // (before D-BP153-029/D-BP153-032) wiped `frame.excluded` to `[]` here -- "9 of 9 remain in
+      // frame", the exact live bug. The FIX retains the four directly stated exclusions.
       expect(frame.partitionComplete).toBe(false);
       expect(new Set(frame.excluded)).toEqual(new Set(['G', 'H', 'I', 'D']));
       expect(new Set(frame.included)).toEqual(new Set(['B', 'C', 'F']));
       expect(frame.available).toBe(true);
       expect(frame.answeredFrom).toBe('new-query');
 
-      // The note names both sets, says the inference is discarded, says RETAINED, and names the
-      // still-unaccounted options (A, E) -- never silently drops any of that detail.
-      const reconciliationLine = log.find((l) => l.includes('FRAME RECONCILIATION') && l.includes('INCOMPLETE PARTITION'));
+      // The note names both sets and the still-unaccounted options (A, E) -- never silently drops
+      // any of that detail.
+      const reconciliationLine = log.find((l) => l.includes('FRAME RECONCILIATION') && l.includes('UNACCOUNTED'));
       expect(reconciliationLine).toBeDefined();
-      expect(reconciliationLine).toMatch(/RETAINED/);
       expect(reconciliationLine).toContain('A) South America');
       expect(reconciliationLine).toContain('E) Europe');
       for (const optLetter of ['G', 'H', 'I', 'D']) {
