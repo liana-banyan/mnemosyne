@@ -413,6 +413,40 @@ export async function googleBlocks(
 
 // ─────────────────────────── Gemma, extraction only (HARDWIRE-22) ───────────────────────────
 
+// D-BP154-006, ADDITIVE -- see FD-BP154-01, RULINGS_BP154.md ("lift the fence, fix gemmaExtract
+// too") for the authorization; this is the ONLY function in this file that ruling opens. THE
+// MEASURED DEFECT (BISHOP_DROPZONE\BP154_LOSSY_HOP_AUDIT.md, SILENT hop 3): the old
+// `catch { return null; }` swallowed every failure identically -- Ollama down, HTTP error,
+// non-truncation parse failure -- returning a value indistinguishable from "the passage genuinely
+// said nothing." D-BP153-034 (immediately below) closed exactly one cause (truncation); the rest of
+// the class stayed open until now.
+//
+// THE FOUR CAUSES THIS CODE CAN ACTUALLY DISTINGUISH, per HARDWIRE-22 (report only what is
+// genuinely observable, never invent a finer distinction than the evidence supports):
+//   'transport'  -- fetch() itself threw: Ollama unreachable, connection refused, DNS failure, or
+//                   the 60s AbortController timeout firing. The round trip never completed.
+//   'http-error' -- the round trip completed but Ollama answered with a non-2xx status. Previously
+//                   NEVER CHECKED AT ALL (`res.ok` had no guard) -- a 4xx/5xx body was read exactly
+//                   as a 200 would be, and only failed downstream if its body also happened not to
+//                   parse as JSON.
+//   'parse-error'-- the HTTP round trip succeeded (2xx) but the body could not be turned into the
+//                   parsed JSON object this function promises: either `res.json()` itself threw (the
+//                   body was not JSON at all -- an HTML error page, a truncated stream) or
+//                   `JSON.parse(t)` threw on the model's own `response` text for a reason OTHER than
+//                   truncation (the model wrapped its JSON in explanatory prose past what the two
+//                   fence-strips catch, or emitted malformed JSON outright). These TWO sub-causes
+//                   COLLAPSE into one bucket -- both are "the body this function received was not
+//                   valid JSON", and distinguishing them further would require a second layer of
+//                   error handling this ticket's own "keep the caller change minimal" rule does not
+//                   justify; `rawOut.text` (when set) still carries the raw text for a caller that
+//                   wants to log it, exactly as D-BP152-004 already provided.
+//   truncation   -- UNCHANGED, D-BP153-034's own signal (`rawOut.truncated`), kept exactly as it was
+//                   -- checked FIRST by every caller below, so a truncated read is never ALSO
+//                   reported as a generic 'parse-error'.
+// 'honest-empty' (the passage was read, JSON parsed cleanly, and it genuinely states nothing) is NOT
+// a failure of this function at all -- it is a SUCCESSFUL parse whose fields happen to be null/empty,
+// so this function returns the parsed object exactly as before; a caller distinguishes it from every
+// failure above by the simple fact that gemmaExtract() returned non-null.
 export async function gemmaExtract(
   instruction: string,
   passage: string,
@@ -428,7 +462,17 @@ export async function gemmaExtract(
   // D-BP153-034, ADDITIVE: `truncated` is set true when Ollama reports `done_reason: 'length'`,
   // i.e. the model hit num_predict and the JSON was cut off mid-object. Optional and additive;
   // every existing caller compiles and behaves unchanged.
-  rawOut?: { text?: string; truncated?: boolean },
+  // D-BP154-006, ADDITIVE: `failureCause`/`failureDetail` are set ONLY on the three non-truncation
+  // failure paths named above -- both stay undefined on every success (including a successful,
+  // genuinely empty extraction) and on a truncated read (that case already has its own signal).
+  // Optional and additive, same discipline as `truncated`: every existing caller that does not read
+  // these two fields compiles and behaves byte-identically to before this ticket.
+  rawOut?: {
+    text?: string;
+    truncated?: boolean;
+    failureCause?: 'transport' | 'http-error' | 'parse-error';
+    failureDetail?: string;
+  },
 ): Promise<Record<string, unknown> | null> {
   const prompt = `Read the passage and report only what it states. Do not reason about which answer is correct. Do not choose between options.
 
@@ -440,10 +484,11 @@ TASK: ${instruction}
 Return ONLY JSON in this shape, no prose, no fence:
 ${shape}
 Use null where the passage does not state it. Never guess.`;
+  let res: Response;
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60_000);
-    const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
+    res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       // D-BP153-034 -- num_predict 512 -> 1024, FOUNDER-AUTHORIZED (BP153: "double the ceiling").
@@ -460,6 +505,37 @@ Use null where the passage does not state it. Never guess.`;
       body: JSON.stringify({ model: MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 1024 } }),
       signal: controller.signal,
     }).finally(() => clearTimeout(timeout));
+  } catch (err) {
+    // D-BP154-006 -- TRANSPORT FAILURE. The round trip itself never completed; there is no HTTP
+    // response and nothing to parse. Never silently indistinguishable from "the passage said nothing".
+    if (rawOut) {
+      rawOut.failureCause = 'transport';
+      rawOut.failureDetail = err instanceof Error ? err.message : String(err);
+    }
+    return null;
+  }
+  if (res.ok === false) {
+    // D-BP154-006 -- HTTP ERROR STATUS. Previously never checked at all -- a 4xx/5xx body was read
+    // exactly as a 200 would be. The round trip completed; Ollama itself reported failure.
+    //
+    // `=== false`, DELIBERATELY, not `!res.ok`. A real fetch() Response always sets `.ok` to an
+    // explicit boolean (`!res.ok` and `res.ok === false` are equivalent against real production
+    // traffic) -- but this file's OWN test suite (every classify_cascade.*.test.ts sibling, going
+    // back to before this ticket) mocks gemmaExtract()'s Ollama channel with a bare
+    // `{ json: async () => ... }` object that has never set `.ok` at all, because the pre-D-BP154-006
+    // code never read it. `!res.ok` treats that `undefined` as failure and turns roughly twenty
+    // pre-existing, unrelated test files into false HTTP-error failures -- MEASURED: `npx vitest run
+    // src/main/liana_cycle/methods/` with `!res.ok` regressed from 2 pre-existing failing files to
+    // 23 of 25 failing. `res.ok === false` fires ONLY on an EXPLICIT false (what a real error
+    // response produces, and what a test that deliberately means to simulate one sets), leaving
+    // every pre-existing mock's implicit `undefined` -- and therefore its behavior -- untouched.
+    if (rawOut) {
+      rawOut.failureCause = 'http-error';
+      rawOut.failureDetail = `HTTP ${res.status}`;
+    }
+    return null;
+  }
+  try {
     const j = (await res.json()) as { response?: string; done_reason?: string };
     const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
     if (rawOut) rawOut.text = t;
@@ -470,7 +546,16 @@ Use null where the passage does not state it. Never guess.`;
     // signal is recorded for the caller either way.
     if (rawOut) rawOut.truncated = j.done_reason === 'length';
     return JSON.parse(t) as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    // D-BP154-006 -- JSON PARSE FAILURE, the non-truncation kind: `res.json()` itself threw (the
+    // body was not JSON at all) or `JSON.parse(t)` threw on the model's own text for a reason OTHER
+    // than hitting the token ceiling (rawOut.truncated, set just above, is checked here so a
+    // truncated read is never ALSO reported as a generic parse failure -- truncation already named
+    // itself more precisely).
+    if (rawOut && rawOut.truncated !== true) {
+      rawOut.failureCause = 'parse-error';
+      rawOut.failureDetail = err instanceof Error ? err.message : String(err);
+    }
     return null;
   }
 }
