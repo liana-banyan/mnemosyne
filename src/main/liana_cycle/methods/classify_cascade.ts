@@ -2867,6 +2867,85 @@ export interface MembershipTerminatorResult {
   why: string;
 }
 
+// ─────────────────────────── CROSS-QUESTION CONSISTENCY (D-BP153-030) ───────────────────────────
+//
+// D-BP153-030/BISHOP/seg-cross-question-consistency. THE MEASURED FALSE PASS this closes (live run,
+// receipt LIANA_RUN_qid98_2026-08-13T04-55-00-660Z.json): that run PUBLISHED A with ok=true, on a
+// basis that reads, verbatim: "frame excluded [G, H, I, B, C, D, F] (new-query); named set of most
+// densely populated members [B, D, E] (owned-passage); legitimate-regions {A, E} MINUS
+// named-set-members {B, D, E} leaves exactly one candidate: A -- UNIQUE". THE FRAME says B (South
+// Asia) and D (Northeast United States) are NOT world regions. THE NAMED SET says B and D are AMONG
+// the world's most densely populated REGIONS. Both cannot be true -- a member of "the most densely
+// populated world regions" is a world region BY CONSTRUCTION (membership in a named subset of a
+// category implies membership in the category itself, for ANY superlative-membership question, not
+// just this one). Nothing checked QUESTION 1 (THE SOFTBALLS, the frame) against QUESTION 2 (THE
+// NAMED SET) before this ticket, so the run published on a self-contradictory basis -- A survived
+// only because the frame was over-aggressive (it excluded B and D too), never because South America
+// was distinguished from North Africa/Central Asia on the evidence. The discriminator (STAGE D)
+// never ran. Same shape as BP149: right letter, wrong mechanism.
+//
+// THE RULE: an option THE NAMED SET states is a member must be IN FRAME. If THE FRAME (QUESTION 1)
+// excluded an option that THE NAMED SET (QUESTION 2) names as a member (QUESTION 2), that is a
+// CONTRADICTION between the two sources' own answers -- not a tie to break, not a case for trusting
+// one source over the other.
+//
+// BEHAVIOR ON CONTRADICTION, per the estate's own standing doctrine on disagreeing sources (this
+// file's own FD-BP153-07 "a disagreement here is reported, never resolved by force", and FD-BP152-21
+// "ask Google, and also let the Cascade apply, as a check on each other" -- both sources are meant
+// to check one another, and a check that disagrees is a FINDING, not noise to silently resolve):
+// name every contradicting option and what EACH source said about it, then ABSTAIN. Never pick a
+// side (never "trust the named set", never drop the frame exclusion and continue) -- that is exactly
+// the silent resolution this rule exists to prevent. Pure function, no I/O, no model call, and no
+// access to input.correctAnswer -- it can only ever ABSTAIN, never select a letter, so it cannot be
+// tuned toward a key (mirrors runMembershipTerminator()'s own discipline, immediately below).
+export interface FrameNamedSetConsistencyResult {
+  /** Option letters THE NAMED SET states are members that THE FRAME excluded as not being a member
+   *  of the category at all -- empty when the two sources agree on every named-set member. */
+  contradictions: string[];
+  /** True when every named-set member is in frame (no contradiction) -- the ORIGINAL, unchanged
+   *  behavior applies and the membership terminator may run. False means STAGE M must not run this
+   *  turn; the caller abstains instead. */
+  consistent: boolean;
+  /** Plain-English rendering of the check, naming each contradicting option and what the frame said
+   *  vs. what the named set said, for the transcript/basis -- a reader can audit the abstain (or the
+   *  all-clear) without re-running anything. */
+  why: string;
+}
+
+/**
+ * CROSS-QUESTION CONSISTENCY. Pure function over already-computed inputs -- no I/O, fully testable
+ * in isolation, and never reads `KEY`/`input.correctAnswer` (nothing here can select an answer; it
+ * can only ever report a contradiction and let the caller abstain). `frameExcluded` is Step 1's own
+ * exclusion list (FrameResult.excluded); `members` is Step 2's own named-set membership
+ * (NamedSetResult.members). Runs AFTER both have resolved and BEFORE runMembershipTerminator() so
+ * the terminator never computes candidates from a contradictory pair.
+ */
+export function checkFrameNamedSetConsistency(
+  frameExcluded: string[],
+  members: string[],
+  OPT: Record<string, string>,
+): FrameNamedSetConsistencyResult {
+  const excludedSet = new Set(frameExcluded);
+  const contradictions = members.filter((L) => excludedSet.has(L));
+  if (!contradictions.length) {
+    return {
+      contradictions,
+      consistent: true,
+      why: 'no contradiction -- every named-set member the source named is also in frame',
+    };
+  }
+  const detail = contradictions
+    .map((L) => `${L}) ${OPT[L]} -- THE FRAME excluded it (not a member of the category); THE NAMED SET states it IS a member`)
+    .join('; ');
+  return {
+    contradictions,
+    consistent: false,
+    why: `CONTRADICTION on ${contradictions.length} option${contradictions.length === 1 ? '' : 's'}: ${detail} `
+      + '-- a member of a named subset of the category is a member of the category by construction, so both '
+      + 'cannot be true; reported as a FINDING, neither source is preferred (FD-BP153-07 x FD-BP152-21)',
+  };
+}
+
 /**
  * STEP 3, PUT THEM TOGETHER. Pure function over already-computed inputs -- no I/O, fully
  * testable in isolation. `all` is the FULL original option set (mirrors establishFrame()'s own
@@ -3617,6 +3696,40 @@ export async function runSuperlativeByMagnitude(
   const namedSet = await extractNamedSetMembers(countedAskGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages, countedAskConversationalAuthority);
   if (namedSet.answeredFrom === 'owned-passage') answeredFromOwned.push('THE NAMED SET');
   if (namedSet.available) {
+    // D-BP153-030: CROSS-QUESTION CONSISTENCY. Must run BEFORE runMembershipTerminator() -- see
+    // checkFrameNamedSetConsistency()'s own section header (above) for the full ruling and the
+    // measured false pass (qid 98, receipt LIANA_RUN_qid98_2026-08-13T04-55-00-660Z.json) this
+    // closes. The terminator must never compute candidates from a frame/named-set pair that
+    // contradict each other.
+    const consistency = checkFrameNamedSetConsistency(frame.excluded, namedSet.members, OPT);
+    note(`   CROSS-QUESTION CONSISTENCY (D-BP153-030): ${consistency.why}`);
+    if (!consistency.consistent) {
+      step(
+        `ABSTAIN -- THE FRAME and THE NAMED SET contradict each other on `
+          + `${consistency.contradictions.map((L) => `${L}) ${OPT[L]}`).join(', ')}; reporting the contradiction, `
+          + 'never silently resolving it (FD-BP153-07 x FD-BP152-21) -- Stage D, Stage A\'s litmus-strip loop, and '
+          + 'Stage B\'s four ordering queries were never issued',
+      );
+      queryBillNote();
+      emit({
+        kind: 'result',
+        text: `ABSTAIN (frame/named-set contradiction on ${consistency.contradictions.join(', ')})${KEY != null ? `  key=${KEY}` : ''}`,
+        ts: nowIso(),
+      });
+      note(`   ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+      return {
+        qid: input.qid,
+        question: input.question,
+        verdict: null,
+        correct: KEY,
+        abstain: true,
+        freeText: input.qid == null,
+        basis: `superlative-by-magnitude route, CROSS-QUESTION CONSISTENCY (D-BP153-030): frame excluded `
+          + `[${frame.excluded.join(', ') || 'none'}] (${frame.answeredFrom}); named set of ${match.direction} `
+          + `${property} members [${namedSet.members.join(', ') || 'none'}] (${namedSet.answeredFrom}); `
+          + `${consistency.why}`,
+      };
+    }
     const termination = runMembershipTerminator(ALL, frame.excluded, namedSet.members, OPT);
     note(`   MEMBERSHIP TERMINATOR: ${termination.why}`);
     if (termination.unique) {
