@@ -57,6 +57,32 @@ const OPT: Record<string, string> = {
 };
 const ALL = Object.keys(OPT);
 const CATEGORY = 'world regions';
+const CATEGORY_KIND = 'legitimate world region';
+const OTHER_KIND = 'not a legitimate world region';
+
+/** D-BP153-032: establishFrame() now extracts a STATED KIND per option plus a stated category
+ *  denotation (extractFrameKinds()/applyFrameKindElimination(), classify_cascade.ts), never a
+ *  direct/complement exclusion pair -- see that file's own D-BP153-032 section header. Builds a
+ *  COMPLETE, all-nine-options passage + reply so establishFrame()'s two tests below (which are
+ *  about FIX 3's mechanical rejection, not about incomplete-coverage fall-through) terminate in
+ *  exactly ONE query, same as their original pre-D-BP153-032 shape did. */
+function fullCoverageFrame(excludedLetters: string[], introText: string): { passage: string; response: string } {
+  const includedLetters = ALL.filter((L) => !excludedLetters.includes(L));
+  const excludedClause = excludedLetters.length
+    ? `${excludedLetters.map((L) => OPT[L]).join(', ')} ${excludedLetters.length > 1 ? 'are each' : 'is'} "${OTHER_KIND}".`
+    : '';
+  const includedClause = includedLetters.length
+    ? `${includedLetters.map((L) => OPT[L]).join(', ')} ${includedLetters.length > 1 ? 'are each' : 'is'} "${CATEGORY_KIND}".`
+    : '';
+  const passage = `${introText} ${excludedClause} ${includedClause} A world region properly denotes a "${CATEGORY_KIND}".`;
+  const response = JSON.stringify({
+    kinds: ALL.map((L) => ({ name: OPT[L], kind: excludedLetters.includes(L) ? OTHER_KIND : CATEGORY_KIND, span: passage })),
+    category_kind: CATEGORY_KIND,
+    category_kind_span: passage,
+    stated_in_passage: true,
+  });
+  return { passage, response };
+}
 
 // THE REAL AMBIGUITY PASSAGE, verbatim, quoted exactly from the dispatch -- the counterfactual that
 // produced "Amazon Rainforest" as a member of the world's most densely populated regions.
@@ -270,10 +296,8 @@ describe('D-BP153-016 TEST 5 -- REJECT A PASSAGE THAT CANNOT SOURCE THE CLAIM (m
 
   test('establishFrame() applies the identical FIX 3 rejection to the same passage', async () => {
     const originalFetch = global.fetch;
-    const freshPassage = 'Arctic Circle is a climatic zone, not a world region.';
-    global.fetch = queuedFetch([
-      JSON.stringify({ not_members: [{ name: 'Arctic Circle', span: freshPassage }], stated_in_passage: true }),
-    ]);
+    const { passage: freshPassage, response } = fullCoverageFrame(['G'], 'Arctic Circle is a climatic zone, not a world region.');
+    global.fetch = queuedFetch([response]);
     const askGoogle = vi.fn(async () => ({ snippet: freshPassage }));
     try {
       const { note, log } = notes();
@@ -282,12 +306,13 @@ describe('D-BP153-016 TEST 5 -- REJECT A PASSAGE THAT CANNOT SOURCE THE CLAIM (m
         () => [owned(GEMINI_UI_CHROME_PASSAGE, 'operation')],
       );
       expect(log.some((l) => /REJECTED an owned passage/.test(l) && /FIX 3/.test(l))).toBe(true);
-      // D-BP153-027: same COMPLEMENT-SILENT-AND-PARTIAL shape as the sibling test above (fresh-query
-      // direct side names only G of 9, complement silent) -- the ONE completion follow-up fires.
-      // `excluded` is unchanged.
-      expect(askGoogle).toHaveBeenCalledTimes(2);
+      // The Gemini-UI-chrome owned passage is REJECTED mechanically (FIX 3) before ever reaching
+      // extraction, so this run's owned evidence contributes ZERO gemmaExtract() calls -- falls
+      // straight to ONE fresh query, which answers completely (D-BP153-032: a complete stated-kind
+      // accounting, no follow-up needed).
+      expect(askGoogle).toHaveBeenCalledTimes(1);
       expect(frame.answeredFrom).toBe('new-query');
-      expect(frame.excluded).toEqual(['G']);
+      expect(new Set(frame.excluded)).toEqual(new Set(['G']));
     } finally {
       global.fetch = originalFetch;
     }
@@ -323,21 +348,18 @@ describe('D-BP153-016 TEST 6 -- no ownedPassages accessor at all behaves identic
 
   test('establishFrame(): omitting the accessor entirely falls straight to the query path, unchanged', async () => {
     const originalFetch = global.fetch;
-    const freshPassage = 'Arctic Circle is a climatic zone, not a world region.';
-    global.fetch = queuedFetch([
-      JSON.stringify({ not_members: [{ name: 'Arctic Circle', span: freshPassage }], stated_in_passage: true }),
-    ]);
+    const { passage: freshPassage, response } = fullCoverageFrame(['G'], 'Arctic Circle is a climatic zone, not a world region.');
+    global.fetch = queuedFetch([response]);
     const askGoogle = vi.fn(async () => ({ snippet: freshPassage }));
     try {
       const { note } = notes();
       const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
-      // D-BP153-027: same COMPLEMENT-SILENT-AND-PARTIAL shape as the sibling test above (direct
-      // names only G of 9, complement silent) -- the ONE completion follow-up fires. `excluded` is
-      // unchanged.
-      expect(askGoogle).toHaveBeenCalledTimes(2);
+      // D-BP153-032: a single, complete stated-kind accounting answers in ONE query -- no
+      // incomplete-coverage fall-through, no follow-up needed.
+      expect(askGoogle).toHaveBeenCalledTimes(1);
       expect(frame.answeredFrom).toBe('new-query');
       expect(frame.ownedPassageIndex).toBeNull();
-      expect(frame.excluded).toEqual(['G']);
+      expect(new Set(frame.excluded)).toEqual(new Set(['G']));
     } finally {
       global.fetch = originalFetch;
     }

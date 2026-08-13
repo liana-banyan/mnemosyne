@@ -55,6 +55,28 @@ const OPT: Record<string, string> = {
 };
 const ALL = Object.keys(OPT);
 const CATEGORY = 'world regions';
+const CATEGORY_KIND = 'legitimate world region';
+const OTHER_KIND = 'not a legitimate world region';
+
+/** D-BP153-032: builds a COMPLETE, all-nine-options stated-kind passage + reply -- see
+ *  classify_cascade.owned_evidence_frame.test.ts's own identical helper for the full rationale. */
+function fullCoverage(excludedLetters: string[], introText: string): { passage: string; response: string } {
+  const includedLetters = ALL.filter((L) => !excludedLetters.includes(L));
+  const excludedClause = excludedLetters.length
+    ? `${excludedLetters.map((L) => OPT[L]).join(', ')} ${excludedLetters.length > 1 ? 'are each' : 'is'} "${OTHER_KIND}".`
+    : '';
+  const includedClause = includedLetters.length
+    ? `${includedLetters.map((L) => OPT[L]).join(', ')} ${includedLetters.length > 1 ? 'are each' : 'is'} "${CATEGORY_KIND}".`
+    : '';
+  const passage = `${introText} ${excludedClause} ${includedClause} A world region properly denotes a "${CATEGORY_KIND}".`;
+  const response = JSON.stringify({
+    kinds: ALL.map((L) => ({ name: OPT[L], kind: excludedLetters.includes(L) ? OTHER_KIND : CATEGORY_KIND, span: passage })),
+    category_kind: CATEGORY_KIND,
+    category_kind_span: passage,
+    stated_in_passage: true,
+  });
+  return { passage, response };
+}
 
 const owned = (text: string): OwnedPassage => ({ text, kind: 'operation' });
 
@@ -78,35 +100,45 @@ function queuedFetch(responses: string[]): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-// THE EXACT LIVE SHAPE (receipt LIANA_RUN_qid98_2026-08-13T02-58-52-307Z.json): direct excludes
-// {D, G, H, I}, complement includes {B, C, F} -- {A, E} unaccounted for by either side.
-const FIRST_PASS_PASSAGE = 'D (Northeast United States), G (Arctic Circle), H (Amazon Rainforest), and '
-  + 'I (Sahara Desert) are not properly considered here. B (South Asia), C (North Africa), and '
-  + 'F (Central Asia) are considered valid entries here.';
-// The follow-up's own returned passage -- states A and E, completing the partition.
-const FOLLOW_UP_COMPLETING_PASSAGE = 'A (South America) and E (Europe) are considered valid entries here.';
+// THE EXACT LIVE SHAPE (receipt LIANA_RUN_qid98_2026-08-13T02-58-52-307Z.json), restated for
+// D-BP153-032's stated-kind shape: D, G, H, I are stated "not a legitimate world region"; B, C, F
+// are stated "legitimate world region" (the category's own denotation) -- A, E never get a stated
+// kind from the first pass.
+const FIRST_PASS_PASSAGE = `Northeast United States, Arctic Circle, Amazon Rainforest, and Sahara Desert `
+  + `are each "${OTHER_KIND}". South Asia, North Africa, and Central Asia are each a "${CATEGORY_KIND}". `
+  + `A world region properly denotes a "${CATEGORY_KIND}".`;
+const FIRST_PASS_RESPONSE = JSON.stringify({
+  kinds: [
+    { name: 'Northeast United States', kind: OTHER_KIND, span: FIRST_PASS_PASSAGE },
+    { name: 'Arctic Circle', kind: OTHER_KIND, span: FIRST_PASS_PASSAGE },
+    { name: 'Amazon Rainforest', kind: OTHER_KIND, span: FIRST_PASS_PASSAGE },
+    { name: 'Sahara Desert', kind: OTHER_KIND, span: FIRST_PASS_PASSAGE },
+    { name: 'South Asia', kind: CATEGORY_KIND, span: FIRST_PASS_PASSAGE },
+    { name: 'North Africa', kind: CATEGORY_KIND, span: FIRST_PASS_PASSAGE },
+    { name: 'Central Asia', kind: CATEGORY_KIND, span: FIRST_PASS_PASSAGE },
+  ],
+  category_kind: CATEGORY_KIND,
+  category_kind_span: FIRST_PASS_PASSAGE,
+  stated_in_passage: true,
+});
+// The follow-up's own returned passage -- states A and E, completing the accounting.
+const FOLLOW_UP_COMPLETING_PASSAGE = `South America and Europe are each a "${CATEGORY_KIND}".`;
+const FOLLOW_UP_COMPLETING_RESPONSE = JSON.stringify({
+  kinds: [
+    { name: 'South America', kind: CATEGORY_KIND, span: FOLLOW_UP_COMPLETING_PASSAGE },
+    { name: 'Europe', kind: CATEGORY_KIND, span: FOLLOW_UP_COMPLETING_PASSAGE },
+  ],
+  category_kind: CATEGORY_KIND,
+  category_kind_span: FOLLOW_UP_COMPLETING_PASSAGE,
+  stated_in_passage: true,
+});
 
-describe('D-BP153-026 TEST 1 (HEADLINE): establishFrame(), the exact live shape -- 7 of 9 answered, follow-up completes the partition', () => {
-  test('FAIL-BEFORE / PASS-AFTER: the follow-up is issued naming ONLY A and E, the union is a complete partition, and the trusted exclusions come from it', async () => {
+describe('D-BP153-026 TEST 1 (HEADLINE): establishFrame(), the exact live shape -- 7 of 9 answered, follow-up completes the accounting', () => {
+  test('FAIL-BEFORE / PASS-AFTER: the follow-up is issued naming ONLY A and E, the union is a complete accounting, and the trusted exclusions come from it', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      // First pass (main fresh query): the exact live shape.
-      JSON.stringify({
-        not_members: ['Northeast United States', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: FIRST_PASS_PASSAGE })),
-        stated_in_passage: true,
-      }),
-      JSON.stringify({
-        members: ['South Asia', 'North Africa', 'Central Asia'].map((name) => ({ name, span: FIRST_PASS_PASSAGE })),
-        stated_in_passage: true,
-      }),
-      // Follow-up: direct side states nothing new excluded.
-      JSON.stringify({ not_members: [], stated_in_passage: false }),
-      // Follow-up: complement states A and E ARE world regions -- completes the partition.
-      JSON.stringify({
-        members: ['South America', 'Europe'].map((name) => ({ name, span: FOLLOW_UP_COMPLETING_PASSAGE })),
-        stated_in_passage: true,
-      }),
+      FIRST_PASS_RESPONSE, // first pass (main fresh query): the exact live shape
+      FOLLOW_UP_COMPLETING_RESPONSE, // follow-up: states A and E -- completes the accounting
     ]);
     let call = 0;
     const askGoogle = vi.fn(async () => {
@@ -127,7 +159,7 @@ describe('D-BP153-026 TEST 1 (HEADLINE): establishFrame(), the exact live shape 
       expect(askGoogle).toHaveBeenCalledTimes(2); // the main fresh query, PLUS the one follow-up
       expect(log.some((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l))).toBe(true);
       expect(log.some((l) => /FRAME FOLLOW-UP: ANSWERED BY/.test(l))).toBe(true);
-      expect(log.some((l) => /FRAME FOLLOW-UP RECONCILIATION \(D-BP153-026/.test(l) && /complete partition/.test(l))).toBe(true);
+      expect(log.some((l) => /FRAME FOLLOW-UP RECONCILIATION \(D-BP153-026/.test(l))).toBe(true);
       expect(frame.partitionComplete).toBe(true);
       expect(frame.answeredFrom).toBe('new-query');
       // The union: direct {D,G,H,I} plus follow-up direct {} = {D,G,H,I}; complement {B,C,F} plus
@@ -145,15 +177,7 @@ describe('D-BP153-026 TEST 2: the follow-up names ONLY the unaccounted-for optio
   test('the composed follow-up query string contains A and E and does NOT contain the other seven option letters/labels', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      JSON.stringify({
-        not_members: ['Northeast United States', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: FIRST_PASS_PASSAGE })),
-        stated_in_passage: true,
-      }),
-      JSON.stringify({
-        members: ['South Asia', 'North Africa', 'Central Asia'].map((name) => ({ name, span: FIRST_PASS_PASSAGE })),
-        stated_in_passage: true,
-      }),
+      FIRST_PASS_RESPONSE,
       // The follow-up query text is captured before extraction is attempted -- a challenge on the
       // follow-up's own askGoogle call is enough; this test needs the QUERY STRING, not an answer.
     ]);
@@ -186,55 +210,45 @@ describe('D-BP153-026 TEST 2: the follow-up names ONLY the unaccounted-for optio
 });
 
 describe('D-BP153-026 TEST 3: AT MOST ONE follow-up -- a follow-up that is ALSO incomplete never triggers a second one', () => {
-  // D-BP153-029 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to assert that the STILL-
-  // incomplete union (E remains unaccounted for) discarded EVERYTHING, including the four
+  // D-BP153-029/D-BP153-032 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to assert that the
+  // STILL-incomplete union (E remains unaccounted for) discarded EVERYTHING, including the four
   // DIRECTLY STATED exclusions {D,G,H,I} the first pass's own verified spans established -- the
-  // exact over-correction D-BP153-029 closes (this is literally the live measured failure's own
-  // shape: a real dispatch, HEADLINE test below in this same file, differs only in which follow-up
-  // response was queued). The corrected rule: an incomplete union discards only the
-  // COMPLEMENT-DERIVED INFERENCE (the "all minus non-members" arithmetic), never the directly
-  // stated values -- {D,G,H,I} stay trusted, only E's status (and the complement's own inference)
-  // is withheld.
+  // exact over-correction D-BP153-029 closes. Restated for D-BP153-032's stated-kind shape:
+  // applyFrameKindElimination() judges each option on its OWN stated kind -- an option with no
+  // stated kind (E, here) is left UNACCOUNTED, never discarding any OTHER option's own directly
+  // stated kind. {D,G,H,I} stay excluded; only E's own status is withheld.
   test('the follow-up names only A, answers only A, E stays unaccounted -- no third query, the four DIRECTLY STATED exclusions are retained, not a zero-credit wipe', async () => {
     const originalFetch = global.fetch;
+    const followUpOnlyAPassage = `South America is a "${CATEGORY_KIND}".`;
     global.fetch = queuedFetch([
+      FIRST_PASS_RESPONSE,
+      // Follow-up: names ONLY A, not E -- the follow-up is ALSO incomplete.
       JSON.stringify({
-        not_members: ['Northeast United States', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: FIRST_PASS_PASSAGE })),
-        stated_in_passage: true,
-      }),
-      JSON.stringify({
-        members: ['South Asia', 'North Africa', 'Central Asia'].map((name) => ({ name, span: FIRST_PASS_PASSAGE })),
-        stated_in_passage: true,
-      }),
-      // Follow-up direct: nothing new excluded.
-      JSON.stringify({ not_members: [], stated_in_passage: false }),
-      // Follow-up complement: names ONLY A, not E -- the follow-up is ALSO incomplete.
-      JSON.stringify({
-        members: [{ name: 'South America', span: 'A (South America) is considered a valid entry here.' }],
+        kinds: [{ name: 'South America', kind: CATEGORY_KIND, span: followUpOnlyAPassage }],
+        category_kind: CATEGORY_KIND,
+        category_kind_span: followUpOnlyAPassage,
         stated_in_passage: true,
       }),
     ]);
     let call = 0;
     const askGoogle = vi.fn(async () => {
       call += 1;
-      return { snippet: call === 1 ? FIRST_PASS_PASSAGE : 'A (South America) is considered a valid entry here.' };
+      return { snippet: call === 1 ? FIRST_PASS_PASSAGE : followUpOnlyAPassage };
     });
     try {
       const { note, log } = notes();
       const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
 
       // TWO queries total -- the main fresh query and the ONE follow-up -- never a third attempt
-      // even though the follow-up itself came back incomplete (E is still unaccounted for).
+      // even though the follow-up itself came back incomplete (E never got a stated kind).
       expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(log.filter((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l)).length).toBe(1); // exactly one follow-up issued
       expect(frame.partitionComplete).toBe(false);
-      // D-BP153-029: the DIRECTLY STATED exclusions are retained -- the complement-derived inference
-      // (which would have put A and E's non-mentioned siblings back in, or wiped {D,G,H,I} out) is
-      // what is discarded, not the four spans the first pass itself verified.
+      // D-BP153-029/D-BP153-032: the DIRECTLY STATED exclusions are retained -- E's own missing kind
+      // never blocks any OTHER option's own directly stated kind from being judged on its merits.
       expect(new Set(frame.excluded)).toEqual(new Set(['D', 'G', 'H', 'I']));
-      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /INCOMPLETE PARTITION/.test(l) && l.includes('E) Europe'))).toBe(true);
-      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /RETAINED/.test(l))).toBe(true);
+      expect(new Set(frame.included)).toEqual(new Set(['A', 'B', 'C', 'F']));
+      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /UNACCOUNTED/.test(l) && l.includes('E) Europe'))).toBe(true);
     } finally {
       global.fetch = originalFetch;
     }
@@ -244,22 +258,8 @@ describe('D-BP153-026 TEST 3: AT MOST ONE follow-up -- a follow-up that is ALSO 
 describe('D-BP153-026 TEST 4: a complete fresh answer -> NO follow-up issued', () => {
   test('a fresh query naming all nine options in one pass never triggers the follow-up -- ONE query only', async () => {
     const originalFetch = global.fetch;
-    const completePassage = 'South America, South Asia, Northeast United States, and Europe are each classified as '
-      + 'continental or subcontinental world regions. North Africa and Central Asia are classified as '
-      + 'colloquial geographic areas, not world regions. Arctic Circle, Amazon Rainforest, and Sahara '
-      + 'Desert are each classified as biomes, not world regions.';
-    global.fetch = queuedFetch([
-      JSON.stringify({
-        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: completePassage })),
-        stated_in_passage: true,
-      }),
-      JSON.stringify({
-        members: ['South America', 'South Asia', 'Northeast United States', 'Europe']
-          .map((name) => ({ name, span: completePassage })),
-        stated_in_passage: true,
-      }),
-    ]);
+    const { passage: completePassage, response } = fullCoverage(['C', 'F', 'G', 'H', 'I'], 'A complete accounting of every option follows.');
+    global.fetch = queuedFetch([response]);
     const askGoogle = vi.fn(async () => ({ snippet: completePassage }));
     try {
       const { note, log } = notes();
@@ -278,20 +278,8 @@ describe('D-BP153-026 TEST 4: a complete fresh answer -> NO follow-up issued', (
 describe('D-BP153-026 TEST 5: a complete OWNED answer -> no fresh query and no follow-up at all', () => {
   test('an owned passage answering completely on the first try never reaches the fresh-query path, so the follow-up never fires', async () => {
     const originalFetch = global.fetch;
-    const passage = 'Arctic Circle, Amazon Rainforest, and Sahara Desert are biomes, not world regions. '
-      + 'South America, South Asia, North Africa, Northeast United States, Europe, and Central Asia are '
-      + 'all legitimate world regions.';
-    global.fetch = queuedFetch([
-      JSON.stringify({
-        not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: passage })),
-        stated_in_passage: true,
-      }),
-      JSON.stringify({
-        members: ['South America', 'South Asia', 'North Africa', 'Northeast United States', 'Europe', 'Central Asia']
-          .map((name) => ({ name, span: passage })),
-        stated_in_passage: true,
-      }),
-    ]);
+    const { passage, response } = fullCoverage(['G', 'H', 'I'], 'A complete accounting of every option follows.');
+    global.fetch = queuedFetch([response]);
     const askGoogle = vi.fn(async () => { throw new Error('must never be called -- the owned passage is complete'); });
     try {
       const { note, log } = notes();

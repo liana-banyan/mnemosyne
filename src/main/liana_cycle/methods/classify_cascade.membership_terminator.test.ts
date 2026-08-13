@@ -44,7 +44,36 @@ const REAL_PASSAGE_S3 = 'Among the non-dense options, G, H, and I represent the 
 const REAL_PASSAGE_S4 = 'North Africa (C) and Central Asia (F) are classified by entity type as a '
   + 'colloquial area, not a continent, while Arctic Circle (G), Amazon Rainforest (H), and Sahara '
   + 'Desert (I) are climatic biomes -- none of the five is classified as a world region.';
-const REAL_PASSAGE = `${REAL_PASSAGE_S1} ${REAL_PASSAGE_S2} ${REAL_PASSAGE_S3} ${REAL_PASSAGE_S4}`;
+// D-BP153-032 ADDITION. THE SOFTBALLS (establishFrame(), QUESTION 1) now extract a STATED KIND per
+// option plus a stated category denotation (extractFrameKinds()/applyFrameKindElimination()) -- see
+// classify_cascade.ts's own D-BP153-032 section header. REAL_PASSAGE_S4 (above) already states a
+// genuine, property-free KIND for C, F, G, H, I -- this sentence supplies the SAME for A, B, D, E
+// (never quoted in the original live-run evidence, same convention S4's own comment already
+// establishes for the property-vs-category split D-BP153-018 needed), so THE HEADLINE test below can
+// resolve the frame in exactly ONE stated-kind call, matching what it required before this ticket.
+const REAL_PASSAGE_S5 = 'South America (A), South Asia (B), Northeast United States (D), and Europe (E) '
+  + 'are each classified by entity type as a continent, the proper denotation of a world region.';
+const REAL_PASSAGE = `${REAL_PASSAGE_S1} ${REAL_PASSAGE_S2} ${REAL_PASSAGE_S3} ${REAL_PASSAGE_S4} ${REAL_PASSAGE_S5}`;
+
+// D-BP153-032: THE SOFTBALLS' own single stated-kind reply, reused by every test below that needs
+// the frame to resolve from REAL_PASSAGE -- excludes {C, F, G, H, I}, keeps {A, B, D, E}, matching
+// the SAME real frame result these tests already derived before this ticket.
+const FRAME_KINDS_RESPONSE = JSON.stringify({
+  kinds: [
+    { name: 'South America', kind: 'continent', span: REAL_PASSAGE_S5 },
+    { name: 'South Asia', kind: 'continent', span: REAL_PASSAGE_S5 },
+    { name: 'North Africa', kind: 'colloquial area', span: REAL_PASSAGE_S4 },
+    { name: 'Northeast United States', kind: 'continent', span: REAL_PASSAGE_S5 },
+    { name: 'Europe', kind: 'continent', span: REAL_PASSAGE_S5 },
+    { name: 'Central Asia', kind: 'colloquial area', span: REAL_PASSAGE_S4 },
+    { name: 'Arctic Circle', kind: 'climatic biome', span: REAL_PASSAGE_S4 },
+    { name: 'Amazon Rainforest', kind: 'climatic biome', span: REAL_PASSAGE_S4 },
+    { name: 'Sahara Desert', kind: 'climatic biome', span: REAL_PASSAGE_S4 },
+  ],
+  category_kind: 'continent',
+  category_kind_span: REAL_PASSAGE_S5,
+  stated_in_passage: true,
+});
 
 import {
   describe, test, expect, vi, beforeEach, afterEach,
@@ -317,21 +346,15 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
     // the queue exhausted and fails silently (gemmaExtract()'s own catch-and-return-null), which is
     // fine: the direct read alone already resolves this test's own arithmetic.
     global.fetch = queuedFetch([
-      // Frame extraction (establishFrame(), unmodified) -- the real BP153 frame result: only
-      // South America, South Asia, Northeast US, Europe were named legitimate world regions.
-      // D-BP153-018: sourced from REAL_PASSAGE_S4 (the genuine, property-free category span), NOT
-      // S1 -- S1 states only the superlative PROPERTY and is exactly the span the live qid 98 bug
-      // wrongly used for this same claim; see REAL_PASSAGE_S4's own comment above for why.
-      JSON.stringify({
-        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: REAL_PASSAGE_S4 })),
-        stated_in_passage: true,
-      }),
-      // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement extraction against the
-      // SAME owned passage -- empty (nothing stated in that shape); the direct exclusion read
-      // above already resolved the frame.
-      JSON.stringify({ members: [], stated_in_passage: false }),
-      // Named-set extraction (extractNamedSetMembers(), this ticket).
+      // Frame extraction (establishFrame(), D-BP153-032 stated-kind shape) -- ONE call, the real
+      // BP153 frame result: only South America, South Asia, Northeast US, Europe are stated
+      // "continent" (the category's own denotation); North Africa/Central Asia are "colloquial
+      // area", Arctic Circle/Amazon Rainforest/Sahara Desert are "climatic biome" -- all sourced
+      // from the genuine, property-free category spans (REAL_PASSAGE_S4/S5), never S1 (which states
+      // only the superlative PROPERTY, exactly the span the live qid 98 bug wrongly used for this
+      // same claim; see REAL_PASSAGE_S4's own comment above for why).
+      FRAME_KINDS_RESPONSE,
+      // Named-set extraction (extractNamedSetMembers(), UNCHANGED by D-BP153-032).
       JSON.stringify({
         members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: REAL_PASSAGE_S2 })),
         stated_in_passage: true,
@@ -377,15 +400,8 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
   test('D-BP153-015: not-unique named set -> STAGE D (the discriminator) fires and terminates the route; Stage A is no longer reached for this case', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      // Frame extraction: same real frame as above.
-      JSON.stringify({
-        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
-        stated_in_passage: true,
-      }),
-      // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement extraction against the
-      // same owned passage -- empty; the direct exclusion read above already resolved the frame.
-      JSON.stringify({ members: [], stated_in_passage: false }),
+      // Frame extraction (D-BP153-032 stated-kind shape, ONE call): same real frame as above.
+      FRAME_KINDS_RESPONSE,
       // Named-set direct extraction: only TWO of the three members named -- not unique (candidates {A,E}).
       JSON.stringify({
         members: ['South Asia', 'Northeast United States'].map((name) => ({ name, span: REAL_PASSAGE_S2 })),
@@ -433,15 +449,9 @@ describe('runSuperlativeByMagnitude() wiring -- STAGE M runs before Stage A/B, a
   test('named set UNAVAILABLE (owned passage yields nothing, fresh query also comes back nothing) -> falls through to the existing magnitude path unchanged', async () => {
     const originalFetch = global.fetch;
     global.fetch = queuedFetch([
-      // Frame extraction (Step 1, unmodified): resolves fine from the owned passage, as always.
-      JSON.stringify({
-        not_members: ['North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
-        stated_in_passage: true,
-      }),
-      // D-BP153-017, THE DOUBLECHECK: establishFrame()'s own complement extraction against the
-      // same owned passage -- empty; the direct exclusion read above already resolved the frame.
-      JSON.stringify({ members: [], stated_in_passage: false }),
+      // Frame extraction (D-BP153-032 stated-kind shape, ONE call): resolves fine from the owned
+      // passage, as always.
+      FRAME_KINDS_RESPONSE,
       // Named-set extraction (Step 2) tries the SAME owned passage per FD-BP153-04's contract (each
       // stage tries owned evidence independently) but this time the extraction honestly finds
       // nothing -- D-BP153-010's rule: inconclusive, not "no members". Falls through to a fresh

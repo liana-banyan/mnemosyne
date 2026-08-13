@@ -293,25 +293,47 @@ describe('D-BP153-027 TEST 5: owned complete answer -> no fresh query, no follow
   });
 });
 
-describe('D-BP153-027: establishFrame() (QUESTION 1, THE SOFTBALLS) shares the identical trigger', () => {
-  test('complement silent, direct excludes only 2 of 9 -- the follow-up fires and names the 7 uncovered options', async () => {
+// D-BP153-027, RETIRED FOR THE SOFTBALLS BY D-BP153-032. THE SOFTBALLS no longer have a separate
+// "complement" direction to be silent about (frameExtractionInstruction()/
+// frameComplementExtractionInstruction()/extractFrameBothSides(), RETIRED) -- an incomplete
+// stated-kind read (some option's own kind never stated) is handled by the SAME single
+// `uncovered`/D-BP153-026 gate every incomplete read now uses, whatever the reason some option's
+// kind was never stated (see classify_cascade.ts's own D-BP153-032 section header). The residual
+// invariant (a partial first pass triggers exactly ONE targeted follow-up naming only the still-
+// unaccounted options) is restated below against the new shape; D-BP153-027 remains fully live for
+// THE NAMED SET, above, untouched by this ticket.
+describe('D-BP153-026/D-BP153-032: establishFrame() (QUESTION 1, THE SOFTBALLS) shares the identical single-gate follow-up mechanism', () => {
+  test('a partial first pass (2 of 9 stated) triggers the follow-up, which names the 7 uncovered options and completes the accounting', async () => {
     const originalFetch = global.fetch;
-    const firstPassPassage = 'G (Arctic Circle) and H (Amazon Rainforest) are climatic zones, not world regions.';
-    const followUpPassage = 'I (Sahara Desert) is also a biome, not a world region. A (South America), B '
-      + '(South Asia), C (North Africa), D (Northeast United States), E (Europe), and F (Central Asia) '
-      + 'are each legitimate world regions.';
+    const firstPassPassage = 'G (Arctic Circle) and H (Amazon Rainforest) are each a "biome", not world regions.';
+    const followUpPassage = 'I (Sahara Desert) is also a "biome", not a world region. A (South America), B '
+      + '(South Asia), C (North Africa), D (Northeast United States), E (Europe), and F (Central Asia) are '
+      + 'each a "legitimate world region", the proper denotation of a world region.';
     global.fetch = queuedFetch([
+      // First pass: states G, H's own kind ("biome"), no category denotation yet -- 7 unaccounted.
       JSON.stringify({
-        not_members: ['Arctic Circle', 'Amazon Rainforest'].map((name) => ({ name, span: firstPassPassage })),
+        kinds: [
+          { name: 'Arctic Circle', kind: 'biome', span: firstPassPassage },
+          { name: 'Amazon Rainforest', kind: 'biome', span: firstPassPassage },
+        ],
+        category_kind: null,
+        category_kind_span: '',
         stated_in_passage: true,
       }),
-      JSON.stringify({ members: [], stated_in_passage: false }), // complement silent
-      // Follow-up direct: names I as excluded.
-      JSON.stringify({ not_members: [{ name: 'Sahara Desert', span: followUpPassage }], stated_in_passage: true }),
-      // Follow-up complement: names the other six as included -- completes the partition.
+      // Follow-up (targets the seven unaccounted-for options): states I's own kind ("biome") plus
+      // A-F's own kind AND the category denotation -- completes the accounting.
       JSON.stringify({
-        members: ['South America', 'South Asia', 'North Africa', 'Northeast United States', 'Europe', 'Central Asia']
-          .map((name) => ({ name, span: followUpPassage })),
+        kinds: [
+          { name: 'Sahara Desert', kind: 'biome', span: followUpPassage },
+          { name: 'South America', kind: 'legitimate world region', span: followUpPassage },
+          { name: 'South Asia', kind: 'legitimate world region', span: followUpPassage },
+          { name: 'North Africa', kind: 'legitimate world region', span: followUpPassage },
+          { name: 'Northeast United States', kind: 'legitimate world region', span: followUpPassage },
+          { name: 'Europe', kind: 'legitimate world region', span: followUpPassage },
+          { name: 'Central Asia', kind: 'legitimate world region', span: followUpPassage },
+        ],
+        category_kind: 'legitimate world region',
+        category_kind_span: followUpPassage,
         stated_in_passage: true,
       }),
     ]);
@@ -325,7 +347,7 @@ describe('D-BP153-027: establishFrame() (QUESTION 1, THE SOFTBALLS) shares the i
       const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
 
       expect(askGoogle).toHaveBeenCalledTimes(2);
-      expect(log.some((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l) && /COMPLEMENT-SILENT-AND-PARTIAL/.test(l))).toBe(true);
+      expect(log.some((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l))).toBe(true);
       const followUpLine = log.find((l) => l.includes('FRAME FOLLOW-UP: query SENT to Google'));
       expect(followUpLine).toBeDefined();
       for (const L of ['A', 'B', 'C', 'D', 'E', 'F', 'I']) {

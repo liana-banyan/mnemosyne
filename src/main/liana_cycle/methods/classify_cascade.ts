@@ -1521,31 +1521,35 @@ export interface FrameResult {
   /** False = the authority gave no usable answer. Per FD-BP153-01 consequence 2 this ABSTAINS;
    *  it never falls back to ranking the unframed pool. */
   available: boolean;
-  /** Option letters the SOURCE stated are not members of the category -- RECONCILED (see
-   *  reconcileNamedSet(), reused by extractFrameBothSides() below) with the complement
-   *  (which-ARE-`category`) extraction when the two sides form a clean, COMPLETE, conflict-free
-   *  reading (D-BP153-020: covering every option, not merely conflict-free). When the complement
-   *  said something but the union is incomplete, this is the DIRECTLY STATED exclusion list,
-   *  unexpanded (D-BP153-029) -- a COMPLETE partition is required before the COMPLEMENT-DERIVED
-   *  inference is trusted, but a directly stated exclusion is never discarded merely because some
-   *  OTHER option went unaccounted for (absence is omission, never a stated exclusion -- that rule
-   *  is about the options nobody named, not the ones somebody did). Empty here only when the direct
-   *  side itself stated nothing. Only when the complement extracted NOTHING AT ALL is this the
-   *  direct exclusion extraction alone, unreconciled. May be empty, which is a valid frame meaning
-   *  "nothing is established as excluded from this passage", NOT the same as unavailable. */
+  /** D-BP153-032: option letters whose STATED KIND (extractFrameKinds(), applyFrameKindElimination(),
+   *  both above) differs from the STATED category kind -- pure per-option comparison in code, never
+   *  a model judgment call (HARDWIRE-22). An option with no stated kind at all is in NEITHER
+   *  `excluded` nor `included` (D-BP153-029's rule: never guessed, and never discarded from the
+   *  options that WERE stated merely because some other option was not). May be empty, which is a
+   *  valid frame meaning "the stated category kind excludes nothing among what was stated" -- NOT
+   *  the same as unavailable (see `available`, above: unavailable means no category kind was ever
+   *  stated at all, a categorically different fact from "stated, and it excludes nothing"). */
   excluded: string[];
-  /** D-BP153-017, THE DOUBLECHECK applied to THE SOFTBALLS: option letters the SAME passage
-   *  states ARE `category` -- the complementary direction, extracted from the identical
-   *  already-fetched text, no new query. Empty when the complement extracted nothing (the passage
-   *  may simply not use that shape). */
+  /** D-BP153-032: option letters whose STATED KIND matches the STATED category kind -- the other
+   *  side of the same per-option comparison that produces `excluded`. Empty when no option's stated
+   *  kind matches (or nothing was stated). RETIRED, D-BP153-017's own two-independent-extractions
+   *  "doublecheck" reading of this field (ask both directions, reconcile) -- THE SOFTBALLS now read
+   *  a single stated kind per option, which is single-valued by construction, so `included` is
+   *  simply the complement of `excluded` within "options with a stated kind", never a second,
+   *  independently-extracted direction. D-BP153-017 remains fully live for THE NAMED SET, below. */
   included: string[];
-  /** Option letters extracted as BOTH excluded and included by the two independent extractions --
-   *  a FINDING, reported and never silently resolved (FD-BP153-07: "ask it both directions and
-   *  require agreement"; a disagreement is reported, never resolved by force). Empty when the two
-   *  extractions agree. */
+  /** RETIRED, D-BP153-032: a stated kind is single-valued (it either matches the stated category
+   *  kind, differs from it, or is unstated), so there is no longer a shape in which THE SOFTBALLS'
+   *  own extraction could name an option on both sides at once. Always empty from establishFrame()
+   *  from this ticket forward; kept on the interface only because NamedSetResult (below, UNTOUCHED
+   *  by this ticket) still has a live, non-empty `conflicts` of its own and callers that read both
+   *  result types generically should not need a type-level special case for FrameResult alone. */
   conflicts: string[];
-  /** True when the direct exclusion set and the complement inclusion set together name every
-   *  option in `all`, with zero conflicts -- mirrors NamedSetResult.partitionComplete exactly. */
+  /** True when EVERY option in `all` has a STATED KIND (D-BP153-032) -- i.e. `unaccounted`
+   *  (applyFrameKindElimination()'s own field, above) is empty. Independent of whether a category
+   *  kind was ever stated (`available`, above, is the field that tracks that): a frame can have
+   *  complete per-option coverage and still be unavailable, if nothing ever stated which of those
+   *  kinds counts. */
   partitionComplete: boolean;
   /** Plain-English rendering of the reconciliation arithmetic -- mirrors
    *  NamedSetResult.reconciliationWhy, so a reader can audit this result without re-running
@@ -1572,206 +1576,153 @@ export interface FrameResult {
   drawsIssued?: number;
 }
 
-/** THE SAME instruction and output shape both the owned-evidence extraction attempt (below) and
- *  the fresh-query path (further below) use to read a frame partition out of a passage -- factored
- *  into one function specifically so there is exactly ONE wording, never two that could drift.
- *  EXTRACTION ONLY (HARDWIRE-22): asks the model to copy out names the passage ITSELF states are
- *  excluded, never to judge whether a passage "answers" the question.
- *
- *  D-BP153-014, BUG-3 FIX. SHARPENED. Prior-run prose (Bishop's own dispatch, quoted verbatim):
- *  "G, H, and I represent the extreme sparsely populated biomes" -- establishFrame() extracted
- *  NOTHING from it. The old wording only asked for an explicit "NOT the category" statement; this
- *  sentence never uses the word NOT -- it states a POSITIVE alternate classification ("represent...
- *  biomes") instead, which is exactly as exclusionary but was outside what the old prompt looked
- *  for. THE COMPARISON STAYS MECHANICAL, no word list built here (HARDWIRE-23): the model is told
- *  to compare whatever classification the passage states against `category` -- the exact string
- *  this function is now given, the same string the fresh-query path already sends the question
- *  with -- and copy the name only when the STATED classification differs from that string. The
- *  model still only copies verbatim text (HARDWIRE-22 unrelaxed); the code's own appearsIn() check
- *  below still verifies every copy against the source passage, unchanged. */
-function frameExtractionInstruction(category: string, all: string[], OPT: Record<string, string>): string {
-  return `If this passage states that any of these names is NOT ${category}, copy out exactly those `
-    + 'names, spelled as the passage spells them. This exclusion may be worded as an explicit NOT, '
-    + `OR as a POSITIVE statement of what the name IS INSTEAD (for example, "X, Y, and Z represent `
-    + `biomes" or "X, Y, and Z are climatic zones" -- when the passage states a classification for a `
-    + `name that is DIFFERENT from "${category}", that name is excluded, even with no literal NOT). `
-    + 'Copy only names the passage itself excludes, by either wording. If the passage excludes none '
-    + 'of them, return an empty list. Do not decide yourself which ones qualify -- compare only '
-    + 'against what the passage itself states the name is. For EACH excluded name, also copy out the '
-    + 'exact verbatim sentence or clause from the passage that states the exclusion, word for word, '
-    + `into "span". Names: ${all.map((L) => OPT[L]).join('; ')}`;
-}
-// D-BP153-016, FIX 2: `not_members` is now a list of {name, span} objects, not bare strings -- see
-// extractSpannedLetters() (above) for the verification this shape exists to support.
-const FRAME_EXTRACTION_SHAPE = '{"not_members":[{"name":"exact name the passage says is not one",'
-  + '"span":"the exact verbatim sentence from the passage"}],"stated_in_passage":true}';
-
-// ─────────────────────────── D-BP153-017: THE DOUBLECHECK, APPLIED TO THE SOFTBALLS ───────────────────────────
+// ─────────────────────────── D-BP153-032: THE SOFTBALLS, STATED KIND -- NEVER STATED MEMBERSHIP ───────────────────────────
 //
-// TICKET_D-BP153-017_THE_THREE_QUESTIONS.md, ITEM 3: "Add the complementary direction to the
-// Softballs, reconciled the same way the named set already is." His own QC, FD-BP153-07, verbatim:
-// "ask it both directions and require agreement." D-BP153-014 already built exactly this pattern
-// for THE NAMED SET (namedSetComplementExtractionInstruction() / extractNamedSetBothSides() /
-// reconcileNamedSet(), above) -- this section is that SAME pattern, reused (reconcileNamedSet()
-// itself is called unchanged, not reimplemented), retargeted at THE SOFTBALLS (establishFrame()).
+// D-BP153-032/BISHOP/seg-classify-032, A HARDWIRE-22 VIOLATION CLOSED. THE MEASURED PROOF (repeated
+// draws, D-BP153-031): run LIANA_RUN_qid98_2026-08-13T12-25-35-888Z.json issued THE SOFTBALLS' base
+// query twice against ESSENTIALLY IDENTICAL source text (both draws on record, quoted verbatim in
+// this ticket's own dispatch) and got wildly different extractions:
+//   draw 1 -> excludes {A,B,C,D,E,F,G,H,I}   (all nine)
+//   draw 2 -> excludes {G,H,I}
+// ~0% source variance produced ~100% extraction variance.
+//
+// ROOT CAUSE. frameExtractionInstruction()/frameComplementExtractionInstruction() (RETIRED by this
+// ticket -- were here, immediately above establishFrame(), before this section) asked the LOCAL
+// MODEL which options ARE/are NOT `category`. The passage states KINDS ("Continent", "Geopolitical
+// Subregion", "Parallel of Latitude", ...), never membership directly -- to answer "is Geopolitical
+// Subregion a world region?" gemma had to DECIDE whether that kind counts. THAT IS JUDGMENT
+// (HARDWIRE-22 forbids delegating it to a local model), and it decided differently every call.
+//
+// THE FIX. THE DISCRIMINATOR (extractDiscriminatorKinds()/applyDiscriminatorElimination(), STAGE D,
+// further below) already asks the RIGHT question, over a narrowed candidate set: copy out the
+// STATED KIND per name, and separately the STATED category denotation, then compare the two IN PURE
+// CODE -- copying is extraction; deciding membership from a judgment call is not. THE SOFTBALLS now
+// ask the IDENTICAL question over the FULL option list, reusing extractDiscriminatorKinds() ITSELF
+// (unmodified logic; this ticket's own change to it, above that function's own header, only ADDS the
+// verbatim spans to its return so D-BP153-018's property-span discard, below, can run over a
+// stated-kind read exactly as it already ran over the retired exclusion/inclusion reads) -- one
+// extraction mechanism, not two that could drift (D-BP153-020's own "one mechanism" discipline,
+// restated here for a THIRD caller of the identical extractor). discriminatorExtractionInstruction()
+// and DISCRIMINATOR_EXTRACTION_SHAPE (STAGE D, further below) are reused BYTE-IDENTICAL, not copied.
+//
+// available:false ONLY when NO categoryKind is ever stated, ANYWHERE this function looks (Founder,
+// this ticket, verbatim): "NO stated category denotation -> the frame is UNAVAILABLE (no
+// exclusions)... Do NOT guess which kind counts." A categoryKind that IS stated but some OTHER
+// option's own kind never is does NOT make the frame unavailable -- D-BP153-029's own rule ("a
+// directly stated exclusion is never discarded merely because some OTHER option went unaccounted
+// for"), restated here for kind-comparison: an option with no stated kind is left UNACCOUNTED
+// (excluded from neither list), never guessed either way. See applyFrameKindElimination(), below,
+// for the pure-code arithmetic this produces, and establishFrame() (immediately below it) for how
+// owned evidence / a fresh query / the D-BP153-026 completion follow-up feed it.
+//
+// D-BP153-017 ("THE DOUBLECHECK", ask both directions, require agreement WITHIN one passage) is
+// SUPERSEDED for THE SOFTBALLS by this ticket -- there is only one direction now (a stated kind is
+// single-valued: it either matches categoryKind, differs from it, or is unstated; it cannot be
+// "both"), so FrameResult.conflicts is always empty from this function from here on. D-BP153-017
+// remains fully enforced for THE NAMED SET (extractNamedSetMembers(), further below, UNTOUCHED by
+// this ticket) -- that function still asks both directions and reconciles them; only THE SOFTBALLS'
+// own QUESTION 1 changes here. D-BP153-031's REPEATED-DRAW wrapper (drawWithAgreement(), above) is
+// UNRELAXED and is exactly how this ticket's own measured failure is closed: the EXTRACTED RESULT
+// SET (kinds + categoryKind) must still agree byte-for-byte across independent draws before anything
+// downstream trusts it -- what changes is that the SAME passage now yields the SAME extraction every
+// time (pure copying is deterministic; judgment was not), so agreement is no longer a matter of luck.
 
-/** The complementary direction of frameExtractionInstruction() above -- asks which of these names
- *  the passage states ARE `category`, rather than which are NOT. EXTRACTION ONLY (HARDWIRE-22):
- *  copies out names the passage itself states ARE the category, never judges which ones qualify. */
-function frameComplementExtractionInstruction(category: string, all: string[], OPT: Record<string, string>): string {
-  return `If this passage states that any of these names IS ${category} -- a legitimate member of `
-    + 'that category, stated directly by the source -- copy out exactly those names, spelled as the '
-    + `passage spells them. Copy only names the passage itself states ARE ${category}. If the passage `
-    + 'states that none of them are, return an empty list. Do not decide yourself which ones qualify '
-    + '-- copy only what the passage itself states. For EACH included name, also copy out the exact '
-    + 'verbatim sentence or clause from the passage that states its inclusion, word for word, into '
-    + `"span". Names: ${all.map((L) => OPT[L]).join('; ')}`;
-}
-const FRAME_COMPLEMENT_EXTRACTION_SHAPE = '{"members":[{"name":"exact name the passage says it is",'
-  + '"span":"the exact verbatim sentence from the passage"}],"stated_in_passage":true}';
-
-/** ONE passage, BOTH directions -- the exclusion read (direct, frameExtractionInstruction(),
- *  unchanged) and its complement (the inclusion read, frameComplementExtractionInstruction(),
- *  D-BP153-017), over the SAME already-in-hand text. NO NEW QUERY: two gemmaExtract() calls (local
- *  Ollama), never a second googleBlocks() -- mirrors extractNamedSetBothSides() above
- *  byte-for-byte.
- *
- *  REUSES reconcileNamedSet() -- the SAME shared function the named set's own call below uses, one
- *  mechanism, never a second parallel one (D-BP153-020's own instruction) -- roles swapped relative
- *  to the named set's own call: there, `members` is the direct read and `nonMembers` is the
- *  complement, and the function returns the reconciled MEMBER set. Here `members` is fed the direct
- *  EXCLUSION read and `nonMembers` is fed the complement INCLUSION read -- the identical arithmetic
- *  then yields, in its own `.members` field, the reconciled EXCLUDED set, because "all minus the
- *  trusted complement" is exactly the exclusion arithmetic THE SOFTBALLS need, ONLY when `members`
- *  and `nonMembers` TOGETHER cover every option (D-BP153-020: a complete partition, not merely
- *  agreement) -- an incomplete union discards that complement-derived "all minus complement"
- *  inference and falls back to the directly stated exclusions alone (D-BP153-029), see
- *  reconcileNamedSet()'s own header for the measured failure this closes. A conflict (a name BOTH
- *  extractions place on opposite sides) is
- *  never silently resolved -- reconcileNamedSet() falls back to the direct extraction, unreconciled,
- *  and reports `conflicts` for the caller to note as a FINDING (FD-BP153-07: "a disagreement here is
- *  reported, never resolved by force"). */
-async function extractFrameBothSides(
+/** ONE passage, THE SOFTBALLS' own stated-kind read. Reuses extractDiscriminatorKinds() (STAGE D,
+ *  further below) UNCHANGED as the extraction mechanism -- see this section's own header for why --
+ *  then applies D-BP153-018's property-span discard to the KIND reads exactly as it already applied
+ *  to the retired direct/complement reads: a span asserting the SUPERLATIVE PROPERTY is not evidence
+ *  of a stated KIND either, same rule, same reason, now guarding a different extraction shape. The
+ *  category-kind span is checked the same way, inline (discardPropertyContaminatedSpans() is keyed
+ *  by option letter via `OPT`, which the category-kind claim -- not itself an option -- does not
+ *  have, so this is the smallest equivalent check, not a second parallel mechanism). */
+async function extractFrameKinds(
   passage: string,
+  names: string[],
+  OPT: Record<string, string>,
   category: string,
   property: string,
-  all: string[],
-  OPT: Record<string, string>,
   note: (text: string) => void,
-): Promise<{
-  excluded: string[]; rawExcluded: string[]; excludedSpans: Record<string, string>;
-  included: string[]; conflicts: string[]; partitionComplete: boolean; why: string; discarded: number;
-  /** D-BP153-018: true when EITHER direction extracted a value BEFORE the property-contamination
-   *  filter ran -- the signal establishFrame() must gate "did this passage answer anything" on,
-   *  NOT `rawExcluded.length || included.length` (which are POST-filter and can legitimately be
-   *  zero when discarding empties an otherwise-real answer -- see this file's own D-BP153-018
-   *  section header for why that is a different fact than "this passage had nothing to extract"). */
-  extractedAnything: boolean;
-  /** D-BP153-023: mirrors NamedSetReconciliation.incompletePartition exactly (reconcileNamedSet()
-   *  is the SAME shared function this reads it from) -- true ONLY for the "INCOMPLETE PARTITION"
-   *  reconciliation outcome, false for a conflict, a complete partition, a silent complement, or the
-   *  D-BP153-019 wholesale-rejection branch (which is its own, already-`extractedAnything:false`,
-   *  fall-through case and is not "incomplete" in this sense). */
-  incompletePartition: boolean;
-}> {
-  const exNot = await gemmaExtract(frameExtractionInstruction(category, all, OPT), passage, FRAME_EXTRACTION_SHAPE);
-  const direct = extractSpannedLetters(exNot?.not_members, passage, OPT);
+): Promise<{ kinds: Record<string, string | null>; categoryKind: string | null; discarded: number }> {
+  const {
+    kinds: rawKinds, kindSpans, categoryKind: rawCategoryKind, categoryKindSpan, discarded: spanDiscarded,
+  } = await extractDiscriminatorKinds(passage, names, OPT, category);
 
-  const exIs = await gemmaExtract(frameComplementExtractionInstruction(category, all, OPT), passage, FRAME_COMPLEMENT_EXTRACTION_SHAPE);
-  const complement = extractSpannedLetters(exIs?.members, passage, OPT);
-
-  const extractedAnything = direct.letters.length > 0 || complement.letters.length > 0;
-
-  // D-BP153-018, AFTER span verification, BOTH directions: a value whose own verified span asserts
-  // the superlative property is not evidence about category membership, in EITHER direction (the
-  // measured bug was on the exclusion side; the inclusion side is checked the same way on general
-  // principle -- the rule is about what kind of claim a span supports, not which side it landed on).
-  const directFiltered = discardPropertyContaminatedSpans(direct, property, OPT, note, 'FRAME / QUESTION 1 (exclusion read)');
-  const complementFiltered = discardPropertyContaminatedSpans(complement, property, OPT, note, 'FRAME / QUESTION 1 (inclusion read)');
-  const propertyDiscarded = directFiltered.discardedCount + complementFiltered.discardedCount;
-  if (propertyDiscarded) {
-    note(
-      `   FRAME: discarded ${propertyDiscarded} value(s) whose supporting span asserts the SUPERLATIVE `
-        + `PROPERTY ("${property}"), not category membership (D-BP153-018)`,
-    );
+  const kindEntry = { letters: names.filter((L) => rawKinds[L] != null), spans: kindSpans };
+  const kindFiltered = discardPropertyContaminatedSpans(kindEntry, property, OPT, note, 'FRAME / QUESTION 1 (stated-kind read)');
+  const kinds: Record<string, string | null> = { ...rawKinds };
+  for (const L of kindEntry.letters) {
+    if (!kindFiltered.letters.includes(L)) kinds[L] = null; // discarded as a property span, D-BP153-018
   }
 
-  // D-BP153-019, FIX 2. THE MEASURED FAILURE THIS CLOSES (live run 2026-08-13T00-02-41Z, receipt
-  // LIANA_RUN_qid98_2026-08-13T00-02-41-506Z.json). D-BP153-018 (immediately above) discarded all
-  // six spurious direct-side exclusions correctly, but the COMPLEMENT side's own verified spans for
-  // B/D/E ("Only B..., D..., and E... qualify") do not themselves repeat the property phrase (it was
-  // stated once, in the PRECEDING sentence, and gemmaExtract() copied only the clause about THIS
-  // value) -- so discardPropertyContaminatedSpans() (applied to the complement exactly as to the
-  // direct side, immediately above) never saw the property string in THEIR span and did not discard
-  // them. reconcileNamedSet() then read the direct side as merely EMPTY (case (a): "found nothing")
-  // and trusted the complement, reintroducing the very six options D-BP153-018 had just discarded --
-  // "FRAME RECONCILIATION: complement (non-members {B,D,E}) trusted despite an incomplete direct
-  // side."
-  //
-  // THE FIX: distinguish case (a) -- the direct side genuinely found nothing to extract -- from case
-  // (b) -- the direct side found values and ALL of them were discarded as property spans, AND the
-  // complement has something that would otherwise be trusted in its place. Case (b) is itself
-  // EVIDENCE THE PASSAGE IS ABOUT THE PROPERTY, NOT THE CATEGORY (a passage that only ever talks
-  // about who scores highest on the property has nothing reliable to say about category membership
-  // from EITHER direction), so the complement is not trusted either -- the whole frame extraction
-  // from this passage is REJECTED, `extractedAnything` is forced false so the caller
-  // (establishFrame()) treats this exactly as if the passage yielded nothing at all (falls through to
-  // the next owned passage, then the query path), never as "excluded nothing."
-  //
-  // THE COMPLEMENT-HAS-SOMETHING CONDITION, deliberately. When the complement ALSO extracted
-  // nothing (`complementFiltered.letters.length === 0`), reconcileNamedSet()'s own pre-existing
-  // "the complement extracted nothing... using the direct member extraction alone" branch already
-  // reduces to `excluded: []` -- the identical fact this rejection would otherwise force -- so
-  // rejecting wholesale here would only spend a needless fresh query for the SAME zero-exclusion
-  // reading (measured regression: classify_cascade.membership_terminator.test.ts's own STAGE
-  // D/STAGE A fixtures, and this file's own D-BP153-018 TEST 1, all share this exact "direct fully
-  // discarded, complement genuinely silent" shape and must keep answering FROM OWNED EVIDENCE, not
-  // fall through to a query that was never needed). The measured live bug (this ticket's own header)
-  // always had a NON-EMPTY complement putting the discarded options straight back -- gating on
-  // `complementFiltered.letters.length > 0` targets exactly that shape and no other.
-  //
-  // `direct.letters` (PRE-filter, not `directFiltered.letters`) is the "did it find something" read
-  // -- the same PRE-filter signal `extractedAnything` above already uses for the identical reason.
-  const directFullyDiscardedAsPropertyOnly = direct.letters.length > 0 && directFiltered.letters.length === 0
-    && complementFiltered.letters.length > 0;
-  if (directFullyDiscardedAsPropertyOnly) {
+  let categoryKind = rawCategoryKind;
+  let categoryDiscarded = 0;
+  const propNorm = normalizePropertyForMatch(property);
+  if (categoryKind && categoryKindSpan && propNorm
+    && normalizeSpanWhitespace(categoryKindSpan).toLowerCase().includes(propNorm)) {
     note(
-      `   FRAME (D-BP153-019, FIX 2): REJECTED this passage's frame extraction ENTIRELY -- the direct `
-        + `side extracted ${direct.letters.length} value(s) and ALL were discarded as SUPERLATIVE `
-        + `PROPERTY span(s) ("${property}"), not category membership -- this passage is about the `
-        + 'property, not the category, so its complement side is NOT trusted either (it would otherwise '
-        + `have stated ${complementFiltered.letters.length} value(s) IS ${category}: `
-        + `${complementFiltered.letters.length ? complementFiltered.letters.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(none)'}). `
-        + 'Treated as if this passage yielded nothing extractable (FD-BP153-06: a passage whose category '
-        + 'claims are all property claims cannot answer QUESTION 1 from either direction).',
+      `   FRAME / QUESTION 1 (category-kind read): DISCARDED the stated category kind ("${categoryKind}") `
+        + `(D-BP153-018) -- its supporting span asserts the SUPERLATIVE PROPERTY ("${property}"), not `
+        + `category membership: "${categoryKindSpan}"`,
     );
+    categoryKind = null;
+    categoryDiscarded = 1;
+  }
+
+  return { kinds, categoryKind, discarded: spanDiscarded + kindFiltered.discardedCount + categoryDiscarded };
+}
+
+export interface FrameKindElimination {
+  excluded: string[];
+  included: string[];
+  /** Option letters with no stated kind (either never extracted, or discarded, D-BP153-018) --
+   *  neither excluded nor included, never guessed. */
+  unaccounted: string[];
+  why: string;
+}
+
+/** Pure set arithmetic, no I/O -- mirrors applyDiscriminatorElimination()'s (STAGE D, further below)
+ *  own discipline DELIBERATELY, but is NOT a call to it: THE DISCRIMINATOR refuses to eliminate
+ *  ANYTHING when even one candidate lacks a stated kind (its own condition (a), "partial information
+ *  does not eliminate") -- an all-or-nothing gate that fits a narrowed few-candidate set fed by a
+ *  single targeted query. THE SOFTBALLS run over the FULL option list, where D-BP153-029's own rule
+ *  already governs the identical shape of gap ("a directly stated exclusion is never discarded
+ *  merely because some OTHER option went unaccounted for") -- so this applies the SAME per-option
+ *  comparison WITHOUT that all-or-nothing gate: every option whose own kind IS known is judged on
+ *  its own merits, and an option with no stated kind is left UNACCOUNTED, in neither list, never
+ *  guessed (HARDWIRE-22 unrelaxed). This is "the smallest equivalent", commented as deliberately
+ *  mirroring applyDiscriminatorElimination() rather than reusing it, per this ticket's own
+ *  instruction (reuse it if it generalizes; it does not, for the reason just given).
+ *
+ *  `categoryKind === null` is the ONE case this refuses ENTIRELY (Founder, this ticket, verbatim):
+ *  "NO stated category denotation -> the frame is UNAVAILABLE (no exclusions)... Do NOT guess which
+ *  kind counts." establishFrame() (below) reads that as FrameResult.available:false -- the frame's
+ *  own `available` flag has no analog in DiscriminatorResult (STAGE D never marks itself
+ *  unavailable; it always names survivors), which is exactly why this is a separate function rather
+ *  than a shared one. */
+export function applyFrameKindElimination(
+  all: string[],
+  kinds: Record<string, string | null>,
+  categoryKind: string | null,
+  category: string,
+  OPT: Record<string, string>,
+): FrameKindElimination {
+  const label = (Ls: string[]) => `{${Ls.map((L) => `${L}) ${OPT[L]}`).join(', ') || 'none'}}`;
+  if (!categoryKind) {
     return {
       excluded: [],
-      rawExcluded: [],
-      excludedSpans: {},
       included: [],
-      conflicts: [],
-      partitionComplete: false,
-      why: 'passage REJECTED (D-BP153-019, FIX 2) -- every direct-side value extracted was a property '
-        + 'span, not a membership span, so the complement side is not trusted either',
-      discarded: direct.discarded + complement.discarded,
-      extractedAnything: false,
-      incompletePartition: false, // wholesale-REJECTED, not "incomplete" -- extractedAnything:false already sends this through the "nothing extracted" fall-through
+      unaccounted: all,
+      why: `the passage does not state which kind properly denotes "${category}" -- FRAME UNAVAILABLE, `
+        + 'no exclusions performed (HARDWIRE-22: never guess which kind counts)',
     };
   }
-
-  const reconciliation = reconcileNamedSet(all, directFiltered.letters, complementFiltered.letters, OPT);
+  const excluded = all.filter((L) => kinds[L] != null && kinds[L] !== categoryKind);
+  const included = all.filter((L) => kinds[L] === categoryKind);
+  const unaccounted = all.filter((L) => kinds[L] == null);
+  const why = `stated category kind "${categoryKind}" (per the source) excludes ${label(excluded)}, keeps `
+    + `${label(included)}${unaccounted.length ? `, and leaves ${label(unaccounted)} UNACCOUNTED (no stated kind -- never guessed)` : ''}`;
   return {
-    excluded: reconciliation.members, // the reconciled EXCLUDED set -- see this function's own header
-    rawExcluded: directFiltered.letters,
-    excludedSpans: directFiltered.spans,
-    included: complementFiltered.letters,
-    conflicts: reconciliation.conflicts,
-    partitionComplete: reconciliation.partitionComplete,
-    why: reconciliation.why,
-    discarded: direct.discarded + complement.discarded,
-    extractedAnything,
-    incompletePartition: reconciliation.incompletePartition,
+    excluded, included, unaccounted, why,
   };
 }
 
@@ -2140,11 +2091,11 @@ export async function drawWithAgreement<T>(
  * something the run already had in hand, before 62 more queries hit google.com/sorry.
  *
  * WHAT THIS ADDS, BELOW. Before the existing query path (unchanged beneath this block), try the
- * SAME extraction (frameExtractionInstruction(), one shared instruction/shape, no second wording)
- * against every passage the caller says this run already owns. EXTRACTION ONLY, NEVER JUDGMENT
- * (HARDWIRE-22, unrelaxed) -- exactly the same choke point the fresh-query path already used:
- * gemmaExtract() copies out names the passage itself states are excluded, verified back against
- * THAT owned passage's own text with appearsIn(), never inferred. OWNED MEANS THIS RUN ONLY: the
+ * SAME extraction (extractFrameKinds(), D-BP153-032, one shared instruction/shape, no second
+ * wording) against every passage the caller says this run already owns. EXTRACTION ONLY, NEVER
+ * JUDGMENT (HARDWIRE-22, unrelaxed) -- exactly the same choke point the fresh-query path already
+ * used: gemmaExtract() copies out the KIND the passage itself states for each name, verified back
+ * against THAT owned passage's own text with appearsIn(), never inferred. OWNED MEANS THIS RUN ONLY: the
  * `ownedPassages` accessor comes from MethodRunContext (method_registry.ts), populated by
  * liana_terminal_engine.ts from live in-memory state, never the evidence store on disk. And
  * D-BP153-010's rule extends here unchanged: an owned passage that yields NOTHING extractable is
@@ -2187,112 +2138,88 @@ export async function establishFrame(
   for (let i = 0; i < owned.length; i++) {
     const passage = owned[i].text;
     // eslint-disable-next-line no-await-in-loop -- each owned passage is tried in turn, stopping at
-    // the first that yields a verified, non-empty read on either side; this is extraction over text
-    // already sitting in memory (a local Ollama call), never a network fan-out, so there is nothing
-    // here to parallelize against.
-    const both = await extractFrameBothSides(passage, category, prop, all, OPT, note);
-    if (both.discarded) {
-      note(`   FRAME: discarded ${both.discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
+    // the first that yields a verified, complete stated-kind read; extraction over text already
+    // sitting in memory (a local Ollama call), never a network fan-out, so there is nothing here to
+    // parallelize against.
+    const { kinds, categoryKind, discarded } = await extractFrameKinds(passage, all, OPT, category, prop, note);
+    if (discarded) {
+      note(`   FRAME: discarded ${discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
     }
-    // D-BP153-023/BISHOP/seg-classify-023 -- INCOMPLETE IS NOT ANSWERED. THE MEASURED FAILURE this
-    // closes (receipt LIANA_RUN_qid98_2026-08-13T02-05-04-911Z.json): this owned passage extracted
-    // SOMETHING (both.extractedAnything is true -- it would have fallen through on the OLD rule
-    // below already if not), but reconcileNamedSet() came back INCOMPLETE PARTITION -- members and
-    // non-members do NOT together account for every option. That is NOT an answer (FD-BP153-07: a
-    // partial answer establishes nothing) -- it must NOT terminate this step with a false "zero
-    // exclusions, done" the way the live bug did. Falls through to the next owned passage, and then
-    // to the fresh query (below), the SAME query D-BP153-021 reworded specifically to force a
-    // complete accounting -- that query has never had the chance to run on this shape before this
-    // ticket, because this exact gate always terminated first.
-    if (both.extractedAnything && both.incompletePartition) {
+    const anyKindOrCategory = Object.values(kinds).some((k) => k != null) || categoryKind != null;
+    const missingKind = all.filter((L) => kinds[L] == null);
+    // D-BP153-023/BISHOP/seg-classify-023, restated for THE SOFTBALLS' stated-kind shape
+    // (D-BP153-032): a passage that stated SOME kinds but not EVERY option's kind is a
+    // per-PASSAGE-retry heuristic only -- try for a MORE complete read from the next owned passage,
+    // then the fresh query below. This is NOT the terminal safety net: D-BP153-029's own rule (an
+    // unaccounted option is never guessed, and a directly stated kind is never discarded merely
+    // because some OTHER option went unaccounted for) governs the terminal answer regardless -- see
+    // applyFrameKindElimination(), above, which this function's own terminal return (further below)
+    // always applies even when some option never got a stated kind.
+    if (anyKindOrCategory && missingKind.length > 0) {
       note(
-        `   FRAME: INCOMPLETE PARTITION on owned passage ${i + 1} of ${owned.length} (D-BP153-023) -- `
-          + `${both.why} -- this owned passage did NOT answer THE SOFTBALLS; falling through to `
+        `   FRAME: INCOMPLETE on owned passage ${i + 1} of ${owned.length} (D-BP153-023) -- `
+          + `${missingKind.length} of ${all.length} option(s) have no stated kind `
+          + `{${missingKind.map((L) => `${L}) ${OPT[L]}`).join(', ')}} -- this owned passage did NOT `
+          + `fully answer THE SOFTBALLS; falling through to `
           + `${i + 1 < owned.length ? 'the next owned passage' : 'a fresh query'}`,
       );
       continue;
     }
-    // D-BP153-017: answered when EITHER direction extracted something -- mirrors
-    // extractNamedSetMembers()'s own extension of this same rule (D-BP153-014), for the identical
-    // reason: the complement can be the more directly-stated side.
-    // D-BP153-018: gated on PRE-property-filter extraction (`extractedAnything`), not the (now
-    // possibly post-filter-empty) `rawExcluded`/`included` -- a passage that extracted something
-    // real, all of which was then discarded as property-not-membership, DID answer the frame (with
-    // zero exclusions, a legitimate outcome, not "nothing here, try the next passage").
-    if (both.extractedAnything) {
+    if (anyKindOrCategory) {
+      const result = applyFrameKindElimination(all, kinds, categoryKind, category, OPT);
       note(
         `   FRAME: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already acquired `
-          + `this run -- NO NEW QUERY ISSUED) -- direct extraction excludes `
-          + `${both.rawExcluded.length ? both.rawExcluded.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(none)'}, `
-          + `complement states ${both.included.length ? both.included.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(none)'} `
-          + `IS ${category}`,
-      );
-      if (both.conflicts.length) {
-        note(
-          `   FRAME CONFLICT (D-BP153-017, THE DOUBLECHECK): ${both.conflicts.map((L) => `${L}) ${OPT[L]}`).join(', ')} `
-            + 'extracted as BOTH excluded and included by the two independent directions -- reported as a FINDING, '
-            + 'neither side is preferred (FD-BP153-07: "a disagreement here is reported, never resolved by force")',
-        );
-      }
-      note(`   FRAME RECONCILIATION: ${both.why}`);
-      note(
-        `   FRAME: ${both.excluded.length} option(s) are not ${category} and will NOT be ranked -- `
-          + `${both.excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') || '(none)'}`,
+          + `this run -- NO NEW QUERY ISSUED) -- ${result.why}`,
       );
       return {
-        available: true, excluded: both.excluded, included: both.included, conflicts: both.conflicts,
-        partitionComplete: both.partitionComplete, reconciliationWhy: both.why,
+        available: categoryKind != null,
+        excluded: result.excluded,
+        included: result.included,
+        conflicts: [],
+        partitionComplete: result.unaccounted.length === 0,
+        reconciliationWhy: result.why,
         query: `(owned passage ${i + 1} of ${owned.length}, no query issued)`,
         via: 'owned-passage', answeredFrom: 'owned-passage', ownedPassageIndex: i,
       };
     }
-    // D-BP153-010's rule, extended: yielded nothing on EITHER side -- inconclusive for THIS
-    // passage, not "excluded nothing". Falls through to the next owned passage, then to the query
-    // path below.
+    // D-BP153-010's rule, extended: yielded no stated kind and no stated categoryKind at all --
+    // inconclusive for THIS passage, not "confirmed nothing excluded". Falls through to the next
+    // owned passage, then to the query path below.
   }
   if (owned.length) {
-    note(`   FRAME: ${owned.length} owned passage(s) already acquired this run did not contain a usable frame partition -- falling through to a NEW QUERY`);
+    note(`   FRAME: ${owned.length} owned passage(s) already acquired this run did not contain a usable stated-kind read -- falling through to a NEW QUERY`);
   }
 
-  // D-BP153-021 FIX. THE MEASURED FAILURE (live run, receipt
-  // LIANA_RUN_qid98_2026-08-13T01-30-04-993Z.json). The OLD wording asked "which of these ARE
-  // category, and which of them are NOT category" -- a two-part ask that a source can satisfy by
-  // naming a couple of examples and stopping. It did exactly that, twice: both live runs returned
-  // only 2 of 9 options, and D-BP153-020's own complete-partition rule (unchanged, still enforced
-  // below via extractFrameBothSides() -> reconcileNamedSet()) correctly rejected the partial
-  // answer as an honest abstain rather than a false pass. No downstream logic can repair an answer
-  // that never covered the field -- the question itself had to change.
-  //
-  // THE FIX asks for an accounting of EVERY option, IN ONE QUERY (Founder, BP151, verbatim: "we
-  // got rid of four answers with ONE google search" -- no fan-out to one query per option), and
-  // asks what each option IS (its actual classification) rather than whether it "is or is not"
-  // the category. The "is or is not" framing is exactly what invited the partial list, AND it
-  // invites the same property/category conflation D-BP153-018 already had to guard against (a
-  // span stating how a thing SCORES on a property is not evidence about what it IS). Asking for a
-  // stated classification per option sidesteps both: the two existing extraction instructions
-  // below (frameExtractionInstruction() / frameComplementExtractionInstruction, UNCHANGED) still
-  // read this SAME passage for a classification that differs from `category` (exclusion) and one
-  // that matches it (inclusion) -- one stated kind per option answers both directions at once, so
-  // the old query's separate "and which of them are not" clause is now redundant and is dropped.
-  // If the source still fails to name a kind for every option, D-BP153-020's complete-partition
-  // rule still rejects the answer -- that safety net is untouched by this ticket.
-  const query = `For EACH of the following, state exactly what it is -- its actual classification `
-    + `or type -- rather than merely whether it is or is not ${category}. Answer for every one, in `
-    + `order, and do not skip any. ${list(all, OPT)}`;
+  // D-BP153-032 FIX. THE MEASURED FAILURE (see this file's own D-BP153-032 section header, above,
+  // for the full receipt): the OLD query already asked the source "state exactly what it is", but
+  // the DOWNSTREAM extraction (frameExtractionInstruction()/frameComplementExtractionInstruction(),
+  // RETIRED) still asked the LOCAL MODEL to judge which stated kinds count as `category` -- that
+  // judgment, not the source, is what produced ~100% variance on ~0% source variance. THE FIX
+  // changes what is ASKED of the source too, to match what THE DISCRIMINATOR already asks (STAGE D,
+  // further below, D-BP153-028's own query, dfe72680) -- explicitly for the category's OWN stated
+  // kind, not merely "what each option is" -- so the source has a chance to state it before
+  // extraction even begins, and the extraction that follows (extractFrameKinds(), above) only ever
+  // copies out what was stated, never judges membership.
+  const query = `What kind of ${category} is each of these, how do they differ from one another, `
+    + `and which of those kinds properly denotes "${category}"? ${list(all, OPT)}`;
   note(`   FRAME: ${query}`);
   // D-BP153-031, THE REPEATS RUN FIRST. THE SOFTBALLS' own base question is drawn LB_DRAW_REPEATS
   // times, independently, BEFORE anything downstream (including D-BP153-026's completion follow-up,
-  // below) ever runs -- see this file's own D-BP153-031 section header, above establishFrame(), for
-  // the full ruling and the measured failure it closes. Each draw repeats the IDENTICAL three checks
-  // this function already performed once before this ticket (res.ok, non-empty passage,
-  // passageMentionsAnyLabel) plus the extraction itself, and folds all four possible outcomes into
-  // one comparable `resultKey` -- so two draws that fail for DIFFERENT reasons (one empty, one
-  // genuinely extracted) are correctly treated as a disagreement too, not silently conflated.
+  // below) ever runs -- see this file's own D-BP153-031 section header for the full ruling. Each
+  // draw repeats the IDENTICAL checks this function already performed once before that ticket
+  // (res.ok, non-empty passage, passageMentionsAnyLabel) plus the extraction itself, and folds all
+  // four possible outcomes into one comparable `resultKey` -- so two draws that fail for DIFFERENT
+  // reasons (one empty, one genuinely extracted) are correctly treated as a disagreement too, not
+  // silently conflated. D-BP153-032 changes only what `resultKey`/`resultLabel` are built FROM (the
+  // stated-kind extraction, not the retired direct/complement one) -- the wrapper itself
+  // (drawWithAgreement(), above) is untouched, and is exactly how this ticket's own measured
+  // variance is closed: a deterministic (copy-only) extraction now agrees draw over draw on
+  // essentially identical source text, where a judgment-based one did not.
   type FrameDrawData =
     | { kind: 'not-ok'; res: GoogleAnswer }
     | { kind: 'empty'; res: GoogleAnswer }
     | { kind: 'no-label'; res: GoogleAnswer }
-    | { kind: 'extracted'; res: GoogleAnswer; both: Awaited<ReturnType<typeof extractFrameBothSides>> };
+    | { kind: 'extracted'; res: GoogleAnswer; kinds: Record<string, string | null>; categoryKind: string | null; discarded: number };
   const drawRepeats = resolveDrawRepeats();
   const frameDrawOutcome = await drawWithAgreement<FrameDrawData>('FRAME', drawRepeats, async () => {
     // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
@@ -2301,14 +2228,8 @@ export async function establishFrame(
     if (!drawRes.ok) {
       return { resultKey: 'UNAVAILABLE:not-ok', resultLabel: `no usable answer (${drawRes.via})`, data: { kind: 'not-ok', res: drawRes } };
     }
-    // D-BP153-010 -- AN EMPTY PASSAGE IS NOT AN EMPTY EXCLUSION LIST. Bishop's own bug, found in the
-    // first live run of this function (2026-08-12T16:04Z, acquisition
-    // EVIDENCE_qid98_2026-08-12T15-51-57-546Z_23720): googleBlocks() returned ok:true with EMPTY
-    // text, gemmaExtract() then found nothing in nothing, and this function reported
-    // "source excluded (nothing) -- 9 of 9 option(s) remain in frame". That reads identically to
-    // "the source examined all nine and said every one is a world region", which is a completely
-    // different fact. An unusable frame must abstain (FD-BP153-01 consequence 2), never silently
-    // pass every option through to the ranking.
+    // D-BP153-010 -- AN EMPTY PASSAGE IS NOT AN EMPTY EXCLUSION LIST. An unusable frame must abstain
+    // (FD-BP153-01 consequence 2), never silently pass every option through to the ranking.
     if (!drawRes.text || !drawRes.text.trim()) {
       return { resultKey: 'UNAVAILABLE:empty', resultLabel: `empty passage (${drawRes.via})`, data: { kind: 'empty', res: drawRes } };
     }
@@ -2317,25 +2238,26 @@ export async function establishFrame(
     if (!passageMentionsAnyLabel(drawRes.text, all, OPT)) {
       return { resultKey: 'UNAVAILABLE:no-label', resultLabel: `no option named (${drawRes.via})`, data: { kind: 'no-label', res: drawRes } };
     }
-    const drawBoth = await extractFrameBothSides(drawRes.text, category, prop, all, OPT, note);
+    const { kinds: drawKinds, categoryKind: drawCategoryKind, discarded: drawDiscarded } = await extractFrameKinds(drawRes.text, all, OPT, category, prop, note);
     // THE COMPARISON: the EXTRACTED RESULT SET, never the raw passage text (this section's own
-    // header) -- excluded/included/conflicts/partitionComplete are exactly the fields this
-    // function's own callers (runMembershipTerminator(), checkFrameNamedSetConsistency()) actually
-    // consume, so agreement here is agreement on everything downstream logic can see.
+    // header) -- the stated kind per option plus the stated category kind are exactly what
+    // applyFrameKindElimination() consumes; sorted by option letter so key order never causes a
+    // spurious disagreement.
     const resultKey = JSON.stringify({
-      excluded: [...drawBoth.excluded].sort(), included: [...drawBoth.included].sort(),
-      conflicts: [...drawBoth.conflicts].sort(), partitionComplete: drawBoth.partitionComplete,
+      kinds: all.map((L) => [L, drawKinds[L]]), categoryKind: drawCategoryKind,
     });
-    const resultLabel = `excludes {${drawBoth.excluded.join(',') || 'none'}}, includes {${drawBoth.included.join(',') || 'none'}}`
-      + `${drawBoth.conflicts.length ? `, conflicts {${drawBoth.conflicts.join(',')}}` : ''}`;
-    return { resultKey, resultLabel, data: { kind: 'extracted', res: drawRes, both: drawBoth } };
+    const resultLabel = `kinds {${all.map((L) => `${L}:${drawKinds[L] ?? 'null'}`).join(', ')}}, categoryKind=${drawCategoryKind ?? 'null'}`;
+    return {
+      resultKey, resultLabel, data: {
+        kind: 'extracted', res: drawRes, kinds: drawKinds, categoryKind: drawCategoryKind, discarded: drawDiscarded,
+      },
+    };
   }, note);
   if (!frameDrawOutcome.agreed) {
     // DISAGREEMENT -> UNAVAILABLE, exactly the same state a frame this function could never
-    // establish at all already produces (FD-BP153-01 consequence 2: an unframed/unavailable frame
-    // ABSTAINS, never falls back to ranking the unframed pool). Never an intersection, a union, a
-    // majority, or a first-draw pick -- drawWithAgreement() above already reported the FINDING
-    // (D-BP153-031) naming every draw's own result; this is only the caller's consequence of it.
+    // establish at all already produces (FD-BP153-01 consequence 2). Never an intersection, a
+    // union, a majority, or a first-draw pick -- drawWithAgreement() above already reported the
+    // FINDING (D-BP153-031) naming every draw's own result; this is only the caller's consequence.
     return {
       available: false, excluded: [], included: [], conflicts: [], partitionComplete: false,
       reconciliationWhy: `unavailable -- ${drawRepeats} independent draws disagreed (D-BP153-031, THE CHANNEL VARIANCE FINDING)`,
@@ -2368,83 +2290,84 @@ export async function establishFrame(
       drawRepeats, drawsIssued: frameDrawOutcome.draws.length,
     };
   }
-  const { res, both } = frameTrusted;
-  if (both.discarded) {
-    note(`   FRAME: discarded ${both.discarded} value(s) with no verbatim supporting span (fresh query)`);
+  const { res, discarded } = frameTrusted;
+  let effectiveKinds = frameTrusted.kinds;
+  let effectiveCategoryKind = frameTrusted.categoryKind;
+  if (discarded) {
+    note(`   FRAME: discarded ${discarded} value(s) with no verbatim supporting span (fresh query)`);
   }
   note(
-    `   FRAME: answered FROM A NEW QUERY -- direct extraction excludes `
-      + `${both.rawExcluded.length ? both.rawExcluded.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'}, `
-      + `complement states ${both.included.length ? both.included.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(nothing)'} IS ${category}`,
+    `   FRAME: answered FROM A NEW QUERY -- stated kinds `
+      + `{${all.map((L) => `${L}:${effectiveKinds[L] ?? 'null'}`).join(', ')}}, `
+      + `stated category kind = ${effectiveCategoryKind ?? 'null'}`,
   );
-  if (both.conflicts.length) {
-    note(
-      `   FRAME CONFLICT (D-BP153-017, THE DOUBLECHECK): ${both.conflicts.map((L) => `${L}) ${OPT[L]}`).join(', ')} `
-        + 'extracted as BOTH excluded and included by the two independent directions -- reported as a FINDING, '
-        + 'neither side is preferred (FD-BP153-07: "a disagreement here is reported, never resolved by force")',
-    );
-  }
+
   // D-BP153-026, THE COMPLETION FOLLOW-UP -- see this file's own section header, above
-  // obtainCascadePassage(), for the full ruling. Fires ONLY here (a FRESH query's own reconciliation
-  // came back INCOMPLETE PARTITION), never on an owned-passage read (those fall through unchanged,
-  // D-BP153-023). D-BP153-027 ADDS a second trigger, below -- see complementSilentAndPartial()'s own
-  // section header (above obtainCascadePassage()) for the measured gap it closes: a COMPLEMENT-SILENT
-  // read (reconcileNamedSet()'s own last branch, UNCHANGED by that addition) whose direct side did
-  // not itself name every option. Either way, AT MOST ONE: this branch runs once per establishFrame()
-  // call, is never re-entered on its own output, and `effective` -- not `both` -- is what the rest of
-  // this function logs and returns from here on.
-  const frameComplementSilentUncovered = both.incompletePartition
-    ? [] : complementSilentAndPartial(all, both.rawExcluded, both.included);
-  let effective = both;
-  if (both.incompletePartition || frameComplementSilentUncovered.length) {
-    const uncovered = both.incompletePartition
-      ? all.filter((L) => !new Set([...both.rawExcluded, ...both.included]).has(L))
-      : frameComplementSilentUncovered;
-    const reason = both.incompletePartition
-      ? 'INCOMPLETE PARTITION' : 'COMPLEMENT-SILENT-AND-PARTIAL (D-BP153-027)';
+  // obtainCascadePassage(), for the full ruling. Fires ONLY when the fresh query's own stated-kind
+  // read left some option(s) with no stated kind (D-BP153-032 restates the SAME gate for THE
+  // SOFTBALLS' new shape: "uncovered" here means "no stated kind", where before this ticket it meant
+  // "named by neither the direct nor the complement extraction" -- the underlying rule, AT MOST ONE
+  // follow-up naming ONLY the still-unaccounted options, is unchanged). D-BP153-027's own SECOND
+  // trigger (complementSilentAndPartial()) has no analog here -- there is no complement direction
+  // left to be silent about (see this file's own D-BP153-032 section header) -- it remains fully
+  // wired for THE NAMED SET, below, untouched by this ticket.
+  const uncovered = all.filter((L) => effectiveKinds[L] == null);
+  if (uncovered.length) {
     const followUp = await issueCompletionFollowUp(
       'FRAME',
-      reason,
-      (namesList) => `For EACH of the following, state exactly what it is -- its actual classification `
-        + `or type -- rather than merely whether it is or is not ${category}. These are the ONLY `
-        + `option(s) the first pass left unaccounted for; answer for every one, in order, and do not `
-        + `skip any. ${namesList}`,
+      'INCOMPLETE STATED-KIND COVERAGE (D-BP153-032)',
+      (namesList) => `What kind of ${category} is each of these, how do they differ from one another, `
+        + `and which of those kinds properly denotes "${category}"? These are the ONLY option(s) the `
+        + `first pass left unaccounted for; answer for every one, in order, and do not skip any. ${namesList}`,
       uncovered, all, OPT, askGoogle, askConversationalAuthority, note,
     );
     if (followUp) {
       // The SAME extractor the first pass used, unmodified -- every guard (span verification,
       // D-BP153-018's property-span discard, typed passages, appearsIn) applies to this passage
-      // exactly as it did to the first one.
-      const followUpBoth = await extractFrameBothSides(followUp.text, category, prop, all, OPT, note);
-      if (followUpBoth.discarded) {
-        note(`   FRAME FOLLOW-UP: discarded ${followUpBoth.discarded} value(s) with no verbatim supporting span`);
+      // exactly as it did to the first one. Scoped to `uncovered` only -- the follow-up query itself
+      // named only these, so nothing else could be stated in the reply anyway.
+      const followUpRead = await extractFrameKinds(followUp.text, uncovered, OPT, category, prop, note);
+      if (followUpRead.discarded) {
+        note(`   FRAME FOLLOW-UP: discarded ${followUpRead.discarded} value(s) with no verbatim supporting span`);
       }
-      // Reconcile the follow-up's values TOGETHER WITH the first pass's values -- the first pass is
-      // never discarded, only added to -- then apply the complete-partition test to the union.
-      const unionExcluded = [...new Set([...both.rawExcluded, ...followUpBoth.rawExcluded])];
-      const unionIncluded = [...new Set([...both.included, ...followUpBoth.included])];
-      const merged = reconcileNamedSet(all, unionExcluded, unionIncluded, OPT);
-      note(`   FRAME FOLLOW-UP RECONCILIATION (D-BP153-026, union of first pass + follow-up): ${merged.why}`);
-      effective = {
-        ...both,
-        excluded: merged.members,
-        rawExcluded: unionExcluded,
-        included: unionIncluded,
-        conflicts: merged.conflicts,
-        partitionComplete: merged.partitionComplete,
-        why: merged.why,
-        incompletePartition: merged.incompletePartition,
-      };
+      // Union the follow-up's stated kinds into the first pass's own -- the first pass is never
+      // discarded, only added to (mirrors D-BP153-026's own "union, not replacement" rule). Prefer
+      // the first pass's own categoryKind when it has one; take the follow-up's only when the first
+      // pass never got one at all.
+      const mergedKinds: Record<string, string | null> = { ...effectiveKinds };
+      for (const L of uncovered) {
+        if (followUpRead.kinds[L] != null) mergedKinds[L] = followUpRead.kinds[L];
+      }
+      const mergedCategoryKind = effectiveCategoryKind ?? followUpRead.categoryKind;
+      note(
+        `   FRAME FOLLOW-UP RECONCILIATION (D-BP153-026, union of first pass + follow-up): stated kinds `
+          + `{${all.map((L) => `${L}:${mergedKinds[L] ?? 'null'}`).join(', ')}}, stated category kind = `
+          + `${mergedCategoryKind ?? 'null'}`,
+      );
+      effectiveKinds = mergedKinds;
+      effectiveCategoryKind = mergedCategoryKind;
     }
   }
-  note(`   FRAME RECONCILIATION: ${effective.why}`);
+
+  // THE TERMINAL SAFETY NET -- applyFrameKindElimination() (above) is ALWAYS the final word here,
+  // even when the follow-up (if any) is ALSO incomplete: D-BP153-029's own rule means an option with
+  // no stated kind stays UNACCOUNTED (never guessed) rather than blocking every OTHER option's own
+  // directly stated exclusion, and Founder's own D-BP153-032 rule means a categoryKind that was
+  // NEVER stated by anything this function tried makes the whole frame UNAVAILABLE (`available`,
+  // below) rather than publishing a zero-exclusion "answer" that was never actually established.
+  const result = applyFrameKindElimination(all, effectiveKinds, effectiveCategoryKind, category, OPT);
+  note(`   FRAME RECONCILIATION: ${result.why}`);
   note(
-    `   FRAME: ${effective.excluded.length} option(s) are not ${category} and will NOT be ranked -- `
-      + `${effective.excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') || '(none)'}`,
+    `   FRAME: ${result.excluded.length} option(s) are not ${category} and will NOT be ranked -- `
+      + `${result.excluded.map((L) => `${L}) ${OPT[L]}`).join(', ') || '(none)'}`,
   );
   return {
-    available: true, excluded: effective.excluded, included: effective.included, conflicts: effective.conflicts,
-    partitionComplete: effective.partitionComplete, reconciliationWhy: effective.why,
+    available: effectiveCategoryKind != null,
+    excluded: result.excluded,
+    included: result.included,
+    conflicts: [],
+    partitionComplete: result.unaccounted.length === 0,
+    reconciliationWhy: result.why,
     query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
     drawRepeats, drawsIssued: frameDrawOutcome.draws.length,
   };
@@ -3283,12 +3206,25 @@ async function extractDiscriminatorKinds(
   candidates: string[],
   OPT: Record<string, string>,
   category: string,
-): Promise<{ kinds: Record<string, string | null>; categoryKind: string | null; discarded: number }> {
+): Promise<{
+  kinds: Record<string, string | null>;
+  // D-BP153-032, ADDITIVE: the verbatim span each verified kind was read from -- undefined for a
+  // candidate whose kind is null. Discriminator callers (below, unchanged) already destructure only
+  // `{ kinds, categoryKind, discarded }`, so an extra field on this return is a no-op for them.
+  // THE SOFTBALLS (establishFrame(), above) reuse this SAME extractor (D-BP153-032's own header, at
+  // establishFrame()) and need the spans to run D-BP153-018's property-span discard over a
+  // stated-kind read, exactly as it already runs over the old exclusion/inclusion reads.
+  kindSpans: Record<string, string>;
+  categoryKind: string | null;
+  categoryKindSpan: string | null;
+  discarded: number;
+}> {
   const ex = await gemmaExtract(
     discriminatorExtractionInstruction(candidates, OPT, category), passage, DISCRIMINATOR_EXTRACTION_SHAPE,
   );
   const rawKinds = (ex?.kinds as Array<{ name?: unknown; kind?: unknown; span?: unknown }> | undefined) ?? [];
   const kinds: Record<string, string | null> = {};
+  const kindSpans: Record<string, string> = {};
   let discarded = 0;
   for (const L of candidates) {
     const entry = rawKinds.find((r) => norm(r?.name) === norm(OPT[L]));
@@ -3297,6 +3233,7 @@ async function extractDiscriminatorKinds(
     const verified = !!kindText && !!span && spanIsVerbatim(passage, span) && appearsIn(span, kindText) && appearsIn(passage, OPT[L]);
     if (verified) {
       kinds[L] = kindText;
+      kindSpans[L] = span;
     } else {
       kinds[L] = null;
       if (kindText) discarded++; // a kind was stated but its span did not verify -- counted, not silently dropped
@@ -3308,7 +3245,9 @@ async function extractDiscriminatorKinds(
     && spanIsVerbatim(passage, categoryKindSpan) && appearsIn(categoryKindSpan, rawCategoryKind);
   const categoryKind = categoryKindVerified ? rawCategoryKind : null;
   if (rawCategoryKind && !categoryKindVerified) discarded++;
-  return { kinds, categoryKind, discarded };
+  return {
+    kinds, kindSpans, categoryKind, categoryKindSpan: categoryKindVerified ? categoryKindSpan : null, discarded,
+  };
 }
 
 export interface DiscriminatorElimination {

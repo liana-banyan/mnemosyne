@@ -49,6 +49,32 @@ const OPT: Record<string, string> = {
 };
 const ALL = Object.keys(OPT);
 const CATEGORY = 'world regions';
+const CATEGORY_KIND = 'legitimate world region';
+const OTHER_KIND = 'not a legitimate world region';
+
+/** D-BP153-032: establishFrame() now extracts a STATED KIND per option plus a stated category
+ *  denotation (extractFrameKinds()/applyFrameKindElimination()) in ONE gemmaExtract() call, never a
+ *  direct/complement pair -- see classify_cascade.ts's own D-BP153-032 section header. Builds a
+ *  COMPLETE, all-nine-options passage + reply so this file's establishFrame() tests (which are about
+ *  AUTHORITY ROUTING, not about incomplete-coverage fall-through) terminate in exactly ONE
+ *  acquisition, same as their original pre-D-BP153-032 shape did. */
+function fullCoverageFrame(excludedLetters: string[], introText: string): { passage: string; response: string } {
+  const includedLetters = ALL.filter((L) => !excludedLetters.includes(L));
+  const excludedClause = excludedLetters.length
+    ? `${excludedLetters.map((L) => OPT[L]).join(', ')} ${excludedLetters.length > 1 ? 'are each' : 'is'} "${OTHER_KIND}".`
+    : '';
+  const includedClause = includedLetters.length
+    ? `${includedLetters.map((L) => OPT[L]).join(', ')} ${includedLetters.length > 1 ? 'are each' : 'is'} "${CATEGORY_KIND}".`
+    : '';
+  const passage = `${introText} ${excludedClause} ${includedClause} A world region properly denotes a "${CATEGORY_KIND}".`;
+  const response = JSON.stringify({
+    kinds: ALL.map((L) => ({ name: OPT[L], kind: excludedLetters.includes(L) ? OTHER_KIND : CATEGORY_KIND, span: passage })),
+    category_kind: CATEGORY_KIND,
+    category_kind_span: passage,
+    stated_in_passage: true,
+  });
+  return { passage, response };
+}
 
 const owned = (text: string): OwnedPassage => ({ text, kind: 'operation' });
 
@@ -74,11 +100,13 @@ function queuedFetch(responses: string[]): typeof fetch {
 
 /** A usable conversational answer -- same real shape classify_cascade.owned_evidence_frame.test.ts's
  *  own fixture uses for an owned passage, here returned by a mocked `askConversationalAuthority`
- *  instead. */
-const CONVO_PASSAGE = "Options A (South America), C (North Africa), F (Central Asia), G (Arctic Circle), "
-  + "H (Amazon Rainforest), and I (Sahara Desert) are all NOT considered among the world's most "
-  + 'densely populated regions. Only B (South Asia), D (Northeast United States), and E (Europe) are '
-  + 'recognized in human geography as major global population clusters.';
+ *  instead. D-BP153-032: extended with a complete stated-kind response, below. */
+const { passage: CONVO_PASSAGE, response: CONVO_FRAME_RESPONSE } = fullCoverageFrame(
+  ['A', 'C', 'F', 'G', 'H', 'I'],
+  "Options A (South America), C (North Africa), F (Central Asia), G (Arctic Circle), "
+    + "H (Amazon Rainforest), and I (Sahara Desert) are all NOT considered among the world's most "
+    + 'densely populated regions.',
+);
 
 function okConvo(text = CONVO_PASSAGE): ConversationalAuthorityResult {
   return { ok: true, text, citations: ['https://example.com/geography'], via: 'nexus-gemini', authority: 'user_gemini' };
@@ -92,13 +120,7 @@ function refusedConvo(): ConversationalAuthorityResult {
 describe('D-BP153-024: establishFrame() tries the conversational authority before Google', () => {
   test('TEST 1, HEADLINE: a conversational authority that returns a usable passage is used, and askGoogle is NEVER called', async () => {
     const originalFetch = global.fetch;
-    global.fetch = queuedFetch([
-      JSON.stringify({
-        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: CONVO_PASSAGE })),
-        stated_in_passage: true,
-      }),
-    ]);
+    global.fetch = queuedFetch([CONVO_FRAME_RESPONSE]);
     const askGoogle = vi.fn(async () => ({ snippet: 'MUST NEVER BE REACHED -- the conversational authority answered' }));
     const convo = vi.fn(async () => okConvo());
     try {
@@ -112,13 +134,9 @@ describe('D-BP153-024: establishFrame() tries the conversational authority befor
       );
 
       expect(askGoogle).not.toHaveBeenCalled(); // THE POINT OF THE FIX
-      // D-BP153-027: the complement extracted nothing (only ONE gemma response is queued -- the
-      // complement call exhausts queuedFetch() and comes back null/empty), and the direct side's 6
-      // letters do not cover all 9 options -- COMPLEMENT-SILENT-AND-PARTIAL, so the ONE completion
-      // follow-up fires and tries the conversational authority again (same routing as the first
-      // pass). The follow-up's own extraction also lands on the exhausted queue and adds nothing, so
-      // the reconciled `excluded` set is unchanged -- only the call count moves.
-      expect(convo).toHaveBeenCalledTimes(2);
+      // D-BP153-032: a single, COMPLETE stated-kind accounting answers in ONE acquisition -- no
+      // incomplete-coverage fall-through, no follow-up needed.
+      expect(convo).toHaveBeenCalledTimes(1);
       expect(frame.available).toBe(true);
       expect(frame.answeredFrom).toBe('new-query'); // a fresh acquisition, just not from Google
       expect(new Set(frame.excluded)).toEqual(new Set(['A', 'C', 'F', 'G', 'H', 'I']));
@@ -134,10 +152,8 @@ describe('D-BP153-024: establishFrame() tries the conversational authority befor
 
   test('TEST 2: a conversational authority that refuses (ok:false) falls back to askGoogle exactly as today', async () => {
     const originalFetch = global.fetch;
-    const freshPassage = 'Arctic Circle is a climatic zone, not a world region.';
-    global.fetch = queuedFetch([
-      JSON.stringify({ not_members: [{ name: 'Arctic Circle', span: freshPassage }], stated_in_passage: true }),
-    ]);
+    const { passage: freshPassage, response } = fullCoverageFrame(['G'], 'Arctic Circle is a climatic zone, not a world region.');
+    global.fetch = queuedFetch([response]);
     const askGoogle = vi.fn(async () => ({ snippet: freshPassage }));
     const convo = vi.fn(async () => refusedConvo());
     try {
@@ -148,15 +164,13 @@ describe('D-BP153-024: establishFrame() tries the conversational authority befor
         convo as unknown as MethodRunContext['askConversationalAuthority'],
       );
 
-      // D-BP153-027: direct names only G (1 of 9), complement is silent (no second gemma response
-      // queued) -- COMPLEMENT-SILENT-AND-PARTIAL, so the ONE completion follow-up fires and repeats
-      // the SAME try-convo-then-Google routing a second time. The follow-up's own extraction lands
-      // on the exhausted queue and adds nothing, so `excluded` is unchanged.
-      expect(convo).toHaveBeenCalledTimes(2); // tried first, both times
-      expect(askGoogle).toHaveBeenCalledTimes(2); // then fell back, both times
+      // D-BP153-032: a single, complete stated-kind accounting answers in ONE acquisition -- no
+      // follow-up needed.
+      expect(convo).toHaveBeenCalledTimes(1); // tried first
+      expect(askGoogle).toHaveBeenCalledTimes(1); // then fell back
       expect(frame.available).toBe(true);
       expect(frame.answeredFrom).toBe('new-query');
-      expect(frame.excluded).toEqual(['G']);
+      expect(new Set(frame.excluded)).toEqual(new Set(['G']));
       expect(frame.via).not.toMatch(/answered by/); // the Google branch is UNCHANGED -- no authority tag added
       expect(log.some((l) => /conversational authority UNAVAILABLE/.test(l))).toBe(true);
       expect(log.some((l) => /FRAME: query SENT to Google/.test(l))).toBe(true);
@@ -167,10 +181,8 @@ describe('D-BP153-024: establishFrame() tries the conversational authority befor
 
   test('TEST 3: no conversational authority supplied at all -- behavior BYTE-IDENTICAL to before this ticket', async () => {
     const originalFetch = global.fetch;
-    const freshPassage = 'Arctic Circle is a climatic zone, not a world region.';
-    global.fetch = queuedFetch([
-      JSON.stringify({ not_members: [{ name: 'Arctic Circle', span: freshPassage }], stated_in_passage: true }),
-    ]);
+    const { passage: freshPassage, response } = fullCoverageFrame(['G'], 'Arctic Circle is a climatic zone, not a world region.');
+    global.fetch = queuedFetch([response]);
     const askGoogle = vi.fn(async () => ({ snippet: freshPassage }));
     try {
       const { note, log } = notes();
@@ -178,13 +190,12 @@ describe('D-BP153-024: establishFrame() tries the conversational authority befor
       // no 6th/7th/8th argument at all.
       const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
 
-      // D-BP153-027: same COMPLEMENT-SILENT-AND-PARTIAL shape as TEST 2 above (direct names only G
-      // of 9, complement silent) -- the ONE completion follow-up fires and goes straight to
-      // askGoogle again (no conversational authority threaded here either). `excluded` is unchanged.
-      expect(askGoogle).toHaveBeenCalledTimes(2);
+      // D-BP153-032: a single, complete stated-kind accounting answers in ONE query -- no follow-up
+      // needed (no conversational authority threaded here either).
+      expect(askGoogle).toHaveBeenCalledTimes(1);
       expect(frame.available).toBe(true);
       expect(frame.answeredFrom).toBe('new-query');
-      expect(frame.excluded).toEqual(['G']);
+      expect(new Set(frame.excluded)).toEqual(new Set(['G']));
       expect(log.some((l) => /no conversational authority is wired for this call/.test(l))).toBe(true);
     } finally {
       global.fetch = originalFetch;
@@ -193,13 +204,7 @@ describe('D-BP153-024: establishFrame() tries the conversational authority befor
 
   test('TEST 5: owned-evidence-first still wins -- a complete owned passage means NEITHER authority is queried', async () => {
     const originalFetch = global.fetch;
-    global.fetch = queuedFetch([
-      JSON.stringify({
-        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
-          .map((name) => ({ name, span: CONVO_PASSAGE })),
-        stated_in_passage: true,
-      }),
-    ]);
+    global.fetch = queuedFetch([CONVO_FRAME_RESPONSE]);
     const askGoogle = vi.fn(async () => ({ snippet: 'MUST NEVER BE REACHED' }));
     const convo = vi.fn(async () => okConvo());
     try {

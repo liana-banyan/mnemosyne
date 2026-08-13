@@ -157,60 +157,68 @@ describe('reconcileNamedSet() pure arithmetic -- D-BP153-020, the partition-comp
   });
 });
 
-describe('establishFrame() end to end -- D-BP153-020, THE EXACT LIVE SHAPE (fresh-query path)', () => {
-  test('HEADLINE: direct excludes nothing, complement names ONLY {A, E} -- the frame returns ZERO exclusions, not the seven the live bug produced', async () => {
+// D-BP153-032, RESHAPED FOR THE SOFTBALLS. THE OLD MEASURED BUG (this file's own header) was
+// specifically about the COMPLEMENT-DERIVED INFERENCE ("all minus non-members") -- an arithmetic
+// establishFrame() no longer performs at all (RETIRED along with frameExtractionInstruction()/
+// frameComplementExtractionInstruction()/extractFrameBothSides(), see classify_cascade.ts's own
+// D-BP153-032 section header). THE SOFTBALLS now compare each option's OWN stated kind against the
+// stated category kind (applyFrameKindElimination()) -- an option nobody described AT ALL is simply
+// UNACCOUNTED, in neither list, by construction; there is no "all minus complement" step left to
+// require a completeness gate on. The RESIDUAL invariant this block still proves: a source that
+// names only a few options never produces a confident exclusion for the REST -- restated below
+// against the new shape.
+describe('establishFrame() end to end -- D-BP153-032, restating the OLD measured-bug shape against the stated-kind extractor', () => {
+  test('HEADLINE: a source naming only A and E never excludes the other seven -- no complement-derived inference exists anymore to trust', async () => {
     const originalFetch = global.fetch;
-    const passage = 'South America and Europe are recognized as legitimate world regions.';
-    global.fetch = queuedFetch([
-      // Direct (NOT category): nothing stated in that shape.
-      JSON.stringify({ not_members: [], stated_in_passage: false }),
-      // Complement (IS category): ONLY A and E, exactly the measured live shape -- seven of nine
-      // options are simply never mentioned by either direction.
-      JSON.stringify({
-        members: ['South America', 'Europe'].map((name) => ({ name, span: passage })),
-        stated_in_passage: true,
-      }),
-    ]);
+    const passage = 'South America and Europe are recognized as a "legitimate world region", the proper '
+      + 'denotation of a world region.';
+    global.fetch = queuedFetch([JSON.stringify({
+      kinds: [
+        { name: 'South America', kind: 'legitimate world region', span: passage },
+        { name: 'Europe', kind: 'legitimate world region', span: passage },
+      ],
+      category_kind: 'legitimate world region',
+      category_kind_span: passage,
+      stated_in_passage: true,
+    })]);
     const askGoogle = vi.fn(async () => ({ snippet: passage }));
     try {
       const { note, log } = notes();
       const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
 
-      // THE HEADLINE ASSERTION: zero exclusions -- NOT {B,C,D,F,G,H,I}, the seven the live bug
-      // produced by trusting a complement that only ever named two of nine options.
+      // THE HEADLINE ASSERTION: zero exclusions -- NOT {B,C,D,F,G,H,I}, the seven the OLD live bug
+      // produced by trusting a complement that only ever named two of nine options. THE SOFTBALLS'
+      // new shape cannot even ATTEMPT that inference: there is no "all minus complement" arithmetic
+      // left in applyFrameKindElimination().
       expect(frame.excluded).toEqual([]);
       expect(frame.included).toEqual(expect.arrayContaining(['A', 'E']));
       expect(frame.partitionComplete).toBe(false);
-      expect(frame.available).toBe(true); // answered -- with zero exclusions, a legitimate outcome
+      expect(frame.available).toBe(true); // a category kind WAS stated -- answered, zero exclusions among the unaccounted
       expect(frame.answeredFrom).toBe('new-query');
 
-      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /INCOMPLETE PARTITION/.test(l))).toBe(true);
-      expect(log.some((l) => /trusted despite an incomplete direct side/.test(l))).toBe(false);
+      expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /UNACCOUNTED/.test(l))).toBe(true);
       // The note names exactly the seven unaccounted-for options.
       for (const opt of ['B', 'C', 'D', 'F', 'G', 'H', 'I']) {
-        expect(log.some((l) => l.includes('INCOMPLETE PARTITION') && l.includes(`${opt}) ${OPT[opt]}`))).toBe(true);
+        expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && l.includes(`${opt}) ${OPT[opt]}`))).toBe(true);
       }
     } finally {
       global.fetch = originalFetch;
     }
   });
 
-  test('a complete partition split across owned-evidence direct+complement is still trusted end to end', async () => {
+  test('a complete stated-kind accounting from owned evidence is still trusted end to end', async () => {
     const originalFetch = global.fetch;
-    const passage = 'Arctic Circle, Amazon Rainforest, and Sahara Desert are biomes, not world regions. '
-      + 'South America, South Asia, North Africa, Northeast United States, Europe, and Central Asia '
-      + 'are all legitimate world regions.';
-    global.fetch = queuedFetch([
-      JSON.stringify({
-        not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: passage })),
-        stated_in_passage: true,
-      }),
-      JSON.stringify({
-        members: ['South America', 'South Asia', 'North Africa', 'Northeast United States', 'Europe', 'Central Asia']
-          .map((name) => ({ name, span: passage })),
-        stated_in_passage: true,
-      }),
-    ]);
+    const passage = 'Arctic Circle, Amazon Rainforest, and Sahara Desert are each a "biome", not world regions. '
+      + 'South America, South Asia, North Africa, Northeast United States, Europe, and Central Asia are each '
+      + 'a "legitimate world region", the proper denotation of a world region.';
+    global.fetch = queuedFetch([JSON.stringify({
+      kinds: ALL.map((L) => ({
+        name: OPT[L], kind: ['G', 'H', 'I'].includes(L) ? 'biome' : 'legitimate world region', span: passage,
+      })),
+      category_kind: 'legitimate world region',
+      category_kind_span: passage,
+      stated_in_passage: true,
+    })]);
     const askGoogle = vi.fn(async () => ({ snippet: 'must never be reached' }));
     try {
       const { note } = notes();
