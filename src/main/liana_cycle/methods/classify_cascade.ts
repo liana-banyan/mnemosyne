@@ -1762,6 +1762,87 @@ async function extractFrameBothSides(
   };
 }
 
+// ─────────────────────────── D-BP153-024: CONVERSATIONAL AUTHORITY FIRST, THEN GOOGLE ───────────────────────────
+//
+// THE MEASURED FAILURE THIS CLOSES (receipt LIANA_RUN_qid98_2026-08-13T02-29-52-712Z.json). THE
+// SOFTBALLS' reworded frame query (D-BP153-021/023, above) was finally issued, and went straight to
+// askGoogle: "nobox+organic(5)" -- a page of organic web-search links -- which named none of the
+// nine options under test, so the frame correctly refused ("the frame is UNAVAILABLE, not 'nothing
+// excluded'") rather than guess. In the SAME run, the operation meta-question (survey_stage.ts's own
+// askOperation(), which already tries `ctx.askConversationalAuthority` first via
+// obtainMetaQuestionPassage()) went to `user_gemini` and returned usable prose. THE SOFTBALLS/THE
+// NAMED SET/THE DISCRIMINATOR (establishFrame()/extractNamedSetMembers()/runDiscriminator(), below
+// and further down this file) are the SAME SHAPE OF ASK survey_stage.ts's two meta-questions already
+// are -- a CONVERSATIONAL, structured, per-item accounting across every option -- exactly what a
+// page of search-result links cannot answer and a conversational authority reliably can.
+//
+// obtainCascadePassage(), immediately below, gives all three functions the SAME
+// try-conversational-then-fall-back-to-Google behavior survey_stage.ts's own
+// obtainMetaQuestionPassage() already established for the ambiguity/operation meta-questions -- see
+// this function's own header for exactly why it is a mirror, not a re-export, of that one.
+
+/**
+ * MIRRORS survey_stage.ts's own obtainMetaQuestionPassage() DELIBERATELY -- same
+ * try-conversational-then-fall-back-to-Google shape, same reason -- named here specifically so the
+ * two do not silently drift if either one changes. NOT a re-export: obtainMetaQuestionPassage() is
+ * module-private to survey_stage.ts, takes a full `MethodRunContext` plus a fixed
+ * 'ambiguity'|'operation' label, and calls `ctx.emit` directly with a structured
+ * LianaTerminalEvent. establishFrame()/extractNamedSetMembers()/runDiscriminator() already take a
+ * bare `askGoogle: MethodRunContext['askGoogle']` function and a bare `note: (text: string) => void`
+ * closure, not a full ctx -- reshaping all three signatures to carry a ctx just to reuse that
+ * function would be a bigger change than this ticket authorizes ("route... through the same
+ * try-conversational-then-fall-back-to-Google behavior", not "restructure the three functions").
+ *
+ * `askConversationalAuthority` is OPTIONAL, same contract as `MethodRunContext.
+ * askConversationalAuthority` itself (method_registry.ts) -- undefined for every caller that does
+ * not thread it, so this goes straight to `googleBlocks()`, BYTE-IDENTICAL to this file's own
+ * behavior before this ticket. ANY non-ok conversational result (window not open, operator visibly
+ * using it, ceiling reached with no text, any other refusal) falls back to `googleBlocks()`,
+ * UNCHANGED -- never hangs the run, never silently swaps the other direction.
+ *
+ * Returns a GoogleAnswer-COMPATIBLE shape so every one of the three call sites below needed no edit
+ * beyond the single line that acquires `res` -- `res.ok`/`res.text`/`res.via` are the only fields
+ * any of the three functions reads (verified by reading every `res.` use in
+ * establishFrame()/extractNamedSetMembers()/runDiscriminator() before writing this).
+ *
+ * Law 5 (HARDWIRE-23), "the receipt says which": on the conversational branch, `via` is tagged with
+ * the answering authority's own name (`answered by ${convo.authority}` -- e.g. "answered by
+ * user_gemini") so every existing `${res.via}`-interpolating note/basis string downstream (already
+ * written, untouched by this ticket) names it with no further edit at those call sites. On the
+ * Google branch `via` is returned EXACTLY as `googleBlocks()` produced it (e.g. "nobox+organic(5)")
+ * -- unchanged, because that string already names Google by its own existing convention (same rule
+ * obtainMetaQuestionPassage()'s own header states: "the Google via-string", not a second tag).
+ */
+async function obtainCascadePassage(
+  askGoogle: MethodRunContext['askGoogle'],
+  askConversationalAuthority: MethodRunContext['askConversationalAuthority'],
+  label: string,
+  query: string,
+  note: (text: string) => void,
+): Promise<GoogleAnswer> {
+  if (askConversationalAuthority) {
+    note(`   ${label}: query SENT to conversational authority (untruncated, verbatim)="${query}"`);
+    const convo = await askConversationalAuthority(query);
+    if (convo.ok && convo.text.trim()) {
+      note(
+        `   ${label}: ANSWERED BY: ${convo.authority} (${convo.via}) -- a conversational authority, `
+          + 'not Google web search',
+      );
+      return {
+        ok: true, text: convo.text, via: `${convo.via} (answered by ${convo.authority})`, blocks: [], sources: convo.citations,
+      };
+    }
+    note(
+      `   ${label}: conversational authority UNAVAILABLE (${convo.via}) -- falling back to Google `
+        + "(never hijack the operator's window, never hang the run)",
+    );
+  } else {
+    note(`   ${label}: no conversational authority is wired for this call -- falling back to Google`);
+  }
+  note(`   ${label}: query SENT to Google (untruncated, verbatim)="${query}"`);
+  return googleBlocks(askGoogle, query);
+}
+
 /**
  * FD-BP153-01 -- THE FRAME. Establishes which options are legitimate members of the category the
  * question names, before anything is ranked.
@@ -1836,6 +1917,12 @@ export async function establishFrame(
   // header (above establishFrame() in this file) for the ruling. Undefined/blank behaves exactly as
   // before this ticket: discardPropertyContaminatedSpans() no-ops on an empty property string.
   property?: string,
+  // D-BP153-024, ADDITIVE/OPTIONAL, placed LAST so no existing call site (none of which pass an 8th
+  // argument) shifts meaning. Undefined behaves exactly as before this ticket: the fresh-query path
+  // below goes straight to Google via obtainCascadePassage()'s own no-conversational-authority
+  // branch. See obtainCascadePassage()'s own header, immediately above establishFrame(), for the
+  // full ruling.
+  askConversationalAuthority?: MethodRunContext['askConversationalAuthority'],
 ): Promise<FrameResult> {
   const prop = property ?? '';
   const rawOwned = ownedPassages ? ownedPassages() : [];
@@ -1936,7 +2023,9 @@ export async function establishFrame(
     + `or type -- rather than merely whether it is or is not ${category}. Answer for every one, in `
     + `order, and do not skip any. ${list(all, OPT)}`;
   note(`   FRAME: ${query}`);
-  const res = await googleBlocks(askGoogle, query);
+  // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
+  // see obtainCascadePassage()'s own header, above establishFrame(), for the full ruling.
+  const res = await obtainCascadePassage(askGoogle, askConversationalAuthority, 'FRAME', query, note);
   if (!res.ok) {
     note(`   FRAME: no usable answer (${res.via}) -- the frame is UNAVAILABLE, not empty`);
     return {
@@ -2363,6 +2452,10 @@ export async function extractNamedSetMembers(
   // FD-BP153-04, ADDITIVE/OPTIONAL -- same contract as establishFrame()'s own `ownedPassages`
   // parameter, same accessor. D-BP153-016, FIX 1: now typed OwnedPassage[], not bare string[].
   ownedPassages?: () => OwnedPassage[],
+  // D-BP153-024, ADDITIVE/OPTIONAL, placed LAST -- same contract as establishFrame()'s own
+  // trailing `askConversationalAuthority` parameter. See obtainCascadePassage()'s own header for
+  // the full ruling.
+  askConversationalAuthority?: MethodRunContext['askConversationalAuthority'],
 ): Promise<NamedSetResult> {
   const rawOwned = ownedPassages ? ownedPassages() : [];
   const owned = filterUsableOwnedPassages(rawOwned, all, OPT, 'NAMED SET', note);
@@ -2425,7 +2518,9 @@ export async function extractNamedSetMembers(
   // list()/OPT convention every other query in this file already uses.
   const query = `Which of these are ${category} that ARE ${direction} ${property}? Name each one that is. ${list(all, OPT)}`;
   note(`   NAMED SET: ${query}`);
-  const res = await googleBlocks(askGoogle, query);
+  // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
+  // see obtainCascadePassage()'s own header, above establishFrame(), for the full ruling.
+  const res = await obtainCascadePassage(askGoogle, askConversationalAuthority, 'NAMED SET', query, note);
   if (!res.ok) {
     note(`   NAMED SET: no usable answer (${res.via}) -- the named set is UNAVAILABLE, not empty`);
     return {
@@ -2764,6 +2859,10 @@ export async function runDiscriminator(
   // extractNamedSetMembers()'s own `ownedPassages` parameter, same accessor. D-BP153-016, FIX 1:
   // now typed OwnedPassage[], not bare string[].
   ownedPassages?: () => OwnedPassage[],
+  // D-BP153-024, ADDITIVE/OPTIONAL, placed LAST -- same contract as establishFrame()'s and
+  // extractNamedSetMembers()'s own trailing `askConversationalAuthority` parameter. See
+  // obtainCascadePassage()'s own header for the full ruling.
+  askConversationalAuthority?: MethodRunContext['askConversationalAuthority'],
 ): Promise<DiscriminatorResult> {
   if (candidates.length <= 1) {
     return {
@@ -2840,7 +2939,9 @@ export async function runDiscriminator(
   // got rid of four answers with ONE google search." Ticket's own example wording, used verbatim.
   const query = `What kind of ${category} is each of these, and how do they differ from one another? ${list(candidates, OPT)}`;
   note(`   DISCRIMINATOR: ${query}`);
-  const res = await googleBlocks(askGoogle, query);
+  // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
+  // see obtainCascadePassage()'s own header, above establishFrame(), for the full ruling.
+  const res = await obtainCascadePassage(askGoogle, askConversationalAuthority, 'DISCRIMINATOR', query, note);
   if (!res.ok) {
     note(`   DISCRIMINATOR: no usable answer (${res.via}) -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
     return {
@@ -3104,7 +3205,10 @@ export async function runSuperlativeByMagnitude(
   // FD-BP153-04: `ctx.ownedPassages` (MethodRunContext, ADDITIVE/OPTIONAL) is threaded through here
   // so establishFrame() tries extraction from evidence this run already owns before it spends a
   // new query -- see establishFrame()'s own header for the ruling and the measurement behind it.
-  const frame = await establishFrame(countedAskGoogle, category, ALL, OPT, note, ctx.ownedPassages, property);
+  // D-BP153-024: `ctx.askConversationalAuthority` threaded through as the trailing argument, same
+  // additive/optional pattern `ctx.ownedPassages` already established -- see
+  // obtainCascadePassage()'s own header for the full ruling.
+  const frame = await establishFrame(countedAskGoogle, category, ALL, OPT, note, ctx.ownedPassages, property, ctx.askConversationalAuthority);
   if (frame.answeredFrom === 'owned-passage') answeredFromOwned.push('THE SOFTBALLS');
   if (!frame.available) {
     // FD-BP153-01 consequence 2, verbatim: "A magnitude result with no frame is NOT definitive."
@@ -3160,7 +3264,8 @@ export async function runSuperlativeByMagnitude(
   // verbatim (additive label, not a rename -- same reasoning as STAGE 0/QUESTION 1 above).
   step(`STAGE M / QUESTION 2  THE NAMED SET (FD-BP152-19 x FD-BP153-01) -- which options ARE ${match.direction} ${property}? Does a NAMED SET resolve this without ranking?`);
   questionsAttempted.push('THE NAMED SET');
-  const namedSet = await extractNamedSetMembers(countedAskGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages);
+  // D-BP153-024: same threading as establishFrame(), above.
+  const namedSet = await extractNamedSetMembers(countedAskGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages, ctx.askConversationalAuthority);
   if (namedSet.answeredFrom === 'owned-passage') answeredFromOwned.push('THE NAMED SET');
   if (namedSet.available) {
     const termination = runMembershipTerminator(ALL, frame.excluded, namedSet.members, OPT);
@@ -3207,7 +3312,8 @@ export async function runSuperlativeByMagnitude(
           + `(${termination.candidates.join(', ')}); does a STATED KIND distinction resolve it?`,
       );
       questionsAttempted.push('THE DISCRIMINATOR');
-      const discriminator = await runDiscriminator(countedAskGoogle, category, termination.candidates, OPT, note, ctx.ownedPassages);
+      // D-BP153-024: same threading as establishFrame()/extractNamedSetMembers(), above.
+      const discriminator = await runDiscriminator(countedAskGoogle, category, termination.candidates, OPT, note, ctx.ownedPassages, ctx.askConversationalAuthority);
       if (discriminator.answeredFrom === 'owned-passage') answeredFromOwned.push('THE DISCRIMINATOR');
       if (discriminator.unique) {
         const winner = discriminator.unique;
