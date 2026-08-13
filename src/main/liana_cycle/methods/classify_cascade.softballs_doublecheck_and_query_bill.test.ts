@@ -217,6 +217,82 @@ describe('D-BP153-017 ITEM 4: THE QUERY BILL', () => {
       const bill = notesTexts.find((t) => /QUERY BILL/.test(t));
       expect(bill).toBeDefined();
       expect(bill).toMatch(/^ {3}QUERY BILL: 1 query issued this run/);
+      // D-BP153-028: the authority split is ADDITIVE to the same leading clause -- this route never
+      // threaded a conversational authority, so every query billed went to Google.
+      expect(bill).toMatch(/\(0 to the conversational authority, 1 to Google\)/);
+      expect(bill).toMatch(/\d+ completion follow-up(s)? issued \(D-BP153-026\)/);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  // D-BP153-028/BISHOP/seg-classify-028. THE MEASURED ROOT CAUSE (live run, receipt
+  // LIANA_RUN_qid98_2026-08-13T03-57-15-514Z.json): `countedAskGoogle` (above) only ever wrapped
+  // `askGoogle` -- every one of THE SOFTBALLS/THE NAMED SET/THE DISCRIMINATOR's own fresh queries and
+  // D-BP153-026 completion follow-ups is routed through `obtainCascadePassage()`, which tries
+  // `ctx.askConversationalAuthority` FIRST (D-BP153-024) -- and that raw, uncounted function was
+  // threaded straight through to all three call sites. A run answered end-to-end by the
+  // conversational authority therefore billed itself "0 queries issued -- 0 of 3 answered", even
+  // though the transcript itself showed five queries sent to and answered by user_gemini and the
+  // evidence store held seven records. This test proves the fix: it does NOT hand-predict how many
+  // queries the run costs (the cascading owned-evidence/follow-up/discriminator arithmetic makes that
+  // fragile) -- it reads the REAL mock call counts back after the run and asserts the bill reconciles
+  // with them exactly, the same self-verifying style the ZERO-queries test (above) already uses for
+  // askGoogle alone, now extended to both authorities.
+  test('D-BP153-028: a run answered via the conversational authority reports a NON-ZERO, authority-split query count that reconciles with the real mock call counts, and reports follow-ups separately', async () => {
+    const originalFetch = global.fetch;
+    // Only TWO gemma responses are queued -- enough for THE SOFTBALLS' own direct+complement
+    // extraction over its one fetched passage. Every extraction after that (THE NAMED SET's own
+    // direct+complement, its D-BP153-026 follow-up, THE DISCRIMINATOR's own extraction) runs the
+    // queue past its end -- queuedFetch() throws, gemmaExtract()'s own try/catch turns that into a
+    // silent null (the SAME documented convention classify_cascade.conversational_authority_routing.
+    // test.ts's own header already establishes), so those steps honestly extract nothing rather than
+    // crashing. The point of THIS test is the query count, not the extracted arithmetic.
+    global.fetch = queuedFetch([
+      JSON.stringify({
+        not_members: ['Arctic Circle', 'Amazon Rainforest', 'Sahara Desert'].map((name) => ({ name, span: REAL_PASSAGE })),
+        stated_in_passage: true,
+      }),
+      JSON.stringify({
+        members: ['South America', 'South Asia', 'North Africa', 'Northeast United States', 'Europe', 'Central Asia']
+          .map((name) => ({ name, span: REAL_PASSAGE })),
+        stated_in_passage: true,
+      }),
+    ]);
+    // askGoogle must never be reached: the conversational authority answers `ok: true` every time it
+    // is tried, so obtainCascadePassage() never falls back.
+    const askGoogle = vi.fn(async () => ({ snippet: 'MUST NEVER BE REACHED -- the conversational authority always answers ok' }));
+    const convo = vi.fn(async () => ({
+      ok: true, text: REAL_PASSAGE, citations: ['https://example.com/geography'], via: 'nexus-gemini', authority: 'user_gemini',
+    }));
+    try {
+      const events: LianaTerminalEvent[] = [];
+      const ctx: MethodRunContext = {
+        askGoogle: askGoogle as unknown as MethodRunContext['askGoogle'],
+        emit: (e) => events.push(e),
+        askConversationalAuthority: convo as unknown as MethodRunContext['askConversationalAuthority'],
+      };
+      const input: MethodQuestionInput = { qid: 98, question: QUESTION, options: OPT, correctAnswer: 'A' };
+      const match = extractSuperlativeMatch(QUESTION)!;
+
+      await runSuperlativeByMagnitude(input, ctx, match);
+
+      expect(askGoogle).not.toHaveBeenCalled();
+      expect(convo.mock.calls.length).toBeGreaterThan(0); // THE POINT: non-zero -- the old bill said 0
+
+      const notesTexts = events.filter((e) => e.kind === 'note').map((e) => e.text);
+      const bill = notesTexts.find((t) => /QUERY BILL/.test(t));
+      expect(bill).toBeDefined();
+
+      const totalCalls = convo.mock.calls.length + askGoogle.mock.calls.length;
+      expect(bill).toMatch(new RegExp(`^ {3}QUERY BILL: ${totalCalls} quer`));
+      expect(bill).toMatch(new RegExp(`\\(${convo.mock.calls.length} to the conversational authority, ${askGoogle.mock.calls.length} to Google\\)`));
+
+      // Follow-ups reported SEPARATELY: the number in the bill matches the number of FOLLOW-UP
+      // (D-BP153-026) marker lines actually emitted in this same transcript -- never an independent
+      // guess.
+      const followUpEvents = notesTexts.filter((t) => / FOLLOW-UP \(D-BP153-026\):/.test(t)).length;
+      expect(bill).toMatch(new RegExp(`${followUpEvents} completion follow-up`));
     } finally {
       global.fetch = originalFetch;
     }

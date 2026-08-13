@@ -3164,8 +3164,29 @@ export async function runDiscriminator(
   }
 
   // ONE QUERY, over the survivors only -- never one per candidate. Founder, BP151, verbatim: "we
-  // got rid of four answers with ONE google search." Ticket's own example wording, used verbatim.
-  const query = `What kind of ${category} is each of these, and how do they differ from one another? ${list(candidates, OPT)}`;
+  // got rid of four answers with ONE google search."
+  //
+  // D-BP153-028 FIX. THE MEASURED GAP (live run, receipt
+  // LIANA_RUN_qid98_2026-08-13T03-57-15-514Z.json). The OLD wording asked only what KIND each
+  // option is -- it never asked what kind of thing `category` ITSELF properly denotes.
+  // applyDiscriminatorElimination() (above) has always required BOTH a stated kind per candidate
+  // AND a stated categoryKind before it will eliminate anything; the live run got all three stated
+  // kinds ("A continent", "A macro-region", "A landlocked region") but no categoryKind, because the
+  // question never asked for it -- so the run correctly, but avoidably, abstained. This is the SAME
+  // single query, extended with ONE more clause asking the SAME source what kind `category` itself
+  // denotes -- never a second call (Founder, BP151, verbatim, above). Extraction of the answer is
+  // UNCHANGED (discriminatorExtractionInstruction()/DISCRIMINATOR_EXTRACTION_SHAPE, above, already
+  // ask for category_kind separately from each candidate's own kind, span-verified exactly the same
+  // way) -- only the QUESTION SENT TO THE SOURCE changes, so the source has a chance to state it.
+  //
+  // HARDWIRE-22 UNRELAXED, FD-BP153-06 ("would this rule survive on a question whose answer we do
+  // not know?"): this asks the source to STATE which kind denotes the category -- it does not ask
+  // the source (or Gemma, downstream) to JUDGE which candidate is correct, and it does not prefer
+  // any particular kind. If the source states a categoryKind that eliminates the historically
+  // correct candidate, applyDiscriminatorElimination() eliminates it -- that is the intended,
+  // honest behavior (this file's own header, and the ticket's own "CRITICAL HONESTY REQUIREMENT").
+  const query = `What kind of ${category} is each of these, how do they differ from one another, `
+    + `and which of those kinds properly denotes "${category}"? ${list(candidates, OPT)}`;
   note(`   DISCRIMINATOR: ${query}`);
   // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
   // see obtainCascadePassage()'s own header, above establishFrame(), for the full ruling.
@@ -3365,41 +3386,91 @@ export async function runSuperlativeByMagnitude(
   const KEY = input.correctAnswer;
   const t0 = Date.now();
 
+  // D-BP153-028 FIX: THE QUERY BILL'S ROOT CAUSE, MEASURED (not assumed) by reading every call site
+  // below before writing this. THE OLD BILL COUNTED ONLY `askGoogle` CALLS. D-BP153-024 (above,
+  // obtainCascadePassage()) routes THE SOFTBALLS/THE NAMED SET/THE DISCRIMINATOR's fresh queries AND
+  // D-BP153-026's completion follow-ups through `ctx.askConversationalAuthority` FIRST when it is
+  // threaded -- and every one of the three call sites below (establishFrame(), extractNamedSetMembers(),
+  // runDiscriminator()) was passed the RAW `ctx.askConversationalAuthority`, never a counted wrapper,
+  // while `askGoogle` itself was already routed through `countedAskGoogle`. So a run answered
+  // end-to-end by the conversational authority (live receipt LIANA_RUN_qid98_2026-08-13T03-57-15-514Z.
+  // json: five queries actually sent and answered by user_gemini, per the transcript's own
+  // "ANSWERED BY:"/"query SENT to conversational authority" lines and the seven records the evidence
+  // store held) billed itself "0 queries issued -- 0 of 3 answered", the exact contradiction this
+  // ticket names. Fixed the same way `countedAskGoogle` already was: a matching counted wrapper for
+  // the second authority, so BOTH channels are tallied by the same live count of the exact calls that
+  // produce the evidence records, never a second, independently-derived guess.
+  let queriesIssued = 0;
+  let googleQueriesIssued = 0;
+  let conversationalQueriesIssued = 0;
+  let followUpsIssued = 0;
+
   const say = (text: string) => emit({ kind: 'header', text, ts: nowIso() });
   const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
-  const note = (text: string) => emit({ kind: 'note', text, ts: nowIso() });
+  // D-BP153-026's own issueCompletionFollowUp() (above) unconditionally emits a note beginning
+  // "<LABEL> FOLLOW-UP (D-BP153-026):" as the FIRST thing it does whenever it is invoked (i.e.
+  // whenever establishFrame()/extractNamedSetMembers() decide to spend the one-shot completion
+  // follow-up) -- this is the one point common to every follow-up, regardless of which authority
+  // ultimately answers it, so counting that exact, already-emitted marker (rather than threading a
+  // new counter parameter through issueCompletionFollowUp() and both of its callers) tallies "how
+  // many completion follow-ups were issued" from the same live transcript the rest of the bill reads,
+  // with no change to either function's signature or behavior.
+  const note = (text: string) => {
+    if (/ FOLLOW-UP \(D-BP153-026\):/.test(text)) followUpsIssued++;
+    emit({ kind: 'note', text, ts: nowIso() });
+  };
 
-  // D-BP153-017, ITEM 4: THE QUERY BILL. Every query THIS route actually issues goes through this
-  // counted wrapper -- it is the SAME askGoogle the evidence-writing layer upstream of ctx already
-  // writes one evidence record per call for (evidence_authority.ts, not touched here), so this
-  // tally is never a second, independently-derived guess at what the ledger holds; it is a live
-  // count of the exact calls that produce it. `askGoogle` (destructured above) is not called
-  // directly again below this point -- every call site in this function goes through
-  // `countedAskGoogle` (or `countedCtx`, for runLitmusStripLoop()'s own internal calls) instead.
-  let queriesIssued = 0;
+  // D-BP153-017, ITEM 4: THE QUERY BILL. Every query THIS route actually issues goes through one of
+  // these two counted wrappers -- they are the SAME askGoogle/askConversationalAuthority the
+  // evidence-writing layer upstream of ctx already writes one evidence record per call for
+  // (evidence_authority.ts, not touched here), so this tally is never a second, independently-derived
+  // guess at what the ledger holds; it is a live count of the exact calls that produce it. Neither
+  // `askGoogle` nor `ctx.askConversationalAuthority` (destructured/read above) is called directly
+  // again below this point -- every call site in this function goes through `countedAskGoogle` /
+  // `countedAskConversationalAuthority` (or `countedCtx`, for runLitmusStripLoop()'s own internal
+  // calls) instead.
   const countedAskGoogle: MethodRunContext['askGoogle'] = async (q) => {
     queriesIssued++;
+    googleQueriesIssued++;
     return askGoogle(q);
   };
-  const countedCtx: MethodRunContext = { ...ctx, askGoogle: countedAskGoogle };
+  // `undefined` when `ctx.askConversationalAuthority` itself is undefined -- obtainCascadePassage()
+  // (D-BP153-024) already treats an undefined askConversationalAuthority as "no conversational
+  // authority is wired for this call, go straight to Google", and this preserves that exactly (a
+  // wrapper that always ran would turn "not wired" into "wired but always refuses", a different fact).
+  const countedAskConversationalAuthority: MethodRunContext['askConversationalAuthority'] = ctx.askConversationalAuthority
+    ? async (q) => {
+      queriesIssued++;
+      conversationalQueriesIssued++;
+      return ctx.askConversationalAuthority!(q);
+    }
+    : undefined;
+  const countedCtx: MethodRunContext = {
+    ...ctx, askGoogle: countedAskGoogle, askConversationalAuthority: countedAskConversationalAuthority,
+  };
   // THE THREE QUESTIONS THIS RUN ATTEMPTED, and which of them THE DOUBLECHECK/owned-evidence-first
   // discipline (FD-BP153-04) resolved WITHOUT spending a query -- named as it happens below, read
   // back by queryBillNote() at every exit point so the saving is visible without reading the
   // ledger (ticket's own words).
   const questionsAttempted: string[] = [];
   const answeredFromOwned: string[] = [];
-  /** Emits ONE note naming: queries issued this run, how many of THE THREE QUESTIONS were answered
-   *  from owned evidence (no new query), and that the per-option denotation sweep (Survey's own
-   *  FD-BP152-01 fallback) was skipped on this route -- always true here, since this function only
-   *  ever runs when extractSuperlativeMatch() already matched (the SAME structural gate
-   *  survey_stage.ts's own Step 3 gate now tests, D-BP153-017, so this fact and that skip can never
-   *  disagree). Called at every exit point below, not only the final one, so an abstain's own
-   *  transcript states the bill too. */
+  /** Emits ONE note naming: queries issued this run (split by which authority answered them), how
+   *  many of THE THREE QUESTIONS were answered from owned evidence (no new query), how many
+   *  completion follow-ups (D-BP153-026) were issued, and that the per-option denotation sweep
+   *  (Survey's own FD-BP152-01 fallback) was skipped on this route -- always true here, since this
+   *  function only ever runs when extractSuperlativeMatch() already matched (the SAME structural
+   *  gate survey_stage.ts's own Step 3 gate now tests, D-BP153-017, so this fact and that skip can
+   *  never disagree). Called at every exit point below, not only the final one, so an abstain's own
+   *  transcript states the bill too. D-BP153-028: the leading "N quer(y/ies) issued this run" clause
+   *  is UNCHANGED wording/position from before this ticket (every pre-existing assertion on it still
+   *  matches) -- the authority split, the follow-up count, and everything after are ADDITIVE. */
   const queryBillNote = () => note(
-    `   QUERY BILL: ${queriesIssued} quer${queriesIssued === 1 ? 'y' : 'ies'} issued this run -- `
+    `   QUERY BILL: ${queriesIssued} quer${queriesIssued === 1 ? 'y' : 'ies'} issued this run `
+      + `(${conversationalQueriesIssued} to the conversational authority, ${googleQueriesIssued} to Google) -- `
       + `${answeredFromOwned.length} of ${questionsAttempted.length} question(s) asked `
       + `(${questionsAttempted.join(', ') || 'none'}) answered from OWNED EVIDENCE, no new query `
-      + `(${answeredFromOwned.join(', ') || 'none'}); 1 per-option denotation sweep SKIPPED -- redundant `
+      + `(${answeredFromOwned.join(', ') || 'none'}); ${followUpsIssued} completion follow-up${followUpsIssued === 1 ? '' : 's'} issued `
+      + '(D-BP153-026); 1 per-option denotation sweep SKIPPED -- redundant '
       + 'by construction on the superlative path (FD-BP152-01 fallback; D-BP153-017)',
   );
 
@@ -3436,7 +3507,7 @@ export async function runSuperlativeByMagnitude(
   // D-BP153-024: `ctx.askConversationalAuthority` threaded through as the trailing argument, same
   // additive/optional pattern `ctx.ownedPassages` already established -- see
   // obtainCascadePassage()'s own header for the full ruling.
-  const frame = await establishFrame(countedAskGoogle, category, ALL, OPT, note, ctx.ownedPassages, property, ctx.askConversationalAuthority);
+  const frame = await establishFrame(countedAskGoogle, category, ALL, OPT, note, ctx.ownedPassages, property, countedAskConversationalAuthority);
   if (frame.answeredFrom === 'owned-passage') answeredFromOwned.push('THE SOFTBALLS');
   if (!frame.available) {
     // FD-BP153-01 consequence 2, verbatim: "A magnitude result with no frame is NOT definitive."
@@ -3493,7 +3564,7 @@ export async function runSuperlativeByMagnitude(
   step(`STAGE M / QUESTION 2  THE NAMED SET (FD-BP152-19 x FD-BP153-01) -- which options ARE ${match.direction} ${property}? Does a NAMED SET resolve this without ranking?`);
   questionsAttempted.push('THE NAMED SET');
   // D-BP153-024: same threading as establishFrame(), above.
-  const namedSet = await extractNamedSetMembers(countedAskGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages, ctx.askConversationalAuthority);
+  const namedSet = await extractNamedSetMembers(countedAskGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages, countedAskConversationalAuthority);
   if (namedSet.answeredFrom === 'owned-passage') answeredFromOwned.push('THE NAMED SET');
   if (namedSet.available) {
     const termination = runMembershipTerminator(ALL, frame.excluded, namedSet.members, OPT);
@@ -3541,7 +3612,7 @@ export async function runSuperlativeByMagnitude(
       );
       questionsAttempted.push('THE DISCRIMINATOR');
       // D-BP153-024: same threading as establishFrame()/extractNamedSetMembers(), above.
-      const discriminator = await runDiscriminator(countedAskGoogle, category, termination.candidates, OPT, note, ctx.ownedPassages, ctx.askConversationalAuthority);
+      const discriminator = await runDiscriminator(countedAskGoogle, category, termination.candidates, OPT, note, ctx.ownedPassages, countedAskConversationalAuthority);
       if (discriminator.answeredFrom === 'owned-passage') answeredFromOwned.push('THE DISCRIMINATOR');
       if (discriminator.unique) {
         const winner = discriminator.unique;

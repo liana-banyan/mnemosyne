@@ -389,6 +389,154 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
   });
 });
 
+// ─────────────────────────── D-BP153-028: THE DISCRIMINATOR ASKS FOR THE CATEGORY'S OWN KIND ───────────────────────────
+//
+// THE MEASURED GAP (live run, receipt LIANA_RUN_qid98_2026-08-13T03-57-15-514Z.json). The
+// discriminator's own fresh query asked only "What kind of X is each of these, and how do they
+// differ from one another?" -- it never asked what kind of thing the CATEGORY itself denotes.
+// applyDiscriminatorElimination() (tested above) has always required BOTH a stated kind per
+// candidate AND a stated categoryKind before eliminating anything; extraction
+// (discriminatorExtractionInstruction()/DISCRIMINATOR_EXTRACTION_SHAPE) has always asked for
+// category_kind too -- but a source can only state a category denotation if it is ASKED for one.
+// This section tests the ONE-QUERY fix: the SAME single query now asks both.
+describe('D-BP153-028: THE DISCRIMINATOR asks for the category\'s own denotation in the SAME single query', () => {
+  test('TEST 8, HEADLINE: the composed discriminator query asks BOTH what each option is AND what the category denotes', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = queuedFetch([
+      JSON.stringify({ kinds: [], category_kind: null, stated_in_passage: false }),
+    ]);
+    const askGoogle = vi.fn(async () => ({ snippet: 'irrelevant -- this test only inspects the composed query string' }));
+    try {
+      const { note, log } = notes();
+      await runDiscriminator(
+        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note,
+      );
+      expect(askGoogle).toHaveBeenCalledTimes(1); // still ONE query, never a second call for this ask
+      const queryLine = log.find((l) => l.startsWith('   DISCRIMINATOR: What kind of'));
+      expect(queryLine).toBeDefined();
+      // BOTH clauses in the SAME composed string:
+      expect(queryLine).toContain(`What kind of ${CATEGORY} is each of these`);
+      expect(queryLine).toMatch(/how do they differ from one another/);
+      expect(queryLine).toMatch(new RegExp(`properly denotes "${CATEGORY}"`));
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  test('TEST 9, POSITIVE, FAIL-BEFORE/PASS-AFTER: a fresh-query passage stating kinds for all candidates AND the category denotation -- elimination performed, unique survivor, receipt names the stated basis', async () => {
+    const originalFetch = global.fetch;
+    const s1 = "Google's own entity classification labels South America a Continent.";
+    const s2 = 'North Africa is labeled a Colloquial area, not a formally defined world region.';
+    const s3 = 'Central Asia is also labeled a Colloquial area.';
+    const s4 = 'Only a Continent is properly considered a world region.';
+    const passage = `${s1} ${s2} ${s3} ${s4}`;
+    global.fetch = queuedFetch([
+      JSON.stringify({
+        kinds: [
+          { name: 'South America', kind: 'Continent', span: s1 },
+          { name: 'North Africa', kind: 'Colloquial area', span: s2 },
+          { name: 'Central Asia', kind: 'Colloquial area', span: s3 },
+        ],
+        category_kind: 'Continent',
+        category_kind_span: s4,
+        stated_in_passage: true,
+      }),
+    ]);
+    const askGoogle = vi.fn(async () => ({ snippet: passage }));
+    try {
+      const { note, log } = notes();
+      const result = await runDiscriminator(
+        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note,
+      );
+      // THE QUERY ITSELF must ask for the category's own denotation -- this is the clause that is
+      // ABSENT before D-BP153-028 (fail-before: this assertion fails on the pre-fix query text;
+      // pass-after: it passes once the query is composed with the new clause).
+      const queryLine = log.find((l) => l.startsWith('   DISCRIMINATOR: What kind of'));
+      expect(queryLine).toMatch(new RegExp(`properly denotes "${CATEGORY}"`));
+      // AND the elimination itself is performed and published, exactly as
+      // applyDiscriminatorElimination() already does when categoryKind is present.
+      expect(askGoogle).toHaveBeenCalledTimes(1);
+      expect(result.answeredFrom).toBe('new-query');
+      expect(result.unique).toBe('A');
+      expect(result.eliminations.map((e) => e.letter).sort()).toEqual(['C', 'F']);
+      expect(log.some((l) => /answered FROM A NEW QUERY/.test(l) && /stated kind/.test(l))).toBe(true);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  test('TEST 10, NEGATIVE (mandatory): a fresh-query passage stating kinds but NOT the category denotation -- unchanged, no elimination, abstain naming survivors', async () => {
+    const originalFetch = global.fetch;
+    const s1 = 'South America is a Continent.';
+    const s2 = 'North Africa is a Colloquial area.';
+    const s3 = 'Central Asia is also a Colloquial area.';
+    const passage = `${s1} ${s2} ${s3}`;
+    global.fetch = queuedFetch([
+      JSON.stringify({
+        kinds: [
+          { name: 'South America', kind: 'Continent', span: s1 },
+          { name: 'North Africa', kind: 'Colloquial area', span: s2 },
+          { name: 'Central Asia', kind: 'Colloquial area', span: s3 },
+        ],
+        category_kind: null,
+        category_kind_span: '',
+        stated_in_passage: true,
+      }),
+    ]);
+    const askGoogle = vi.fn(async () => ({ snippet: passage }));
+    try {
+      const { note } = notes();
+      const result = await runDiscriminator(
+        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note,
+      );
+      expect(result.unique).toBeNull();
+      expect(new Set(result.survivors)).toEqual(new Set(CANDIDATES));
+      expect(result.eliminations).toEqual([]);
+      expect(result.why).toMatch(/does not state which kind properly denotes/);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  test('TEST 11, ANTI-TUNING (mandatory, FD-BP153-06): the source states the category denotes the kind held by a NON-A candidate -- A is eliminated and a different letter survives', async () => {
+    const originalFetch = global.fetch;
+    const s1 = 'South America is a Continent.';
+    const s2 = 'North Africa is a Colloquial area.';
+    const s3 = 'Central Asia is a Landlocked region.';
+    const s4 = 'Only a Colloquial area is properly considered a world region in this classification scheme.';
+    const passage = `${s1} ${s2} ${s3} ${s4}`;
+    global.fetch = queuedFetch([
+      JSON.stringify({
+        kinds: [
+          { name: 'South America', kind: 'Continent', span: s1 },
+          { name: 'North Africa', kind: 'Colloquial area', span: s2 },
+          { name: 'Central Asia', kind: 'Landlocked region', span: s3 },
+        ],
+        category_kind: 'Colloquial area',
+        category_kind_span: s4,
+        stated_in_passage: true,
+      }),
+    ]);
+    const askGoogle = vi.fn(async () => ({ snippet: passage }));
+    try {
+      const { note } = notes();
+      const result = await runDiscriminator(
+        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note,
+      );
+      // THE POINT: A (South America, a Continent) is ELIMINATED, and North Africa (C) -- the ONLY
+      // candidate stated to share the category's own denoted kind -- is the UNIQUE survivor. This
+      // is the SAME arithmetic as TEST 9 above, run on a passage where the stated facts point AWAY
+      // from the historically correct key -- no continent preference, no tiebreak, no tare.
+      expect(result.eliminations.map((e) => e.letter).sort()).toEqual(['A', 'F']);
+      expect(result.unique).toBe('C');
+      expect(result.unique).not.toBe('A');
+      expect(new Set(result.survivors)).toEqual(new Set(['C']));
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
 describe('runSuperlativeByMagnitude() wiring -- STAGE D fires when STAGE M leaves more than one candidate (D-BP153-015)', () => {
   test('TEST 7, REAL-FIXTURE END TO END: frame excludes G/H/I, members {B,D,E}, STAGE M yields {A,C,F}, STAGE D runs -- resolves on a stated distinction or abstains naming {A,C,F}; NEVER asserts the letter is A', async () => {
     const originalFetch = global.fetch;
