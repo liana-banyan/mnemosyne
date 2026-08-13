@@ -270,8 +270,35 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     // visible, not a new code path: `LB_DRAW_REPEATS=1` (the escape hatch D-BP153-031 itself requires)
     // reproduces the pre-ticket 3-round count exactly -- see
     // classify_cascade.repeated_draws.test.ts's own TEST 3 for that proof in isolation.
+    //
+    // RE-PINNED AGAIN, 4 -> 6, D-BP154-001 (THE INVALID DRAW). Measured on this ticket's own build;
+    // the shape is deterministic under this instrument (every capture is the SAME content-free
+    // string), so a second run reproduces it exactly. THE BUG THIS RE-PIN IS THE RECEIPT FOR: before
+    // this ticket, two draws that BOTH said "no option named" were treated as AGREEING (identical
+    // `resultKey`s) and trusted outright -- the previous 3/4-round re-pin's own paragraph, above,
+    // says so explicitly ("both draws of round 3's own question... AGREE"). THE RULE (this ticket's
+    // own ticket file, verbatim) names that the SAME defect as a good draw being vetoed by a bad
+    // one: "agreement on an empty result is not corroboration." A draw whose passage names none of
+    // the question's options is now classified INVALID (passageMentionsAnyLabel() false, the SAME
+    // FIX 3 predicate D-BP153-016 already used) and is REPLACED, under a cap of
+    // `LB_DRAW_MAX_INVALID_REPLACEMENTS = 2` extra attempts, rather than trusted.
+    //   Round 1-2: unchanged (the 2 Survey meta-queries).
+    //   Round 3: THE SOFTBALLS' draw 1 of 2 -- content-free capture, INVALID (no option named),
+    //     discarded, replacement taken.
+    //   Round 4: replacement 1 of 2 -- SAME content-free capture, STILL invalid, discarded,
+    //     replacement taken.
+    //   Round 5: replacement 2 of 2 -- SAME content-free capture, STILL invalid, cap now exhausted.
+    //   Round 6: only 0 of the required 2 VALID draws were ever obtained after 4 attempts (2 + the
+    //     cap of 2) -- CAPTURE FAILURE (D-BP154-001), honestly distinct from the previous re-pin's
+    //     "AGREE" outcome, though it reaches the SAME frame.available:false / ABSTAIN consequence
+    //     downstream (Per FD-BP153-01 consequence 2, STAGE M/STAGE D are still never reached).
+    // Two more rounds than the previous pin is the correct, measured cost of no longer letting a
+    // repeatedly-failed capture masquerade as corroborated agreement -- not a regression. On content
+    // that DOES name an option (any real acquisition, or classify_cascade.repeated_draws.test.ts's
+    // own fixtures), a single invalid draw is replaced ONCE and the run proceeds normally; this
+    // instrument's worst case (every draw invalid, every time) is deliberately the cap's own ceiling.
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    expect(rounds).toBe(4);
+    expect(rounds).toBe(6);
     expect(outcome.error).not.toBe('demand_unknown');
     expect(outcome.method).toBe('classify-cascade');
     expect(events.length).toBeGreaterThan(0);
