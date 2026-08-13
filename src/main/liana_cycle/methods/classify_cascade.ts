@@ -1337,6 +1337,16 @@ function passageMentionsAnyLabel(passage: string, labels: string[], OPT: Record<
   return labels.some((L) => appearsIn(passage, OPT[L]));
 }
 
+/** D-BP154-001/BISHOP/seg-invaliddraw -- a short, verbatim preview of a passage for a DISCARD note
+ *  (THE RULE, rule 5: "say every discard out loud... a passage preview. A silent discard is
+ *  indistinguishable from a draw that never happened."). Truncation only, never a summary or a
+ *  rewrite -- the same "verbatim, whitespace-normalized-only" discipline normalizeSpanWhitespace()
+ *  already uses for a supporting span, applied here to a note instead of an extraction. */
+function passagePreview(passage: string, maxLen = 160): string {
+  const norm = normalizeSpanWhitespace(passage);
+  return norm.length > maxLen ? `${norm.slice(0, maxLen)}...` : norm;
+}
+
 /** FIX 1 + FIX 3, the SHARED CHOKE POINT. establishFrame(), extractNamedSetMembers(), and
  *  runDiscriminator() all filter their `ownedPassages()` accessor through this ONE function before
  *  trying anything else. Every rejection is noted (never silent); an owned passage that is empty or
@@ -1569,9 +1579,10 @@ export interface FrameResult {
   /** D-BP153-031, ADDITIVE/OPTIONAL -- undefined on an owned-passage answer (zero draws spent,
    *  never multiplied) and on every call site that predates this ticket's own repeated-draw wiring.
    *  On a fresh-query answer, the LB_DRAW_REPEATS value actually in effect this call and how many
-   *  independent draws THE SOFTBALLS' base question actually issued (repeats on agreement,
-   *  `<= repeats` never applies -- every configured draw is always issued, none skipped early, so
-   *  this always equals `drawRepeats` whenever it is set at all). See drawWithAgreement() above. */
+   *  independent draws THE SOFTBALLS' base question actually issued. D-BP154-001: `drawsIssued` can
+   *  now EXCEED `drawRepeats` -- an INVALID draw (passage names none of the options) is replaced,
+   *  under a cap, so `drawsIssued` counts every attempt (valid and invalid, including replacements),
+   *  never only the `drawRepeats` target. See drawWithAgreement() above. */
   drawRepeats?: number;
   drawsIssued?: number;
 }
@@ -2009,15 +2020,58 @@ export function resolveDrawRepeats(): number {
   return Math.max(1, Math.min(5, repeats));
 }
 
+// ─────────────────────────── D-BP154-001: THE INVALID DRAW ───────────────────────────
+//
+// TICKET_D-BP154-001_THE_INVALID_DRAW.md/BISHOP/seg-invaliddraw. THE RULE, verbatim: "A draw whose
+// passage names NONE of the question's options is an INVALID draw, not a disagreeing one. Discard
+// it, say so out loud, and take another in its place. It must never veto a good draw." MEASURED on
+// HARDWIRE\LEDGER\LIANA_RUNS\LIANA_RUN_qid98_2026-08-13T19-24-50-420Z.json (D-BP153-034,
+// commit 1ee72b8d): draw 1 was a failed browser capture ("no option named"); draw 2 was a perfect,
+// verbatim-sourced extraction. The pre-existing drawWithAgreement() (above) compared the two
+// byte-for-byte and reported a DISAGREEMENT, discarding the good draw along with the bad one -- one
+// failed capture vetoed a correct answer. This section closes that.
+//
+// THE OTHER HALF, THE RULE'S OWN WORDS: "draws that all extract NOTHING are not in agreement.
+// Agreement on an empty result is not corroboration." MEASURED on runs 2026-08-13T16-29-46-988Z and
+// 2026-08-13T16-59-33-658Z, both `kinds {A:null...I:null}` on EVERY draw -- a passage that DID name
+// options (so not an invalid draw by the rule above) but from which nothing was ever extracted. Two
+// (or more) such draws agree byte-for-byte on `resultKey` today and are trusted -- false
+// corroboration of an uninformative result. `RepeatedDraw.emptyResult` (below) closes this half.
+//
+// FD-BP153-06 TEST, APPLIED (Founder, BP153, verbatim): "would this rule survive on a question whose
+// answer we do not know?" Yes -- both checks are structural (does the passage name ANY option at
+// all; did the extraction produce ANY informative value at all), never keyed on WHICH option or
+// WHICH value. HARDWIRE-22 UNRELAXED: this never judges, it only classifies a draw as usable or not.
+
+/** D-BP154-001: the cap on REPLACEMENT draws issued to stand in for an INVALID one, named so the
+ *  transcript and this file's own tests can cite it. THE RULE's own words: "capped at a small named
+ *  constant of TOTAL attempts... the cap is what stops this becoming consensus-shopping -- we are
+ *  replacing failed captures, never redrawing until we like the answer." At most this many EXTRA
+ *  draws beyond the configured `LB_DRAW_REPEATS` may ever be issued by ONE drawWithAgreement() call;
+ *  once exhausted, still-missing valid draws mean the question is a CAPTURE FAILURE, and the run
+ *  abstains -- never a widened gate, never a forced pass (WHAT NOT TO DO, this ticket, verbatim). */
+export const LB_DRAW_MAX_INVALID_REPLACEMENTS = 2;
+
 /** One independent draw's own outcome. `resultKey` is the CANONICAL, comparable rendering of the
  *  EXTRACTED RESULT SET this draw produced (never the raw passage text -- see this section's own
  *  header); two draws agree iff their `resultKey`s are byte-identical. `resultLabel` is the
  *  human-readable rendering of the same fact, for the transcript. `data` is whatever the caller needs
- *  to proceed when this draw turns out to be the trusted one. */
+ *  to proceed when this draw turns out to be the trusted one.
+ *
+ *  D-BP154-001, ADDITIVE/OPTIONAL: `invalid` marks a FAILED CAPTURE -- the drawOnce() callback
+ *  already ran passageMentionsAnyLabel() (D-BP153-016 FIX 3, the SAME predicate, reused, never a
+ *  second one) and found the passage names NONE of the question's options. `invalidDetail` is the
+ *  transport/authority that answered plus a verbatim passage preview, for the discard note (THE
+ *  RULE, rule 5). `emptyResult` marks a draw whose passage DID name options but from which nothing
+ *  informative was ever extracted (THE RULE's "other half") -- a draw missing both flags is treated
+ *  as an ordinary, comparable draw, exactly as every draw was before this ticket. */
 export interface RepeatedDraw<T> {
   resultKey: string;
   resultLabel: string;
   data: T;
+  invalid?: boolean;
+  invalidDetail?: string;
+  emptyResult?: boolean;
 }
 
 export interface RepeatedDrawOutcome<T> {
@@ -2027,40 +2081,139 @@ export interface RepeatedDrawOutcome<T> {
    *  "never a first-draw preference" (that rule is about disagreement, where the draws are NOT
    *  identical; here, on agreement, they are, so returning one of them is not a preference). */
   trusted: RepeatedDraw<T> | null;
+  /** EVERY draw actually attempted, valid and invalid, INCLUDING replacement draws taken for an
+   *  invalid one (D-BP154-001) -- `draws.length` can exceed `repeats` for exactly this reason. Never
+   *  filtered; a caller that wants only the draws actually compared reads `trusted`/the disagreement
+   *  note, not this array. */
   draws: RepeatedDraw<T>[];
   repeats: number;
+  /** D-BP154-001: true iff this outcome is a CAPTURE FAILURE, THE RULE's own distinct third state --
+   *  neither a trusted agreement nor a draw-disagreement between two informative draws. Set when
+   *  either (a) the replacement cap (`LB_DRAW_MAX_INVALID_REPLACEMENTS`) was exhausted before
+   *  `repeats` VALID draws were obtained, or (b) every valid draw obtained extracted NOTHING (THE
+   *  RULE's "other half": "agreement on an empty result is not corroboration"). Callers MUST branch
+   *  on this before treating `agreed === false` as draw-disagreement -- a capture failure is neither
+   *  agreement nor disagreement. */
+  captureFailure?: boolean;
+  captureFailureReason?: 'all-invalid' | 'all-empty';
 }
 
-/** THE MECHANISM. Issues `repeats` independent draws of `drawOnce`, one at a time (see the
- *  no-await-in-loop note below), compares their `resultKey`s, and returns either the single agreed
- *  draw or a reported, UNRESOLVED disagreement. `repeats === 1` is a pure pass-through: exactly one
- *  draw is issued and none of this function's own note()s fire -- see this section's own header. */
+/** THE MECHANISM. Issues independent draws of `drawOnce`, one at a time (see the no-await-in-loop
+ *  note below), until either `repeats` VALID draws have been collected or the D-BP154-001 replacement
+ *  cap is exhausted, then compares the VALID draws' `resultKey`s and returns the single agreed draw,
+ *  a reported UNRESOLVED disagreement, or a CAPTURE FAILURE (`captureFailure`, D-BP154-001, THE
+ *  INVALID DRAW). `repeats <= 1` is a pure pass-through, UNCHANGED by D-BP154-001: exactly one draw
+ *  is issued, its result is used exactly as given (valid, invalid, or empty alike), and none of this
+ *  function's own note()s fire -- see this section's own header (D-BP153-031) and the D-BP154-001
+ *  section header (above) for why: THE TICKET'S OWN SCOPE is "the draw-repeat loop... wherever it is
+ *  used," and at `repeats <= 1` there is no repeat loop to apply it to.
+ *
+ *  D-BP154-001, THE MECHANISM (repeats > 1 only), per THE RULE's own five points: (1) classify each
+ *  draw via `draw.invalid`/`draw.emptyResult`, set by the caller's own `drawOnce()` (never re-derived
+ *  here -- "reuse that predicate, do not write a second one"); (2) an invalid draw is removed from
+ *  the comparison set before agreement/disagreement is ever computed; (3) a replacement is taken for
+ *  each invalid draw, capped at `LB_DRAW_MAX_INVALID_REPLACEMENTS` TOTAL extra attempts; (4) if the
+ *  cap is exhausted before `repeats` valid draws exist (all-invalid is the extreme case of this), or
+ *  every valid draw extracted nothing, the result is a CAPTURE FAILURE, never draw-disagreement and
+ *  never a trusted agreement; (5) every discard is noted, naming the draw number, the FAILED CAPTURE
+ *  fact, the transport/authority, and a passage preview (`draw.invalidDetail`). A VALID draw is never
+ *  discarded -- only draws with `invalid === true` are ever removed from the comparison set. */
 export async function drawWithAgreement<T>(
   label: string,
   repeats: number,
   drawOnce: (drawIndex: number) => Promise<RepeatedDraw<T>>,
   note: (text: string) => void,
 ): Promise<RepeatedDrawOutcome<T>> {
+  // D-BP153-031's own escape hatch, UNTOUCHED by D-BP154-001. THE TICKET'S OWN SCOPE (WHAT TO
+  // BUILD, verbatim): "The draw-repeat loop introduced by D-BP153-031... wherever it is used." At
+  // `repeats <= 1` there IS no repeat loop -- one draw is issued and its result is used exactly as
+  // it was before EITHER ticket, no notes, no invalid-draw replacement, no empty-result guard. This
+  // is deliberate, not an oversight: every sibling classify_cascade.*.test.ts file (18 of them)
+  // pins `LB_DRAW_REPEATS=1` specifically so its own single-draw fixtures stay valid across BOTH
+  // tickets, and D-BP154-001's own measured evidence (this file's own D-BP154-001 section header)
+  // is entirely about MULTIPLE independent draws disagreeing or falsely "agreeing" -- a concept
+  // that does not exist for a single draw.
+  if (repeats <= 1) {
+    const draw = await drawOnce(0);
+    return { agreed: true, trusted: draw, draws: [draw], repeats };
+  }
   const draws: RepeatedDraw<T>[] = [];
-  for (let i = 0; i < repeats; i++) {
-    if (repeats > 1) note(`   ${label}: DRAW ${i + 1} of ${repeats} (LB_DRAW_REPEATS=${repeats}, D-BP153-031)`);
+  const validDraws: RepeatedDraw<T>[] = [];
+  let capExhausted = false;
+  for (;;) {
+    if (validDraws.length >= repeats) break;
+    if (draws.length >= repeats + LB_DRAW_MAX_INVALID_REPLACEMENTS) { capExhausted = true; break; }
+    const attemptNumber = draws.length + 1;
+    const isReplacement = draws.length >= repeats;
+    if (!isReplacement) {
+      note(`   ${label}: DRAW ${attemptNumber} of ${repeats} (LB_DRAW_REPEATS=${repeats}, D-BP153-031)`);
+    } else {
+      note(
+        `   ${label}: DRAW ${attemptNumber} -- REPLACEMENT draw ${draws.length - repeats + 1} of `
+          + `${LB_DRAW_MAX_INVALID_REPLACEMENTS} for an earlier INVALID draw (D-BP154-001)`,
+      );
+    }
     // eslint-disable-next-line no-await-in-loop -- each draw must be a genuinely separate,
     // independent ask of the SAME channel (that is the entire point -- a parallel fan-out would not
     // measure independent channel variance, it would just be the same race this file's own rate-limit
     // history already warns about); drawn one at a time by design.
-    const draw = await drawOnce(i);
+    const draw = await drawOnce(draws.length);
     draws.push(draw);
-    if (repeats > 1) note(`   ${label}: draw ${i + 1} result -- ${draw.resultLabel}`);
+    note(`   ${label}: draw ${attemptNumber} result -- ${draw.resultLabel}`);
+    if (draw.invalid) {
+      const attemptsLeft = repeats + LB_DRAW_MAX_INVALID_REPLACEMENTS - draws.length;
+      // D-BP154-001, THE RULE rule 5: "say every discard out loud... which draw number, that it
+      // named no options, the transport/authority that answered, and a passage preview. A silent
+      // discard is indistinguishable from a draw that never happened."
+      note(
+        `   ${label}: draw ${attemptNumber} DISCARDED as INVALID -- named NONE of the option(s) under `
+          + 'test, a FAILED CAPTURE, never a disagreeing answer (D-BP154-001, THE INVALID DRAW) -- '
+          + `${draw.invalidDetail ?? 'no detail available'} -- `
+          + (attemptsLeft > 0
+            ? 'taking a REPLACEMENT draw in its place'
+            : `cap reached (LB_DRAW_MAX_INVALID_REPLACEMENTS=${LB_DRAW_MAX_INVALID_REPLACEMENTS}), no further replacement`),
+      );
+      continue; // NEVER counted toward agreement or disagreement (THE RULE, rule 2).
+    }
+    validDraws.push(draw); // a VALID draw is never discarded (THE RULE, verbatim).
   }
-  const uniqueKeys = new Set(draws.map((d) => d.resultKey));
+
+  if (capExhausted || validDraws.length === 0) {
+    note(
+      `   ${label}: only ${validDraws.length} of ${repeats} required VALID draw(s) obtained after `
+        + `${draws.length} attempt(s) (replacement cap LB_DRAW_MAX_INVALID_REPLACEMENTS=`
+        + `${LB_DRAW_MAX_INVALID_REPLACEMENTS} exhausted) -- CAPTURE FAILURE (D-BP154-001), never `
+        + `draw-disagreement and never a trusted result; treating ${label} as UNAVAILABLE`,
+    );
+    return {
+      agreed: false, trusted: null, draws, repeats, captureFailure: true, captureFailureReason: 'all-invalid',
+    };
+  }
+
+  // D-BP154-001, THE RULE's "other half": every VALID draw obtained named options (passed the
+  // `invalid` check above) but extracted NOTHING informative -- agreement on an empty result is not
+  // corroboration.
+  if (validDraws.every((d) => d.emptyResult)) {
+    note(
+      `   ${label}: ${validDraws.length} valid independent draw(s) each named an option but extracted `
+        + 'NOTHING -- agreement on an empty result is not corroboration (D-BP154-001, THE INVALID '
+        + `DRAW, THE RULE's other half) -- CAPTURE FAILURE, never draw-disagreement and never a `
+        + `trusted empty result; treating ${label} as UNAVAILABLE`,
+    );
+    return {
+      agreed: false, trusted: null, draws, repeats, captureFailure: true, captureFailureReason: 'all-empty',
+    };
+  }
+
+  const uniqueKeys = new Set(validDraws.map((d) => d.resultKey));
   if (uniqueKeys.size <= 1) {
-    if (repeats > 1) note(`   ${label}: ${repeats} independent draw(s) AGREE -- ${draws[0].resultLabel} -- trusted`);
-    return { agreed: true, trusted: draws[0], draws, repeats };
+    note(`   ${label}: ${validDraws.length} valid independent draw(s) AGREE -- ${validDraws[0].resultLabel} -- trusted`);
+    return { agreed: true, trusted: validDraws[0], draws, repeats };
   }
   note(
-    `   ${label}: DISAGREEMENT across ${repeats} independent draws of the SAME question (D-BP153-031, `
-      + 'THE CHANNEL VARIANCE FINDING) -- '
-      + `${draws.map((d, i) => `draw ${i + 1}: ${d.resultLabel}`).join(' | ')} -- reported as a FINDING and `
+    `   ${label}: DISAGREEMENT across ${validDraws.length} VALID independent draws of the SAME question `
+      + '(D-BP153-031, THE CHANNEL VARIANCE FINDING) -- '
+      + `${validDraws.map((d, i) => `draw ${i + 1}: ${d.resultLabel}`).join(' | ')} -- reported as a FINDING and `
       + 'LEFT UNRESOLVED (never an intersection, a union, a majority vote, or a first-draw pick); '
       + `treating ${label} as UNAVAILABLE`,
   );
@@ -2266,8 +2419,15 @@ export async function establishFrame(
     }
     // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the options
     // cannot state anything about them -- same fact-class as the empty-passage check above.
+    // D-BP154-001: this is exactly THE INVALID DRAW -- a FAILED CAPTURE, not a disagreeing answer.
+    // `invalid`/`invalidDetail` let drawWithAgreement() (above) remove it from the comparison set
+    // and replace it under the cap, instead of letting it veto a good draw the way it did on the
+    // measured receipt (LIANA_RUN_qid98_2026-08-13T19-24-50-420Z.json, this ticket's own header).
     if (!passageMentionsAnyLabel(drawRes.text, all, OPT)) {
-      return { resultKey: 'UNAVAILABLE:no-label', resultLabel: `no option named (${drawRes.via})`, data: { kind: 'no-label', res: drawRes } };
+      return {
+        resultKey: 'UNAVAILABLE:no-label', resultLabel: `no option named (${drawRes.via})`, data: { kind: 'no-label', res: drawRes },
+        invalid: true, invalidDetail: `answered by ${drawRes.via} -- passage preview: "${passagePreview(drawRes.text)}"`,
+      };
     }
     const { kinds: drawKinds, categoryKind: drawCategoryKind, discarded: drawDiscarded } = await extractFrameKinds(drawRes.text, all, OPT, category, prop, note);
     // THE COMPARISON: the EXTRACTED RESULT SET, never the raw passage text (this section's own
@@ -2278,12 +2438,29 @@ export async function establishFrame(
       kinds: all.map((L) => [L, drawKinds[L]]), categoryKind: drawCategoryKind,
     });
     const resultLabel = `kinds {${all.map((L) => `${L}:${drawKinds[L] ?? 'null'}`).join(', ')}}, categoryKind=${drawCategoryKind ?? 'null'}`;
+    // D-BP154-001, THE RULE's "other half": the passage named options (it passed the check above)
+    // but nothing was actually extracted about ANY of them -- an uninformative draw that must never
+    // be allowed to "agree" with another equally uninformative draw and be trusted as corroboration.
+    const emptyResult = all.every((L) => drawKinds[L] == null) && drawCategoryKind == null;
     return {
-      resultKey, resultLabel, data: {
+      resultKey, resultLabel, emptyResult, data: {
         kind: 'extracted', res: drawRes, kinds: drawKinds, categoryKind: drawCategoryKind, discarded: drawDiscarded,
       },
     };
   }, note);
+  if (frameDrawOutcome.captureFailure) {
+    // D-BP154-001: a CAPTURE FAILURE -- either every draw (through the replacement cap) was
+    // INVALID, or every valid draw extracted nothing. Distinct from draw-disagreement (THE RULE:
+    // "it must never veto a good draw") and distinct from a trusted agreement (THE RULE's other
+    // half: "agreement on an empty result is not corroboration").
+    return {
+      available: false, excluded: [], included: [], conflicts: [], partitionComplete: false,
+      reconciliationWhy: `unavailable -- CAPTURE FAILURE (D-BP154-001, ${frameDrawOutcome.captureFailureReason}), `
+        + 'never a disagreement and never a trusted empty frame',
+      query, via: 'draw-capture-failure', answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: frameDrawOutcome.draws.length,
+    };
+  }
   if (!frameDrawOutcome.agreed) {
     // DISAGREEMENT -> UNAVAILABLE, exactly the same state a frame this function could never
     // establish at all already produces (FD-BP153-01 consequence 2). Never an intersection, a
@@ -2904,9 +3081,13 @@ export async function extractNamedSetMembers(
       return { resultKey: 'UNAVAILABLE:empty', resultLabel: `empty passage (${drawRes.via})`, data: { kind: 'empty', res: drawRes } };
     }
     // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the options
-    // cannot state anything about them.
+    // cannot state anything about them. D-BP154-001: THE INVALID DRAW -- a FAILED CAPTURE, never a
+    // disagreeing answer; see establishFrame()'s own identical D-BP154-001 comment, above.
     if (!passageMentionsAnyLabel(drawRes.text, all, OPT)) {
-      return { resultKey: 'UNAVAILABLE:no-label', resultLabel: `no option named (${drawRes.via})`, data: { kind: 'no-label', res: drawRes } };
+      return {
+        resultKey: 'UNAVAILABLE:no-label', resultLabel: `no option named (${drawRes.via})`, data: { kind: 'no-label', res: drawRes },
+        invalid: true, invalidDetail: `answered by ${drawRes.via} -- passage preview: "${passagePreview(drawRes.text)}"`,
+      };
     }
     const drawBoth = await extractNamedSetBothSides(drawRes.text, all, OPT, direction, property, note);
     // THE COMPARISON: the EXTRACTED RESULT SET (this section's own header) -- members/nonMembers/
@@ -2918,8 +3099,24 @@ export async function extractNamedSetMembers(
     });
     const resultLabel = `members {${drawBoth.members.join(',') || 'none'}}, non-members {${drawBoth.nonMembers.join(',') || 'none'}}`
       + `${drawBoth.conflicts.length ? `, conflicts {${drawBoth.conflicts.join(',')}}` : ''}`;
-    return { resultKey, resultLabel, data: { kind: 'extracted', res: drawRes, both: drawBoth } };
+    // D-BP154-001, THE RULE's "other half": a labeled passage from which NEITHER side extracted a
+    // single member is uninformative -- never let two such draws "agree" and be trusted.
+    const emptyResult = drawBoth.members.length === 0 && drawBoth.nonMembers.length === 0;
+    return {
+      resultKey, resultLabel, emptyResult, data: { kind: 'extracted', res: drawRes, both: drawBoth },
+    };
   }, note);
+  if (namedSetDrawOutcome.captureFailure) {
+    // D-BP154-001: CAPTURE FAILURE -- see establishFrame()'s own identical branch, above, for the
+    // full ruling this mirrors.
+    return {
+      available: false, members: [], rawMembers: [], memberSpans: {}, nonMembers: [], conflicts: [], partitionComplete: false,
+      reconciliationWhy: `unavailable -- CAPTURE FAILURE (D-BP154-001, ${namedSetDrawOutcome.captureFailureReason}), `
+        + 'never a disagreement and never a trusted empty named set',
+      query, via: 'draw-capture-failure', answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: namedSetDrawOutcome.draws.length,
+    };
+  }
   if (!namedSetDrawOutcome.agreed) {
     // DISAGREEMENT -> UNAVAILABLE, the identical state a named set this function could never
     // establish at all already produces -- never an intersection, union, majority, or first-draw
@@ -3567,9 +3764,13 @@ export async function runDiscriminator(
       return { resultKey: 'UNAVAILABLE:empty', resultLabel: `empty passage (${drawRes.via})`, data: { kind: 'empty', res: drawRes } };
     }
     // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the candidates
-    // cannot state anything about them.
+    // cannot state anything about them. D-BP154-001: THE INVALID DRAW -- a FAILED CAPTURE, never a
+    // disagreeing answer; see establishFrame()'s own identical D-BP154-001 comment, above.
     if (!passageMentionsAnyLabel(drawRes.text, candidates, OPT)) {
-      return { resultKey: 'UNAVAILABLE:no-label', resultLabel: `no option named (${drawRes.via})`, data: { kind: 'no-label', res: drawRes } };
+      return {
+        resultKey: 'UNAVAILABLE:no-label', resultLabel: `no option named (${drawRes.via})`, data: { kind: 'no-label', res: drawRes },
+        invalid: true, invalidDetail: `answered by ${drawRes.via} -- passage preview: "${passagePreview(drawRes.text)}"`,
+      };
     }
     const { kinds: drawKinds, categoryKind: drawCategoryKind, discarded: drawDiscarded } = await extractDiscriminatorKinds(drawRes.text, candidates, OPT, category);
     // THE COMPARISON: the EXTRACTED RESULT SET (this section's own header) -- the stated kind per
@@ -3579,12 +3780,29 @@ export async function runDiscriminator(
       kinds: candidates.map((L) => [L, drawKinds[L]]), categoryKind: drawCategoryKind,
     });
     const resultLabel = `kinds {${candidates.map((L) => `${L}:${drawKinds[L] ?? 'null'}`).join(', ')}}, categoryKind=${drawCategoryKind ?? 'null'}`;
+    // D-BP154-001, THE RULE's "other half" -- the MEASURED case this ticket's own header names
+    // (runs 16-29-46-988Z/16-59-33-658Z, `kinds {A:null...I:null}` on EVERY draw): a labeled
+    // passage from which NO candidate's kind and NO category kind was ever extracted.
+    const emptyResult = candidates.every((L) => drawKinds[L] == null) && drawCategoryKind == null;
     return {
-      resultKey, resultLabel, data: {
+      resultKey, resultLabel, emptyResult, data: {
         kind: 'extracted', res: drawRes, kinds: drawKinds, categoryKind: drawCategoryKind, discarded: drawDiscarded,
       },
     };
   }, note);
+  if (discriminatorDrawOutcome.captureFailure) {
+    // D-BP154-001: CAPTURE FAILURE -- see establishFrame()'s own identical branch, above, for the
+    // full ruling this mirrors.
+    note(`   DISCRIMINATOR: CAPTURE FAILURE (D-BP154-001, ${discriminatorDrawOutcome.captureFailureReason}) -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
+    return {
+      survivors: candidates, unique: null, eliminations: [],
+      kinds: Object.fromEntries(candidates.map((L) => [L, null])), categoryKind: null,
+      why: `CAPTURE FAILURE (D-BP154-001, ${discriminatorDrawOutcome.captureFailureReason}) -- `
+        + `never a disagreement and never a trusted empty read -- ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
+      query, via: 'draw-capture-failure', answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: discriminatorDrawOutcome.draws.length,
+    };
+  }
   if (!discriminatorDrawOutcome.agreed) {
     // DISAGREEMENT -> UNAVAILABLE, the identical ABSTAIN-naming-every-candidate state a discriminator
     // read this function could never establish at all already produces -- never an intersection,
@@ -3828,6 +4046,18 @@ export async function runSuperlativeByMagnitude(
   // the arithmetic by hand to see it reconcile.
   const drawRepeats = resolveDrawRepeats();
   let totalDrawsIssued = 0;
+  // D-BP154-001, THE RULE rule 6: "Extend THE QUERY BILL to count the replacement draws, so the
+  // cost of failed captures is visible without reading the ledger." `totalDrawsIssued` already
+  // includes every replacement draw (drawWithAgreement() reports EVERY attempt in `draws.length`,
+  // valid and invalid alike -- see its own D-BP154-001 header, above) so the total was already
+  // correct; this is the SAME fact restated in its own units (draws issued ABOVE `drawRepeats`,
+  // i.e. spent solely on replacing an invalid draw) so a reader sees the failed-capture cost without
+  // doing `totalDrawsIssued - N * drawRepeats` by hand.
+  let totalReplacementDrawsIssued = 0;
+  /** D-BP154-001: draws beyond `drawRepeats` on ONE stage's own `drawsIssued` were spent replacing
+   *  an invalid draw (drawWithAgreement() only ever issues more than `drawRepeats` attempts to
+   *  replace one -- see its own header). `undefined` (owned-evidence, zero draws) contributes 0. */
+  const replacementDrawsOf = (issued: number | undefined) => Math.max(0, (issued ?? 0) - drawRepeats);
 
   const say = (text: string) => emit({ kind: 'header', text, ts: nowIso() });
   const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
@@ -3897,7 +4127,9 @@ export async function runSuperlativeByMagnitude(
       + '(D-BP153-026); 1 per-option denotation sweep SKIPPED -- redundant '
       + 'by construction on the superlative path (FD-BP152-01 fallback; D-BP153-017); '
       + `LB_DRAW_REPEATS=${drawRepeats} (D-BP153-031), ${totalDrawsIssued} draw${totalDrawsIssued === 1 ? '' : 's'} issued across `
-      + "THE SOFTBALLS/THE NAMED SET/THE DISCRIMINATOR's own base question(s) -- included in, never "
+      + "THE SOFTBALLS/THE NAMED SET/THE DISCRIMINATOR's own base question(s) "
+      + `(${totalReplacementDrawsIssued} of which ${totalReplacementDrawsIssued === 1 ? 'was a REPLACEMENT draw' : 'were REPLACEMENT draws'} `
+      + 'for an INVALID capture, D-BP154-001) -- included in, never '
       + `on top of, the ${queriesIssued} quer${queriesIssued === 1 ? 'y' : 'ies'} counted above`,
   );
 
@@ -3936,6 +4168,7 @@ export async function runSuperlativeByMagnitude(
   // obtainCascadePassage()'s own header for the full ruling.
   const frame = await establishFrame(countedAskGoogle, category, ALL, OPT, note, ctx.ownedPassages, property, countedAskConversationalAuthority);
   totalDrawsIssued += frame.drawsIssued ?? 0;
+  totalReplacementDrawsIssued += replacementDrawsOf(frame.drawsIssued);
   if (frame.answeredFrom === 'owned-passage') answeredFromOwned.push('THE SOFTBALLS');
   if (!frame.available) {
     // FD-BP153-01 consequence 2, verbatim: "A magnitude result with no frame is NOT definitive."
@@ -3994,6 +4227,7 @@ export async function runSuperlativeByMagnitude(
   // D-BP153-024: same threading as establishFrame(), above.
   const namedSet = await extractNamedSetMembers(countedAskGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages, countedAskConversationalAuthority);
   totalDrawsIssued += namedSet.drawsIssued ?? 0;
+  totalReplacementDrawsIssued += replacementDrawsOf(namedSet.drawsIssued);
   if (namedSet.answeredFrom === 'owned-passage') answeredFromOwned.push('THE NAMED SET');
   if (namedSet.available) {
     // D-BP153-030: CROSS-QUESTION CONSISTENCY. Must run BEFORE runMembershipTerminator() -- see
@@ -4077,6 +4311,7 @@ export async function runSuperlativeByMagnitude(
       // D-BP153-024: same threading as establishFrame()/extractNamedSetMembers(), above.
       const discriminator = await runDiscriminator(countedAskGoogle, category, termination.candidates, OPT, note, ctx.ownedPassages, countedAskConversationalAuthority);
       totalDrawsIssued += discriminator.drawsIssued ?? 0;
+      totalReplacementDrawsIssued += replacementDrawsOf(discriminator.drawsIssued);
       if (discriminator.answeredFrom === 'owned-passage') answeredFromOwned.push('THE DISCRIMINATOR');
       if (discriminator.unique) {
         const winner = discriminator.unique;
