@@ -1884,8 +1884,31 @@ export async function establishFrame(
     note(`   FRAME: ${owned.length} owned passage(s) already acquired this run did not contain a usable frame partition -- falling through to a NEW QUERY`);
   }
 
-  const query = `Which of these are ${category}, and which of them are not ${category}? `
-    + `For each one that is not, say so explicitly and say what it is instead. ${list(all, OPT)}`;
+  // D-BP153-021 FIX. THE MEASURED FAILURE (live run, receipt
+  // LIANA_RUN_qid98_2026-08-13T01-30-04-993Z.json). The OLD wording asked "which of these ARE
+  // category, and which of them are NOT category" -- a two-part ask that a source can satisfy by
+  // naming a couple of examples and stopping. It did exactly that, twice: both live runs returned
+  // only 2 of 9 options, and D-BP153-020's own complete-partition rule (unchanged, still enforced
+  // below via extractFrameBothSides() -> reconcileNamedSet()) correctly rejected the partial
+  // answer as an honest abstain rather than a false pass. No downstream logic can repair an answer
+  // that never covered the field -- the question itself had to change.
+  //
+  // THE FIX asks for an accounting of EVERY option, IN ONE QUERY (Founder, BP151, verbatim: "we
+  // got rid of four answers with ONE google search" -- no fan-out to one query per option), and
+  // asks what each option IS (its actual classification) rather than whether it "is or is not"
+  // the category. The "is or is not" framing is exactly what invited the partial list, AND it
+  // invites the same property/category conflation D-BP153-018 already had to guard against (a
+  // span stating how a thing SCORES on a property is not evidence about what it IS). Asking for a
+  // stated classification per option sidesteps both: the two existing extraction instructions
+  // below (frameExtractionInstruction() / frameComplementExtractionInstruction, UNCHANGED) still
+  // read this SAME passage for a classification that differs from `category` (exclusion) and one
+  // that matches it (inclusion) -- one stated kind per option answers both directions at once, so
+  // the old query's separate "and which of them are not" clause is now redundant and is dropped.
+  // If the source still fails to name a kind for every option, D-BP153-020's complete-partition
+  // rule still rejects the answer -- that safety net is untouched by this ticket.
+  const query = `For EACH of the following, state exactly what it is -- its actual classification `
+    + `or type -- rather than merely whether it is or is not ${category}. Answer for every one, in `
+    + `order, and do not skip any. ${list(all, OPT)}`;
   note(`   FRAME: ${query}`);
   const res = await googleBlocks(askGoogle, query);
   if (!res.ok) {
