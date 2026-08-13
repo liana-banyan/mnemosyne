@@ -48,6 +48,10 @@ import { explainSelection, listMethods, selectMethod } from './method_registry';
 import { describeDemand, determineDemandFromAmbiguityNested, determineDemandFromOperationAnswer, determineDemandFromQuestionStructure, determineDemandFromSurveyedAsk } from './demand_test';
 import type { DemandResult } from './demand_test';
 import type { AskGoogleFn, ConversationalAuthorityFn, EmitFn, MethodQuestionInput, MethodRunContext, OwnedPassage } from './method_registry';
+// D-BP154-008/BISHOP/S8/seg-mortgage, ADDITIVE. THE MORTGAGE -- see cross_acquisition.ts's own
+// header for the full ruling (FD-BP153-04 boundary 4, lifted). The ONE call site below (this
+// file's own `ownedPassages()` builder) is the sole consumer of this import.
+import { buildPriorAcquisitionOwnedPassages } from './evidence/cross_acquisition';
 // D-BP151-026/BISHOP/seg-contingency-operator (Contingency Operator: Survey Splice), ORIGIN.
 // Founder, BP151, Q-20: "This is a case for Contingency Operators. Do it, and see if it works
 // before I ratify." runSurveyStage() (Founder steps 2, 3, 4, 6) was built D-BP151-025 but never
@@ -377,6 +381,9 @@ async function runLianaCycleQuestionInner(
    *  INDEPENDENTLY of `steppedAudible` -- assisted mode must not silently depend on the Stepped
    *  Audible bench toggle also being on. Only consulted when `mode === 'assisted'`. */
   assistedChannel?: SteppedAudibleChannel | null,
+  // D-BP154-008, ADDITIVE/OPTIONAL, placed LAST -- see runLianaCycleQuestion()'s own D-BP154-008
+  // comment on this same parameter, above, for the full ruling.
+  currentAcquisitionId?: string,
 ): Promise<LianaTerminalOutcome> {
   const trimmed = input.trim();
   const runMode = normalizeRunMode(mode);
@@ -842,6 +849,40 @@ async function runLianaCycleQuestionInner(
     // as an assertion. `kind` is what lets an extractor refuse that passage outright, structurally,
     // rather than by convention. `sourceQuery` carries the literal query text (Survey's own
     // `askedText`) through for audit, when the caller has it.
+    //
+    // D-BP154-008/BISHOP/S8/seg-mortgage -- THE MORTGAGE, FD-BP153-04 BOUNDARY 4 LIFTED. Computed
+    // HERE (not inside the `ownedPassages()` closure below) because building it is a disk read
+    // plus, on a Google match, one pass of googleBlocks()'s own async text assembly -- and this
+    // function is already `async` at the point Survey's `askedText` values exist, while
+    // `MethodRunContext.ownedPassages` itself is a SYNCHRONOUS accessor every existing consumer
+    // (establishFrame()/extractNamedSetMembers()/runDiscriminator(), classify_cascade.ts) already
+    // calls without an `await`. Pre-computing the list here and having the closure below simply
+    // return it keeps that type, and every existing consumer, byte-identical.
+    //
+    // SCOPED TO A BUNDLED QID ONLY. `parsed.qid == null` (free-text input) is excluded entirely:
+    // evidence_store.ts's own `slugFor(null)` buckets every free-text acquisition under one shared
+    // 'free-text' file, which does not identify a single question -- reaching across acquisitions
+    // for a store that cannot uniquely address the qid would risk mixing one free-text question's
+    // evidence into an unrelated one's run, so this only ever fires for a bundled qid.
+    //
+    // `fullQueryText`, NOT `askedText` -- survey_stage.ts's own AmbiguityQueryResult/
+    // OperationQueryResult.askedText is only the STATIC clause (resources/liana_survey_queries.json);
+    // the text ACTUALLY sent (and therefore what a prior acquisition's own EvidenceRecord.query
+    // holds) is `askText + optionsBlock + askedText`, carried in the D-BP154-008 `fullQueryText`
+    // field added alongside it. Matching against the shorter `askedText` would search for a string
+    // no live run ever actually sent and never find anything -- see that field's own doc comment,
+    // survey_stage.ts, for the full ruling. Undefined (the 'gemma' transport, or no Survey result at
+    // all) is skipped by buildPriorAcquisitionOwnedPassages() itself, never a crash.
+    const priorAcquisitionPassages = parsed.qid != null
+      ? await buildPriorAcquisitionOwnedPassages(
+        parsed.qid,
+        [
+          { kind: 'ambiguity', askedText: surveyResult.step2.ambiguity?.fullQueryText },
+          { kind: 'operation', askedText: surveyResult.step2.operation?.fullQueryText },
+        ],
+        { excludeAcquisitionId: currentAcquisitionId },
+      )
+      : [];
     const baseCtx: MethodRunContext = {
       askGoogle: wrapAskGoogleWithAudible(effectiveAskGoogle, audible ?? null, emit, audibleLog),
       emit,
@@ -874,6 +915,13 @@ async function runLianaCycleQuestionInner(
         if (op && op.rawGooglePassage && op.rawGooglePassage.trim()) {
           out.push({ text: op.rawGooglePassage, kind: 'operation', sourceQuery: op.askedText });
         }
+        // D-BP154-008 -- ADDED AFTER this run's own two entries above, so every existing
+        // owned-passage loop (establishFrame()/extractNamedSetMembers()/runDiscriminator(),
+        // classify_cascade.ts, unmodified) tries a live, this-run answer FIRST; reaching across
+        // acquisitions only ever adds a candidate, never displaces this run's own. See this
+        // function's own D-BP154-008 comment, above `baseCtx`, for how `priorAcquisitionPassages`
+        // is computed.
+        out.push(...priorAcquisitionPassages);
         return out;
       },
     };
@@ -1016,6 +1064,17 @@ export async function runLianaCycleQuestion(
   askConversationalAuthority?: ConversationalAuthorityFn,
   mode?: RunMode,
   assistedChannel?: SteppedAudibleChannel | null,
+  // D-BP154-008, ADDITIVE/OPTIONAL, placed LAST so no existing call site (none of which pass an
+  // 11th argument) shifts meaning -- same convention every other trailing parameter in this
+  // signature already follows. THE MORTGAGE, TICKET_D-BP154-008_THE_MORTGAGE.md: the evidence
+  // acquisition THIS run is currently writing (index.ts's `evidenceSession.acquisitionId`, when
+  // this run is wired to the evidence store at all), so the cross-acquisition lookup below never
+  // "reuses" a record this run is itself in the middle of producing -- see
+  // cross_acquisition.ts's own header, `excludeAcquisitionId`. Undefined for every caller that
+  // omits it (every pre-existing test, library/script_bridge.ts's Composer path): excludes
+  // nothing beyond what qid and the query already select, never a crash or a behavior change on
+  // that path.
+  currentAcquisitionId?: string,
 ): Promise<LianaTerminalOutcome> {
   const outcome = await runLianaCycleQuestionInner(
     input,
@@ -1028,6 +1087,7 @@ export async function runLianaCycleQuestion(
     askConversationalAuthority,
     mode,
     assistedChannel,
+    currentAcquisitionId,
   );
   return { ...outcome, mode: normalizeRunMode(mode) };
 }

@@ -4283,6 +4283,44 @@ export async function runSuperlativeByMagnitude(
   // ledger (ticket's own words).
   const questionsAttempted: string[] = [];
   const answeredFromOwned: string[] = [];
+  // D-BP154-008/BISHOP/S8/seg-mortgage -- THE MORTGAGE, section 4: "how many questions were
+  // answered from evidence owned by a PRIOR acquisition, how many from this run's own, and how
+  // many required a new query." A snapshot of `ctx.ownedPassages()`, taken ONCE here -- it is a
+  // pure accessor over already-computed state (liana_terminal_engine.ts builds it from
+  // `surveyResult`/`priorAcquisitionPassages`, never a network call), so calling it again here
+  // costs nothing and changes no behavior; establishFrame()/extractNamedSetMembers()/
+  // runDiscriminator() below each call the SAME `ctx.ownedPassages` themselves, unmodified. Used
+  // only to tell WHICH bucket an 'owned-passage' answer came from, via the D-BP154-008
+  // `acquisitionId` marker (method_registry.ts's OwnedPassage) -- present only on a passage
+  // reused from a PRIOR acquisition, absent on one fetched live this run.
+  const ownedPassagesSnapshot = ctx.ownedPassages ? ctx.ownedPassages() : [];
+  const answeredFromPriorAcquisition: string[] = [];
+  const priorAcquisitionProvenance: string[] = [];
+  /** Reads `answeredFrom`/`ownedPassageIndex` off one of THE THREE QUESTIONS' own result (FrameResult/
+   *  NamedSetResult/DiscriminatorResult, all typed `answeredFrom: 'owned-passage' | 'new-query'`,
+   *  the discriminator adding `'not-fired'`) and files it into exactly one bucket -- this run's own
+   *  owned evidence, or a PRIOR acquisition -- never both, never neither, when `answeredFrom` is
+   *  'owned-passage'. Nothing here re-derives WHETHER a question resolved from owned evidence
+   *  (establishFrame()/extractNamedSetMembers()/runDiscriminator() decide that, unmodified); this
+   *  only reads the fact those functions already reported and asks the SAME snapshot above which
+   *  kind of "owned" it was. */
+  const noteOwnedSource = (
+    label: string,
+    answeredFrom: 'owned-passage' | 'new-query' | 'not-fired',
+    ownedPassageIndex: number | null,
+  ) => {
+    if (answeredFrom !== 'owned-passage' || ownedPassageIndex == null) return;
+    const p = ownedPassagesSnapshot[ownedPassageIndex];
+    if (p?.acquisitionId) {
+      answeredFromPriorAcquisition.push(label);
+      priorAcquisitionProvenance.push(
+        `${label}: acquisition ${p.acquisitionId}, recorded ${p.acquiredAt ?? 'unknown'}, `
+          + `age ${Math.round((p.ageMsAtUse ?? 0) / 60000)} minute(s) at time of use (D-BP154-008)`,
+      );
+    } else {
+      answeredFromOwned.push(label);
+    }
+  };
   /** Emits ONE note naming: queries issued this run (split by which authority answered them), how
    *  many of THE THREE QUESTIONS were answered from owned evidence (no new query), how many
    *  completion follow-ups (D-BP153-026) were issued, and that the per-option denotation sweep
@@ -4292,21 +4330,32 @@ export async function runSuperlativeByMagnitude(
    *  never disagree). Called at every exit point below, not only the final one, so an abstain's own
    *  transcript states the bill too. D-BP153-028: the leading "N quer(y/ies) issued this run" clause
    *  is UNCHANGED wording/position from before this ticket (every pre-existing assertion on it still
-   *  matches) -- the authority split, the follow-up count, and everything after are ADDITIVE. */
-  const queryBillNote = () => note(
-    `   QUERY BILL: ${queriesIssued} quer${queriesIssued === 1 ? 'y' : 'ies'} issued this run `
-      + `(${conversationalQueriesIssued} to the conversational authority, ${googleQueriesIssued} to Google) -- `
-      + `${answeredFromOwned.length} of ${questionsAttempted.length} question(s) asked `
-      + `(${questionsAttempted.join(', ') || 'none'}) answered from OWNED EVIDENCE, no new query `
-      + `(${answeredFromOwned.join(', ') || 'none'}); ${followUpsIssued} completion follow-up${followUpsIssued === 1 ? '' : 's'} issued `
-      + '(D-BP153-026); 1 per-option denotation sweep SKIPPED -- redundant '
-      + 'by construction on the superlative path (FD-BP152-01 fallback; D-BP153-017); '
-      + `LB_DRAW_REPEATS=${drawRepeats} (D-BP153-031), ${totalDrawsIssued} draw${totalDrawsIssued === 1 ? '' : 's'} issued across `
-      + "THE SOFTBALLS/THE NAMED SET/THE DISCRIMINATOR's own base question(s) "
-      + `(${totalReplacementDrawsIssued} of which ${totalReplacementDrawsIssued === 1 ? 'was a REPLACEMENT draw' : 'were REPLACEMENT draws'} `
-      + 'for an INVALID capture, D-BP154-001) -- included in, never '
-      + `on top of, the ${queriesIssued} quer${queriesIssued === 1 ? 'y' : 'ies'} counted above`,
-  );
+   *  matches) -- the authority split, the follow-up count, and everything after are ADDITIVE.
+   *  D-BP154-008: the PRIOR ACQUISITION clause and the REUSED EVIDENCE PROVENANCE lines are
+   *  ADDITIVE, inserted immediately after the pre-existing OWNED EVIDENCE clause -- nothing already
+   *  matched by an existing assertion moves or is removed. */
+  const queryBillNote = () => {
+    note(
+      `   QUERY BILL: ${queriesIssued} quer${queriesIssued === 1 ? 'y' : 'ies'} issued this run `
+        + `(${conversationalQueriesIssued} to the conversational authority, ${googleQueriesIssued} to Google) -- `
+        + `${answeredFromOwned.length} of ${questionsAttempted.length} question(s) asked `
+        + `(${questionsAttempted.join(', ') || 'none'}) answered from OWNED EVIDENCE, no new query `
+        + `(${answeredFromOwned.join(', ') || 'none'}); ${answeredFromPriorAcquisition.length} of `
+        + `${questionsAttempted.length} question(s) answered from a PRIOR ACQUISITION (D-BP154-008, `
+        + `FD-BP153-04 boundary 4 lifted), no new query (${answeredFromPriorAcquisition.join(', ') || 'none'}); `
+        + `${followUpsIssued} completion follow-up${followUpsIssued === 1 ? '' : 's'} issued `
+        + '(D-BP153-026); 1 per-option denotation sweep SKIPPED -- redundant '
+        + 'by construction on the superlative path (FD-BP152-01 fallback; D-BP153-017); '
+        + `LB_DRAW_REPEATS=${drawRepeats} (D-BP153-031), ${totalDrawsIssued} draw${totalDrawsIssued === 1 ? '' : 's'} issued across `
+        + "THE SOFTBALLS/THE NAMED SET/THE DISCRIMINATOR's own base question(s) "
+        + `(${totalReplacementDrawsIssued} of which ${totalReplacementDrawsIssued === 1 ? 'was a REPLACEMENT draw' : 'were REPLACEMENT draws'} `
+        + 'for an INVALID capture, D-BP154-001) -- included in, never '
+        + `on top of, the ${queriesIssued} quer${queriesIssued === 1 ? 'y' : 'ies'} counted above`,
+    );
+    // D-BP154-008, WHAT TO BUILD section 5: provenance is the price of reaching across runs --
+    // acquisition id, timestamp, and age, named for EVERY reused passage, not just counted.
+    priorAcquisitionProvenance.forEach((line) => note(`   REUSED EVIDENCE PROVENANCE: ${line}`));
+  };
 
   say(`METHOD classify-cascade / superlative-by-magnitude -- ${input.qid != null ? `qid ${input.qid}` : 'free-text'}`);
   note(`   ${input.question}`);
@@ -4344,7 +4393,7 @@ export async function runSuperlativeByMagnitude(
   const frame = await establishFrame(countedAskGoogle, category, ALL, OPT, note, ctx.ownedPassages, property, countedAskConversationalAuthority);
   totalDrawsIssued += frame.drawsIssued ?? 0;
   totalReplacementDrawsIssued += replacementDrawsOf(frame.drawsIssued);
-  if (frame.answeredFrom === 'owned-passage') answeredFromOwned.push('THE SOFTBALLS');
+  noteOwnedSource('THE SOFTBALLS', frame.answeredFrom, frame.ownedPassageIndex);
   if (frame.degenerate) {
     // D-BP154-005 -- checked BEFORE `!frame.available` (degenerate reads also set available:false,
     // above) so this gets its OWN distinct, honest abstain reason rather than being folded into the
@@ -4432,7 +4481,7 @@ export async function runSuperlativeByMagnitude(
   const namedSet = await extractNamedSetMembers(countedAskGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages, countedAskConversationalAuthority);
   totalDrawsIssued += namedSet.drawsIssued ?? 0;
   totalReplacementDrawsIssued += replacementDrawsOf(namedSet.drawsIssued);
-  if (namedSet.answeredFrom === 'owned-passage') answeredFromOwned.push('THE NAMED SET');
+  noteOwnedSource('THE NAMED SET', namedSet.answeredFrom, namedSet.ownedPassageIndex);
   if (namedSet.available) {
     // D-BP153-030: CROSS-QUESTION CONSISTENCY. Must run BEFORE runMembershipTerminator() -- see
     // checkFrameNamedSetConsistency()'s own section header (above) for the full ruling and the
@@ -4516,7 +4565,7 @@ export async function runSuperlativeByMagnitude(
       const discriminator = await runDiscriminator(countedAskGoogle, category, termination.candidates, OPT, note, ctx.ownedPassages, countedAskConversationalAuthority);
       totalDrawsIssued += discriminator.drawsIssued ?? 0;
       totalReplacementDrawsIssued += replacementDrawsOf(discriminator.drawsIssued);
-      if (discriminator.answeredFrom === 'owned-passage') answeredFromOwned.push('THE DISCRIMINATOR');
+      noteOwnedSource('THE DISCRIMINATOR', discriminator.answeredFrom, discriminator.ownedPassageIndex);
       if (discriminator.unique) {
         const winner = discriminator.unique;
         const ok = KEY != null ? winner === KEY : undefined;

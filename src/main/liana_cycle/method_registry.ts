@@ -119,11 +119,32 @@ export interface ShapeTestResult {
  *  for the ambiguity meta-question's own passage, 'operation' for the operation meta-question's own
  *  passage. `sourceQuery` is the literal query text this passage answers, when the caller has it
  *  (Survey's own `askedText`), carried through for audit -- optional because not every future
- *  producer of an owned passage will have a clean single query string to hand back. */
+ *  producer of an owned passage will have a clean single query string to hand back.
+ *
+ *  D-BP154-008, ADDITIVE/OPTIONAL -- THE MORTGAGE. FD-BP153-04 boundary 4 ("owned means acquired
+ *  THIS RUN, for now... reaching across acquisitions is not authorized by this ruling") is LIFTED
+ *  by TICKET_D-BP154-008_THE_MORTGAGE.md, per FD-BP153-03 ("we don't pay rent on answers, we pay
+ *  the mortgage to own them") -- see cross_acquisition.ts's own header for the full ruling this
+ *  authorizes and the provenance price it names. `acquisitionId`/`acquiredAt`/`ageMsAtUse` are
+ *  present ONLY when a passage was reused from a PRIOR acquisition on disk rather than fetched
+ *  live this run; absent (undefined) on every passage acquired live, this run, exactly as every
+ *  OwnedPassage before this ticket -- an absent field is never a fabricated "this run" claim, it
+ *  is simply the pre-existing shape for a live passage. `ageMsAtUse` is reported, never compared
+ *  to a cutoff anywhere in this estate: this ticket authorizes reaching across acquisitions, not a
+ *  staleness/TTL/expiry policy, which remains an unauthorized, undecided Founder ruling. */
 export interface OwnedPassage {
   text: string;
   kind: string;
   sourceQuery?: string;
+  /** D-BP154-008, ADDITIVE/OPTIONAL. The acquisition this passage was reused from, when it was NOT
+   *  acquired live this run. See this interface's own D-BP154-008 paragraph, above. */
+  acquisitionId?: string;
+  /** D-BP154-008, ADDITIVE/OPTIONAL. That acquisition's own wall-clock (ISO 8601 UTC), i.e. when
+   *  the reused passage was ORIGINALLY acquired -- not when it was reused. */
+  acquiredAt?: string;
+  /** D-BP154-008, ADDITIVE/OPTIONAL. Age of the reused passage, milliseconds, AT THE MOMENT this
+   *  run looked it up (now - acquiredAt). Mechanical and answer-independent; never a cutoff. */
+  ageMsAtUse?: number;
 }
 
 export interface MethodRunContext {
@@ -156,8 +177,22 @@ export interface MethodRunContext {
    *  `rawGooglePassage` fields, D-BP152-004/005, unmodified -- populated by
    *  liana_terminal_engine.ts where `baseCtx` is built, immediately after Survey returns). Non-
    *  empty strings only; an empty array means nothing has been acquired yet, never a fabricated
-   *  placeholder. OWNED MEANS THIS RUN ONLY -- never the evidence store on disk, never a prior
-   *  acquisition; a caller must not reach across acquisitions to populate this.
+   *  placeholder.
+   *
+   *  D-BP154-008, BOUNDARY 4 LIFTED -- "OWNED MEANS THIS RUN ONLY" (the sentence that stood here
+   *  before this ticket: "never the evidence store on disk, never a prior acquisition; a caller
+   *  must not reach across acquisitions to populate this") is NO LONGER the rule. Founder ruling
+   *  FD-BP153-03 ("we don't pay rent on answers, we pay the mortgage to own them"), applied by
+   *  TICKET_D-BP154-008_THE_MORTGAGE.md: liana_terminal_engine.ts's own `ownedPassages()` builder
+   *  now ALSO appends passages reused from PRIOR acquisitions on disk for the SAME two named
+   *  questions (ambiguity, operation), via cross_acquisition.ts's `buildPriorAcquisitionOwnedPassages()`
+   *  -- see that file's own header for the exact-query-text matching rule and the provenance this
+   *  authorization is priced at. A reused entry is marked, never silently indistinguishable from a
+   *  live one: `OwnedPassage.acquisitionId` (this interface, above) is set on it and absent on
+   *  every live-this-run entry. Still ADDITIVE ONLY: this run's own live passages are always pushed
+   *  first by liana_terminal_engine.ts's builder, so every existing owned-passage loop below tries
+   *  a live, this-run answer before a reused one -- reaching across acquisitions only ever adds a
+   *  candidate, never displaces this run's own.
    *
    *  classify_cascade.ts's establishFrame(), extractNamedSetMembers(), and runDiscriminator() read
    *  this field (D-BP153-04, extended D-BP153-016). Every other Survey/method query keeps going to
