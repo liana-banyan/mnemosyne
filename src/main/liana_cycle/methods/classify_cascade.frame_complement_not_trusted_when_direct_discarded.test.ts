@@ -233,29 +233,47 @@ describe('D-BP153-019 TEST 4: case (a) direct-genuinely-empty is preserved for a
   // a partial complement establishes nothing. See TEST 3 (above) for the complete-partition sibling
   // that DOES get trusted, and classify_cascade.complete_partition_required.test.ts for the
   // dedicated gate coverage.
-  test('the direct side extracts NOTHING and the complement names only a strict subset -- NOTHING is trusted, not the six the old arithmetic derived from absence', async () => {
+  // D-BP153-023 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to assert that a single owned
+  // passage yielding an INCOMPLETE PARTITION TERMINATED the step right there (`answeredFrom:
+  // 'owned-passage'`, zero queries issued) -- that IS the live measured bug D-BP153-023 closes
+  // (receipt LIANA_RUN_qid98_2026-08-13T02-05-04-911Z.json): an INCOMPLETE partition is not an
+  // answer, and must fall through to a fresh query rather than stopping here. This test now supplies
+  // a fresh-query response too (the SAME shape, still incomplete -- proving D-BP153-020's safety net
+  // is unchanged: an incomplete fresh query is still the final, "nothing trusted" answer) and asserts
+  // the ONE query D-BP153-023 now spends, where the old code spent zero.
+  test('the direct side extracts NOTHING and the complement names only a strict subset -- INCOMPLETE, falls through to a fresh query (D-BP153-023); the fresh query is ALSO incomplete, so NOTHING is trusted (safety net unchanged)', async () => {
     const originalFetch = global.fetch;
     const passage = 'Only B (South Asia), D (Northeast United States), and E (Europe) are recognized as major population clusters.';
     global.fetch = queuedFetch([
-      // Direct read: genuinely nothing extracted -- an empty list, not six discarded values.
+      // Owned passage. Direct read: genuinely nothing extracted -- an empty list, not six discarded
+      // values. Complement read: three genuine members -- but six of nine options (A, C, F, G, H, I)
+      // are never mentioned by EITHER extraction -- INCOMPLETE PARTITION, falls through.
       JSON.stringify({ not_members: [], stated_in_passage: true }),
-      // Complement read: three genuine members -- but six of nine options (A, C, F, G, H, I) are
-      // never mentioned by EITHER extraction.
+      JSON.stringify({
+        members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: passage })),
+        stated_in_passage: true,
+      }),
+      // The fresh query (D-BP153-023's own fall-through, never reached before this ticket): the SAME
+      // incomplete shape comes back, proving the safety net (D-BP153-020) still holds unchanged.
+      JSON.stringify({ not_members: [], stated_in_passage: true }),
       JSON.stringify({
         members: ['South Asia', 'Northeast United States', 'Europe'].map((name) => ({ name, span: passage })),
         stated_in_passage: true,
       }),
     ]);
-    const askGoogle = vi.fn(async () => ({ snippet: 'must never be reached' }));
+    const askGoogle = vi.fn(async () => ({ snippet: passage }));
     try {
       const { note, log } = notes();
       const frame = await establishFrame(
         askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note,
         () => [owned(passage)], PROPERTY,
       );
-      expect(askGoogle).not.toHaveBeenCalled();
+      // D-BP153-023: ONE query issued -- the owned passage's INCOMPLETE PARTITION did NOT answer,
+      // so it fell through instead of terminating with zero queries the way the old code did.
+      expect(askGoogle).toHaveBeenCalledTimes(1);
+      expect(log.some((l) => /INCOMPLETE PARTITION on owned passage/.test(l) && /D-BP153-023/.test(l) && /falling through/.test(l))).toBe(true);
       expect(frame.available).toBe(true);
-      expect(frame.answeredFrom).toBe('owned-passage');
+      expect(frame.answeredFrom).toBe('new-query');
       // Case (a) still reaches reconciliation (never wrongly REJECTED by D-BP153-019's own FIX 2
       // machinery, which is specific to case (b) -- all-direct-values-discarded-as-property).
       expect(log.some((l) => /D-BP153-019, FIX 2.*REJECTED/.test(l))).toBe(false);

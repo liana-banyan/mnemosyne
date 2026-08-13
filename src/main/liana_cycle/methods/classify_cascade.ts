@@ -1654,6 +1654,12 @@ async function extractFrameBothSides(
    *  zero when discarding empties an otherwise-real answer -- see this file's own D-BP153-018
    *  section header for why that is a different fact than "this passage had nothing to extract"). */
   extractedAnything: boolean;
+  /** D-BP153-023: mirrors NamedSetReconciliation.incompletePartition exactly (reconcileNamedSet()
+   *  is the SAME shared function this reads it from) -- true ONLY for the "INCOMPLETE PARTITION"
+   *  reconciliation outcome, false for a conflict, a complete partition, a silent complement, or the
+   *  D-BP153-019 wholesale-rejection branch (which is its own, already-`extractedAnything:false`,
+   *  fall-through case and is not "incomplete" in this sense). */
+  incompletePartition: boolean;
 }> {
   const exNot = await gemmaExtract(frameExtractionInstruction(category, all, OPT), passage, FRAME_EXTRACTION_SHAPE);
   const direct = extractSpannedLetters(exNot?.not_members, passage, OPT);
@@ -1737,6 +1743,7 @@ async function extractFrameBothSides(
         + 'span, not a membership span, so the complement side is not trusted either',
       discarded: direct.discarded + complement.discarded,
       extractedAnything: false,
+      incompletePartition: false, // wholesale-REJECTED, not "incomplete" -- extractedAnything:false already sends this through the "nothing extracted" fall-through
     };
   }
 
@@ -1751,6 +1758,7 @@ async function extractFrameBothSides(
     why: reconciliation.why,
     discarded: direct.discarded + complement.discarded,
     extractedAnything,
+    incompletePartition: reconciliation.incompletePartition,
   };
 }
 
@@ -1841,6 +1849,24 @@ export async function establishFrame(
     const both = await extractFrameBothSides(passage, category, prop, all, OPT, note);
     if (both.discarded) {
       note(`   FRAME: discarded ${both.discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
+    }
+    // D-BP153-023/BISHOP/seg-classify-023 -- INCOMPLETE IS NOT ANSWERED. THE MEASURED FAILURE this
+    // closes (receipt LIANA_RUN_qid98_2026-08-13T02-05-04-911Z.json): this owned passage extracted
+    // SOMETHING (both.extractedAnything is true -- it would have fallen through on the OLD rule
+    // below already if not), but reconcileNamedSet() came back INCOMPLETE PARTITION -- members and
+    // non-members do NOT together account for every option. That is NOT an answer (FD-BP153-07: a
+    // partial answer establishes nothing) -- it must NOT terminate this step with a false "zero
+    // exclusions, done" the way the live bug did. Falls through to the next owned passage, and then
+    // to the fresh query (below), the SAME query D-BP153-021 reworded specifically to force a
+    // complete accounting -- that query has never had the chance to run on this shape before this
+    // ticket, because this exact gate always terminated first.
+    if (both.extractedAnything && both.incompletePartition) {
+      note(
+        `   FRAME: INCOMPLETE PARTITION on owned passage ${i + 1} of ${owned.length} (D-BP153-023) -- `
+          + `${both.why} -- this owned passage did NOT answer THE SOFTBALLS; falling through to `
+          + `${i + 1 < owned.length ? 'the next owned passage' : 'a fresh query'}`,
+      );
+      continue;
     }
     // D-BP153-017: answered when EITHER direction extracted something -- mirrors
     // extractNamedSetMembers()'s own extension of this same rule (D-BP153-014), for the identical
@@ -2125,6 +2151,7 @@ export function reconcileNamedSet(
       nonMembers,
       conflicts,
       partitionComplete: false,
+      incompletePartition: false, // a CONFLICT, not an incomplete union -- see D-BP153-023's own doc comment
       why: `CONFLICT: ${label(conflicts)} extracted as BOTH a member and a non-member by the two `
         + 'independent extractions -- reported, neither side is preferred; using the direct member '
         + 'extraction unreconciled',
@@ -2143,6 +2170,11 @@ export function reconcileNamedSet(
         nonMembers,
         conflicts,
         partitionComplete: false,
+        // D-BP153-023: THE one outcome a caller must NOT treat as "this passage answered". See
+        // establishFrame()'s and extractNamedSetMembers()'s own owned-passage loops -- this is
+        // exactly the signal they fall through on, rather than terminating here as the live
+        // measured bug (this file's own D-BP153-023 section header) did.
+        incompletePartition: true,
         why: `INCOMPLETE PARTITION (D-BP153-020, FD-BP153-07): members ${label(members)} and `
           + `non-members ${label(nonMembers)} do NOT together account for every option -- `
           + `${label(uncovered)} unaccounted for by either extraction. Absence is omission, never a `
@@ -2156,6 +2188,7 @@ export function reconcileNamedSet(
       nonMembers,
       conflicts,
       partitionComplete: true,
+      incompletePartition: false, // COMPLETE -- the polar opposite outcome
       why: `complete partition: members ${label(members)} and non-members ${label(nonMembers)} together `
         + `account for all ${all.length} option(s), zero conflicts -- each side corroborates the other `
         + `(reconciled members: ${label(reconciledMembers)})`,
@@ -2166,6 +2199,10 @@ export function reconcileNamedSet(
     nonMembers,
     conflicts,
     partitionComplete: false,
+    // D-BP153-023: the complement said NOTHING at all -- there is no union to be incomplete, this is
+    // a direct-only read (or a genuinely silent passage), the SAME class of answer this file already
+    // treated as terminal before this ticket, untouched here.
+    incompletePartition: false,
     why: 'the complement extracted nothing -- no non-members stated in this passage to reconcile '
       + 'against; using the direct member extraction alone',
   };
@@ -2179,6 +2216,20 @@ export interface NamedSetReconciliation {
   conflicts: string[];
   partitionComplete: boolean;
   why: string;
+  /** D-BP153-023/BISHOP/seg-classify-023 -- INCOMPLETE IS NOT ANSWERED. True in EXACTLY the one
+   *  branch below where `nonMembers` said something, there is no conflict, and the union still does
+   *  not cover every option in `all` -- the "INCOMPLETE PARTITION" outcome. False in every other
+   *  outcome (a conflict, a complete partition, or the complement having said nothing at all), so a
+   *  caller can tell "this owned passage genuinely did not answer the question" (this flag) apart
+   *  from "this owned passage answered, just with zero exclusions/members trusted" (every other
+   *  false-but-`members`-is-empty case already produced before this ticket). See establishFrame()'s
+   *  and extractNamedSetMembers()'s own owned-passage loops for what a caller does with this: falls
+   *  through to the next owned passage, then to a fresh query, rather than terminating here (the
+   *  live measured bug this ticket closes -- see this file's own D-BP153-023 section header,
+   *  above establishFrame()). Never used to relax `partitionComplete` itself, and never used on the
+   *  FRESH-QUERY path (D-BP153-020's safety net there is unchanged: a fresh query that is ALSO
+   *  incomplete is still the final answer, zero exclusions, nothing further to fall through to). */
+  incompletePartition: boolean;
 }
 
 /** THE SAME instruction/shape both the owned-evidence attempt and the fresh-query path below use
@@ -2324,6 +2375,19 @@ export async function extractNamedSetMembers(
     const both = await extractNamedSetBothSides(passage, all, OPT, direction, property, note);
     if (both.discarded) {
       note(`   NAMED SET: discarded ${both.discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
+    }
+    // D-BP153-023/BISHOP/seg-classify-023 -- INCOMPLETE IS NOT ANSWERED, mirrors establishFrame()'s
+    // own identical gate (above): this owned passage extracted something, but reconcileNamedSet()
+    // came back INCOMPLETE PARTITION -- members and non-members do NOT together account for every
+    // option. A partial answer establishes nothing (FD-BP153-07) -- falls through instead of
+    // terminating with a false "nothing trusted, done" the way the pre-023 code did.
+    if ((both.rawMembers.length || both.nonMembers.length) && both.incompletePartition) {
+      note(
+        `   NAMED SET: INCOMPLETE PARTITION on owned passage ${i + 1} of ${owned.length} (D-BP153-023) -- `
+          + `${both.why} -- this owned passage did NOT answer THE NAMED SET; falling through to `
+          + `${i + 1 < owned.length ? 'the next owned passage' : 'a fresh query'}`,
+      );
+      continue;
     }
     if (both.rawMembers.length || both.nonMembers.length) {
       note(
@@ -2729,7 +2793,30 @@ export async function runDiscriminator(
     if (discarded) {
       note(`   DISCRIMINATOR: discarded ${discarded} value(s) with no verbatim supporting span (passage ${i + 1} of ${owned.length})`);
     }
-    if (Object.values(kinds).some((k) => k != null) || categoryKind != null) {
+    const anyKindOrCategory = Object.values(kinds).some((k) => k != null) || categoryKind != null;
+    // D-BP153-023/BISHOP/seg-classify-023 -- INCOMPLETE IS NOT ANSWERED, applied to STAGE D's own
+    // completeness notion: "account for every option" here means a STATED KIND for every candidate
+    // (applyDiscriminatorElimination()'s own (a) requirement, "partial information does not
+    // eliminate" -- missingKind, below, is that same gap). Before this ticket, a passage stating a
+    // kind for even ONE of several candidates was treated as having "answered" and terminated the
+    // step -- exactly the same premature-termination shape establishFrame() and
+    // extractNamedSetMembers() had for THE SOFTBALLS/THE NAMED SET, restated here for STAGE D:
+    // partial per-candidate coverage is not an answer, it falls through to the next owned passage,
+    // then to STAGE D's own one fresh query (unchanged below, the safety net: a fresh query that is
+    // ALSO incomplete is still the final answer -- applyDiscriminatorElimination() already reports
+    // "partial information does not eliminate" for that case, nothing further to fall through to).
+    const missingKind = candidates.filter((L) => kinds[L] == null);
+    if (anyKindOrCategory && missingKind.length > 0) {
+      const label = (Ls: string[]) => `{${Ls.map((L) => `${L}) ${OPT[L]}`).join(', ') || 'none'}}`;
+      note(
+        `   DISCRIMINATOR: INCOMPLETE on owned passage ${i + 1} of ${owned.length} (D-BP153-023) -- `
+          + `${missingKind.length} of ${candidates.length} candidate(s) have no stated kind `
+          + `${label(missingKind)} -- this owned passage did NOT answer STAGE D; falling through to `
+          + `${i + 1 < owned.length ? 'the next owned passage' : 'a fresh query'}`,
+      );
+      continue;
+    }
+    if (anyKindOrCategory) {
       const result = applyDiscriminatorElimination(candidates, kinds, categoryKind, category, OPT);
       note(
         `   DISCRIMINATOR: answered FROM OWNED EVIDENCE (passage ${i + 1} of ${owned.length}, already `

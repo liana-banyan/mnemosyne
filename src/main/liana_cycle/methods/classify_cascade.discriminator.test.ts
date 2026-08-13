@@ -259,12 +259,24 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
     }
   });
 
-  test('TEST 5: a distinction stated for only SOME survivors -- no elimination (partial information does not eliminate)', async () => {
+  // D-BP153-023 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to assert that a SINGLE owned
+  // passage stating a kind for only SOME survivors TERMINATED the step right there (`askGoogle`
+  // asserted never called, "no elimination performed" as the final answer with zero queries spent).
+  // That is the SAME premature-termination shape D-BP153-023 closes for THE SOFTBALLS/THE NAMED SET,
+  // applied here to STAGE D's own completeness notion (a stated kind for EVERY candidate, not just
+  // some): partial per-candidate coverage is not an answer and must fall through to a fresh query.
+  // This test now supplies a fresh-query response too (the SAME partial shape, still missing Central
+  // Asia -- proving the safety net is unchanged: an incomplete fresh query is still the final,
+  // no-elimination answer) and asserts the ONE query D-BP153-023 now spends where the old code spent
+  // zero.
+  test('TEST 5: a distinction stated for only SOME survivors -- INCOMPLETE, falls through to a fresh query (D-BP153-023); the fresh query is ALSO incomplete, so no elimination is performed (safety net unchanged)', async () => {
     const originalFetch = global.fetch;
     const s1 = 'South America is a Continent.';
     const s2 = 'North Africa is a Colloquial area.';
     const passage = `${s1} ${s2} Central Asia is not characterized in this passage at all.`;
     global.fetch = queuedFetch([
+      // Owned passage: South America and North Africa get a stated kind, Central Asia does not --
+      // INCOMPLETE (missingKind = [F]), falls through instead of terminating.
       JSON.stringify({
         kinds: [
           { name: 'South America', kind: 'Continent', span: s1 },
@@ -274,14 +286,30 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
         category_kind_span: s1,
         stated_in_passage: true,
       }),
+      // The fresh query (D-BP153-023's own fall-through, never reached before this ticket): the SAME
+      // partial shape comes back -- Central Asia still uncharacterized -- proving the safety net
+      // (partial information does not eliminate) still holds unchanged.
+      JSON.stringify({
+        kinds: [
+          { name: 'South America', kind: 'Continent', span: 'South America is a Continent, per this source.' },
+          { name: 'North Africa', kind: 'Colloquial area', span: 'North Africa is a Colloquial area, per this source.' },
+        ],
+        category_kind: 'Continent',
+        category_kind_span: 'South America is a Continent, per this source.',
+        stated_in_passage: true,
+      }),
     ]);
-    const askGoogle = vi.fn(async () => { throw new Error('must never be called -- owned evidence answers (partially)'); });
+    const askGoogle = vi.fn(async () => ({ snippet: 'South America is a Continent, per this source. North Africa is a Colloquial area, per this source.' }));
     try {
-      const { note } = notes();
+      const { note, log } = notes();
       const result = await runDiscriminator(
         askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note, () => [owned(passage)],
       );
-      expect(askGoogle).not.toHaveBeenCalled();
+      // D-BP153-023: ONE query issued -- the owned passage's partial kind coverage did NOT answer,
+      // so it fell through instead of terminating with zero queries the way the old code did.
+      expect(askGoogle).toHaveBeenCalledTimes(1);
+      expect(log.some((l) => /INCOMPLETE on owned passage/.test(l) && /D-BP153-023/.test(l) && /Central Asia/.test(l) && /falling through/.test(l))).toBe(true);
+      expect(result.answeredFrom).toBe('new-query');
       expect(result.unique).toBeNull();
       expect(new Set(result.survivors)).toEqual(new Set(CANDIDATES));
       expect(result.eliminations).toEqual([]);
@@ -291,13 +319,28 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
     }
   });
 
-  test('TEST 6: a span that does not actually contain the hallucinated kind is discarded -- never trusted', async () => {
+  // D-BP153-023 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to supply only ONE owned passage
+  // and assert `askGoogle` was never called even though the hallucination-discard left Central Asia's
+  // kind unknown (a partial read that, before this ticket, still wrongly TERMINATED the step). Since
+  // partial per-candidate coverage now falls through (D-BP153-023, same rule TEST 5 above exercises
+  // against a fresh query), this test now adds a SECOND owned passage that fully and correctly
+  // characterizes all three candidates, so the loop falls through from the hallucinated/incomplete
+  // first passage to the complete second one -- still zero queries issued, and proving the
+  // hallucination never contaminates the final trusted result.
+  test('TEST 6: a span that does not actually contain the hallucinated kind is discarded, leaving the passage INCOMPLETE -- it falls through (D-BP153-023) to a second, complete owned passage; the hallucination never contaminates the final trusted result', async () => {
     const originalFetch = global.fetch;
     const s1 = 'South America is a Continent.';
     const s2 = 'North Africa is a Colloquial area.';
-    const passage = `${s1} ${s2}`;
-    // Model hallucinates a kind for Central Asia ("Subcontinent") the passage never states -- its
-    // only offered span is real passage text that never mentions "Subcontinent" at all.
+    const hallucinatedPassage = `${s1} ${s2}`;
+    // A second, fully-characterized owned passage -- same shape TEST 2 (above) already uses.
+    const t1 = "According to Google's own entity classification, South America is labeled a Continent.";
+    const t2 = 'North Africa is labeled a Colloquial area, not a formally defined world region.';
+    const t3 = 'Central Asia is also labeled a Colloquial area.';
+    const t4 = 'Only a Continent is properly considered a world region.';
+    const completePassage = `${t1} ${t2} ${t3} ${t4}`;
+    // Model hallucinates a kind for Central Asia ("Subcontinent") the FIRST passage never states --
+    // its only offered span is real passage text that never mentions "Subcontinent" at all, so it is
+    // discarded, leaving that passage's own kind coverage INCOMPLETE (missingKind = [F]).
     global.fetch = queuedFetch([
       JSON.stringify({
         kinds: [
@@ -309,21 +352,37 @@ describe('runDiscriminator() -- STAGE D, owned-evidence-first (mirrors establish
         category_kind_span: s1,
         stated_in_passage: true,
       }),
+      JSON.stringify({
+        kinds: [
+          { name: 'South America', kind: 'Continent', span: t1 },
+          { name: 'North Africa', kind: 'Colloquial area', span: t2 },
+          { name: 'Central Asia', kind: 'Colloquial area', span: t3 },
+        ],
+        category_kind: 'Continent',
+        category_kind_span: t4,
+        stated_in_passage: true,
+      }),
     ]);
-    const askGoogle = vi.fn(async () => { throw new Error('must never be called'); });
+    const askGoogle = vi.fn(async () => { throw new Error('must never be called -- owned evidence answers on the second passage'); });
     try {
-      const { note } = notes();
+      const { note, log } = notes();
       const result = await runDiscriminator(
-        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note, () => [owned(passage)],
+        askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, CANDIDATES, OPT, note,
+        () => [owned(hallucinatedPassage), owned(completePassage)],
       );
-      expect(result.kinds.F).toBeNull(); // "Subcontinent" never appears in the passage text -- rejected
+      // D-BP153-023: the transcript names Central Asia as the unaccounted-for candidate and says the
+      // step is falling through -- never silent about why the first passage did not answer.
+      expect(log.some((l) => /INCOMPLETE on owned passage/.test(l) && /D-BP153-023/.test(l) && /Central Asia/.test(l) && /falling through/.test(l))).toBe(true);
+      expect(askGoogle).not.toHaveBeenCalled();
+      expect(result.answeredFrom).toBe('owned-passage');
+      expect(result.ownedPassageIndex).toBe(1); // the SECOND passage answered, not the first
+      // The hallucination never survives into the final result -- the trusted kinds come from the
+      // second, verified passage.
       expect(result.kinds.A).toBe('Continent');
       expect(result.kinds.C).toBe('Colloquial area');
-      // F's kind ends up unknown (span verification rejected the hallucination), so partial
-      // information does not eliminate -- proving the rejection actually propagates into the honest
-      // outcome.
-      expect(result.unique).toBeNull();
-      expect(result.eliminations).toEqual([]);
+      expect(result.kinds.F).toBe('Colloquial area');
+      expect(result.unique).toBe('A');
+      expect(result.eliminations.map((e) => e.letter).sort()).toEqual(['C', 'F']);
     } finally {
       global.fetch = originalFetch;
     }

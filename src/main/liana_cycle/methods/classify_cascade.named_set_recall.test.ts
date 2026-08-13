@@ -81,7 +81,14 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
   // because it's probably right." See classify_cascade.complete_partition_required.test.ts for the
   // dedicated coverage of the new gate; this test now asserts the corrected behavior on the SAME
   // real fixture rather than re-deriving a different one.
-  test('HEADLINE, D-BP153-020 CORRECTED: the direct side under-recalls D and the complement does not name it either -- the union is incomplete (8 of 9), so NOTHING is trusted, not a coincidentally-correct {B, D, E}', async () => {
+  // D-BP153-023 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to assert that this single owned
+  // passage's INCOMPLETE PARTITION TERMINATED the step right there (`answeredFrom: 'owned-passage'`,
+  // zero queries issued). That IS the live measured bug D-BP153-023 closes (receipt
+  // LIANA_RUN_qid98_2026-08-13T02-05-04-911Z.json): an INCOMPLETE partition is not an answer and
+  // must fall through to a fresh query. This test now supplies a fresh-query response too (the SAME
+  // under-recalled shape, still incomplete -- the safety net, D-BP153-020, unchanged) and asserts
+  // the ONE query D-BP153-023 now spends where the old code spent zero.
+  test('HEADLINE, D-BP153-023 UPDATED: the direct side under-recalls D and the complement does not name it either -- INCOMPLETE (8 of 9), falls through to a fresh query that is ALSO incomplete, so NOTHING is trusted, not a coincidentally-correct {B, D, E}', async () => {
     const originalFetch = global.fetch;
     // Simulates the MEASURED live extraction (a partial copy, D dropped) on the direct-member side
     // -- exactly what BUG-1 reports gemma4:12b actually returned for this passage -- and the
@@ -99,18 +106,34 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
           .map((name) => ({ name, span: REAL_PASSAGE_S1 })), // complement: the passage's own first sentence, in full
         stated_in_passage: true,
       }),
+      // The fresh query (D-BP153-023's own fall-through, never reached before this ticket): the SAME
+      // under-recalled shape comes back, proving the safety net (D-BP153-020) still holds unchanged.
+      JSON.stringify({
+        members: ['South Asia', 'Europe'].map((name) => ({ name, span: REAL_PASSAGE_S2 })),
+        stated_in_passage: true,
+      }),
+      JSON.stringify({
+        not_members: ['South America', 'North Africa', 'Central Asia', 'Arctic Circle', 'Amazon Rainforest', 'Sahara Desert']
+          .map((name) => ({ name, span: REAL_PASSAGE_S1 })),
+        stated_in_passage: true,
+      }),
     ]);
-    const askGoogle = vi.fn(async () => ({ snippet: 'this must never be reached' }));
+    const askGoogle = vi.fn(async () => ({ snippet: REAL_PASSAGE }));
     try {
-      const { note } = notes();
+      const { note, log } = notes();
       const result = await extractNamedSetMembers(
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
         () => [owned(REAL_PASSAGE)],
       );
-      expect(askGoogle).not.toHaveBeenCalled();
+      // D-BP153-023: ONE query issued -- the owned passage's INCOMPLETE PARTITION did NOT answer,
+      // so it fell through instead of terminating with zero queries the way the old code did.
+      expect(askGoogle).toHaveBeenCalledTimes(1);
+      expect(log.some((l) => /INCOMPLETE PARTITION on owned passage/.test(l) && /D-BP153-023/.test(l) && /falling through/.test(l))).toBe(true);
       expect(result.available).toBe(true);
-      // THE BUG D-BP153-014 measured: the direct extraction alone (rawMembers) under-recalls.
+      expect(result.answeredFrom).toBe('new-query');
+      // THE BUG D-BP153-014 measured: the direct extraction alone (rawMembers) under-recalls --
+      // still true, now read from the fresh query rather than the owned passage.
       expect(new Set(result.rawMembers)).toEqual(new Set(['B', 'E']));
       // THE CORRECTED BEHAVIOR (D-BP153-020): D is unaccounted for by BOTH extractions (direct
       // named {B,E}, complement named the OTHER six {A,C,F,G,H,I} -- neither list mentions D at
