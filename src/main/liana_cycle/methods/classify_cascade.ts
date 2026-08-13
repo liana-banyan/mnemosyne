@@ -1670,6 +1670,69 @@ async function extractFrameBothSides(
     );
   }
 
+  // D-BP153-019, FIX 2. THE MEASURED FAILURE THIS CLOSES (live run 2026-08-13T00-02-41Z, receipt
+  // LIANA_RUN_qid98_2026-08-13T00-02-41-506Z.json). D-BP153-018 (immediately above) discarded all
+  // six spurious direct-side exclusions correctly, but the COMPLEMENT side's own verified spans for
+  // B/D/E ("Only B..., D..., and E... qualify") do not themselves repeat the property phrase (it was
+  // stated once, in the PRECEDING sentence, and gemmaExtract() copied only the clause about THIS
+  // value) -- so discardPropertyContaminatedSpans() (applied to the complement exactly as to the
+  // direct side, immediately above) never saw the property string in THEIR span and did not discard
+  // them. reconcileNamedSet() then read the direct side as merely EMPTY (case (a): "found nothing")
+  // and trusted the complement, reintroducing the very six options D-BP153-018 had just discarded --
+  // "FRAME RECONCILIATION: complement (non-members {B,D,E}) trusted despite an incomplete direct
+  // side."
+  //
+  // THE FIX: distinguish case (a) -- the direct side genuinely found nothing to extract -- from case
+  // (b) -- the direct side found values and ALL of them were discarded as property spans, AND the
+  // complement has something that would otherwise be trusted in its place. Case (b) is itself
+  // EVIDENCE THE PASSAGE IS ABOUT THE PROPERTY, NOT THE CATEGORY (a passage that only ever talks
+  // about who scores highest on the property has nothing reliable to say about category membership
+  // from EITHER direction), so the complement is not trusted either -- the whole frame extraction
+  // from this passage is REJECTED, `extractedAnything` is forced false so the caller
+  // (establishFrame()) treats this exactly as if the passage yielded nothing at all (falls through to
+  // the next owned passage, then the query path), never as "excluded nothing."
+  //
+  // THE COMPLEMENT-HAS-SOMETHING CONDITION, deliberately. When the complement ALSO extracted
+  // nothing (`complementFiltered.letters.length === 0`), reconcileNamedSet()'s own pre-existing
+  // "the complement extracted nothing... using the direct member extraction alone" branch already
+  // reduces to `excluded: []` -- the identical fact this rejection would otherwise force -- so
+  // rejecting wholesale here would only spend a needless fresh query for the SAME zero-exclusion
+  // reading (measured regression: classify_cascade.membership_terminator.test.ts's own STAGE
+  // D/STAGE A fixtures, and this file's own D-BP153-018 TEST 1, all share this exact "direct fully
+  // discarded, complement genuinely silent" shape and must keep answering FROM OWNED EVIDENCE, not
+  // fall through to a query that was never needed). The measured live bug (this ticket's own header)
+  // always had a NON-EMPTY complement putting the discarded options straight back -- gating on
+  // `complementFiltered.letters.length > 0` targets exactly that shape and no other.
+  //
+  // `direct.letters` (PRE-filter, not `directFiltered.letters`) is the "did it find something" read
+  // -- the same PRE-filter signal `extractedAnything` above already uses for the identical reason.
+  const directFullyDiscardedAsPropertyOnly = direct.letters.length > 0 && directFiltered.letters.length === 0
+    && complementFiltered.letters.length > 0;
+  if (directFullyDiscardedAsPropertyOnly) {
+    note(
+      `   FRAME (D-BP153-019, FIX 2): REJECTED this passage's frame extraction ENTIRELY -- the direct `
+        + `side extracted ${direct.letters.length} value(s) and ALL were discarded as SUPERLATIVE `
+        + `PROPERTY span(s) ("${property}"), not category membership -- this passage is about the `
+        + 'property, not the category, so its complement side is NOT trusted either (it would otherwise '
+        + `have stated ${complementFiltered.letters.length} value(s) IS ${category}: `
+        + `${complementFiltered.letters.length ? complementFiltered.letters.map((L) => `${L}) ${OPT[L]}`).join(', ') : '(none)'}). `
+        + 'Treated as if this passage yielded nothing extractable (FD-BP153-06: a passage whose category '
+        + 'claims are all property claims cannot answer QUESTION 1 from either direction).',
+    );
+    return {
+      excluded: [],
+      rawExcluded: [],
+      excludedSpans: {},
+      included: [],
+      conflicts: [],
+      partitionComplete: false,
+      why: 'passage REJECTED (D-BP153-019, FIX 2) -- every direct-side value extracted was a property '
+        + 'span, not a membership span, so the complement side is not trusted either',
+      discarded: direct.discarded + complement.discarded,
+      extractedAnything: false,
+    };
+  }
+
   const reconciliation = reconcileNamedSet(all, directFiltered.letters, complementFiltered.letters, OPT);
   return {
     excluded: reconciliation.members, // the reconciled EXCLUDED set -- see this function's own header
