@@ -1495,12 +1495,49 @@ export async function founderStep2Survey(term: string | null, ctx: MethodRunCont
     // order allowed either "survey all named terms" or "survey them in the order the source gave";
     // this ticket does both at once, since they coincide when nothing is dropped BY ORDER (sig figs
     // above drops by stated impact, a separate, ATTRIBUTED filter -- not a ranking or pick).
+    //
+    // D-BP153-019, FIX 3, ADDITIVE, SCOPE: THE SUPERLATIVE PATH ONLY -- the SAME gate D-BP153-017
+    // already applies to SURVEY STEP 3's per-OPTION denotation sweep (runSurveyStage()'s own
+    // comment, below), applied HERE to this DIFFERENT sweep: the per-TERM denotation survey
+    // (surveyAskNested() -> surveyAsk(), elements/survey_ask.ts's own "SURVEY (${term}): N
+    // denotation(s), M discarded" line). THE MEASURED WASTE THIS CLOSES, live run receipt
+    // LIANA_RUN_qid98_2026-08-13T00-02-41-506Z.json: three per-term denotation surveys ("Region",
+    // "Densely Populated", "Which"), two Google queries each, against dictionary.com, Cambridge
+    // grammar, a thesaurus, and Reddit -- none consulted by THE THREE QUESTIONS
+    // (classify_cascade.ts's establishFrame()/extractNamedSetMembers()/runDiscriminator(), D-BP153-
+    // 017/018/019), which already resolve DEMAND structurally and consult owned evidence FIRST
+    // (FD-BP153-04) before ever spending a query of their own -- this sweep is redundant by
+    // construction on that route for the identical reason D-BP153-017's own header already gives.
+    //
+    // Gated on the SAME structural regex (extractSuperlativeMatch(), imported above for D-BP153-017)
+    // classify_cascade.ts's own run() tests to ROUTE this exact question, so this gate and that
+    // routing decision -- and D-BP153-017's own STEP 3 gate -- can never disagree about what "is a
+    // superlative question" means. SCOPE IS NARROW AND DELIBERATE, same as D-BP153-017: this cuts
+    // ONLY this one sweep on ONLY the superlative route -- the constraints loop and the threshold
+    // question loop immediately below are UNTOUCHED (FD-BP152-01/D-BP151-035's own authorizations
+    // are not repealed), and every non-superlative question surveys every kept term exactly as
+    // before this ticket.
+    const superlativeMatchForStep2 = extractSuperlativeMatch(askText);
     const ambiguityNested: Array<{ term: string; nested: SurveyAskNestedResult }> = [];
-    for (const t of sigFigsKeptTerms) {
-      // eslint-disable-next-line no-await-in-loop -- one nested survey per named term, sequential
-      // by design, same pattern as surveyAskNested()'s own level loop.
-      const nested = await surveyAskNested(t.term, ctx);
-      ambiguityNested.push({ term: t.term, nested });
+    if (superlativeMatchForStep2) {
+      emit({
+        kind: 'note',
+        text: '   SURVEY STEP 2 PER-TERM DENOTATION SWEEP: SKIPPED (D-BP153-019) -- the question resolves '
+          + 'to the CLASSIFY superlative-by-magnitude route (structural match: '
+          + `direction="${superlativeMatchForStep2.direction}" property="${superlativeMatchForStep2.property}"). `
+          + `${sigFigsKeptTerms.length} term(s) (${sigFigsKeptTerms.map((t) => `"${t.term}"`).join(', ') || 'none'}) `
+          + 'would otherwise have been surveyed here; THE THREE QUESTIONS (classify_cascade.ts, D-BP153-017/'
+          + '018/019) consult owned evidence before spending a query, so this sweep is redundant by '
+          + 'construction on this route. SCOPE: superlative path ONLY, every other question is unaffected.',
+        ts: nowIso(),
+      });
+    } else {
+      for (const t of sigFigsKeptTerms) {
+        // eslint-disable-next-line no-await-in-loop -- one nested survey per named term, sequential
+        // by design, same pattern as surveyAskNested()'s own level loop.
+        const nested = await surveyAskNested(t.term, ctx);
+        ambiguityNested.push({ term: t.term, nested });
+      }
     }
     const negationNamed = ambiguity.terms.some((t) => t.isNegation);
     if (negationNamed) {
