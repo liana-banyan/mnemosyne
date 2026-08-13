@@ -233,6 +233,27 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     // ABSTAIN IS STILL EXPECTED HERE, unchanged from every prior re-pin's own note above: this
     // instrument's content-free capture can never name an option, so an honest abstain is correct.
     // What must never come back is `demand_unknown` -- outcome.method stays 'classify-cascade' below.
+    //
+    // CHECKED AND CONFIRMED UNCHANGED AT 3, D-BP153-023 (INCOMPLETE IS NOT ANSWERED). Measured
+    // TWICE in isolation on this ticket's own build, both runs identical (3) -- NOT re-pinned,
+    // because it did not move, and this file's own rule is to report what the instrument says, not
+    // what a prior ticket's own note predicted it would say. D-BP153-023 changes what a caller does
+    // when an owned/fresh-query passage extracts something for SOME but not all options (falls
+    // through to the next source instead of terminating). This instrument's synthetic capture is the
+    // SAME content-free string on every pause -- it names ZERO of the nine option labels, so
+    // establishFrame()'s FIX 3 guard (`passageMentionsAnyLabel`, D-BP153-016, unchanged by this
+    // ticket) rejects it BEFORE extraction is ever attempted, on both the owned-passage loop and
+    // round 3's own fresh query. The run never reaches reconcileNamedSet() at all here, so it never
+    // produces an INCOMPLETE PARTITION for D-BP153-023's new fall-through to act on -- it hits the
+    // EARLIER "frame is UNAVAILABLE, no option named" abstain instead (D-BP153-016's own path),
+    // exactly as every re-pin back to D-BP153-017 already documented. D-BP153-023's fall-through
+    // only fires on a passage that names AT LEAST ONE option but not all of them -- a shape this
+    // all-or-nothing synthetic stub cannot produce (it is either off-topic for every option at once,
+    // or -- on real evidence -- on-topic for options it actually names). See
+    // classify_cascade.frame_complement_not_trusted_when_direct_discarded.test.ts's own D-BP153-023
+    // TEST 4 and classify_cascade.named_set_recall.test.ts's own HEADLINE test for the isolated,
+    // real-content proof that the fall-through DOES spend the extra query on a passage shaped that
+    // way; this instrument's own content-free stub simply never is one.
     // ─────────────────────────────────────────────────────────────────────────────────────────
     expect(rounds).toBe(3);
     expect(outcome.error).not.toBe('demand_unknown');
