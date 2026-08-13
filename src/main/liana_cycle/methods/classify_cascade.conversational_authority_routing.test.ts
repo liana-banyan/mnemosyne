@@ -102,7 +102,13 @@ describe('D-BP153-024: establishFrame() tries the conversational authority befor
       );
 
       expect(askGoogle).not.toHaveBeenCalled(); // THE POINT OF THE FIX
-      expect(convo).toHaveBeenCalledTimes(1);
+      // D-BP153-027: the complement extracted nothing (only ONE gemma response is queued -- the
+      // complement call exhausts queuedFetch() and comes back null/empty), and the direct side's 6
+      // letters do not cover all 9 options -- COMPLEMENT-SILENT-AND-PARTIAL, so the ONE completion
+      // follow-up fires and tries the conversational authority again (same routing as the first
+      // pass). The follow-up's own extraction also lands on the exhausted queue and adds nothing, so
+      // the reconciled `excluded` set is unchanged -- only the call count moves.
+      expect(convo).toHaveBeenCalledTimes(2);
       expect(frame.available).toBe(true);
       expect(frame.answeredFrom).toBe('new-query'); // a fresh acquisition, just not from Google
       expect(new Set(frame.excluded)).toEqual(new Set(['A', 'C', 'F', 'G', 'H', 'I']));
@@ -132,8 +138,12 @@ describe('D-BP153-024: establishFrame() tries the conversational authority befor
         convo as unknown as MethodRunContext['askConversationalAuthority'],
       );
 
-      expect(convo).toHaveBeenCalledTimes(1); // tried first
-      expect(askGoogle).toHaveBeenCalledTimes(1); // then fell back
+      // D-BP153-027: direct names only G (1 of 9), complement is silent (no second gemma response
+      // queued) -- COMPLEMENT-SILENT-AND-PARTIAL, so the ONE completion follow-up fires and repeats
+      // the SAME try-convo-then-Google routing a second time. The follow-up's own extraction lands
+      // on the exhausted queue and adds nothing, so `excluded` is unchanged.
+      expect(convo).toHaveBeenCalledTimes(2); // tried first, both times
+      expect(askGoogle).toHaveBeenCalledTimes(2); // then fell back, both times
       expect(frame.available).toBe(true);
       expect(frame.answeredFrom).toBe('new-query');
       expect(frame.excluded).toEqual(['G']);
@@ -158,7 +168,10 @@ describe('D-BP153-024: establishFrame() tries the conversational authority befor
       // no 6th/7th/8th argument at all.
       const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
 
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-027: same COMPLEMENT-SILENT-AND-PARTIAL shape as TEST 2 above (direct names only G
+      // of 9, complement silent) -- the ONE completion follow-up fires and goes straight to
+      // askGoogle again (no conversational authority threaded here either). `excluded` is unchanged.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(frame.available).toBe(true);
       expect(frame.answeredFrom).toBe('new-query');
       expect(frame.excluded).toEqual(['G']);
@@ -218,7 +231,11 @@ describe('D-BP153-024: extractNamedSetMembers() tries the conversational authori
         convo as unknown as MethodRunContext['askConversationalAuthority'],
       );
       expect(askGoogle).not.toHaveBeenCalled();
-      expect(convo).toHaveBeenCalledTimes(1);
+      // D-BP153-027: direct names {B,D,E} (3 of 9), complement is silent (only ONE gemma response
+      // queued) -- COMPLEMENT-SILENT-AND-PARTIAL, so the ONE completion follow-up fires and tries
+      // the conversational authority again. The follow-up's own extraction lands on the exhausted
+      // queue and adds nothing, so `members` is unchanged.
+      expect(convo).toHaveBeenCalledTimes(2);
       expect(result.available).toBe(true);
       expect(new Set(result.members)).toEqual(new Set(['B', 'D', 'E']));
       expect(log.some((l) => /ANSWERED BY: user_gemini/.test(l))).toBe(true);
@@ -244,8 +261,11 @@ describe('D-BP153-024: extractNamedSetMembers() tries the conversational authori
         undefined,
         convo as unknown as MethodRunContext['askConversationalAuthority'],
       );
-      expect(convo).toHaveBeenCalledTimes(1);
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-027: direct names only B (1 of 9), complement is silent -- COMPLEMENT-SILENT-AND-
+      // PARTIAL, so the ONE completion follow-up fires and repeats the same try-convo-then-Google
+      // routing a second time. `members` is unchanged.
+      expect(convo).toHaveBeenCalledTimes(2);
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(result.answeredFrom).toBe('new-query');
       expect(result.members).toEqual(['B']);
     } finally {
@@ -265,7 +285,10 @@ describe('D-BP153-024: extractNamedSetMembers() tries the conversational authori
       const result = await extractNamedSetMembers(
         askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, 'most', 'densely populated', ALL, OPT, note,
       );
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-027: same COMPLEMENT-SILENT-AND-PARTIAL shape (direct names only B of 9, complement
+      // silent, no conversational authority threaded) -- the ONE completion follow-up fires and goes
+      // straight to askGoogle again. `members` is unchanged.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(result.answeredFrom).toBe('new-query');
       expect(result.members).toEqual(['B']);
     } finally {

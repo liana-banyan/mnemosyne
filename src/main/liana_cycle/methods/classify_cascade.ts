@@ -1881,8 +1881,14 @@ async function obtainCascadePassage(
 // raw direct/complement reads with the first pass's own raw reads and re-applies
 // reconcileNamedSet() to the union -- see each call site's own D-BP153-026 comment for that
 // arithmetic. The first pass's own reads are never discarded, only added to.
+//
+// D-BP153-027 ADDS a second trigger for this SAME follow-up, below (complementSilentAndPartial()) --
+// see that function's own header for the measured gap it closes. `reason`, added to this function's
+// signature by that ticket, names WHICH of the two triggers fired, so the transcript can tell them
+// apart (both share this one mechanism, unchanged).
 async function issueCompletionFollowUp(
   label: string,
+  reason: string,
   buildQuery: (namesList: string) => string,
   uncovered: string[],
   all: string[],
@@ -1894,8 +1900,8 @@ async function issueCompletionFollowUp(
   const namesList = list(uncovered, OPT);
   const query = buildQuery(namesList);
   note(
-    `   ${label} FOLLOW-UP (D-BP153-026): the first pass left ${uncovered.length} of ${all.length} `
-      + `option(s) unaccounted for by either side -- ${namesList} -- issuing ONE targeted follow-up `
+    `   ${label} FOLLOW-UP (D-BP153-026): ${reason} -- the first pass left ${uncovered.length} of `
+      + `${all.length} option(s) unaccounted for -- ${namesList} -- issuing ONE targeted follow-up `
       + 'naming ONLY these (AT MOST ONE follow-up per question, never a loop)',
   );
   const res = await obtainCascadePassage(askGoogle, askConversationalAuthority, `${label} FOLLOW-UP`, query, note);
@@ -1916,6 +1922,50 @@ async function issueCompletionFollowUp(
   }
   note(`   ${label} FOLLOW-UP: ANSWERED BY ${res.via}`);
   return { text: res.text, via: res.via };
+}
+
+// ─────────────────────────── D-BP153-027: COMPLEMENT-SILENT, AND PARTIAL ───────────────────────────
+//
+// THE MEASURED GAP (live run, receipt LIANA_RUN_qid98_2026-08-13T03-29-03-503Z.json). THE NAMED SET's
+// fresh query finally reached a real "Only B (South Asia), D (Northeast United States), and E
+// (Europe)..." passage, but the complement extraction found nothing to say (no source text of the
+// form "X is NOT a member" for this passage), and the direct extraction under-recalled the stated
+// list, the SAME gemma weakness namedSetExtractionInstruction()'s own header (D-BP153-014, BUG-1(a))
+// already named and only partly closed: {B, E} came back, D was dropped.
+//
+//   NAMED SET RECONCILIATION: the complement extracted nothing -- no non-members stated in this
+//   passage to reconcile against; using the direct member extraction alone
+//   MEMBERSHIP TERMINATOR: legitimate-regions {A,B,C,D,E,F} MINUS named-set-members {B,E} leaves 4
+//   candidates (A, C, D, F) -- had the named set returned {B, D, E}, the terminator would have
+//   handed the discriminator exactly {A, C, F}.
+//
+// reconcileNamedSet()'s own last branch (above, "the complement extracted nothing... using the
+// direct member extraction alone") is CORRECT and is NOT changed here -- a silent complement is not
+// evidence of anything, and the direct side is the only stated read there is. What that branch does
+// NOT carry is the `incompletePartition` flag D-BP153-026's own gate reads (it structurally cannot:
+// there is no complement to be incomplete AGAINST), so a complement-silent-but-under-extracted direct
+// read never reached D-BP153-026's follow-up at all.
+//
+// THE RULE (Founder, BP153, verbatim in this ticket's own dispatch): "A COMPLEMENT-SILENT read whose
+// DIRECT side does not account for every option is INCOMPLETE for the purpose of the completion
+// follow-up." complementSilentAndPartial(), below, is that test -- and ONLY that test. It changes
+// nothing about what reconcileNamedSet() DOES with a complement-silent read (extraction only, never
+// an inference from silence -- HARDWIRE-22 unrelaxed); it only tells the two callers
+// (establishFrame() / extractNamedSetMembers(), each at their own D-BP153-026 gate) whether THIS
+// shape earns the SAME one-shot completion follow-up an INCOMPLETE PARTITION already earns.
+//
+// GATED ON A NON-EMPTY DIRECT SIDE, DELIBERATELY. "The direct side's stated values do not cover all N
+// options" presupposes there ARE stated values -- a direct side that found NOTHING AT ALL (whether
+// because the passage is genuinely silent, or because D-BP153-019's property-discard rule (above)
+// discarded every candidate) is the PRE-EXISTING "extracted nothing" outcome this file already
+// treats as legitimate (D-BP153-010/018/019, all untouched by this ticket) -- not a new partial-list
+// case for THIS rule to re-litigate. Gating on `directValues.length > 0` keeps this rule targeted
+// exactly at the measured shape (a genuine, non-empty, under-recalled list) and leaves every
+// already-settled "nothing extracted" case exactly as it was.
+function complementSilentAndPartial(all: string[], directValues: string[], complementValues: string[]): string[] {
+  if (complementValues.length > 0 || directValues.length === 0) return [];
+  const covered = new Set(directValues);
+  return all.filter((L) => !covered.has(L));
 }
 
 /**
@@ -2159,14 +2209,24 @@ export async function establishFrame(
   // D-BP153-026, THE COMPLETION FOLLOW-UP -- see this file's own section header, above
   // obtainCascadePassage(), for the full ruling. Fires ONLY here (a FRESH query's own reconciliation
   // came back INCOMPLETE PARTITION), never on an owned-passage read (those fall through unchanged,
-  // D-BP153-023). AT MOST ONE: this branch runs once per establishFrame() call, is never re-entered
-  // on its own output, and `effective` -- not `both` -- is what the rest of this function logs and
-  // returns from here on.
+  // D-BP153-023). D-BP153-027 ADDS a second trigger, below -- see complementSilentAndPartial()'s own
+  // section header (above obtainCascadePassage()) for the measured gap it closes: a COMPLEMENT-SILENT
+  // read (reconcileNamedSet()'s own last branch, UNCHANGED by that addition) whose direct side did
+  // not itself name every option. Either way, AT MOST ONE: this branch runs once per establishFrame()
+  // call, is never re-entered on its own output, and `effective` -- not `both` -- is what the rest of
+  // this function logs and returns from here on.
+  const frameComplementSilentUncovered = both.incompletePartition
+    ? [] : complementSilentAndPartial(all, both.rawExcluded, both.included);
   let effective = both;
-  if (both.incompletePartition) {
-    const uncovered = all.filter((L) => !new Set([...both.rawExcluded, ...both.included]).has(L));
+  if (both.incompletePartition || frameComplementSilentUncovered.length) {
+    const uncovered = both.incompletePartition
+      ? all.filter((L) => !new Set([...both.rawExcluded, ...both.included]).has(L))
+      : frameComplementSilentUncovered;
+    const reason = both.incompletePartition
+      ? 'INCOMPLETE PARTITION' : 'COMPLEMENT-SILENT-AND-PARTIAL (D-BP153-027)';
     const followUp = await issueCompletionFollowUp(
       'FRAME',
+      reason,
       (namesList) => `For EACH of the following, state exactly what it is -- its actual classification `
         + `or type -- rather than merely whether it is or is not ${category}. These are the ONLY `
         + `option(s) the first pass left unaccounted for; answer for every one, in order, and do not `
@@ -2684,13 +2744,23 @@ export async function extractNamedSetMembers(
   // D-BP153-026, THE COMPLETION FOLLOW-UP -- mirrors establishFrame()'s own identical gate (above),
   // see this file's own D-BP153-026 section header (above obtainCascadePassage()) for the full
   // ruling. Fires ONLY here (a FRESH query's own reconciliation came back INCOMPLETE PARTITION),
-  // never on an owned-passage read. AT MOST ONE: this branch runs once per
+  // never on an owned-passage read. D-BP153-027 ADDS a second trigger, below -- THIS is the exact
+  // shape that ticket's own measured gap was found in (see complementSilentAndPartial()'s own
+  // section header, above obtainCascadePassage()): a COMPLEMENT-SILENT read whose direct side did
+  // not itself name every option. Either way, AT MOST ONE: this branch runs once per
   // extractNamedSetMembers() call, never re-entered on its own output.
+  const namedSetComplementSilentUncovered = both.incompletePartition
+    ? [] : complementSilentAndPartial(all, both.rawMembers, both.nonMembers);
   let effective = both;
-  if (both.incompletePartition) {
-    const uncovered = all.filter((L) => !new Set([...both.rawMembers, ...both.nonMembers]).has(L));
+  if (both.incompletePartition || namedSetComplementSilentUncovered.length) {
+    const uncovered = both.incompletePartition
+      ? all.filter((L) => !new Set([...both.rawMembers, ...both.nonMembers]).has(L))
+      : namedSetComplementSilentUncovered;
+    const reason = both.incompletePartition
+      ? 'INCOMPLETE PARTITION' : 'COMPLEMENT-SILENT-AND-PARTIAL (D-BP153-027)';
     const followUp = await issueCompletionFollowUp(
       'NAMED SET',
+      reason,
       (namesList) => `Which of these are ${category} that ARE ${direction} ${property}? These are the `
         + `ONLY option(s) the first pass left unaccounted for; name each one that is, and state what `
         + `each one is otherwise. ${namesList}`,
