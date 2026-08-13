@@ -1666,6 +1666,7 @@ async function extractFrameKinds(
 ): Promise<{ kinds: Record<string, string | null>; categoryKind: string | null; discarded: number }> {
   const {
     kinds: rawKinds, kindSpans, categoryKind: rawCategoryKind, categoryKindSpan, discarded: spanDiscarded, truncated,
+    failureCause, failureDetail,
   } = await extractDiscriminatorKinds(passage, names, OPT, category);
 
   // D-BP153-034 -- TRUNCATION IS NAMED, NEVER SILENT. When the model hits its token ceiling the
@@ -1681,6 +1682,21 @@ async function extractFrameKinds(
         + 'reads as null. THIS IS A TRUNCATED READ, NOT AN EMPTY PASSAGE. The passage may state every '
         + 'kind perfectly; we simply could not finish reading it. Do NOT interpret the nulls as the '
         + 'source having said nothing.',
+    );
+  } else if (failureCause) {
+    // D-BP154-006 -- EVERY OTHER EXTRACTION FAILURE IS NAMED TOO, NEVER SILENT (FD-BP154-01). Before
+    // this ticket, a transport failure (Ollama unreachable) or an HTTP error status (previously never
+    // even checked) arrived exactly as `kinds {A:null ... I:null}` -- byte-identical to a genuinely
+    // uninformative passage. establishFrame()'s own fallthrough (D-BP153-010's rule, this file's own
+    // section above) already treats this safely -- it is NEVER consumed as "the passage stated
+    // nothing about any option" and turned into an exclusion -- but until now nothing said WHY the
+    // read came back empty. Naming it here is the fix this ticket authorizes: extraction only
+    // (HARDWIRE-22), never a judgment about what the failure means.
+    note(
+      `   FRAME / QUESTION 1 (stated-kind read): EXTRACTION FAILED (${failureCause}, D-BP154-006)`
+        + `${failureDetail ? ` -- ${failureDetail}` : ''} -- every kind below reads as null because the `
+        + 'read itself failed, NOT because the passage stated nothing. Falling through exactly as an '
+        + 'INCOMPLETE or empty read already does.',
     );
   }
 
@@ -3583,8 +3599,23 @@ async function extractDiscriminatorKinds(
   // A truncated read and a genuinely empty read BOTH arrive as all-nulls; this is the only thing
   // that tells them apart, and conflating them is what hid the defect for an entire session.
   truncated: boolean;
+  // D-BP154-006, ADDITIVE -- gemmaExtract()'s own new failure signal (comparative_cascade.ts),
+  // passed straight through so a caller that cares (extractFrameKinds(), immediately above, is the
+  // only one today) can name it. undefined on success (including a genuinely empty extraction) and
+  // on a truncated read (that already has its own, more specific signal, above). Every OTHER
+  // existing caller of this function (runDiscriminator()'s own STAGE D draw loop, further below)
+  // already destructures only `{ kinds, categoryKind, discarded }` and compiles/behaves unchanged --
+  // this is exactly the same "extra field is a no-op for callers that do not ask for it" shape
+  // D-BP153-032's own comment (above, on `kindSpans`) already established for this function.
+  failureCause?: 'transport' | 'http-error' | 'parse-error';
+  failureDetail?: string;
 }> {
-  const rawOut: { text?: string; truncated?: boolean } = {};
+  const rawOut: {
+    text?: string;
+    truncated?: boolean;
+    failureCause?: 'transport' | 'http-error' | 'parse-error';
+    failureDetail?: string;
+  } = {};
   const ex = await gemmaExtract(
     discriminatorExtractionInstruction(candidates, OPT, category), passage, DISCRIMINATOR_EXTRACTION_SHAPE, rawOut,
   );
@@ -3614,6 +3645,7 @@ async function extractDiscriminatorKinds(
   if (rawCategoryKind && !categoryKindVerified) discarded++;
   return {
     kinds, kindSpans, categoryKind, categoryKindSpan: categoryKindVerified ? categoryKindSpan : null, discarded, truncated,
+    failureCause: rawOut.failureCause, failureDetail: rawOut.failureDetail,
   };
 }
 
