@@ -24,12 +24,27 @@
 // RETIRED) then asked the LOCAL MODEL to JUDGE whether each stated classification counted as
 // `category` -- a judgment call that produced ~100% extraction variance on ~0% source variance
 // (two draws of essentially identical text, "excludes all nine" vs "excludes three"). D-BP153-032's
-// fix changes the query ONE MORE TIME (to match STAGE D's own query, dfe72680) to ALSO ask which
-// stated kind properly denotes the category, and changes the DOWNSTREAM extraction to pure copying
-// (extractFrameKinds(), reusing extractDiscriminatorKinds() unmodified) plus a PURE-CODE comparison
-// (applyFrameKindElimination()) -- see classify_cascade.ts's own D-BP153-032 section header for the
-// full ruling. TEST 1 (below) is rewritten against the query THIS ticket now sends; TESTS 2/3 are
-// rewritten against the stated-kind extraction shape. reconcileNamedSet(),
+// fix changed the query to ALSO ask which stated kind properly denotes the category, and changed the
+// DOWNSTREAM extraction to pure copying (extractFrameKinds(), reusing extractDiscriminatorKinds()
+// unmodified) plus a PURE-CODE comparison (applyFrameKindElimination()) -- that pure-copy
+// extraction shape is UNCHANGED by this section's own next update, below.
+//
+// D-BP153-033, SUPERSEDING UPDATE, RECORDED HERE EXPLICITLY. THE MEASURED PROOF (this ticket's own
+// dispatch; run LIANA_RUN_qid98_2026-08-13T16-29-46-988Z.json, acquisition
+// EVIDENCE_qid98_2026-08-13T16-27-05-170Z_27064.jsonl): D-BP153-032 changed the query WORDING ONE
+// MORE TIME, to reuse STAGE D's own query verbatim ("What kind of X is each of these, how do they
+// differ from one another, and which of those kinds properly denotes X?") -- that was the WRONG fix
+// for a defect that was never in the query wording (the defect was the DOWNSTREAM JUDGMENT, already
+// closed above). STAGE D's own "how do they differ from one another" phrasing invites a source to
+// answer with a COMPARISON ESSAY, and the real Gemini passages this run acquired did exactly that --
+// GROUPED all nine options under four category headings instead of stating a kind per option, and
+// the (then per-item-only) extraction read every one of them as null. D-BP153-033 restores THE
+// FRAME's OWN previous query (D-BP153-021's wording, above, verbatim) and appends the
+// category-denotation ask as a SEPARATE TRAILING CLAUSE so it cannot reshape the per-option list into
+// a comparison essay -- TEST 1 below is rewritten against THIS query. STAGE D's OWN query
+// (runDiscriminator(), classify_cascade.ts, D-BP153-028's wording) is UNTOUCHED by this ticket.
+// TESTS 2/3 (below) exercise the stated-kind extraction shape, which D-BP153-033 does not change the
+// JSON contract of -- only unaffected by the query-wording revert. reconcileNamedSet(),
 // discardPropertyContaminatedSpans(), and the two RETIRED extraction instructions are UNCHANGED (the
 // first two still serve THE NAMED SET; the RETIRED two no longer exist -- extractFrameBothSides()
 // itself was removed by D-BP153-032, not merely superseded).
@@ -79,8 +94,8 @@ function queuedFetch(responses: string[]): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-describe('D-BP153-021/D-BP153-032 TEST 1 (HEADLINE): the composed FRAME query forces an accounting of every option, AND asks what kind denotes the category', () => {
-  test('the query contains every option letter+label, an explicit demand to answer for each/all, and a request for the category\'s own stated kind', async () => {
+describe('D-BP153-033 TEST 1 (HEADLINE): the composed FRAME query restores the per-option accounting wording, AND asks what kind denotes the category as a SEPARATE TRAILING CLAUSE', () => {
+  test('the query contains every option letter+label, the D-BP153-021 per-option demand, and a trailing (never comparison-essay) request for the category\'s own stated kind', async () => {
     // challengeDetected short-circuits googleBlocks() to ok:false on the FIRST attempt, no retry
     // sleeps -- this test only needs the COMPOSED query string, not a real answer.
     const askGoogle = vi.fn(async () => ({ challengeDetected: true }));
@@ -95,15 +110,20 @@ describe('D-BP153-021/D-BP153-032 TEST 1 (HEADLINE): the composed FRAME query fo
     for (const [L, label] of Object.entries(OPT)) {
       expect(frame.query).toContain(`${L}) ${label}`);
     }
-    // D-BP153-032: the query now asks what KIND each option is (mirrors STAGE D's own query,
-    // dfe72680) AND which of those kinds properly denotes the category -- never merely "is or is
-    // not", the framing that invited a two-example answer and left no chance for a category
-    // denotation to ever be stated at all.
-    expect(frame.query).toMatch(/what kind of .*world regions.* is each of these/i);
-    expect(frame.query).toMatch(/how do they differ from one another/i);
-    expect(frame.query).toMatch(/which of those kinds properly denotes/i);
+    // D-BP153-033: the query is D-BP153-021's own per-option wording, restored VERBATIM (never
+    // STAGE D's "what kind... how do they differ from one another" run-on, which invites a
+    // comparison-essay answer a grouped-heading passage can satisfy without ever stating a kind on
+    // any individual option's own line).
+    expect(frame.query).toMatch(/state exactly what it is/i);
+    expect(frame.query).toMatch(/actual classification/i);
+    expect(frame.query).toMatch(/answer for every one/i);
+    expect(frame.query).toMatch(/do not skip any/i);
+    // The category-denotation ask is present, but ONLY as a separate, trailing clause after the
+    // per-option list -- never folded into a "how do they differ from one another" essay prompt.
+    expect(frame.query).toMatch(/then, separately and last, state which one of those classifications properly denotes/i);
+    expect(frame.query).not.toMatch(/how do they differ from one another/i);
     expect(frame.query).not.toMatch(/^Which of these are/);
-    expect(frame.query).not.toMatch(/is or is not/i);
+    expect(frame.query).not.toMatch(/^What kind of/i);
   });
 });
 

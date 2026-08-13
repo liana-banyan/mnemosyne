@@ -2190,18 +2190,33 @@ export async function establishFrame(
     note(`   FRAME: ${owned.length} owned passage(s) already acquired this run did not contain a usable stated-kind read -- falling through to a NEW QUERY`);
   }
 
-  // D-BP153-032 FIX. THE MEASURED FAILURE (see this file's own D-BP153-032 section header, above,
-  // for the full receipt): the OLD query already asked the source "state exactly what it is", but
-  // the DOWNSTREAM extraction (frameExtractionInstruction()/frameComplementExtractionInstruction(),
-  // RETIRED) still asked the LOCAL MODEL to judge which stated kinds count as `category` -- that
-  // judgment, not the source, is what produced ~100% variance on ~0% source variance. THE FIX
-  // changes what is ASKED of the source too, to match what THE DISCRIMINATOR already asks (STAGE D,
-  // further below, D-BP153-028's own query, dfe72680) -- explicitly for the category's OWN stated
-  // kind, not merely "what each option is" -- so the source has a chance to state it before
-  // extraction even begins, and the extraction that follows (extractFrameKinds(), above) only ever
-  // copies out what was stated, never judges membership.
-  const query = `What kind of ${category} is each of these, how do they differ from one another, `
-    + `and which of those kinds properly denotes "${category}"? ${list(all, OPT)}`;
+  // D-BP153-033 FIX. D-BP153-032 changed QUESTION 1's OWN query wording to reuse STAGE D's query
+  // verbatim ("What kind of X is each of these, how do they differ from one another, and which of
+  // those kinds properly denotes X?") -- that was the WRONG fix for a defect that was never in the
+  // query wording. THE MEASURED FAILURE this restores from (run
+  // LIANA_RUN_qid98_2026-08-13T16-29-46-988Z.json, acquisition
+  // EVIDENCE_qid98_2026-08-13T16-27-05-170Z_27064.jsonl): STAGE D's own wording invites a source to
+  // answer with a COMPARISON ESSAY ("how do they differ from one another") -- the real Gemini
+  // passages this run acquired GROUPED the nine options under four category headings ("Category 1:
+  // Macro-Geographic / Socio-Political Regions  A) South America (Continent) B) South Asia
+  // (Sub-continental realm) ...") instead of stating a kind per option, and
+  // extractDiscriminatorKinds()'s per-item shape read every one of those as null -- draw 1 result:
+  // "kinds {A:null, B:null, C:null, D:null, E:null, F:null, G:null, H:null, I:null},
+  // categoryKind=null". THE FRAME's OWN previous query (D-BP153-021, 332dd737, "For EACH of the
+  // following, state exactly what it is...") produced clean per-option lines on both draws it ever
+  // ran and never once produced this comparison-essay shape -- restored here VERBATIM, with the
+  // category-denotation ask appended as a SEPARATE TRAILING CLAUSE (never folded into the per-option
+  // list, so it cannot reshape it into a comparison essay the way STAGE D's single run-on sentence
+  // did). ONE query still (Founder, BP151, verbatim: "we got rid of four answers with ONE google
+  // search"). Extraction (extractFrameKinds()/extractDiscriminatorKinds(), above/further below) is
+  // UNCHANGED by this ticket's Fix 1 -- Fix 2 (discriminatorExtractionInstruction(), further below)
+  // is what teaches the EXTRACTOR to read a grouped-heading passage; this fix only restores what is
+  // ASKED of the source. STAGE D's OWN query (further below, D-BP153-028's wording) is untouched --
+  // this ticket's dispatch is explicit that the discriminator's wording stays as it is.
+  const query = `For EACH of the following, state exactly what it is -- its actual classification `
+    + `or type -- rather than merely whether it is or is not ${category}. Answer for every one, in `
+    + `order, and do not skip any. ${list(all, OPT)} Then, separately and last, state which one of `
+    + `those classifications properly denotes "${category}".`;
   note(`   FRAME: ${query}`);
   // D-BP153-031, THE REPEATS RUN FIRST. THE SOFTBALLS' own base question is drawn LB_DRAW_REPEATS
   // times, independently, BEFORE anything downstream (including D-BP153-026's completion follow-up,
@@ -2316,9 +2331,11 @@ export async function establishFrame(
     const followUp = await issueCompletionFollowUp(
       'FRAME',
       'INCOMPLETE STATED-KIND COVERAGE (D-BP153-032)',
-      (namesList) => `What kind of ${category} is each of these, how do they differ from one another, `
-        + `and which of those kinds properly denotes "${category}"? These are the ONLY option(s) the `
-        + `first pass left unaccounted for; answer for every one, in order, and do not skip any. ${namesList}`,
+      (namesList) => `For EACH of the following, state exactly what it is -- its actual classification `
+        + `or type -- rather than merely whether it is or is not ${category}. These are the ONLY `
+        + `option(s) the first pass left unaccounted for; answer for every one, in order, and do not `
+        + `skip any. ${namesList} Then, separately and last, state which one of those classifications `
+        + `properly denotes "${category}".`,
       uncovered, all, OPT, askGoogle, askConversationalAuthority, note,
     );
     if (followUp) {
@@ -3169,13 +3186,37 @@ export function runMembershipTerminator(
  *  (above). EXTRACTION ONLY (HARDWIRE-22): asks the model to copy out the passage's OWN
  *  classification word for each survivor, and separately (never conflated into the same field) the
  *  passage's OWN statement of which of those kinds properly denotes the category -- never to judge
- *  which kind is correct itself. */
+ *  which kind is correct itself.
+ *
+ *  D-BP153-033, ADDITIVE: THE MEASURED FAILURE this paragraph closes (see this file's own
+ *  D-BP153-033 section header, at establishFrame()'s fresh-query path, for the full receipt) is not
+ *  a judgment defect -- it is a SHAPE the per-item reading missed entirely. A passage can state every
+ *  option's kind by GROUPING options under a category heading ("Category 1: Macro-Geographic /
+ *  Socio-Political Regions  A) South America (Continent) B) South Asia (Sub-continental realm) ...")
+ *  rather than stating "A) South America: Continent" per line. The heading NAMES the kind just as
+ *  plainly as a per-item line does -- reading it and attributing it to the names listed beneath it is
+ *  PURE COPYING, not a judgment about whether that kind qualifies as anything (HARDWIRE-22
+ *  unrelaxed: this paragraph only tells the model WHERE a stated kind may be written, never which
+ *  kind counts). The per-item shape (a kind stated directly on the name's own line) is unchanged and
+ *  must keep working exactly as it does today; this is an ADDITIONAL shape the same read now also
+ *  recognizes. */
 function discriminatorExtractionInstruction(candidates: string[], OPT: Record<string, string>, category: string): string {
   return 'For each of these names, copy out exactly what KIND of thing the passage states it is '
     + '(for example "Continent", "Colloquial area", "Subcontinent", "Climatic zone") -- the '
     + "passage's own classification word or phrase for that name, verbatim, spelled as the passage "
-    + 'spells it, AND the exact verbatim sentence or clause the kind was read from, into "span". Use '
-    + 'null (and an empty span) for a name whose kind the passage does not state. SEPARATELY, if the '
+    + 'spells it, AND the exact verbatim sentence or clause the kind was read from, into "span". The '
+    + 'passage may state a kind two different ways: (1) directly on the name\'s own line (for example '
+    + '"A) South America: Continent"), or (2) by GROUPING several names under a category heading that '
+    + 'itself names the kind (for example a heading reading "Category 1: Macro-Geographic / '
+    + 'Socio-Political Regions" followed by a list of names underneath it, with no kind word on any '
+    + "individual name's own line). When the passage uses the SECOND shape, every name listed under a "
+    + "heading takes THAT HEADING's own stated kind as its kind -- copy the heading's kind text "
+    + 'verbatim into "kind", and into "span" copy the verbatim text that ties the name to its heading '
+    + "(the heading line itself, or the heading line together with the name's own line beneath it) so "
+    + 'the tie can be checked against the passage. This is still copying only -- never decide yourself '
+    + 'whether a heading\'s kind qualifies as anything, only which heading (if any) a name sits under. '
+    + 'Use null (and an empty span) for a name whose kind the passage does not state either way. '
+    + 'SEPARATELY, if the '
     + `passage ALSO states which of those stated kinds properly counts as a ${category} -- the `
     + 'formal or correct kind for that category, AS THE PASSAGE ITSELF SAYS SO, never your own '
     + 'judgment -- copy that kind verbatim too, in category_kind, with its own verbatim sentence in '
