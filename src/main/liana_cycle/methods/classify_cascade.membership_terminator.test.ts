@@ -46,7 +46,17 @@ const REAL_PASSAGE_S4 = 'North Africa (C) and Central Asia (F) are classified by
   + 'Desert (I) are climatic biomes -- none of the five is classified as a world region.';
 const REAL_PASSAGE = `${REAL_PASSAGE_S1} ${REAL_PASSAGE_S2} ${REAL_PASSAGE_S3} ${REAL_PASSAGE_S4}`;
 
-import { describe, test, expect, vi } from 'vitest';
+import {
+  describe, test, expect, vi, beforeEach, afterEach,
+} from 'vitest';
+// D-BP153-031, TEST ISOLATION: this file's own fixtures each mock exactly ONE response per base
+// question -- pinning LB_DRAW_REPEATS=1 keeps every existing assertion in this file (call counts,
+// single-draw extraction) valid. drawWithAgreement()'s own repeats===1 path is a pure pass-through,
+// BYTE-IDENTICAL to this file's pre-D-BP153-031 behavior (see classify_cascade.ts's own D-BP153-031
+// section header and resolveDrawRepeats()). The channel-variance repeat/disagreement behavior itself
+// is covered by classify_cascade.repeated_draws.test.ts, not here.
+beforeEach(() => { process.env.LB_DRAW_REPEATS = '1'; });
+afterEach(() => { delete process.env.LB_DRAW_REPEATS; });
 import {
   extractNamedSetMembers, runMembershipTerminator, runSuperlativeByMagnitude, extractSuperlativeMatch,
 } from './classify_cascade';

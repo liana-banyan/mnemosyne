@@ -1562,6 +1562,14 @@ export interface FrameResult {
   /** Index into the caller's ownedPassages() array that answered the frame, when answeredFrom is
    *  'owned-passage'; null on 'new-query'. */
   ownedPassageIndex: number | null;
+  /** D-BP153-031, ADDITIVE/OPTIONAL -- undefined on an owned-passage answer (zero draws spent,
+   *  never multiplied) and on every call site that predates this ticket's own repeated-draw wiring.
+   *  On a fresh-query answer, the LB_DRAW_REPEATS value actually in effect this call and how many
+   *  independent draws THE SOFTBALLS' base question actually issued (repeats on agreement,
+   *  `<= repeats` never applies -- every configured draw is always issued, none skipped early, so
+   *  this always equals `drawRepeats` whenever it is set at all). See drawWithAgreement() above. */
+  drawRepeats?: number;
+  drawsIssued?: number;
 }
 
 /** THE SAME instruction and output shape both the owned-evidence extraction attempt (below) and
@@ -1973,6 +1981,125 @@ function complementSilentAndPartial(all: string[], directValues: string[], compl
   return all.filter((L) => !covered.has(L));
 }
 
+// ─────────────────────────── D-BP153-031: THE CHANNEL VARIANCE FINDING, REPEATED DRAWS ───────────────────────────
+//
+// D-BP153-031/BISHOP/seg-repeated-draws. Bishop diagnosed this from FOUR CONSECUTIVE LIVE RUNS, not
+// re-diagnosed here. THE MEASURED FAILURE: the SAME question, to the SAME authority, on consecutive
+// runs, returned wildly different named sets for qid 98 --
+//   run 03-57Z: members {B, E}
+//   run 04-55Z: members {B, D, E}   <- correct
+//   run 06-40Z: members {C}          <- one member, and the wrong one (North Africa is not a dense
+//                                        cluster)
+// Receipt LIANA_RUN_qid98_2026-08-13T06-40-53-268Z.json: the membership terminator ran on the single,
+// unlucky {C} draw ("legitimate-regions {A..I} MINUS named-set-members {C) North Africa} leaves 8
+// candidates") and correctly ABSTAINED on 8 surviving candidates -- sound arithmetic over a noisy
+// input. Every fix to date made the DERIVATION sound; none makes the INPUT stable. This section makes
+// the input stable by asking more than once and requiring agreement -- it never resolves a
+// disagreement itself.
+//
+// THE RULE, HIS OWN, EXTENDED. FD-BP153-07 ("ask it both directions and require agreement") already
+// covers both DIRECTIONS within ONE draw (the member extraction and its complement, over the SAME
+// already-fetched passage). It does not cover REPEATED draws -- a second, fully independent fetch of
+// the SAME question. This section is that extension, composed with the estate's own noise-floor
+// canon ("never cite a single run" -- 44% observed spread on identical zero-change runs): THE SOFTBALLS
+// (establishFrame()), THE NAMED SET (extractNamedSetMembers()), and THE DISCRIMINATOR
+// (runDiscriminator()) each ask their own BASE question LB_DRAW_REPEATS times, independently, and the
+// EXTRACTED RESULT SETS (never the raw prose -- the prose differs every draw by construction) must
+// agree byte-for-byte before anything downstream trusts them.
+//
+// SCOPE, DELIBERATELY NARROW. Repeats apply ONLY to the FRESH-QUERY path of the BASE question. An
+// OWNED-EVIDENCE read is a complete answer already sitting in memory from earlier this run, not a
+// draw from a noisy channel -- used once, at zero cost, exactly as before this ticket (see each call
+// site's own owned-passage loop, untouched). D-BP153-026's completion follow-up is its OWN single
+// query, issued only AFTER the base question's repeats already agreed and the agreed result is
+// incomplete -- it is never itself repeated (see establishFrame()'s and extractNamedSetMembers()'s
+// own "the repeats run FIRST" comment, at each call site, for where this is enforced).
+//
+// DISAGREEMENT IS A FINDING, NEVER SILENTLY RESOLVED (FD-BP152-21: "ask Google, and also let the
+// Cascade apply, as a check on each other" -- two independent draws checking one another is the same
+// discipline, and a check that disagrees is a FINDING, not noise to resolve). No intersection, no
+// union, no majority vote, no first-draw preference -- any of those would be exactly the
+// force-a-winner-from-noise this file's own "no tie-breakers, ever" rule (FD-BP152-19) already
+// forbids for criteria and for a named set, applied here to repeated draws of the SAME question. A
+// disagreement makes the question UNAVAILABLE -- the identical state a frame/named-set/discriminator
+// read that could not be established at all already produces -- so the run abstains or falls through
+// exactly as it already does for that state; nothing new is invented for this case.
+//
+// LB_DRAW_REPEATS, CLAMPED [1, 5], DEFAULT 2. resolveDrawRepeats() reads the environment fresh on
+// every call (never cached at module load) so a test can set it per-case. repeats === 1 makes
+// drawWithAgreement() below issue exactly ONE draw and emit NONE of its own wrapper note()s --
+// byte-identical to this file's own behavior before this ticket, the escape hatch this ticket's own
+// spec requires ("a value of 1 must reproduce today's behavior EXACTLY, so the feature can be turned
+// off").
+
+/** Reads `LB_DRAW_REPEATS` fresh on every call (never cached), clamped to [1, 5], default 2. A
+ *  missing or non-numeric value is the default; a value outside [1, 5] is clamped, never rejected --
+ *  an operational dial, not a config the estate wants a run to crash over. */
+export function resolveDrawRepeats(): number {
+  const raw = process.env.LB_DRAW_REPEATS;
+  const parsed = raw === undefined ? NaN : Number.parseInt(raw, 10);
+  const repeats = Number.isFinite(parsed) ? parsed : 2;
+  return Math.max(1, Math.min(5, repeats));
+}
+
+/** One independent draw's own outcome. `resultKey` is the CANONICAL, comparable rendering of the
+ *  EXTRACTED RESULT SET this draw produced (never the raw passage text -- see this section's own
+ *  header); two draws agree iff their `resultKey`s are byte-identical. `resultLabel` is the
+ *  human-readable rendering of the same fact, for the transcript. `data` is whatever the caller needs
+ *  to proceed when this draw turns out to be the trusted one. */
+export interface RepeatedDraw<T> {
+  resultKey: string;
+  resultLabel: string;
+  data: T;
+}
+
+export interface RepeatedDrawOutcome<T> {
+  agreed: boolean;
+  /** The (arbitrary, since identical-by-definition-of-`agreed`) first draw, when every draw agreed.
+   *  Null on disagreement -- there IS no single trusted draw then; see this section's own header,
+   *  "never a first-draw preference" (that rule is about disagreement, where the draws are NOT
+   *  identical; here, on agreement, they are, so returning one of them is not a preference). */
+  trusted: RepeatedDraw<T> | null;
+  draws: RepeatedDraw<T>[];
+  repeats: number;
+}
+
+/** THE MECHANISM. Issues `repeats` independent draws of `drawOnce`, one at a time (see the
+ *  no-await-in-loop note below), compares their `resultKey`s, and returns either the single agreed
+ *  draw or a reported, UNRESOLVED disagreement. `repeats === 1` is a pure pass-through: exactly one
+ *  draw is issued and none of this function's own note()s fire -- see this section's own header. */
+export async function drawWithAgreement<T>(
+  label: string,
+  repeats: number,
+  drawOnce: (drawIndex: number) => Promise<RepeatedDraw<T>>,
+  note: (text: string) => void,
+): Promise<RepeatedDrawOutcome<T>> {
+  const draws: RepeatedDraw<T>[] = [];
+  for (let i = 0; i < repeats; i++) {
+    if (repeats > 1) note(`   ${label}: DRAW ${i + 1} of ${repeats} (LB_DRAW_REPEATS=${repeats}, D-BP153-031)`);
+    // eslint-disable-next-line no-await-in-loop -- each draw must be a genuinely separate,
+    // independent ask of the SAME channel (that is the entire point -- a parallel fan-out would not
+    // measure independent channel variance, it would just be the same race this file's own rate-limit
+    // history already warns about); drawn one at a time by design.
+    const draw = await drawOnce(i);
+    draws.push(draw);
+    if (repeats > 1) note(`   ${label}: draw ${i + 1} result -- ${draw.resultLabel}`);
+  }
+  const uniqueKeys = new Set(draws.map((d) => d.resultKey));
+  if (uniqueKeys.size <= 1) {
+    if (repeats > 1) note(`   ${label}: ${repeats} independent draw(s) AGREE -- ${draws[0].resultLabel} -- trusted`);
+    return { agreed: true, trusted: draws[0], draws, repeats };
+  }
+  note(
+    `   ${label}: DISAGREEMENT across ${repeats} independent draws of the SAME question (D-BP153-031, `
+      + 'THE CHANNEL VARIANCE FINDING) -- '
+      + `${draws.map((d, i) => `draw ${i + 1}: ${d.resultLabel}`).join(' | ')} -- reported as a FINDING and `
+      + 'LEFT UNRESOLVED (never an intersection, a union, a majority vote, or a first-draw pick); '
+      + `treating ${label} as UNAVAILABLE`,
+  );
+  return { agreed: false, trusted: null, draws, repeats };
+}
+
 /**
  * FD-BP153-01 -- THE FRAME. Establishes which options are legitimate members of the category the
  * question names, before anything is ranked.
@@ -2153,49 +2280,95 @@ export async function establishFrame(
     + `or type -- rather than merely whether it is or is not ${category}. Answer for every one, in `
     + `order, and do not skip any. ${list(all, OPT)}`;
   note(`   FRAME: ${query}`);
-  // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
-  // see obtainCascadePassage()'s own header, above establishFrame(), for the full ruling.
-  const res = await obtainCascadePassage(askGoogle, askConversationalAuthority, 'FRAME', query, note);
-  if (!res.ok) {
-    note(`   FRAME: no usable answer (${res.via}) -- the frame is UNAVAILABLE, not empty`);
+  // D-BP153-031, THE REPEATS RUN FIRST. THE SOFTBALLS' own base question is drawn LB_DRAW_REPEATS
+  // times, independently, BEFORE anything downstream (including D-BP153-026's completion follow-up,
+  // below) ever runs -- see this file's own D-BP153-031 section header, above establishFrame(), for
+  // the full ruling and the measured failure it closes. Each draw repeats the IDENTICAL three checks
+  // this function already performed once before this ticket (res.ok, non-empty passage,
+  // passageMentionsAnyLabel) plus the extraction itself, and folds all four possible outcomes into
+  // one comparable `resultKey` -- so two draws that fail for DIFFERENT reasons (one empty, one
+  // genuinely extracted) are correctly treated as a disagreement too, not silently conflated.
+  type FrameDrawData =
+    | { kind: 'not-ok'; res: GoogleAnswer }
+    | { kind: 'empty'; res: GoogleAnswer }
+    | { kind: 'no-label'; res: GoogleAnswer }
+    | { kind: 'extracted'; res: GoogleAnswer; both: Awaited<ReturnType<typeof extractFrameBothSides>> };
+  const drawRepeats = resolveDrawRepeats();
+  const frameDrawOutcome = await drawWithAgreement<FrameDrawData>('FRAME', drawRepeats, async () => {
+    // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
+    // see obtainCascadePassage()'s own header, above establishFrame(), for the full ruling.
+    const drawRes = await obtainCascadePassage(askGoogle, askConversationalAuthority, 'FRAME', query, note);
+    if (!drawRes.ok) {
+      return { resultKey: 'UNAVAILABLE:not-ok', resultLabel: `no usable answer (${drawRes.via})`, data: { kind: 'not-ok', res: drawRes } };
+    }
+    // D-BP153-010 -- AN EMPTY PASSAGE IS NOT AN EMPTY EXCLUSION LIST. Bishop's own bug, found in the
+    // first live run of this function (2026-08-12T16:04Z, acquisition
+    // EVIDENCE_qid98_2026-08-12T15-51-57-546Z_23720): googleBlocks() returned ok:true with EMPTY
+    // text, gemmaExtract() then found nothing in nothing, and this function reported
+    // "source excluded (nothing) -- 9 of 9 option(s) remain in frame". That reads identically to
+    // "the source examined all nine and said every one is a world region", which is a completely
+    // different fact. An unusable frame must abstain (FD-BP153-01 consequence 2), never silently
+    // pass every option through to the ranking.
+    if (!drawRes.text || !drawRes.text.trim()) {
+      return { resultKey: 'UNAVAILABLE:empty', resultLabel: `empty passage (${drawRes.via})`, data: { kind: 'empty', res: drawRes } };
+    }
+    // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the options
+    // cannot state anything about them -- same fact-class as the empty-passage check above.
+    if (!passageMentionsAnyLabel(drawRes.text, all, OPT)) {
+      return { resultKey: 'UNAVAILABLE:no-label', resultLabel: `no option named (${drawRes.via})`, data: { kind: 'no-label', res: drawRes } };
+    }
+    const drawBoth = await extractFrameBothSides(drawRes.text, category, prop, all, OPT, note);
+    // THE COMPARISON: the EXTRACTED RESULT SET, never the raw passage text (this section's own
+    // header) -- excluded/included/conflicts/partitionComplete are exactly the fields this
+    // function's own callers (runMembershipTerminator(), checkFrameNamedSetConsistency()) actually
+    // consume, so agreement here is agreement on everything downstream logic can see.
+    const resultKey = JSON.stringify({
+      excluded: [...drawBoth.excluded].sort(), included: [...drawBoth.included].sort(),
+      conflicts: [...drawBoth.conflicts].sort(), partitionComplete: drawBoth.partitionComplete,
+    });
+    const resultLabel = `excludes {${drawBoth.excluded.join(',') || 'none'}}, includes {${drawBoth.included.join(',') || 'none'}}`
+      + `${drawBoth.conflicts.length ? `, conflicts {${drawBoth.conflicts.join(',')}}` : ''}`;
+    return { resultKey, resultLabel, data: { kind: 'extracted', res: drawRes, both: drawBoth } };
+  }, note);
+  if (!frameDrawOutcome.agreed) {
+    // DISAGREEMENT -> UNAVAILABLE, exactly the same state a frame this function could never
+    // establish at all already produces (FD-BP153-01 consequence 2: an unframed/unavailable frame
+    // ABSTAINS, never falls back to ranking the unframed pool). Never an intersection, a union, a
+    // majority, or a first-draw pick -- drawWithAgreement() above already reported the FINDING
+    // (D-BP153-031) naming every draw's own result; this is only the caller's consequence of it.
     return {
       available: false, excluded: [], included: [], conflicts: [], partitionComplete: false,
-      reconciliationWhy: 'unavailable -- no usable answer', query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+      reconciliationWhy: `unavailable -- ${drawRepeats} independent draws disagreed (D-BP153-031, THE CHANNEL VARIANCE FINDING)`,
+      query, via: 'draw-disagreement', answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: frameDrawOutcome.draws.length,
     };
   }
-  // D-BP153-010 -- AN EMPTY PASSAGE IS NOT AN EMPTY EXCLUSION LIST. Bishop's own bug, found in the
-  // first live run of this function (2026-08-12T16:04Z, acquisition
-  // EVIDENCE_qid98_2026-08-12T15-51-57-546Z_23720): googleBlocks() returned ok:true with EMPTY
-  // text, gemmaExtract() then found nothing in nothing, and this function reported
-  // "source excluded (nothing) -- 9 of 9 option(s) remain in frame". That reads identically to
-  // "the source examined all nine and said every one is a world region", which is a completely
-  // different fact.
-  //
-  // This is the exact defect class this session spent itself closing, rebuilt by hand inside the
-  // fix for it. evidence_store.ts's own header states the rule this violated: a recorded null is
-  // a FACT ("we asked and got nothing") and is NOT the same as an absent record. Same distinction,
-  // same failure to honor it.
-  //
-  // An unusable frame must abstain (FD-BP153-01 consequence 2), never silently pass every option
-  // through to the ranking -- because passing all nine through is precisely the unframed pool that
-  // answers G on qid 98 against a key of A.
-  if (!res.text || !res.text.trim()) {
-    note(`   FRAME: the source returned an EMPTY passage (${res.via}) -- the frame is UNAVAILABLE, not "nothing excluded"`);
+  const frameTrusted = frameDrawOutcome.trusted!.data;
+  if (frameTrusted.kind === 'not-ok') {
+    note(`   FRAME: no usable answer (${frameTrusted.res.via}) -- the frame is UNAVAILABLE, not empty`);
     return {
       available: false, excluded: [], included: [], conflicts: [], partitionComplete: false,
-      reconciliationWhy: 'unavailable -- empty passage', query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      reconciliationWhy: 'unavailable -- no usable answer', query, via: frameTrusted.res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: frameDrawOutcome.draws.length,
     };
   }
-  // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the options
-  // cannot state anything about them -- same fact-class as the empty-passage check just above.
-  if (!passageMentionsAnyLabel(res.text, all, OPT)) {
-    note(`   FRAME: the source's passage (${res.via}) names NONE of the option(s) under test -- the frame is UNAVAILABLE, not "nothing excluded"`);
+  if (frameTrusted.kind === 'empty') {
+    note(`   FRAME: the source returned an EMPTY passage (${frameTrusted.res.via}) -- the frame is UNAVAILABLE, not "nothing excluded"`);
     return {
       available: false, excluded: [], included: [], conflicts: [], partitionComplete: false,
-      reconciliationWhy: 'unavailable -- no option named', query, via: `${res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      reconciliationWhy: 'unavailable -- empty passage', query, via: `${frameTrusted.res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: frameDrawOutcome.draws.length,
     };
   }
-  const both = await extractFrameBothSides(res.text, category, prop, all, OPT, note);
+  if (frameTrusted.kind === 'no-label') {
+    note(`   FRAME: the source's passage (${frameTrusted.res.via}) names NONE of the option(s) under test -- the frame is UNAVAILABLE, not "nothing excluded"`);
+    return {
+      available: false, excluded: [], included: [], conflicts: [], partitionComplete: false,
+      reconciliationWhy: 'unavailable -- no option named', query, via: `${frameTrusted.res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: frameDrawOutcome.draws.length,
+    };
+  }
+  const { res, both } = frameTrusted;
   if (both.discarded) {
     note(`   FRAME: discarded ${both.discarded} value(s) with no verbatim supporting span (fresh query)`);
   }
@@ -2273,6 +2446,7 @@ export async function establishFrame(
     available: true, excluded: effective.excluded, included: effective.included, conflicts: effective.conflicts,
     partitionComplete: effective.partitionComplete, reconciliationWhy: effective.why,
     query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+    drawRepeats, drawsIssued: frameDrawOutcome.draws.length,
   };
 }
 
@@ -2359,6 +2533,9 @@ export interface NamedSetResult {
   /** Index into the caller's ownedPassages() array that answered the named set, when answeredFrom
    *  is 'owned-passage'; null on 'new-query'. */
   ownedPassageIndex: number | null;
+  /** D-BP153-031, ADDITIVE/OPTIONAL -- mirrors FrameResult's own pair, same contract, see there. */
+  drawRepeats?: number;
+  drawsIssued?: number;
 }
 
 /** D-BP153-014, BUG-1(b), SUPERSEDED IN PART BY D-BP153-020 (below). Pure set arithmetic, no I/O,
@@ -2746,40 +2923,85 @@ export async function extractNamedSetMembers(
   // list()/OPT convention every other query in this file already uses.
   const query = `Which of these are ${category} that ARE ${direction} ${property}? Name each one that is. ${list(all, OPT)}`;
   note(`   NAMED SET: ${query}`);
-  // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
-  // see obtainCascadePassage()'s own header, above establishFrame(), for the full ruling.
-  const res = await obtainCascadePassage(askGoogle, askConversationalAuthority, 'NAMED SET', query, note);
-  if (!res.ok) {
-    note(`   NAMED SET: no usable answer (${res.via}) -- the named set is UNAVAILABLE, not empty`);
+  // D-BP153-031, THE REPEATS RUN FIRST -- mirrors establishFrame()'s own identical wiring (above),
+  // see this file's own D-BP153-031 section header for the full ruling. THE NAMED SET's own base
+  // question is drawn LB_DRAW_REPEATS times, independently, before D-BP153-026's completion
+  // follow-up (below) ever runs. THIS IS THE EXACT QUESTION THE MEASURED FAILURE WAS ON (this
+  // file's own D-BP153-031 header: run 06-40Z's single unlucky {C} draw).
+  type NamedSetDrawData =
+    | { kind: 'not-ok'; res: GoogleAnswer }
+    | { kind: 'empty'; res: GoogleAnswer }
+    | { kind: 'no-label'; res: GoogleAnswer }
+    | { kind: 'extracted'; res: GoogleAnswer; both: Awaited<ReturnType<typeof extractNamedSetBothSides>> };
+  const drawRepeats = resolveDrawRepeats();
+  const namedSetDrawOutcome = await drawWithAgreement<NamedSetDrawData>('NAMED SET', drawRepeats, async () => {
+    // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
+    // see obtainCascadePassage()'s own header, above establishFrame(), for the full ruling.
+    const drawRes = await obtainCascadePassage(askGoogle, askConversationalAuthority, 'NAMED SET', query, note);
+    if (!drawRes.ok) {
+      return { resultKey: 'UNAVAILABLE:not-ok', resultLabel: `no usable answer (${drawRes.via})`, data: { kind: 'not-ok', res: drawRes } };
+    }
+    // D-BP153-010, mirrored: an EMPTY passage is not the same fact as "the source named zero
+    // members" -- see establishFrame()'s own D-BP153-010 comment for the full incident this rule
+    // closes; the same failure mode is possible here.
+    if (!drawRes.text || !drawRes.text.trim()) {
+      return { resultKey: 'UNAVAILABLE:empty', resultLabel: `empty passage (${drawRes.via})`, data: { kind: 'empty', res: drawRes } };
+    }
+    // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the options
+    // cannot state anything about them.
+    if (!passageMentionsAnyLabel(drawRes.text, all, OPT)) {
+      return { resultKey: 'UNAVAILABLE:no-label', resultLabel: `no option named (${drawRes.via})`, data: { kind: 'no-label', res: drawRes } };
+    }
+    const drawBoth = await extractNamedSetBothSides(drawRes.text, all, OPT, direction, property, note);
+    // THE COMPARISON: the EXTRACTED RESULT SET (this section's own header) -- members/nonMembers/
+    // conflicts/partitionComplete are exactly the fields runMembershipTerminator() and
+    // checkFrameNamedSetConsistency() actually consume downstream.
+    const resultKey = JSON.stringify({
+      members: [...drawBoth.members].sort(), nonMembers: [...drawBoth.nonMembers].sort(),
+      conflicts: [...drawBoth.conflicts].sort(), partitionComplete: drawBoth.partitionComplete,
+    });
+    const resultLabel = `members {${drawBoth.members.join(',') || 'none'}}, non-members {${drawBoth.nonMembers.join(',') || 'none'}}`
+      + `${drawBoth.conflicts.length ? `, conflicts {${drawBoth.conflicts.join(',')}}` : ''}`;
+    return { resultKey, resultLabel, data: { kind: 'extracted', res: drawRes, both: drawBoth } };
+  }, note);
+  if (!namedSetDrawOutcome.agreed) {
+    // DISAGREEMENT -> UNAVAILABLE, the identical state a named set this function could never
+    // establish at all already produces -- never an intersection, union, majority, or first-draw
+    // pick. drawWithAgreement() above already reported the FINDING (D-BP153-031) naming every
+    // draw's own result set; this is only the caller's consequence of it.
     return {
       available: false, members: [], rawMembers: [], memberSpans: {}, nonMembers: [], conflicts: [], partitionComplete: false,
-      reconciliationWhy: 'unavailable -- no usable answer', query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+      reconciliationWhy: `unavailable -- ${drawRepeats} independent draws disagreed (D-BP153-031, THE CHANNEL VARIANCE FINDING)`,
+      query, via: 'draw-disagreement', answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: namedSetDrawOutcome.draws.length,
     };
   }
-  // D-BP153-010, mirrored: an EMPTY passage is not the same fact as "the source named zero
-  // members" -- it means nothing was asked at all. See establishFrame()'s own D-BP153-010 comment
-  // for the full incident this rule closes; the same failure mode is possible here. BUG-2 of
-  // D-BP153-014's own dispatch: this check runs BEFORE either extraction below, so an empty
-  // passage never reaches gemmaExtract() at all -- verified by
-  // classify_cascade.membership_terminator.test.ts's own D-BP153-010 regression (unchanged by this
-  // ticket) and classify_cascade.owned_evidence_frame.test.ts's new sibling test for establishFrame().
-  if (!res.text || !res.text.trim()) {
-    note(`   NAMED SET: the source returned an EMPTY passage (${res.via}) -- the named set is UNAVAILABLE, not "no members"`);
+  const namedSetTrusted = namedSetDrawOutcome.trusted!.data;
+  if (namedSetTrusted.kind === 'not-ok') {
+    note(`   NAMED SET: no usable answer (${namedSetTrusted.res.via}) -- the named set is UNAVAILABLE, not empty`);
     return {
       available: false, members: [], rawMembers: [], memberSpans: {}, nonMembers: [], conflicts: [], partitionComplete: false,
-      reconciliationWhy: 'unavailable -- empty passage', query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      reconciliationWhy: 'unavailable -- no usable answer', query, via: namedSetTrusted.res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: namedSetDrawOutcome.draws.length,
     };
   }
-  // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the options
-  // cannot state anything about them.
-  if (!passageMentionsAnyLabel(res.text, all, OPT)) {
-    note(`   NAMED SET: the source's passage (${res.via}) names NONE of the option(s) under test -- the named set is UNAVAILABLE, not "no members"`);
+  if (namedSetTrusted.kind === 'empty') {
+    note(`   NAMED SET: the source returned an EMPTY passage (${namedSetTrusted.res.via}) -- the named set is UNAVAILABLE, not "no members"`);
     return {
       available: false, members: [], rawMembers: [], memberSpans: {}, nonMembers: [], conflicts: [], partitionComplete: false,
-      reconciliationWhy: 'unavailable -- no option named', query, via: `${res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      reconciliationWhy: 'unavailable -- empty passage', query, via: `${namedSetTrusted.res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: namedSetDrawOutcome.draws.length,
     };
   }
-  const both = await extractNamedSetBothSides(res.text, all, OPT, direction, property, note);
+  if (namedSetTrusted.kind === 'no-label') {
+    note(`   NAMED SET: the source's passage (${namedSetTrusted.res.via}) names NONE of the option(s) under test -- the named set is UNAVAILABLE, not "no members"`);
+    return {
+      available: false, members: [], rawMembers: [], memberSpans: {}, nonMembers: [], conflicts: [], partitionComplete: false,
+      reconciliationWhy: 'unavailable -- no option named', query, via: `${namedSetTrusted.res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: namedSetDrawOutcome.draws.length,
+    };
+  }
+  const { res, both } = namedSetTrusted;
   if (both.discarded) {
     note(`   NAMED SET: discarded ${both.discarded} value(s) with no verbatim supporting span (fresh query)`);
   }
@@ -2852,6 +3074,7 @@ export async function extractNamedSetMembers(
     partitionComplete: effective.partitionComplete,
     reconciliationWhy: effective.why,
     query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+    drawRepeats, drawsIssued: namedSetDrawOutcome.draws.length,
   };
 }
 
@@ -3194,6 +3417,9 @@ export interface DiscriminatorResult {
   via: string;
   answeredFrom: 'owned-passage' | 'new-query' | 'not-fired';
   ownedPassageIndex: number | null;
+  /** D-BP153-031, ADDITIVE/OPTIONAL -- mirrors FrameResult's own pair, same contract, see there. */
+  drawRepeats?: number;
+  drawsIssued?: number;
 }
 
 /**
@@ -3317,39 +3543,93 @@ export async function runDiscriminator(
   const query = `What kind of ${category} is each of these, how do they differ from one another, `
     + `and which of those kinds properly denotes "${category}"? ${list(candidates, OPT)}`;
   note(`   DISCRIMINATOR: ${query}`);
-  // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
-  // see obtainCascadePassage()'s own header, above establishFrame(), for the full ruling.
-  const res = await obtainCascadePassage(askGoogle, askConversationalAuthority, 'DISCRIMINATOR', query, note);
-  if (!res.ok) {
-    note(`   DISCRIMINATOR: no usable answer (${res.via}) -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
+  // D-BP153-031, THE REPEATS RUN FIRST -- mirrors establishFrame()'s and extractNamedSetMembers()'s
+  // own identical wiring (above), see this file's own D-BP153-031 section header for the full
+  // ruling. STAGE D's own base question is drawn LB_DRAW_REPEATS times, independently; STAGE D has
+  // no completion follow-up of its own (D-BP153-026 names only THE SOFTBALLS and THE NAMED SET), so
+  // there is no ordering to state beyond "the repeats are the whole fresh-query path here".
+  type DiscriminatorDrawData =
+    | { kind: 'not-ok'; res: GoogleAnswer }
+    | { kind: 'empty'; res: GoogleAnswer }
+    | { kind: 'no-label'; res: GoogleAnswer }
+    | { kind: 'extracted'; res: GoogleAnswer; kinds: Record<string, string | null>; categoryKind: string | null; discarded: number };
+  const drawRepeats = resolveDrawRepeats();
+  const discriminatorDrawOutcome = await drawWithAgreement<DiscriminatorDrawData>('DISCRIMINATOR', drawRepeats, async () => {
+    // D-BP153-024: tries `askConversationalAuthority` first (when threaded), falls back to Google --
+    // see obtainCascadePassage()'s own header, above establishFrame(), for the full ruling.
+    const drawRes = await obtainCascadePassage(askGoogle, askConversationalAuthority, 'DISCRIMINATOR', query, note);
+    if (!drawRes.ok) {
+      return { resultKey: 'UNAVAILABLE:not-ok', resultLabel: `no usable answer (${drawRes.via})`, data: { kind: 'not-ok', res: drawRes } };
+    }
+    if (!drawRes.text || !drawRes.text.trim()) {
+      return { resultKey: 'UNAVAILABLE:empty', resultLabel: `empty passage (${drawRes.via})`, data: { kind: 'empty', res: drawRes } };
+    }
+    // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the candidates
+    // cannot state anything about them.
+    if (!passageMentionsAnyLabel(drawRes.text, candidates, OPT)) {
+      return { resultKey: 'UNAVAILABLE:no-label', resultLabel: `no option named (${drawRes.via})`, data: { kind: 'no-label', res: drawRes } };
+    }
+    const { kinds: drawKinds, categoryKind: drawCategoryKind, discarded: drawDiscarded } = await extractDiscriminatorKinds(drawRes.text, candidates, OPT, category);
+    // THE COMPARISON: the EXTRACTED RESULT SET (this section's own header) -- the stated kind per
+    // candidate plus the stated category kind are exactly what applyDiscriminatorElimination()
+    // consumes; sorted by candidate letter so key order never causes a spurious disagreement.
+    const resultKey = JSON.stringify({
+      kinds: candidates.map((L) => [L, drawKinds[L]]), categoryKind: drawCategoryKind,
+    });
+    const resultLabel = `kinds {${candidates.map((L) => `${L}:${drawKinds[L] ?? 'null'}`).join(', ')}}, categoryKind=${drawCategoryKind ?? 'null'}`;
+    return {
+      resultKey, resultLabel, data: {
+        kind: 'extracted', res: drawRes, kinds: drawKinds, categoryKind: drawCategoryKind, discarded: drawDiscarded,
+      },
+    };
+  }, note);
+  if (!discriminatorDrawOutcome.agreed) {
+    // DISAGREEMENT -> UNAVAILABLE, the identical ABSTAIN-naming-every-candidate state a discriminator
+    // read this function could never establish at all already produces -- never an intersection,
+    // union, majority, or first-draw pick. drawWithAgreement() above already reported the FINDING
+    // (D-BP153-031) naming every draw's own result set; this is only the caller's consequence of it.
+    note(`   DISCRIMINATOR: DRAWS DISAGREED (D-BP153-031) -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
     return {
       survivors: candidates, unique: null, eliminations: [],
       kinds: Object.fromEntries(candidates.map((L) => [L, null])), categoryKind: null,
-      why: `no usable answer (${res.via}) -- ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
-      query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+      why: `${drawRepeats} independent draws disagreed (D-BP153-031, THE CHANNEL VARIANCE FINDING) -- `
+        + `ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
+      query, via: 'draw-disagreement', answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: discriminatorDrawOutcome.draws.length,
     };
   }
-  if (!res.text || !res.text.trim()) {
-    note(`   DISCRIMINATOR: the source returned an EMPTY passage (${res.via}) -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
+  const discriminatorTrusted = discriminatorDrawOutcome.trusted!.data;
+  if (discriminatorTrusted.kind === 'not-ok') {
+    note(`   DISCRIMINATOR: no usable answer (${discriminatorTrusted.res.via}) -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
     return {
       survivors: candidates, unique: null, eliminations: [],
       kinds: Object.fromEntries(candidates.map((L) => [L, null])), categoryKind: null,
-      why: `empty passage (${res.via}) -- ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
-      query, via: `${res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      why: `no usable answer (${discriminatorTrusted.res.via}) -- ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
+      query, via: discriminatorTrusted.res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: discriminatorDrawOutcome.draws.length,
     };
   }
-  // D-BP153-016, FIX 3, mirrored for the fresh-query path: a passage naming none of the candidates
-  // cannot state anything about them.
-  if (!passageMentionsAnyLabel(res.text, candidates, OPT)) {
-    note(`   DISCRIMINATOR: the source's passage (${res.via}) names NONE of the candidate(s) under test -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
+  if (discriminatorTrusted.kind === 'empty') {
+    note(`   DISCRIMINATOR: the source returned an EMPTY passage (${discriminatorTrusted.res.via}) -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
     return {
       survivors: candidates, unique: null, eliminations: [],
       kinds: Object.fromEntries(candidates.map((L) => [L, null])), categoryKind: null,
-      why: `no candidate named (${res.via}) -- ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
-      query, via: `${res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      why: `empty passage (${discriminatorTrusted.res.via}) -- ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
+      query, via: `${discriminatorTrusted.res.via} (empty passage)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: discriminatorDrawOutcome.draws.length,
     };
   }
-  const { kinds, categoryKind, discarded } = await extractDiscriminatorKinds(res.text, candidates, OPT, category);
+  if (discriminatorTrusted.kind === 'no-label') {
+    note(`   DISCRIMINATOR: the source's passage (${discriminatorTrusted.res.via}) names NONE of the candidate(s) under test -- ABSTAIN, naming all ${candidates.length} candidate(s)`);
+    return {
+      survivors: candidates, unique: null, eliminations: [],
+      kinds: Object.fromEntries(candidates.map((L) => [L, null])), categoryKind: null,
+      why: `no candidate named (${discriminatorTrusted.res.via}) -- ABSTAIN naming ${candidates.join(', ')}, no elimination performed`,
+      query, via: `${discriminatorTrusted.res.via} (no option named)`, answeredFrom: 'new-query', ownedPassageIndex: null,
+      drawRepeats, drawsIssued: discriminatorDrawOutcome.draws.length,
+    };
+  }
+  const { res, kinds, categoryKind, discarded } = discriminatorTrusted;
   if (discarded) {
     note(`   DISCRIMINATOR: discarded ${discarded} value(s) with no verbatim supporting span (fresh query)`);
   }
@@ -3358,6 +3638,7 @@ export async function runDiscriminator(
   return {
     survivors: result.survivors, unique: result.unique, eliminations: result.eliminations, kinds, categoryKind,
     why: result.why, query, via: res.via, answeredFrom: 'new-query', ownedPassageIndex: null,
+    drawRepeats, drawsIssued: discriminatorDrawOutcome.draws.length,
   };
 }
 
@@ -3533,6 +3814,18 @@ export async function runSuperlativeByMagnitude(
   let googleQueriesIssued = 0;
   let conversationalQueriesIssued = 0;
   let followUpsIssued = 0;
+  // D-BP153-031: THE REPEAT COUNT AND HOW MANY DRAWS WERE ISSUED, so the cost of repeated-draw
+  // agreement is visible in the SAME bill as every other query this route spends. `drawRepeats` is
+  // read ONCE here (LB_DRAW_REPEATS does not change mid-run); `totalDrawsIssued` accumulates each of
+  // THE SOFTBALLS/THE NAMED SET/THE DISCRIMINATOR's own `drawsIssued` (undefined -- an
+  // owned-evidence answer, or a call site predating this ticket -- counts as 0, never NaN) as each
+  // stage resolves below. Every draw a stage issues already runs through `countedAskGoogle` /
+  // `countedAskConversationalAuthority` (obtainCascadePassage() is called from inside each draw), so
+  // `queriesIssued` above ALREADY reflects the repeats byte-for-byte; `totalDrawsIssued` is the same
+  // fact stated in the repeats' own units (draws, not raw queries) so a reader does not have to do
+  // the arithmetic by hand to see it reconcile.
+  const drawRepeats = resolveDrawRepeats();
+  let totalDrawsIssued = 0;
 
   const say = (text: string) => emit({ kind: 'header', text, ts: nowIso() });
   const step = (text: string) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
@@ -3600,7 +3893,10 @@ export async function runSuperlativeByMagnitude(
       + `(${questionsAttempted.join(', ') || 'none'}) answered from OWNED EVIDENCE, no new query `
       + `(${answeredFromOwned.join(', ') || 'none'}); ${followUpsIssued} completion follow-up${followUpsIssued === 1 ? '' : 's'} issued `
       + '(D-BP153-026); 1 per-option denotation sweep SKIPPED -- redundant '
-      + 'by construction on the superlative path (FD-BP152-01 fallback; D-BP153-017)',
+      + 'by construction on the superlative path (FD-BP152-01 fallback; D-BP153-017); '
+      + `LB_DRAW_REPEATS=${drawRepeats} (D-BP153-031), ${totalDrawsIssued} draw${totalDrawsIssued === 1 ? '' : 's'} issued across `
+      + "THE SOFTBALLS/THE NAMED SET/THE DISCRIMINATOR's own base question(s) -- included in, never "
+      + `on top of, the ${queriesIssued} quer${queriesIssued === 1 ? 'y' : 'ies'} counted above`,
   );
 
   say(`METHOD classify-cascade / superlative-by-magnitude -- ${input.qid != null ? `qid ${input.qid}` : 'free-text'}`);
@@ -3637,6 +3933,7 @@ export async function runSuperlativeByMagnitude(
   // additive/optional pattern `ctx.ownedPassages` already established -- see
   // obtainCascadePassage()'s own header for the full ruling.
   const frame = await establishFrame(countedAskGoogle, category, ALL, OPT, note, ctx.ownedPassages, property, countedAskConversationalAuthority);
+  totalDrawsIssued += frame.drawsIssued ?? 0;
   if (frame.answeredFrom === 'owned-passage') answeredFromOwned.push('THE SOFTBALLS');
   if (!frame.available) {
     // FD-BP153-01 consequence 2, verbatim: "A magnitude result with no frame is NOT definitive."
@@ -3694,6 +3991,7 @@ export async function runSuperlativeByMagnitude(
   questionsAttempted.push('THE NAMED SET');
   // D-BP153-024: same threading as establishFrame(), above.
   const namedSet = await extractNamedSetMembers(countedAskGoogle, category, match.direction, property, ALL, OPT, note, ctx.ownedPassages, countedAskConversationalAuthority);
+  totalDrawsIssued += namedSet.drawsIssued ?? 0;
   if (namedSet.answeredFrom === 'owned-passage') answeredFromOwned.push('THE NAMED SET');
   if (namedSet.available) {
     // D-BP153-030: CROSS-QUESTION CONSISTENCY. Must run BEFORE runMembershipTerminator() -- see
@@ -3776,6 +4074,7 @@ export async function runSuperlativeByMagnitude(
       questionsAttempted.push('THE DISCRIMINATOR');
       // D-BP153-024: same threading as establishFrame()/extractNamedSetMembers(), above.
       const discriminator = await runDiscriminator(countedAskGoogle, category, termination.candidates, OPT, note, ctx.ownedPassages, countedAskConversationalAuthority);
+      totalDrawsIssued += discriminator.drawsIssued ?? 0;
       if (discriminator.answeredFrom === 'owned-passage') answeredFromOwned.push('THE DISCRIMINATOR');
       if (discriminator.unique) {
         const winner = discriminator.unique;
