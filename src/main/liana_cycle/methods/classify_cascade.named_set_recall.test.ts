@@ -98,7 +98,16 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
   // the defect is a recall problem, not a passage-availability one) -- so the union is STILL
   // incomplete (D remains unaccounted for) and NOTHING is trusted, same as before this ticket,
   // now over 2 queries instead of 1.
-  test('HEADLINE, D-BP153-026 UPDATED: the direct side under-recalls D and the complement does not name it either -- INCOMPLETE (8 of 9), falls through to a fresh query that is ALSO incomplete, so its one completion follow-up (D-BP153-026) is issued naming ONLY D, and it ALSO under-recalls D, so NOTHING is trusted, not a coincidentally-correct {B, D, E}', async () => {
+  // D-BP153-029 UPDATE, RECORDED HERE EXPLICITLY. This fixture used to assert that the STILL-
+  // incomplete union (D remains unaccounted for after the follow-up ALSO under-recalls it) wiped
+  // `result.members` to `[]` -- discarding the two DIRECTLY STATED members {B, E} along with the
+  // forbidden D-inference. That was the over-correction: {B, E} are not an inference from D's
+  // absence, they are what the direct extraction itself verified, span by span. The corrected rule
+  // keeps the two apart -- the COMPLEMENT-DERIVED INFERENCE (D-BP153-014's own old arithmetic,
+  // "all minus the six non-members" = {B, D, E}, which would silently manufacture D from its mere
+  // absence on the complement's list) is still discarded, exactly as D-BP153-020 requires; the
+  // DIRECTLY STATED {B, E} are retained.
+  test('HEADLINE, D-BP153-029 UPDATED: the direct side under-recalls D and the complement does not name it either -- INCOMPLETE (8 of 9), falls through to a fresh query that is ALSO incomplete, so its one completion follow-up (D-BP153-026) is issued naming ONLY D, and it ALSO under-recalls D, so the complement-derived D-inference is discarded but the two DIRECTLY STATED members {B, E} are RETAINED, never a coincidentally-correct {B, D, E} and never a zero-credit wipe', async () => {
     const originalFetch = global.fetch;
     // Simulates the MEASURED live extraction (a partial copy, D dropped) on the direct-member side
     // -- exactly what BUG-1 reports gemma4:12b actually returned for this passage -- and the
@@ -153,15 +162,17 @@ describe('D-BP153-014 BUG-1: extractNamedSetMembers() recall, real fixture', () 
       // THE BUG D-BP153-014 measured: the direct extraction alone (rawMembers) under-recalls --
       // still true, now read from the fresh query rather than the owned passage.
       expect(new Set(result.rawMembers)).toEqual(new Set(['B', 'E']));
-      // THE CORRECTED BEHAVIOR (D-BP153-020): D is unaccounted for by BOTH extractions (direct
-      // named {B,E}, complement named the OTHER six {A,C,F,G,H,I} -- neither list mentions D at
-      // all), so the union covers only 8 of 9 options and the reconciliation trusts NOTHING, not
-      // the coincidentally-correct {B,D,E} the old arithmetic derived from D's mere absence.
-      expect(result.members).toEqual([]);
+      // THE CORRECTED BEHAVIOR (D-BP153-020/D-BP153-029): D is unaccounted for by BOTH extractions
+      // (direct named {B,E}, complement named the OTHER six {A,C,F,G,H,I} -- neither list mentions D
+      // at all), so the union covers only 8 of 9 options and the COMPLEMENT-DERIVED INFERENCE (the
+      // old arithmetic's own {B,D,E}, D manufactured purely from its absence on the complement) is
+      // discarded -- but the two DIRECTLY STATED members {B, E} are RETAINED, not wiped to `[]`.
+      expect(new Set(result.members)).toEqual(new Set(['B', 'E']));
       expect(result.partitionComplete).toBe(false);
       expect(result.conflicts).toEqual([]);
       expect(result.reconciliationWhy).toMatch(/INCOMPLETE PARTITION/);
       expect(result.reconciliationWhy).toContain('D) Northeast United States');
+      expect(result.reconciliationWhy).toMatch(/RETAINED/);
       expect(result.reconciliationWhy).not.toMatch(/trusted despite an incomplete direct side/);
     } finally {
       global.fetch = originalFetch;
