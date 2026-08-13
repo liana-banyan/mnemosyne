@@ -245,7 +245,12 @@ describe('D-BP153-016 TEST 5 -- REJECT A PASSAGE THAT CANNOT SOURCE THE CLAIM (m
       expect(log.some((l) => /REJECTED an owned passage/.test(l) && /FIX 3/.test(l))).toBe(true);
       // Rejected mechanically -- falls through to the (mocked) fresh query, same as if no owned
       // evidence had ever been supplied.
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-027: the fresh query's direct side names only G (1 of 9); the complement call
+      // exhausts queuedFetch() (only ONE response is queued here) and comes back null/empty --
+      // COMPLEMENT-SILENT-AND-PARTIAL, so the ONE completion follow-up fires and goes straight to
+      // askGoogle again. The follow-up's own extraction also lands on the exhausted queue and adds
+      // nothing, so `members` is unchanged.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(result.answeredFrom).toBe('new-query');
       expect(result.members).toEqual(['G']);
     } finally {
@@ -267,7 +272,10 @@ describe('D-BP153-016 TEST 5 -- REJECT A PASSAGE THAT CANNOT SOURCE THE CLAIM (m
         () => [owned(GEMINI_UI_CHROME_PASSAGE, 'operation')],
       );
       expect(log.some((l) => /REJECTED an owned passage/.test(l) && /FIX 3/.test(l))).toBe(true);
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-027: same COMPLEMENT-SILENT-AND-PARTIAL shape as the sibling test above (fresh-query
+      // direct side names only G of 9, complement silent) -- the ONE completion follow-up fires.
+      // `excluded` is unchanged.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(frame.answeredFrom).toBe('new-query');
       expect(frame.excluded).toEqual(['G']);
     } finally {
@@ -291,7 +299,10 @@ describe('D-BP153-016 TEST 6 -- no ownedPassages accessor at all behaves identic
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
       );
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-027: direct names only G (1 of 9), complement is silent (queuedFetch() only has ONE
+      // response) -- COMPLEMENT-SILENT-AND-PARTIAL, so the ONE completion follow-up fires and goes
+      // straight to askGoogle again. `members` is unchanged.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(result.answeredFrom).toBe('new-query');
       expect(result.ownedPassageIndex).toBeNull();
       expect(result.members).toEqual(['G']);
@@ -310,7 +321,10 @@ describe('D-BP153-016 TEST 6 -- no ownedPassages accessor at all behaves identic
     try {
       const { note } = notes();
       const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-027: same COMPLEMENT-SILENT-AND-PARTIAL shape as the sibling test above (direct
+      // names only G of 9, complement silent) -- the ONE completion follow-up fires. `excluded` is
+      // unchanged.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(frame.answeredFrom).toBe('new-query');
       expect(frame.ownedPassageIndex).toBeNull();
       expect(frame.excluded).toEqual(['G']);

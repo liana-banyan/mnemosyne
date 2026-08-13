@@ -141,7 +141,11 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
       // ticket) used.
       const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
 
-      expect(askGoogle).toHaveBeenCalledTimes(1); // the only query path available was used
+      // D-BP153-027: direct names only G (1 of 9); the complement call exhausts queuedFetch() (only
+      // ONE response is queued here) and comes back null/empty -- COMPLEMENT-SILENT-AND-PARTIAL, so
+      // the ONE completion follow-up fires and goes straight to askGoogle again. The follow-up's own
+      // extraction also lands on the exhausted queue and adds nothing, so `excluded` is unchanged.
+      expect(askGoogle).toHaveBeenCalledTimes(2); // the main fresh query, plus the ONE follow-up
       expect(frame.available).toBe(true);
       expect(frame.answeredFrom).toBe('new-query');
       expect(frame.ownedPassageIndex).toBeNull();
@@ -164,7 +168,10 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
       const frameWithEmptyAccessor = await establishFrame(
         askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note, () => [],
       );
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-027: same COMPLEMENT-SILENT-AND-PARTIAL shape as the sibling test above (direct
+      // names only G of 9, complement silent) -- the ONE completion follow-up fires. `excluded` is
+      // unchanged.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(frameWithEmptyAccessor.answeredFrom).toBe('new-query');
       expect(frameWithEmptyAccessor.excluded).toEqual(['G']);
     } finally {
@@ -286,7 +293,10 @@ describe('FD-BP153-04: establishFrame() consults owned evidence BEFORE issuing a
         CATEGORY, ALL, OPT, note,
         () => [owned(offTopicPassage1), owned(offTopicPassage2)],
       );
-      expect(askGoogle).toHaveBeenCalledTimes(1); // owned evidence was tried FIRST, but both rejected
+      // D-BP153-027: same COMPLEMENT-SILENT-AND-PARTIAL shape as the sibling tests above (direct
+      // names only G of 9, complement silent) -- the ONE completion follow-up fires after the fresh
+      // query. `excluded` is unchanged.
+      expect(askGoogle).toHaveBeenCalledTimes(2); // owned evidence was tried FIRST, but both rejected; fresh query + ONE follow-up
       expect(frame.answeredFrom).toBe('new-query');
       expect(frame.ownedPassageIndex).toBeNull();
       expect(frame.excluded).toEqual(['G']);

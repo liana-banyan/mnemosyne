@@ -238,7 +238,12 @@ describe('extractNamedSetMembers() -- STEP 2, owned-evidence-first (mirrors esta
         askGoogle as unknown as MethodRunContext['askGoogle'],
         CATEGORY, 'most', 'densely populated', ALL, OPT, note,
       );
-      expect(askGoogle).toHaveBeenCalledTimes(1);
+      // D-BP153-027: direct names only G (1 of 9); the complement call exhausts queuedFetch() (only
+      // ONE response is queued here) and comes back null/empty -- COMPLEMENT-SILENT-AND-PARTIAL, so
+      // the ONE completion follow-up fires and goes straight to askGoogle again (no conversational
+      // authority threaded). The follow-up's own extraction also lands on the exhausted queue and
+      // adds nothing, so `members` is unchanged.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(result.answeredFrom).toBe('new-query');
       expect(result.ownedPassageIndex).toBeNull();
       expect(result.members).toEqual(['G']);
