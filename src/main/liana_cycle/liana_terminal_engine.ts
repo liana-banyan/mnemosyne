@@ -845,6 +845,25 @@ async function runLianaCycleQuestionInner(
     const baseCtx: MethodRunContext = {
       askGoogle: wrapAskGoogleWithAudible(effectiveAskGoogle, audible ?? null, emit, audibleLog),
       emit,
+      // D-BP153-025 -- THE MISSING WIRE. `askConversationalAuthority` existed, was recording-wrapped
+      // in index.ts, and was handed to `surveyCtx` above -- and was never put on the METHOD's
+      // context. So Survey could ask Gemini and the three questions could not.
+      //
+      // MEASURED, live run 2026-08-13T02:48:03Z (LIANA_RUN_qid98_2026-08-13T02-48-03-120Z.json):
+      // D-BP153-024 had already routed the frame to try the conversational authority first, and the
+      // transcript read "FRAME: no conversational authority is wired for this call -- falling back
+      // to Google". It then sent a nine-item per-option accounting question to WEB SEARCH, got
+      // `nobox+organic(5)`, and correctly reported the frame unavailable because the passage named
+      // none of the options.
+      //
+      // This is the estate's signature defect for the eighth time this session: a value exists, one
+      // hop fails to carry it, and the downstream message reads like a decision ("falling back to
+      // Google") rather than like a missing wire. See
+      // Asteroid-ProofVault/state/eblets/CANON/canon_signature_defect_one_hop_fails_to_carry_the_value_bp153.
+      //
+      // OPTIONAL AND ADDITIVE: undefined when no conversational authority was supplied to this run,
+      // in which case every method behaves exactly as it did before D-BP153-024.
+      askConversationalAuthority,
       ownedPassages: (): OwnedPassage[] => {
         const out: OwnedPassage[] = [];
         const amb = surveyResult.step2.ambiguity;
