@@ -254,8 +254,24 @@ describe('MEASURED: qid 98\'s default run, assisted mode, round count', () => {
     // TEST 4 and classify_cascade.named_set_recall.test.ts's own HEADLINE test for the isolated,
     // real-content proof that the fall-through DOES spend the extra query on a passage shaped that
     // way; this instrument's own content-free stub simply never is one.
+    //
+    // RE-PINNED AGAIN, 3 -> 4, D-BP153-031 (REPEATED DRAWS, THE CHANNEL VARIANCE FINDING). Measured
+    // TWICE in isolation on this ticket's own build, both runs identical (4). THE SOFTBALLS' own base
+    // question is now drawn LB_DRAW_REPEATS times (default 2), independently, BEFORE establishFrame()
+    // decides anything -- this instrument's assisted channel hands back the SAME content-free
+    // synthetic capture string for EVERY pause, so both draws of round 3's own question are
+    // byte-identical and AGREE (drawWithAgreement()'s own "N independent draw(s) AGREE" branch), never
+    // a disagreement -- but agreement still costs the SECOND draw's own round. Round 3 and round 4 are
+    // that pair: same query text both times (see the two identical "For EACH of the following..."
+    // entries in the sample queries logged above), same content-free capture both times, same FIX 3
+    // rejection both times ("no option named" -- passageMentionsAnyLabel fails) -- so the AGREED
+    // outcome is still frame.available:false, and STAGE M/STAGE D are still never reached, exactly as
+    // every prior re-pin already established. This is the cost of repeated-draw agreement made
+    // visible, not a new code path: `LB_DRAW_REPEATS=1` (the escape hatch D-BP153-031 itself requires)
+    // reproduces the pre-ticket 3-round count exactly -- see
+    // classify_cascade.repeated_draws.test.ts's own TEST 3 for that proof in isolation.
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    expect(rounds).toBe(3);
+    expect(rounds).toBe(4);
     expect(outcome.error).not.toBe('demand_unknown');
     expect(outcome.method).toBe('classify-cascade');
     expect(events.length).toBeGreaterThan(0);
