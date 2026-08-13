@@ -1523,9 +1523,13 @@ export interface FrameResult {
   available: boolean;
   /** Option letters the SOURCE stated are not members of the category -- RECONCILED (see
    *  reconcileNamedSet(), reused by extractFrameBothSides() below) with the complement
-   *  (which-ARE-`category`) extraction when the two sides form a clean, conflict-free reading;
-   *  otherwise this is the direct exclusion extraction alone, unreconciled. May be empty, which is
-   *  a valid frame meaning "the source excluded nothing", NOT the same as unavailable. */
+   *  (which-ARE-`category`) extraction when the two sides form a clean, COMPLETE, conflict-free
+   *  reading (D-BP153-020: covering every option, not merely conflict-free). When the complement
+   *  said something but the union is incomplete, this is EMPTY -- a complete partition is required
+   *  before ANY exclusion is trusted, never a fallback to the direct list alone (absence is
+   *  omission, never a stated exclusion). Only when the complement extracted NOTHING AT ALL is this
+   *  the direct exclusion extraction alone, unreconciled. May be empty, which is a valid frame
+   *  meaning "nothing is established as excluded from this passage", NOT the same as unavailable. */
   excluded: string[];
   /** D-BP153-017, THE DOUBLECHECK applied to THE SOFTBALLS: option letters the SAME passage
    *  states ARE `category` -- the complementary direction, extracted from the identical
@@ -1621,16 +1625,19 @@ const FRAME_COMPLEMENT_EXTRACTION_SHAPE = '{"members":[{"name":"exact name the p
  *  Ollama), never a second googleBlocks() -- mirrors extractNamedSetBothSides() above
  *  byte-for-byte.
  *
- *  REUSES reconcileNamedSet() UNCHANGED, roles swapped relative to the named set's own call: there,
- *  `members` is the direct read and `nonMembers` is the complement, and the function returns the
- *  reconciled MEMBER set. Here `members` is fed the direct EXCLUSION read and `nonMembers` is fed
- *  the complement INCLUSION read -- the identical arithmetic ("trust the complement side when it
- *  said something and the two sides do not conflict") then yields, in its own `.members` field, the
- *  reconciled EXCLUDED set, because "all minus the trusted complement" is exactly the exclusion
- *  arithmetic THE SOFTBALLS need. A conflict (a name BOTH extractions place on opposite sides) is
- *  never silently resolved -- reconcileNamedSet() already falls back to the direct extraction,
- *  unreconciled, and reports `conflicts` for the caller to note as a FINDING (FD-BP153-07: "a
- *  disagreement here is reported, never resolved by force"). */
+ *  REUSES reconcileNamedSet() -- the SAME shared function the named set's own call below uses, one
+ *  mechanism, never a second parallel one (D-BP153-020's own instruction) -- roles swapped relative
+ *  to the named set's own call: there, `members` is the direct read and `nonMembers` is the
+ *  complement, and the function returns the reconciled MEMBER set. Here `members` is fed the direct
+ *  EXCLUSION read and `nonMembers` is fed the complement INCLUSION read -- the identical arithmetic
+ *  then yields, in its own `.members` field, the reconciled EXCLUDED set, because "all minus the
+ *  trusted complement" is exactly the exclusion arithmetic THE SOFTBALLS need, ONLY when `members`
+ *  and `nonMembers` TOGETHER cover every option (D-BP153-020: a complete partition, not merely
+ *  agreement) -- an incomplete union trusts nothing, see reconcileNamedSet()'s own header for the
+ *  measured failure this closes. A conflict (a name BOTH extractions place on opposite sides) is
+ *  never silently resolved -- reconcileNamedSet() falls back to the direct extraction, unreconciled,
+ *  and reports `conflicts` for the caller to note as a FINDING (FD-BP153-07: "a disagreement here is
+ *  reported, never resolved by force"). */
 async function extractFrameBothSides(
   passage: string,
   category: string,
@@ -1987,9 +1994,13 @@ export interface NamedSetResult {
   available: boolean;
   /** Option letters the SOURCE itself states ARE members of the named set -- RECONCILED (see
    *  reconcileNamedSet() below) with the complement extraction when the two sides form a clean,
-   *  conflict-free partition of `all`; otherwise this is the direct extraction alone, unreconciled.
-   *  May be empty, which (when `available` is true) is a valid reading meaning "the source named
-   *  none of these as members" -- not the same as unavailable. */
+   *  COMPLETE, conflict-free partition of `all` (D-BP153-020: covering every option, not merely
+   *  conflict-free). When the complement said something but the union is incomplete, this is
+   *  EMPTY -- nothing is trusted, never the direct extraction as a fallback (see
+   *  reconcileNamedSet()'s own header for why). Only when the complement extracted NOTHING AT ALL
+   *  is this the direct extraction alone, unreconciled. May be empty, which (when `available` is
+   *  true) is a valid reading meaning "nothing about membership is established from this passage"
+   *  -- not the same as unavailable. */
   members: string[];
   /** The direct member-extraction, BEFORE reconciliation -- D-BP153-014. Kept separate from
    *  `members` so a reader can see exactly what changed and why (reconciliation.why says the
@@ -2028,10 +2039,10 @@ export interface NamedSetResult {
   ownedPassageIndex: number | null;
 }
 
-/** D-BP153-014, BUG-1(b): pure set arithmetic, no I/O, mirrors runMembershipTerminator()'s own
- *  discipline (Step 3, above) -- mechanical only, never a model call, never a guess, and never a
- *  tie-break. Reconciles the direct member-extraction against the complement (non-member)
- *  extraction over the SAME already-fetched passage.
+/** D-BP153-014, BUG-1(b), SUPERSEDED IN PART BY D-BP153-020 (below). Pure set arithmetic, no I/O,
+ *  mirrors runMembershipTerminator()'s own discipline (Step 3, above) -- mechanical only, never a
+ *  model call, never a guess, and never a tie-break. Reconciles the direct member-extraction
+ *  against the complement (non-member) extraction over the SAME already-fetched passage.
  *
  *  A conflict (an option BOTH extractions name) is a FINDING. Reported and left UNRESOLVED --
  *  never silently preferred one way or the other. His own dispatch, verbatim: "if they conflict...
@@ -2039,17 +2050,35 @@ export interface NamedSetResult {
  *  extraction, unreconciled -- the conflicting name(s) stay exactly where the direct extraction put
  *  them, and `conflicts` says so.
  *
- *  WHEN THERE IS NO CONFLICT AND THE COMPLEMENT SAID SOMETHING, the complement is TRUSTED --
- *  reconciled members = `all` minus non-members. This is deliberately NOT gated on the direct
- *  member list also being complete: his own diagnosis is that the complement is stated MORE
- *  directly in this shape of passage ("Options A, C, F... are all NOT considered... Only B, D, and
- *  E... qualify"), and gating on direct-side completeness would defeat the whole point -- the
- *  measured live bug is the direct extraction missing D while the complement names the other six
- *  cleanly; requiring D to ALSO already be on the direct list before trusting the complement would
- *  never fire on the one case this exists for. `partitionComplete` is still computed and reported
- *  (true only when BOTH sides together, unaided, cover every option) as an honest, separate
- *  finding -- it does not gate which set wins, per his own instruction that a conflict is reported,
- *  not that a partial partition disqualifies the more-direct side.
+ *  D-BP153-020, THE MEASURED FAILURE THIS SECTION NOW CLOSES (live run, receipt
+ *  LIANA_RUN_qid98_2026-08-13T00-54-31-659Z.json). THE OLD RULE (D-BP153-014) trusted the
+ *  complement whenever it said something and there was no conflict, REGARDLESS of whether the two
+ *  sides together covered every option -- deliberately, on the theory that the complement is
+ *  stated more directly in some passages. Measured live: a passage whose complement named only
+ *  {A, E} out of nine options reconciled to SEVEN exclusions {B,C,D,F,G,H,I} -- every option the
+ *  complement simply never mentioned was treated as excluded. South Asia, North Africa, Northeast
+ *  United States, and Central Asia ARE legitimate world regions; the source never said otherwise,
+ *  it just never named them. Absence is omission, not a stated exclusion (FD-BP153-07).
+ *
+ *  THE RULE, NOW: an exclusion may be trusted ONLY when `members` and `nonMembers` TOGETHER cover
+ *  every option in `all` (zero conflicts, zero gaps -- `partitionComplete`, computed below). When
+ *  the complement said something but the union is incomplete, NOTHING is trusted -- this returns
+ *  `members: []` (never a partial credit, never "the direct list at least"), names exactly which
+ *  options neither side addressed, and the caller treats the passage as having answered with ZERO
+ *  exclusions (the same legitimate outcome D-BP153-018 already established for "extracted
+ *  something, all of it discarded" -- never re-litigated here, never "try the next passage").
+ *
+ *  This intentionally retires the OLD "complement trusted despite an incomplete direct side"
+ *  reading D-BP153-014 built (the live bug's own exact wording) -- the case that reading existed
+ *  for (a passage naming D nowhere directly, recovered only by complement completion arithmetic)
+ *  is the SAME arithmetic that produced the live bug: inferring a member (or an exclusion) for an
+ *  option neither extraction actually named, purely from its absence on the other list. HARDWIRE-22:
+ *  extraction only, never an inference dressed as one.
+ *
+ *  A DIRECT-ONLY OR COMPLEMENT-ONLY read (the OTHER side extracted nothing at all,
+ *  `nonMembers.length === 0`, below) is UNCHANGED and untouched by this rule -- it never performs
+ *  this completion arithmetic in the first place, it only ever reports names one side explicitly,
+ *  directly stated, so there is nothing here for "absence is omission" to forbid.
  *
  *  When the complement extracted NOTHING (no non-members stated at all -- the passage may simply
  *  not use that shape), there is nothing to reconcile against, and this falls back to the direct
@@ -2064,7 +2093,8 @@ export function reconcileNamedSet(
   const nonMemberSet = new Set(nonMembers);
   const conflicts = all.filter((L) => memberSet.has(L) && nonMemberSet.has(L));
   const covered = new Set([...members, ...nonMembers]);
-  const partitionComplete = conflicts.length === 0 && all.every((L) => covered.has(L));
+  const uncovered = all.filter((L) => !covered.has(L));
+  const partitionComplete = conflicts.length === 0 && uncovered.length === 0;
   const label = (Ls: string[]) => `{${Ls.map((L) => `${L}) ${OPT[L]}`).join(', ') || 'none'}}`;
   if (conflicts.length) {
     return {
@@ -2078,17 +2108,35 @@ export function reconcileNamedSet(
     };
   }
   if (nonMembers.length) {
+    // D-BP153-020, THE GATE: an exclusion is trusted ONLY when the two sides TOGETHER cover every
+    // option -- see this function's own header for the measured failure this closes. Absence from
+    // BOTH extractions is omission, never a stated exclusion, so an incomplete union establishes
+    // NOTHING (not even the direct side's own partial list -- see header: this branch is the ONLY
+    // one that ever performs "all minus the other side" completion arithmetic, and that arithmetic
+    // is exactly what is forbidden on an incomplete union).
+    if (!partitionComplete) {
+      return {
+        members: [],
+        nonMembers,
+        conflicts,
+        partitionComplete: false,
+        why: `INCOMPLETE PARTITION (D-BP153-020, FD-BP153-07): members ${label(members)} and `
+          + `non-members ${label(nonMembers)} do NOT together account for every option -- `
+          + `${label(uncovered)} unaccounted for by either extraction. Absence is omission, never a `
+          + 'stated exclusion -- this reconciliation establishes NOTHING; treated as if nothing was '
+          + 'extracted from this passage',
+      };
+    }
     const reconciledMembers = all.filter((L) => !nonMemberSet.has(L));
-    const unaddressedByDirect = reconciledMembers.filter((L) => !memberSet.has(L));
-    const completeNote = partitionComplete
-      ? `complete partition: members ${label(members)} and non-members ${label(nonMembers)} together `
+    return {
+      members: reconciledMembers,
+      nonMembers,
+      conflicts,
+      partitionComplete: true,
+      why: `complete partition: members ${label(members)} and non-members ${label(nonMembers)} together `
         + `account for all ${all.length} option(s), zero conflicts -- each side corroborates the other `
-        + `(reconciled members: ${label(reconciledMembers)})`
-      : `complement (non-members ${label(nonMembers)}) trusted despite an incomplete direct side -- `
-        + `${label(unaddressedByDirect)} implied a member by the complement but not named by the direct `
-        + `extraction (recovered, not assumed: HARDWIRE-22's own extraction-verified evidence, not a `
-        + `guess) -- reconciled members: ${label(reconciledMembers)}`;
-    return { members: reconciledMembers, nonMembers, conflicts, partitionComplete, why: completeNote };
+        + `(reconciled members: ${label(reconciledMembers)})`,
+    };
   }
   return {
     members,
