@@ -4094,6 +4094,42 @@ function checkExtremeAgreement(
   return { targetExtreme, primaryCandidate, qcCandidate, contradictsElimination, agrees, candidate: agrees ? primaryCandidate : null, notes };
 }
 
+/** D-BP154-007/BISHOP/seg-basisfidelity. True only when THIS query's own failure came from
+ *  askOrdering()/googleBlocks() reporting the structural google.com/sorry/ verification-or-rate-
+ *  limit challenge (comparative_cascade.ts's googleBlocks(), untouched -- this reads the `via`
+ *  string it already produces, never re-derives the cause). A query that simply came back empty,
+ *  or that answered but stated no order, is NOT a block and must not be counted as one. */
+function isTransportBlocked(raw: GoogleAnswer | null): boolean {
+  return !!raw && !raw.ok && /verification\/rate-limit challenge detected/i.test(raw.via);
+}
+
+/** D-BP154-007/BISHOP/seg-basisfidelity. THE DEFECT: the four Stage B/C ordering queries each
+ *  already know, individually, WHY they produced no ordering ("no usable answer (Google
+ *  verification/rate-limit challenge detected ... halted, 0 further retries)" vs "(none
+ *  extracted)" from a passage that answered but stated no order) -- but the ABSTAIN basis one
+ *  level up collapsed all of that into one sentence, "orderings disagreed, were unusable, or the
+ *  QC pass contradicted an earlier elimination", so a reader of the basis alone cannot tell a
+ *  transport refusal from a hard question. This carries the SAME per-query cause the transcript
+ *  notes already state up into the basis text, naming counts, never re-deriving or re-classifying
+ *  a failure the query result did not itself report. Reporting only -- returns text, decides
+ *  nothing, moves no verdict. */
+function describeOrderingOutcome(queries: OrderingQueryResult[]): string {
+  const total = queries.length;
+  const blocked = queries.filter((q) => isTransportBlocked(q.raw)).length;
+  const usable = queries.filter((q) => q.ordering.length > 0).length;
+  if (blocked > 0 && usable === 0) {
+    return `no ordering could be obtained because the authority was blocked/refused (${blocked} of ${total} ranking `
+      + 'quer' + (blocked === 1 ? 'y' : 'ies') + '); this reports a transport refusal, never an epistemic outcome '
+      + 'about the question itself';
+  }
+  if (blocked > 0) {
+    return `${blocked} of ${total} ranking quer${blocked === 1 ? 'y was' : 'ies were'} blocked/refused by the `
+      + `authority and never returned an ordering; the remaining ${total - blocked} returned usable content, and `
+      + 'orderings disagreed, were unusable, or the QC pass contradicted an earlier elimination at that extreme';
+  }
+  return 'orderings disagreed, were unusable, or the QC pass contradicted an earlier elimination at that extreme';
+}
+
 /** Numeric density figures per option, harvested from the SAME four ordering passages already
  *  fetched above -- NO NEW askGoogle CALL, the identical "don't pay for evidence twice" discipline
  *  THE CONVERGENCE (above) already established for the criteria-stack route. His own transcript
@@ -4617,8 +4653,9 @@ export async function runSuperlativeByMagnitude(
       abstain: true,
       freeText: input.qid == null,
       basis: `superlative-by-magnitude route: property="${property}" direction=${match.direction}`
-        + `${complement ? ' (complement demanded)' : ''} target extreme=${targetExtreme} -- orderings disagreed, were `
-        + `unusable, or the QC pass contradicted an earlier elimination at that extreme (primary=${agreement.primaryCandidate ?? 'none'}, `
+        + `${complement ? ' (complement demanded)' : ''} target extreme=${targetExtreme} -- `
+        + `${describeOrderingOutcome([mostToLeast, leastToMost, mostToLeastQC, leastToMostQC])} `
+        + `(primary=${agreement.primaryCandidate ?? 'none'}, `
         + `qc=${agreement.qcCandidate ?? 'none'}, contradictsElimination=${agreement.contradictsElimination}); per his own `
         + 'instruction, a disagreement here is reported, never resolved by force',
     };
