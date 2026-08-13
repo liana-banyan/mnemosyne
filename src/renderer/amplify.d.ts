@@ -373,6 +373,9 @@ declare global {
         input: string,
         steps?: string[],
       ) => Promise<import('../main/liana_cycle/library/script_bridge').ScriptRunResponse>;
+      // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: the evidence store
+      // already on disk must be VISIBLE. Strictly read-only, see evidence_store.ts's own header.
+      lianaEvidenceStoreSummary?: () => Promise<import('../main/liana_cycle/evidence/evidence_store').EvidenceStoreSummary>;
       // D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE. The engine stops before every
       // Google query and again on what comes back, and waits -- with no timer -- until the
       // operator answers. onLianaAudiblePause is the push; lianaAudibleRespond is the only way a

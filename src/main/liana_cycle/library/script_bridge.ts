@@ -40,8 +40,14 @@
 //     four ids named above, so a new declaration appearing in the registry can never silently
 //     start running real queries this ticket did not test.
 
-import type { EmitFn, MethodQuestionInput, MethodRunContext } from '../method_registry';
+import type { ConversationalAuthorityFn, EmitFn, MethodQuestionInput, MethodRunContext } from '../method_registry';
 import { listMethods } from '../method_registry';
+// D-BP154-010/BISHOP/S10/seg-thepail -- type-only. THE PAIL's ScriptRunResponse.evidence field
+// (below) reports what THIS run wrote to the evidence store; the actual writing/wrapping happens
+// in index.ts (the only place an evidenceSession is constructed), never in this file -- see this
+// file's own header, "does not modify... any file under methods/... it only IMPORTS". A type-only
+// import of the record shape is not evidence-store coupling.
+import type { EvidenceAuthority, EvidenceRecord } from '../evidence/evidence_store';
 import { runSurveyStage } from '../survey_stage';
 import { parseFreeText, parseQid, runLianaCycleQuestion } from '../liana_terminal_engine';
 import type { AskGoogleFn } from '../liana_terminal_engine';
@@ -288,14 +294,27 @@ export async function runComposedStack(
 
 // ─────────────────────────────── the one entry point index.ts calls ───────────────────────────────
 
+/** D-BP154-010/BISHOP/S10/seg-thepail -- what THIS run wrote to the evidence store, reported
+ *  alongside the answer so the pail's contents are visible to whoever called runScratchComposer(),
+ *  not only to a file-reader on disk. Built by the CALLER (index.ts, the only place an
+ *  evidenceSession exists) and attached to the response after this function returns -- see this
+ *  file's own header for why the evidence-store coupling stays out of this file's own logic. */
+export interface ComposerEvidenceSummary {
+  acquisitionId: string;
+  recordsWritten: number;
+  writeFailures: Array<{ query: string; authority: EvidenceAuthority; error: string }>;
+  records: EvidenceRecord[];
+}
+
 export type ScriptRunResponse =
-  | { mode: 'default'; outcome: LianaTerminalOutcome }
+  | { mode: 'default'; outcome: LianaTerminalOutcome; evidence?: ComposerEvidenceSummary }
   | {
       mode: 'stack';
       qid?: number;
       question: string;
       options: Record<string, string> | null;
       result: ComposedRunResult;
+      evidence?: ComposerEvidenceSummary;
     };
 
 /**
@@ -305,15 +324,41 @@ export type ScriptRunResponse =
  * Stepped Audible, no Contingency Operator/ambiguity override -- the composer exposes none of
  * those toggles). Nothing in this function transforms, wraps, or inspects that call's return
  * value before handing it back -- THE DEFAULT MUST NOT CHANGE.
+ *
+ * D-BP154-010/BISHOP/S10/seg-thepail, ADDITIVE/OPTIONAL: `askConversationalAuthority` and
+ * `currentAcquisitionId`. Both undefined on every pre-existing call site (this file's own test
+ * suite, before this ticket) -- passing them through is the SAME "no wrapping" contract, just
+ * widened: `askGoogle` may itself now be a transparent recordingAskGoogle() wrapper (evidence_
+ * authority.ts's own contract: returns exactly what the inner function returned), which does not
+ * transform this function's own logic at all, only what the CALLER handed in as `askGoogle`. Before
+ * this ticket the Composer could not reach Gemini at all (`askConversationalAuthority` was never
+ * threaded past this function's own parameter list); this closes that gap for both the default
+ * path (an 8th positional argument to runLianaCycleQuestion(), exactly where 'liana-terminal-run'
+ * already passes its own) and the stack path (MethodRunContext.askConversationalAuthority, the
+ * same optional field Survey's own askAmbiguity()/askOperation() already know how to read).
  */
 export async function runScratchComposer(
   input: string,
   stepIds: string[] | undefined,
   askGoogle: AskGoogleFn,
   emit: EmitFn,
+  askConversationalAuthority?: ConversationalAuthorityFn,
+  currentAcquisitionId?: string,
 ): Promise<ScriptRunResponse> {
   if (!stepIds || stepIds.length === 0) {
-    const outcome = await runLianaCycleQuestion(input, askGoogle, emit);
+    const outcome = await runLianaCycleQuestion(
+      input,
+      askGoogle,
+      emit,
+      undefined, // audible
+      undefined, // steppedAudible
+      undefined, // contingencyOperatorSurvey
+      undefined, // ambiguityQueryTransport
+      askConversationalAuthority,
+      undefined, // mode
+      undefined, // assistedChannel
+      currentAcquisitionId,
+    );
     return { mode: 'default', outcome };
   }
 
@@ -339,7 +384,7 @@ export async function runScratchComposer(
     options: parsed.options,
     correctAnswer: parsed.correctAnswer,
   };
-  const ctx: MethodRunContext = { askGoogle, emit };
+  const ctx: MethodRunContext = { askGoogle, emit, askConversationalAuthority };
   const result = await runComposedStack(stepIds, methodInput, ctx);
   return { mode: 'stack', qid: parsed.qid, question: parsed.question, options: parsed.options, result };
 }

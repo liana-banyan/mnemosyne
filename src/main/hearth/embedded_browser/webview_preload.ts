@@ -13,6 +13,10 @@
 // third-party AI-backed search interface via embedded-browser content-script bridge
 
 import { ipcRenderer } from 'electron';
+// D-BP154-010/BISHOP/S10/seg-thepail -- THE HOLE IN THE PAIL, CLOSED AT THE CAPTURE HOP. See
+// option_membership.ts's own header for the full ruling (THE_PAIL_BP154.md) and why the predicate
+// lives in its own DOM-free/electron-free module rather than inline here.
+import { mentionsAnyOption } from './option_membership';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -632,6 +636,13 @@ ipcRenderer.on('browser-authority-run-query', (_event, payload: BrowserAuthority
 interface BrowserAuthorityRunInteractiveQueryRequest {
   query: string;
   authority: BrowserAuthorityName;
+  /** D-BP154-010/BISHOP/S10/seg-thepail, ADDITIVE/OPTIONAL -- the question's own option texts
+   *  (same "L) text" shape `query.mcOptions` already carries, browser_authority_types.ts),
+   *  threaded through so the capture-hop gate (option_membership.ts's `mentionsAnyOption`) can
+   *  positively verify a captured passage before it is trusted as an answer. Undefined/absent on
+   *  every pre-existing sender until index.ts's own wv.send() call sites are updated alongside
+   *  this file -- absent means "no options to check against", never a crash. */
+  mcOptions?: string[];
 }
 
 interface BrowserAuthorityInteractiveResultMessage {
@@ -819,16 +830,32 @@ function findMainRegionTailFallback(promptText: string): { text: string; selecto
  *  behavior, tier (a)), then the broad-container fallback (tier (b)), then the main-region tail
  *  fallback (tier (c)) -- returns the FIRST tier that yields non-trivial (>= 15 char), non-
  *  echoed-prompt text. Never fabricates: returns null (not a placeholder string) when every tier
- *  comes up empty, exactly like the pre-fix lastNonEmptyTextMatch-only path did. */
-function getResilientAssistantText(promptText: string): { text: string; selector: string; element: HTMLElement } | null {
+ *  comes up empty, exactly like the pre-fix lastNonEmptyTextMatch-only path did.
+ *
+ *  D-BP154-010/BISHOP/S10/seg-thepail, ADDITIVE: THE CAPTURE-HOP GATE. Every tier's candidate is
+ *  now ALSO required to pass `mentionsAnyOption(text, mcOptions)` before it is accepted -- this is
+ *  what closes BP154_LOSSY_HOP_AUDIT.md's SILENT #1 (`looksLikeUiChrome`'s 5-regex denylist is not
+ *  a chrome detector; a Gemini privacy banner and similar chrome passed it and was recorded as a
+ *  real answer). A rejected candidate is NOT returned as a lesser match -- it is treated exactly
+ *  as "this tier found nothing", falling through to the next tier or to null, which the poller
+ *  below already treats as "keep waiting" (never a stabilized, silently-wrong answer). When
+ *  `mcOptions` is undefined/empty (a free-text query with no lettered options), this gate never
+ *  rejects anything -- byte-identical to this function's behavior before this ticket. */
+function getResilientAssistantText(
+  promptText: string,
+  mcOptions?: string[],
+): { text: string; selector: string; element: HTMLElement } | null {
   const specific = lastNonEmptyTextMatch(CLAUDE_ASSISTANT_MESSAGE_SELECTORS);
-  if (specific && specific.text.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(specific.text, promptText)) {
+  if (
+    specific && specific.text.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(specific.text, promptText)
+    && mentionsAnyOption(specific.text, mcOptions)
+  ) {
     return specific;
   }
   const broad = findBroadFallbackMatch(promptText);
-  if (broad) return broad;
+  if (broad && mentionsAnyOption(broad.text, mcOptions)) return broad;
   const tail = findMainRegionTailFallback(promptText);
-  if (tail) return tail;
+  if (tail && mentionsAnyOption(tail.text, mcOptions)) return tail;
   return null;
 }
 
@@ -1112,7 +1139,7 @@ function findComposerFast(
   tick();
 }
 
-function runClaudeInteractiveQuery(promptText: string): void {
+function runClaudeInteractiveQuery(promptText: string, mcOptions?: string[]): void {
   const reportFailure = (reason?: string) => {
     ipcRenderer.sendToHost('browser-authority-interactive-result', {
       success: false, authority: 'user_claude', snippet: '', sourceUrl: null, selectorUsed: null, citations: [],
@@ -1208,7 +1235,7 @@ function runClaudeInteractiveQuery(promptText: string): void {
         // selectors alone were confirmed (3 identical live runs) to match nothing on claude.ai's
         // current DOM even while streaming was correctly detected, so `currentText` here used to
         // stay empty for the whole poll no matter how long we waited.
-        const match = getResilientAssistantText(promptText);
+        const match = getResilientAssistantText(promptText, mcOptions);
         const currentText = match?.text ?? '';
         if (match) {
           lastSelector = match.selector;
@@ -1573,19 +1600,24 @@ function findMainRegionTailFallbackGeneric(
 }
 
 /** Parameterized twin of getResilientAssistantText above: tier a (specific) -> tier b (broad)
- *  -> tier c (main-region tail). */
+ *  -> tier c (main-region tail). Same D-BP154-010 capture-hop gate, same contract for `mcOptions`
+ *  undefined/empty -- see that function's own header. */
 function getResilientAssistantTextGeneric(
   config: InteractiveAuthorityDriverConfig,
   promptText: string,
+  mcOptions?: string[],
 ): { text: string; selector: string; element: HTMLElement } | null {
   const specific = lastNonEmptyTextMatch(config.assistantMessageSelectorsTierA);
-  if (specific && specific.text.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(specific.text, promptText)) {
+  if (
+    specific && specific.text.length >= RESILIENT_TEXT_MIN_LENGTH && !isEchoedPrompt(specific.text, promptText)
+    && mentionsAnyOption(specific.text, mcOptions)
+  ) {
     return specific;
   }
   const broad = findBroadFallbackMatchGeneric(config.fallbackMessageSelectorsTierB, promptText);
-  if (broad) return broad;
+  if (broad && mentionsAnyOption(broad.text, mcOptions)) return broad;
   const tail = findMainRegionTailFallbackGeneric(config, promptText);
-  if (tail) return tail;
+  if (tail && mentionsAnyOption(tail.text, mcOptions)) return tail;
   return null;
 }
 
@@ -1615,7 +1647,11 @@ function submitComposerGeneric(composerEl: HTMLElement, sendButtonSelectors: str
  *  reply-poll window). Emits the exact 6 lifecycle events this build pass's spec requires
  *  (query_received is logged by the dispatcher below before this runs), each prefixed with
  *  config.logPrefix -- 'chatgpt_interactive_...' or 'gemini_interactive_...'. */
-function runGenericInteractiveQuery(config: InteractiveAuthorityDriverConfig, promptText: string): void {
+function runGenericInteractiveQuery(
+  config: InteractiveAuthorityDriverConfig,
+  promptText: string,
+  mcOptions?: string[],
+): void {
   const reportFailure = (reason?: string) => {
     ipcRenderer.sendToHost('browser-authority-interactive-result', {
       success: false, authority: config.authority, snippet: '', sourceUrl: null, selectorUsed: null, citations: [],
@@ -1694,7 +1730,7 @@ function runGenericInteractiveQuery(config: InteractiveAuthorityDriverConfig, pr
           logInjectionEvent(`${config.logPrefix}_streaming_detected`, { url: window.location.href });
         }
 
-        const match = getResilientAssistantTextGeneric(config, promptText);
+        const match = getResilientAssistantTextGeneric(config, promptText, mcOptions);
         const currentText = match?.text ?? '';
         if (match) {
           lastSelector = match.selector;
@@ -1735,17 +1771,17 @@ ipcRenderer.on('browser-authority-run-interactive-query', (_event, payload: Brow
   // honestly rather than attempting the wrong vendor's selectors against an unrelated page.
   if (payload.authority === 'user_claude') {
     logInjectionEvent('claude_interactive_query_received', { authority: payload.authority, url: window.location.href });
-    runClaudeInteractiveQuery(payload.query);
+    runClaudeInteractiveQuery(payload.query, payload.mcOptions);
     return;
   }
   if (payload.authority === 'user_chatgpt') {
     logInjectionEvent('chatgpt_interactive_query_received', { authority: payload.authority, url: window.location.href });
-    runGenericInteractiveQuery(CHATGPT_DRIVER_CONFIG, payload.query);
+    runGenericInteractiveQuery(CHATGPT_DRIVER_CONFIG, payload.query, payload.mcOptions);
     return;
   }
   if (payload.authority === 'user_gemini') {
     logInjectionEvent('gemini_interactive_query_received', { authority: payload.authority, url: window.location.href });
-    runGenericInteractiveQuery(GEMINI_DRIVER_CONFIG, payload.query);
+    runGenericInteractiveQuery(GEMINI_DRIVER_CONFIG, payload.query, payload.mcOptions);
     return;
   }
   logInjectionEvent('interactive_query_unsupported_authority', { authority: payload.authority, url: window.location.href });
