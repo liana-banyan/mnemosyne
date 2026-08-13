@@ -133,7 +133,13 @@ describe('D-BP153-021 TEST 2: a source that states a kind for ALL nine options -
 });
 
 describe('D-BP153-021 TEST 3: a source that only answers for two of nine -> STILL rejected (the safety net is unchanged)', () => {
-  test('fresh-query path, partial answer -> zero exclusions trusted despite the new wording demanding all', async () => {
+  // D-BP153-026 UPDATE, RECORDED HERE EXPLICITLY. This test used to assert exactly ONE query --
+  // before D-BP153-026, an incomplete fresh query was the final word. Now ONE completion follow-up
+  // is always issued naming the seven still-unaccounted options; askGoogle's mock here always
+  // returns the SAME two-option passage regardless of query text, so the follow-up's own returned
+  // passage names none of the seven it asked about and is abandoned before extraction -- the
+  // OUTCOME (zero exclusions, the safety net) is unchanged, but the query count is now 2.
+  test('fresh-query path, partial answer -> zero exclusions trusted despite the new wording demanding all, PLUS the one completion follow-up D-BP153-026 always spends on an incomplete fresh query', async () => {
     const originalFetch = global.fetch;
     // A source that, despite the new wording's explicit demand, still only names two of nine --
     // the exact live-bug shape (LIANA_RUN_qid98_2026-08-13T01-30-04-993Z.json). D-BP153-020's
@@ -145,18 +151,23 @@ describe('D-BP153-021 TEST 3: a source that only answers for two of nine -> STIL
         members: ['South America', 'Europe'].map((name) => ({ name, span: passage })),
         stated_in_passage: true,
       }),
+      // D-BP153-026's own ONE follow-up never reaches extraction: askGoogle's mock always returns
+      // the SAME two-option passage, which names none of the seven still-unaccounted options, so
+      // the follow-up is abandoned by passageMentionsAnyLabel() before gemmaExtract() runs again.
     ]);
     const askGoogle = vi.fn(async () => ({ snippet: passage }));
     try {
       const { note, log } = notes();
       const frame = await establishFrame(askGoogle as unknown as MethodRunContext['askGoogle'], CATEGORY, ALL, OPT, note);
 
-      expect(askGoogle).toHaveBeenCalledTimes(1); // ONE query, even though the answer was partial
+      // TWO queries: the main fresh query, plus D-BP153-026's own ONE completion follow-up.
+      expect(askGoogle).toHaveBeenCalledTimes(2);
       expect(frame.available).toBe(true); // answered -- with zero exclusions, a legitimate outcome
       expect(frame.answeredFrom).toBe('new-query');
       expect(frame.partitionComplete).toBe(false);
       expect(frame.excluded).toEqual([]); // trusts nothing -- the safety net, unchanged
       expect(frame.included).toEqual(expect.arrayContaining(['A', 'E']));
+      expect(log.some((l) => /FRAME FOLLOW-UP \(D-BP153-026\)/.test(l))).toBe(true);
       expect(log.some((l) => /FRAME RECONCILIATION/.test(l) && /INCOMPLETE PARTITION/.test(l))).toBe(true);
       for (const opt of ['B', 'C', 'D', 'F', 'G', 'H', 'I']) {
         expect(log.some((l) => l.includes('INCOMPLETE PARTITION') && l.includes(`${opt}) ${OPT[opt]}`))).toBe(true);
