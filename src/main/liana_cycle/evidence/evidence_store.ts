@@ -65,7 +65,7 @@
 // names the drift satisfies it. This is a considered departure, not an unnoticed one.
 
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** Which authority produced a record. These are DIFFERENT SHAPES on purpose (see
@@ -229,4 +229,46 @@ export function listAcquisitions(qid: number | null, dir?: string): string[] {
     .filter((f) => f.startsWith(prefix) && f.endsWith('.jsonl'))
     .map((f) => f.slice(prefix.length, -'.jsonl'.length))
     .sort();
+}
+
+/** D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: "the evidence we already own
+ *  is VISIBLE... 440 records, ~291 KB, 23 acquisition files... Read-only." This is the read side
+ *  of that requirement: a whole-store summary across EVERY qid, not one question's acquisitions
+ *  (listAcquisitions()/loadAcquisition() above are both scoped to a single `qid` -- this function
+ *  is the first thing in this file that looks at the store as a whole).
+ *
+ *  STRICTLY READ-ONLY. `readdirSync`/`statSync`/`readFileSync` only -- no write, no rename, no
+ *  delete, nowhere in this function. Calling it any number of times leaves every byte on disk
+ *  unchanged; the evidence store's own append-only contract (this file's header) is untouched by
+ *  its existence. A malformed line is counted, exactly as `loadAcquisition()` already does for one
+ *  acquisition -- never silently absorbed into `totalRecords`. */
+export interface EvidenceStoreSummary {
+  dir: string;
+  files: number;
+  totalBytes: number;
+  totalRecords: number;
+  malformedLines: number;
+}
+
+export function summarizeEvidenceStore(dir?: string): EvidenceStoreSummary {
+  const d = dir || resolveEvidenceDir();
+  if (!existsSync(d)) return { dir: d, files: 0, totalBytes: 0, totalRecords: 0, malformedLines: 0 };
+  const files = readdirSync(d).filter((f) => f.startsWith('EVIDENCE_') && f.endsWith('.jsonl'));
+  let totalBytes = 0;
+  let totalRecords = 0;
+  let malformedLines = 0;
+  for (const f of files) {
+    const p = join(d, f);
+    totalBytes += statSync(p).size;
+    const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim().length > 0);
+    for (const line of lines) {
+      try {
+        JSON.parse(line);
+        totalRecords += 1;
+      } catch {
+        malformedLines += 1;
+      }
+    }
+  }
+  return { dir: d, files: files.length, totalBytes, totalRecords, malformedLines };
 }

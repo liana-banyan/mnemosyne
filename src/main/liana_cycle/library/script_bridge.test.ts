@@ -11,6 +11,18 @@
 //
 // (b)/(f)/(g) (add/remove/move-up/move-down, per-step results shown, cascade files byte-
 // identical) are renderer/diff concerns, not this file's -- see the SEG return.
+//
+// D-BP154-010/BISHOP/S10/seg-thepail UPDATE: runScratchComposer() gained two ADDITIVE/OPTIONAL
+// trailing parameters (askConversationalAuthority, currentAcquisitionId) so THE COMPOSER can
+// reach Gemini and thread its own evidence acquisition id through, exactly as 'liana-terminal-run'
+// already does -- see script_bridge.ts's own header on runScratchComposer(). Assertion (e)'s two
+// tests below are updated to assert the now-11-argument call shape (undefined fillers in the
+// positions this call site does not use), which is BYTE-IDENTICAL in runtime behavior to the old
+// 3-argument call (JS treats a trailing omitted argument and an explicit `undefined` identically)
+// -- "THE DEFAULT MUST NOT CHANGE" is a claim about runLianaCycleQuestion()'s OWN behavior/return
+// value, never about the literal arity of the call expression. A THIRD test is added, proving the
+// two new parameters actually thread through to the two positions runLianaCycleQuestion() reads
+// them from (8th: askConversationalAuthority, 11th: currentAcquisitionId).
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
@@ -48,7 +60,9 @@ describe('assertion (e): a no-script run is byte-identical to runLianaCycleQuest
     const response = await runScratchComposer('98', [], askGoogle, emit);
 
     expect(mockRunLianaCycleQuestion).toHaveBeenCalledTimes(1);
-    expect(mockRunLianaCycleQuestion).toHaveBeenCalledWith('98', askGoogle, emit);
+    expect(mockRunLianaCycleQuestion).toHaveBeenCalledWith(
+      '98', askGoogle, emit, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    );
     expect(response).toEqual({ mode: 'default', outcome: sentinelOutcome });
     // The exact same object reference comes back -- no cloning, no field added/removed/renamed.
     expect(response.mode === 'default' && response.outcome).toBe(sentinelOutcome);
@@ -62,7 +76,25 @@ describe('assertion (e): a no-script run is byte-identical to runLianaCycleQuest
 
     const response = await runScratchComposer('1', undefined, askGoogle, emit);
 
-    expect(mockRunLianaCycleQuestion).toHaveBeenCalledWith('1', askGoogle, emit);
+    expect(mockRunLianaCycleQuestion).toHaveBeenCalledWith(
+      '1', askGoogle, emit, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    );
+    expect(response).toEqual({ mode: 'default', outcome: sentinelOutcome });
+  });
+
+  test('D-BP154-010: askConversationalAuthority and currentAcquisitionId, when passed, thread through to the exact positions runLianaCycleQuestion() reads them from (8th and 11th)', async () => {
+    const sentinelOutcome = { qid: 98, question: 'q', verdict: 'A', abstain: false, freeText: false, options: null };
+    mockRunLianaCycleQuestion.mockResolvedValue(sentinelOutcome);
+    const askGoogle = vi.fn();
+    const emit = vi.fn();
+    const askConversationalAuthority = vi.fn();
+
+    const response = await runScratchComposer('98', [], askGoogle, emit, askConversationalAuthority, 'acq-123');
+
+    expect(mockRunLianaCycleQuestion).toHaveBeenCalledWith(
+      '98', askGoogle, emit, undefined, undefined, undefined, undefined,
+      askConversationalAuthority, undefined, undefined, 'acq-123',
+    );
     expect(response).toEqual({ mode: 'default', outcome: sentinelOutcome });
   });
 

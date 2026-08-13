@@ -795,6 +795,13 @@ contextBridge.exposeInMainWorld('amplify', {
   ): Promise<import('./liana_cycle/library/script_bridge').ScriptRunResponse> =>
     ipcRenderer.invoke('liana-script-run', { input, steps }),
 
+  // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: the evidence store already
+  // on disk (440 records / ~291 KB / 23 acquisition files, measured 2026-08-13) must be VISIBLE to
+  // the operator, not orphaned. Strictly read-only -- see evidence_store.ts's summarizeEvidenceStore()
+  // header for the read-only argument in full.
+  lianaEvidenceStoreSummary: (): Promise<import('./liana_cycle/evidence/evidence_store').EvidenceStoreSummary> =>
+    ipcRenderer.invoke('liana-evidence-store-summary'),
+
   // D-BP152-039 REMOVAL -- `lianaTerminalGateEnvState` used to live here, bridging
   // 'liana-terminal-gate-env-state' so a renderer toggle could show the Survey Splice env var's
   // effective state before a run. That toggle was already removed by D-BP152-012 (zero renderer
@@ -2597,6 +2604,10 @@ declare global {
         input: string,
         steps?: string[],
       ) => Promise<import('./liana_cycle/library/script_bridge').ScriptRunResponse>;
+      // D-BP154-010/BISHOP/S10/seg-thepail -- see the real ipcRenderer.invoke-typed declaration
+      // above (this file's exposeInMainWorld object) for the full explanation this ambient block
+      // mirrors.
+      lianaEvidenceStoreSummary?: () => Promise<import('./liana_cycle/evidence/evidence_store').EvidenceStoreSummary>;
       onLianaTerminalEvent?: (
         cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
       ) => () => void;

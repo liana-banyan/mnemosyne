@@ -10,7 +10,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -21,6 +21,7 @@ import {
   listAcquisitions,
   loadAcquisition,
   newAcquisitionId,
+  summarizeEvidenceStore,
 } from './evidence_store';
 import {
   buildReplay,
@@ -221,5 +222,53 @@ describe('replay is deterministic, and refuses loudly when evidence is missing',
     const r = buildReplay(acquisition!);
     await r.askGoogle('first');
     expect(r.unconsumed().map((u) => u.query)).toEqual(['second']);
+  });
+});
+
+// D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: the store we already own must
+// be VISIBLE, read-only, unchanged by looking at it. These tests cover summarizeEvidenceStore()
+// itself (in a scratch temp dir, per this file's own no-real-ledger-writes discipline above); the
+// deliverable doc for this ticket separately hashes the REAL ledger directory before/after this
+// session's work to prove this function's own read-only claim held against the real store too.
+describe('summarizeEvidenceStore() -- read-only, whole-store, never scoped to one qid', () => {
+  test('an empty/non-existent dir summarizes to all zeros, never throws', () => {
+    const missing = join(dir, 'does-not-exist');
+    expect(summarizeEvidenceStore(missing)).toEqual({
+      dir: missing, files: 0, totalBytes: 0, totalRecords: 0, malformedLines: 0,
+    });
+  });
+
+  test('counts records across MULTIPLE qids and MULTIPLE acquisitions -- not scoped to one qid, unlike listAcquisitions()', async () => {
+    const s1 = newAcquisitionSession({ acquisitionId: newAcquisitionId(T, 'a'), qid: 98, dir, now: () => T });
+    await recordingAskGoogle(async () => ({ snippet: 'x' } as never), s1)('q1');
+    await recordingAskGoogle(async () => ({ snippet: 'y' } as never), s1)('q2');
+    const s2 = newAcquisitionSession({ acquisitionId: newAcquisitionId(T, 'b'), qid: 85, dir, now: () => T });
+    await recordingAskGoogle(async () => ({ snippet: 'z' } as never), s2)('q3');
+
+    const summary = summarizeEvidenceStore(dir);
+    expect(summary.files).toBe(2); // one file per (qid, acquisitionId)
+    expect(summary.totalRecords).toBe(3);
+    expect(summary.malformedLines).toBe(0);
+    expect(summary.totalBytes).toBeGreaterThan(0);
+  });
+
+  test('calling it never writes, renames, or deletes anything -- the store is byte-identical before and after', async () => {
+    const s1 = newAcquisitionSession({ acquisitionId: newAcquisitionId(T, 'c'), qid: 98, dir, now: () => T });
+    await recordingAskGoogle(async () => ({ snippet: 'x' } as never), s1)('q1');
+    const before = readFileSync(join(dir, `EVIDENCE_qid98_${s1.acquisitionId}.jsonl`), 'utf8');
+    summarizeEvidenceStore(dir);
+    summarizeEvidenceStore(dir);
+    const after = readFileSync(join(dir, `EVIDENCE_qid98_${s1.acquisitionId}.jsonl`), 'utf8');
+    expect(after).toBe(before);
+  });
+
+  test('a malformed line is counted, never silently folded into totalRecords', () => {
+    const acquisitionId = newAcquisitionId(T, 'malformed');
+    const filePath = join(dir, `EVIDENCE_qid98_${acquisitionId}.jsonl`);
+    writeFileSync(filePath, '{"schema":"liana-evidence/1","ok":true}\nnot valid json\n{"also":"ok"}\n', 'utf8');
+    const summary = summarizeEvidenceStore(dir);
+    expect(summary.files).toBe(1);
+    expect(summary.totalRecords).toBe(2);
+    expect(summary.malformedLines).toBe(1);
   });
 });

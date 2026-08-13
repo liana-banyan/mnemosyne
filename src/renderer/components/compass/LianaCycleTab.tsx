@@ -35,6 +35,8 @@ import type {
 } from '../../../shared/liana_cycle/liana_terminal_types';
 // D-BP152-043/BISHOP/seg-scratch-composer -- type-only, see script_bridge.ts's own header.
 import type { ComposerRegistryEntry, ScriptRunResponse } from '../../../main/liana_cycle/library/script_bridge';
+// D-BP154-010/BISHOP/S10/seg-thepail -- type-only, see evidence_store.ts's own header.
+import type { EvidenceStoreSummary } from '../../../main/liana_cycle/evidence/evidence_store';
 
 // D-BP152-045/BISHOP/seg-composer-ui-fixes -- PARENTAGE LABEL. Founder, live report: "can you
 // indicate with the NameNumbers if they are part of a script or method or whatever? ... so that
@@ -313,6 +315,15 @@ export function LianaCycleTab() {
   const [composerStack, setComposerStack] = useState<string[]>([]);
   const [composerRunning, setComposerRunning] = useState(false);
   const [composerResult, setComposerResult] = useState<ScriptRunResponse | null>(null);
+
+  // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL. "The Founder can SEE what is in it"
+  // (THE_PAIL_BP154.md). `evidenceStoreSummary` is the READ-ONLY, whole-store view (the 440
+  // records / ~291 KB / 23 files already on disk, plus whatever this session adds) -- loaded the
+  // same lazy, refreshable way `composerRegistry` already is. `composerResult.evidence` (this
+  // run's own pail contents: acquisition id, records written, write failures, and the records
+  // themselves) rides on `composerResult` already and needs no separate state.
+  const [evidenceStoreSummary, setEvidenceStoreSummary] = useState<EvidenceStoreSummary | null>(null);
+  const [evidenceStoreSummaryState, setEvidenceStoreSummaryState] = useState<'idle' | 'loading' | 'loaded' | 'unavailable'>('idle');
 
   // D-BP152-022/BISHOP/seg-laboratory-and-keep -- THE LABORATORY. FD-BP152-07: ephemeral by
   // default, persisted only when the operator explicitly says "keep". Every one of these is
@@ -776,13 +787,35 @@ export function LianaCycleTab() {
     }
   }, []);
 
+  // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: "the evidence we already own
+  // is VISIBLE... not orphaned." Same lazy-load-on-open, refreshable-on-demand shape as
+  // loadComposerRegistry above. Read-only on the main-process side (summarizeEvidenceStore()) --
+  // calling this any number of times cannot change what is on disk.
+  const loadEvidenceStoreSummary = useCallback(async () => {
+    if (!window.amplify?.lianaEvidenceStoreSummary) {
+      setEvidenceStoreSummaryState('unavailable');
+      return;
+    }
+    setEvidenceStoreSummaryState('loading');
+    try {
+      const summary = await window.amplify.lianaEvidenceStoreSummary();
+      setEvidenceStoreSummary(summary);
+      setEvidenceStoreSummaryState('loaded');
+    } catch {
+      setEvidenceStoreSummaryState('unavailable');
+    }
+  }, []);
+
   const toggleComposerOpen = useCallback(() => {
     setComposerOpen((wasOpen) => {
       const willOpen = !wasOpen;
-      if (willOpen) void loadComposerRegistry();
+      if (willOpen) {
+        void loadComposerRegistry();
+        void loadEvidenceStoreSummary();
+      }
       return willOpen;
     });
-  }, [loadComposerRegistry]);
+  }, [loadComposerRegistry, loadEvidenceStoreSummary]);
 
   // Add / remove / move-up / move-down -- "That is the whole interaction" (this ticket's own
   // words). Duplicates are allowed on purpose: the Founder's own ask is "iterations galore", and
@@ -1980,6 +2013,87 @@ export function LianaCycleTab() {
                     Ran the normal way (the stack was empty) -- see the answer above.
                   </div>
                 )}
+
+                {/* D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL. Founder, BP154, verbatim: "I
+                    want to SEE it." This is that: the question, the answer, and the pail's
+                    contents listed, live -- not a test log, not a file the operator has to go
+                    find. Shown only after a run that actually produced an evidence field (every
+                    run through THIS handler does, from this ticket forward). */}
+                {composerResult?.evidence && (
+                  <div style={{ border: '1px solid #334155', borderRadius: 6, overflow: 'hidden' }}>
+                    <div style={{
+                      padding: '6px 10px', fontSize: 11, fontWeight: 700, color: '#e2e8f0',
+                      background: '#0d1117', fontFamily: 'system-ui, sans-serif',
+                    }}>
+                      THE PAIL -- this run's own evidence
+                    </div>
+                    <div style={{ padding: 10, background: '#05080d', fontSize: 11, fontFamily: 'monospace', color: '#e2e8f0' }}>
+                      <div>acquisition: {composerResult.evidence.acquisitionId}</div>
+                      <div>records written to the evidence store: {composerResult.evidence.recordsWritten}</div>
+                      {composerResult.evidence.writeFailures.length > 0 && (
+                        <div style={{ color: '#fca5a5', marginTop: 4 }}>
+                          {composerResult.evidence.writeFailures.length} WRITE FAILURE(S) -- this acquisition is
+                          INCOMPLETE:
+                          {composerResult.evidence.writeFailures.map((f, i) => (
+                            <div key={i} style={{ marginLeft: 10 }}>- [{f.authority}] &quot;{f.query}&quot;: {f.error}</div>
+                          ))}
+                        </div>
+                      )}
+                      {composerResult.evidence.records.length === 0 && (
+                        <div style={{ color: '#475569', fontStyle: 'italic', marginTop: 4 }}>
+                          No authority query was issued on this run (nothing to keep).
+                        </div>
+                      )}
+                      {composerResult.evidence.records.length > 0 && (
+                        <div style={{
+                          marginTop: 6, maxHeight: 220, minHeight: 60, overflowY: 'auto', resize: 'vertical',
+                          border: '1px solid #1e2a38', borderRadius: 4, padding: 4,
+                        }}>
+                          {composerResult.evidence.records.map((r, i) => {
+                            const resp = r.response as { snippet?: string; text?: string } | null;
+                            const answerPreview = (resp?.snippet || resp?.text || '(no answer text captured)').slice(0, 220);
+                            return (
+                              <div key={i} style={{ padding: '4px 6px', marginBottom: 4, background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 4 }}>
+                                <div style={{ color: '#94a3b8' }}>#{r.seq} [{r.authority}] {r.ts}</div>
+                                <div style={{ marginTop: 2 }}><span style={{ color: '#64748b' }}>query (verbatim): </span>{r.query}</div>
+                                <div style={{ marginTop: 2 }}><span style={{ color: '#64748b' }}>answer: </span>{r.response === null ? '(recorded null -- asked, got nothing back)' : answerPreview}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: "the 440
+                    records / ~291 KB / 23 acquisitions we already own are visible in it, not
+                    orphaned... Read-only; the store is never rewritten." */}
+                <div style={{ border: '1px solid #334155', borderRadius: 6, overflow: 'hidden' }}>
+                  <div style={{
+                    padding: '6px 10px', fontSize: 11, fontWeight: 700, color: '#e2e8f0',
+                    background: '#0d1117', fontFamily: 'system-ui, sans-serif',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  }}>
+                    <span>Evidence store on disk (read-only, every question)</span>
+                    <button type="button" onClick={() => void loadEvidenceStoreSummary()} style={{ background: 'none', border: 'none', color: '#22d3ee', cursor: 'pointer', fontSize: 11 }}>
+                      refresh
+                    </button>
+                  </div>
+                  <div style={{ padding: 10, background: '#05080d', fontSize: 11, fontFamily: 'monospace', color: '#e2e8f0' }}>
+                    {evidenceStoreSummaryState === 'loading' && <div style={{ color: '#475569' }}>Loading…</div>}
+                    {evidenceStoreSummaryState === 'unavailable' && <div style={{ color: '#fca5a5' }}>Not available in this build.</div>}
+                    {evidenceStoreSummaryState === 'loaded' && evidenceStoreSummary && (
+                      <div>
+                        {evidenceStoreSummary.files} acquisition file(s), {evidenceStoreSummary.totalRecords} record(s),
+                        {' '}{(evidenceStoreSummary.totalBytes / 1024).toFixed(1)} KB
+                        {evidenceStoreSummary.malformedLines > 0 && (
+                          <span style={{ color: '#facc15' }}> ({evidenceStoreSummary.malformedLines} malformed line(s))</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 {/* Steps on file -- always the live list, so a step added elsewhere shows up here
                     without reopening the app. D-BP152-045/BISHOP/seg-composer-ui-fixes: this is

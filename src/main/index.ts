@@ -332,7 +332,7 @@ import { listTeachingFiles } from './liana_cycle/teaching_notes';
 // replayed offline over frozen evidence. See the block comment at its wiring site in the
 // 'liana-terminal-run' handler, and evidence/evidence_store.ts's own header, for why.
 import { newAcquisitionSession, recordingAskGoogle, recordingConversationalAuthority } from './liana_cycle/evidence/evidence_authority';
-import { newAcquisitionId } from './liana_cycle/evidence/evidence_store';
+import { newAcquisitionId, summarizeEvidenceStore } from './liana_cycle/evidence/evidence_store';
 import { deriveRunShape } from './liana_cycle/evidence/run_shape';
 import type { LianaAudibleResponse, LianaSteppedResponse, LianaTerminalEvent } from '../shared/liana_cycle/liana_terminal_types';
 import { _paths as YOKE_PATHS } from './resident/yoke_watcher';
@@ -1967,6 +1967,13 @@ async function runInteractiveBrowserAuthorityQueryObserved(
       ? buildMcAwareQueryText(query.question, query.mcOptions)
       : query.question;
 
+  // D-BP154-010/BISHOP/S10/seg-thepail, ADDITIVE: `query.mcOptions` also travels alongside the
+  // composed `promptText` in the wv.send() payloads below (not embedded inside promptText itself)
+  // so webview_preload.ts's capture-hop gate (option_membership.ts's `mentionsAnyOption`) can
+  // positively verify a captured passage mentions at least one real option before trusting it as
+  // an answer -- see that module's own header for the defect this closes (BP154_LOSSY_HOP_
+  // AUDIT.md SILENT #1). `?? []` on each send site means "no options" when absent, never a crash.
+
   // BP140-K4: this main-process log prefix must track whichever interactive authority is
   // actually running, not a hardcoded 'claude_interactive' -- ChatGPT/Gemini now share this same
   // outer script, and their own console evidence must read 'chatgpt_interactive:'/
@@ -2015,7 +2022,7 @@ async function runInteractiveBrowserAuthorityQueryObserved(
           wv.addEventListener('ipc-message', onMsg);
           setTimeout(function() {
             try {
-              wv.send('browser-authority-run-interactive-query', { query: ${JSON.stringify(promptText)}, authority: ${JSON.stringify(query.authority)} });
+              wv.send('browser-authority-run-interactive-query', { query: ${JSON.stringify(promptText)}, authority: ${JSON.stringify(query.authority)}, mcOptions: ${JSON.stringify(query.mcOptions ?? [])} });
             } catch (sendErr) {
               if (!settled) { settled = true; clearTimeout(timeoutId); resolve({ success: false, reason: 'webview_send_failed' }); }
             }
@@ -2060,7 +2067,7 @@ async function runInteractiveBrowserAuthorityQueryObserved(
             wv.removeEventListener('did-finish-load', onLoad);
             setTimeout(function() {
               try {
-                wv.send('browser-authority-run-interactive-query', { query: ${JSON.stringify(promptText)}, authority: ${JSON.stringify(query.authority)} });
+                wv.send('browser-authority-run-interactive-query', { query: ${JSON.stringify(promptText)}, authority: ${JSON.stringify(query.authority)}, mcOptions: ${JSON.stringify(query.mcOptions ?? [])} });
               } catch (sendErr) {
                 if (!settled) { settled = true; clearTimeout(timeoutId); resolve({ success: false, reason: 'webview_send_failed' }); }
               }
@@ -2489,6 +2496,39 @@ function buildLianaAskGoogle(runThreadContext: NexusRunThreadContext): AskGoogle
       results: [],
       dispatchOutcome: observed.dispatchOutcome,
       challengeDetected: observed.challengeDetected,
+    };
+  };
+}
+
+// D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL's own "reaches the browser authority" half for
+// the Gemini/conversational path. Extracted, byte-for-byte, from the inline closure the
+// 'liana-terminal-run' handler already builds at this file's own D-BP152-044 site (below,
+// `const askConversationalAuthority: ConversationalAuthorityFn = ...`) -- that closure is left
+// completely untouched (nothing about THE PAIL requires or benefits from disturbing a working,
+// already-verified handler); this is a NEW, separate factory so 'liana-script-run' (THE COMPOSER's
+// own entry point) can reach Gemini too, which it never could before this ticket (it called
+// runScratchComposer with only an askGoogle closure -- see script_bridge.ts's own header, "no
+// wrapping" referred to the DEFAULT branch's call shape, not to which authorities were reachable
+// at all). Same contract as the original: `question` passed through verbatim (HARDWIRE-22
+// unaffected), every non-ok outcome maps to `ok: false`, no judgment/rating prompt ever built here.
+function buildAskConversationalAuthority(runThreadContext: NexusRunThreadContext): ConversationalAuthorityFn {
+  return async (question: string) => {
+    const result = await runMachineDrivenNexusQueryFromMain('user_gemini', question, null, runThreadContext);
+    if (!result.ok || !result.text.trim()) {
+      return {
+        ok: false,
+        text: '',
+        citations: [],
+        via: `user_gemini:${result.outcome}${result.reason ? `(${result.reason})` : ''}`,
+        authority: 'user_gemini',
+      };
+    }
+    return {
+      ok: true,
+      text: result.text,
+      citations: result.citations.map((c) => c.href),
+      via: `user_gemini:${result.outcome}`,
+      authority: 'user_gemini',
     };
   };
 }
@@ -4217,13 +4257,33 @@ function registerIPCHandlers(): void {
   // dispatch registers after this ticket lands without this handler changing.
   safeHandle('liana-script-list-registry', async () => listComposerRegistry());
 
-  // 'liana-script-run' is the ONE new run path. `steps` undefined/empty = THE DEFAULT, byte-
-  // identical to 'liana-terminal-run' above (see script_bridge.ts's runScratchComposer() header
-  // for exactly why: the same runLianaCycleQuestion() call, by reference, no wrapping). A
-  // non-empty `steps` array runs that authored stack instead, through script_runner.ts
-  // (D-BP152-041, unmodified). This handler does not write a run receipt or a heartbeat line --
-  // that persistence (D-BP150-015) belongs to the pre-existing default path above; adding it here
-  // too was not asked for by this ticket (HARDWIRE-23, "nothing more").
+  // 'liana-script-run' is the ONE new run path. `steps` undefined/empty = THE DEFAULT -- STILL
+  // calls runLianaCycleQuestion() by reference, no transformation of ITS return value, exactly as
+  // script_bridge.ts's own header requires ("THE DEFAULT MUST NOT CHANGE"). A non-empty `steps`
+  // array runs that authored stack instead, through script_runner.ts (D-BP152-041, unmodified).
+  // This handler does not write a run receipt or a heartbeat line -- that persistence
+  // (D-BP150-015) belongs to the pre-existing default path above; adding it here too was not
+  // asked for by this ticket (HARDWIRE-23, "nothing more").
+  //
+  // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL. Before this ticket, THIS was the hole: the
+  // Composer is the ONLY UI path that reaches runScratchComposer() (LianaCycleTab.tsx's "Run this
+  // stack" button always calls lianaScriptRun, even with an empty stack -- the plain "Run" button
+  // calls the pre-existing, already-evidenced lianaTerminalRun instead). Every query this handler
+  // issued vanished on return: no evidenceSession, no recordingAskGoogle/recordingConversationalAuthority
+  // wrap, no askConversationalAuthority passed at all (Gemini unreachable through the Composer).
+  // Answers came back to the RENDERER (script_bridge.ts's ComposerStepOutcome.raw / the default
+  // outcome) but never touched the evidence store -- an answer that reads like it was kept and was
+  // not, THE PAIL'S signature failure mode.
+  //
+  // Mirrors 'liana-terminal-run' above, adapted to this handler's own local variables: ONE
+  // evidenceSession per IPC call (same "per run, not per query" discipline), BOTH authorities
+  // wrapped (recordingAskGoogle AND recordingConversationalAuthority -- omitting either would
+  // produce a store that looks complete and is not, evidence_authority.ts's own header), and
+  // evidenceSession.acquisitionId threaded through as runLianaCycleQuestion's currentAcquisitionId
+  // so this run's own cross-acquisition lookup never "reuses" a record it is itself writing.
+  // TRANSPARENT: recordingAskGoogle/recordingConversationalAuthority both return exactly what the
+  // inner function returned (evidence_authority.ts's own contract) -- wrapping cannot change what
+  // answer a run reaches, only whether that answer is kept.
   safeHandle('liana-script-run', async (event, { input, steps }: { input: string; steps?: string[] }) => {
     const sender = event.sender;
     // D-BP152-031 convention (see 'liana-terminal-run' above): ONE thread-identity space per run
@@ -4232,11 +4292,49 @@ function registerIPCHandlers(): void {
     // D-BP152-050: buildLianaAskGoogle(runThreadContext) replaces the old inline
     // runBrowserAuthorityQueryFromMain(...) closure -- see that function's own header, above.
     const askGoogle = buildLianaAskGoogle(runThreadContext);
+    const askConversationalAuthority = buildAskConversationalAuthority(runThreadContext);
     const emit = (evt: LianaTerminalEvent) => {
       try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ }
     };
-    return runScratchComposer(input, steps, askGoogle, emit);
+
+    const evidenceQid = /^\d+$/.test(input.trim()) ? Number(input.trim()) : null;
+    const evidenceSession = newAcquisitionSession({
+      acquisitionId: newAcquisitionId(new Date().toISOString(), String(process.pid)),
+      qid: evidenceQid,
+    });
+
+    const response = await runScratchComposer(
+      input,
+      steps,
+      recordingAskGoogle(askGoogle, evidenceSession),
+      emit,
+      recordingConversationalAuthority(askConversationalAuthority, evidenceSession),
+      evidenceSession.acquisitionId,
+    );
+
+    // THE PAIL'S CONTENTS, LISTED -- returned to the renderer alongside the answer, not just
+    // written to disk where only a file-reader could see it (THE_PAIL_BP154.md: "the Founder can
+    // SEE what is in it"). `writeFailures` is carried un-summarized, never collapsed to a count:
+    // a non-empty array here means this acquisition is INCOMPLETE (evidence_authority.ts's own
+    // record() contract) and the renderer must be able to say so, not just "N records written".
+    return {
+      ...response,
+      evidence: {
+        acquisitionId: evidenceSession.acquisitionId,
+        recordsWritten: evidenceSession.written.length,
+        writeFailures: evidenceSession.writeFailures,
+        records: evidenceSession.written,
+      },
+    };
   });
+
+  // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: the 440 records / ~291 KB /
+  // 23 acquisition files already on disk must be VISIBLE, not orphaned. STRICTLY READ-ONLY --
+  // summarizeEvidenceStore() (evidence_store.ts) does not open a file for writing anywhere in its
+  // body; see that function's own header for the read-only argument in full. Whole-store, every
+  // qid at once (listAcquisitions()/loadAcquisition() are both scoped to one qid already, and
+  // reusing either here would silently hide every acquisition for every OTHER question).
+  safeHandle('liana-evidence-store-summary', async () => summarizeEvidenceStore());
 
   // D-BP150-001/BISHOP/S01/seg-audible -- the operator answering one pause. Returns a plain
   // ok/reason rather than throwing on an unknown pauseId: a response for a pause that has
