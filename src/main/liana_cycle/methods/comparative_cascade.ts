@@ -425,7 +425,10 @@ export async function gemmaExtract(
   // Optional and additive: every existing call site that does not pass a fourth argument compiles
   // unchanged, and this function's return type and null-on-failure semantics are untouched -- no
   // caller's accept/reject behavior changes.
-  rawOut?: { text?: string },
+  // D-BP153-034, ADDITIVE: `truncated` is set true when Ollama reports `done_reason: 'length'`,
+  // i.e. the model hit num_predict and the JSON was cut off mid-object. Optional and additive;
+  // every existing caller compiles and behaves unchanged.
+  rawOut?: { text?: string; truncated?: boolean },
 ): Promise<Record<string, unknown> | null> {
   const prompt = `Read the passage and report only what it states. Do not reason about which answer is correct. Do not choose between options.
 
@@ -443,12 +446,29 @@ Use null where the passage does not state it. Never guess.`;
     const res = await fetch(`${OLLAMA_API_BASE}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 512 } }),
+      // D-BP153-034 -- num_predict 512 -> 1024, FOUNDER-AUTHORIZED (BP153: "double the ceiling").
+      //
+      // MEASURED, not guessed. The stated-kind extraction (D-BP153-032) returns nine entries each
+      // carrying a name, a kind, AND a verbatim span. Called with the real qid 98 frame passage
+      // outside the app, against this same model at temperature 0:
+      //     num_predict=512   chars=1868  JSON.parse=FAILED  kinds=0  eval_count=512  done_reason=length
+      //     num_predict=2048  chars=2089  JSON.parse=OK      kinds=9  eval_count=580  done_reason=stop
+      // It ran out 68 tokens short. The JSON was cut mid-object, JSON.parse threw, this function
+      // returned null, and every kind arrived as null -- indistinguishable from "the passage stated
+      // nothing". 512 was chosen when extractions returned short name lists; a span-carrying read is
+      // simply longer. 1024 clears the measured 580 with headroom.
+      body: JSON.stringify({ model: MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 1024 } }),
       signal: controller.signal,
     }).finally(() => clearTimeout(timeout));
-    const j = (await res.json()) as { response?: string };
+    const j = (await res.json()) as { response?: string; done_reason?: string };
     const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
     if (rawOut) rawOut.text = t;
+    // D-BP153-034 -- TRUNCATION IS NOT SILENCE. Ollama reports `done_reason: 'length'` when the
+    // model hit num_predict. That is a DIFFERENT fact from "the passage did not state it", and
+    // conflating them is what hid this defect: a truncated read and an empty read both surfaced as
+    // all-nulls. Raising the ceiling makes truncation rarer; it does not make it impossible, so the
+    // signal is recorded for the caller either way.
+    if (rawOut) rawOut.truncated = j.done_reason === 'length';
     return JSON.parse(t) as Record<string, unknown>;
   } catch {
     return null;

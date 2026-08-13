@@ -1644,8 +1644,24 @@ async function extractFrameKinds(
   note: (text: string) => void,
 ): Promise<{ kinds: Record<string, string | null>; categoryKind: string | null; discarded: number }> {
   const {
-    kinds: rawKinds, kindSpans, categoryKind: rawCategoryKind, categoryKindSpan, discarded: spanDiscarded,
+    kinds: rawKinds, kindSpans, categoryKind: rawCategoryKind, categoryKindSpan, discarded: spanDiscarded, truncated,
   } = await extractDiscriminatorKinds(passage, names, OPT, category);
+
+  // D-BP153-034 -- TRUNCATION IS NAMED, NEVER SILENT. When the model hits its token ceiling the
+  // JSON is cut mid-object, the parse fails, and every kind arrives null -- byte-identical to "the
+  // passage stated nothing". That conflation cost this campaign a full session: the extractor was
+  // working, the passage was perfect, and the receipt read `kinds {A:null ... I:null}`.
+  // MEASURED at D-BP153-034: num_predict 512 stopped at eval_count 512 with done_reason=length on
+  // the real qid 98 frame passage, 68 tokens short of the 580 the same read needs.
+  if (truncated) {
+    note(
+      '   FRAME / QUESTION 1 (stated-kind read): THE MODEL HIT ITS TOKEN CEILING (done_reason=length, '
+        + 'D-BP153-034) -- the JSON was cut off mid-object and could not be parsed, so every kind below '
+        + 'reads as null. THIS IS A TRUNCATED READ, NOT AN EMPTY PASSAGE. The passage may state every '
+        + 'kind perfectly; we simply could not finish reading it. Do NOT interpret the nulls as the '
+        + 'source having said nothing.',
+    );
+  }
 
   const kindEntry = { letters: names.filter((L) => rawKinds[L] != null), spans: kindSpans };
   const kindFiltered = discardPropertyContaminatedSpans(kindEntry, property, OPT, note, 'FRAME / QUESTION 1 (stated-kind read)');
@@ -3259,10 +3275,16 @@ async function extractDiscriminatorKinds(
   categoryKind: string | null;
   categoryKindSpan: string | null;
   discarded: number;
+  // D-BP153-034: true when the model hit its token ceiling and the JSON was cut off mid-object.
+  // A truncated read and a genuinely empty read BOTH arrive as all-nulls; this is the only thing
+  // that tells them apart, and conflating them is what hid the defect for an entire session.
+  truncated: boolean;
 }> {
+  const rawOut: { text?: string; truncated?: boolean } = {};
   const ex = await gemmaExtract(
-    discriminatorExtractionInstruction(candidates, OPT, category), passage, DISCRIMINATOR_EXTRACTION_SHAPE,
+    discriminatorExtractionInstruction(candidates, OPT, category), passage, DISCRIMINATOR_EXTRACTION_SHAPE, rawOut,
   );
+  const truncated = rawOut.truncated === true;
   const rawKinds = (ex?.kinds as Array<{ name?: unknown; kind?: unknown; span?: unknown }> | undefined) ?? [];
   const kinds: Record<string, string | null> = {};
   const kindSpans: Record<string, string> = {};
@@ -3287,7 +3309,7 @@ async function extractDiscriminatorKinds(
   const categoryKind = categoryKindVerified ? rawCategoryKind : null;
   if (rawCategoryKind && !categoryKindVerified) discarded++;
   return {
-    kinds, kindSpans, categoryKind, categoryKindSpan: categoryKindVerified ? categoryKindSpan : null, discarded,
+    kinds, kindSpans, categoryKind, categoryKindSpan: categoryKindVerified ? categoryKindSpan : null, discarded, truncated,
   };
 }
 
