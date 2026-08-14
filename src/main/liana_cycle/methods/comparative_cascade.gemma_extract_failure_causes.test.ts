@@ -72,7 +72,18 @@ describe('D-BP154-006 TEST 2: HTTP ERROR STATUS is named, never read as a 200 wo
 });
 
 describe('D-BP154-006 TEST 3: JSON PARSE FAILURE (non-truncation) is named, distinctly from truncation', () => {
-  test('the model wraps its JSON in explanatory prose the fence-strips do not catch -> failureCause "parse-error", rawOut.text carries the raw text', async () => {
+  // D-BP154-033 UPDATE: prior to this ticket, ANY prose wrapped around a complete JSON object
+  // (even "Sure, here is the answer: {...} -- hope that helps!") failed extraction outright --
+  // gemmaExtract() only ever tried JSON.parse() on the WHOLE trimmed string. LIVE-MEASURED this
+  // ticket (Magnitude:1, qid 98): the model sometimes emits a complete, valid JSON object, then
+  // (unprompted) more prose and a SECOND self-correcting JSON object -- and the original
+  // whole-string-only parse threw on that too, discarding a real, complete, correctly-spanned
+  // first answer. extractFirstBalancedJson() (comparative_cascade.ts, gemmaExtract()'s own fallback,
+  // tried only after a whole-string parse has already failed) now recovers the first balanced
+  // top-level JSON value regardless of what surrounds it -- so this exact scenario is no longer a
+  // failure, and the test below is updated to assert the (better) recovered value instead of a
+  // stale "must fail" expectation.
+  test('the model wraps a COMPLETE JSON object in explanatory prose -> now RECOVERED via extractFirstBalancedJson(), not a failure', async () => {
     const originalFetch = global.fetch;
     global.fetch = (async () => ({
       ok: true,
@@ -82,7 +93,30 @@ describe('D-BP154-006 TEST 3: JSON PARSE FAILURE (non-truncation) is named, dist
     try {
       const rawOut: RawOut = {};
       const result = await gemmaExtract('extract something', 'a passage', '{"x":"y"}', rawOut);
-      expect(result).toBeNull(); // JSON.parse() throws on the prose-wrapped text
+      expect(result).toEqual({ x: 'y' }); // recovered by the balanced-JSON fallback
+      expect(rawOut.failureCause).toBeUndefined(); // a recovered extraction is a SUCCESS, not a failure
+      expect(rawOut.truncated).toBe(false); // done_reason was "stop", not "length" -- genuinely NOT truncation
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  // The genuine "no JSON present at all" case -- still, correctly, an unrecoverable parse-error:
+  // extractFirstBalancedJson() finds no `{`/`[` at all, returns null, and gemmaExtract() re-throws
+  // the ORIGINAL parse error rather than inventing a value. This is the case TEST 3's own original
+  // scenario was meant to guard, now covered honestly instead of by an example that turned out to
+  // be recoverable.
+  test('the model responds with prose that contains NO JSON structure at all -> failureCause "parse-error", rawOut.text carries the raw text', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ response: 'Sure, here is the answer: it depends, honestly, hope that helps!', done_reason: 'stop' }),
+    })) as unknown as typeof fetch;
+    try {
+      const rawOut: RawOut = {};
+      const result = await gemmaExtract('extract something', 'a passage', '{"x":"y"}', rawOut);
+      expect(result).toBeNull();
       expect(rawOut.failureCause).toBe('parse-error');
       expect(rawOut.failureDetail).toBeTruthy();
       expect(rawOut.text).toContain('hope that helps'); // D-BP152-004's own instrument, unchanged
@@ -178,7 +212,10 @@ describe('D-BP154-006 TEST 6 (SUCCESS PATH UNCHANGED): a clean extraction return
       // The request body construction itself (model, prompt, options) is untouched by this ticket.
       const parsedBody = JSON.parse(capturedBody!);
       expect(parsedBody.model).toBeTruthy();
-      expect(parsedBody.options).toEqual({ temperature: 0, num_predict: 1024 });
+      // D-BP154-033: num_predict raised 1024 -> 2048, MEASURED (comparative_cascade.ts's own
+      // gemmaExtract() header comment names the live measurement) -- this assertion tracks
+      // whatever gemmaExtract() actually sends, not a stale hardcoded ceiling.
+      expect(parsedBody.options).toEqual({ temperature: 0, num_predict: 2048 });
       expect(parsedBody.prompt).toContain('copy the stated kind');
       expect(parsedBody.prompt).toContain('South America: Continent.');
     } finally {
