@@ -205,6 +205,36 @@ function anyStepFailed(stepsConsulted: TerminatorResult['stepsConsulted']): bool
   return Object.values(stepsConsulted).some((s) => s === 'failed');
 }
 
+// D-BP154-029/BISHOP-SEG/S29/seg-withhold, NEW. Founder's own rule, this dispatch, verbatim: "An
+// incomplete run may not publish a verdict. If any step FAILED, the run ABSTAINS, and the basis
+// names which steps failed and that the verdict was withheld because of it." The receipt's OWN
+// first live run caught this: NamedSet:1 failed (so B/E, its own stated superlative-property
+// eliminations, never happened), Magnitude:1 then ranked the WRONG survivor set, and the Terminator
+// published F anyway -- `incomplete: true` was recorded, and the run proceeded as if it were not.
+// "A flag that records a problem while the system proceeds as if there were none is not a fix."
+// This map names each step's own job, purely descriptive (never used to eliminate or judge
+// anything) -- it is what a reader needs to understand WHY withholding a verdict is the correct
+// response to that specific step's absence.
+const STEP_RESPONSIBILITY: Record<string, string> = {
+  'Softballs:1': 'eliminating options the source states are NOT the category',
+  'NamedSet:1': 'eliminating options the source states ARE the superlative property',
+  'Discriminator:1': 'eliminating options the source states ARE the superlative property, or explicitly NOT the category in their own right',
+  'Magnitude:1': 'ranking the survivors by magnitude to select the extreme',
+};
+
+/** D-BP154-029, NEW. Names every FAILED step and what it was responsible for -- "Withheld:
+ *  NamedSet:1 failed, so stated members of the superlative property were never eliminated" is the
+ *  dispatch's own worked example; this generalizes it to however many steps failed, symmetrically
+ *  (no step is special-cased by identity). */
+function withheldNote(stepsConsulted: TerminatorResult['stepsConsulted']): string {
+  const failedIds = (Object.entries(stepsConsulted) as Array<[string, string]>)
+    .filter(([, status]) => status === 'failed')
+    .map(([id]) => id);
+  return failedIds
+    .map((id) => `${id} failed, so ${STEP_RESPONSIBILITY[id] ?? 'its own contribution to the frame'} never happened`)
+    .join('; ');
+}
+
 function sameLetterSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const bSet = new Set(b);
@@ -528,6 +558,12 @@ export async function runTerminatorStep(
     'Discriminator:1': discriminatorRaw ? (discriminatorRaw.ok ? 'ok' : 'failed') : 'not run',
     'Magnitude:1': magnitudeRaw ? (magnitudeRaw.ok ? 'ok' : 'failed') : 'not run',
   };
+  // D-BP154-029/BISHOP-SEG/S29/seg-withhold FIX. Computed ONCE, used everywhere below --
+  // deriveTerminatorEliminations() itself, contradiction/zero-survivor ABSTAINs, and (new this
+  // ticket) the gate that keeps a VERDICT from ever publishing while `incomplete` is true.
+  const incomplete = anyStepFailed(stepsConsulted);
+  const consultedNote = (Object.entries(stepsConsulted) as Array<[string, string]>)
+    .map(([id, status]) => `${id}: ${status}`).join(', ');
 
   const { eliminated, contradiction } = deriveTerminatorEliminations(
     OPT,
@@ -547,7 +583,7 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, eliminated, survivors: [], contradiction, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `CONTRADICTION: ${contradiction.reason}`,
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete: anyStepFailed(stepsConsulted),
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -566,7 +602,7 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: 'every option was eliminated -- at least one contributing step\'s basis must be wrong; not published',
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete: anyStepFailed(stepsConsulted),
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -595,18 +631,34 @@ export async function runTerminatorStep(
       const extremeEntry = magnitudeRaw.targetExtreme === 'least'
         ? magnitudeRaw.order[magnitudeRaw.order.length - 1]
         : magnitudeRaw.order[0];
+      // D-BP154-029/BISHOP-SEG/S29/seg-withhold FIX. THE GATE. This is the exact shape the
+      // dispatch's own live receipt caught: NamedSet:1 failed, Magnitude:1 ranked the WRONG
+      // survivor set (B/E never eliminated), and F published anyway with `incomplete: true`
+      // recorded but ignored. A verdict derived from a partial elimination set is unsound whatever
+      // letter it lands on -- WITHHELD, never published, when `incomplete` is true, regardless of
+      // how clean Magnitude:1's own ranking looks.
+      if (incomplete) {
+        const result: TerminatorResult = {
+          ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
+          verdictName: null, abstain: true,
+          abstainReason: `WITHHELD: Magnitude:1 would have named ${extremeEntry.letter}) ${OPT[extremeEntry.letter]} as the `
+            + `${magnitudeRaw.targetExtreme} of "${magnitudeRaw.property}", but this run is INCOMPLETE -- ${withheldNote(stepsConsulted)}. `
+            + `A verdict derived from a partial elimination set is unsound whatever letter it lands on -- not published. `
+            + `Steps consulted: ${consultedNote}`,
+          basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
+        };
+        return { result, summary: summaryLine(OPT, result) };
+      }
       const magnitudeClass = classifyComposerStepResult(magnitudeRaw).cls;
       const result: TerminatorResult = {
         ok: true, stepsConsulted, eliminated, survivors, contradiction: null,
         verdict: extremeEntry.letter, verdictName: OPT[extremeEntry.letter], abstain: false, abstainReason: null,
         basisStepClasses: [...basisStepClasses, magnitudeClass],
         magnitudeBasis: { targetExtreme: magnitudeRaw.targetExtreme, property: magnitudeRaw.property, span: extremeEntry.span },
-        frameMatchBuckets, incomplete: anyStepFailed(stepsConsulted),
+        frameMatchBuckets, incomplete,
       };
       return { result, summary: summaryLine(OPT, result) };
     }
-    const consultedNote = (Object.entries(stepsConsulted) as Array<[string, string]>)
-      .map(([id, status]) => `${id}: ${status}`).join(', ');
     const magnitudeNote = magnitudeRaw
       ? magnitudeRaw.ok
         ? !sameLetterSet(magnitudeRaw.frame, survivors)
@@ -620,16 +672,32 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `more than one survivor left (${survivors.join(', ')}) -- no stated distinction separated them further. Steps consulted: ${consultedNote}${magnitudeNote}`,
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete: anyStepFailed(stepsConsulted),
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
 
   const verdict = survivors[0];
+  // D-BP154-029/BISHOP-SEG/S29/seg-withhold FIX. THE SAME GATE as the magnitude-verdict branch
+  // above, applied here too: a unique survivor reached while `incomplete` is true is exactly as
+  // untrustworthy as a magnitude-derived one -- the elimination set that made it unique is partial
+  // by construction (a failed step never eliminated anything, so any option it WOULD have removed
+  // is sitting in `survivors` unexamined). WITHHELD, never published.
+  if (incomplete) {
+    const result: TerminatorResult = {
+      ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
+      verdictName: null, abstain: true,
+      abstainReason: `WITHHELD: a unique survivor (${verdict}) ${OPT[verdict]} was reached, but this run is `
+        + `INCOMPLETE -- ${withheldNote(stepsConsulted)}. A verdict derived from a partial elimination set is `
+        + `unsound whatever letter it lands on -- not published. Steps consulted: ${consultedNote}`,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
+    };
+    return { result, summary: summaryLine(OPT, result) };
+  }
   const result: TerminatorResult = {
     ok: true, stepsConsulted, eliminated, survivors, contradiction: null,
     verdict, verdictName: OPT[verdict], abstain: false, abstainReason: null, basisStepClasses,
-    magnitudeBasis: null, frameMatchBuckets, incomplete: anyStepFailed(stepsConsulted),
+    magnitudeBasis: null, frameMatchBuckets, incomplete,
   };
   return { result, summary: summaryLine(OPT, result) };
 }

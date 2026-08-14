@@ -274,11 +274,28 @@ export async function runNamedSetStep(
   // extraction itself did not fail (a genuine "tried and got zero" is still worth a second,
   // independent source before the step abstains).
   let conversationalError: string | undefined;
+  // D-BP154-029/BISHOP-SEG/S29/seg-mortgagetrap2 FIX, ADDITIVE. Diagnosed live this dispatch: the
+  // MORTGAGE-trap guard below (D-BP154-021/44499f3b) already fires correctly -- it never falsely
+  // credits ok:true -- but its own final message only ever names `via`, which stays pinned to
+  // STAGE 1's stale owned source whenever STAGE 2 is tried and ALSO comes back with zero members
+  // (the very next comment's own "prefer STAGE 2 only when it found something new" rule, by
+  // design, leaves `via` untouched in that case). A reader of "the credited passage (owned:...)
+  // produced zero verified memberships" could not tell STAGE 2 was ever attempted at all -- exactly
+  // indistinguishable from "we only ever checked one stale source", which is what read as the
+  // mortgage trap being back. It is not back; it was never disclosed. These three fields capture
+  // STAGE 2's own outcome (attempted or not, which via, how many it found) so the final message
+  // below can state it explicitly, without changing which result is ultimately credited.
+  let stage2Attempted = false;
+  let stage2Via: string | undefined;
+  let stage2IncludedCount: number | undefined;
   const stage1WasUnproductive = !text || (extraction !== null && extraction.included.length === 0 && !extractionFailedOnStage1Text);
   if (stage1WasUnproductive) {
     const cr = await tryConversationalAuthority(ctx, query, mcOptions);
     if (cr.ok && namesAnyOption(cr.text)) {
       const cExtraction = await extractFrom(cr.text);
+      stage2Attempted = true;
+      stage2Via = cr.via;
+      stage2IncludedCount = cExtraction.included.length;
       // Prefer STAGE 2 only when it actually found something STAGE 1 did not -- STAGE 1's own
       // (possibly empty) result is never discarded in favour of an equally-empty STAGE 2 result;
       // "tried harder, still nothing" stays an honest zero, not silently swapped for a different
@@ -289,6 +306,7 @@ export async function runNamedSetStep(
       }
     } else {
       conversationalError = cr.error ?? 'conversational authority answered but named none of the options';
+      stage2Attempted = true;
     }
   }
 
@@ -325,10 +343,20 @@ export async function runNamedSetStep(
   // "nothing usable was found" -- HARDWIRE-22's own absence-is-omission law applies here exactly as
   // it already does to every per-option inclusion decision above.
   if (extraction.included.length === 0) {
+    // D-BP154-029, ADDITIVE: names whether STAGE 2 was even attempted, and its own outcome, so
+    // "the credited passage is a stale STAGE 1 source" is never confused with "STAGE 2 was never
+    // tried" -- see the fields' own header comment above for the live confusion this closes.
+    const stage2Note = !stage1WasUnproductive
+      ? ' (STAGE 1 alone was productive enough to skip STAGE 2 -- see included/discarded above)'
+      : stage2Attempted
+        ? stage2Via
+          ? ` (STAGE 2 WAS ALSO tried, fresh, via ${stage2Via} -- it too found ${stage2IncludedCount} verified membership(s), so STAGE 1's own passage remains credited)`
+          : ` (STAGE 2 WAS ALSO tried, fresh -- it failed outright: ${conversationalError ?? 'no reason given'})`
+        : ' (STAGE 2 was not tried)';
     const result: NamedSetResult = {
       ok: false, property, query, included: [], discarded: extraction.discarded, notIncluded: all, via,
       error: `no usable answer from any authority -- the credited passage (${via}) produced zero verified `
-        + `memberships (${extraction.discarded} candidate(s) discarded for no verifiable span) -- `
+        + `memberships (${extraction.discarded} candidate(s) discarded for no verifiable span)${stage2Note} -- `
         + `THE NAMED SET is UNAVAILABLE, not "nothing included"`,
     };
     return { result, summary: summaryLine(OPT, result) };
