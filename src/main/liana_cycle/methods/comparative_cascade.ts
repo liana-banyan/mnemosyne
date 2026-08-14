@@ -447,6 +447,36 @@ export async function googleBlocks(
 // a failure of this function at all -- it is a SUCCESSFUL parse whose fields happen to be null/empty,
 // so this function returns the parsed object exactly as before; a caller distinguishes it from every
 // failure above by the simple fact that gemmaExtract() returned non-null.
+
+/** D-BP154-033, module-private, used only by gemmaExtract()'s own fallback path (see that
+ *  function's own comment for the live-measured defect this exists to handle). Scans `text` for
+ *  the first top-level `{`/`[` and returns the substring up to its matching close, tracking string
+ *  literals (and `\`-escapes within them) so a brace/bracket that appears INSIDE a quoted span
+ *  (e.g. inside an extracted `span` field's own text) never miscounts the depth. Returns null when
+ *  no balanced structure is found (an unterminated/never-closed object) -- never a guess, never a
+ *  partial parse. Purely structural/mechanical (HARDWIRE-22): no reading of what the JSON MEANS,
+ *  only where it starts and ends. */
+function extractFirstBalancedJson(text: string): string | null {
+  const start = text.search(/[{[]/);
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) { escaped = false; } else if (ch === '\\') { escaped = true; } else if (ch === '"') { inString = false; }
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null; // never closed -- not a balanced structure, not a guess
+}
 export async function gemmaExtract(
   instruction: string,
   passage: string,
@@ -502,7 +532,27 @@ Use null where the passage does not state it. Never guess.`;
       // returned null, and every kind arrived as null -- indistinguishable from "the passage stated
       // nothing". 512 was chosen when extractions returned short name lists; a span-carrying read is
       // simply longer. 1024 clears the measured 580 with headroom.
-      body: JSON.stringify({ model: MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 1024 } }),
+      //
+      // D-BP154-033 -- num_predict 1024 -> 2048, MEASURED, not guessed, per the coordinator's own
+      // instruction ("measure before you raise... set it from the measurement"). LIVE-MEASURED this
+      // ticket: Magnitude:1's own ranking extraction against a real qid 98 passage (8 options, each
+      // carrying a long duplicated whole-sentence span -- longer than the stated-kind extraction
+      // above, which needed only 580) FAILED live with `truncated: true`. Reproduced outside the app,
+      // same model, same temperature, against the EXACT failing passage and instruction:
+      //     num_predict=1024  respChars=4262  eval_count=1024  done_reason=length  JSON.parse=FAILED
+      //     num_predict=1536  respChars=6157  eval_count=1536  done_reason=length  JSON.parse=FAILED
+      //     num_predict=2048  respChars=7281  eval_count=1862  done_reason=stop    JSON.parse=(see below)
+      // 1862 is the measured need; 2048 clears it with the same proportionate headroom style
+      // D-BP153-034 already used (186 tokens, ~10%). NOTE, reported honestly rather than papered
+      // over: even at 2048 (done_reason: 'stop', genuinely NOT truncated) `JSON.parse(t)` on the
+      // WHOLE response text still threw -- a SEPARATE defect, the model emitting a complete, valid
+      // JSON object then a second, self-correcting one after some prose ("Wait, I see a typo...").
+      // That is fixed separately, in gemmaExtract()'s own parse step, by extractFirstBalancedJson()
+      // (defined just above this function) -- raising this ceiling alone does not fix Magnitude:1's
+      // live failure; both fixes
+      // are required together, and this comment names that plainly rather than claiming this one
+      // number was the whole story.
+      body: JSON.stringify({ model: MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 2048 } }),
       signal: controller.signal,
     }).finally(() => clearTimeout(timeout));
   } catch (err) {
@@ -545,7 +595,29 @@ Use null where the passage does not state it. Never guess.`;
     // all-nulls. Raising the ceiling makes truncation rarer; it does not make it impossible, so the
     // signal is recorded for the caller either way.
     if (rawOut) rawOut.truncated = j.done_reason === 'length';
-    return JSON.parse(t) as Record<string, unknown>;
+    try {
+      return JSON.parse(t) as Record<string, unknown>;
+    } catch (firstParseErr) {
+      // D-BP154-033 -- SELF-CORRECTION ARTIFACT, a SEPARATE failure mode from truncation.
+      // LIVE-MEASURED this ticket (Magnitude:1, qid 98, the full 8-option ranked passage): raising
+      // num_predict past the truncation point (done_reason: 'stop', eval_count well under the
+      // ceiling) still did not fix extraction -- the model emitted a COMPLETE, valid, fenced JSON
+      // object, then unprompted prose ("Wait, I see a typo...") followed by a SECOND fenced JSON
+      // object correcting itself. The leading/trailing fence strip above only ever handles ONE
+      // fenced block; two of them plus prose between them is not valid JSON as a whole string, so
+      // JSON.parse threw even though a complete, real answer is sitting in the first block.
+      // Mechanical fix only (HARDWIRE-22 -- no judgment about which answer is "more right"; the
+      // FIRST complete top-level JSON value is used, by POSITION only, same "first candidate wins"
+      // discipline this estate already applies elsewhere, e.g. corroborateClaim()'s own
+      // first-verified-block rule): scan for the first balanced top-level {...} or [...], respecting
+      // string literals and escapes so a brace/bracket inside a quoted span never miscounts, and
+      // parse only that span. Never invoked when the whole-string parse already succeeded, and it
+      // is not called AT ALL when `t` genuinely is (or should be) a single JSON document -- it only
+      // ever runs after that parse has already thrown.
+      const firstJson = extractFirstBalancedJson(t);
+      if (firstJson === null) throw firstParseErr;
+      return JSON.parse(firstJson) as Record<string, unknown>;
+    }
   } catch (err) {
     // D-BP154-006 -- JSON PARSE FAILURE, the non-truncation kind: `res.json()` itself threw (the
     // body was not JSON at all) or `JSON.parse(t)` threw on the model's own text for a reason OTHER
