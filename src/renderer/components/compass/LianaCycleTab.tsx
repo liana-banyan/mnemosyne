@@ -37,6 +37,9 @@ import type {
 import type { ComposerRegistryEntry, ScriptRunResponse } from '../../../main/liana_cycle/library/script_bridge';
 // D-BP154-010/BISHOP/S10/seg-thepail -- type-only, see evidence_store.ts's own header.
 import type { EvidenceStoreSummary } from '../../../main/liana_cycle/evidence/evidence_store';
+// D-BP154-025/BISHOP-SEG/S25/seg-handproof -- type-only, see composer_reference_panels.ts's own
+// header for the "verbatim from disk, nothing generated" discipline both types carry.
+import type { FounderProofSlice, KnownGoodQuery } from '../../../main/liana_cycle/library/composer_reference_panels';
 // D-BP154-017/BISHOP-SEG/S17/seg-classify -- the shared, renderer-safe classification module (no
 // Node imports, pure functions only). See that file's own header for the ratified mapping and why
 // PROVEN never fires for these three steps today.
@@ -333,6 +336,18 @@ export function LianaCycleTab() {
   // themselves) rides on `composerResult` already and needs no separate state.
   const [evidenceStoreSummary, setEvidenceStoreSummary] = useState<EvidenceStoreSummary | null>(null);
   const [evidenceStoreSummaryState, setEvidenceStoreSummaryState] = useState<'idle' | 'loading' | 'loaded' | 'unavailable'>('idle');
+
+  // D-BP154-025/BISHOP-SEG/S25/seg-handproof -- TWO READ-ONLY REFERENCE PANELS. Founder, verbatim:
+  // "Give me my hand-written proof, in the composer, as well as the THREE QUESTIONS that we know
+  // get the right answer." Same lazy-load-on-open, refreshable-on-demand shape as
+  // evidenceStoreSummary above -- both are pure disk reads on the main-process side
+  // (composer_reference_panels.ts), never derivation logic, and calling either any number of times
+  // cannot change anything on disk or any verdict.
+  const [founderProof, setFounderProof] = useState<{ bp153: FounderProofSlice; founderCascade: FounderProofSlice } | null>(null);
+  const [founderProofState, setFounderProofState] = useState<'idle' | 'loading' | 'loaded' | 'unavailable'>('idle');
+  const [knownGoodQueries, setKnownGoodQueries] = useState<KnownGoodQuery[] | null>(null);
+  const [knownGoodQueriesState, setKnownGoodQueriesState] = useState<'idle' | 'loading' | 'loaded' | 'unavailable'>('idle');
+  const [showWholeFounderCascade, setShowWholeFounderCascade] = useState(false);
 
   // D-BP152-022/BISHOP/seg-laboratory-and-keep -- THE LABORATORY. FD-BP152-07: ephemeral by
   // default, persisted only when the operator explicitly says "keep". Every one of these is
@@ -815,16 +830,64 @@ export function LianaCycleTab() {
     }
   }, []);
 
+  // D-BP154-025/BISHOP-SEG/S25/seg-handproof -- same lazy-load-on-open, refreshable-on-demand
+  // shape as loadEvidenceStoreSummary above. Both main-process reads are strictly read-only
+  // (composer_reference_panels.ts) -- calling either any number of times cannot change what is on
+  // disk or any verdict.
+  const loadFounderProof = useCallback(async () => {
+    if (!window.amplify?.lianaComposerFounderProof) {
+      setFounderProofState('unavailable');
+      return;
+    }
+    setFounderProofState('loading');
+    try {
+      const proof = await window.amplify.lianaComposerFounderProof();
+      setFounderProof(proof);
+      setFounderProofState('loaded');
+    } catch {
+      setFounderProofState('unavailable');
+    }
+  }, []);
+
+  const loadWholeFounderCascade = useCallback(async () => {
+    if (!window.amplify?.lianaComposerFounderCascadeWhole || !founderProof) return;
+    try {
+      const whole = await window.amplify.lianaComposerFounderCascadeWhole();
+      setFounderProof((prev) => (prev ? { ...prev, founderCascade: whole } : prev));
+      setShowWholeFounderCascade(true);
+    } catch {
+      // Leave the excerpt showing -- an on-demand "see whole file" failure is not a reason to lose
+      // what is already displayed.
+    }
+  }, [founderProof]);
+
+  const loadKnownGoodQueries = useCallback(async () => {
+    if (!window.amplify?.lianaComposerKnownGoodQueries) {
+      setKnownGoodQueriesState('unavailable');
+      return;
+    }
+    setKnownGoodQueriesState('loading');
+    try {
+      const queries = await window.amplify.lianaComposerKnownGoodQueries();
+      setKnownGoodQueries(queries);
+      setKnownGoodQueriesState('loaded');
+    } catch {
+      setKnownGoodQueriesState('unavailable');
+    }
+  }, []);
+
   const toggleComposerOpen = useCallback(() => {
     setComposerOpen((wasOpen) => {
       const willOpen = !wasOpen;
       if (willOpen) {
         void loadComposerRegistry();
         void loadEvidenceStoreSummary();
+        void loadFounderProof();
+        void loadKnownGoodQueries();
       }
       return willOpen;
     });
-  }, [loadComposerRegistry, loadEvidenceStoreSummary]);
+  }, [loadComposerRegistry, loadEvidenceStoreSummary, loadFounderProof, loadKnownGoodQueries]);
 
   // Add / remove / move-up / move-down -- "That is the whole interaction" (this ticket's own
   // words). Duplicates are allowed on purpose: the Founder's own ask is "iterations galore", and
@@ -2139,6 +2202,157 @@ export function LianaCycleTab() {
                     </div>
                   </div>
                 )}
+
+                {/* D-BP154-025/BISHOP-SEG/S25/seg-handproof -- PANEL 1: THE FOUNDER'S HAND-WRITTEN
+                    PROOF. Founder, verbatim: "Give me my hand-written proof, in the composer...".
+                    Rendered VERBATIM from his own two files on disk -- never paraphrased,
+                    reconstructed, or summarized here. Every box below cites the file path and the
+                    line range / byte offset of exactly what it is showing, so it can be checked
+                    against the source. */}
+                <div style={{ border: '1px solid #334155', borderRadius: 6, overflow: 'hidden' }}>
+                  <div style={{
+                    padding: '6px 10px', fontSize: 11, fontWeight: 700, color: '#e2e8f0',
+                    background: '#0d1117', fontFamily: 'system-ui, sans-serif',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  }}>
+                    <span>THE FOUNDER&apos;S HAND-WRITTEN PROOF (verbatim from disk)</span>
+                    <button type="button" onClick={() => void loadFounderProof()} style={{ background: 'none', border: 'none', color: '#22d3ee', cursor: 'pointer', fontSize: 11 }}>
+                      refresh
+                    </button>
+                  </div>
+                  <div style={{ padding: 10, background: '#05080d', fontSize: 11, fontFamily: 'monospace', color: '#e2e8f0' }}>
+                    {founderProofState === 'loading' && <div style={{ color: '#475569' }}>Loading…</div>}
+                    {founderProofState === 'unavailable' && <div style={{ color: '#fca5a5' }}>Not available in this build.</div>}
+                    {founderProofState === 'loaded' && founderProof && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {([
+                          { key: 'bp153' as const, title: 'BP153_QID98_DERIVATION_FROM_EVIDENCE.md -- qid 98, derived from owned evidence' },
+                          { key: 'founderCascade' as const, title: 'FOUNDER_CASCADE_WORKED_BY_HAND_VERBATIM_RECOVERED_BP144.md -- his hand-solved walkthrough' },
+                        ]).map(({ key, title }) => {
+                          const slice = founderProof[key];
+                          return (
+                            <div key={key}>
+                              <div style={{ color: '#94a3b8', fontFamily: 'system-ui, sans-serif', marginBottom: 2 }}>{title}</div>
+                              {!slice.ok && (
+                                <div style={{ color: '#fca5a5' }}>{slice.error}</div>
+                              )}
+                              {slice.ok && (
+                                <>
+                                  <div style={{ color: '#64748b', fontFamily: 'system-ui, sans-serif', fontSize: 10, marginBottom: 4 }}>
+                                    {slice.path}
+                                    {slice.lineRange && ` -- lines ${slice.lineRange[0]}-${slice.lineRange[1]}`}
+                                    {slice.byteOffsetRange && ` (bytes ${slice.byteOffsetRange[0]}-${slice.byteOffsetRange[1]} of ${slice.totalBytes})`}
+                                    {slice.error && <span style={{ color: '#facc15' }}> -- {slice.error}</span>}
+                                    {key === 'founderCascade' && !showWholeFounderCascade && (
+                                      <>
+                                        {'  '}
+                                        <button type="button" onClick={() => void loadWholeFounderCascade()} style={{ background: 'none', border: 'none', color: '#22d3ee', cursor: 'pointer', fontSize: 10 }}>
+                                          see whole file ({slice.totalBytes} bytes)
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                  <pre style={{
+                                    margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                    maxHeight: 260, minHeight: 60, overflowY: 'auto', resize: 'vertical',
+                                    border: '1px solid #1e2a38', borderRadius: 4, padding: 6, background: '#0d1117',
+                                  }}>
+                                    {slice.text}
+                                  </pre>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {founderProof.founderCascade.ok
+                          && founderProof.founderCascade.text
+                          && founderProof.founderCascade.text.includes('Western Europe')
+                          && (
+                            <div style={{ color: '#facc15', fontFamily: 'system-ui, sans-serif', fontSize: 10 }}>
+                              DIVERGENCE, disclosed plainly: his hand-worked excerpt above solves the SAME question
+                              stem on a DIFFERENT random option draw (South America / Western Europe / South
+                              Asia / East Asia / Southeast Asia / Northeastern United States / Nile Valley / Java /
+                              Ganges Valley) than this run&apos;s own qid 98 draw. Same method, not the same nine
+                              options -- do not read his lettered answer as this run&apos;s letter.
+                            </div>
+                          )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* D-BP154-025/BISHOP-SEG/S25/seg-handproof -- PANEL 2: THE THREE QUESTIONS THAT
+                    ARE KNOWN TO WORK. Founder, verbatim: "...as well as the THREE QUESTIONS that
+                    we know get the right answer." Query/result text below is read VERBATIM out of
+                    the receipts on disk, never retyped from any dispatch or this file's own
+                    source. Where the CURRENT run's Discriminator:1 step asked something different,
+                    that divergence is shown -- exact substring comparison only, display-only,
+                    changes no verdict. */}
+                <div style={{ border: '1px solid #334155', borderRadius: 6, overflow: 'hidden' }}>
+                  <div style={{
+                    padding: '6px 10px', fontSize: 11, fontWeight: 700, color: '#e2e8f0',
+                    background: '#0d1117', fontFamily: 'system-ui, sans-serif',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  }}>
+                    <span>THE THREE QUESTIONS KNOWN TO WORK (verbatim from receipts on disk)</span>
+                    <button type="button" onClick={() => void loadKnownGoodQueries()} style={{ background: 'none', border: 'none', color: '#22d3ee', cursor: 'pointer', fontSize: 11 }}>
+                      refresh
+                    </button>
+                  </div>
+                  <div style={{ padding: 10, background: '#05080d', fontSize: 11, fontFamily: 'monospace', color: '#e2e8f0' }}>
+                    {knownGoodQueriesState === 'loading' && <div style={{ color: '#475569' }}>Loading…</div>}
+                    {knownGoodQueriesState === 'unavailable' && <div style={{ color: '#fca5a5' }}>Not available in this build.</div>}
+                    {knownGoodQueriesState === 'loaded' && knownGoodQueries && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {knownGoodQueries.map((kg, i) => {
+                          // Divergence against the CURRENT run's own Discriminator:1 step, when one
+                          // ran -- exact substring containment only (the same structural discipline
+                          // appearsIn() already applies elsewhere in this codebase), never a
+                          // similarity score, never a model judging "close enough".
+                          const currentQuery = (() => {
+                            if (!composerResult || composerResult.mode !== 'stack') return undefined;
+                            const idx = composerResult.result.steps.findIndex((s) => s.id.startsWith('Discriminator'));
+                            if (idx < 0) return undefined;
+                            const raw = composerResult.result.results[idx]?.raw as { query?: unknown } | undefined;
+                            return typeof raw?.query === 'string' ? raw.query : undefined;
+                          })();
+                          const appliesToThisRow = kg.label.startsWith('FRAME') || kg.label.startsWith('DISCRIMINATOR');
+                          const divergent = appliesToThisRow && kg.ok && kg.queryText && currentQuery
+                            ? !currentQuery.includes(kg.queryText.replace(/^\s*FRAME: query SENT to conversational authority \(untruncated, verbatim\)="/, '').replace(/"$/, ''))
+                            : null;
+                          return (
+                            <div key={i} style={{ borderTop: i > 0 ? '1px solid #1e2a38' : undefined, paddingTop: i > 0 ? 8 : 0 }}>
+                              <div style={{ color: '#94a3b8', fontFamily: 'system-ui, sans-serif', marginBottom: 2 }}>{kg.label}</div>
+                              {!kg.ok && <div style={{ color: '#fca5a5' }}>{kg.error}</div>}
+                              {kg.ok && (
+                                <>
+                                  <div style={{ color: '#64748b', fontFamily: 'system-ui, sans-serif', fontSize: 10, marginBottom: 4 }}>
+                                    receipt: {kg.receiptPath}{kg.ts ? ` @ ${kg.ts}` : ''}
+                                  </div>
+                                  <div style={{ marginBottom: 4 }}><span style={{ color: '#64748b' }}>query (verbatim): </span>{kg.queryText}</div>
+                                  <div><span style={{ color: '#64748b' }}>result (verbatim): </span>{kg.resultText}</div>
+                                  {appliesToThisRow && (
+                                    <div style={{ marginTop: 4, fontFamily: 'system-ui, sans-serif', fontSize: 10 }}>
+                                      {currentQuery === undefined && (
+                                        <span style={{ color: '#64748b' }}>No Discriminator:1 step in the current run to compare against.</span>
+                                      )}
+                                      {currentQuery !== undefined && divergent === false && (
+                                        <span style={{ color: '#34d399' }}>MATCHES the current run&apos;s own Discriminator:1 query (contains this known-good text).</span>
+                                      )}
+                                      {currentQuery !== undefined && divergent === true && (
+                                        <span style={{ color: '#facc15' }}>DIVERGES from the current run&apos;s own Discriminator:1 query -- the known-good text above is not contained in it.</span>
+                                      )}
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 {/* D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: "the 440
                     records / ~291 KB / 23 acquisitions we already own are visible in it, not

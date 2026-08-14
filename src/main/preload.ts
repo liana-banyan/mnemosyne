@@ -802,6 +802,19 @@ contextBridge.exposeInMainWorld('amplify', {
   lianaEvidenceStoreSummary: (): Promise<import('./liana_cycle/evidence/evidence_store').EvidenceStoreSummary> =>
     ipcRenderer.invoke('liana-evidence-store-summary'),
 
+  // D-BP154-025/BISHOP-SEG/S25/seg-handproof -- THE FOUNDER'S HAND-WRITTEN PROOF and THE THREE
+  // KNOWN-GOOD QUESTIONS, both strictly read-only (composer_reference_panels.ts's own header).
+  lianaComposerFounderProof: (): Promise<{
+    bp153: import('./liana_cycle/library/composer_reference_panels').FounderProofSlice;
+    founderCascade: import('./liana_cycle/library/composer_reference_panels').FounderProofSlice;
+  }> => ipcRenderer.invoke('liana-composer-founder-proof'),
+
+  lianaComposerKnownGoodQueries: (): Promise<import('./liana_cycle/library/composer_reference_panels').KnownGoodQuery[]> =>
+    ipcRenderer.invoke('liana-composer-known-good-queries'),
+
+  lianaComposerFounderCascadeWhole: (): Promise<import('./liana_cycle/library/composer_reference_panels').FounderProofSlice> =>
+    ipcRenderer.invoke('liana-composer-founder-cascade-whole'),
+
   // D-BP152-039 REMOVAL -- `lianaTerminalGateEnvState` used to live here, bridging
   // 'liana-terminal-gate-env-state' so a renderer toggle could show the Survey Splice env var's
   // effective state before a run. That toggle was already removed by D-BP152-012 (zero renderer
@@ -2608,6 +2621,15 @@ declare global {
       // above (this file's exposeInMainWorld object) for the full explanation this ambient block
       // mirrors.
       lianaEvidenceStoreSummary?: () => Promise<import('./liana_cycle/evidence/evidence_store').EvidenceStoreSummary>;
+      // D-BP154-025/BISHOP-SEG/S25/seg-handproof -- see the real ipcRenderer.invoke-typed
+      // declarations above (this file's exposeInMainWorld object) for the full explanation this
+      // ambient block mirrors.
+      lianaComposerFounderProof?: () => Promise<{
+        bp153: import('./liana_cycle/library/composer_reference_panels').FounderProofSlice;
+        founderCascade: import('./liana_cycle/library/composer_reference_panels').FounderProofSlice;
+      }>;
+      lianaComposerKnownGoodQueries?: () => Promise<import('./liana_cycle/library/composer_reference_panels').KnownGoodQuery[]>;
+      lianaComposerFounderCascadeWhole?: () => Promise<import('./liana_cycle/library/composer_reference_panels').FounderProofSlice>;
       onLianaTerminalEvent?: (
         cb: (evt: import('../shared/liana_cycle/liana_terminal_types').LianaTerminalEvent) => void,
       ) => () => void;

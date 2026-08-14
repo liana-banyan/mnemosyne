@@ -309,6 +309,11 @@ import { runLianaCycleQuestion } from './liana_cycle/liana_terminal_engine';
 // the pre-existing 'liana-terminal-run' handler below (same runLianaCycleQuestion call, by
 // reference, untouched).
 import { listComposerRegistry, runScratchComposer } from './liana_cycle/library/script_bridge';
+// D-BP154-025/BISHOP-SEG/S25/seg-handproof -- TWO READ-ONLY REFERENCE PANELS. Founder, verbatim:
+// "Give me my hand-written proof, in the composer, as well as the THREE QUESTIONS that we know get
+// the right answer." Both functions are pure disk reads (or MISSING), no derivation logic; see
+// composer_reference_panels.ts's own header for the full "verbatim from disk" discipline.
+import { readFounderProof, readFounderCascadeWhole, readKnownGoodQueries } from './liana_cycle/library/composer_reference_panels';
 // D-BP150-001 (Call an Audible) -- the operator-facing side of the pause. AudibleChannel is
 // implemented over IPC in the 'liana-terminal-run' handler below; audible.ts itself has no
 // Electron dependency, which is why the interface lives there and the wiring lives here.
@@ -4389,6 +4394,19 @@ function registerIPCHandlers(): void {
   // qid at once (listAcquisitions()/loadAcquisition() are both scoped to one qid already, and
   // reusing either here would silently hide every acquisition for every OTHER question).
   safeHandle('liana-evidence-store-summary', async () => summarizeEvidenceStore());
+
+  // D-BP154-025/BISHOP-SEG/S25/seg-handproof -- THE FOUNDER'S HAND-WRITTEN PROOF, read verbatim
+  // from his own two files on disk. STRICTLY READ-ONLY -- readFounderProof() opens nothing for
+  // writing; see composer_reference_panels.ts's own header.
+  safeHandle('liana-composer-founder-proof', async () => readFounderProof());
+
+  // D-BP154-025/BISHOP-SEG/S25/seg-handproof -- "a way to see the whole file" (Founder, this
+  // ticket). On-demand only (the panel's default view is the excerpt above).
+  safeHandle('liana-composer-founder-cascade-whole', async () => readFounderCascadeWhole());
+
+  // D-BP154-025/BISHOP-SEG/S25/seg-handproof -- THE THREE KNOWN-GOOD QUESTIONS, read verbatim from
+  // the receipts on disk that already carry them. STRICTLY READ-ONLY, same discipline as above.
+  safeHandle('liana-composer-known-good-queries', async () => readKnownGoodQueries());
 
   // D-BP150-001/BISHOP/S01/seg-audible -- the operator answering one pause. Returns a plain
   // ok/reason rather than throwing on an unknown pauseId: a response for a pause that has
