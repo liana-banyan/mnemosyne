@@ -82,6 +82,15 @@ import type { HumanNuanceResult } from './human_nuance_step';
 // satisfy the stated purpose." Consulted here so a structurally-insufficient purpose withholds a
 // verdict BEFORE this reducer's own elimination/contradiction logic runs at all.
 import type { PurposeResult } from './purpose_step';
+// D-BP154-041/BISHOP-SEG/S41/seg-purpose, PART 3/3, ADDITIVE, VALUE IMPORT. isSkippedMarker() is
+// the ONE place a SKIPPED-AS-MOOT raw result (script_bridge.ts's own computeStepSkip()) is told
+// apart from a real 'failed' result -- qualifier 1 of the skip gate's own five: "SKIPPED-AS-MOOT
+// is not FAILED... must NOT mark the run incomplete." No runtime circular dependency: step_skip.ts
+// imports isMembershipPartitioned (this file, above) as a VALUE, but this file never imports
+// anything from script_bridge.ts except TYPES (already erased at compile time, see
+// ComposerStepOutcome's own import below) -- the same non-circular shape magnitude_step.ts's/
+// human_nuance_step.ts's own imports FROM this file already establish.
+import { isSkippedMarker } from './step_skip';
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 
@@ -175,8 +184,10 @@ export interface TerminatorResult {
    *  and abstained. D-BP154-022, ADDITIVE: 'Magnitude:1' added alongside the original three.
    *  D-BP154-033, ADDITIVE: 'HumanNuance:1' added as a fifth. */
   // D-BP154-041 PART 2/3, ADDITIVE: 'Purpose:1' added as a sixth entry -- see this file's own new
-  // import above.
-  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1', 'not run' | 'ok' | 'failed'>;
+  // import above. PART 3/3, ADDITIVE: 'skipped-moot' added as a fourth status -- Purpose:1 itself
+  // is never skipped (nothing precedes it), so it never carries this status; the five query-issuing
+  // feeder steps can.
+  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1', 'not run' | 'ok' | 'failed' | 'skipped-moot'>;
   /** D-BP154-041 PART 2/3, FD-BP154-17, ADDITIVE. Non-null ONLY when Purpose:1 ran (ok:true) and
    *  found the evidence class structurally incapable of satisfying its own stated purpose -- a
    *  DISTINCT outcome from a normal ABSTAIN (multiple/zero survivors after elimination) and from a
@@ -265,6 +276,23 @@ function sameLetterSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const bSet = new Set(b);
   return a.every((L) => bSet.has(L));
+}
+
+/** D-BP154-041 PART 3/3, EXTRACTED (not duplicated) from this file's own FD-BP154-14 branch below,
+ *  so script_bridge.ts's own upstream skip gate (step_skip.ts) can check the SAME condition BEFORE
+ *  Magnitude:1 ever runs, not only after it already spent a live query -- see step_skip.ts's own
+ *  header for the full "upstream skip gate" reasoning this closes the loop on. Pure, synchronous;
+ *  reads only NamedSet:1's/Discriminator:1's own already-computed `included`/`propertyMembers`
+ *  arrays, and only when `ok === true` -- qualifiers 2/3 of the skip gate's own five (never resolve,
+ *  and never skip, on the basis of a step that itself FAILED). */
+export function isMembershipPartitioned(
+  namedSet: NamedSetResult | null,
+  discriminator: DiscriminatorResult | null,
+): boolean {
+  return Boolean(
+    (namedSet?.ok && namedSet.included.length > 0)
+    || (discriminator?.ok && discriminator.propertyMembers.length > 0),
+  );
 }
 
 function summaryLine(OPT: Record<string, string>, r: TerminatorResult): string {
@@ -657,12 +685,25 @@ export async function runTerminatorStep(
   // D-BP154-041 PART 2/3, ADDITIVE.
   const purposeRaw = findRaw('Purpose:1') as PurposeResult | null;
 
+  // D-BP154-041 PART 3/3, NEW. THE ONE PLACE a step's raw result (real, or a SKIPPED-AS-MOOT
+  // marker from script_bridge.ts's own computeStepSkip()) becomes its stepsConsulted status --
+  // qualifier 1 of the skip gate's own five: skipped is checked BEFORE 'ok'/'failed', so it can
+  // never be folded into 'failed' and can never mark a run incomplete (anyStepFailed(), below,
+  // only ever counts the literal string 'failed').
+  const stepStatus = (raw: { ok?: boolean } | null): 'not run' | 'ok' | 'failed' | 'skipped-moot' => {
+    if (!raw) return 'not run';
+    if (isSkippedMarker(raw)) return 'skipped-moot';
+    return raw.ok ? 'ok' : 'failed';
+  };
+
   const stepsConsulted: TerminatorResult['stepsConsulted'] = {
-    'Softballs:1': softballsRaw ? (softballsRaw.ok ? 'ok' : 'failed') : 'not run',
-    'NamedSet:1': namedSetRaw ? (namedSetRaw.ok ? 'ok' : 'failed') : 'not run',
-    'Discriminator:1': discriminatorRaw ? (discriminatorRaw.ok ? 'ok' : 'failed') : 'not run',
-    'Magnitude:1': magnitudeRaw ? (magnitudeRaw.ok ? 'ok' : 'failed') : 'not run',
-    'HumanNuance:1': humanNuanceRaw ? (humanNuanceRaw.ok ? 'ok' : 'failed') : 'not run',
+    'Softballs:1': stepStatus(softballsRaw),
+    'NamedSet:1': stepStatus(namedSetRaw),
+    'Discriminator:1': stepStatus(discriminatorRaw),
+    'Magnitude:1': stepStatus(magnitudeRaw),
+    'HumanNuance:1': stepStatus(humanNuanceRaw),
+    // Purpose:1 is never a skip candidate (nothing precedes it) -- plain ok/failed/not-run, same
+    // as PART 2/3 built it.
     'Purpose:1': purposeRaw ? (purposeRaw.ok ? 'ok' : 'failed') : 'not run',
   };
   // D-BP154-041 PART 2/3, FD-BP154-17, NEW. "Before an answer is attempted, establish that the
@@ -766,10 +807,7 @@ export async function runTerminatorStep(
     // question, where NO prior step ever found a stated member of the property to partition on --
     // this gate is silent (membershipPartitioned stays false) and the pre-existing magnitude-
     // consultation logic runs exactly as before.
-    const membershipPartitioned = Boolean(
-      (namedSetRaw?.ok && namedSetRaw.included.length > 0)
-      || (discriminatorRaw?.ok && discriminatorRaw.propertyMembers.length > 0),
-    );
+    const membershipPartitioned = isMembershipPartitioned(namedSetRaw, discriminatorRaw);
     if (membershipPartitioned) {
       const statedMembers = [
         ...(namedSetRaw?.ok ? namedSetRaw.included.map((e) => `${e.letter}) ${e.name} [NamedSet:1]`) : []),

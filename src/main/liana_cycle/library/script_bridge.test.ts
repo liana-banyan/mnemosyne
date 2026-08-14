@@ -268,3 +268,45 @@ describe('D-BP152-049 STAGE 3/4: "State the Question" as a selectable NameNumber
     }));
   });
 });
+
+describe('D-BP154-041 PART 3/3: THE UPSTREAM SKIP GATE, end to end through runScratchComposer()', () => {
+  // qid 98's own real nine-option shape (BISHOP_DROPZONE\BP154_QID98_RESOLVED_THE_AUGMENTATION_
+  // DEFECT.md), typed as free text with inline lettered options so this test needs no bundled-
+  // corpus file read (Electron's `app` module) -- Purpose:1 itself needs no network call, so its
+  // sufficiency gate can fire from this input alone.
+  const QID98_FREE_TEXT = "Which of the following world regions is NOT considered one of the world's "
+    + 'most densely populated regions? A) South America B) South Asia C) North Africa '
+    + 'D) Northeast United States E) Europe F) Central Asia G) Arctic Circle H) Amazon Rainforest '
+    + 'I) Sahara Desert';
+
+  test('Purpose:1 INSUFFICIENT skips every query-issuing step downstream -- askGoogle/askConversationalAuthority are NEVER called', async () => {
+    const emit = vi.fn();
+    const askGoogle = vi.fn(async () => { throw new Error('askGoogle must never be called -- every downstream step should have been skip-gated'); });
+    const askConversationalAuthority = vi.fn(async () => { throw new Error('askConversationalAuthority must never be called -- every downstream step should have been skip-gated'); });
+    const response = await runScratchComposer(
+      QID98_FREE_TEXT,
+      ['Purpose:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Magnitude:1', 'HumanNuance:1', 'Terminator:1'],
+      askGoogle,
+      emit,
+      askConversationalAuthority,
+    );
+
+    expect(response.mode).toBe('stack');
+    if (response.mode !== 'stack') throw new Error('unreachable');
+    expect(response.result.ok).toBe(true);
+    expect(askGoogle).not.toHaveBeenCalled();
+    expect(askConversationalAuthority).not.toHaveBeenCalled();
+
+    const byId = new Map(response.result.results.map((r) => [r.id, r.raw as { skipped?: boolean }]));
+    for (const id of ['Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Magnitude:1', 'HumanNuance:1']) {
+      expect(byId.get(id)?.skipped, `${id} should be a SKIPPED-AS-MOOT marker`).toBe(true);
+    }
+    const terminatorRaw = byId.get('Terminator:1') as unknown as {
+      insufficientEvidence: unknown; abstain: boolean; verdict: string | null; incomplete: boolean;
+    };
+    expect(terminatorRaw.insufficientEvidence).not.toBeNull();
+    expect(terminatorRaw.abstain).toBe(true);
+    expect(terminatorRaw.verdict).toBeNull();
+    expect(terminatorRaw.incomplete).toBe(false);
+  });
+});
