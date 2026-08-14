@@ -74,6 +74,27 @@ describe('verifyIncludedEntries -- extraction only, verified span or discarded (
     }
   });
 
+  // D-BP154-033 REGRESSION TEST. LIVE-MEASURED this ticket: Gemini's own real answer for qid 98
+  // ("B South Asia is explicitly the world's most densely populated region...") was correctly
+  // extracted with a correct, verbatim span, but the local model echoed the option list's own
+  // "B) " letter-prefix formatting back into `name` ("B) South Asia" instead of "South Asia") --
+  // toLetters()'s exact-match discipline then refused it, and a real, correct extraction was lost
+  // as "names no known option". Fixed by stripListLetterPrefix() (same fix softballs_step.ts's
+  // own verifyExcludedEntries() already carries, D-BP154-015) -- this test locks the fix in.
+  test('D-BP154-033: a name carrying the list\'s own "L) " letter prefix is still matched, not lost', () => {
+    const raw = [{ name: 'B) South Asia', span: 'Only B (South Asia), D (Northeast United States), and E (Europe) are recognized in human geography as major global population clusters.' }];
+    const { included, discarded } = verifyIncludedEntries(raw, passage, OPT);
+    expect(included).toHaveLength(1);
+    expect(included[0].letter).toBe('B');
+    expect(discarded).toBe(0);
+  });
+
+  test('a name with NO letter prefix is unaffected -- the strip is a fallback, never the first attempt', () => {
+    const raw = [{ name: 'South Asia', span: 'Only B (South Asia), D (Northeast United States), and E (Europe) are recognized in human geography as major global population clusters.' }];
+    const { included } = verifyIncludedEntries(raw, passage, OPT);
+    expect(included[0].letter).toBe('B');
+  });
+
   test('a span not verbatim in the passage is discarded and counted, never silently kept', () => {
     const raw = [{ name: 'South Asia', span: 'South Asia is definitely one of them, everyone agrees.' }];
     const { included, discarded } = verifyIncludedEntries(raw, passage, OPT);

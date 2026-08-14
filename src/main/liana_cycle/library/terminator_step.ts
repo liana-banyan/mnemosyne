@@ -69,6 +69,13 @@ import type { DiscriminatorResult } from './discriminator_step';
 // runtime circular dependency; magnitude_step.ts's own VALUE import of
 // deriveTerminatorEliminations from THIS file is the only runtime edge between the two files).
 import type { MagnitudeResult } from './magnitude_step';
+// D-BP154-033/BISHOP-SEG/S30-continuation/seg-wire-humannuance, ADDITIVE, TYPE-ONLY (erased at
+// compile time -- same non-circular shape as MagnitudeResult's own import just above:
+// human_nuance_step.ts's own runtime import of deriveTerminatorEliminations from THIS file is the
+// only runtime edge between the two files). Closes the gap flagged in D-BP154-030's own commit
+// message: HumanNuance:1 was built and registered but never consumed by this file, so it could
+// never change a verdict -- BUILT, not ACTIVE, per FD-BP154-08. This wiring is what makes it ACTIVE.
+import type { HumanNuanceResult } from './human_nuance_step';
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 
@@ -143,8 +150,9 @@ export function discriminatorKindMatchesCategory(optionKind: string, categoryKin
 export interface TerminatorEliminationEntry {
   letter: string;
   name: string;
-  /** Which Composer step's stated fact eliminated this option. */
-  sourceStep: 'Softballs:1' | 'NamedSet:1' | 'Discriminator:1';
+  /** Which Composer step's stated fact eliminated this option. D-BP154-033, ADDITIVE:
+   *  'HumanNuance:1' added as a fourth elimination source. */
+  sourceStep: 'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'HumanNuance:1';
   reason: string;
   span: string;
 }
@@ -158,8 +166,9 @@ export interface TerminatorResult {
   ok: boolean;
   /** Which of the feeder steps were actually found (already run, earlier in this same stack) --
    *  a step absent from the stack is reported here as 'not run', distinct from a step that ran
-   *  and abstained. D-BP154-022, ADDITIVE: 'Magnitude:1' added alongside the original three. */
-  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1', 'not run' | 'ok' | 'failed'>;
+   *  and abstained. D-BP154-022, ADDITIVE: 'Magnitude:1' added alongside the original three.
+   *  D-BP154-033, ADDITIVE: 'HumanNuance:1' added as a fifth. */
+  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1', 'not run' | 'ok' | 'failed'>;
   eliminated: TerminatorEliminationEntry[];
   survivors: string[];
   contradiction: TerminatorContradiction | null;
@@ -220,6 +229,8 @@ const STEP_RESPONSIBILITY: Record<string, string> = {
   'NamedSet:1': 'eliminating options the source states ARE the superlative property',
   'Discriminator:1': 'eliminating options the source states ARE the superlative property, or explicitly NOT the category in their own right',
   'Magnitude:1': 'ranking the survivors by magnitude to select the extreme',
+  // D-BP154-033, ADDITIVE.
+  'HumanNuance:1': 'eliminating options a source states are excluded from the origin\'s own (pre-augmentation) frame, with a stated reason',
 };
 
 /** D-BP154-029, NEW. Names every FAILED step and what it was responsible for -- "Withheld:
@@ -278,13 +289,18 @@ function summaryLine(OPT: Record<string, string>, r: TerminatorResult): string {
   return `TERMINATOR -- VERDICT ${r.verdict}) ${r.verdictName}  ||  ELIMINATED: ${elimText}${magnitudeNote}${bucketsNote}${completenessNote}`;
 }
 
-/** THE ONE PLACE the three feeder steps' results become eliminations. Pure, synchronous, no I/O --
- *  unit-testable without a live Ollama/browser (unlike the three feeder steps themselves). */
+/** THE ONE PLACE the feeder steps' results become eliminations. Pure, synchronous, no I/O --
+ *  unit-testable without a live Ollama/browser (unlike the feeder steps themselves). D-BP154-033,
+ *  ADDITIVE: `humanNuance` is a fifth, OPTIONAL parameter (defaults to `undefined` when a caller
+ *  does not pass one) -- every pre-existing 3/4-arg call site (this file's own tests,
+ *  magnitude_step.ts's runMagnitudeStep()) keeps compiling and behaving byte-identically; only a
+ *  caller that explicitly passes a HumanNuanceResult gets the new elimination source. */
 export function deriveTerminatorEliminations(
   OPT: Record<string, string>,
   softballs: SoftballsResult | null,
   namedSet: NamedSetResult | null,
   discriminator: DiscriminatorResult | null,
+  humanNuance?: HumanNuanceResult | null,
 ): { eliminated: TerminatorEliminationEntry[]; contradiction: TerminatorContradiction | null } {
   const eliminated: TerminatorEliminationEntry[] = [];
   const excludedBySoftballs = new Map<string, { name: string; span: string }>();
@@ -304,6 +320,23 @@ export function deriveTerminatorEliminations(
       eliminated.push({
         letter: e.letter, name: e.name, sourceStep: 'NamedSet:1',
         reason: `source states this IS the superlative property (a member, not the odd one out)`, span: e.span,
+      });
+    }
+  }
+  // D-BP154-033/BISHOP-SEG/S30-continuation/seg-wire-humannuance, ADDITIVE. HumanNuance:1's own
+  // `excluded` array (human_nuance_step.ts) is an AFFIRMATIVE denial of the SAME shape Softballs'
+  // own `excluded` already is: a source explicitly stated a REASON this option does not belong to
+  // the origin's own (pre-augmentation) frame -- e.g. "sparsely settled", the Founder's own worked
+  // example (FD-BP154-07a). Symmetric across every option (FD-BP153-06); no letter is favored, and
+  // this reads only HumanNuanceResult.excluded -- never `frame`/`nonParticipants` (a non-participant
+  // with NO stated reason is UNRESOLVED, per that file's own law, and is never eliminated here).
+  const excludedByHumanNuance = new Map<string, { name: string; reason: string; span: string }>();
+  if (humanNuance?.ok) {
+    for (const e of humanNuance.excluded) {
+      excludedByHumanNuance.set(e.letter, { name: e.name, reason: e.reason, span: e.span });
+      eliminated.push({
+        letter: e.letter, name: e.name, sourceStep: 'HumanNuance:1',
+        reason: `source states this is excluded from the origin's own frame (${e.reason})`, span: e.span,
       });
     }
   }
@@ -453,6 +486,43 @@ export function deriveTerminatorEliminations(
       break;
     }
   }
+  if (contradiction) return { eliminated, contradiction };
+  // D-BP154-033, ADDITIVE: the SAME three contradiction checks Softballs'/the subregion source's
+  // own loops above already run, applied to HumanNuance:1's own affirmative denial -- a
+  // frame-excluded fact cannot coexist with a stated superlative-property membership or a stated
+  // enumeration membership for the SAME option without the mechanisms disagreeing.
+  for (const [letter, humanNuanceFact] of excludedByHumanNuance) {
+    const namedSetFact = includedByNamedSet.get(letter);
+    if (namedSetFact) {
+      contradiction = {
+        letter,
+        reason: `HUMAN NUANCE states "${OPT[letter] ?? letter}" is excluded from the origin's own frame `
+          + `("${humanNuanceFact.span}") while NAMED SET simultaneously states it IS the superlative `
+          + `property ("${namedSetFact.span}") -- self-contradictory, not published`,
+      };
+      break;
+    }
+    const discriminatorPropertyFact = propertyMembersByDiscriminator.get(letter);
+    if (discriminatorPropertyFact) {
+      contradiction = {
+        letter,
+        reason: `HUMAN NUANCE states "${OPT[letter] ?? letter}" is excluded from the origin's own frame `
+          + `("${humanNuanceFact.span}") while DISCRIMINATOR simultaneously states it IS the superlative `
+          + `property ("${discriminatorPropertyFact.span}") -- self-contradictory, not published`,
+      };
+      break;
+    }
+    const discriminatorEnumerationFact = enumeratedByDiscriminator.get(letter);
+    if (discriminatorEnumerationFact) {
+      contradiction = {
+        letter,
+        reason: `HUMAN NUANCE states "${OPT[letter] ?? letter}" is excluded from the origin's own frame `
+          + `("${humanNuanceFact.span}") while DISCRIMINATOR's own enumeration simultaneously names it `
+          + `as a member ("${discriminatorEnumerationFact.span}") -- self-contradictory, not published`,
+      };
+      break;
+    }
+  }
   return { eliminated, contradiction };
 }
 
@@ -492,6 +562,9 @@ export function computeFrameMatchBuckets(
   OPT: Record<string, string>,
   softballs: SoftballsResult | null,
   discriminator: DiscriminatorResult | null,
+  // D-BP154-033, ADDITIVE/OPTIONAL -- undefined on every pre-existing 3-arg call site (this file's
+  // own test suite), so every existing caller keeps compiling and behaving identically.
+  humanNuance?: HumanNuanceResult | null,
 ): TerminatorFrameMatchBuckets {
   const affirmedNonMember = new Set<string>();
   if (softballs?.ok) {
@@ -503,6 +576,11 @@ export function computeFrameMatchBuckets(
   // the category?"), just via two independently-asked questions.
   if (discriminator?.ok) {
     for (const e of discriminator.subregionNonMembers) affirmedNonMember.add(e.letter);
+  }
+  // D-BP154-033, ADDITIVE: a THIRD affirmative-denial source -- HumanNuance:1's own `excluded`,
+  // same bucket, same reasoning as the two above.
+  if (humanNuance?.ok) {
+    for (const e of humanNuance.excluded) affirmedNonMember.add(e.letter);
   }
   const affirmedMember = new Set<string>();
   if (discriminator?.ok && discriminator.categoryKind) {
@@ -533,6 +611,7 @@ export async function runTerminatorStep(
   const OPT = input.options;
   const emptyStepsConsulted: TerminatorResult['stepsConsulted'] = {
     'Softballs:1': 'not run', 'NamedSet:1': 'not run', 'Discriminator:1': 'not run', 'Magnitude:1': 'not run',
+    'HumanNuance:1': 'not run',
   };
   if (!OPT || Object.keys(OPT).length === 0) {
     const result: TerminatorResult = {
@@ -551,16 +630,21 @@ export async function runTerminatorStep(
   const namedSetRaw = findRaw('NamedSet:1') as NamedSetResult | null;
   const discriminatorRaw = findRaw('Discriminator:1') as DiscriminatorResult | null;
   const magnitudeRaw = findRaw('Magnitude:1') as MagnitudeResult | null;
+  // D-BP154-033/BISHOP-SEG/S30-continuation/seg-wire-humannuance, ADDITIVE.
+  const humanNuanceRaw = findRaw('HumanNuance:1') as HumanNuanceResult | null;
 
   const stepsConsulted: TerminatorResult['stepsConsulted'] = {
     'Softballs:1': softballsRaw ? (softballsRaw.ok ? 'ok' : 'failed') : 'not run',
     'NamedSet:1': namedSetRaw ? (namedSetRaw.ok ? 'ok' : 'failed') : 'not run',
     'Discriminator:1': discriminatorRaw ? (discriminatorRaw.ok ? 'ok' : 'failed') : 'not run',
     'Magnitude:1': magnitudeRaw ? (magnitudeRaw.ok ? 'ok' : 'failed') : 'not run',
+    'HumanNuance:1': humanNuanceRaw ? (humanNuanceRaw.ok ? 'ok' : 'failed') : 'not run',
   };
   // D-BP154-029/BISHOP-SEG/S29/seg-withhold FIX. Computed ONCE, used everywhere below --
   // deriveTerminatorEliminations() itself, contradiction/zero-survivor ABSTAINs, and (new this
-  // ticket) the gate that keeps a VERDICT from ever publishing while `incomplete` is true.
+  // ticket) the gate that keeps a VERDICT from ever publishing while `incomplete` is true. This
+  // generalizes automatically to 'HumanNuance:1' above -- anyStepFailed() reads whatever keys
+  // `stepsConsulted` carries, never a hardcoded list of them.
   const incomplete = anyStepFailed(stepsConsulted);
   const consultedNote = (Object.entries(stepsConsulted) as Array<[string, string]>)
     .map(([id, status]) => `${id}: ${status}`).join(', ');
@@ -570,12 +654,14 @@ export async function runTerminatorStep(
     softballsRaw?.ok ? softballsRaw : null,
     namedSetRaw?.ok ? namedSetRaw : null,
     discriminatorRaw?.ok ? discriminatorRaw : null,
+    humanNuanceRaw?.ok ? humanNuanceRaw : null,
   );
   // D-BP154-024/BISHOP-SEG/S24/seg-unstated, ADDITIVE: computed ONCE, threaded into every
   // TerminatorResult return below regardless of outcome (abstain, verdict, or contradiction) --
   // see computeFrameMatchBuckets()'s own header for why this is a report, never a gate.
   const frameMatchBuckets = computeFrameMatchBuckets(
     OPT, softballsRaw?.ok ? softballsRaw : null, discriminatorRaw?.ok ? discriminatorRaw : null,
+    humanNuanceRaw?.ok ? humanNuanceRaw : null,
   );
 
   if (contradiction) {
@@ -596,6 +682,8 @@ export async function runTerminatorStep(
   if (contributingSteps.has('Softballs:1') && softballsRaw) basisStepClasses.push(classifyComposerStepResult(softballsRaw).cls);
   if (contributingSteps.has('NamedSet:1') && namedSetRaw) basisStepClasses.push(classifyComposerStepResult(namedSetRaw).cls);
   if (contributingSteps.has('Discriminator:1') && discriminatorRaw) basisStepClasses.push(classifyComposerStepResult(discriminatorRaw).cls);
+  // D-BP154-033, ADDITIVE.
+  if (contributingSteps.has('HumanNuance:1') && humanNuanceRaw) basisStepClasses.push(classifyComposerStepResult(humanNuanceRaw).cls);
 
   if (survivors.length === 0) {
     const result: TerminatorResult = {
