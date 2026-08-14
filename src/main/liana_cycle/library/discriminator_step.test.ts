@@ -12,8 +12,9 @@
 
 import { describe, test, expect, vi } from 'vitest';
 import {
-  buildDiscriminatorQuery, deriveDiscriminatorCategory, registerDiscriminatorStep, runDiscriminatorStep,
-  verifyCategoryKind, verifyDiscriminatorKinds,
+  buildDiscriminatorQuery, deriveDiscriminatorCategory, deriveDiscriminatorSuperlativeProperty,
+  registerDiscriminatorStep, runDiscriminatorStep,
+  verifyCategoryKind, verifyDiscriminatorKinds, verifyDiscriminatorPropertyMembers,
 } from './discriminator_step';
 import { listComposerRegistry, runScratchComposer } from './script_bridge';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
@@ -45,12 +46,66 @@ describe('deriveDiscriminatorCategory -- reads the category the question itself 
 
 describe('buildDiscriminatorQuery -- ONE query asking BOTH things, never split into two round trips', () => {
   test('the query names the category once, asks for a kind per option, and lists every option once', () => {
-    const q = buildDiscriminatorQuery('world regions', ALL, OPT);
+    const q = buildDiscriminatorQuery('world regions', null, ALL, OPT);
     expect(q).toContain('For EACH of the following, state exactly what it is');
     expect(q).toContain('properly denotes "world regions"');
     for (const L of ALL) expect(q).toContain(OPT[L]);
     // ONE query -- the category phrase appears exactly once, not once per option.
     expect(q.match(/properly denotes/g)?.length).toBe(1);
+  });
+
+  // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap, ADDITIVE.
+  test('a null property asks nothing about it -- no third clause appended', () => {
+    const q = buildDiscriminatorQuery('world regions', null, ALL, OPT);
+    expect(q).not.toContain('ARE');
+  });
+
+  test('a non-null property adds a third ask, in the SAME query, asking which options ARE it', () => {
+    const q = buildDiscriminatorQuery('world regions', "the world's most densely populated regions", ALL, OPT);
+    expect(q).toContain('properly denotes "world regions"');
+    expect(q).toContain("ARE the world's most densely populated regions");
+    expect(q).toContain("that it is the world's most densely populated regions");
+  });
+});
+
+describe("deriveDiscriminatorSuperlativeProperty -- reads the SUPERLATIVE PROPERTY (FD-BP153-07 point 3 is about this, not only the bare category), never guesses", () => {
+  test("qid 98: '...one of the world's most densely populated regions?' -> \"world's most densely populated regions\"", () => {
+    expect(deriveDiscriminatorSuperlativeProperty(QID98_QUESTION)).toBe("world's most densely populated regions");
+  });
+
+  test('a bare-category question with no superlative phrase returns null, not a fabricated property', () => {
+    expect(deriveDiscriminatorSuperlativeProperty('Which of the following is NOT a mammal?')).toBeNull();
+  });
+});
+
+describe('verifyDiscriminatorPropertyMembers -- extraction only, verified span or discarded (HARDWIRE-22)', () => {
+  // Invented vocabulary (not qid 98's real property) -- proves the mechanism, not tuned to this question.
+  const passage = 'Alpha is explicitly one of the recognized primary clusters. Beta is explicitly '
+    + 'one of the recognized primary clusters. Gamma is a different kind of thing entirely.';
+  const OPT2: Record<string, string> = { A: 'Alpha', B: 'Beta', C: 'Gamma' };
+
+  test('an option the source explicitly states IS the property is kept, verbatim span required', () => {
+    const raw = [
+      { name: 'Alpha', span: 'Alpha is explicitly one of the recognized primary clusters.' },
+      { name: 'Beta', span: 'Beta is explicitly one of the recognized primary clusters.' },
+    ];
+    const { propertyMembers, discarded } = verifyDiscriminatorPropertyMembers(raw, passage, OPT2);
+    expect(propertyMembers.map((e) => e.letter).sort()).toEqual(['A', 'B']);
+    expect(discarded).toBe(0);
+  });
+
+  test('an option the source never affirms is NOT included -- absence is omission, not membership', () => {
+    const raw = [{ name: 'Alpha', span: 'Alpha is explicitly one of the recognized primary clusters.' }];
+    const { propertyMembers } = verifyDiscriminatorPropertyMembers(raw, passage, OPT2);
+    expect(propertyMembers.map((e) => e.letter)).toEqual(['A']);
+    expect(propertyMembers.some((e) => e.letter === 'C')).toBe(false);
+  });
+
+  test('a span that does not verbatim-match the passage is discarded, not silently kept', () => {
+    const raw = [{ name: 'Gamma', span: 'Gamma is one of the recognized primary clusters (fabricated span).' }];
+    const { propertyMembers, discarded } = verifyDiscriminatorPropertyMembers(raw, passage, OPT2);
+    expect(propertyMembers).toHaveLength(0);
+    expect(discarded).toBe(1);
   });
 });
 

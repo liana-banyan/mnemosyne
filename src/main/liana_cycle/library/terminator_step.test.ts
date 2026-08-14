@@ -53,14 +53,23 @@ function namedSet(included: Array<[string, string]>): NamedSetResult {
   };
 }
 
-function discriminator(kinds: Array<[string, string, string]>, categoryKind: { kind: string; span: string } | null): DiscriminatorResult {
+function discriminator(
+  kinds: Array<[string, string, string]>,
+  categoryKind: { kind: string; span: string } | null,
+  // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap, ADDITIVE, optional (defaults to none so every
+  // pre-existing call site below compiles and behaves unchanged): [letter, span] pairs the source
+  // explicitly states ARE the superlative property.
+  propertyMembers: Array<[string, string]> = [],
+): DiscriminatorResult {
   return {
-    ok: true, category: 'world regions', query: 'q',
+    ok: true, category: 'world regions', property: null, query: 'q',
     kinds: kinds.map(([letter, kind, span]) => ({ letter, name: OPT[letter], kind, span })),
     discardedKinds: 0,
     noKindStated: Object.keys(OPT).filter((L) => !kinds.some(([l]) => l === L)),
     categoryKind,
     categoryKindDiscarded: false,
+    propertyMembers: propertyMembers.map(([letter, span]) => ({ letter, name: OPT[letter], span })),
+    discardedPropertyMembers: 0,
     via: 'test',
   };
 }
@@ -147,6 +156,35 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
     expect(eliminatedLetters.has('C')).toBe(true);
   });
 
+  // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap FIX -- LIVE-MEASURED bug in D-BP154-020's own
+  // stripParenthetical() (end-anchored only): a categoryKind with a parenthetical in the MIDDLE
+  // of the string (not just at the end) had its own internal commas/"and" mis-read as additional
+  // top-level list separators, corrupting the split and wrongly eliminating options that genuinely
+  // matched. Invented vocabulary, structurally identical to the real qid 98 shape that exposed it
+  // ("Geopolitical Macro-Regions (such as South Asia, North Africa, and Central Asia) and
+  // Continents (such as Europe and South America)") but with none of its real words.
+  test('a categoryKind with a MIDDLE (non-trailing) parenthetical containing its own commas/"and" still splits correctly', () => {
+    const disc = discriminator(
+      [
+        ['A', 'Alpha Grade', 'A) is Alpha Grade.'],
+        ['B', 'Beta Grade', 'B) is Beta Grade.'],
+        ['C', 'Gamma Type', 'C) is Gamma Type.'],
+      ],
+      {
+        kind: 'Alpha Grades (such as Delta, Epsilon, and Zeta) and Beta Grades (such as Eta and Theta)',
+        span: 'x',
+      },
+    );
+    const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+    const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
+    // A ("Alpha Grade") and B ("Beta Grade") each match one of the two REAL list items -- the
+    // parenthetical examples inside each item must NOT be read as extra list separators. Before
+    // this fix, A and B were wrongly eliminated (the exact live defect).
+    expect(eliminatedLetters.has('A')).toBe(false);
+    expect(eliminatedLetters.has('B')).toBe(false);
+    expect(eliminatedLetters.has('C')).toBe(true);
+  });
+
   test('Discriminator STILL eliminates when the stated kind genuinely matches NEITHER the whole category string NOR any of its list items', () => {
     const disc = discriminator(
       [['A', 'Delta Class (an entirely different classification)', 'A) is Delta Class.']],
@@ -157,10 +195,40 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
     expect(eliminated[0].letter).toBe('A');
   });
 
+  // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap -- FD-BP153-07 point 3 is about the SUPERLATIVE
+  // PROPERTY, not only the bare category. Deliberately invented vocabulary (not qid 98's real
+  // "world's most densely populated regions") -- proves the mechanism generalizes, per FD-BP153-06's
+  // "would this rule survive on a question whose answer we do not know" bar.
+  test('Discriminator eliminates an option its OWN query states IS the superlative property', () => {
+    const disc = discriminator(
+      [],
+      null,
+      [['B', 'B) is explicitly one of the recognized primary clusters.']],
+    );
+    const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+    expect(eliminated).toHaveLength(1);
+    expect(eliminated[0].letter).toBe('B');
+    expect(eliminated[0].sourceStep).toBe('Discriminator:1');
+  });
+
+  test('Discriminator does NOT eliminate an option no source ever states is the superlative property -- absence is omission', () => {
+    const disc = discriminator([], null, []);
+    const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+    expect(eliminated).toHaveLength(0);
+  });
+
   test('CONTRADICTION: the same letter excluded by Softballs and included by NamedSet aborts publication', () => {
     const sb = softballs([['B', 'B) South Asia is not a world region.']]);
     const ns = namedSet([['B', 'B) South Asia is one of the most densely populated regions.']]);
     const { contradiction } = deriveTerminatorEliminations(OPT, sb, ns, null);
+    expect(contradiction).not.toBeNull();
+    expect(contradiction?.letter).toBe('B');
+  });
+
+  test('CONTRADICTION: the same letter excluded by Softballs and stated a superlative-property member by Discriminator aborts publication', () => {
+    const sb = softballs([['B', 'B) South Asia is not a world region.']]);
+    const disc = discriminator([], null, [['B', 'B) is explicitly one of the recognized primary clusters.']]);
+    const { contradiction } = deriveTerminatorEliminations(OPT, sb, null, disc);
     expect(contradiction).not.toBeNull();
     expect(contradiction?.letter).toBe('B');
   });

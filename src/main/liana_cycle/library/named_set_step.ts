@@ -308,6 +308,31 @@ export async function runNamedSetStep(
     };
     return { result, summary: summaryLine(OPT, result) };
   }
+  // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap FIX -- THE MORTGAGE trap. Restores THIS FILE'S OWN
+  // ALREADY-STATED intent (its own header, above: "never a silent empty result standing in for
+  // 'the source confirmed nothing qualifies'") which the code below it did not actually enforce --
+  // a passage that produced NO usable value after BOTH Stage 1 (owned evidence) AND Stage 2 (a
+  // fresh live query, tried above whenever Stage 1 was unproductive) is credited as "answered" is
+  // exactly the false credit found elsewhere this session (classify_cascade.ts's own transcript
+  // line "answered FROM OWNED EVIDENCE ... FRAME UNAVAILABLE" in the SAME sentence -- read only for
+  // the pattern, that file stays FORBIDDEN). LIVE-MEASURED this ticket (qid 98, two consecutive
+  // runs): the SAME ~3-hour-old owned Google-search passage never once yielded a usable membership
+  // ("discarded 1 candidate(s) with no verifiable span" both times), yet was reported ok:true,
+  // "ANSWERED VIA OWNED_EVIDENCE" -- the exact trap. Keyed on UNPRODUCTIVE (a fact this function
+  // already observes -- `included.length === 0`), never on the passage's AGE (a staleness cutoff/
+  // TTL is a Founder ruling, not authorized here). A genuinely zero-member finding is, in THIS
+  // codebase's own design (every sibling step's header says the same), never distinguishable from
+  // "nothing usable was found" -- HARDWIRE-22's own absence-is-omission law applies here exactly as
+  // it already does to every per-option inclusion decision above.
+  if (extraction.included.length === 0) {
+    const result: NamedSetResult = {
+      ok: false, property, query, included: [], discarded: extraction.discarded, notIncluded: all, via,
+      error: `no usable answer from any authority -- the credited passage (${via}) produced zero verified `
+        + `memberships (${extraction.discarded} candidate(s) discarded for no verifiable span) -- `
+        + `THE NAMED SET is UNAVAILABLE, not "nothing included"`,
+    };
+    return { result, summary: summaryLine(OPT, result) };
+  }
   const { included, discarded } = extraction;
   const includedLetters = new Set(included.map((e) => e.letter));
   const notIncluded = all.filter((L) => !includedLetters.has(L));
