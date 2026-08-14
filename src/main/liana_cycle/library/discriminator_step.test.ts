@@ -82,6 +82,24 @@ describe('buildDiscriminatorQuery -- ONE query asking BOTH things, never split i
     expect(enumIdx).toBeGreaterThan(-1);
     expect(propIdx).toBeGreaterThan(enumIdx);
   });
+
+  // D-BP154-026/BISHOP-SEG/S26/seg-subregion, ADDITIVE.
+  test('the query ALWAYS asks the subregion-vs-region-in-its-own-right question too, symmetrically, naming no letter', () => {
+    const q = buildDiscriminatorQuery('world regions', null, ALL, OPT);
+    expect(q).toContain('SUBREGION, SUBDIVISION, or PART of a larger region');
+    expect(q).toContain('properly considered one of "world regions"');
+    // Symmetric -- no option letter or name is singled out inside this clause's own text.
+    const clauseStart = q.indexOf('for each option above whose own stated classification');
+    expect(clauseStart).toBeGreaterThan(-1);
+    for (const L of ALL) expect(q.slice(clauseStart)).not.toContain(OPT[L]);
+  });
+
+  test('the subregion ask comes last, after the enumeration ask and (when present) the property ask', () => {
+    const withProperty = buildDiscriminatorQuery('world regions', "the world's most densely populated regions", ALL, OPT);
+    const propIdx = withProperty.indexOf("ARE the world's most densely populated regions");
+    const subregionIdx = withProperty.indexOf('SUBREGION, SUBDIVISION, or PART');
+    expect(subregionIdx).toBeGreaterThan(propIdx);
+  });
 });
 
 describe("deriveDiscriminatorSuperlativeProperty -- reads the SUPERLATIVE PROPERTY (FD-BP153-07 point 3 is about this, not only the bare category), never guesses", () => {
@@ -266,6 +284,36 @@ describe('verifyDiscriminatorPropertyMembers reused for CATEGORY enumeration mem
     const rawForD = [{ name: 'Yellowland', span: 'a sentence that never appeared anywhere' }];
     expect(verifyDiscriminatorPropertyMembers(rawForA, passage, OPT2).discarded).toBe(1);
     expect(verifyDiscriminatorPropertyMembers(rawForD, passage, OPT2).discarded).toBe(1);
+  });
+});
+
+// D-BP154-026/BISHOP-SEG/S26/seg-subregion, ADDITIVE. Same generic verifyDiscriminatorPropertyMembers()
+// choke point, reused a third time for subregionNonMembers -- invented vocabulary per FD-BP153-06,
+// deliberately shaped like the exact live pattern this ticket targets: a source stating a named
+// SUBDIVISION is not the top-level category in its own right.
+describe('verifyDiscriminatorPropertyMembers reused for SUBREGION-NON-MEMBER facts -- same generic four-part discipline, no letter preference', () => {
+  const passage = 'Zorbania and Quixland are independent Alpha Federations in their own right. '
+    + 'Northern Kelvinstan, however, is not an Alpha Federation on its own -- it is a subdivision '
+    + 'within the larger Kelvinstan Federation, not a Federation in its own right.';
+  const OPT3: Record<string, string> = { A: 'Zorbania', B: 'Quixland', C: 'Northern Kelvinstan' };
+
+  test('an option the source explicitly states is a subdivision (not the category in its own right) is kept, with its own verbatim span', () => {
+    const raw = [{ name: 'Northern Kelvinstan', span: 'Northern Kelvinstan, however, is not an Alpha Federation on its own -- it is a subdivision within the larger Kelvinstan Federation, not a Federation in its own right.' }];
+    const { propertyMembers, discarded } = verifyDiscriminatorPropertyMembers(raw, passage, OPT3);
+    expect(propertyMembers.map((e) => e.letter)).toEqual(['C']);
+    expect(discarded).toBe(0);
+  });
+
+  test('an option the source never addresses this way is never included -- absence is omission, not a stated subdivision', () => {
+    const raw = [{ name: 'Northern Kelvinstan', span: 'Northern Kelvinstan, however, is not an Alpha Federation on its own -- it is a subdivision within the larger Kelvinstan Federation, not a Federation in its own right.' }];
+    const { propertyMembers } = verifyDiscriminatorPropertyMembers(raw, passage, OPT3);
+    expect(propertyMembers.some((e) => e.letter === 'A')).toBe(false);
+    expect(propertyMembers.some((e) => e.letter === 'B')).toBe(false);
+  });
+
+  test('a fabricated span is discarded, not trusted', () => {
+    const raw = [{ name: 'Zorbania', span: 'a sentence that never appeared anywhere' }];
+    expect(verifyDiscriminatorPropertyMembers(raw, passage, OPT3).discarded).toBe(1);
   });
 });
 

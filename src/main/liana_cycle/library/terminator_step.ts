@@ -301,7 +301,61 @@ export function deriveTerminatorEliminations(
       enumeratedByDiscriminator.set(e.letter, { name: e.name, span: e.span });
     }
   }
+  // D-BP154-026/BISHOP-SEG/S26/seg-subregion, ADDITIVE. A source explicitly stating an option is
+  // NOT the category in its own right (only a subdivision WITHIN a larger region) is an
+  // AFFIRMATIVE denial -- the exact same status Softballs' own `excluded` already carries (D-BP154-
+  // 024's law: elimination requires the source itself to say so, never our own inference). This is
+  // a genuinely different QUESTION from Softballs' ("is this the category at all?") -- Softballs
+  // asks membership in the category outright; this asks whether a stated SUBREGION is the category
+  // ITSELF or a part within it. Symmetric across every option (FD-BP153-06); no letter is favored.
+  const subregionNonMembersByDiscriminator = new Map<string, { name: string; span: string }>();
+  if (discriminator?.ok) {
+    for (const e of discriminator.subregionNonMembers) {
+      subregionNonMembersByDiscriminator.set(e.letter, { name: e.name, span: e.span });
+      eliminated.push({
+        letter: e.letter, name: e.name, sourceStep: 'Discriminator:1',
+        reason: `source states this is not the category in its own right (a subdivision within a larger region)`, span: e.span,
+      });
+    }
+  }
   let contradiction: TerminatorContradiction | null = null;
+  // D-BP154-026, ADDITIVE: the same three contradiction checks Softballs' own `excludedBySoftballs`
+  // loop below already runs, applied to this second affirmative-denial source -- a subregion-
+  // non-member fact cannot coexist with a stated superlative-property membership or a stated
+  // enumeration membership for the SAME option without the two mechanisms disagreeing.
+  for (const [letter, subregionFact] of subregionNonMembersByDiscriminator) {
+    const namedSetFact = includedByNamedSet.get(letter);
+    if (namedSetFact) {
+      contradiction = {
+        letter,
+        reason: `DISCRIMINATOR states "${OPT[letter] ?? letter}" is not the category in its own right ("${subregionFact.span}") while `
+          + `NAMED SET simultaneously states it IS the superlative property ("${namedSetFact.span}") -- `
+          + `self-contradictory, not published`,
+      };
+      break;
+    }
+    const discriminatorPropertyFact = propertyMembersByDiscriminator.get(letter);
+    if (discriminatorPropertyFact) {
+      contradiction = {
+        letter,
+        reason: `DISCRIMINATOR states "${OPT[letter] ?? letter}" is not the category in its own right ("${subregionFact.span}") while `
+          + `it simultaneously states this option IS the superlative property ("${discriminatorPropertyFact.span}") -- `
+          + `self-contradictory, not published`,
+      };
+      break;
+    }
+    const discriminatorEnumerationFact = enumeratedByDiscriminator.get(letter);
+    if (discriminatorEnumerationFact) {
+      contradiction = {
+        letter,
+        reason: `DISCRIMINATOR states "${OPT[letter] ?? letter}" is not the category in its own right ("${subregionFact.span}") while `
+          + `its own enumeration simultaneously names it as a member ("${discriminatorEnumerationFact.span}") -- `
+          + `self-contradictory, not published`,
+      };
+      break;
+    }
+  }
+  if (contradiction) return { eliminated, contradiction };
   for (const [letter, softballsFact] of excludedBySoftballs) {
     const namedSetFact = includedByNamedSet.get(letter);
     if (namedSetFact) {
@@ -341,9 +395,11 @@ export function deriveTerminatorEliminations(
 }
 
 export interface TerminatorFrameMatchBuckets {
-  /** Options a source AFFIRMATIVELY states are NOT the category -- today, only Softballs' own
-   *  direct "not the category" statement (a real denial, never an inference from a structural
-   *  mismatch). This is the ONLY bucket THE FRAME's own eliminations (above) may draw on. */
+  /** Options a source AFFIRMATIVELY states are NOT the category -- Softballs' own direct "not the
+   *  category" statement, OR (D-BP154-026, ADDITIVE) Discriminator's own direct "not the category
+   *  in its own right, only a subdivision within one" statement. Both are real denials, never an
+   *  inference from a structural mismatch. This is the ONLY bucket THE FRAME's own eliminations
+   *  (above) may draw on. */
   affirmedNonMember: string[];
   /** Options AFFIRMATIVELY confirmed a member of the bare CATEGORY -- Discriminator's own kind
    *  structurally matching the category-kind list, or verified as a named member of the
@@ -378,6 +434,13 @@ export function computeFrameMatchBuckets(
   const affirmedNonMember = new Set<string>();
   if (softballs?.ok) {
     for (const e of softballs.excluded) affirmedNonMember.add(e.letter);
+  }
+  // D-BP154-026, ADDITIVE: the second affirmative-denial source (see deriveTerminatorEliminations()
+  // above for the full ruling) -- folded into the SAME bucket as Softballs' own `excluded`, since
+  // both answer the identical question ("does the source affirmatively place this option outside
+  // the category?"), just via two independently-asked questions.
+  if (discriminator?.ok) {
+    for (const e of discriminator.subregionNonMembers) affirmedNonMember.add(e.letter);
   }
   const affirmedMember = new Set<string>();
   if (discriminator?.ok && discriminator.categoryKind) {
