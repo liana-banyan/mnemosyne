@@ -58,6 +58,27 @@
 // "stated but uncorroborated" or "legitimately nothing stated" tier of its own), so they are new,
 // picked to read clearly as "weaker than corroborated" (grey) and "neutral, not a failure" (slate)
 // respectively without inventing a third hand-copy of anything that already exists elsewhere.
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP154-035/BISHOP-SEG/S35/seg-purefunction -- FD-BP154-11 AMENDS FD-BP154-05's ANSWERED ROW.
+// Founder ruling (RULINGS_BP154.md FD-BP154-11), verbatim: "ANSWERED -- an authoritative key or
+// dataset explicitly supplies the answer, even if the text does not independently entail it...
+// This is the important change: it creates an honest, labelled slot for a key-supplied answer, so
+// key-lookup neither has to be forbidden nor allowed to masquerade as derivation. It resolves qid
+// 98 exactly: 'ANSWERED -- keyed answer: A. Not independently proven from the item text and
+// admitted category evidence.' Both facts, neither hidden."
+//
+// applyKeyedAnswerLabel() below is that slot. It is a SEPARATE, ADDITIVE function, called ONLY
+// AFTER classifyComposerStepResult() has already produced its blind classification -- the answer
+// key is NEVER passed into classifyComposerStepResult() itself, into
+// terminator_step.ts's deriveTerminatorEliminations()/runTerminatorStep(), or into
+// verdict_evaluator.ts's evaluateVerdict(). "The key may be read ONLY for this label, never to
+// influence elimination, ranking or survivor sets -- the runtime stays blind everywhere else"
+// (RULINGS_BP154.md FD-BP154-11, citing D-BP153-003). No new class is added
+// (ComposerStepClass stays PROVEN/CORROBORATED/ANSWERED/ABSTAIN, per the ruling's own words: "never
+// allowed to masquerade as derivation" means the key produces ANSWERED, the weakest positive tier,
+// not a stronger one) -- see applyKeyedAnswerLabel()'s own header below for exactly which blind
+// classes it may relabel and which it only annotates.
 
 export type ComposerStepClass = 'PROVEN' | 'CORROBORATED' | 'ANSWERED' | 'ABSTAIN';
 
@@ -232,4 +253,59 @@ export function classifyComposerStepResult(raw: unknown): ComposerStepClassifica
     return { cls: 'CORROBORATED', detail: `${statedCount} stated, confirmed by "${title}"`, statedCount };
   }
   return { cls: 'ANSWERED', detail: `${statedCount} stated, verbatim span verified, no corroboration yet`, statedCount };
+}
+
+/** D-BP154-035, ADDITIVE. What a keyed answer looks like once attached to a classification -- see
+ *  applyKeyedAnswerLabel() below for when `matchesVerdict` can and cannot be computed. */
+export interface KeyedAnswerLabel {
+  answer: string;
+  /** null when this classification carried no verdict/value of its own to compare the key
+   *  against (an ABSTAIN has none by construction) -- never coerced to `false`, which would read
+   *  as "the machine disagreed" when in fact the machine said nothing to agree or disagree with. */
+  matchesVerdict: boolean | null;
+}
+
+/** FD-BP154-11's own amendment to FD-BP154-05, applied as a pure, synchronous, POST-classification
+ *  label -- see this file's header for the full ruling and the D-BP153-003 boundary it does not
+ *  cross. `correctAnswer` is read ONLY here, for display, never threaded into any elimination or
+ *  ranking function; callers must never pass it to classifyComposerStepResult(),
+ *  deriveTerminatorEliminations(), or evaluateVerdict().
+ *
+ *  - No key available (`correctAnswer` undefined) -- returns `classification` completely
+ *    unchanged; nothing to label.
+ *  - Blind class PROVEN -- returned with `keyed` attached as METADATA ONLY, `cls`/`detail` left
+ *    exactly as the blind mechanism reported them. PROVEN already means an authority or formal
+ *    definition plus deterministic rule application UNIQUELY ENTAILS the verdict (FD-BP154-11) --
+ *    a strictly stronger, independent basis than a key lookup; the key can corroborate that basis
+ *    for a reader's own confidence, but must never be the reason a badge reads PROVEN.
+ *  - Blind class ABSTAIN -- THIS IS THE ROW THE RULING ADDS, verbatim, qid 98's own worked
+ *    example: relabeled to ANSWERED with a detail stating BOTH facts the ruling requires --
+ *    what the key says, and that it was not independently proven. Never silently upgraded to
+ *    CORROBORATED or PROVEN; the key alone can never earn a stronger tier than ANSWERED
+ *    ("never allowed to masquerade as derivation").
+ *  - Blind class CORROBORATED or ANSWERED (the mechanism itself already produced a value, on its
+ *    own basis) -- `cls`/`detail` are left EXACTLY as the blind mechanism reported them; the key
+ *    is attached as `keyed` metadata only, so a reader can see whether the machine's own
+ *    independent finding agrees or disagrees with the key WITHOUT the key silently overriding or
+ *    suppressing what the machine itself found ("both facts, neither hidden"). */
+export function applyKeyedAnswerLabel(
+  classification: ComposerStepClassification,
+  verdictLetter: string | null,
+  correctAnswer: string | undefined,
+): ComposerStepClassification & { keyed?: KeyedAnswerLabel } {
+  if (!correctAnswer) return classification;
+  const keyed: KeyedAnswerLabel = {
+    answer: correctAnswer,
+    matchesVerdict: verdictLetter == null ? null : verdictLetter === correctAnswer,
+  };
+  if (classification.cls === 'ABSTAIN') {
+    return {
+      cls: 'ANSWERED',
+      detail: `ANSWERED -- keyed answer: ${correctAnswer}. Not independently proven from the item `
+        + 'text and admitted category evidence.',
+      statedCount: classification.statedCount,
+      keyed,
+    };
+  }
+  return { ...classification, keyed };
 }
