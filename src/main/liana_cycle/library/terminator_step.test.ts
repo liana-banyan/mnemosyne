@@ -554,6 +554,93 @@ describe('runTerminatorStep -- UNIQUE OR ABSTAIN end to end over the pure reduce
     });
   });
 
+  // D-BP154-014/BISHOP-SEG/S40/seg-magnitude-gate, NEW. FD-BP154-14 (RULINGS_BP154.md): "Magnitude
+  // should not run once membership is settled - ruled." Reproduces the LIVE DEFECT this ruling
+  // fixes (LIANA_COMPOSER_RUN_qid98_2026-08-14T21-59-51-048Z.json: NamedSet:1 found one stated
+  // property member, eliminating it; the remaining survivors -- ALL non-members by construction --
+  // were then ranked by Magnitude:1 and a "least dense of several equally-correct answers" was
+  // published as a confident verdict) with INVENTED vocabulary (FD-BP153-06 discipline, this
+  // file's own header), not qid 98's real words.
+  describe('FD-BP154-14: Magnitude:1 does not run once the membership test has already partitioned the options', () => {
+    // Softballs leaves {A, B, C} as the frame (D-I eliminated as not-the-category-at-all).
+    const threeSurvivorSoftballs = softballs(
+      ['D', 'E', 'F', 'G', 'H', 'I'].map((L) => [L, `${L}) not a Zorblatt cluster.`] as [string, string]),
+    );
+    const threeSurvivorOutcome = { id: 'Softballs:1', summary: 's', raw: threeSurvivorSoftballs };
+
+    test('NamedSet:1 found ONE stated property member (now eliminated) -- the remaining survivors are non-members by construction; Magnitude:1, even fully-ranked and frame-matched, is NOT consulted -- ABSTAIN, not a ranking', async () => {
+      const ns = namedSet([['C', 'C) is explicitly one of the galaxy\'s most luminous Zorblatt clusters.']]);
+      const namedSetOutcome = { id: 'NamedSet:1', summary: 's', raw: ns };
+      // A CLEAN, fully-ranked, frame-matched Magnitude:1 over the ACTUAL survivors {A, B} (C was
+      // just eliminated by NamedSet above) -- exactly the shape that, before this ruling, would
+      // have been trusted and published as a verdict.
+      const mag = magnitude(['A', 'B'], 'least', 'luminosity', [['A', 'A is more luminous than B.'], ['B', 'B is less luminous than A.']]);
+      const magOutcome = { id: 'Magnitude:1', summary: 's', raw: mag };
+      const { result, summary } = await runTerminatorStep(input, ctx, [threeSurvivorOutcome, namedSetOutcome, magOutcome]);
+      expect(result.abstain).toBe(true);
+      expect(result.verdict).toBeNull();
+      expect(result.magnitudeBasis).toBeNull(); // magnitude contributed NOTHING to this outcome
+      expect(result.abstainReason).toContain('FD-BP154-14');
+      expect(result.abstainReason).toContain('Magnitude:1 not consulted');
+      expect(result.abstainReason).toContain('C) North Africa'); // names the stated member that caused the partition (this file's own OPT)
+      expect(summary).toContain('FD-BP154-14');
+    });
+
+    test('Discriminator:1\'s own propertyMembers (not NamedSet) also triggers the gate -- either source of a stated property member counts', async () => {
+      const disc = discriminator([], null, [['B', 'B) is explicitly a member of the property.']]);
+      const discOutcome = { id: 'Discriminator:1', summary: 's', raw: disc };
+      const mag = magnitude(['A', 'C'], 'most', 'luminosity', [['A', 'A is most luminous.'], ['C', 'C is less luminous.']]);
+      const magOutcome = { id: 'Magnitude:1', summary: 's', raw: mag };
+      const { result } = await runTerminatorStep(input, ctx, [threeSurvivorOutcome, discOutcome, magOutcome]);
+      expect(result.abstain).toBe(true);
+      expect(result.verdict).toBeNull();
+      expect(result.abstainReason).toContain('FD-BP154-14');
+    });
+
+    test('AMENDS, DOES NOT REPLACE, FD-BP153-01: when NEITHER NamedSet:1 nor Discriminator:1 ever found a stated property member (a genuine "which is the extreme" question, no partition), Magnitude:1 still resolves the verdict exactly as before this ruling', async () => {
+      const ns = namedSet([]); // ran, found nothing -- ok:true, included: [] -- NOT a partition
+      const namedSetOutcome = { id: 'NamedSet:1', summary: 's', raw: ns };
+      const mag = magnitude(['A', 'B', 'C'], 'least', 'luminosity', [
+        ['A', 'A is most luminous.'], ['B', 'B is next.'], ['C', 'C is least luminous.'],
+      ]);
+      const magOutcome = { id: 'Magnitude:1', summary: 's', raw: mag };
+      const { result } = await runTerminatorStep(input, ctx, [threeSurvivorOutcome, namedSetOutcome, magOutcome]);
+      expect(result.abstain).toBe(false);
+      expect(result.verdict).toBe('C'); // magnitude legitimately decides -- no membership partition occurred
+      expect(result.magnitudeBasis).not.toBeNull();
+    });
+
+    // THE EXACT LIVE SHAPE, qid 98's own real words, reproducing LIANA_COMPOSER_RUN_qid98_
+    // 2026-08-14T21-59-51-048Z.json's own mechanism precisely (this ONE test deliberately breaks
+    // the invented-vocabulary convention, matching D-BP154-029's own "the exact live shape" test
+    // immediately above it in this file) -- proves the gate fires on the REAL defect, not only an
+    // analogous invented one.
+    test('THE EXACT LIVE DEFECT THIS RULING FIXES: qid 98\'s own real shape -- NamedSet finds South Asia a member, Magnitude ranks the rest and would have published F -- now ABSTAINS instead', async () => {
+      const qid98Softballs = softballs([
+        ['D', 'D) Northeast United States is a subnational region, not a world region.'],
+        ['G', 'G) Arctic Circle is a line of latitude, not a world region.'],
+        ['H', 'H) Amazon Rainforest is a biome, not a world region.'],
+        ['I', 'I) Sahara Desert is a desert, not a world region.'],
+      ]);
+      const qid98NamedSet = namedSet([['B', 'B) South Asia is explicitly one of the world\'s most densely populated regions.']]);
+      const qid98Magnitude = magnitude(['A', 'C', 'E', 'F'], 'least', "world's most densely populated regions", [
+        ['E', 'Europe > North Africa > South America > Central Asia'],
+        ['C', 'Europe > North Africa > South America > Central Asia'],
+        ['A', 'Europe > North Africa > South America > Central Asia'],
+        ['F', 'Europe > North Africa > South America > Central Asia'],
+      ]);
+      const { result } = await runTerminatorStep(input, ctx, [
+        { id: 'Softballs:1', summary: 's', raw: qid98Softballs },
+        { id: 'NamedSet:1', summary: 's', raw: qid98NamedSet },
+        { id: 'Magnitude:1', summary: 's', raw: qid98Magnitude },
+      ]);
+      expect(result.abstain).toBe(true);
+      expect(result.verdict).toBeNull();
+      expect(result.verdict).not.toBe('F'); // the confident-wrong letter this ruling exists to stop
+      expect(result.abstainReason).toContain('FD-BP154-14');
+    });
+  });
+
   test('no feeder steps run at all -> every option survives -> ABSTAIN, never a fabricated verdict', async () => {
     const { result } = await runTerminatorStep(input, ctx, []);
     expect(result.ok).toBe(true);
