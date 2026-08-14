@@ -80,6 +80,11 @@ import { registerMagnitudeStep, runMagnitudeStep } from './magnitude_step';
 // terminator_step.ts was built to consume them -- see human_nuance_step.ts's own header for why
 // this ticket does not also wire it into deriveTerminatorEliminations().
 import { registerHumanNuanceStep, runHumanNuanceStep } from './human_nuance_step';
+// D-BP154-041/BISHOP-SEG/S41/seg-purpose, PART 1/3 -- THE QUESTION PURPOSE (FD-BP154-16). Reads
+// only stated fields (stem/src/category), never `input.options` -- see purpose_step.ts's own
+// header for why it must run before any option-examining step.
+import { registerPurposeStep, runPurposeStep } from './purpose_step';
+import type { PurposeResult } from './purpose_step';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -186,6 +191,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP154-041/BISHOP-SEG/S41/seg-purpose, ADDITIVE, PART 1/3 -- same idempotent shape as every
+  // call above, for the same reason. Does not touch, re-register, or collide with anything the
+  // others register -- 'Purpose' is a new name.
+  try {
+    registerPurposeStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -225,7 +238,9 @@ export interface ComposerRegistryEntry {
 // calls magnitude_step.ts's runMagnitudeStep() (frame established via terminator_step.ts's own
 // deriveTerminatorEliminations(), one ranking query, one verified extraction; see that file's own
 // header for why it does not call classify_cascade.ts's ranking logic).
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1']);
+// D-BP154-041 adds 'Purpose:1' -- see purpose_step.ts's own header; must run before any
+// option-examining step to satisfy FD-BP154-16's "stated before any option is examined" guard.
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -392,6 +407,13 @@ async function runOneStep(
     // this stack (magnitude_step.ts's own header) before ranking anything.
     const { result, summary } = await runMagnitudeStep(input, ctx, priorResults);
     persistStepClaim(id, input, ctx, result);
+    return { summary, raw: result };
+  }
+  if (id === 'Purpose:1') {
+    // D-BP154-041/BISHOP-SEG/S41/seg-purpose, PART 1/3 -- THE QUESTION PURPOSE. Issues no query in
+    // its BUILT form (purpose_step.ts's own header); reads only `input.question`/`originSrc`/
+    // `category`, never `priorResults` and never `input.options`.
+    const { result, summary } = await runPurposeStep(input, ctx);
     return { summary, raw: result };
   }
   if (id === 'HumanNuance:1') {
@@ -668,6 +690,9 @@ export async function runScratchComposer(
     // parseQid()/parseFreeText() (liana_terminal_engine.ts) -- undefined for free-text input or a
     // bundled qid not yet backfilled, exactly like correctAnswer's own optionality above.
     originSrc: parsed.originSrc,
+    // D-BP154-041/BISHOP-SEG/S41/seg-purpose, ADDITIVE: same threading, for purpose_step.ts's
+    // category-sourced candidate.
+    category: parsed.category,
   };
   // D-BP154-017: acquisitionId threaded through so a claim-producing step (persistStepClaim(),
   // above) can tag its persisted classification with the SAME acquisition id THE PAIL already

@@ -294,6 +294,14 @@ export interface ParsedInput {
    *  MethodQuestionInput.originSrc (method_registry.ts) for the full chain this is threaded
    *  through. Undefined for free-text input and for any bundled qid not yet backfilled. */
   originSrc?: string;
+  /** D-BP154-041/BISHOP-SEG/S41/seg-purpose, ADDITIVE/OPTIONAL. FD-BP154-16: the artifact's own
+   *  stated `category` field (BundledQuestion.category, already on disk, never invented) is one of
+   *  the three admissible sources for a Question Purpose candidate ("the question's own stem...
+   *  the artifact's `src`... and its category -- all stated fields"). Threaded through the exact
+   *  same optional-field discipline `originSrc` already established just above: undefined for
+   *  free-text input or a row with no `category` on file, never guessed. Only purpose_step.ts
+   *  reads this field. */
+  category?: string;
 }
 
 export function parseQid(qid: number): ParsedInput {
@@ -303,6 +311,7 @@ export function parseQid(qid: number): ParsedInput {
   q.options.forEach((o, i) => { opts[letter(i)] = o; });
   return {
     qid, question: q.question, options: opts, correctAnswer: q.answer, originSrc: q.origin_src,
+    category: q.category,
   };
 }
 
