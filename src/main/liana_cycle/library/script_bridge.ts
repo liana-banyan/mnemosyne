@@ -88,6 +88,10 @@ import type { PurposeResult } from './purpose_step';
 // D-BP154-041/BISHOP-SEG/S41/seg-purpose, PART 3/3 -- THE UPSTREAM SKIP GATE. See step_skip.ts's
 // own header for the full five-qualifier design and the DECIDING/REFUTING classification table.
 import { computeStepSkip } from './step_skip';
+// D-BP154-042/BISHOP-SEG/S42/seg-originframe -- THE ORIGIN FRAME (the Kobayashi Maru move made
+// mechanical). See origin_frame_step.ts's own header for the full ruling and the key-blindness
+// discipline.
+import { registerOriginFrameStep, runOriginFrameStep } from './origin_frame_step';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -202,6 +206,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP154-042/BISHOP-SEG/S42/seg-originframe, ADDITIVE -- same idempotent shape as every call
+  // above, for the same reason. Does not touch, re-register, or collide with anything the others
+  // register -- 'OriginFrame' is a new name.
+  try {
+    registerOriginFrameStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -243,7 +255,8 @@ export interface ComposerRegistryEntry {
 // header for why it does not call classify_cascade.ts's ranking logic).
 // D-BP154-041 adds 'Purpose:1' -- see purpose_step.ts's own header; must run before any
 // option-examining step to satisfy FD-BP154-16's "stated before any option is examined" guard.
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1']);
+// D-BP154-042 adds 'OriginFrame:1' -- see origin_frame_step.ts's own header.
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -429,6 +442,14 @@ async function runOneStep(
     // its BUILT form (purpose_step.ts's own header); reads only `input.question`/`originSrc`/
     // `category`, never `priorResults` and never `input.options`.
     const { result, summary } = await runPurposeStep(input, ctx);
+    return { summary, raw: result };
+  }
+  if (id === 'OriginFrame:1') {
+    // D-BP154-042/BISHOP-SEG/S42/seg-originframe -- THE ORIGIN FRAME. Reads priorResults for
+    // Terminator:1's own already-computed augmented-question status; runs its own mini-derivation
+    // (Softballs:1 + NamedSet:1 over the origin frame only) via the SAME ctx every other step here
+    // receives.
+    const { result, summary } = await runOriginFrameStep(input, ctx, priorResults);
     return { summary, raw: result };
   }
   if (id === 'HumanNuance:1') {
