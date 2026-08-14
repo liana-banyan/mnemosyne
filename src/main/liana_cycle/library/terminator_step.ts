@@ -91,6 +91,10 @@ import type { PurposeResult } from './purpose_step';
 // ComposerStepOutcome's own import below) -- the same non-circular shape magnitude_step.ts's/
 // human_nuance_step.ts's own imports FROM this file already establish.
 import { isSkippedMarker } from './step_skip';
+// D-BP154-043/BISHOP-SEG/S43/seg-unitary, ADDITIVE, TYPE-ONLY (same non-circular shape as every
+// other feeder-step type import above -- unitary_step.ts's own runtime imports never reach this
+// file). FD-BP154-16's "unitary vs conglomerate" membership factor, as a sixth elimination source.
+import type { UnitaryResult } from './unitary_step';
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 
@@ -166,8 +170,9 @@ export interface TerminatorEliminationEntry {
   letter: string;
   name: string;
   /** Which Composer step's stated fact eliminated this option. D-BP154-033, ADDITIVE:
-   *  'HumanNuance:1' added as a fourth elimination source. */
-  sourceStep: 'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'HumanNuance:1';
+   *  'HumanNuance:1' added as a fourth elimination source. D-BP154-043, ADDITIVE: 'Unitary:1'
+   *  added as a fifth (FD-BP154-16's "unitary vs conglomerate" factor). */
+  sourceStep: 'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'HumanNuance:1' | 'Unitary:1';
   reason: string;
   span: string;
 }
@@ -186,8 +191,8 @@ export interface TerminatorResult {
   // D-BP154-041 PART 2/3, ADDITIVE: 'Purpose:1' added as a sixth entry -- see this file's own new
   // import above. PART 3/3, ADDITIVE: 'skipped-moot' added as a fourth status -- Purpose:1 itself
   // is never skipped (nothing precedes it), so it never carries this status; the five query-issuing
-  // feeder steps can.
-  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1', 'not run' | 'ok' | 'failed' | 'skipped-moot'>;
+  // feeder steps can. D-BP154-043, ADDITIVE: 'Unitary:1' added as a seventh entry.
+  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1' | 'Unitary:1', 'not run' | 'ok' | 'failed' | 'skipped-moot'>;
   /** D-BP154-041 PART 2/3, FD-BP154-17, ADDITIVE. Non-null ONLY when Purpose:1 ran (ok:true) and
    *  found the evidence class structurally incapable of satisfying its own stated purpose -- a
    *  DISTINCT outcome from a normal ABSTAIN (multiple/zero survivors after elimination) and from a
@@ -212,7 +217,23 @@ export interface TerminatorResult {
    *  decides only among the survivors" -- a DIFFERENT mechanism from UNIQUE OR ABSTAIN's own
    *  elimination-to-one, reported honestly as such, never blended into `eliminated` as if it were
    *  another stated exclusion). Null in every pre-existing unique-survivor verdict. */
-  magnitudeBasis: { targetExtreme: 'most' | 'least'; property: string; span: string } | null;
+  // D-BP154-043, ADDITIVE: `tieBreakKind` distinguishes a GENUINE superlative ranking
+  // ('genuine-superlative', FD-BP153-01's own original case -- no prior step ever found a stated
+  // member of the property) from a PARTITIONED TIE-BREAK ('partitioned-membership-tiebreak' --
+  // membership already partitioned the options but left more than one survivor, and this run's own
+  // artifact class was established as a single-answer item, so FD-BP154-14's AMENDMENT permits
+  // Magnitude:1 as the final permissible tie-break). Undefined on the pre-existing genuine-ranking
+  // shape (no behavior change for that case); always present when this verdict came through the
+  // amendment's own branch.
+  magnitudeBasis: {
+    targetExtreme: 'most' | 'least'; property: string; span: string;
+    tieBreakKind?: 'genuine-superlative' | 'partitioned-membership-tiebreak';
+    /** D-BP154-043, ADDITIVE. The Founder's own explicit badge instruction, verbatim: "PROVEN
+     *  requires the single frozen dataset covering all survivors... Otherwise it is ANSWERED. Do
+     *  not badge higher than the evidence." Computed here from Magnitude:1's own
+     *  `frozenSource.obtained` -- never upgraded on this file's own say-so. */
+    sourceGrade?: 'ANSWERED -- not proven by a unified frozen dataset' | 'PROVEN-eligible -- single frozen source covers every survivor';
+  } | null;
   /** D-BP154-024/BISHOP-SEG/S24/seg-unstated, ADDITIVE: the three-bucket report (Founder, this
    *  dispatch, verbatim: "matched-as-member / matched-as-non-member / unmatched (unstated) --
    *  three outcomes, not two"). Null only in the two early "cannot even attempt this" failure
@@ -257,6 +278,8 @@ const STEP_RESPONSIBILITY: Record<string, string> = {
   'Magnitude:1': 'ranking the survivors by magnitude to select the extreme',
   // D-BP154-033, ADDITIVE.
   'HumanNuance:1': 'eliminating options a source states are excluded from the origin\'s own (pre-augmentation) frame, with a stated reason',
+  // D-BP154-043, ADDITIVE.
+  'Unitary:1': 'eliminating options a source states are a conglomerate/grouping of multiple regions, not a single unitary region',
 };
 
 /** D-BP154-029, NEW. Names every FAILED step and what it was responsible for -- "Withheld:
@@ -351,6 +374,10 @@ export function deriveTerminatorEliminations(
   namedSet: NamedSetResult | null,
   discriminator: DiscriminatorResult | null,
   humanNuance?: HumanNuanceResult | null,
+  // D-BP154-043, ADDITIVE/OPTIONAL -- undefined on every pre-existing call site (this file's own
+  // tests, magnitude_step.ts's runMagnitudeStep()), same discipline `humanNuance` above already
+  // established: every existing caller keeps compiling and behaving byte-identically.
+  unitary?: UnitaryResult | null,
 ): { eliminated: TerminatorEliminationEntry[]; contradiction: TerminatorContradiction | null } {
   const eliminated: TerminatorEliminationEntry[] = [];
   const excludedBySoftballs = new Map<string, { name: string; span: string }>();
@@ -387,6 +414,22 @@ export function deriveTerminatorEliminations(
       eliminated.push({
         letter: e.letter, name: e.name, sourceStep: 'HumanNuance:1',
         reason: `source states this is excluded from the origin's own frame (${e.reason})`, span: e.span,
+      });
+    }
+  }
+  // D-BP154-043/BISHOP-SEG/S43/seg-unitary, ADDITIVE. Unitary:1's own `excluded` array
+  // (unitary_step.ts) is a FOURTH affirmative denial of the SAME shape -- FD-BP154-16's "unitary
+  // vs conglomerate" membership factor: a source explicitly stated an option IS a conglomerate/
+  // grouping of multiple regions, not a single unitary region. Symmetric across every option
+  // (FD-BP153-06); an UNSTATED option is never eliminated on this basis (absence is omission).
+  const excludedByUnitary = new Map<string, { name: string; span: string }>();
+  if (unitary?.ok) {
+    for (const e of unitary.excluded) {
+      excludedByUnitary.set(e.letter, { name: e.name, span: e.span });
+      eliminated.push({
+        letter: e.letter, name: e.name, sourceStep: 'Unitary:1',
+        reason: 'source states this is a conglomerate/grouping of multiple regions, not a single unitary region (FD-BP154-16 unitary-vs-conglomerate factor)',
+        span: e.span,
       });
     }
   }
@@ -573,6 +616,42 @@ export function deriveTerminatorEliminations(
       break;
     }
   }
+  if (contradiction) return { eliminated, contradiction };
+  // D-BP154-043, ADDITIVE: the SAME three contradiction checks above, applied to Unitary:1's own
+  // affirmative denial -- a conglomerate-grouping fact cannot coexist with a stated superlative-
+  // property membership or a stated enumeration membership for the SAME option.
+  for (const [letter, unitaryFact] of excludedByUnitary) {
+    const namedSetFact = includedByNamedSet.get(letter);
+    if (namedSetFact) {
+      contradiction = {
+        letter,
+        reason: `UNITARY states "${OPT[letter] ?? letter}" is a conglomerate/grouping ("${unitaryFact.span}") `
+          + `while NAMED SET simultaneously states it IS the superlative property ("${namedSetFact.span}") -- `
+          + `self-contradictory, not published`,
+      };
+      break;
+    }
+    const discriminatorPropertyFact = propertyMembersByDiscriminator.get(letter);
+    if (discriminatorPropertyFact) {
+      contradiction = {
+        letter,
+        reason: `UNITARY states "${OPT[letter] ?? letter}" is a conglomerate/grouping ("${unitaryFact.span}") `
+          + `while DISCRIMINATOR simultaneously states it IS the superlative property `
+          + `("${discriminatorPropertyFact.span}") -- self-contradictory, not published`,
+      };
+      break;
+    }
+    const discriminatorEnumerationFact = enumeratedByDiscriminator.get(letter);
+    if (discriminatorEnumerationFact) {
+      contradiction = {
+        letter,
+        reason: `UNITARY states "${OPT[letter] ?? letter}" is a conglomerate/grouping ("${unitaryFact.span}") `
+          + `while DISCRIMINATOR's own enumeration simultaneously names it as a member `
+          + `("${discriminatorEnumerationFact.span}") -- self-contradictory, not published`,
+      };
+      break;
+    }
+  }
   return { eliminated, contradiction };
 }
 
@@ -615,6 +694,8 @@ export function computeFrameMatchBuckets(
   // D-BP154-033, ADDITIVE/OPTIONAL -- undefined on every pre-existing 3-arg call site (this file's
   // own test suite), so every existing caller keeps compiling and behaving identically.
   humanNuance?: HumanNuanceResult | null,
+  // D-BP154-043, ADDITIVE/OPTIONAL -- same discipline as `humanNuance` above.
+  unitary?: UnitaryResult | null,
 ): TerminatorFrameMatchBuckets {
   const affirmedNonMember = new Set<string>();
   if (softballs?.ok) {
@@ -631,6 +712,11 @@ export function computeFrameMatchBuckets(
   // same bucket, same reasoning as the two above.
   if (humanNuance?.ok) {
     for (const e of humanNuance.excluded) affirmedNonMember.add(e.letter);
+  }
+  // D-BP154-043, ADDITIVE: a FOURTH affirmative-denial source -- Unitary:1's own `excluded`, same
+  // bucket, same reasoning.
+  if (unitary?.ok) {
+    for (const e of unitary.excluded) affirmedNonMember.add(e.letter);
   }
   const affirmedMember = new Set<string>();
   if (discriminator?.ok && discriminator.categoryKind) {
@@ -661,7 +747,7 @@ export async function runTerminatorStep(
   const OPT = input.options;
   const emptyStepsConsulted: TerminatorResult['stepsConsulted'] = {
     'Softballs:1': 'not run', 'NamedSet:1': 'not run', 'Discriminator:1': 'not run', 'Magnitude:1': 'not run',
-    'HumanNuance:1': 'not run', 'Purpose:1': 'not run',
+    'HumanNuance:1': 'not run', 'Purpose:1': 'not run', 'Unitary:1': 'not run',
   };
   if (!OPT || Object.keys(OPT).length === 0) {
     const result: TerminatorResult = {
@@ -684,6 +770,8 @@ export async function runTerminatorStep(
   const humanNuanceRaw = findRaw('HumanNuance:1') as HumanNuanceResult | null;
   // D-BP154-041 PART 2/3, ADDITIVE.
   const purposeRaw = findRaw('Purpose:1') as PurposeResult | null;
+  // D-BP154-043, ADDITIVE.
+  const unitaryRaw = findRaw('Unitary:1') as UnitaryResult | null;
 
   // D-BP154-041 PART 3/3, NEW. THE ONE PLACE a step's raw result (real, or a SKIPPED-AS-MOOT
   // marker from script_bridge.ts's own computeStepSkip()) becomes its stepsConsulted status --
@@ -705,6 +793,7 @@ export async function runTerminatorStep(
     // Purpose:1 is never a skip candidate (nothing precedes it) -- plain ok/failed/not-run, same
     // as PART 2/3 built it.
     'Purpose:1': purposeRaw ? (purposeRaw.ok ? 'ok' : 'failed') : 'not run',
+    'Unitary:1': stepStatus(unitaryRaw),
   };
   // D-BP154-041 PART 2/3, FD-BP154-17, NEW. "Before an answer is attempted, establish that the
   // available evidence class CAN satisfy the stated purpose." Checked here, BEFORE this reducer's
@@ -741,6 +830,7 @@ export async function runTerminatorStep(
     namedSetRaw?.ok ? namedSetRaw : null,
     discriminatorRaw?.ok ? discriminatorRaw : null,
     humanNuanceRaw?.ok ? humanNuanceRaw : null,
+    unitaryRaw?.ok ? unitaryRaw : null,
   );
   // D-BP154-024/BISHOP-SEG/S24/seg-unstated, ADDITIVE: computed ONCE, threaded into every
   // TerminatorResult return below regardless of outcome (abstain, verdict, or contradiction) --
@@ -748,6 +838,7 @@ export async function runTerminatorStep(
   const frameMatchBuckets = computeFrameMatchBuckets(
     OPT, softballsRaw?.ok ? softballsRaw : null, discriminatorRaw?.ok ? discriminatorRaw : null,
     humanNuanceRaw?.ok ? humanNuanceRaw : null,
+    unitaryRaw?.ok ? unitaryRaw : null,
   );
 
   if (contradiction) {
@@ -770,6 +861,8 @@ export async function runTerminatorStep(
   if (contributingSteps.has('Discriminator:1') && discriminatorRaw) basisStepClasses.push(classifyComposerStepResult(discriminatorRaw).cls);
   // D-BP154-033, ADDITIVE.
   if (contributingSteps.has('HumanNuance:1') && humanNuanceRaw) basisStepClasses.push(classifyComposerStepResult(humanNuanceRaw).cls);
+  // D-BP154-043, ADDITIVE.
+  if (contributingSteps.has('Unitary:1') && unitaryRaw) basisStepClasses.push(classifyComposerStepResult(unitaryRaw).cls);
 
   if (survivors.length === 0) {
     const result: TerminatorResult = {
@@ -808,7 +901,27 @@ export async function runTerminatorStep(
     // this gate is silent (membershipPartitioned stays false) and the pre-existing magnitude-
     // consultation logic runs exactly as before.
     const membershipPartitioned = isMembershipPartitioned(namedSetRaw, discriminatorRaw);
-    if (membershipPartitioned) {
+    // D-BP154-043/BISHOP-SEG/S43/seg-unitary, AMENDS FD-BP154-14 (which itself amended FD-BP153-01).
+    // Founder's own correction, D-BP154-043 dispatch, verbatim: "I over-applied FD-BP154-14 as
+    // 'membership settled -> always abstain'... Magnitude does NOT run when membership RESOLVES to
+    // a unique survivor. Magnitude IS the final permissible tie-break when membership PARTITIONS
+    // but leaves several survivors AND the artifact class is a single-answer item. Partitioned-but-
+    // unresolved and resolved are different states; collapsing them was my error."
+    //
+    // `survivors.length > 1` (this whole branch's own guard) is already "partitioned but leaves
+    // several survivors" -- membership never RESOLVES to a unique survivor inside this branch at
+    // all (a unique survivor is handled entirely separately, below this whole `if` block). So the
+    // ONLY new condition this amendment adds is the artifact-class precondition: is this
+    // confirmed, from STATED METADATA (src/category -- step 1 of the Founder's own chain), to be a
+    // single-correct-answer assessment item? Reused, not reinvented: HumanNuance:1's own
+    // `artifactClassEstablished` + `corpusMetaTruth` (human_nuance_step.ts, FD-BP154-07a: "every
+    // MMLU-Pro item is a human-authored assessment artifact with exactly one intended answer")
+    // already answer exactly this question from exactly those two fields -- no new classification
+    // logic is built here.
+    const artifactClassEstablished = Boolean(
+      humanNuanceRaw?.ok && humanNuanceRaw.artifactClassEstablished && humanNuanceRaw.corpusMetaTruth,
+    );
+    if (membershipPartitioned && !artifactClassEstablished) {
       const statedMembers = [
         ...(namedSetRaw?.ok ? namedSetRaw.included.map((e) => `${e.letter}) ${e.name} [NamedSet:1]`) : []),
         ...(discriminatorRaw?.ok ? discriminatorRaw.propertyMembers.map((e) => `${e.letter}) ${e.name} [Discriminator:1]`) : []),
@@ -821,11 +934,21 @@ export async function runTerminatorStep(
           + `so the ${survivors.length} remaining survivor(s) (${survivors.join(', ')}) are `
           + 'non-members by elimination; ranking them by magnitude would answer "which is least/'
           + 'most of the property", not "which is NOT a member" -- more than one survivor after '
-          + `membership is settled is an ABSTAIN, not a ranking problem. Steps consulted: ${consultedNote}`,
+          + 'membership is settled is an ABSTAIN, not a ranking problem UNLESS the artifact class is '
+          + 'confirmed a single-answer item (D-BP154-043 amendment), which it is not here '
+          + `(HumanNuance:1: ${humanNuanceRaw?.ok ? (humanNuanceRaw.artifactClassEstablished ? 'artifact class established but no corpus meta-truth' : 'artifact class not established') : 'not run/failed'}). `
+          + `Steps consulted: ${consultedNote}`,
         basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
       };
       return { result, summary: summaryLine(OPT, result) };
     }
+    // D-BP154-043: when membershipPartitioned && artifactClassEstablished, this branch is
+    // deliberately NOT taken -- execution falls through to the SAME magnitude-consultation logic
+    // below a genuine superlative ranking already uses, now also serving as the permitted
+    // tie-break. `tieBreakKind` (set on the eventual `magnitudeBasis`, below) is what tells the two
+    // cases apart in the published result.
+    const tieBreakKind: 'genuine-superlative' | 'partitioned-membership-tiebreak' = membershipPartitioned
+      ? 'partitioned-membership-tiebreak' : 'genuine-superlative';
     // D-BP154-022/BISHOP-SEG/S22/seg-magnitude, ADDITIVE: FD-BP153-01, "magnitude decides only
     // among the survivors" -- consulted here, AFTER the elimination-based frame is established,
     // exactly the ordering the ruling names. Every one of these checks must hold before a
@@ -873,7 +996,13 @@ export async function runTerminatorStep(
         ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null,
         verdict: extremeEntry.letter, verdictName: OPT[extremeEntry.letter], abstain: false, abstainReason: null,
         basisStepClasses: [...basisStepClasses, magnitudeClass],
-        magnitudeBasis: { targetExtreme: magnitudeRaw.targetExtreme, property: magnitudeRaw.property, span: extremeEntry.span },
+        magnitudeBasis: {
+          targetExtreme: magnitudeRaw.targetExtreme, property: magnitudeRaw.property, span: extremeEntry.span,
+          tieBreakKind,
+          sourceGrade: magnitudeRaw.frozenSource?.obtained
+            ? 'PROVEN-eligible -- single frozen source covers every survivor'
+            : 'ANSWERED -- not proven by a unified frozen dataset',
+        },
         frameMatchBuckets, incomplete,
       };
       return { result, summary: summaryLine(OPT, result) };

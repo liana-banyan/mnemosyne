@@ -97,10 +97,15 @@ export function isSkippedMarker(raw: unknown): raw is SkippedStepMarker {
   return Boolean(raw) && typeof raw === 'object' && (raw as { skipped?: unknown }).skipped === true;
 }
 
-/** The five query-issuing Composer steps this gate can ever skip -- Purpose:1 and Terminator:1 are
- *  never candidates (qualifier 4's own table, this file's header). */
+/** The query-issuing Composer steps this gate can ever skip -- Purpose:1 and Terminator:1 are
+ *  never candidates (qualifier 4's own table, this file's header). D-BP154-043, ADDITIVE:
+ *  'Unitary:1' (FD-BP154-16's "unitary vs conglomerate" factor) is REFUTING, same reasoning as
+ *  Softballs:1/NamedSet:1/Discriminator:1/HumanNuance:1 -- its `excluded` facts feed
+ *  terminator_step.ts's own contradiction checks -- but it is still subject to the WIDER
+ *  sufficiency-driven skip (this file's own header: "there is nothing here for a REFUTING step to
+ *  refute" when the conclusion is structural, not a stated fact). */
 const SKIPPABLE_QUERY_STEPS: ReadonlySet<string> = new Set([
-  'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Magnitude:1', 'HumanNuance:1',
+  'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Magnitude:1', 'HumanNuance:1', 'Unitary:1',
 ]);
 
 /** THE GATE ITSELF. Called from script_bridge.ts's runOneStep() BEFORE a skippable step's real

@@ -20,6 +20,8 @@ import type { NamedSetResult } from './named_set_step';
 import type { DiscriminatorResult } from './discriminator_step';
 import type { MagnitudeResult, MagnitudeOrderEntry } from './magnitude_step';
 import type { HumanNuanceResult } from './human_nuance_step';
+import { CORPUS_META_TRUTH } from './human_nuance_step';
+import type { UnitaryResult } from './unitary_step';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 
 // qid 98's real option letters, from resources/mmlu_pro_bundled/questions.jsonl (question_id 98) --
@@ -75,6 +77,25 @@ function humanNuance(excluded: Array<[string, string, string]>): HumanNuanceResu
     // real feature data to report; empty/default values are correct here, not a shortcut.
     insufficientEvidence: [], consistent: [], featureRuleVersion: 'test',
     discarded: 0, unresolved: [], via: 'test',
+  };
+}
+
+/** D-BP154-043/BISHOP-SEG/S43/seg-unitary. The REAL shape runHumanNuanceStep() produces when the
+ *  artifact class is genuinely established -- `corpusMetaTruth` set to the real, exported
+ *  CORPUS_META_TRUTH constant (never a hand-invented value), since humanNuance()'s own fixture,
+ *  above, predates this amendment and deliberately leaves it null (proving the amendment does NOT
+ *  fire for that pre-existing fixture -- see this file's own test below). */
+function humanNuanceWithArtifactClassEstablished(): HumanNuanceResult {
+  return { ...humanNuance([]), corpusMetaTruth: CORPUS_META_TRUTH };
+}
+
+function unitary(excluded: Array<[string, string]>): UnitaryResult {
+  return {
+    ok: true, query: 'q',
+    excluded: excluded.map(([letter, span]) => ({ letter, name: OPT[letter], span })),
+    discarded: 0,
+    notExcluded: Object.keys(OPT).filter((L) => !excluded.some(([l]) => l === L)),
+    via: 'test',
   };
 }
 
@@ -868,6 +889,88 @@ describe('D-BP154-033: HumanNuance:1 is wired into deriveTerminatorEliminations(
     expect(result.stepsConsulted['Magnitude:1']).toBe('skipped-moot');
     expect(result.incomplete).toBe(false);
     expect(result.verdict).toBe('A');
+  });
+});
+
+describe('D-BP154-043: Unitary:1 is wired into deriveTerminatorEliminations() -- FD-BP154-16 unitary-vs-conglomerate factor', () => {
+  test('a Unitary:1 exclusion eliminates the named option with its own sourceStep and span', () => {
+    const un = unitary([['F', 'F) Central Asia is not considered a single world region, but a conglomerate of multiple countries.']]);
+    const { eliminated, contradiction } = deriveTerminatorEliminations(OPT, null, null, null, null, un);
+    expect(contradiction).toBeNull();
+    const entry = eliminated.find((e) => e.letter === 'F');
+    expect(entry).toBeDefined();
+    expect(entry?.sourceStep).toBe('Unitary:1');
+    expect(entry?.span).toContain('conglomerate');
+  });
+
+  test('an unstated option is never eliminated by Unitary:1 -- absence is omission', () => {
+    const un = unitary([]);
+    const { eliminated } = deriveTerminatorEliminations(OPT, null, null, null, null, un);
+    expect(eliminated).toEqual([]);
+  });
+
+  test('a Unitary:1 exclusion contradicting NamedSet:1 membership ABSTAINS rather than publishing', () => {
+    const { contradiction } = deriveTerminatorEliminations(
+      OPT, null, namedSet([['F', 'F) densely populated.']]), null, null,
+      unitary([['F', 'F) is a conglomerate, not a single region.']]),
+    );
+    expect(contradiction).not.toBeNull();
+    expect(contradiction?.letter).toBe('F');
+  });
+});
+
+describe('D-BP154-043: FD-BP154-14 AMENDMENT -- Magnitude permitted as a tie-break when membership PARTITIONS but does not RESOLVE, and the artifact class is a single-answer item', () => {
+  const input: MethodQuestionInput = {
+    qid: 98,
+    question: "Which of the following world regions is NOT considered one of the world's most densely populated regions?",
+    options: OPT,
+  };
+  const ctx: MethodRunContext = { askGoogle: async () => null, emit: () => {} };
+
+  test('REGRESSION PROOF: with artifact class NOT established (corpusMetaTruth null, the pre-existing humanNuance() fixture), a partitioned multi-survivor frame still ABSTAINS immediately -- the amendment does not fire', async () => {
+    const namedSetOutcome = { id: 'NamedSet:1', summary: 's', raw: namedSet([['B', 'B) is densely populated.']]) };
+    const humanNuanceOutcome = { id: 'HumanNuance:1', summary: 's', raw: humanNuance([]) };
+    const magOutcome = {
+      id: 'Magnitude:1', summary: 's',
+      raw: magnitude(['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I'], 'least', 'densely populated', [['A', 'A) least dense.']]),
+    };
+    const { result } = await runTerminatorStep(input, ctx, [namedSetOutcome, humanNuanceOutcome, magOutcome]);
+    expect(result.abstain).toBe(true);
+    expect(result.verdict).toBeNull();
+    expect(result.abstainReason).toMatch(/FD-BP154-14/);
+    expect(result.magnitudeBasis).toBeNull();
+  });
+
+  test('with artifact class ESTABLISHED (HumanNuance:1 states corpusMetaTruth), Magnitude:1 is permitted as the tie-break and its verdict is published, labeled ANSWERED (no frozen source)', async () => {
+    const namedSetOutcome = { id: 'NamedSet:1', summary: 's', raw: namedSet([['B', 'B) is densely populated.']]) };
+    const humanNuanceOutcome = { id: 'HumanNuance:1', summary: 's', raw: humanNuanceWithArtifactClassEstablished() };
+    const survivorFrame = Object.keys(OPT).filter((L) => L !== 'B');
+    const magOutcome = {
+      id: 'Magnitude:1', summary: 's',
+      raw: magnitude(
+        survivorFrame, 'least', 'densely populated',
+        [...survivorFrame].reverse().map((L) => [L, `${L}) has a stated relative density position.`] as [string, string]),
+      ),
+    };
+    const { result } = await runTerminatorStep(input, ctx, [namedSetOutcome, humanNuanceOutcome, magOutcome]);
+    expect(result.abstain).toBe(false);
+    expect(result.verdict).not.toBeNull();
+    expect(result.magnitudeBasis?.tieBreakKind).toBe('partitioned-membership-tiebreak');
+    expect(result.magnitudeBasis?.sourceGrade).toBe('ANSWERED -- not proven by a unified frozen dataset');
+  });
+
+  test('a GENUINE superlative ranking (no prior membership partition) is still labeled genuine-superlative, unchanged from before this amendment', async () => {
+    const magOutcome = {
+      id: 'Magnitude:1', summary: 's',
+      raw: magnitude(
+        Object.keys(OPT), 'least', 'densely populated',
+        Object.keys(OPT).slice().reverse().map((L) => [L, `${L}) has a stated relative density position.`] as [string, string]),
+      ),
+    };
+    // No NamedSet:1/Discriminator:1 in priorResults at all -- membershipPartitioned is false, so
+    // this is the pre-existing genuine-ranking path, unaffected by the amendment.
+    const { result } = await runTerminatorStep(input, ctx, [magOutcome]);
+    expect(result.magnitudeBasis?.tieBreakKind).toBe('genuine-superlative');
   });
 });
 

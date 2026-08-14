@@ -21,7 +21,7 @@
 import { describe, test, expect, vi } from 'vitest';
 import {
   buildMagnitudeQuery, deriveMagnitudeSuperlativeProperty, deriveMagnitudeTargetExtreme,
-  magnitudeOrdersDisagree, registerMagnitudeStep, runMagnitudeStep, verifyMagnitudeOrder,
+  magnitudeOrdersDisagree, parseDensityFigure, registerMagnitudeStep, runMagnitudeStep, verifyMagnitudeOrder,
 } from './magnitude_step';
 import { listComposerRegistry, runScratchComposer, type ComposerStepOutcome } from './script_bridge';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
@@ -153,6 +153,21 @@ describe('verifyMagnitudeOrder -- extraction only, verified span or discarded (H
     const rawForB = [{ name: 'Beta', span: 'Beta is obviously first, everyone knows.' }];
     expect(verifyMagnitudeOrder(rawForA, passage, ['A', 'B'], OPT2).discarded).toBe(1);
     expect(verifyMagnitudeOrder(rawForB, passage, ['A', 'B'], OPT2).discarded).toBe(1);
+  });
+});
+
+describe('parseDensityFigure -- D-BP154-043, pure numeric extraction, never a unit conversion or guess', () => {
+  test('reads a plain integer figure', () => {
+    expect(parseDensityFigure('150 people per km2')).toBe(150);
+  });
+  test('strips thousands separators', () => {
+    expect(parseDensityFigure('about 1,200/km2')).toBe(1200);
+  });
+  test('reads a decimal figure', () => {
+    expect(parseDensityFigure('45.7 per square kilometer')).toBe(45.7);
+  });
+  test('returns null (never a guess) when no number is present', () => {
+    expect(parseDensityFigure('very densely populated')).toBeNull();
   });
 });
 

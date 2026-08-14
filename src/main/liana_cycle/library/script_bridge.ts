@@ -92,6 +92,9 @@ import { computeStepSkip } from './step_skip';
 // mechanical). See origin_frame_step.ts's own header for the full ruling and the key-blindness
 // discipline.
 import { registerOriginFrameStep, runOriginFrameStep } from './origin_frame_step';
+// D-BP154-043/BISHOP-SEG/S43/seg-unitary -- FD-BP154-16's "unitary vs conglomerate" membership
+// factor, as its own step. See unitary_step.ts's own header.
+import { registerUnitaryStep, runUnitaryStep } from './unitary_step';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -214,6 +217,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP154-043/BISHOP-SEG/S43/seg-unitary, ADDITIVE -- same idempotent shape as every call above,
+  // for the same reason. Does not touch, re-register, or collide with anything the others
+  // register -- 'Unitary' is a new name.
+  try {
+    registerUnitaryStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -256,7 +267,8 @@ export interface ComposerRegistryEntry {
 // D-BP154-041 adds 'Purpose:1' -- see purpose_step.ts's own header; must run before any
 // option-examining step to satisfy FD-BP154-16's "stated before any option is examined" guard.
 // D-BP154-042 adds 'OriginFrame:1' -- see origin_frame_step.ts's own header.
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1']);
+// D-BP154-043 adds 'Unitary:1' -- see unitary_step.ts's own header.
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1', 'Unitary:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -450,6 +462,13 @@ async function runOneStep(
     // (Softballs:1 + NamedSet:1 over the origin frame only) via the SAME ctx every other step here
     // receives.
     const { result, summary } = await runOriginFrameStep(input, ctx, priorResults);
+    return { summary, raw: result };
+  }
+  if (id === 'Unitary:1') {
+    // D-BP154-043/BISHOP-SEG/S43/seg-unitary -- THE UNITARY-VS-CONGLOMERATE FACTOR. Same
+    // recordingAskGoogle()-wrapped ctx.askGoogle every other step here receives.
+    const { result, summary } = await runUnitaryStep(input, ctx);
+    persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }
   if (id === 'HumanNuance:1') {
