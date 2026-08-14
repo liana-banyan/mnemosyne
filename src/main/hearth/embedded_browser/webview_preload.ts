@@ -13,10 +13,6 @@
 // third-party AI-backed search interface via embedded-browser content-script bridge
 
 import { ipcRenderer } from 'electron';
-// D-BP154-010/BISHOP/S10/seg-thepail -- THE HOLE IN THE PAIL, CLOSED AT THE CAPTURE HOP. See
-// option_membership.ts's own header for the full ruling (THE_PAIL_BP154.md) and why the predicate
-// lives in its own DOM-free/electron-free module rather than inline here.
-import { mentionsAnyOption } from './option_membership';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -260,6 +256,62 @@ function looksLikeUiChrome(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
   return UI_CHROME_DENYLIST_PATTERNS.some((re) => re.test(t));
+}
+
+// D-BP154-011/BISHOP/S11/seg-thepailmouth -- URGENT CORRECTION, same-day. THE PAIL's own capture-
+// hop predicate (mentionsAnyOption, D-BP154-010) was originally a SEPARATE module,
+// option_membership.ts, imported here via `import { mentionsAnyOption } from './option_membership'`.
+// THAT IMPORT BROKE THIS ENTIRE FILE. MEASURED, directly, via a CDP console listener attached to
+// the Gemini guest webview's own devtools target during a live dispatch:
+//
+//   Unable to load preload script: .../dist/main/hearth/embedded_browser/webview_preload.js
+//   Error: module not found: ./option_membership
+//     at preloadRequire (node:electron/js2c/sandbox_bundle:2:151213)
+//
+// This file's OWN header, written before this ticket (BP138, see the top of this file): "this
+// <webview>'s guest context runs under Electron's default sandbox (sandbox: true)... Node
+// built-ins (fs/path) do NOT exist in a sandboxed context -- the former top-level `import {
+// appendFileSync, mkdirSync } from 'fs'`... threw at MODULE LOAD time, before ANY listener in this
+// file... ever attached." A relative import to a SIBLING PROJECT FILE hits the exact same
+// sandboxed-preload restriction `fs`/`path` did -- Electron's sandboxed preload loader
+// (`preloadRequire`) does not resolve arbitrary local modules, only what it is given inline. This
+// file must be entirely self-contained; every function in it already is, for this reason, and this
+// one broke that discipline for one release. THE CONSEQUENCE WAS TOTAL, NOT PARTIAL: the whole
+// preload script threw at load time, so NOTHING in this file ever ran again in any sandboxed
+// webview -- not looksLikeUiChrome, not any interactive driver, not the static extraction path --
+// which is the true root cause of BP154_STAGE1_THE_PAIL.md's "16 of 16 timeouts" finding across
+// two full live runs and a follow-up "fix" (D-BP154-011's own probe-skip) that could never have
+// worked, because the file that fix also depended on could not load either. Reimplemented inline,
+// below -- byte-identical logic to option_membership.ts, which stays as the tested, DOM-free
+// reference (see that file's own header) but is no longer imported by anything that ships inside
+// a sandboxed preload. Drift between the two is pinned by option_membership.test.ts's own suite
+// plus this file's own manual review; both are small, pure, and unlikely to need to change often.
+
+/** Lowercase, strip everything but alphanumerics and spaces, collapse whitespace, trim. Mirrors
+ *  option_membership.ts's `normalizeForOptionMatch` exactly. */
+function normalizeForOptionMatch(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** Strips a leading "A) " / "1) " style letter-or-number prefix, when present. Mirrors
+ *  option_membership.ts's `stripOptionLabelPrefix` exactly. */
+function stripOptionLabelPrefix(option: string): string {
+  return option.replace(/^\s*[A-Za-z0-9]+\)\s*/, '');
+}
+
+/** Mirrors option_membership.ts's `mentionsAnyOption` exactly -- see that file's own header for
+ *  the full contract (empty/undefined mcOptions never rejects; a needle under 3 normalized
+ *  characters is never used; empty/whitespace-only text is never a match). */
+function mentionsAnyOption(text: string, mcOptions: string[] | undefined): boolean {
+  if (!mcOptions || mcOptions.length === 0) return true;
+  const t = text.trim();
+  if (!t) return false;
+  const hay = normalizeForOptionMatch(t);
+  if (!hay) return false;
+  return mcOptions.some((opt) => {
+    const needle = normalizeForOptionMatch(stripOptionLabelPrefix(opt));
+    return needle.length >= 3 && hay.includes(needle);
+  });
 }
 
 interface BrowserAuthorityExtractionResultMessage {

@@ -2207,11 +2207,47 @@ export async function runBrowserAuthorityQueryFromMainObserved(
     // function's own header for the measured collision this closes), so this probe can no longer
     // navigate whatever surface the operator has the shared window open on.
     const isInteractive = isInteractiveBrowserAuthority(query.authority);
-    if (!threadDecision.continuing) {
-      const signInStatus = await probeNexusAuthoritySignInStatus(
-        query.authority,
-        isInteractive ? ensureNexusAuthoritySession : ensureNexusMachineQuerySession,
-      );
+    // D-BP154-011/BISHOP/S11/seg-thepailmouth -- THE MOUTH OF THE PAIL. MEASURED, not assumed
+    // (BP154_STAGE1_THE_PAIL.md's own CONTINUATION section, live CDP event capture on the real
+    // shared webview): on a FRESH interactive dispatch, this probe and
+    // runInteractiveBrowserAuthorityQueryObserved()'s own freshScript (below) BOTH call
+    // `wv.loadURL()` to the IDENTICAL URL (this function's own `url` local, above, e.g.
+    // 'https://gemini.google.com/app' for user_gemini -- byte-identical to
+    // buildBrowserAuthorityQueryUrl(query) for the same authority) within roughly two seconds of
+    // each other, each attaching its OWN 'did-finish-load' listener to the SAME <webview> element.
+    // Live-instrumented run (native `did-start-loading`/`did-navigate`/`dom-ready`/
+    // `did-finish-load`/`did-stop-loading`/`ipc-message` listeners attached directly to the guest
+    // <webview> element via CDP): TWO complete navigation cycles to the same URL landed within
+    // ~2.9s of the click (did-finish-load at both t+916ms and t+2778ms), followed by a THIRD,
+    // truncated did-start-loading/did-stop-loading pair with no did-finish-load at t+6.5s -- and
+    // then NOTHING for the remaining ~20+ seconds until the outer ceiling fired. The guest's own
+    // `embedded_browser_injection.jsonl` log confirms `gemini_interactive_query_received` (the
+    // FIRST line webview_preload.ts's dispatcher logs, unconditionally, on receiving the IPC
+    // message this function's freshScript sends after its own 2s settle delay) never fired at all
+    // for this dispatch, though the identical mechanism DID complete successfully, repeatedly,
+    // earlier the same day (same log file, `success:true`, up to 2301 chars of real answer text)
+    // on CONTINUING dispatches -- the one difference being that a continuing dispatch takes
+    // neither this probe's branch NOR the freshScript's own `wv.loadURL()` at all (script.ts's
+    // own continuingScript sends directly into the already-mounted composer, no navigation).
+    // CONCLUSION: the probe's OWN redundant navigation races the real dispatch's navigation on
+    // the SAME shared <webview>, and the resulting second-or-third overlapping load appears to
+    // tear down the guest JS realm (and whatever listener/composer state the real dispatch's own
+    // script was about to use) before the real dispatch ever gets a stable, single, uninterrupted
+    // page to type into -- exactly the shape of "the app cannot hear an authority that is
+    // genuinely answering" the order names. THE FIX: this probe is already documented, by its own
+    // header and this exact call site's own pre-existing comment, as PURELY ADVISORY -- its result
+    // is never used for anything but a console.warn; no caller branches on `signInStatus.signedIn`.
+    // For an INTERACTIVE authority specifically, the dispatch immediately below (whether taken via
+    // the `isInteractive` branch here or not) performs its OWN navigation and its OWN honest
+    // logged-out detection (`isGenericLoginWall`/`isClaudeLoginWall`, webview_preload.ts) -- "the
+    // query's own extraction is the real arbiter", this call site's own pre-existing words. Skipping
+    // this probe for interactive authorities removes ONLY the redundant, colliding navigation; it
+    // removes no safety property, since nothing downstream ever read its result for control flow.
+    // Static authorities (Google/Perplexity) are UNTOUCHED -- they navigate a DIFFERENT window
+    // (ensureNexusMachineQuerySession()) than this measurement covers, and this ticket's own
+    // hard boundary is to fix the ONE measured defect, not to generalize past what was measured.
+    if (!threadDecision.continuing && !isInteractive) {
+      const signInStatus = await probeNexusAuthoritySignInStatus(query.authority, ensureNexusMachineQuerySession);
       if (!signInStatus.signedIn) {
         console.warn(`[browser-authority-main] ${query.authority} sign-in probe returned not-signed-in (${signInStatus.reason}) -- proceeding anyway; the query's own extraction is the real arbiter (BP139: probe is advisory, false-negatives confirmed live).`);
       }

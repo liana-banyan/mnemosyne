@@ -1,6 +1,18 @@
 // option_membership.ts -- D-BP154-010/BISHOP/S10/seg-thepail -- THE HOLE IN THE PAIL, CLOSED AT
 // THE CAPTURE HOP.
 //
+// D-BP154-011 CORRECTION: webview_preload.ts no longer imports this file. It DID, briefly, in
+// D-BP154-010, and that import broke the entire preload script -- Electron's sandboxed preload
+// loader cannot resolve a relative import to a sibling project file (measured directly via a CDP
+// console listener on a live guest webview: "Error: module not found: ./option_membership", the
+// exact same class of failure this estate already hit once with `fs`/`path`, per this file's own
+// header up top). webview_preload.ts now carries a byte-identical INLINE copy of
+// normalizeForOptionMatch()/stripOptionLabelPrefix()/mentionsAnyOption() (see that file's own
+// D-BP154-011 comment, right above looksLikeUiChrome()). THIS file remains the tested reference
+// implementation (option_membership.test.ts's own suite covers it) and the thing any non-sandboxed
+// caller should still import; it is simply no longer reachable from inside the one context that
+// cannot load it.
+//
 // BP154_LOSSY_HOP_AUDIT.md, SILENT #1: webview_preload.ts's looksLikeUiChrome() is a 5-regex
 // DENYLIST built reactively, one observed chrome string at a time -- it only ever closes gaps
 // AFTER they have already cost a session. This exact string passed it and was recorded as a real
