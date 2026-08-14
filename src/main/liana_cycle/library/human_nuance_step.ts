@@ -180,28 +180,250 @@ export function deriveHumanNuanceFrame(
 }
 
 /** PART 4's own second half -- ONE query (FD-BP153-01 consequence 4), asking a source to STATE,
- *  for every non-participant, the reason it is not usually considered a member of `category`.
- *  Generic across categories -- never names "population", "settlement", or any of qid 98's own
- *  words; those come only from whatever the SOURCE states back. */
+ *  for every non-participant, what KIND OF THING it is, in the source's OWN short term (never a
+ *  free-text justification). Generic across categories -- never names "population", "settlement",
+ *  or any of qid 98's own words; those come only from whatever the SOURCE states back.
+ *
+ *  D-BP154-036/BISHOP-SEG/S36/seg-wireit REWRITE. Founder, FD-BP154-11: "Replace the free-text
+ *  reason with a bounded feature extractor... Any prose the step still surfaces must be a verbatim
+ *  span, never 'in your own words.'" The PRE-EXISTING query asked for "the reason (if any)... quote
+ *  or closely paraphrase" -- `closely paraphrase` was exactly the model-authored-prose defect his
+ *  own audit named. This query asks for a KIND (a short, structural noun the source itself uses --
+ *  "continent", "desert", "line of latitude") plus its own verbatim span, never a reason in the
+ *  model's own words -- see classifyHumanNuanceOntology()/applyHumanNuanceFeatureRules() below for
+ *  how a stated kind becomes an exclusion (or does not) through declared, versioned rules, never
+ *  through anything the model composed. */
 export function buildHumanNuanceExclusionQuery(
   category: string, nonParticipants: string[], OPT: Record<string, string>,
 ): string {
   const list = nonParticipants.map((L) => `${L}) ${OPT[L]}`).join('; ');
-  return `For each of the following, state the reason (if any) it would NOT usually be considered `
-    + `part of "${category}" -- quote or closely paraphrase the source's own stated reason. Do not `
-    + `guess about ones you are not sure of; simply do not mention those. ${list}`;
+  return `For each of the following, state what KIND OF THING it is, in a few words, using the `
+    + `source's own term (for example: continent, subregion, desert, biome, line of latitude) as `
+    + `it relates to whether it would usually be considered part of "${category}". Copy the term `
+    + `as the source states it -- do not paraphrase, invent, or explain in your own words -- and `
+    + `give the exact verbatim sentence or clause that states it. If the passage does not state a `
+    + `kind for an option, do not include it. ${list}`;
+}
+
+// ───────────────── D-BP154-036/BISHOP-SEG/S36/seg-wireit -- DECLARED FEATURES OVER THE OPTION SET ─────────────────
+//
+// FD-BP154-11, Founder verbatim: "Your own audit: zero declared features, and the `reason` field
+// is instructed to be written 'in your own brief words' -- model-generated paraphrase inside a
+// step that presents as extraction-only. Only `span` is verbatim-checked. Replace the free-text
+// reason with a bounded feature extractor: declared features over the option set -- geographic
+// scale, ontology type, whether the term is a named canonical region, whether it matches the class
+// implied by the other options. Rules over those features, versioned as part of R. If a pattern
+// cannot be represented in declared features and explicit rules, emit INSUFFICIENT EVIDENCE --
+// never a paraphrase."
+//
+// WHAT CHANGED, PRECISELY. The step no longer asks a source to compose a REASON -- it asks a
+// source to STATE THE OPTION'S OWN KIND, a short structural term COPIED from the passage (verbatim
+// span required, same choke point every extraction in this estate already uses). That stated kind
+// is then run through classifyHumanNuanceOntology() -- a DECLARED, VERSIONED lookup table, pure
+// and synchronous, no model, no I/O -- producing four typed features (ontologyType,
+// geographicScale, namedCanonicalRegion, matchesClassImpliedByOtherOptions).
+// applyHumanNuanceFeatureRules() then decides EXCLUDED / CONSISTENT / INSUFFICIENT_EVIDENCE from
+// those features ALONE, through an explicit, in-code branch -- never a model's own judgment. The
+// only "reason" text this step emits is a fixed, CODE-TEMPLATED sentence built from the typed
+// feature values themselves (see applyHumanNuanceFeatureRules()'s own return below) -- never
+// model-authored prose. The verbatim span the source stated is carried alongside it, unchanged.
+//
+// THE DECLARED TABLE -- ATTRIBUTED WHERE THE FOUNDER NAMED THE TOKEN, TARE WHERE THIS TICKET
+// GENERALIZES HIS OWN REASONING STRUCTURALLY. FD-BP154-07a, verbatim: "desert and jungle are not
+// considered world regions - because of their lack of usual human settlement and therefore
+// population." "desert"/"jungle"/"rainforest" are ATTRIBUTED, his own words. "biome"/"ecosystem"/
+// "forest" (the general CLASS his own reasoning names) and "line of latitude"/"circle of
+// latitude"/"parallel" (this file's own qid-98 fixture already reads Arctic Circle as "a line of
+// latitude", terminator_step.test.ts's own worked example) are TARE per HARDWIRE-23 Law 2/4: no
+// direct Founder quote names these specific tokens; they generalize his stated reasoning
+// structurally and are disclosed as an extension here, not hidden as though ratified. Extending
+// this table further is a decision for its own ruling, not silently grown by a later ticket.
+
+export type HumanNuanceOntologyType =
+  | 'macro_region'
+  | 'non_region_biome_or_landform'
+  | 'non_region_line_or_boundary'
+  | 'unclassified';
+
+export type HumanNuanceGeographicScale = 'macro' | 'sub_regional_line' | 'biome_or_ecosystem' | 'unclassified';
+
+interface OntologyTokenRule {
+  token: string;
+  ontologyType: HumanNuanceOntologyType;
+  scale: HumanNuanceGeographicScale;
+  attribution: 'ATTRIBUTED' | 'TARE';
+}
+
+/** R, versioned (FD-BP154-11: "Rules over those features, versioned as part of R"). Bump this
+ *  string in the SAME commit as any change to the token table below or to
+ *  applyHumanNuanceFeatureRules()'s own logic -- a feature/decision computed under one version is
+ *  never silently compared against one computed under another (same discipline
+ *  verdict_evaluator.ts's own RULE_SET_VERSION already established for the Terminator). */
+export const HUMAN_NUANCE_FEATURE_RULE_VERSION = 'human_nuance_features@FD-BP154-07a:1';
+
+const NON_REGION_TOKENS: readonly OntologyTokenRule[] = [
+  { token: 'desert', ontologyType: 'non_region_biome_or_landform', scale: 'biome_or_ecosystem', attribution: 'ATTRIBUTED' },
+  { token: 'jungle', ontologyType: 'non_region_biome_or_landform', scale: 'biome_or_ecosystem', attribution: 'ATTRIBUTED' },
+  { token: 'rainforest', ontologyType: 'non_region_biome_or_landform', scale: 'biome_or_ecosystem', attribution: 'ATTRIBUTED' },
+  { token: 'biome', ontologyType: 'non_region_biome_or_landform', scale: 'biome_or_ecosystem', attribution: 'TARE' },
+  { token: 'ecosystem', ontologyType: 'non_region_biome_or_landform', scale: 'biome_or_ecosystem', attribution: 'TARE' },
+  { token: 'forest', ontologyType: 'non_region_biome_or_landform', scale: 'biome_or_ecosystem', attribution: 'TARE' },
+  { token: 'line of latitude', ontologyType: 'non_region_line_or_boundary', scale: 'sub_regional_line', attribution: 'TARE' },
+  { token: 'circle of latitude', ontologyType: 'non_region_line_or_boundary', scale: 'sub_regional_line', attribution: 'TARE' },
+  { token: 'latitude line', ontologyType: 'non_region_line_or_boundary', scale: 'sub_regional_line', attribution: 'TARE' },
+  { token: 'parallel', ontologyType: 'non_region_line_or_boundary', scale: 'sub_regional_line', attribution: 'TARE' },
+];
+
+const REGION_TOKENS: readonly OntologyTokenRule[] = [
+  { token: 'geopolitical macro-region', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+  { token: 'geographic macro-region', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+  { token: 'macro-region', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+  { token: 'macroregion', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+  { token: 'subcontinent', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+  { token: 'continent', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+  { token: 'subregion', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+  { token: 'geographic region', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+  { token: 'geopolitical region', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+  { token: 'world region', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+  { token: 'region', ontologyType: 'macro_region', scale: 'macro', attribution: 'TARE' },
+];
+
+// Longer/more-specific tokens first so e.g. "geopolitical macro-region" matches before the bare
+// "region" fallback -- a plain array scan in this fixed, declared order, never a similarity score.
+const ALL_TOKENS: readonly OntologyTokenRule[] = [...NON_REGION_TOKENS, ...REGION_TOKENS];
+
+/** Same normalization discipline as terminator_step.ts's own normKindToken() (case/punctuation/
+ *  whitespace fold) -- reproduced here, not imported, per this file's own "steps stay
+ *  self-contained" convention (every sibling step's own header). */
+function normOntologyText(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export interface HumanNuanceOntologyClassification {
+  ontologyType: HumanNuanceOntologyType;
+  scale: HumanNuanceGeographicScale;
+  matchedToken: string | null;
+}
+
+/** THE ONE PLACE a stated kind becomes a typed ontology classification -- pure, synchronous, no
+ *  I/O, no model. Matches the normalized `statedKind` text against the declared table above by
+ *  whole-phrase containment (the same structural containment discipline
+ *  terminator_step.ts's own discriminatorKindMatchesCategory() uses -- never a similarity score);
+ *  the FIRST matching token wins, in the table's own declared order. Returns 'unclassified' (never
+ *  a guess) when nothing in the declared table matches -- this is exactly the case
+ *  applyHumanNuanceFeatureRules() below turns into INSUFFICIENT EVIDENCE, never an elimination. */
+export function classifyHumanNuanceOntology(statedKind: string): HumanNuanceOntologyClassification {
+  const norm = normOntologyText(statedKind);
+  for (const rule of ALL_TOKENS) {
+    if (norm.includes(rule.token)) {
+      return { ontologyType: rule.ontologyType, scale: rule.scale, matchedToken: rule.token };
+    }
+  }
+  return { ontologyType: 'unclassified', scale: 'unclassified', matchedToken: null };
+}
+
+export interface HumanNuanceFeatureSet {
+  letter: string;
+  /** The source's own stated kind, verbatim-span-backed by the caller (not repeated here). */
+  statedKind: string;
+  ontologyType: HumanNuanceOntologyType;
+  geographicScale: HumanNuanceGeographicScale;
+  /** DECLARED FEATURE: "whether the term is a named canonical region" (FD-BP154-11, verbatim). */
+  namedCanonicalRegion: boolean;
+  /** DECLARED FEATURE: "whether it matches the class implied by the other options" (FD-BP154-11,
+   *  verbatim). Derived from `ontologyType` alone -- both features read the SAME declared
+   *  classification of the stated kind, from two angles ("what kind is this" vs "does that kind
+   *  belong to the region class every frame option's own category implies") -- disclosed here as
+   *  DERIVED, not independently re-queried, so it is never mistaken for a second, separate signal.
+   *  `null` when `ontologyType` is 'unclassified' -- there is nothing to compare. */
+  matchesClassImpliedByOtherOptions: boolean | null;
+  matchedToken: string | null;
+}
+
+/** Pure, synchronous. Combines classifyHumanNuanceOntology()'s own typed classification into the
+ *  full declared feature set for one option. */
+export function deriveHumanNuanceFeatures(letter: string, statedKind: string): HumanNuanceFeatureSet {
+  const { ontologyType, scale, matchedToken } = classifyHumanNuanceOntology(statedKind);
+  return {
+    letter,
+    statedKind,
+    ontologyType,
+    geographicScale: scale,
+    namedCanonicalRegion: ontologyType === 'macro_region',
+    matchesClassImpliedByOtherOptions: ontologyType === 'unclassified' ? null : ontologyType === 'macro_region',
+    matchedToken,
+  };
+}
+
+export type HumanNuanceFeatureDecision = 'excluded' | 'consistent' | 'insufficient_evidence';
+
+/** THE RULE SET (R) itself -- an explicit, in-code branch over DECLARED FEATURES ONLY. No model is
+ *  consulted here; no free text is read here. `reason` (when non-null) is a fixed, CODE-TEMPLATED
+ *  sentence built purely from the typed field values already computed above -- never model-
+ *  authored prose (FD-BP154-11: "any prose the step still surfaces must be a verbatim span, never
+ *  'in your own words'" -- the verbatim SPAN itself is carried separately by the caller, alongside
+ *  this templated sentence, never replaced by it).
+ *
+ *  - non_region_biome_or_landform / non_region_line_or_boundary -> EXCLUDED (FD-BP154-07a: these
+ *    declared classes lack usual human settlement, so a population/settlement region category
+ *    excludes them by declared policy, not by this run's own judgment).
+ *  - macro_region -> CONSISTENT -- not excluded by this mechanism (may still be governed by other
+ *    Composer steps; this step only ever REPORTS this option as consistent with the region class).
+ *  - unclassified -> INSUFFICIENT_EVIDENCE -- the source stated *something*, but it does not match
+ *    any declared token, region or non-region. Never guessed, never silently dropped; reported by
+ *    its own name so a reader can tell "the source was silent" (unresolved, elsewhere in this
+ *    file) apart from "the source spoke and the declared rules do not cover it" (this). */
+export function applyHumanNuanceFeatureRules(
+  features: HumanNuanceFeatureSet,
+): { decision: HumanNuanceFeatureDecision; reason: string | null } {
+  if (features.ontologyType === 'non_region_biome_or_landform' || features.ontologyType === 'non_region_line_or_boundary') {
+    return {
+      decision: 'excluded',
+      reason: `declared feature match under ${HUMAN_NUANCE_FEATURE_RULE_VERSION}: stated kind `
+        + `"${features.statedKind}" matches declared token "${features.matchedToken}" -- `
+        + `ontologyType=${features.ontologyType}, geographicScale=${features.geographicScale}, `
+        + `namedCanonicalRegion=${features.namedCanonicalRegion}, `
+        + `matchesClassImpliedByOtherOptions=${features.matchesClassImpliedByOtherOptions} `
+        + '(FD-BP154-07a: excluded from a population/settlement region category by declared, '
+        + 'versioned ontology policy, not by this run\'s own judgment)',
+    };
+  }
+  if (features.ontologyType === 'macro_region') {
+    return { decision: 'consistent', reason: null };
+  }
+  return { decision: 'insufficient_evidence', reason: null };
 }
 
 export interface HumanNuanceExclusionEntry {
   letter: string;
   name: string;
-  /** The stated reason, verbatim as the source phrased it. */
+  /** CODE-TEMPLATED from declared features (applyHumanNuanceFeatureRules(), above) -- never
+   *  model-authored prose, never a paraphrase. */
   reason: string;
-  /** The verbatim span (sentence or clause) proving the source itself stated this. */
+  /** The verbatim span (sentence or clause) proving the source itself stated the kind this
+   *  exclusion was classified from. */
+  span: string;
+  /** The declared features this exclusion was decided from -- full transparency into R. Optional
+   *  only so a hand-built fixture elsewhere in this estate (terminator_step.test.ts's own
+   *  `humanNuance()` helper, which predates this ticket and constructs entries directly rather
+   *  than through verifyAndClassifyHumanNuanceKinds()) is not forced to fabricate a feature set it
+   *  never computed -- every REAL entry this file itself produces always sets it. */
+  features?: HumanNuanceFeatureSet;
+}
+
+/** DECLARED FEATURE outcome, FD-BP154-11's own required slot: a kind WAS stated (and
+ *  verbatim-span-verified) but does not match any declared token, region or non-region. Distinct
+ *  from `unresolved` (source never addressed the option at all) -- "the source spoke and the
+ *  declared rules do not cover it" is a different fact from "the source was silent", and
+ *  conflating them would hide exactly the gap FD-BP154-11 exists to expose. */
+export interface HumanNuanceInsufficientEvidenceEntry {
+  letter: string;
+  name: string;
+  statedKind: string;
   span: string;
 }
 
-type RawExclusionEntry = { name?: unknown; reason?: unknown; span?: unknown };
+type RawKindEntry = { name?: unknown; kind?: unknown; span?: unknown };
 
 // D-BP154-033/BISHOP-SEG/S30-continuation/seg-namedset-prefix, PORTED. LIVE-MEASURED this same
 // ticket: this step's own live run (qid 98) got a real, unambiguous Gemini answer for G) Arctic
@@ -215,27 +437,48 @@ function stripListLetterPrefix(name: string): string {
   return name.replace(/^[A-Za-z]\)\s*/, '');
 }
 
+export interface HumanNuanceKindVerificationResult {
+  excluded: HumanNuanceExclusionEntry[];
+  /** DECLARED FEATURE outcome (FD-BP154-11): a kind was stated and verbatim-verified, but does not
+   *  match any declared token. */
+  insufficientEvidence: HumanNuanceInsufficientEvidenceEntry[];
+  /** Letters whose stated, verified kind classified as 'macro_region' -- addressed by the source,
+   *  found consistent with the region class, NOT excluded. Kept separate from `unresolved` (below,
+   *  in runHumanNuanceStep()) so "the source said this IS a region" is never conflated with "the
+   *  source said nothing at all". */
+  consistent: string[];
+  discarded: number;
+}
+
 /** THE VERIFY-THE-SPAN CHOKE POINT (FD-BP153-07 FIX 2), same four-part discipline every sibling
  *  step's own verify function already applies: (a) non-empty `name`, (b) maps to a KNOWN
  *  non-participant option (an option ALREADY in the frame is never a candidate here -- part 4 only
- *  ever speaks about non-participants), (c) non-empty `reason`, (d) non-empty `span`, (e) span
+ *  ever speaks about non-participants), (c) non-empty `kind`, (d) non-empty `span`, (e) span
  *  VERBATIM in `passage`, (f) span itself ABOUT the named option (appearsIn). Any failure of
  *  (c)/(d)/(e)/(f) is a DISCARD and is counted. A `name` mapping to no known option letter, even
- *  after stripListLetterPrefix() (D-BP154-033) is tried, is simply not a match. */
-export function verifyHumanNuanceExclusions(
+ *  after stripListLetterPrefix() (D-BP154-033) is tried, is simply not a match.
+ *
+ *  D-BP154-036/BISHOP-SEG/S36/seg-wireit REWRITE (was verifyHumanNuanceExclusions(), reading a
+ *  free-text `reason` field the model composed). Verifies a `kind` (a short, verbatim-span-backed
+ *  term) instead, then runs it through classifyHumanNuanceOntology()/applyHumanNuanceFeatureRules()
+ *  -- declared, versioned, in-code rules, never a second pass of model judgment -- to decide
+ *  EXCLUDED / CONSISTENT / INSUFFICIENT_EVIDENCE. */
+export function verifyAndClassifyHumanNuanceKinds(
   raw: unknown,
   passage: string,
   nonParticipants: string[],
   OPT: Record<string, string>,
-): { excluded: HumanNuanceExclusionEntry[]; discarded: number } {
-  const entries = Array.isArray(raw) ? (raw as RawExclusionEntry[]) : [];
+): HumanNuanceKindVerificationResult {
+  const entries = Array.isArray(raw) ? (raw as RawKindEntry[]) : [];
   const nonParticipantSet = new Set(nonParticipants);
   const excluded: HumanNuanceExclusionEntry[] = [];
+  const insufficientEvidence: HumanNuanceInsufficientEvidenceEntry[] = [];
+  const consistent: string[] = [];
   const seen = new Set<string>();
   let discarded = 0;
   for (const entry of entries) {
     const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
-    const reason = typeof entry?.reason === 'string' ? entry.reason.trim() : '';
+    const kind = typeof entry?.kind === 'string' ? entry.kind.trim() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
     if (!name) continue; // nothing named -- not a candidate value, not a discard
     let matched = toLetters([name], OPT);
@@ -246,15 +489,25 @@ export function verifyHumanNuanceExclusions(
     if (matched.length === 0) continue; // names no known option -- not a candidate value here
     const L = matched[0];
     if (!nonParticipantSet.has(L)) continue; // names a FRAME option -- part 4 never speaks about those; not a discard
-    if (!reason || !span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {
+    if (!kind || !span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {
       discarded++;
       continue;
     }
     if (seen.has(L)) continue; // one entry per option; a repeat is neither kept nor double-counted
     seen.add(L);
-    excluded.push({ letter: L, name: OPT[L], reason, span });
+    const features = deriveHumanNuanceFeatures(L, kind);
+    const { decision, reason } = applyHumanNuanceFeatureRules(features);
+    if (decision === 'excluded') {
+      excluded.push({ letter: L, name: OPT[L], reason: reason as string, span, features });
+    } else if (decision === 'insufficient_evidence') {
+      insufficientEvidence.push({ letter: L, name: OPT[L], statedKind: kind, span });
+    } else {
+      consistent.push(L);
+    }
   }
-  return { excluded, discarded };
+  return {
+    excluded, insufficientEvidence, consistent, discarded,
+  };
 }
 
 export interface HumanNuanceResult {
@@ -276,9 +529,21 @@ export interface HumanNuanceResult {
   answerDerivableFromQuestionTermsAlone: boolean | null;
   query: string | null;
   excluded: HumanNuanceExclusionEntry[];
+  /** D-BP154-036, ADDITIVE. FD-BP154-11's own required slot: a kind was stated and verified but
+   *  matches no declared token. Never silently folded into `unresolved` -- see
+   *  HumanNuanceInsufficientEvidenceEntry's own header for why the two are different facts. */
+  insufficientEvidence: HumanNuanceInsufficientEvidenceEntry[];
+  /** D-BP154-036, ADDITIVE. Non-participants whose stated, verified kind classified as
+   *  'macro_region' -- addressed, found consistent, not excluded. */
+  consistent: string[];
+  /** D-BP154-036, ADDITIVE. Which build of the declared token table + rules produced every
+   *  `excluded`/`insufficientEvidence` entry in this result -- see
+   *  HUMAN_NUANCE_FEATURE_RULE_VERSION's own header. */
+  featureRuleVersion: string;
   discarded: number;
-  /** Non-participants for which no sourced reason was obtained -- ABSENCE IS OMISSION, never
-   *  conflated with "confirmed a member after all". */
+  /** Non-participants for which no sourced kind was obtained AT ALL -- ABSENCE IS OMISSION, never
+   *  conflated with "confirmed a member after all" and never conflated with `insufficientEvidence`
+   *  (which DID get a stated, verified kind -- just one the declared table does not cover). */
   unresolved: string[];
   via: string;
   answerProvenance?: ClaimProvenance;
@@ -291,7 +556,8 @@ function emptyHumanNuanceResult(overrides: Partial<HumanNuanceResult> & { error:
     ok: false, artifactClassEstablished: false, src: null, corpusMetaTruth: null, cowGuard: null,
     category: null, frame: null, nonParticipants: [], originStratum: null,
     singleAnswerPropertySurvived: null, answerDerivableFromQuestionTermsAlone: null,
-    query: null, excluded: [], discarded: 0, unresolved: [], via: 'n/a',
+    query: null, excluded: [], insufficientEvidence: [], consistent: [],
+    featureRuleVersion: HUMAN_NUANCE_FEATURE_RULE_VERSION, discarded: 0, unresolved: [], via: 'n/a',
     ...overrides,
   };
 }
@@ -302,8 +568,12 @@ function summaryLine(OPT: Record<string, string>, r: HumanNuanceResult): string 
   const frameText = r.frame ? `{${r.frame.join(', ')}}` : '(unavailable -- no origin provenance on file for this item)';
   const npText = r.nonParticipants.length ? r.nonParticipants.map((L) => `${L}) ${OPT[L] ?? '?'}`).join(', ') : '(none)';
   const exText = r.excluded.length
-    ? r.excluded.map((e) => `${e.letter}) ${e.name} -- "${e.reason}" [source: "${e.span}"]`).join('  |  ')
+    ? r.excluded.map((e) => `${e.letter}) ${e.name} -- ${e.reason} [source: "${e.span}"]`).join('  |  ')
     : '(none stated)';
+  const consistentText = r.consistent.length ? r.consistent.map((L) => `${L}) ${OPT[L] ?? '?'}`).join(', ') : '(none)';
+  const insufficientText = r.insufficientEvidence.length
+    ? r.insufficientEvidence.map((e) => `${e.letter}) ${e.name} -- stated kind "${e.statedKind}" matches no declared token [source: "${e.span}"]`).join('  |  ')
+    : '(none)';
   const unresolvedText = r.unresolved.length ? r.unresolved.map((L) => `${L}) ${OPT[L] ?? '?'}`).join(', ') : '(none)';
   const discardNote = r.discarded ? ` -- discarded ${r.discarded} candidate(s) with no verifiable span` : '';
   const provenanceNote = r.answerProvenance ? `  ||  ANSWERED VIA ${r.answerProvenance.mechanism}: ${r.answerProvenance.detail}` : '';
@@ -313,7 +583,10 @@ function summaryLine(OPT: Record<string, string>, r: HumanNuanceResult): string 
   return `HUMAN NUANCE -- ARTIFACT CLASS: ${r.artifactClassEstablished ? `established (src="${r.src}")` : 'UNESTABLISHED'}  ||  `
     + `CORPUS META-TRUTH: ${r.corpusMetaTruth?.statement ?? '(n/a)'}  ||  COW GUARD: ${guardText}  ||  `
     + `FRAME (origin's own option set): ${frameText}  ||  NON-PARTICIPANTS (augmentation additions): ${npText}  ||  `
-    + `EXCLUDED (source-stated reasons, verified): ${exText}${discardNote}  ||  `
+    + `R=${r.featureRuleVersion}  ||  `
+    + `EXCLUDED (declared feature match, verified): ${exText}${discardNote}  ||  `
+    + `CONSISTENT (stated, verified macro_region kind, not excluded): ${consistentText}  ||  `
+    + `INSUFFICIENT EVIDENCE (stated kind matches no declared token): ${insufficientText}  ||  `
     + `UNRESOLVED (source silent -- omission, not a member): ${unresolvedText}  ||  `
     + `single-answer property survived augmentation: ${survivedNote}  ||  `
     + `answer derivable from question's own terms alone: ${derivableNote}`
@@ -355,7 +628,8 @@ export async function runHumanNuanceStep(
       ok: true, artifactClassEstablished, src, corpusMetaTruth, cowGuard,
       category: null, frame: null, nonParticipants: [], originStratum: null,
       singleAnswerPropertySurvived: null, answerDerivableFromQuestionTermsAlone: null,
-      query: null, excluded: [], discarded: 0, unresolved: [], via: 'n/a',
+      query: null, excluded: [], insufficientEvidence: [], consistent: [],
+      featureRuleVersion: HUMAN_NUANCE_FEATURE_RULE_VERSION, discarded: 0, unresolved: [], via: 'n/a',
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -380,7 +654,8 @@ export async function runHumanNuanceStep(
     const result: HumanNuanceResult = {
       ok: true, artifactClassEstablished, src, corpusMetaTruth, cowGuard, category,
       frame: null, nonParticipants: [], originStratum, singleAnswerPropertySurvived, answerDerivableFromQuestionTermsAlone,
-      query: null, excluded: [], discarded: 0, unresolved: [], via: 'n/a',
+      query: null, excluded: [], insufficientEvidence: [], consistent: [],
+      featureRuleVersion: HUMAN_NUANCE_FEATURE_RULE_VERSION, discarded: 0, unresolved: [], via: 'n/a',
       error: originProvenance
         ? 'origin provenance is on file for this item but carries no resolved origin option set '
           + `(src="${src}" did not resolve to a known origin family, or the origin lookup failed) -- `
@@ -396,7 +671,8 @@ export async function runHumanNuanceStep(
     const result: HumanNuanceResult = {
       ok: true, artifactClassEstablished, src, corpusMetaTruth, cowGuard, category,
       frame: frameInfo.frameLetters, nonParticipants: [], originStratum, singleAnswerPropertySurvived, answerDerivableFromQuestionTermsAlone,
-      query: null, excluded: [], discarded: 0, unresolved: [], via: 'n/a',
+      query: null, excluded: [], insufficientEvidence: [], consistent: [],
+      featureRuleVersion: HUMAN_NUANCE_FEATURE_RULE_VERSION, discarded: 0, unresolved: [], via: 'n/a',
       error: 'the origin\'s own option set already covers every option in this run -- no augmentation '
         + 'additions to read a reason for; nothing to eliminate',
     };
@@ -413,15 +689,24 @@ export async function runHumanNuanceStep(
   const query = buildHumanNuanceExclusionQuery(category, nonParticipants, optSafe);
   const namesAnyNonParticipant = (t: string) => nonParticipants.some((L) => appearsIn(t, optSafe[L]));
   const mcOptions = nonParticipants.map((L) => `${L}) ${optSafe[L]}`);
-  const instruction = `From the passage, for each option below, if it explicitly states a reason `
-    + `this option would NOT usually be considered part of "${category}", copy that reason (in your `
-    + `own brief words) and the exact verbatim sentence or clause that states it. Do not include an `
-    + `option the passage does not address this way -- an omission is not a statement. `
+  // D-BP154-036/BISHOP-SEG/S36/seg-wireit REWRITE. Asks for a KIND (a short, source-stated term),
+  // never a free-text "reason... in your own brief words" -- see buildHumanNuanceExclusionQuery()'s
+  // own header for the full ruling this observes. EXPLICITLY forbids paraphrase/invention in the
+  // instruction text itself, not merely in a comment.
+  const instruction = `From the passage, for each option below, if it explicitly states what KIND `
+    + `OF THING it is, copy that kind as the source's own short term (do not paraphrase, invent, `
+    + `or explain -- copy the term as stated, e.g. "continent", "desert", "line of latitude") and `
+    + `the exact verbatim sentence or clause that states it. Do not include an option the passage `
+    + `does not address this way -- an omission is not a statement. `
     + `Options: ${nonParticipants.map((L) => `${L}) ${optSafe[L]}`).join('; ')}`;
-  const shape = '{"excluded":[{"name":"exact option name from the list","reason":"brief stated reason","span":"verbatim sentence or clause"}]}';
+  const shape = '{"excluded":[{"name":"exact option name from the list","kind":"short stated kind term, copied not composed","span":"verbatim sentence or clause"}]}';
 
   async function extractFrom(candidateText: string): Promise<{
-    excluded: HumanNuanceExclusionEntry[]; discarded: number; extractionError?: string;
+    excluded: HumanNuanceExclusionEntry[];
+    insufficientEvidence: HumanNuanceInsufficientEvidenceEntry[];
+    consistent: string[];
+    discarded: number;
+    extractionError?: string;
   }> {
     const rawOut: {
       truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string;
@@ -433,11 +718,17 @@ export async function runHumanNuanceStep(
         : rawOut.failureCause
           ? `the local extraction model failed (${rawOut.failureCause}${rawOut.failureDetail ? `: ${rawOut.failureDetail}` : ''})`
           : 'the local extraction model failed for an unclassified reason';
-      return { excluded: [], discarded: 0, extractionError: cause };
+      return {
+        excluded: [], insufficientEvidence: [], consistent: [], discarded: 0, extractionError: cause,
+      };
     }
     const r = ex as { excluded?: unknown };
-    const { excluded, discarded } = verifyHumanNuanceExclusions(r.excluded, candidateText, nonParticipants, optSafe);
-    return { excluded, discarded };
+    const {
+      excluded, insufficientEvidence, consistent, discarded,
+    } = verifyAndClassifyHumanNuanceKinds(r.excluded, candidateText, nonParticipants, optSafe);
+    return {
+      excluded, insufficientEvidence, consistent, discarded,
+    };
   }
 
   // STAGE 1: OWNED EVIDENCE FIRST (FD-BP153-04, THE MORTGAGE + this run's own passages).
@@ -446,13 +737,26 @@ export async function runHumanNuanceStep(
     ...gatherThisRunCandidates(ctx),
   ];
   let text = ''; let via = ''; let provenance: ClaimProvenance | undefined;
-  let extraction: { excluded: HumanNuanceExclusionEntry[]; discarded: number; extractionError?: string } | null = null;
+  type Extraction = {
+    excluded: HumanNuanceExclusionEntry[];
+    insufficientEvidence: HumanNuanceInsufficientEvidenceEntry[];
+    consistent: string[];
+    discarded: number;
+    extractionError?: string;
+  };
+  // D-BP154-036, ADDITIVE: "addressed" now means excluded OR consistent OR insufficientEvidence --
+  // any of the three is a genuine, verified fact about a non-participant, not only an exclusion.
+  // Treating only `excluded.length > 0` as success (the pre-existing condition) would have thrown
+  // away a real "stated, verified, macro_region -- consistent" or "stated, verified, unclassified
+  // -- insufficient evidence" finding and kept searching as if nothing had been obtained.
+  const addressedCount = (e: Extraction) => e.excluded.length + e.consistent.length + e.insufficientEvidence.length;
+  let extraction: Extraction | null = null;
   for (const c of ownedCandidates) {
     if (!namesAnyNonParticipant(c.text)) continue;
     // eslint-disable-next-line no-await-in-loop -- bounded, small candidate list, same idiom every
     // sibling step's own owned-evidence loop already uses.
     const owned = await extractFrom(c.text);
-    if (owned.excluded.length > 0) {
+    if (addressedCount(owned) > 0) {
       text = c.text; via = c.via; provenance = c.provenance; extraction = owned;
       break;
     }
@@ -460,11 +764,11 @@ export async function runHumanNuanceStep(
 
   // STAGE 2: THE CONVERSATIONAL AUTHORITY ANSWERS (FD-BP154-02) -- tried when nothing owned worked.
   let conversationalError: string | undefined;
-  if (!extraction || extraction.excluded.length === 0) {
+  if (!extraction || addressedCount(extraction) === 0) {
     const cr = await tryConversationalAuthority(ctx, query, mcOptions);
     if (cr.ok && namesAnyNonParticipant(cr.text)) {
       const cExtraction = await extractFrom(cr.text);
-      if (cExtraction.excluded.length > 0 || !text) {
+      if (addressedCount(cExtraction) > 0 || !text) {
         text = cr.text; via = cr.via; provenance = cr.provenance; extraction = cExtraction;
       }
     } else {
@@ -477,7 +781,9 @@ export async function runHumanNuanceStep(
       ok: true, artifactClassEstablished, src, corpusMetaTruth, cowGuard, category,
       frame: frameInfo.frameLetters, nonParticipants: frameInfo.nonParticipants, originStratum,
       singleAnswerPropertySurvived, answerDerivableFromQuestionTermsAlone,
-      query, excluded: [], discarded: 0, unresolved: frameInfo.nonParticipants, via: 'n/a',
+      query, excluded: [], insufficientEvidence: [], consistent: [],
+      featureRuleVersion: HUMAN_NUANCE_FEATURE_RULE_VERSION, discarded: 0,
+      unresolved: frameInfo.nonParticipants, via: 'n/a',
       error: `no usable answer from any authority -- owned evidence: ${ownedCandidates.length} candidate(s) `
         + `tried, none usable; conversational authority: ${conversationalError ?? 'not tried'} -- `
         + 'reading the option set as authored evidence is UNAVAILABLE this run, not "nothing to state"',
@@ -489,13 +795,22 @@ export async function runHumanNuanceStep(
       ok: true, artifactClassEstablished, src, corpusMetaTruth, cowGuard, category,
       frame: frameInfo.frameLetters, nonParticipants: frameInfo.nonParticipants, originStratum,
       singleAnswerPropertySurvived, answerDerivableFromQuestionTermsAlone,
-      query, excluded: [], discarded: 0, unresolved: frameInfo.nonParticipants, via,
+      query, excluded: [], insufficientEvidence: [], consistent: [],
+      featureRuleVersion: HUMAN_NUANCE_FEATURE_RULE_VERSION, discarded: 0,
+      unresolved: frameInfo.nonParticipants, via,
       error: `extraction failed -- ${extraction?.extractionError ?? 'the local extraction model failed for an unclassified reason'}`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
 
-  const resolvedLetters = new Set(extraction.excluded.map((e) => e.letter));
+  // D-BP154-036, ADDITIVE: a letter is "resolved" (not `unresolved`) whenever the source addressed
+  // it at all -- excluded, consistent, OR insufficientEvidence all count; only a letter with NO
+  // entry of any of the three kinds is unresolved (source silent -- omission, unchanged law).
+  const resolvedLetters = new Set([
+    ...extraction.excluded.map((e) => e.letter),
+    ...extraction.consistent,
+    ...extraction.insufficientEvidence.map((e) => e.letter),
+  ]);
   const unresolved = frameInfo.nonParticipants.filter((L) => !resolvedLetters.has(L));
 
   // STAGE 3: GOOGLE CORROBORATES A NAMED CLAIM -- ONE query, for the first resolved exclusion only
@@ -516,7 +831,9 @@ export async function runHumanNuanceStep(
     ok: true, artifactClassEstablished, src, corpusMetaTruth, cowGuard, category,
     frame: frameInfo.frameLetters, nonParticipants: frameInfo.nonParticipants, originStratum,
     singleAnswerPropertySurvived, answerDerivableFromQuestionTermsAlone,
-    query, excluded: extraction.excluded, discarded: extraction.discarded, unresolved, via,
+    query, excluded: extraction.excluded, insufficientEvidence: extraction.insufficientEvidence,
+    consistent: extraction.consistent, featureRuleVersion: HUMAN_NUANCE_FEATURE_RULE_VERSION,
+    discarded: extraction.discarded, unresolved, via,
     answerProvenance: provenance, corroboration,
   };
   return { result, summary: summaryLine(OPT, result) };
