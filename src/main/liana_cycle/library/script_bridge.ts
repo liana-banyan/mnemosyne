@@ -59,6 +59,10 @@ import { registerStateTheQuestionStep } from './state_the_question_step';
 // classify_cascade.ts change. See softballs_step.ts's own header for why it is a separate,
 // self-contained implementation rather than a call into establishFrame().
 import { registerSoftballsStep, runSoftballsStep } from './softballs_step';
+// D-BP154-013/BISHOP/S13/seg-composerstep, STEP 2/3 -- THE NAMED SET. Same discipline as
+// softballs_step.ts's own import -- see that file's header for why classify_cascade.ts is not
+// depended on here either.
+import { registerNamedSetStep, runNamedSetStep } from './named_set_step';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -114,6 +118,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP154-013/BISHOP/S13/seg-composerstep, STEP 2/3 -- ADDITIVE, same idempotent shape as the
+  // four calls above, for the same reason. Does not touch, re-register, or collide with anything
+  // the others register -- 'NamedSet' is a new name.
+  try {
+    registerNamedSetStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -148,7 +160,7 @@ export interface ComposerRegistryEntry {
 // D-BP154-013 adds 'Softballs:1' -- it calls THIS file's own runOneStep() branch below, which
 // calls softballs_step.ts's runSoftballsStep() (one query, one verified extraction; see that
 // file's own header for why it does not call classify_cascade.ts's establishFrame()).
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1']);
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -211,6 +223,12 @@ async function runOneStep(
     // step run through this function. Nothing in this branch or in softballs_step.ts touches the
     // evidence store directly.
     const { result, summary } = await runSoftballsStep(input, ctx);
+    return { summary, raw: result };
+  }
+  if (id === 'NamedSet:1') {
+    // D-BP154-013/BISHOP/S13/seg-composerstep, STEP 2/3 -- THE NAMED SET. Same
+    // recordingAskGoogle()-wrapped ctx.askGoogle every other step here receives.
+    const { result, summary } = await runNamedSetStep(input, ctx);
     return { summary, raw: result };
   }
   const liveId = CASCADE_LIVE_ID[id];
