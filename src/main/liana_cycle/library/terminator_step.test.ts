@@ -566,20 +566,57 @@ describe('runTerminatorStep -- UNIQUE OR ABSTAIN end to end over the pure reduce
       expect(summary).toContain('Softballs:1');
     });
 
-    test('a genuinely FAILED (ok:false) feeder step marks the run incomplete even on a VERDICT', async () => {
-      // NamedSet alone leaves exactly one survivor (A) -- a real verdict is reached even though
-      // Softballs (which never contributed an elimination here) failed outright.
+    // D-BP154-029/BISHOP-SEG/S29/seg-withhold FIX, REVERSING this test's own pre-fix expectation.
+    // Founder's own rule, verbatim, this dispatch: "An incomplete run may not publish a verdict...
+    // A flag that records a problem while the system proceeds as if there were none is not a fix."
+    // The dispatch's own live receipt caught EXACTLY this shape (NamedSet:1 failed, Magnitude:1
+    // ranked the wrong survivor set, Terminator published F anyway with incomplete:true recorded
+    // but ignored) -- this test now proves the withhold, not the publish.
+    test('a genuinely FAILED (ok:false) feeder step WITHHOLDS what would otherwise be a unique-survivor VERDICT -- never published', async () => {
+      // NamedSet alone would leave exactly one survivor (A) -- but Softballs (which never
+      // contributed an elimination here) failed outright, so the run is incomplete and the
+      // would-be verdict must be withheld, not published.
       const failedOutcome = { id: 'Softballs:1', summary: 's', raw: failedSoftballs };
       const namedSetOutcome = {
         id: 'NamedSet:1', summary: 's',
         raw: namedSet(Object.keys(OPT).filter((L) => L !== 'A').map((L) => [L, `${L}) is densely populated.`] as [string, string])),
       };
       const { result, summary } = await runTerminatorStep(input, ctx, [failedOutcome, namedSetOutcome]);
-      expect(result.abstain).toBe(false);
-      expect(result.verdict).toBe('A');
+      expect(result.abstain).toBe(true);
+      expect(result.verdict).toBeNull();
       expect(result.incomplete).toBe(true);
-      expect(summary).toContain('VERDICT');
+      expect(result.abstainReason).toContain('WITHHELD');
+      expect(result.abstainReason).toContain('A) South America'); // names what WOULD have published
+      expect(result.abstainReason).toContain('Softballs:1 failed');
+      expect(summary).toContain('WITHHELD');
       expect(summary).toContain('RUN INCOMPLETE');
+    });
+
+    // D-BP154-029, NEW. The EXACT live shape the dispatch's own receipt caught: a clean,
+    // fully-ranked, frame-matched Magnitude:1 verdict, withheld because a DIFFERENT feeder step
+    // (NamedSet:1) failed -- Magnitude:1 itself did nothing wrong; the survivor set it ranked was
+    // built from a partial elimination basis, so its own otherwise-honest ranking cannot be
+    // trusted either.
+    test('a FAILED NamedSet:1 withholds an otherwise-clean Magnitude:1 verdict too -- the exact live shape this ticket fixes', async () => {
+      const failedNamedSet: NamedSetResult = {
+        ok: false, property: null, query: null, included: [], discarded: 0, notIncluded: Object.keys(OPT), via: 'n/a', error: 'authority timed out',
+      };
+      const failedOutcome = { id: 'NamedSet:1', summary: 's', raw: failedNamedSet };
+      const twoSurvivorSoftballsOutcome = {
+        id: 'Softballs:1', summary: 's',
+        raw: softballs(['C', 'D', 'E', 'F', 'G', 'H', 'I'].map((L) => [L, `${L}) not a world region.`] as [string, string])),
+      };
+      const mag = magnitude(['A', 'B'], 'least', 'Alpha Grade', [['A', 'A is more Alpha than B.'], ['B', 'B is less Alpha than A.']]);
+      const magOutcome = { id: 'Magnitude:1', summary: 's', raw: mag };
+      const { result, summary } = await runTerminatorStep(input, ctx, [twoSurvivorSoftballsOutcome, failedOutcome, magOutcome]);
+      expect(result.abstain).toBe(true);
+      expect(result.verdict).toBeNull();
+      expect(result.incomplete).toBe(true);
+      expect(result.magnitudeBasis).toBeNull(); // withheld, not credited as a real basis
+      expect(result.abstainReason).toContain('WITHHELD');
+      expect(result.abstainReason).toContain('B) South Asia'); // names what Magnitude:1 WOULD have named
+      expect(result.abstainReason).toContain('NamedSet:1 failed');
+      expect(summary).toContain('WITHHELD');
     });
 
     test('every consulted step green -> incomplete is false, and the summary says so plainly', async () => {
