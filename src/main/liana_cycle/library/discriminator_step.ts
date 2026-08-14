@@ -107,10 +107,21 @@ export function buildDiscriminatorQuery(
     + `type -- rather than merely whether it is or is not ${category}. Answer for every one, in `
     + `order, and do not skip any. ${list(all, OPT)} Then, separately and last, state which one `
     + `of those classifications properly denotes "${category}".`;
-  if (!property) return base;
-  return `${base} Then, separately, state explicitly which of the following, if any, ARE ${property} `
-    + `-- name each one explicitly and state clearly that it is ${property}. Do not guess about `
-    + `ones you are not sure of; simply do not mention those.`;
+  // D-BP154-023/BISHOP-SEG/S23/seg-enumerate, ADDITIVE. FD-BP154-06, Founder verbatim: "the
+  // narrow reading is obtainable from a source we can cite." The fourth ask -- ALWAYS included
+  // (the bare category is always present, unlike `property`): does the source enumerate what the
+  // category ITSELF consists of, as a stated, exhaustive list -- the Jar Method applied to the
+  // CATEGORY rather than the property. Phrased to explicitly demand exhaustiveness ("the complete
+  // list... do not give examples") so a source that merely illustrates with "such as" is not
+  // mistaken for one that is defining the category by enumeration.
+  const withEnumeration = `${base} Then, separately, does "${category}" refer to a specific, `
+    + `enumerable, closed set of things (not an open-ended kind)? If so, state the complete list `
+    + `of what it consists of, exhaustively -- do not give examples, give the actual list -- and `
+    + `then state explicitly which of the options above are named members of that list.`;
+  if (!property) return withEnumeration;
+  return `${withEnumeration} Then, separately, state explicitly which of the following, if any, `
+    + `ARE ${property} -- name each one explicitly and state clearly that it is ${property}. Do `
+    + `not guess about ones you are not sure of; simply do not mention those.`;
 }
 
 export interface DiscriminatorEntry {
@@ -143,6 +154,22 @@ export function buildDiscriminatorCategoryKindCorroborationQuery(category: strin
 export function buildDiscriminatorKindCorroborationQuery(entry: DiscriminatorEntry): string {
   return `Is ${entry.name} ${entry.kind}? Answer plainly and directly, stating clearly whether it `
     + `is or is not ${entry.kind}.`;
+}
+
+export interface CategoryEnumeration {
+  /** Verbatim span proving the source itself gave an enumerated list for the category. */
+  span: string;
+}
+
+/** D-BP154-023/BISHOP-SEG/S23/seg-enumerate. THE ONE CORROBORATION QUERY for the decisive
+ *  enumeration-absence fact (FD-BP154-06's own decisive claim, when present): re-asks whether the
+ *  named option is genuinely absent from -- i.e. not a member of -- the category's own stated
+ *  enumeration. Preferred over the categoryKind corroboration target when a productive
+ *  enumeration exists (this IS the ruling's own decisive fact, the same priority categoryKind
+ *  already held for the kind-mismatch rule). */
+export function buildDiscriminatorEnumerationCorroborationQuery(category: string, name: string): string {
+  return `Is ${name} one of the things that "${category}" enumerates or consists of? Answer `
+    + `plainly and directly, stating clearly whether it is or is not.`;
 }
 
 // spanIsVerbatimInPassage() is now imported from composer_step_evidence.ts (D-BP154-014) --
@@ -212,6 +239,23 @@ export function verifyCategoryKind(raw: unknown, passage: string): { categoryKin
   return { categoryKind: { kind, span }, discarded: false };
 }
 
+type RawCategoryEnumeration = { span?: unknown };
+
+/** D-BP154-023/BISHOP-SEG/S23/seg-enumerate. THE VERIFY-THE-SPAN CHOKE POINT for the category's
+ *  own stated enumeration (FD-BP154-06). Only verbatim-span verification applies here (there is
+ *  no option name to cross-check against -- this is a statement about the CATEGORY as a whole,
+ *  mirroring verifyCategoryKind()'s own identical discipline immediately above). A missing or
+ *  unverifiable span discards the candidate; the caller treats a discard here as "no enumeration
+ *  stated", never a guess. */
+export function verifyCategoryEnumeration(raw: unknown, passage: string): { categoryEnumeration: CategoryEnumeration | null; discarded: boolean } {
+  const entry = raw as RawCategoryEnumeration | undefined;
+  const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
+  if (!span || !spanIsVerbatimInPassage(passage, span)) {
+    return { categoryEnumeration: null, discarded: Boolean(span) };
+  }
+  return { categoryEnumeration: { span }, discarded: false };
+}
+
 /** THE VERIFY-THE-SPAN CHOKE POINT for the superlative-property membership list (D-BP154-021,
  *  ADDITIVE), mirrored exactly from named_set_step.ts's own verifyIncludedEntries() four-part
  *  discipline: (a) non-empty `name`, (b) non-empty `span`, (c) span VERBATIM in `passage`, (d)
@@ -266,13 +310,31 @@ export interface DiscriminatorResult {
    *  Empty (never null) when `property` is null or the source states no members. */
   propertyMembers: DiscriminatorPropertyMemberEntry[];
   discardedPropertyMembers: number;
+  /** D-BP154-023/BISHOP-SEG/S23/seg-enumerate, ADDITIVE (FD-BP154-06, "the narrow reading is
+   *  obtainable from a source we can cite"). The source's own stated, exhaustive enumeration of
+   *  what the CATEGORY consists of -- null when no source ever gave one (never guessed, never
+   *  supplied by this file). */
+  categoryEnumeration: CategoryEnumeration | null;
+  categoryEnumerationDiscarded: boolean;
+  /** D-BP154-023, ADDITIVE: options the source's own enumeration names as members -- verified
+   *  with the SAME four-part discipline as `propertyMembers`. ABSENCE IS OMISSION *unless*
+   *  `categoryEnumeration` is non-null AND this array is non-empty (proof the enumeration
+   *  genuinely engaged this option set) -- only then does terminator_step.ts treat an option NOT
+   *  in this list as excluded from the frame; see that file's own header for the full rule and
+   *  why an empty list here is never trusted to mean "everyone is excluded". */
+  categoryEnumerationMembers: DiscriminatorPropertyMemberEntry[];
+  discardedCategoryEnumerationMembers: number;
   via: string;
   /** D-BP154-014, FD-BP154-03: HOW the passage this extraction ran over was obtained. */
   answerProvenance?: ClaimProvenance;
   /** D-BP154-014, FD-BP154-02: ONE Google corroboration attempt against the single decisive
-   *  claim (the category-denoting kind, or -- when none was stated -- the first per-option kind).
-   *  Additive, never a gate. */
+   *  claim (the category's own enumeration when productive, else the category-denoting kind, or
+   *  -- when neither was stated -- the first per-option kind). Additive, never a gate. */
   corroboration?: CorroborationResult;
+  /** D-BP154-023, ADDITIVE: non-null ONLY when Stage 1 (owned) and Stage 2 (a fresh live query)
+   *  each independently produced a PRODUCTIVE enumeration-membership set that DISAGREES --
+   *  reported, never resolved by picking the convenient one (FD-BP154-06's own explicit rule). */
+  enumerationDisagreement: { detailA: string; detailB: string } | null;
   error?: string;
 }
 
@@ -299,9 +361,24 @@ function summaryLine(OPT: Record<string, string>, r: DiscriminatorResult): strin
         : '(none stated)'
     }${r.discardedPropertyMembers ? ` -- discarded ${r.discardedPropertyMembers} candidate(s) with no verifiable span` : ''}`
     : '';
+  // D-BP154-023/BISHOP-SEG/S23/seg-enumerate.
+  const enumerationText = r.categoryEnumeration
+    ? `stated -- "${r.categoryEnumeration.span}"`
+    : r.categoryEnumerationDiscarded
+      ? '(source attempted an answer but it had no verifiable span -- discarded)'
+      : '(not stated)';
+  const enumerationMembersText = r.categoryEnumerationMembers.length
+    ? r.categoryEnumerationMembers.map((e) => `${e.letter}) ${e.name} [source: "${e.span}"]`).join('  |  ')
+    : '(none stated)';
+  const enumerationNote = `  ||  ENUMERATION OF "${r.category}": ${enumerationText}  ||  `
+    + `NAMED MEMBERS OF THAT ENUMERATION: ${enumerationMembersText}`
+    + `${r.discardedCategoryEnumerationMembers ? ` -- discarded ${r.discardedCategoryEnumerationMembers} candidate(s) with no verifiable span` : ''}`;
+  const enumerationDisagreementNote = r.enumerationDisagreement
+    ? `  ||  ENUMERATION DISAGREEMENT: ${r.enumerationDisagreement.detailA} vs ${r.enumerationDisagreement.detailB}`
+    : '';
   return `DISCRIMINATOR -- query: "${r.query}"  ||  KINDS (source-stated, verified): ${kindsText}`
     + `${discardNote}  ||  NO KIND STATED (source silent -- omission, not "no kind"): ${noKindText}`
-    + `  ||  WHICH KIND DENOTES "${r.category}": ${categoryKindText}${propertyMembersNote}${provenanceNote}${corrobNote}`;
+    + `  ||  WHICH KIND DENOTES "${r.category}": ${categoryKindText}${enumerationNote}${enumerationDisagreementNote}${propertyMembersNote}${provenanceNote}${corrobNote}`;
 }
 
 // ───────────────── the live step (owned evidence -> conversational -> corroboration; needs a real run to verify) ─────────────────
@@ -316,6 +393,26 @@ function summaryLine(OPT: Record<string, string>, r: DiscriminatorResult): strin
  * named_set_step.ts's own headers state. The pure parts above carry the real unit tests; this
  * function is verified by a live in-app run (this ticket's own return).
  */
+/** D-BP154-023, ADDITIVE: the fields common to every early/failure DiscriminatorResult return
+ *  below -- factored out so the growing field list (now 4 extraction asks) does not have to be
+ *  hand-copied at each of the six return sites, a real drift risk this ticket's own predecessors
+ *  (D-BP154-020/021) already hand-copied through twice. */
+function emptyDiscriminatorFields(): Pick<
+  DiscriminatorResult,
+  'kinds' | 'discardedKinds' | 'categoryKind' | 'categoryKindDiscarded'
+  | 'propertyMembers' | 'discardedPropertyMembers'
+  | 'categoryEnumeration' | 'categoryEnumerationDiscarded' | 'categoryEnumerationMembers' | 'discardedCategoryEnumerationMembers'
+  | 'enumerationDisagreement'
+> {
+  return {
+    kinds: [], discardedKinds: 0, categoryKind: null, categoryKindDiscarded: false,
+    propertyMembers: [], discardedPropertyMembers: 0,
+    categoryEnumeration: null, categoryEnumerationDiscarded: false,
+    categoryEnumerationMembers: [], discardedCategoryEnumerationMembers: 0,
+    enumerationDisagreement: null,
+  };
+}
+
 export async function runDiscriminatorStep(
   input: MethodQuestionInput,
   ctx: MethodRunContext,
@@ -323,8 +420,8 @@ export async function runDiscriminatorStep(
   const OPT = input.options;
   if (!OPT || Object.keys(OPT).length === 0) {
     const result: DiscriminatorResult = {
-      ok: false, category: null, property: null, query: null, kinds: [], discardedKinds: 0, noKindStated: [],
-      categoryKind: null, categoryKindDiscarded: false, propertyMembers: [], discardedPropertyMembers: 0, via: 'n/a',
+      ok: false, category: null, property: null, query: null, noKindStated: [], via: 'n/a',
+      ...emptyDiscriminatorFields(),
       error: 'this question has no lettered options -- THE DISCRIMINATOR classifies options and cannot run without them',
     };
     return { result, summary: summaryLine({}, result) };
@@ -337,8 +434,8 @@ export async function runDiscriminatorStep(
   const category = deriveDiscriminatorCategory(input.question);
   if (!category) {
     const result: DiscriminatorResult = {
-      ok: false, category: null, property: null, query: null, kinds: [], discardedKinds: 0, noKindStated: all,
-      categoryKind: null, categoryKindDiscarded: false, propertyMembers: [], discardedPropertyMembers: 0, via: 'n/a',
+      ok: false, category: null, property: null, query: null, noKindStated: all, via: 'n/a',
+      ...emptyDiscriminatorFields(),
       error: 'could not determine the category this question names (no "following X is/are" phrase found) -- refusing rather than guessing a category',
     };
     return { result, summary: summaryLine(OPT, result) };
@@ -362,22 +459,38 @@ export async function runDiscriminatorStep(
     + `not a statement. Then, separately, copy which ONE classification the passage states `
     + `properly denotes "${category}", and the verbatim sentence or clause that states so. `
     + `Options: ${all.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
-  // D-BP154-021, ADDITIVE: the third extraction ask, mirrored from named_set_step.ts's own
+  // D-BP154-023/BISHOP-SEG/S23/seg-enumerate, ADDITIVE (FD-BP154-06). The fourth extraction ask,
+  // ALWAYS included: does the passage give an exhaustive enumeration of what the CATEGORY
+  // consists of, and which options does that enumeration name. Mirrored from propertyMembers'
+  // own instruction shape (D-BP154-021).
+  const instructionWithEnumeration = `${instructionBase} Then, separately, if the passage gives `
+    + `an exhaustive enumerated list of what "${category}" consists of, copy the exact verbatim `
+    + `sentence or clause that gives that list. Then, separately, list every option above that `
+    + `the passage's own enumeration explicitly names as a member of it. For each one, copy the `
+    + `exact verbatim sentence or clause that names it (this may be the same sentence as the `
+    + `enumeration itself, if it names the option directly). Do not include an option the `
+    + `enumeration does not name -- an omission is not a statement. If the passage gives no such `
+    + `enumeration, state null for it.`;
+  // D-BP154-021, ADDITIVE: the fifth extraction ask, mirrored from named_set_step.ts's own
   // verifyIncludedEntries() instruction shape -- only added when the question names a superlative
   // property distinct from the bare category.
   const instruction = property
-    ? `${instructionBase} Then, separately, list every option that the passage explicitly and `
-      + `directly states IS ${property}. For each one, copy the exact verbatim sentence or clause `
-      + `from the passage that states it is ${property}. Do not include an option the passage `
-      + `merely does not mention -- an omission is not a statement.`
-    : instructionBase;
+    ? `${instructionWithEnumeration} Then, separately, list every option that the passage `
+      + `explicitly and directly states IS ${property}. For each one, copy the exact verbatim `
+      + `sentence or clause from the passage that states it is ${property}. Do not include an `
+      + `option the passage merely does not mention -- an omission is not a statement.`
+    : instructionWithEnumeration;
+  const enumerationShapeFields = '"categoryEnumeration":{"span":"verbatim sentence or clause giving the enumerated list, or null"},'
+    + '"categoryEnumerationMembers":[{"name":"exact option name from the list","span":"verbatim sentence or clause naming it as a member of the enumeration"}],';
   const shape = property
-    ? '{"kinds":[{"name":"exact option name from the list","kind":"the stated classification","span":"verbatim sentence or clause"}],"categoryKind":{"kind":"the classification that denotes the category, or null","span":"verbatim sentence or clause, or null"},"propertyMembers":[{"name":"exact option name from the list","span":"verbatim sentence or clause stating it is the superlative property"}]}'
-    : '{"kinds":[{"name":"exact option name from the list","kind":"the stated classification","span":"verbatim sentence or clause"}],"categoryKind":{"kind":"the classification that denotes the category, or null","span":"verbatim sentence or clause, or null"}}';
+    ? `{"kinds":[{"name":"exact option name from the list","kind":"the stated classification","span":"verbatim sentence or clause"}],"categoryKind":{"kind":"the classification that denotes the category, or null","span":"verbatim sentence or clause, or null"},${enumerationShapeFields}"propertyMembers":[{"name":"exact option name from the list","span":"verbatim sentence or clause stating it is the superlative property"}]}`
+    : `{"kinds":[{"name":"exact option name from the list","kind":"the stated classification","span":"verbatim sentence or clause"}],"categoryKind":{"kind":"the classification that denotes the category, or null","span":"verbatim sentence or clause, or null"},${enumerationShapeFields}}`;
   async function extractFrom(candidateText: string): Promise<{
     kinds: DiscriminatorEntry[]; discardedKinds: number;
     categoryKind: CategoryKind | null; categoryKindDiscarded: boolean;
     propertyMembers: DiscriminatorPropertyMemberEntry[]; discardedPropertyMembers: number;
+    categoryEnumeration: CategoryEnumeration | null; categoryEnumerationDiscarded: boolean;
+    categoryEnumerationMembers: DiscriminatorPropertyMemberEntry[]; discardedCategoryEnumerationMembers: number;
     extractionError?: string;
   }> {
     const rawOut: {
@@ -392,7 +505,10 @@ export async function runDiscriminatorStep(
           : 'the local extraction model failed for an unclassified reason';
       return {
         kinds: [], discardedKinds: 0, categoryKind: null, categoryKindDiscarded: false,
-        propertyMembers: [], discardedPropertyMembers: 0, extractionError: cause,
+        propertyMembers: [], discardedPropertyMembers: 0,
+        categoryEnumeration: null, categoryEnumerationDiscarded: false,
+        categoryEnumerationMembers: [], discardedCategoryEnumerationMembers: 0,
+        extractionError: cause,
       };
     }
     const { kinds, discarded } = verifyDiscriminatorKinds(ex.kinds, candidateText, optSafe);
@@ -400,8 +516,16 @@ export async function runDiscriminatorStep(
     const { propertyMembers, discarded: discardedPropertyMembers } = property
       ? verifyDiscriminatorPropertyMembers(ex.propertyMembers, candidateText, optSafe)
       : { propertyMembers: [], discarded: 0 };
+    const { categoryEnumeration, discarded: categoryEnumerationDiscarded } = verifyCategoryEnumeration(ex.categoryEnumeration, candidateText);
+    // D-BP154-023: verifyDiscriminatorPropertyMembers() is fully generic (name/span verification
+    // against a passage + option map, nothing property-specific inside it) -- reused unmodified
+    // for the enumeration's own membership list rather than a near-duplicate fourth function.
+    const { propertyMembers: categoryEnumerationMembers, discarded: discardedCategoryEnumerationMembers } = verifyDiscriminatorPropertyMembers(
+      ex.categoryEnumerationMembers, candidateText, optSafe,
+    );
     return {
       kinds, discardedKinds: discarded, categoryKind, categoryKindDiscarded, propertyMembers, discardedPropertyMembers,
+      categoryEnumeration, categoryEnumerationDiscarded, categoryEnumerationMembers, discardedCategoryEnumerationMembers,
     };
   }
 
@@ -419,23 +543,31 @@ export async function runDiscriminatorStep(
 
   let extraction = text ? await extractFrom(text) : null;
   let extractionFailedOnStage1Text = Boolean(extraction?.extractionError);
+  // D-BP154-023, ADDITIVE: STAGE 1's own extraction, captured BEFORE Stage 2 can overwrite
+  // `extraction` -- kept only to detect a genuine cross-source ENUMERATION disagreement below
+  // (FD-BP154-06: "if two sources state different denotations, that is a disagreement -- report
+  // it, and abstain rather than picking the convenient one"). Never used for anything else.
+  const stage1ExtractionForDisagreementCheck = extraction;
 
   // STAGE 2: GEMINI ANSWERS (FD-BP154-02) -- tried when STAGE 1 found nothing at all, OR (mirrors
   // D-BP154-018's named_set_step.ts fix) when STAGE 1 found a passage but it verifiably
-  // established NEITHER of THE DISCRIMINATOR's two required outputs (a per-option kind, or the
-  // category-denoting kind) and extraction itself did not fail. LIVE-MEASURED this ticket
-  // (D-BP154-020, qid 98): the pre-fix behavior accepted a stale ~2.5-hour-old owned passage
-  // (`gatherMortgageCandidates`) that merely happened to mention an option name somewhere,
-  // extracted ZERO per-option kinds (9 of 9 discarded) and a near-empty categoryKind whose own
-  // span was just an echo of the query text ("Which of the following regions") -- not a real
-  // denotation statement -- and reported `ok:true` anyway, leaving THE TERMINATOR's own
-  // already-correct rule 3 (deriveTerminatorEliminations, this file's sibling terminator_step.ts)
-  // with nothing usable to eliminate on. A passage that produced NEITHER output is exactly as
-  // unproductive as one that produced zero memberships in named_set_step.ts's own sense -- worth
-  // a second, independent, FRESH source before this step accepts a near-empty result.
+  // established NONE of THE DISCRIMINATOR's four required outputs and extraction itself did not
+  // fail. LIVE-MEASURED this ticket (D-BP154-020, qid 98): the pre-fix behavior accepted a stale
+  // ~2.5-hour-old owned passage (`gatherMortgageCandidates`) that merely happened to mention an
+  // option name somewhere, extracted ZERO per-option kinds (9 of 9 discarded) and a near-empty
+  // categoryKind whose own span was just an echo of the query text ("Which of the following
+  // regions") -- not a real denotation statement -- and reported `ok:true` anyway, leaving THE
+  // TERMINATOR's own already-correct rule 3 (deriveTerminatorEliminations, this file's sibling
+  // terminator_step.ts) with nothing usable to eliminate on. A passage that produced NONE of the
+  // outputs is exactly as unproductive as one that produced zero memberships in
+  // named_set_step.ts's own sense -- worth a second, independent, FRESH source before this step
+  // accepts a near-empty result.
   const isProductive = (
-    e: { kinds: DiscriminatorEntry[]; categoryKind: CategoryKind | null; propertyMembers: DiscriminatorPropertyMemberEntry[] } | null,
-  ): boolean => !!e && (e.kinds.length > 0 || !!e.categoryKind || e.propertyMembers.length > 0);
+    e: {
+      kinds: DiscriminatorEntry[]; categoryKind: CategoryKind | null;
+      propertyMembers: DiscriminatorPropertyMemberEntry[]; categoryEnumerationMembers: DiscriminatorPropertyMemberEntry[];
+    } | null,
+  ): boolean => !!e && (e.kinds.length > 0 || !!e.categoryKind || e.propertyMembers.length > 0 || e.categoryEnumerationMembers.length > 0);
 
   let conversationalError: string | undefined;
   const stage1WasUnproductive = !text || (!isProductive(extraction) && !extractionFailedOnStage1Text);
@@ -443,7 +575,31 @@ export async function runDiscriminatorStep(
     const cr = await tryConversationalAuthority(ctx, query, mcOptions);
     if (cr.ok && namesAnyOption(cr.text)) {
       const cExtraction = await extractFrom(cr.text);
-      // Prefer STAGE 2 only when it actually found something STAGE 1 did not (any of the three
+      // D-BP154-023, ADDITIVE (FD-BP154-06): a genuine cross-source ENUMERATION disagreement --
+      // both Stage 1's own (otherwise-unproductive) extraction AND Stage 2's fresh one produced a
+      // NON-EMPTY, DIFFERING category-enumeration membership set -- is reported and refused
+      // outright, never silently resolved by preferring either one (explicitly, never the one
+      // that "happens to yield A"). Pure set-equality comparison, no interpretation.
+      const stage1Members = stage1ExtractionForDisagreementCheck?.categoryEnumerationMembers ?? [];
+      const stage2Members = cExtraction.categoryEnumerationMembers;
+      if (stage1Members.length > 0 && stage2Members.length > 0) {
+        const stage1Letters = new Set(stage1Members.map((e) => e.letter));
+        const stage2Letters = new Set(stage2Members.map((e) => e.letter));
+        const disagree = stage1Letters.size !== stage2Letters.size
+          || [...stage1Letters].some((L) => !stage2Letters.has(L));
+        if (disagree) {
+          const result: DiscriminatorResult = {
+            ok: false, category, property, query, noKindStated: all, via,
+            ...emptyDiscriminatorFields(),
+            enumerationDisagreement: { detailA: via, detailB: cr.via },
+            error: `the category's own enumeration is CONTRADICTED across independent sources (${via}: `
+              + `{${[...stage1Letters].join(', ')}} vs ${cr.via}: {${[...stage2Letters].join(', ')}}) -- `
+              + `reported as a disagreement, never resolved by force (FD-BP154-06)`,
+          };
+          return { result, summary: summaryLine(OPT, result) };
+        }
+      }
+      // Prefer STAGE 2 only when it actually found something STAGE 1 did not (any of the four
       // outputs) -- STAGE 1's own (possibly partial) result is never discarded in favour of an
       // equally-empty STAGE 2 result; "tried harder, still nothing" stays an honest zero, not
       // silently swapped.
@@ -458,8 +614,8 @@ export async function runDiscriminatorStep(
 
   if (!text) {
     const result: DiscriminatorResult = {
-      ok: false, category, property, query, kinds: [], discardedKinds: 0, noKindStated: all,
-      categoryKind: null, categoryKindDiscarded: false, propertyMembers: [], discardedPropertyMembers: 0, via: 'n/a',
+      ok: false, category, property, query, noKindStated: all, via: 'n/a',
+      ...emptyDiscriminatorFields(),
       error: `no usable answer from any authority -- owned evidence: ${ownedCandidates.length} candidate(s) tried, none usable; `
         + `conversational authority: ${conversationalError ?? 'not tried'} -- THE DISCRIMINATOR is UNAVAILABLE, not "no kinds stated"`,
     };
@@ -467,8 +623,8 @@ export async function runDiscriminatorStep(
   }
   if (!extraction || extractionFailedOnStage1Text) {
     const result: DiscriminatorResult = {
-      ok: false, category, property, query, kinds: [], discardedKinds: 0, noKindStated: all,
-      categoryKind: null, categoryKindDiscarded: false, propertyMembers: [], discardedPropertyMembers: 0, via,
+      ok: false, category, property, query, noKindStated: all, via,
+      ...emptyDiscriminatorFields(),
       error: `extraction failed -- ${extraction?.extractionError ?? 'the local extraction model failed for an unclassified reason'} -- reported as a FAILURE, never an empty "no kinds stated"`,
     };
     return { result, summary: summaryLine(OPT, result) };
@@ -476,33 +632,51 @@ export async function runDiscriminatorStep(
   // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap FIX -- same law, same session, applied here too:
   // "an owned passage that produces NO usable value has not answered the question." If BOTH
   // stages (owned evidence, then a fresh live query when Stage 1 was unproductive) still leave
-  // NONE of THE DISCRIMINATOR's three outputs (no per-option kinds, no category-denoting kind, no
-  // property members), that is not a successful "no kinds stated" finding -- it is THE
-  // DISCRIMINATOR failing to answer, and must be reported as an honest failure, never credited as
-  // ok:true. (Kept ok:true when ANY output came through -- a real, useful partial result, same
-  // "absence is omission for the others" reading this file's own header already establishes.)
+  // NONE of THE DISCRIMINATOR's four outputs (no per-option kinds, no category-denoting kind, no
+  // category-enumeration members, no property members), that is not a successful "no kinds
+  // stated" finding -- it is THE DISCRIMINATOR failing to answer, and must be reported as an
+  // honest failure, never credited as ok:true. (Kept ok:true when ANY output came through -- a
+  // real, useful partial result, same "absence is omission for the others" reading this file's
+  // own header already establishes.)
   if (!isProductive(extraction)) {
     const result: DiscriminatorResult = {
-      ok: false, category, property, query, kinds: [], discardedKinds: extraction.discardedKinds, noKindStated: all,
-      categoryKind: null, categoryKindDiscarded: extraction.categoryKindDiscarded,
-      propertyMembers: [], discardedPropertyMembers: extraction.discardedPropertyMembers, via,
+      ok: false, category, property, query, noKindStated: all, via,
+      ...emptyDiscriminatorFields(),
+      discardedKinds: extraction.discardedKinds, categoryKindDiscarded: extraction.categoryKindDiscarded,
+      discardedPropertyMembers: extraction.discardedPropertyMembers,
+      categoryEnumerationDiscarded: extraction.categoryEnumerationDiscarded,
+      discardedCategoryEnumerationMembers: extraction.discardedCategoryEnumerationMembers,
       error: `no usable answer from any authority -- the credited passage (${via}) produced zero verified `
-        + `kinds, no category-denoting kind, and no property members (${extraction.discardedKinds + extraction.discardedPropertyMembers} `
+        + `kinds, no category-denoting kind, no category-enumeration members, and no property members `
+        + `(${extraction.discardedKinds + extraction.discardedPropertyMembers + extraction.discardedCategoryEnumerationMembers} `
         + `candidate(s) discarded for no verifiable span) -- THE DISCRIMINATOR is UNAVAILABLE, not "no kinds stated"`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
   const {
     kinds, discardedKinds: discarded, categoryKind, categoryKindDiscarded, propertyMembers, discardedPropertyMembers,
+    categoryEnumeration, categoryEnumerationDiscarded, categoryEnumerationMembers, discardedCategoryEnumerationMembers,
   } = extraction;
   const statedLetters = new Set(kinds.map((e) => e.letter));
   const noKindStated = all.filter((L) => !statedLetters.has(L));
 
   // STAGE 3: GOOGLE CORROBORATES A NAMED CLAIM -- ONE query, for the single decisive claim only.
-  // Prefers the category-denoting kind (the decisive discriminator fact); falls back to the first
-  // per-option kind when no category-denoting kind was stated.
+  // D-BP154-023: prefers the category's own enumeration (the FD-BP154-06 decisive fact, when
+  // productive -- corroborates the first option the enumeration excludes, the actual claim the
+  // Terminator's own new elimination rule below will use); falls back to the category-denoting
+  // kind, then the first per-option kind, when no productive enumeration was obtained.
+  const enumeratedLetters = new Set(categoryEnumerationMembers.map((e) => e.letter));
+  const firstEnumerationExcluded = categoryEnumerationMembers.length > 0
+    ? all.find((L) => !enumeratedLetters.has(L))
+    : undefined;
   let corroboration: CorroborationResult | undefined;
-  if (categoryKind) {
+  if (firstEnumerationExcluded) {
+    corroboration = await corroborateClaim(
+      ctx,
+      buildDiscriminatorEnumerationCorroborationQuery(category, optSafe[firstEnumerationExcluded]),
+      optSafe[firstEnumerationExcluded],
+    );
+  } else if (categoryKind) {
     corroboration = await corroborateClaim(
       ctx, buildDiscriminatorCategoryKindCorroborationQuery(category, categoryKind), categoryKind.kind,
     );
@@ -515,6 +689,8 @@ export async function runDiscriminatorStep(
   const result: DiscriminatorResult = {
     ok: true, category, property, query, kinds, discardedKinds: discarded, noKindStated,
     categoryKind, categoryKindDiscarded, propertyMembers, discardedPropertyMembers,
+    categoryEnumeration, categoryEnumerationDiscarded, categoryEnumerationMembers, discardedCategoryEnumerationMembers,
+    enumerationDisagreement: null,
     via, answerProvenance: provenance, corroboration,
   };
   return { result, summary: summaryLine(OPT, result) };

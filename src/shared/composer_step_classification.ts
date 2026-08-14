@@ -215,7 +215,14 @@ export function classifyComposerStepResult(raw: unknown): ComposerStepClassifica
   const propertyMembersStated = Array.isArray((r as { propertyMembers?: unknown }).propertyMembers)
     ? (r as { propertyMembers: unknown[] }).propertyMembers.length
     : 0;
-  const statedCount = statedArray.length + (categoryKindStated ? 1 : 0) + propertyMembersStated;
+  // D-BP154-023, ADDITIVE: DiscriminatorResult's own categoryEnumerationMembers array
+  // (discriminator_step.ts, D-BP154-023/FD-BP154-06) -- same undercounting gap the
+  // propertyMembers fix above already closed once, now closed for the category's own
+  // enumeration too.
+  const categoryEnumerationMembersStated = Array.isArray((r as { categoryEnumerationMembers?: unknown }).categoryEnumerationMembers)
+    ? (r as { categoryEnumerationMembers: unknown[] }).categoryEnumerationMembers.length
+    : 0;
+  const statedCount = statedArray.length + (categoryKindStated ? 1 : 0) + propertyMembersStated + categoryEnumerationMembersStated;
   if (statedCount === 0) {
     return { cls: 'ABSTAIN', detail: 'the source was silent -- nothing stated (absence is omission, not denial)', statedCount: 0 };
   }
