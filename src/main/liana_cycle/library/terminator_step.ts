@@ -76,6 +76,12 @@ import type { MagnitudeResult } from './magnitude_step';
 // message: HumanNuance:1 was built and registered but never consumed by this file, so it could
 // never change a verdict -- BUILT, not ACTIVE, per FD-BP154-08. This wiring is what makes it ACTIVE.
 import type { HumanNuanceResult } from './human_nuance_step';
+// D-BP154-041/BISHOP-SEG/S41/seg-purpose, PART 2/3, ADDITIVE, TYPE-ONLY (same non-circular shape as
+// the two imports just above -- purpose_step.ts's own runtime imports never reach this file).
+// FD-BP154-17: "before an answer is attempted, establish that the available evidence class CAN
+// satisfy the stated purpose." Consulted here so a structurally-insufficient purpose withholds a
+// verdict BEFORE this reducer's own elimination/contradiction logic runs at all.
+import type { PurposeResult } from './purpose_step';
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 
@@ -168,7 +174,16 @@ export interface TerminatorResult {
    *  a step absent from the stack is reported here as 'not run', distinct from a step that ran
    *  and abstained. D-BP154-022, ADDITIVE: 'Magnitude:1' added alongside the original three.
    *  D-BP154-033, ADDITIVE: 'HumanNuance:1' added as a fifth. */
-  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1', 'not run' | 'ok' | 'failed'>;
+  // D-BP154-041 PART 2/3, ADDITIVE: 'Purpose:1' added as a sixth entry -- see this file's own new
+  // import above.
+  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1', 'not run' | 'ok' | 'failed'>;
+  /** D-BP154-041 PART 2/3, FD-BP154-17, ADDITIVE. Non-null ONLY when Purpose:1 ran (ok:true) and
+   *  found the evidence class structurally incapable of satisfying its own stated purpose -- a
+   *  DISTINCT outcome from a normal ABSTAIN (multiple/zero survivors after elimination) and from a
+   *  wrong VERDICT. `abstain` is still set true and `abstainReason` still carries a human-readable
+   *  line (every pre-existing reader of `abstain`/`abstainReason` keeps working unchanged); this
+   *  field is what lets a reader tell the two ABSTAIN shapes apart structurally. */
+  insufficientEvidence: { preconditionId: string; reason: string; policyVersion: string } | null;
   eliminated: TerminatorEliminationEntry[];
   survivors: string[];
   contradiction: TerminatorContradiction | null;
@@ -280,6 +295,13 @@ function summaryLine(OPT: Record<string, string>, r: TerminatorResult): string {
   const completenessNote = r.incomplete
     ? `  ||  RUN INCOMPLETE -- ${Object.entries(r.stepsConsulted).filter(([, s]) => s === 'failed').map(([id]) => id).join(', ')} FAILED (steps consulted: ${stepsNote})`
     : `  ||  run complete -- all consulted steps green (steps consulted: ${stepsNote})`;
+  // D-BP154-041 PART 2/3: INSUFFICIENT EVIDENCE is reported as its OWN labeled line, ahead of the
+  // generic ABSTAIN line -- FD-BP154-17's own "a distinct outcome from ABSTAIN and from a wrong
+  // answer" must be visible in the transcript, not just in the structured field.
+  if (r.insufficientEvidence) {
+    return `TERMINATOR -- INSUFFICIENT EVIDENCE (${r.insufficientEvidence.preconditionId}, policy v`
+      + `${r.insufficientEvidence.policyVersion}): ${r.insufficientEvidence.reason}${completenessNote}`;
+  }
   if (r.abstain) {
     return `TERMINATOR -- ABSTAIN: ${r.abstainReason}  ||  ELIMINATED: ${elimText}  ||  SURVIVORS: ${r.survivors.join(', ') || '(none)'}${bucketsNote}${completenessNote}`;
   }
@@ -611,11 +633,11 @@ export async function runTerminatorStep(
   const OPT = input.options;
   const emptyStepsConsulted: TerminatorResult['stepsConsulted'] = {
     'Softballs:1': 'not run', 'NamedSet:1': 'not run', 'Discriminator:1': 'not run', 'Magnitude:1': 'not run',
-    'HumanNuance:1': 'not run',
+    'HumanNuance:1': 'not run', 'Purpose:1': 'not run',
   };
   if (!OPT || Object.keys(OPT).length === 0) {
     const result: TerminatorResult = {
-      ok: false, stepsConsulted: emptyStepsConsulted, eliminated: [], survivors: [],
+      ok: false, stepsConsulted: emptyStepsConsulted, insufficientEvidence: null, eliminated: [], survivors: [],
       contradiction: null, verdict: null, verdictName: null, abstain: true,
       abstainReason: 'this question has no lettered options', basisStepClasses: [], magnitudeBasis: null,
       frameMatchBuckets: null, incomplete: false,
@@ -632,6 +654,8 @@ export async function runTerminatorStep(
   const magnitudeRaw = findRaw('Magnitude:1') as MagnitudeResult | null;
   // D-BP154-033/BISHOP-SEG/S30-continuation/seg-wire-humannuance, ADDITIVE.
   const humanNuanceRaw = findRaw('HumanNuance:1') as HumanNuanceResult | null;
+  // D-BP154-041 PART 2/3, ADDITIVE.
+  const purposeRaw = findRaw('Purpose:1') as PurposeResult | null;
 
   const stepsConsulted: TerminatorResult['stepsConsulted'] = {
     'Softballs:1': softballsRaw ? (softballsRaw.ok ? 'ok' : 'failed') : 'not run',
@@ -639,7 +663,28 @@ export async function runTerminatorStep(
     'Discriminator:1': discriminatorRaw ? (discriminatorRaw.ok ? 'ok' : 'failed') : 'not run',
     'Magnitude:1': magnitudeRaw ? (magnitudeRaw.ok ? 'ok' : 'failed') : 'not run',
     'HumanNuance:1': humanNuanceRaw ? (humanNuanceRaw.ok ? 'ok' : 'failed') : 'not run',
+    'Purpose:1': purposeRaw ? (purposeRaw.ok ? 'ok' : 'failed') : 'not run',
   };
+  // D-BP154-041 PART 2/3, FD-BP154-17, NEW. "Before an answer is attempted, establish that the
+  // available evidence class CAN satisfy the stated purpose." Checked here, BEFORE this reducer's
+  // own elimination/contradiction logic runs at all -- a structurally-insufficient purpose means no
+  // amount of elimination could ever have produced a trustworthy unique survivor, so nothing below
+  // this point is worth computing. A DISTINCT outcome from a normal ABSTAIN: `insufficientEvidence`
+  // is set, never conflated with "no stated distinction separated them further".
+  if (purposeRaw?.ok && purposeRaw.sufficiency && !purposeRaw.sufficiency.sufficient) {
+    const result: TerminatorResult = {
+      ok: true, stepsConsulted, eliminated: [], survivors: all, contradiction: null, verdict: null,
+      verdictName: null, abstain: true,
+      abstainReason: `INSUFFICIENT EVIDENCE: ${purposeRaw.sufficiency.reason}`,
+      insufficientEvidence: {
+        preconditionId: purposeRaw.sufficiency.preconditionId,
+        reason: purposeRaw.sufficiency.reason,
+        policyVersion: purposeRaw.sufficiency.policyVersion,
+      },
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets: null, incomplete: false,
+    };
+    return { result, summary: summaryLine(OPT, result) };
+  }
   // D-BP154-029/BISHOP-SEG/S29/seg-withhold FIX. Computed ONCE, used everywhere below --
   // deriveTerminatorEliminations() itself, contradiction/zero-survivor ABSTAINs, and (new this
   // ticket) the gate that keeps a VERDICT from ever publishing while `incomplete` is true. This
@@ -666,7 +711,7 @@ export async function runTerminatorStep(
 
   if (contradiction) {
     const result: TerminatorResult = {
-      ok: true, stepsConsulted, eliminated, survivors: [], contradiction, verdict: null,
+      ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors: [], contradiction, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `CONTRADICTION: ${contradiction.reason}`,
       basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
@@ -687,7 +732,7 @@ export async function runTerminatorStep(
 
   if (survivors.length === 0) {
     const result: TerminatorResult = {
-      ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
+      ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: 'every option was eliminated -- at least one contributing step\'s basis must be wrong; not published',
       basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
@@ -731,7 +776,7 @@ export async function runTerminatorStep(
         ...(discriminatorRaw?.ok ? discriminatorRaw.propertyMembers.map((e) => `${e.letter}) ${e.name} [Discriminator:1]`) : []),
       ];
       const result: TerminatorResult = {
-        ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
+        ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null, verdict: null,
         verdictName: null, abstain: true,
         abstainReason: `FD-BP154-14: Magnitude:1 not consulted -- the membership test already `
           + `partitioned the options (stated member(s): ${statedMembers.join(', ') || '(none)'}), `
@@ -775,7 +820,7 @@ export async function runTerminatorStep(
       // how clean Magnitude:1's own ranking looks.
       if (incomplete) {
         const result: TerminatorResult = {
-          ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
+          ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null, verdict: null,
           verdictName: null, abstain: true,
           abstainReason: `WITHHELD: Magnitude:1 would have named ${extremeEntry.letter}) ${OPT[extremeEntry.letter]} as the `
             + `${magnitudeRaw.targetExtreme} of "${magnitudeRaw.property}", but this run is INCOMPLETE -- ${withheldNote(stepsConsulted)}. `
@@ -787,7 +832,7 @@ export async function runTerminatorStep(
       }
       const magnitudeClass = classifyComposerStepResult(magnitudeRaw).cls;
       const result: TerminatorResult = {
-        ok: true, stepsConsulted, eliminated, survivors, contradiction: null,
+        ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null,
         verdict: extremeEntry.letter, verdictName: OPT[extremeEntry.letter], abstain: false, abstainReason: null,
         basisStepClasses: [...basisStepClasses, magnitudeClass],
         magnitudeBasis: { targetExtreme: magnitudeRaw.targetExtreme, property: magnitudeRaw.property, span: extremeEntry.span },
@@ -805,7 +850,7 @@ export async function runTerminatorStep(
         : `; Magnitude:1 ran but did not succeed (${magnitudeRaw.error ?? 'no reason given'})`
       : '';
     const result: TerminatorResult = {
-      ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
+      ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `more than one survivor left (${survivors.join(', ')}) -- no stated distinction separated them further. Steps consulted: ${consultedNote}${magnitudeNote}`,
       basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
@@ -821,7 +866,7 @@ export async function runTerminatorStep(
   // is sitting in `survivors` unexamined). WITHHELD, never published.
   if (incomplete) {
     const result: TerminatorResult = {
-      ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
+      ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `WITHHELD: a unique survivor (${verdict}) ${OPT[verdict]} was reached, but this run is `
         + `INCOMPLETE -- ${withheldNote(stepsConsulted)}. A verdict derived from a partial elimination set is `
@@ -831,7 +876,7 @@ export async function runTerminatorStep(
     return { result, summary: summaryLine(OPT, result) };
   }
   const result: TerminatorResult = {
-    ok: true, stepsConsulted, eliminated, survivors, contradiction: null,
+    ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null,
     verdict, verdictName: OPT[verdict], abstain: false, abstainReason: null, basisStepClasses,
     magnitudeBasis: null, frameMatchBuckets, incomplete,
   };

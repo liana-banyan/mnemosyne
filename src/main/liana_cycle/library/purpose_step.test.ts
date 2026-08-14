@@ -137,6 +137,32 @@ describe('runPurposeStep', () => {
     expect(summary).toMatch(/PURPOSE --/);
   });
 
+  it('computes sufficiency INSUFFICIENT for qid 98\'s real nine-option shape, from the option count alone', async () => {
+    const nineOptions: Record<string, string> = {
+      A: 'South America', B: 'South Asia', C: 'North Africa', D: 'Northeast United States', E: 'Europe',
+      F: 'Central Asia', G: 'Arctic Circle', H: 'Amazon Rainforest', I: 'Sahara Desert',
+    };
+    const input: MethodQuestionInput = {
+      qid: 98, question: QID98_QUESTION, options: nineOptions, originSrc: QID98_SRC, category: QID98_CATEGORY,
+    };
+    const { result } = await runPurposeStep(input, ctx());
+    expect(result.ok).toBe(true);
+    expect(result.sufficiency).not.toBeNull();
+    expect(result.sufficiency!.sufficient).toBe(false);
+    expect(result.sufficiency!.reason).toMatch(/INSUFFICIENT EVIDENCE/);
+  });
+
+  it('computes sufficiency SUFFICIENT for the origin four-option shape', async () => {
+    const fourOptions: Record<string, string> = {
+      A: 'South Asia', B: 'Europe', C: 'South America', D: 'Northeast United States',
+    };
+    const input: MethodQuestionInput = {
+      qid: 98, question: QID98_QUESTION, options: fourOptions, originSrc: QID98_SRC, category: QID98_CATEGORY,
+    };
+    const { result } = await runPurposeStep(input, ctx());
+    expect(result.sufficiency!.sufficient).toBe(true);
+  });
+
   it('reports INSUFFICIENT EVIDENCE, never the least-bad purpose, when every candidate is eliminated', async () => {
     const input: MethodQuestionInput = {
       qid: 1, question: 'What is 2+2?', options: null, category: 'other',

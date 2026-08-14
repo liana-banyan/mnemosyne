@@ -35,6 +35,11 @@ export interface PurposeReceipt {
   candidates: Array<{ id: string; source: string; statement: string; span: string }>;
   survivors: Array<{ id: string; source: string; statement: string; span: string }>;
   eliminated: Array<{ candidateId: string; reason: string }>;
+  /** D-BP154-041 PART 2/3, FD-BP154-17 -- null only when this step itself failed before a purpose
+   *  was derived (see PurposeResult.sufficiency's own doc, purpose_step.ts). */
+  sufficiency: {
+    preconditionId: string; sufficient: boolean; reason: string; policyVersion: string;
+  } | null;
   error: string | null;
   recordedAt: string;
 }
@@ -83,6 +88,12 @@ export function mintPurposeReceipt(
       id: c.id, source: c.source, statement: c.statement, span: c.span,
     })),
     eliminated: result.eliminated.map((e) => ({ candidateId: e.candidate.id, reason: e.reason })),
+    sufficiency: result.sufficiency ? {
+      preconditionId: result.sufficiency.preconditionId,
+      sufficient: result.sufficiency.sufficient,
+      reason: result.sufficiency.reason,
+      policyVersion: result.sufficiency.policyVersion,
+    } : null,
     error: result.error ?? null,
     recordedAt: new Date().toISOString(),
   };

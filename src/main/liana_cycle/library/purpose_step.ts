@@ -53,6 +53,13 @@ import type { MethodIdentity } from './method_identity';
 import type { StepDeclaration } from './step_declaration';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 import { mintPurposeReceipt } from './purpose_receipt_store';
+// D-BP154-041/BISHOP-SEG/S41/seg-purpose, PART 2/3 -- THE SUFFICIENCY GATE (FD-BP154-17). Computed
+// here, once purposeType and the option COUNT are both known, so the result is available to the
+// upstream skip gate (script_bridge.ts, PART 3) without a second, separate consultation.
+import { checkSufficiency } from './sufficiency_gate';
+import type { PurposeSufficiencyResult } from './sufficiency_gate';
+
+export type { PurposeSufficiencyResult } from './sufficiency_gate';
 
 // ───────────────────────────── pure parts (unit-testable, no I/O) ─────────────────────────────
 
@@ -220,13 +227,18 @@ export interface PurposeResult {
   candidates: PurposeCandidate[];
   survivors: PurposeCandidate[];
   eliminated: EliminatedPurposeCandidate[];
+  /** D-BP154-041 PART 2/3, FD-BP154-17. Computed from purposeType + the option COUNT alone, before
+   *  any option-examining step runs -- null only when this step itself failed (no question text /
+   *  no purpose text at all), never when a purpose was successfully derived (even an UNCLASSIFIED
+   *  purposeType still gets an honest "no precondition declared" sufficiency result). */
+  sufficiency: PurposeSufficiencyResult | null;
   via: string;
   error?: string;
 }
 
 function emptyPurposeResult(overrides: Partial<PurposeResult> & { error: string }): PurposeResult {
   return {
-    ok: false, purposeType: 'UNCLASSIFIED', candidates: [], survivors: [], eliminated: [], via: 'n/a',
+    ok: false, purposeType: 'UNCLASSIFIED', candidates: [], survivors: [], eliminated: [], sufficiency: null, via: 'n/a',
     ...overrides,
   };
 }
@@ -239,9 +251,12 @@ function summaryLine(r: PurposeResult): string {
   const eliminatedText = r.eliminated.length
     ? r.eliminated.map((e) => `[${e.candidate.source}] "${e.candidate.statement}" -- ${e.reason}`).join('  |  ')
     : '(none)';
+  const sufficiencyText = r.sufficiency
+    ? ` ${r.sufficiency.sufficient ? 'SUFFICIENT' : 'INSUFFICIENT EVIDENCE'} (${r.sufficiency.preconditionId}): ${r.sufficiency.reason}`
+    : ' (not computed -- this step failed before a purpose was derived)';
   return `PURPOSE -- type: ${r.purposeType}  ||  CANDIDATES (${r.candidates.length}): `
     + `${r.candidates.map((c) => `[${c.source}] "${c.statement}"`).join('  |  ') || '(none)'}`
-    + `  ||  SURVIVORS: ${survivorText}  ||  ELIMINATED: ${eliminatedText}`;
+    + `  ||  SURVIVORS: ${survivorText}  ||  ELIMINATED: ${eliminatedText}  ||  SUFFICIENCY:${sufficiencyText}`;
 }
 
 // ───────────────────────────── the live step (pure/synchronous today) ─────────────────────────────
@@ -267,7 +282,7 @@ export async function runPurposeStep(
 
   if (survivors.length === 0) {
     const result: PurposeResult = {
-      ok: false, purposeType, candidates, survivors, eliminated, via: 'n/a',
+      ok: false, purposeType, candidates, survivors, eliminated, sufficiency: null, via: 'n/a',
       error: `INSUFFICIENT EVIDENCE -- no candidate purpose survived elimination (${candidates.length} `
         + `extracted, ${eliminated.length} discarded by the declared stoplist rule); never the least-bad `
         + 'purpose (FD-BP154-16)',
@@ -276,8 +291,14 @@ export async function runPurposeStep(
     return { result, summary: summaryLine(result) };
   }
 
+  // D-BP154-041 PART 2/3, FD-BP154-17: sufficiency is checked from purposeType + the option COUNT
+  // alone (never which option is which) -- available now, before Softballs:1/NamedSet:1/
+  // Discriminator:1/Magnitude:1/HumanNuance:1 issue a single query.
+  const optionCount = input.options ? Object.keys(input.options).length : 0;
+  const sufficiency = checkSufficiency(purposeType, optionCount);
+
   const result: PurposeResult = {
-    ok: true, purposeType, candidates, survivors, eliminated,
+    ok: true, purposeType, candidates, survivors, eliminated, sufficiency,
     via: `stated fields: ${survivors.map((c) => c.source).join(', ')}`,
   };
   // FD-BP154-16: "Purpose enters the receipt store at stratum sand... so it can be affirmed or
@@ -302,7 +323,9 @@ const PURPOSE_DECLARATION: StepDeclaration = {
     + 'never be retrofitted to a surviving option set. Each candidate carries its own verbatim span. '
     + 'Eliminates candidates only by a declared, content-blind stoplist rule, never by which yields a '
     + 'nicer answer; reports INSUFFICIENT EVIDENCE if none survive. Classifies the question\'s own '
-    + 'structural shape (purposeType) for sufficiency_gate.ts to consult. Issues no query in its BUILT '
+    + 'structural shape (purposeType) and checks sufficiency_gate.ts\'s own precondition against the '
+    + 'option COUNT (never which option is which) -- available to script_bridge.ts\'s upstream skip '
+    + 'gate before any option-examining step spends a query. Issues no query in its BUILT '
     + 'form; a mechanical probe-consistency mechanism exists (buildPurposeProbeQuery/'
     + 'checkPurposeConsistency) but is not yet wired live.',
   inputs: 'MethodQuestionInput (question, originSrc, category, qid) plus MethodRunContext (acquisitionId for the receipt).',
