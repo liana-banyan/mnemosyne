@@ -376,6 +376,16 @@ declare global {
       // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: the evidence store
       // already on disk must be VISIBLE. Strictly read-only, see evidence_store.ts's own header.
       lianaEvidenceStoreSummary?: () => Promise<import('../main/liana_cycle/evidence/evidence_store').EvidenceStoreSummary>;
+      // D-BP154-025/BISHOP-SEG/S25/seg-handproof -- TWO READ-ONLY REFERENCE PANELS. Founder,
+      // verbatim: "Give me my hand-written proof, in the composer, as well as the THREE QUESTIONS
+      // that we know get the right answer." Strictly read-only, see
+      // composer_reference_panels.ts's own header for the "verbatim from disk" discipline.
+      lianaComposerFounderProof?: () => Promise<{
+        bp153: import('../main/liana_cycle/library/composer_reference_panels').FounderProofSlice;
+        founderCascade: import('../main/liana_cycle/library/composer_reference_panels').FounderProofSlice;
+      }>;
+      lianaComposerFounderCascadeWhole?: () => Promise<import('../main/liana_cycle/library/composer_reference_panels').FounderProofSlice>;
+      lianaComposerKnownGoodQueries?: () => Promise<import('../main/liana_cycle/library/composer_reference_panels').KnownGoodQuery[]>;
       // D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE. The engine stops before every
       // Google query and again on what comes back, and waits -- with no timer -- until the
       // operator answers. onLianaAudiblePause is the push; lianaAudibleRespond is the only way a
