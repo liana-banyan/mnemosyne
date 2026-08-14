@@ -2547,9 +2547,17 @@ function buildLianaAskGoogle(runThreadContext: NexusRunThreadContext): AskGoogle
 // wrapping" referred to the DEFAULT branch's call shape, not to which authorities were reachable
 // at all). Same contract as the original: `question` passed through verbatim (HARDWIRE-22
 // unaffected), every non-ok outcome maps to `ok: false`, no judgment/rating prompt ever built here.
+// D-BP154-014/BISHOP/S14/seg-milkthem, ADDITIVE: `mcOptions` threaded straight through to
+// runMachineDrivenNexusQueryFromMain's own 5th positional argument -- that function, and every
+// hop below it (runMachineDrivenNexusQuery -> runInteractiveBrowserAuthorityQueryObserved's
+// query.mcOptions -> the 'browser-authority-run-interactive-query' IPC payload -> webview_
+// preload.ts's own mentionsAnyOption() capture-hop gate), ALREADY accepted and used mcOptions
+// before this ticket; the one missing wire was this function never being GIVEN any to pass
+// through (ConversationalAuthorityFn took only `question`). See ConversationalAuthorityFn's own
+// D-BP154-014 doc comment, method_registry.ts, for the live-measured defect this closes.
 function buildAskConversationalAuthority(runThreadContext: NexusRunThreadContext): ConversationalAuthorityFn {
-  return async (question: string) => {
-    const result = await runMachineDrivenNexusQueryFromMain('user_gemini', question, null, runThreadContext);
+  return async (question: string, mcOptions?: string[]) => {
+    const result = await runMachineDrivenNexusQueryFromMain('user_gemini', question, null, runThreadContext, mcOptions);
     if (!result.ok || !result.text.trim()) {
       return {
         ok: false,
