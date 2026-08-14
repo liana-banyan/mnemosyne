@@ -1,5 +1,5 @@
 {
-  "builtAt": "2026-08-14T19:37:48.054Z",
+  "builtAt": "2026-08-14T19:42:45.227Z",
   "standingSet": [
     1,
     7,
@@ -145,8 +145,8 @@
     }
   ],
   "requestsIssued": 57,
-  "totalRequestMs": 12314,
+  "totalRequestMs": 11609,
   "beforeHash": "f80bd4ca2f65dc69ede56b2fe6fa1bb18b7c533d001c9b70190393bad2dfffeb",
   "afterHash": "f80bd4ca2f65dc69ede56b2fe6fa1bb18b7c533d001c9b70190393bad2dfffeb",
-  "backupPath": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\questions.jsonl.superseded.2026-08-14T193748049Z"
+  "backupPath": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\questions.jsonl.superseded.2026-08-14T194245222Z"
 }

@@ -47,6 +47,6 @@
       124
     ]
   },
-  "updatedAt": "2026-08-14T19:37:48.053Z",
+  "updatedAt": "2026-08-14T19:42:45.226Z",
   "note": "Accretion inventory of origin eblets BY CATEGORY (14 MMLU-Pro domains). Sibling to, never a fork of, LianaBanyanPlatform/eval/mmlu_pro/substrate_domain_ref_cache.jsonl (per-domain curated study-guide content) -- this indexes per-QUESTION provenance records instead, cross-referenced by the same category/domain name."
 }

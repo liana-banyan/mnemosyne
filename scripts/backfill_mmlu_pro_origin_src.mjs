@@ -367,7 +367,18 @@ async function main() {
       },
       campaignQuestionId: campaignId,
       mmluProQuestionId: mmluProId,
+      // D-BP154-030 AMENDMENT 4 (FD-BP154-08b) -- Founder: "tags... are inclusive and not mutually
+      // exclusive, so no loss if we make a new category of the same type of thing accidentally."
+      // `category` (single string) is kept for human-readable continuity with the bundled corpus's
+      // own field, but is no longer the record's only home for this fact -- `categoryTags` is a
+      // LIST from the start, even though every item today carries exactly one tag (the corpus's own
+      // `category` field has only ever had one value per row). A future pass that wants to tag this
+      // item into a SECOND category can append to the list losslessly; no migration of THIS record
+      // is required to do that. Does not migrate LianaBanyanPlatform/eval/mmlu_pro/
+      // substrate_domain_ref_cache.jsonl's own single-valued `domain` field (out of this ticket's
+      // scope -- that store is a sibling, read-only reference here, never written by this script).
       category: bundleRow.category,
+      categoryTags: [bundleRow.category],
       src,
       mmluProFetch: {
         dataset: 'TIGER-Lab/MMLU-Pro', config: 'default', split: 'test',
@@ -448,10 +459,17 @@ async function main() {
   for (const r of results) {
     if (!r.ok) continue;
     const bundleRow = byId.get(r.campaignQuestionId);
-    const cat = bundleRow ? bundleRow.category : 'unknown';
-    if (!existingCategoryIndex.byCategory[cat]) existingCategoryIndex.byCategory[cat] = [];
-    if (!existingCategoryIndex.byCategory[cat].includes(r.campaignQuestionId)) {
-      existingCategoryIndex.byCategory[cat].push(r.campaignQuestionId);
+    // FD-BP154-08b: loop over the TAG LIST (today always length 1, from the corpus's own
+    // single-valued `category` field) rather than a single field -- an item tagged into MULTIPLE
+    // categories in a future pass is added to every one of its buckets, losslessly, with no
+    // migration of this index's own shape (already a multi-map: {category: [ids]}, which already
+    // tolerates one id appearing under more than one key).
+    const tags = bundleRow ? [bundleRow.category] : ['unknown'];
+    for (const cat of tags) {
+      if (!existingCategoryIndex.byCategory[cat]) existingCategoryIndex.byCategory[cat] = [];
+      if (!existingCategoryIndex.byCategory[cat].includes(r.campaignQuestionId)) {
+        existingCategoryIndex.byCategory[cat].push(r.campaignQuestionId);
+      }
     }
   }
   existingCategoryIndex.updatedAt = new Date().toISOString();

@@ -64,7 +64,7 @@
   "domainsSkippedFromLiveCorpus": [],
   "lawSource": "live HF datasets-server fetch (BP134 Yoke #32 Phase F) -- see law_fallback_source.json",
   "originSrcEnrichment": {
-    "enrichedAt": "2026-08-14T19:37:48.053Z",
+    "enrichedAt": "2026-08-14T19:42:45.225Z",
     "enrichedBy": "scripts/backfill_mmlu_pro_origin_src.mjs (D-BP154-030 amendment 2)",
     "campaignQuestionIdsEnriched": [
       1,
