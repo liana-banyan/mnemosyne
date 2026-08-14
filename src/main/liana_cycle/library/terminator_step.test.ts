@@ -852,6 +852,23 @@ describe('D-BP154-033: HumanNuance:1 is wired into deriveTerminatorEliminations(
     expect(result.insufficientEvidence).toBeNull();
     expect(result.verdict).toBe('A');
   });
+
+  // D-BP154-041 PART 3/3 -- QUALIFIER 1: "SKIPPED-AS-MOOT is not FAILED... must NOT mark the run
+  // incomplete." A skip marker (the SAME shape script_bridge.ts's computeStepSkip() produces) sits
+  // in `priorResults` as Magnitude:1's own raw result -- proves stepStatus() reports the THIRD
+  // status 'skipped-moot' (never 'failed') and `incomplete` stays false.
+  test('a Magnitude:1 SKIPPED-AS-MOOT marker reports "skipped-moot", never "failed", and never marks incomplete', async () => {
+    const softballsOutcome = { id: 'Softballs:1', summary: 's', raw: softballs([['D', 'D) not a world region.']]) };
+    const namedSetOutcome = {
+      id: 'NamedSet:1', summary: 's',
+      raw: namedSet(Object.keys(OPT).filter((L) => L !== 'A' && L !== 'D').map((L) => [L, `${L}) is densely populated.`] as [string, string])),
+    };
+    const magnitudeSkipMarker = { id: 'Magnitude:1', summary: 'skipped', raw: { ok: false, skipped: true, skipReason: 'SKIPPED-AS-MOOT (test)' } };
+    const { result } = await runTerminatorStep(input, ctx, [softballsOutcome, namedSetOutcome, magnitudeSkipMarker]);
+    expect(result.stepsConsulted['Magnitude:1']).toBe('skipped-moot');
+    expect(result.incomplete).toBe(false);
+    expect(result.verdict).toBe('A');
+  });
 });
 
 describe('registerTerminatorStep / listComposerRegistry -- Terminator:1 is a real, visible, reorderable Composer entry', () => {

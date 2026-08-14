@@ -85,6 +85,9 @@ import { registerHumanNuanceStep, runHumanNuanceStep } from './human_nuance_step
 // header for why it must run before any option-examining step.
 import { registerPurposeStep, runPurposeStep } from './purpose_step';
 import type { PurposeResult } from './purpose_step';
+// D-BP154-041/BISHOP-SEG/S41/seg-purpose, PART 3/3 -- THE UPSTREAM SKIP GATE. See step_skip.ts's
+// own header for the full five-qualifier design and the DECIDING/REFUTING classification table.
+import { computeStepSkip } from './step_skip';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -356,6 +359,18 @@ async function runOneStep(
   // magnitude_step.ts's header) -- every other branch below ignores the parameter unchanged.
   priorResults: ComposerStepOutcome[],
 ): Promise<{ summary: string; raw: unknown }> {
+  // D-BP154-041/BISHOP-SEG/S41/seg-purpose, PART 3/3, NEW -- THE UPSTREAM SKIP GATE, checked BEFORE
+  // any branch below is reached. computeStepSkip() (step_skip.ts) only ever returns non-null for
+  // the five query-issuing steps it names (Softballs:1/NamedSet:1/Discriminator:1/Magnitude:1/
+  // HumanNuance:1) and only when a real skip condition holds -- every other id below is untouched,
+  // and a `null` return here changes nothing about this function's own pre-existing behavior. No
+  // real runner is invoked, no query is issued, no persistStepClaim() call happens (there is
+  // nothing to classify) -- the marker IS the step's own raw result, exactly like a real ok:false
+  // failure shape, just distinguishable (isSkippedMarker()) from one.
+  const skip = computeStepSkip(id, priorResults);
+  if (skip) {
+    return { summary: skip.skipReason, raw: skip };
+  }
   if (id === 'StateTheQuestion:1') {
     // D-BP152-049 STAGE 3/4: calls the SAME function STEP 0 itself calls automatically at the
     // start of every run (liana_terminal_engine.ts) -- see this file's header and
