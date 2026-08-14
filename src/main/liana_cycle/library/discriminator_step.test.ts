@@ -14,7 +14,7 @@ import { describe, test, expect, vi } from 'vitest';
 import {
   buildDiscriminatorQuery, deriveDiscriminatorCategory, deriveDiscriminatorSuperlativeProperty,
   registerDiscriminatorStep, runDiscriminatorStep,
-  verifyCategoryKind, verifyDiscriminatorKinds, verifyDiscriminatorPropertyMembers,
+  verifyCategoryEnumeration, verifyCategoryKind, verifyDiscriminatorKinds, verifyDiscriminatorPropertyMembers,
 } from './discriminator_step';
 import { listComposerRegistry, runScratchComposer } from './script_bridge';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
@@ -65,6 +65,22 @@ describe('buildDiscriminatorQuery -- ONE query asking BOTH things, never split i
     expect(q).toContain('properly denotes "world regions"');
     expect(q).toContain("ARE the world's most densely populated regions");
     expect(q).toContain("that it is the world's most densely populated regions");
+  });
+
+  // D-BP154-023/BISHOP-SEG/S23/seg-enumerate, ADDITIVE (FD-BP154-06).
+  test('the query ALWAYS asks for a category enumeration, even with no property -- exhaustiveness demanded explicitly', () => {
+    const q = buildDiscriminatorQuery('world regions', null, ALL, OPT);
+    expect(q).toContain('enumerable, closed set');
+    expect(q).toContain('exhaustively');
+    expect(q).toContain('do not give examples');
+  });
+
+  test('the enumeration ask still appears, and still comes before the property ask, when a property is also present', () => {
+    const q = buildDiscriminatorQuery('world regions', "the world's most densely populated regions", ALL, OPT);
+    const enumIdx = q.indexOf('enumerable, closed set');
+    const propIdx = q.indexOf("ARE the world's most densely populated regions");
+    expect(enumIdx).toBeGreaterThan(-1);
+    expect(propIdx).toBeGreaterThan(enumIdx);
   });
 });
 
@@ -182,6 +198,74 @@ describe('verifyDiscriminatorKinds / verifyCategoryKind -- extraction only, veri
     const rawForH = [{ name: 'Amazon Rainforest', kind: 'x', span: 'Amazon Rainforest is obviously x, everyone knows.' }];
     expect(verifyDiscriminatorKinds(rawForA, passage, OPT).discarded).toBe(1);
     expect(verifyDiscriminatorKinds(rawForH, passage, OPT).discarded).toBe(1);
+  });
+});
+
+// D-BP154-023/BISHOP-SEG/S23/seg-enumerate -- FD-BP154-06, Founder verbatim: "the narrow reading
+// is obtainable from a source we can cite." Deliberately invented category/option vocabulary
+// throughout (never qid 98's real "world regions"/real option names) -- proves the mechanism
+// generalizes, per FD-BP153-06's own "would this rule survive on a question whose answer we do
+// not know" bar.
+describe('verifyCategoryEnumeration -- extraction only, verified span or discarded (HARDWIRE-22, FD-BP154-06)', () => {
+  const passage = 'The Alpha Federation consists of exactly three member states: Redland, '
+    + 'Blueland, and Greenland. Yellowland is a separate, unrelated territory.';
+
+  test('a genuine enumeration statement, verbatim in the passage, is kept', () => {
+    const raw = { span: 'The Alpha Federation consists of exactly three member states: Redland, Blueland, and Greenland.' };
+    const { categoryEnumeration, discarded } = verifyCategoryEnumeration(raw, passage);
+    expect(categoryEnumeration).not.toBeNull();
+    expect(categoryEnumeration?.span).toContain('Redland');
+    expect(discarded).toBe(false);
+  });
+
+  test('an enumeration span not verbatim in the passage is discarded, never trusted as stated', () => {
+    const raw = { span: 'This exact sentence never appeared in the passage at all.' };
+    const { categoryEnumeration, discarded } = verifyCategoryEnumeration(raw, passage);
+    expect(categoryEnumeration).toBeNull();
+    expect(discarded).toBe(true);
+  });
+
+  test('no enumeration offered at all is "not stated", never a discard (nothing was attempted)', () => {
+    const { categoryEnumeration, discarded } = verifyCategoryEnumeration(undefined, passage);
+    expect(categoryEnumeration).toBeNull();
+    expect(discarded).toBe(false);
+  });
+
+  test('null is treated identically to undefined -- both are "not stated"', () => {
+    const { categoryEnumeration, discarded } = verifyCategoryEnumeration(null, passage);
+    expect(categoryEnumeration).toBeNull();
+    expect(discarded).toBe(false);
+  });
+});
+
+describe('verifyDiscriminatorPropertyMembers reused for CATEGORY enumeration membership -- the same generic four-part discipline, no letter preference', () => {
+  const passage = 'The Alpha Federation consists of exactly three member states: Redland, '
+    + 'Blueland, and Greenland. Yellowland is a separate, unrelated territory.';
+  const OPT2: Record<string, string> = { A: 'Redland', B: 'Blueland', C: 'Greenland', D: 'Yellowland' };
+
+  test('options the enumeration explicitly names are kept, each with its own verbatim span', () => {
+    const raw = [
+      { name: 'Redland', span: 'The Alpha Federation consists of exactly three member states: Redland, Blueland, and Greenland.' },
+      { name: 'Blueland', span: 'The Alpha Federation consists of exactly three member states: Redland, Blueland, and Greenland.' },
+      { name: 'Greenland', span: 'The Alpha Federation consists of exactly three member states: Redland, Blueland, and Greenland.' },
+    ];
+    const { propertyMembers, discarded } = verifyDiscriminatorPropertyMembers(raw, passage, OPT2);
+    expect(propertyMembers.map((e) => e.letter).sort()).toEqual(['A', 'B', 'C']);
+    expect(discarded).toBe(0);
+  });
+
+  test('an option NOT named by the enumeration is never included -- absence from the extraction, not a false membership', () => {
+    const raw = [{ name: 'Redland', span: 'The Alpha Federation consists of exactly three member states: Redland, Blueland, and Greenland.' }];
+    const { propertyMembers } = verifyDiscriminatorPropertyMembers(raw, passage, OPT2);
+    expect(propertyMembers.map((e) => e.letter)).toEqual(['A']);
+    expect(propertyMembers.some((e) => e.letter === 'D')).toBe(false);
+  });
+
+  test('NO RULE MAY SELECT A PARTICULAR LETTER: a fabricated span is discarded identically regardless of which letter is under test', () => {
+    const rawForA = [{ name: 'Redland', span: 'a sentence that never appeared anywhere' }];
+    const rawForD = [{ name: 'Yellowland', span: 'a sentence that never appeared anywhere' }];
+    expect(verifyDiscriminatorPropertyMembers(rawForA, passage, OPT2).discarded).toBe(1);
+    expect(verifyDiscriminatorPropertyMembers(rawForD, passage, OPT2).discarded).toBe(1);
   });
 });
 

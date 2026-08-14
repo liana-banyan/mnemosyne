@@ -78,6 +78,11 @@ function discriminator(
   // pre-existing call site below compiles and behaves unchanged): [letter, span] pairs the source
   // explicitly states ARE the superlative property.
   propertyMembers: Array<[string, string]> = [],
+  // D-BP154-023/BISHOP-SEG/S23/seg-enumerate, ADDITIVE, optional (defaults to none): [letter,
+  // span] pairs the source's own CATEGORY enumeration names as members, plus the enumeration
+  // statement's own span (null when no enumeration was stated at all).
+  categoryEnumerationMembers: Array<[string, string]> = [],
+  categoryEnumerationSpan: string | null = null,
 ): DiscriminatorResult {
   return {
     ok: true, category: 'world regions', property: null, query: 'q',
@@ -88,6 +93,11 @@ function discriminator(
     categoryKindDiscarded: false,
     propertyMembers: propertyMembers.map(([letter, span]) => ({ letter, name: OPT[letter], span })),
     discardedPropertyMembers: 0,
+    categoryEnumeration: categoryEnumerationSpan ? { span: categoryEnumerationSpan } : null,
+    categoryEnumerationDiscarded: false,
+    categoryEnumerationMembers: categoryEnumerationMembers.map(([letter, span]) => ({ letter, name: OPT[letter], span })),
+    discardedCategoryEnumerationMembers: 0,
+    enumerationDisagreement: null,
     via: 'test',
   };
 }
@@ -233,6 +243,59 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
     const disc = discriminator([], null, []);
     const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
     expect(eliminated).toHaveLength(0);
+  });
+
+  // D-BP154-023/BISHOP-SEG/S23/seg-enumerate -- FD-BP154-06, Founder verbatim: "the narrow
+  // reading is obtainable from a source we can cite... An option the source's own enumeration
+  // does not contain is not a member of the frame." Deliberately invented vocabulary throughout
+  // (never qid 98's real "world regions" or real option names) -- proves the mechanism
+  // generalizes, per FD-BP153-06's own "would this rule survive on a question whose answer we do
+  // not know" bar.
+  describe('THE CATEGORY ENUMERATION -- FD-BP154-06', () => {
+    test('an option NOT named by a productive enumeration is eliminated, sourced to the enumeration span', () => {
+      const disc = discriminator(
+        [], null, [],
+        [['A', 'x'], ['C', 'y'], ['F', 'z']],
+        'The Alpha Federation consists of exactly three member states: South America, North Africa, and Central Asia.',
+      );
+      const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+      const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
+      // A, C, F are named -- not eliminated. Every OTHER option (B, D, E, G, H, I) is eliminated,
+      // sourced to Discriminator:1 with the enumeration's own span as evidence.
+      expect(eliminatedLetters.has('A')).toBe(false);
+      expect(eliminatedLetters.has('C')).toBe(false);
+      expect(eliminatedLetters.has('F')).toBe(false);
+      for (const L of ['B', 'D', 'E', 'G', 'H', 'I']) {
+        expect(eliminatedLetters.has(L), `${L} should be eliminated (not named by the enumeration)`).toBe(true);
+      }
+      const bElim = eliminated.find((e) => e.letter === 'B');
+      expect(bElim?.sourceStep).toBe('Discriminator:1');
+      expect(bElim?.span).toContain('The Alpha Federation consists of');
+    });
+
+    test('NO enumeration stated at all -> zero eliminations via this mechanism -- absence is omission, not denial', () => {
+      const disc = discriminator([], null, [], [], null);
+      const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+      expect(eliminated).toHaveLength(0);
+    });
+
+    test('an enumeration span exists but names ZERO of our options -- never trusted to eliminate everyone (the real live risk this gate closes)', () => {
+      // categoryEnumerationSpan is non-null (a genuine enumeration WAS given) but
+      // categoryEnumerationMembers is EMPTY (none of it verifiably mapped to our option set --
+      // e.g. the source enumerated in different-granularity words). Must NOT collapse every
+      // option to eliminated.
+      const disc = discriminator([], null, [], [], 'The Federation consists of Redland, Blueland, and Greenland.');
+      const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+      expect(eliminated).toHaveLength(0);
+    });
+
+    test('CONTRADICTION: Softballs excludes an option the enumeration explicitly names as a member', () => {
+      const sb = softballs([['C', 'C) is not a world region.']]);
+      const disc = discriminator([], null, [], [['A', 'x'], ['C', 'y']], 'The list consists of South America and North Africa.');
+      const { contradiction } = deriveTerminatorEliminations(OPT, sb, null, disc);
+      expect(contradiction).not.toBeNull();
+      expect(contradiction?.letter).toBe('C');
+    });
   });
 
   test('CONTRADICTION: the same letter excluded by Softballs and included by NamedSet aborts publication', () => {

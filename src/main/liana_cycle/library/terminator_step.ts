@@ -263,6 +263,36 @@ export function deriveTerminatorEliminations(
       });
     }
   }
+  // D-BP154-023/BISHOP-SEG/S23/seg-enumerate, ADDITIVE. FD-BP154-06, Founder ruling verbatim:
+  // "the narrow reading is obtainable from a source we can cite... So: ask the source to STATE
+  // WHAT THE CATEGORY ENUMERATES, and test each option against that stated enumeration. An
+  // option the source's own enumeration does not contain is not a member of the frame."
+  // GATED ON `categoryEnumerationMembers.length > 0` -- the MINIMUM, MECHANICAL proof the
+  // enumeration genuinely engaged THIS option set (see discriminator_step.ts's own
+  // DiscriminatorResult.categoryEnumerationMembers doc comment for why an empty list here is
+  // never trusted to eliminate everyone -- a real risk if the source enumerated in different-
+  // granularity words that verbatim-matched none of our options at all). When gated open, EVERY
+  // option not named in the enumeration is excluded -- this is the whole authorization: an
+  // ENUMERATION (unlike a partial discussion) is presented as exhaustive by its own nature, so
+  // absence FROM a genuine enumeration is read as exclusion, not merely omission (a
+  // deliberately different reading from every OTHER absence rule in this estate, licensed only
+  // by this specific ruling, only for this specific extraction shape).
+  const enumeratedByDiscriminator = new Map<string, { name: string; span: string }>();
+  if (discriminator?.ok && discriminator.categoryEnumeration && discriminator.categoryEnumerationMembers.length > 0) {
+    const enumerationSpan = discriminator.categoryEnumeration.span;
+    const enumeratedLetters = new Set(discriminator.categoryEnumerationMembers.map((e) => e.letter));
+    for (const e of discriminator.categoryEnumerationMembers) {
+      enumeratedByDiscriminator.set(e.letter, { name: e.name, span: e.span });
+    }
+    for (const L of Object.keys(OPT)) {
+      if (enumeratedLetters.has(L)) continue; // named as a member -- not an elimination
+      eliminated.push({
+        letter: L, name: OPT[L], sourceStep: 'Discriminator:1',
+        reason: `source enumerates "${discriminator.category}" as a stated, exhaustive list and this option is not named in it`,
+        span: enumerationSpan,
+      });
+    }
+  }
   let contradiction: TerminatorContradiction | null = null;
   for (const [letter, softballsFact] of excludedBySoftballs) {
     const namedSetFact = includedByNamedSet.get(letter);
@@ -281,6 +311,19 @@ export function deriveTerminatorEliminations(
         letter,
         reason: `SOFTBALLS states "${OPT[letter] ?? letter}" is not the category ("${softballsFact.span}") while `
           + `DISCRIMINATOR simultaneously states it IS the superlative property ("${discriminatorPropertyFact.span}") -- `
+          + `self-contradictory, not published`,
+      };
+      break;
+    }
+    // D-BP154-023, ADDITIVE: SOFTBALLS says "not the category" while THE DISCRIMINATOR's own
+    // enumeration names the SAME option as a member of the category -- the two mechanisms cannot
+    // both be right about it.
+    const discriminatorEnumerationFact = enumeratedByDiscriminator.get(letter);
+    if (discriminatorEnumerationFact) {
+      contradiction = {
+        letter,
+        reason: `SOFTBALLS states "${OPT[letter] ?? letter}" is not the category ("${softballsFact.span}") while `
+          + `DISCRIMINATOR's own enumeration simultaneously names it as a member ("${discriminatorEnumerationFact.span}") -- `
           + `self-contradictory, not published`,
       };
       break;
