@@ -37,6 +37,10 @@ import type {
 import type { ComposerRegistryEntry, ScriptRunResponse } from '../../../main/liana_cycle/library/script_bridge';
 // D-BP154-010/BISHOP/S10/seg-thepail -- type-only, see evidence_store.ts's own header.
 import type { EvidenceStoreSummary } from '../../../main/liana_cycle/evidence/evidence_store';
+// D-BP154-017/BISHOP-SEG/S17/seg-classify -- the shared, renderer-safe classification module (no
+// Node imports, pure functions only). See that file's own header for the ratified mapping and why
+// PROVEN never fires for these three steps today.
+import { classifyComposerStepResult, COMPOSER_STEP_CLASS_STYLE } from '../../../shared/composer_step_classification';
 
 // D-BP152-045/BISHOP/seg-composer-ui-fixes -- PARENTAGE LABEL. Founder, live report: "can you
 // indicate with the NameNumbers if they are part of a script or method or whatever? ... so that
@@ -315,6 +319,11 @@ export function LianaCycleTab() {
   const [composerStack, setComposerStack] = useState<string[]>([]);
   const [composerRunning, setComposerRunning] = useState(false);
   const [composerResult, setComposerResult] = useState<ScriptRunResponse | null>(null);
+  // D-BP154-017/BISHOP-SEG/S17/seg-classify -- which step row's provenance chain is expanded
+  // (Founder, BP154: "click a result, see the chain of where it came from"). Index into
+  // composerResult.result.steps/results; null = nothing expanded. Reset whenever a new stack run
+  // starts (runComposerStack), same discipline composerResult itself already follows.
+  const [expandedStepIndex, setExpandedStepIndex] = useState<number | null>(null);
 
   // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL. "The Founder can SEE what is in it"
   // (THE_PAIL_BP154.md). `evidenceStoreSummary` is the READ-ONLY, whole-store view (the 440
@@ -856,6 +865,7 @@ export function LianaCycleTab() {
     }
     setComposerRunning(true);
     setComposerResult(null);
+    setExpandedStepIndex(null);
     try {
       const response = await window.amplify.lianaScriptRun(text, composerStack);
       setComposerResult(response);
@@ -1994,18 +2004,82 @@ export function LianaCycleTab() {
                     {composerResult.result.error && composerResult.result.steps.length === 0 && (
                       <div style={{ color: '#fca5a5' }}>Could not run: {composerResult.result.error}</div>
                     )}
-                    {composerResult.result.steps.map((s, i) => (
-                      <div key={i} style={{
-                        padding: '4px 6px', marginBottom: 3, borderRadius: 4,
-                        background: s.status === 'ok' ? '#052e1e' : '#3f0a0a',
-                        border: `1px solid ${s.status === 'ok' ? '#059669' : '#991b1b'}`,
-                      }}>
-                        <div>{i + 1}. {s.id}  ({s.durationMs}ms)  {s.status === 'ok' ? 'done' : 'did not finish'}</div>
-                        <div style={{ opacity: 0.85, marginTop: 2 }}>
-                          {composerResult.result.results[i]?.summary ?? s.error ?? s.whatChanged}
+                    {composerResult.result.steps.map((s, i) => {
+                      // D-BP154-017/BISHOP-SEG/S17/seg-classify -- PROVEN/CORROBORATED/ANSWERED/
+                      // ABSTAIN, shown after every step (Founder, BP154: "so that we can see what
+                      // is happening and how well or not what we put in worked"), clickable to the
+                      // provenance chain. classifyComposerStepResult() only reads structural fields
+                      // already on the step's own result -- never the answer key.
+                      const raw = composerResult.result.results[i]?.raw;
+                      const cls = s.status === 'ok' && raw !== undefined ? classifyComposerStepResult(raw) : null;
+                      const style = cls ? COMPOSER_STEP_CLASS_STYLE[cls.cls] : null;
+                      const expanded = expandedStepIndex === i;
+                      const evidenceRecord = (() => {
+                        const q = (raw as { query?: unknown } | undefined)?.query;
+                        if (typeof q !== 'string' || !q || !composerResult.evidence) return null;
+                        return composerResult.evidence.records.find((r) => r.query === q) ?? null;
+                      })();
+                      return (
+                        <div key={i} style={{
+                          padding: '4px 6px', marginBottom: 3, borderRadius: 4,
+                          background: s.status === 'ok' ? '#052e1e' : '#3f0a0a',
+                          border: `1px solid ${s.status === 'ok' ? '#059669' : '#991b1b'}`,
+                          cursor: cls ? 'pointer' : 'default',
+                        }}
+                        onClick={() => { if (cls) setExpandedStepIndex(expanded ? null : i); }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <span>{i + 1}. {s.id}  ({s.durationMs}ms)  {s.status === 'ok' ? 'done' : 'did not finish'}</span>
+                            {style && (
+                              <span title={style.description} style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 4,
+                                background: style.colorBg, color: style.colorFg,
+                                border: `1px solid ${style.colorFg}`, borderRadius: 10,
+                                padding: '1px 8px', fontSize: 10, fontWeight: 700,
+                                fontFamily: 'system-ui, sans-serif',
+                              }}>
+                                <span aria-hidden="true">{style.icon}</span>{style.label}
+                              </span>
+                            )}
+                            {cls && (
+                              <span style={{ color: '#64748b', fontSize: 10, fontFamily: 'system-ui, sans-serif' }}>
+                                {expanded ? '▾ hide chain' : '▸ click for provenance chain'}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ opacity: 0.85, marginTop: 2 }}>
+                            {composerResult.result.results[i]?.summary ?? s.error ?? s.whatChanged}
+                          </div>
+                          {expanded && cls && (
+                            <div style={{
+                              marginTop: 6, padding: '6px 8px', background: '#0d1117',
+                              border: '1px solid #1e2a38', borderRadius: 4, fontFamily: 'system-ui, sans-serif',
+                            }}>
+                              <div style={{ color: style?.colorFg, fontWeight: 700, marginBottom: 4 }}>
+                                {style?.label} -- {cls.detail}
+                              </div>
+                              <div>MECHANISM: {(raw as { answerProvenance?: { mechanism?: unknown } })?.answerProvenance?.mechanism as string ?? 'NOT_OBTAINED'}</div>
+                              <div>SOURCE: {(raw as { answerProvenance?: { detail?: unknown } })?.answerProvenance?.detail as string ?? '(missing -- shown as missing, not blank)'}</div>
+                              <div>QUERY (verbatim): {(raw as { query?: unknown })?.query as string ?? '(missing)'}</div>
+                              <div>ACQUISITION: {evidenceRecord ? `${evidenceRecord.acquisitionId} @ ${evidenceRecord.ts}` : (composerResult.evidence ? `${composerResult.evidence.acquisitionId} (this run)` : '(missing)')}</div>
+                              {(() => {
+                                const c = (raw as { corroboration?: { attempted?: unknown; corroborated?: unknown; sourceUrl?: unknown; sourceTitle?: unknown; span?: unknown; error?: unknown } })?.corroboration;
+                                if (!c) return <div>CORROBORATION: not attempted for this step</div>;
+                                if (c.corroborated) {
+                                  return (
+                                    <div>
+                                      CORROBORATION: confirmed by &quot;{(c.sourceTitle as string) || (c.sourceUrl as string)}&quot; ({c.sourceUrl as string})
+                                      <div style={{ opacity: 0.85 }}>&quot;{c.span as string}&quot;</div>
+                                    </div>
+                                  );
+                                }
+                                return <div>CORROBORATION: attempted, not obtained -- {(c.error as string) ?? '(no reason given)'}</div>;
+                              })()}
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
                 {composerResult && composerResult.mode === 'default' && (

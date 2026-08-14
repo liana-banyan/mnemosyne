@@ -216,6 +216,15 @@ export interface MethodRunContext {
    *  D-BP153-016, FIX 1, TYPED: returns `OwnedPassage[]` (text + kind + optional sourceQuery), not
    *  bare `string[]` -- see OwnedPassage's own doc comment, just above, for why. */
   ownedPassages?: () => OwnedPassage[];
+  /** D-BP154-017, ADDITIVE/OPTIONAL -- undefined on every pre-existing MethodRunContext
+   *  construction site (`{ askGoogle, emit }` and its variants elsewhere in this estate), so every
+   *  existing caller keeps compiling and behaving identically. Only script_bridge.ts's
+   *  runComposedStack() sets it (from runScratchComposer()'s own `currentAcquisitionId`
+   *  parameter, THE PAIL's evidenceSession.acquisitionId, D-BP154-010) -- the same acquisition id
+   *  that already tags every EvidenceRecord this run writes. A Composer step reads it only to tag
+   *  its OWN persisted classification record (composer_claims_store.ts) with the acquisition it
+   *  belongs to, never as a decision input. */
+  acquisitionId?: string;
 }
 
 export interface LianaMethod {
