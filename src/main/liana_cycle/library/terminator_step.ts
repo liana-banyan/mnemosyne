@@ -99,8 +99,22 @@ const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').r
 // categoryKind string OR any ONE item the split in step 2 produced -- always an EXACT match
 // against a literal phrase the source itself wrote, never a judgment that two different words mean
 // the same thing. An option whose kind matches NEITHER is eliminated exactly as before this fix.
+// D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap FIX to D-BP154-020's own stripParenthetical(): the
+// ORIGINAL only stripped a TRAILING parenthetical (anchored to end-of-string). LIVE-MEASURED this
+// ticket (qid 98): a real categoryKind read "Geopolitical Macro-Regions (such as South Asia, North
+// Africa, and Central Asia) and Continents (such as Europe and South America)" -- a parenthetical
+// in the MIDDLE of the string, not just at the end. The end-anchored strip removed only the final
+// "(such as Europe and South America)", leaving the FIRST parenthetical's own internal commas and
+// "and" ("South Asia, North Africa, and Central Asia") to be mis-read by the list-splitter below as
+// ADDITIONAL top-level list separators -- corrupting the split into "Geopolitical Macro-Regions
+// (such as South Asia", "North Africa", "and Central Asia)", "Continents", none of which matched
+// "Geopolitical Macro-Region" (B/C/F's own stated kind) -- wrongly eliminating them. Fixed by
+// stripping EVERY parenthetical span (global, not end-anchored) before splitting -- still the same
+// mechanical operation (decoration the source set off in parentheses, never part of the
+// classification word itself), just no longer blind to a parenthetical that isn't the very last
+// thing in the string.
 function stripParenthetical(s: string): string {
-  return s.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  return s.replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
 }
 function foldPluralToken(s: string): string {
   return s.endsWith('s') && !s.endsWith('ss') ? s.slice(0, -1) : s;
@@ -210,6 +224,26 @@ export function deriveTerminatorEliminations(
       });
     }
   }
+  // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap, ADDITIVE. FD-BP153-07 point 3 is about the
+  // SUPERLATIVE PROPERTY, not only the bare category (Founder's own correction, D-BP154-021
+  // dispatch) -- discriminator.propertyMembers (discriminator_step.ts, ADDITIVE this same
+  // ticket) is what THE DISCRIMINATOR's own query states ARE the superlative property itself
+  // (e.g. "the world's most densely populated regions"), asked and verified with the exact same
+  // verbatim-span discipline as every other extraction in this estate. SAME semantic as NAMED
+  // SET's own rule above: a stated MEMBER of the superlative property cannot be the answer to a
+  // "which is NOT ..." question -- eliminated, sourced honestly to Discriminator:1 (a second,
+  // independent path to the same fact NAMED SET tries to establish, not a duplicate vote -- each
+  // is credited to its own step).
+  const propertyMembersByDiscriminator = new Map<string, { name: string; span: string }>();
+  if (discriminator?.ok) {
+    for (const e of discriminator.propertyMembers) {
+      propertyMembersByDiscriminator.set(e.letter, { name: e.name, span: e.span });
+      eliminated.push({
+        letter: e.letter, name: e.name, sourceStep: 'Discriminator:1',
+        reason: `source states this IS the superlative property (a member, not the odd one out)`, span: e.span,
+      });
+    }
+  }
   let contradiction: TerminatorContradiction | null = null;
   for (const [letter, softballsFact] of excludedBySoftballs) {
     const namedSetFact = includedByNamedSet.get(letter);
@@ -218,6 +252,16 @@ export function deriveTerminatorEliminations(
         letter,
         reason: `SOFTBALLS states "${OPT[letter] ?? letter}" is not the category ("${softballsFact.span}") while `
           + `NAMED SET simultaneously states it IS the superlative property ("${namedSetFact.span}") -- `
+          + `self-contradictory, not published`,
+      };
+      break;
+    }
+    const discriminatorPropertyFact = propertyMembersByDiscriminator.get(letter);
+    if (discriminatorPropertyFact) {
+      contradiction = {
+        letter,
+        reason: `SOFTBALLS states "${OPT[letter] ?? letter}" is not the category ("${softballsFact.span}") while `
+          + `DISCRIMINATOR simultaneously states it IS the superlative property ("${discriminatorPropertyFact.span}") -- `
           + `self-contradictory, not published`,
       };
       break;
