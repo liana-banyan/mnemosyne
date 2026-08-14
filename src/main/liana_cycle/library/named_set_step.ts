@@ -98,13 +98,36 @@ export function buildNamedSetCorroborationQuery(property: string, entry: Include
  *  untyped on purpose, nothing here has verified a single field of it yet. */
 type RawIncludedEntry = { name?: unknown; span?: unknown };
 
+// D-BP154-033/BISHOP-SEG/S30-continuation/seg-namedset-prefix FIX. LIVE-MEASURED this ticket
+// (qid 98, TWO CONSECUTIVE composer runs): Gemini's own STAGE 2 answer stated membership
+// unambiguously -- "B South Asia is explicitly the world's most densely populated region..." --
+// and the local extraction model (gemma4:12b, temperature 0, reproduced standalone outside the
+// app against this exact passage) correctly read it and correctly copied a verbatim span, but
+// echoed the OPTION LIST's own "B) " letter-prefix formatting back into its `name` field
+// ("B) South Asia" instead of "South Asia") -- a natural completion given `list()`-formatted
+// options are shown IN the prompt, not a defect in the passage or the span. toLetters()'s own
+// exact-match discipline (HARDWIRE-22, comparative_cascade.ts, FENCED -- not editable here)
+// correctly refused norm("B) South Asia") = "b south asia" against norm(OPT.B) = "south asia",
+// so a real, correctly-spanned, verbatim-verifiable extraction fell out silently as "names no
+// known option" -- THE SAME defect class softballs_step.ts's own verifyExcludedEntries() already
+// fixed (D-BP154-015, stripListLetterPrefix()) but which was never ported to this file. Diagnosis:
+// src/main/liana_cycle/library/named_set_step.ts, this file, the (pre-fix) single-attempt
+// `toLetters([name], OPT)` call below -- fixed the SAME way, mirrored verbatim (not imported --
+// this file's own header already states why each Composer step stays self-contained) from
+// softballs_step.ts:131-133's own stripListLetterPrefix(), never inventing a new equivalence: only
+// a leading "<single letter>) " token is stripped, and the match is still exact string identity
+// on the option's bare text; no letter is special-cased (FD-BP153-06).
+function stripListLetterPrefix(name: string): string {
+  return name.replace(/^[A-Za-z]\)\s*/, '');
+}
+
 /** THE VERIFY-THE-SPAN CHOKE POINT for this step (FD-BP153-07 FIX 2), mirrored from
  *  softballs_step.ts's verifyExcludedEntries() with the same four-part discipline: (a) non-empty
  *  `name`, (b) non-empty `span`, (c) span VERBATIM in `passage`, (d) span itself ABOUT the named
  *  option (appearsIn(span, OPT[L])). Every failure of (b)/(c)/(d) is a DISCARD and is counted,
- *  never silently dropped. A `name` mapping to no known option letter is simply not a match --
- *  not a candidate value, so not a discard either (same convention as every other extractor in
- *  this estate). */
+ *  never silently dropped. A `name` mapping to no known option letter, even after
+ *  stripListLetterPrefix() (D-BP154-033) is tried, is simply not a match -- not a candidate
+ *  value, so not a discard either (same convention as every other extractor in this estate). */
 export function verifyIncludedEntries(
   raw: unknown,
   passage: string,
@@ -118,7 +141,11 @@ export function verifyIncludedEntries(
     const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
     if (!name) continue; // nothing named -- not a candidate value, not a discard
-    const matched = toLetters([name], OPT);
+    let matched = toLetters([name], OPT);
+    if (matched.length === 0) {
+      const stripped = stripListLetterPrefix(name);
+      if (stripped !== name) matched = toLetters([stripped], OPT);
+    }
     if (matched.length === 0) continue; // names no known option -- not a candidate value here
     const L = matched[0];
     if (!span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {

@@ -19,6 +19,7 @@ import type { SoftballsResult } from './softballs_step';
 import type { NamedSetResult } from './named_set_step';
 import type { DiscriminatorResult } from './discriminator_step';
 import type { MagnitudeResult, MagnitudeOrderEntry } from './magnitude_step';
+import type { HumanNuanceResult } from './human_nuance_step';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 
 // qid 98's real option letters, from resources/mmlu_pro_bundled/questions.jsonl (question_id 98) --
@@ -53,6 +54,22 @@ function namedSet(included: Array<[string, string]>): NamedSetResult {
     discarded: 0,
     notIncluded: Object.keys(OPT).filter((L) => !included.some(([l]) => l === L)),
     via: 'test',
+  };
+}
+
+/** D-BP154-033/BISHOP-SEG/S30-continuation/seg-wire-humannuance, ADDITIVE. `excluded` is
+ *  [letter, reason, span] triples -- HumanNuanceResult's own shape (a stated exclusion reason,
+ *  distinct from Softballs'/NamedSet's own two-field entries). */
+function humanNuance(excluded: Array<[string, string, string]>): HumanNuanceResult {
+  return {
+    ok: true, artifactClassEstablished: true, src: 'ori_mmlu-test', corpusMetaTruth: null,
+    cowGuard: { applies: true, reason: 'test' }, category: 'world regions',
+    frame: Object.keys(OPT).filter((L) => !excluded.some(([l]) => l === L)),
+    nonParticipants: excluded.map(([l]) => l),
+    originStratum: 'sand', singleAnswerPropertySurvived: null, answerDerivableFromQuestionTermsAlone: null,
+    query: 'q',
+    excluded: excluded.map(([letter, reason, span]) => ({ letter, name: OPT[letter], reason, span })),
+    discarded: 0, unresolved: [], via: 'test',
   };
 }
 
@@ -642,6 +659,54 @@ describe('runTerminatorStep -- UNIQUE OR ABSTAIN end to end over the pure reduce
     expect(result.abstain).toBe(true);
     expect(result.contradiction).not.toBeNull();
     expect(result.contradiction?.letter).toBe('B');
+  });
+});
+
+describe('D-BP154-033: HumanNuance:1 is wired into deriveTerminatorEliminations() -- ACTIVE, not just BUILT', () => {
+  const input: MethodQuestionInput = {
+    qid: 98,
+    question: "Which of the following world regions is NOT considered one of the world's most densely populated regions?",
+    options: OPT,
+  };
+  const ctx: MethodRunContext = { askGoogle: async () => null, emit: () => {} };
+
+  test('a HumanNuance:1 exclusion, alone, eliminates that option and changes the survivor set', () => {
+    const { eliminated, contradiction } = deriveTerminatorEliminations(
+      OPT, null, null, null,
+      humanNuance([['G', 'lacks usual human settlement', 'G) Arctic Circle lacks usual human settlement.']]),
+    );
+    expect(contradiction).toBeNull();
+    expect(eliminated).toHaveLength(1);
+    expect(eliminated[0]).toMatchObject({ letter: 'G', sourceStep: 'HumanNuance:1' });
+  });
+
+  test('runTerminatorStep(): stacking HumanNuance:1 alongside Softballs:1 narrows the survivors further than Softballs alone would', async () => {
+    const softballsOutcome = { id: 'Softballs:1', summary: 's', raw: softballs([['H', 'H) not a world region.']]) };
+    const humanNuanceOutcome = {
+      id: 'HumanNuance:1', summary: 's',
+      raw: humanNuance([['G', 'lacks usual human settlement', 'G) Arctic Circle lacks usual human settlement.'], ['I', 'sparsely settled', 'I) Sahara Desert is sparsely settled.']]),
+    };
+    const { result } = await runTerminatorStep(input, ctx, [softballsOutcome, humanNuanceOutcome]);
+    expect(result.stepsConsulted['HumanNuance:1']).toBe('ok');
+    expect(result.survivors).not.toContain('G');
+    expect(result.survivors).not.toContain('I');
+    expect(result.survivors).not.toContain('H');
+    expect(result.eliminated.some((e) => e.sourceStep === 'HumanNuance:1' && e.letter === 'G')).toBe(true);
+  });
+
+  test('a HumanNuance:1 exclusion contradicting NamedSet:1 membership ABSTAINS rather than publishing', () => {
+    const { contradiction } = deriveTerminatorEliminations(
+      OPT, null, namedSet([['B', 'B) densely populated.']]), null,
+      humanNuance([['B', 'excluded for testing', 'B) is excluded for testing.']]),
+    );
+    expect(contradiction).not.toBeNull();
+    expect(contradiction?.letter).toBe('B');
+  });
+
+  test('a step this file does not stack is "not run", never conflated with "ran and abstained"', async () => {
+    const softballsOutcome = { id: 'Softballs:1', summary: 's', raw: softballs([['H', 'H) not a world region.']]) };
+    const { result } = await runTerminatorStep(input, ctx, [softballsOutcome]);
+    expect(result.stepsConsulted['HumanNuance:1']).toBe('not run');
   });
 });
 

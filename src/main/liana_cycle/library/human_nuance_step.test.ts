@@ -165,6 +165,19 @@ describe('verifyHumanNuanceExclusions -- the verify-the-span choke point (HARDWI
     const { excluded } = verifyHumanNuanceExclusions(raw, passage, ['P', 'Q'], relabeled);
     expect(excluded[0].letter).toBe('P');
   });
+
+  // D-BP154-033 REGRESSION TEST (invented vocabulary). LIVE-MEASURED this ticket: this step's own
+  // qid-98 run got a real Gemini answer for G) Arctic Circle, and the local extraction model
+  // echoed the option list's own "G) " letter-prefix back into `name` ("G) Arctic Circle" instead
+  // of "Arctic Circle") -- toLetters()'s exact-match discipline then refused it. Fixed by
+  // stripListLetterPrefix() (ported from softballs_step.ts, D-BP154-015); this test locks it in.
+  test('D-BP154-033: a name carrying the list\'s own "L) " letter prefix is still matched, not lost', () => {
+    const raw = [{ name: 'D) Wobsy Nebula', reason: 'lacks stable star formation', span: 'The Wobsy Nebula is not a Zorblatt cluster because it lacks stable star formation.' }];
+    const { excluded, discarded } = verifyHumanNuanceExclusions(raw, passage, ['D', 'E'], INVENTED_OPT);
+    expect(excluded).toHaveLength(1);
+    expect(excluded[0].letter).toBe('D');
+    expect(discarded).toBe(0);
+  });
 });
 
 // ─────────────────────────── registration / wiring (real bundled qid, like every sibling step's own registration test) ───────────────────────────

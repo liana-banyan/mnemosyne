@@ -203,12 +203,25 @@ export interface HumanNuanceExclusionEntry {
 
 type RawExclusionEntry = { name?: unknown; reason?: unknown; span?: unknown };
 
+// D-BP154-033/BISHOP-SEG/S30-continuation/seg-namedset-prefix, PORTED. LIVE-MEASURED this same
+// ticket: this step's own live run (qid 98) got a real, unambiguous Gemini answer for G) Arctic
+// Circle, and the local extraction model echoed the option list's own "G) " letter-prefix back
+// into its `name` field -- the SAME defect class softballs_step.ts's own verifyExcludedEntries()
+// already fixed (D-BP154-015, stripListLetterPrefix()) and named_set_step.ts was just fixed to
+// match (D-BP154-033). Mirrored verbatim here, not imported (each Composer step stays
+// self-contained, per every sibling step's own header) -- see softballs_step.ts:131-133's own
+// stripListLetterPrefix() for the full original reasoning.
+function stripListLetterPrefix(name: string): string {
+  return name.replace(/^[A-Za-z]\)\s*/, '');
+}
+
 /** THE VERIFY-THE-SPAN CHOKE POINT (FD-BP153-07 FIX 2), same four-part discipline every sibling
  *  step's own verify function already applies: (a) non-empty `name`, (b) maps to a KNOWN
  *  non-participant option (an option ALREADY in the frame is never a candidate here -- part 4 only
  *  ever speaks about non-participants), (c) non-empty `reason`, (d) non-empty `span`, (e) span
  *  VERBATIM in `passage`, (f) span itself ABOUT the named option (appearsIn). Any failure of
- *  (c)/(d)/(e)/(f) is a DISCARD and is counted. */
+ *  (c)/(d)/(e)/(f) is a DISCARD and is counted. A `name` mapping to no known option letter, even
+ *  after stripListLetterPrefix() (D-BP154-033) is tried, is simply not a match. */
 export function verifyHumanNuanceExclusions(
   raw: unknown,
   passage: string,
@@ -225,7 +238,11 @@ export function verifyHumanNuanceExclusions(
     const reason = typeof entry?.reason === 'string' ? entry.reason.trim() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
     if (!name) continue; // nothing named -- not a candidate value, not a discard
-    const matched = toLetters([name], OPT);
+    let matched = toLetters([name], OPT);
+    if (matched.length === 0) {
+      const stripped = stripListLetterPrefix(name);
+      if (stripped !== name) matched = toLetters([stripped], OPT);
+    }
     if (matched.length === 0) continue; // names no known option -- not a candidate value here
     const L = matched[0];
     if (!nonParticipantSet.has(L)) continue; // names a FRAME option -- part 4 never speaks about those; not a discard
