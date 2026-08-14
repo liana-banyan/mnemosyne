@@ -184,10 +184,10 @@ describe('assertion (a): the panel lists every registry entry at runtime', () =>
     // D-BP152-049 STAGE 3/4 adds a fifth non-orphan executable name, 'StateTheQuestion' --
     // excluded here the same way the four pre-existing executable names always were, so this
     // filter still isolates exactly the real orphans (never claims to be executable, per
-    // HARDWIRE-22) rather than sweeping the new step into "orphan". D-BP154-013 adds a sixth and
-    // seventh, 'Softballs' (softballs_step.ts) and 'NamedSet' (named_set_step.ts), excluded here
-    // for the same reason.
-    const orphanIds = entries.filter((e) => !['ComparativeCascade', 'DefinitionalCascade', 'ClassifyCascade', 'Survey', 'StateTheQuestion', 'Softballs', 'NamedSet'].includes(e.name));
+    // HARDWIRE-22) rather than sweeping the new step into "orphan". D-BP154-013 adds a sixth,
+    // seventh and eighth, 'Softballs' (softballs_step.ts), 'NamedSet' (named_set_step.ts) and
+    // 'Discriminator' (discriminator_step.ts), excluded here for the same reason.
+    const orphanIds = entries.filter((e) => !['ComparativeCascade', 'DefinitionalCascade', 'ClassifyCascade', 'Survey', 'StateTheQuestion', 'Softballs', 'NamedSet', 'Discriminator'].includes(e.name));
     expect(orphanIds.length).toBeGreaterThanOrEqual(6);
     for (const e of orphanIds) {
       expect(e.executable, `${e.id} must not claim to be executable -- it is BLOCKED per HARDWIRE-22`).toBe(false);
