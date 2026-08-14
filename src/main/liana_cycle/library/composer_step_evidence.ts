@@ -55,6 +55,7 @@ import {
   describePriorAcquisitionProvenance, findPriorAcquisitionMatch,
 } from '../evidence/cross_acquisition';
 import type { PriorAcquisitionMatch } from '../evidence/cross_acquisition';
+import { timeAtomicQuery } from './measurement_receipts';
 
 // ───────────────────────────────── span verification (shared) ─────────────────────────────────
 
@@ -227,7 +228,11 @@ export async function tryConversationalAuthority(
   if (!ctx.askConversationalAuthority) {
     return notObtained('no conversational authority is wired for this run');
   }
-  let cr = await ctx.askConversationalAuthority(query, mcOptions);
+  // D-BP154-040/BISHOP-SEG/S40/seg-receipts, ADDITIVE. FD-BP154-15: "receipts are automatic... per
+  // atomic query, tagged with mechanism." This IS one atomic query (never a bundled step) --
+  // timeAtomicQuery() (measurement_receipts.ts) wraps it, mints a speed receipt on completion
+  // (success or failure alike), and returns the call's own result/rejection completely unchanged.
+  let cr = await timeAtomicQuery('CONVERSATIONAL_ANSWER', query, ctx.acquisitionId ?? null, () => ctx.askConversationalAuthority!(query, mcOptions));
   // D-BP154-028/BISHOP-SEG/S28/seg-survivable FIX. Live-measured this dispatch (embedded_browser_
   // injection.jsonl, the actual failing dispatch): `streaming=true` from tick 9 through tick 43 (30s
   // straight) while the response-text selector matched `null` on EVERY tick -- the authority was
@@ -241,7 +246,9 @@ export async function tryConversationalAuthority(
   // operator is engaged; retrying would re-interrupt them) and never for a structural failure (not
   // wired / disabled), where a second attempt cannot possibly help and would only cost time.
   if ((!cr.ok || !cr.text || !cr.text.trim()) && cr.via?.includes(':ceiling(')) {
-    cr = await ctx.askConversationalAuthority(query, mcOptions);
+    // A second, genuinely distinct atomic query (the retry) -- timed and receipted separately, not
+    // folded into the first call's own figure.
+    cr = await timeAtomicQuery('CONVERSATIONAL_ANSWER', `${query} (retry)`, ctx.acquisitionId ?? null, () => ctx.askConversationalAuthority!(query, mcOptions));
   }
   if (!cr.ok || !cr.text || !cr.text.trim()) {
     return notObtained(`conversational authority returned no usable answer (${cr.via || cr.authority || 'unknown'})`);
@@ -311,7 +318,10 @@ export async function corroborateClaim(
     provenance: { mechanism: 'NOT_OBTAINED', sourceId: 'n/a', detail: error },
     error,
   });
-  const res = await googleBlocks(ctx.askGoogle, claimQuery);
+  // D-BP154-040/BISHOP-SEG/S40/seg-receipts, ADDITIVE. Same atomic-query timing discipline as
+  // tryConversationalAuthority()'s own call above -- ONE atomic query, mechanism DOCUMENT_
+  // CORROBORATION, timed and receipted, result/rejection unchanged.
+  const res = await timeAtomicQuery('DOCUMENT_CORROBORATION', claimQuery, ctx.acquisitionId ?? null, () => googleBlocks(ctx.askGoogle, claimQuery));
   if (!res.ok) {
     return notObtained(res.via, `Google returned nothing usable to corroborate against (${res.via})`);
   }
