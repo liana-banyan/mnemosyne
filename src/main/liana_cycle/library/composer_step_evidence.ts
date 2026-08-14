@@ -271,6 +271,20 @@ export async function corroborateClaim(
   ctx: MethodRunContext,
   claimQuery: string,
   mustAppear: string,
+  // D-BP154-024/BISHOP-SEG/S24/seg-unstated FIX -- LIVE-MEASURED DEFECT: a 19th-century zoology
+  // text (Gutenberg, "The Geographical Distribution of Animals", discussing which fauna are
+  // "common to Australia and South America") was accepted as corroborating a claim about world
+  // REGIONS purely because `mustAppear` ("South America") is a bare option name and appears in
+  // both. "A document with no bearing on the claim corroborates nothing." `mustAppear` alone is
+  // too weak a mechanical gate when it is just an option's own name -- it says nothing about
+  // whether the document is even discussing the right SUBJECT. `alsoMustAppear`, when given, is a
+  // SECOND, independent, purely structural substring check (same normalized-substring machinery
+  // as `mustAppear` via `appearsIn()`) run against the model-extracted SPAN itself (not the whole
+  // block body): the span must contain this string too, or the candidate is rejected. This is not
+  // a synonym table or a similarity score (HARDWIRE-22 unchanged) -- it is one more exact,
+  // structural containment check, mechanically narrowing what counts as "on topic". Optional and
+  // additive: existing 3-argument call sites are unaffected.
+  alsoMustAppear?: string,
 ): Promise<CorroborationResult> {
   const notObtained = (via: string, error: string): CorroborationResult => ({
     attempted: true,
@@ -303,6 +317,7 @@ export async function corroborateClaim(
     const ex = await gemmaExtract(instruction, block.body, shape, rawOut);
     if (ex === null) continue;
     const span = typeof ex.span === 'string' ? ex.span.trim() : '';
+    if (alsoMustAppear && !appearsIn(span, alsoMustAppear)) continue;
     if (ex.corroborated === true && span && spanIsVerbatimInPassage(block.body, span)) {
       return {
         attempted: true,
