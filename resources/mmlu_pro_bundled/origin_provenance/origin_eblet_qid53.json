@@ -1,0 +1,46 @@
+{
+  "eblet_kind": "mmlu_pro_origin_provenance",
+  "stratum": "sand",
+  "matriculationCriteria": {
+    "proposedNotRatified": true,
+    "sand->soil": "origin option set reconfirmed by a second, independent fetch",
+    "soil->sediment": "augmentation delta cross-checked (every added option independently verified absent from the origin set)",
+    "sediment->sandstone": "the src value's own claim corroborated -- the origin dataset confirmed to actually contain this item, by a second, independent matching method"
+  },
+  "campaignQuestionId": 53,
+  "mmluProQuestionId": 11481,
+  "category": "engineering",
+  "src": "stemez-ElectronicCommunications",
+  "mmluProFetch": {
+    "dataset": "TIGER-Lab/MMLU-Pro",
+    "config": "default",
+    "split": "test",
+    "rowIdx": 11257,
+    "blockOffsetUsed": 11200,
+    "blocksScanned": 3,
+    "offsetGuessUsed": 11326,
+    "offsetGuessWasCorrect": false,
+    "question": "A sinusoidal signal in the frequency range 0.4 to 4.4 KHz is being sampled at a rate equal to four times theNyquistrate. If this signal is received by a receiver of signal-to-noise ratio {(s_i) / (\\eta} = 10^6 after being quantized by a 256 levelquantizer at the transmission end, calculate (a) The time T between samples. (b) The number of bits N and the probability of error if the quantized signal is encoded into a binary PCM waveform. (c) The probability of error,P_e, if the signal is encoded into 1 to 256 orthogonal signals.",
+    "augmentedOptions": [
+      "T = 5.125 microseconds, N = 6 bits, P_e = 10^-3",
+      "T = 3.125 microseconds, N = 8 bits, P_e = 10^-5",
+      "T = 3.75 microseconds, N = 10 bits, P_e = 10^-5",
+      "T = 2.5 microseconds, N = 7 bits, P_e = 10^-4",
+      "T = 2.875 microseconds, N = 7 bits, P_e = 10^-2",
+      "T = 2.25 microseconds, N = 8 bits, P_e = 10^-6",
+      "T = 1.25 microseconds, N = 7 bits, P_e = 10^-7",
+      "T = 4.5 microseconds, N = 9 bits, P_e = 10^-4",
+      "T = 4.125 microseconds, N = 9 bits, P_e = 10^-6",
+      "T = 3.5 microseconds, N = 8 bits, P_e = 10^-3"
+    ],
+    "answerFieldsDiscarded": true
+  },
+  "origin": null,
+  "augmentationDelta": null,
+  "singleAnswerPropertySurvived": null,
+  "note": "not determined this pass -- requires a per-item sourced query (whether each ADDED distractor is also wrong for the origin's own stated reason), a content judgment this batch script does not make; only campaign qid 98 has an already-obtained, cited answer (see BP154_QID98_RESOLVED_THE_AUGMENTATION_DEFECT.md).",
+  "answerDerivableFromQuestionTermsAlone": null,
+  "derivableNote": "not determined this pass -- same content-judgment boundary as singleAnswerPropertySurvived above; requires a per-item sourced determination.",
+  "builtAt": "2026-08-14T19:37:40.458Z",
+  "builtBy": "scripts/backfill_mmlu_pro_origin_src.mjs (D-BP154-030 amendment 3)"
+}

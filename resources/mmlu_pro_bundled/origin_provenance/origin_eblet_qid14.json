@@ -1,0 +1,74 @@
+{
+  "eblet_kind": "mmlu_pro_origin_provenance",
+  "stratum": "sand",
+  "matriculationCriteria": {
+    "proposedNotRatified": true,
+    "sand->soil": "origin option set reconfirmed by a second, independent fetch",
+    "soil->sediment": "augmentation delta cross-checked (every added option independently verified absent from the origin set)",
+    "sediment->sandstone": "the src value's own claim corroborated -- the origin dataset confirmed to actually contain this item, by a second, independent matching method"
+  },
+  "campaignQuestionId": 14,
+  "mmluProQuestionId": 310,
+  "category": "business",
+  "src": "ori_mmlu-marketing",
+  "mmluProFetch": {
+    "dataset": "TIGER-Lab/MMLU-Pro",
+    "config": "default",
+    "split": "test",
+    "rowIdx": 238,
+    "blockOffsetUsed": 200,
+    "blocksScanned": 2,
+    "offsetGuessUsed": 155,
+    "offsetGuessWasCorrect": false,
+    "question": " _____________is an important element in the communication process. It recognizes that successful communications are more likely to be achieved if the source and the receiver understand each other.",
+    "augmentedOptions": [
+      "The encoding-decoding process.",
+      "Personal selling.",
+      "The realm of understanding.",
+      "The context of the message.",
+      "Noise.",
+      "The communication channel.",
+      "Feedback.",
+      "The use of jargon.",
+      "The sender-receiver model.",
+      "The use of technology."
+    ],
+    "answerFieldsDiscarded": true
+  },
+  "origin": {
+    "dataset": "cais/mmlu",
+    "config": "marketing",
+    "split": "test",
+    "rowIdx": 1,
+    "blockOffsetUsed": 0,
+    "blocksScanned": 1,
+    "question": " _____________is an important element in the communication process. It recognizes that successful communications are more likely to be achieved if the source and the receiver understand each other.",
+    "options": [
+      "The realm of understanding.",
+      "Personal selling.",
+      "Noise.",
+      "Feedback."
+    ],
+    "answerFieldsDiscarded": true
+  },
+  "augmentationDelta": {
+    "added": [
+      "The encoding-decoding process.",
+      "The context of the message.",
+      "The communication channel.",
+      "The use of jargon.",
+      "The sender-receiver model.",
+      "The use of technology."
+    ],
+    "removedFromOrigin": [],
+    "originCount": 4,
+    "augmentedCount": 10,
+    "countChange": 6
+  },
+  "singleAnswerPropertySurvived": null,
+  "note": "not determined this pass -- requires a per-item sourced query (whether each ADDED distractor is also wrong for the origin's own stated reason), a content judgment this batch script does not make; only campaign qid 98 has an already-obtained, cited answer (see BP154_QID98_RESOLVED_THE_AUGMENTATION_DEFECT.md).",
+  "answerDerivableFromQuestionTermsAlone": null,
+  "derivableNote": "not determined this pass -- same content-judgment boundary as singleAnswerPropertySurvived above; requires a per-item sourced determination.",
+  "builtAt": "2026-08-14T19:37:37.518Z",
+  "builtBy": "scripts/backfill_mmlu_pro_origin_src.mjs (D-BP154-030 amendment 3)"
+}
