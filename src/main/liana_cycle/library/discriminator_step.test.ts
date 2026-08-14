@@ -12,7 +12,9 @@
 
 import { describe, test, expect, vi } from 'vitest';
 import {
-  buildDiscriminatorQuery, deriveDiscriminatorCategory, deriveDiscriminatorSuperlativeProperty,
+  buildDiscriminatorKindQuery, buildDiscriminatorEnumerationQuery, buildDiscriminatorPropertyQuery,
+  buildDiscriminatorSubregionQuery, buildDiscriminatorRegisterQuery,
+  deriveDiscriminatorCategory, deriveDiscriminatorSuperlativeProperty,
   registerDiscriminatorStep, runDiscriminatorStep,
   verifyCategoryEnumeration, verifyCategoryKind, verifyDiscriminatorKinds, verifyDiscriminatorPropertyMembers,
 } from './discriminator_step';
@@ -44,61 +46,108 @@ describe('deriveDiscriminatorCategory -- reads the category the question itself 
   });
 });
 
-describe('buildDiscriminatorQuery -- ONE query asking BOTH things, never split into two round trips', () => {
-  test('the query names the category once, asks for a kind per option, and lists every option once', () => {
-    const q = buildDiscriminatorQuery('world regions', null, ALL, OPT);
+// D-BP154-027/BISHOP-SEG/S27/seg-split FIX. Founder's own rule, verbatim: "we got rid of four
+// answers with ONE google search" -- ONE QUESTION, ONE JOB. The single six-part compound query
+// (buildDiscriminatorQuery, now REMOVED) is replaced by five short, single-job builders below,
+// each tested for staying short and staying single-purpose -- the measured defect this ticket
+// fixes was a query long enough that 2 of 3 live runs timed out on it.
+describe('buildDiscriminatorKindQuery -- ASK 1/5, ONE job: what kind, and which kind denotes the category', () => {
+  test('names the category once, asks for a kind per option, lists every option once', () => {
+    const q = buildDiscriminatorKindQuery('world regions', ALL, OPT);
     expect(q).toContain('For EACH of the following, state exactly what it is');
     expect(q).toContain('properly denotes "world regions"');
     for (const L of ALL) expect(q).toContain(OPT[L]);
-    // ONE query -- the category phrase appears exactly once, not once per option.
     expect(q.match(/properly denotes/g)?.length).toBe(1);
   });
 
-  // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap, ADDITIVE.
-  test('a null property asks nothing about it -- no third clause appended', () => {
-    const q = buildDiscriminatorQuery('world regions', null, ALL, OPT);
+  test('asks nothing about enumeration, property, subregion, or register -- ONE job only', () => {
+    const q = buildDiscriminatorKindQuery('world regions', ALL, OPT);
+    expect(q).not.toContain('enumerable, closed set');
     expect(q).not.toContain('ARE');
+    expect(q).not.toContain('SUBREGION');
+    expect(q).not.toContain('ordinary');
   });
+});
 
-  test('a non-null property adds a third ask, in the SAME query, asking which options ARE it', () => {
-    const q = buildDiscriminatorQuery('world regions', "the world's most densely populated regions", ALL, OPT);
-    expect(q).toContain('properly denotes "world regions"');
-    expect(q).toContain("ARE the world's most densely populated regions");
-    expect(q).toContain("that it is the world's most densely populated regions");
-  });
-
-  // D-BP154-023/BISHOP-SEG/S23/seg-enumerate, ADDITIVE (FD-BP154-06).
-  test('the query ALWAYS asks for a category enumeration, even with no property -- exhaustiveness demanded explicitly', () => {
-    const q = buildDiscriminatorQuery('world regions', null, ALL, OPT);
+describe('buildDiscriminatorEnumerationQuery -- ASK 2/5, ONE job: does the category enumerate a closed set (FD-BP154-06)', () => {
+  test('asks for exhaustiveness explicitly and lists every option once, asks nothing else', () => {
+    const q = buildDiscriminatorEnumerationQuery('world regions', ALL, OPT);
     expect(q).toContain('enumerable, closed set');
     expect(q).toContain('exhaustively');
     expect(q).toContain('do not give examples');
+    for (const L of ALL) expect(q).toContain(OPT[L]);
+    expect(q).not.toContain('For EACH of the following, state exactly what it is');
+    expect(q).not.toContain('SUBREGION');
+  });
+});
+
+describe('buildDiscriminatorPropertyQuery -- ASK 3/5, ONE job: which options ARE the superlative property', () => {
+  test('short, single-purpose, same shape as softballs_step.ts/named_set_step.ts own buildXQuery()', () => {
+    const q = buildDiscriminatorPropertyQuery("the world's most densely populated regions", ALL, OPT);
+    expect(q).toContain("ARE the world's most densely populated regions");
+    expect(q).toContain("that it is the world's most densely populated regions");
+    for (const L of ALL) expect(q).toContain(OPT[L]);
+    expect(q).not.toContain('enumerable, closed set');
+    expect(q).not.toContain('SUBREGION');
+  });
+});
+
+describe('buildDiscriminatorSubregionQuery -- ASK 4/5, ONE job: which options are a subdivision, not the category in its own right', () => {
+  test('symmetric across every option, naming no letter inside the clause itself', () => {
+    const q = buildDiscriminatorSubregionQuery('world regions', ALL, OPT);
+    expect(q).toContain('subdivision or part WITHIN a larger region');
+    const clauseStart = q.indexOf('For each of the following');
+    expect(clauseStart).toBe(0);
+    // The option LIST is appended (every simple ask lists every option, same as Softballs'/
+    // NamedSet's own queries) -- symmetry means no option is singled out ahead of the others, not
+    // that options are absent from the query altogether.
+    for (const L of ALL) expect(q).toContain(OPT[L]);
+    expect(q).not.toContain('enumerable, closed set');
+    expect(q).not.toContain('ARE');
+  });
+});
+
+describe('buildDiscriminatorRegisterQuery -- ASK 5/5, NEW, ONE job: the CATEGORY\'s ordinary-usage register (BP141 rule 13, D-BP154-027)', () => {
+  test('asks about the category only -- no option list, no option name, never steering toward a letter', () => {
+    const q = buildDiscriminatorRegisterQuery('world regions');
+    expect(q).toContain('"world regions"');
+    expect(q).toContain('ordinary');
+    expect(q).toContain('continent-scale or macro-level divisions');
+    expect(q).toContain('subregional entries');
+    for (const L of ALL) expect(q).not.toContain(OPT[L]);
   });
 
-  test('the enumeration ask still appears, and still comes before the property ask, when a property is also present', () => {
-    const q = buildDiscriminatorQuery('world regions', "the world's most densely populated regions", ALL, OPT);
-    const enumIdx = q.indexOf('enumerable, closed set');
-    const propIdx = q.indexOf("ARE the world's most densely populated regions");
-    expect(enumIdx).toBeGreaterThan(-1);
-    expect(propIdx).toBeGreaterThan(enumIdx);
+  test('is short -- a single, simple question, not a compound one', () => {
+    const q = buildDiscriminatorRegisterQuery('world regions');
+    // Structural proxy for "single job": no more than one question mark's worth of actual asking
+    // (the "does X or Y" phrasing below uses exactly one '?').
+    expect((q.match(/\?/g) ?? []).length).toBe(1);
   });
+});
 
-  // D-BP154-026/BISHOP-SEG/S26/seg-subregion, ADDITIVE.
-  test('the query ALWAYS asks the subregion-vs-region-in-its-own-right question too, symmetrically, naming no letter', () => {
-    const q = buildDiscriminatorQuery('world regions', null, ALL, OPT);
-    expect(q).toContain('SUBREGION, SUBDIVISION, or PART of a larger region');
-    expect(q).toContain('properly considered one of "world regions"');
-    // Symmetric -- no option letter or name is singled out inside this clause's own text.
-    const clauseStart = q.indexOf('for each option above whose own stated classification');
-    expect(clauseStart).toBeGreaterThan(-1);
-    for (const L of ALL) expect(q.slice(clauseStart)).not.toContain(OPT[L]);
-  });
-
-  test('the subregion ask comes last, after the enumeration ask and (when present) the property ask', () => {
-    const withProperty = buildDiscriminatorQuery('world regions', "the world's most densely populated regions", ALL, OPT);
-    const propIdx = withProperty.indexOf("ARE the world's most densely populated regions");
-    const subregionIdx = withProperty.indexOf('SUBREGION, SUBDIVISION, or PART');
-    expect(subregionIdx).toBeGreaterThan(propIdx);
+// D-BP154-027 MEASUREMENT: query length before (the old six-part compound query) vs after (the
+// five short, single-job queries) -- "so 'shorter is more reliable' is a number, not a belief"
+// (coordinator, this dispatch). The OLD buildDiscriminatorQuery() no longer exists (replaced, not
+// kept alongside) -- its own length is reconstructed here, once, from its last-known real shape
+// (byte-identical to the query text this ticket's own D-BP154-026 commit logged live against qid
+// 98), so the comparison survives even though the old function itself is gone.
+describe('D-BP154-027 MEASUREMENT: query length, before vs after the split', () => {
+  test('every new ask is dramatically shorter than the old six-part compound query', () => {
+    // Measured via `wc -m` against the exact query text logged by the live D-BP154-026 qid-98 run
+    // (LIANA CLI run 2 of 3, "DISCRIMINATOR -- query:" summary line, kind+denote+enumeration+
+    // property+subregion all in one round trip).
+    const OLD_COMPOUND_QUERY_LENGTH_QID98 = 1718;
+    const kindLen = buildDiscriminatorKindQuery('world regions', ALL, OPT).length;
+    const enumLen = buildDiscriminatorEnumerationQuery('world regions', ALL, OPT).length;
+    const propLen = buildDiscriminatorPropertyQuery("the world's most densely populated regions", ALL, OPT).length;
+    const subLen = buildDiscriminatorSubregionQuery('world regions', ALL, OPT).length;
+    const regLen = buildDiscriminatorRegisterQuery('world regions').length;
+    for (const len of [kindLen, enumLen, propLen, subLen, regLen]) {
+      expect(len).toBeLessThan(OLD_COMPOUND_QUERY_LENGTH_QID98);
+    }
+    // The register ask -- the shortest, since it carries no option list -- is less than a third the
+    // length of the old compound query.
+    expect(regLen).toBeLessThan(OLD_COMPOUND_QUERY_LENGTH_QID98 / 3);
   });
 });
 

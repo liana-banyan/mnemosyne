@@ -105,6 +105,11 @@ function discriminator(
     discardedCategoryEnumerationMembers: 0,
     subregionNonMembers: subregionNonMembers.map(([letter, span]) => ({ letter, name: OPT[letter], span })),
     discardedSubregionNonMembers: 0,
+    // D-BP154-027/BISHOP-SEG/S27/seg-register, ADDITIVE: this reducer never reads registerStatement
+    // (it is display-only, never wired into any elimination) -- always null here, same discipline
+    // as every other optional-default field above.
+    registerStatement: null,
+    registerStatementDiscarded: false,
     enumerationDisagreement: null,
     via: 'test',
   };
