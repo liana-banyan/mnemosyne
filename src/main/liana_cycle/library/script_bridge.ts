@@ -75,6 +75,11 @@ import { registerTerminatorStep, runTerminatorStep } from './terminator_step';
 // Softballs:1/NamedSet:1/Discriminator:1 already left, via terminator_step.ts's own
 // deriveTerminatorEliminations() (reused, not duplicated) -- see that file's own header.
 import { registerMagnitudeStep, runMagnitudeStep } from './magnitude_step';
+// D-BP154-030/BISHOP-SEG/S30/seg-humannuance -- THE HUMAN NUANCE FACTOR, a sixth Composer step
+// (FD-BP154-07/07a). Standalone, like Softballs:1/NamedSet:1/Discriminator:1 were before
+// terminator_step.ts was built to consume them -- see human_nuance_step.ts's own header for why
+// this ticket does not also wire it into deriveTerminatorEliminations().
+import { registerHumanNuanceStep, runHumanNuanceStep } from './human_nuance_step';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -168,6 +173,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP154-030/BISHOP-SEG/S30/seg-humannuance -- ADDITIVE, same idempotent shape as the eight
+  // calls above, for the same reason. Does not touch, re-register, or collide with anything the
+  // others register -- 'HumanNuance' is a new name.
+  try {
+    registerHumanNuanceStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -207,7 +220,7 @@ export interface ComposerRegistryEntry {
 // calls magnitude_step.ts's runMagnitudeStep() (frame established via terminator_step.ts's own
 // deriveTerminatorEliminations(), one ranking query, one verified extraction; see that file's own
 // header for why it does not call classify_cascade.ts's ranking logic).
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1']);
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -356,6 +369,15 @@ async function runOneStep(
     // own frame from whatever of Softballs:1/NamedSet:1/Discriminator:1 already ran earlier in
     // this stack (magnitude_step.ts's own header) before ranking anything.
     const { result, summary } = await runMagnitudeStep(input, ctx, priorResults);
+    persistStepClaim(id, input, ctx, result);
+    return { summary, raw: result };
+  }
+  if (id === 'HumanNuance:1') {
+    // D-BP154-030/BISHOP-SEG/S30/seg-humannuance -- THE HUMAN NUANCE FACTOR. Same
+    // recordingAskGoogle()-wrapped ctx.askGoogle every other step here receives; reads
+    // input.originSrc (threaded through from parseQid(), liana_terminal_engine.ts) and the
+    // offline-backfilled origin_provenance/ eblet store -- issues no network call for either.
+    const { result, summary } = await runHumanNuanceStep(input, ctx);
     persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }
@@ -553,6 +575,10 @@ export async function runScratchComposer(
     question: parsed.question,
     options: parsed.options,
     correctAnswer: parsed.correctAnswer,
+    // D-BP154-030/BISHOP-SEG/S30/seg-humannuance, ADDITIVE: threaded straight through from
+    // parseQid()/parseFreeText() (liana_terminal_engine.ts) -- undefined for free-text input or a
+    // bundled qid not yet backfilled, exactly like correctAnswer's own optionality above.
+    originSrc: parsed.originSrc,
   };
   // D-BP154-017: acquisitionId threaded through so a claim-producing step (persistStepClaim(),
   // above) can tag its persisted classification with the SAME acquisition id THE PAIL already

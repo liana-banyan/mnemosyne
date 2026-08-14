@@ -235,6 +235,14 @@ interface BundledQuestion {
   options: string[];
   answer: string;
   category?: string;
+  /** D-BP154-030/BISHOP-SEG/S30/seg-humannuance, ADDITIVE/OPTIONAL. Backfilled offline by
+   *  scripts/backfill_mmlu_pro_origin_src.mjs for the standing 20 (HARDWIRE-01 line 242) -- the
+   *  MMLU-Pro item's own stated origin (e.g. "ori_mmlu-high_school_geography"), read live from
+   *  TIGER-Lab/MMLU-Pro's own `src` column, never re-derived. Absent on every row this pass has
+   *  not touched. See that script's header for the full mechanism and
+   *  resources/mmlu_pro_bundled/origin_provenance/ for the fuller provenance record this field
+   *  only points into. */
+  origin_src?: string;
 }
 
 function resolveBundledDatasetPath(): string {
@@ -282,6 +290,10 @@ export interface ParsedInput {
   options: Record<string, string> | null;
   correctAnswer?: string;
   qidNotFound?: boolean;
+  /** D-BP154-030, ADDITIVE/OPTIONAL -- see BundledQuestion.origin_src above and
+   *  MethodQuestionInput.originSrc (method_registry.ts) for the full chain this is threaded
+   *  through. Undefined for free-text input and for any bundled qid not yet backfilled. */
+  originSrc?: string;
 }
 
 export function parseQid(qid: number): ParsedInput {
@@ -289,7 +301,9 @@ export function parseQid(qid: number): ParsedInput {
   if (!q) return { qid, question: '', options: null, qidNotFound: true };
   const opts: Record<string, string> = {};
   q.options.forEach((o, i) => { opts[letter(i)] = o; });
-  return { qid, question: q.question, options: opts, correctAnswer: q.answer };
+  return {
+    qid, question: q.question, options: opts, correctAnswer: q.answer, originSrc: q.origin_src,
+  };
 }
 
 export function parseFreeText(input: string): ParsedInput {

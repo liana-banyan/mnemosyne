@@ -111,6 +111,18 @@ export interface MethodQuestionInput {
   question: string;
   options: Record<string, string> | null;
   correctAnswer?: string;
+  /** D-BP154-030/BISHOP-SEG/S30/seg-humannuance, ADDITIVE/OPTIONAL -- undefined on every
+   *  pre-existing MethodQuestionInput construction site, so every existing caller keeps compiling
+   *  and behaving identically. The bundled corpus row's own stated `origin_src` field (e.g.
+   *  "ori_mmlu-high_school_geography"), backfilled offline by scripts/backfill_mmlu_pro_origin_src.mjs
+   *  -- see that script's header and resources/mmlu_pro_bundled/origin_provenance/ for the full
+   *  provenance record this is only a fast pointer into (Law 9: the index is not the thing it
+   *  indexes). Present only for the standing-20 campaign qids that pass has enriched; absent for
+   *  every other question (free-text input, or a bundled qid not yet backfilled) -- absence is
+   *  read as "artifact class not established", never guessed. Only human_nuance_step.ts reads
+   *  this field; every other step ignores it unchanged. NEVER the `answer`/`answer_index` field --
+   *  those are not present on BundledQuestion at all (D-BP153-003, runtime stays blind). */
+  originSrc?: string;
 }
 
 export interface ShapeTestResult {
