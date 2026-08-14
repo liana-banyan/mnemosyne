@@ -70,6 +70,11 @@ import { registerDiscriminatorStep, runDiscriminatorStep } from './discriminator
 // no query of its own; reduces the three steps above's already-computed results. See that file's
 // own header for FD-BP152-19 (UNIQUE OR ABSTAIN) and the contradiction check.
 import { registerTerminatorStep, runTerminatorStep } from './terminator_step';
+// D-BP154-022/BISHOP-SEG/S22/seg-magnitude -- THE MAGNITUDE, the fifth Composer step (FD-BP153-01,
+// "a superlative resolves by magnitude, ranked WITHIN THE FRAME"). Ranks only the survivors
+// Softballs:1/NamedSet:1/Discriminator:1 already left, via terminator_step.ts's own
+// deriveTerminatorEliminations() (reused, not duplicated) -- see that file's own header.
+import { registerMagnitudeStep, runMagnitudeStep } from './magnitude_step';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -155,6 +160,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP154-022/BISHOP-SEG/S22/seg-magnitude -- ADDITIVE, same idempotent shape as the seven
+  // calls above, for the same reason. Does not touch, re-register, or collide with anything the
+  // others register -- 'Magnitude' is a new name.
+  try {
+    registerMagnitudeStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -190,7 +203,11 @@ export interface ComposerRegistryEntry {
 // calls softballs_step.ts's runSoftballsStep() (one query, one verified extraction; see that
 // file's own header for why it does not call classify_cascade.ts's establishFrame()).
 // D-BP154-018 adds 'Terminator:1' -- issues no query of its own, see terminator_step.ts's header.
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1']);
+// D-BP154-022 adds 'Magnitude:1' -- it calls THIS file's own runOneStep() branch below, which
+// calls magnitude_step.ts's runMagnitudeStep() (frame established via terminator_step.ts's own
+// deriveTerminatorEliminations(), one ranking query, one verified extraction; see that file's own
+// header for why it does not call classify_cascade.ts's ranking logic).
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -283,9 +300,10 @@ async function runOneStep(
   id: string,
   input: MethodQuestionInput,
   ctx: MethodRunContext,
-  // D-BP154-018, ADDITIVE: every step already run earlier in THIS stack. Only 'Terminator:1'
-  // reads it (it asks no query of its own, see terminator_step.ts's header) -- every other branch
-  // below ignores the parameter exactly as it did before this ticket.
+  // D-BP154-018, ADDITIVE: every step already run earlier in THIS stack. 'Terminator:1' reads it
+  // (it asks no query of its own, see terminator_step.ts's header); D-BP154-022 adds 'Magnitude:1'
+  // as a second reader (it establishes its own frame from these same prior results, see
+  // magnitude_step.ts's header) -- every other branch below ignores the parameter unchanged.
   priorResults: ComposerStepOutcome[],
 ): Promise<{ summary: string; raw: unknown }> {
   if (id === 'StateTheQuestion:1') {
@@ -326,7 +344,18 @@ async function runOneStep(
   if (id === 'Terminator:1') {
     // D-BP154-018/BISHOP-SEG/S18/seg-terminator -- THE TERMINATOR. No query issued; reduces
     // whatever of Softballs:1/NamedSet:1/Discriminator:1 already ran earlier in this stack.
+    // D-BP154-022, ADDITIVE: also consults Magnitude:1 (if present in priorResults) to pick the
+    // extreme among multiple survivors -- see terminator_step.ts's own header for the full rule.
     const { result, summary } = await runTerminatorStep(input, ctx, priorResults);
+    persistStepClaim(id, input, ctx, result);
+    return { summary, raw: result };
+  }
+  if (id === 'Magnitude:1') {
+    // D-BP154-022/BISHOP-SEG/S22/seg-magnitude -- THE MAGNITUDE. Same
+    // recordingAskGoogle()-wrapped ctx.askGoogle every other step here receives; establishes its
+    // own frame from whatever of Softballs:1/NamedSet:1/Discriminator:1 already ran earlier in
+    // this stack (magnitude_step.ts's own header) before ranking anything.
+    const { result, summary } = await runMagnitudeStep(input, ctx, priorResults);
     persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }

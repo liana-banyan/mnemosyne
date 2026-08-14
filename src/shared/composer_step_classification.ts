@@ -127,6 +127,11 @@ interface StepResultShape {
    *  before this ever reaches here -- this file re-checks only that the fields are non-empty, not
    *  the verbatim-in-passage fact itself, which is not this module's job). */
   categoryKind?: { kind?: unknown; span?: unknown } | null;
+  /** MagnitudeResult-only (magnitude_step.ts, D-BP154-022): the stated most-to-least ordering --
+   *  same duck-typed, defensively-read discipline as `excluded`/`included`/`kinds` above. Each
+   *  ranked entry (verified against a verbatim span before this ever reaches here, same
+   *  discipline as every other field on this interface) counts as one stated claim. */
+  order?: unknown;
   answerProvenance?: { mechanism?: unknown; sourceId?: unknown; detail?: unknown } | null;
   corroboration?: {
     attempted?: unknown; corroborated?: unknown; sourceUrl?: unknown; sourceTitle?: unknown;
@@ -193,12 +198,24 @@ export function classifyComposerStepResult(raw: unknown): ComposerStepClassifica
       ? r.included
       : Array.isArray(r.kinds)
         ? r.kinds
-        : [];
+        // D-BP154-022, ADDITIVE: MagnitudeResult's own `order` array (magnitude_step.ts) --
+        // checked after `kinds` so a DiscriminatorResult (which has neither `order` nor,
+        // ordinarily, both `kinds` and `order` at once) is never mis-read.
+        : Array.isArray(r.order)
+          ? r.order
+          : [];
   const categoryKindStated = Boolean(
     r.categoryKind && typeof r.categoryKind.kind === 'string' && r.categoryKind.kind
       && typeof r.categoryKind.span === 'string' && r.categoryKind.span,
   );
-  const statedCount = statedArray.length + (categoryKindStated ? 1 : 0);
+  // D-BP154-022, ADDITIVE: DiscriminatorResult's own propertyMembers array (discriminator_step.ts,
+  // D-BP154-021) was never counted here -- a Discriminator result stating ONLY superlative-
+  // property membership (no per-option kinds, no category-denoting kind) was wrongly read as
+  // ABSTAIN. Counted alongside `kinds`/`categoryKind`, same defensive, duck-typed discipline.
+  const propertyMembersStated = Array.isArray((r as { propertyMembers?: unknown }).propertyMembers)
+    ? (r as { propertyMembers: unknown[] }).propertyMembers.length
+    : 0;
+  const statedCount = statedArray.length + (categoryKindStated ? 1 : 0) + propertyMembersStated;
   if (statedCount === 0) {
     return { cls: 'ABSTAIN', detail: 'the source was silent -- nothing stated (absence is omission, not denial)', statedCount: 0 };
   }
