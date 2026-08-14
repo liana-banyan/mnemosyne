@@ -46,12 +46,22 @@
 // here decides a final answer letter.
 
 import {
-  appearsIn, gemmaExtract, googleBlocks, list, toLetters,
+  appearsIn, gemmaExtract, list, toLetters,
 } from '../methods/comparative_cascade';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 import { registerNameNumbered } from './method_registry';
 import type { MethodIdentity } from './method_identity';
 import type { StepDeclaration } from './step_declaration';
+// D-BP154-014/BISHOP/S14/seg-milkthem -- FD-BP154-02 ("use gemini to answer, google to
+// corroborate") + FD-BP153-04 ("consult what you already own before you spend a query") +
+// FD-BP154-03 (mechanism provenance). See composer_step_evidence.ts's own header for the full
+// ruling this shared module implements; softballs_step.ts, named_set_step.ts and
+// discriminator_step.ts all use it identically rather than each re-deriving the same ordering.
+import {
+  corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates,
+  spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
+} from './composer_step_evidence';
+import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
@@ -85,18 +95,18 @@ export interface ExcludedOption {
   span: string;
 }
 
-/** Whitespace-normalized verbatim containment -- same discipline as FD-BP153-07 FIX 2 ("the span
- *  must appear VERBATIM in the source passage, normalize whitespace only -- do not fuzzy
- *  match"), written locally rather than importing classify_cascade.ts's own spanIsVerbatim()
- *  (that file is FORBIDDEN to depend on in this ticket -- see this file's own header). Three
- *  lines, no fuzzy/similarity logic, the same shape as comparative_cascade.ts's own exported
- *  appearsIn(). */
-function spanIsVerbatimInPassage(passage: string, span: string): boolean {
-  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
-  const s = norm(span);
-  if (!s) return false;
-  return norm(passage).includes(s);
+/** THE ONE CORROBORATION QUERY (FD-BP154-02): re-asks, about a SINGLE already-excluded option,
+ *  whether it is the category -- never re-issued per option, only for the one decisive claim the
+ *  caller selects (runSoftballsStep() below picks the first verified excluded entry). Distinct
+ *  text from buildSoftballsQuery() -- this is a corroboration of ONE claim, not a repeat of the
+ *  membership sweep. */
+export function buildSoftballsCorroborationQuery(category: string, entry: ExcludedOption): string {
+  return `Is ${entry.name} ${category}? Answer plainly and directly, stating clearly whether it `
+    + `is or is not ${category}.`;
 }
+
+// spanIsVerbatimInPassage() is now imported from composer_step_evidence.ts (D-BP154-014) --
+// identical logic, shared rather than a third local copy; see that file's own header.
 
 /** One raw `{name, span}` entry exactly as gemmaExtract()'s JSON parse may hand it back --
  *  untyped on purpose, nothing here has verified a single field of it yet. */
@@ -151,6 +161,15 @@ export interface SoftballsResult {
    *  never reported as "confirmed members", only as "not denied by this passage". */
   notExcluded: string[];
   via: string;
+  /** D-BP154-014, FD-BP154-03: HOW the passage this extraction ran over was obtained -- one of the
+   *  four mechanism classes, with a structural sourceId a later stage can use to detect two claims
+   *  sharing one derivation path. Present whenever ok:true (a passage was in hand); absent on a
+   *  failure (nothing was obtained to have a mechanism at all). */
+  answerProvenance?: ClaimProvenance;
+  /** D-BP154-014, FD-BP154-02: ONE Google corroboration attempt against the first verified
+   *  excluded entry, when there is one. Additive evidence, never a gate -- ok:true stands whether
+   *  or not corroboration succeeded; a failed corroboration is reported, never silently dropped. */
+  corroboration?: CorroborationResult;
   error?: string;
 }
 
@@ -163,19 +182,26 @@ function summaryLine(OPT: Record<string, string>, r: SoftballsResult): string {
     ? r.notExcluded.map((L) => `${L}) ${OPT[L]}`).join(', ')
     : '(none)';
   const discardNote = r.discarded ? ` -- discarded ${r.discarded} candidate(s) with no verifiable span` : '';
+  const provenanceNote = r.answerProvenance ? `  ||  ANSWERED VIA ${r.answerProvenance.mechanism}: ${r.answerProvenance.detail}` : '';
+  const corrobNote = r.corroboration ? `  ||  ${summarizeCorroboration(r.corroboration)}` : '';
   return `SOFTBALLS -- query: "${r.query}"  ||  EXCLUDED (source-stated, not members of ${r.category}): `
-    + `${excludedText}${discardNote}  ||  NOT EXCLUDED (source silent -- omission, not confirmed membership): ${notExcludedText}`;
+    + `${excludedText}${discardNote}  ||  NOT EXCLUDED (source silent -- omission, not confirmed membership): ${notExcludedText}`
+    + `${provenanceNote}${corrobNote}`;
 }
 
-// ───────────────── the live step (googleBlocks + gemmaExtract, needs a real run to verify) ─────────────────
+// ───────────────── the live step (owned evidence -> conversational -> corroboration; needs a real run to verify) ─────────────────
 
 /**
- * Runs THE SOFTBALLS as one Composer step: one query, one extraction pass, verified spans.
- * Cannot be exercised end to end under vitest -- googleBlocks() needs the live browser authority
- * and gemmaExtract() needs a live Ollama instance, the same boundary
- * classify_cascade.frame.test.ts's own header states for establishFrame(). The pure parts above
- * (deriveSoftballsCategory, buildSoftballsQuery, verifyExcludedEntries) carry the real unit
- * tests; this function is verified by a live in-app run (this ticket's own return).
+ * Runs THE SOFTBALLS as one Composer step: owned evidence tried first (zero new queries), then
+ * the conversational authority (Gemini) answers the one Softballs query (FD-BP154-02), then --
+ * when there is a verified excluded claim -- ONE Google corroboration pass names a third-party
+ * document that independently states the same thing (FD-BP154-02 correction: "what corroborates
+ * is the DOCUMENT, not Google"). Every value produced carries its mechanism (FD-BP154-03). Cannot
+ * be exercised end to end under vitest -- the live authorities need a live browser/Ollama, the
+ * same boundary classify_cascade.frame.test.ts's own header states for establishFrame(). The pure
+ * parts above (deriveSoftballsCategory, buildSoftballsQuery, buildSoftballsCorroborationQuery,
+ * verifyExcludedEntries) carry the real unit tests; this function is verified by a live in-app
+ * run (this ticket's own return).
  */
 export async function runSoftballsStep(
   input: MethodQuestionInput,
@@ -201,22 +227,50 @@ export async function runSoftballsStep(
     return { result, summary: summaryLine(OPT, result) };
   }
   const query = buildSoftballsQuery(category, all, OPT);
-  const res = await googleBlocks(ctx.askGoogle, query);
-  if (!res.ok || !res.text || !res.text.trim()) {
+  const namesAnyOption = (t: string) => all.some((L) => appearsIn(t, OPT[L]));
+  // D-BP154-014, ADDITIVE: "L) option text" shape, same as comparative_cascade.ts's own list() /
+  // browser_authority_types.ts's buildMcAwareQueryText -- lets webview_preload.ts's capture-hop
+  // gate (mentionsAnyOption) reject a Gemini UI-chrome capture before it ever reaches this step's
+  // own namesAnyOption check. See tryConversationalAuthority()'s own doc comment.
+  const mcOptions = all.map((L) => `${L}) ${OPT[L]}`);
+
+  // STAGE 1: OWNED EVIDENCE FIRST (FD-BP153-04/FD-BP153-03, "the mortgage") -- zero new queries
+  // when it answers: THE MORTGAGE (this exact query text, any prior acquisition) then THIS RUN'S
+  // own already-acquired, non-ambiguity passages. The first candidate that actually NAMES one of
+  // this question's options is accepted; one that never mentions any option is not usable
+  // evidence for THIS question and is skipped, not force-fit.
+  const ownedCandidates = [
+    ...(await gatherMortgageCandidates(input.qid, query)),
+    ...gatherThisRunCandidates(ctx),
+  ];
+  let text = '';
+  let via = '';
+  let provenance: ClaimProvenance | undefined;
+  for (const c of ownedCandidates) {
+    if (namesAnyOption(c.text)) { text = c.text; via = c.via; provenance = c.provenance; break; }
+  }
+
+  // STAGE 2: GEMINI ANSWERS (FD-BP154-02) -- the same query text, no judgment prompt.
+  let conversationalError: string | undefined;
+  if (!text) {
+    const cr = await tryConversationalAuthority(ctx, query, mcOptions);
+    if (cr.ok && namesAnyOption(cr.text)) {
+      text = cr.text; via = cr.via; provenance = cr.provenance;
+    } else {
+      conversationalError = cr.error ?? 'conversational authority answered but named none of the options';
+    }
+  }
+
+  if (!text) {
     const result: SoftballsResult = {
-      ok: false, category, query, excluded: [], discarded: 0, notExcluded: all, via: res.via,
-      error: `no usable answer (${res.via}) -- the frame is UNAVAILABLE, not "nothing excluded"`,
+      ok: false, category, query, excluded: [], discarded: 0, notExcluded: all,
+      via: 'n/a',
+      error: `no usable answer from any authority -- owned evidence: ${ownedCandidates.length} candidate(s) tried, none usable; `
+        + `conversational authority: ${conversationalError ?? 'not tried'} -- the frame is UNAVAILABLE, not "nothing excluded"`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-  const namesAnyOption = all.some((L) => appearsIn(res.text, OPT[L]));
-  if (!namesAnyOption) {
-    const result: SoftballsResult = {
-      ok: false, category, query, excluded: [], discarded: 0, notExcluded: all, via: res.via,
-      error: `the source's passage (${res.via}) names none of the options -- it cannot state anything about them`,
-    };
-    return { result, summary: summaryLine(OPT, result) };
-  }
+
   const rawOut: {
     text?: string; truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string;
   } = {};
@@ -226,7 +280,7 @@ export async function runSoftballsStep(
     + `passage merely does not mention -- an omission is not a statement. Only include an option `
     + `the passage directly denies membership for. Options: ${all.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
   const shape = '{"excluded":[{"name":"exact option name from the list","span":"verbatim sentence or clause from the passage stating it is not the category"}]}';
-  const ex = await gemmaExtract(instruction, res.text, shape, rawOut);
+  const ex = await gemmaExtract(instruction, text, shape, rawOut);
   if (ex === null) {
     const cause = rawOut.truncated
       ? 'the local extraction model truncated its output before finishing'
@@ -234,16 +288,25 @@ export async function runSoftballsStep(
         ? `the local extraction model failed (${rawOut.failureCause}${rawOut.failureDetail ? `: ${rawOut.failureDetail}` : ''})`
         : 'the local extraction model failed for an unclassified reason';
     const result: SoftballsResult = {
-      ok: false, category, query, excluded: [], discarded: 0, notExcluded: all, via: res.via,
+      ok: false, category, query, excluded: [], discarded: 0, notExcluded: all, via,
       error: `extraction failed -- ${cause} -- reported as a FAILURE, never an empty "nothing excluded"`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-  const { excluded, discarded } = verifyExcludedEntries(ex.excluded, res.text, OPT);
+  const { excluded, discarded } = verifyExcludedEntries(ex.excluded, text, OPT);
   const excludedLetters = new Set(excluded.map((e) => e.letter));
   const notExcluded = all.filter((L) => !excludedLetters.has(L));
+
+  // STAGE 3: GOOGLE CORROBORATES A NAMED CLAIM (FD-BP154-02) -- ONE corroboration query, only for
+  // the single decisive claim (the first verified excluded entry), only when there is one.
+  // Additive: does not gate ok:true, and a failed corroboration is reported, not hidden.
+  let corroboration: CorroborationResult | undefined;
+  if (excluded.length) {
+    corroboration = await corroborateClaim(ctx, buildSoftballsCorroborationQuery(category, excluded[0]), excluded[0].name);
+  }
+
   const result: SoftballsResult = {
-    ok: true, category, query, excluded, discarded, notExcluded, via: res.via,
+    ok: true, category, query, excluded, discarded, notExcluded, via, answerProvenance: provenance, corroboration,
   };
   return { result, summary: summaryLine(OPT, result) };
 }
@@ -259,15 +322,17 @@ const SOFTBALLS_DECLARATION: StepDeclaration = {
   exportKind: 'function',
   whatItDoes:
     'Asks ONE question -- which of the answer options are NOT members of the category the '
-    + 'question names -- and shows exactly which options the source explicitly said are not '
-    + 'members, each with the verbatim sentence it said so in. Never excludes an option the '
-    + 'source simply did not mention.',
-  inputs: 'MethodQuestionInput (question, options) plus MethodRunContext (askGoogle, emit) to runSoftballsStep().',
-  outputs: 'Promise<{ result: SoftballsResult, summary: string }> -- excluded options with verbatim spans, discard count, and the options the source left unaddressed.',
+    + 'question names -- tried against owned evidence first, then the conversational authority '
+    + '(Gemini), which answers it (FD-BP154-02); shows exactly which options the source '
+    + 'explicitly said are not members, each with the verbatim sentence it said so in, plus ONE '
+    + 'Google corroboration naming a third-party document for the decisive claim. Never excludes '
+    + 'an option the source simply did not mention.',
+  inputs: 'MethodQuestionInput (question, options, qid) plus MethodRunContext (askGoogle, askConversationalAuthority, ownedPassages, emit) to runSoftballsStep().',
+  outputs: 'Promise<{ result: SoftballsResult, summary: string }> -- excluded options with verbatim spans, discard count, the options the source left unaddressed, the answer mechanism, and a document corroboration attempt.',
   decidesOrReports: 'DECIDES_AND_REFUSES',
   queryText: {
     issuesQuery: true,
-    description: 'One query per run: "Which of the following are NOT <category> at all?" (FD-BP153-07 THE SOFTBALLS), hardcoded inline in this file.',
+    description: 'One primary question per run -- owned evidence tried first, then "Which of the following are NOT <category> at all?" put to the conversational authority (FD-BP153-07 THE SOFTBALLS, FD-BP154-02) -- plus at most one Google corroboration query for a single decisive claim, hardcoded inline in this file.',
     loadedFromQueryResource: false,
   },
   attribution: {

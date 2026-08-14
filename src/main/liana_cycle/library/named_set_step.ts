@@ -31,12 +31,22 @@
 // doublecheck. This file produces ONLY the inclusion list with its spans.
 
 import {
-  appearsIn, gemmaExtract, googleBlocks, list, toLetters,
+  appearsIn, gemmaExtract, list, toLetters,
 } from '../methods/comparative_cascade';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 import { registerNameNumbered } from './method_registry';
 import type { MethodIdentity } from './method_identity';
 import type { StepDeclaration } from './step_declaration';
+// D-BP154-014/BISHOP/S14/seg-milkthem -- FD-BP154-02 ("use gemini to answer, google to
+// corroborate") + FD-BP153-04 ("consult what you already own before you spend a query") +
+// FD-BP154-03 (mechanism provenance). See composer_step_evidence.ts's own header for the full
+// ruling this shared module implements; softballs_step.ts, named_set_step.ts and
+// discriminator_step.ts all use it identically rather than each re-deriving the same ordering.
+import {
+  corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates,
+  spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
+} from './composer_step_evidence';
+import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
@@ -73,18 +83,16 @@ export interface IncludedOption {
   span: string;
 }
 
-/** Whitespace-normalized verbatim containment -- same discipline as softballs_step.ts's own
- *  spanIsVerbatimInPassage() (FD-BP153-07 FIX 2: "the span must appear VERBATIM in the source
- *  passage, normalize whitespace only -- do not fuzzy match"), duplicated locally rather than
- *  imported from either forbidden file or from softballs_step.ts (each Composer step stays
- *  self-contained -- no step depends on another step's internals, only on the shared, generic
- *  comparative_cascade.ts primitives every cascade already reuses). */
-function spanIsVerbatimInPassage(passage: string, span: string): boolean {
-  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
-  const s = norm(span);
-  if (!s) return false;
-  return norm(passage).includes(s);
+/** THE ONE CORROBORATION QUERY (FD-BP154-02): re-asks, about a SINGLE already-included option,
+ *  whether it is the property -- never re-issued per option, only for the one decisive claim the
+ *  caller selects (runNamedSetStep() below picks the first verified included entry). */
+export function buildNamedSetCorroborationQuery(property: string, entry: IncludedOption): string {
+  return `Is ${entry.name} ${property}? Answer plainly and directly, stating clearly whether it `
+    + `is or is not ${property}.`;
 }
+
+// spanIsVerbatimInPassage() is now imported from composer_step_evidence.ts (D-BP154-014) --
+// identical logic, shared rather than a third local copy; see that file's own header.
 
 /** One raw `{name, span}` entry exactly as gemmaExtract()'s JSON parse may hand it back --
  *  untyped on purpose, nothing here has verified a single field of it yet. */
@@ -134,6 +142,11 @@ export interface NamedSetResult {
    *  never reported as "confirmed non-members", only as "not affirmed by this passage". */
   notIncluded: string[];
   via: string;
+  /** D-BP154-014, FD-BP154-03: HOW the passage this extraction ran over was obtained. */
+  answerProvenance?: ClaimProvenance;
+  /** D-BP154-014, FD-BP154-02: ONE Google corroboration attempt against the first verified
+   *  included entry, when there is one. Additive, never a gate. */
+  corroboration?: CorroborationResult;
   error?: string;
 }
 
@@ -146,17 +159,23 @@ function summaryLine(OPT: Record<string, string>, r: NamedSetResult): string {
     ? r.notIncluded.map((L) => `${L}) ${OPT[L]}`).join(', ')
     : '(none)';
   const discardNote = r.discarded ? ` -- discarded ${r.discarded} candidate(s) with no verifiable span` : '';
+  const provenanceNote = r.answerProvenance ? `  ||  ANSWERED VIA ${r.answerProvenance.mechanism}: ${r.answerProvenance.detail}` : '';
+  const corrobNote = r.corroboration ? `  ||  ${summarizeCorroboration(r.corroboration)}` : '';
   return `NAMED SET -- query: "${r.query}"  ||  INCLUDED (source-stated members of ${r.property}): `
-    + `${includedText}${discardNote}  ||  NOT INCLUDED (source silent -- omission, not confirmed non-membership): ${notIncludedText}`;
+    + `${includedText}${discardNote}  ||  NOT INCLUDED (source silent -- omission, not confirmed non-membership): ${notIncludedText}`
+    + `${provenanceNote}${corrobNote}`;
 }
 
-// ───────────────── the live step (googleBlocks + gemmaExtract, needs a real run to verify) ─────────────────
+// ───────────────── the live step (owned evidence -> conversational -> corroboration; needs a real run to verify) ─────────────────
 
 /**
- * Runs THE NAMED SET as one Composer step: one query, one extraction pass, verified spans.
- * Cannot be exercised end to end under vitest -- googleBlocks() needs the live browser authority
- * and gemmaExtract() needs a live Ollama instance, the same boundary softballs_step.ts's own
- * header states. The pure parts above (deriveNamedSetProperty, buildNamedSetQuery,
+ * Runs THE NAMED SET as one Composer step: owned evidence tried first (zero new queries), then
+ * the conversational authority (Gemini) answers the one Named Set query (FD-BP154-02), then --
+ * when there is a verified included claim -- ONE Google corroboration pass names a third-party
+ * document that independently states the same thing. Every value produced carries its mechanism
+ * (FD-BP154-03). Cannot be exercised end to end under vitest -- the live authorities need a live
+ * browser/Ollama, the same boundary softballs_step.ts's own header states. The pure parts above
+ * (deriveNamedSetProperty, buildNamedSetQuery, buildNamedSetCorroborationQuery,
  * verifyIncludedEntries) carry the real unit tests; this function is verified by a live in-app
  * run (this ticket's own return).
  */
@@ -184,22 +203,43 @@ export async function runNamedSetStep(
     return { result, summary: summaryLine(OPT, result) };
   }
   const query = buildNamedSetQuery(property, all, OPT);
-  const res = await googleBlocks(ctx.askGoogle, query);
-  if (!res.ok || !res.text || !res.text.trim()) {
+  const namesAnyOption = (t: string) => all.some((L) => appearsIn(t, OPT[L]));
+  // D-BP154-014, ADDITIVE: see softballs_step.ts's identical comment / tryConversationalAuthority().
+  const mcOptions = all.map((L) => `${L}) ${OPT[L]}`);
+
+  // STAGE 1: OWNED EVIDENCE FIRST.
+  const ownedCandidates = [
+    ...(await gatherMortgageCandidates(input.qid, query)),
+    ...gatherThisRunCandidates(ctx),
+  ];
+  let text = '';
+  let via = '';
+  let provenance: ClaimProvenance | undefined;
+  for (const c of ownedCandidates) {
+    if (namesAnyOption(c.text)) { text = c.text; via = c.via; provenance = c.provenance; break; }
+  }
+
+  // STAGE 2: GEMINI ANSWERS (FD-BP154-02).
+  let conversationalError: string | undefined;
+  if (!text) {
+    const cr = await tryConversationalAuthority(ctx, query, mcOptions);
+    if (cr.ok && namesAnyOption(cr.text)) {
+      text = cr.text; via = cr.via; provenance = cr.provenance;
+    } else {
+      conversationalError = cr.error ?? 'conversational authority answered but named none of the options';
+    }
+  }
+
+  if (!text) {
     const result: NamedSetResult = {
-      ok: false, property, query, included: [], discarded: 0, notIncluded: all, via: res.via,
-      error: `no usable answer (${res.via}) -- THE NAMED SET is UNAVAILABLE, not "nothing included"`,
+      ok: false, property, query, included: [], discarded: 0, notIncluded: all,
+      via: 'n/a',
+      error: `no usable answer from any authority -- owned evidence: ${ownedCandidates.length} candidate(s) tried, none usable; `
+        + `conversational authority: ${conversationalError ?? 'not tried'} -- THE NAMED SET is UNAVAILABLE, not "nothing included"`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-  const namesAnyOption = all.some((L) => appearsIn(res.text, OPT[L]));
-  if (!namesAnyOption) {
-    const result: NamedSetResult = {
-      ok: false, property, query, included: [], discarded: 0, notIncluded: all, via: res.via,
-      error: `the source's passage (${res.via}) names none of the options -- it cannot state anything about them`,
-    };
-    return { result, summary: summaryLine(OPT, result) };
-  }
+
   const rawOut: {
     text?: string; truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string;
   } = {};
@@ -209,7 +249,7 @@ export async function runNamedSetStep(
     + `merely does not mention -- an omission is not a statement. Only include an option the `
     + `passage directly affirms membership for. Options: ${all.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
   const shape = '{"included":[{"name":"exact option name from the list","span":"verbatim sentence or clause from the passage stating it is the property"}]}';
-  const ex = await gemmaExtract(instruction, res.text, shape, rawOut);
+  const ex = await gemmaExtract(instruction, text, shape, rawOut);
   if (ex === null) {
     const cause = rawOut.truncated
       ? 'the local extraction model truncated its output before finishing'
@@ -217,16 +257,23 @@ export async function runNamedSetStep(
         ? `the local extraction model failed (${rawOut.failureCause}${rawOut.failureDetail ? `: ${rawOut.failureDetail}` : ''})`
         : 'the local extraction model failed for an unclassified reason';
     const result: NamedSetResult = {
-      ok: false, property, query, included: [], discarded: 0, notIncluded: all, via: res.via,
+      ok: false, property, query, included: [], discarded: 0, notIncluded: all, via,
       error: `extraction failed -- ${cause} -- reported as a FAILURE, never an empty "nothing included"`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-  const { included, discarded } = verifyIncludedEntries(ex.included, res.text, OPT);
+  const { included, discarded } = verifyIncludedEntries(ex.included, text, OPT);
   const includedLetters = new Set(included.map((e) => e.letter));
   const notIncluded = all.filter((L) => !includedLetters.has(L));
+
+  // STAGE 3: GOOGLE CORROBORATES A NAMED CLAIM -- ONE query, for the single decisive claim only.
+  let corroboration: CorroborationResult | undefined;
+  if (included.length) {
+    corroboration = await corroborateClaim(ctx, buildNamedSetCorroborationQuery(property, included[0]), included[0].name);
+  }
+
   const result: NamedSetResult = {
-    ok: true, property, query, included, discarded, notIncluded, via: res.via,
+    ok: true, property, query, included, discarded, notIncluded, via, answerProvenance: provenance, corroboration,
   };
   return { result, summary: summaryLine(OPT, result) };
 }
@@ -242,15 +289,17 @@ const NAMED_SET_DECLARATION: StepDeclaration = {
   exportKind: 'function',
   whatItDoes:
     'Asks ONE question -- which of the answer options ARE the specific superlative property the '
-    + 'question names (e.g. "the world\'s most densely populated regions") -- and shows exactly '
-    + 'which options the source explicitly said qualify, each with the verbatim sentence it said '
-    + 'so in. Never includes an option the source simply did not mention.',
-  inputs: 'MethodQuestionInput (question, options) plus MethodRunContext (askGoogle, emit) to runNamedSetStep().',
-  outputs: 'Promise<{ result: NamedSetResult, summary: string }> -- included options with verbatim spans, discard count, and the options the source left unaddressed.',
+    + 'question names (e.g. "the world\'s most densely populated regions") -- tried against owned '
+    + 'evidence first, then the conversational authority (Gemini), which answers it (FD-BP154-02); '
+    + 'shows exactly which options the source explicitly said qualify, each with the verbatim '
+    + 'sentence it said so in, plus ONE Google corroboration naming a third-party document for the '
+    + 'decisive claim. Never includes an option the source simply did not mention.',
+  inputs: 'MethodQuestionInput (question, options, qid) plus MethodRunContext (askGoogle, askConversationalAuthority, ownedPassages, emit) to runNamedSetStep().',
+  outputs: 'Promise<{ result: NamedSetResult, summary: string }> -- included options with verbatim spans, discard count, the options the source left unaddressed, the answer mechanism, and a document corroboration attempt.',
   decidesOrReports: 'DECIDES_AND_REFUSES',
   queryText: {
     issuesQuery: true,
-    description: 'One query per run: "Which of the following ARE <property>?" (FD-BP153-07 THE NAMED SET), hardcoded inline in this file.',
+    description: 'One primary question per run -- owned evidence tried first, then "Which of the following ARE <property>?" put to the conversational authority (FD-BP153-07 THE NAMED SET, FD-BP154-02) -- plus at most one Google corroboration query for a single decisive claim, hardcoded inline in this file.',
     loadedFromQueryResource: false,
   },
   attribution: {

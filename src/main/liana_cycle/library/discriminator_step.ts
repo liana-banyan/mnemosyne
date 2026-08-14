@@ -34,12 +34,22 @@
 // each with its span -- it does NOT eliminate, rank, or answer the question.
 
 import {
-  appearsIn, gemmaExtract, googleBlocks, list, toLetters,
+  appearsIn, gemmaExtract, list, toLetters,
 } from '../methods/comparative_cascade';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 import { registerNameNumbered } from './method_registry';
 import type { MethodIdentity } from './method_identity';
 import type { StepDeclaration } from './step_declaration';
+// D-BP154-014/BISHOP/S14/seg-milkthem -- FD-BP154-02 ("use gemini to answer, google to
+// corroborate") + FD-BP153-04 ("consult what you already own before you spend a query") +
+// FD-BP154-03 (mechanism provenance). See composer_step_evidence.ts's own header for the full
+// ruling this shared module implements; softballs_step.ts, named_set_step.ts and
+// discriminator_step.ts all use it identically rather than each re-deriving the same ordering.
+import {
+  corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates,
+  spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
+} from './composer_step_evidence';
+import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
@@ -79,15 +89,24 @@ export interface CategoryKind {
   span: string;
 }
 
-/** Whitespace-normalized verbatim containment -- same discipline as softballs_step.ts's own
- *  spanIsVerbatimInPassage() / named_set_step.ts's own copy (FD-BP153-07 FIX 2). Duplicated
- *  locally for the same self-containment reason stated above deriveDiscriminatorCategory(). */
-function spanIsVerbatimInPassage(passage: string, span: string): boolean {
-  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
-  const s = norm(span);
-  if (!s) return false;
-  return norm(passage).includes(s);
+/** THE ONE CORROBORATION QUERY (FD-BP154-02): re-asks whether the category is properly denoted by
+ *  the single stated category-denoting kind. Preferred corroboration target when the passage
+ *  stated one (this is THE decisive discriminator fact -- what breaks the winning option from the
+ *  others). */
+export function buildDiscriminatorCategoryKindCorroborationQuery(category: string, ck: CategoryKind): string {
+  return `Does "${category}" denote ${ck.kind}? Answer plainly and directly, stating clearly `
+    + `whether it does or does not.`;
 }
+
+/** Fallback corroboration target when no category-denoting kind was stated but at least one
+ *  per-option kind was: corroborates the first verified per-option kind instead. */
+export function buildDiscriminatorKindCorroborationQuery(entry: DiscriminatorEntry): string {
+  return `Is ${entry.name} ${entry.kind}? Answer plainly and directly, stating clearly whether it `
+    + `is or is not ${entry.kind}.`;
+}
+
+// spanIsVerbatimInPassage() is now imported from composer_step_evidence.ts (D-BP154-014) --
+// identical logic, shared rather than a third local copy; see that file's own header.
 
 type RawKindEntry = { name?: unknown; kind?: unknown; span?: unknown };
 type RawCategoryKind = { kind?: unknown; span?: unknown };
@@ -152,6 +171,12 @@ export interface DiscriminatorResult {
   categoryKind: CategoryKind | null;
   categoryKindDiscarded: boolean;
   via: string;
+  /** D-BP154-014, FD-BP154-03: HOW the passage this extraction ran over was obtained. */
+  answerProvenance?: ClaimProvenance;
+  /** D-BP154-014, FD-BP154-02: ONE Google corroboration attempt against the single decisive
+   *  claim (the category-denoting kind, or -- when none was stated -- the first per-option kind).
+   *  Additive, never a gate. */
+  corroboration?: CorroborationResult;
   error?: string;
 }
 
@@ -169,19 +194,24 @@ function summaryLine(OPT: Record<string, string>, r: DiscriminatorResult): strin
       ? '(source attempted an answer but it had no verifiable span -- discarded)'
       : '(not stated)';
   const discardNote = r.discardedKinds ? ` -- discarded ${r.discardedKinds} candidate(s) with no verifiable span` : '';
+  const provenanceNote = r.answerProvenance ? `  ||  ANSWERED VIA ${r.answerProvenance.mechanism}: ${r.answerProvenance.detail}` : '';
+  const corrobNote = r.corroboration ? `  ||  ${summarizeCorroboration(r.corroboration)}` : '';
   return `DISCRIMINATOR -- query: "${r.query}"  ||  KINDS (source-stated, verified): ${kindsText}`
     + `${discardNote}  ||  NO KIND STATED (source silent -- omission, not "no kind"): ${noKindText}`
-    + `  ||  WHICH KIND DENOTES "${r.category}": ${categoryKindText}`;
+    + `  ||  WHICH KIND DENOTES "${r.category}": ${categoryKindText}${provenanceNote}${corrobNote}`;
 }
 
-// ───────────────── the live step (googleBlocks + gemmaExtract, needs a real run to verify) ─────────────────
+// ───────────────── the live step (owned evidence -> conversational -> corroboration; needs a real run to verify) ─────────────────
 
 /**
- * Runs THE DISCRIMINATOR as one Composer step: one query asking both what each option is AND
- * which stated kind denotes the category, one extraction pass, verified spans. Cannot be
- * exercised end to end under vitest -- same boundary softballs_step.ts's/named_set_step.ts's own
- * headers state. The pure parts above carry the real unit tests; this function is verified by a
- * live in-app run (this ticket's own return).
+ * Runs THE DISCRIMINATOR as one Composer step: owned evidence tried first (zero new queries),
+ * then the conversational authority (Gemini) answers the one Discriminator question -- what kind
+ * each option is, AND which stated kind denotes the category -- (FD-BP154-02), then -- when there
+ * is a decisive claim -- ONE Google corroboration pass names a third-party document that
+ * independently states the same thing. Every value produced carries its mechanism (FD-BP154-03).
+ * Cannot be exercised end to end under vitest -- same boundary softballs_step.ts's/
+ * named_set_step.ts's own headers state. The pure parts above carry the real unit tests; this
+ * function is verified by a live in-app run (this ticket's own return).
  */
 export async function runDiscriminatorStep(
   input: MethodQuestionInput,
@@ -207,24 +237,43 @@ export async function runDiscriminatorStep(
     return { result, summary: summaryLine(OPT, result) };
   }
   const query = buildDiscriminatorQuery(category, all, OPT);
-  const res = await googleBlocks(ctx.askGoogle, query);
-  if (!res.ok || !res.text || !res.text.trim()) {
+  const namesAnyOption = (t: string) => all.some((L) => appearsIn(t, OPT[L]));
+  // D-BP154-014, ADDITIVE: see softballs_step.ts's identical comment / tryConversationalAuthority().
+  const mcOptions = all.map((L) => `${L}) ${OPT[L]}`);
+
+  // STAGE 1: OWNED EVIDENCE FIRST.
+  const ownedCandidates = [
+    ...(await gatherMortgageCandidates(input.qid, query)),
+    ...gatherThisRunCandidates(ctx),
+  ];
+  let text = '';
+  let via = '';
+  let provenance: ClaimProvenance | undefined;
+  for (const c of ownedCandidates) {
+    if (namesAnyOption(c.text)) { text = c.text; via = c.via; provenance = c.provenance; break; }
+  }
+
+  // STAGE 2: GEMINI ANSWERS (FD-BP154-02).
+  let conversationalError: string | undefined;
+  if (!text) {
+    const cr = await tryConversationalAuthority(ctx, query, mcOptions);
+    if (cr.ok && namesAnyOption(cr.text)) {
+      text = cr.text; via = cr.via; provenance = cr.provenance;
+    } else {
+      conversationalError = cr.error ?? 'conversational authority answered but named none of the options';
+    }
+  }
+
+  if (!text) {
     const result: DiscriminatorResult = {
       ok: false, category, query, kinds: [], discardedKinds: 0, noKindStated: all,
-      categoryKind: null, categoryKindDiscarded: false, via: res.via,
-      error: `no usable answer (${res.via}) -- THE DISCRIMINATOR is UNAVAILABLE, not "no kinds stated"`,
+      categoryKind: null, categoryKindDiscarded: false, via: 'n/a',
+      error: `no usable answer from any authority -- owned evidence: ${ownedCandidates.length} candidate(s) tried, none usable; `
+        + `conversational authority: ${conversationalError ?? 'not tried'} -- THE DISCRIMINATOR is UNAVAILABLE, not "no kinds stated"`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-  const namesAnyOption = all.some((L) => appearsIn(res.text, OPT[L]));
-  if (!namesAnyOption) {
-    const result: DiscriminatorResult = {
-      ok: false, category, query, kinds: [], discardedKinds: 0, noKindStated: all,
-      categoryKind: null, categoryKindDiscarded: false, via: res.via,
-      error: `the source's passage (${res.via}) names none of the options -- it cannot state anything about them`,
-    };
-    return { result, summary: summaryLine(OPT, result) };
-  }
+
   const rawOut: {
     text?: string; truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string;
   } = {};
@@ -235,7 +284,7 @@ export async function runDiscriminatorStep(
     + `properly denotes "${category}", and the verbatim sentence or clause that states so. `
     + `Options: ${all.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
   const shape = '{"kinds":[{"name":"exact option name from the list","kind":"the stated classification","span":"verbatim sentence or clause"}],"categoryKind":{"kind":"the classification that denotes the category, or null","span":"verbatim sentence or clause, or null"}}';
-  const ex = await gemmaExtract(instruction, res.text, shape, rawOut);
+  const ex = await gemmaExtract(instruction, text, shape, rawOut);
   if (ex === null) {
     const cause = rawOut.truncated
       ? 'the local extraction model truncated its output before finishing'
@@ -244,18 +293,33 @@ export async function runDiscriminatorStep(
         : 'the local extraction model failed for an unclassified reason';
     const result: DiscriminatorResult = {
       ok: false, category, query, kinds: [], discardedKinds: 0, noKindStated: all,
-      categoryKind: null, categoryKindDiscarded: false, via: res.via,
+      categoryKind: null, categoryKindDiscarded: false, via,
       error: `extraction failed -- ${cause} -- reported as a FAILURE, never an empty "no kinds stated"`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-  const { kinds, discarded } = verifyDiscriminatorKinds(ex.kinds, res.text, OPT);
-  const { categoryKind, discarded: categoryKindDiscarded } = verifyCategoryKind(ex.categoryKind, res.text);
+  const { kinds, discarded } = verifyDiscriminatorKinds(ex.kinds, text, OPT);
+  const { categoryKind, discarded: categoryKindDiscarded } = verifyCategoryKind(ex.categoryKind, text);
   const statedLetters = new Set(kinds.map((e) => e.letter));
   const noKindStated = all.filter((L) => !statedLetters.has(L));
+
+  // STAGE 3: GOOGLE CORROBORATES A NAMED CLAIM -- ONE query, for the single decisive claim only.
+  // Prefers the category-denoting kind (the decisive discriminator fact); falls back to the first
+  // per-option kind when no category-denoting kind was stated.
+  let corroboration: CorroborationResult | undefined;
+  if (categoryKind) {
+    corroboration = await corroborateClaim(
+      ctx, buildDiscriminatorCategoryKindCorroborationQuery(category, categoryKind), categoryKind.kind,
+    );
+  } else if (kinds.length) {
+    corroboration = await corroborateClaim(
+      ctx, buildDiscriminatorKindCorroborationQuery(kinds[0]), kinds[0].name,
+    );
+  }
+
   const result: DiscriminatorResult = {
     ok: true, category, query, kinds, discardedKinds: discarded, noKindStated,
-    categoryKind, categoryKindDiscarded, via: res.via,
+    categoryKind, categoryKindDiscarded, via, answerProvenance: provenance, corroboration,
   };
   return { result, summary: summaryLine(OPT, result) };
 }
@@ -271,15 +335,17 @@ const DISCRIMINATOR_DECLARATION: StepDeclaration = {
   exportKind: 'function',
   whatItDoes:
     'Asks ONE question -- what kind or classification each option is, and which one of those '
-    + 'kinds properly denotes the category the question names -- and shows exactly what the '
-    + 'source stated for each, with the verbatim sentence it said so in. Never guesses a kind for '
-    + 'an option the source did not classify.',
-  inputs: 'MethodQuestionInput (question, options) plus MethodRunContext (askGoogle, emit) to runDiscriminatorStep().',
-  outputs: 'Promise<{ result: DiscriminatorResult, summary: string }> -- per-option stated kinds with verbatim spans, discard counts, and the stated category-denoting kind.',
+    + 'kinds properly denotes the category the question names -- tried against owned evidence '
+    + 'first, then the conversational authority (Gemini), which answers it (FD-BP154-02); shows '
+    + 'exactly what the source stated for each, with the verbatim sentence it said so in, plus ONE '
+    + 'Google corroboration naming a third-party document for the decisive claim. Never guesses a '
+    + 'kind for an option the source did not classify.',
+  inputs: 'MethodQuestionInput (question, options, qid) plus MethodRunContext (askGoogle, askConversationalAuthority, ownedPassages, emit) to runDiscriminatorStep().',
+  outputs: 'Promise<{ result: DiscriminatorResult, summary: string }> -- per-option stated kinds with verbatim spans, discard counts, the stated category-denoting kind, the answer mechanism, and a document corroboration attempt.',
   decidesOrReports: 'DECIDES_AND_REFUSES',
   queryText: {
     issuesQuery: true,
-    description: 'One query per run, asking both the per-option kind and the category-denoting kind (FD-BP153-07 THE DISCRIMINATOR), hardcoded inline in this file.',
+    description: 'One primary question per run -- owned evidence tried first, then both the per-option kind and the category-denoting kind (FD-BP153-07 THE DISCRIMINATOR, FD-BP154-02) put to the conversational authority -- plus at most one Google corroboration query for a single decisive claim, hardcoded inline in this file.',
     loadedFromQueryResource: false,
   },
   attribution: {
