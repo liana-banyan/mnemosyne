@@ -44,6 +44,7 @@ import type { FounderProofSlice, KnownGoodQuery } from '../../../main/liana_cycl
 // Node imports, pure functions only). See that file's own header for the ratified mapping and why
 // PROVEN never fires for these three steps today.
 import { classifyComposerStepResult, COMPOSER_STEP_CLASS_STYLE } from '../../../shared/composer_step_classification';
+import type { ComposerStepClassificationWithKey } from '../../../shared/composer_step_classification';
 
 // D-BP152-045/BISHOP/seg-composer-ui-fixes -- PARENTAGE LABEL. Founder, live report: "can you
 // indicate with the NameNumbers if they are part of a script or method or whatever? ... so that
@@ -2074,7 +2075,17 @@ export function LianaCycleTab() {
                       // provenance chain. classifyComposerStepResult() only reads structural fields
                       // already on the step's own result -- never the answer key.
                       const raw = composerResult.result.results[i]?.raw;
-                      const cls = s.status === 'ok' && raw !== undefined ? classifyComposerStepResult(raw) : null;
+                      // D-BP154-036/BISHOP-SEG/S36/seg-wireit, ADDITIVE: for Terminator:1 ONLY, prefer
+                      // the main process's own keyedTerminatorLabel (FD-BP154-11's ANSWERED-row
+                      // amendment, computed AFTER the run already finished -- see script_bridge.ts's
+                      // ComposedRunResult.keyedTerminatorLabel for the D-BP153-003 boundary this
+                      // observes) over the blind re-classification below. Every other step keeps
+                      // reading its own blind classification exactly as before this ticket.
+                      const cls: ComposerStepClassificationWithKey | null = s.status === 'ok' && raw !== undefined
+                        ? (s.id === 'Terminator:1' && composerResult.result.keyedTerminatorLabel
+                          ? composerResult.result.keyedTerminatorLabel
+                          : classifyComposerStepResult(raw))
+                        : null;
                       const style = cls ? COMPOSER_STEP_CLASS_STYLE[cls.cls] : null;
                       const expanded = expandedStepIndex === i;
                       const evidenceRecord = (() => {
@@ -2121,6 +2132,13 @@ export function LianaCycleTab() {
                               <div style={{ color: style?.colorFg, fontWeight: 700, marginBottom: 4 }}>
                                 {style?.label} -- {cls.detail}
                               </div>
+                              {/* D-BP154-036, ADDITIVE -- same "key=X" display convention this file
+                                  already uses for the default (non-Composer) run path above. Shown
+                                  only when a keyed label was actually computed (Terminator:1, key on
+                                  file); never influences `cls`/`style` above, display only. */}
+                              {cls.keyed && (
+                                <div>KEY: {cls.keyed.answer} ({cls.keyed.matchesVerdict === null ? 'no verdict to compare' : cls.keyed.matchesVerdict ? 'matches this run’s verdict' : 'DISAGREES with this run’s verdict'})</div>
+                              )}
                               <div>MECHANISM: {(raw as { answerProvenance?: { mechanism?: unknown } })?.answerProvenance?.mechanism as string ?? 'NOT_OBTAINED'}</div>
                               <div>SOURCE: {(raw as { answerProvenance?: { detail?: unknown } })?.answerProvenance?.detail as string ?? '(missing -- shown as missing, not blank)'}</div>
                               <div>QUERY (verbatim): {(raw as { query?: unknown })?.query as string ?? '(missing)'}</div>

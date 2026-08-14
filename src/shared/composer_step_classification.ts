@@ -265,6 +265,13 @@ export interface KeyedAnswerLabel {
   matchesVerdict: boolean | null;
 }
 
+/** D-BP154-036, ADDITIVE. Named alias for applyKeyedAnswerLabel()'s own return shape -- a plain
+ *  ComposerStepClassification is always assignable to this type (`keyed` is optional), so a caller
+ *  that sometimes calls applyKeyedAnswerLabel() and sometimes uses the blind classification
+ *  unchanged (script_bridge.ts's persistStepClaim(), scoped to Terminator:1 only) can hold both in
+ *  one uniformly-typed variable without a union-narrowing dance at every read site. */
+export type ComposerStepClassificationWithKey = ComposerStepClassification & { keyed?: KeyedAnswerLabel };
+
 /** FD-BP154-11's own amendment to FD-BP154-05, applied as a pure, synchronous, POST-classification
  *  label -- see this file's header for the full ruling and the D-BP153-003 boundary it does not
  *  cross. `correctAnswer` is read ONLY here, for display, never threaded into any elimination or
@@ -292,7 +299,7 @@ export function applyKeyedAnswerLabel(
   classification: ComposerStepClassification,
   verdictLetter: string | null,
   correctAnswer: string | undefined,
-): ComposerStepClassification & { keyed?: KeyedAnswerLabel } {
+): ComposerStepClassificationWithKey {
   if (!correctAnswer) return classification;
   const keyed: KeyedAnswerLabel = {
     answer: correctAnswer,
