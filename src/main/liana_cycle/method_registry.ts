@@ -82,8 +82,23 @@ export interface ConversationalAuthorityResult {
  *  VERBATIM in (HARDWIRE-22 still binds -- this asks a source his question, exactly as his browser
  *  did, never a rate/judge/decide prompt), a real answer or an honest refusal out. Never a second
  *  askGoogle-shaped channel -- see ConversationalAuthorityResult's own header for why the return
- *  shape differs from AskGoogleFn. */
-export type ConversationalAuthorityFn = (question: string) => Promise<ConversationalAuthorityResult>;
+ *  shape differs from AskGoogleFn.
+ *
+ *  D-BP154-014, ADDITIVE/OPTIONAL: `mcOptions`, same "L) option text" shape
+ *  comparative_cascade.ts's own `list()` / browser_authority_types.ts's `buildMcAwareQueryText`
+ *  already produce. Undefined on every pre-existing call site (byte-identical behavior --
+ *  `buildAskConversationalAuthority()`'s own existing closure, index.ts, ignores a 2nd arg it
+ *  does not read). MEASURED live this ticket: webview_preload.ts's capture-hop gate
+ *  (`mentionsAnyOption`, option_membership.ts/D-BP154-010) already exists and already fires on
+ *  the INTERACTIVE-QUERY IPC payload's own `mcOptions` field -- but `buildAskConversationalAuthority`
+ *  never had a way to SUPPLY it (this type took only `question`), so the gate was silently a
+ *  no-op for every Composer-step conversational call: a captured passage of pure Gemini UI chrome
+ *  ("Thinking... Your lianabanyan.com chats aren't used to improve our models...") passed straight
+ *  through as `ok:true`, live-verified 2026-08-14 (CDP body-text read of the same conversation
+ *  showed Gemini's real, correct answer had in fact rendered -- the capture just was never gated
+ *  on mentioning an option, so a chrome string sitting elsewhere on the page was accepted first).
+ *  Passing `mcOptions` here is what lets that ALREADY-BUILT gate actually run for this caller. */
+export type ConversationalAuthorityFn = (question: string, mcOptions?: string[]) => Promise<ConversationalAuthorityResult>;
 
 /** What every method's shapeTest() and run() receive. `options` is null for a free-text
  *  question typed with no lettered option list -- most methods (which eliminate AMONG options)
