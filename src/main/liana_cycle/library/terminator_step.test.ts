@@ -800,6 +800,58 @@ describe('D-BP154-033: HumanNuance:1 is wired into deriveTerminatorEliminations(
     const { result } = await runTerminatorStep(input, ctx, [softballsOutcome]);
     expect(result.stepsConsulted['HumanNuance:1']).toBe('not run');
   });
+
+  // D-BP154-041 PART 2/3, FD-BP154-17 -- THE ACCEPTANCE TEST. Purpose:1 found the evidence class
+  // structurally incapable (qid 98's own nine-option shape) -- the Terminator must withhold BEFORE
+  // even looking at Softballs/NamedSet/Discriminator, report a DISTINCT insufficientEvidence field,
+  // and never mark the run incomplete (nothing failed; the query-issuing steps were never asked).
+  test('Purpose:1 INSUFFICIENT -> Terminator withholds with a distinct insufficientEvidence, incomplete stays false', async () => {
+    const purposeOutcome = {
+      id: 'Purpose:1', summary: 's',
+      raw: {
+        ok: true, purposeType: 'NEGATED_SUPERLATIVE_MEMBERSHIP', candidates: [], survivors: [], eliminated: [],
+        sufficiency: {
+          purposeType: 'NEGATED_SUPERLATIVE_MEMBERSHIP', preconditionId: 'negated-superlative-member-bound',
+          preconditionDescription: 'test', sufficient: false, reason: 'INSUFFICIENT EVIDENCE -- test reason',
+          policyVersion: '1',
+        },
+        via: 'test',
+      },
+    };
+    const { result, summary } = await runTerminatorStep(input, ctx, [purposeOutcome]);
+    expect(result.ok).toBe(true);
+    expect(result.abstain).toBe(true);
+    expect(result.verdict).toBeNull();
+    expect(result.insufficientEvidence).not.toBeNull();
+    expect(result.insufficientEvidence?.preconditionId).toBe('negated-superlative-member-bound');
+    expect(result.abstainReason).toMatch(/INSUFFICIENT EVIDENCE/);
+    expect(result.incomplete).toBe(false);
+    expect(result.stepsConsulted['Purpose:1']).toBe('ok');
+    expect(result.eliminated).toEqual([]);
+    expect(summary).toMatch(/INSUFFICIENT EVIDENCE/);
+  });
+
+  test('Purpose:1 SUFFICIENT -> the normal elimination path runs unaffected', async () => {
+    const purposeOutcome = {
+      id: 'Purpose:1', summary: 's',
+      raw: {
+        ok: true, purposeType: 'NEGATED_SUPERLATIVE_MEMBERSHIP', candidates: [], survivors: [], eliminated: [],
+        sufficiency: {
+          purposeType: 'NEGATED_SUPERLATIVE_MEMBERSHIP', preconditionId: 'negated-superlative-member-bound',
+          preconditionDescription: 'test', sufficient: true, reason: 'sufficient', policyVersion: '1',
+        },
+        via: 'test',
+      },
+    };
+    const softballsOutcome = { id: 'Softballs:1', summary: 's', raw: softballs([['D', 'D) not a world region.']]) };
+    const namedSetOutcome = {
+      id: 'NamedSet:1', summary: 's',
+      raw: namedSet(Object.keys(OPT).filter((L) => L !== 'A' && L !== 'D').map((L) => [L, `${L}) is densely populated.`] as [string, string])),
+    };
+    const { result } = await runTerminatorStep(input, ctx, [purposeOutcome, softballsOutcome, namedSetOutcome]);
+    expect(result.insufficientEvidence).toBeNull();
+    expect(result.verdict).toBe('A');
+  });
 });
 
 describe('registerTerminatorStep / listComposerRegistry -- Terminator:1 is a real, visible, reorderable Composer entry', () => {
