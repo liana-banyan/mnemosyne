@@ -68,6 +68,60 @@ import type { DiscriminatorResult } from './discriminator_step';
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 
+// D-BP154-020/BISHOP-SEG/S20/seg-discriminator2 -- THE VOCABULARY MISMATCH FIX.
+//
+// LIVE-MEASURED this ticket (qid 98, run 6): a real Discriminator passage stated the
+// category-denoting kind as a COMPOUND LIST -- "Continents and Geographic / Geopolitical
+// Subregions" -- while stating each option's OWN kind singularly, with its own parenthetical
+// elaboration -- "Continent (a major global landmass)". Byte-for-byte identity (this file's
+// pre-existing rule, unchanged in spirit below) failed EVERY ONE of the 9 options against that
+// compound string, even the ones the source's own words plainly support (a "Continent" IS one of
+// the two kinds the same sentence says denote "world regions") -- producing a spurious
+// zero-survivor DEGENERATE FRAME that the zero-survivors safety net below correctly caught and
+// abstained on, but which never should have been produced in the first place: the source did not
+// say a Continent is a DIFFERENT kind from what denotes the category, it said the OPPOSITE.
+//
+// Founder's own naming of this exact trap (D-BP154-020 dispatch): "A kind that does not
+// string-match is UNSTATED, not denied. Never exclude on a non-match." THE FIX BELOW STAYS
+// STRUCTURAL, NEVER SEMANTIC (HARDWIRE-22; BP153 canon "ask a local model to copy, never to
+// decide") -- no synonym table, no similarity score, no model consulted about whether two labels
+// mean the same thing, anywhere in this function:
+//   1. Strip each side's own trailing parenthetical elaboration -- decoration the source itself
+//      set off in parentheses, never part of the classification word itself.
+//   2. Split the categoryKind's stated text on ITS OWN literal list conjunctions (", " / " and "
+//      / " or ") into the list of kind-phrases the source itself enumerated -- reading a list the
+//      source wrote as a list, never inventing one that isn't there.
+//   3. Fold a single trailing "s" for singular/plural tolerance ONLY -- the same class of
+//      mechanical operation norm() above already performs (case/punctuation/whitespace folding),
+//      applied identically to every kind pair regardless of the actual words, never conditioned on
+//      which option, letter, or category is involved.
+// A per-option kind is treated as matching the category iff it equals (after 1-3) the WHOLE
+// categoryKind string OR any ONE item the split in step 2 produced -- always an EXACT match
+// against a literal phrase the source itself wrote, never a judgment that two different words mean
+// the same thing. An option whose kind matches NEITHER is eliminated exactly as before this fix.
+function stripParenthetical(s: string): string {
+  return s.replace(/\s*\([^)]*\)\s*$/, '').trim();
+}
+function foldPluralToken(s: string): string {
+  return s.endsWith('s') && !s.endsWith('ss') ? s.slice(0, -1) : s;
+}
+function normKindToken(s: string): string {
+  return foldPluralToken(norm(stripParenthetical(s)));
+}
+function splitCategoryKindList(categoryKindText: string): string[] {
+  return stripParenthetical(categoryKindText)
+    .split(/\s*,\s*|\s+and\s+|\s+or\s+/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+/** Exported for direct unit testing (same discipline as this file's own deriveTerminatorEliminations). */
+export function discriminatorKindMatchesCategory(optionKind: string, categoryKindText: string): boolean {
+  const optionToken = normKindToken(optionKind);
+  if (!optionToken) return false;
+  if (normKindToken(categoryKindText) === optionToken) return true;
+  return splitCategoryKindList(categoryKindText).some((item) => normKindToken(item) === optionToken);
+}
+
 export interface TerminatorEliminationEntry {
   letter: string;
   name: string;
@@ -144,9 +198,11 @@ export function deriveTerminatorEliminations(
     }
   }
   if (discriminator?.ok && discriminator.categoryKind) {
-    const categoryKindNorm = norm(discriminator.categoryKind.kind);
     for (const k of discriminator.kinds) {
-      if (norm(k.kind) === categoryKindNorm) continue; // same stated kind as the category -- not an elimination
+      // D-BP154-020: discriminatorKindMatchesCategory (this file, above) replaces a naive
+      // whole-string identity check -- see that function's own header for why exact identity
+      // alone wrongly eliminated every option against a compound category-kind list.
+      if (discriminatorKindMatchesCategory(k.kind, discriminator.categoryKind.kind)) continue; // matches the category's own stated kind (or one of its stated list items) -- not an elimination
       eliminated.push({
         letter: k.letter, name: k.name, sourceStep: 'Discriminator:1',
         reason: `source states this is "${k.kind}", a different stated kind from "${discriminator.categoryKind.kind}"`,

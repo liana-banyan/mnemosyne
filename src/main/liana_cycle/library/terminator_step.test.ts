@@ -120,6 +120,43 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
     expect(eliminated).toHaveLength(0);
   });
 
+  // D-BP154-020/BISHOP-SEG/S20/seg-discriminator2 -- THE VOCABULARY MISMATCH FIX. Deliberately
+  // uses invented, qid-98-UNRELATED words ("Alpha Grade"/"Beta Grade"/"Gamma Type") so this
+  // asserts the MECHANISM (list-split + parenthetical-strip + singular/plural fold), never
+  // anything tuned to this specific question's real vocabulary (FD-BP153-06's own "would this
+  // rule survive on a question whose answer we do not know" bar).
+  test('Discriminator does NOT eliminate an option whose singular kind is ONE ITEM of a compound (list) category-denoting kind', () => {
+    const disc = discriminator(
+      [
+        ['A', 'Alpha Grade (a top-tier classification)', 'A) is Alpha Grade (a top-tier classification).'],
+        ['B', 'Beta Grade (a mid-tier classification)', 'B) is Beta Grade (a mid-tier classification).'],
+        ['C', 'Gamma Type (an unrelated classification)', 'C) is Gamma Type (an unrelated classification).'],
+      ],
+      {
+        kind: 'Alpha Grades and Beta Grades',
+        span: 'the classifications that properly denote the category are Alpha Grades and Beta Grades',
+      },
+    );
+    const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+    const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
+    // A and B each match ONE item of the compound list (after singular/plural fold + parenthetical
+    // strip) -- neither is eliminated. C matches neither list item -- it IS eliminated. Before this
+    // fix, byte-identity against the WHOLE compound string would have wrongly eliminated all three.
+    expect(eliminatedLetters.has('A')).toBe(false);
+    expect(eliminatedLetters.has('B')).toBe(false);
+    expect(eliminatedLetters.has('C')).toBe(true);
+  });
+
+  test('Discriminator STILL eliminates when the stated kind genuinely matches NEITHER the whole category string NOR any of its list items', () => {
+    const disc = discriminator(
+      [['A', 'Delta Class (an entirely different classification)', 'A) is Delta Class.']],
+      { kind: 'Alpha Grades and Beta Grades', span: 'x' },
+    );
+    const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+    expect(eliminated).toHaveLength(1);
+    expect(eliminated[0].letter).toBe('A');
+  });
+
   test('CONTRADICTION: the same letter excluded by Softballs and included by NamedSet aborts publication', () => {
     const sb = softballs([['B', 'B) South Asia is not a world region.']]);
     const ns = namedSet([['B', 'B) South Asia is one of the most densely populated regions.']]);

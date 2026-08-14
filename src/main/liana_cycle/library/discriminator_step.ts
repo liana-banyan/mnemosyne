@@ -66,11 +66,23 @@ export function deriveDiscriminatorCategory(question: string): string | null {
   return category || null;
 }
 
-/** THE ONE QUERY, asking BOTH things FD-BP153-07 point 3 names in a single round trip. */
+/** THE ONE QUERY, asking BOTH things FD-BP153-07 point 3 names in a single round trip.
+ *
+ *  D-BP154-020/BISHOP-SEG/S20/seg-discriminator2: the trailing "-- rather than merely whether it
+ *  is or is not `<category>`" clause is added here to match the KNOWN-WORKING phrasing on record
+ *  in LIANA_RUN_qid98_2026-08-13T19-24-50-420Z.json (draw 2, all nine options correctly classified
+ *  live) -- classify_cascade.ts's own establishFrame() needed the identical clause for the
+ *  identical reason (commit 5781c477, FORBIDDEN file, read only for its OWN measured finding, not
+ *  imported): without it, this exact "state what it is" wording still invites the model to answer
+ *  the CATEGORY-MEMBERSHIP question ("is/is not `<category>`") instead of stating an actual
+ *  classification, which extraction then reads as no stated kind at all -- a comparison essay, not
+ *  a taxonomy answer. Plain wording, applies identically regardless of which category or option is
+ *  named -- never a letter-specific or answer-specific change (FD-BP153-06). */
 export function buildDiscriminatorQuery(category: string, all: string[], OPT: Record<string, string>): string {
   return `For EACH of the following, state exactly what it is -- its actual classification or `
-    + `type. Answer for every one, in order, and do not skip any. ${list(all, OPT)} Then, `
-    + `separately and last, state which one of those classifications properly denotes "${category}".`;
+    + `type -- rather than merely whether it is or is not ${category}. Answer for every one, in `
+    + `order, and do not skip any. ${list(all, OPT)} Then, separately and last, state which one `
+    + `of those classifications properly denotes "${category}".`;
 }
 
 export interface DiscriminatorEntry {
@@ -226,7 +238,11 @@ export async function runDiscriminatorStep(
     };
     return { result, summary: summaryLine({}, result) };
   }
-  const all = Object.keys(OPT);
+  // D-BP154-020: narrowed once, by value, so the nested extractFrom() closure below (which TS
+  // does not retain the outer `!OPT` narrowing into) has a definitely-non-null Record to use --
+  // same fix named_set_step.ts's own optSafe already applies for the identical closure shape.
+  const optSafe: Record<string, string> = OPT;
+  const all = Object.keys(optSafe);
   const category = deriveDiscriminatorCategory(input.question);
   if (!category) {
     const result: DiscriminatorResult = {
@@ -241,6 +257,39 @@ export async function runDiscriminatorStep(
   // D-BP154-014, ADDITIVE: see softballs_step.ts's identical comment / tryConversationalAuthority().
   const mcOptions = all.map((L) => `${L}) ${OPT[L]}`);
 
+  // D-BP154-020/BISHOP-SEG/S20/seg-discriminator2: factored out of the old single inline
+  // gemmaExtract call so BOTH Stage 1 (owned evidence) and Stage 2 (a fresh live query) can run
+  // it and be COMPARED -- named_set_step.ts's own extractFrom()/"try-harder-before-abstain"
+  // pattern (D-BP154-018), mirrored here for THE DISCRIMINATOR's two outputs instead of one.
+  const instruction = `From the passage, for EACH option below, copy its stated classification `
+    + `or kind (exactly what the passage says it is), and the exact verbatim sentence or clause `
+    + `that states it. Do not include an option the passage does not classify -- an omission is `
+    + `not a statement. Then, separately, copy which ONE classification the passage states `
+    + `properly denotes "${category}", and the verbatim sentence or clause that states so. `
+    + `Options: ${all.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
+  const shape = '{"kinds":[{"name":"exact option name from the list","kind":"the stated classification","span":"verbatim sentence or clause"}],"categoryKind":{"kind":"the classification that denotes the category, or null","span":"verbatim sentence or clause, or null"}}';
+  async function extractFrom(candidateText: string): Promise<{
+    kinds: DiscriminatorEntry[]; discardedKinds: number;
+    categoryKind: CategoryKind | null; categoryKindDiscarded: boolean;
+    extractionError?: string;
+  }> {
+    const rawOut: {
+      text?: string; truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string;
+    } = {};
+    const ex = await gemmaExtract(instruction, candidateText, shape, rawOut);
+    if (ex === null) {
+      const cause = rawOut.truncated
+        ? 'the local extraction model truncated its output before finishing'
+        : rawOut.failureCause
+          ? `the local extraction model failed (${rawOut.failureCause}${rawOut.failureDetail ? `: ${rawOut.failureDetail}` : ''})`
+          : 'the local extraction model failed for an unclassified reason';
+      return { kinds: [], discardedKinds: 0, categoryKind: null, categoryKindDiscarded: false, extractionError: cause };
+    }
+    const { kinds, discarded } = verifyDiscriminatorKinds(ex.kinds, candidateText, optSafe);
+    const { categoryKind, discarded: categoryKindDiscarded } = verifyCategoryKind(ex.categoryKind, candidateText);
+    return { kinds, discardedKinds: discarded, categoryKind, categoryKindDiscarded };
+  }
+
   // STAGE 1: OWNED EVIDENCE FIRST.
   const ownedCandidates = [
     ...(await gatherMortgageCandidates(input.qid, query)),
@@ -253,12 +302,36 @@ export async function runDiscriminatorStep(
     if (namesAnyOption(c.text)) { text = c.text; via = c.via; provenance = c.provenance; break; }
   }
 
-  // STAGE 2: GEMINI ANSWERS (FD-BP154-02).
+  let extraction = text ? await extractFrom(text) : null;
+  let extractionFailedOnStage1Text = Boolean(extraction?.extractionError);
+
+  // STAGE 2: GEMINI ANSWERS (FD-BP154-02) -- tried when STAGE 1 found nothing at all, OR (mirrors
+  // D-BP154-018's named_set_step.ts fix) when STAGE 1 found a passage but it verifiably
+  // established NEITHER of THE DISCRIMINATOR's two required outputs (a per-option kind, or the
+  // category-denoting kind) and extraction itself did not fail. LIVE-MEASURED this ticket
+  // (D-BP154-020, qid 98): the pre-fix behavior accepted a stale ~2.5-hour-old owned passage
+  // (`gatherMortgageCandidates`) that merely happened to mention an option name somewhere,
+  // extracted ZERO per-option kinds (9 of 9 discarded) and a near-empty categoryKind whose own
+  // span was just an echo of the query text ("Which of the following regions") -- not a real
+  // denotation statement -- and reported `ok:true` anyway, leaving THE TERMINATOR's own
+  // already-correct rule 3 (deriveTerminatorEliminations, this file's sibling terminator_step.ts)
+  // with nothing usable to eliminate on. A passage that produced NEITHER output is exactly as
+  // unproductive as one that produced zero memberships in named_set_step.ts's own sense -- worth
+  // a second, independent, FRESH source before this step accepts a near-empty result.
   let conversationalError: string | undefined;
-  if (!text) {
+  const stage1WasUnproductive = !text
+    || (extraction !== null && extraction.kinds.length === 0 && !extraction.categoryKind && !extractionFailedOnStage1Text);
+  if (stage1WasUnproductive) {
     const cr = await tryConversationalAuthority(ctx, query, mcOptions);
     if (cr.ok && namesAnyOption(cr.text)) {
-      text = cr.text; via = cr.via; provenance = cr.provenance;
+      const cExtraction = await extractFrom(cr.text);
+      // Prefer STAGE 2 only when it actually found something STAGE 1 did not (either output) --
+      // STAGE 1's own (possibly partial) result is never discarded in favour of an equally-empty
+      // STAGE 2 result; "tried harder, still nothing" stays an honest zero, not silently swapped.
+      if (cExtraction.kinds.length > 0 || cExtraction.categoryKind || !text) {
+        text = cr.text; via = cr.via; provenance = cr.provenance; extraction = cExtraction;
+        extractionFailedOnStage1Text = false;
+      }
     } else {
       conversationalError = cr.error ?? 'conversational authority answered but named none of the options';
     }
@@ -273,33 +346,15 @@ export async function runDiscriminatorStep(
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-
-  const rawOut: {
-    text?: string; truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string;
-  } = {};
-  const instruction = `From the passage, for EACH option below, copy its stated classification `
-    + `or kind (exactly what the passage says it is), and the exact verbatim sentence or clause `
-    + `that states it. Do not include an option the passage does not classify -- an omission is `
-    + `not a statement. Then, separately, copy which ONE classification the passage states `
-    + `properly denotes "${category}", and the verbatim sentence or clause that states so. `
-    + `Options: ${all.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
-  const shape = '{"kinds":[{"name":"exact option name from the list","kind":"the stated classification","span":"verbatim sentence or clause"}],"categoryKind":{"kind":"the classification that denotes the category, or null","span":"verbatim sentence or clause, or null"}}';
-  const ex = await gemmaExtract(instruction, text, shape, rawOut);
-  if (ex === null) {
-    const cause = rawOut.truncated
-      ? 'the local extraction model truncated its output before finishing'
-      : rawOut.failureCause
-        ? `the local extraction model failed (${rawOut.failureCause}${rawOut.failureDetail ? `: ${rawOut.failureDetail}` : ''})`
-        : 'the local extraction model failed for an unclassified reason';
+  if (!extraction || extractionFailedOnStage1Text) {
     const result: DiscriminatorResult = {
       ok: false, category, query, kinds: [], discardedKinds: 0, noKindStated: all,
       categoryKind: null, categoryKindDiscarded: false, via,
-      error: `extraction failed -- ${cause} -- reported as a FAILURE, never an empty "no kinds stated"`,
+      error: `extraction failed -- ${extraction?.extractionError ?? 'the local extraction model failed for an unclassified reason'} -- reported as a FAILURE, never an empty "no kinds stated"`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-  const { kinds, discarded } = verifyDiscriminatorKinds(ex.kinds, text, OPT);
-  const { categoryKind, discarded: categoryKindDiscarded } = verifyCategoryKind(ex.categoryKind, text);
+  const { kinds, discardedKinds: discarded, categoryKind, categoryKindDiscarded } = extraction;
   const statedLetters = new Set(kinds.map((e) => e.letter));
   const noKindStated = all.filter((L) => !statedLetters.has(L));
 
