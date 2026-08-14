@@ -1,0 +1,152 @@
+{
+  "builtAt": "2026-08-14T19:37:48.054Z",
+  "standingSet": [
+    1,
+    7,
+    14,
+    20,
+    27,
+    33,
+    40,
+    46,
+    53,
+    59,
+    66,
+    72,
+    79,
+    85,
+    92,
+    98,
+    105,
+    111,
+    118,
+    124
+  ],
+  "results": [
+    {
+      "campaignQuestionId": 1,
+      "ok": true,
+      "src": "ori_mmlu-high_school_biology",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid1.json"
+    },
+    {
+      "campaignQuestionId": 7,
+      "ok": true,
+      "src": "stemez-Genetics",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid7.json"
+    },
+    {
+      "campaignQuestionId": 14,
+      "ok": true,
+      "src": "ori_mmlu-marketing",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid14.json"
+    },
+    {
+      "campaignQuestionId": 20,
+      "ok": true,
+      "src": "stemez-Business",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid20.json"
+    },
+    {
+      "campaignQuestionId": 27,
+      "ok": true,
+      "src": "stemez-Chemistry",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid27.json"
+    },
+    {
+      "campaignQuestionId": 33,
+      "ok": true,
+      "src": "ori_mmlu-high_school_computer_science",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid33.json"
+    },
+    {
+      "campaignQuestionId": 40,
+      "ok": true,
+      "src": "ori_mmlu-computer_security",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid40.json"
+    },
+    {
+      "campaignQuestionId": 46,
+      "ok": true,
+      "src": "stemez-Economics",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid46.json"
+    },
+    {
+      "campaignQuestionId": 53,
+      "ok": true,
+      "src": "stemez-ElectronicCommunications",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid53.json"
+    },
+    {
+      "campaignQuestionId": 59,
+      "ok": true,
+      "src": "stemez-FluidMechanics",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid59.json"
+    },
+    {
+      "campaignQuestionId": 66,
+      "ok": true,
+      "src": "ori_mmlu-anatomy",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid66.json"
+    },
+    {
+      "campaignQuestionId": 72,
+      "ok": true,
+      "src": "ori_mmlu-prehistory",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid72.json"
+    },
+    {
+      "campaignQuestionId": 79,
+      "ok": true,
+      "src": "ori_mmlu-high_school_european_history",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid79.json"
+    },
+    {
+      "campaignQuestionId": 85,
+      "ok": true,
+      "src": "ori_mmlu-high_school_statistics",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid85.json"
+    },
+    {
+      "campaignQuestionId": 92,
+      "ok": true,
+      "src": "ori_mmlu-security_studies",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid92.json"
+    },
+    {
+      "campaignQuestionId": 98,
+      "ok": true,
+      "src": "ori_mmlu-high_school_geography",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid98.json"
+    },
+    {
+      "campaignQuestionId": 105,
+      "ok": true,
+      "src": "ori_mmlu-philosophy",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid105.json"
+    },
+    {
+      "campaignQuestionId": 111,
+      "ok": true,
+      "src": "ori_mmlu-astronomy",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid111.json"
+    },
+    {
+      "campaignQuestionId": 118,
+      "ok": true,
+      "src": "scibench-class",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid118.json"
+    },
+    {
+      "campaignQuestionId": 124,
+      "ok": true,
+      "src": "ori_mmlu-high_school_psychology",
+      "eblet": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\origin_provenance\\origin_eblet_qid124.json"
+    }
+  ],
+  "requestsIssued": 57,
+  "totalRequestMs": 12314,
+  "beforeHash": "f80bd4ca2f65dc69ede56b2fe6fa1bb18b7c533d001c9b70190393bad2dfffeb",
+  "afterHash": "f80bd4ca2f65dc69ede56b2fe6fa1bb18b7c533d001c9b70190393bad2dfffeb",
+  "backupPath": "C:\\Users\\Administrator\\Documents\\mnemosyne\\resources\\mmlu_pro_bundled\\questions.jsonl.superseded.2026-08-14T193748049Z"
+}

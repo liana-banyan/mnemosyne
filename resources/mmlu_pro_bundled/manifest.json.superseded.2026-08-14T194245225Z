@@ -1,0 +1,94 @@
+{
+  "version": "0.9.4",
+  "generatedAt": "2026-07-26T16:06:48.611Z",
+  "totalQuestions": 140,
+  "sha256": "f80bd4ca2f65dc69ede56b2fe6fa1bb18b7c533d001c9b70190393bad2dfffeb",
+  "categories": [
+    {
+      "category": "biology",
+      "count": 10
+    },
+    {
+      "category": "business",
+      "count": 10
+    },
+    {
+      "category": "chemistry",
+      "count": 10
+    },
+    {
+      "category": "computer_science",
+      "count": 10
+    },
+    {
+      "category": "economics",
+      "count": 10
+    },
+    {
+      "category": "engineering",
+      "count": 10
+    },
+    {
+      "category": "health",
+      "count": 10
+    },
+    {
+      "category": "history",
+      "count": 10
+    },
+    {
+      "category": "law",
+      "count": 10
+    },
+    {
+      "category": "math",
+      "count": 10
+    },
+    {
+      "category": "other",
+      "count": 10
+    },
+    {
+      "category": "philosophy",
+      "count": 10
+    },
+    {
+      "category": "physics",
+      "count": 10
+    },
+    {
+      "category": "psychology",
+      "count": 10
+    }
+  ],
+  "domainsSkippedFromLiveCorpus": [],
+  "lawSource": "live HF datasets-server fetch (BP134 Yoke #32 Phase F) -- see law_fallback_source.json",
+  "originSrcEnrichment": {
+    "enrichedAt": "2026-08-14T19:37:48.053Z",
+    "enrichedBy": "scripts/backfill_mmlu_pro_origin_src.mjs (D-BP154-030 amendment 2)",
+    "campaignQuestionIdsEnriched": [
+      1,
+      7,
+      14,
+      20,
+      27,
+      33,
+      40,
+      46,
+      53,
+      59,
+      66,
+      72,
+      79,
+      85,
+      92,
+      98,
+      105,
+      111,
+      118,
+      124
+    ],
+    "fieldAdded": "origin_src (per-row, only on the enriched rows above)",
+    "priorSha256": "f80bd4ca2f65dc69ede56b2fe6fa1bb18b7c533d001c9b70190393bad2dfffeb"
+  }
+}

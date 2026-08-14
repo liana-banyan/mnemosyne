@@ -10,6 +10,9 @@
   "campaignQuestionId": 98,
   "mmluProQuestionId": 5723,
   "category": "other",
+  "categoryTags": [
+    "other"
+  ],
   "src": "ori_mmlu-high_school_geography",
   "mmluProFetch": {
     "dataset": "TIGER-Lab/MMLU-Pro",
@@ -70,6 +73,6 @@
   "answerDerivableFromQuestionTermsAlone": false,
   "derivableNote": "the augmented (9-option) question genuinely has multiple defensible answers from its own terms alone (see singleAnswerPropertySurvived above) -- the unique answer is reachable only via the ORIGIN's own narrower option set (provenance), not from the question and its stated options in isolation.",
   "derivableCitedAt": "LianaBanyanPlatform/BISHOP_DROPZONE/BP154_QID98_RESOLVED_THE_AUGMENTATION_DEFECT.md",
-  "builtAt": "2026-08-14T19:37:44.703Z",
+  "builtAt": "2026-08-14T19:42:41.757Z",
   "builtBy": "scripts/backfill_mmlu_pro_origin_src.mjs (D-BP154-030 amendment 3)"
 }
