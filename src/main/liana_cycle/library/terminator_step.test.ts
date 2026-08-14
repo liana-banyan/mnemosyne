@@ -85,6 +85,10 @@ function discriminator(
   // statement's own span (null when no enumeration was stated at all).
   categoryEnumerationMembers: Array<[string, string]> = [],
   categoryEnumerationSpan: string | null = null,
+  // D-BP154-026/BISHOP-SEG/S26/seg-subregion, ADDITIVE, optional (defaults to none): [letter,
+  // span] pairs the source explicitly states are NOT the category in their own right (only a
+  // subdivision within a larger region).
+  subregionNonMembers: Array<[string, string]> = [],
 ): DiscriminatorResult {
   return {
     ok: true, category: 'world regions', property: null, query: 'q',
@@ -99,6 +103,8 @@ function discriminator(
     categoryEnumerationDiscarded: false,
     categoryEnumerationMembers: categoryEnumerationMembers.map(([letter, span]) => ({ letter, name: OPT[letter], span })),
     discardedCategoryEnumerationMembers: 0,
+    subregionNonMembers: subregionNonMembers.map(([letter, span]) => ({ letter, name: OPT[letter], span })),
+    discardedSubregionNonMembers: 0,
     enumerationDisagreement: null,
     via: 'test',
   };
@@ -330,6 +336,67 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
       const { contradiction } = deriveTerminatorEliminations(OPT, sb, null, disc);
       expect(contradiction).not.toBeNull();
       expect(contradiction?.letter).toBe('C');
+    });
+  });
+
+  // D-BP154-026/BISHOP-SEG/S26/seg-subregion -- THE SECOND AFFIRMATIVE-DENIAL SOURCE. Invented
+  // vocabulary per FD-BP153-06: a source explicitly stating an option is a subdivision WITHIN a
+  // larger region, not the region in its own right, is a legitimate elimination basis -- the exact
+  // same status Softballs' own direct exclusion already has, never an inference from a kind label
+  // or an enumeration's own nesting.
+  describe('SUBREGION-NON-MEMBER FACTS -- D-BP154-026', () => {
+    test('an option the source explicitly states is a subdivision, not the category in its own right, IS eliminated, sourced to Discriminator:1', () => {
+      const disc = discriminator([], null, [], [], null, [['C', 'C) is a subdivision within a larger region, not a region on its own.']]);
+      const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+      expect(eliminated).toHaveLength(1);
+      expect(eliminated[0].letter).toBe('C');
+      expect(eliminated[0].sourceStep).toBe('Discriminator:1');
+      expect(eliminated[0].span).toContain('subdivision within a larger region');
+    });
+
+    test('an option the source never addresses this way is UNSTATED, never eliminated -- absence is omission', () => {
+      const disc = discriminator([], null, [], [], null, [['C', 'C) is a subdivision within a larger region, not a region on its own.']]);
+      const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+      expect(eliminated.some((e) => e.letter === 'A')).toBe(false);
+      const buckets = computeFrameMatchBuckets(OPT, null, disc);
+      expect(buckets.unstated).toContain('A');
+    });
+
+    test('folds into the SAME affirmedNonMember bucket as Softballs -- both answer the identical question via two independent sources', () => {
+      const sb = softballs([['B', 'B) is not a world region at all.']]);
+      const disc = discriminator([], null, [], [], null, [['C', 'C) is a subdivision within a larger region, not a region on its own.']]);
+      const buckets = computeFrameMatchBuckets(OPT, sb, disc);
+      expect(buckets.affirmedNonMember).toEqual(expect.arrayContaining(['B', 'C']));
+    });
+
+    test('CONTRADICTION: a subregion-non-member fact and a stated superlative-property member for the SAME option aborts publication', () => {
+      const disc = discriminator(
+        [], null,
+        [['C', 'C) is explicitly one of the recognized primary clusters.']],
+        [], null,
+        [['C', 'C) is a subdivision within a larger region, not a region on its own.']],
+      );
+      const { contradiction } = deriveTerminatorEliminations(OPT, null, null, disc);
+      expect(contradiction).not.toBeNull();
+      expect(contradiction?.letter).toBe('C');
+    });
+
+    test('CONTRADICTION: a subregion-non-member fact and the enumeration naming the SAME option a member aborts publication', () => {
+      const disc = discriminator(
+        [], null, [],
+        [['C', 'y']], 'The list consists of Alpha and Beta.',
+        [['C', 'C) is a subdivision within a larger region, not a region on its own.']],
+      );
+      const { contradiction } = deriveTerminatorEliminations(OPT, null, null, disc);
+      expect(contradiction).not.toBeNull();
+      expect(contradiction?.letter).toBe('C');
+    });
+
+    test('NO RULE SELECTS A PARTICULAR LETTER: the identical fact eliminates identically regardless of which letter carries it', () => {
+      const discA = discriminator([], null, [], [], null, [['A', 'A) is a subdivision within a larger region, not a region on its own.']]);
+      const discH = discriminator([], null, [], [], null, [['H', 'H) is a subdivision within a larger region, not a region on its own.']]);
+      expect(deriveTerminatorEliminations(OPT, null, null, discA).eliminated.map((e) => e.letter)).toEqual(['A']);
+      expect(deriveTerminatorEliminations(OPT, null, null, discH).eliminated.map((e) => e.letter)).toEqual(['H']);
     });
   });
 
