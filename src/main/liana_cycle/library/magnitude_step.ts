@@ -63,7 +63,7 @@
 // stated direction), never by which letter that reading happens to land on.
 
 import {
-  appearsIn, gemmaExtract, list, toLetters,
+  appearsIn, gemmaExtract, googleBlocks, list, toLetters,
 } from '../methods/comparative_cascade';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 import { registerNameNumbered } from './method_registry';
@@ -223,6 +223,13 @@ export interface MagnitudeResult {
    *  reported, never silently resolved by picking one (this step's own dispatch, verbatim: "never
    *  resolve it by force"). */
   disagreement: { detailA: string; detailB: string } | null;
+  /** D-BP154-043/BISHOP-SEG/S43/seg-unitary, ADDITIVE. Founder's own correction: a magnitude
+   *  tie-break must be grounded in "a single frozen source and year defining boundaries and
+   *  densities for ALL surviving regions... Not model recall." Non-null whenever an attempt was
+   *  made (attemptFrozenDensitySource(), below); `obtained: true` ONLY when one document's own
+   *  text stated a verifiable figure for EVERY frame member -- see that function's own header for
+   *  why a partial/mismatched-source reading is never silently used as if it were unified. */
+  frozenSource?: FrozenDensitySourceResult;
   error?: string;
 }
 
@@ -245,10 +252,123 @@ function summaryLine(OPT: Record<string, string>, r: MagnitudeResult): string {
   const discardNote = r.discarded ? ` -- discarded ${r.discarded} candidate(s) with no verifiable span` : '';
   const provenanceNote = r.answerProvenance ? `  ||  ANSWERED VIA ${r.answerProvenance.mechanism}: ${r.answerProvenance.detail}` : '';
   const corrobNote = r.corroboration ? `  ||  ${summarizeCorroboration(r.corroboration)}` : '';
+  const frozenNote = r.frozenSource
+    ? r.frozenSource.obtained
+      ? `  ||  FROZEN SOURCE: "${r.frozenSource.sourceTitle}" (${r.frozenSource.sourceUrl}) -- covers every survivor -- `
+        + `${r.frozenSource.entries.map((e) => `${e.letter}) ${e.name}: ${e.figureText}`).join('; ')}`
+      : `  ||  FROZEN SOURCE: attempted, NOT obtained -- ${r.frozenSource.error} -- ranking below is NOT from a unified dataset`
+    : '';
   return `MAGNITUDE -- frame: {${r.frame.join(', ')}}  ||  target: ${r.targetExtreme}  ||  `
     + `query: "${r.query}"  ||  ORDER (source-stated, most to least, verified): ${orderText}`
     + `${discardNote}  ||  UNRANKED (source silent -- omission, not an extreme): ${unrankedText}`
-    + `${provenanceNote}${corrobNote}`;
+    + `${provenanceNote}${corrobNote}${frozenNote}`;
+}
+
+// ───────────────── FD-BP154-043: THE FROZEN-SOURCE DENSITY ATTEMPT ─────────────────
+
+export interface FrozenDensityEntry {
+  letter: string;
+  name: string;
+  /** The stated density figure or explicit density phrase, verbatim from the source. */
+  figureText: string;
+  /** Verbatim span proving the source itself stated this figure for this option. */
+  span: string;
+}
+
+export interface FrozenDensitySourceResult {
+  attempted: boolean;
+  /** true ONLY when ONE document's own text yielded a verified figure+span for EVERY frame
+   *  member -- a partial reading (some but not all survivors covered) is never reported as
+   *  `obtained`, per the Founder's own "if you cannot obtain one apples-to-apples dataset covering
+   *  every survivor, say so and report what you could get." */
+  obtained: boolean;
+  sourceUrl: string | null;
+  sourceTitle: string | null;
+  entries: FrozenDensityEntry[];
+  /** true only when every entry's figureText parsed to a comparable number -- an obtained-but-
+   *  non-numeric reading (e.g. only qualitative density language) is reported honestly and never
+   *  used to rank. */
+  numericallyRankable: boolean;
+  error?: string;
+}
+
+/** Extracts a leading numeric magnitude from a density figure's own text (e.g. "150 people per
+ *  km2" -> 150; "about 1,200/km2" -> 1200). Pure text parsing, no unit conversion, no judgment --
+ *  returns null (never a guess) when no number is present. */
+export function parseDensityFigure(figureText: string): number | null {
+  const m = figureText.replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** THE ONE ATTEMPT at a single, frozen, apples-to-apples source. Issues ONE Google query, then
+ *  requires ONE organic result block's OWN body text to state a verifiable figure for EVERY
+ *  option in `frame` before it is accepted -- a document naming only some survivors is skipped in
+ *  favor of the next candidate, never patched together with a second document (that would be
+ *  exactly the "mismatched-source ranking" the Founder's own dispatch forbids using quietly).
+ *  Returns `obtained: false` (never a guess) when no single candidate document covers every
+ *  survivor. */
+export async function attemptFrozenDensitySource(
+  ctx: MethodRunContext,
+  frame: string[],
+  OPT: Record<string, string>,
+  property: string,
+): Promise<FrozenDensitySourceResult> {
+  const query = `Compare the population density (people per square kilometer) of the following, `
+    + `citing a figure for each: ${list(frame, OPT)}`;
+  const res = await googleBlocks(ctx.askGoogle, query);
+  if (!res.ok) {
+    return {
+      attempted: true, obtained: false, sourceUrl: null, sourceTitle: null, entries: [],
+      numericallyRankable: false, error: `Google returned nothing usable (${res.via})`,
+    };
+  }
+  const candidates = res.blocks.filter((b) => b.kind === 'organic' && b.url && b.url.trim() && b.body && b.body.trim());
+  for (const block of candidates) {
+    // The document must at least NAME every survivor before it is worth an extraction pass.
+    if (!frame.every((L) => appearsIn(block.body, OPT[L]))) continue;
+    const instruction = `From the passage, for EACH of the following, copy the exact verbatim `
+      + `sentence or clause stating its population density (a figure, or an explicit density `
+      + `comparison). If the passage does not state a density figure for one of them, omit it -- `
+      + `do not guess. Options: ${frame.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
+    const shape = '{"entries":[{"name":"exact option name from the list","figureText":"the stated density figure or phrase, verbatim","span":"verbatim sentence or clause from the passage"}]}';
+    const rawOut: { text?: string } = {};
+    // eslint-disable-next-line no-await-in-loop -- stops at the first candidate document that
+    // fully covers the frame; not a fan-out worth parallelizing.
+    const ex = await gemmaExtract(instruction, block.body, shape, rawOut);
+    if (ex === null) continue;
+    const rawEntries = Array.isArray((ex as { entries?: unknown }).entries) ? (ex as { entries: unknown[] }).entries : [];
+    const verified: FrozenDensityEntry[] = [];
+    for (const raw of rawEntries as Array<{ name?: unknown; figureText?: unknown; span?: unknown }>) {
+      const name = typeof raw?.name === 'string' ? raw.name.trim() : '';
+      const figureText = typeof raw?.figureText === 'string' ? raw.figureText.trim() : '';
+      const span = typeof raw?.span === 'string' ? raw.span.trim() : '';
+      if (!name || !figureText || !span) continue;
+      const matched = toLetters([name], OPT);
+      if (matched.length === 0) continue;
+      const L = matched[0];
+      if (!frame.includes(L)) continue;
+      if (!spanIsVerbatimInPassage(block.body, span) || !appearsIn(span, OPT[L])) continue;
+      if (verified.some((v) => v.letter === L)) continue;
+      verified.push({ letter: L, name: OPT[L], figureText, span });
+    }
+    const coveredLetters = new Set(verified.map((e) => e.letter));
+    if (frame.every((L) => coveredLetters.has(L))) {
+      const entries = frame.map((L) => verified.find((e) => e.letter === L)!);
+      const numericallyRankable = entries.every((e) => parseDensityFigure(e.figureText) !== null);
+      return {
+        attempted: true, obtained: true, sourceUrl: block.url, sourceTitle: block.title || null,
+        entries, numericallyRankable,
+      };
+    }
+  }
+  return {
+    attempted: true, obtained: false, sourceUrl: null, sourceTitle: null, entries: [],
+    numericallyRankable: false,
+    error: `no single candidate document's own text stated a verifiable ${property.includes('densit') ? '' : 'density '}`
+      + 'figure for every survivor -- could not obtain one apples-to-apples dataset covering every survivor',
+  };
 }
 
 // ───────────────── the live step (frame -> owned evidence -> conversational -> corroboration; needs a real run to verify) ─────────────────
@@ -330,6 +450,36 @@ export async function runMagnitudeStep(
   const namesAnyFrameOption = (t: string) => frame.some((L) => appearsIn(t, optSafe[L]));
   const mcOptions = frame.map((L) => `${L}) ${optSafe[L]}`);
 
+  // STAGE 0, D-BP154-043, NEW: THE FROZEN SOURCE. Tried FIRST, before owned evidence/the
+  // conversational authority -- Founder's own correction: a magnitude ranking must be grounded in
+  // "a single frozen source and year defining boundaries and densities for ALL surviving regions...
+  // Not model recall." Only ever taken as the ranking basis when it covers EVERY frame member with
+  // a verified, numerically-comparable figure from the SAME document; otherwise this is reported
+  // (frozenSource on the result, below) and the pre-existing owned-evidence/conversational/
+  // corroboration pipeline runs exactly as it always has.
+  const frozenSource = await attemptFrozenDensitySource(ctx, frame, optSafe, property);
+  if (frozenSource.obtained && frozenSource.numericallyRankable) {
+    const sorted = [...frozenSource.entries].sort(
+      (a, b) => (parseDensityFigure(b.figureText) ?? 0) - (parseDensityFigure(a.figureText) ?? 0),
+    );
+    const order: MagnitudeOrderEntry[] = sorted.map((e) => ({ letter: e.letter, name: e.name, span: e.span }));
+    const extremeEntry = targetExtreme === 'least' ? order[order.length - 1] : order[0];
+    const corroboration = extremeEntry
+      ? await corroborateClaim(ctx, buildMagnitudeCorroborationQuery(property, extremeEntry, targetExtreme), extremeEntry.name)
+      : undefined;
+    const result: MagnitudeResult = {
+      ok: true, frame, property, targetExtreme, query, frozenSource, order, discarded: 0, unranked: [],
+      via: `frozen-source: "${frozenSource.sourceTitle}" (${frozenSource.sourceUrl})`,
+      answerProvenance: {
+        mechanism: 'DOCUMENT_CORROBORATION',
+        sourceId: `document:${frozenSource.sourceUrl}`,
+        detail: `single frozen source covering every survivor: ${frozenSource.sourceTitle} (${frozenSource.sourceUrl})`,
+      },
+      corroboration, disagreement: null,
+    };
+    return { result, summary: summaryLine(OPT, result) };
+  }
+
   // D-BP154-022 FIX, live-measured this ticket: the FIRST live run against a real, clean, fully-
   // stated ordering ("...the full order from most to least ... is C) ... as the most ..., A) ...
   // as the second most ..., and F) ... as the least ...") returned `order: []` -- the local
@@ -394,7 +544,7 @@ export async function runMagnitudeStep(
   for (let i = 1; i < productiveOwned.length; i++) {
     if (magnitudeOrdersDisagree(productiveOwned[0].extraction.order, productiveOwned[i].extraction.order)) {
       const result = emptyMagnitudeResult({
-        frame, property, targetExtreme, query,
+        frame, property, targetExtreme, query, frozenSource,
         disagreement: { detailA: productiveOwned[0].via, detailB: productiveOwned[i].via },
         error: `the ordering is CONTRADICTED across independent sources (${productiveOwned[0].via} vs `
           + `${productiveOwned[i].via}) -- reported as a disagreement, never resolved by force`,
@@ -428,7 +578,7 @@ export async function runMagnitudeStep(
 
   if (!text) {
     const result = emptyMagnitudeResult({
-      frame, property, targetExtreme, query,
+      frame, property, targetExtreme, query, frozenSource,
       error: `no usable answer from any authority -- owned evidence: ${ownedCandidates.length} candidate(s) tried, none usable; `
         + `conversational authority: ${conversationalError ?? 'not tried'} -- THE MAGNITUDE is UNAVAILABLE, not "no ordering stated"`,
     });
@@ -436,14 +586,14 @@ export async function runMagnitudeStep(
   }
   if (!extraction || extraction.extractionError) {
     const result = emptyMagnitudeResult({
-      frame, property, targetExtreme, query, via,
+      frame, property, targetExtreme, query, frozenSource, via,
       error: `extraction failed -- ${extraction?.extractionError ?? 'the local extraction model failed for an unclassified reason'} -- reported as a FAILURE, never an empty "no ordering stated"`,
     });
     return { result, summary: summaryLine(OPT, result) };
   }
   if (extraction.order.length === 0) {
     const result = emptyMagnitudeResult({
-      frame, property, targetExtreme, query, via, discarded: extraction.discarded,
+      frame, property, targetExtreme, query, frozenSource, via, discarded: extraction.discarded,
       error: `no usable answer from any authority -- the credited passage (${via}) produced zero verified `
         + `ordering entries (${extraction.discarded} candidate(s) discarded for no verifiable span) -- `
         + `THE MAGNITUDE is UNAVAILABLE, not "no ordering stated"`,
@@ -467,7 +617,7 @@ export async function runMagnitudeStep(
   }
 
   const result: MagnitudeResult = {
-    ok: true, frame, property, targetExtreme, query, order: extraction.order, discarded: extraction.discarded,
+    ok: true, frame, property, targetExtreme, query, frozenSource, order: extraction.order, discarded: extraction.discarded,
     unranked, via, answerProvenance: provenance, corroboration, disagreement: null,
   };
   return { result, summary: summaryLine(OPT, result) };
