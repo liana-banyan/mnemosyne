@@ -69,6 +69,11 @@ function humanNuance(excluded: Array<[string, string, string]>): HumanNuanceResu
     originStratum: 'sand', singleAnswerPropertySurvived: null, answerDerivableFromQuestionTermsAlone: null,
     query: 'q',
     excluded: excluded.map(([letter, reason, span]) => ({ letter, name: OPT[letter], reason, span })),
+    // D-BP154-036/BISHOP-SEG/S36/seg-wireit, ADDITIVE: HumanNuanceResult gained three fields
+    // (declared-feature classification, FD-BP154-11) -- this fixture predates that ticket and
+    // builds entries by hand rather than through verifyAndClassifyHumanNuanceKinds(), so it has no
+    // real feature data to report; empty/default values are correct here, not a shortcut.
+    insufficientEvidence: [], consistent: [], featureRuleVersion: 'test',
     discarded: 0, unresolved: [], via: 'test',
   };
 }
