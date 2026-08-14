@@ -178,6 +178,11 @@ export interface TerminatorResult {
    *  elimination-to-one, reported honestly as such, never blended into `eliminated` as if it were
    *  another stated exclusion). Null in every pre-existing unique-survivor verdict. */
   magnitudeBasis: { targetExtreme: 'most' | 'least'; property: string; span: string } | null;
+  /** D-BP154-024/BISHOP-SEG/S24/seg-unstated, ADDITIVE: the three-bucket report (Founder, this
+   *  dispatch, verbatim: "matched-as-member / matched-as-non-member / unmatched (unstated) --
+   *  three outcomes, not two"). Null only in the two early "cannot even attempt this" failure
+   *  returns (no options at all); computed whenever OPT exists, regardless of abstain/verdict. */
+  frameMatchBuckets: TerminatorFrameMatchBuckets | null;
   error?: string;
 }
 
@@ -192,13 +197,23 @@ function summaryLine(OPT: Record<string, string>, r: TerminatorResult): string {
   const elimText = r.eliminated.length
     ? r.eliminated.map((e) => `${e.letter}) ${e.name} [${e.sourceStep}: ${e.reason} -- "${e.span}"]`).join('  |  ')
     : '(none)';
+  // D-BP154-024/BISHOP-SEG/S24/seg-unstated -- reported on EVERY outcome (verdict or abstain), so
+  // a silently-failing matcher shows up as a pile of UNSTATED counts even on a run that still
+  // reaches a verdict via other evidence.
+  const bucketsNote = r.frameMatchBuckets
+    ? `  ||  FRAME MATCH: affirmed-non-member=${r.frameMatchBuckets.affirmedNonMember.length} `
+      + `(${r.frameMatchBuckets.affirmedNonMember.join(', ') || 'none'}), `
+      + `affirmed-member=${r.frameMatchBuckets.affirmedMember.length} `
+      + `(${r.frameMatchBuckets.affirmedMember.join(', ') || 'none'}), `
+      + `unstated=${r.frameMatchBuckets.unstated.length} (${r.frameMatchBuckets.unstated.join(', ') || 'none'})`
+    : '';
   if (r.abstain) {
-    return `TERMINATOR -- ABSTAIN: ${r.abstainReason}  ||  ELIMINATED: ${elimText}  ||  SURVIVORS: ${r.survivors.join(', ') || '(none)'}`;
+    return `TERMINATOR -- ABSTAIN: ${r.abstainReason}  ||  ELIMINATED: ${elimText}  ||  SURVIVORS: ${r.survivors.join(', ') || '(none)'}${bucketsNote}`;
   }
   const magnitudeNote = r.magnitudeBasis
     ? `  ||  MAGNITUDE BASIS: target=${r.magnitudeBasis.targetExtreme} of "${r.magnitudeBasis.property}" -- "${r.magnitudeBasis.span}"`
     : '';
-  return `TERMINATOR -- VERDICT ${r.verdict}) ${r.verdictName}  ||  ELIMINATED: ${elimText}${magnitudeNote}`;
+  return `TERMINATOR -- VERDICT ${r.verdict}) ${r.verdictName}  ||  ELIMINATED: ${elimText}${magnitudeNote}${bucketsNote}`;
 }
 
 /** THE ONE PLACE the three feeder steps' results become eliminations. Pure, synchronous, no I/O --
@@ -230,19 +245,20 @@ export function deriveTerminatorEliminations(
       });
     }
   }
-  if (discriminator?.ok && discriminator.categoryKind) {
-    for (const k of discriminator.kinds) {
-      // D-BP154-020: discriminatorKindMatchesCategory (this file, above) replaces a naive
-      // whole-string identity check -- see that function's own header for why exact identity
-      // alone wrongly eliminated every option against a compound category-kind list.
-      if (discriminatorKindMatchesCategory(k.kind, discriminator.categoryKind.kind)) continue; // matches the category's own stated kind (or one of its stated list items) -- not an elimination
-      eliminated.push({
-        letter: k.letter, name: k.name, sourceStep: 'Discriminator:1',
-        reason: `source states this is "${k.kind}", a different stated kind from "${discriminator.categoryKind.kind}"`,
-        span: k.span,
-      });
-    }
-  }
+  // D-BP154-024/BISHOP-SEG/S24/seg-unstated FIX -- REMOVED, not weakened: kind-mismatch NO
+  // LONGER eliminates anyone. See this file's own header for the full history (FOUR live
+  // instances of the same class of defect: `ca92a439`, `d219bf2a`, `44499f3b`, and this one --
+  // qid 98's own A eliminated for stating its kind as the compound "Continent / Macro-geographical
+  // region" against a category-kind list containing "Continent" -- a phrasing difference, not a
+  // denial, and A is GENUINELY a member of the very enumeration the SAME run obtained). THE LAW:
+  // a kind that does not structurally match the category-kind list is UNSTATED, not DENIED --
+  // this comparison is an INFERENCE from two separately-extracted facts, never something the
+  // source directly said ("X is not the category"), and four straight defects proved that
+  // inference is not reliable enough to eliminate on. discriminatorKindMatchesCategory() (this
+  // file, above) is KEPT and still called -- by computeFrameMatchBuckets() below, for REPORTING
+  // ("affirmedMember" visibility) only, never to eliminate. The genuine, affirmative "not the
+  // category" fact remains exactly where it always correctly lived: Softballs' own direct
+  // statement, above -- untouched by this fix.
   // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap, ADDITIVE. FD-BP153-07 point 3 is about the
   // SUPERLATIVE PROPERTY, not only the bare category (Founder's own correction, D-BP154-021
   // dispatch) -- discriminator.propertyMembers (discriminator_step.ts, ADDITIVE this same
@@ -263,34 +279,26 @@ export function deriveTerminatorEliminations(
       });
     }
   }
-  // D-BP154-023/BISHOP-SEG/S23/seg-enumerate, ADDITIVE. FD-BP154-06, Founder ruling verbatim:
-  // "the narrow reading is obtainable from a source we can cite... So: ask the source to STATE
-  // WHAT THE CATEGORY ENUMERATES, and test each option against that stated enumeration. An
-  // option the source's own enumeration does not contain is not a member of the frame."
-  // GATED ON `categoryEnumerationMembers.length > 0` -- the MINIMUM, MECHANICAL proof the
-  // enumeration genuinely engaged THIS option set (see discriminator_step.ts's own
-  // DiscriminatorResult.categoryEnumerationMembers doc comment for why an empty list here is
-  // never trusted to eliminate everyone -- a real risk if the source enumerated in different-
-  // granularity words that verbatim-matched none of our options at all). When gated open, EVERY
-  // option not named in the enumeration is excluded -- this is the whole authorization: an
-  // ENUMERATION (unlike a partial discussion) is presented as exhaustive by its own nature, so
-  // absence FROM a genuine enumeration is read as exclusion, not merely omission (a
-  // deliberately different reading from every OTHER absence rule in this estate, licensed only
-  // by this specific ruling, only for this specific extraction shape).
+  // D-BP154-024/BISHOP-SEG/S24/seg-unstated FIX to D-BP154-023's own D-BP154-023 build,
+  // REMOVED, not weakened: absence FROM the category's own enumeration NO LONGER eliminates
+  // anyone. LIVE-MEASURED the very next dispatch after D-BP154-023 landed: qid 98's own A (South
+  // America) IS genuinely named in the UN-geoscheme enumeration a real run obtained ("Americas:
+  // ...South America..."), but the LOCAL EXTRACTION MODEL failed to produce a verified span for
+  // it (one candidate discarded), so `categoryEnumerationMembers` came back without A -- and the
+  // absence-elimination rule below (as originally built) read that EXTRACTION FAILURE as "the
+  // enumeration excludes A" and eliminated it. THE LAW, restated for this mechanism exactly as
+  // for the kind-mismatch fix above: our own matcher failing to verify a member is UNSTATED, not
+  // a stated exclusion -- "never because our matcher failed to find it" (Founder, this dispatch,
+  // verbatim). A genuine enumeration being "exhaustive by its own nature" does not change this:
+  // exhaustiveness is a property of what the SOURCE said, not of what OUR extraction succeeded in
+  // copying from it. `discriminator.categoryEnumerationMembers` is KEPT and still computed --
+  // used by computeFrameMatchBuckets() below for REPORTING ("affirmedMember" visibility, and the
+  // contradiction check immediately below, which only ever reads genuine POSITIVE membership,
+  // never absence) -- never to eliminate.
   const enumeratedByDiscriminator = new Map<string, { name: string; span: string }>();
-  if (discriminator?.ok && discriminator.categoryEnumeration && discriminator.categoryEnumerationMembers.length > 0) {
-    const enumerationSpan = discriminator.categoryEnumeration.span;
-    const enumeratedLetters = new Set(discriminator.categoryEnumerationMembers.map((e) => e.letter));
+  if (discriminator?.ok) {
     for (const e of discriminator.categoryEnumerationMembers) {
       enumeratedByDiscriminator.set(e.letter, { name: e.name, span: e.span });
-    }
-    for (const L of Object.keys(OPT)) {
-      if (enumeratedLetters.has(L)) continue; // named as a member -- not an elimination
-      eliminated.push({
-        letter: L, name: OPT[L], sourceStep: 'Discriminator:1',
-        reason: `source enumerates "${discriminator.category}" as a stated, exhaustive list and this option is not named in it`,
-        span: enumerationSpan,
-      });
     }
   }
   let contradiction: TerminatorContradiction | null = null;
@@ -332,6 +340,66 @@ export function deriveTerminatorEliminations(
   return { eliminated, contradiction };
 }
 
+export interface TerminatorFrameMatchBuckets {
+  /** Options a source AFFIRMATIVELY states are NOT the category -- today, only Softballs' own
+   *  direct "not the category" statement (a real denial, never an inference from a structural
+   *  mismatch). This is the ONLY bucket THE FRAME's own eliminations (above) may draw on. */
+  affirmedNonMember: string[];
+  /** Options AFFIRMATIVELY confirmed a member of the bare CATEGORY -- Discriminator's own kind
+   *  structurally matching the category-kind list, or verified as a named member of the
+   *  category's own stated enumeration. (Superlative-PROPERTY membership -- NamedSet's/
+   *  Discriminator's own `included`/`propertyMembers` -- is a DIFFERENT question with its own,
+   *  unaffected elimination rule; it is not folded in here.) */
+  affirmedMember: string[];
+  /** D-BP154-024/BISHOP-SEG/S24/seg-unstated, THE WHOLE POINT OF THIS FIX: every option in
+   *  neither bucket above -- a kind was stated but did not structurally match the category-kind
+   *  list, OR a productive enumeration exists but never verified this option as a member, OR
+   *  nothing was ever stated about this option at all. NEVER eliminated on this basis alone;
+   *  these options SURVIVE into the frame exactly as if nothing had been asked (Founder, this
+   *  dispatch, verbatim: "A failed match is UNSTATED, and an UNSTATED option survives... It does
+   *  not get eliminated"). Reported explicitly so a silently-failing matcher shows up as a pile
+   *  of UNSTATED counts, not as confident (and wrong) eliminations. */
+  unstated: string[];
+}
+
+/** D-BP154-024/BISHOP-SEG/S24/seg-unstated. THE THREE-BUCKET REPORT (Founder, this dispatch,
+ *  verbatim: "matched-as-member / matched-as-non-member / unmatched (unstated) -- three
+ *  outcomes, not two"). Pure, synchronous, same testability discipline as
+ *  deriveTerminatorEliminations() above -- deliberately a SEPARATE function (not folded into
+ *  that one) so a caller can report the buckets even when `eliminated` ends up empty for other
+ *  reasons, and so the REPORTING logic is visibly decoupled from the ELIMINATION logic (the
+ *  actual bug this ticket fixes was exactly that coupling: a "no match" being routed straight
+ *  into `eliminated` instead of into a named, honest third bucket). */
+export function computeFrameMatchBuckets(
+  OPT: Record<string, string>,
+  softballs: SoftballsResult | null,
+  discriminator: DiscriminatorResult | null,
+): TerminatorFrameMatchBuckets {
+  const affirmedNonMember = new Set<string>();
+  if (softballs?.ok) {
+    for (const e of softballs.excluded) affirmedNonMember.add(e.letter);
+  }
+  const affirmedMember = new Set<string>();
+  if (discriminator?.ok && discriminator.categoryKind) {
+    for (const k of discriminator.kinds) {
+      if (discriminatorKindMatchesCategory(k.kind, discriminator.categoryKind.kind)) affirmedMember.add(k.letter);
+    }
+  }
+  if (discriminator?.ok) {
+    for (const e of discriminator.categoryEnumerationMembers) affirmedMember.add(e.letter);
+  }
+  // A genuine affirmative denial (Softballs) always outranks a structural-match "member" reading
+  // -- defensive only; terminator_step.ts's own contradiction check above already refuses to
+  // publish when the two genuinely disagree, so this should never matter in practice.
+  for (const L of affirmedNonMember) affirmedMember.delete(L);
+  const unstated: string[] = [];
+  for (const L of Object.keys(OPT)) {
+    if (affirmedNonMember.has(L) || affirmedMember.has(L)) continue;
+    unstated.push(L);
+  }
+  return { affirmedNonMember: [...affirmedNonMember], affirmedMember: [...affirmedMember], unstated };
+}
+
 export async function runTerminatorStep(
   input: MethodQuestionInput,
   _ctx: MethodRunContext,
@@ -346,6 +414,7 @@ export async function runTerminatorStep(
       ok: false, stepsConsulted: emptyStepsConsulted, eliminated: [], survivors: [],
       contradiction: null, verdict: null, verdictName: null, abstain: true,
       abstainReason: 'this question has no lettered options', basisStepClasses: [], magnitudeBasis: null,
+      frameMatchBuckets: null,
       error: 'THE TERMINATOR needs lettered options -- cannot run without them',
     };
     return { result, summary: summaryLine({}, result) };
@@ -371,13 +440,19 @@ export async function runTerminatorStep(
     namedSetRaw?.ok ? namedSetRaw : null,
     discriminatorRaw?.ok ? discriminatorRaw : null,
   );
+  // D-BP154-024/BISHOP-SEG/S24/seg-unstated, ADDITIVE: computed ONCE, threaded into every
+  // TerminatorResult return below regardless of outcome (abstain, verdict, or contradiction) --
+  // see computeFrameMatchBuckets()'s own header for why this is a report, never a gate.
+  const frameMatchBuckets = computeFrameMatchBuckets(
+    OPT, softballsRaw?.ok ? softballsRaw : null, discriminatorRaw?.ok ? discriminatorRaw : null,
+  );
 
   if (contradiction) {
     const result: TerminatorResult = {
       ok: true, stepsConsulted, eliminated, survivors: [], contradiction, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `CONTRADICTION: ${contradiction.reason}`,
-      basisStepClasses: [], magnitudeBasis: null,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -396,7 +471,7 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: 'every option was eliminated -- at least one contributing step\'s basis must be wrong; not published',
-      basisStepClasses: [], magnitudeBasis: null,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -431,6 +506,7 @@ export async function runTerminatorStep(
         verdict: extremeEntry.letter, verdictName: OPT[extremeEntry.letter], abstain: false, abstainReason: null,
         basisStepClasses: [...basisStepClasses, magnitudeClass],
         magnitudeBasis: { targetExtreme: magnitudeRaw.targetExtreme, property: magnitudeRaw.property, span: extremeEntry.span },
+        frameMatchBuckets,
       };
       return { result, summary: summaryLine(OPT, result) };
     }
@@ -449,7 +525,7 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `more than one survivor left (${survivors.join(', ')}) -- no stated distinction separated them further. Steps consulted: ${consultedNote}${magnitudeNote}`,
-      basisStepClasses: [], magnitudeBasis: null,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -458,7 +534,7 @@ export async function runTerminatorStep(
   const result: TerminatorResult = {
     ok: true, stepsConsulted, eliminated, survivors, contradiction: null,
     verdict, verdictName: OPT[verdict], abstain: false, abstainReason: null, basisStepClasses,
-    magnitudeBasis: null,
+    magnitudeBasis: null, frameMatchBuckets,
   };
   return { result, summary: summaryLine(OPT, result) };
 }

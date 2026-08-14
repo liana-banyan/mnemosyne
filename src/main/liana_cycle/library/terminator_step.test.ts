@@ -11,7 +11,9 @@
 // './terminator_step'".
 
 import { describe, test, expect } from 'vitest';
-import { deriveTerminatorEliminations, registerTerminatorStep, runTerminatorStep } from './terminator_step';
+import {
+  computeFrameMatchBuckets, deriveTerminatorEliminations, registerTerminatorStep, runTerminatorStep,
+} from './terminator_step';
 import { listComposerRegistry } from './script_bridge';
 import type { SoftballsResult } from './softballs_step';
 import type { NamedSetResult } from './named_set_step';
@@ -134,7 +136,15 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
     expect(contradiction).toBeNull();
   });
 
-  test('Discriminator eliminates an option whose stated kind differs from the category-denoting kind (FD-BP153-06 passing example)', () => {
+  // D-BP154-024/BISHOP-SEG/S24/seg-unstated FIX -- THE LAW REVERSED, verbatim: "An option may
+  // only be eliminated from the frame when the source's enumeration AFFIRMATIVELY places it
+  // outside -- never because our matcher failed to find it. A failed match is UNSTATED, and an
+  // UNSTATED option survives." This is FOUR STRAIGHT live defects of this exact shape
+  // (ca92a439, d219bf2a, 44499f3b, and qid 98's own A dropped for stating its kind as a compound
+  // phrase) -- so the rule below is now uniform: EVEN a kind that looks unambiguously different
+  // ("a rainforest biome" vs "a continent-scale geographic region") is UNSTATED, not denied, via
+  // this mechanism -- the only genuine denial in this estate is Softballs' own direct statement.
+  test('Discriminator does NOT eliminate on a kind mismatch, however clean-looking -- UNSTATED, not denied (this is the D-BP154-024 fix, reversing the pre-fix behavior)', () => {
     const disc = discriminator(
       [
         ['A', 'a continent-scale geographic region', 'A) South America is a continent-scale geographic region.'],
@@ -143,26 +153,31 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
       { kind: 'a continent-scale geographic region', span: 'the classification that denotes world regions is a continent-scale geographic region' },
     );
     const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
-    expect(eliminated).toHaveLength(1);
-    expect(eliminated[0].letter).toBe('H');
-    expect(eliminated[0].sourceStep).toBe('Discriminator:1');
+    expect(eliminated).toHaveLength(0);
+    const buckets = computeFrameMatchBuckets(OPT, null, disc);
+    expect(buckets.affirmedMember).toContain('A'); // matches the category-kind list -- reported, not gating
+    expect(buckets.unstated).toContain('H'); // mismatched -- UNSTATED, survives, never eliminated
+    expect(buckets.affirmedNonMember).toEqual([]); // no source ever directly denied anything here
   });
 
-  test('Discriminator does NOT eliminate an option whose stated kind MATCHES the category-denoting kind', () => {
+  test('Discriminator never eliminates on kind alone -- matching or not, reported via computeFrameMatchBuckets(), never via eliminated[]', () => {
     const disc = discriminator(
       [['A', 'a continent-scale geographic region', 'A) South America is a continent-scale geographic region.']],
       { kind: 'a continent-scale geographic region', span: 'x' },
     );
     const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
     expect(eliminated).toHaveLength(0);
+    expect(computeFrameMatchBuckets(OPT, null, disc).affirmedMember).toContain('A');
   });
 
-  // D-BP154-020/BISHOP-SEG/S20/seg-discriminator2 -- THE VOCABULARY MISMATCH FIX. Deliberately
-  // uses invented, qid-98-UNRELATED words ("Alpha Grade"/"Beta Grade"/"Gamma Type") so this
-  // asserts the MECHANISM (list-split + parenthetical-strip + singular/plural fold), never
-  // anything tuned to this specific question's real vocabulary (FD-BP153-06's own "would this
-  // rule survive on a question whose answer we do not know" bar).
-  test('Discriminator does NOT eliminate an option whose singular kind is ONE ITEM of a compound (list) category-denoting kind', () => {
+  // D-BP154-020/BISHOP-SEG/S20/seg-discriminator2 -- THE VOCABULARY MISMATCH FIX (list-split +
+  // parenthetical-strip + singular/plural fold), still the right STRUCTURAL matching shape for
+  // computeFrameMatchBuckets()'s own "affirmedMember" reporting -- D-BP154-024 only changed what
+  // a NON-match does (UNSTATED, survives, instead of eliminated). Deliberately invented,
+  // qid-98-UNRELATED words ("Alpha Grade"/"Beta Grade"/"Gamma Type") -- proves the mechanism,
+  // never tuned to this question's real vocabulary (FD-BP153-06's own "would this rule survive
+  // on a question whose answer we do not know" bar).
+  test('a singular kind that IS one item of a compound (list) category-denoting kind reports as affirmedMember; one that is not reports as unstated, never eliminated', () => {
     const disc = discriminator(
       [
         ['A', 'Alpha Grade (a top-tier classification)', 'A) is Alpha Grade (a top-tier classification).'],
@@ -175,23 +190,23 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
       },
     );
     const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
-    const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
-    // A and B each match ONE item of the compound list (after singular/plural fold + parenthetical
-    // strip) -- neither is eliminated. C matches neither list item -- it IS eliminated. Before this
-    // fix, byte-identity against the WHOLE compound string would have wrongly eliminated all three.
-    expect(eliminatedLetters.has('A')).toBe(false);
-    expect(eliminatedLetters.has('B')).toBe(false);
-    expect(eliminatedLetters.has('C')).toBe(true);
+    // D-BP154-024: NOTHING is eliminated via kind matching anymore, matched or not.
+    expect(eliminated).toHaveLength(0);
+    const buckets = computeFrameMatchBuckets(OPT, null, disc);
+    expect(buckets.affirmedMember).toEqual(expect.arrayContaining(['A', 'B']));
+    expect(buckets.unstated).toContain('C'); // matches neither list item -- UNSTATED, not eliminated
   });
 
   // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap FIX -- LIVE-MEASURED bug in D-BP154-020's own
   // stripParenthetical() (end-anchored only): a categoryKind with a parenthetical in the MIDDLE
   // of the string (not just at the end) had its own internal commas/"and" mis-read as additional
-  // top-level list separators, corrupting the split and wrongly eliminating options that genuinely
-  // matched. Invented vocabulary, structurally identical to the real qid 98 shape that exposed it
-  // ("Geopolitical Macro-Regions (such as South Asia, North Africa, and Central Asia) and
-  // Continents (such as Europe and South America)") but with none of its real words.
-  test('a categoryKind with a MIDDLE (non-trailing) parenthetical containing its own commas/"and" still splits correctly', () => {
+  // top-level list separators, corrupting the split. Still exercised here (via
+  // computeFrameMatchBuckets()'s own reporting, since D-BP154-024 removed the elimination path
+  // entirely) to prove the STRUCTURAL matcher itself stays correct. Invented vocabulary,
+  // structurally identical to the real qid 98 shape that exposed it ("Geopolitical
+  // Macro-Regions (such as South Asia, North Africa, and Central Asia) and Continents (such as
+  // Europe and South America)") but with none of its real words.
+  test('a categoryKind with a MIDDLE (non-trailing) parenthetical containing its own commas/"and" still splits correctly (reported, never eliminates)', () => {
     const disc = discriminator(
       [
         ['A', 'Alpha Grade', 'A) is Alpha Grade.'],
@@ -204,23 +219,39 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
       },
     );
     const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
-    const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
+    expect(eliminated).toHaveLength(0);
+    const buckets = computeFrameMatchBuckets(OPT, null, disc);
     // A ("Alpha Grade") and B ("Beta Grade") each match one of the two REAL list items -- the
-    // parenthetical examples inside each item must NOT be read as extra list separators. Before
-    // this fix, A and B were wrongly eliminated (the exact live defect).
-    expect(eliminatedLetters.has('A')).toBe(false);
-    expect(eliminatedLetters.has('B')).toBe(false);
-    expect(eliminatedLetters.has('C')).toBe(true);
+    // parenthetical examples inside each item must NOT be read as extra list separators.
+    expect(buckets.affirmedMember).toEqual(expect.arrayContaining(['A', 'B']));
+    expect(buckets.unstated).toContain('C');
   });
 
-  test('Discriminator STILL eliminates when the stated kind genuinely matches NEITHER the whole category string NOR any of its list items', () => {
+  // D-BP154-024/BISHOP-SEG/S24/seg-unstated -- THE EXACT LIVE DEFECT SHAPE, invented vocabulary.
+  // qid 98's own A (South America) was eliminated for stating its kind as the COMPOUND phrase
+  // "Continent / Macro-geographical region" against a category-kind list containing the bare
+  // "Continent" -- a phrasing difference (compound vs simple), not a denial. Reproduced here with
+  // wholly invented words to prove the fix is structural, not tuned to qid 98's real vocabulary.
+  test('a COMPOUND per-option kind ("X / Y" shape) that does not exact-match a single list item is UNSTATED, never eliminated -- the exact live defect this ticket fixes', () => {
+    const disc = discriminator(
+      [['A', 'Alpha Grade / Zeta Classification', 'A) is Alpha Grade / Zeta Classification.']],
+      { kind: 'Alpha Grades and Beta Grades', span: 'x' },
+    );
+    const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
+    expect(eliminated).toHaveLength(0);
+    const buckets = computeFrameMatchBuckets(OPT, null, disc);
+    expect(buckets.unstated).toContain('A');
+    expect(buckets.affirmedNonMember).toEqual([]);
+  });
+
+  test('a kind that genuinely matches NEITHER the whole category string NOR any of its list items is UNSTATED, never eliminated (post D-BP154-024)', () => {
     const disc = discriminator(
       [['A', 'Delta Class (an entirely different classification)', 'A) is Delta Class.']],
       { kind: 'Alpha Grades and Beta Grades', span: 'x' },
     );
     const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
-    expect(eliminated).toHaveLength(1);
-    expect(eliminated[0].letter).toBe('A');
+    expect(eliminated).toHaveLength(0);
+    expect(computeFrameMatchBuckets(OPT, null, disc).unstated).toContain('A');
   });
 
   // D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap -- FD-BP153-07 point 3 is about the SUPERLATIVE
@@ -252,25 +283,29 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
   // generalizes, per FD-BP153-06's own "would this rule survive on a question whose answer we do
   // not know" bar.
   describe('THE CATEGORY ENUMERATION -- FD-BP154-06', () => {
-    test('an option NOT named by a productive enumeration is eliminated, sourced to the enumeration span', () => {
+    // D-BP154-024/BISHOP-SEG/S24/seg-unstated FIX -- THE LAW REVERSED, verbatim: "the source's
+    // own enumeration does not contain [it]" used to eliminate; now it means UNSTATED, survives.
+    // LIVE-MEASURED the very next dispatch after D-BP154-023 landed: qid 98's own A (South
+    // America) genuinely IS named in a real enumeration a live run obtained, but the LOCAL
+    // EXTRACTION failed to produce a verified span for it -- and the pre-fix rule below read
+    // that EXTRACTION FAILURE as "the enumeration excludes A". Reproduced here with invented
+    // vocabulary: an option absent from `categoryEnumerationMembers` is no longer eliminated,
+    // full stop -- it is reported as `unstated` by computeFrameMatchBuckets() instead.
+    test('an option NOT named by a productive enumeration is UNSTATED, never eliminated -- this is the D-BP154-024 fix', () => {
       const disc = discriminator(
         [], null, [],
         [['A', 'x'], ['C', 'y'], ['F', 'z']],
         'The Alpha Federation consists of exactly three member states: South America, North Africa, and Central Asia.',
       );
       const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
-      const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
-      // A, C, F are named -- not eliminated. Every OTHER option (B, D, E, G, H, I) is eliminated,
-      // sourced to Discriminator:1 with the enumeration's own span as evidence.
-      expect(eliminatedLetters.has('A')).toBe(false);
-      expect(eliminatedLetters.has('C')).toBe(false);
-      expect(eliminatedLetters.has('F')).toBe(false);
+      // D-BP154-024: NOTHING is eliminated via enumeration-absence anymore -- not even the six
+      // options this same enumeration never named.
+      expect(eliminated).toHaveLength(0);
+      const buckets = computeFrameMatchBuckets(OPT, null, disc);
+      expect(buckets.affirmedMember).toEqual(expect.arrayContaining(['A', 'C', 'F']));
       for (const L of ['B', 'D', 'E', 'G', 'H', 'I']) {
-        expect(eliminatedLetters.has(L), `${L} should be eliminated (not named by the enumeration)`).toBe(true);
+        expect(buckets.unstated, `${L} should be UNSTATED (not named by the enumeration), never eliminated`).toContain(L);
       }
-      const bElim = eliminated.find((e) => e.letter === 'B');
-      expect(bElim?.sourceStep).toBe('Discriminator:1');
-      expect(bElim?.span).toContain('The Alpha Federation consists of');
     });
 
     test('NO enumeration stated at all -> zero eliminations via this mechanism -- absence is omission, not denial', () => {

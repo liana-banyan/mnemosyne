@@ -670,19 +670,32 @@ export async function runDiscriminatorStep(
     ? all.find((L) => !enumeratedLetters.has(L))
     : undefined;
   let corroboration: CorroborationResult | undefined;
+  // D-BP154-024/BISHOP-SEG/S24/seg-unstated FIX: the zoology-text false positive (Gutenberg
+  // "Geographical Distribution of Animals" accepted as corroborating a world-regions enumeration
+  // claim, purely for containing the substring "South America") happened on THIS branch --
+  // `mustAppear` was a bare option name with no bearing on subject matter. `alsoMustAppear:
+  // category` is a second, independent, mechanical (not similarity-scored) substring check: the
+  // extracted span must ALSO contain the category string itself, or the candidate is rejected.
+  // Also note (D-BP154-024): `firstEnumerationExcluded` no longer drives any Terminator
+  // elimination -- deriveTerminatorEliminations() treats enumeration-absence as UNSTATED, never
+  // DENIED (see terminator_step.ts). This corroboration call is retained as additive evidence
+  // toward the "is this option a stated non-member" question ONLY; it is never wired to eliminate.
   if (firstEnumerationExcluded) {
     corroboration = await corroborateClaim(
       ctx,
       buildDiscriminatorEnumerationCorroborationQuery(category, optSafe[firstEnumerationExcluded]),
       optSafe[firstEnumerationExcluded],
+      category,
     );
   } else if (categoryKind) {
     corroboration = await corroborateClaim(
       ctx, buildDiscriminatorCategoryKindCorroborationQuery(category, categoryKind), categoryKind.kind,
+      category,
     );
   } else if (kinds.length) {
     corroboration = await corroborateClaim(
       ctx, buildDiscriminatorKindCorroborationQuery(kinds[0]), kinds[0].name,
+      category,
     );
   }
 
