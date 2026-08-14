@@ -112,6 +112,26 @@ export function buildSoftballsCorroborationQuery(category: string, entry: Exclud
  *  untyped on purpose, nothing here has verified a single field of it yet. */
 type RawExcludedEntry = { name?: unknown; span?: unknown };
 
+/** D-BP154-015, ADDITIVE: gemma4:12b's `name` field for an excluded entry sometimes carries the
+ *  passage's OWN "L) text" formatting (list()/buildSoftballsQuery() already prefix every option
+ *  with its letter before the passage is ever built, and the passage this step reads restates
+ *  that same "D) Northeast United States is..." shape) -- MEASURED live, qid 98 Softballs, this
+ *  ticket: gemmaExtract() returned `{"name":"D) Northeast United States","span":"D) Northeast
+ *  United States is a subnational region..."}`x4, extraction and span both CORRECT, but
+ *  toLetters()'s exact-match discipline (HARDWIRE-22, "similarity is not identity") correctly
+ *  refused norm("D) Northeast United States") = "d northeast united states" against
+ *  norm(OPT.D) = "northeast united states" -- not the same string, so all four verified,
+ *  correctly-spanned extractions fell out silently as "names no known option". This strips ONLY
+ *  a leading "<single letter>) " token before the match is attempted a second time -- undoing
+ *  formatting the PASSAGE (built by this file's own list()-derived buildSoftballsQuery()) put
+ *  there, not inventing a new equivalence. The match itself is still exact string identity on
+ *  the option's bare text; no letter is special-cased (FD-BP153-06) -- the pattern is generic
+ *  over every letter A-Z, and a name that does not carry the prefix is tried unchanged, same as
+ *  before this ticket. */
+function stripListLetterPrefix(name: string): string {
+  return name.replace(/^[A-Za-z]\)\s*/, '');
+}
+
 /** THE VERIFY-THE-SPAN CHOKE POINT for this step (FD-BP153-07 FIX 2, mirrored locally -- see
  *  this file's header for why classify_cascade.ts's own extractSpannedLetters() is not
  *  imported). Accepts a raw extraction entry as an excluded option ONLY when ALL of: (a) a
@@ -120,10 +140,10 @@ type RawExcludedEntry = { name?: unknown; span?: unknown };
  *  span itself is actually ABOUT the named option (appearsIn(span, OPT[L]) -- presence of the
  *  option's words in the PASSAGE is not enough, the SPAN itself must name it). Every failure of
  *  (b)/(c)/(d) is a DISCARD and is counted, never silently dropped. A `name` that maps to no
- *  known option letter (toLetters()'s own exact-match discipline, HARDWIRE-22: similarity is not
- *  identity) is simply not a match -- nothing here was ever a candidate value, so it is not
- *  counted as a discard either, the same convention classify_cascade.ts's own
- *  extractSpannedLetters() documents. */
+ *  known option letter, even after stripListLetterPrefix() (D-BP154-015) is tried
+ *  (toLetters()'s own exact-match discipline, HARDWIRE-22: similarity is not identity) is simply
+ *  not a match -- nothing here was ever a candidate value, so it is not counted as a discard
+ *  either, the same convention classify_cascade.ts's own extractSpannedLetters() documents. */
 export function verifyExcludedEntries(
   raw: unknown,
   passage: string,
@@ -137,7 +157,13 @@ export function verifyExcludedEntries(
     const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
     if (!name) continue; // nothing named -- not a candidate value, not a discard
-    const matched = toLetters([name], OPT);
+    let matched = toLetters([name], OPT);
+    if (matched.length === 0) {
+      // D-BP154-015: try again with a leading "L) " token (the passage's own list() formatting,
+      // which the model sometimes echoes back into `name`) stripped off.
+      const stripped = stripListLetterPrefix(name);
+      if (stripped !== name) matched = toLetters([stripped], OPT);
+    }
     if (matched.length === 0) continue; // names no known option -- not a candidate value here
     const L = matched[0];
     if (!span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {
