@@ -540,6 +540,59 @@ describe('runTerminatorStep -- UNIQUE OR ABSTAIN end to end over the pure reduce
     expect(result.stepsConsulted['Softballs:1']).toBe('not run');
     expect(result.stepsConsulted['NamedSet:1']).toBe('not run');
     expect(result.stepsConsulted['Discriminator:1']).toBe('not run');
+    // D-BP154-028/BISHOP-SEG/S28/seg-survivable: 'not run' is NOT incomplete -- a step the operator
+    // never stacked was never expected to run.
+    expect(result.incomplete).toBe(false);
+  });
+
+  // D-BP154-028/BISHOP-SEG/S28/seg-survivable. Founder's own rule, this dispatch: "A step that
+  // failed must never be indistinguishable from a step that ran and found nothing... an ABSTAIN
+  // from an incomplete run is a different animal from an ABSTAIN with all steps green, and today
+  // they look identical." These tests prove the two are now distinguishable, structurally
+  // (`incomplete`) and in the human-readable basis text (`summary`).
+  describe('incomplete run detection -- a FAILED step is distinguishable from a clean one', () => {
+    const failedSoftballs: SoftballsResult = {
+      ok: false, category: null, query: null, excluded: [], discarded: 0, notExcluded: Object.keys(OPT),
+      via: 'n/a', error: 'authority timed out',
+    };
+
+    test('a genuinely FAILED (ok:false) feeder step marks the run incomplete, on an ABSTAIN', async () => {
+      const failedOutcome = { id: 'Softballs:1', summary: 's', raw: failedSoftballs };
+      const { result, summary } = await runTerminatorStep(input, ctx, [failedOutcome]);
+      expect(result.abstain).toBe(true);
+      expect(result.stepsConsulted['Softballs:1']).toBe('failed');
+      expect(result.incomplete).toBe(true);
+      expect(summary).toContain('RUN INCOMPLETE');
+      expect(summary).toContain('Softballs:1');
+    });
+
+    test('a genuinely FAILED (ok:false) feeder step marks the run incomplete even on a VERDICT', async () => {
+      // NamedSet alone leaves exactly one survivor (A) -- a real verdict is reached even though
+      // Softballs (which never contributed an elimination here) failed outright.
+      const failedOutcome = { id: 'Softballs:1', summary: 's', raw: failedSoftballs };
+      const namedSetOutcome = {
+        id: 'NamedSet:1', summary: 's',
+        raw: namedSet(Object.keys(OPT).filter((L) => L !== 'A').map((L) => [L, `${L}) is densely populated.`] as [string, string])),
+      };
+      const { result, summary } = await runTerminatorStep(input, ctx, [failedOutcome, namedSetOutcome]);
+      expect(result.abstain).toBe(false);
+      expect(result.verdict).toBe('A');
+      expect(result.incomplete).toBe(true);
+      expect(summary).toContain('VERDICT');
+      expect(summary).toContain('RUN INCOMPLETE');
+    });
+
+    test('every consulted step green -> incomplete is false, and the summary says so plainly', async () => {
+      const softballsOutcome = { id: 'Softballs:1', summary: 's', raw: softballs([['D', 'D) not a world region.']]) };
+      const namedSetOutcome = {
+        id: 'NamedSet:1', summary: 's',
+        raw: namedSet(Object.keys(OPT).filter((L) => L !== 'A' && L !== 'D').map((L) => [L, `${L}) is densely populated.`] as [string, string])),
+      };
+      const { result, summary } = await runTerminatorStep(input, ctx, [softballsOutcome, namedSetOutcome]);
+      expect(result.incomplete).toBe(false);
+      expect(summary).not.toContain('RUN INCOMPLETE');
+      expect(summary).toContain('run complete');
+    });
   });
 
   test('a contradictory basis ABSTAINS rather than publishing, even if it would otherwise leave one survivor', async () => {

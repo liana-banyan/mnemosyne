@@ -183,7 +183,26 @@ export interface TerminatorResult {
    *  three outcomes, not two"). Null only in the two early "cannot even attempt this" failure
    *  returns (no options at all); computed whenever OPT exists, regardless of abstain/verdict. */
   frameMatchBuckets: TerminatorFrameMatchBuckets | null;
+  /** D-BP154-028/BISHOP-SEG/S28/seg-survivable, ADDITIVE. Founder's own rule, this dispatch,
+   *  verbatim: "A step that failed must never be indistinguishable from a step that ran and found
+   *  nothing... an ABSTAIN from an incomplete run is a different animal from an ABSTAIN with all
+   *  steps green, and today they look identical." True whenever ANY entry in `stepsConsulted` is
+   *  'failed' -- computed from that SAME field (never a second, independently-tracked source of
+   *  truth), so this can never drift from what the receipt already carries. 'not run' is NOT
+   *  incomplete -- a step the operator never stacked was never expected to run; only a step that
+   *  WAS run and did not succeed makes the run incomplete. Read this before trusting ANY verdict or
+   *  ABSTAIN below, verdict or not -- a verdict reached while a feeder step failed is exactly as
+   *  incomplete as an abstain reached the same way. */
+  incomplete: boolean;
   error?: string;
+}
+
+/** D-BP154-028, ADDITIVE. The ONE place `incomplete` is computed -- never duplicated inline at each
+ *  of the six TerminatorResult return sites below (that duplication is exactly the drift risk this
+ *  file's own emptyDiscriminatorFields()-style helpers already guard against elsewhere in this
+ *  estate). */
+function anyStepFailed(stepsConsulted: TerminatorResult['stepsConsulted']): boolean {
+  return Object.values(stepsConsulted).some((s) => s === 'failed');
 }
 
 function sameLetterSet(a: string[], b: string[]): boolean {
@@ -207,13 +226,26 @@ function summaryLine(OPT: Record<string, string>, r: TerminatorResult): string {
       + `(${r.frameMatchBuckets.affirmedMember.join(', ') || 'none'}), `
       + `unstated=${r.frameMatchBuckets.unstated.length} (${r.frameMatchBuckets.unstated.join(', ') || 'none'})`
     : '';
+  // D-BP154-028/BISHOP-SEG/S28/seg-survivable FIX. Founder's own rule: "the verdict basis must
+  // state which steps FAILED, not merely which eliminations happened... an ABSTAIN from an
+  // incomplete run is a different animal from an ABSTAIN with all steps green, and today they look
+  // identical." Reported on EVERY outcome now (previously only the multi-survivor ABSTAIN branch
+  // named step status, and only informally, inline in `abstainReason` -- a VERDICT reached while a
+  // feeder step failed said nothing about it at all). `incomplete` is the SAME field
+  // deriveTerminatorEliminations()'s caller already computes (anyStepFailed(stepsConsulted)) --
+  // read here, never recomputed, so this text can never disagree with the structured field.
+  const stepsNote = (Object.entries(r.stepsConsulted) as Array<[string, string]>)
+    .map(([id, status]) => `${id}: ${status}`).join(', ');
+  const completenessNote = r.incomplete
+    ? `  ||  RUN INCOMPLETE -- ${Object.entries(r.stepsConsulted).filter(([, s]) => s === 'failed').map(([id]) => id).join(', ')} FAILED (steps consulted: ${stepsNote})`
+    : `  ||  run complete -- all consulted steps green (steps consulted: ${stepsNote})`;
   if (r.abstain) {
-    return `TERMINATOR -- ABSTAIN: ${r.abstainReason}  ||  ELIMINATED: ${elimText}  ||  SURVIVORS: ${r.survivors.join(', ') || '(none)'}${bucketsNote}`;
+    return `TERMINATOR -- ABSTAIN: ${r.abstainReason}  ||  ELIMINATED: ${elimText}  ||  SURVIVORS: ${r.survivors.join(', ') || '(none)'}${bucketsNote}${completenessNote}`;
   }
   const magnitudeNote = r.magnitudeBasis
     ? `  ||  MAGNITUDE BASIS: target=${r.magnitudeBasis.targetExtreme} of "${r.magnitudeBasis.property}" -- "${r.magnitudeBasis.span}"`
     : '';
-  return `TERMINATOR -- VERDICT ${r.verdict}) ${r.verdictName}  ||  ELIMINATED: ${elimText}${magnitudeNote}${bucketsNote}`;
+  return `TERMINATOR -- VERDICT ${r.verdict}) ${r.verdictName}  ||  ELIMINATED: ${elimText}${magnitudeNote}${bucketsNote}${completenessNote}`;
 }
 
 /** THE ONE PLACE the three feeder steps' results become eliminations. Pure, synchronous, no I/O --
@@ -477,7 +509,7 @@ export async function runTerminatorStep(
       ok: false, stepsConsulted: emptyStepsConsulted, eliminated: [], survivors: [],
       contradiction: null, verdict: null, verdictName: null, abstain: true,
       abstainReason: 'this question has no lettered options', basisStepClasses: [], magnitudeBasis: null,
-      frameMatchBuckets: null,
+      frameMatchBuckets: null, incomplete: false,
       error: 'THE TERMINATOR needs lettered options -- cannot run without them',
     };
     return { result, summary: summaryLine({}, result) };
@@ -515,7 +547,7 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, eliminated, survivors: [], contradiction, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `CONTRADICTION: ${contradiction.reason}`,
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete: anyStepFailed(stepsConsulted),
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -534,7 +566,7 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: 'every option was eliminated -- at least one contributing step\'s basis must be wrong; not published',
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete: anyStepFailed(stepsConsulted),
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -569,7 +601,7 @@ export async function runTerminatorStep(
         verdict: extremeEntry.letter, verdictName: OPT[extremeEntry.letter], abstain: false, abstainReason: null,
         basisStepClasses: [...basisStepClasses, magnitudeClass],
         magnitudeBasis: { targetExtreme: magnitudeRaw.targetExtreme, property: magnitudeRaw.property, span: extremeEntry.span },
-        frameMatchBuckets,
+        frameMatchBuckets, incomplete: anyStepFailed(stepsConsulted),
       };
       return { result, summary: summaryLine(OPT, result) };
     }
@@ -588,7 +620,7 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `more than one survivor left (${survivors.join(', ')}) -- no stated distinction separated them further. Steps consulted: ${consultedNote}${magnitudeNote}`,
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete: anyStepFailed(stepsConsulted),
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -597,7 +629,7 @@ export async function runTerminatorStep(
   const result: TerminatorResult = {
     ok: true, stepsConsulted, eliminated, survivors, contradiction: null,
     verdict, verdictName: OPT[verdict], abstain: false, abstainReason: null, basisStepClasses,
-    magnitudeBasis: null, frameMatchBuckets,
+    magnitudeBasis: null, frameMatchBuckets, incomplete: anyStepFailed(stepsConsulted),
   };
   return { result, summary: summaryLine(OPT, result) };
 }

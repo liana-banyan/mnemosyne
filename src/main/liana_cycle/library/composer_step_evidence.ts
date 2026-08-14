@@ -227,7 +227,22 @@ export async function tryConversationalAuthority(
   if (!ctx.askConversationalAuthority) {
     return notObtained('no conversational authority is wired for this run');
   }
-  const cr = await ctx.askConversationalAuthority(query, mcOptions);
+  let cr = await ctx.askConversationalAuthority(query, mcOptions);
+  // D-BP154-028/BISHOP-SEG/S28/seg-survivable FIX. Live-measured this dispatch (embedded_browser_
+  // injection.jsonl, the actual failing dispatch): `streaming=true` from tick 9 through tick 43 (30s
+  // straight) while the response-text selector matched `null` on EVERY tick -- the authority was
+  // genuinely answering, this session's own poll simply never found the container that run. An
+  // ADJACENT query 16 seconds earlier, in the SAME session, matched a real selector and completed
+  // normally -- ruling out a systemic selector-list gap; this is transient per-dispatch DOM-render
+  // variance on Gemini's own side, not a defect in any one query's text or length. Per this
+  // dispatch's own rule ("a step that times out must be retryable within the run, and its failure
+  // must not silently change the survivor set"): retry ONCE, a genuinely fresh dispatch, but ONLY
+  // for a `ceiling` outcome specifically (`via` contains ':ceiling(') -- never for 'refused' (the
+  // operator is engaged; retrying would re-interrupt them) and never for a structural failure (not
+  // wired / disabled), where a second attempt cannot possibly help and would only cost time.
+  if ((!cr.ok || !cr.text || !cr.text.trim()) && cr.via?.includes(':ceiling(')) {
+    cr = await ctx.askConversationalAuthority(query, mcOptions);
+  }
   if (!cr.ok || !cr.text || !cr.text.trim()) {
     return notObtained(`conversational authority returned no usable answer (${cr.via || cr.authority || 'unknown'})`);
   }

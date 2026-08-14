@@ -4320,9 +4320,19 @@ function registerIPCHandlers(): void {
   // calls runLianaCycleQuestion() by reference, no transformation of ITS return value, exactly as
   // script_bridge.ts's own header requires ("THE DEFAULT MUST NOT CHANGE"). A non-empty `steps`
   // array runs that authored stack instead, through script_runner.ts (D-BP152-041, unmodified).
-  // This handler does not write a run receipt or a heartbeat line -- that persistence
-  // (D-BP150-015) belongs to the pre-existing default path above; adding it here too was not
-  // asked for by this ticket (HARDWIRE-23, "nothing more").
+  //
+  // D-BP154-028/BISHOP-SEG/S28/seg-survivable, FIX (reversing the D-BP154-010-era decision
+  // recorded immediately below, which the coordinator's own D-BP154-026/027 returns flagged twice
+  // and this dispatch orders fixed): "Composer-run verdicts are not currently recoverable from the
+  // ledger by anyone but the operator running them... a Composer run should write a receipt the
+  // way the terminal path does, so a verdict exists on disk for someone else to check." A receipt
+  // IS now written here, every run -- see the try/catch immediately before this handler's `return`,
+  // mirroring 'liana-terminal-run's own D-BP150-015 receipt below almost exactly (same `runsDir`,
+  // same non-fatal try/catch discipline), with a DISTINCT filename prefix
+  // (LIANA_COMPOSER_RUN_, never LIANA_RUN_) so a reader can never mistake one path's receipt for
+  // the other's, and a top-level verdict/abstain/basis/incomplete summary lifted from the
+  // Terminator:1 step's own raw result when one ran in this stack (absent, honestly, when it did
+  // not -- never guessed).
   //
   // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL. Before this ticket, THIS was the hole: the
   // Composer is the ONLY UI path that reaches runScratchComposer() (LianaCycleTab.tsx's "Run this
@@ -4352,7 +4362,11 @@ function registerIPCHandlers(): void {
     // runBrowserAuthorityQueryFromMain(...) closure -- see that function's own header, above.
     const askGoogle = buildLianaAskGoogle(runThreadContext);
     const askConversationalAuthority = buildAskConversationalAuthority(runThreadContext);
+    // D-BP154-028, ADDITIVE: accumulated (mirroring 'liana-terminal-run's own `events` array above)
+    // so the receipt written below can carry a real transcript, not just the final answer.
+    const composerEvents: LianaTerminalEvent[] = [];
     const emit = (evt: LianaTerminalEvent) => {
+      composerEvents.push(evt);
       try { sender.send('liana-terminal-event', evt); } catch { /* window may have closed mid-run */ }
     };
 
@@ -4370,6 +4384,71 @@ function registerIPCHandlers(): void {
       recordingConversationalAuthority(askConversationalAuthority, evidenceSession),
       evidenceSession.acquisitionId,
     );
+
+    // D-BP154-028/BISHOP-SEG/S28/seg-survivable, NEW: THE COMPOSER RECEIPT. Non-fatal by
+    // construction, same discipline as 'liana-terminal-run's own D-BP150-015 receipt above -- a
+    // failed write here must never turn a good run into an error, and must never affect what was
+    // already returned to the renderer. Written for EVERY Composer run, stack or default, resolved
+    // or abstained, so a verdict never again exists only in a window (the exact gap this dispatch's
+    // own coordinator flagged twice: "Composer-run verdicts are not currently recoverable from the
+    // ledger by anyone but the operator running them").
+    try {
+      const runsDir = join(YOKE_PATHS.RETURNS_DIR, '..', 'LIANA_RUNS');
+      mkdirSync(runsDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      // D-BP154-028: a top-level verdict/abstain/basis/incomplete summary, lifted from the
+      // Terminator:1 step's own raw result WHEN one ran in this stack -- absent, honestly, when it
+      // did not (a stack with no Terminator step reaches no verdict; guessing one here would be
+      // exactly the fabrication this whole receipt exists to prevent). 'default' mode already
+      // carries these fields directly on `outcome` (the SAME LianaTerminalOutcome shape the
+      // terminal path's own receipt above already writes) -- read from there instead, never
+      // duplicated logic for the same fact.
+      const terminatorRaw = response.mode === 'stack'
+        ? (response.result.results.find((r) => r.id === 'Terminator:1')?.raw as {
+          verdict?: string | null; verdictName?: string | null; abstain?: boolean; abstainReason?: string | null; incomplete?: boolean;
+        } | undefined)
+        : undefined;
+      const topLevel = response.mode === 'default'
+        ? {
+          qid: response.outcome.qid ?? null, question: response.outcome.question, options: response.outcome.options ?? null,
+          verdict: response.outcome.verdict, abstain: response.outcome.abstain, basis: response.outcome.basis ?? null,
+          incomplete: null as boolean | null, // 'default' mode has no per-step stepsConsulted concept -- honestly absent, not guessed
+        }
+        : {
+          qid: response.qid ?? null, question: response.question, options: response.options,
+          verdict: terminatorRaw?.verdict ?? null, abstain: terminatorRaw?.abstain ?? null,
+          basis: terminatorRaw
+            ? (terminatorRaw.abstain ? terminatorRaw.abstainReason ?? null : `VERDICT ${terminatorRaw.verdict}) ${terminatorRaw.verdictName}`)
+            : null,
+          incomplete: terminatorRaw?.incomplete ?? null,
+        };
+      const slug = topLevel.qid != null ? `qid${topLevel.qid}` : 'free-text';
+      const receipt = {
+        schema: 'liana-composer-run-receipt/1',
+        writtenAt: new Date().toISOString(),
+        input,
+        mode: response.mode,
+        steps: steps ?? [],
+        evidence: {
+          acquisitionId: evidenceSession.acquisitionId,
+          recordsWritten: evidenceSession.written.length,
+          writeFailures: evidenceSession.writeFailures,
+        },
+        ...topLevel,
+        // Full per-step record for a 'stack' run (id/summary/raw, exactly what the renderer's own
+        // expanded provenance-chain view already reads); the single terminal outcome object for a
+        // 'default' run.
+        composerResult: response.mode === 'stack' ? response.result : null,
+        outcome: response.mode === 'default' ? response.outcome : null,
+        eventCount: composerEvents.length,
+        transcript: composerEvents,
+      };
+      const rp = join(runsDir, `LIANA_COMPOSER_RUN_${slug}_${stamp}.json`);
+      writeFileSync(rp, JSON.stringify(receipt, null, 2), 'utf8');
+      console.log(`[liana-script-run] receipt written: ${rp} (${composerEvents.length} events, mode=${response.mode})`);
+    } catch (e) {
+      console.warn('[liana-script-run] receipt write failed (non-fatal, the answer already returned to the renderer stands):', e);
+    }
 
     // THE PAIL'S CONTENTS, LISTED -- returned to the renderer alongside the answer, not just
     // written to disk where only a file-reader could see it (THE_PAIL_BP154.md: "the Founder can
