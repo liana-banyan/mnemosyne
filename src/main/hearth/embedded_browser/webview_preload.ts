@@ -1116,12 +1116,30 @@ const CLAUDE_INTERACTIVE_POLL_MS = 700;
 // selector's last-resort catch-all (`div[contenteditable="true"]`) matched something OTHER than
 // the real composer (e.g. a login-wall page has no real composer, but the catch-all can still
 // hit an unrelated contenteditable node), typed/submitted into it, then polled for a reply that
-// could never arrive. Cut from 75_000 -> 18_000: paired with the NEW composer-find fast-fail below
+// could never arrive. Cut from 75_000 -> 18_000, paired with the NEW composer-find fast-fail below
 // (CLAUDE_COMPOSER_FIND_MAX_WAIT_MS) and index.ts's shortened BROWSER_AUTHORITY_INTERACTIVE_
-// TIMEOUT_MS (90_000 -> 25_000), the worst-case total interactive round trip is now ~2s (main's
-// load-settle) + 3s (composer find) + 0.4s (submit settle) + 18s (this poll) = ~23.4s, comfortably
-// under the new 25s outer cap, instead of the old ~92s worst case.
-const CLAUDE_INTERACTIVE_MAX_WAIT_MS = 18_000;
+// TIMEOUT_MS (90_000 -> 25_000).
+//
+// D-BP154-019/BISHOP-SEG/S19/seg-secondquery, RAISED 18_000 -> 30_000 -- MEASURED, not a blind
+// raise (this ticket's own explicit instruction). This ticket fixed a DIFFERENT bug first (the
+// ceiling branch below used to report success on ANY non-empty text regardless of whether the
+// reply had actually finished) and, separately, a dropped-mcOptions bug (evidence_authority.ts's
+// recordingConversationalAuthority) that let Gemini's own "Thinking..." UI chrome pass the
+// capture-hop gate uncontested. With BOTH of those fixed, the 18s ceiling itself proved too tight
+// against Gemini's real measured latency in THIS environment across three live qid-98 runs this
+// ticket: run 1 (pre-fix), a genuinely complete 311-char answer had rendered by 16.8s but the
+// ceiling still fired at 18.2s (with `streaming` still true) before the OLD honesty bug even
+// mattered; run 2 (ceiling-honesty fix only), Softballs:1 settled cleanly right at 18.2s -- no
+// margin at all; run 3 (both fixes), Softballs:1's reply had STILL not finished at the 18.2s
+// ceiling and was correctly reported as an honest timeout rather than a truncated success. 30_000
+// is not invented for this ticket -- it reuses nexus_authority_persistent_session.ts's own
+// already-justified MACHINE_QUERY_CEILING_MS constant, chosen there for the identical reasoning
+// ("a generative... answer can render slower" than a static scrape). index.ts's
+// BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS (the OUTER cap around this INNER one) is raised in the
+// same commit, same arithmetic pattern as before: worst-case total is now ~2s (load-settle) + 3s
+// (composer find) + 0.4s (submit settle) + 30s (this poll) = ~35.4s, comfortably under the new
+// 37s outer cap (index.ts), preserving the same ~1.6s safety margin the 18s/25s pair had.
+const CLAUDE_INTERACTIVE_MAX_WAIT_MS = 30_000;
 // How many consecutive no-change poll ticks (with no stop-button visible) are required before
 // completion is declared when NO streaming indicator was ever observed (fast answer, or the
 // stop-button selector missed it) -- see the stableAndDone comment below for the full logic.
@@ -1318,15 +1336,22 @@ function runClaudeInteractiveQuery(promptText: string, mcOptions?: string[]): vo
         }
 
         if (Date.now() - startedAt > CLAUDE_INTERACTIVE_MAX_WAIT_MS) {
-          // Timed out -- report honestly with whatever text (if any) was last observed. Empty
-          // lastText reports success:false (no fabricated snippet); a non-empty-but-possibly-
-          // still-growing lastText is reported success:true as a best-effort partial, but is never
-          // silently upgraded to "verified" upstream (distillExtraction's own length-based
-          // `verified` heuristic in browser_authority_types.ts is the only thing that judges that).
+          // D-BP154-019/BISHOP-SEG/S19/seg-secondquery FIX (same defect, same file, this driver's
+          // own hand-written twin of runGenericInteractiveQuery's identical bug -- see that
+          // function's own comment on this exact branch for the live measurement that found it,
+          // AND for why this checks `ticksSinceChange`, not `streaming`, at the ceiling). PRE-FIX
+          // this branch called `finish(currentText.length > 0)` -- ANY non-empty text at the
+          // ceiling was reported success:true even mid-sentence. Fix: only a capture that has been
+          // BYTE-IDENTICAL for at least one immediately-preceding tick (`ticksSinceChange >= 1`,
+          // the SAME bar this function's own `stableAndDone` above already accepts once streaming
+          // has been seen -- reused, not invented) is reported success; text that changed on the
+          // very last tick (still actively growing at the instant the ceiling fired) is an honest
+          // 'stream_timeout_or_empty' failure (already correctly classified as 'timeout' by
+          // index.ts's classifyInteractiveDispatchReason), never a fabricated success.
           logInjectionEvent('claude_interactive_timeout', {
-            elapsedMs: Date.now() - startedAt, textLength: currentText.length, url: window.location.href,
+            elapsedMs: Date.now() - startedAt, textLength: currentText.length, streaming, ticksSinceChange, url: window.location.href,
           });
-          finish(currentText.length > 0);
+          finish(currentText.length > 0 && ticksSinceChange >= 1);
         }
       }, CLAUDE_INTERACTIVE_POLL_MS);
     }, 400);
@@ -1735,6 +1760,23 @@ function runGenericInteractiveQuery(
     }
 
     setTimeout(() => {
+      // D-BP154-019/BISHOP-SEG/S19/seg-secondquery, DIAGNOSTIC ONLY (no behavior change): capture
+      // what tierA's own last-matching-element already contains BEFORE this query's submit even
+      // fires. If a prior turn's <model-response> is still mounted (the CONTINUING/no-reload
+      // branch never navigates), this is the exact stale text a too-eager settle could return.
+      // Printed so query-1-vs-query-2 can be compared directly off the log, per this ticket's own
+      // "diagnose before you cure" mandate -- never consulted by the real decision below.
+      try {
+        const baseline = lastNonEmptyTextMatch(config.assistantMessageSelectorsTierA);
+        logInjectionEvent(`${config.logPrefix}_pretx_baseline`, {
+          hasBaseline: !!baseline,
+          selector: baseline?.selector ?? null,
+          textPreview: (baseline?.text ?? '').slice(0, 160),
+          textLength: baseline?.text.length ?? 0,
+          url: window.location.href,
+        });
+      } catch { /* diagnostic only -- never blocks the real submit below */ }
+
       const submitMethod = submitComposerGeneric(composer, config.sendButtonSelectors);
       logInjectionEvent(`${config.logPrefix}_submitted`, { method: submitMethod, url: window.location.href });
       if (submitMethod === 'failed') {
@@ -1748,6 +1790,7 @@ function runGenericInteractiveQuery(
       let loggedStreamingDetected = false;
       let lastSelector: string | null = null;
       let lastMatchElement: HTMLElement | null = null;
+      let tickCount = 0;
       const startedAt = Date.now();
 
       const finish = (success: boolean) => {
@@ -1775,6 +1818,7 @@ function runGenericInteractiveQuery(
       };
 
       const pollHandle = setInterval(() => {
+        tickCount++;
         const streaming = isGenericStillStreaming(config);
         if (streaming) hasSeenStreaming = true;
         if (streaming && !loggedStreamingDetected) {
@@ -1800,16 +1844,63 @@ function runGenericInteractiveQuery(
           currentText.length > 0 && !streaming &&
           (hasSeenStreaming ? ticksSinceChange >= 1 : ticksSinceChange >= CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED);
 
+        // D-BP154-019/BISHOP-SEG/S19/seg-secondquery, DIAGNOSTIC ONLY -- print exactly what the
+        // settle predicate evaluated THIS tick, raw, so a query-1 vs query-2 comparison never has
+        // to be reconstructed from textLength alone. Never influences stableAndDone above (that
+        // line is unchanged from before this ticket).
+        logInjectionEvent(`${config.logPrefix}_poll_tick`, {
+          tick: tickCount,
+          elapsedMs: Date.now() - startedAt,
+          streaming,
+          hasSeenStreaming,
+          ticksSinceChange,
+          selector: match?.selector ?? null,
+          textLength: currentText.length,
+          textPreview: currentText.slice(0, 160),
+          stableAndDone,
+          url: window.location.href,
+        });
+
         if (stableAndDone) {
           finish(true);
           return;
         }
 
         if (Date.now() - startedAt > CLAUDE_INTERACTIVE_MAX_WAIT_MS) {
+          // D-BP154-019/BISHOP-SEG/S19/seg-secondquery FIX -- THE ROOT CAUSE this ticket was
+          // dispatched to find. LIVE-MEASURED this ticket (qid 98, NamedSet:1's own Gemini query,
+          // embedded_browser_injection.jsonl 2026-08-14T04:00:27.440Z): `isGenericStillStreaming()`
+          // (the stop-button/thinking-indicator presence check) stayed `streaming:true` on EVERY
+          // poll tick from tick 8 through tick 26 (the entire remainder of the poll) -- Gemini's
+          // own "Searching the web" tool-call detour meant the real answer was still actively
+          // rendering when the ceiling fired, text still GROWING tick over tick (191 -> 204 -> 372
+          // chars, `ticksSinceChange:0` at the ceiling tick -- it had JUST changed). PRE-FIX this
+          // branch called `finish(currentText.length > 0)` unconditionally -- that non-empty-but-
+          // still-growing, cut-mid-sentence text ("Gemini said B) South Asia is one of the world's
+          // most densely populated regions.D) Northeast United States is...") was reported
+          // success:true, indistinguishable from a genuinely finished answer, and handed onward as
+          // one.
+          //
+          // WHY THIS CHECKS `ticksSinceChange`, NOT `streaming`: a second query in the SAME run
+          // (Softballs:1) hit the identical ceiling with fully-rendered, correct, complete text
+          // (311 chars, matches the evidence store exactly) -- but `streaming` was ALSO still
+          // `true` there (`ticksSinceChange:2` at that tick). Gating on `!streaming` alone (this
+          // fix's own first draft, corrected before commit) would have turned Softballs:1's honest
+          // success into a false failure too -- proof, measured live, that the stop-button/
+          // thinking-indicator selector is not a reliable "still generating" signal on its own (it
+          // lingers past real completion, at least in this session). `ticksSinceChange >= 1` --
+          // the SAME bar `stableAndDone` above already accepts once streaming has been seen,
+          // reused rather than invented -- correctly separates the two live-measured cases: 2
+          // (Softballs:1, genuinely done) accepts, 0 (NamedSet:1, actively growing) rejects. This
+          // ticket's own law: "a capture that is not complete may never be returned as if it
+          // were." A ceiling hit with text that changed on the very last tick now reports the SAME
+          // pre-existing 'stream_timeout_or_empty' reason (already correctly classified as
+          // 'timeout' by index.ts's classifyInteractiveDispatchReason) as an honest failure, never
+          // a fabricated success -- exactly like an empty capture already did before this fix.
           logInjectionEvent(`${config.logPrefix}_timeout`, {
-            elapsedMs: Date.now() - startedAt, textLength: currentText.length, url: window.location.href,
+            elapsedMs: Date.now() - startedAt, textLength: currentText.length, streaming, ticksSinceChange, url: window.location.href,
           });
-          finish(currentText.length > 0);
+          finish(currentText.length > 0 && ticksSinceChange >= 1);
         }
       }, CLAUDE_INTERACTIVE_POLL_MS);
     }, 400);
@@ -1832,7 +1923,12 @@ ipcRenderer.on('browser-authority-run-interactive-query', (_event, payload: Brow
     return;
   }
   if (payload.authority === 'user_gemini') {
-    logInjectionEvent('gemini_interactive_query_received', { authority: payload.authority, url: window.location.href });
+    // D-BP154-019/BISHOP-SEG/S19/seg-secondquery, DIAGNOSTIC ONLY (no behavior change): count of
+    // mcOptions actually received on THIS ipc payload -- checking whether the capture-hop gate
+    // (mentionsAnyOption) has anything to gate on for THIS call, live, per query.
+    logInjectionEvent('gemini_interactive_query_received', {
+      authority: payload.authority, mcOptionsCount: payload.mcOptions?.length ?? 0, url: window.location.href,
+    });
     runGenericInteractiveQuery(GEMINI_DRIVER_CONFIG, payload.query, payload.mcOptions);
     return;
   }

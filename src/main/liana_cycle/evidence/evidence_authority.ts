@@ -116,13 +116,31 @@ export function recordingAskGoogle(inner: AskGoogleFn, session: AcquisitionSessi
 }
 
 /** Wraps the Gemini path. Same transparency contract as above. See this file's header for why
- *  omitting this wrapper would have produced a silently incomplete store. */
+ *  omitting this wrapper would have produced a silently incomplete store.
+ *
+ *  D-BP154-019/BISHOP-SEG/S19/seg-secondquery FIX: this wrapper's own inner arrow function used
+ *  to accept only `question`, silently dropping whatever `mcOptions` the real caller (
+ *  named_set_step.ts, softballs_step.ts, discriminator_step.ts, via tryConversationalAuthority)
+ *  passed in -- TypeScript's structural typing allows a narrower function to satisfy
+ *  ConversationalAuthorityFn's wider `(question, mcOptions?)` signature, so this compiled clean
+ *  while quietly discarding the second argument on every call. LIVE-MEASURED this ticket (qid 98,
+ *  embedded_browser_injection.jsonl): `gemini_interactive_query_received` carried
+ *  `mcOptionsCount:0` for BOTH Softballs:1's and NamedSet:1's live Gemini queries, through BOTH
+ *  the default (`liana-terminal-run`) and Composer (`liana-script-run`) paths -- this wrapper sits
+ *  between every one of those callers and the real dispatch (index.ts:4130,4355), so it is the
+ *  ONE place responsible for both. The consequence: D-BP154-010/014's own capture-hop gate
+ *  (`mentionsAnyOption`, webview_preload.ts) had an empty mcOptions list on every call, and its
+ *  own documented contract is "empty mcOptions never rejects" -- so it let Gemini's OWN UI chrome
+ *  ("...Thinking Your lianabanyan.com chats aren't used to improve our models...") through as an
+ *  accepted candidate answer, exactly the failure that gate was built to close. Fix: forward
+ *  `mcOptions` through, unchanged, same transparency contract as recordingAskGoogle above -- this
+ *  wrapper still returns exactly what `inner` returns and still never judges the answer itself. */
 export function recordingConversationalAuthority(
   inner: ConversationalAuthorityFn,
   session: AcquisitionSession,
 ): ConversationalAuthorityFn {
-  return async (question: string): Promise<ConversationalAuthorityResult> => {
-    const response = await inner(question);
+  return async (question: string, mcOptions?: string[]): Promise<ConversationalAuthorityResult> => {
+    const response = await inner(question, mcOptions);
     record(session, 'conversational', question, response);
     return response;
   };

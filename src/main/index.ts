@@ -1856,12 +1856,22 @@ const BROWSER_AUTHORITY_RETRY_DELAY_MS = 1_500;
 // login wall) would type/submit into the wrong element and then poll for a reply that could never
 // arrive, burning nearly the full 90s before honestly reporting null. Cut 90_000 -> 25_000, paired
 // with webview_preload.ts's new composer-find fast-fail (~3s) and shortened reply-poll budget
-// (75_000 -> 18_000ms): worst-case total is now ~2s (load-settle below) + 3s (composer find) +
-// 0.4s (submit settle) + 18s (reply poll) = ~23.4s of INNER budget, so this 25s OUTER cap is a
-// safety net around that, not the expected duration -- a composer-not-found or not-signed-in page
-// now reports back in ~2-5s, and a genuinely completed answer returns as soon as it stabilizes,
-// not after the budget is exhausted.
-const BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS = 25_000;
+// (75_000 -> 18_000ms): worst-case total was ~2s (load-settle below) + 3s (composer find) +
+// 0.4s (submit settle) + 18s (reply poll) = ~23.4s of INNER budget under this 25s OUTER cap.
+//
+// D-BP154-019/BISHOP-SEG/S19/seg-secondquery, RAISED 25_000 -> 37_000, paired with
+// webview_preload.ts's CLAUDE_INTERACTIVE_MAX_WAIT_MS (18_000 -> 30_000, see that constant's own
+// comment for the full live measurement). NOT a blind raise: this ticket's own qid 98 runs
+// measured Gemini's real reply-completion time landing AT or PAST the old 18s inner budget three
+// times running (16.8s genuinely complete but cut off by the ceiling anyway; 18.2s genuinely
+// complete, right at the edge; a third run still incomplete at 18.2s) -- the 18s/25s pair was
+// simply too tight for this authority's real latency, which is what forced query 2/3 truncations
+// onto the ceiling path in the first place. 30_000 reuses nexus_authority_persistent_session.ts's
+// own already-justified MACHINE_QUERY_CEILING_MS constant (same class of problem, "a generative
+// answer can render slower" -- not a new number invented for this ticket). New worst-case total:
+// ~2s (load-settle) + 3s (composer find) + 0.4s (submit settle) + 30s (reply poll) = ~35.4s of
+// INNER budget; 37_000 keeps the SAME ~1.6s safety margin the pre-existing 23.4s-vs-25s pair had.
+const BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS = 37_000;
 // Extra settle delay after did-finish-load before the composer is even looked up -- claude.ai's
 // own client-side app shell needs a moment to mount past the raw HTML load event, same rationale
 // as BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS above but tuned separately since this is a different
