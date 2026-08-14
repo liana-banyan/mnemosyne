@@ -90,7 +90,12 @@ import type { StepAttribution } from './step_declaration';
 // composer_claims_store.ts's own header for why this is a SEPARATE ledger, not a widened
 // evidence_store.ts schema (that file is HARDWIRE-08 pinned).
 import { appendComposerClaim } from './composer_claims_store';
-import { classifyComposerStepResult } from '../../../shared/composer_step_classification';
+import {
+  applyKeyedAnswerLabel, classifyComposerStepResult,
+} from '../../../shared/composer_step_classification';
+import type {
+  ComposerStepClassificationWithKey,
+} from '../../../shared/composer_step_classification';
 
 // ─────────────────────────────── registry population (idempotent) ───────────────────────────────
 // registerKnownMethods() throws on any id already present (Rule 66, "duplicate is an error" --
@@ -269,7 +274,23 @@ function summarizeOutcome(outcome: LianaTerminalOutcome): string {
 function persistStepClaim(id: string, input: MethodQuestionInput, ctx: MethodRunContext, raw: unknown): void {
   if (!ctx.acquisitionId) return;
   try {
-    const { cls, detail } = classifyComposerStepResult(raw);
+    const blind = classifyComposerStepResult(raw);
+    // D-BP154-036/BISHOP-SEG/S36/seg-wireit, ADDITIVE. Scoped to Terminator:1 ONLY -- the answer
+    // key names the QUESTION's own correct letter, meaningful only against the run's terminal
+    // VERDICT (FD-BP154-11's own qid-98 worked example), never against an intermediate elimination
+    // step's own ABSTAIN (Softballs:1/NamedSet:1/etc. have no "verdict" of their own to key
+    // against; relabeling their ABSTAIN this way would be a category error, not the ruling's
+    // amendment). `input.correctAnswer` is read HERE ONLY, after `raw` already reflects a run that
+    // never saw it -- see ComposedRunResult.keyedTerminatorLabel's own header, script_bridge.ts,
+    // for the full boundary this mirrors.
+    const verdictLetter = id === 'Terminator:1' && typeof (raw as { verdict?: unknown } | null)?.verdict === 'string'
+      ? (raw as { verdict: string }).verdict
+      : null;
+    const labeled: ComposerStepClassificationWithKey = id === 'Terminator:1'
+      ? applyKeyedAnswerLabel(blind, verdictLetter, input.correctAnswer)
+      : blind;
+    const { cls, detail } = labeled;
+    const keyed = labeled.keyed ?? null;
     const r = raw as {
       query?: unknown;
       answerProvenance?: { mechanism?: unknown; sourceId?: unknown; detail?: unknown } | null;
@@ -297,6 +318,7 @@ function persistStepClaim(id: string, input: MethodQuestionInput, ctx: MethodRun
         sourceTitle: typeof r.corroboration.sourceTitle === 'string' ? r.corroboration.sourceTitle : null,
         span: typeof r.corroboration.span === 'string' ? r.corroboration.span : null,
       } : null,
+      keyed,
     });
   } catch {
     // Instrumentation failure only -- never fails the step it describes. Nothing to report to a
@@ -416,6 +438,34 @@ export interface ComposedRunResult {
   results: ComposerStepOutcome[];
   error?: string;
   failedId?: string;
+  /** D-BP154-036/BISHOP-SEG/S36/seg-wireit, ADDITIVE. FD-BP154-11's ANSWERED-row amendment
+   *  (applyKeyedAnswerLabel(), composer_step_classification.ts), applied ONLY to the Terminator:1
+   *  step's OWN already-computed blind classification -- computed here, AFTER the run has already
+   *  finished, strictly for display. `parsedInput.correctAnswer` is read for this ONE purpose only;
+   *  it is never passed into runOneStep()/deriveTerminatorEliminations()/evaluateVerdict(), so it
+   *  cannot influence which options were eliminated, which survived, or which letter (if any) the
+   *  blind mechanism reached -- D-BP153-003 stays unrelaxed. `null` when Terminator:1 did not run
+   *  in this stack, or when no key is on file for this input (free-text, or a bundled qid the
+   *  backfill has not touched -- see applyKeyedAnswerLabel()'s own "no key available" branch). */
+  keyedTerminatorLabel?: ComposerStepClassificationWithKey | null;
+}
+
+/** D-BP154-036, NEW. THE ONE PLACE `correctAnswer` is read to build a display label for a composed
+ *  stack's own result -- see ComposedRunResult.keyedTerminatorLabel's own header for the boundary
+ *  this observes. Pure, synchronous: reads only the already-finished `results` array and the
+ *  already-known key; calls nothing that acquires, ranks, or eliminates anything. Returns `null`
+ *  (never a guess) when Terminator:1 is not among `results` at all. */
+function computeKeyedTerminatorLabel(
+  results: ComposerStepOutcome[],
+  correctAnswer: string | undefined,
+): ComposerStepClassificationWithKey | null {
+  const term = results.find((r) => r.id === 'Terminator:1');
+  if (!term) return null;
+  const blind = classifyComposerStepResult(term.raw);
+  const verdictLetter = typeof (term.raw as { verdict?: unknown } | null)?.verdict === 'string'
+    ? (term.raw as { verdict: string }).verdict
+    : null;
+  return applyKeyedAnswerLabel(blind, verdictLetter, correctAnswer);
 }
 
 /** Per HARDWIRE-23 Law 4/5: the operator authoring/reordering a stack via the composer panel at
@@ -473,7 +523,12 @@ export async function runComposedStack(
     execute,
   );
   if (runResult.ok) {
-    return { ok: true, steps: runResult.steps, results: runResult.finalState.results };
+    return {
+      ok: true,
+      steps: runResult.steps,
+      results: runResult.finalState.results,
+      keyedTerminatorLabel: computeKeyedTerminatorLabel(runResult.finalState.results, parsedInput.correctAnswer),
+    };
   }
   return {
     ok: false,
@@ -481,6 +536,7 @@ export async function runComposedStack(
     results: runResult.stateAtFailure.results,
     error: runResult.error,
     failedId: runResult.failedId,
+    keyedTerminatorLabel: computeKeyedTerminatorLabel(runResult.stateAtFailure.results, parsedInput.correctAnswer),
   };
 }
 

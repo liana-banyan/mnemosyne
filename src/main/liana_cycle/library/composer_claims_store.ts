@@ -29,7 +29,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveEvidenceDir } from '../evidence/evidence_store';
-import type { ComposerStepClass } from '../../../shared/composer_step_classification';
+import type { ComposerStepClass, KeyedAnswerLabel } from '../../../shared/composer_step_classification';
 
 export interface ComposerClaimRecord {
   schema: 'liana-composer-claim/1';
@@ -53,6 +53,13 @@ export interface ComposerClaimRecord {
     sourceTitle: string | null;
     span: string | null;
   } | null;
+  /** D-BP154-036/BISHOP-SEG/S36/seg-wireit, ADDITIVE. FD-BP154-11's ANSWERED-row amendment --
+   *  present only for the 'Terminator:1' claim, and only when a key was on file for this qid
+   *  (script_bridge.ts's persistStepClaim() is the ONE place that computes this, strictly after
+   *  the step's own blind classification already exists; see that function's own header for the
+   *  D-BP153-003 boundary). `null` for every other step, and for a Terminator:1 claim with no key
+   *  on file. */
+  keyed: KeyedAnswerLabel | null;
 }
 
 function slugFor(qid: number | null): string {
@@ -80,6 +87,7 @@ export function appendComposerClaim(input: {
   sourceId: string | null;
   mechanismDetail: string | null;
   corroboration: ComposerClaimRecord['corroboration'];
+  keyed?: KeyedAnswerLabel | null;
   dir?: string;
 }): ComposerClaimRecord {
   const dir = input.dir || resolveEvidenceDir();
@@ -98,6 +106,7 @@ export function appendComposerClaim(input: {
     sourceId: input.sourceId,
     mechanismDetail: input.mechanismDetail,
     corroboration: input.corroboration,
+    keyed: input.keyed ?? null,
   };
   appendFileSync(fileFor(dir, input.qid, input.acquisitionId), `${JSON.stringify(record)}\n`, 'utf8');
   return record;
