@@ -123,6 +123,11 @@ export interface MethodQuestionInput {
    *  this field; every other step ignores it unchanged. NEVER the `answer`/`answer_index` field --
    *  those are not present on BundledQuestion at all (D-BP153-003, runtime stays blind). */
   originSrc?: string;
+  /** D-BP154-041/BISHOP-SEG/S41/seg-purpose, ADDITIVE/OPTIONAL -- same discipline as `originSrc`
+   *  just above: undefined on every pre-existing construction site. The bundled corpus row's own
+   *  stated `category` field (liana_terminal_engine.ts's BundledQuestion.category), threaded
+   *  through ParsedInput.category unchanged. Only purpose_step.ts reads this field. */
+  category?: string;
 }
 
 export interface ShapeTestResult {
