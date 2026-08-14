@@ -314,5 +314,28 @@ export function applyKeyedAnswerLabel(
       keyed,
     };
   }
+  // D-BP154-039/BISHOP-SEG/S39/seg-disagreement, ADDITIVE. Founder, this dispatch, verbatim: "The
+  // keyed label does not cover disagreement... a derived answer that CONTRADICTS the key passes
+  // silently. Under FD-BP154-11's own three-way distinction (the source says A != the evidence
+  // entails A != A is a plausible guess), that disagreement is the most informative state in the
+  // system and it is currently invisible." A live qid-98 run (2026-08-14T21-59-51-048Z) reached
+  // VERDICT F while the key is A, CORROBORATED-classified, and nothing in the label said so.
+  //
+  // Applied to EVERY non-ABSTAIN class, PROVEN included -- a "proven" verdict that disagrees with
+  // the key is not a lesser case to soften; it is either a defect in the mechanism or the key
+  // itself, and hiding it behind a stronger badge would be exactly the "failure presented as
+  // success" shape this estate has spent this campaign eliminating. Only the DISPLAYED `detail` is
+  // touched; `cls` and `statedCount` are the blind mechanism's own, unrelaxed -- this labels a
+  // disagreement, it does not adjudicate one, and nothing about elimination, ranking, or survivors
+  // is read or changed by this function (D-BP153-003 unrelaxed; see KEY-BLINDNESS PROOF in
+  // script_bridge.keyed_terminator_label.test.ts).
+  if (keyed.matchesVerdict === false) {
+    return {
+      ...classification,
+      detail: `${classification.detail}  ||  DISAGREES WITH KEYED ANSWER ${correctAnswer}: the `
+        + 'evidence admitted does not entail the keyed answer.',
+      keyed,
+    };
+  }
   return { ...classification, keyed };
 }

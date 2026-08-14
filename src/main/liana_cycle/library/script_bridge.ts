@@ -468,6 +468,39 @@ function computeKeyedTerminatorLabel(
   return applyKeyedAnswerLabel(blind, verdictLetter, correctAnswer);
 }
 
+/** D-BP154-039/BISHOP-SEG/S39/seg-disagreement, NEW. Founder, this dispatch, verbatim: "A verdict
+ *  must carry at least what an abstain carries" -- a live qid-98 receipt
+ *  (LIANA_COMPOSER_RUN_qid98_2026-08-14T21-59-51-048Z.json) recorded `basis: "VERDICT F) Central
+ *  Asia"` for a verdict, two words, while an abstain on the SAME run would have carried the full
+ *  eliminated-list/magnitude-basis/frame-match text -- because index.ts's own receipt writer
+ *  hand-built a short string for a verdict instead of reading the SAME full text
+ *  runTerminatorStep()'s own summaryLine() already computes and stores on `term.summary`. This
+ *  function is THE ONE PLACE that basis text is built now, for both outcomes alike, so the two can
+ *  never diverge in richness again.
+ *
+ *  D-BP154-039 PART 2: when the verdict DISAGREES with the keyed answer (`keyedTerminatorLabel.
+ *  keyed.matchesVerdict === false`), the returned basis states that FIRST, explicitly, before the
+ *  full elimination text -- "the most informative state in the system" per the Founder's own
+ *  words, never left to be inferred from a `keyed` object a reader would have to know to look for.
+ *  Reads `result.keyedTerminatorLabel` only for this label; changes no elimination, ranking, or
+ *  survivor -- see applyKeyedAnswerLabel()'s own header, composer_step_classification.ts, for the
+ *  same boundary stated there. Returns `null` only when Terminator:1 did not run in this stack
+ *  (nothing to report a basis for) -- never a fabricated placeholder. */
+export function buildComposerRunBasis(result: ComposedRunResult): string | null {
+  const term = result.results.find((r) => r.id === 'Terminator:1');
+  if (!term) return null;
+  const raw = term.raw as { verdict?: string | null; abstain?: boolean } | null;
+  if (!raw) return null;
+  const full = term.summary;
+  if (raw.abstain || !raw.verdict) return full;
+  const keyed = result.keyedTerminatorLabel?.keyed;
+  if (keyed && keyed.matchesVerdict === false) {
+    return `VERDICT ${raw.verdict} -- DISAGREES WITH KEYED ANSWER ${keyed.answer}. The evidence `
+      + `admitted does not entail the keyed answer.  ||  ${full}`;
+  }
+  return full;
+}
+
 /** Per HARDWIRE-23 Law 4/5: the operator authoring/reordering a stack via the composer panel at
  *  runtime IS the Founder's own act of "mix and match as I please" (FD-BP152-20) -- this
  *  attribution is descriptive metadata on the Script format (script.ts: "never read by the

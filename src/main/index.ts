@@ -308,7 +308,7 @@ import { runLianaCycleQuestion } from './liana_cycle/liana_terminal_engine';
 // see script_bridge.ts's own header for why the default (empty-stack) path is byte-identical to
 // the pre-existing 'liana-terminal-run' handler below (same runLianaCycleQuestion call, by
 // reference, untouched).
-import { listComposerRegistry, runScratchComposer } from './liana_cycle/library/script_bridge';
+import { buildComposerRunBasis, listComposerRegistry, runScratchComposer } from './liana_cycle/library/script_bridge';
 // D-BP154-025/BISHOP-SEG/S25/seg-handproof -- TWO READ-ONLY REFERENCE PANELS. Founder, verbatim:
 // "Give me my hand-written proof, in the composer, as well as the THREE QUESTIONS that we know get
 // the right answer." Both functions are pure disk reads (or MISSING), no derivation logic; see
@@ -4403,6 +4403,15 @@ function registerIPCHandlers(): void {
       // carries these fields directly on `outcome` (the SAME LianaTerminalOutcome shape the
       // terminal path's own receipt above already writes) -- read from there instead, never
       // duplicated logic for the same fact.
+      //
+      // D-BP154-039/BISHOP-SEG/S39/seg-disagreement FIX. The pre-existing `basis` for a VERDICT
+      // was hand-built here as a bare `VERDICT ${letter}) ${name}` -- two words -- while an
+      // ABSTAIN's own `abstainReason` already carried the full elimination/magnitude/frame-match
+      // accounting. Founder, this dispatch, verbatim: "A verdict must carry at least what an
+      // abstain carries." buildComposerRunBasis() (script_bridge.ts) is now THE ONE PLACE this text
+      // is built, for both outcomes alike, reading the SAME full summaryLine() text
+      // runTerminatorStep() already computes -- and, when the keyed answer disagrees with the
+      // verdict, states that FIRST, explicitly (script_bridge.ts's own header has the full ruling).
       const terminatorRaw = response.mode === 'stack'
         ? (response.result.results.find((r) => r.id === 'Terminator:1')?.raw as {
           verdict?: string | null; verdictName?: string | null; abstain?: boolean; abstainReason?: string | null; incomplete?: boolean;
@@ -4417,9 +4426,7 @@ function registerIPCHandlers(): void {
         : {
           qid: response.qid ?? null, question: response.question, options: response.options,
           verdict: terminatorRaw?.verdict ?? null, abstain: terminatorRaw?.abstain ?? null,
-          basis: terminatorRaw
-            ? (terminatorRaw.abstain ? terminatorRaw.abstainReason ?? null : `VERDICT ${terminatorRaw.verdict}) ${terminatorRaw.verdictName}`)
-            : null,
+          basis: buildComposerRunBasis(response.result),
           incomplete: terminatorRaw?.incomplete ?? null,
         };
       const slug = topLevel.qid != null ? `qid${topLevel.qid}` : 'free-text';
