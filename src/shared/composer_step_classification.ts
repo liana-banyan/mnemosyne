@@ -25,10 +25,16 @@
 // "verbatim span + one document" and "verbatim span + AND independent document corroboration" are
 // the same event for these three steps; manufacturing a fake gap between them would be exactly the
 // "false pass" BP154 dispatch warned against, five runs deep, all published A on unstated bases).
-// PROVEN's own emitter is the Terminator's VALUE CONVERGENCE branch (D-BP154-018,
-// comparative_cascade.ts's own detectValueConvergence(), a genuinely independent second numeric
-// path agreeing with the first) -- see classifyTerminatorVerdict() there. This file only
-// classifies what it can HONESTLY tell apart; CORROBORATED is the ceiling for these three steps.
+// PROVEN's own emitter, added D-BP154-018, is the TERMINATOR branch below (typeof r.abstain ===
+// 'boolean'): a verdict whose EVERY contributing feeder step was independently CORROBORATED (not
+// merely one of them) -- redundant, independent document-backing across the whole basis, not just
+// a single fact. comparative_cascade.ts's own detectValueConvergence()/evaluateComparativeTerminator()
+// machinery is untouched by this file and by terminator_step.ts -- that machinery is fenced
+// (comparative_cascade.ts stays untouched beyond gemmaExtract() itself), and this new elimination-
+// based terminator (FD-BP152-19, UNIQUE OR ABSTAIN) is a separate, self-contained reducer that
+// never calls it. This file only classifies what it can HONESTLY tell apart; CORROBORATED is the
+// ceiling for Softballs/NamedSet/Discriminator alone, and PROVEN only ever comes from a verdict
+// resting on multiple independently-corroborated facts.
 //
 // A FAILURE MAY NEVER BE PRESENTED AS A SUCCESS (today's law across six defects, THE_PAIL_BP154.md
 // STAGE 5's own dispatch): `ok !== true` is ABSTAIN, full stop, regardless of what a summary string
@@ -126,6 +132,18 @@ interface StepResultShape {
     attempted?: unknown; corroborated?: unknown; sourceUrl?: unknown; sourceTitle?: unknown;
     span?: unknown; error?: unknown;
   } | null;
+  /** TerminatorResult-only (terminator_step.ts, D-BP154-018) -- a DIFFERENT shape from the three
+   *  feeder steps (no excluded/included/kinds array of its own; it derives a verdict FROM them).
+   *  Detected by the presence of `abstain` (a boolean every TerminatorResult sets, `ok===true` or
+   *  not) rather than any of the fields above. `basisStepClasses` is terminator_step.ts's own,
+   *  already-computed classification of every feeder step that contributed an elimination --
+   *  reduced below into this verdict's own class, never re-derived from scratch here (this module
+   *  has no way to re-run that reduction faithfully without re-importing the feeder steps'
+   *  result shapes a second time). */
+  abstain?: unknown;
+  abstainReason?: unknown;
+  verdict?: unknown;
+  basisStepClasses?: unknown;
 }
 
 export interface ComposerStepClassification {
@@ -149,6 +167,25 @@ export function classifyComposerStepResult(raw: unknown): ComposerStepClassifica
   if (r.ok !== true) {
     const err = typeof r.error === 'string' && r.error ? r.error : 'the step did not complete';
     return { cls: 'ABSTAIN', detail: err, statedCount: 0 };
+  }
+  // TerminatorResult branch (D-BP154-018) -- checked first, before the generic excluded/included/
+  // kinds path below, since a terminator verdict has none of those and would otherwise fall
+  // through to the statedCount===0 ABSTAIN case for the wrong reason.
+  if (typeof r.abstain === 'boolean') {
+    if (r.abstain) {
+      const reason = typeof r.abstainReason === 'string' && r.abstainReason ? r.abstainReason : 'abstained';
+      return { cls: 'ABSTAIN', detail: reason, statedCount: 0 };
+    }
+    const classes = Array.isArray(r.basisStepClasses) ? (r.basisStepClasses as unknown[]) : [];
+    const corroboratedOrBetter = classes.filter((c) => c === 'CORROBORATED' || c === 'PROVEN').length;
+    const verdictLabel = typeof r.verdict === 'string' ? r.verdict : '(unknown)';
+    if (classes.length > 0 && corroboratedOrBetter === classes.length) {
+      return { cls: 'PROVEN', detail: `verdict ${verdictLabel}, every contributing step independently corroborated`, statedCount: 1 };
+    }
+    if (corroboratedOrBetter > 0) {
+      return { cls: 'CORROBORATED', detail: `verdict ${verdictLabel}, at least one contributing step independently corroborated`, statedCount: 1 };
+    }
+    return { cls: 'ANSWERED', detail: `verdict ${verdictLabel}, contributing step(s) stated but not corroborated`, statedCount: 1 };
   }
   const statedArray = Array.isArray(r.excluded)
     ? r.excluded

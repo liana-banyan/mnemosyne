@@ -192,7 +192,11 @@ export async function runNamedSetStep(
     };
     return { result, summary: summaryLine({}, result) };
   }
-  const all = Object.keys(OPT);
+  // Rebound to a fresh, definitely-non-null const: TS's control-flow narrowing of the early-return
+  // check above does not propagate into the nested `extractFrom` function declaration below (a
+  // known TS closure-narrowing limitation for function declarations, not this file's own logic).
+  const optSafe: Record<string, string> = OPT;
+  const all = Object.keys(optSafe);
   const property = deriveNamedSetProperty(input.question);
   if (!property) {
     const result: NamedSetResult = {
@@ -207,6 +211,49 @@ export async function runNamedSetStep(
   // D-BP154-014, ADDITIVE: see softballs_step.ts's identical comment / tryConversationalAuthority().
   const mcOptions = all.map((L) => `${L}) ${OPT[L]}`);
 
+  // D-BP154-018/BISHOP-SEG/S18/seg-terminator -- TRY-HARDER-BEFORE-ABSTAIN. MEASURED live, qid 98,
+  // this ticket: STAGE 1 (owned evidence / THE MORTGAGE) reused a real prior Google acquisition
+  // that merely NAMED an option (`namesAnyOption` only checks the option's own words appear
+  // somewhere in the passage) without ever verifying the passage actually STATED membership --
+  // extraction from it then correctly found zero verified inclusions, and the pre-this-ticket code
+  // stopped there (STAGE 2 only ran `if (!text)`, and `text` was already set by STAGE 1's weaker
+  // bar). The real prior passage DID contain a usable fact ("South Asia is the most densely
+  // populated region in the world", Quizlet, inside a noisy multi-snippet Google blob) that this
+  // extraction pass could not cleanly pull a verbatim span from -- a genuinely different failure
+  // from "no source exists". This helper runs extraction+verification against ONE candidate text
+  // and reports whether it actually produced a verified claim, so the caller below can try a
+  // SECOND source when the first, despite being found, produced nothing -- never widening what
+  // counts as a match (verifyIncludedEntries()'s own four-part span discipline is untouched), only
+  // trying a second independent source before concluding the step has nothing. This is a
+  // structural retry, not a letter preference (FD-BP153-06): it runs identically regardless of
+  // which options are in play, and a second source that ALSO yields nothing still abstains
+  // honestly, naming both attempts. */
+  async function extractFrom(candidateText: string): Promise<{
+    included: IncludedOption[]; discarded: number;
+    extractionError?: string;
+  }> {
+    const rawOut: {
+      text?: string; truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string;
+    } = {};
+    const instruction = `From the passage, list every option below that the passage explicitly and `
+      + `directly states IS ${property}. For each one, copy the exact verbatim sentence or clause `
+      + `from the passage that states it is ${property}. Do not include an option the passage `
+      + `merely does not mention -- an omission is not a statement. Only include an option the `
+      + `passage directly affirms membership for. Options: ${all.map((L) => `${L}) ${optSafe[L]}`).join('; ')}`;
+    const shape = '{"included":[{"name":"exact option name from the list","span":"verbatim sentence or clause from the passage stating it is the property"}]}';
+    const ex = await gemmaExtract(instruction, candidateText, shape, rawOut);
+    if (ex === null) {
+      const cause = rawOut.truncated
+        ? 'the local extraction model truncated its output before finishing'
+        : rawOut.failureCause
+          ? `the local extraction model failed (${rawOut.failureCause}${rawOut.failureDetail ? `: ${rawOut.failureDetail}` : ''})`
+          : 'the local extraction model failed for an unclassified reason';
+      return { included: [], discarded: 0, extractionError: cause };
+    }
+    const { included, discarded } = verifyIncludedEntries(ex.included, candidateText, optSafe);
+    return { included, discarded };
+  }
+
   // STAGE 1: OWNED EVIDENCE FIRST.
   const ownedCandidates = [
     ...(await gatherMortgageCandidates(input.qid, query)),
@@ -219,12 +266,27 @@ export async function runNamedSetStep(
     if (namesAnyOption(c.text)) { text = c.text; via = c.via; provenance = c.provenance; break; }
   }
 
-  // STAGE 2: GEMINI ANSWERS (FD-BP154-02).
+  let extraction = text ? await extractFrom(text) : null;
+  let extractionFailedOnStage1Text = Boolean(extraction?.extractionError);
+
+  // STAGE 2: GEMINI ANSWERS (FD-BP154-02) -- tried when STAGE 1 found nothing at all, OR (D-
+  // BP154-018) when STAGE 1 found a passage but it verifiably established zero memberships and
+  // extraction itself did not fail (a genuine "tried and got zero" is still worth a second,
+  // independent source before the step abstains).
   let conversationalError: string | undefined;
-  if (!text) {
+  const stage1WasUnproductive = !text || (extraction !== null && extraction.included.length === 0 && !extractionFailedOnStage1Text);
+  if (stage1WasUnproductive) {
     const cr = await tryConversationalAuthority(ctx, query, mcOptions);
     if (cr.ok && namesAnyOption(cr.text)) {
-      text = cr.text; via = cr.via; provenance = cr.provenance;
+      const cExtraction = await extractFrom(cr.text);
+      // Prefer STAGE 2 only when it actually found something STAGE 1 did not -- STAGE 1's own
+      // (possibly empty) result is never discarded in favour of an equally-empty STAGE 2 result;
+      // "tried harder, still nothing" stays an honest zero, not silently swapped for a different
+      // empty source.
+      if (cExtraction.included.length > 0 || !text) {
+        text = cr.text; via = cr.via; provenance = cr.provenance; extraction = cExtraction;
+        extractionFailedOnStage1Text = false;
+      }
     } else {
       conversationalError = cr.error ?? 'conversational authority answered but named none of the options';
     }
@@ -239,30 +301,14 @@ export async function runNamedSetStep(
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-
-  const rawOut: {
-    text?: string; truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string;
-  } = {};
-  const instruction = `From the passage, list every option below that the passage explicitly and `
-    + `directly states IS ${property}. For each one, copy the exact verbatim sentence or clause `
-    + `from the passage that states it is ${property}. Do not include an option the passage `
-    + `merely does not mention -- an omission is not a statement. Only include an option the `
-    + `passage directly affirms membership for. Options: ${all.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
-  const shape = '{"included":[{"name":"exact option name from the list","span":"verbatim sentence or clause from the passage stating it is the property"}]}';
-  const ex = await gemmaExtract(instruction, text, shape, rawOut);
-  if (ex === null) {
-    const cause = rawOut.truncated
-      ? 'the local extraction model truncated its output before finishing'
-      : rawOut.failureCause
-        ? `the local extraction model failed (${rawOut.failureCause}${rawOut.failureDetail ? `: ${rawOut.failureDetail}` : ''})`
-        : 'the local extraction model failed for an unclassified reason';
+  if (!extraction || extractionFailedOnStage1Text) {
     const result: NamedSetResult = {
       ok: false, property, query, included: [], discarded: 0, notIncluded: all, via,
-      error: `extraction failed -- ${cause} -- reported as a FAILURE, never an empty "nothing included"`,
+      error: `extraction failed -- ${extraction?.extractionError ?? 'the local extraction model failed for an unclassified reason'} -- reported as a FAILURE, never an empty "nothing included"`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-  const { included, discarded } = verifyIncludedEntries(ex.included, text, OPT);
+  const { included, discarded } = extraction;
   const includedLetters = new Set(included.map((e) => e.letter));
   const notIncluded = all.filter((L) => !includedLetters.has(L));
 

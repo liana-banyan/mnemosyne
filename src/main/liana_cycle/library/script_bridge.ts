@@ -66,6 +66,10 @@ import { registerNamedSetStep, runNamedSetStep } from './named_set_step';
 // D-BP154-013/BISHOP/S13/seg-composerstep, STEP 3/3 -- THE DISCRIMINATOR. Same discipline as the
 // two imports above -- see discriminator_step.ts's own header.
 import { registerDiscriminatorStep, runDiscriminatorStep } from './discriminator_step';
+// D-BP154-018/BISHOP-SEG/S18/seg-terminator -- THE TERMINATOR, THE_PAIL_BP154.md STAGE 5. Issues
+// no query of its own; reduces the three steps above's already-computed results. See that file's
+// own header for FD-BP152-19 (UNIQUE OR ABSTAIN) and the contradiction check.
+import { registerTerminatorStep, runTerminatorStep } from './terminator_step';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -143,6 +147,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP154-018/BISHOP-SEG/S18/seg-terminator -- ADDITIVE, same idempotent shape as the six calls
+  // above, for the same reason. Does not touch, re-register, or collide with anything the others
+  // register -- 'Terminator' is a new name.
+  try {
+    registerTerminatorStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -177,7 +189,8 @@ export interface ComposerRegistryEntry {
 // D-BP154-013 adds 'Softballs:1' -- it calls THIS file's own runOneStep() branch below, which
 // calls softballs_step.ts's runSoftballsStep() (one query, one verified extraction; see that
 // file's own header for why it does not call classify_cascade.ts's establishFrame()).
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1']);
+// D-BP154-018 adds 'Terminator:1' -- issues no query of its own, see terminator_step.ts's header.
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -270,6 +283,10 @@ async function runOneStep(
   id: string,
   input: MethodQuestionInput,
   ctx: MethodRunContext,
+  // D-BP154-018, ADDITIVE: every step already run earlier in THIS stack. Only 'Terminator:1'
+  // reads it (it asks no query of its own, see terminator_step.ts's header) -- every other branch
+  // below ignores the parameter exactly as it did before this ticket.
+  priorResults: ComposerStepOutcome[],
 ): Promise<{ summary: string; raw: unknown }> {
   if (id === 'StateTheQuestion:1') {
     // D-BP152-049 STAGE 3/4: calls the SAME function STEP 0 itself calls automatically at the
@@ -303,6 +320,13 @@ async function runOneStep(
     // D-BP154-013/BISHOP/S13/seg-composerstep, STEP 3/3 -- THE DISCRIMINATOR. Same
     // recordingAskGoogle()-wrapped ctx.askGoogle every other step here receives.
     const { result, summary } = await runDiscriminatorStep(input, ctx);
+    persistStepClaim(id, input, ctx, result);
+    return { summary, raw: result };
+  }
+  if (id === 'Terminator:1') {
+    // D-BP154-018/BISHOP-SEG/S18/seg-terminator -- THE TERMINATOR. No query issued; reduces
+    // whatever of Softballs:1/NamedSet:1/Discriminator:1 already ran earlier in this stack.
+    const { result, summary } = await runTerminatorStep(input, ctx, priorResults);
     persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }
@@ -388,7 +412,7 @@ export async function runComposedStack(
     return { ok: false, steps: [], results: [], error: validation.error };
   }
   const execute: MethodExecutor<ComposerState> = async (identity, state) => {
-    const { summary, raw } = await runOneStep(identity.id, state.input, ctx);
+    const { summary, raw } = await runOneStep(identity.id, state.input, ctx, state.results);
     return { input: state.input, results: [...state.results, { id: identity.id, summary, raw }] };
   };
   const runResult: RunResult<ComposerState> = await runScript(
