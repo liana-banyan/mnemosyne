@@ -189,8 +189,10 @@ describe('assertion (a): the panel lists every registry entry at runtime', () =>
     // 'Discriminator' (discriminator_step.ts), excluded here for the same reason. D-BP154-018
     // adds a ninth, 'Terminator' (terminator_step.ts), excluded here for the same reason -- it is
     // a real, executable Composer step (issues no query of its own, see that file's header), not
-    // an orphan.
-    const orphanIds = entries.filter((e) => !['ComparativeCascade', 'DefinitionalCascade', 'ClassifyCascade', 'Survey', 'StateTheQuestion', 'Softballs', 'NamedSet', 'Discriminator', 'Terminator'].includes(e.name));
+    // an orphan. D-BP154-022 adds a tenth, 'Magnitude' (magnitude_step.ts), excluded here for the
+    // same reason -- a real, executable Composer step (FD-BP153-01, ranks the frame's own
+    // survivors), not an orphan.
+    const orphanIds = entries.filter((e) => !['ComparativeCascade', 'DefinitionalCascade', 'ClassifyCascade', 'Survey', 'StateTheQuestion', 'Softballs', 'NamedSet', 'Discriminator', 'Terminator', 'Magnitude'].includes(e.name));
     expect(orphanIds.length).toBeGreaterThanOrEqual(6);
     for (const e of orphanIds) {
       expect(e.executable, `${e.id} must not claim to be executable -- it is BLOCKED per HARDWIRE-22`).toBe(false);

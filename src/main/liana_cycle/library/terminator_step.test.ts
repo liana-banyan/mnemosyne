@@ -16,6 +16,7 @@ import { listComposerRegistry } from './script_bridge';
 import type { SoftballsResult } from './softballs_step';
 import type { NamedSetResult } from './named_set_step';
 import type { DiscriminatorResult } from './discriminator_step';
+import type { MagnitudeResult, MagnitudeOrderEntry } from './magnitude_step';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 
 // qid 98's real option letters, from resources/mmlu_pro_bundled/questions.jsonl (question_id 98) --
@@ -50,6 +51,23 @@ function namedSet(included: Array<[string, string]>): NamedSetResult {
     discarded: 0,
     notIncluded: Object.keys(OPT).filter((L) => !included.some(([l]) => l === L)),
     via: 'test',
+  };
+}
+
+/** D-BP154-022/BISHOP-SEG/S22/seg-magnitude, ADDITIVE. `order` is [letter, span] pairs, MOST to
+ *  LEAST -- caller supplies them already in the intended sequence, mirroring how
+ *  runMagnitudeStep() itself trusts an extraction's own stated array order. */
+function magnitude(
+  frame: string[],
+  targetExtreme: 'most' | 'least',
+  property: string,
+  order: Array<[string, string]>,
+  unranked: string[] = [],
+): MagnitudeResult {
+  const orderEntries: MagnitudeOrderEntry[] = order.map(([letter, span]) => ({ letter, name: OPT[letter], span }));
+  return {
+    ok: true, frame, property, targetExtreme, query: 'q', order: orderEntries, discarded: 0,
+    unranked, via: 'test', disagreement: null,
   };
 }
 
@@ -275,6 +293,73 @@ describe('runTerminatorStep -- UNIQUE OR ABSTAIN end to end over the pure reduce
     expect(result.abstain).toBe(true);
     expect(result.verdict).toBeNull();
     expect(result.survivors.length).toBeGreaterThan(1);
+  });
+
+  // D-BP154-022/BISHOP-SEG/S22/seg-magnitude -- FD-BP153-01, "magnitude decides only among the
+  // survivors". Softballs leaves exactly {A, B} as the frame (7 of 9 eliminated) so these tests
+  // isolate the extreme-picking mechanism itself, independent of the real qid 98 property words.
+  describe('Magnitude:1 breaks a multi-survivor tie -- FD-BP153-01', () => {
+    const twoSurvivorSoftballs = softballs(
+      ['C', 'D', 'E', 'F', 'G', 'H', 'I'].map((L) => [L, `${L}) not a world region.`] as [string, string]),
+    );
+    const twoSurvivorOutcome = { id: 'Softballs:1', summary: 's', raw: twoSurvivorSoftballs };
+
+    test('a fully-ranked, frame-matched, LEAST-targeting Magnitude:1 picks the LAST (least) entry as verdict', async () => {
+      const mag = magnitude(['A', 'B'], 'least', 'Alpha Grade', [['A', 'A is more Alpha than B.'], ['B', 'B is less Alpha than A.']]);
+      const magOutcome = { id: 'Magnitude:1', summary: 's', raw: mag };
+      const { result } = await runTerminatorStep(input, ctx, [twoSurvivorOutcome, magOutcome]);
+      expect(result.abstain).toBe(false);
+      expect(result.verdict).toBe('B'); // the LAST (least) entry of a most-to-least order
+      expect(result.magnitudeBasis).not.toBeNull();
+      expect(result.magnitudeBasis?.targetExtreme).toBe('least');
+      expect(result.magnitudeBasis?.span).toBe('B is less Alpha than A.');
+    });
+
+    test('a fully-ranked, frame-matched, MOST-targeting Magnitude:1 picks the FIRST (most) entry as verdict', async () => {
+      const mag = magnitude(['A', 'B'], 'most', 'Alpha Grade', [['A', 'A is more Alpha than B.'], ['B', 'B is less Alpha than A.']]);
+      const magOutcome = { id: 'Magnitude:1', summary: 's', raw: mag };
+      const { result } = await runTerminatorStep(input, ctx, [twoSurvivorOutcome, magOutcome]);
+      expect(result.abstain).toBe(false);
+      expect(result.verdict).toBe('A'); // the FIRST (most) entry of a most-to-least order
+    });
+
+    test('Magnitude:1 ranking a DIFFERENT frame than this reduction computed is refused, not trusted', async () => {
+      // Magnitude ranked {A, C} -- not the {A, B} this Softballs basis actually leaves.
+      const mag = magnitude(['A', 'C'], 'least', 'Alpha Grade', [['A', 'x'], ['C', 'y']]);
+      const magOutcome = { id: 'Magnitude:1', summary: 's', raw: mag };
+      const { result } = await runTerminatorStep(input, ctx, [twoSurvivorOutcome, magOutcome]);
+      expect(result.abstain).toBe(true);
+      expect(result.verdict).toBeNull();
+      expect(result.abstainReason).toContain('DIFFERENT frame');
+    });
+
+    test('a PARTIAL ranking (an unranked frame survivor) is refused -- cannot honestly name the true extreme', async () => {
+      const mag = magnitude(['A', 'B'], 'least', 'Alpha Grade', [['A', 'A is more Alpha than B.']], ['B']);
+      const magOutcome = { id: 'Magnitude:1', summary: 's', raw: mag };
+      const { result } = await runTerminatorStep(input, ctx, [twoSurvivorOutcome, magOutcome]);
+      expect(result.abstain).toBe(true);
+      expect(result.verdict).toBeNull();
+      expect(result.abstainReason).toContain('unranked');
+    });
+
+    test('a FAILED Magnitude:1 (ok:false) is treated as unavailable, ABSTAIN as before this ticket', async () => {
+      const failedMag: MagnitudeResult = {
+        ok: false, frame: [], property: null, targetExtreme: null, query: null, order: [], discarded: 0,
+        unranked: [], via: 'n/a', disagreement: null, error: 'no usable answer from any authority',
+      };
+      const magOutcome = { id: 'Magnitude:1', summary: 's', raw: failedMag };
+      const { result } = await runTerminatorStep(input, ctx, [twoSurvivorOutcome, magOutcome]);
+      expect(result.abstain).toBe(true);
+      expect(result.verdict).toBeNull();
+      expect(result.abstainReason).toContain('did not succeed');
+    });
+
+    test('no Magnitude:1 in the stack at all -> the pre-existing plain multi-survivor ABSTAIN, unchanged', async () => {
+      const { result } = await runTerminatorStep(input, ctx, [twoSurvivorOutcome]);
+      expect(result.abstain).toBe(true);
+      expect(result.verdict).toBeNull();
+      expect(result.magnitudeBasis).toBeNull();
+    });
   });
 
   test('no feeder steps run at all -> every option survives -> ABSTAIN, never a fabricated verdict', async () => {

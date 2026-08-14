@@ -65,6 +65,10 @@ import { classifyComposerStepResult, type ComposerStepClass } from '../../../sha
 import type { SoftballsResult } from './softballs_step';
 import type { NamedSetResult } from './named_set_step';
 import type { DiscriminatorResult } from './discriminator_step';
+// D-BP154-022/BISHOP-SEG/S22/seg-magnitude, ADDITIVE, TYPE-ONLY (erased at compile time -- no
+// runtime circular dependency; magnitude_step.ts's own VALUE import of
+// deriveTerminatorEliminations from THIS file is the only runtime edge between the two files).
+import type { MagnitudeResult } from './magnitude_step';
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 
@@ -152,10 +156,10 @@ export interface TerminatorContradiction {
 
 export interface TerminatorResult {
   ok: boolean;
-  /** Which of the three feeder steps were actually found (already run, earlier in this same
-   *  stack) -- a step absent from the stack is reported here as 'not run', distinct from a step
-   *  that ran and abstained. */
-  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1', 'not run' | 'ok' | 'failed'>;
+  /** Which of the feeder steps were actually found (already run, earlier in this same stack) --
+   *  a step absent from the stack is reported here as 'not run', distinct from a step that ran
+   *  and abstained. D-BP154-022, ADDITIVE: 'Magnitude:1' added alongside the original three. */
+  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1', 'not run' | 'ok' | 'failed'>;
   eliminated: TerminatorEliminationEntry[];
   survivors: string[];
   contradiction: TerminatorContradiction | null;
@@ -168,7 +172,19 @@ export interface TerminatorResult {
    *  derive this verdict's own PROVEN/CORROBORATED/ANSWERED tier from how well-evidenced its own
    *  basis actually is, never from which letter it reached. Empty when abstaining. */
   basisStepClasses: ComposerStepClass[];
+  /** D-BP154-022, ADDITIVE: non-null ONLY when this verdict was reached via Magnitude:1's stated
+   *  ranking rather than a unique survivor after elimination alone (FD-BP153-01: "magnitude
+   *  decides only among the survivors" -- a DIFFERENT mechanism from UNIQUE OR ABSTAIN's own
+   *  elimination-to-one, reported honestly as such, never blended into `eliminated` as if it were
+   *  another stated exclusion). Null in every pre-existing unique-survivor verdict. */
+  magnitudeBasis: { targetExtreme: 'most' | 'least'; property: string; span: string } | null;
   error?: string;
+}
+
+function sameLetterSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const bSet = new Set(b);
+  return a.every((L) => bSet.has(L));
 }
 
 function summaryLine(OPT: Record<string, string>, r: TerminatorResult): string {
@@ -179,7 +195,10 @@ function summaryLine(OPT: Record<string, string>, r: TerminatorResult): string {
   if (r.abstain) {
     return `TERMINATOR -- ABSTAIN: ${r.abstainReason}  ||  ELIMINATED: ${elimText}  ||  SURVIVORS: ${r.survivors.join(', ') || '(none)'}`;
   }
-  return `TERMINATOR -- VERDICT ${r.verdict}) ${r.verdictName}  ||  ELIMINATED: ${elimText}`;
+  const magnitudeNote = r.magnitudeBasis
+    ? `  ||  MAGNITUDE BASIS: target=${r.magnitudeBasis.targetExtreme} of "${r.magnitudeBasis.property}" -- "${r.magnitudeBasis.span}"`
+    : '';
+  return `TERMINATOR -- VERDICT ${r.verdict}) ${r.verdictName}  ||  ELIMINATED: ${elimText}${magnitudeNote}`;
 }
 
 /** THE ONE PLACE the three feeder steps' results become eliminations. Pure, synchronous, no I/O --
@@ -277,13 +296,13 @@ export async function runTerminatorStep(
 ): Promise<{ result: TerminatorResult; summary: string }> {
   const OPT = input.options;
   const emptyStepsConsulted: TerminatorResult['stepsConsulted'] = {
-    'Softballs:1': 'not run', 'NamedSet:1': 'not run', 'Discriminator:1': 'not run',
+    'Softballs:1': 'not run', 'NamedSet:1': 'not run', 'Discriminator:1': 'not run', 'Magnitude:1': 'not run',
   };
   if (!OPT || Object.keys(OPT).length === 0) {
     const result: TerminatorResult = {
       ok: false, stepsConsulted: emptyStepsConsulted, eliminated: [], survivors: [],
       contradiction: null, verdict: null, verdictName: null, abstain: true,
-      abstainReason: 'this question has no lettered options', basisStepClasses: [],
+      abstainReason: 'this question has no lettered options', basisStepClasses: [], magnitudeBasis: null,
       error: 'THE TERMINATOR needs lettered options -- cannot run without them',
     };
     return { result, summary: summaryLine({}, result) };
@@ -294,11 +313,13 @@ export async function runTerminatorStep(
   const softballsRaw = findRaw('Softballs:1') as SoftballsResult | null;
   const namedSetRaw = findRaw('NamedSet:1') as NamedSetResult | null;
   const discriminatorRaw = findRaw('Discriminator:1') as DiscriminatorResult | null;
+  const magnitudeRaw = findRaw('Magnitude:1') as MagnitudeResult | null;
 
   const stepsConsulted: TerminatorResult['stepsConsulted'] = {
     'Softballs:1': softballsRaw ? (softballsRaw.ok ? 'ok' : 'failed') : 'not run',
     'NamedSet:1': namedSetRaw ? (namedSetRaw.ok ? 'ok' : 'failed') : 'not run',
     'Discriminator:1': discriminatorRaw ? (discriminatorRaw.ok ? 'ok' : 'failed') : 'not run',
+    'Magnitude:1': magnitudeRaw ? (magnitudeRaw.ok ? 'ok' : 'failed') : 'not run',
   };
 
   const { eliminated, contradiction } = deriveTerminatorEliminations(
@@ -313,7 +334,7 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, eliminated, survivors: [], contradiction, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `CONTRADICTION: ${contradiction.reason}`,
-      basisStepClasses: [],
+      basisStepClasses: [], magnitudeBasis: null,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -332,18 +353,60 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: 'every option was eliminated -- at least one contributing step\'s basis must be wrong; not published',
-      basisStepClasses: [],
+      basisStepClasses: [], magnitudeBasis: null,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
   if (survivors.length > 1) {
+    // D-BP154-022/BISHOP-SEG/S22/seg-magnitude, ADDITIVE: FD-BP153-01, "magnitude decides only
+    // among the survivors" -- consulted here, AFTER the elimination-based frame is established,
+    // exactly the ordering the ruling names. Every one of these checks must hold before a
+    // magnitude-derived verdict is trusted; any single failure falls through to the SAME honest
+    // multi-survivor ABSTAIN this branch has always returned, now naming why magnitude did not
+    // apply:
+    //   (a) Magnitude:1 actually ran and succeeded (ok:true) -- absent/failed is not a basis.
+    //   (b) its own `frame` is EXACTLY the survivor set THIS reduction just (re-)computed -- never
+    //       trust a ranking obtained against a different or stale frame (a mismatch means the
+    //       stack was reordered or re-run in a way that invalidates the ranking; report it, never
+    //       force it).
+    //   (c) `targetExtreme` was determined (the question's own wording named a direction).
+    //   (d) EVERY survivor was actually ranked (`unranked.length === 0`) -- a partial ordering
+    //       cannot honestly name the true extreme (an unranked option could be even more extreme
+    //       than the one at the end of a short list).
+    if (
+      magnitudeRaw?.ok && magnitudeRaw.targetExtreme && magnitudeRaw.property
+      && sameLetterSet(magnitudeRaw.frame, survivors)
+      && magnitudeRaw.unranked.length === 0
+      && magnitudeRaw.order.length === survivors.length
+    ) {
+      const extremeEntry = magnitudeRaw.targetExtreme === 'least'
+        ? magnitudeRaw.order[magnitudeRaw.order.length - 1]
+        : magnitudeRaw.order[0];
+      const magnitudeClass = classifyComposerStepResult(magnitudeRaw).cls;
+      const result: TerminatorResult = {
+        ok: true, stepsConsulted, eliminated, survivors, contradiction: null,
+        verdict: extremeEntry.letter, verdictName: OPT[extremeEntry.letter], abstain: false, abstainReason: null,
+        basisStepClasses: [...basisStepClasses, magnitudeClass],
+        magnitudeBasis: { targetExtreme: magnitudeRaw.targetExtreme, property: magnitudeRaw.property, span: extremeEntry.span },
+      };
+      return { result, summary: summaryLine(OPT, result) };
+    }
     const consultedNote = (Object.entries(stepsConsulted) as Array<[string, string]>)
       .map(([id, status]) => `${id}: ${status}`).join(', ');
+    const magnitudeNote = magnitudeRaw
+      ? magnitudeRaw.ok
+        ? !sameLetterSet(magnitudeRaw.frame, survivors)
+          ? `; Magnitude:1 ran but against a DIFFERENT frame {${magnitudeRaw.frame.join(', ')}} than this reduction's own {${survivors.join(', ')}} -- refused, not trusted`
+          : magnitudeRaw.unranked.length > 0
+            ? `; Magnitude:1 ran on the right frame but left ${magnitudeRaw.unranked.join(', ')} unranked -- a partial ordering cannot name the true extreme`
+            : '; Magnitude:1 ran but did not resolve a target extreme'
+        : `; Magnitude:1 ran but did not succeed (${magnitudeRaw.error ?? 'no reason given'})`
+      : '';
     const result: TerminatorResult = {
       ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
-      abstainReason: `more than one survivor left (${survivors.join(', ')}) -- no stated distinction separated them further. Steps consulted: ${consultedNote}`,
-      basisStepClasses: [],
+      abstainReason: `more than one survivor left (${survivors.join(', ')}) -- no stated distinction separated them further. Steps consulted: ${consultedNote}${magnitudeNote}`,
+      basisStepClasses: [], magnitudeBasis: null,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -352,6 +415,7 @@ export async function runTerminatorStep(
   const result: TerminatorResult = {
     ok: true, stepsConsulted, eliminated, survivors, contradiction: null,
     verdict, verdictName: OPT[verdict], abstain: false, abstainReason: null, basisStepClasses,
+    magnitudeBasis: null,
   };
   return { result, summary: summaryLine(OPT, result) };
 }
