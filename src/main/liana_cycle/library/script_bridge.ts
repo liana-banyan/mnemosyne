@@ -71,6 +71,12 @@ import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
 import { runScript, type MethodExecutor, type RunResult, type StepRunRecord } from './script_runner';
 import type { StepAttribution } from './step_declaration';
+// D-BP154-017/BISHOP-SEG/S17/seg-classify -- THE PERSISTENCE GAP (THE_PAIL_BP154.md STAGE 4):
+// mechanism + verbatim corroborating span were computed transiently and discarded at run end. See
+// composer_claims_store.ts's own header for why this is a SEPARATE ledger, not a widened
+// evidence_store.ts schema (that file is HARDWIRE-08 pinned).
+import { appendComposerClaim } from './composer_claims_store';
+import { classifyComposerStepResult } from '../../../shared/composer_step_classification';
 
 // ─────────────────────────────── registry population (idempotent) ───────────────────────────────
 // registerKnownMethods() throws on any id already present (Rule 66, "duplicate is an error" --
@@ -207,6 +213,55 @@ function summarizeOutcome(outcome: LianaTerminalOutcome): string {
   return `verdict ${outcome.verdict ?? '(none)'}${outcome.basis ? ` -- ${outcome.basis}` : ''}`;
 }
 
+/** D-BP154-017/BISHOP-SEG/S17/seg-classify -- persists the classification + mechanism + verbatim
+ *  corroborating span for one step's result (composer_claims_store.ts, a SEPARATE ledger from
+ *  evidence_store.ts -- see that store's own header for why). Called for every step whose result
+ *  shape classifyComposerStepResult() can read (today: Softballs:1/NamedSet:1/Discriminator:1; D-
+ *  BP154-018 adds Terminator:1 the same way). Never throws into the caller: a write failure here
+ *  is instrumentation failing, not the step itself -- caught and swallowed, same discipline
+ *  evidence_authority.ts's own recordingAskGoogle() uses for a failed evidence write not being
+ *  allowed to fail the query it describes. Silently a no-op when `ctx.acquisitionId` is absent
+ *  (every pre-existing call site, and every unit test, that does not thread one through).
+ */
+function persistStepClaim(id: string, input: MethodQuestionInput, ctx: MethodRunContext, raw: unknown): void {
+  if (!ctx.acquisitionId) return;
+  try {
+    const { cls, detail } = classifyComposerStepResult(raw);
+    const r = raw as {
+      query?: unknown;
+      answerProvenance?: { mechanism?: unknown; sourceId?: unknown; detail?: unknown } | null;
+      corroboration?: {
+        attempted?: unknown; corroborated?: unknown; sourceUrl?: unknown; sourceTitle?: unknown; span?: unknown;
+      } | null;
+      ok?: unknown;
+    };
+    appendComposerClaim({
+      qid: input.qid ?? null,
+      acquisitionId: ctx.acquisitionId,
+      stepId: id,
+      ts: new Date().toISOString(),
+      ok: r.ok === true,
+      classification: cls,
+      classificationDetail: detail,
+      query: typeof r.query === 'string' ? r.query : null,
+      mechanism: typeof r.answerProvenance?.mechanism === 'string' ? r.answerProvenance.mechanism : null,
+      sourceId: typeof r.answerProvenance?.sourceId === 'string' ? r.answerProvenance.sourceId : null,
+      mechanismDetail: typeof r.answerProvenance?.detail === 'string' ? r.answerProvenance.detail : null,
+      corroboration: r.corroboration ? {
+        attempted: r.corroboration.attempted === true,
+        corroborated: r.corroboration.corroborated === true,
+        sourceUrl: typeof r.corroboration.sourceUrl === 'string' ? r.corroboration.sourceUrl : null,
+        sourceTitle: typeof r.corroboration.sourceTitle === 'string' ? r.corroboration.sourceTitle : null,
+        span: typeof r.corroboration.span === 'string' ? r.corroboration.span : null,
+      } : null,
+    });
+  } catch {
+    // Instrumentation failure only -- never fails the step it describes. Nothing to report to a
+    // caller that has no channel for a non-fatal warning here; the step's own result (already
+    // returned to the operator) is unaffected either way.
+  }
+}
+
 /** Runs exactly one registered step's real code against the shared question. Throws (rather than
  *  returning a fabricated result) for any id this file does not know how to execute -- caught by
  *  script_runner.ts's own MethodExecutor contract, which marks the step 'failed' and stops the
@@ -234,18 +289,21 @@ async function runOneStep(
     // step run through this function. Nothing in this branch or in softballs_step.ts touches the
     // evidence store directly.
     const { result, summary } = await runSoftballsStep(input, ctx);
+    persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }
   if (id === 'NamedSet:1') {
     // D-BP154-013/BISHOP/S13/seg-composerstep, STEP 2/3 -- THE NAMED SET. Same
     // recordingAskGoogle()-wrapped ctx.askGoogle every other step here receives.
     const { result, summary } = await runNamedSetStep(input, ctx);
+    persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }
   if (id === 'Discriminator:1') {
     // D-BP154-013/BISHOP/S13/seg-composerstep, STEP 3/3 -- THE DISCRIMINATOR. Same
     // recordingAskGoogle()-wrapped ctx.askGoogle every other step here receives.
     const { result, summary } = await runDiscriminatorStep(input, ctx);
+    persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }
   const liveId = CASCADE_LIVE_ID[id];
@@ -443,7 +501,11 @@ export async function runScratchComposer(
     options: parsed.options,
     correctAnswer: parsed.correctAnswer,
   };
-  const ctx: MethodRunContext = { askGoogle, emit, askConversationalAuthority };
+  // D-BP154-017: acquisitionId threaded through so a claim-producing step (persistStepClaim(),
+  // above) can tag its persisted classification with the SAME acquisition id THE PAIL already
+  // tags every EvidenceRecord this run writes with -- see method_registry.ts's own doc comment on
+  // MethodRunContext.acquisitionId.
+  const ctx: MethodRunContext = { askGoogle, emit, askConversationalAuthority, acquisitionId: currentAcquisitionId };
   const result = await runComposedStack(stepIds, methodInput, ctx);
   return { mode: 'stack', qid: parsed.qid, question: parsed.question, options: parsed.options, result };
 }
