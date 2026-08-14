@@ -695,6 +695,54 @@ export async function runTerminatorStep(
     return { result, summary: summaryLine(OPT, result) };
   }
   if (survivors.length > 1) {
+    // D-BP154-014/BISHOP-SEG/S40/seg-magnitude-gate, NEW. FD-BP154-14 (RULINGS_BP154.md), Founder
+    // verbatim: "Magnitude should not run once membership is settled - ruled." AMENDS FD-BP153-01.
+    //
+    // MEASURED LIVE, qid 98 (LIANA_COMPOSER_RUN_qid98_2026-08-14T21-59-51-048Z.json, the first
+    // COMPLETE seven-step run of the session): NamedSet:1 found exactly ONE stated member of the
+    // superlative property (B, South Asia) and eliminated it. Every one of the FOUR remaining
+    // survivors was THEREFORE already a stated NON-member by construction -- elimination only ever
+    // removes members; a survivor's mere presence proves nothing was stated placing it INSIDE the
+    // property. Magnitude:1 then ranked those four non-members by the SAME property and picked
+    // "the least dense of several equally-correct answers" -- answering "which is least dense",
+    // not "which is NOT considered one of the most densely populated". The membership test had
+    // ALREADY partitioned the options; magnitude had nothing legitimate left to decide, and it
+    // decided anyway, publishing a confident wrong VERDICT F against a key of A.
+    //
+    // THE GATE, structural and HARDWIRE-22 safe: reads only WHETHER NamedSet:1's own `included` or
+    // Discriminator:1's own `propertyMembers` arrays are non-empty -- i.e. whether the membership-
+    // of-the-property question was ever asked AND answered affirmatively for at least one option.
+    // Never reads Magnitude:1's own ranking content, never which letter is which (FD-BP153-06).
+    // When it fires, Magnitude:1's own status (ran/failed/not stacked) becomes irrelevant -- per
+    // the ruling's own words, "it does not run", not "it runs but is not trusted".
+    //
+    // AMENDS, DOES NOT REPLACE, FD-BP153-01: "a superlative resolves by magnitude, ranked within
+    // the frame" remains correct and UNCHANGED below for a genuine "which is the MOST/LEAST X"
+    // question, where NO prior step ever found a stated member of the property to partition on --
+    // this gate is silent (membershipPartitioned stays false) and the pre-existing magnitude-
+    // consultation logic runs exactly as before.
+    const membershipPartitioned = Boolean(
+      (namedSetRaw?.ok && namedSetRaw.included.length > 0)
+      || (discriminatorRaw?.ok && discriminatorRaw.propertyMembers.length > 0),
+    );
+    if (membershipPartitioned) {
+      const statedMembers = [
+        ...(namedSetRaw?.ok ? namedSetRaw.included.map((e) => `${e.letter}) ${e.name} [NamedSet:1]`) : []),
+        ...(discriminatorRaw?.ok ? discriminatorRaw.propertyMembers.map((e) => `${e.letter}) ${e.name} [Discriminator:1]`) : []),
+      ];
+      const result: TerminatorResult = {
+        ok: true, stepsConsulted, eliminated, survivors, contradiction: null, verdict: null,
+        verdictName: null, abstain: true,
+        abstainReason: `FD-BP154-14: Magnitude:1 not consulted -- the membership test already `
+          + `partitioned the options (stated member(s): ${statedMembers.join(', ') || '(none)'}), `
+          + `so the ${survivors.length} remaining survivor(s) (${survivors.join(', ')}) are `
+          + 'non-members by elimination; ranking them by magnitude would answer "which is least/'
+          + 'most of the property", not "which is NOT a member" -- more than one survivor after '
+          + `membership is settled is an ABSTAIN, not a ranking problem. Steps consulted: ${consultedNote}`,
+        basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
+      };
+      return { result, summary: summaryLine(OPT, result) };
+    }
     // D-BP154-022/BISHOP-SEG/S22/seg-magnitude, ADDITIVE: FD-BP153-01, "magnitude decides only
     // among the survivors" -- consulted here, AFTER the elimination-based frame is established,
     // exactly the ordering the ruling names. Every one of these checks must hold before a
