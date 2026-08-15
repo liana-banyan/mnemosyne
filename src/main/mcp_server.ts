@@ -37,6 +37,13 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { queryEbletStore, getEbletIndexStats, writeVerifiedEblet } from './mnem_eblet_store';
 import { runGiantConcordance, type ConcordanceResult } from './plow/giant_concordance';
+// D-BP154-074/BISHOP-SEG/S74/seg-ambient -- AMBIENT BROWSER CAPTURE. See ambient_capture_auth.ts's
+// own header for why this is a SEPARATE, narrower-privileged key from _authToken above, and
+// ambient_capture.ts's own header for why recordAmbientBrowserCapture() is a NEW CALLER into the
+// existing evidence_store.ts, not a new writer.
+import { isValidCaptureKey, getOrCreateCaptureKey, getCaptureKeyPath } from './ambient_capture_auth';
+import { recordAmbientBrowserCapture, type AmbientCapturePayload } from './liana_cycle/evidence/ambient_capture';
+import { notifyAmbientCapture } from './ambient_capture_bridge';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -69,6 +76,22 @@ let _authToken: string | null = null;
 export const connectedClients: Map<string, { name: string; connectedAt: number; callCount: number }> = new Map();
 
 const _recentCalls: RecentCall[] = [];
+
+// ── D-BP154-074/BISHOP-SEG/S74/seg-ambient: ambient browser capture state ─────────────────────
+// Per-acquisition monotonic seq counter (evidence_store.ts requires "monotonic within an
+// acquisition" -- see appendEvidence()'s own doc comment). Reset is never needed: a fresh
+// acquisitionId is derived per (surface, capturedAt), so this map only ever grows by a few
+// entries per session and is intentionally never persisted (it exists purely to satisfy the
+// ledger's own ordering contract for records that land in the SAME millisecond+surface).
+const _ambientSeqByAcquisition: Map<string, number> = new Map();
+let _ambientCaptureCount = 0;
+let _ambientCaptureLastAt: string | null = null;
+
+function nextAmbientSeq(acquisitionId: string): number {
+  const n = _ambientSeqByAcquisition.get(acquisitionId) ?? 0;
+  _ambientSeqByAcquisition.set(acquisitionId, n + 1);
+  return n;
+}
 
 function pushRecentCall(tool: string, clientId = 'unknown'): void {
   _recentCalls.unshift({ tool, ts: Date.now(), clientId });
@@ -283,14 +306,34 @@ function buildMcpServer(): McpServer {
 async function handleMcpHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const clientId = req.socket.remoteAddress || 'unknown';
 
-  // CORS pre-flight
-  res.setHeader('Access-Control-Allow-Origin', '127.0.0.1');
+  // CORS pre-flight. D-BP154-074/seg-ambient FIX: the prior header was the bare literal
+  // '127.0.0.1' (no scheme, no port), which can never equal a real browser Origin header (e.g.
+  // 'https://claude.ai' or a 'chrome-extension://<id>' background-worker origin) — BP154_
+  // AMBIENT_CAPTURE_GAP.md Part 2c named this as a real blocking bug for any browser-originated
+  // fetch. Reflecting the request's own Origin is safe HERE specifically because this server sets
+  // no cookies and reads no cookie/session state keyed by Origin — auth is a single shared-secret
+  // header (Authorization Bearer for /mcp, X-Mnemo-Capture-Key for /capture below), so there is no
+  // credentialed cross-site state for a reflected Origin to steal. Falls back to the old literal
+  // for non-browser clients (Claude Desktop/Cursor MCP stdio-over-HTTP clients typically send no
+  // Origin header at all) so nothing that worked before this fix stops working.
+  const requestOrigin = (req.headers['origin'] || '') as string;
+  res.setHeader('Access-Control-Allow-Origin', requestOrigin || '127.0.0.1');
+  res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, Mcp-Session-Id');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, Mcp-Session-Id, X-Mnemo-Capture-Key');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // D-BP154-074/seg-ambient, ADDITIVE, BEFORE the /mcp Bearer gate: the ambient-capture routes use
+  // their OWN, separately-minted, narrower-privileged key (ambient_capture_auth.ts) — never the
+  // full-privilege MCP Bearer token. See that file's header for the least-privilege rationale.
+  // Handled and returned here so neither route falls through to the /mcp-only logic below.
+  if (req.url === '/capture' || req.url === '/capture/status') {
+    await handleAmbientCaptureRequest(req, res, clientId);
     return;
   }
 
@@ -363,6 +406,117 @@ async function handleMcpHttpRequest(req: http.IncomingMessage, res: http.ServerR
   }
 }
 
+// ── D-BP154-074/BISHOP-SEG/S74/seg-ambient: ambient browser capture routes ────────────────────
+//
+// TWO ROUTES, ONE NARROW KEY (ambient_capture_auth.ts):
+//   POST /capture         -- body: AmbientCapturePayload (see ambient_capture.ts). Writes ONE
+//                             record via recordAmbientBrowserCapture() -> appendEvidence()
+//                             (evidence_store.ts, UNCHANGED except the additive authority-union
+//                             edit documented in that file's own header).
+//   GET  /capture/status   -- {running, capturesRecorded, lastCaptureAt}. Lets the extension's
+//                             popup show real connectivity instead of the prior GET_STATUS stub
+//                             (browser-extension/background/service_worker.js, before this
+//                             ticket, always returned connected:false unconditionally).
+//
+// Both require X-Mnemo-Capture-Key: <the file ambient_capture_auth.ts mints>, never the /mcp
+// route's Authorization Bearer token — see that file's header for why this is deliberately a
+// separate, narrower-privileged secret.
+
+async function handleAmbientCaptureRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  clientId: string,
+): Promise<void> {
+  const keyHeader = (req.headers['x-mnemo-capture-key'] || '') as string;
+  if (!isValidCaptureKey(keyHeader)) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized — provide X-Mnemo-Capture-Key' }));
+    return;
+  }
+
+  if (req.url === '/capture/status' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      connected: true,
+      running: _running,
+      capturesRecorded: _ambientCaptureCount,
+      lastCaptureAt: _ambientCaptureLastAt,
+    }));
+    return;
+  }
+
+  if (req.url === '/capture' && req.method === 'POST') {
+    const bodyChunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      req.on('data', (chunk: Buffer) => bodyChunks.push(chunk));
+      req.on('end', () => resolve());
+      req.on('error', reject);
+    });
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.concat(bodyChunks).toString('utf8'));
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    const p = parsed as Partial<AmbientCapturePayload> | null;
+    if (!p || typeof p !== 'object' || typeof p.query !== 'string' || typeof p.answer !== 'string'
+      || typeof p.surface !== 'string' || typeof p.url !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Payload must include query, answer, surface, url (strings)' }));
+      return;
+    }
+    const payload: AmbientCapturePayload = {
+      query: p.query,
+      answer: p.answer,
+      surface: p.surface as AmbientCapturePayload['surface'],
+      url: p.url,
+      capturedAt: typeof p.capturedAt === 'string' && p.capturedAt ? p.capturedAt : new Date().toISOString(),
+    };
+    const acquisitionId = `ambient_${payload.surface}_${payload.capturedAt.replace(/[:.]/g, '-')}`;
+    const seq = nextAmbientSeq(acquisitionId);
+    let result: ReturnType<typeof recordAmbientBrowserCapture>;
+    try {
+      result = recordAmbientBrowserCapture(payload, parsed, seq, undefined);
+    } catch (e) {
+      console.error('[AmbientCapture] recordAmbientBrowserCapture threw:', e);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error recording capture' }));
+      return;
+    }
+    if (!result.ok) {
+      console.log(`[AmbientCapture] REJECTED (${payload.surface}): ${result.reason}`);
+      res.writeHead(422, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ recorded: false, reason: result.reason }));
+      return;
+    }
+    _ambientCaptureCount += 1;
+    _ambientCaptureLastAt = result.record.ts;
+    console.log(`[AmbientCapture] recorded (${payload.surface}): queryKey=${result.record.queryKey.slice(0, 12)}… address=${result.record.address.slice(0, 12)}…`);
+    // Indicator leg: tells index.ts's registered listener (ambient_capture_bridge.ts) to ensure
+    // the dashed overlay is showing and pulse it once for this capture. Never blocks or fails the
+    // HTTP response — the capture is already durably written above regardless of whether anything
+    // is listening.
+    notifyAmbientCapture({
+      surface: payload.surface, url: payload.url, query: payload.query, ts: result.record.ts,
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      recorded: true,
+      queryKey: result.record.queryKey,
+      address: result.record.address,
+      acquisitionId: result.record.acquisitionId,
+      ts: result.record.ts,
+    }));
+    return;
+  }
+
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: `Not found — ${req.method} ${req.url}` }));
+  void clientId; // reserved for future per-client capture accounting; unused today, kept named for readability at call site
+}
+
 // ── Lifecycle: startMcpServer / stopMcpServer ─────────────────────────────────
 
 export async function startMcpServer(): Promise<void> {
@@ -374,6 +528,11 @@ export async function startMcpServer(): Promise<void> {
   const port = getMcpPort();
 
   _authToken = loadOrCreateAuthToken();
+  // D-BP154-074/seg-ambient: mint (or load) the ambient-capture key eagerly at server start, not
+  // lazily on first /capture request, so its file exists and its path can be logged the moment
+  // the server comes up -- the Founder needs to find and paste this value into the extension's
+  // options page BEFORE the first capture attempt, not discover it only after one fails.
+  const captureKeyPreview = getOrCreateCaptureKey().slice(0, 8);
 
   await new Promise<void>((resolve, reject) => {
     const httpSrv = http.createServer(handleMcpHttpRequest);
@@ -389,6 +548,7 @@ export async function startMcpServer(): Promise<void> {
       _activePort = port;
       console.log(`[MCP] Server listening on http://127.0.0.1:${port}/mcp`);
       console.log('[MCP] 5 tools registered: mnem_query_substrate, mnem_record_qa, mnem_get_substrate_stats, mnem_run_giant_concordance, mnem_share_eblet_to_peer');
+      console.log(`[MCP] Ambient browser capture routes: POST/GET http://127.0.0.1:${port}/capture{,/status} (key starts ${captureKeyPreview}…, full value at ${getCaptureKeyPath()})`);
       resolve();
     });
   });
