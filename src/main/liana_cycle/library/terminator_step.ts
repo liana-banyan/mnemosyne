@@ -1005,10 +1005,13 @@ export function deriveTerminatorEliminations(
   // taxonomy) -- a comparability decision, never a claim the option is not a region or lacks
   // inhabitants (spec's own words, both files).
   const boundaryGate = checkBoundaryStabilityUniformity(OPT, boundaryStability?.ok ? boundaryStability : null);
-  const excludedByBoundaryStability = new Map<string, { name: string; span: string }>();
+  // D-BP154-062: no companion `excludedByBoundaryStability` map -- unlike Softballs:1/HumanNuance:1/
+  // Discriminator:1's own subregion probe (each checked against membership facts below),
+  // NOT_COMPARABLE has no opposite-disposition partner in this file's own vocabulary (see this
+  // function's own trailing comment, below, for the full ruling) -- there is no contradiction check
+  // left for a map to feed, so none is built.
   if (boundaryStability?.ok && boundaryGate.discriminating) {
     for (const e of boundaryStability.unstable) {
-      excludedByBoundaryStability.set(e.letter, { name: e.name, span: e.span });
       eliminated.push({
         letter: e.letter, name: e.name, sourceStep: 'BoundaryStability:1',
         reason: 'source states this option\'s boundary/definition is materially variable and not fixed '
@@ -1215,32 +1218,29 @@ export function deriveTerminatorEliminations(
   // check against a Map that is never populated would be exactly the "receipt reports a step
   // green while it produced nothing" shape this ticket's own dispatch warned against.
   //
-  // D-BP154-053, ADDITIVE: the SAME three contradiction checks applied to BoundaryStability:1's
-  // own NOT_COMPARABLE finding -- only populated (non-empty Map) when checkBoundaryStabilityUniformity()
-  // actually accepted the rule this run, so this loop is a genuine no-op (never a dead check
-  // against an always-empty Map) exactly when the rule was rejected.
-  for (const [letter, boundaryFact] of excludedByBoundaryStability) {
-    const namedSetFact = includedByNamedSet.get(letter);
-    if (namedSetFact) {
-      contradiction = {
-        letter,
-        reason: `BOUNDARY STABILITY states "${OPT[letter] ?? letter}" has a materially variable boundary `
-          + `("${boundaryFact.span}") while NAMED SET simultaneously states it IS the superlative property `
-          + `("${namedSetFact.span}") -- self-contradictory, not published`,
-      };
-      break;
-    }
-    const discriminatorPropertyFact = propertyMembersByDiscriminator.get(letter);
-    if (discriminatorPropertyFact) {
-      contradiction = {
-        letter,
-        reason: `BOUNDARY STABILITY states "${OPT[letter] ?? letter}" has a materially variable boundary `
-          + `("${boundaryFact.span}") while DISCRIMINATOR simultaneously states it IS the superlative `
-          + `property ("${discriminatorPropertyFact.span}") -- self-contradictory, not published`,
-      };
-      break;
-    }
-  }
+  // D-BP154-062, REMOVED (was D-BP154-053's own addition), THE ANTONYMIC CANON AGAIN. Founder,
+  // this dispatch: "two eliminating dispositions co-occurring is not a contradiction... this is the
+  // antonymic canon again: agreement-reached-by-different-routes collapsed into a conflict flag,
+  // because the check tests CO-OCCURRENCE of dispositions rather than CONFLICT of dispositions."
+  // LIVE-MEASURED four straight runs (qid 98, D-BP154-060/061): BoundaryStability:1's own
+  // NOT_COMPARABLE finding for South Asia ("materially variable boundary") and NamedSet:1's/
+  // Discriminator:1's own STATED_MEMBER finding ("IS one of the densest") were flagged
+  // self-contradictory and aborted publication -- but nothing asserted is inconsistent: a region
+  // can genuinely have a materially variable boundary AND be a stated member of the dense set
+  // ("South Asia is densely populated" holds under all three of its enumerated definitions), and
+  // BOTH findings drive the SAME outcome (South Asia is eliminated from being the unique answer
+  // either way) -- OVER-DETERMINATION, not contradiction. THE RULE, Founder's own words: "a
+  // contradiction exists only when two findings imply OPPOSITE dispositions for the same option --
+  // one retaining and one eliminating, or two mutually exclusive positive claims." NOT_COMPARABLE
+  // (a rankability/comparability judgment) never asserts or denies CATEGORY MEMBERSHIP the way
+  // OUT_OF_FRAME (Softballs:1/HumanNuance:1) or "not the category in its own right"
+  // (Discriminator:1's own subregion probe, KEPT above -- the genuine case this whole mechanism was
+  // built for) do -- it has no opposite-disposition partner under this file's own vocabulary, and
+  // is symmetric-eliminating with every OTHER elimination source, never conflicting with any of
+  // them. BoundaryStability:1's own eliminated entries already coexist peacefully in `eliminated`
+  // alongside whatever NamedSet:1/Discriminator:1 separately pushed for the SAME letter (this
+  // file's own pre-existing multi-entry-per-letter capacity, unchanged) -- "record both grounds" is
+  // the array already doing its job; the only thing removed here is the FALSE ABORT.
   return { eliminated, contradiction, boundaryGate, subregionGate };
 }
 

@@ -1176,6 +1176,47 @@ describe('D-BP154-053/D-BP154-060: checkBoundaryStabilityUniformity() -- checkUn
     expect(eliminated[0].reason).toMatch(/NOT_COMPARABLE/);
   });
 
+  // D-BP154-062, THE FIX. Founder, verbatim: "two eliminating dispositions co-occurring is not a
+  // contradiction... this is the antonymic canon again: agreement-reached-by-different-routes
+  // collapsed into a conflict flag." LIVE-MEASURED four straight runs (qid 98): BoundaryStability:1's
+  // own NOT_COMPARABLE for South Asia and NamedSet:1's/Discriminator:1's own STATED_MEMBER for the
+  // SAME letter were wrongly flagged self-contradictory. Nothing asserted is inconsistent -- a
+  // region can have a materially variable boundary AND be a stated member of the dense set -- and
+  // BOTH findings drive the SAME outcome (elimination). OVER-DETERMINATION PROCEEDS.
+  test('D-BP154-062 OVER-DETERMINATION PROCEEDS: BoundaryStability:1\'s NOT_COMPARABLE and NamedSet:1\'s STATED_MEMBER for the SAME letter do NOT contradict -- both grounds are recorded, elimination proceeds, no abstain', () => {
+    const namedSetSameLetter = namedSet([['F', 'F) is one of the world\'s most densely populated regions.']]);
+    const { eliminated, contradiction, boundaryGate } = deriveTerminatorEliminations(
+      OPT, null, namedSetSameLetter, null, null, null, allNineAddressed,
+    );
+    expect(boundaryGate.discriminating).toBe(true);
+    expect(contradiction).toBeNull();
+    // BOTH grounds recorded -- two separate elimination entries for F, one per source, per this
+    // file's own pre-existing multi-entry-per-letter capacity (unchanged, "record both grounds").
+    const fEntries = eliminated.filter((e) => e.letter === 'F');
+    expect(fEntries.map((e) => e.sourceStep).sort()).toEqual(['BoundaryStability:1', 'NamedSet:1']);
+  });
+
+  // D-BP154-062, THE KEPT CHECK. Founder, verbatim: "KEEP the real contradiction check. The case
+  // it was built for is genuine and must still fire: the earlier run where Discriminator's
+  // subregion probe eliminated South America while its own enumeration affirmed it. That is one
+  // finding RETAINING and another ELIMINATING the same option -- opposite dispositions." Exercised
+  // here directly against deriveTerminatorEliminations()'s own subregion-vs-enumeration check
+  // (unchanged by this ticket) with ALL NINE options flagged subregion-non-members (so
+  // checkSubregionUniformity() itself accepts the rule as procedurally fair, FD-BP154-22 --
+  // required for the subregion contradiction map to populate at all, per this file's own D-BP154-060
+  // HONEST LIMITATION note) -- proving the OPPOSITE-DISPOSITION check still fires and still abstains.
+  test('D-BP154-062 OPPOSITE-DISPOSITION STILL ABSTAINS: a subregion-non-member finding and the SAME step\'s own enumeration naming that option a member -- genuinely opposite dispositions (one retains, one eliminates) -- contradiction fires, not published', () => {
+    const disc = discriminator(
+      [], null, [],
+      [['A', 'A) South America']], 'The list consists of every option below.',
+      Object.keys(OPT).map((L) => [L, `${L}) ${OPT[L]} is a subregion within a larger macro world region.`] as [string, string]),
+    );
+    const { contradiction, subregionGate } = deriveTerminatorEliminations(OPT, null, null, disc);
+    expect(subregionGate.discriminating).toBe(true); // all nine individually, sourcedly answered
+    expect(contradiction).not.toBeNull();
+    expect(contradiction?.letter).toBe('A');
+  });
+
   test('WIRING PROOF (negative control): a REJECTED (procedurally unfair -- most of the frame unaddressed) boundary-stability rule does NOT fold into `eliminated`', () => {
     const bd = boundary(
       [['F', 'F) Central Asia\'s membership is materially variable.']],
