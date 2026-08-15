@@ -51,6 +51,22 @@ function softballsExcluding(letters: string[]): SoftballsResult {
   };
 }
 
+/** D-BP154-043 FIX, live-measured: this file's own frame establishment had NOT been updated to
+ *  consult HumanNuance:1/Unitary:1 -- see runMagnitudeStep()'s own new comment. Minimal
+ *  HumanNuanceResult fixture, excluding the given letters, for the regression test below. */
+function humanNuanceExcluding(letters: string[]) {
+  return {
+    ok: true as const, artifactClassEstablished: true, src: 'ori_mmlu-test',
+    corpusMetaTruth: null, cowGuard: { applies: true, reason: 'test' }, category: 'world regions',
+    frame: ALL.filter((L) => !letters.includes(L)), nonParticipants: letters,
+    originStratum: 'sand', singleAnswerPropertySurvived: null, answerDerivableFromQuestionTermsAlone: null,
+    query: 'q',
+    excluded: letters.map((L) => ({ letter: L, name: OPT[L], reason: 'test reason', span: `${L} is excluded.` })),
+    insufficientEvidence: [], consistent: [], featureRuleVersion: 'test',
+    discarded: 0, unresolved: [], via: 'test',
+  };
+}
+
 describe('deriveMagnitudeSuperlativeProperty -- reads the superlative property, byte-identical twin of discriminator_step.ts\'s own, never guesses', () => {
   test('qid 98 shape', () => {
     expect(deriveMagnitudeSuperlativeProperty(QID98_QUESTION)).toBe("world's most densely populated regions");
@@ -207,6 +223,22 @@ describe('runMagnitudeStep -- named failures, never a silent full-option-list ra
     expect(result.ok).toBe(false);
     expect(result.error).toContain('no frame was established');
     expect(result.frame).toEqual([]);
+  });
+
+  test('D-BP154-043 FIX regression: HumanNuance:1 ALONE (no Softballs/NamedSet/Discriminator) establishes a frame -- proves this file\'s own frame no longer diverges from Terminator:1\'s', async () => {
+    const input: MethodQuestionInput = { question: QID98_QUESTION, options: OPT };
+    const ctx: MethodRunContext = { askGoogle: vi.fn(), emit: vi.fn() };
+    // HumanNuance:1 excludes 8 of 9, leaving exactly one survivor -- reaches the SAME "fewer than
+    // two survivors" refusal softballsExcluding() drives below, proving HumanNuance:1 alone is now
+    // read as a real frame-establishing source (before this fix, `anyFrameStepRan` never looked at
+    // it, so this exact input would have fallen through to "no frame was established" instead).
+    const priorResults: ComposerStepOutcome[] = [{
+      id: 'HumanNuance:1', summary: 's', raw: humanNuanceExcluding(['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']),
+    }];
+    const { result } = await runMagnitudeStep(input, ctx, priorResults);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('nothing to rank');
+    expect(result.error).not.toContain('no frame was established');
   });
 
   test('a frame established but reduced to fewer than two survivors -> ok:false, nothing to rank', async () => {
