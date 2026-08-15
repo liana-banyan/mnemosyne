@@ -99,6 +99,9 @@ import { registerUnitaryStep, runUnitaryStep } from './unitary_step';
 // own sourced proof, PROOF_QID98_TEST_AWARE_ELIMINATION_BP154.md). See boundary_step.ts's own
 // header for the full ruling.
 import { registerBoundaryStep, runBoundaryStep } from './boundary_step';
+// D-BP154-058/BISHOP-SEG/S52/seg-wiregate PART 5 -- THE TARGET-CLASS GATE. See
+// target_class_step.ts's own header.
+import { registerTargetClassStep, runTargetClassStep } from './target_class_step';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -237,6 +240,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP154-058/BISHOP-SEG/S52/seg-wiregate PART 5, ADDITIVE -- same idempotent shape as every
+  // call above, for the same reason. Does not touch, re-register, or collide with anything the
+  // others register -- 'TargetClass' is a new name.
+  try {
+    registerTargetClassStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -281,7 +292,8 @@ export interface ComposerRegistryEntry {
 // D-BP154-042 adds 'OriginFrame:1' -- see origin_frame_step.ts's own header.
 // D-BP154-043 adds 'Unitary:1' -- see unitary_step.ts's own header.
 // D-BP154-053 adds 'BoundaryStability:1' -- see boundary_step.ts's own header.
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1', 'Unitary:1', 'BoundaryStability:1']);
+// D-BP154-058 adds 'TargetClass:1' -- see target_class_step.ts's own header.
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1', 'Unitary:1', 'BoundaryStability:1', 'TargetClass:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -484,10 +496,21 @@ async function runOneStep(
     persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }
+  if (id === 'TargetClass:1') {
+    // D-BP154-058/BISHOP-SEG/S52/seg-wiregate PART 5 -- THE TARGET-CLASS GATE. Perplexity
+    // preferred (ctx.askConversationalAuthorityAs), Gemini fallback -- see target_class_step.ts's
+    // own header.
+    const { result, summary } = await runTargetClassStep(input, ctx);
+    persistStepClaim(id, input, ctx, result);
+    return { summary, raw: result };
+  }
   if (id === 'BoundaryStability:1') {
     // D-BP154-053/BISHOP-SEG/S52/seg-wiregate -- THE BOUNDARY STABILITY DISCRIMINATOR. Same
-    // recordingAskGoogle()-wrapped ctx.askGoogle every other step here receives.
-    const { result, summary } = await runBoundaryStep(input, ctx);
+    // recordingAskGoogle()-wrapped ctx.askGoogle every other step here receives. D-BP154-058 PART 5,
+    // ADDITIVE: `priorResults` now threaded through so TargetClass:1's own established frame (if it
+    // ran earlier in this same stack) can frame this step's own query -- see boundary_step.ts's own
+    // header.
+    const { result, summary } = await runBoundaryStep(input, ctx, priorResults);
     persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }

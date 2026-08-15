@@ -111,8 +111,16 @@ function unitary(excluded: Array<[string, string]>): UnitaryResult {
 function boundary(unstable: Array<[string, string]>, confirmedStable: Array<[string, string]> = []): BoundaryResult {
   return {
     ok: true, query: 'q',
-    unstable: unstable.map(([letter, span]) => ({ letter, name: OPT[letter], span })),
+    // D-BP154-058: `unstable` entries now carry `definitions` too (>=2 named rivals, the
+    // disposition rule this ticket enforces) -- this fixture's own callers only ever exercise the
+    // TERMINATOR-side gating (letter/name/span), so a fixed two-item placeholder list is enough to
+    // keep every existing call site meaningful without threading a fifth fixture parameter through
+    // every one of them.
+    unstable: unstable.map(([letter, span]) => ({
+      letter, name: OPT[letter], span, definitions: ['rival definition one', 'rival definition two'],
+    })),
     confirmedStable: confirmedStable.map(([letter, span]) => ({ letter, name: OPT[letter], span })),
+    insufficientEnumeration: [],
     discarded: 0,
     notAddressed: Object.keys(OPT).filter(
       (L) => !unstable.some(([l]) => l === L) && !confirmedStable.some(([l]) => l === L),
