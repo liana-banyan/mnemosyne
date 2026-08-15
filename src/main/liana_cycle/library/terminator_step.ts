@@ -82,6 +82,16 @@ import type { HumanNuanceResult } from './human_nuance_step';
 // satisfy the stated purpose." Consulted here so a structurally-insufficient purpose withholds a
 // verdict BEFORE this reducer's own elimination/contradiction logic runs at all.
 import type { PurposeResult } from './purpose_step';
+// D-BP154-055/BISHOP-SEG/S52/seg-wiregate, VALUE IMPORT. Coordinator's own live-diagnosed fix:
+// "the sufficiency precondition is firing on the raw nine-option count and short-circuiting the
+// whole chain before the frame is ever attempted... it must be evaluated against the COMPARABLE
+// CANDIDATE SET, not the raw option list." checkSufficiency() (sufficiency_gate.ts, D-BP154-041,
+// UNCHANGED) is reused, not reinvented -- called a SECOND time, here, against the post-admissibility-
+// filter pool size, alongside the pre-existing RAW call purpose_step.ts already makes. Both are
+// kept, never one deleted for the other (coordinator, verbatim: "Keep the gate... do not delete it
+// -- move it, and record BOTH results").
+import { checkSufficiency } from './sufficiency_gate';
+import type { PurposeSufficiencyResult } from './sufficiency_gate';
 // D-BP154-041/BISHOP-SEG/S41/seg-purpose, PART 3/3, ADDITIVE, VALUE IMPORT. isSkippedMarker() is
 // the ONE place a SKIPPED-AS-MOOT raw result (script_bridge.ts's own computeStepSkip()) is told
 // apart from a real 'failed' result -- qualifier 1 of the skip gate's own five: "SKIPPED-AS-MOOT
@@ -95,6 +105,28 @@ import { isSkippedMarker } from './step_skip';
 // other feeder-step type import above -- unitary_step.ts's own runtime imports never reach this
 // file). FD-BP154-16's "unitary vs conglomerate" membership factor, as a sixth elimination source.
 import type { UnitaryResult } from './unitary_step';
+// D-BP154-052/BISHOP-SEG/S52/seg-wiregate, VALUE IMPORT. comparability_gate.ts (D-BP154-050) was
+// BUILT and tested but never consumed by this file -- FD-BP154-08's own "tests pass is never
+// ACTIVE" applies to it exactly as it applied to HumanNuance:1 before D-BP154-033 wired that one
+// in (see this file's own import above). checkUniformPredicate() -- "the executable rejection of
+// any elimination rule that would also remove a same-type peer" -- is now called LIVE, this run,
+// against whatever Unitary:1 actually returned (checkCompositenessUniformity(), below) -- this
+// REPLACES the prior hardcoded "Unitary never eliminates" comment (D-BP154-050's own
+// `void unitary;` line, still present just below for the reason stated there) with a computed,
+// per-run, data-driven decision: the withdrawal is no longer asserted by this file's own say-so,
+// it is PROVEN by the same mechanical check the spec names as the ONE thing that mechanically
+// blocks the Central Asia category error. unknownCandidate() gives every option Unitary:1 never
+// adjudicated an 'unknown' entityType, which sameRelevantType() (comparability_gate.ts) then
+// correctly excludes from the uniformity comparison, per that function's own header -- this file
+// never re-derives that rule, only calls it.
+import {
+  checkUniformPredicate, unknownCandidate, type Candidate,
+} from './comparability_gate';
+// D-BP154-053/BISHOP-SEG/S52/seg-wiregate, ADDITIVE, TYPE-ONLY (same non-circular shape as every
+// other feeder-step type import above). The Founder's own sourced proof names boundary stability,
+// not compositeness, as the discriminator that survives checkUniformPredicate() -- see
+// boundary_step.ts's own header.
+import type { BoundaryResult } from './boundary_step';
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 
@@ -172,7 +204,10 @@ export interface TerminatorEliminationEntry {
   /** Which Composer step's stated fact eliminated this option. D-BP154-033, ADDITIVE:
    *  'HumanNuance:1' added as a fourth elimination source. D-BP154-043, ADDITIVE: 'Unitary:1'
    *  added as a fifth (FD-BP154-16's "unitary vs conglomerate" factor). */
-  sourceStep: 'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'HumanNuance:1' | 'Unitary:1';
+  // D-BP154-053, ADDITIVE: 'BoundaryStability:1' added as a sixth elimination source -- the
+  // Founder's own sourced proof (PROOF_QID98_TEST_AWARE_ELIMINATION_BP154.md): boundary stability,
+  // not compositeness, is the discriminator that survives checkUniformPredicate().
+  sourceStep: 'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'HumanNuance:1' | 'Unitary:1' | 'BoundaryStability:1';
   reason: string;
   span: string;
 }
@@ -200,7 +235,8 @@ export interface TerminatorResult {
   // non-regions in the frame) is formally green and substantively hollow. Distinct from 'ok'
   // (ran, succeeded, produced something) and from 'failed' (did not succeed at all) -- three states
   // for three different facts, never collapsed into two.
-  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1' | 'Unitary:1', 'not run' | 'ok' | 'ok-but-unproductive' | 'failed' | 'skipped-moot'>;
+  // D-BP154-053, ADDITIVE: 'BoundaryStability:1' added as an eighth entry.
+  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1' | 'Unitary:1' | 'BoundaryStability:1', 'not run' | 'ok' | 'ok-but-unproductive' | 'failed' | 'skipped-moot'>;
   /** D-BP154-041 PART 2/3, FD-BP154-17, ADDITIVE. Non-null ONLY when Purpose:1 ran (ok:true) and
    *  found the evidence class structurally incapable of satisfying its own stated purpose -- a
    *  DISTINCT outcome from a normal ABSTAIN (multiple/zero survivors after elimination) and from a
@@ -247,6 +283,46 @@ export interface TerminatorResult {
    *  three outcomes, not two"). Null only in the two early "cannot even attempt this" failure
    *  returns (no options at all); computed whenever OPT exists, regardless of abstain/verdict. */
   frameMatchBuckets: TerminatorFrameMatchBuckets | null;
+  /** D-BP154-052/BISHOP-SEG/S52/seg-wiregate, ADDITIVE, OPTIONAL (undefined only on the two early
+   *  "cannot even attempt this" failure returns, before OPT/Unitary:1 are even read -- every other
+   *  return site below sets it). THE LIVE PROOF that comparability_gate.ts's own
+   *  checkUniformPredicate() -- not this file's comment -- decided whether Unitary:1's
+   *  composite/conglomerate finding may eliminate anyone this run. See
+   *  checkCompositenessUniformity()'s own header above. */
+  comparabilityGate?: ComparabilityGateCheck | null;
+  /** D-BP154-053, ADDITIVE, OPTIONAL (same undefined-on-the-two-early-failures shape as
+   *  `comparabilityGate` above). THE LIVE PROOF that checkUniformPredicate() -- not this file's
+   *  say-so -- decided whether BoundaryStability:1's materially-variable-boundary finding may
+   *  eliminate anyone this run, and (unlike `comparabilityGate`) the SAME live decision actually
+   *  GATES whether it is folded into `eliminated` (see checkBoundaryStabilityUniformity()'s own
+   *  header above and deriveTerminatorEliminations()'s own use of it). */
+  boundaryGate?: ComparabilityGateCheck | null;
+  /** D-BP154-056, ADDITIVE, OPTIONAL (same shape as `comparabilityGate`/`boundaryGate` above). THE
+   *  THIRD LIVE CALL: whether checkUniformPredicate() accepted or rejected Discriminator:1's own
+   *  `subregionNonMembers` finding (D-BP154-026) as discriminating this run -- live-measured to
+   *  reproduce the SAME category error the compositeness gate exists to catch (see
+   *  checkSubregionUniformity()'s own header above). Undefined only on the two early failure
+   *  returns before Discriminator:1 is even read. */
+  subregionGate?: ComparabilityGateCheck | null;
+  /** D-BP154-055, ADDITIVE. Purpose:1's own RAW sufficiency check (sufficiency_gate.ts,
+   *  D-BP154-041), computed against the FULL, unfiltered option list -- "the item as MMLU-Pro
+   *  ships it." Coordinator's own ruling: KEPT, never deleted -- it correctly detects the
+   *  augmentation defect from the option count alone, deterministically and for free, and that
+   *  finding stands regardless of what the comparable-set check below finds. Null only when
+   *  Purpose:1 did not run/failed, or found no precondition applicable. Copied straight from
+   *  `purposeRaw.sufficiency` -- never recomputed here (a second, independently-computed copy
+   *  could drift from Purpose:1's own). */
+  sufficiencyRaw?: PurposeSufficiencyResult | null;
+  /** D-BP154-055, ADDITIVE. THE COORDINATOR'S OWN FIX: the SAME precondition
+   *  (sufficiency_gate.ts's checkSufficiency(), reused unchanged), evaluated a SECOND time against
+   *  the COMPARABLE CANDIDATE SET -- the option count AFTER admissibility-class eliminations
+   *  (Softballs:1/HumanNuance:1/BoundaryStability:1's own OUT_OF_FRAME/NOT_COMPARABLE-class
+   *  findings, computed live from whatever THIS run's evidence actually states, never from the
+   *  raw list). THIS is what gates `insufficientEvidence` below now -- the raw field above is
+   *  reported, never acted on by itself. Null under the same conditions `sufficiencyRaw` is null,
+   *  OR when `purposeRaw.purposeType` has no declared precondition (checkSufficiency() itself
+   *  reports `sufficient: true` in that case, so this is never null merely for lack of a rule). */
+  sufficiencyPostFilter?: PurposeSufficiencyResult | null;
   /** D-BP154-028/BISHOP-SEG/S28/seg-survivable, ADDITIVE. Founder's own rule, this dispatch,
    *  verbatim: "A step that failed must never be indistinguishable from a step that ran and found
    *  nothing... an ABSTAIN from an incomplete run is a different animal from an ABSTAIN with all
@@ -288,6 +364,8 @@ const STEP_RESPONSIBILITY: Record<string, string> = {
   'HumanNuance:1': 'eliminating options a source states are excluded from the origin\'s own (pre-augmentation) frame, with a stated reason',
   // D-BP154-043, ADDITIVE.
   'Unitary:1': 'eliminating options a source states are a conglomerate/grouping of multiple regions, not a single unitary region',
+  // D-BP154-053, ADDITIVE.
+  'BoundaryStability:1': 'eliminating options a source states have a materially variable, not-fixed-by-the-item boundary/definition, NOT_COMPARABLE to a peer whose boundary is fixed',
 };
 
 /** D-BP154-029, NEW. Names every FAILED step and what it was responsible for -- "Withheld:
@@ -334,6 +412,9 @@ export function isStepProductive(id: string, raw: unknown): boolean {
     case 'HumanNuance:1':
     case 'Unitary:1':
       return nonEmpty(r.excluded);
+    // D-BP154-053, ADDITIVE. BoundaryResult's own field is `unstable`, not `excluded`.
+    case 'BoundaryStability:1':
+      return nonEmpty(r.unstable);
     case 'NamedSet:1':
       return nonEmpty(r.included);
     case 'Discriminator:1':
@@ -376,6 +457,289 @@ export function isCategoryFrameSubstantive(
   return { substantive: uncaught.length === 0, uncaught };
 }
 
+// D-BP154-052/BISHOP-SEG/S52/seg-wiregate, NEW -- THE LIVE CALL. Builds comparability_gate.ts's
+// own typed Candidate record for every option Unitary:1 actually adjudicated this run (`excluded`
+// = stated conglomerate, `confirmedUnitary` = stated single region). Unitary:1's OWN act of
+// classifying an option unitary-or-conglomerate is the evidence span for entityType
+// 'statistical_macroregion' -- it asked, and a source answered, treating the option as a
+// candidate member of the SAME "single region or grouping" class the question's own frame
+// denotes (spec part 2: "never infer entityType from surface words alone... every non-'unknown'
+// field needs a source span" -- the span here IS Unitary:1's own verbatim quote). An option
+// Unitary never addressed stays unknownCandidate() -- 'unknown' entityType, which
+// sameRelevantType() (comparability_gate.ts, imported above) then correctly excludes from the
+// uniformity comparison per that function's own header (widens the check, never narrows it).
+function buildComparabilityCandidates(OPT: Record<string, string>, unitary: UnitaryResult | null): Candidate[] {
+  const candidates = new Map<string, Candidate>();
+  for (const L of Object.keys(OPT)) candidates.set(L, unknownCandidate(L, OPT[L]));
+  if (unitary?.ok) {
+    for (const e of [...unitary.excluded, ...unitary.confirmedUnitary]) {
+      candidates.set(e.letter, {
+        optionId: e.letter,
+        observedLabel: e.name,
+        entityType: 'statistical_macroregion',
+        entityTypeEvidence: { text: e.span, via: 'Unitary:1' },
+        aggregationLevel: 'unknown',
+        populationStatus: 'unknown',
+        boundary: { status: 'unresolved' },
+      });
+    }
+  }
+  return [...candidates.values()];
+}
+
+/** D-BP154-052, NEW, EXPORTED (unit-testable independent of a live run). Reported on every
+ *  TerminatorResult once `eliminated`/`contradiction` are computed (below); this is the field a
+ *  live receipt shows to prove the comparability gate's own mechanism, not this file's comment,
+ *  decided the run. */
+export interface ComparabilityGateCheck {
+  /** false when Unitary:1 did not run, or stated no option is a conglomerate, or every
+   *  Unitary-stated composite option had no known same-relevant-type peer to test against --
+   *  UNTESTED, per spec's own "if any part is missing, the only valid action is UNRESOLVED",
+   *  never asserted discriminating OR non-discriminating in that case. */
+  ran: boolean;
+  ruleChecked: string;
+  /** null only when `ran` is false. true: the rule, applied to THIS run's own Unitary:1 output,
+   *  fired on no same-relevant-type peer besides its own target -- self-consistent, but this file
+   *  still does NOT fold it into `eliminated` (D-BP154-050's own ruling, restated in `note`).
+   *  false: REJECTED -- the rule would also have removed a same-relevant-type peer, exactly the
+   *  category error this gate exists to catch. */
+  discriminating: boolean | null;
+  /** Every same-relevant-type option the rule would ALSO have removed -- empty unless
+   *  `discriminating` is false. */
+  wouldAlsoRemove: string[];
+  note: string;
+}
+
+/** THE LIVE CALL. checkUniformPredicate() (comparability_gate.ts) is invoked once per option
+ *  Unitary:1 stated is a conglomerate, against the FULL candidate pool this run actually built --
+ *  never a fixture, never a hardcoded pair. Symmetric and letter-blind (FD-BP153-06): every
+ *  Unitary-stated composite option is tried as `target` in turn, and the union of every
+ *  `wouldAlsoRemove` across all of them is what gets reported -- one non-discriminating target is
+ *  enough to reject the whole rule, matching the spec's own "Universal or invalid; never
+ *  selective." */
+export function checkCompositenessUniformity(
+  OPT: Record<string, string>, unitary: UnitaryResult | null,
+): ComparabilityGateCheck {
+  const ruleChecked = 'composite/conglomerate (Unitary:1) excludes an option from the region category';
+  if (!unitary?.ok || unitary.excluded.length === 0) {
+    return {
+      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      note: 'Unitary:1 did not run/failed, or stated no option is a conglomerate this run -- nothing to check',
+    };
+  }
+  const pool = buildComparabilityCandidates(OPT, unitary);
+  const compositeSet = new Set(unitary.excluded.map((e) => e.letter));
+  const wouldEliminate = (c: Candidate) => compositeSet.has(c.optionId);
+  const wouldAlsoRemove = new Set<string>();
+  let anyChecked = false;
+  let discriminating = true;
+  for (const target of pool) {
+    if (!compositeSet.has(target.optionId)) continue;
+    anyChecked = true;
+    const check = checkUniformPredicate(target, pool, wouldEliminate);
+    if (!check.discriminating) {
+      discriminating = false;
+      for (const L of check.wouldAlsoRemove) wouldAlsoRemove.add(L);
+    }
+  }
+  if (!anyChecked) {
+    return {
+      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      note: 'no Unitary-stated composite option had a known same-relevant-type peer to test uniformity against',
+    };
+  }
+  return {
+    ran: true, ruleChecked, discriminating, wouldAlsoRemove: [...wouldAlsoRemove],
+    note: discriminating
+      ? 'self-consistent this run -- no same-relevant-type peer would also be removed by the rule as Unitary:1 '
+        + 'actually stated it; still NOT folded into `eliminated` (D-BP154-050: a compositeness finding alone '
+        + 'never removes an option without a Founder decision to re-enable it) -- reported, not acted on'
+      : `REJECTED as non-discriminating -- the rule would ALSO remove ${wouldAlsoRemove.size ? [...wouldAlsoRemove].join(', ') : '(unlisted)'}, `
+        + 'a same-relevant-type peer, exactly the Central Asia/South America/Northern Africa category error '
+        + 'this gate exists to catch (SPEC_COMPARABILITY_GATE_BP154.md) -- this is WHY Unitary:1 does not '
+        + 'eliminate, computed this run, not asserted by this file\'s own say-so',
+  };
+}
+
+// D-BP154-053/BISHOP-SEG/S52/seg-wiregate, NEW -- THE SECOND LIVE CALL, THE ACCEPTING CASE. The
+// Founder's own sourced proof (PROOF_QID98_TEST_AWARE_ELIMINATION_BP154.md): "the valid
+// discriminator is boundary stability, not compositeness... this PASSES checkUniformPredicate() --
+// it distinguishes on a property the candidates genuinely differ on, rather than one they all
+// share." Same candidate-pool construction as buildComparabilityCandidates() above (every option
+// BoundaryStability:1 adjudicated gets entityType 'statistical_macroregion' -- the same
+// "same-relevant-type" bucket the compositeness check uses, so the two rules are tested against
+// the SAME peer group), but here the tested predicate reads `boundary.status`, not `entityType`:
+// wouldEliminate = "this option's boundary/definition is NOT fixed by the item". Unlike
+// checkCompositenessUniformity(), a boundary-stability rule this function finds DISCRIMINATING is
+// what LICENSES folding it into `eliminated` (below, in deriveTerminatorEliminations()) -- the
+// live, data-driven difference between a rule the gate rejects and one it accepts.
+function buildBoundaryCandidates(OPT: Record<string, string>, boundary: BoundaryResult | null): Candidate[] {
+  const candidates = new Map<string, Candidate>();
+  for (const L of Object.keys(OPT)) candidates.set(L, unknownCandidate(L, OPT[L]));
+  if (boundary?.ok) {
+    for (const e of boundary.confirmedStable) {
+      candidates.set(e.letter, {
+        optionId: e.letter,
+        observedLabel: e.name,
+        entityType: 'statistical_macroregion',
+        entityTypeEvidence: { text: e.span, via: 'BoundaryStability:1' },
+        aggregationLevel: 'unknown',
+        populationStatus: 'unknown',
+        boundary: { status: 'fixed', evidence: { text: e.span, via: 'BoundaryStability:1' } },
+      });
+    }
+    for (const e of boundary.unstable) {
+      candidates.set(e.letter, {
+        optionId: e.letter,
+        observedLabel: e.name,
+        entityType: 'statistical_macroregion',
+        entityTypeEvidence: { text: e.span, via: 'BoundaryStability:1' },
+        aggregationLevel: 'unknown',
+        populationStatus: 'unknown',
+        boundary: { status: 'unresolved', evidence: { text: e.span, via: 'BoundaryStability:1' } },
+      });
+    }
+  }
+  return [...candidates.values()];
+}
+
+/** THE LIVE CALL, ACCEPTING CASE. checkUniformPredicate() invoked once per option
+ *  BoundaryStability:1 stated has a materially variable boundary, against the full candidate pool
+ *  this run actually built. A candidate whose boundary is 'unresolved' or 'source_defined' (never
+ *  affirmatively confirmed 'fixed' this run) is what the rule removes; if it would ALSO remove a
+ *  same-relevant-type peer BoundaryStability:1 itself confirmed 'fixed' (or another unstable
+ *  option, trivially, which never happens since only unstable candidates are tested as targets),
+ *  the rule is REJECTED exactly as the compositeness rule is -- this function does not assume
+ *  acceptance, it computes it, so a run where BoundaryStability:1 fails to distinguish (e.g. it
+ *  calls every M49-style option variable) is caught the same mechanical way. */
+export function checkBoundaryStabilityUniformity(
+  OPT: Record<string, string>, boundary: BoundaryResult | null,
+): ComparabilityGateCheck {
+  const ruleChecked = 'boundary/definition not fixed by the item (BoundaryStability:1) excludes an option from the final aggregate comparison';
+  if (!boundary?.ok || boundary.unstable.length === 0) {
+    return {
+      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      note: 'BoundaryStability:1 did not run/failed, or stated no option has a materially variable boundary this run -- nothing to check',
+    };
+  }
+  const pool = buildBoundaryCandidates(OPT, boundary);
+  const unstableSet = new Set(boundary.unstable.map((e) => e.letter));
+  const wouldEliminate = (c: Candidate) => c.boundary.status !== 'fixed' && unstableSet.has(c.optionId);
+  const wouldAlsoRemove = new Set<string>();
+  let anyChecked = false;
+  let discriminating = true;
+  for (const target of pool) {
+    if (!unstableSet.has(target.optionId)) continue;
+    anyChecked = true;
+    const check = checkUniformPredicate(target, pool, wouldEliminate);
+    if (!check.discriminating) {
+      discriminating = false;
+      for (const L of check.wouldAlsoRemove) wouldAlsoRemove.add(L);
+    }
+  }
+  if (!anyChecked) {
+    return {
+      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      note: 'no BoundaryStability-stated variable-boundary option had a known same-relevant-type peer to test uniformity against',
+    };
+  }
+  return {
+    ran: true, ruleChecked, discriminating, wouldAlsoRemove: [...wouldAlsoRemove],
+    note: discriminating
+      ? 'ACCEPTED -- distinguishes on a property (boundary/definition stability) the candidates genuinely differ '
+        + 'on this run: every option BoundaryStability:1 confirmed fixed stays fixed, only the stated '
+        + 'materially-variable option(s) are removed -- this is WHY BoundaryStability:1 DOES eliminate '
+        + '(unlike Unitary:1\'s compositeness rule), computed this run, not asserted by this file\'s own say-so'
+      : `REJECTED as non-discriminating -- the rule would ALSO remove ${wouldAlsoRemove.size ? [...wouldAlsoRemove].join(', ') : '(unlisted)'}, `
+        + 'a same-relevant-type peer BoundaryStability:1 itself confirmed has a fixed boundary -- the rule does '
+        + 'not actually distinguish this run, so it is withheld exactly like a rejected compositeness finding',
+  };
+}
+
+// D-BP154-056/BISHOP-SEG/S52/seg-wiregate, NEW -- THE THIRD LIVE CALL. LIVE-MEASURED this ticket
+// (qid 98, D-BP154-055 receipt, LIANA_COMPOSER_RUN acquisitionId 2026-08-15T03-33-52-578Z_14568):
+// Discriminator:1's OWN `subregionNonMembers` mechanism (D-BP154-026, pre-existing, this file's own
+// header above) reproduces the EXACT SAME category error the comparability gate exists to catch --
+// a real live passage stated "South America, along with South Asia, North Africa, and Central
+// Asia, is a subregion located within a larger macro world region" and D-BP154-026's own logic
+// eliminated ALL FOUR uniformly, contradicting Discriminator's OWN enumeration probe (which had
+// separately affirmed South America a member) and forcing an honest ABSTAIN. The uniform
+// application is not itself a defect (FD-BP153-06 -- it did not selectively pick Central Asia); the
+// defect is that "subregion of a larger region" is being read as a MEMBERSHIP-EXCLUDING fact at
+// all, exactly `composite(x) => not-T(x)` under a different name (spec's own error type 4,
+// "aggregate/atomic confusion"). checkUniformPredicate() is the SAME mechanism
+// checkCompositenessUniformity()/checkBoundaryStabilityUniformity() already use, applied a THIRD
+// time to this THIRD source -- symmetric, letter-blind, computed live from whatever THIS run's own
+// Discriminator:1 returned, never assumed.
+function buildSubregionCandidates(OPT: Record<string, string>, discriminator: DiscriminatorResult | null): Candidate[] {
+  const candidates = new Map<string, Candidate>();
+  for (const L of Object.keys(OPT)) candidates.set(L, unknownCandidate(L, OPT[L]));
+  if (discriminator?.ok) {
+    for (const e of discriminator.subregionNonMembers) {
+      candidates.set(e.letter, {
+        optionId: e.letter, observedLabel: e.name, entityType: 'statistical_macroregion',
+        entityTypeEvidence: { text: e.span, via: 'Discriminator:1' }, aggregationLevel: 'unknown',
+        populationStatus: 'unknown', boundary: { status: 'unresolved' },
+      });
+    }
+    // Same-relevant-type peers: options Discriminator:1's OWN enumeration affirmatively named as
+    // members of the category -- these are the candidates a uniform "subregion" rule must NOT also
+    // remove for the rule to survive as discriminating (e.g. live-measured this ticket: the
+    // enumeration affirmed South America a member while the subregion probe removed it too).
+    for (const e of discriminator.categoryEnumerationMembers) {
+      if (candidates.get(e.letter)?.entityType === 'statistical_macroregion') continue; // already set above
+      candidates.set(e.letter, {
+        optionId: e.letter, observedLabel: e.name, entityType: 'statistical_macroregion',
+        entityTypeEvidence: { text: e.span, via: 'Discriminator:1' }, aggregationLevel: 'unknown',
+        populationStatus: 'unknown', boundary: { status: 'unresolved' },
+      });
+    }
+  }
+  return [...candidates.values()];
+}
+
+export function checkSubregionUniformity(
+  OPT: Record<string, string>, discriminator: DiscriminatorResult | null,
+): ComparabilityGateCheck {
+  const ruleChecked = 'subregion of a larger region (Discriminator:1) excludes an option from the category in its own right';
+  if (!discriminator?.ok || discriminator.subregionNonMembers.length === 0) {
+    return {
+      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      note: 'Discriminator:1 did not run/failed, or stated no option is a subregion-not-in-its-own-right this run -- nothing to check',
+    };
+  }
+  const pool = buildSubregionCandidates(OPT, discriminator);
+  const subregionSet = new Set(discriminator.subregionNonMembers.map((e) => e.letter));
+  const wouldEliminate = (c: Candidate) => subregionSet.has(c.optionId);
+  const wouldAlsoRemove = new Set<string>();
+  let anyChecked = false;
+  let discriminating = true;
+  for (const target of pool) {
+    if (!subregionSet.has(target.optionId)) continue;
+    anyChecked = true;
+    const check = checkUniformPredicate(target, pool, wouldEliminate);
+    if (!check.discriminating) {
+      discriminating = false;
+      for (const L of check.wouldAlsoRemove) wouldAlsoRemove.add(L);
+    }
+  }
+  if (!anyChecked) {
+    return {
+      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      note: 'no Discriminator-stated subregion-non-member option had a known same-relevant-type peer to test uniformity against',
+    };
+  }
+  return {
+    ran: true, ruleChecked, discriminating, wouldAlsoRemove: [...wouldAlsoRemove],
+    note: discriminating
+      ? 'self-consistent this run -- no same-relevant-type peer (including any the enumeration affirmed a member) '
+        + 'would also be removed by the rule as Discriminator:1 actually stated it'
+      : `REJECTED as non-discriminating -- the rule would ALSO remove ${wouldAlsoRemove.size ? [...wouldAlsoRemove].join(', ') : '(unlisted)'}, `
+        + 'a same-relevant-type peer (or a peer the SAME step\'s own enumeration affirmed a member) -- exactly '
+        + 'the aggregate/atomic category error this gate exists to catch; withheld, never folded into `eliminated`',
+  };
+}
+
 function summaryLine(OPT: Record<string, string>, r: TerminatorResult): string {
   if (!r.ok) return `TERMINATOR: FAILED -- ${r.error}`;
   const elimText = r.eliminated.length
@@ -407,17 +771,51 @@ function summaryLine(OPT: Record<string, string>, r: TerminatorResult): string {
   // D-BP154-041 PART 2/3: INSUFFICIENT EVIDENCE is reported as its OWN labeled line, ahead of the
   // generic ABSTAIN line -- FD-BP154-17's own "a distinct outcome from ABSTAIN and from a wrong
   // answer" must be visible in the transcript, not just in the structured field.
+  // D-BP154-055/BISHOP-SEG/S52/seg-wiregate -- BOTH SUFFICIENCY RESULTS, IN THE RECEIPT. Coordinator,
+  // verbatim: "Both are true and the receipt should carry both... it must not be erased by a clean
+  // result over the filtered set." Reported on every outcome where either was computed (i.e.
+  // whenever Purpose:1 ran ok), not only when the run actually withholds on it.
+  const sufficiencyNote = (r.sufficiencyRaw || r.sufficiencyPostFilter)
+    ? `  ||  SUFFICIENCY -- RAW (against all ${Object.keys(OPT).length} option(s), the item as shipped): `
+      + `${r.sufficiencyRaw ? (r.sufficiencyRaw.sufficient ? 'SUFFICIENT' : 'INSUFFICIENT') : 'not computed'}`
+      + (r.sufficiencyRaw ? ` -- ${r.sufficiencyRaw.reason}` : '')
+      + `  ||  SUFFICIENCY -- POST-FILTER (against the comparable candidate set, after admissibility `
+      + `filtering): ${r.sufficiencyPostFilter ? (r.sufficiencyPostFilter.sufficient ? 'SUFFICIENT' : 'INSUFFICIENT') : 'not computed'}`
+      + (r.sufficiencyPostFilter ? ` -- ${r.sufficiencyPostFilter.reason}` : '')
+    : '';
   if (r.insufficientEvidence) {
     return `TERMINATOR -- INSUFFICIENT EVIDENCE (${r.insufficientEvidence.preconditionId}, policy v`
-      + `${r.insufficientEvidence.policyVersion}): ${r.insufficientEvidence.reason}${completenessNote}`;
+      + `${r.insufficientEvidence.policyVersion}): ${r.insufficientEvidence.reason}${completenessNote}${sufficiencyNote}`;
   }
+  // D-BP154-052/BISHOP-SEG/S52/seg-wiregate -- THE GATE'S OWN DECISION, IN THE RECEIPT. Reported
+  // whenever it ran (undefined only on the two early failure returns before Unitary:1 is read).
+  const comparabilityGateNote = r.comparabilityGate?.ran
+    ? `  ||  COMPARABILITY GATE (checkUniformPredicate, live): ${r.comparabilityGate.ruleChecked} -- `
+      + `${r.comparabilityGate.discriminating ? 'DISCRIMINATING' : 'REJECTED'} -- ${r.comparabilityGate.note}`
+    : r.comparabilityGate
+      ? `  ||  COMPARABILITY GATE: not run this pass -- ${r.comparabilityGate.note}`
+      : '';
+  // D-BP154-053 -- THE ACCEPTING GATE'S OWN DECISION, IN THE RECEIPT.
+  const boundaryGateNote = r.boundaryGate?.ran
+    ? `  ||  BOUNDARY GATE (checkUniformPredicate, live): ${r.boundaryGate.ruleChecked} -- `
+      + `${r.boundaryGate.discriminating ? 'ACCEPTED' : 'REJECTED'} -- ${r.boundaryGate.note}`
+    : r.boundaryGate
+      ? `  ||  BOUNDARY GATE: not run this pass -- ${r.boundaryGate.note}`
+      : '';
+  // D-BP154-056 -- THE THIRD GATE'S OWN DECISION, IN THE RECEIPT.
+  const subregionGateNote = r.subregionGate?.ran
+    ? `  ||  SUBREGION GATE (checkUniformPredicate, live): ${r.subregionGate.ruleChecked} -- `
+      + `${r.subregionGate.discriminating ? 'DISCRIMINATING' : 'REJECTED'} -- ${r.subregionGate.note}`
+    : r.subregionGate
+      ? `  ||  SUBREGION GATE: not run this pass -- ${r.subregionGate.note}`
+      : '';
   if (r.abstain) {
-    return `TERMINATOR -- ABSTAIN: ${r.abstainReason}  ||  ELIMINATED: ${elimText}  ||  SURVIVORS: ${r.survivors.join(', ') || '(none)'}${bucketsNote}${completenessNote}`;
+    return `TERMINATOR -- ABSTAIN: ${r.abstainReason}  ||  ELIMINATED: ${elimText}  ||  SURVIVORS: ${r.survivors.join(', ') || '(none)'}${bucketsNote}${completenessNote}${comparabilityGateNote}${boundaryGateNote}${subregionGateNote}${sufficiencyNote}`;
   }
   const magnitudeNote = r.magnitudeBasis
     ? `  ||  MAGNITUDE BASIS: target=${r.magnitudeBasis.targetExtreme} of "${r.magnitudeBasis.property}" -- "${r.magnitudeBasis.span}"`
     : '';
-  return `TERMINATOR -- VERDICT ${r.verdict}) ${r.verdictName}  ||  ELIMINATED: ${elimText}${magnitudeNote}${bucketsNote}${completenessNote}`;
+  return `TERMINATOR -- VERDICT ${r.verdict}) ${r.verdictName}  ||  ELIMINATED: ${elimText}${magnitudeNote}${bucketsNote}${completenessNote}${comparabilityGateNote}${boundaryGateNote}${subregionGateNote}${sufficiencyNote}`;
 }
 
 /** THE ONE PLACE the feeder steps' results become eliminations. Pure, synchronous, no I/O --
@@ -436,7 +834,13 @@ export function deriveTerminatorEliminations(
   // tests, magnitude_step.ts's runMagnitudeStep()), same discipline `humanNuance` above already
   // established: every existing caller keeps compiling and behaving byte-identically.
   unitary?: UnitaryResult | null,
-): { eliminated: TerminatorEliminationEntry[]; contradiction: TerminatorContradiction | null } {
+  // D-BP154-053, ADDITIVE/OPTIONAL -- same discipline as `unitary` above: undefined on every
+  // pre-existing call site, every existing caller keeps compiling and behaving byte-identically.
+  boundaryStability?: BoundaryResult | null,
+): {
+  eliminated: TerminatorEliminationEntry[]; contradiction: TerminatorContradiction | null;
+  boundaryGate: ComparabilityGateCheck; subregionGate: ComparabilityGateCheck;
+} {
   const eliminated: TerminatorEliminationEntry[] = [];
   const excludedBySoftballs = new Map<string, { name: string; span: string }>();
   if (softballs?.ok) {
@@ -501,6 +905,28 @@ export function deriveTerminatorEliminations(
   // (unitary.excluded/confirmedUnitary remain on the result, informational) -- it no longer
   // contributes anything to `eliminated`. A compositeness finding alone never removes an option.
   void unitary; // parameter kept (its OTHER fields -- confirmedUnitary -- may be read for reporting elsewhere); no longer folded into eliminated.
+  // D-BP154-053/BISHOP-SEG/S52/seg-wiregate, NEW, LIVE-GATED. THE ACCEPTING CASE the Founder's own
+  // sourced proof names: unlike compositeness, a materially-variable-boundary finding folds into
+  // `eliminated` -- but ONLY when checkBoundaryStabilityUniformity() (this file, above) finds the
+  // rule discriminating THIS RUN, computed from whatever BoundaryStability:1 actually returned,
+  // never assumed. disposition NOT_COMPARABLE (comparability_gate.ts's own exclusion-reason
+  // taxonomy) -- a comparability decision, never a claim the option is not a region or lacks
+  // inhabitants (spec's own words, both files).
+  const boundaryGate = checkBoundaryStabilityUniformity(OPT, boundaryStability?.ok ? boundaryStability : null);
+  const excludedByBoundaryStability = new Map<string, { name: string; span: string }>();
+  if (boundaryStability?.ok && boundaryGate.discriminating) {
+    for (const e of boundaryStability.unstable) {
+      excludedByBoundaryStability.set(e.letter, { name: e.name, span: e.span });
+      eliminated.push({
+        letter: e.letter, name: e.name, sourceStep: 'BoundaryStability:1',
+        reason: 'source states this option\'s boundary/definition is materially variable and not fixed '
+          + 'by the item -- NOT_COMPARABLE to a peer whose boundary IS fixed (a comparability decision, '
+          + 'never a claim this option is not a region or lacks inhabitants; checkUniformPredicate() '
+          + 'accepted this rule as discriminating this run, see comparabilityGate/boundaryGate)',
+        span: e.span,
+      });
+    }
+  }
   // D-BP154-024/BISHOP-SEG/S24/seg-unstated FIX -- REMOVED, not weakened: kind-mismatch NO
   // LONGER eliminates anyone. See this file's own header for the full history (FOUR live
   // instances of the same class of defect: `ca92a439`, `d219bf2a`, `44499f3b`, and this one --
@@ -564,13 +990,20 @@ export function deriveTerminatorEliminations(
   // a genuinely different QUESTION from Softballs' ("is this the category at all?") -- Softballs
   // asks membership in the category outright; this asks whether a stated SUBREGION is the category
   // ITSELF or a part within it. Symmetric across every option (FD-BP153-06); no letter is favored.
+  // D-BP154-056/BISHOP-SEG/S52/seg-wiregate, LIVE-GATED (was unconditional). THE THIRD LIVE CALL --
+  // checkSubregionUniformity() (this file, above) is invoked BEFORE this rule may fold into
+  // `eliminated` at all. LIVE-MEASURED this ticket: a real passage stated FOUR options (A, B, C, F)
+  // uniformly as "a subregion located within a larger macro world region", contradicting the SAME
+  // step's own enumeration -- exactly the non-discriminating shape this check exists to catch.
+  const subregionGate = checkSubregionUniformity(OPT, discriminator?.ok ? discriminator : null);
   const subregionNonMembersByDiscriminator = new Map<string, { name: string; span: string }>();
-  if (discriminator?.ok) {
+  if (discriminator?.ok && subregionGate.discriminating) {
     for (const e of discriminator.subregionNonMembers) {
       subregionNonMembersByDiscriminator.set(e.letter, { name: e.name, span: e.span });
       eliminated.push({
         letter: e.letter, name: e.name, sourceStep: 'Discriminator:1',
-        reason: `source states this is not the category in its own right (a subdivision within a larger region)`, span: e.span,
+        reason: `source states this is not the category in its own right (a subdivision within a larger region); `
+          + 'checkUniformPredicate() accepted this rule as discriminating this run', span: e.span,
       });
     }
   }
@@ -611,7 +1044,7 @@ export function deriveTerminatorEliminations(
       break;
     }
   }
-  if (contradiction) return { eliminated, contradiction };
+  if (contradiction) return { eliminated, contradiction, boundaryGate, subregionGate };
   for (const [letter, softballsFact] of excludedBySoftballs) {
     const namedSetFact = includedByNamedSet.get(letter);
     if (namedSetFact) {
@@ -647,7 +1080,7 @@ export function deriveTerminatorEliminations(
       break;
     }
   }
-  if (contradiction) return { eliminated, contradiction };
+  if (contradiction) return { eliminated, contradiction, boundaryGate, subregionGate };
   // D-BP154-033, ADDITIVE: the SAME three contradiction checks Softballs'/the subregion source's
   // own loops above already run, applied to HumanNuance:1's own affirmative denial -- a
   // frame-excluded fact cannot coexist with a stated superlative-property membership or a stated
@@ -689,7 +1122,34 @@ export function deriveTerminatorEliminations(
   // header above), so it can no longer contradict anything either; keeping a dead contradiction
   // check against a Map that is never populated would be exactly the "receipt reports a step
   // green while it produced nothing" shape this ticket's own dispatch warned against.
-  return { eliminated, contradiction };
+  //
+  // D-BP154-053, ADDITIVE: the SAME three contradiction checks applied to BoundaryStability:1's
+  // own NOT_COMPARABLE finding -- only populated (non-empty Map) when checkBoundaryStabilityUniformity()
+  // actually accepted the rule this run, so this loop is a genuine no-op (never a dead check
+  // against an always-empty Map) exactly when the rule was rejected.
+  for (const [letter, boundaryFact] of excludedByBoundaryStability) {
+    const namedSetFact = includedByNamedSet.get(letter);
+    if (namedSetFact) {
+      contradiction = {
+        letter,
+        reason: `BOUNDARY STABILITY states "${OPT[letter] ?? letter}" has a materially variable boundary `
+          + `("${boundaryFact.span}") while NAMED SET simultaneously states it IS the superlative property `
+          + `("${namedSetFact.span}") -- self-contradictory, not published`,
+      };
+      break;
+    }
+    const discriminatorPropertyFact = propertyMembersByDiscriminator.get(letter);
+    if (discriminatorPropertyFact) {
+      contradiction = {
+        letter,
+        reason: `BOUNDARY STABILITY states "${OPT[letter] ?? letter}" has a materially variable boundary `
+          + `("${boundaryFact.span}") while DISCRIMINATOR simultaneously states it IS the superlative `
+          + `property ("${discriminatorPropertyFact.span}") -- self-contradictory, not published`,
+      };
+      break;
+    }
+  }
+  return { eliminated, contradiction, boundaryGate, subregionGate };
 }
 
 export interface TerminatorFrameMatchBuckets {
@@ -733,6 +1193,11 @@ export function computeFrameMatchBuckets(
   humanNuance?: HumanNuanceResult | null,
   // D-BP154-043, ADDITIVE/OPTIONAL -- same discipline as `humanNuance` above.
   unitary?: UnitaryResult | null,
+  // D-BP154-056, ADDITIVE/OPTIONAL -- same discipline as `humanNuance`/`unitary` above. When
+  // omitted (every pre-existing call site), this function behaves byte-identically to before
+  // (subregionNonMembers folds in unconditionally, same as always) -- only a caller that explicitly
+  // passes the live checkSubregionUniformity() result gets the gated behavior.
+  subregionGate?: ComparabilityGateCheck | null,
 ): TerminatorFrameMatchBuckets {
   const affirmedNonMember = new Set<string>();
   if (softballs?.ok) {
@@ -742,7 +1207,12 @@ export function computeFrameMatchBuckets(
   // above for the full ruling) -- folded into the SAME bucket as Softballs' own `excluded`, since
   // both answer the identical question ("does the source affirmatively place this option outside
   // the category?"), just via two independently-asked questions.
-  if (discriminator?.ok) {
+  //
+  // D-BP154-056 FIX: gated the same way `eliminated` itself now is -- a REJECTED (non-
+  // discriminating) subregion rule is not an affirmed non-member of the category either (same
+  // ruling D-BP154-050 already gave Unitary:1's own `excluded`, just below); `subregionGate` being
+  // omitted (undefined, every pre-existing caller) preserves the old unconditional behavior exactly.
+  if (discriminator?.ok && subregionGate?.discriminating !== false) {
     for (const e of discriminator.subregionNonMembers) affirmedNonMember.add(e.letter);
   }
   // D-BP154-033, ADDITIVE: a THIRD affirmative-denial source -- HumanNuance:1's own `excluded`,
@@ -783,7 +1253,7 @@ export async function runTerminatorStep(
   const OPT = input.options;
   const emptyStepsConsulted: TerminatorResult['stepsConsulted'] = {
     'Softballs:1': 'not run', 'NamedSet:1': 'not run', 'Discriminator:1': 'not run', 'Magnitude:1': 'not run',
-    'HumanNuance:1': 'not run', 'Purpose:1': 'not run', 'Unitary:1': 'not run',
+    'HumanNuance:1': 'not run', 'Purpose:1': 'not run', 'Unitary:1': 'not run', 'BoundaryStability:1': 'not run',
   };
   if (!OPT || Object.keys(OPT).length === 0) {
     const result: TerminatorResult = {
@@ -808,6 +1278,12 @@ export async function runTerminatorStep(
   const purposeRaw = findRaw('Purpose:1') as PurposeResult | null;
   // D-BP154-043, ADDITIVE.
   const unitaryRaw = findRaw('Unitary:1') as UnitaryResult | null;
+  // D-BP154-053, ADDITIVE.
+  const boundaryRaw = findRaw('BoundaryStability:1') as BoundaryResult | null;
+  // D-BP154-052/BISHOP-SEG/S52/seg-wiregate, NEW. THE LIVE CALL -- computed once, here, from
+  // whatever Unitary:1 actually returned this run, threaded into every TerminatorResult return
+  // below (see checkCompositenessUniformity()'s own header above).
+  const comparabilityGate = checkCompositenessUniformity(OPT, unitaryRaw?.ok ? unitaryRaw : null);
 
   // D-BP154-041 PART 3/3, NEW. THE ONE PLACE a step's raw result (real, or a SKIPPED-AS-MOOT
   // marker from script_bridge.ts's own computeStepSkip()) becomes its stepsConsulted status --
@@ -835,27 +1311,8 @@ export async function runTerminatorStep(
     // Purpose:1 is never a skip candidate (nothing precedes it) -- same productivity check applied.
     'Purpose:1': stepStatus('Purpose:1', purposeRaw),
     'Unitary:1': stepStatus('Unitary:1', unitaryRaw),
+    'BoundaryStability:1': stepStatus('BoundaryStability:1', boundaryRaw),
   };
-  // D-BP154-041 PART 2/3, FD-BP154-17, NEW. "Before an answer is attempted, establish that the
-  // available evidence class CAN satisfy the stated purpose." Checked here, BEFORE this reducer's
-  // own elimination/contradiction logic runs at all -- a structurally-insufficient purpose means no
-  // amount of elimination could ever have produced a trustworthy unique survivor, so nothing below
-  // this point is worth computing. A DISTINCT outcome from a normal ABSTAIN: `insufficientEvidence`
-  // is set, never conflated with "no stated distinction separated them further".
-  if (purposeRaw?.ok && purposeRaw.sufficiency && !purposeRaw.sufficiency.sufficient) {
-    const result: TerminatorResult = {
-      ok: true, stepsConsulted, eliminated: [], survivors: all, contradiction: null, verdict: null,
-      verdictName: null, abstain: true,
-      abstainReason: `INSUFFICIENT EVIDENCE: ${purposeRaw.sufficiency.reason}`,
-      insufficientEvidence: {
-        preconditionId: purposeRaw.sufficiency.preconditionId,
-        reason: purposeRaw.sufficiency.reason,
-        policyVersion: purposeRaw.sufficiency.policyVersion,
-      },
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets: null, incomplete: false,
-    };
-    return { result, summary: summaryLine(OPT, result) };
-  }
   // D-BP154-029/BISHOP-SEG/S29/seg-withhold FIX. Computed ONCE, used everywhere below --
   // deriveTerminatorEliminations() itself, contradiction/zero-survivor ABSTAINs, and (new this
   // ticket) the gate that keeps a VERDICT from ever publishing while `incomplete` is true. This
@@ -865,13 +1322,14 @@ export async function runTerminatorStep(
   const consultedNote = (Object.entries(stepsConsulted) as Array<[string, string]>)
     .map(([id, status]) => `${id}: ${status}`).join(', ');
 
-  const { eliminated, contradiction } = deriveTerminatorEliminations(
+  const { eliminated, contradiction, boundaryGate, subregionGate } = deriveTerminatorEliminations(
     OPT,
     softballsRaw?.ok ? softballsRaw : null,
     namedSetRaw?.ok ? namedSetRaw : null,
     discriminatorRaw?.ok ? discriminatorRaw : null,
     humanNuanceRaw?.ok ? humanNuanceRaw : null,
     unitaryRaw?.ok ? unitaryRaw : null,
+    boundaryRaw?.ok ? boundaryRaw : null,
   );
   // D-BP154-024/BISHOP-SEG/S24/seg-unstated, ADDITIVE: computed ONCE, threaded into every
   // TerminatorResult return below regardless of outcome (abstain, verdict, or contradiction) --
@@ -880,14 +1338,71 @@ export async function runTerminatorStep(
     OPT, softballsRaw?.ok ? softballsRaw : null, discriminatorRaw?.ok ? discriminatorRaw : null,
     humanNuanceRaw?.ok ? humanNuanceRaw : null,
     unitaryRaw?.ok ? unitaryRaw : null,
+    subregionGate,
   );
+
+  // D-BP154-055/BISHOP-SEG/S52/seg-wiregate -- THE COORDINATOR'S OWN LIVE-DIAGNOSED FIX, MOVED
+  // (not deleted) FROM ABOVE deriveTerminatorEliminations() TO HERE, AFTER it. Founder's own
+  // reading of the qid-98 receipt: "the gate is firing on the raw nine-option count and short-
+  // circuiting the whole chain before the frame is ever attempted... it is correct about the naive
+  // reading and wrong as a gate placement... requiredMemberCount = optionCount - 1 must be
+  // evaluated against the COMPARABLE CANDIDATE SET, not the raw option list -- establish frame ->
+  // remove out-of-frame -> remove non-comparable -> THEN test whether the remaining pool can
+  // satisfy the purpose."
+  //
+  // THE COMPARABLE POOL, computed live from whatever THIS run's own admissibility-class sources
+  // actually eliminated -- Softballs:1 (OUT_OF_FRAME-equivalent: "falls outside the category"),
+  // HumanNuance:1 (the same admissibility class, D-BP154-033's own ruling), and BoundaryStability:1
+  // (NOT_COMPARABLE, D-BP154-053) -- NEVER Discriminator:1's/NamedSet:1's own STATED_MEMBER-class
+  // eliminations, because satisfying the NEGATED_SUPERLATIVE_MEMBERSHIP purpose (finding enough
+  // affirmed members to leave a unique non-member) IS what the purpose asks for, not a filter
+  // that should shrink the pool BEFORE the purpose is even tested against it. This reads only
+  // `eliminated`'s own already-computed `sourceStep` tags -- no new judgment, no letter selected
+  // (FD-BP153-06).
+  const admissibilityFilteredLetters = new Set(
+    eliminated
+      .filter((e) => e.sourceStep === 'Softballs:1' || e.sourceStep === 'HumanNuance:1' || e.sourceStep === 'BoundaryStability:1')
+      .map((e) => e.letter),
+  );
+  const comparablePoolCount = all.length - admissibilityFilteredLetters.size;
+  // `sufficiencyRaw` is copied straight from Purpose:1's own already-computed field -- never
+  // recomputed (a second, independently-computed copy could drift from Purpose:1's own). Null
+  // under the exact same conditions the pre-existing early-return check above used to read.
+  const sufficiencyRaw = purposeRaw?.ok ? purposeRaw.sufficiency : null;
+  // `sufficiencyPostFilter`: THE SAME checkSufficiency() function (sufficiency_gate.ts, UNCHANGED)
+  // called a second time, against `comparablePoolCount` instead of the raw `all.length`. Null
+  // under the same conditions `sufficiencyRaw` is null -- if Purpose:1 never ran or never
+  // classified a purposeType, there is nothing to re-check against a narrower pool either.
+  const sufficiencyPostFilter = purposeRaw?.ok
+    ? checkSufficiency(purposeRaw.purposeType, comparablePoolCount)
+    : null;
+  // THE GATE ITSELF, MOVED: an insufficiency finding now requires the POST-FILTER check (the
+  // comparable pool) to ALSO be insufficient -- the raw check alone no longer aborts the run.
+  // BOTH results are always threaded into every TerminatorResult return below regardless of this
+  // branch's own outcome (coordinator, verbatim: "Both are true and the receipt should carry
+  // both... it must not be erased by a clean result over the filtered set").
+  if (sufficiencyPostFilter && !sufficiencyPostFilter.sufficient) {
+    const result: TerminatorResult = {
+      ok: true, stepsConsulted, eliminated, survivors: all.filter((L) => !admissibilityFilteredLetters.has(L)),
+      contradiction: null, verdict: null, verdictName: null, abstain: true,
+      abstainReason: `INSUFFICIENT EVIDENCE (against the comparable pool of ${comparablePoolCount}, after `
+        + `admissibility filtering): ${sufficiencyPostFilter.reason}`,
+      insufficientEvidence: {
+        preconditionId: sufficiencyPostFilter.preconditionId,
+        reason: sufficiencyPostFilter.reason,
+        policyVersion: sufficiencyPostFilter.policyVersion,
+      },
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete, comparabilityGate, boundaryGate, sufficiencyRaw, sufficiencyPostFilter, subregionGate,
+    };
+    return { result, summary: summaryLine(OPT, result) };
+  }
 
   if (contradiction) {
     const result: TerminatorResult = {
       ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors: [], contradiction, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `CONTRADICTION: ${contradiction.reason}`,
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete, comparabilityGate, boundaryGate, sufficiencyRaw, sufficiencyPostFilter, subregionGate,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -904,13 +1419,15 @@ export async function runTerminatorStep(
   if (contributingSteps.has('HumanNuance:1') && humanNuanceRaw) basisStepClasses.push(classifyComposerStepResult(humanNuanceRaw).cls);
   // D-BP154-043, ADDITIVE.
   if (contributingSteps.has('Unitary:1') && unitaryRaw) basisStepClasses.push(classifyComposerStepResult(unitaryRaw).cls);
+  // D-BP154-053, ADDITIVE.
+  if (contributingSteps.has('BoundaryStability:1') && boundaryRaw) basisStepClasses.push(classifyComposerStepResult(boundaryRaw).cls);
 
   if (survivors.length === 0) {
     const result: TerminatorResult = {
       ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: 'every option was eliminated -- at least one contributing step\'s basis must be wrong; not published',
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete, comparabilityGate, boundaryGate, sufficiencyRaw, sufficiencyPostFilter, subregionGate,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -1022,7 +1539,7 @@ export async function runTerminatorStep(
           + '(D-BP154-046 FIX 2), which is not the case here. Artifact class: '
           + `${humanNuanceRaw?.ok ? (humanNuanceRaw.artifactClassEstablished ? (humanNuanceRaw.corpusMetaTruth ? 'established' : 'established but no corpus meta-truth') : 'not established') : 'not run/failed'}. `
           + `Category frame: ${substantiveNote}. Steps consulted: ${consultedNote}`,
-        basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
+        basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete, comparabilityGate, boundaryGate, sufficiencyRaw, sufficiencyPostFilter, subregionGate,
       };
       return { result, summary: summaryLine(OPT, result) };
     }
@@ -1072,7 +1589,7 @@ export async function runTerminatorStep(
             + `${magnitudeRaw.targetExtreme} of "${magnitudeRaw.property}", but this run is INCOMPLETE -- ${withheldNote(stepsConsulted)}. `
             + `A verdict derived from a partial elimination set is unsound whatever letter it lands on -- not published. `
             + `Steps consulted: ${consultedNote}`,
-          basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
+          basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete, comparabilityGate, boundaryGate, sufficiencyRaw, sufficiencyPostFilter, subregionGate,
         };
         return { result, summary: summaryLine(OPT, result) };
       }
@@ -1088,7 +1605,7 @@ export async function runTerminatorStep(
             ? 'PROVEN-eligible -- single frozen source covers every survivor'
             : 'ANSWERED -- not proven by a unified frozen dataset',
         },
-        frameMatchBuckets, incomplete,
+        frameMatchBuckets, incomplete, comparabilityGate, boundaryGate, sufficiencyRaw, sufficiencyPostFilter, subregionGate,
       };
       return { result, summary: summaryLine(OPT, result) };
     }
@@ -1105,7 +1622,7 @@ export async function runTerminatorStep(
       ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null, verdict: null,
       verdictName: null, abstain: true,
       abstainReason: `more than one survivor left (${survivors.join(', ')}) -- no stated distinction separated them further. Steps consulted: ${consultedNote}${magnitudeNote}`,
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete, comparabilityGate, boundaryGate, sufficiencyRaw, sufficiencyPostFilter, subregionGate,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -1123,14 +1640,14 @@ export async function runTerminatorStep(
       abstainReason: `WITHHELD: a unique survivor (${verdict}) ${OPT[verdict]} was reached, but this run is `
         + `INCOMPLETE -- ${withheldNote(stepsConsulted)}. A verdict derived from a partial elimination set is `
         + `unsound whatever letter it lands on -- not published. Steps consulted: ${consultedNote}`,
-      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
+      basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete, comparabilityGate, boundaryGate, sufficiencyRaw, sufficiencyPostFilter, subregionGate,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
   const result: TerminatorResult = {
     ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null,
     verdict, verdictName: OPT[verdict], abstain: false, abstainReason: null, basisStepClasses,
-    magnitudeBasis: null, frameMatchBuckets, incomplete,
+    magnitudeBasis: null, frameMatchBuckets, incomplete, comparabilityGate, boundaryGate, sufficiencyRaw, sufficiencyPostFilter, subregionGate,
   };
   return { result, summary: summaryLine(OPT, result) };
 }
