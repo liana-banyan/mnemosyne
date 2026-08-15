@@ -1,7 +1,7 @@
 // step_skip.test.ts -- D-BP154-041/BISHOP-SEG/S41/seg-purpose, PART 3/3
 
 import { describe, expect, it } from 'vitest';
-import { computeStepSkip, isSkippedMarker, SKIP_POLICY_VERSION } from './step_skip';
+import { computeStepSkip, isSkippedMarker } from './step_skip';
 import type { ComposerStepOutcome } from './script_bridge';
 import type { PurposeResult } from './purpose_step';
 import type { NamedSetResult } from './named_set_step';
@@ -93,19 +93,22 @@ describe('isSkippedMarker', () => {
   });
 });
 
-describe('computeStepSkip -- the sufficiency-driven skip (all five query-issuing steps)', () => {
+// D-BP154-055/BISHOP-SEG/S52/seg-wiregate, REWRITTEN (not deleted): the old sufficiency-driven
+// upstream skip this describe block locked in is GONE from step_skip.ts (coordinator's own
+// live-diagnosed fix -- see step_skip.ts's own header for the full ruling: the raw-count
+// sufficiency check now runs DOWNSTREAM in terminator_step.ts, against the comparable pool, which
+// requires these very steps to have already run). This block now locks in the OPPOSITE fact: a
+// structurally-insufficient Purpose:1 no longer skips ANY of these steps upstream, regardless of
+// its own sufficiency finding -- FAIL-BEFORE for this rewrite: every test below FAILS against the
+// pre-D-BP154-055 step_skip.ts, because that file returned a real SkippedStepMarker for each one.
+describe('computeStepSkip -- D-BP154-055: NO upstream skip on Purpose:1\'s raw sufficiency finding (moved downstream)', () => {
   const priorResults: ComposerStepOutcome[] = [
     { id: 'Purpose:1', summary: 's', raw: insufficientPurpose() },
   ];
 
-  for (const id of ['Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Magnitude:1', 'HumanNuance:1']) {
-    it(`skips ${id} as moot when Purpose:1 found the evidence class insufficient`, () => {
-      const skip = computeStepSkip(id, priorResults);
-      expect(skip).not.toBeNull();
-      expect(skip?.skipped).toBe(true);
-      expect(skip?.ok).toBe(false);
-      expect(skip?.skipReason).toMatch(/SKIPPED-AS-MOOT/);
-      expect(skip?.skipReason).toContain(`v${SKIP_POLICY_VERSION}`);
+  for (const id of ['Softballs:1', 'NamedSet:1', 'Discriminator:1', 'HumanNuance:1', 'Unitary:1', 'BoundaryStability:1']) {
+    it(`does NOT skip ${id} even when Purpose:1's raw sufficiency finding is insufficient -- it always runs now`, () => {
+      expect(computeStepSkip(id, priorResults)).toBeNull();
     });
   }
 
@@ -117,7 +120,7 @@ describe('computeStepSkip -- the sufficiency-driven skip (all five query-issuing
     expect(computeStepSkip('Terminator:1', priorResults)).toBeNull();
   });
 
-  it('does not skip when Purpose:1 is sufficient', () => {
+  it('does not skip when Purpose:1 is sufficient (unchanged: was never a skip candidate on this axis)', () => {
     const pr: ComposerStepOutcome[] = [{ id: 'Purpose:1', summary: 's', raw: sufficientPurpose() }];
     expect(computeStepSkip('Softballs:1', pr)).toBeNull();
   });
@@ -126,7 +129,7 @@ describe('computeStepSkip -- the sufficiency-driven skip (all five query-issuing
     expect(computeStepSkip('Softballs:1', [])).toBeNull();
   });
 
-  it('QUALIFIER 2/3: never skips on the basis of a FAILED Purpose:1', () => {
+  it('does not skip on the basis of a FAILED Purpose:1 either (moot now -- nothing here ever skips on this axis)', () => {
     const failedPurpose: PurposeResult = { ...insufficientPurpose(), ok: false, sufficiency: null, error: 'failed' };
     const pr: ComposerStepOutcome[] = [{ id: 'Purpose:1', summary: 's', raw: failedPurpose }];
     expect(computeStepSkip('Softballs:1', pr)).toBeNull();

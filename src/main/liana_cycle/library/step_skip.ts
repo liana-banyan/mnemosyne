@@ -82,7 +82,6 @@ import type { DiscriminatorResult } from './discriminator_step';
 import type { SoftballsResult } from './softballs_step';
 import type { UnitaryResult } from './unitary_step';
 import type { HumanNuanceResult } from './human_nuance_step';
-import type { PurposeResult } from './purpose_step';
 import type { ComposerStepOutcome } from './script_bridge';
 
 export const SKIP_POLICY_VERSION = '1';
@@ -100,39 +99,22 @@ export function isSkippedMarker(raw: unknown): raw is SkippedStepMarker {
   return Boolean(raw) && typeof raw === 'object' && (raw as { skipped?: unknown }).skipped === true;
 }
 
-/** The query-issuing Composer steps this gate can ever skip -- Purpose:1 and Terminator:1 are
- *  never candidates (qualifier 4's own table, this file's header). D-BP154-043, ADDITIVE:
- *  'Unitary:1' (FD-BP154-16's "unitary vs conglomerate" factor) is REFUTING, same reasoning as
- *  Softballs:1/NamedSet:1/Discriminator:1/HumanNuance:1 -- its `excluded` facts feed
- *  terminator_step.ts's own contradiction checks -- but it is still subject to the WIDER
- *  sufficiency-driven skip (this file's own header: "there is nothing here for a REFUTING step to
- *  refute" when the conclusion is structural, not a stated fact). */
-const SKIPPABLE_QUERY_STEPS: ReadonlySet<string> = new Set([
-  'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Magnitude:1', 'HumanNuance:1', 'Unitary:1',
-]);
-
-/** THE GATE ITSELF. Called from script_bridge.ts's runOneStep() BEFORE a skippable step's real
- *  runner is invoked. Returns a SkippedStepMarker (never invokes any query, never returns null
- *  when a real skip condition holds) or `null` (meaning: run the step for real). Pure, synchronous,
- *  no I/O -- reads only `priorResults`, the SAME accumulated array every other step already reads
- *  (script_bridge.ts's own ComposerState.results). */
+// D-BP154-055/BISHOP-SEG/S52/seg-wiregate, REMOVED (not weakened): the sufficiency-driven upstream
+// skip that used to live here (SKIPPABLE_QUERY_STEPS + a Purpose:1-raw-sufficiency check, firing
+// on Softballs:1/NamedSet:1/Discriminator:1/HumanNuance:1/Unitary:1/Magnitude:1 alike) is GONE.
+// Coordinator's own live-diagnosed finding (qid 98, D-BP154-055 dispatch): "the gate is firing on
+// the raw nine-option count and short-circuiting the whole chain before the frame is ever
+// attempted... it is correct about the naive reading and wrong as a gate placement." The fix moves
+// the sufficiency check DOWNSTREAM, into terminator_step.ts's own runTerminatorStep() -- evaluated
+// a SECOND time there, against the COMPARABLE CANDIDATE SET (the option count after admissibility-
+// class eliminations), not the raw list -- which structurally REQUIRES Softballs:1/HumanNuance:1/
+// BoundaryStability:1 (the admissibility-class sources) to have already run before that recheck can
+// mean anything. An UPSTREAM skip based on the RAW count alone would once again short-circuit the
+// very evidence the downstream recheck needs -- exactly the placement error this ticket repairs.
+// These five/six query-issuing steps therefore always run now; only Magnitude:1's own SEPARATE,
+// unrelated FD-BP154-14 skip (below, unmodified) remains.
 export function computeStepSkip(id: string, priorResults: ComposerStepOutcome[]): SkippedStepMarker | null {
   const findRaw = (sid: string): unknown | null => priorResults.find((r) => r.id === sid)?.raw ?? null;
-
-  if (SKIPPABLE_QUERY_STEPS.has(id)) {
-    const purposeRaw = findRaw('Purpose:1') as PurposeResult | null;
-    // Qualifiers 2/3: only a SUCCESSFUL Purpose:1 (ok === true) can trigger this skip.
-    if (purposeRaw?.ok === true && purposeRaw.sufficiency && purposeRaw.sufficiency.sufficient === false) {
-      return {
-        ok: false,
-        skipped: true,
-        skipReason: `SKIPPED-AS-MOOT (skip policy v${SKIP_POLICY_VERSION}): Purpose:1 already found the `
-          + `evidence class structurally insufficient (${purposeRaw.sufficiency.preconditionId}: `
-          + `${purposeRaw.sufficiency.reason}) -- no query this step could issue changes a structural `
-          + 'conclusion that does not rest on any stated fact (FD-BP154-17)',
-      };
-    }
-  }
 
   if (id === 'Magnitude:1') {
     const softballsRaw = findRaw('Softballs:1') as SoftballsResult | null;
