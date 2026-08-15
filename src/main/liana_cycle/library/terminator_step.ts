@@ -192,7 +192,15 @@ export interface TerminatorResult {
   // import above. PART 3/3, ADDITIVE: 'skipped-moot' added as a fourth status -- Purpose:1 itself
   // is never skipped (nothing precedes it), so it never carries this status; the five query-issuing
   // feeder steps can. D-BP154-043, ADDITIVE: 'Unitary:1' added as a seventh entry.
-  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1' | 'Unitary:1', 'not run' | 'ok' | 'failed' | 'skipped-moot'>;
+  //
+  // D-BP154-046 FIX 1, NEW STATE. Founder: "A step that succeeds badly is indistinguishable from a
+  // step that succeeds well" -- the antonymic canon at the status layer. 'ok-but-unproductive':
+  // the step ran, returned ok:true, but stated NOTHING actionable (isStepProductive(), below) --
+  // e.g. Softballs:1 excluding zero (or, live-measured, a partial/trivial subset that left obvious
+  // non-regions in the frame) is formally green and substantively hollow. Distinct from 'ok'
+  // (ran, succeeded, produced something) and from 'failed' (did not succeed at all) -- three states
+  // for three different facts, never collapsed into two.
+  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1' | 'Unitary:1', 'not run' | 'ok' | 'ok-but-unproductive' | 'failed' | 'skipped-moot'>;
   /** D-BP154-041 PART 2/3, FD-BP154-17, ADDITIVE. Non-null ONLY when Purpose:1 ran (ok:true) and
    *  found the evidence class structurally incapable of satisfying its own stated purpose -- a
    *  DISTINCT outcome from a normal ABSTAIN (multiple/zero survivors after elimination) and from a
@@ -308,6 +316,37 @@ function sameLetterSet(a: string[], b: string[]): boolean {
  *  reads only NamedSet:1's/Discriminator:1's own already-computed `included`/`propertyMembers`
  *  arrays, and only when `ok === true` -- qualifiers 2/3 of the skip gate's own five (never resolve,
  *  and never skip, on the basis of a step that itself FAILED). */
+// D-BP154-046 FIX 1, NEW, EXPORTED. THE ANTONYMIC CANON AT THE STATUS LAYER (Founder: "a step that
+// succeeds badly is indistinguishable from a step that succeeds well"). Per-step "did this step's
+// own successful run state anything actionable" -- reads only each step's OWN already-computed
+// arrays (never a new judgment, never a letter-specific rule, FD-BP153-06); called ONLY after a
+// step's own `ok === true` (qualifier 3: a failed step is 'failed', never 'ok-but-unproductive' --
+// the two are different facts). A step id this function does not recognize is treated as
+// productive by default -- never a false "unproductive" downgrade for a step this function has
+// not been taught about. Exported so step_skip.ts's own gates (FIX 2, below) can consult the same
+// definition rather than a second, independently-computed one that could drift from this one.
+export function isStepProductive(id: string, raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const r = raw as Record<string, unknown>;
+  const nonEmpty = (v: unknown): boolean => Array.isArray(v) && v.length > 0;
+  switch (id) {
+    case 'Softballs:1':
+    case 'HumanNuance:1':
+    case 'Unitary:1':
+      return nonEmpty(r.excluded);
+    case 'NamedSet:1':
+      return nonEmpty(r.included);
+    case 'Discriminator:1':
+      return nonEmpty(r.propertyMembers) || nonEmpty(r.subregionNonMembers) || nonEmpty(r.categoryEnumerationMembers);
+    case 'Magnitude:1':
+      return nonEmpty(r.order);
+    case 'Purpose:1':
+      return nonEmpty(r.survivors);
+    default:
+      return true;
+  }
+}
+
 export function isMembershipPartitioned(
   namedSet: NamedSetResult | null,
   discriminator: DiscriminatorResult | null,
@@ -777,23 +816,28 @@ export async function runTerminatorStep(
   // marker from script_bridge.ts's own computeStepSkip()) becomes its stepsConsulted status --
   // qualifier 1 of the skip gate's own five: skipped is checked BEFORE 'ok'/'failed', so it can
   // never be folded into 'failed' and can never mark a run incomplete (anyStepFailed(), below,
-  // only ever counts the literal string 'failed').
-  const stepStatus = (raw: { ok?: boolean } | null): 'not run' | 'ok' | 'failed' | 'skipped-moot' => {
+  // only ever counts the literal string 'failed'). D-BP154-046 FIX 1, AMENDED: a raw that IS ok
+  // is no longer automatically 'ok' -- isStepProductive() (this file, exported below) is
+  // consulted, and a formally-successful-but-hollow result becomes 'ok-but-unproductive', the
+  // antonymic canon's third state.
+  const stepStatus = (
+    id: string, raw: { ok?: boolean } | null,
+  ): 'not run' | 'ok' | 'ok-but-unproductive' | 'failed' | 'skipped-moot' => {
     if (!raw) return 'not run';
     if (isSkippedMarker(raw)) return 'skipped-moot';
-    return raw.ok ? 'ok' : 'failed';
+    if (!raw.ok) return 'failed';
+    return isStepProductive(id, raw) ? 'ok' : 'ok-but-unproductive';
   };
 
   const stepsConsulted: TerminatorResult['stepsConsulted'] = {
-    'Softballs:1': stepStatus(softballsRaw),
-    'NamedSet:1': stepStatus(namedSetRaw),
-    'Discriminator:1': stepStatus(discriminatorRaw),
-    'Magnitude:1': stepStatus(magnitudeRaw),
-    'HumanNuance:1': stepStatus(humanNuanceRaw),
-    // Purpose:1 is never a skip candidate (nothing precedes it) -- plain ok/failed/not-run, same
-    // as PART 2/3 built it.
-    'Purpose:1': purposeRaw ? (purposeRaw.ok ? 'ok' : 'failed') : 'not run',
-    'Unitary:1': stepStatus(unitaryRaw),
+    'Softballs:1': stepStatus('Softballs:1', softballsRaw),
+    'NamedSet:1': stepStatus('NamedSet:1', namedSetRaw),
+    'Discriminator:1': stepStatus('Discriminator:1', discriminatorRaw),
+    'Magnitude:1': stepStatus('Magnitude:1', magnitudeRaw),
+    'HumanNuance:1': stepStatus('HumanNuance:1', humanNuanceRaw),
+    // Purpose:1 is never a skip candidate (nothing precedes it) -- same productivity check applied.
+    'Purpose:1': stepStatus('Purpose:1', purposeRaw),
+    'Unitary:1': stepStatus('Unitary:1', unitaryRaw),
   };
   // D-BP154-041 PART 2/3, FD-BP154-17, NEW. "Before an answer is attempted, establish that the
   // available evidence class CAN satisfy the stated purpose." Checked here, BEFORE this reducer's
@@ -921,28 +965,77 @@ export async function runTerminatorStep(
     const artifactClassEstablished = Boolean(
       humanNuanceRaw?.ok && humanNuanceRaw.artifactClassEstablished && humanNuanceRaw.corpusMetaTruth,
     );
-    if (membershipPartitioned && !artifactClassEstablished) {
+    // D-BP154-046 FIX 2, NEW. Founder: "FD-BP154-18's licence checked that membership partitioned
+    // and artifact class was established -- both formally true in the failing run, both hollow...
+    // Skip-gate qualifier 2 applies here and was never carried over: resolved must mean resolved
+    // by EVIDENCE, not by exhaustion." LIVE-MEASURED (D-BP154-046 dispatch): Softballs:1 returned
+    // ok:true while excluding only D -- G/H/I (biomes/a latitude line) survived into the frame,
+    // the license fired anyway (membershipPartitioned + artifactClassEstablished both formally
+    // true), and Magnitude ranked a frame that was never substantively established, publishing
+    // VERDICT G) Arctic Circle.
+    //
+    // THE CHECK: HumanNuance:1's own `nonParticipants` (human_nuance_step.ts) is a BLIND,
+    // letter-agnostic, already-computed fact -- the augmentation-added options, derived purely
+    // from an option-COUNT comparison against the origin's own (pre-augmentation) option set,
+    // never a judgment about which letter is which (FD-BP153-06). If a category-elimination pass
+    // were genuinely substantive, every one of those additions would appear somewhere in
+    // `eliminated` (Softballs/Discriminator/HumanNuance/Unitary all contribute to that same
+    // array). An addition that survived UNELIMINATED is direct, structural evidence the frame is
+    // still hollow -- exactly qualifier 2's "resolved by evidence, not exhaustion": a partition
+    // existing on paper is not the same fact as the category having actually been narrowed.
+    // `null` (never a guess) when HumanNuance:1 did not run or found no augmentation deltas to
+    // check against -- absence of this specific evidence is NOT treated as "substantive" by
+    // default (qualifier 2 again: no evidence for substantiveness means it is not licensed).
+    const categoryFrameSubstantive: { substantive: boolean; uncaught: string[] } | null = (() => {
+      if (!humanNuanceRaw?.ok || humanNuanceRaw.nonParticipants.length === 0) return null;
+      const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
+      const uncaught = humanNuanceRaw.nonParticipants.filter((L) => !eliminatedLetters.has(L));
+      return { substantive: uncaught.length === 0, uncaught };
+    })();
+    // Qualifier 3: no gate may be licensed on the basis of a step that FAILED or was UNPRODUCTIVE.
+    // Softballs:1/Discriminator:1 are the category-elimination steps this license depends on;
+    // 'ok-but-unproductive' (D-BP154-046 FIX 1) on EITHER, with nothing else in `eliminated`
+    // covering the category question, is the same hollow-license shape by construction --
+    // categoryFrameSubstantive's own uncaught-additions check already catches this in practice
+    // (an unproductive Softballs leaves its own augmentation additions uncaught), so this is
+    // stated here as the EXPLICIT qualifier-3 reading, not a second, separate check.
+    const licenseWithheld = membershipPartitioned && (
+      !artifactClassEstablished
+      || categoryFrameSubstantive === null
+      || !categoryFrameSubstantive.substantive
+    );
+    if (licenseWithheld) {
       const statedMembers = [
         ...(namedSetRaw?.ok ? namedSetRaw.included.map((e) => `${e.letter}) ${e.name} [NamedSet:1]`) : []),
         ...(discriminatorRaw?.ok ? discriminatorRaw.propertyMembers.map((e) => `${e.letter}) ${e.name} [Discriminator:1]`) : []),
       ];
+      const substantiveNote = categoryFrameSubstantive === null
+        ? 'no evidence either way (HumanNuance:1 did not run, or found no augmentation deltas to check) -- absence of evidence for substantiveness is not treated as substantive'
+        : categoryFrameSubstantive.substantive
+          ? 'substantive (every known augmentation addition was eliminated by some step)'
+          : `NOT substantive -- ${categoryFrameSubstantive.uncaught.map((L) => `${L}) ${OPT[L]}`).join(', ')} `
+            + `${categoryFrameSubstantive.uncaught.length === 1 ? 'is' : 'are'} a known augmentation addition `
+            + 'that survived every elimination step uncaught (Softballs:1/Discriminator:1 ran "ok" but did '
+            + 'not substantively narrow the category, D-BP154-046 FIX 1/2)';
       const result: TerminatorResult = {
         ok: true, stepsConsulted, insufficientEvidence: null, eliminated, survivors, contradiction: null, verdict: null,
         verdictName: null, abstain: true,
-        abstainReason: `FD-BP154-14: Magnitude:1 not consulted -- the membership test already `
+        abstainReason: `FD-BP154-14 (amended D-BP154-043, D-BP154-046): Magnitude:1 not consulted -- the membership test already `
           + `partitioned the options (stated member(s): ${statedMembers.join(', ') || '(none)'}), `
           + `so the ${survivors.length} remaining survivor(s) (${survivors.join(', ')}) are `
           + 'non-members by elimination; ranking them by magnitude would answer "which is least/'
           + 'most of the property", not "which is NOT a member" -- more than one survivor after '
           + 'membership is settled is an ABSTAIN, not a ranking problem UNLESS the artifact class is '
-          + 'confirmed a single-answer item (D-BP154-043 amendment), which it is not here '
-          + `(HumanNuance:1: ${humanNuanceRaw?.ok ? (humanNuanceRaw.artifactClassEstablished ? 'artifact class established but no corpus meta-truth' : 'artifact class not established') : 'not run/failed'}). `
-          + `Steps consulted: ${consultedNote}`,
+          + 'confirmed a single-answer item AND the category frame is SUBSTANTIVELY established '
+          + '(D-BP154-046 FIX 2), which is not the case here. Artifact class: '
+          + `${humanNuanceRaw?.ok ? (humanNuanceRaw.artifactClassEstablished ? (humanNuanceRaw.corpusMetaTruth ? 'established' : 'established but no corpus meta-truth') : 'not established') : 'not run/failed'}. `
+          + `Category frame: ${substantiveNote}. Steps consulted: ${consultedNote}`,
         basisStepClasses: [], magnitudeBasis: null, frameMatchBuckets, incomplete,
       };
       return { result, summary: summaryLine(OPT, result) };
     }
-    // D-BP154-043: when membershipPartitioned && artifactClassEstablished, this branch is
+    // D-BP154-043/046: when membershipPartitioned && artifactClassEstablished && the category
+    // frame is substantively established, this branch is
     // deliberately NOT taken -- execution falls through to the SAME magnitude-consultation logic
     // below a genuine superlative ranking already uses, now also serving as the permitted
     // tie-break. `tieBreakKind` (set on the eventual `magnitudeBasis`, below) is what tells the two
