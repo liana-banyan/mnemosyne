@@ -317,27 +317,97 @@ export function parseDensityFigure(figureText: string): number | null {
  *  candidate here comes through ctx.askGoogle/ctx.askConversationalAuthority, THE PAIL's own
  *  recording wrapper, exactly like every other step's query in this estate; nothing here reads a
  *  URL or a page outside that wiring). */
-// D-BP154-044, NEW. THE ONE PINNED PATH, hardcoded and explicit -- this is the SPECIFIC eblet
-// minted this ticket (mint_geography_eblet.py's own receipt sidecar), not a general REFERENCE-tree
-// reader. A missing or unreadable file is "not pinned", never a guess -- same discipline
-// origin_provenance_store.ts's own loadOriginProvenance() already establishes for a local eblet
-// read.
+// D-BP154-044, NEW; D-BP154-045 FIX 2, REWRITTEN. THE ONE PINNED PATH, hardcoded and explicit --
+// this is the SPECIFIC eblet minted this ticket (mint_geography_eblet.py's own receipt sidecar),
+// not a general REFERENCE-tree reader. A missing or unreadable file is "not pinned", never a
+// guess -- same discipline origin_provenance_store.ts's own loadOriginProvenance() already
+// establishes for a local eblet read.
+//
+// FIX 2, live-measured: Stage A2 used to run the receipt's raw PROSE text through the SAME
+// generic `namesEverySurvivor()`/gemmaExtract pipeline the live conversational/document stages
+// use -- `appearsIn(prose, "North Africa")` failed because the acquired prose literally says
+// "Northern Africa", a different string. Founder's fix: "the bridge is already in the acquired
+// text and it is STATED, not invented... match on the M49 code." The receipt's own STRUCTURED
+// `regions[]` array already carries BOTH the option-facing name (`nameInQuestionSet`, recorded at
+// mint time by reading the augmented question's own option text) AND the source's own stated M49
+// code (`m49Code`, copied verbatim from a span like "Northern Africa (M49 015)") -- this reader
+// returns THAT structure directly, so matching never touches free prose or any synonym/similarity
+// logic: it is EXACT equality between a frame option's own text and the receipt's own recorded
+// `nameInQuestionSet`, with the source-stated M49 code carried through as the audit trail proving
+// the bridge is a stated identifier, not an inference.
 const PINNED_GEOGRAPHY_DENSITY_RECEIPT_PATH = 'C:\\Users\\Administrator\\Documents\\Asteroid-ProofVault\\state\\eblets\\REFERENCE\\mmlu_pro_geography\\density_un_m49_south_america_northern_africa_central_asia_2025.receipt.json';
 
-function readPinnedGeographyDensityReceipt(): { text: string; contentHash: string } | null {
+export interface PinnedDensityRegion {
+  nameInQuestionSet: string;
+  m49Code: string;
+  nameInSource: string;
+  population: string;
+  area: string;
+  density: string;
+  span: string;
+}
+
+export interface PinnedDensityReceipt {
+  regions: PinnedDensityRegion[];
+  contentHash: string;
+  sourceName: string;
+}
+
+function readPinnedGeographyDensityReceipt(): PinnedDensityReceipt | null {
   try {
     if (!existsSync(PINNED_GEOGRAPHY_DENSITY_RECEIPT_PATH)) return null;
     const raw = JSON.parse(readFileSync(PINNED_GEOGRAPHY_DENSITY_RECEIPT_PATH, 'utf8')) as {
-      acquisition?: { rawText?: unknown };
+      regions?: unknown;
       contentHash?: unknown;
+      sourceName?: unknown;
     };
-    const text = typeof raw.acquisition?.rawText === 'string' ? raw.acquisition.rawText : '';
     const contentHash = typeof raw.contentHash === 'string' ? raw.contentHash : '';
-    if (!text || !contentHash) return null;
-    return { text, contentHash };
+    const sourceName = typeof raw.sourceName === 'string' ? raw.sourceName : '';
+    if (!contentHash || !Array.isArray(raw.regions)) return null;
+    const regions: PinnedDensityRegion[] = [];
+    for (const r of raw.regions as Array<Record<string, unknown>>) {
+      const nameInQuestionSet = typeof r.nameInQuestionSet === 'string' ? r.nameInQuestionSet : '';
+      const m49Code = typeof r.m49Code === 'string' ? r.m49Code : '';
+      const nameInSource = typeof r.nameInSource === 'string' ? r.nameInSource : '';
+      const population = typeof r.population === 'string' ? r.population : '';
+      const area = typeof r.area === 'string' ? r.area : '';
+      const density = typeof r.density === 'string' ? r.density : '';
+      const span = typeof r.span === 'string' ? r.span : '';
+      // A region record missing its own stated M49 code carries no deterministic bridge --
+      // excluded here rather than matched by name alone (this file's own "match on the code" fix).
+      if (!nameInQuestionSet || !m49Code || !density || !span) continue;
+      regions.push({ nameInQuestionSet, m49Code, nameInSource, population, area, density, span });
+    }
+    if (regions.length === 0) return null;
+    return { regions, contentHash, sourceName };
   } catch {
     return null; // unreadable/corrupt -- "not pinned", never fabricated.
   }
+}
+
+/** D-BP154-045 FIX 2. Matches EVERY letter in `frame` against the pinned receipt's own
+ *  `nameInQuestionSet` field -- EXACT string equality, no synonym table, no similarity score,
+ *  never a model asked whether two labels mean the same thing (HARDWIRE-22). A frame option with
+ *  no exact match is reported by letter, honestly, as lacking a stated code/bridge -- never
+ *  guessed via substring or fuzzy matching. Returns null (never partial) unless EVERY frame
+ *  letter matches. */
+export function matchPinnedRegionsToFrame(
+  receipt: PinnedDensityReceipt,
+  frame: string[],
+  OPT: Record<string, string>,
+): { entries: FrozenDensityEntry[]; unmatchedLetters: string[] } {
+  const unmatchedLetters: string[] = [];
+  const entries: FrozenDensityEntry[] = [];
+  for (const L of frame) {
+    const region = receipt.regions.find((r) => r.nameInQuestionSet === OPT[L]);
+    if (!region) { unmatchedLetters.push(L); continue; }
+    entries.push({
+      letter: L, name: OPT[L],
+      figureText: `${region.density} (M49 ${region.m49Code}, "${region.nameInSource}": population ${region.population}, area ${region.area})`,
+      span: region.span,
+    });
+  }
+  return { entries, unmatchedLetters };
 }
 
 interface FrozenSourceCandidate {
@@ -379,20 +449,36 @@ export async function attemptFrozenDensitySource(
     }
   }
 
-  // STAGE A2: THE PINNED CATEGORY-COLUMN DEPOSIT (D-BP154-044). One SPECIFIC, already-minted
-  // sand-stratum eblet (Asteroid-ProofVault REFERENCE/mmlu_pro_geography/ -- the coordinator's own
-  // "pin it in the evidence snapshot" instruction) is read here, zero network, exactly like Stage A's
-  // own owned-evidence discipline -- this is the ONE narrow, explicit, one-off pin this ticket
-  // authorizes; it is NOT a general "read any REFERENCE eblet" mechanism (that stays unbuilt). If
-  // its own three regions cover this run's frame, it is used as a candidate BEFORE any new query
-  // is spent, exactly the FD-BP153-04 ordering.
-  const pinned = readPinnedGeographyDensityReceipt();
-  if (pinned && namesEverySurvivor(pinned.text)) {
-    candidates.push({
-      text: pinned.text, sourceUrl: null,
-      sourceTitle: `pinned Category Column deposit (mmlu_pro_geography, contentHash ${pinned.contentHash.slice(0, 16)}...)`,
-      mechanism: 'CONVERSATIONAL_ANSWER',
-    });
+  // STAGE A2: THE PINNED CATEGORY-COLUMN DEPOSIT (D-BP154-044; D-BP154-045 FIX 2). One SPECIFIC,
+  // already-minted sand-stratum eblet (Asteroid-ProofVault REFERENCE/mmlu_pro_geography/) is read
+  // here, zero network, exactly like Stage A's own owned-evidence discipline -- this is the ONE
+  // narrow, explicit, one-off pin this ticket authorizes; it is NOT a general "read any REFERENCE
+  // eblet" mechanism (that stays unbuilt). Matches EACH frame letter against the receipt's own
+  // structured `nameInQuestionSet` field (EXACT equality -- see matchPinnedRegionsToFrame()'s own
+  // header for why this is "match on the stated M49 code", not a text-similarity read). When
+  // EVERY frame letter matches, this returns immediately -- no live query spent at all, the
+  // strongest form of "consult what is already owned before a new query" (FD-BP153-04). When only
+  // SOME match, the unmatched letters are named, honestly, in the eventual failure -- reported,
+  // never silently dropped, never patched with a guess.
+  let pinnedUnmatchedNote = '';
+  const pinnedReceipt = readPinnedGeographyDensityReceipt();
+  if (pinnedReceipt) {
+    const { entries, unmatchedLetters } = matchPinnedRegionsToFrame(pinnedReceipt, frame, OPT);
+    if (unmatchedLetters.length === 0 && entries.length === frame.length) {
+      const numericallyRankable = entries.every((e) => parseDensityFigure(e.figureText) !== null);
+      const result: FrozenDensitySourceResult = {
+        attempted: true, obtained: true,
+        sourceUrl: null,
+        sourceTitle: `pinned Category Column deposit (mmlu_pro_geography, ${pinnedReceipt.sourceName}, contentHash ${pinnedReceipt.contentHash.slice(0, 16)}...)`,
+        entries, numericallyRankable, mechanism: 'OWNED_EVIDENCE',
+      };
+      return result;
+    }
+    if (unmatchedLetters.length > 0) {
+      pinnedUnmatchedNote = ` The pinned Category Column deposit (mmlu_pro_geography) was checked but did not cover `
+        + `${unmatchedLetters.map((L) => `${L}) ${OPT[L]}`).join(', ')} -- no region in that deposit carries a `
+        + `stated M49 code matching this option's own text; never matched by name similarity.`;
+    }
   }
 
   // STAGE B: PERPLEXITY (D-BP154-044/FD-BP154-19, Founder verbatim: "you can use claude or
@@ -474,9 +560,10 @@ export async function attemptFrozenDensitySource(
   return {
     attempted: true, obtained: false, sourceUrl: null, sourceTitle: null, entries: [],
     numericallyRankable: false,
-    error: `no single candidate (${candidates.length} tried, through owned evidence / the conversational `
-      + `authority / Google document search) stated a verifiable ${property.includes('densit') ? '' : 'density '}`
-      + 'figure for every survivor -- could not obtain one apples-to-apples dataset covering every survivor',
+    error: `no single candidate (${candidates.length} tried, through owned evidence / the pinned `
+      + `Category Column deposit / the conversational authority / Google document search) stated a `
+      + `verifiable ${property.includes('densit') ? '' : 'density '}figure for every survivor -- could `
+      + `not obtain one apples-to-apples dataset covering every survivor.${pinnedUnmatchedNote}`,
   };
 }
 

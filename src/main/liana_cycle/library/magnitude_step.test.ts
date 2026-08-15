@@ -21,8 +21,10 @@
 import { describe, test, expect, vi } from 'vitest';
 import {
   buildMagnitudeQuery, deriveMagnitudeSuperlativeProperty, deriveMagnitudeTargetExtreme,
-  magnitudeOrdersDisagree, parseDensityFigure, registerMagnitudeStep, runMagnitudeStep, verifyMagnitudeOrder,
+  magnitudeOrdersDisagree, matchPinnedRegionsToFrame, parseDensityFigure, registerMagnitudeStep,
+  runMagnitudeStep, verifyMagnitudeOrder,
 } from './magnitude_step';
+import type { PinnedDensityReceipt } from './magnitude_step';
 import { listComposerRegistry, runScratchComposer, type ComposerStepOutcome } from './script_bridge';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 import type { SoftballsResult } from './softballs_step';
@@ -184,6 +186,52 @@ describe('parseDensityFigure -- D-BP154-043, pure numeric extraction, never a un
   });
   test('returns null (never a guess) when no number is present', () => {
     expect(parseDensityFigure('very densely populated')).toBeNull();
+  });
+});
+
+describe('matchPinnedRegionsToFrame -- D-BP154-045 FIX 2, entity resolution by STATED identifier (M49 code), never by name similarity', () => {
+  const receipt: PinnedDensityReceipt = {
+    contentHash: 'testhash', sourceName: 'test source',
+    regions: [
+      {
+        nameInQuestionSet: 'South America', m49Code: '005', nameInSource: 'South America (M49 005)',
+        population: '~439 million', area: '~17.8 million km2', density: '~25 people/km2', span: 'South America span',
+      },
+      {
+        // The exact live-measured defect: the SOURCE states "Northern Africa" but the option this
+        // test frame carries is "North Africa" -- a literal substring mismatch that broke the OLD
+        // prose-matching stage. nameInQuestionSet is what was RECORDED (at mint time) as the
+        // option's own text; the match below must succeed via this field, never via nameInSource.
+        nameInQuestionSet: 'North Africa', m49Code: '015', nameInSource: 'Northern Africa (M49 015)',
+        population: '~278 million', area: '~8.5 million km2', density: '~33 people/km2', span: 'Northern Africa span',
+      },
+      {
+        nameInQuestionSet: 'Central Asia', m49Code: '143', nameInSource: 'Central Asia (M49 143)',
+        population: '~83 million', area: '~4.0 million km2', density: '~21 people/km2', span: 'Central Asia span',
+      },
+    ],
+  };
+  const OPT_ABC: Record<string, string> = { A: 'South America', C: 'North Africa', F: 'Central Asia' };
+
+  test('matches every frame letter when its exact option text equals a recorded nameInQuestionSet, despite the source using a different name ("Northern Africa" vs "North Africa")', () => {
+    const { entries, unmatchedLetters } = matchPinnedRegionsToFrame(receipt, ['A', 'C', 'F'], OPT_ABC);
+    expect(unmatchedLetters).toEqual([]);
+    expect(entries).toHaveLength(3);
+    expect(entries.find((e) => e.letter === 'C')?.figureText).toContain('M49 015');
+    expect(entries.find((e) => e.letter === 'C')?.figureText).toContain('~33 people/km2');
+  });
+
+  test('reports, by letter, a survivor the pinned deposit does not cover -- never a partial match silently accepted', () => {
+    const OPT_WITH_EXTRA: Record<string, string> = { ...OPT_ABC, E: 'Europe' };
+    const { entries, unmatchedLetters } = matchPinnedRegionsToFrame(receipt, ['A', 'C', 'E'], OPT_WITH_EXTRA);
+    expect(unmatchedLetters).toEqual(['E']);
+    expect(entries.map((e) => e.letter)).toEqual(['A', 'C']);
+  });
+
+  test('never matches on partial/similar text -- only exact equality against the recorded nameInQuestionSet', () => {
+    const OPT_MISMATCHED: Record<string, string> = { C: 'Northern Africa' }; // NOT the recorded value
+    const { unmatchedLetters } = matchPinnedRegionsToFrame(receipt, ['C'], OPT_MISMATCHED);
+    expect(unmatchedLetters).toEqual(['C']);
   });
 });
 

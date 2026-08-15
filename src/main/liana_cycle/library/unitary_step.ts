@@ -45,13 +45,21 @@ import type { ClaimProvenance, CorroborationResult } from './composer_step_evide
 /** THE ONE QUERY. Restricted to the FRAME the caller hands in (runUnitaryStep() below always
  *  passes ALL of `input.options` -- this step, like Softballs:1, runs over the full option set it
  *  is handed; a stack that wants it scoped to a narrower frame passes a narrower `options` object
- *  itself, the same discipline every other step in this estate leaves to the caller). */
+ *  itself, the same discipline every other step in this estate leaves to the caller).
+ *
+ *  D-BP154-045 FIX 1, live-measured. Founder: "Central Asia is eliminated early on, because it
+ *  counts as a grouping of other regions, not just itself." The ORIGINAL "which of the following
+ *  ARE a conglomerate" phrasing invites the authority to NAME whichever one comes to mind first,
+ *  never adjudicating the rest -- live-measured this ticket, it named Europe and never even
+ *  considered Central Asia. Rebuilt on the SAME per-option "for EACH... answer for every one, in
+ *  order, do not skip any" shape already proven on this machine (receipt
+ *  LIANA_RUN_qid98_2026-08-13T19-24-50-420Z.json, draw 2 -- all nine classifications correct)
+ *  -- forces the authority to adjudicate EVERY option, not just volunteer one. */
 export function buildUnitaryQuery(all: string[], OPT: Record<string, string>): string {
-  return 'Which of the following are considered a CONGLOMERATE or GROUPING of multiple separate '
-    + 'countries or sub-regions, rather than a single unitary region in its own right? Answer '
-    + 'plainly and directly for any that are -- name it explicitly and state clearly that it is a '
-    + 'conglomerate or grouping of multiple regions, not one single region. Do not guess about ones '
-    + `you are not sure of; simply do not mention those. ${list(all, OPT)}`;
+  return 'For EACH of the following, state whether it denotes a SINGLE UNITARY region in its own '
+    + 'right, or a GROUPING/CONGLOMERATE of multiple separate countries or sub-regions. Answer for '
+    + 'every one, in order, and do not skip any -- classify every option below, not only the ones '
+    + `you are most confident about. ${list(all, OPT)}`;
 }
 
 export interface UnitaryExcludedOption {
@@ -67,44 +75,57 @@ export function buildUnitaryCorroborationQuery(entry: UnitaryExcludedOption): st
     + 'separate countries or sub-regions? Answer plainly and directly, stating clearly which.';
 }
 
-type RawUnitaryEntry = { name?: unknown; span?: unknown };
+type RawUnitaryClassification = { name?: unknown; classification?: unknown; span?: unknown };
 
 function stripListLetterPrefix(name: string): string {
   return name.replace(/^[A-Za-z]\)\s*/, '');
 }
 
-/** THE VERIFY-THE-SPAN CHOKE POINT -- identical discipline to softballs_step.ts's own
- *  verifyExcludedEntries() (FD-BP153-07 FIX 2), mirrored locally per this file's own "steps stay
- *  self-contained" note above. */
-export function verifyUnitaryExcludedEntries(
+/** D-BP154-045 FIX 1, NEW SHAPE. Every entry the extraction returns carries its OWN
+ *  `classification` ("unitary" or "conglomerate") -- this is what makes the per-option query
+ *  above actually per-option at the extraction layer too: an entry classified "unitary" CONFIRMS
+ *  the option (reported, never eliminated); "conglomerate" ELIMINATES it (same verbatim-span
+ *  choke point as before, FD-BP153-07 FIX 2); anything else (missing/garbled classification, or
+ *  an option the passage never addressed at all) is neither -- UNSTATED, never guessed. */
+export function verifyUnitaryClassifications(
   raw: unknown,
   passage: string,
   OPT: Record<string, string>,
-): { excluded: UnitaryExcludedOption[]; discarded: number } {
-  const entries = Array.isArray(raw) ? (raw as RawUnitaryEntry[]) : [];
+): { excluded: UnitaryExcludedOption[]; confirmedUnitary: UnitaryExcludedOption[]; discarded: number } {
+  const entries = Array.isArray(raw) ? (raw as RawUnitaryClassification[]) : [];
   const excluded: UnitaryExcludedOption[] = [];
-  const seen = new Set<string>();
+  const confirmedUnitary: UnitaryExcludedOption[] = [];
+  const seenExcluded = new Set<string>();
+  const seenUnitary = new Set<string>();
   let discarded = 0;
   for (const entry of entries) {
     const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+    const classification = typeof entry?.classification === 'string' ? entry.classification.trim().toLowerCase() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
-    if (!name) continue;
+    if (!name) continue; // nothing named -- not a candidate value, not a discard
+    if (classification !== 'unitary' && classification !== 'conglomerate') continue; // no usable classification stated -- UNSTATED, not a discard
     let matched = toLetters([name], OPT);
     if (matched.length === 0) {
       const stripped = stripListLetterPrefix(name);
       if (stripped !== name) matched = toLetters([stripped], OPT);
     }
-    if (matched.length === 0) continue;
+    if (matched.length === 0) continue; // names no known option -- not a candidate value here
     const L = matched[0];
     if (!span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {
       discarded++;
       continue;
     }
-    if (seen.has(L)) continue;
-    seen.add(L);
-    excluded.push({ letter: L, name: OPT[L], span });
+    if (classification === 'conglomerate') {
+      if (seenExcluded.has(L)) continue;
+      seenExcluded.add(L);
+      excluded.push({ letter: L, name: OPT[L], span });
+    } else {
+      if (seenUnitary.has(L)) continue;
+      seenUnitary.add(L);
+      confirmedUnitary.push({ letter: L, name: OPT[L], span });
+    }
   }
-  return { excluded, discarded };
+  return { excluded, confirmedUnitary, discarded };
 }
 
 export interface UnitaryResult {
@@ -114,9 +135,15 @@ export interface UnitaryResult {
    *  (FD-BP154-16's own "unitary vs conglomerate" factor: a conglomerate is not a member of a
    *  "single world region" category). */
   excluded: UnitaryExcludedOption[];
+  /** D-BP154-045 FIX 1, ADDITIVE. Options the source explicitly classified "unitary" (its own
+   *  per-option answer, span-verified) -- reported for transparency (the query now asks it to
+   *  adjudicate EVERY option, so a genuine "unitary" answer is real information), but NEVER used
+   *  to eliminate or confirm membership on its own; only `excluded` drives elimination. */
+  confirmedUnitary: UnitaryExcludedOption[];
   discarded: number;
   /** ABSENCE IS OMISSION -- an option never stated to be a conglomerate stays in the frame; this
-   *  is reported, never conflated with "confirmed unitary". */
+   *  is reported, never conflated with "confirmed unitary". Now computed as "neither excluded nor
+   *  confirmedUnitary" -- see summaryLine()/runUnitaryStep() below. */
   notExcluded: string[];
   via: string;
   answerProvenance?: ClaimProvenance;
@@ -129,6 +156,9 @@ function summaryLine(OPT: Record<string, string>, r: UnitaryResult): string {
   const excludedText = r.excluded.length
     ? r.excluded.map((e) => `${e.letter}) ${e.name} [source: "${e.span}"]`).join('  |  ')
     : '(none stated)';
+  const confirmedText = r.confirmedUnitary.length
+    ? r.confirmedUnitary.map((e) => `${e.letter}) ${e.name} [source: "${e.span}"]`).join('  |  ')
+    : '(none)';
   const notExcludedText = r.notExcluded.length
     ? r.notExcluded.map((L) => `${L}) ${OPT[L]}`).join(', ')
     : '(none)';
@@ -136,7 +166,8 @@ function summaryLine(OPT: Record<string, string>, r: UnitaryResult): string {
   const provenanceNote = r.answerProvenance ? `  ||  ANSWERED VIA ${r.answerProvenance.mechanism}: ${r.answerProvenance.detail}` : '';
   const corrobNote = r.corroboration ? `  ||  ${summarizeCorroboration(r.corroboration)}` : '';
   return `UNITARY -- query: "${r.query}"  ||  EXCLUDED (source-stated conglomerate/grouping, not a single unitary region): `
-    + `${excludedText}${discardNote}  ||  NOT EXCLUDED (source silent -- stays in the frame, omission is not confirmed unitary): ${notExcludedText}`
+    + `${excludedText}${discardNote}  ||  CONFIRMED UNITARY (source-stated, reported only, never eliminates): ${confirmedText}`
+    + `  ||  NOT EXCLUDED (either confirmed unitary or source silent -- omission is not confirmed unitary): ${notExcludedText}`
     + `${provenanceNote}${corrobNote}`;
 }
 
@@ -155,7 +186,7 @@ export async function runUnitaryStep(
   const OPT = input.options;
   if (!OPT || Object.keys(OPT).length === 0) {
     const result: UnitaryResult = {
-      ok: false, query: null, excluded: [], discarded: 0, notExcluded: [], via: 'n/a',
+      ok: false, query: null, excluded: [], confirmedUnitary: [], discarded: 0, notExcluded: [], via: 'n/a',
       error: 'this question has no lettered options -- UNITARY tests unitary-vs-conglomerate among options and cannot run without them',
     };
     return { result, summary: summaryLine({}, result) };
@@ -188,7 +219,7 @@ export async function runUnitaryStep(
 
   if (!text) {
     const result: UnitaryResult = {
-      ok: false, query, excluded: [], discarded: 0, notExcluded: all, via: 'n/a',
+      ok: false, query, excluded: [], confirmedUnitary: [], discarded: 0, notExcluded: all, via: 'n/a',
       error: `no usable answer from any authority -- owned evidence: ${ownedCandidates.length} candidate(s) tried, none usable; `
         + `conversational authority: ${conversationalError ?? 'not tried'} -- UNITARY is UNAVAILABLE, not "nothing excluded"`,
     };
@@ -198,12 +229,16 @@ export async function runUnitaryStep(
   const rawOut: {
     text?: string; truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string;
   } = {};
-  const instruction = 'From the passage, list every option below that the passage explicitly and '
-    + 'directly states is a CONGLOMERATE or GROUPING of multiple separate countries/sub-regions, '
-    + 'not a single unitary region. For each one, copy the exact verbatim sentence or clause from '
-    + 'the passage that states this. Do not include an option the passage merely does not mention '
-    + `-- an omission is not a statement. Options: ${all.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
-  const shape = '{"excluded":[{"name":"exact option name from the list","span":"verbatim sentence or clause from the passage stating it is a conglomerate/grouping, not one region"}]}';
+  // D-BP154-045 FIX 1: per-option classification, matching the per-option QUERY above -- asks the
+  // extraction to classify EVERY option the passage addresses (unitary or conglomerate), never
+  // just harvest whichever one the passage happened to volunteer.
+  const instruction = 'From the passage, for EACH option below that the passage classifies, state '
+    + 'whether the passage says it is a single UNITARY region, or a CONGLOMERATE/GROUPING of '
+    + 'multiple separate countries/sub-regions. For each one, copy the exact verbatim sentence or '
+    + 'clause from the passage that states its classification. Do not include an option the '
+    + 'passage merely does not mention -- an omission is not a statement. Classify every option '
+    + `the passage DOES address, not only the first one. Options: ${all.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
+  const shape = '{"classifications":[{"name":"exact option name from the list","classification":"unitary or conglomerate","span":"verbatim sentence or clause from the passage stating this classification"}]}';
   const ex = await gemmaExtract(instruction, text, shape, rawOut);
   if (ex === null) {
     const cause = rawOut.truncated
@@ -212,12 +247,12 @@ export async function runUnitaryStep(
         ? `the local extraction model failed (${rawOut.failureCause}${rawOut.failureDetail ? `: ${rawOut.failureDetail}` : ''})`
         : 'the local extraction model failed for an unclassified reason';
     const result: UnitaryResult = {
-      ok: false, query, excluded: [], discarded: 0, notExcluded: all, via,
+      ok: false, query, excluded: [], confirmedUnitary: [], discarded: 0, notExcluded: all, via,
       error: `extraction failed -- ${cause} -- reported as a FAILURE, never an empty "nothing excluded"`,
     };
     return { result, summary: summaryLine(OPT, result) };
   }
-  const { excluded, discarded } = verifyUnitaryExcludedEntries(ex.excluded, text, OPT);
+  const { excluded, confirmedUnitary, discarded } = verifyUnitaryClassifications(ex.classifications, text, OPT);
   const excludedLetters = new Set(excluded.map((e) => e.letter));
   const notExcluded = all.filter((L) => !excludedLetters.has(L));
 
@@ -227,7 +262,7 @@ export async function runUnitaryStep(
   }
 
   const result: UnitaryResult = {
-    ok: true, query, excluded, discarded, notExcluded, via, answerProvenance: provenance, corroboration,
+    ok: true, query, excluded, confirmedUnitary, discarded, notExcluded, via, answerProvenance: provenance, corroboration,
   };
   return { result, summary: summaryLine(OPT, result) };
 }
