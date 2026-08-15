@@ -113,6 +113,10 @@ export default function App() {
   const [overlayActive, setOverlayActive] = useState<boolean>(() =>
     localStorage.getItem(LS_OVERLAY_ACTIVE) === 'true'
   );
+  // D-BP154-074/BISHOP-SEG/S74/seg-ambient: incremented once per ambient-capture-pulse IPC
+  // event; passed to FrameModeIndicator as a changing prop so it can flash a brief per-capture
+  // confirmation border pulse (styles.css .lb-frame--pulse). 0 = never fired this session.
+  const [captureCorrelation, setCaptureCorrelation] = useState<number>(0);
   // v0.4.0 BP083 SEG-5: post-install restart prompt state
   const [restartPrompt, setRestartPrompt] = useState<{ version: string; message: string } | null>(null);
   // v0.4.2 BP083 SEG-5: Plow resume modal
@@ -155,6 +159,28 @@ export default function App() {
       cleanupMode?.();
       cleanupAuth?.();
     };
+  }, []);
+
+  // D-BP154-074/BISHOP-SEG/S74/seg-ambient -- THE INDICATOR LEG'S RENDERER HALF.
+  // "Capture must be user-toggleable and visibly on, which is what the overlay is for" (the
+  // order, verbatim). On the FIRST ambient capture this session, make that literally true rather
+  // than requiring a separate manual "Show Overlay" click after the fact: write the SAME
+  // localStorage key FrameTab's own "Show" button writes (LS_OVERLAY_ACTIVE), so this window
+  // renders the dashed border going forward, and ask main to ensure the overlay window itself
+  // exists and is shown (window.amplify.showOverlay(), the SAME IPC the tray's "Show Overlay"
+  // item already uses -- restoring, not reinventing). Every subsequent capture (this one
+  // included) bumps captureCorrelation so FrameModeIndicator can flash a brief pulse.
+  useEffect(() => {
+    if (!window.amplify?.onAmbientCapturePulse) return undefined;
+    const cleanup = window.amplify.onAmbientCapturePulse(() => {
+      if (localStorage.getItem(LS_OVERLAY_ACTIVE) !== 'true') {
+        localStorage.setItem(LS_OVERLAY_ACTIVE, 'true');
+        setOverlayActive(true);
+        window.amplify?.showOverlay?.();
+      }
+      setCaptureCorrelation((n) => n + 1);
+    });
+    return cleanup;
   }, []);
 
   // Cross-window sync: when FrameTab (dashboard window) writes mnemo_overlay_active,
@@ -455,6 +481,7 @@ export default function App() {
           onChipClick={showModelPull ? undefined : handleCornerClick}
           memberBadge={authState?.member?.badge_tier}
           degraded={authState?.degraded ?? false}
+          capturePulseSignal={captureCorrelation}
         />
       )}
 

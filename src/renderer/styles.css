@@ -310,6 +310,21 @@ body {
     radial-gradient(ellipse 80px 80px at 100% 100%, rgba(59, 130, 246, 0.18) 0%, transparent 100%);
 }
 
+/* D-BP154-074/BISHOP-SEG/S74/seg-ambient: THE PER-CAPTURE CONFIRMATION.
+   Applied for ~900ms (FrameModeIndicator.tsx's own setTimeout) whenever an ambient browser
+   capture lands, on top of whichever mode color is already showing -- a bright white flash that
+   reads as "something just happened" regardless of mode, then eases back to normal. Does not
+   change border-style (dash pattern stays the mode's own, so triple-channel accessibility -- hue
+   + luminance + dash-pattern, BP041 canon -- is never contradicted by a capture pulse). */
+.lb-frame--pulse::before {
+  animation: mnemo-capture-pulse 0.9s ease-out 1;
+}
+
+@keyframes mnemo-capture-pulse {
+  0%   { box-shadow: 0 0 24px 8px rgba(255, 255, 255, 0.85), inset 0 0 16px 4px rgba(255, 255, 255, 0.4); }
+  100% { box-shadow: none; }
+}
+
 /* ─── Corner Mode Indicator ─────────────────────────────────────────────────── */
 
 .lb-corner-indicator {
