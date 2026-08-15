@@ -115,12 +115,12 @@ import type { UnitaryResult } from './unitary_step';
 // `void unitary;` line, still present just below for the reason stated there) with a computed,
 // per-run, data-driven decision: the withdrawal is no longer asserted by this file's own say-so,
 // it is PROVEN by the same mechanical check the spec names as the ONE thing that mechanically
-// blocks the Central Asia category error. unknownCandidate() gives every option Unitary:1 never
-// adjudicated an 'unknown' entityType, which sameRelevantType() (comparability_gate.ts) then
-// correctly excludes from the uniformity comparison, per that function's own header -- this file
-// never re-derives that rule, only calls it.
+// blocks the Central Asia category error. D-BP154-060/FD-BP154-22: every option in the frame now
+// gets a real entityType (peer-scope, not a substantive claim -- see buildComparabilityCandidates()'s
+// own header below) so an option a feeder step never addressed at all stays VISIBLE to the
+// procedural check as unanswered, rather than disappearing via 'unknown'-type exclusion.
 import {
-  checkUniformPredicate, unknownCandidate, type Candidate,
+  checkUniformPredicate, type Candidate,
 } from './comparability_gate';
 // D-BP154-053/BISHOP-SEG/S52/seg-wiregate, ADDITIVE, TYPE-ONLY (same non-circular shape as every
 // other feeder-step type import above). The Founder's own sourced proof names boundary stability,
@@ -474,22 +474,33 @@ export function isCategoryFrameSubstantive(
   return { substantive: uncaught.length === 0, uncaught };
 }
 
-// D-BP154-052/BISHOP-SEG/S52/seg-wiregate, NEW -- THE LIVE CALL. Builds comparability_gate.ts's
-// own typed Candidate record for every option Unitary:1 actually adjudicated this run (`excluded`
-// = stated conglomerate, `confirmedUnitary` = stated single region). Unitary:1's OWN act of
-// classifying an option unitary-or-conglomerate is the evidence span for entityType
-// 'statistical_macroregion' -- it asked, and a source answered, treating the option as a
-// candidate member of the SAME "single region or grouping" class the question's own frame
-// denotes (spec part 2: "never infer entityType from surface words alone... every non-'unknown'
-// field needs a source span" -- the span here IS Unitary:1's own verbatim quote). An option
-// Unitary never addressed stays unknownCandidate() -- 'unknown' entityType, which
-// sameRelevantType() (comparability_gate.ts, imported above) then correctly excludes from the
-// uniformity comparison per that function's own header (widens the check, never narrows it).
+// D-BP154-052/BISHOP-SEG/S52/seg-wiregate, NEW -- THE LIVE CALL. D-BP154-060/FD-BP154-22,
+// REWRITTEN: every option in the FRAME (OPT) is now a same-relevant-type peer for THIS gate's own
+// procedural check, not only the ones Unitary:1 happened to classify. Necessary correction: under
+// the retired outcome-cardinality reading, an option Unitary:1 never addressed at all stayed
+// unknownCandidate() ('unknown' entityType), and sameRelevantType() correctly refuses to compare
+// two 'unknown'-typed candidates -- which meant a genuinely UNANSWERED peer was invisible to the
+// check, exactly the loophole that would let the Central Asia manoeuvre's own shape (ask ONE
+// option, never mention its peers at all) slip through undetected. The FRAME ITSELF is what
+// establishes peer scope for "was the identical question asked of every candidate" (Unitary:1's own
+// query is addressed to every lettered option in the frame by construction) -- this is a scope
+// decision, never a substantive claim about what any option actually IS (spec's own "never infer
+// entityType from surface words alone" governs SUBSTANTIVE typing elsewhere in this file, e.g.
+// checkBoundaryStabilityUniformity()'s own `boundary.status`; it does not govern which candidates
+// this PROCEDURAL check is entitled to ask "were you addressed?" about). `entityTypeEvidence`
+// stays span-sourced and null for anything Unitary:1 never actually classified -- only the PEER
+// GROUPING widened, not what is asserted about any one candidate. */
 function buildComparabilityCandidates(OPT: Record<string, string>, unitary: UnitaryResult | null): Candidate[] {
   const candidates = new Map<string, Candidate>();
-  for (const L of Object.keys(OPT)) candidates.set(L, unknownCandidate(L, OPT[L]));
+  for (const L of Object.keys(OPT)) {
+    candidates.set(L, {
+      optionId: L, observedLabel: OPT[L], entityType: 'statistical_macroregion', entityTypeEvidence: null,
+      aggregationLevel: 'unknown', populationStatus: 'unknown', boundary: { status: 'unresolved' },
+    });
+  }
   if (unitary?.ok) {
     for (const e of [...unitary.excluded, ...unitary.confirmedUnitary]) {
+      const prior = candidates.get(e.letter);
       candidates.set(e.letter, {
         optionId: e.letter,
         observedLabel: e.name,
@@ -497,7 +508,7 @@ function buildComparabilityCandidates(OPT: Record<string, string>, unitary: Unit
         entityTypeEvidence: { text: e.span, via: 'Unitary:1' },
         aggregationLevel: 'unknown',
         populationStatus: 'unknown',
-        boundary: { status: 'unresolved' },
+        boundary: prior?.boundary ?? { status: 'unresolved' },
       });
     }
   }
@@ -507,74 +518,87 @@ function buildComparabilityCandidates(OPT: Record<string, string>, unitary: Unit
 /** D-BP154-052, NEW, EXPORTED (unit-testable independent of a live run). Reported on every
  *  TerminatorResult once `eliminated`/`contradiction` are computed (below); this is the field a
  *  live receipt shows to prove the comparability gate's own mechanism, not this file's comment,
- *  decided the run. */
+ *  decided the run. D-BP154-060/FD-BP154-22, REWRITTEN: `discriminating` now answers "was the
+ *  identical question asked of every same-relevant-type peer, sourced and span-verified, none
+ *  exempted or inferred" -- never "did the rule's own outcome happen to strike more than one
+ *  peer" (that reading was a bug, RETIRED this ruling; comparability_gate.ts's own header carries
+ *  the full text). */
 export interface ComparabilityGateCheck {
-  /** false when Unitary:1 did not run, or stated no option is a conglomerate, or every
-   *  Unitary-stated composite option had no known same-relevant-type peer to test against --
-   *  UNTESTED, per spec's own "if any part is missing, the only valid action is UNRESOLVED",
-   *  never asserted discriminating OR non-discriminating in that case. */
+  /** false when the feeder step did not run, stated nothing to check, or every stated candidate
+   *  had no known same-relevant-type peer to test against -- UNTESTED, per spec's own "if any part
+   *  is missing, the only valid action is UNRESOLVED", never asserted discriminating OR
+   *  non-discriminating in that case. */
   ran: boolean;
   ruleChecked: string;
-  /** null only when `ran` is false. true: the rule, applied to THIS run's own Unitary:1 output,
-   *  fired on no same-relevant-type peer besides its own target -- self-consistent, but this file
-   *  still does NOT fold it into `eliminated` (D-BP154-050's own ruling, restated in `note`).
-   *  false: REJECTED -- the rule would also have removed a same-relevant-type peer, exactly the
-   *  category error this gate exists to catch. */
+  /** null only when `ran` is false. true: every same-relevant-type peer was individually asked
+   *  and answered this run -- procedurally fair, regardless of what any answer said. false:
+   *  REJECTED -- at least one same-relevant-type peer was never individually, sourcedly asked/
+   *  answered (exempted or inferred) -- a procedural failure, the exact Central Asia manoeuvre
+   *  shape. */
   discriminating: boolean | null;
-  /** Every same-relevant-type option the rule would ALSO have removed -- empty unless
-   *  `discriminating` is false. */
-  wouldAlsoRemove: string[];
+  /** FD-BP154-22, RENAMED from `wouldAlsoRemove`. Every same-relevant-type peer that was NOT
+   *  individually asked and given a sourced, span-verified answer this run -- empty unless
+   *  `discriminating` is false. Never populated by which peers the rule's own outcome would ALSO
+   *  have struck; that question is retired. */
+  unanswered: string[];
   note: string;
 }
 
 /** THE LIVE CALL. checkUniformPredicate() (comparability_gate.ts) is invoked once per option
  *  Unitary:1 stated is a conglomerate, against the FULL candidate pool this run actually built --
  *  never a fixture, never a hardcoded pair. Symmetric and letter-blind (FD-BP153-06): every
- *  Unitary-stated composite option is tried as `target` in turn, and the union of every
- *  `wouldAlsoRemove` across all of them is what gets reported -- one non-discriminating target is
- *  enough to reject the whole rule, matching the spec's own "Universal or invalid; never
- *  selective." */
+ *  Unitary-stated composite option is tried as `target` in turn. D-BP154-060/FD-BP154-22: `answered`
+ *  is true for a peer iff Unitary:1 gave it EITHER a span-verified `excluded` (composite) OR
+ *  `confirmedUnitary` (single) entry -- i.e. it was individually asked and its answer was sourced,
+ *  regardless of WHICH way that answer went. A peer in neither array was never answered (silent,
+ *  exempted, or discarded on verification) -- exactly the procedural gap the Central Asia manoeuvre
+ *  exploited. */
 export function checkCompositenessUniformity(
   OPT: Record<string, string>, unitary: UnitaryResult | null,
 ): ComparabilityGateCheck {
   const ruleChecked = 'composite/conglomerate (Unitary:1) excludes an option from the region category';
   if (!unitary?.ok || unitary.excluded.length === 0) {
     return {
-      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      ran: false, ruleChecked, discriminating: null, unanswered: [],
       note: 'Unitary:1 did not run/failed, or stated no option is a conglomerate this run -- nothing to check',
     };
   }
   const pool = buildComparabilityCandidates(OPT, unitary);
   const compositeSet = new Set(unitary.excluded.map((e) => e.letter));
-  const wouldEliminate = (c: Candidate) => compositeSet.has(c.optionId);
-  const wouldAlsoRemove = new Set<string>();
+  const confirmedSet = new Set(unitary.confirmedUnitary.map((e) => e.letter));
+  // D-BP154-060/FD-BP154-22: "answered" -- individually asked AND sourced -- never "would this
+  // rule also eliminate it". A peer stated composite OR confirmed single-unitary was answered
+  // either way; only silence/omission counts as unanswered.
+  const answered = (c: Candidate) => compositeSet.has(c.optionId) || confirmedSet.has(c.optionId);
+  const unanswered = new Set<string>();
   let anyChecked = false;
   let discriminating = true;
   for (const target of pool) {
     if (!compositeSet.has(target.optionId)) continue;
     anyChecked = true;
-    const check = checkUniformPredicate(target, pool, wouldEliminate);
+    const check = checkUniformPredicate(target, pool, answered);
     if (!check.discriminating) {
       discriminating = false;
-      for (const L of check.wouldAlsoRemove) wouldAlsoRemove.add(L);
+      for (const L of check.unanswered) unanswered.add(L);
     }
   }
   if (!anyChecked) {
     return {
-      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      ran: false, ruleChecked, discriminating: null, unanswered: [],
       note: 'no Unitary-stated composite option had a known same-relevant-type peer to test uniformity against',
     };
   }
   return {
-    ran: true, ruleChecked, discriminating, wouldAlsoRemove: [...wouldAlsoRemove],
+    ran: true, ruleChecked, discriminating, unanswered: [...unanswered],
     note: discriminating
-      ? 'self-consistent this run -- no same-relevant-type peer would also be removed by the rule as Unitary:1 '
-        + 'actually stated it; still NOT folded into `eliminated` (D-BP154-050: a compositeness finding alone '
-        + 'never removes an option without a Founder decision to re-enable it) -- reported, not acted on'
-      : `REJECTED as non-discriminating -- the rule would ALSO remove ${wouldAlsoRemove.size ? [...wouldAlsoRemove].join(', ') : '(unlisted)'}, `
-        + 'a same-relevant-type peer, exactly the Central Asia/South America/Northern Africa category error '
-        + 'this gate exists to catch (SPEC_COMPARABILITY_GATE_BP154.md) -- this is WHY Unitary:1 does not '
-        + 'eliminate, computed this run, not asserted by this file\'s own say-so',
+      ? 'PROCEDURALLY FAIR this run -- every same-relevant-type peer was individually asked and given a '
+        + 'sourced, verified answer by Unitary:1; still NOT folded into `eliminated` (D-BP154-050: a '
+        + 'compositeness finding alone never removes an option without a Founder decision to re-enable it) '
+        + '-- reported, not acted on'
+      : `REJECTED as non-discriminating -- ${unanswered.size ? [...unanswered].join(', ') : '(unlisted)'} `
+        + 'was/were never individually asked and given a sourced, span-verified answer this run (FD-BP154-22: '
+        + '"uniformity is procedure") -- this is WHY Unitary:1 does not eliminate, computed this run, not '
+        + 'asserted by this file\'s own say-so',
   };
 }
 
@@ -585,14 +609,25 @@ export function checkCompositenessUniformity(
 // share." Same candidate-pool construction as buildComparabilityCandidates() above (every option
 // BoundaryStability:1 adjudicated gets entityType 'statistical_macroregion' -- the same
 // "same-relevant-type" bucket the compositeness check uses, so the two rules are tested against
-// the SAME peer group), but here the tested predicate reads `boundary.status`, not `entityType`:
-// wouldEliminate = "this option's boundary/definition is NOT fixed by the item". Unlike
+// the SAME peer group), but here `answered` reads whether BoundaryStability:1 gave the peer ANY
+// sourced classification (fixed, unstable, or insufficiently-enumerated) -- D-BP154-060/FD-BP154-22,
+// "uniformity is procedure". Unlike
 // checkCompositenessUniformity(), a boundary-stability rule this function finds DISCRIMINATING is
 // what LICENSES folding it into `eliminated` (below, in deriveTerminatorEliminations()) -- the
 // live, data-driven difference between a rule the gate rejects and one it accepts.
+// D-BP154-060/FD-BP154-22, REWRITTEN -- same correction as buildComparabilityCandidates() above:
+// every option in the FRAME is a same-relevant-type peer for THIS gate's procedural check, not
+// only the ones BoundaryStability:1 happened to classify; see that function's own header for the
+// full reasoning (an unaddressed option must be VISIBLE to the check as unanswered, never invisible
+// because it never received a real entityType).
 function buildBoundaryCandidates(OPT: Record<string, string>, boundary: BoundaryResult | null): Candidate[] {
   const candidates = new Map<string, Candidate>();
-  for (const L of Object.keys(OPT)) candidates.set(L, unknownCandidate(L, OPT[L]));
+  for (const L of Object.keys(OPT)) {
+    candidates.set(L, {
+      optionId: L, observedLabel: OPT[L], entityType: 'statistical_macroregion', entityTypeEvidence: null,
+      aggregationLevel: 'unknown', populationStatus: 'unknown', boundary: { status: 'unresolved' },
+    });
+  }
   if (boundary?.ok) {
     for (const e of boundary.confirmedStable) {
       candidates.set(e.letter, {
@@ -635,41 +670,51 @@ export function checkBoundaryStabilityUniformity(
   const ruleChecked = 'boundary/definition not fixed by the item (BoundaryStability:1) excludes an option from the final aggregate comparison';
   if (!boundary?.ok || boundary.unstable.length === 0) {
     return {
-      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      ran: false, ruleChecked, discriminating: null, unanswered: [],
       note: 'BoundaryStability:1 did not run/failed, or stated no option has a materially variable boundary this run -- nothing to check',
     };
   }
   const pool = buildBoundaryCandidates(OPT, boundary);
   const unstableSet = new Set(boundary.unstable.map((e) => e.letter));
-  const wouldEliminate = (c: Candidate) => c.boundary.status !== 'fixed' && unstableSet.has(c.optionId);
-  const wouldAlsoRemove = new Set<string>();
+  // D-BP154-060/FD-BP154-22: "answered" -- individually asked AND sourced -- never "would this
+  // rule also eliminate it". `insufficientEnumeration` entries WERE individually asked and given a
+  // sourced, span-verified answer (they just did not name enough rivals to trigger elimination) --
+  // they count as answered, exactly like `unstable`/`confirmedStable`. Only silence
+  // (`notAddressed`) is unanswered.
+  const answeredSet = new Set<string>([
+    ...boundary.unstable.map((e) => e.letter),
+    ...boundary.confirmedStable.map((e) => e.letter),
+    ...boundary.insufficientEnumeration.map((e) => e.letter),
+  ]);
+  const answered = (c: Candidate) => answeredSet.has(c.optionId);
+  const unanswered = new Set<string>();
   let anyChecked = false;
   let discriminating = true;
   for (const target of pool) {
     if (!unstableSet.has(target.optionId)) continue;
     anyChecked = true;
-    const check = checkUniformPredicate(target, pool, wouldEliminate);
+    const check = checkUniformPredicate(target, pool, answered);
     if (!check.discriminating) {
       discriminating = false;
-      for (const L of check.wouldAlsoRemove) wouldAlsoRemove.add(L);
+      for (const L of check.unanswered) unanswered.add(L);
     }
   }
   if (!anyChecked) {
     return {
-      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      ran: false, ruleChecked, discriminating: null, unanswered: [],
       note: 'no BoundaryStability-stated variable-boundary option had a known same-relevant-type peer to test uniformity against',
     };
   }
   return {
-    ran: true, ruleChecked, discriminating, wouldAlsoRemove: [...wouldAlsoRemove],
+    ran: true, ruleChecked, discriminating, unanswered: [...unanswered],
     note: discriminating
-      ? 'ACCEPTED -- distinguishes on a property (boundary/definition stability) the candidates genuinely differ '
-        + 'on this run: every option BoundaryStability:1 confirmed fixed stays fixed, only the stated '
-        + 'materially-variable option(s) are removed -- this is WHY BoundaryStability:1 DOES eliminate '
-        + '(unlike Unitary:1\'s compositeness rule), computed this run, not asserted by this file\'s own say-so'
-      : `REJECTED as non-discriminating -- the rule would ALSO remove ${wouldAlsoRemove.size ? [...wouldAlsoRemove].join(', ') : '(unlisted)'}, `
-        + 'a same-relevant-type peer BoundaryStability:1 itself confirmed has a fixed boundary -- the rule does '
-        + 'not actually distinguish this run, so it is withheld exactly like a rejected compositeness finding',
+      ? 'ACCEPTED -- every same-relevant-type peer was individually asked (the identical enumerable question, '
+        + 'D-BP154-058) and given a sourced, span-verified answer this run (FD-BP154-22: "uniformity is '
+        + 'procedure") -- this is WHY BoundaryStability:1 DOES eliminate (unlike a REJECTED rule), computed '
+        + 'this run, not asserted by this file\'s own say-so'
+      : `REJECTED as non-discriminating -- ${unanswered.size ? [...unanswered].join(', ') : '(unlisted)'} `
+        + 'was/were never individually asked and given a sourced, span-verified answer this run -- withheld '
+        + 'exactly like a procedurally-rejected compositeness finding',
   };
 }
 
@@ -688,9 +733,21 @@ export function checkBoundaryStabilityUniformity(
 // checkCompositenessUniformity()/checkBoundaryStabilityUniformity() already use, applied a THIRD
 // time to this THIRD source -- symmetric, letter-blind, computed live from whatever THIS run's own
 // Discriminator:1 returned, never assumed.
+// D-BP154-060/FD-BP154-22, REWRITTEN -- same peer-scope correction as buildComparabilityCandidates()/
+// buildBoundaryCandidates() above (every option in the FRAME is a same-relevant-type peer for this
+// gate's own procedural check). Combined with this file's own "HONEST LIMITATION" note just below
+// (no independent "confirmed not a subdivision" array exists), this widening means the subregion
+// gate will now almost always find unaddressed peers and REJECT -- which is the correct, honest,
+// conservative outcome given the data gap, not a defect: a rule this file cannot verify was fairly
+// asked of every peer must not be trusted to eliminate anyone.
 function buildSubregionCandidates(OPT: Record<string, string>, discriminator: DiscriminatorResult | null): Candidate[] {
   const candidates = new Map<string, Candidate>();
-  for (const L of Object.keys(OPT)) candidates.set(L, unknownCandidate(L, OPT[L]));
+  for (const L of Object.keys(OPT)) {
+    candidates.set(L, {
+      optionId: L, observedLabel: OPT[L], entityType: 'statistical_macroregion', entityTypeEvidence: null,
+      aggregationLevel: 'unknown', populationStatus: 'unknown', boundary: { status: 'unresolved' },
+    });
+  }
   if (discriminator?.ok) {
     for (const e of discriminator.subregionNonMembers) {
       candidates.set(e.letter, {
@@ -704,7 +761,7 @@ function buildSubregionCandidates(OPT: Record<string, string>, discriminator: Di
     // remove for the rule to survive as discriminating (e.g. live-measured this ticket: the
     // enumeration affirmed South America a member while the subregion probe removed it too).
     for (const e of discriminator.categoryEnumerationMembers) {
-      if (candidates.get(e.letter)?.entityType === 'statistical_macroregion') continue; // already set above
+      if (candidates.get(e.letter)?.entityTypeEvidence !== null) continue; // already given a real evidence span above
       candidates.set(e.letter, {
         optionId: e.letter, observedLabel: e.name, entityType: 'statistical_macroregion',
         entityTypeEvidence: { text: e.span, via: 'Discriminator:1' }, aggregationLevel: 'unknown',
@@ -715,45 +772,63 @@ function buildSubregionCandidates(OPT: Record<string, string>, discriminator: Di
   return [...candidates.values()];
 }
 
+// D-BP154-060/FD-BP154-22, HONEST LIMITATION, DOCUMENTED RATHER THAN PAPERED OVER: unlike
+// compositeness (Unitary:1's own TWO independent arrays, `excluded`/`confirmedUnitary`) and
+// boundary (BoundaryStability:1's own THREE, `unstable`/`confirmedStable`/`insufficientEnumeration`),
+// Discriminator:1's own SUBREGION sub-question (D-BP154-026) has no companion "confirmed NOT a
+// subdivision" array -- only `subregionNonMembers`, a one-directional positive claim. This file
+// cannot currently tell "this peer was individually asked and said no" apart from "this peer was
+// never asked at all" for that specific sub-question -- clause (1)/(3) of FD-BP154-22's own test
+// ("the identical question was asked of every candidate... no option exempted") is NOT
+// independently verifiable here with today's data. Until discriminator_step.ts gains a matching
+// "confirmed not a subdivision" array, `answered` below is necessarily the SAME set-membership
+// proxy the retired cardinality reading used -- reported honestly as a data gap in `note`, never
+// silently treated as a genuine procedural verification.
 export function checkSubregionUniformity(
   OPT: Record<string, string>, discriminator: DiscriminatorResult | null,
 ): ComparabilityGateCheck {
   const ruleChecked = 'subregion of a larger region (Discriminator:1) excludes an option from the category in its own right';
   if (!discriminator?.ok || discriminator.subregionNonMembers.length === 0) {
     return {
-      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      ran: false, ruleChecked, discriminating: null, unanswered: [],
       note: 'Discriminator:1 did not run/failed, or stated no option is a subregion-not-in-its-own-right this run -- nothing to check',
     };
   }
   const pool = buildSubregionCandidates(OPT, discriminator);
   const subregionSet = new Set(discriminator.subregionNonMembers.map((e) => e.letter));
-  const wouldEliminate = (c: Candidate) => subregionSet.has(c.optionId);
-  const wouldAlsoRemove = new Set<string>();
+  // HONEST LIMITATION (this function's own header, above): no independent "confirmed NOT a
+  // subdivision" array exists yet, so `answered` cannot distinguish "asked, said no" from "never
+  // asked" for any peer outside `subregionNonMembers` itself.
+  const answered = (c: Candidate) => subregionSet.has(c.optionId);
+  const unanswered = new Set<string>();
   let anyChecked = false;
   let discriminating = true;
   for (const target of pool) {
     if (!subregionSet.has(target.optionId)) continue;
     anyChecked = true;
-    const check = checkUniformPredicate(target, pool, wouldEliminate);
+    const check = checkUniformPredicate(target, pool, answered);
     if (!check.discriminating) {
       discriminating = false;
-      for (const L of check.wouldAlsoRemove) wouldAlsoRemove.add(L);
+      for (const L of check.unanswered) unanswered.add(L);
     }
   }
   if (!anyChecked) {
     return {
-      ran: false, ruleChecked, discriminating: null, wouldAlsoRemove: [],
+      ran: false, ruleChecked, discriminating: null, unanswered: [],
       note: 'no Discriminator-stated subregion-non-member option had a known same-relevant-type peer to test uniformity against',
     };
   }
   return {
-    ran: true, ruleChecked, discriminating, wouldAlsoRemove: [...wouldAlsoRemove],
+    ran: true, ruleChecked, discriminating, unanswered: [...unanswered],
     note: discriminating
-      ? 'self-consistent this run -- no same-relevant-type peer (including any the enumeration affirmed a member) '
-        + 'would also be removed by the rule as Discriminator:1 actually stated it'
-      : `REJECTED as non-discriminating -- the rule would ALSO remove ${wouldAlsoRemove.size ? [...wouldAlsoRemove].join(', ') : '(unlisted)'}, `
-        + 'a same-relevant-type peer (or a peer the SAME step\'s own enumeration affirmed a member) -- exactly '
-        + 'the aggregate/atomic category error this gate exists to catch; withheld, never folded into `eliminated`',
+      ? 'no OTHER same-relevant-type peer was ALSO flagged a subregion-non-member this run -- but see this '
+        + 'function\'s own header: discriminator_step.ts has no independent "confirmed not a subdivision" '
+        + 'array, so peer coverage (clause 1/3 of FD-BP154-22) is NOT independently verified here, only the '
+        + 'absence of a second flagged peer'
+      : `REJECTED -- ${unanswered.size ? [...unanswered].join(', ') : '(unlisted)'} was/were ALSO flagged a `
+        + 'subregion-non-member this run by the identical sub-question -- withheld, never folded into '
+        + '`eliminated` (peer-coverage caveat above still applies: this gate cannot yet distinguish a '
+        + 'genuinely fair-but-multi-hit question from an unasked peer)',
   };
 }
 

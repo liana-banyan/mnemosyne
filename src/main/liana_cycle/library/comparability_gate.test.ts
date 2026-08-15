@@ -25,41 +25,78 @@ function candidate(optionId: string, entityType: Candidate['entityType'], overri
   };
 }
 
-describe('THE UNIFORM-PREDICATE INVARIANT -- "the one thing that mechanically blocks the error we made"', () => {
-  it('does not eliminate an M49 region for being a multi-country aggregate (THE EXACT LIVE-MEASURED CASE)', () => {
-    // South America, Northern Africa, Central Asia -- all `statistical_subregion` under UN M49,
-    // all territorial aggregations. A rule that says "composite -> not a world region" would fire
-    // on all three alike.
+describe('THE UNIFORM-PREDICATE INVARIANT -- "the one thing that mechanically blocks the error we made" (FD-BP154-22 REWRITE: uniformity is PROCEDURE, not outcome cardinality)', () => {
+  // D-BP154-060/FD-BP154-22. Live investigation (qid 98, run 6) found the OLD reading -- "reject
+  // whenever the rule's own outcome would strike more than one same-type peer" -- was a BUG: a
+  // rule asked identically, individually, and sourcedly of every one of five same-type peers, all
+  // five of which genuinely shared the same property, was indistinguishable from a rule aimed at
+  // one option and never honestly asked of the rest. Founder ruling, verbatim: "uniformity is
+  // procedure - ruled." The THIRD constructor argument is now `answered` (was `wouldEliminate`):
+  // true iff THIS candidate was individually asked and given a sourced, verified answer -- its
+  // CONTENT is never this function's business.
+
+  it('THE CENTRAL ASIA MANOEUVRE STILL FAILS -- ORIGINAL, PRE-D-BP154-045 SHAPE: only Central Asia was ever individually asked/answered; South America and Northern Africa were never addressed at all (a real "which of the following ARE a conglomerate" collective query volunteers one option and asks the others nothing)', () => {
     const southAmerica = candidate('A', 'statistical_subregion');
     const northernAfrica = candidate('C', 'statistical_subregion');
     const centralAsia = candidate('F', 'statistical_subregion');
     const pool = [southAmerica, northernAfrica, centralAsia];
-    const compositeRule = (c: Candidate): boolean => true; // "is a group of countries" -- true for all three
-    const check = checkUniformPredicate(centralAsia, pool, compositeRule);
+    // Only F ever received an individual, sourced answer -- A and C were never asked (the exact
+    // procedural failure the manoeuvre committed).
+    const onlyCentralAsiaAnswered = (c: Candidate): boolean => c.optionId === 'F';
+    const check = checkUniformPredicate(centralAsia, pool, onlyCentralAsiaAnswered);
     expect(check.discriminating).toBe(false);
-    expect(check.wouldAlsoRemove.sort()).toEqual(['A', 'C']);
+    expect(check.unanswered.sort()).toEqual(['A', 'C']);
   });
 
-  it('requires the same comparability predicate for every survivor (invented vocabulary)', () => {
-    const zorvexia = candidate('A', 'statistical_subregion');
-    const quintara = candidate('B', 'statistical_subregion');
-    const blexmoor = candidate('C', 'biome'); // a DIFFERENT entity type -- not a same-type peer
-    const pool = [zorvexia, quintara, blexmoor];
-    // A rule that only fires on Quintara, among the two statistical_subregions, IS discriminating.
-    const quintaraOnly = (c: Candidate): boolean => c.optionId === 'B';
-    const check = checkUniformPredicate(quintara, pool, quintaraOnly);
+  it('FD-BP154-22 CORRECTION: the SAME three options, asked the IDENTICAL question individually with a sourced answer for all three -- DISCRIMINATING for Central Asia even though South America and Northern Africa share the same underlying property (composite/multi-country), because the PROCEDURE was fair. This is the run-6 shape: content symmetry no longer rejects a procedurally fair rule.', () => {
+    const southAmerica = candidate('A', 'statistical_subregion');
+    const northernAfrica = candidate('C', 'statistical_subregion');
+    const centralAsia = candidate('F', 'statistical_subregion');
+    const pool = [southAmerica, northernAfrica, centralAsia];
+    const allIndividuallyAnswered = (): boolean => true; // every one of the three was asked and sourced
+    const check = checkUniformPredicate(centralAsia, pool, allIndividuallyAnswered);
     expect(check.discriminating).toBe(true);
-    expect(check.wouldAlsoRemove).toEqual([]);
+    expect(check.unanswered).toEqual([]);
   });
 
-  it('a rule that would remove EVERY same-type candidate is rejected as non-discriminating for EACH of them -- it never singles one out', () => {
+  it('a target that was itself never answered is rejected outright, naming itself as unanswered', () => {
     const a = candidate('A', 'statistical_subregion');
     const b = candidate('B', 'statistical_subregion');
-    const alwaysComposite = (c: Candidate): boolean => true;
-    // "composite -> exclude" fires on both A and B alike -- checked against EITHER as the target,
-    // it is rejected, because it does not uniquely distinguish that one from its same-type peer.
-    expect(checkUniformPredicate(a, [a, b], alwaysComposite).discriminating).toBe(false);
-    expect(checkUniformPredicate(b, [a, b], alwaysComposite).discriminating).toBe(false);
+    const neverAnswered = (): boolean => false;
+    const check = checkUniformPredicate(a, [a, b], neverAnswered);
+    expect(check.discriminating).toBe(false);
+    expect(check.unanswered).toEqual(['A']);
+  });
+
+  it('requires the same PROCEDURE for every peer, not the same predicate CONTENT (invented vocabulary): a peer of a DIFFERENT entity type is never required to have been asked anything', () => {
+    const zorvexia = candidate('A', 'statistical_subregion');
+    const quintara = candidate('B', 'statistical_subregion');
+    const blexmoor = candidate('C', 'biome'); // a DIFFERENT entity type -- not a same-type peer, never required to be answered
+    const pool = [zorvexia, quintara, blexmoor];
+    // Only Quintara (and, symmetrically, Zorvexia) were individually asked -- Blexmoor never was,
+    // but it does not matter, because it is not a same-relevant-type peer.
+    const onlySameTypeAnswered = (c: Candidate): boolean => c.optionId === 'A' || c.optionId === 'B';
+    const check = checkUniformPredicate(quintara, pool, onlySameTypeAnswered);
+    expect(check.discriminating).toBe(true);
+    expect(check.unanswered).toEqual([]);
+  });
+
+  it('FD-BP154-22: a rule whose outcome would strike EVERY same-type candidate is still DISCRIMINATING when every one of them was individually, honestly asked and answered -- uniformity is procedure, not outcome cardinality (the exact reading this ruling retires)', () => {
+    const a = candidate('A', 'statistical_subregion');
+    const b = candidate('B', 'statistical_subregion');
+    const bothAnswered = (): boolean => true; // both individually asked and sourced, regardless of what either answer said
+    expect(checkUniformPredicate(a, [a, b], bothAnswered).discriminating).toBe(true);
+    expect(checkUniformPredicate(b, [a, b], bothAnswered).discriminating).toBe(true);
+  });
+
+  it('a rule where ONE same-type peer was silently exempted from the question is rejected, naming exactly that peer', () => {
+    const a = candidate('A', 'statistical_subregion');
+    const b = candidate('B', 'statistical_subregion');
+    const c = candidate('C', 'statistical_subregion');
+    const bExempted = (cand: Candidate): boolean => cand.optionId !== 'B';
+    const check = checkUniformPredicate(a, [a, b, c], bExempted);
+    expect(check.discriminating).toBe(false);
+    expect(check.unanswered).toEqual(['B']);
   });
 
   it('never treats two "unknown"-typed candidates as the same relevant type -- uniformity cannot be asserted about an unestablished type', () => {

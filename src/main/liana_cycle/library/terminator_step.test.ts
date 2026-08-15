@@ -422,17 +422,26 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
   // larger region, not the region in its own right, is a legitimate elimination basis -- the exact
   // same status Softballs' own direct exclusion already has, never an inference from a kind label
   // or an enumeration's own nesting.
-  describe('SUBREGION-NON-MEMBER FACTS -- D-BP154-026', () => {
-    test('an option the source explicitly states is a subdivision, not the category in its own right, IS eliminated, sourced to Discriminator:1', () => {
+  // D-BP154-060/FD-BP154-22, REWRITTEN. D-BP154-056 already gated subregionNonMembers folding
+  // behind checkSubregionUniformity(); THIS ticket's own frame-wide peer-pool widening plus
+  // checkSubregionUniformity()'s own documented "HONEST LIMITATION" (no independent "confirmed not
+  // a subdivision" array exists in discriminator_step.ts) means a single-letter subregion finding
+  // no longer eliminates -- correctly and honestly, since this gate cannot verify the other eight
+  // options were fairly asked anything. These tests, D-BP154-026 vintage, predate both gates and
+  // asserted the UNGATED behavior; rewritten to lock in the current, honest reality.
+  describe('SUBREGION-NON-MEMBER FACTS -- D-BP154-026, GATED SINCE D-BP154-056, HONEST-LIMITATION SINCE D-BP154-060', () => {
+    test('an option the source explicitly states is a subdivision is REPORTED (frame-match bucket) but NOT eliminated on its own -- this gate cannot verify the other eight options were fairly asked anything (HONEST LIMITATION, not a regression)', () => {
       const disc = discriminator([], null, [], [], null, [['C', 'C) is a subdivision within a larger region, not a region on its own.']]);
-      const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
-      expect(eliminated).toHaveLength(1);
-      expect(eliminated[0].letter).toBe('C');
-      expect(eliminated[0].sourceStep).toBe('Discriminator:1');
-      expect(eliminated[0].span).toContain('subdivision within a larger region');
+      const { eliminated, subregionGate } = deriveTerminatorEliminations(OPT, null, null, disc);
+      expect(subregionGate.discriminating).toBe(false);
+      expect(eliminated).toEqual([]);
+      // Still visible in the frame-match report, informational -- computeFrameMatchBuckets() is a
+      // report, never a gate (this file's own header), unaffected by whether the elimination gate fires.
+      const buckets = computeFrameMatchBuckets(OPT, null, disc);
+      expect(buckets.affirmedNonMember).toContain('C');
     });
 
-    test('an option the source never addresses this way is UNSTATED, never eliminated -- absence is omission', () => {
+    test('an option the source never addresses this way is UNSTATED (frame-match bucket) exactly as before -- unaffected by the elimination gate', () => {
       const disc = discriminator([], null, [], [], null, [['C', 'C) is a subdivision within a larger region, not a region on its own.']]);
       const { eliminated } = deriveTerminatorEliminations(OPT, null, null, disc);
       expect(eliminated.some((e) => e.letter === 'A')).toBe(false);
@@ -440,14 +449,19 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
       expect(buckets.unstated).toContain('A');
     });
 
-    test('folds into the SAME affirmedNonMember bucket as Softballs -- both answer the identical question via two independent sources', () => {
+    test('folds into the SAME affirmedNonMember REPORTING bucket as Softballs -- both answer the identical question via two independent sources (reporting is unaffected by the elimination gate)', () => {
       const sb = softballs([['B', 'B) is not a world region at all.']]);
       const disc = discriminator([], null, [], [], null, [['C', 'C) is a subdivision within a larger region, not a region on its own.']]);
       const buckets = computeFrameMatchBuckets(OPT, sb, disc);
       expect(buckets.affirmedNonMember).toEqual(expect.arrayContaining(['B', 'C']));
     });
 
-    test('CONTRADICTION: a subregion-non-member fact and a stated superlative-property member for the SAME option aborts publication', () => {
+    // D-BP154-060: a subregion-non-member fact that never eliminates (HONEST LIMITATION) can also
+    // never CONTRADICT anything -- `subregionNonMembersByDiscriminator` (deriveTerminatorEliminations()'s
+    // own internal map) is only populated when the gate accepts the rule, exactly mirroring
+    // Unitary:1's own D-BP154-050 precedent ("a compositeness finding no longer participates in
+    // `eliminated` at all... so it can no longer contradict anything either").
+    test('NO CONTRADICTION FIRES: a subregion-non-member fact and a stated superlative-property member for the SAME option -- the subregion fact was rejected on procedure, so it never entered the contradiction check at all', () => {
       const disc = discriminator(
         [], null,
         [['C', 'C) is explicitly one of the recognized primary clusters.']],
@@ -455,26 +469,24 @@ describe('deriveTerminatorEliminations -- FD-BP152-19 UNIQUE OR ABSTAIN, pure re
         [['C', 'C) is a subdivision within a larger region, not a region on its own.']],
       );
       const { contradiction } = deriveTerminatorEliminations(OPT, null, null, disc);
-      expect(contradiction).not.toBeNull();
-      expect(contradiction?.letter).toBe('C');
+      expect(contradiction).toBeNull();
     });
 
-    test('CONTRADICTION: a subregion-non-member fact and the enumeration naming the SAME option a member aborts publication', () => {
+    test('NO CONTRADICTION FIRES: a subregion-non-member fact and the enumeration naming the SAME option a member -- same reason', () => {
       const disc = discriminator(
         [], null, [],
         [['C', 'y']], 'The list consists of Alpha and Beta.',
         [['C', 'C) is a subdivision within a larger region, not a region on its own.']],
       );
       const { contradiction } = deriveTerminatorEliminations(OPT, null, null, disc);
-      expect(contradiction).not.toBeNull();
-      expect(contradiction?.letter).toBe('C');
+      expect(contradiction).toBeNull();
     });
 
-    test('NO RULE SELECTS A PARTICULAR LETTER: the identical fact eliminates identically regardless of which letter carries it', () => {
+    test('NO RULE SELECTS A PARTICULAR LETTER: the identical fact is withheld identically regardless of which letter carries it', () => {
       const discA = discriminator([], null, [], [], null, [['A', 'A) is a subdivision within a larger region, not a region on its own.']]);
       const discH = discriminator([], null, [], [], null, [['H', 'H) is a subdivision within a larger region, not a region on its own.']]);
-      expect(deriveTerminatorEliminations(OPT, null, null, discA).eliminated.map((e) => e.letter)).toEqual(['A']);
-      expect(deriveTerminatorEliminations(OPT, null, null, discH).eliminated.map((e) => e.letter)).toEqual(['H']);
+      expect(deriveTerminatorEliminations(OPT, null, null, discA).eliminated).toEqual([]);
+      expect(deriveTerminatorEliminations(OPT, null, null, discH).eliminated).toEqual([]);
     });
   });
 
@@ -990,26 +1002,62 @@ describe('D-BP154-050: Unitary:1 is WITHDRAWN as an eliminator -- comparability_
 // these tests prove checkCompositenessUniformity() now COMPUTES that decision, live, from
 // whatever Unitary:1 actually returns, and that the computed result reaches TerminatorResult's own
 // `comparabilityGate` field (i.e. the receipt), not just an internal variable nothing reads.
-describe('D-BP154-052: checkCompositenessUniformity() -- comparability_gate.ts\'s checkUniformPredicate(), called LIVE against this run\'s own Unitary:1 output', () => {
-  test('REJECTED: Unitary:1 states MORE THAN ONE option composite (the real live-run shape -- Central Asia AND South America AND Northern Africa are all M49-style multi-country aggregates) -- the rule is non-discriminating and every stated composite letter is named in wouldAlsoRemove', () => {
-    const un = unitary([
-      ['A', 'A) South America is a grouping of multiple sovereign countries, not a single unitary region.'],
-      ['C', 'C) North Africa is a grouping of multiple sovereign countries, not a single unitary region.'],
-      ['F', 'F) Central Asia is a grouping of multiple sovereign countries, not a single unitary region.'],
-    ]);
-    const check = checkCompositenessUniformity(OPT, un);
-    expect(check.ran).toBe(true);
-    expect(check.discriminating).toBe(false);
-    expect(check.wouldAlsoRemove.sort()).toEqual(['A', 'C', 'F'].sort());
-    expect(check.note).toMatch(/REJECTED/);
-  });
-
-  test('DISCRIMINATING (self-consistent, still not folded into eliminated): Unitary:1 states exactly ONE option composite this run, with no other same-relevant-type peer classified at all', () => {
-    const un = unitary([['F', 'F) Central Asia is a conglomerate of multiple countries.']]);
+// D-BP154-060/FD-BP154-22, REWRITTEN. Founder ruling, verbatim: "uniformity is procedure - ruled."
+// The retired outcome-cardinality reading rejected a rule whenever its OWN OUTCOME struck more
+// than one same-relevant-type peer -- live investigation (qid 98, run 6) found that indistinguishable
+// from a rule genuinely, fairly asked of every peer that happened to share the same property. The
+// NEW test: was the identical question asked of every same-relevant-type peer, sourced and
+// span-verified, none exempted or inferred? `unitary()`'s own fixture only ever builds `excluded`
+// (never `confirmedUnitary`), so every test below that wants a peer PROCEDURALLY answered (not just
+// composite) uses `confirmedUnitary` directly via a raw override -- see each test's own setup.
+describe('D-BP154-052/D-BP154-060: checkCompositenessUniformity() -- comparability_gate.ts\'s checkUniformPredicate(), called LIVE against this run\'s own Unitary:1 output, PROCEDURAL reading (FD-BP154-22)', () => {
+  test('DISCRIMINATING under FD-BP154-22: Unitary:1 individually asks and sourcedly answers EVERY option in the frame (South America/North Africa/Central Asia composite, the rest confirmed unitary) -- procedurally fair, so the rule IS discriminating even though it would strike three of nine (content symmetry no longer rejects a fair procedure)', () => {
+    const un: UnitaryResult = {
+      ok: true, query: 'q', discarded: 0, via: 'test',
+      excluded: [
+        { letter: 'A', name: OPT.A, span: 'A) South America is a grouping of multiple sovereign countries, not a single unitary region.' },
+        { letter: 'C', name: OPT.C, span: 'C) North Africa is a grouping of multiple sovereign countries, not a single unitary region.' },
+        { letter: 'F', name: OPT.F, span: 'F) Central Asia is a grouping of multiple sovereign countries, not a single unitary region.' },
+      ],
+      confirmedUnitary: Object.keys(OPT).filter((L) => !['A', 'C', 'F'].includes(L))
+        .map((L) => ({ letter: L, name: OPT[L], span: `${L}) ${OPT[L]} is a single unitary region.` })),
+      notExcluded: Object.keys(OPT).filter((L) => !['A', 'C', 'F'].includes(L)),
+    };
     const check = checkCompositenessUniformity(OPT, un);
     expect(check.ran).toBe(true);
     expect(check.discriminating).toBe(true);
-    expect(check.wouldAlsoRemove).toEqual([]);
+    expect(check.unanswered).toEqual([]);
+  });
+
+  // THE CENTRAL ASIA MANOEUVRE STILL FAILS -- Founder's own standing requirement, verbatim:
+  // "PRESERVE what the invariant was built for... Keep a test proving it still fails." The
+  // manoeuvre's actual shape (pre-D-BP154-045): Unitary:1's original collective "which of the
+  // following ARE a conglomerate" query got an answer for Central Asia alone -- South America and
+  // North Africa were never individually addressed AT ALL (no excluded entry, no confirmedUnitary
+  // entry, nothing). This is exactly what `unitary([['F', ...]])` produces on its own (confirmedUnitary
+  // stays empty) -- A and C are UNANSWERED, not merely "confirmed unitary".
+  test('THE CENTRAL ASIA MANOEUVRE STILL FAILS: Unitary:1 answers ONLY Central Asia -- South America and North Africa were never individually addressed at all -- REJECTED on procedure, naming exactly the unanswered peers', () => {
+    const un = unitary([['F', 'F) Central Asia is a conglomerate of multiple countries.']]);
+    const check = checkCompositenessUniformity(OPT, un);
+    expect(check.ran).toBe(true);
+    expect(check.discriminating).toBe(false);
+    // Every OTHER option in the frame was never addressed either -- all are named unanswered.
+    expect(check.unanswered).toContain('A');
+    expect(check.unanswered).toContain('C');
+    expect(check.note).toMatch(/REJECTED/);
+  });
+
+  test('DISCRIMINATING: Unitary:1 individually asks and answers EVERY option in the frame -- some composite, some confirmed unitary -- procedurally fair regardless of which way each answer went', () => {
+    const un: UnitaryResult = {
+      ok: true, query: 'q', discarded: 0, via: 'test',
+      excluded: [{ letter: 'F', name: OPT.F, span: 'F) Central Asia is a conglomerate.' }],
+      confirmedUnitary: Object.keys(OPT).filter((L) => L !== 'F').map((L) => ({ letter: L, name: OPT[L], span: `${L}) ${OPT[L]} is a single unitary region.` })),
+      notExcluded: Object.keys(OPT).filter((L) => L !== 'F'),
+    };
+    const check = checkCompositenessUniformity(OPT, un);
+    expect(check.ran).toBe(true);
+    expect(check.discriminating).toBe(true);
+    expect(check.unanswered).toEqual([]);
   });
 
   test('UNTESTED (ran:false): Unitary:1 did not run at all', () => {
@@ -1024,7 +1072,7 @@ describe('D-BP154-052: checkCompositenessUniformity() -- comparability_gate.ts\'
     expect(check.discriminating).toBeNull();
   });
 
-  test('WIRING PROOF: the live gate\'s own REJECTED decision reaches TerminatorResult.comparabilityGate through a real runTerminatorStep() call, not just an unread internal variable', async () => {
+  test('WIRING PROOF: the live gate\'s own REJECTED (procedural) decision reaches TerminatorResult.comparabilityGate through a real runTerminatorStep() call, not just an unread internal variable', async () => {
     const input: MethodQuestionInput = {
       qid: 98,
       question: "Which of the following world regions is NOT considered one of the world's most densely populated regions?",
@@ -1032,55 +1080,65 @@ describe('D-BP154-052: checkCompositenessUniformity() -- comparability_gate.ts\'
     };
     const ctx: MethodRunContext = { askGoogle: async () => null, emit: () => {} };
     const unitaryOutcome = {
+      // Only F individually addressed -- A never asked/answered at all (the manoeuvre shape).
       id: 'Unitary:1', summary: 's',
       raw: unitary([
-        ['A', 'A) South America is a grouping of multiple sovereign countries.'],
         ['F', 'F) Central Asia is a grouping of multiple sovereign countries.'],
       ]),
     };
     const { result } = await runTerminatorStep(input, ctx, [unitaryOutcome]);
     expect(result.comparabilityGate?.ran).toBe(true);
     expect(result.comparabilityGate?.discriminating).toBe(false);
-    expect(result.comparabilityGate?.wouldAlsoRemove.sort()).toEqual(['A', 'F']);
+    expect(result.comparabilityGate?.unanswered.length).toBeGreaterThan(0);
     // AND the withdrawal itself still holds -- the rejected rule still eliminates nobody.
     expect(result.eliminated.some((e) => e.sourceStep === 'Unitary:1')).toBe(false);
   });
 });
 
-// D-BP154-053 -- THE FOUNDER'S OWN SOURCED PROOF (PROOF_QID98_TEST_AWARE_ELIMINATION_BP154.md):
-// "the valid discriminator is boundary stability, not compositeness... this PASSES
-// checkUniformPredicate() -- it distinguishes on a property the candidates genuinely differ on."
-// THE PAIRED DEMONSTRATION the coordinator asked for, explicitly: the SAME mechanism
-// (checkUniformPredicate) REJECTS compositeness (D-BP154-052, block above) and ACCEPTS boundary
-// stability (this block) -- proving the gate is not a rubber stamp in either direction.
-describe('D-BP154-053: checkBoundaryStabilityUniformity() -- checkUniformPredicate(), called LIVE, ACCEPTS the boundary-stability rule the compositeness rule was REJECTED for', () => {
-  test('ACCEPTED: BoundaryStability:1 confirms South America AND North Africa FIXED while stating Central Asia alone is materially variable -- the rule distinguishes on a property the candidates genuinely differ on, so it is DISCRIMINATING', () => {
+// D-BP154-053/D-BP154-060, REWRITTEN -- THE FOUNDER'S OWN SOURCED PROOF
+// (PROOF_QID98_TEST_AWARE_ELIMINATION_BP154.md) plus FD-BP154-22 ("uniformity is procedure -
+// ruled"). Live investigation (qid 98, run 6) showed the boundary gate REJECTED even a fully,
+// individually, sourcedly answered 9-option run (5 flagged multi-definition, 4 confirmed single) --
+// exactly the bug FD-BP154-22 corrects. The `boundary()` fixture only ever fills the letters it is
+// explicitly given; every test below that wants a PROCEDURALLY FAIR run must address ALL NINE
+// options (the widened frame-wide peer pool, D-BP154-060's own buildBoundaryCandidates() fix) --
+// tests that want the manoeuvre shape deliberately leave peers unaddressed.
+describe('D-BP154-053/D-BP154-060: checkBoundaryStabilityUniformity() -- checkUniformPredicate(), PROCEDURAL reading (FD-BP154-22)', () => {
+  test('DISCRIMINATING: ALL NINE options individually, sourcedly answered -- Central Asia (and others) multi-definition, South America/North Africa/rest confirmed single -- procedurally fair regardless of the 5-vs-4 split (the run-6 shape, corrected)', () => {
     const bd = boundary(
       [['F', 'F) Central Asia\'s membership is materially variable across world-regional usage and the item supplies no boundary definition.']],
       [
         ['A', 'A) South America has a broadly stable boundary, routinely used in density comparisons.'],
+        ['B', 'B) South Asia has one settled definition.'],
         ['C', 'C) North Africa maps to the named statistical aggregate Northern Africa, M49 015.'],
+        ['D', 'D) Northeast United States has one settled definition.'],
+        ['E', 'E) Europe has one settled definition.'],
+        ['G', 'G) Arctic Circle has one settled definition.'],
+        ['H', 'H) Amazon Rainforest has one settled definition.'],
+        ['I', 'I) Sahara Desert has one settled definition.'],
       ],
     );
     const check = checkBoundaryStabilityUniformity(OPT, bd);
     expect(check.ran).toBe(true);
     expect(check.discriminating).toBe(true);
-    expect(check.wouldAlsoRemove).toEqual([]);
+    expect(check.unanswered).toEqual([]);
     expect(check.note).toMatch(/ACCEPTED/);
   });
 
-  test('REJECTED: BoundaryStability:1 states MORE THAN ONE same-relevant-type option has a materially variable boundary -- the rule would ALSO remove a peer, so it is non-discriminating exactly like a bad compositeness rule', () => {
+  // THE CENTRAL ASIA MANOEUVRE SHAPE, applied to boundary: only Central Asia (and a couple of
+  // peers) were ever individually addressed; most of the frame was never asked anything.
+  test('REJECTED on PROCEDURE: BoundaryStability:1 individually addresses only THREE of nine options (F multi-definition, A/C single) -- the other six were never asked anything at all -- non-discriminating, naming the unanswered peers', () => {
     const bd = boundary(
+      [['F', 'F) Central Asia\'s membership is materially variable across world-regional usage.']],
       [
-        ['A', 'A) South America\'s boundary is also treated inconsistently across some sources.'],
-        ['F', 'F) Central Asia\'s membership is materially variable across world-regional usage.'],
+        ['A', 'A) South America has a broadly stable boundary.'],
+        ['C', 'C) North Africa maps to the named statistical aggregate Northern Africa, M49 015.'],
       ],
-      [['C', 'C) North Africa maps to the named statistical aggregate Northern Africa, M49 015.']],
     );
     const check = checkBoundaryStabilityUniformity(OPT, bd);
     expect(check.ran).toBe(true);
     expect(check.discriminating).toBe(false);
-    expect(check.wouldAlsoRemove.sort()).toEqual(['A', 'F']);
+    expect(check.unanswered.length).toBeGreaterThan(0);
     expect(check.note).toMatch(/REJECTED/);
   });
 
@@ -1096,27 +1154,31 @@ describe('D-BP154-053: checkBoundaryStabilityUniformity() -- checkUniformPredica
     expect(check.discriminating).toBeNull();
   });
 
-  test('WIRING PROOF: an ACCEPTED boundary-stability rule DOES fold into deriveTerminatorEliminations()\'s own `eliminated`, sourced to BoundaryStability:1, disposition NOT_COMPARABLE, unlike Unitary:1\'s permanently-withdrawn compositeness rule', () => {
-    const bd = boundary(
-      [['F', 'F) Central Asia\'s membership is materially variable across world-regional usage.']],
-      [
-        ['A', 'A) South America has a broadly stable boundary.'],
-        ['C', 'C) North Africa maps to the named statistical aggregate Northern Africa, M49 015.'],
-      ],
-    );
-    const { eliminated, boundaryGate } = deriveTerminatorEliminations(OPT, null, null, null, null, null, bd);
+  const allNineAddressed = boundary(
+    [['F', 'F) Central Asia\'s membership is materially variable across world-regional usage.']],
+    [
+      ['A', 'A) South America has a broadly stable boundary.'],
+      ['B', 'B) South Asia has one settled definition.'],
+      ['C', 'C) North Africa maps to the named statistical aggregate Northern Africa, M49 015.'],
+      ['D', 'D) Northeast United States has one settled definition.'],
+      ['E', 'E) Europe has one settled definition.'],
+      ['G', 'G) Arctic Circle has one settled definition.'],
+      ['H', 'H) Amazon Rainforest has one settled definition.'],
+      ['I', 'I) Sahara Desert has one settled definition.'],
+    ],
+  );
+
+  test('WIRING PROOF: an ACCEPTED (procedurally fair, all nine addressed) boundary-stability rule DOES fold into deriveTerminatorEliminations()\'s own `eliminated`, sourced to BoundaryStability:1, disposition NOT_COMPARABLE, unlike Unitary:1\'s permanently-withdrawn compositeness rule', () => {
+    const { eliminated, boundaryGate } = deriveTerminatorEliminations(OPT, null, null, null, null, null, allNineAddressed);
     expect(boundaryGate.discriminating).toBe(true);
     expect(eliminated).toHaveLength(1);
     expect(eliminated[0]).toMatchObject({ letter: 'F', sourceStep: 'BoundaryStability:1' });
     expect(eliminated[0].reason).toMatch(/NOT_COMPARABLE/);
   });
 
-  test('WIRING PROOF (negative control): a REJECTED boundary-stability rule does NOT fold into `eliminated` -- withheld exactly like a rejected compositeness rule', () => {
+  test('WIRING PROOF (negative control): a REJECTED (procedurally unfair -- most of the frame unaddressed) boundary-stability rule does NOT fold into `eliminated`', () => {
     const bd = boundary(
-      [
-        ['A', 'A) South America\'s boundary is also treated inconsistently.'],
-        ['F', 'F) Central Asia\'s membership is materially variable.'],
-      ],
+      [['F', 'F) Central Asia\'s membership is materially variable.']],
       [['C', 'C) North Africa maps to Northern Africa, M49 015.']],
     );
     const { eliminated, boundaryGate } = deriveTerminatorEliminations(OPT, null, null, null, null, null, bd);
@@ -1131,16 +1193,7 @@ describe('D-BP154-053: checkBoundaryStabilityUniformity() -- checkUniformPredica
       options: OPT,
     };
     const ctx: MethodRunContext = { askGoogle: async () => null, emit: () => {} };
-    const boundaryOutcome = {
-      id: 'BoundaryStability:1', summary: 's',
-      raw: boundary(
-        [['F', 'F) Central Asia\'s membership is materially variable across world-regional usage.']],
-        [
-          ['A', 'A) South America has a broadly stable boundary.'],
-          ['C', 'C) North Africa maps to the named statistical aggregate Northern Africa, M49 015.'],
-        ],
-      ),
-    };
+    const boundaryOutcome = { id: 'BoundaryStability:1', summary: 's', raw: allNineAddressed };
     const { result } = await runTerminatorStep(input, ctx, [boundaryOutcome]);
     expect(result.boundaryGate?.ran).toBe(true);
     expect(result.boundaryGate?.discriminating).toBe(true);
@@ -1148,16 +1201,15 @@ describe('D-BP154-053: checkBoundaryStabilityUniformity() -- checkUniformPredica
   });
 });
 
-// D-BP154-056 -- LIVE-MEASURED this ticket (qid 98, D-BP154-055 receipt): Discriminator:1's own
-// pre-existing subregionNonMembers mechanism (D-BP154-026) reproduces the EXACT category error the
-// comparability gate exists to catch, uniformly excluding South America/South Asia/North Africa/
-// Central Asia as "a subregion within a larger region" while its OWN enumeration affirmed South
-// America a member -- the same aggregate/atomic confusion under a different name. THE THIRD PAIRED
-// DEMONSTRATION: checkUniformPredicate() REJECTS the multi-letter uniform case (this block) exactly
-// as it rejected compositeness (D-BP154-052), while a genuinely selective single-letter finding
-// (already exercised by this file's own pre-existing discriminator() fixture calls, unchanged and
-// still passing) remains DISCRIMINATING.
-describe('D-BP154-056: checkSubregionUniformity() -- checkUniformPredicate(), called LIVE against Discriminator:1\'s own subregionNonMembers, catching the SAME category error a different step re-introduced', () => {
+// D-BP154-056/D-BP154-060, REWRITTEN. Discriminator:1's own pre-existing subregionNonMembers
+// mechanism (D-BP154-026) has NO companion "confirmed not a subdivision" array (checkSubregionUniformity()'s
+// own header, terminator_step.ts, carries the full "HONEST LIMITATION" ruling) -- this file cannot
+// tell "asked, said no" apart from "never asked" for any peer outside subregionNonMembers itself.
+// Combined with D-BP154-060's own frame-wide peer-pool widening (every option in OPT is now a
+// same-relevant-type peer for this check), this gate now REJECTS essentially always -- the correct,
+// conservative outcome given the data gap: a rule this file cannot verify was fairly asked of every
+// peer must not be trusted to eliminate anyone, whether it flags one option or four.
+describe('D-BP154-056/D-BP154-060: checkSubregionUniformity() -- HONEST LIMITATION (no independent "confirmed not a subdivision" array) means this gate now conservatively REJECTS regardless of how many letters are flagged', () => {
   test('REJECTED: Discriminator:1 states FOUR options uniformly "a subregion within a larger region" (the real live-run shape) while its own enumeration affirms one of them a member -- non-discriminating', () => {
     const disc = discriminator(
       [], null, [], [['A', 'A) South America'], ['E', 'E) Europe'], ['F', 'F) Central Asia']], null,
@@ -1171,14 +1223,20 @@ describe('D-BP154-056: checkSubregionUniformity() -- checkUniformPredicate(), ca
     const check = checkSubregionUniformity(OPT, disc);
     expect(check.ran).toBe(true);
     expect(check.discriminating).toBe(false);
-    expect(check.wouldAlsoRemove.length).toBeGreaterThan(0);
+    expect(check.unanswered.length).toBeGreaterThan(0);
   });
 
-  test('DISCRIMINATING: Discriminator:1 states exactly ONE option is a subregion-not-in-its-own-right, no peer removed', () => {
+  // D-BP154-060: previously "DISCRIMINATING" under the retired outcome-cardinality reading (only
+  // one letter flagged, so nothing else would ALSO be struck). Under FD-BP154-22's procedural
+  // reading, this is now REJECTED too, honestly: the other eight options were never individually,
+  // sourcedly confirmed NOT a subdivision either -- this gate has no data to tell that apart from
+  // "never asked", so it correctly withholds rather than assume fairness it cannot verify.
+  test('REJECTED (HONEST, not a regression): Discriminator:1 states exactly ONE option is a subregion-not-in-its-own-right -- still rejected, because the other eight options were never independently confirmed NOT a subdivision either (this gate cannot tell that apart from "never asked")', () => {
     const disc = discriminator([], null, [], [], null, [['C', 'C) is a subdivision within a larger region, not a region on its own.']]);
     const check = checkSubregionUniformity(OPT, disc);
     expect(check.ran).toBe(true);
-    expect(check.discriminating).toBe(true);
+    expect(check.discriminating).toBe(false);
+    expect(check.unanswered.length).toBeGreaterThan(0);
   });
 
   test('WIRING PROOF: a REJECTED subregion rule does NOT fold into `eliminated`, unlike the pre-existing unconditional behavior', () => {
