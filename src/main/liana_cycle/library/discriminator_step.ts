@@ -50,20 +50,24 @@ import {
   spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
 } from './composer_step_evidence';
 import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
+// D-BP154-063/BISHOP-SEG/S52/seg-wiregate, WIRING. THE ONE SHARED CATEGORY-PARSE GATE replaces
+// this file's own local "following X is/are" regex (previously duplicated, byte-identical, from
+// softballs_step.ts -- the Founder's own explicit instruction this dispatch: "extract it; every
+// step calls the one", superseding the earlier "steps stay self-contained" discipline for this ONE
+// mechanical helper). See category_parse_gate.ts's own header for the full derivation.
+// deriveDiscriminatorSuperlativeProperty() below is UNRELATED (a different shape, "one of.../
+// considered...") and was not touched.
+import { parseFollowingCategory } from './category_parse_gate';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
 /** Reads the category noun phrase the question itself names ("Which of the following world
- *  regions is NOT..." -> "world regions") -- the SAME shape softballs_step.ts's own
- *  deriveSoftballsCategory() parses, duplicated locally rather than imported so this file stays
- *  self-contained (no Composer step depends on another step's internals -- each depends only on
- *  the shared, generic comparative_cascade.ts primitives every cascade already reuses). Pure
- *  text-structure parsing of the question's OWN wording, never a judgment -- returns null (never
- *  a guess) when the question does not fit this shape. */
+ *  regions is NOT..." -> "world regions"). Pure text-structure parsing of the question's OWN
+ *  wording, never a judgment -- returns null (never a guess) when parseFollowingCategory()
+ *  (category_parse_gate.ts, THE ONE SHARED GATE, D-BP154-063) finds no category. Kept as a named
+ *  export -- signature unchanged -- for existing callers/tests. */
 export function deriveDiscriminatorCategory(question: string): string | null {
-  const m = question.match(/following\s+([a-z][a-z\s]*?)\s+(?:is|are)\b/i);
-  const category = m ? m[1].trim() : '';
-  return category || null;
+  return parseFollowingCategory(question).category;
 }
 
 /** D-BP154-021/BISHOP-SEG/S21/seg-mortgagetrap, ADDITIVE. Founder's own correction (D-BP154-021
@@ -359,6 +363,9 @@ export function verifyDiscriminatorPropertyMembers(
 
 export interface DiscriminatorResult {
   ok: boolean;
+  /** D-BP154-063, ADDITIVE. See SoftballsResult's own identical field for the full doc -- same
+   *  convention, checked BEFORE `ok` by terminator_step.ts's own stepStatus(). */
+  inapplicable?: boolean;
   category: string | null;
   /** D-BP154-021, ADDITIVE: the superlative property phrase (e.g. "the world's most densely
    *  populated regions"), when the question names one -- null when the question has only a bare
@@ -527,12 +534,13 @@ export async function runDiscriminatorStep(
   }
   const optSafe: Record<string, string> = OPT;
   const all = Object.keys(optSafe);
-  const category = deriveDiscriminatorCategory(input.question);
+  const categoryParse = parseFollowingCategory(input.question);
+  const category = categoryParse.category;
   if (!category) {
     const result: DiscriminatorResult = {
-      ok: false, category: null, property: null, query: null, noKindStated: all, via: 'n/a',
+      ok: false, inapplicable: true, category: null, property: null, query: null, noKindStated: all, via: 'n/a',
       ...emptyDiscriminatorFields(),
-      error: 'could not determine the category this question names (no "following X is/are" phrase found) -- refusing rather than guessing a category',
+      error: categoryParse.reason ?? 'could not determine the category this question names -- refusing rather than guessing a category',
     };
     return { result, summary: summaryLine(OPT, result) };
   }

@@ -93,18 +93,22 @@ import type { OriginProvenance } from './origin_provenance_store';
 // toLetters() (comparative_cascade.ts, imported above) stays imported -- this file's own frame
 // (line ~172) still uses it directly and unrelated to this fix.
 import { resolveNameToOption } from './entity_resolution';
+// D-BP154-063/BISHOP-SEG/S52/seg-wiregate, WIRING. THE ONE SHARED CATEGORY-PARSE GATE replaces
+// this file's own local "following X is/are" regex (previously duplicated, byte-identical, from
+// softballs_step.ts/discriminator_step.ts -- the Founder's own explicit instruction this
+// dispatch: "extract it; every step calls the one", superseding the earlier "steps stay
+// self-contained" discipline for this ONE mechanical helper). See category_parse_gate.ts's own
+// header for the full derivation.
+import { parseFollowingCategory } from './category_parse_gate';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
-/** Reads the category noun phrase the question itself names -- byte-identical shape to
- *  softballs_step.ts's/discriminator_step.ts's own category parser (duplicated locally, not
- *  imported -- "steps stay self-contained", the same discipline every sibling step's own header
- *  already states). Pure text-structure parsing, never a judgment -- returns null (never a guess)
- *  when the question does not fit this shape. */
+/** Reads the category noun phrase the question itself names. Pure text-structure parsing, never a
+ *  judgment -- returns null (never a guess) when parseFollowingCategory() (category_parse_gate.ts,
+ *  THE ONE SHARED GATE, D-BP154-063) finds no category. Kept as a named export -- signature
+ *  unchanged -- for existing callers/tests. */
 export function deriveHumanNuanceCategory(question: string): string | null {
-  const m = question.match(/following\s+([a-z][a-z\s]*?)\s+(?:is|are)\b/i);
-  const category = m ? m[1].trim() : '';
-  return category || null;
+  return parseFollowingCategory(question).category;
 }
 
 // D-BP154-030 PART 2 -- THE CORPUS-WIDE META-TRUTH. Founder, FD-BP154-07a, verbatim: "all MMLU-Pro
@@ -507,6 +511,9 @@ export function verifyAndClassifyHumanNuanceKinds(
 
 export interface HumanNuanceResult {
   ok: boolean;
+  /** D-BP154-063, ADDITIVE. See SoftballsResult's own identical field for the full doc -- same
+   *  convention, checked BEFORE `ok` by terminator_step.ts's own stepStatus(). */
+  inapplicable?: boolean;
   artifactClassEstablished: boolean;
   src: string | null;
   corpusMetaTruth: typeof CORPUS_META_TRUTH | null;
@@ -629,11 +636,12 @@ export async function runHumanNuanceStep(
     return { result, summary: summaryLine(OPT, result) };
   }
 
-  const category = deriveHumanNuanceCategory(input.question);
+  const categoryParse = parseFollowingCategory(input.question);
+  const category = categoryParse.category;
   if (!category) {
     const result = emptyHumanNuanceResult({
-      artifactClassEstablished, src, corpusMetaTruth, cowGuard,
-      error: 'could not determine the category this question names (no "following X is/are" phrase found) -- refusing rather than guessing what to read the option set against',
+      artifactClassEstablished, src, corpusMetaTruth, cowGuard, inapplicable: true,
+      error: categoryParse.reason ?? 'could not determine the category this question names -- refusing rather than guessing what to read the option set against',
     });
     return { result, summary: summaryLine(OPT, result) };
   }

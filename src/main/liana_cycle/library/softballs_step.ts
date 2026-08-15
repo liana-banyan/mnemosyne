@@ -70,21 +70,22 @@ import type { ClaimProvenance, CorroborationResult } from './composer_step_evide
 // retry never resolved may now ALSO resolve via the shared resolver's other two mechanical steps
 // (stated annotation, singular/plural fold) -- never a similarity judgment, HARDWIRE-22 unrelaxed.
 import { resolveNameToOption } from './entity_resolution';
+// D-BP154-063/BISHOP-SEG/S52/seg-wiregate, WIRING. THE ONE SHARED CATEGORY-PARSE GATE replaces
+// this file's own local "following X is/are" regex -- see category_parse_gate.ts's own header for
+// the full derivation (widened linking-verb set, the verb-less clause-final shape, and the
+// clause-splitting fix for the reference-preamble decoy). deriveSoftballsCategory() below is kept
+// as a thin, signature-unchanged passthrough so nothing that imported it before has to change.
+import { parseFollowingCategory } from './category_parse_gate';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
 /** Reads the category noun phrase the question itself names ("Which of the following world
- *  regions is NOT..." -> "world regions") -- the same SHAPE comparative_cascade.ts's own
- *  module-private deriveCategoryAndProperty() parses for its own superlative property, but a
- *  SEPARATE, smaller extraction (category only -- no property/magnitude parsing, which is out of
- *  this step's scope) written locally so this file depends on nothing module-private in
- *  comparative_cascade.ts. Pure text-structure parsing of the question's OWN wording, never a
- *  judgment about the world -- returns null (never a guess) when the question does not fit the
- *  "following X is/are" shape this step's one query needs to be phrased against. */
+ *  regions is NOT..." -> "world regions"). Pure text-structure parsing of the question's OWN
+ *  wording, never a judgment about the world -- returns null (never a guess) when
+ *  parseFollowingCategory() (category_parse_gate.ts, THE ONE SHARED GATE, D-BP154-063) finds no
+ *  category. Kept as a named export -- signature unchanged -- for existing callers/tests. */
 export function deriveSoftballsCategory(question: string): string | null {
-  const m = question.match(/following\s+([a-z][a-z\s]*?)\s+(?:is|are)\b/i);
-  const category = m ? m[1].trim() : '';
-  return category || null;
+  return parseFollowingCategory(question).category;
 }
 
 /** THE ONE QUERY (FD-BP153-07 point 1; FD-BP153-01 consequence 4, "one query, not one per
@@ -168,6 +169,13 @@ export function verifyExcludedEntries(
 
 export interface SoftballsResult {
   ok: boolean;
+  /** D-BP154-063, ADDITIVE. true ONLY when this run's own category parse genuinely does not apply
+   *  to this question's shape (parseFollowingCategory() found no "following" clause, or found one
+   *  with no identifiable category noun) -- terminator_step.ts's own stepStatus() reads this
+   *  BEFORE `ok`, reporting the distinct status 'inapplicable' rather than 'failed' (FD-BP154-21:
+   *  INAPPLICABLE is a legitimate four-valued outcome, an honest statement about reach, never a
+   *  defect). Absent/false on every other outcome, including a genuine failure. */
+  inapplicable?: boolean;
   category: string | null;
   query: string | null;
   excluded: ExcludedOption[];
@@ -232,12 +240,13 @@ export async function runSoftballsStep(
     return { result, summary: summaryLine({}, result) };
   }
   const all = Object.keys(OPT);
-  const category = deriveSoftballsCategory(input.question);
+  const categoryParse = parseFollowingCategory(input.question);
+  const category = categoryParse.category;
   if (!category) {
     const result: SoftballsResult = {
-      ok: false, category: null, query: null, excluded: [], discarded: 0, notExcluded: all,
+      ok: false, inapplicable: true, category: null, query: null, excluded: [], discarded: 0, notExcluded: all,
       via: 'n/a',
-      error: 'could not determine the category this question names (no "following X is/are" phrase found) -- refusing rather than guessing a category',
+      error: categoryParse.reason ?? 'could not determine the category this question names -- refusing rather than guessing a category',
     };
     return { result, summary: summaryLine(OPT, result) };
   }
