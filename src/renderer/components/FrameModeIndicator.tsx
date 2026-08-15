@@ -35,6 +35,11 @@ interface FrameModeIndicatorProps {
   ollamaAvailable?: boolean;
   /** Whether an API key is configured (prerequisite for Fire mode) */
   apiKeyAvailable?: boolean;
+  /** D-BP154-074/BISHOP-SEG/S74/seg-ambient: bumped by App.tsx once per ambient browser capture
+   *  (window.amplify.onAmbientCapturePulse). A changing number (never the same twice in a row)
+   *  is used rather than a boolean so a rapid second capture re-triggers the pulse even if the
+   *  first animation hasn't finished -- the order's "per-capture confirmation" requirement. */
+  capturePulseSignal?: number;
 }
 
 // Member-facing mode labels: AI Burst / Normal / Fallback (SAGA 01 BP046B brand sweep)
@@ -73,8 +78,21 @@ export const FrameModeIndicator: React.FC<FrameModeIndicatorProps> = ({
   degraded = false,
   ollamaAvailable = false,
   apiKeyAvailable = false,
+  capturePulseSignal,
 }) => {
   const [popoverOpen, setPopoverOpen] = useState(false);
+  // D-BP154-074/BISHOP-SEG/S74/seg-ambient: brief per-capture border flash. A plain CSS class
+  // toggle, added on signal change and removed after the animation's own duration -- no new
+  // dependency, same idiom the rest of this component already uses for transient UI state.
+  const [pulsing, setPulsing] = useState(false);
+  const lastPulseSignal = React.useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (capturePulseSignal === undefined || capturePulseSignal === lastPulseSignal.current) return;
+    lastPulseSignal.current = capturePulseSignal;
+    setPulsing(true);
+    const t = setTimeout(() => setPulsing(false), 900);
+    return () => clearTimeout(t);
+  }, [capturePulseSignal]);
   // KniPr026: track chip hover state separately so the useEffect below can
   // re-enable click-through the moment the popover closes (even if the mouse
   // is no longer over the chip — the old handleChipMouseLeave guard was
@@ -125,9 +143,11 @@ export const FrameModeIndicator: React.FC<FrameModeIndicatorProps> = ({
 
   return (
     <>
-      {/* LB Frame border overlay — full-screen; grey when degraded */}
+      {/* LB Frame border overlay — full-screen; grey when degraded.
+          D-BP154-074/seg-ambient: lb-frame--pulse added briefly per ambient browser capture, the
+          "substrate on, and a per-capture confirmation" indicator the order asks for. */}
       <div
-        className={`lb-frame lb-frame--${degraded ? 'fallback' : state.mode}`}
+        className={`lb-frame lb-frame--${degraded ? 'fallback' : state.mode}${pulsing ? ' lb-frame--pulse' : ''}`}
         aria-hidden="true"
         style={degraded ? { filter: 'grayscale(0.7)', opacity: 0.5 } : undefined}
       />

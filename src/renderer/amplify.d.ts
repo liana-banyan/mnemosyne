@@ -558,6 +558,8 @@ declare global {
       openExternal?: (url: string) => void;
       hideOverlay?: () => void;
       showOverlay?: () => void;
+      // D-BP154-074/BISHOP-SEG/S74/seg-ambient — mirrors preload.ts's own declaration.
+      onAmbientCapturePulse?: (cb: (payload: { surface: string; url: string; query: string; ts: string }) => void) => () => void;
       getTelemetrySummary?: () => Promise<TelemetrySummary>;
       // BP067 Phase 1A — $5 Membership Checkout
       membership?: {
