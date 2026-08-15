@@ -848,7 +848,9 @@ describe('D-BP154-033: HumanNuance:1 is wired into deriveTerminatorEliminations(
     expect(result.insufficientEvidence?.preconditionId).toBe('negated-superlative-member-bound');
     expect(result.abstainReason).toMatch(/INSUFFICIENT EVIDENCE/);
     expect(result.incomplete).toBe(false);
-    expect(result.stepsConsulted['Purpose:1']).toBe('ok');
+    // D-BP154-046 FIX 1: Purpose:1 ran (ok:true) but stated zero survivors in this fixture --
+    // formally successful, substantively hollow -- the antonymic canon's third state.
+    expect(result.stepsConsulted['Purpose:1']).toBe('ok-but-unproductive');
     expect(result.eliminated).toEqual([]);
     expect(summary).toMatch(/INSUFFICIENT EVIDENCE/);
   });
@@ -942,10 +944,17 @@ describe('D-BP154-043: FD-BP154-14 AMENDMENT -- Magnitude permitted as a tie-bre
     expect(result.magnitudeBasis).toBeNull();
   });
 
-  test('with artifact class ESTABLISHED (HumanNuance:1 states corpusMetaTruth), Magnitude:1 is permitted as the tie-break and its verdict is published, labeled ANSWERED (no frozen source)', async () => {
+  test('with artifact class ESTABLISHED AND the category frame SUBSTANTIVELY established (D-BP154-046 FIX 2), Magnitude:1 is permitted as the tie-break and its verdict is published, labeled ANSWERED (no frozen source)', async () => {
+    const softballsOutcome = { id: 'Softballs:1', summary: 's', raw: softballs([['D', 'D) not a world region.'], ['G', 'G) not a world region.'], ['H', 'H) not a world region.'], ['I', 'I) not a world region.']]) };
     const namedSetOutcome = { id: 'NamedSet:1', summary: 's', raw: namedSet([['B', 'B) is densely populated.']]) };
-    const humanNuanceOutcome = { id: 'HumanNuance:1', summary: 's', raw: humanNuanceWithArtifactClassEstablished() };
-    const survivorFrame = Object.keys(OPT).filter((L) => L !== 'B');
+    // D-BP154-046 FIX 2: nonParticipants (the augmentation deltas) are EXACTLY the four letters
+    // Softballs:1 above eliminated -- every known addition is caught, so the category frame is
+    // SUBSTANTIVE, not merely formally partitioned.
+    const humanNuanceOutcome = {
+      id: 'HumanNuance:1', summary: 's',
+      raw: { ...humanNuanceWithArtifactClassEstablished(), nonParticipants: ['D', 'G', 'H', 'I'] },
+    };
+    const survivorFrame = Object.keys(OPT).filter((L) => L !== 'B' && !['D', 'G', 'H', 'I'].includes(L));
     const magOutcome = {
       id: 'Magnitude:1', summary: 's',
       raw: magnitude(
@@ -953,11 +962,42 @@ describe('D-BP154-043: FD-BP154-14 AMENDMENT -- Magnitude permitted as a tie-bre
         [...survivorFrame].reverse().map((L) => [L, `${L}) has a stated relative density position.`] as [string, string]),
       ),
     };
-    const { result } = await runTerminatorStep(input, ctx, [namedSetOutcome, humanNuanceOutcome, magOutcome]);
+    const { result } = await runTerminatorStep(input, ctx, [softballsOutcome, namedSetOutcome, humanNuanceOutcome, magOutcome]);
     expect(result.abstain).toBe(false);
     expect(result.verdict).not.toBeNull();
     expect(result.magnitudeBasis?.tieBreakKind).toBe('partitioned-membership-tiebreak');
     expect(result.magnitudeBasis?.sourceGrade).toBe('ANSWERED -- not proven by a unified frozen dataset');
+  });
+
+  test('D-BP154-046 FIX 2 REGRESSION PROOF: artifact class established but the category frame is NOT substantive (a live-measured shape: Softballs ok but only excludes ONE of several known augmentation additions) -- license WITHHELD, ABSTAIN, never a wrong verdict', async () => {
+    // LIVE-MEASURED shape (D-BP154-046 dispatch): Softballs:1 returns ok:true while excluding only
+    // D -- G/H/I (three more known augmentation additions) survive uncaught.
+    const softballsOutcome = { id: 'Softballs:1', summary: 's', raw: softballs([['D', 'D) not a world region.']]) };
+    const namedSetOutcome = { id: 'NamedSet:1', summary: 's', raw: namedSet([['B', 'B) is densely populated.']]) };
+    const humanNuanceOutcome = {
+      id: 'HumanNuance:1', summary: 's',
+      raw: { ...humanNuanceWithArtifactClassEstablished(), nonParticipants: ['D', 'G', 'H', 'I'] },
+    };
+    const survivorFrame = Object.keys(OPT).filter((L) => L !== 'B' && L !== 'D');
+    const magOutcome = {
+      id: 'Magnitude:1', summary: 's',
+      raw: magnitude(
+        survivorFrame, 'least', 'densely populated',
+        [...survivorFrame].reverse().map((L) => [L, `${L}) has a stated relative density position.`] as [string, string]),
+      ),
+    };
+    const { result } = await runTerminatorStep(input, ctx, [softballsOutcome, namedSetOutcome, humanNuanceOutcome, magOutcome]);
+    expect(result.abstain).toBe(true);
+    expect(result.verdict).toBeNull();
+    expect(result.magnitudeBasis).toBeNull();
+    expect(result.abstainReason).toMatch(/NOT substantive/);
+    expect(result.abstainReason).toMatch(/G\) Arctic Circle|H\) Amazon Rainforest|I\) Sahara Desert/);
+    // Softballs:1 is legitimately 'ok' in isolation (it DID exclude something, D-BP154-046 FIX 1's
+    // own per-step productivity check) -- proving FIX 1 and FIX 2 are complementary, not
+    // redundant: a step can be honestly productive on its OWN terms while the cross-step
+    // substantive-frame check (FIX 2, categoryFrameSubstantive) still correctly finds the overall
+    // category frame hollow, because known augmentation additions survived uncaught regardless.
+    expect(result.stepsConsulted['Softballs:1']).toBe('ok');
   });
 
   test('a GENUINE superlative ranking (no prior membership partition) is still labeled genuine-superlative, unchanged from before this amendment', async () => {
