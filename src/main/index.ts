@@ -408,6 +408,12 @@ import { ensureMnemosyneCFolders, generateMemoryMd, populateTestDataSeeds, regis
 
 // BP081 K-2 — MnemosyneC local MCP server
 import { startMcpServer, stopMcpServer, getMcpServerStatus } from './mcp_server';
+// D-BP154-074/BISHOP-SEG/S74/seg-ambient -- INDICATOR LEG. registerAmbientCaptureNotifier() is
+// called once below (near startMcpServer()) so mcp_server.ts's /capture route can tell this
+// process "show the dashed overlay, a capture just landed" without importing this file back
+// (see ambient_capture_bridge.ts's own header for why that would be circular).
+import { registerAmbientCaptureNotifier } from './ambient_capture_bridge';
+import { rotateCaptureKey, getOrCreateCaptureKey } from './ambient_capture_auth';
 
 // SAGA-? v0.1.10 ? SubstratedFolderWatcher?
 import { SubstratedFolderWatcher, registerWatcherIpc } from './services/SubstratedFolderWatcher';
@@ -1455,6 +1461,38 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
       click: () => {
         if (!overlayWindow) createOverlayWindow();
         overlayWindow?.showInactive();
+      },
+    },
+    { type: 'separator' },
+    {
+      // D-BP154-074/BISHOP-SEG/S74/seg-ambient -- lets the Founder retrieve (or rotate) the key
+      // the Chrome extension's options page needs, without opening a file browser. Shown in a
+      // native dialog (selectable text) rather than copied to the clipboard automatically, so a
+      // secret is never silently placed somewhere another app could read it unasked.
+      label: 'Ambient Browser Capture Key…',
+      click: () => {
+        const key = getOrCreateCaptureKey();
+        void dialog.showMessageBox({
+          type: 'info',
+          title: 'Ambient Browser Capture Key',
+          message: 'Paste this into the MnemosyneC Substrate Capture extension\'s options page:',
+          detail: `${key}\n\nPort: ${getMcpServerStatus().port ?? 11456}\n\nClick "Rotate Key" below to issue a new one (invalidates this one immediately).`,
+          buttons: ['Close', 'Rotate Key'],
+          defaultId: 0,
+          noLink: true,
+        }).then((result) => {
+          if (result.response === 1) {
+            const fresh = rotateCaptureKey();
+            void dialog.showMessageBox({
+              type: 'info',
+              title: 'Ambient Browser Capture Key — Rotated',
+              message: 'New key (paste into the extension\'s options page; the old key no longer works):',
+              detail: fresh,
+              buttons: ['Close'],
+              noLink: true,
+            });
+          }
+        });
       },
     },
     { type: 'separator' },
@@ -10282,6 +10320,23 @@ app.whenReady().then(async () => {
   } catch (e) {
     console.error('[Frame] MCP server failed to start (non-fatal):', e);
   }
+
+  // D-BP154-074/BISHOP-SEG/S74/seg-ambient -- INDICATOR LEG, restoring rather than reinventing
+  // Part 1's already-BUILT dashed overlay (createOverlayWindow()/FrameModeIndicator.tsx). The
+  // overlay stays opt-in by DEFAULT (this line does not flip App.tsx:113's localStorage default,
+  // per the "user-toggleable" hard rule -- an ambient background capture feature turning on a
+  // full-screen always-on-top window with no prior signal would be a surprise, not a confirmation)
+  // -- but the FIRST time a real capture lands, this makes the "substrate is on" promise true
+  // immediately rather than requiring a separate manual "Show Overlay" click after the fact.
+  // 'ambient-capture-pulse' additionally lets FrameModeIndicator.tsx (via App.tsx) flash the
+  // border once per capture -- see that component's own D-BP154-074 addition.
+  registerAmbientCaptureNotifier((event) => {
+    if (!overlayWindow) createOverlayWindow();
+    overlayWindow?.showInactive();
+    overlayWindow?.webContents.send('ambient-capture-pulse', event);
+    dashboardWindow?.webContents.send('ambient-capture-pulse', event);
+    console.log(`[AmbientCapture] indicator pulse (${event.surface}): "${event.query.slice(0, 60)}"`);
+  });
 
   // SEG-U-7 BP078: mesh-test-complete file watcher
   // Watches two locations for mesh results JSON; sends IPC to renderer on detection.
