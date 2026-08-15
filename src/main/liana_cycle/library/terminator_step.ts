@@ -442,9 +442,19 @@ export function deriveTerminatorEliminations(
   if (softballs?.ok) {
     for (const e of softballs.excluded) {
       excludedBySoftballs.set(e.letter, { name: e.name, span: e.span });
+      // D-BP154-050 FIX. Spec's own exclusion-reason taxonomy: "Never emit 'not a world region'
+      // where the actual conclusion is 'outside this run's target entity class.'" A source stating
+      // an option is "not a world region" is a statement about admissibility under THIS question's
+      // own target category, never a claim the option lacks population or does not exist as a
+      // place (both would be false as stated for a biome/desert/latitude line, which DO have
+      // populations and DO have definable boundaries) -- the verbatim span (the source's own
+      // words) is unchanged and still fully quoted; only this file's OWN reason text is narrowed.
       eliminated.push({
         letter: e.letter, name: e.name, sourceStep: 'Softballs:1',
-        reason: `source states this is not the category`, span: e.span,
+        reason: 'source states this option falls outside the category this question names -- an '
+          + 'admissibility finding under this run\'s own target category, not a claim the option '
+          + 'has no population or is not a real place',
+        span: e.span,
       });
     }
   }
@@ -475,22 +485,22 @@ export function deriveTerminatorEliminations(
       });
     }
   }
-  // D-BP154-043/BISHOP-SEG/S43/seg-unitary, ADDITIVE. Unitary:1's own `excluded` array
-  // (unitary_step.ts) is a FOURTH affirmative denial of the SAME shape -- FD-BP154-16's "unitary
-  // vs conglomerate" membership factor: a source explicitly stated an option IS a conglomerate/
-  // grouping of multiple regions, not a single unitary region. Symmetric across every option
-  // (FD-BP153-06); an UNSTATED option is never eliminated on this basis (absence is omission).
-  const excludedByUnitary = new Map<string, { name: string; span: string }>();
-  if (unitary?.ok) {
-    for (const e of unitary.excluded) {
-      excludedByUnitary.set(e.letter, { name: e.name, span: e.span });
-      eliminated.push({
-        letter: e.letter, name: e.name, sourceStep: 'Unitary:1',
-        reason: 'source states this is a conglomerate/grouping of multiple regions, not a single unitary region (FD-BP154-16 unitary-vs-conglomerate factor)',
-        span: e.span,
-      });
-    }
-  }
+  // D-BP154-050/BISHOP-SEG/S50/seg-comparability, WITHDRAWN AS AN ELIMINATOR. Founder's own spec
+  // (SPEC_COMPARABILITY_GATE_BP154.md/SPEC_CATEGORY_ERROR_TAXONOMY_BP154.md): "Central Asia is a
+  // group of countries" does NOT imply "Central Asia is not a world region" -- UN M49 assigns
+  // region codes to South America (005), Northern Africa (015), AND Central Asia (143) alike; all
+  // three are territorial aggregations. `composite(x) => not-T(x)` is unsound unless the target
+  // class explicitly requires atomic entities, and even then must apply uniformly to EVERY option
+  // -- comparability_gate.ts's own checkUniformPredicate() is the executable form of that check,
+  // and applying it here would reject "conglomerate" as a discriminator outright (it fires on
+  // South America and North Africa exactly as it fires on Central Asia under any M49-style frame).
+  // D-BP154-045's own "ask Unitary per-option to catch Central Asia specifically" was, in the
+  // Founder's own later words, "outcome engineering... the premise was selected because it
+  // produces the rankable pair {A, C} that yields A, not because a criterion independently
+  // distinguishes F." Unitary:1 STILL RUNS and STILL RECORDS what a source states
+  // (unitary.excluded/confirmedUnitary remain on the result, informational) -- it no longer
+  // contributes anything to `eliminated`. A compositeness finding alone never removes an option.
+  void unitary; // parameter kept (its OTHER fields -- confirmedUnitary -- may be read for reporting elsewhere); no longer folded into eliminated.
   // D-BP154-024/BISHOP-SEG/S24/seg-unstated FIX -- REMOVED, not weakened: kind-mismatch NO
   // LONGER eliminates anyone. See this file's own header for the full history (FOUR live
   // instances of the same class of defect: `ca92a439`, `d219bf2a`, `44499f3b`, and this one --
@@ -674,42 +684,11 @@ export function deriveTerminatorEliminations(
       break;
     }
   }
-  if (contradiction) return { eliminated, contradiction };
-  // D-BP154-043, ADDITIVE: the SAME three contradiction checks above, applied to Unitary:1's own
-  // affirmative denial -- a conglomerate-grouping fact cannot coexist with a stated superlative-
-  // property membership or a stated enumeration membership for the SAME option.
-  for (const [letter, unitaryFact] of excludedByUnitary) {
-    const namedSetFact = includedByNamedSet.get(letter);
-    if (namedSetFact) {
-      contradiction = {
-        letter,
-        reason: `UNITARY states "${OPT[letter] ?? letter}" is a conglomerate/grouping ("${unitaryFact.span}") `
-          + `while NAMED SET simultaneously states it IS the superlative property ("${namedSetFact.span}") -- `
-          + `self-contradictory, not published`,
-      };
-      break;
-    }
-    const discriminatorPropertyFact = propertyMembersByDiscriminator.get(letter);
-    if (discriminatorPropertyFact) {
-      contradiction = {
-        letter,
-        reason: `UNITARY states "${OPT[letter] ?? letter}" is a conglomerate/grouping ("${unitaryFact.span}") `
-          + `while DISCRIMINATOR simultaneously states it IS the superlative property `
-          + `("${discriminatorPropertyFact.span}") -- self-contradictory, not published`,
-      };
-      break;
-    }
-    const discriminatorEnumerationFact = enumeratedByDiscriminator.get(letter);
-    if (discriminatorEnumerationFact) {
-      contradiction = {
-        letter,
-        reason: `UNITARY states "${OPT[letter] ?? letter}" is a conglomerate/grouping ("${unitaryFact.span}") `
-          + `while DISCRIMINATOR's own enumeration simultaneously names it as a member `
-          + `("${discriminatorEnumerationFact.span}") -- self-contradictory, not published`,
-      };
-      break;
-    }
-  }
+  // D-BP154-050: Unitary:1's own contradiction checks REMOVED along with its elimination role --
+  // a compositeness finding no longer participates in `eliminated` at all (see this file's own
+  // header above), so it can no longer contradict anything either; keeping a dead contradiction
+  // check against a Map that is never populated would be exactly the "receipt reports a step
+  // green while it produced nothing" shape this ticket's own dispatch warned against.
   return { eliminated, contradiction };
 }
 
@@ -771,11 +750,10 @@ export function computeFrameMatchBuckets(
   if (humanNuance?.ok) {
     for (const e of humanNuance.excluded) affirmedNonMember.add(e.letter);
   }
-  // D-BP154-043, ADDITIVE: a FOURTH affirmative-denial source -- Unitary:1's own `excluded`, same
-  // bucket, same reasoning.
-  if (unitary?.ok) {
-    for (const e of unitary.excluded) affirmedNonMember.add(e.letter);
-  }
+  // D-BP154-050: Unitary:1's own `excluded` REMOVED from this bucket -- a compositeness finding is
+  // not an affirmed non-member of the CATEGORY (this file's own header above states the ruling in
+  // full); folding it in here would let it influence the frame-match report exactly the same way
+  // it used to influence elimination, through a side door.
   const affirmedMember = new Set<string>();
   if (discriminator?.ok && discriminator.categoryKind) {
     for (const k of discriminator.kinds) {
