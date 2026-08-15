@@ -56,6 +56,13 @@ import {
 } from '../evidence/cross_acquisition';
 import type { PriorAcquisitionMatch } from '../evidence/cross_acquisition';
 import { timeAtomicQuery } from './measurement_receipts';
+// D-BP155-010/BISHOP/seg-freetext-wire -- FD-BP155-01 OPTION B, WIRED. readFreeTextEvidence()/
+// toStepCandidates() (free_text_evidence.ts, D-BP155-007, built but never called until this
+// ticket) read an honestly-unlabeled (qid:null) ambient capture and select it by CONTENT overlap
+// with the live question, never by identity -- see that file's own header for the full ruling.
+// Value import only; free_text_evidence.ts's own import of StepPassageCandidate from THIS file is
+// type-only (erased at compile time), so this is not a runtime circular dependency.
+import { readFreeTextEvidence, toStepCandidates as toFreeTextStepCandidates } from '../evidence/free_text_evidence';
 
 // ───────────────────────────────── span verification (shared) ─────────────────────────────────
 
@@ -186,6 +193,37 @@ export function gatherThisRunCandidates(ctx: MethodRunContext): StepPassageCandi
         detail: `this run's own '${p.kind}' passage${p.acquisitionId ? ` (reused from acquisition ${p.acquisitionId})` : ''}`,
       },
     }));
+}
+
+// ─────────────────── stage 1(c): free-text evidence, FD-BP155-01 OPTION B (D-BP155-010) ───────────────────
+
+/** STAGE 1(c): FREE-TEXT EVIDENCE. An ADDITIVE owned-evidence source alongside THE MORTGAGE (1a,
+ *  immediately above -- its own `if (qid == null) return [];` gate stays byte-identical, NOT
+ *  touched by this function) and THIS RUN'S OWN passages (1b). This is the ruling the Founder gave
+ *  verbatim, BP155: "B, clearly" -- "build the free-text reader so the plow sorts
+ *  honestly-unlabeled material." An ambient capture keeps its honest `qid: null`
+ *  (ambient_capture.ts:167, unmodified) -- it is never assigned this run's qid, and this function
+ *  never asks whether a record OWNS this qid. It asks a different question, by CONTENT: does an
+ *  unowned passage's own text answer the SAME query text `gatherMortgageCandidates()` above and
+ *  `tryConversationalAuthority()` below are already trying to answer -- via
+ *  free_text_evidence.ts's own positive relevance test (judgeFreeTextRecord(), that file's own
+ *  header has the full non-negotiables this is bound by: never a rejection-absence pass, every
+ *  passage carries authority/surface/url/capturedAt/relevanceReason, every failure named).
+ *
+ *  `mechanism: 'OWNED_EVIDENCE'` (set by toStepCandidates() in free_text_evidence.ts) -- the SAME
+ *  honest classification a prior acquisition's reused record already gets: this is evidence
+ *  already on disk, zero new queries spent to produce it.
+ *
+ *  `opts.dir` passes straight through to readFreeTextEvidence() -- ADDITIVE/OPTIONAL, undefined at
+ *  every live call site (falls back to evidence_store.ts's own resolveEvidenceDir(), which itself
+ *  honors LB_EVIDENCE_DIR); a test supplies it (or sets LB_EVIDENCE_DIR) to point at a temp dir,
+ *  the same contamination discipline every other evidence-reading test in this tree holds to. */
+export function gatherFreeTextCandidates(
+  query: string,
+  opts?: { dir?: string },
+): StepPassageCandidate[] {
+  const { relevant } = readFreeTextEvidence(query, opts);
+  return toFreeTextStepCandidates(relevant);
 }
 
 // ───────────────────────────── stage 2: gemini answers ─────────────────────────────
