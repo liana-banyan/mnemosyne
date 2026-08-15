@@ -357,6 +357,25 @@ export function isMembershipPartitioned(
   );
 }
 
+// D-BP154-046 FIX 2, EXTRACTED (not duplicated) so script_bridge.ts's own upstream skip gate
+// (step_skip.ts) can apply the SAME substantive-frame requirement BEFORE Magnitude:1 runs, not
+// only after it already spent a live query -- see this function's own original inline comment
+// (now here) for the full qualifier-2 reasoning. `null` (never a guess) when HumanNuance:1 did
+// not run/failed, or found no augmentation deltas to check against.
+export function isCategoryFrameSubstantive(
+  // Structurally typed to `{ letter: string }` (not the full TerminatorEliminationEntry) so
+  // step_skip.ts's own upstream call (which has no `name`/`sourceStep`/`reason`/`span` to hand in
+  // before Magnitude:1 has even run) can build a minimal letter-only array and still call this
+  // SAME function -- one definition, reused, never a second one that could drift.
+  eliminated: Array<{ letter: string }>,
+  humanNuance: HumanNuanceResult | null,
+): { substantive: boolean; uncaught: string[] } | null {
+  if (!humanNuance?.ok || humanNuance.nonParticipants.length === 0) return null;
+  const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
+  const uncaught = humanNuance.nonParticipants.filter((L) => !eliminatedLetters.has(L));
+  return { substantive: uncaught.length === 0, uncaught };
+}
+
 function summaryLine(OPT: Record<string, string>, r: TerminatorResult): string {
   if (!r.ok) return `TERMINATOR: FAILED -- ${r.error}`;
   const elimText = r.eliminated.length
@@ -986,12 +1005,7 @@ export async function runTerminatorStep(
     // `null` (never a guess) when HumanNuance:1 did not run or found no augmentation deltas to
     // check against -- absence of this specific evidence is NOT treated as "substantive" by
     // default (qualifier 2 again: no evidence for substantiveness means it is not licensed).
-    const categoryFrameSubstantive: { substantive: boolean; uncaught: string[] } | null = (() => {
-      if (!humanNuanceRaw?.ok || humanNuanceRaw.nonParticipants.length === 0) return null;
-      const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
-      const uncaught = humanNuanceRaw.nonParticipants.filter((L) => !eliminatedLetters.has(L));
-      return { substantive: uncaught.length === 0, uncaught };
-    })();
+    const categoryFrameSubstantive = isCategoryFrameSubstantive(eliminated, humanNuanceRaw);
     // Qualifier 3: no gate may be licensed on the basis of a step that FAILED or was UNPRODUCTIVE.
     // Softballs:1/Discriminator:1 are the category-elimination steps this license depends on;
     // 'ok-but-unproductive' (D-BP154-046 FIX 1) on EITHER, with nothing else in `eliminated`
