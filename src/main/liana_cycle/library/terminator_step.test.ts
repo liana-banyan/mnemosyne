@@ -13,7 +13,8 @@
 import { describe, test, expect } from 'vitest';
 import {
   checkBoundaryStabilityUniformity, checkCompositenessUniformity, checkSubregionUniformity,
-  computeFrameMatchBuckets, deriveTerminatorEliminations, registerTerminatorStep, runTerminatorStep,
+  computeFrameMatchBuckets, deriveTerminatorEliminations, isCategoryFrameSubstantive,
+  registerTerminatorStep, runTerminatorStep,
 } from './terminator_step';
 import { listComposerRegistry } from './script_bridge';
 import type { SoftballsResult } from './softballs_step';
@@ -1283,6 +1284,62 @@ describe('D-BP154-043: FD-BP154-14 AMENDMENT -- Magnitude permitted as a tie-bre
     // substantive-frame check (FIX 2, categoryFrameSubstantive) still correctly finds the overall
     // category frame hollow, because known augmentation additions survived uncaught regardless.
     expect(result.stepsConsulted['Softballs:1']).toBe('ok');
+  });
+
+  // D-BP154-057 BLOCKER 2 -- THE COORDINATOR'S OWN RULING: "the substantive-frame check requires
+  // every option to be ACCOUNTED FOR, not ELIMINATED... RETAINED-as-comparable-candidate" now
+  // counts. LIVE-DIAGNOSED shape (qid 98, run 2026-08-15T03-45-38-083Z_23592): North Africa (C)
+  // was never eliminated by any step -- it is legitimately RETAINED as a comparable candidate
+  // (BoundaryStability:1's own confirmedStable) -- and the old ELIMINATED-only check wrongly
+  // treated that as "uncaught", forcing an ABSTAIN the evidence did not actually require.
+  test('D-BP154-057 BLOCKER 2: a RETAINED (confirmedStable) augmentation addition now counts as accounted-for -- the frame is SUBSTANTIVE, not hollow', () => {
+    const humanNuance = { ...humanNuanceWithArtifactClassEstablished(), nonParticipants: ['C', 'F'] };
+    // C) North Africa is eliminated by NOTHING -- it is explicitly RETAINED (confirmedStable).
+    // F) Central Asia IS eliminated (stands in for a NOT_COMPARABLE finding elsewhere in the run).
+    const eliminated = [{ letter: 'F' }];
+    const confirmedRetained = new Set(['C']);
+    const before = isCategoryFrameSubstantive(eliminated, humanNuance); // no confirmedRetained arg
+    expect(before?.substantive).toBe(false);
+    expect(before?.uncaught).toEqual(['C']);
+    const after = isCategoryFrameSubstantive(eliminated, humanNuance, confirmedRetained);
+    expect(after?.substantive).toBe(true);
+    expect(after?.uncaught).toEqual([]);
+  });
+
+  test('D-BP154-057 BLOCKER 2: an option with NO disposition at all (neither eliminated nor confirmed-retained) still makes the frame non-substantive -- the Arctic-Circle-on-a-hollow-frame defect this check exists to catch is UNCHANGED', () => {
+    const humanNuance = { ...humanNuanceWithArtifactClassEstablished(), nonParticipants: ['G'] };
+    const result = isCategoryFrameSubstantive([], humanNuance, new Set(['A'])); // G carries neither disposition
+    expect(result?.substantive).toBe(false);
+    expect(result?.uncaught).toEqual(['G']);
+  });
+
+  test('D-BP154-057 BLOCKER 2 WIRING PROOF: a real runTerminatorStep() call licenses the tie-break once BoundaryStability:1\'s own confirmedStable accounts for the previously-uncaught option', async () => {
+    const softballsOutcome = { id: 'Softballs:1', summary: 's', raw: softballs([['D', 'D) not a world region.'], ['G', 'G) not a world region.'], ['H', 'H) not a world region.'], ['I', 'I) not a world region.']]) };
+    const namedSetOutcome = { id: 'NamedSet:1', summary: 's', raw: namedSet([['B', 'B) is densely populated.']]) };
+    const humanNuanceOutcome = {
+      id: 'HumanNuance:1', summary: 's',
+      // The augmentation additions are EXACTLY what Softballs eliminated, plus C -- which nothing
+      // eliminates but BoundaryStability:1 (below) explicitly confirms stable/retained.
+      raw: { ...humanNuanceWithArtifactClassEstablished(), nonParticipants: ['C', 'D', 'G', 'H', 'I'] },
+    };
+    const boundaryOutcome = {
+      id: 'BoundaryStability:1', summary: 's',
+      raw: boundary([], [['C', 'C) North Africa has a stable, consistently-used boundary.']]),
+    };
+    const survivorFrame = Object.keys(OPT).filter((L) => L !== 'B' && !['D', 'G', 'H', 'I'].includes(L));
+    const magOutcome = {
+      id: 'Magnitude:1', summary: 's',
+      raw: magnitude(
+        survivorFrame, 'least', 'densely populated',
+        [...survivorFrame].reverse().map((L) => [L, `${L}) has a stated relative density position.`] as [string, string]),
+      ),
+    };
+    const { result } = await runTerminatorStep(
+      input, ctx, [softballsOutcome, namedSetOutcome, humanNuanceOutcome, boundaryOutcome, magOutcome],
+    );
+    expect(result.abstain).toBe(false);
+    expect(result.verdict).not.toBeNull();
+    expect(result.magnitudeBasis?.tieBreakKind).toBe('partitioned-membership-tiebreak');
   });
 
   test('a GENUINE superlative ranking (no prior membership partition) is still labeled genuine-superlative, unchanged from before this amendment', async () => {

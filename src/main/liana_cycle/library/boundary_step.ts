@@ -230,12 +230,29 @@ export async function runBoundaryStep(
   const rawOut: {
     text?: string; truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string;
   } = {};
+  // D-BP154-057, BLOCKER 1 FIX. CHECK THE PARSER BEFORE THE SOLVER (BP141 law) -- diagnosed
+  // OUTSIDE the app, against the real compliant live passage (qid 98, evidence address
+  // 47d3a73278a2df60bc407ab026ebd536): gemma4:12b's extraction was CORRECT (verbatim, not
+  // truncated -- done_reason:'stop', eval_count 550 of 2048) and 9/9 candidates were still
+  // discarded, ALL for the identical reason -- "span verbatim but does not contain option L's own
+  // text". The passage's own structure is "A) South America: STABLE because...", and the ORIGINAL
+  // instruction below ("copy the exact verbatim sentence or clause that states its classification")
+  // was read, faithfully and correctly, as "copy the clause AFTER the label" -- so the extracted
+  // span never repeated the option's own name, and appearsIn(span, OPT[L]) (composer_step_evidence.ts's
+  // shared choke point, UNCHANGED, never relaxed) correctly rejected it: the span, taken alone, is
+  // not verifiably about that option. That is a genuine bug in THIS instruction, not in the check --
+  // reproduced with a candidate fix outside the app (same model, same passage): explicitly requiring
+  // the copied span to carry the option's own label closed the gap, 9/9 kept, with the shared
+  // verification primitives never touched.
   const instruction = 'From the passage, for EACH option below that the passage classifies, state '
     + 'whether the passage says it has a STABLE, consistently-used boundary/definition, or a '
     + 'MATERIALLY VARIABLE one (different sources or conventions define its extent differently). '
     + 'For each one, copy the exact verbatim sentence or clause from the passage that states its '
-    + 'classification. Do not include an option the passage merely does not mention -- an omission '
-    + 'is not a statement. Classify every option the passage DOES address, not only the first one. '
+    + 'classification, AND make sure the copied span itself includes the option\'s own name or '
+    + 'letter label exactly as the passage states it (e.g. copy "A) South America: STABLE '
+    + 'because..." in full, not just "STABLE because..." with the label cut off). Do not include '
+    + 'an option the passage merely does not mention -- an omission is not a statement. Classify '
+    + 'every option the passage DOES address, not only the first one. '
     + `Options: ${all.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
   const shape = '{"classifications":[{"name":"exact option name from the list","classification":"stable or variable","span":"verbatim sentence or clause from the passage stating this classification"}]}';
   const ex = await gemmaExtract(instruction, text, shape, rawOut);
