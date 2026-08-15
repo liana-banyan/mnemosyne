@@ -8,7 +8,7 @@
 import { describe, test, expect } from 'vitest';
 import {
   buildUnitaryCorroborationQuery, buildUnitaryQuery, registerUnitaryStep, runUnitaryStep,
-  verifyUnitaryExcludedEntries,
+  verifyUnitaryClassifications,
 } from './unitary_step';
 import { listComposerRegistry } from './script_bridge';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
@@ -19,12 +19,15 @@ const OPT: Record<string, string> = {
 };
 const ALL = Object.keys(OPT);
 
-describe('buildUnitaryQuery -- ONE query, never one per option', () => {
-  test('names every option once and asks about conglomerate/grouping', () => {
+describe('buildUnitaryQuery -- ONE query, per-option adjudication (D-BP154-045 FIX 1)', () => {
+  test('names every option once and asks for a classification of EVERY one, in order, none skipped', () => {
     const q = buildUnitaryQuery(ALL, OPT);
-    expect(q).toContain('CONGLOMERATE or GROUPING');
+    expect(q).toContain('For EACH of the following');
+    expect(q).toContain('every one, in order');
+    expect(q).toContain('do not skip any');
     for (const L of ALL) expect(q).toContain(OPT[L]);
-    expect(q.match(/CONGLOMERATE or GROUPING/g)?.length).toBe(1);
+    // Never invites naming just ONE conglomerate -- the live defect this fix closes.
+    expect(q).not.toMatch(/^Which of the following/);
   });
 });
 
@@ -35,33 +38,61 @@ describe('buildUnitaryCorroborationQuery', () => {
   });
 });
 
-describe('verifyUnitaryExcludedEntries -- extraction only, verified span or discarded (HARDWIRE-22)', () => {
-  const passage = 'Central Asia is not considered a single world region, but a conglomerate of '
-    + 'multiple countries. South America is a single unitary continent.';
+describe('verifyUnitaryClassifications -- D-BP154-045 FIX 1: per-option, extraction only, verified span or discarded (HARDWIRE-22)', () => {
+  const passage = 'Central Asia is a conglomerate of multiple separate countries, not a single '
+    + 'world region. South America is a single unitary continent, not a conglomerate.';
 
-  test('keeps an entry with a verbatim, on-topic span', () => {
-    const raw = [{ name: 'Central Asia', span: 'Central Asia is not considered a single world region, but a conglomerate of multiple countries.' }];
-    const { excluded, discarded } = verifyUnitaryExcludedEntries(raw, passage, OPT);
+  test('an entry classified "conglomerate" with a verbatim span is excluded', () => {
+    const raw = [{ name: 'Central Asia', classification: 'conglomerate', span: 'Central Asia is a conglomerate of multiple separate countries, not a single world region.' }];
+    const { excluded, confirmedUnitary, discarded } = verifyUnitaryClassifications(raw, passage, OPT);
     expect(excluded).toEqual([{ letter: 'F', name: 'Central Asia', span: raw[0].span }]);
+    expect(confirmedUnitary).toEqual([]);
     expect(discarded).toBe(0);
   });
 
+  test('an entry classified "unitary" with a verbatim span is CONFIRMED, never eliminated', () => {
+    const raw = [{ name: 'South America', classification: 'unitary', span: 'South America is a single unitary continent, not a conglomerate.' }];
+    const { excluded, confirmedUnitary, discarded } = verifyUnitaryClassifications(raw, passage, OPT);
+    expect(excluded).toEqual([]);
+    expect(confirmedUnitary).toEqual([{ letter: 'A', name: 'South America', span: raw[0].span }]);
+    expect(discarded).toBe(0);
+  });
+
+  test('EVERY option the passage addresses is classified in one pass -- both Central Asia (conglomerate) and South America (unitary) together', () => {
+    const raw = [
+      { name: 'Central Asia', classification: 'conglomerate', span: 'Central Asia is a conglomerate of multiple separate countries, not a single world region.' },
+      { name: 'South America', classification: 'unitary', span: 'South America is a single unitary continent, not a conglomerate.' },
+    ];
+    const { excluded, confirmedUnitary } = verifyUnitaryClassifications(raw, passage, OPT);
+    expect(excluded.map((e) => e.letter)).toEqual(['F']);
+    expect(confirmedUnitary.map((e) => e.letter)).toEqual(['A']);
+  });
+
   test('discards an entry whose span is not verbatim in the passage', () => {
-    const raw = [{ name: 'Central Asia', span: 'this sentence does not appear anywhere in the passage' }];
-    const { excluded, discarded } = verifyUnitaryExcludedEntries(raw, passage, OPT);
+    const raw = [{ name: 'Central Asia', classification: 'conglomerate', span: 'this sentence does not appear anywhere in the passage' }];
+    const { excluded, discarded } = verifyUnitaryClassifications(raw, passage, OPT);
     expect(excluded).toEqual([]);
     expect(discarded).toBe(1);
   });
 
-  test('never treats an unmentioned option as excluded -- absence is omission, not a candidate at all', () => {
-    const { excluded, discarded } = verifyUnitaryExcludedEntries([], passage, OPT);
+  test('an entry with no recognized classification value is neither excluded nor confirmed -- UNSTATED, not a discard', () => {
+    const raw = [{ name: 'Central Asia', classification: 'maybe', span: 'irrelevant' }];
+    const { excluded, confirmedUnitary, discarded } = verifyUnitaryClassifications(raw, passage, OPT);
     expect(excluded).toEqual([]);
+    expect(confirmedUnitary).toEqual([]);
+    expect(discarded).toBe(0);
+  });
+
+  test('never treats an unmentioned option as excluded -- absence is omission, not a candidate at all', () => {
+    const { excluded, confirmedUnitary, discarded } = verifyUnitaryClassifications([], passage, OPT);
+    expect(excluded).toEqual([]);
+    expect(confirmedUnitary).toEqual([]);
     expect(discarded).toBe(0);
   });
 
   test('a name matching no known option is not a candidate, not a discard', () => {
-    const raw = [{ name: 'Atlantis', span: 'irrelevant' }];
-    const { excluded, discarded } = verifyUnitaryExcludedEntries(raw, passage, OPT);
+    const raw = [{ name: 'Atlantis', classification: 'conglomerate', span: 'irrelevant' }];
+    const { excluded, discarded } = verifyUnitaryClassifications(raw, passage, OPT);
     expect(excluded).toEqual([]);
     expect(discarded).toBe(0);
   });

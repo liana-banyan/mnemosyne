@@ -93,6 +93,7 @@ function unitary(excluded: Array<[string, string]>): UnitaryResult {
   return {
     ok: true, query: 'q',
     excluded: excluded.map(([letter, span]) => ({ letter, name: OPT[letter], span })),
+    confirmedUnitary: [],
     discarded: 0,
     notExcluded: Object.keys(OPT).filter((L) => !excluded.some(([l]) => l === L)),
     via: 'test',
