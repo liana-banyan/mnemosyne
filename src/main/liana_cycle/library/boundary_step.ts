@@ -48,6 +48,18 @@
 // buildBoundaryCandidates()/checkBoundaryStabilityUniformity() read only those three fields and
 // need no changes for this rewrite; only the EVIDENCE REQUIRED to populate `unstable` changed (an
 // enumerated rival-definitions list, not a bare adjective).
+//
+// D-BP155-010/BISHOP/seg-freetext-wire -- FD-BP155-01 OPTION B, WIRED HERE FIRST. This is the ONE
+// step this dispatch wires gatherFreeTextCandidates() (composer_step_evidence.ts) into, before any
+// other sibling step. Chosen because runBoundaryStep() has the SINGLE most linear owned-evidence
+// shape in this file's own sibling set: one fetch, one `for` loop crediting the first
+// option-naming candidate, one extraction call -- unlike named_set_step.ts/discriminator_step.ts's
+// own multi-stage STAGE-1-vs-STAGE-2 "mortgage trap" retry logic (each with its own history of
+// live-measured defects, D-BP154-018/021/029), which is exactly the kind of interaction a NEW,
+// unproven evidence source should not be dropped into first. Proven here (this file's own test
+// file, boundary_step_freetext_wiring.test.ts); extension to the other steps is NOT authorized by
+// this ticket and was not done -- see this dispatch's own return for the honest statement of what
+// remains.
 
 import {
   appearsIn, gemmaExtract, list, toLetters,
@@ -57,7 +69,7 @@ import { registerNameNumbered } from './method_registry';
 import type { MethodIdentity } from './method_identity';
 import type { StepDeclaration } from './step_declaration';
 import {
-  corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates,
+  corroborateClaim, gatherFreeTextCandidates, gatherMortgageCandidates, gatherThisRunCandidates,
   spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
 } from './composer_step_evidence';
 import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
@@ -270,9 +282,18 @@ export async function runBoundaryStep(
   const namesAnyOption = (t: string) => all.some((L) => appearsIn(t, OPT[L]));
   const mcOptions = all.map((L) => `${L}) ${OPT[L]}`);
 
+  // D-BP155-010/BISHOP/seg-freetext-wire, ADDITIVE. THIS IS THE FIRST STEP FD-BP155-01 OPTION B is
+  // wired into (see this file's own D-BP155-010 header note below the module header for why
+  // BoundaryStability:1 was chosen). gatherFreeTextCandidates() is appended LAST in owned-evidence
+  // priority -- after THE MORTGAGE (exact prior-query match) and THIS RUN'S OWN passages (already
+  // acquired live) -- because it is the weakest-specificity owned source (selected by content
+  // overlap, not identity or exact match); the `for` loop immediately below still credits whichever
+  // candidate is FIRST in this array that names an option, so free-text evidence is only ever
+  // credited when nothing more specific already answered.
   const ownedCandidates = [
     ...(await gatherMortgageCandidates(input.qid, query)),
     ...gatherThisRunCandidates(ctx),
+    ...gatherFreeTextCandidates(query),
   ];
   let text = '';
   let via = '';
