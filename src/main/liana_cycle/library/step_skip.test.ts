@@ -6,6 +6,7 @@ import type { ComposerStepOutcome } from './script_bridge';
 import type { PurposeResult } from './purpose_step';
 import type { NamedSetResult } from './named_set_step';
 import type { DiscriminatorResult } from './discriminator_step';
+import type { SoftballsResult } from './softballs_step';
 import { CORPUS_META_TRUTH } from './human_nuance_step';
 import type { HumanNuanceResult } from './human_nuance_step';
 
@@ -33,6 +34,14 @@ function sufficientPurpose(): PurposeResult {
       preconditionDescription: 'test', sufficient: true, reason: 'sufficient', policyVersion: '1',
     },
     via: 'test',
+  };
+}
+
+function softballsExcluding(excluded: string[], ok = true): SoftballsResult {
+  return {
+    ok, category: 'c', query: 'q',
+    excluded: excluded.map((letter) => ({ letter, name: OPT[letter], span: `${letter}) span` })),
+    discarded: 0, notExcluded: Object.keys(OPT).filter((L) => !excluded.includes(L)), via: 'test',
   };
 }
 
@@ -125,12 +134,26 @@ describe('computeStepSkip -- the sufficiency-driven skip (all five query-issuing
 });
 
 describe('computeStepSkip -- D-BP154-043 AMENDMENT: Magnitude:1 is NOT skipped when the artifact class is established', () => {
-  it('does NOT skip Magnitude:1 when membership is partitioned AND HumanNuance:1 confirms the artifact class', () => {
+  it('does NOT skip Magnitude:1 when membership is partitioned AND HumanNuance:1 confirms the artifact class AND the category frame is SUBSTANTIVE (D-BP154-046 FIX 2)', () => {
     const pr: ComposerStepOutcome[] = [
+      { id: 'Softballs:1', summary: 's', raw: softballsExcluding(['D']) },
       { id: 'NamedSet:1', summary: 's', raw: namedSet(['B']) },
-      { id: 'HumanNuance:1', summary: 's', raw: humanNuanceArtifactEstablished() },
+      // nonParticipants EXACTLY matches what Softballs:1 above eliminated -- the frame is
+      // substantively, not just formally, established.
+      { id: 'HumanNuance:1', summary: 's', raw: { ...humanNuanceArtifactEstablished(), nonParticipants: ['D'] } },
     ];
     expect(computeStepSkip('Magnitude:1', pr)).toBeNull();
+  });
+
+  it('D-BP154-046 FIX 2 REGRESSION PROOF: still skips Magnitude:1 when membership is partitioned, artifact class established, but the category frame is NOT substantive -- a known augmentation addition survived uncaught', () => {
+    const pr: ComposerStepOutcome[] = [
+      { id: 'Softballs:1', summary: 's', raw: softballsExcluding(['D']) }, // only D -- G/H/I never caught
+      { id: 'NamedSet:1', summary: 's', raw: namedSet(['B']) },
+      { id: 'HumanNuance:1', summary: 's', raw: { ...humanNuanceArtifactEstablished(), nonParticipants: ['D', 'G', 'H', 'I'] } },
+    ];
+    const skip = computeStepSkip('Magnitude:1', pr);
+    expect(skip).not.toBeNull();
+    expect(skip?.skipReason).toMatch(/NOT substantive/);
   });
 
   it('still skips Magnitude:1 when membership is partitioned but HumanNuance:1 did NOT establish the artifact class', () => {

@@ -76,9 +76,11 @@
 // FD-BP153-06) -- every check reads only counts/booleans already computed by the feeder steps
 // themselves, never which option is which.
 
-import { isMembershipPartitioned } from './terminator_step';
+import { deriveTerminatorEliminations, isCategoryFrameSubstantive, isMembershipPartitioned } from './terminator_step';
 import type { NamedSetResult } from './named_set_step';
 import type { DiscriminatorResult } from './discriminator_step';
+import type { SoftballsResult } from './softballs_step';
+import type { UnitaryResult } from './unitary_step';
 import type { HumanNuanceResult } from './human_nuance_step';
 import type { PurposeResult } from './purpose_step';
 import type { ComposerStepOutcome } from './script_bridge';
@@ -133,39 +135,61 @@ export function computeStepSkip(id: string, priorResults: ComposerStepOutcome[])
   }
 
   if (id === 'Magnitude:1') {
+    const softballsRaw = findRaw('Softballs:1') as SoftballsResult | null;
     const namedSetRaw = findRaw('NamedSet:1') as NamedSetResult | null;
     const discriminatorRaw = findRaw('Discriminator:1') as DiscriminatorResult | null;
-    // D-BP154-043, AMENDED. Founder's own correction to FD-BP154-14 (terminator_step.ts's own
-    // header carries the full ruling text): "Magnitude does NOT run when membership RESOLVES to a
-    // unique survivor. Magnitude IS the final permissible tie-break when membership PARTITIONS but
-    // leaves several survivors AND the artifact class is a single-answer item." This upstream gate
-    // must apply the SAME amendment the downstream terminator_step.ts reducer now applies, or the
-    // two disagree -- exactly the live-measured defect this ticket found (Magnitude:1 skipped here
-    // even when the amendment would have permitted it as a tie-break, because this file still
-    // encoded the PRE-amendment rule). Reads HumanNuance:1's own already-built
-    // `artifactClassEstablished` + `corpusMetaTruth` fields, the SAME two fields terminator_step.ts
-    // reads for the identical question -- one definition of "artifact class established", never a
-    // second, independently-computed one that could drift from the first.
+    const unitaryRaw = findRaw('Unitary:1') as UnitaryResult | null;
+    // D-BP154-043, AMENDED; D-BP154-046 FIX 2, AMENDED AGAIN. Founder's own correction to
+    // FD-BP154-14 (terminator_step.ts's own header carries the full ruling text): "Magnitude does
+    // NOT run when membership RESOLVES to a unique survivor. Magnitude IS the final permissible
+    // tie-break when membership PARTITIONS but leaves several survivors AND the artifact class is
+    // a single-answer item AND the category frame is SUBSTANTIVELY established." This upstream
+    // gate must apply the SAME amendment the downstream terminator_step.ts reducer applies, or the
+    // two disagree -- LIVE-MEASURED TWICE now (D-BP154-043's own original mismatch, and again this
+    // ticket: Magnitude:1 ran a real, wasted live query here even though terminator_step.ts's own
+    // Fix 2 correctly withheld the license afterward, because this file still only checked the
+    // pre-Fix-2 condition). isCategoryFrameSubstantive() is imported, not duplicated -- ONE
+    // definition, reused by both this upstream gate and the downstream reducer.
     const humanNuanceRaw = findRaw('HumanNuance:1') as HumanNuanceResult | null;
     const artifactClassEstablished = Boolean(
       humanNuanceRaw?.ok && humanNuanceRaw.artifactClassEstablished && humanNuanceRaw.corpusMetaTruth,
     );
+    // Qualifiers 2/3: a minimal, letter-only "what has been eliminated so far" array, built ONLY
+    // from letters each feeder step's own `ok === true` result actually states -- a failed or
+    // unproductive step contributes nothing, same discipline deriveTerminatorEliminations() itself
+    // already applies (never duplicated here; this is deliberately narrower, letter-only, since
+    // this upstream gate has no `OPT` to build full elimination entries with).
+    const eliminatedLetters: Array<{ letter: string }> = [
+      ...(softballsRaw?.ok ? softballsRaw.excluded.map((e) => ({ letter: e.letter })) : []),
+      ...(namedSetRaw?.ok ? namedSetRaw.included.map((e) => ({ letter: e.letter })) : []),
+      ...(discriminatorRaw?.ok ? [...discriminatorRaw.propertyMembers, ...discriminatorRaw.subregionNonMembers].map((e) => ({ letter: e.letter })) : []),
+      ...(humanNuanceRaw?.ok ? humanNuanceRaw.excluded.map((e) => ({ letter: e.letter })) : []),
+      ...(unitaryRaw?.ok ? unitaryRaw.excluded.map((e) => ({ letter: e.letter })) : []),
+    ];
+    const categoryFrameSubstantive = isCategoryFrameSubstantive(eliminatedLetters, humanNuanceRaw);
     // Qualifiers 2/3: isMembershipPartitioned() (terminator_step.ts) itself reads `included`/
     // `propertyMembers` ONLY when the owning step's own `ok === true`.
-    if (isMembershipPartitioned(namedSetRaw, discriminatorRaw) && !artifactClassEstablished) {
+    if (isMembershipPartitioned(namedSetRaw, discriminatorRaw)
+      && (!artifactClassEstablished || categoryFrameSubstantive === null || !categoryFrameSubstantive.substantive)) {
+      const substantiveNote = categoryFrameSubstantive === null
+        ? 'no evidence either way'
+        : categoryFrameSubstantive.substantive
+          ? 'substantive'
+          : `NOT substantive -- ${categoryFrameSubstantive.uncaught.join(', ')} uncaught`;
       return {
         ok: false,
         skipped: true,
         skipReason: `SKIPPED-AS-MOOT (skip policy v${SKIP_POLICY_VERSION}): FD-BP154-14 -- membership `
-          + 'already partitioned by NamedSet:1/Discriminator:1 (both SUCCESSFUL) and the artifact class '
-          + `is not confirmed a single-answer item (HumanNuance:1: ${humanNuanceRaw?.ok ? (humanNuanceRaw.artifactClassEstablished ? 'artifact class established but no corpus meta-truth' : 'artifact class not established') : 'not run/failed'}) -- `
+          + 'already partitioned by NamedSet:1/Discriminator:1 (both SUCCESSFUL). Artifact class: '
+          + `${humanNuanceRaw?.ok ? (humanNuanceRaw.artifactClassEstablished ? 'established' : 'not established') : 'not run/failed'}. `
+          + `Category frame (D-BP154-046 FIX 2): ${substantiveNote}. `
           + 'Magnitude:1 is DECIDING-only (it ranks; it cannot refute a stated membership fact) and has '
-          + 'nothing legitimate left to decide once membership is settled without the D-BP154-043 '
-          + 'amendment\'s own precondition',
+          + 'nothing legitimate left to decide once membership is settled without BOTH of the tie-break '
+          + 'licence\'s own preconditions (D-BP154-043/046)',
       };
     }
-    // membershipPartitioned && artifactClassEstablished: NOT skipped -- D-BP154-043's own amendment
-    // permits Magnitude:1 to run as the final tie-break here; falls through to the live run.
+    // Both preconditions hold: NOT skipped -- the amendment permits Magnitude:1 to run as the
+    // final tie-break here; falls through to the live run.
   }
 
   return null;
