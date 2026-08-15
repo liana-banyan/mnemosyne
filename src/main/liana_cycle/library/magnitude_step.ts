@@ -73,7 +73,7 @@ import {
   corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates,
   spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
 } from './composer_step_evidence';
-import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
+import type { ClaimMechanism, ClaimProvenance, CorroborationResult } from './composer_step_evidence';
 import { deriveTerminatorEliminations } from './terminator_step';
 import type { SoftballsResult } from './softballs_step';
 import type { NamedSetResult } from './named_set_step';
@@ -83,6 +83,7 @@ import type { DiscriminatorResult } from './discriminator_step';
 import type { HumanNuanceResult } from './human_nuance_step';
 import type { UnitaryResult } from './unitary_step';
 import type { ComposerStepOutcome } from './script_bridge';
+import { existsSync, readFileSync } from 'node:fs';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
@@ -293,6 +294,9 @@ export interface FrozenDensitySourceResult {
    *  non-numeric reading (e.g. only qualitative density language) is reported honestly and never
    *  used to rank. */
   numericallyRankable: boolean;
+  /** D-BP154-044, ADDITIVE. Which mechanism the winning passage came through -- the SAME four
+   *  classes FD-BP154-03 names throughout this estate. Null when not obtained. */
+  mechanism?: ClaimMechanism;
   error?: string;
 }
 
@@ -306,13 +310,55 @@ export function parseDensityFigure(figureText: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** THE ONE ATTEMPT at a single, frozen, apples-to-apples source. Issues ONE Google query, then
- *  requires ONE organic result block's OWN body text to state a verifiable figure for EVERY
- *  option in `frame` before it is accepted -- a document naming only some survivors is skipped in
- *  favor of the next candidate, never patched together with a second document (that would be
- *  exactly the "mismatched-source ranking" the Founder's own dispatch forbids using quietly).
- *  Returns `obtained: false` (never a guess) when no single candidate document covers every
- *  survivor. */
+/** One passage this run had a chance to be the frozen source -- owned evidence, the conversational
+ *  authority's own answer, or one Google organic result block. Unified so every candidate goes
+ *  through the IDENTICAL per-entry extraction+verification discipline below, regardless of which
+ *  mechanism produced it (D-BP154-044: "acquire it through the machine, not around it" -- every
+ *  candidate here comes through ctx.askGoogle/ctx.askConversationalAuthority, THE PAIL's own
+ *  recording wrapper, exactly like every other step's query in this estate; nothing here reads a
+ *  URL or a page outside that wiring). */
+// D-BP154-044, NEW. THE ONE PINNED PATH, hardcoded and explicit -- this is the SPECIFIC eblet
+// minted this ticket (mint_geography_eblet.py's own receipt sidecar), not a general REFERENCE-tree
+// reader. A missing or unreadable file is "not pinned", never a guess -- same discipline
+// origin_provenance_store.ts's own loadOriginProvenance() already establishes for a local eblet
+// read.
+const PINNED_GEOGRAPHY_DENSITY_RECEIPT_PATH = 'C:\\Users\\Administrator\\Documents\\Asteroid-ProofVault\\state\\eblets\\REFERENCE\\mmlu_pro_geography\\density_un_m49_south_america_northern_africa_central_asia_2025.receipt.json';
+
+function readPinnedGeographyDensityReceipt(): { text: string; contentHash: string } | null {
+  try {
+    if (!existsSync(PINNED_GEOGRAPHY_DENSITY_RECEIPT_PATH)) return null;
+    const raw = JSON.parse(readFileSync(PINNED_GEOGRAPHY_DENSITY_RECEIPT_PATH, 'utf8')) as {
+      acquisition?: { rawText?: unknown };
+      contentHash?: unknown;
+    };
+    const text = typeof raw.acquisition?.rawText === 'string' ? raw.acquisition.rawText : '';
+    const contentHash = typeof raw.contentHash === 'string' ? raw.contentHash : '';
+    if (!text || !contentHash) return null;
+    return { text, contentHash };
+  } catch {
+    return null; // unreadable/corrupt -- "not pinned", never fabricated.
+  }
+}
+
+interface FrozenSourceCandidate {
+  text: string;
+  sourceUrl: string | null;
+  sourceTitle: string;
+  mechanism: ClaimMechanism;
+}
+
+/** THE ONE ATTEMPT at a single, frozen, apples-to-apples source. D-BP154-044, Founder verbatim:
+ *  "Use my free tier with google in Mnemosynec - specifically the liana cycle, or the browser we
+ *  made to do this very thing" -- every candidate below is acquired THROUGH the machine's own
+ *  authority path (gatherMortgageCandidates/gatherThisRunCandidates for owned evidence,
+ *  tryConversationalAuthority for Gemini, googleBlocks for Google document search), never an
+ *  out-of-band fetch. Tried in that order (FD-BP153-04: consult what is already owned before a
+ *  new query; FD-BP154-02: Gemini answers before Google is asked to corroborate). Requires ONE
+ *  candidate's OWN text to state a verifiable figure for EVERY option in `frame` before it is
+ *  accepted -- a passage naming only some survivors is skipped in favor of the next candidate,
+ *  never patched together with a second passage (that would be exactly the "mismatched-source
+ *  ranking" the Founder's own dispatch forbids using quietly). Returns `obtained: false` (never a
+ *  guess) when no single candidate covers every survivor. */
 export async function attemptFrozenDensitySource(
   ctx: MethodRunContext,
   frame: string[],
@@ -320,27 +366,85 @@ export async function attemptFrozenDensitySource(
   property: string,
 ): Promise<FrozenDensitySourceResult> {
   const query = `Compare the population density (people per square kilometer) of the following, `
-    + `citing a figure for each: ${list(frame, OPT)}`;
-  const res = await googleBlocks(ctx.askGoogle, query);
-  if (!res.ok) {
-    return {
-      attempted: true, obtained: false, sourceUrl: null, sourceTitle: null, entries: [],
-      numericallyRankable: false, error: `Google returned nothing usable (${res.via})`,
-    };
+    + `citing a single source and its reference year, with a figure for each: ${list(frame, OPT)}`;
+  const mcOptions = frame.map((L) => `${L}) ${OPT[L]}`);
+  const namesEverySurvivor = (t: string) => frame.every((L) => appearsIn(t, OPT[L]));
+
+  const candidates: FrozenSourceCandidate[] = [];
+
+  // STAGE A: OWNED EVIDENCE (FD-BP153-04) -- zero new queries when it already answers.
+  for (const c of [...(await gatherMortgageCandidates(undefined, query)), ...gatherThisRunCandidates(ctx)]) {
+    if (namesEverySurvivor(c.text)) {
+      candidates.push({ text: c.text, sourceUrl: null, sourceTitle: `owned evidence (${c.via})`, mechanism: 'OWNED_EVIDENCE' });
+    }
   }
-  const candidates = res.blocks.filter((b) => b.kind === 'organic' && b.url && b.url.trim() && b.body && b.body.trim());
-  for (const block of candidates) {
-    // The document must at least NAME every survivor before it is worth an extraction pass.
-    if (!frame.every((L) => appearsIn(block.body, OPT[L]))) continue;
+
+  // STAGE A2: THE PINNED CATEGORY-COLUMN DEPOSIT (D-BP154-044). One SPECIFIC, already-minted
+  // sand-stratum eblet (Asteroid-ProofVault REFERENCE/mmlu_pro_geography/ -- the coordinator's own
+  // "pin it in the evidence snapshot" instruction) is read here, zero network, exactly like Stage A's
+  // own owned-evidence discipline -- this is the ONE narrow, explicit, one-off pin this ticket
+  // authorizes; it is NOT a general "read any REFERENCE eblet" mechanism (that stays unbuilt). If
+  // its own three regions cover this run's frame, it is used as a candidate BEFORE any new query
+  // is spent, exactly the FD-BP153-04 ordering.
+  const pinned = readPinnedGeographyDensityReceipt();
+  if (pinned && namesEverySurvivor(pinned.text)) {
+    candidates.push({
+      text: pinned.text, sourceUrl: null,
+      sourceTitle: `pinned Category Column deposit (mmlu_pro_geography, contentHash ${pinned.contentHash.slice(0, 16)}...)`,
+      mechanism: 'CONVERSATIONAL_ANSWER',
+    });
+  }
+
+  // STAGE B: PERPLEXITY (D-BP154-044/FD-BP154-19, Founder verbatim: "you can use claude or
+  // perplexity as facts gathering - perplexity is excellent for such"; preferred here specifically
+  // because it returns citations with source URLs -- a verbatim span PLUS a named third-party
+  // document, arriving together, exactly the admission shape this function needs). Tried FIRST
+  // among the conversational stages, through ctx.askConversationalAuthorityAs (method_registry.ts,
+  // D-BP154-044) -- THE PAIL's own recording wrapper, same as every other query here; never an
+  // out-of-band fetch. Absent (undefined) on any caller that has not wired it -- falls straight
+  // through to Stage B2 with zero behavior change for every pre-existing test/call site.
+  if (ctx.askConversationalAuthorityAs) {
+    const pr = await ctx.askConversationalAuthorityAs('user_perplexity', query, mcOptions);
+    if (pr.ok && namesEverySurvivor(pr.text)) {
+      // A REAL citation URL, when Perplexity supplied one, is genuinely stronger provenance than
+      // `null` -- carried through, never fabricated when citations is empty.
+      const citedUrl = pr.citations.find((u) => u && u.trim()) ?? null;
+      candidates.push({
+        text: pr.text, sourceUrl: citedUrl,
+        sourceTitle: citedUrl ? `Perplexity (${pr.via}), citing ${citedUrl}` : `Perplexity (${pr.via})`,
+        mechanism: 'CONVERSATIONAL_ANSWER',
+      });
+    }
+  }
+
+  // STAGE B2: GEMINI (the app's own default conversational authority) -- FD-BP154-02.
+  if (ctx.askConversationalAuthority) {
+    const cr = await tryConversationalAuthority(ctx, query, mcOptions);
+    if (cr.ok && namesEverySurvivor(cr.text)) {
+      candidates.push({ text: cr.text, sourceUrl: null, sourceTitle: `conversational authority (${cr.via})`, mechanism: 'CONVERSATIONAL_ANSWER' });
+    }
+  }
+
+  // STAGE C: GOOGLE DOCUMENT SEARCH ("google in MnemosyneC... the liana cycle").
+  const res = await googleBlocks(ctx.askGoogle, query);
+  if (res.ok) {
+    for (const block of res.blocks.filter((b) => b.kind === 'organic' && b.url && b.url.trim() && b.body && b.body.trim())) {
+      if (namesEverySurvivor(block.body)) {
+        candidates.push({ text: block.body, sourceUrl: block.url, sourceTitle: block.title || block.url, mechanism: 'DOCUMENT_CORROBORATION' });
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
     const instruction = `From the passage, for EACH of the following, copy the exact verbatim `
       + `sentence or clause stating its population density (a figure, or an explicit density `
       + `comparison). If the passage does not state a density figure for one of them, omit it -- `
       + `do not guess. Options: ${frame.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
     const shape = '{"entries":[{"name":"exact option name from the list","figureText":"the stated density figure or phrase, verbatim","span":"verbatim sentence or clause from the passage"}]}';
     const rawOut: { text?: string } = {};
-    // eslint-disable-next-line no-await-in-loop -- stops at the first candidate document that
-    // fully covers the frame; not a fan-out worth parallelizing.
-    const ex = await gemmaExtract(instruction, block.body, shape, rawOut);
+    // eslint-disable-next-line no-await-in-loop -- stops at the first candidate that fully covers
+    // the frame; not a fan-out worth parallelizing.
+    const ex = await gemmaExtract(instruction, candidate.text, shape, rawOut);
     if (ex === null) continue;
     const rawEntries = Array.isArray((ex as { entries?: unknown }).entries) ? (ex as { entries: unknown[] }).entries : [];
     const verified: FrozenDensityEntry[] = [];
@@ -353,7 +457,7 @@ export async function attemptFrozenDensitySource(
       if (matched.length === 0) continue;
       const L = matched[0];
       if (!frame.includes(L)) continue;
-      if (!spanIsVerbatimInPassage(block.body, span) || !appearsIn(span, OPT[L])) continue;
+      if (!spanIsVerbatimInPassage(candidate.text, span) || !appearsIn(span, OPT[L])) continue;
       if (verified.some((v) => v.letter === L)) continue;
       verified.push({ letter: L, name: OPT[L], figureText, span });
     }
@@ -362,15 +466,16 @@ export async function attemptFrozenDensitySource(
       const entries = frame.map((L) => verified.find((e) => e.letter === L)!);
       const numericallyRankable = entries.every((e) => parseDensityFigure(e.figureText) !== null);
       return {
-        attempted: true, obtained: true, sourceUrl: block.url, sourceTitle: block.title || null,
-        entries, numericallyRankable,
+        attempted: true, obtained: true, sourceUrl: candidate.sourceUrl, sourceTitle: candidate.sourceTitle,
+        entries, numericallyRankable, mechanism: candidate.mechanism,
       };
     }
   }
   return {
     attempted: true, obtained: false, sourceUrl: null, sourceTitle: null, entries: [],
     numericallyRankable: false,
-    error: `no single candidate document's own text stated a verifiable ${property.includes('densit') ? '' : 'density '}`
+    error: `no single candidate (${candidates.length} tried, through owned evidence / the conversational `
+      + `authority / Google document search) stated a verifiable ${property.includes('densit') ? '' : 'density '}`
       + 'figure for every survivor -- could not obtain one apples-to-apples dataset covering every survivor',
   };
 }

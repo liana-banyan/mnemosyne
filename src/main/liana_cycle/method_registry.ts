@@ -242,6 +242,22 @@ export interface MethodRunContext {
    *  its OWN persisted classification record (composer_claims_store.ts) with the acquisition it
    *  belongs to, never as a decision input. */
   acquisitionId?: string;
+  /** D-BP154-044/BISHOP-SEG/S44/seg-acquire, ADDITIVE/OPTIONAL -- undefined on every pre-existing
+   *  MethodRunContext construction site, so every existing caller keeps compiling and behaving
+   *  identically. FD-BP154-19: "you can use claude or perplexity as facts gathering" -- widens
+   *  ACQUISITION (never corroboration, which stays document-only, FD-BP154-02/03) to any of the
+   *  five signed-in authorities, named explicitly rather than always defaulting to Gemini
+   *  (`askConversationalAuthority`, above, is UNCHANGED and remains what every pre-existing step
+   *  uses). Only magnitude_step.ts's attemptFrozenDensitySource() (D-BP154-044) reads this field.
+   *  Built the SAME way as `askConversationalAuthority` -- through THE PAIL's own recording
+   *  wrapper (index.ts's 'liana-script-run' handler), so a query issued through this field lands
+   *  in the evidence store exactly like every other query, query verbatim, span, mechanism tag,
+   *  timestamp -- never an out-of-band fetch. */
+  askConversationalAuthorityAs?: (
+    authority: 'user_gemini' | 'user_perplexity' | 'user_claude' | 'user_google' | 'user_chatgpt',
+    question: string,
+    mcOptions?: string[],
+  ) => Promise<ConversationalAuthorityResult>;
 }
 
 export interface LianaMethod {

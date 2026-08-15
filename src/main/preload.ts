@@ -795,6 +795,15 @@ contextBridge.exposeInMainWorld('amplify', {
   ): Promise<import('./liana_cycle/library/script_bridge').ScriptRunResponse> =>
     ipcRenderer.invoke('liana-script-run', { input, steps }),
 
+  // D-BP154-044/BISHOP-SEG/S44/seg-acquire -- thin wrap for the standalone acquisition entry
+  // point (index.ts's 'liana-acquire-fact' handler). See that handler's own header.
+  lianaAcquireFact: (
+    authority: 'user_gemini' | 'user_perplexity' | 'user_claude' | 'user_google' | 'user_chatgpt',
+    question: string,
+    mcOptions?: string[],
+  ): Promise<{ ok: boolean; text: string; citations: string[]; via: string; authority: string; acquisitionId: string }> =>
+    ipcRenderer.invoke('liana-acquire-fact', { authority, question, mcOptions }),
+
   // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: the evidence store already
   // on disk (440 records / ~291 KB / 23 acquisition files, measured 2026-08-13) must be VISIBLE to
   // the operator, not orphaned. Strictly read-only -- see evidence_store.ts's summarizeEvidenceStore()
