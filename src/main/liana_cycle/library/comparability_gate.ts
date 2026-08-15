@@ -5,9 +5,13 @@
 // BISHOP_DROPZONE\SPEC_CATEGORY_ERROR_TAXONOMY_BP154.md -- this file implements those two
 // documents' typed core: the five predicates (kept separate, never collapsed), the four-valued
 // gate status, the exclusion-reason taxonomy, and -- the single mechanism named as "the ONE thing
-// that mechanically blocks the error we made" -- the UNIFORM-PREDICATE INVARIANT: a rule that would
-// eliminate one same-relevant-type candidate but not another is REJECTED as non-discriminating
-// before it is ever allowed to eliminate anyone.
+// that mechanically blocks the error we made" -- the UNIFORM-PREDICATE INVARIANT. FD-BP154-22,
+// FOUNDER RULING ("uniformity is procedure - ruled", BISHOP_DROPZONE\RULINGS_BP154.md): a rule is
+// REJECTED as non-discriminating when the identical question was NOT asked of every
+// same-relevant-type candidate, sourced and span-verified, with none exempted or inferred -- never
+// merely because the rule's own outcome happens to strike more than one peer (that outcome-
+// cardinality reading was RETIRED this ruling; see checkUniformPredicate()'s own header below for
+// the live-measured bug that forced the correction).
 //
 // THE CATEGORY ERROR THIS REPAIRS (both specs, verbatim): "Central Asia is a group of countries"
 // does NOT imply "Central Asia is not a world region" -- UN M49 assigns region codes to South
@@ -120,17 +124,37 @@ export function dispositionSupportsAnswer(disposition: EliminationDisposition): 
 }
 
 // ─────────────────────────── THE UNIFORM-PREDICATE INVARIANT ───────────────────────────
-// "THE ONE THING THAT MECHANICALLY BLOCKS THE ERROR WE MADE." ∀ x,y ∈ P, sameRelevantType(x,y) =>
-// sameEligibilityPredicate(x,y). A rule that would eliminate one same-relevant-type candidate but
-// spare another of the SAME type is REJECTED outright, before it is ever allowed to eliminate
-// anyone -- this is what would have caught "Central Asia excluded as a group of countries while
-// South America (also a group of countries under M49) is retained" automatically, and would have
-// blocked the Founder's own D-BP154-045 instruction to re-ask Unitary specifically to catch it.
+// FD-BP154-22, FOUNDER RULING, BISHOP_DROPZONE\RULINGS_BP154.md, verbatim: "uniformity is
+// procedure - ruled." REPLACES the outcome-cardinality reading this file shipped with
+// (D-BP154-050/052: "a rule that would eliminate one same-relevant-type candidate but spare
+// another of the SAME type is REJECTED" -- i.e. discriminating iff the rule's OWN OUTCOME touches
+// exactly one peer). D-BP154-060's own live investigation (qid 98, run 6) found that reading was a
+// BUG, not a philosophical stance: it rejects a rule the instant more than one same-typed peer
+// happens to share the SAME property, even when every one of them was asked the identical question,
+// individually, and answered with a genuine, sourced, verbatim-verified span -- indistinguishable,
+// to the old check, from a rule aimed at one option and never honestly asked of its peers.
+//
+// THE CORRECTED TEST, Founder's own three clauses: a rule is uniformly applied when (1) the
+// IDENTICAL question was asked of every candidate, (2) every answer is SOURCED and span-verified,
+// (3) no option was EXEMPTED or INFERRED. All three are procedural facts about how the evidence was
+// gathered, never about what the evidence turned out to say -- `discriminating` no longer depends
+// on how many peers the rule's OWN outcome would strike. THIS is what still correctly fails the
+// Central Asia manoeuvre: the ORIGINAL "which of the following ARE a conglomerate" phrasing
+// (pre-D-BP154-045) never individually asked South America or Northern Africa anything at all --
+// they were never answered, clause (1)/(3) fail, and the rule is rejected on PROCEDURE, not on the
+// number of options it happens to strike.
+//
+// THE DEGENERATE GUARD IS SEPARATE AND UNCHANGED (D-BP154-060, Founder: "Already handled
+// (ca92a439)"): a rule that leaves ZERO survivors is caught by runTerminatorStep()'s own
+// `survivors.length === 0` abstain, an entirely different, pre-existing mechanism this file does
+// not touch and this ruling does not reach.
 
 /** "Same relevant type" for THIS invariant check: same `entityType` when both are known/stated;
  *  when either is 'unknown', they are never treated as comparable for this check (an unknown
  *  entity's own type has not been established, so uniformity cannot be asserted OR denied about
- *  it -- this function only ever widens what a rule must survive, never narrows it). */
+ *  it -- this function only ever widens what a rule must survive, never narrows it). UNCHANGED by
+ *  FD-BP154-22 -- grouping candidates into peer sets is orthogonal to how the invariant tests each
+ *  set. */
 export function sameRelevantType(a: Candidate, b: Candidate): boolean {
   if (a.entityType === 'unknown' || b.entityType === 'unknown') return false;
   return a.entityType === b.entityType;
@@ -139,27 +163,34 @@ export function sameRelevantType(a: Candidate, b: Candidate): boolean {
 export interface EliminationRuleCheck {
   /** true iff the rule may fire at all -- false means REJECTED, never applied to anyone. */
   discriminating: boolean;
-  /** Present only when discriminating is false: every same-relevant-type candidate the rule would
-   *  ALSO have removed, naming exactly why the rule fails uniformity. */
-  wouldAlsoRemove: string[];
+  /** FD-BP154-22, RENAMED from `wouldAlsoRemove` (the retired outcome-cardinality field). Present
+   *  only when discriminating is false: every same-relevant-type peer that was NOT individually
+   *  asked the identical question and given a sourced, verbatim-span-verified answer this run --
+   *  exempted, inferred, or simply never addressed. Never populated by which OTHER candidates the
+   *  rule's own outcome would ALSO have struck -- that question is no longer what this check asks. */
+  unanswered: string[];
 }
 
-/** THE EXECUTABLE CHECK (not a convention, per this ticket's own instruction). `wouldEliminate` is
- *  the rule UNDER TEST, applied to every candidate in `pool` -- if it would fire on more than the
- *  ONE `target` candidate among same-relevant-type peers, the rule is non-discriminating and is
- *  rejected. Symmetric, letter-blind: `wouldEliminate` is supplied by the caller and is never
- *  itself inspected for which letter it targets (FD-BP153-06) -- this function only checks
- *  CONSISTENCY of its own outcome across same-type peers. */
+/** THE EXECUTABLE CHECK (not a convention, per this ticket's own instruction), FD-BP154-22
+ *  REWRITE. `answered` is supplied by the caller: true iff THIS candidate was individually asked
+ *  the identical question and given a sourced, verbatim-span-verified answer this run (whatever
+ *  that answer said -- the CONTENT of the answer is never this function's business, only whether
+ *  one was honestly obtained). `target` must itself be answered (a caller only ever tests this for
+ *  a candidate that DID trigger the rule under consideration, so an unanswered target is already a
+ *  contradiction in terms -- reported, never silently passed). The rule is discriminating iff
+ *  EVERY same-relevant-type peer was ALSO answered -- never conditioned on what any of those
+ *  answers said, symmetric and letter-blind (FD-BP153-06): `answered` is never itself inspected for
+ *  which letter it names. */
 export function checkUniformPredicate(
   target: Candidate,
   pool: Candidate[],
-  wouldEliminate: (c: Candidate) => boolean,
+  answered: (c: Candidate) => boolean,
 ): EliminationRuleCheck {
-  if (!wouldEliminate(target)) return { discriminating: false, wouldAlsoRemove: [] };
-  const wouldAlsoRemove = pool
-    .filter((c) => c.optionId !== target.optionId && sameRelevantType(target, c) && wouldEliminate(c))
+  if (!answered(target)) return { discriminating: false, unanswered: [target.optionId] };
+  const unanswered = pool
+    .filter((c) => c.optionId !== target.optionId && sameRelevantType(target, c) && !answered(c))
     .map((c) => c.optionId);
-  return { discriminating: wouldAlsoRemove.length === 0, wouldAlsoRemove };
+  return { discriminating: unanswered.length === 0, unanswered };
 }
 
 // ─────────────────────────── SPEC PART 1: licensing magnitude (mayRank) ───────────────────────────
