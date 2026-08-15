@@ -24,8 +24,9 @@
 // MMLU-Pro corpus (resources/mmlu_pro_bundled/questions.jsonl) before writing a line of fix:
 //   qid 1   "Which of the following would most likely provide examples of mitotic cell
 //            divisions?" -- "following" is followed immediately by "would", an auxiliary, not a
-//            noun. STAYS inapplicable on purpose after this fix too (see NOT_A_NOUN_HEAD below) --
-//            "no captured noun" was never a parser bug, it is what the sentence actually says.
+//            noun. STAYS inapplicable on purpose after this fix too (see CLAUSE_VERB_MARKERS/
+//            truncateAtClauseVerb() below) -- "no captured noun" was never a parser bug, it is
+//            what the sentence actually says.
 //   qid 46  "Indicate whether the following economic events represent a change in supply or a
 //            change in quantity supplied." -- right shape ("following NOUN VERB"), wrong verb
 //            (this file's old regex only accepted is|are). Fixed by widening the accepted verb
@@ -54,6 +55,18 @@
 //            un-copula'd "which of the following X?" shape). Fixed by a second extraction branch
 //            (the verb-less, clause-final noun phrase, which the "of ..." tail rides along with
 //            for free -- no separate handling needed for "a category noun that may sit after of").
+//
+// A FIFTH CASE, FOUND BY THE STANDING-20 LIVE SWEEP ITSELF (not named in the dispatch, but the
+// SAME general mechanism catching a shape nobody had reproduced by hand): qid 33 "... Which of
+// the following code segments will correctly create newList?" -- the verb-less branch's FIRST
+// version captured the WHOLE remainder of the clause, "code segments will correctly create
+// newList", because it only checked the phrase's own HEAD word against a modal/auxiliary
+// blocklist -- "will" sits in the MIDDLE of the phrase, past the head, and was never checked.
+// This is exactly the same defect class as qid 79's "following information" (a widened gate
+// accepting something it should not), just discovered by the live run rather than a hand
+// reproduction. Fixed by truncateAtClauseVerb(): the capture is cut at the FIRST clause-verb
+// marker found ANYWHERE in it, not only at the head, so the category becomes "code segments" and
+// the verb phrase that follows it is correctly excluded.
 //
 // WIDENED WITHOUT LOOSENED (the Founder's own instruction, this dispatch, verbatim: "widen what
 // it ACCEPTS without loosening what it VALIDATES"). Two independent widenings, both still
@@ -86,13 +99,29 @@ const LINKING_VERBS = ['is', 'are', 'represent', 'represents', 'would', 'describ
 
 const VERB_ANCHORED_PATTERN = new RegExp(`following\\s+([a-z][a-z\\s]*?)\\s+(?:${LINKING_VERBS.join('|')})\\b`, 'i');
 
-// A verb-less capture's own head word signals a VERB PHRASE, not a NOUN PHRASE, when it is one of
-// these -- modal auxiliaries and copulas. Disqualifies a branch-2 match (qid 1's own shape: the
-// text immediately after "following" IS one of these, so there is no noun to capture at all).
-const NOT_A_NOUN_HEAD = new Set([
+// A modal auxiliary or copula anywhere in a branch-2 (verb-less) capture marks the boundary
+// between the NOUN PHRASE and the VERB PHRASE that follows it -- "following code segments WILL
+// correctly create newList" is a category ("code segments"), not "code segments will correctly
+// create newList" (qid 33's own decoy, live-measured this dispatch: the standing-20 sweep, run
+// BEFORE this truncation existed, produced exactly that run-on as Softballs:1's/Discriminator:1's/
+// HumanNuance:1's own `category`). Checked in TWO ways: (a) as the phrase's own HEAD word, which
+// disqualifies the match entirely (qid 1's own shape -- "following would...", there is no noun
+// before the marker at all, nothing to truncate TO); (b) as a marker occurring LATER in the
+// phrase, which truncates the capture to everything strictly before it (qid 33's own fix).
+const CLAUSE_VERB_MARKERS = new Set([
   'would', 'could', 'should', 'will', 'shall', 'might', 'may', 'must', 'can',
   'do', 'does', 'did', 'is', 'are', 'was', 'were', 'has', 'have', 'had', 'being', 'been',
 ]);
+
+/** Truncates a branch-2 capture at the first CLAUSE_VERB_MARKERS token found anywhere in it --
+ *  the noun phrase never includes the verb phrase that follows it (qid 33's own fix, above).
+ *  Returns '' when the marker IS the first word (qid 1's own shape -- nothing before it to keep). */
+function truncateAtClauseVerb(phrase: string): string {
+  const words = phrase.trim().split(/\s+/);
+  const markerIdx = words.findIndex((w) => CLAUSE_VERB_MARKERS.has(w.toLowerCase()));
+  if (markerIdx === -1) return phrase.trim();
+  return words.slice(0, markerIdx).join(' ').trim();
+}
 
 // Generic reference-preamble nouns -- "the following information/passage/..." names WHAT WAS
 // SUPPLIED to the reader, not the category the item is asking about. A head word in this set is
@@ -152,9 +181,13 @@ export function parseFollowingCategory(question: string): CategoryParseResult {
     }
     const verbLessMatch = seg.match(/following\s+([a-z][a-z\s]*)$/i);
     if (verbLessMatch) {
-      const cat = verbLessMatch[1].trim();
+      // D-BP154-063, LIVE-MEASURED FIX (the standing-20 sweep this dispatch, qid 33): truncate at
+      // the first clause-verb marker BEFORE checking the head word, so "code segments will
+      // correctly create newList" becomes the category "code segments", not the whole run-on --
+      // see truncateAtClauseVerb()'s own header.
+      const cat = truncateAtClauseVerb(verbLessMatch[1]);
       const head = headWord(cat);
-      if (cat && !NOT_A_NOUN_HEAD.has(head) && !REFERENCE_PREAMBLE_HEADS.has(head)) {
+      if (cat && !REFERENCE_PREAMBLE_HEADS.has(head)) {
         return { category: cat };
       }
     }
