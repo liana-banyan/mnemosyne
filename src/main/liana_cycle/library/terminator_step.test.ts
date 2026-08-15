@@ -895,30 +895,26 @@ describe('D-BP154-033: HumanNuance:1 is wired into deriveTerminatorEliminations(
   });
 });
 
-describe('D-BP154-043: Unitary:1 is wired into deriveTerminatorEliminations() -- FD-BP154-16 unitary-vs-conglomerate factor', () => {
-  test('a Unitary:1 exclusion eliminates the named option with its own sourceStep and span', () => {
+describe('D-BP154-050: Unitary:1 is WITHDRAWN as an eliminator -- comparability_gate.ts\'s own uniform-predicate invariant supersedes it', () => {
+  test('a Unitary:1 "conglomerate" finding no longer eliminates anyone -- the category error this ticket repairs (Central Asia is a conglomerate exactly as South America/North Africa are, under M49)', () => {
     const un = unitary([['F', 'F) Central Asia is not considered a single world region, but a conglomerate of multiple countries.']]);
     const { eliminated, contradiction } = deriveTerminatorEliminations(OPT, null, null, null, null, un);
     expect(contradiction).toBeNull();
-    const entry = eliminated.find((e) => e.letter === 'F');
-    expect(entry).toBeDefined();
-    expect(entry?.sourceStep).toBe('Unitary:1');
-    expect(entry?.span).toContain('conglomerate');
+    expect(eliminated).toEqual([]);
   });
 
-  test('an unstated option is never eliminated by Unitary:1 -- absence is omission', () => {
+  test('an unstated option is (still, trivially) never eliminated by Unitary:1 -- it eliminates nothing now, stated or not', () => {
     const un = unitary([]);
     const { eliminated } = deriveTerminatorEliminations(OPT, null, null, null, null, un);
     expect(eliminated).toEqual([]);
   });
 
-  test('a Unitary:1 exclusion contradicting NamedSet:1 membership ABSTAINS rather than publishing', () => {
+  test('a Unitary:1 "conglomerate" finding can no longer contradict NamedSet:1 -- it has nothing left to contradict with', () => {
     const { contradiction } = deriveTerminatorEliminations(
       OPT, null, namedSet([['F', 'F) densely populated.']]), null, null,
       unitary([['F', 'F) is a conglomerate, not a single region.']]),
     );
-    expect(contradiction).not.toBeNull();
-    expect(contradiction?.letter).toBe('F');
+    expect(contradiction).toBeNull();
   });
 });
 
