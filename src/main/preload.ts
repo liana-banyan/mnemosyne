@@ -1296,6 +1296,16 @@ contextBridge.exposeInMainWorld('amplify', {
   showOverlay: (): void =>
     ipcRenderer.send('show-overlay'),
 
+  /** D-BP154-074/BISHOP-SEG/S74/seg-ambient -- fires once per ambient browser capture that lands
+   *  (mcp_server.ts's /capture route -> ambient_capture_bridge.ts -> index.ts's registered
+   *  notifier -> here). App.tsx uses this to ensure the dashed overlay is visible and to pulse
+   *  FrameModeIndicator.tsx briefly, the per-capture confirmation the order asks for. */
+  onAmbientCapturePulse: (cb: (payload: { surface: string; url: string; query: string; ts: string }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: { surface: string; url: string; query: string; ts: string }) => cb(payload);
+    ipcRenderer.on('ambient-capture-pulse', handler);
+    return () => ipcRenderer.removeListener('ambient-capture-pulse', handler);
+  },
+
   // ── Chronos Research Consent (KniPr038) ──────────────────────────────────
 
   /** Write a sha256-signed consent Eblet to ~/.amplify/consent/ */
@@ -2515,6 +2525,7 @@ declare global {
       onFrameModeChanged: (cb: (payload: FrameModePayload) => void) => () => void;
       // Overlay
       setClickthrough: (enabled: boolean) => void;
+      onAmbientCapturePulse: (cb: (payload: { surface: string; url: string; query: string; ts: string }) => void) => () => void;
       // Ollama
       getOllamaStatus: () => Promise<OllamaStatus>;
       checkOllama: () => Promise<{ installed: boolean; version?: string }>;
