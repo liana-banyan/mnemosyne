@@ -106,6 +106,10 @@ import { registerTargetClassStep, runTargetClassStep } from './target_class_step
 // Composer-native after diagnosing the same-shaped forbidden mechanism (D-BP154-064). See
 // no_consensus_step.ts's own header.
 import { registerNoConsensusStep, runNoConsensusStep } from './no_consensus_step';
+// D-BP154-072/BISHOP-SEG/S52/seg-wiregate -- P12, THE BORROMEAN TEST. See borromean_test.ts's own
+// header (including why it was built native rather than reusing THE CONVERGENCE, classify_
+// cascade.ts, which is FORBIDDEN as a dependency here regardless).
+import { registerBorromeanTestStep, runBorromeanTest, borromeanSummaryLine } from './borromean_test';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -260,6 +264,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP154-072/BISHOP-SEG/S52/seg-wiregate, ADDITIVE -- same idempotent shape as every call
+  // above, for the same reason. Does not touch, re-register, or collide with anything the others
+  // register -- 'Borromean' is a new name.
+  try {
+    registerBorromeanTestStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -306,7 +318,8 @@ export interface ComposerRegistryEntry {
 // D-BP154-053 adds 'BoundaryStability:1' -- see boundary_step.ts's own header.
 // D-BP154-058 adds 'TargetClass:1' -- see target_class_step.ts's own header.
 // D-BP154-065 adds 'NoConsensus:1' -- see no_consensus_step.ts's own header.
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1', 'Unitary:1', 'BoundaryStability:1', 'TargetClass:1', 'NoConsensus:1']);
+// D-BP154-072 adds 'Borromean:1' -- see borromean_test.ts's own header.
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1', 'Unitary:1', 'BoundaryStability:1', 'TargetClass:1', 'NoConsensus:1', 'Borromean:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -522,6 +535,15 @@ async function runOneStep(
     // five named voices (ctx.askConversationalAuthorityAs) in parallel, awaits every one to
     // completion before any gate runs -- see no_consensus_step.ts's own header.
     const { result, summary } = await runNoConsensusStep(input, ctx);
+    persistStepClaim(id, input, ctx, result);
+    return { summary, raw: result };
+  }
+  if (id === 'Borromean:1') {
+    // D-BP154-072/BISHOP-SEG/S52/seg-wiregate -- P12, THE BORROMEAN TEST. Reads priorResults for
+    // an already-completed Terminator:1 run in this same stack and re-derives it once per
+    // load-bearing finding, each with that finding withheld -- see borromean_test.ts's own header.
+    const result = await runBorromeanTest(input, ctx, priorResults);
+    const summary = borromeanSummaryLine(result);
     persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }
