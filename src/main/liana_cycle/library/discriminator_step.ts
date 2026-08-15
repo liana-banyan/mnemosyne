@@ -242,6 +242,15 @@ type RawKindEntry = { name?: unknown; kind?: unknown; span?: unknown };
 type RawCategoryKind = { kind?: unknown; span?: unknown };
 type RawPropertyMemberEntry = { name?: unknown; span?: unknown };
 
+// D-BP154-046 SWEEP, LAW 11 FIX. D-BP154-015's own fix (softballs_step.ts) -- gemma4:12b's `name`
+// field sometimes echoes the passage's OWN "L) text" list()-formatting -- was applied only where
+// it was first measured and left latent here. Same mechanical strip (a leading "<letter>) " token
+// the SOURCE'S OWN formatting put there, never a new equivalence) applied identically to both
+// extraction choke points below.
+function stripListLetterPrefix(name: string): string {
+  return name.replace(/^[A-Za-z]\)\s*/, '');
+}
+
 /** THE VERIFY-THE-SPAN CHOKE POINT for the per-option kinds (FD-BP153-07 FIX 2), same four-part
  *  discipline as softballs_step.ts's verifyExcludedEntries()/named_set_step.ts's
  *  verifyIncludedEntries(): (a) non-empty `name`, (b) non-empty `kind`, (c) non-empty `span`, (d)
@@ -262,7 +271,11 @@ export function verifyDiscriminatorKinds(
     const kind = typeof entry?.kind === 'string' ? entry.kind.trim() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
     if (!name) continue; // nothing named -- not a candidate value, not a discard
-    const matched = toLetters([name], OPT);
+    let matched = toLetters([name], OPT);
+    if (matched.length === 0) {
+      const stripped = stripListLetterPrefix(name);
+      if (stripped !== name) matched = toLetters([stripped], OPT);
+    }
     if (matched.length === 0) continue; // names no known option -- not a candidate value here
     const L = matched[0];
     if (!kind || !span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {
@@ -326,7 +339,11 @@ export function verifyDiscriminatorPropertyMembers(
     const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
     if (!name) continue; // nothing named -- not a candidate value, not a discard
-    const matched = toLetters([name], OPT);
+    let matched = toLetters([name], OPT);
+    if (matched.length === 0) {
+      const stripped = stripListLetterPrefix(name);
+      if (stripped !== name) matched = toLetters([stripped], OPT);
+    }
     if (matched.length === 0) continue; // names no known option -- not a candidate value here
     const L = matched[0];
     if (!span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {
