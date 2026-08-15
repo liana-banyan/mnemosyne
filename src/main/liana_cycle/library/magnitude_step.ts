@@ -174,7 +174,11 @@ export function verifyMagnitudeOrder(
     const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
     if (!name) continue; // nothing named -- not a candidate value, not a discard
-    const matched = toLetters([name], OPT);
+    let matched = toLetters([name], OPT);
+    if (matched.length === 0) {
+      const stripped = stripListLetterPrefix(name);
+      if (stripped !== name) matched = toLetters([stripped], OPT);
+    }
     if (matched.length === 0) continue; // names no known option -- not a candidate value here
     const L = matched[0];
     if (!frameSet.has(L)) continue; // names an option OUTSIDE the frame -- never ranked, not a discard
@@ -244,6 +248,14 @@ function emptyMagnitudeResult(overrides: Partial<MagnitudeResult> & { error: str
     unranked: [], via: 'n/a', disagreement: null,
     ...overrides,
   };
+}
+
+// D-BP154-046 SWEEP, LAW 11 FIX. Latent in this file (D-BP154-015's own fix, softballs_step.ts,
+// was never carried here): gemma4:12b's `name` field can echo the passage's OWN "L) text"
+// list()-formatting -- a leading "<letter>) " token the SOURCE'S OWN formatting put there, never
+// a new equivalence. Applied identically at both this file's own name->letter matching sites.
+function stripListLetterPrefix(name: string): string {
+  return name.replace(/^[A-Za-z]\)\s*/, '');
 }
 
 function summaryLine(OPT: Record<string, string>, r: MagnitudeResult): string {
@@ -539,7 +551,11 @@ export async function attemptFrozenDensitySource(
       const figureText = typeof raw?.figureText === 'string' ? raw.figureText.trim() : '';
       const span = typeof raw?.span === 'string' ? raw.span.trim() : '';
       if (!name || !figureText || !span) continue;
-      const matched = toLetters([name], OPT);
+      let matched = toLetters([name], OPT);
+      if (matched.length === 0) {
+        const stripped = stripListLetterPrefix(name);
+        if (stripped !== name) matched = toLetters([stripped], OPT);
+      }
       if (matched.length === 0) continue;
       const L = matched[0];
       if (!frame.includes(L)) continue;
