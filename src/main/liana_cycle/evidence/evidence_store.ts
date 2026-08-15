@@ -70,8 +70,16 @@ import { join } from 'node:path';
 
 /** Which authority produced a record. These are DIFFERENT SHAPES on purpose (see
  *  method_registry.ts:59-72) and the store keeps them distinguishable rather than flattening
- *  them into a lowest-common-denominator blob it cannot faithfully replay. */
-export type EvidenceAuthority = 'google' | 'conversational';
+ *  them into a lowest-common-denominator blob it cannot faithfully replay.
+ *
+ *  D-BP154-074/BISHOP-SEG/S74/seg-ambient, ADDITIVE: 'ambient_browser' is a THIRD, DISTINCT
+ *  authority for a record captured by the Chrome extension from the Founder's own real,
+ *  logged-in browser session (content script -> /capture route -> recordAmbientBrowserCapture(),
+ *  ambient_capture.ts) -- never a machine-driven query, never a human-operated Nexus window
+ *  capture ('conversational'/'google' above cover those). Purely additive: no existing switch
+ *  or exhaustive check over this union exists anywhere in the tree (verified by grep this
+ *  ticket), so no other file changes behavior because of this line. */
+export type EvidenceAuthority = 'google' | 'conversational' | 'ambient_browser';
 
 export interface EvidenceRecord {
   schema: 'liana-evidence/1';
