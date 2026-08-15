@@ -58,6 +58,42 @@ function formatStepLabel(entry: ComposerRegistryEntry): string {
 const LS_LAST_RUNS_KEY = 'liana_terminal_recent_inputs';
 const MAX_RECENT = 12;
 
+// D-BP154-059/BISHOP-SEG/S59/seg-twenty -- THE STANDING 20. Founder's own set,
+// HARDWIRE-01_ANSWERING_PIPELINE.md line 242, verbatim: "1 7 14 20 27 33 40 46 53 59 66 72 79 85
+// 92 98 105 111 118 124" -- CAMPAIGN question_ids (resources/mmlu_pro_bundled/questions.jsonl's
+// own `question_id`), not MMLU-Pro's `source_id`. Byte-identical to the array already used once
+// to backfill origin provenance (scripts/backfill_mmlu_pro_origin_src.mjs's own STANDING_20) --
+// kept as a second literal here (not imported) because that script is Node-only (fs/network) and
+// has no renderer-safe export; this is the one place in the renderer that needs the list.
+const STANDING_20_CAMPAIGN_QIDS: readonly number[] = [
+  1, 7, 14, 20, 27, 33, 40, 46, 53, 59, 66, 72, 79, 85, 92, 98, 105, 111, 118, 124,
+];
+
+// THE ONE STACK PROVEN LIVE-SAFE THIS TICKET (D-BP154-059). Measured this session: adding
+// 'TargetClass:1' (just landed, commit aa5f4e6f, concurrent SEG a03cef29) to a run queued behind
+// this file's own IPC handler and took several MINUTES per question once more than one call was
+// in flight against the same interactive-browser-authority resource -- real completions, not a
+// hang (receipts landed in HARDWIRE/LEDGER/LIANA_RUNS/ for every one), but far too slow for a
+// question-by-question live watch. This is the reduced stack that returned in under a second per
+// question for 19/20 items (all but qid 98, which legitimately queries): the same seven the
+// coffee note (BP154 close) calls ACTIVE, plus the mandatory first step. Used only as the SEED
+// when the Founder has not authored his own stack (composerStack.length === 0) -- an authored
+// stack is never overridden.
+const STANDING_20_DEFAULT_STACK: readonly string[] = [
+  'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'HumanNuance:1',
+  'BoundaryStability:1', 'Magnitude:1', 'Terminator:1',
+];
+
+interface StandingRunRow {
+  qid: number;
+  status: 'pending' | 'running' | 'done' | 'error';
+  verdict?: string | null;
+  abstain?: boolean | null;
+  incomplete?: boolean | null;
+  keyedCls?: string | null;
+  error?: string;
+}
+
 function loadRecent(): string[] {
   try {
     const raw = localStorage.getItem(LS_LAST_RUNS_KEY);
@@ -328,6 +364,13 @@ export function LianaCycleTab() {
   // composerResult.result.steps/results; null = nothing expanded. Reset whenever a new stack run
   // starts (runComposerStack), same discipline composerResult itself already follows.
   const [expandedStepIndex, setExpandedStepIndex] = useState<number | null>(null);
+
+  // D-BP154-059/BISHOP-SEG/S59/seg-twenty -- THE TEST-IT-YOURSELF BUTTON, standing 20. Reuses
+  // composerResult/expandedStepIndex above for the LIVE per-question display (the same rich,
+  // badge-and-clickable-provenance view a single run already gets) -- `standingRunRows` is only
+  // the running SCOREBOARD across questions, never a second copy of a single run's own detail.
+  const [standingRunActive, setStandingRunActive] = useState(false);
+  const [standingRunRows, setStandingRunRows] = useState<StandingRunRow[]>([]);
 
   // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL. "The Founder can SEE what is in it"
   // (THE_PAIL_BP154.md). `evidenceStoreSummary` is the READ-ONLY, whole-store view (the 440
@@ -940,6 +983,62 @@ export function LianaCycleTab() {
       setComposerRunning(false);
     }
   }, [input, composerStack, composerRunning]);
+
+  // D-BP154-059/BISHOP-SEG/S59/seg-twenty -- RUN THE STANDING 20, LIVE, ONE AT A TIME.
+  // "Wire the in-app run so the Founder can trigger the 20 himself and watch it live -- question
+  // by question, step by step, with the badges and clickable provenance already built."
+  //
+  // SEQUENTIAL BY DESIGN, NOT A CONVENIENCE. Measured live this ticket: firing composer runs
+  // concurrently against window.amplify.lianaScriptRun backs up behind the SAME interactive
+  // browser-authority resource every query hop shares (runBrowserAuthorityQueryFromMain /
+  // runMachineDrivenNexusQueryFromMain, src/main/index.ts) -- five/six runs in flight at once each
+  // took minutes instead of seconds. `for...of` with `await` inside, never `Promise.all`.
+  //
+  // REUSE, NOT A FORK. Calls the exact same window.amplify.lianaScriptRun(...) the single-question
+  // path above calls, with the SAME composerStack the Founder authored (an authored stack is never
+  // overridden -- only seeded with STANDING_20_DEFAULT_STACK when he has picked nothing at all).
+  // Every question's response is written into `composerResult` -- the SAME state the rich
+  // step-by-step badge/provenance view below already renders -- so the Founder watches each
+  // question's own steps live, in place, exactly as a single run already shows them. This function
+  // adds ONLY the running scoreboard across questions (`standingRunRows`); it renders nothing of a
+  // single run's own detail a second time.
+  const runStandingTwenty = useCallback(async () => {
+    if (composerRunning || standingRunActive) return;
+    if (!window.amplify?.lianaScriptRun) {
+      setStandingRunRows([{ qid: 0, status: 'error', error: 'Preload bridge missing (lianaScriptRun) -- rebuild main and restart the app.' }]);
+      return;
+    }
+    const stack = composerStack.length > 0 ? composerStack : [...STANDING_20_DEFAULT_STACK];
+    setStandingRunActive(true);
+    setStandingRunRows(STANDING_20_CAMPAIGN_QIDS.map((qid) => ({ qid, status: 'pending' })));
+    setExpandedStepIndex(null);
+    try {
+      for (let i = 0; i < STANDING_20_CAMPAIGN_QIDS.length; i += 1) {
+        const qid = STANDING_20_CAMPAIGN_QIDS[i];
+        setStandingRunRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, status: 'running' } : r)));
+        setComposerResult(null);
+        try {
+          // eslint-disable-next-line no-await-in-loop -- sequential ON PURPOSE, see header above.
+          const response = await window.amplify.lianaScriptRun(String(qid), stack);
+          setComposerResult(response);
+          const term = response.mode === 'stack' ? response.result?.results?.find((r) => r.id === 'Terminator:1') : null;
+          const raw = term?.raw as { verdict?: string | null; abstain?: boolean; incomplete?: boolean } | undefined;
+          setStandingRunRows((prev) => prev.map((r, idx) => (idx === i ? {
+            ...r,
+            status: 'done',
+            verdict: raw?.verdict ?? null,
+            abstain: raw?.abstain ?? null,
+            incomplete: raw?.incomplete ?? null,
+            keyedCls: response.mode === 'stack' ? response.result?.keyedTerminatorLabel?.cls ?? null : null,
+          } : r)));
+        } catch (err) {
+          setStandingRunRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, status: 'error', error: err instanceof Error ? err.message : String(err) } : r)));
+        }
+      }
+    } finally {
+      setStandingRunActive(false);
+    }
+  }, [composerStack, composerRunning, standingRunActive]);
 
   // THE TEACH BOX submit. Writes the operator's `teachText` to disk EXACTLY as typed -- this
   // function never touches, trims (beyond the browser's own textarea value), reformats, or
@@ -1960,11 +2059,11 @@ export function LianaCycleTab() {
           <button
             type="button"
             onClick={() => void handleRun()}
-            disabled={running || !input.trim()}
+            disabled={running || standingRunActive || !input.trim()}
             style={{
-              background: running || !input.trim() ? '#1e2a38' : 'linear-gradient(135deg, #059669, #10b981)',
-              color: running || !input.trim() ? '#64748b' : '#fff', border: 'none', borderRadius: 6,
-              padding: '8px 10px', fontSize: 13, fontWeight: 700, cursor: running || !input.trim() ? 'default' : 'pointer',
+              background: running || standingRunActive || !input.trim() ? '#1e2a38' : 'linear-gradient(135deg, #059669, #10b981)',
+              color: running || standingRunActive || !input.trim() ? '#64748b' : '#fff', border: 'none', borderRadius: 6,
+              padding: '8px 10px', fontSize: 13, fontWeight: 700, cursor: running || standingRunActive || !input.trim() ? 'default' : 'pointer',
               fontFamily: 'system-ui, sans-serif', outline: 'none',
             }}
           >
@@ -2047,17 +2146,72 @@ export function LianaCycleTab() {
                 <button
                   type="button"
                   onClick={() => void runComposerStack()}
-                  disabled={composerRunning || running || !input.trim()}
+                  disabled={composerRunning || standingRunActive || running || !input.trim()}
                   style={{
-                    background: composerRunning || running || !input.trim() ? '#1e2a38' : 'linear-gradient(135deg, #7c3aed, #a78bfa)',
-                    color: composerRunning || running || !input.trim() ? '#64748b' : '#fff', border: 'none', borderRadius: 6,
+                    background: composerRunning || standingRunActive || running || !input.trim() ? '#1e2a38' : 'linear-gradient(135deg, #7c3aed, #a78bfa)',
+                    color: composerRunning || standingRunActive || running || !input.trim() ? '#64748b' : '#fff', border: 'none', borderRadius: 6,
                     padding: '8px 10px', fontSize: 12, fontWeight: 700,
-                    cursor: composerRunning || running || !input.trim() ? 'default' : 'pointer',
+                    cursor: composerRunning || standingRunActive || running || !input.trim() ? 'default' : 'pointer',
                     fontFamily: 'system-ui, sans-serif', outline: 'none',
                   }}
                 >
                   {composerRunning ? 'Running…' : 'Run this stack ▸'}
                 </button>
+
+                {/* D-BP154-059/BISHOP-SEG/S59/seg-twenty -- TEST IT YOURSELF: THE STANDING 20.
+                    Runs the campaign's 20 standing calibration questions (HARDWIRE-01 line 242)
+                    through this SAME stack, one at a time, live -- see runStandingTwenty's own
+                    header for why sequential is load-bearing, not a style choice. Reuses the
+                    "What happened, step by step" panel below (composerResult) for the live detail
+                    of whichever question is currently running; this block is only the scoreboard
+                    across all 20. */}
+                <button
+                  type="button"
+                  onClick={() => void runStandingTwenty()}
+                  disabled={composerRunning || standingRunActive || running}
+                  title="Runs campaign qids 1,7,14,20,27,33,40,46,53,59,66,72,79,85,92,98,105,111,118,124 through this stack, one at a time, live."
+                  style={{
+                    background: composerRunning || standingRunActive || running ? '#1e2a38' : 'linear-gradient(135deg, #0f766e, #14b8a6)',
+                    color: composerRunning || standingRunActive || running ? '#64748b' : '#fff', border: 'none', borderRadius: 6,
+                    padding: '8px 10px', fontSize: 12, fontWeight: 700,
+                    cursor: composerRunning || standingRunActive || running ? 'default' : 'pointer',
+                    fontFamily: 'system-ui, sans-serif', outline: 'none', marginTop: 6,
+                  }}
+                >
+                  {standingRunActive
+                    ? `Running the standing 20… (${standingRunRows.filter((r) => r.status === 'done' || r.status === 'error').length}/${STANDING_20_CAMPAIGN_QIDS.length})`
+                    : 'Test it yourself: run the standing 20 ▸'}
+                </button>
+
+                {standingRunRows.length > 0 && (
+                  <div style={{
+                    fontSize: 11, fontFamily: 'monospace', color: '#e2e8f0', marginTop: 6,
+                    maxHeight: 220, overflowY: 'auto', resize: 'vertical',
+                    border: '1px solid #1e2a38', borderRadius: 4, padding: 6,
+                  }}
+                  >
+                    <div style={{ color: '#94a3b8', fontFamily: 'system-ui, sans-serif', marginBottom: 4 }}>
+                      Standing 20 -- live, one observation per question (never a rate; see NOISE_FLOOR_BP148):
+                    </div>
+                    {standingRunRows.map((row) => {
+                      const label = row.status === 'pending' ? 'pending'
+                        : row.status === 'running' ? 'RUNNING…'
+                          : row.status === 'error' ? `ERROR: ${row.error}`
+                            : `${row.verdict ? `VERDICT ${row.verdict}` : 'ABSTAIN'}${row.incomplete ? ' (incomplete)' : ''} -- keyed label: ${row.keyedCls ?? 'n/a'}`;
+                      const dot = row.status === 'pending' ? '#334155'
+                        : row.status === 'running' ? '#eab308'
+                          : row.status === 'error' ? '#ef4444'
+                            : row.verdict ? '#22c55e' : '#94a3b8';
+                      return (
+                        <div key={row.qid} style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '2px 0' }}>
+                          <span style={{ color: dot, fontSize: 14, lineHeight: 1 }}>●</span>
+                          <span style={{ color: '#64748b', width: 32 }}>{`qid ${row.qid}`}</span>
+                          <span style={{ color: '#cbd5e1' }}>{label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {/* What happened, step by step -- shown after a stack run. */}
                 {composerResult && composerResult.mode === 'stack' && (
