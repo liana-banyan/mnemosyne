@@ -443,6 +443,16 @@ export function isMembershipPartitioned(
 // only after it already spent a live query -- see this function's own original inline comment
 // (now here) for the full qualifier-2 reasoning. `null` (never a guess) when HumanNuance:1 did
 // not run/failed, or found no augmentation deltas to check against.
+// D-BP154-057, BLOCKER 2 -- CORRECTED, THE COORDINATOR'S OWN RULING (disclosed to the Founder, not
+// itself a Founder ruling): "the substantive-frame check requires every option to be ACCOUNTED
+// FOR, not ELIMINATED. An option is accounted for when it carries an explicit disposition with its
+// basis -- OUT_OF_FRAME, STATED_MEMBER, STATED_NONMEMBER, NOT_COMPARABLE, or
+// RETAINED-as-comparable-candidate. An option with no disposition at all still makes the frame
+// non-substantive." LIVE-DIAGNOSED (this ticket, qid 98): the original ELIMINATED-only check
+// correctly caught the Arctic-Circle-on-a-hollow-frame defect (an option with NO disposition at
+// all) but over-reached into requiring every augmentation addition be REMOVED -- the Founder's own
+// proof legitimately RETAINS North Africa as a final comparable candidate (BoundaryStability:1's
+// own `confirmedStable`), which is an explicit, sourced disposition, not silence.
 export function isCategoryFrameSubstantive(
   // Structurally typed to `{ letter: string }` (not the full TerminatorEliminationEntry) so
   // step_skip.ts's own upstream call (which has no `name`/`sourceStep`/`reason`/`span` to hand in
@@ -450,10 +460,17 @@ export function isCategoryFrameSubstantive(
   // SAME function -- one definition, reused, never a second one that could drift.
   eliminated: Array<{ letter: string }>,
   humanNuance: HumanNuanceResult | null,
+  // D-BP154-057, ADDITIVE/OPTIONAL -- defaults to an empty set so every pre-existing call site
+  // (this file's own tests) compiles and behaves identically when omitted. Letters with an
+  // EXPLICIT "confirmed retained as a comparable candidate" disposition -- Unitary:1's own
+  // `confirmedUnitary`, BoundaryStability:1's own `confirmedStable` -- a source directly and
+  // verifiably stated this option belongs in the comparable pool, never a default/silent survival
+  // (silence stays uncaught, exactly as it always has).
+  confirmedRetained: ReadonlySet<string> = new Set(),
 ): { substantive: boolean; uncaught: string[] } | null {
   if (!humanNuance?.ok || humanNuance.nonParticipants.length === 0) return null;
   const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
-  const uncaught = humanNuance.nonParticipants.filter((L) => !eliminatedLetters.has(L));
+  const uncaught = humanNuance.nonParticipants.filter((L) => !eliminatedLetters.has(L) && !confirmedRetained.has(L));
   return { substantive: uncaught.length === 0, uncaught };
 }
 
@@ -1500,7 +1517,17 @@ export async function runTerminatorStep(
     // `null` (never a guess) when HumanNuance:1 did not run or found no augmentation deltas to
     // check against -- absence of this specific evidence is NOT treated as "substantive" by
     // default (qualifier 2 again: no evidence for substantiveness means it is not licensed).
-    const categoryFrameSubstantive = isCategoryFrameSubstantive(eliminated, humanNuanceRaw);
+    //
+    // D-BP154-057, BLOCKER 2, THE COORDINATOR'S OWN RULING (isCategoryFrameSubstantive()'s own
+    // header above carries the full text). `confirmedRetained` is built ONLY from EXPLICIT,
+    // sourced "confirmed" arrays -- Unitary:1's own confirmedUnitary, BoundaryStability:1's own
+    // confirmedStable -- never from mere silence/omission, which still leaves an option uncaught
+    // exactly as before this fix.
+    const confirmedRetained = new Set<string>([
+      ...(unitaryRaw?.ok ? unitaryRaw.confirmedUnitary.map((e) => e.letter) : []),
+      ...(boundaryRaw?.ok ? boundaryRaw.confirmedStable.map((e) => e.letter) : []),
+    ]);
+    const categoryFrameSubstantive = isCategoryFrameSubstantive(eliminated, humanNuanceRaw, confirmedRetained);
     // Qualifier 3: no gate may be licensed on the basis of a step that FAILED or was UNPRODUCTIVE.
     // Softballs:1/Discriminator:1 are the category-elimination steps this license depends on;
     // 'ok-but-unproductive' (D-BP154-046 FIX 1) on EITHER, with nothing else in `eliminated`

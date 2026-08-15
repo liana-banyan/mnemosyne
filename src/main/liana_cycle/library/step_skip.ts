@@ -82,6 +82,7 @@ import type { DiscriminatorResult } from './discriminator_step';
 import type { SoftballsResult } from './softballs_step';
 import type { UnitaryResult } from './unitary_step';
 import type { HumanNuanceResult } from './human_nuance_step';
+import type { BoundaryResult } from './boundary_step';
 import type { ComposerStepOutcome } from './script_bridge';
 
 export const SKIP_POLICY_VERSION = '1';
@@ -121,6 +122,10 @@ export function computeStepSkip(id: string, priorResults: ComposerStepOutcome[])
     const namedSetRaw = findRaw('NamedSet:1') as NamedSetResult | null;
     const discriminatorRaw = findRaw('Discriminator:1') as DiscriminatorResult | null;
     const unitaryRaw = findRaw('Unitary:1') as UnitaryResult | null;
+    // D-BP154-057, ADDITIVE. Same discipline as `unitaryRaw` above -- read so `confirmedRetained`
+    // (below) can stay synchronized with terminator_step.ts's own downstream call to
+    // isCategoryFrameSubstantive(), never a second, independently-computed set that could drift.
+    const boundaryRaw = findRaw('BoundaryStability:1') as BoundaryResult | null;
     // D-BP154-043, AMENDED; D-BP154-046 FIX 2, AMENDED AGAIN. Founder's own correction to
     // FD-BP154-14 (terminator_step.ts's own header carries the full ruling text): "Magnitude does
     // NOT run when membership RESOLVES to a unique survivor. Magnitude IS the final permissible
@@ -148,7 +153,15 @@ export function computeStepSkip(id: string, priorResults: ComposerStepOutcome[])
       ...(humanNuanceRaw?.ok ? humanNuanceRaw.excluded.map((e) => ({ letter: e.letter })) : []),
       ...(unitaryRaw?.ok ? unitaryRaw.excluded.map((e) => ({ letter: e.letter })) : []),
     ];
-    const categoryFrameSubstantive = isCategoryFrameSubstantive(eliminatedLetters, humanNuanceRaw);
+    // D-BP154-057, BLOCKER 2 -- THE COORDINATOR'S OWN RULING, applied here too so this upstream
+    // gate and terminator_step.ts's own downstream reducer never disagree (this file's own header,
+    // above, names that exact "two gates disagree" bug class twice already). Same construction as
+    // the downstream call.
+    const confirmedRetained = new Set<string>([
+      ...(unitaryRaw?.ok ? unitaryRaw.confirmedUnitary.map((e) => e.letter) : []),
+      ...(boundaryRaw?.ok ? boundaryRaw.confirmedStable.map((e) => e.letter) : []),
+    ]);
+    const categoryFrameSubstantive = isCategoryFrameSubstantive(eliminatedLetters, humanNuanceRaw, confirmedRetained);
     // Qualifiers 2/3: isMembershipPartitioned() (terminator_step.ts) itself reads `included`/
     // `propertyMembers` ONLY when the owning step's own `ok === true`.
     if (isMembershipPartitioned(namedSetRaw, discriminatorRaw)
