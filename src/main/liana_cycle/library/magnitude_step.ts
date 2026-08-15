@@ -78,6 +78,10 @@ import { deriveTerminatorEliminations } from './terminator_step';
 import type { SoftballsResult } from './softballs_step';
 import type { NamedSetResult } from './named_set_step';
 import type { DiscriminatorResult } from './discriminator_step';
+// D-BP154-043 FIX, ADDITIVE, TYPE-ONLY (same non-circular shape as the three imports above --
+// human_nuance_step.ts's/unitary_step.ts's own runtime imports never reach this file).
+import type { HumanNuanceResult } from './human_nuance_step';
+import type { UnitaryResult } from './unitary_step';
 import type { ComposerStepOutcome } from './script_bridge';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
@@ -404,13 +408,26 @@ export async function runMagnitudeStep(
   const softballsRaw = findRaw('Softballs:1') as SoftballsResult | null;
   const namedSetRaw = findRaw('NamedSet:1') as NamedSetResult | null;
   const discriminatorRaw = findRaw('Discriminator:1') as DiscriminatorResult | null;
+  // D-BP154-043 FIX, live-measured: this file's own frame establishment (the deriveTerminatorEliminations()
+  // call just below) had NOT been updated when HumanNuance:1 (D-BP154-033) or Unitary:1
+  // (D-BP154-043) were added to terminator_step.ts's own elimination sources -- a real qid-98 live
+  // run caught the consequence directly: Magnitude:1 ranked a 7-member frame while Terminator:1's
+  // OWN full reduction (now consulting HumanNuance:1/Unitary:1 too) had already narrowed to 5,
+  // Terminator refused the mismatched ranking, and an amendment-permitted tie-break was lost to a
+  // stale frame. Read here (same findRaw() pattern as softballsRaw/namedSetRaw/discriminatorRaw
+  // above) so this file's own frame can never again silently diverge from Terminator:1's.
+  const humanNuanceRaw = findRaw('HumanNuance:1') as HumanNuanceResult | null;
+  const unitaryRaw = findRaw('Unitary:1') as UnitaryResult | null;
 
-  const anyFrameStepRan = Boolean(softballsRaw?.ok || namedSetRaw?.ok || discriminatorRaw?.ok);
+  const anyFrameStepRan = Boolean(
+    softballsRaw?.ok || namedSetRaw?.ok || discriminatorRaw?.ok || humanNuanceRaw?.ok || unitaryRaw?.ok,
+  );
   if (!anyFrameStepRan) {
     const result = emptyMagnitudeResult({
-      error: 'no frame was established -- Softballs:1, NamedSet:1, or Discriminator:1 must run '
-        + '(and succeed) earlier in this same stack before MAGNITUDE can rank anything; ranking '
-        + 'the full option list is exactly the unframed magnitude answer FD-BP153-01 forbids',
+      error: 'no frame was established -- Softballs:1, NamedSet:1, Discriminator:1, HumanNuance:1, '
+        + 'or Unitary:1 must run (and succeed) earlier in this same stack before MAGNITUDE can rank '
+        + 'anything; ranking the full option list is exactly the unframed magnitude answer '
+        + 'FD-BP153-01 forbids',
     });
     return { result, summary: summaryLine(OPT, result) };
   }
@@ -420,6 +437,8 @@ export async function runMagnitudeStep(
     softballsRaw?.ok ? softballsRaw : null,
     namedSetRaw?.ok ? namedSetRaw : null,
     discriminatorRaw?.ok ? discriminatorRaw : null,
+    humanNuanceRaw?.ok ? humanNuanceRaw : null,
+    unitaryRaw?.ok ? unitaryRaw : null,
   );
   if (contradiction) {
     const result = emptyMagnitudeResult({
