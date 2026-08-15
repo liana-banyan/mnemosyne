@@ -236,7 +236,14 @@ export interface TerminatorResult {
   // (ran, succeeded, produced something) and from 'failed' (did not succeed at all) -- three states
   // for three different facts, never collapsed into two.
   // D-BP154-053, ADDITIVE: 'BoundaryStability:1' added as an eighth entry.
-  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1' | 'Unitary:1' | 'BoundaryStability:1', 'not run' | 'ok' | 'ok-but-unproductive' | 'failed' | 'skipped-moot'>;
+  // D-BP154-063, NEW STATE. Founder, this dispatch, verbatim: "the 15 no-'following' items must
+  // return INAPPLICABLE, not a forced parse and not a failure... an honest statement about reach,
+  // not a defect." 'inapplicable': the step's own category_parse_gate.ts (THE ONE SHARED GATE)
+  // genuinely found no "following" clause -- or found one with no identifiable category noun --
+  // in THIS question's own wording; distinct from 'failed' (which now means a REAL failure: a live
+  // authority call that errored, timed out, or came back unusable) and never counted by
+  // anyStepFailed(), so it can never mark a run `incomplete` on its own.
+  stepsConsulted: Record<'Softballs:1' | 'NamedSet:1' | 'Discriminator:1' | 'Magnitude:1' | 'HumanNuance:1' | 'Purpose:1' | 'Unitary:1' | 'BoundaryStability:1', 'not run' | 'ok' | 'ok-but-unproductive' | 'failed' | 'skipped-moot' | 'inapplicable'>;
   /** D-BP154-041 PART 2/3, FD-BP154-17, ADDITIVE. Non-null ONLY when Purpose:1 ran (ok:true) and
    *  found the evidence class structurally incapable of satisfying its own stated purpose -- a
    *  DISTINCT outcome from a normal ABSTAIN (multiple/zero survivors after elimination) and from a
@@ -1385,11 +1392,22 @@ export async function runTerminatorStep(
   // is no longer automatically 'ok' -- isStepProductive() (this file, exported below) is
   // consulted, and a formally-successful-but-hollow result becomes 'ok-but-unproductive', the
   // antonymic canon's third state.
+  // D-BP154-063, NEW. Checked BEFORE 'failed', same discipline as isSkippedMarker() above it --
+  // a duck-typed `inapplicable === true` is how softballs_step.ts's/discriminator_step.ts's/
+  // human_nuance_step.ts's own category_parse_gate.ts-backed "no category found" branch is told
+  // apart from a genuine failure (a live authority call that errored, timed out, or came back
+  // unusable). Structural, never a class check, same convention SkippedStepMarker's own
+  // isSkippedMarker() already established (step_skip.ts).
+  const isInapplicableMarker = (raw: unknown): boolean => (
+    Boolean(raw) && typeof raw === 'object' && (raw as { inapplicable?: unknown }).inapplicable === true
+  );
+
   const stepStatus = (
     id: string, raw: { ok?: boolean } | null,
-  ): 'not run' | 'ok' | 'ok-but-unproductive' | 'failed' | 'skipped-moot' => {
+  ): 'not run' | 'ok' | 'ok-but-unproductive' | 'failed' | 'skipped-moot' | 'inapplicable' => {
     if (!raw) return 'not run';
     if (isSkippedMarker(raw)) return 'skipped-moot';
+    if (isInapplicableMarker(raw)) return 'inapplicable';
     if (!raw.ok) return 'failed';
     return isStepProductive(id, raw) ? 'ok' : 'ok-but-unproductive';
   };

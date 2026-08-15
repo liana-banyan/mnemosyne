@@ -131,12 +131,13 @@ describe('runSoftballsStep -- named failures, never a silent empty result', () =
     expect(result.error).toContain('no lettered options');
   });
 
-  test('no derivable category -> ok:false with a named reason, never a guessed category', async () => {
+  test('no derivable category -> ok:false, inapplicable:true (D-BP154-063: an honest reach statement, not a failure), never a guessed category', async () => {
     const input: MethodQuestionInput = { question: 'Pick the best one.', options: { A: 'x', B: 'y' } };
     const ctx: MethodRunContext = { askGoogle: vi.fn(), emit: vi.fn() };
     const { result } = await runSoftballsStep(input, ctx);
     expect(result.ok).toBe(false);
-    expect(result.error).toContain('could not determine the category');
+    expect(result.inapplicable).toBe(true);
+    expect(result.error).toContain('INAPPLICABLE');
   });
 
   test('askGoogle unavailable -> ok:false, named, never "nothing excluded"', async () => {

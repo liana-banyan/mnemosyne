@@ -972,6 +972,29 @@ describe('D-BP154-033: HumanNuance:1 is wired into deriveTerminatorEliminations(
     expect(result.incomplete).toBe(false);
     expect(result.verdict).toBe('A');
   });
+
+  // D-BP154-063 -- THE PARSE GATE FIX'S OWN downstream proof. Founder, this dispatch, verbatim:
+  // "the 15 no-'following' items must return INAPPLICABLE, not a forced parse and not a failure."
+  // Before this fix, softballs_step.ts's/discriminator_step.ts's/human_nuance_step.ts's own
+  // "no category found" branch returned plain `ok: false`, which stepStatus() (this file) could
+  // only read as 'failed' -- silently marking every one of the 15-of-20 standing questions
+  // `incomplete: true` even though nothing was actually broken. `inapplicable: true` (category_
+  // parse_gate.ts-backed) is now checked BEFORE `ok`, same convention as a SKIPPED-AS-MOOT marker.
+  test('a Softballs:1 INAPPLICABLE marker (category_parse_gate.ts found no "following" clause) reports "inapplicable", never "failed", and never marks the run incomplete', async () => {
+    const softballsInapplicable: SoftballsResult = {
+      ok: false, inapplicable: true, category: null, query: null, excluded: [], discarded: 0,
+      notExcluded: Object.keys(OPT), via: 'n/a',
+      error: 'INAPPLICABLE -- no "following" clause anywhere in this question (test)',
+    };
+    const softballsOutcome = { id: 'Softballs:1', summary: 's', raw: softballsInapplicable };
+    const namedSetOutcome = {
+      id: 'NamedSet:1', summary: 's',
+      raw: namedSet(Object.keys(OPT).filter((L) => L !== 'A' && L !== 'D').map((L) => [L, `${L}) is densely populated.`] as [string, string])),
+    };
+    const { result } = await runTerminatorStep(input, ctx, [softballsOutcome, namedSetOutcome]);
+    expect(result.stepsConsulted['Softballs:1']).toBe('inapplicable');
+    expect(result.incomplete).toBe(false);
+  });
 });
 
 describe('D-BP154-050: Unitary:1 is WITHDRAWN as an eliminator -- comparability_gate.ts\'s own uniform-predicate invariant supersedes it', () => {
