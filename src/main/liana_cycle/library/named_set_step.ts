@@ -31,7 +31,7 @@
 // doublecheck. This file produces ONLY the inclusion list with its spans.
 
 import {
-  appearsIn, gemmaExtract, list, toLetters,
+  appearsIn, gemmaExtract, list,
 } from '../methods/comparative_cascade';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 import { registerNameNumbered } from './method_registry';
@@ -47,6 +47,9 @@ import {
   spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
 } from './composer_step_evidence';
 import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
+// D-BP154-052/BISHOP-SEG/S52/seg-wiregate, WIRING (see softballs_step.ts's own header for the
+// full ruling) -- THE ONE SHARED RESOLVER, replacing this file's own local mirrored copy below.
+import { resolveNameToOption } from './entity_resolution';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
@@ -117,9 +120,11 @@ type RawIncludedEntry = { name?: unknown; span?: unknown };
 // softballs_step.ts:131-133's own stripListLetterPrefix(), never inventing a new equivalence: only
 // a leading "<single letter>) " token is stripped, and the match is still exact string identity
 // on the option's bare text; no letter is special-cased (FD-BP153-06).
-function stripListLetterPrefix(name: string): string {
-  return name.replace(/^[A-Za-z]\)\s*/, '');
-}
+//
+// D-BP154-052, RETIRED (not duplicated): this file's own local stripListLetterPrefix() mirror is
+// removed -- entity_resolution.ts's resolveNameToOption() (imported above) now performs the same
+// list-letter-prefix strip as its own step 2, plus two further mechanical steps this file never
+// had (stated annotation, singular/plural fold), so nothing that matched before stops matching.
 
 /** THE VERIFY-THE-SPAN CHOKE POINT for this step (FD-BP153-07 FIX 2), mirrored from
  *  softballs_step.ts's verifyExcludedEntries() with the same four-part discipline: (a) non-empty
@@ -141,13 +146,9 @@ export function verifyIncludedEntries(
     const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
     if (!name) continue; // nothing named -- not a candidate value, not a discard
-    let matched = toLetters([name], OPT);
-    if (matched.length === 0) {
-      const stripped = stripListLetterPrefix(name);
-      if (stripped !== name) matched = toLetters([stripped], OPT);
-    }
-    if (matched.length === 0) continue; // names no known option -- not a candidate value here
-    const L = matched[0];
+    // D-BP154-052, WIRED: THE ONE SHARED RESOLVER (entity_resolution.ts).
+    const { letter: L } = resolveNameToOption(name, OPT);
+    if (!L) continue; // names no known option -- not a candidate value here
     if (!span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {
       discarded++;
       continue;
