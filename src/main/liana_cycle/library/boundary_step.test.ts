@@ -1,12 +1,18 @@
-// boundary_step.test.ts -- D-BP154-053/BISHOP-SEG/S52/seg-wiregate PART 1 CONTINUATION
+// boundary_step.test.ts -- D-BP154-053/BISHOP-SEG/S52/seg-wiregate PART 1 CONTINUATION, REWRITTEN D-BP154-058
 //
 // FAIL-BEFORE / PASS-AFTER for 'BoundaryStability:1'. Same boundary as unitary_step.test.ts's own
 // header: the pure parts (query text, span verification) are exercised directly; runBoundaryStep()
 // itself calls a live conversational authority and a live Ollama extraction, neither available
 // under vitest -- proven by an in-app run instead.
 //
-// FAIL-BEFORE: every test below FAILS on main before this ticket, because boundary_step.ts did not
-// exist -- the import at the top of this file alone throws "Cannot find module './boundary_step'".
+// D-BP154-058 REWRITE: the question changed from a bare STABLE/VARIABLE judgement (D-BP154-055,
+// which a live run answered loosely enough to call 6 of 9 options variable) to an ENUMERABLE
+// question -- does the term carry TWO OR MORE NAMED, materially different definitions? The
+// disposition rule this file's own verifyBoundaryClassifications() now enforces, Founder verbatim:
+// "A bare 'it varies' is NOT sufficient... The source must name the rival definitions. If it cannot
+// enumerate them, the option is UNSTATED on this factor, not eliminated." Every test below reflects
+// the NEW "single"/"multiple" + `definitions[]` shape; FAIL-BEFORE for this rewrite is the same
+// git-stash discipline as every prior wiring proof in this file.
 
 import { describe, test, expect } from 'vitest';
 import {
@@ -22,12 +28,14 @@ const OPT: Record<string, string> = {
 };
 const ALL = Object.keys(OPT);
 
-describe('buildBoundaryQuery -- ONE query, per-option adjudication', () => {
-  test('names every option once and asks for a classification of EVERY one, in order, none skipped', () => {
+describe('buildBoundaryQuery -- ONE query, per-option adjudication, asking for an ENUMERATION not a judgement', () => {
+  test('names every option once, asks for a classification of EVERY one, in order, none skipped, and asks for named rival definitions', () => {
     const q = buildBoundaryQuery(ALL, OPT);
     expect(q).toContain('For EACH of the following');
     expect(q).toContain('every one, in order');
     expect(q).toContain('do not skip any');
+    expect(q).toMatch(/MORE THAN ONE materially different/);
+    expect(q).toMatch(/LIST the competing definitions/);
     for (const L of ALL) expect(q).toContain(OPT[L]);
   });
 });
@@ -39,26 +47,31 @@ describe('buildBoundaryCorroborationQuery', () => {
   });
 });
 
-describe('verifyBoundaryClassifications -- per-option, extraction only, verified span or discarded (HARDWIRE-22)', () => {
-  const passage = 'Central Asia has a materially variable boundary across world-regional usage, '
-    + 'and the item supplies no boundary definition for it. South America has a stable, '
-    + 'consistently-used boundary, routinely used in density comparisons.';
+describe('verifyBoundaryClassifications -- per-option, extraction only, verified span or discarded (HARDWIRE-22), ENUMERATION REQUIRED for a "multiple" finding to count', () => {
+  const passage = 'Central Asia carries multiple materially different definitions: 1) the five '
+    + 'former Soviet republics; 2) Turkestan; 3) a broader area including Afghanistan. South '
+    + 'America has one settled definition, routinely used in density comparisons. Europe is said '
+    + 'to vary somewhat depending on convention.';
 
-  test('an entry classified "variable" with a verbatim span is unstable', () => {
+  test('an entry classified "multiple" with >=2 named rival definitions and a verbatim span is unstable, carrying its own definitions[]', () => {
     const raw = [{
-      name: 'Central Asia', classification: 'variable',
-      span: 'Central Asia has a materially variable boundary across world-regional usage, and the item supplies no boundary definition for it.',
+      name: 'Central Asia', classification: 'multiple', definitions: ['the five former Soviet republics', 'Turkestan', 'a broader area including Afghanistan'],
+      span: 'Central Asia carries multiple materially different definitions: 1) the five former Soviet republics; 2) Turkestan; 3) a broader area including Afghanistan.',
     }];
-    const { unstable, confirmedStable, discarded } = verifyBoundaryClassifications(raw, passage, OPT);
-    expect(unstable).toEqual([{ letter: 'F', name: 'Central Asia', span: raw[0].span }]);
+    const { unstable, confirmedStable, insufficientEnumeration, discarded } = verifyBoundaryClassifications(raw, passage, OPT);
+    expect(unstable).toEqual([{
+      letter: 'F', name: 'Central Asia', span: raw[0].span,
+      definitions: ['the five former Soviet republics', 'Turkestan', 'a broader area including Afghanistan'],
+    }]);
     expect(confirmedStable).toEqual([]);
+    expect(insufficientEnumeration).toEqual([]);
     expect(discarded).toBe(0);
   });
 
-  test('an entry classified "stable" with a verbatim span is CONFIRMED, never eliminated', () => {
+  test('an entry classified "single" with a verbatim span is CONFIRMED, never eliminated', () => {
     const raw = [{
-      name: 'South America', classification: 'stable',
-      span: 'South America has a stable, consistently-used boundary, routinely used in density comparisons.',
+      name: 'South America', classification: 'single',
+      span: 'South America has one settled definition, routinely used in density comparisons.',
     }];
     const { unstable, confirmedStable, discarded } = verifyBoundaryClassifications(raw, passage, OPT);
     expect(unstable).toEqual([]);
@@ -66,15 +79,49 @@ describe('verifyBoundaryClassifications -- per-option, extraction only, verified
     expect(discarded).toBe(0);
   });
 
-  test('EVERY option the passage addresses is classified in one pass -- Central Asia (variable) and South America (stable) together', () => {
+  // THE CORE DISPOSITION RULE, Founder verbatim: "A bare 'it varies' is NOT sufficient... If it
+  // cannot enumerate them, the option is UNSTATED on this factor, not eliminated."
+  test('THE DISPOSITION RULE: a "multiple" claim naming ZERO rival definitions is INSUFFICIENT ENUMERATION, never folded into unstable', () => {
+    const raw = [{
+      name: 'Europe', classification: 'multiple', definitions: [],
+      span: 'Europe is said to vary somewhat depending on convention.',
+    }];
+    const { unstable, insufficientEnumeration, discarded } = verifyBoundaryClassifications(raw, passage, OPT);
+    expect(unstable).toEqual([]);
+    expect(insufficientEnumeration).toEqual([{ letter: 'E', name: 'Europe', span: raw[0].span }]);
+    expect(discarded).toBe(0);
+  });
+
+  test('THE DISPOSITION RULE: a "multiple" claim naming exactly ONE rival definition is STILL insufficient (need TWO OR MORE to be a genuine rivalry)', () => {
+    const raw = [{
+      name: 'Europe', classification: 'multiple', definitions: ['a narrower geopolitical definition'],
+      span: 'Europe is said to vary somewhat depending on convention.',
+    }];
+    const { unstable, insufficientEnumeration } = verifyBoundaryClassifications(raw, passage, OPT);
+    expect(unstable).toEqual([]);
+    expect(insufficientEnumeration.map((e) => e.letter)).toEqual(['E']);
+  });
+
+  test('THE DISPOSITION RULE: two named definitions that are the SAME rival under slightly different wording fold to one -- still insufficient', () => {
+    const raw = [{
+      name: 'Europe', classification: 'multiple',
+      definitions: ['the five former Soviet republics', '  The Five Former Soviet Republics  '],
+      span: 'Europe is said to vary somewhat depending on convention.',
+    }];
+    const { unstable, insufficientEnumeration } = verifyBoundaryClassifications(raw, passage, OPT);
+    expect(unstable).toEqual([]);
+    expect(insufficientEnumeration.map((e) => e.letter)).toEqual(['E']);
+  });
+
+  test('EVERY option the passage addresses is classified in one pass -- Central Asia (multiple, sufficient) and South America (single) together', () => {
     const raw = [
       {
-        name: 'Central Asia', classification: 'variable',
-        span: 'Central Asia has a materially variable boundary across world-regional usage, and the item supplies no boundary definition for it.',
+        name: 'Central Asia', classification: 'multiple', definitions: ['the five former Soviet republics', 'Turkestan'],
+        span: 'Central Asia carries multiple materially different definitions: 1) the five former Soviet republics; 2) Turkestan; 3) a broader area including Afghanistan.',
       },
       {
-        name: 'South America', classification: 'stable',
-        span: 'South America has a stable, consistently-used boundary, routinely used in density comparisons.',
+        name: 'South America', classification: 'single',
+        span: 'South America has one settled definition, routinely used in density comparisons.',
       },
     ];
     const { unstable, confirmedStable } = verifyBoundaryClassifications(raw, passage, OPT);
@@ -83,7 +130,7 @@ describe('verifyBoundaryClassifications -- per-option, extraction only, verified
   });
 
   test('discards an entry whose span is not verbatim in the passage', () => {
-    const raw = [{ name: 'Central Asia', classification: 'variable', span: 'this sentence does not appear anywhere in the passage' }];
+    const raw = [{ name: 'Central Asia', classification: 'multiple', definitions: ['a', 'b'], span: 'this sentence does not appear anywhere in the passage' }];
     const { unstable, discarded } = verifyBoundaryClassifications(raw, passage, OPT);
     expect(unstable).toEqual([]);
     expect(discarded).toBe(1);
@@ -105,7 +152,7 @@ describe('verifyBoundaryClassifications -- per-option, extraction only, verified
   });
 
   test('a name matching no known option is not a candidate, not a discard', () => {
-    const raw = [{ name: 'Atlantis', classification: 'variable', span: 'irrelevant' }];
+    const raw = [{ name: 'Atlantis', classification: 'multiple', definitions: ['a', 'b'], span: 'irrelevant' }];
     const { unstable, discarded } = verifyBoundaryClassifications(raw, passage, OPT);
     expect(unstable).toEqual([]);
     expect(discarded).toBe(0);
@@ -115,8 +162,8 @@ describe('verifyBoundaryClassifications -- per-option, extraction only, verified
   // on entity_resolution.ts's shared resolver (never a local mirror) -- a stated parenthetical
   // alias resolves via that resolver's third mechanical step.
   test('WIRING PROOF: a stated parenthetical alias resolves through entity_resolution.ts', () => {
-    const span = 'Northern Africa (North Africa) has a stable, consistently-used boundary.';
-    const raw = [{ name: 'Northern Africa (North Africa)', classification: 'stable', span }];
+    const span = 'Northern Africa (North Africa) has one settled definition.';
+    const raw = [{ name: 'Northern Africa (North Africa)', classification: 'single', span }];
     const { confirmedStable, discarded } = verifyBoundaryClassifications(raw, `${passage} ${span}`, OPT);
     expect(confirmedStable.map((e) => e.letter)).toEqual(['C']);
     expect(discarded).toBe(0);
