@@ -110,6 +110,11 @@ import { registerNoConsensusStep, runNoConsensusStep } from './no_consensus_step
 // header (including why it was built native rather than reusing THE CONVERGENCE, classify_
 // cascade.ts, which is FORBIDDEN as a dependency here regardless).
 import { registerBorromeanTestStep, runBorromeanTest, borromeanSummaryLine } from './borromean_test';
+// D-BP155-004/BISHOP-SEG/S4/seg-semiotic-square -- RE-DISPATCH OF D-BP154-069. Founder, BP154,
+// verbatim: "yes, I like Greimas, keep it, and use the semiotic square (build it) and apply to
+// 85." See semiotic_square_step.ts's own header for the full ruling, including the search of both
+// BP154 principles files confirming "SemioticSquare" was never specced there under that name.
+import { registerSemioticSquareStep, runSemioticSquareStep } from './semiotic_square_step';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -272,6 +277,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP155-004/BISHOP-SEG/S4/seg-semiotic-square, ADDITIVE -- same idempotent shape as every call
+  // above, for the same reason. Does not touch, re-register, or collide with anything the others
+  // register -- 'SemioticSquare' is a new name.
+  try {
+    registerSemioticSquareStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -319,7 +332,8 @@ export interface ComposerRegistryEntry {
 // D-BP154-058 adds 'TargetClass:1' -- see target_class_step.ts's own header.
 // D-BP154-065 adds 'NoConsensus:1' -- see no_consensus_step.ts's own header.
 // D-BP154-072 adds 'Borromean:1' -- see borromean_test.ts's own header.
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1', 'Unitary:1', 'BoundaryStability:1', 'TargetClass:1', 'NoConsensus:1', 'Borromean:1']);
+// D-BP155-004 adds 'SemioticSquare:1' -- see semiotic_square_step.ts's own header.
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1', 'Unitary:1', 'BoundaryStability:1', 'TargetClass:1', 'NoConsensus:1', 'Borromean:1', 'SemioticSquare:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -544,6 +558,14 @@ async function runOneStep(
     // load-bearing finding, each with that finding withheld -- see borromean_test.ts's own header.
     const result = await runBorromeanTest(input, ctx, priorResults);
     const summary = borromeanSummaryLine(result);
+    persistStepClaim(id, input, ctx, result);
+    return { summary, raw: result };
+  }
+  if (id === 'SemioticSquare:1') {
+    // D-BP155-004/BISHOP-SEG/S4/seg-semiotic-square -- THE SEMIOTIC SQUARE. Same
+    // recordingAskGoogle()-wrapped ctx.askGoogle every other step here receives; see
+    // semiotic_square_step.ts's own header for the full ruling.
+    const { result, summary } = await runSemioticSquareStep(input, ctx);
     persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }
