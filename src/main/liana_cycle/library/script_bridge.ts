@@ -102,6 +102,10 @@ import { registerBoundaryStep, runBoundaryStep } from './boundary_step';
 // D-BP154-058/BISHOP-SEG/S52/seg-wiregate PART 5 -- THE TARGET-CLASS GATE. See
 // target_class_step.ts's own header.
 import { registerTargetClassStep, runTargetClassStep } from './target_class_step';
+// D-BP154-065/BISHOP-SEG/S52/seg-wiregate -- THE NO-CONSENSUS-FROM-SCATTER STEP, built
+// Composer-native after diagnosing the same-shaped forbidden mechanism (D-BP154-064). See
+// no_consensus_step.ts's own header.
+import { registerNoConsensusStep, runNoConsensusStep } from './no_consensus_step';
 import { emitStateTheQuestion } from '../liana_terminal_engine';
 import { makeMethodIdentity } from './method_identity';
 import { validateScript, type ResolvedRef, type Script, type ScriptResolver, type ScriptStepRef } from './script';
@@ -248,6 +252,14 @@ function ensureRegistryPopulated(): void {
   } catch {
     // already registered -- see comment above.
   }
+  // D-BP154-065/BISHOP-SEG/S52/seg-wiregate, ADDITIVE -- same idempotent shape as every call
+  // above, for the same reason. Does not touch, re-register, or collide with anything the others
+  // register -- 'NoConsensus' is a new name.
+  try {
+    registerNoConsensusStep();
+  } catch {
+    // already registered -- see comment above.
+  }
 }
 
 // ─────────────────────────────── the UI-facing listing ───────────────────────────────
@@ -293,7 +305,8 @@ export interface ComposerRegistryEntry {
 // D-BP154-043 adds 'Unitary:1' -- see unitary_step.ts's own header.
 // D-BP154-053 adds 'BoundaryStability:1' -- see boundary_step.ts's own header.
 // D-BP154-058 adds 'TargetClass:1' -- see target_class_step.ts's own header.
-const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1', 'Unitary:1', 'BoundaryStability:1', 'TargetClass:1']);
+// D-BP154-065 adds 'NoConsensus:1' -- see no_consensus_step.ts's own header.
+const EXECUTABLE_IDS: ReadonlySet<string> = new Set(['ComparativeCascade:1', 'DefinitionalCascade:1', 'ClassifyCascade:1', 'Survey:1', 'StateTheQuestion:1', 'Softballs:1', 'NamedSet:1', 'Discriminator:1', 'Terminator:1', 'Magnitude:1', 'HumanNuance:1', 'Purpose:1', 'OriginFrame:1', 'Unitary:1', 'BoundaryStability:1', 'TargetClass:1', 'NoConsensus:1']);
 
 /** Every step currently on file, for the composer panel -- reads the registry AT CALL TIME (no
  *  cached snapshot), so an entry a concurrent dispatch adds after this ticket lands appears here
@@ -501,6 +514,14 @@ async function runOneStep(
     // preferred (ctx.askConversationalAuthorityAs), Gemini fallback -- see target_class_step.ts's
     // own header.
     const { result, summary } = await runTargetClassStep(input, ctx);
+    persistStepClaim(id, input, ctx, result);
+    return { summary, raw: result };
+  }
+  if (id === 'NoConsensus:1') {
+    // D-BP154-065/BISHOP-SEG/S52/seg-wiregate -- THE NO-CONSENSUS-FROM-SCATTER STEP. Queries all
+    // five named voices (ctx.askConversationalAuthorityAs) in parallel, awaits every one to
+    // completion before any gate runs -- see no_consensus_step.ts's own header.
+    const { result, summary } = await runNoConsensusStep(input, ctx);
     persistStepClaim(id, input, ctx, result);
     return { summary, raw: result };
   }
