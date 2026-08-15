@@ -702,6 +702,11 @@ export async function runScratchComposer(
   emit: EmitFn,
   askConversationalAuthority?: ConversationalAuthorityFn,
   currentAcquisitionId?: string,
+  // D-BP154-044/BISHOP-SEG/S44/seg-acquire, ADDITIVE/OPTIONAL: undefined on every pre-existing
+  // call site (index.ts's own default 'liana-terminal-run' path never passes it) -- threaded only
+  // into the stack path's own ctx, below. See method_registry.ts's MethodRunContext.
+  // askConversationalAuthorityAs for the full ruling this exists to serve (FD-BP154-19).
+  askConversationalAuthorityAs?: MethodRunContext['askConversationalAuthorityAs'],
 ): Promise<ScriptRunResponse> {
   if (!stepIds || stepIds.length === 0) {
     const outcome = await runLianaCycleQuestion(
@@ -753,7 +758,9 @@ export async function runScratchComposer(
   // above) can tag its persisted classification with the SAME acquisition id THE PAIL already
   // tags every EvidenceRecord this run writes with -- see method_registry.ts's own doc comment on
   // MethodRunContext.acquisitionId.
-  const ctx: MethodRunContext = { askGoogle, emit, askConversationalAuthority, acquisitionId: currentAcquisitionId };
+  const ctx: MethodRunContext = {
+    askGoogle, emit, askConversationalAuthority, acquisitionId: currentAcquisitionId, askConversationalAuthorityAs,
+  };
   const result = await runComposedStack(stepIds, methodInput, ctx);
   return { mode: 'stack', qid: parsed.qid, question: parsed.question, options: parsed.options, result };
 }

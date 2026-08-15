@@ -2592,6 +2592,39 @@ function buildAskConversationalAuthority(runThreadContext: NexusRunThreadContext
   };
 }
 
+// D-BP154-044/BISHOP-SEG/S44/seg-acquire, ADDITIVE. buildAskConversationalAuthority() (just
+// above) stays byte-unchanged and hardcoded to 'user_gemini' -- every existing caller (every
+// Composer step's own ctx.askConversationalAuthority) is unaffected. This is a SEPARATE,
+// authority-PARAMETERIZED sibling for MethodRunContext.askConversationalAuthorityAs
+// (method_registry.ts, D-BP154-044) -- FD-BP154-19: "you can use claude or perplexity as facts
+// gathering." Reuses runMachineDrivenNexusQueryFromMain() UNCHANGED (it already takes `authority`
+// as its own first argument; only buildAskConversationalAuthority()'s own closure hardcoded which
+// one) -- no new query mechanism, just a second, explicit entry point into the one that exists.
+function buildAskConversationalAuthorityFor(
+  runThreadContext: NexusRunThreadContext,
+  authority: 'user_gemini' | 'user_perplexity' | 'user_claude' | 'user_google' | 'user_chatgpt',
+): ConversationalAuthorityFn {
+  return async (question: string, mcOptions?: string[]) => {
+    const result = await runMachineDrivenNexusQueryFromMain(authority, question, null, runThreadContext, mcOptions);
+    if (!result.ok || !result.text.trim()) {
+      return {
+        ok: false,
+        text: '',
+        citations: [],
+        via: `${authority}:${result.outcome}${result.reason ? `(${result.reason})` : ''}`,
+        authority,
+      };
+    }
+    return {
+      ok: true,
+      text: result.text,
+      citations: result.citations.map((c) => c.href),
+      via: `${authority}:${result.outcome}`,
+      authority,
+    };
+  };
+}
+
 // D-BP152-033/BISHOP/seg-machine-drives-nexus: the one piece of glue this ticket adds to
 // index.ts. nexus_authority_persistent_session.ts's runMachineDrivenNexusQuery() needs a way to
 // reach the interactive (composer-driven) authorities without importing this file (index.ts
@@ -4353,6 +4386,33 @@ function registerIPCHandlers(): void {
   // TRANSPARENT: recordingAskGoogle/recordingConversationalAuthority both return exactly what the
   // inner function returned (evidence_authority.ts's own contract) -- wrapping cannot change what
   // answer a run reaches, only whether that answer is kept.
+  // D-BP154-044/BISHOP-SEG/S44/seg-acquire, NEW, ADDITIVE. FD-BP154-19: "you can use claude or
+  // perplexity as facts gathering." A standalone, ONE-QUERY acquisition entry point -- the SAME
+  // recorded, mechanism-tagged, evidence-store-landing wiring every other query in this estate
+  // uses (buildAskConversationalAuthorityFor + recordingConversationalAuthority, this file, both
+  // UNCHANGED by this handler), just callable directly by name for a single named authority
+  // without stacking a full Composer run. Built because Magnitude:1's own frame-dependent
+  // attemptFrozenDensitySource() (magnitude_step.ts, D-BP154-044) ties its query to WHATEVER
+  // survivor set that particular live run happens to land on -- this handler lets a specific,
+  // fixed research question (e.g. "these three named UN M49 subregions") be acquired directly,
+  // still entirely through the machine, never an out-of-band fetch.
+  safeHandle('liana-acquire-fact', async (_event, { authority, question, mcOptions }: {
+    authority: 'user_gemini' | 'user_perplexity' | 'user_claude' | 'user_google' | 'user_chatgpt';
+    question: string;
+    mcOptions?: string[];
+  }) => {
+    const runThreadContext = createNexusRunThreadContext();
+    const evidenceSession = newAcquisitionSession({
+      acquisitionId: newAcquisitionId(new Date().toISOString(), String(process.pid)),
+      qid: null,
+    });
+    const recorded = recordingConversationalAuthority(
+      buildAskConversationalAuthorityFor(runThreadContext, authority), evidenceSession,
+    );
+    const result = await recorded(question, mcOptions);
+    return { ...result, acquisitionId: evidenceSession.acquisitionId };
+  });
+
   safeHandle('liana-script-run', async (event, { input, steps }: { input: string; steps?: string[] }) => {
     const sender = event.sender;
     // D-BP152-031 convention (see 'liana-terminal-run' above): ONE thread-identity space per run
@@ -4376,6 +4436,15 @@ function registerIPCHandlers(): void {
       qid: evidenceQid,
     });
 
+    // D-BP154-044/BISHOP-SEG/S44/seg-acquire, ADDITIVE. FD-BP154-19: "you can use claude or
+    // perplexity as facts gathering." Same recordingConversationalAuthority() wrap every other
+    // conversational call here gets (THE PAIL), just re-buildable per named authority --
+    // buildAskConversationalAuthorityFor() (above) is the only new query mechanism; everything
+    // else is the SAME wiring. Undefined authority never called unless a step actually reads
+    // ctx.askConversationalAuthorityAs, so this changes nothing for any pre-existing step.
+    const askConversationalAuthorityAs: NonNullable<Parameters<typeof runScratchComposer>[6]> = (authority, question, mcOptions) =>
+      recordingConversationalAuthority(buildAskConversationalAuthorityFor(runThreadContext, authority), evidenceSession)(question, mcOptions);
+
     const response = await runScratchComposer(
       input,
       steps,
@@ -4383,6 +4452,7 @@ function registerIPCHandlers(): void {
       emit,
       recordingConversationalAuthority(askConversationalAuthority, evidenceSession),
       evidenceSession.acquisitionId,
+      askConversationalAuthorityAs,
     );
 
     // D-BP154-028/BISHOP-SEG/S28/seg-survivable, NEW: THE COMPOSER RECEIPT. Non-fatal by
