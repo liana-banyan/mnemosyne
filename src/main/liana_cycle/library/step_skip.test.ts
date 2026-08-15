@@ -6,6 +6,8 @@ import type { ComposerStepOutcome } from './script_bridge';
 import type { PurposeResult } from './purpose_step';
 import type { NamedSetResult } from './named_set_step';
 import type { DiscriminatorResult } from './discriminator_step';
+import { CORPUS_META_TRUTH } from './human_nuance_step';
+import type { HumanNuanceResult } from './human_nuance_step';
 
 const OPT: Record<string, string> = {
   A: 'South America', B: 'South Asia', C: 'North Africa', D: 'Northeast United States', E: 'Europe',
@@ -52,6 +54,20 @@ function discriminator(propertyMembers: string[], ok = true): DiscriminatorResul
     discardedSubregionNonMembers: 0, registerStatement: null, registerStatementDiscarded: false,
     enumerationDisagreement: null, via: 'test',
   };
+}
+
+function humanNuanceArtifactEstablished(): HumanNuanceResult {
+  return {
+    ok: true, artifactClassEstablished: true, src: 'ori_mmlu-test', corpusMetaTruth: CORPUS_META_TRUTH,
+    cowGuard: { applies: true, reason: 'test' }, category: 'c', frame: [], nonParticipants: [],
+    originStratum: 'sand', singleAnswerPropertySurvived: null, answerDerivableFromQuestionTermsAlone: null,
+    query: 'q', excluded: [], insufficientEvidence: [], consistent: [], featureRuleVersion: 'test',
+    discarded: 0, unresolved: [], via: 'test',
+  };
+}
+
+function humanNuanceArtifactNotEstablished(): HumanNuanceResult {
+  return { ...humanNuanceArtifactEstablished(), artifactClassEstablished: false, corpusMetaTruth: null };
 }
 
 describe('isSkippedMarker', () => {
@@ -105,6 +121,40 @@ describe('computeStepSkip -- the sufficiency-driven skip (all five query-issuing
     const failedPurpose: PurposeResult = { ...insufficientPurpose(), ok: false, sufficiency: null, error: 'failed' };
     const pr: ComposerStepOutcome[] = [{ id: 'Purpose:1', summary: 's', raw: failedPurpose }];
     expect(computeStepSkip('Softballs:1', pr)).toBeNull();
+  });
+});
+
+describe('computeStepSkip -- D-BP154-043 AMENDMENT: Magnitude:1 is NOT skipped when the artifact class is established', () => {
+  it('does NOT skip Magnitude:1 when membership is partitioned AND HumanNuance:1 confirms the artifact class', () => {
+    const pr: ComposerStepOutcome[] = [
+      { id: 'NamedSet:1', summary: 's', raw: namedSet(['B']) },
+      { id: 'HumanNuance:1', summary: 's', raw: humanNuanceArtifactEstablished() },
+    ];
+    expect(computeStepSkip('Magnitude:1', pr)).toBeNull();
+  });
+
+  it('still skips Magnitude:1 when membership is partitioned but HumanNuance:1 did NOT establish the artifact class', () => {
+    const pr: ComposerStepOutcome[] = [
+      { id: 'NamedSet:1', summary: 's', raw: namedSet(['B']) },
+      { id: 'HumanNuance:1', summary: 's', raw: humanNuanceArtifactNotEstablished() },
+    ];
+    const skip = computeStepSkip('Magnitude:1', pr);
+    expect(skip).not.toBeNull();
+    expect(skip?.skipReason).toMatch(/FD-BP154-14/);
+  });
+
+  it('still skips Magnitude:1 when membership is partitioned and HumanNuance:1 never ran at all', () => {
+    const pr: ComposerStepOutcome[] = [{ id: 'NamedSet:1', summary: 's', raw: namedSet(['B']) }];
+    expect(computeStepSkip('Magnitude:1', pr)).not.toBeNull();
+  });
+
+  it('QUALIFIER 2/3: does not permit the tie-break on a FAILED HumanNuance:1, even if it claims artifactClassEstablished', () => {
+    const failedHumanNuance = { ...humanNuanceArtifactEstablished(), ok: false };
+    const pr: ComposerStepOutcome[] = [
+      { id: 'NamedSet:1', summary: 's', raw: namedSet(['B']) },
+      { id: 'HumanNuance:1', summary: 's', raw: failedHumanNuance },
+    ];
+    expect(computeStepSkip('Magnitude:1', pr)).not.toBeNull();
   });
 });
 

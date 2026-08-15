@@ -79,6 +79,7 @@
 import { isMembershipPartitioned } from './terminator_step';
 import type { NamedSetResult } from './named_set_step';
 import type { DiscriminatorResult } from './discriminator_step';
+import type { HumanNuanceResult } from './human_nuance_step';
 import type { PurposeResult } from './purpose_step';
 import type { ComposerStepOutcome } from './script_bridge';
 
@@ -134,18 +135,37 @@ export function computeStepSkip(id: string, priorResults: ComposerStepOutcome[])
   if (id === 'Magnitude:1') {
     const namedSetRaw = findRaw('NamedSet:1') as NamedSetResult | null;
     const discriminatorRaw = findRaw('Discriminator:1') as DiscriminatorResult | null;
+    // D-BP154-043, AMENDED. Founder's own correction to FD-BP154-14 (terminator_step.ts's own
+    // header carries the full ruling text): "Magnitude does NOT run when membership RESOLVES to a
+    // unique survivor. Magnitude IS the final permissible tie-break when membership PARTITIONS but
+    // leaves several survivors AND the artifact class is a single-answer item." This upstream gate
+    // must apply the SAME amendment the downstream terminator_step.ts reducer now applies, or the
+    // two disagree -- exactly the live-measured defect this ticket found (Magnitude:1 skipped here
+    // even when the amendment would have permitted it as a tie-break, because this file still
+    // encoded the PRE-amendment rule). Reads HumanNuance:1's own already-built
+    // `artifactClassEstablished` + `corpusMetaTruth` fields, the SAME two fields terminator_step.ts
+    // reads for the identical question -- one definition of "artifact class established", never a
+    // second, independently-computed one that could drift from the first.
+    const humanNuanceRaw = findRaw('HumanNuance:1') as HumanNuanceResult | null;
+    const artifactClassEstablished = Boolean(
+      humanNuanceRaw?.ok && humanNuanceRaw.artifactClassEstablished && humanNuanceRaw.corpusMetaTruth,
+    );
     // Qualifiers 2/3: isMembershipPartitioned() (terminator_step.ts) itself reads `included`/
     // `propertyMembers` ONLY when the owning step's own `ok === true`.
-    if (isMembershipPartitioned(namedSetRaw, discriminatorRaw)) {
+    if (isMembershipPartitioned(namedSetRaw, discriminatorRaw) && !artifactClassEstablished) {
       return {
         ok: false,
         skipped: true,
         skipReason: `SKIPPED-AS-MOOT (skip policy v${SKIP_POLICY_VERSION}): FD-BP154-14 -- membership `
-          + 'already partitioned by NamedSet:1/Discriminator:1 (both SUCCESSFUL) -- Magnitude:1 is '
-          + 'DECIDING-only (it ranks; it cannot refute a stated membership fact) and has nothing '
-          + 'legitimate left to decide once membership is settled',
+          + 'already partitioned by NamedSet:1/Discriminator:1 (both SUCCESSFUL) and the artifact class '
+          + `is not confirmed a single-answer item (HumanNuance:1: ${humanNuanceRaw?.ok ? (humanNuanceRaw.artifactClassEstablished ? 'artifact class established but no corpus meta-truth' : 'artifact class not established') : 'not run/failed'}) -- `
+          + 'Magnitude:1 is DECIDING-only (it ranks; it cannot refute a stated membership fact) and has '
+          + 'nothing legitimate left to decide once membership is settled without the D-BP154-043 '
+          + 'amendment\'s own precondition',
       };
     }
+    // membershipPartitioned && artifactClassEstablished: NOT skipped -- D-BP154-043's own amendment
+    // permits Magnitude:1 to run as the final tie-break here; falls through to the live run.
   }
 
   return null;
