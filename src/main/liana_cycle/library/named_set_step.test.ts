@@ -121,6 +121,18 @@ describe('verifyIncludedEntries -- extraction only, verified span or discarded (
     expect(verifyIncludedEntries(rawForA, passage, OPT).discarded).toBe(1);
     expect(verifyIncludedEntries(rawForB, passage, OPT).discarded).toBe(1);
   });
+
+  // D-BP154-052/BISHOP-SEG/S52/seg-wiregate ACTIVATION PROOF (FD-BP154-08). "Northern Africa
+  // (North Africa)" resolves to C) "North Africa" ONLY via entity_resolution.ts's THIRD
+  // mechanical step (stated annotation). This file's retired local matcher (exact, then "L) "
+  // prefix strip only) had no annotation-splitting step and would have left this UNSTATED.
+  test('WIRING PROOF: a stated parenthetical alias resolves only through entity_resolution.ts, never through this file\'s own retired local matcher', () => {
+    const span = 'Northern Africa (North Africa) is one of them, it is a myth.';
+    const raw = [{ name: 'Northern Africa (North Africa)', span }];
+    const { included, discarded } = verifyIncludedEntries(raw, passage + ' ' + span, OPT);
+    expect(included.map((e) => e.letter)).toEqual(['C']);
+    expect(discarded).toBe(0);
+  });
 });
 
 describe('runNamedSetStep -- named failures, never a silent empty result', () => {

@@ -262,6 +262,22 @@ describe('verifyAndClassifyHumanNuanceKinds -- the verify-the-span choke point (
     expect(excluded[0].letter).toBe('D');
     expect(discarded).toBe(0);
   });
+
+  // D-BP154-052/BISHOP-SEG/S52/seg-wiregate ACTIVATION PROOF (FD-BP154-08). "Greater Wobsy Nebula
+  // (Wobsy Nebula)" resolves to D) "Wobsy Nebula" ONLY via entity_resolution.ts's THIRD mechanical
+  // step (stated annotation, tried as an alternate name once the base fails). This file's retired
+  // local matcher (exact, then "L) " prefix strip only) had no annotation-splitting step and would
+  // have left this UNSTATED (base "Greater Wobsy Nebula" matches no option either).
+  test('WIRING PROOF: a stated parenthetical alias resolves only through entity_resolution.ts, never through this file\'s own retired local matcher', () => {
+    const raw = [{
+      name: 'Greater Wobsy Nebula (Wobsy Nebula)', kind: 'a desert',
+      span: 'The Wobsy Nebula is a desert, not a Zorblatt cluster.',
+    }];
+    const { excluded, discarded } = verifyAndClassifyHumanNuanceKinds(raw, passage, ['D', 'E'], INVENTED_OPT);
+    expect(excluded).toHaveLength(1);
+    expect(excluded[0].letter).toBe('D');
+    expect(discarded).toBe(0);
+  });
 });
 
 // ─────────────────────────── registration / wiring (real bundled qid, like every sibling step's own registration test) ───────────────────────────

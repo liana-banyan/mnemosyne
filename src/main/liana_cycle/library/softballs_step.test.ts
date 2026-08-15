@@ -101,6 +101,25 @@ describe('verifyExcludedEntries -- extraction only, verified span or discarded (
     expect(verifyExcludedEntries(rawForA, passage, OPT).discarded).toBe(1);
     expect(verifyExcludedEntries(rawForG, passage, OPT).discarded).toBe(1);
   });
+
+  // D-BP154-052/BISHOP-SEG/S52/seg-wiregate ACTIVATION PROOF (FD-BP154-08: "tests pass" alone is
+  // never ACTIVE). A name carrying a stated parenthetical alias -- "Northern Africa (North
+  // Africa)" -- resolves to C) "North Africa" ONLY via entity_resolution.ts's THIRD mechanical
+  // step (stated annotation, tried as an alternate name / containment). This file's OLD local
+  // matcher (exact match, then a leading "L) " prefix strip only) had no annotation-splitting
+  // step at all and would have left this entry unmatched -- "names no known option", zero
+  // excluded, zero discarded. If this test passes, verifyExcludedEntries() is actually calling
+  // through to the shared resolver's extended mechanism, not merely behaving byte-identically to
+  // the retired local copy.
+  test('WIRING PROOF: a stated parenthetical alias resolves only through entity_resolution.ts, never through this file\'s own retired local matcher', () => {
+    const raw = [{
+      name: 'Northern Africa (North Africa)',
+      span: 'Northern Africa (North Africa) is not a world region, it is a myth.',
+    }];
+    const { excluded, discarded } = verifyExcludedEntries(raw, passage + ' ' + raw[0].span, OPT);
+    expect(excluded.map((e) => e.letter)).toEqual(['C']);
+    expect(discarded).toBe(0);
+  });
 });
 
 describe('runSoftballsStep -- named failures, never a silent empty result', () => {

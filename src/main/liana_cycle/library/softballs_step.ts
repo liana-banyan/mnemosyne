@@ -46,7 +46,7 @@
 // here decides a final answer letter.
 
 import {
-  appearsIn, gemmaExtract, list, toLetters,
+  appearsIn, gemmaExtract, list,
 } from '../methods/comparative_cascade';
 import type { MethodQuestionInput, MethodRunContext } from '../method_registry';
 import { registerNameNumbered } from './method_registry';
@@ -62,6 +62,14 @@ import {
   spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
 } from './composer_step_evidence';
 import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
+// D-BP154-052/BISHOP-SEG/S52/seg-wiregate, WIRING (entity_resolution.ts was BUILT, tested, but not
+// consumed anywhere -- FD-BP154-08 "tests pass is never ACTIVE"). Replaces this file's own local
+// toLetters()+stripListLetterPrefix() two-step retry (below) with THE ONE SHARED RESOLVER -- same
+// four mechanical steps, strictly a superset of what this file did on its own (exact, then
+// list-letter-prefix-stripped), so no existing match becomes a non-match; a name this file's own
+// retry never resolved may now ALSO resolve via the shared resolver's other two mechanical steps
+// (stated annotation, singular/plural fold) -- never a similarity judgment, HARDWIRE-22 unrelaxed.
+import { resolveNameToOption } from './entity_resolution';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
@@ -112,25 +120,10 @@ export function buildSoftballsCorroborationQuery(category: string, entry: Exclud
  *  untyped on purpose, nothing here has verified a single field of it yet. */
 type RawExcludedEntry = { name?: unknown; span?: unknown };
 
-/** D-BP154-015, ADDITIVE: gemma4:12b's `name` field for an excluded entry sometimes carries the
- *  passage's OWN "L) text" formatting (list()/buildSoftballsQuery() already prefix every option
- *  with its letter before the passage is ever built, and the passage this step reads restates
- *  that same "D) Northeast United States is..." shape) -- MEASURED live, qid 98 Softballs, this
- *  ticket: gemmaExtract() returned `{"name":"D) Northeast United States","span":"D) Northeast
- *  United States is a subnational region..."}`x4, extraction and span both CORRECT, but
- *  toLetters()'s exact-match discipline (HARDWIRE-22, "similarity is not identity") correctly
- *  refused norm("D) Northeast United States") = "d northeast united states" against
- *  norm(OPT.D) = "northeast united states" -- not the same string, so all four verified,
- *  correctly-spanned extractions fell out silently as "names no known option". This strips ONLY
- *  a leading "<single letter>) " token before the match is attempted a second time -- undoing
- *  formatting the PASSAGE (built by this file's own list()-derived buildSoftballsQuery()) put
- *  there, not inventing a new equivalence. The match itself is still exact string identity on
- *  the option's bare text; no letter is special-cased (FD-BP153-06) -- the pattern is generic
- *  over every letter A-Z, and a name that does not carry the prefix is tried unchanged, same as
- *  before this ticket. */
-function stripListLetterPrefix(name: string): string {
-  return name.replace(/^[A-Za-z]\)\s*/, '');
-}
+// D-BP154-015's own "L) text" list-prefix fix (gemma4:12b's `name` field sometimes echoes
+// list()/buildSoftballsQuery()'s own "D) Northeast United States" formatting back) now lives in
+// entity_resolution.ts's resolveNameToOption() (step 2 of its four, imported above) -- this file's
+// own former local copy of stripListLetterPrefix() is retired, not duplicated (D-BP154-052).
 
 /** THE VERIFY-THE-SPAN CHOKE POINT for this step (FD-BP153-07 FIX 2, mirrored locally -- see
  *  this file's header for why classify_cascade.ts's own extractSpannedLetters() is not
@@ -157,15 +150,11 @@ export function verifyExcludedEntries(
     const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
     if (!name) continue; // nothing named -- not a candidate value, not a discard
-    let matched = toLetters([name], OPT);
-    if (matched.length === 0) {
-      // D-BP154-015: try again with a leading "L) " token (the passage's own list() formatting,
-      // which the model sometimes echoes back into `name`) stripped off.
-      const stripped = stripListLetterPrefix(name);
-      if (stripped !== name) matched = toLetters([stripped], OPT);
-    }
-    if (matched.length === 0) continue; // names no known option -- not a candidate value here
-    const L = matched[0];
+    // D-BP154-052, WIRED: THE ONE SHARED RESOLVER (entity_resolution.ts) replaces this file's own
+    // exact-then-prefix-stripped retry -- strictly a superset (its first two of four steps ARE
+    // this file's old two steps), so nothing that resolved before stops resolving.
+    const { letter: L } = resolveNameToOption(name, OPT);
+    if (!L) continue; // names no known option -- not a candidate value here
     if (!span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {
       discarded++;
       continue;

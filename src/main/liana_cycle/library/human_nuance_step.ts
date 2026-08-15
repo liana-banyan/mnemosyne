@@ -88,6 +88,11 @@ import {
 import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
 import { loadOriginProvenance } from './origin_provenance_store';
 import type { OriginProvenance } from './origin_provenance_store';
+// D-BP154-052/BISHOP-SEG/S52/seg-wiregate, WIRING (see softballs_step.ts's own header for the
+// full ruling) -- THE ONE SHARED RESOLVER, replacing this file's own local mirrored copy below.
+// toLetters() (comparative_cascade.ts, imported above) stays imported -- this file's own frame
+// (line ~172) still uses it directly and unrelated to this fix.
+import { resolveNameToOption } from './entity_resolution';
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
@@ -425,17 +430,11 @@ export interface HumanNuanceInsufficientEvidenceEntry {
 
 type RawKindEntry = { name?: unknown; kind?: unknown; span?: unknown };
 
-// D-BP154-033/BISHOP-SEG/S30-continuation/seg-namedset-prefix, PORTED. LIVE-MEASURED this same
-// ticket: this step's own live run (qid 98) got a real, unambiguous Gemini answer for G) Arctic
-// Circle, and the local extraction model echoed the option list's own "G) " letter-prefix back
-// into its `name` field -- the SAME defect class softballs_step.ts's own verifyExcludedEntries()
-// already fixed (D-BP154-015, stripListLetterPrefix()) and named_set_step.ts was just fixed to
-// match (D-BP154-033). Mirrored verbatim here, not imported (each Composer step stays
-// self-contained, per every sibling step's own header) -- see softballs_step.ts:131-133's own
-// stripListLetterPrefix() for the full original reasoning.
-function stripListLetterPrefix(name: string): string {
-  return name.replace(/^[A-Za-z]\)\s*/, '');
-}
+// D-BP154-052, RETIRED (not duplicated): this file's own local stripListLetterPrefix() mirror
+// (D-BP154-033, itself ported from softballs_step.ts) is removed -- entity_resolution.ts's
+// resolveNameToOption() (imported above) now performs the same list-letter-prefix strip as its
+// own step 2, plus two further mechanical steps this file never had (stated annotation,
+// singular/plural fold), so nothing that matched before stops matching.
 
 export interface HumanNuanceKindVerificationResult {
   excluded: HumanNuanceExclusionEntry[];
@@ -481,13 +480,9 @@ export function verifyAndClassifyHumanNuanceKinds(
     const kind = typeof entry?.kind === 'string' ? entry.kind.trim() : '';
     const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
     if (!name) continue; // nothing named -- not a candidate value, not a discard
-    let matched = toLetters([name], OPT);
-    if (matched.length === 0) {
-      const stripped = stripListLetterPrefix(name);
-      if (stripped !== name) matched = toLetters([stripped], OPT);
-    }
-    if (matched.length === 0) continue; // names no known option -- not a candidate value here
-    const L = matched[0];
+    // D-BP154-052, WIRED: THE ONE SHARED RESOLVER (entity_resolution.ts).
+    const { letter: L } = resolveNameToOption(name, OPT);
+    if (!L) continue; // names no known option -- not a candidate value here
     if (!nonParticipantSet.has(L)) continue; // names a FRAME option -- part 4 never speaks about those; not a discard
     if (!kind || !span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {
       discarded++;
