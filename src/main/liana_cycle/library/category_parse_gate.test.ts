@@ -63,6 +63,11 @@ describe('parseFollowingCategory -- the 4 genuine near-misses, reproduced from t
     const r = parseFollowingCategory('People who are able to be hypnotized easily are likely to score high on which of the following dimensions of the big five personality traits?');
     expect(r.category).toBe('dimensions of the big five personality traits');
   });
+
+  test('qid 33 (found by the live standing-20 sweep itself, not the hand-reproduced 4) -- the verb-less branch must truncate at a MID-PHRASE clause-verb marker ("will"), not just check the head word, or the category becomes a run-on including the verb phrase', () => {
+    const r = parseFollowingCategory('Two lists, list1 and list2, contain the names of books found in two different collections. The following procedures are available to create newList. Which of the following code segments will correctly create newList?');
+    expect(r.category).toBe('code segments');
+  });
 });
 
 describe('parseFollowingCategory -- "following information" must still FAIL as a category on its own (D-BP154-063 bullet 3: getting this wrong IS widening a gate to force a pass)', () => {
