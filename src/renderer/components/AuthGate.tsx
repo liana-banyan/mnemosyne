@@ -11,6 +11,11 @@ interface AuthGateProps {
 }
 
 export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
+  // D-BP155-025 — "Sign in" no longer waits on a browser round-trip (the OAuth flow it
+  // used to wait for POSTed to an endpoint that never existed; see auth_manager.ts's
+  // header). It now opens the Dashboard's LB Account tab, which has its own
+  // sent/linking/error states (LBAccountTab.tsx) — so there is nothing left for a
+  // "waiting for browser sign-in" spinner or a 30-second timeout to represent here.
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
   const signInTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -23,14 +28,8 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isValidating = false }) => {
   };
 
   const handleSignIn = () => {
-    setSigningIn(true);
     setSignInError(null);
     window.amplify.authSignIn();
-    // 30-second UX timeout — show error + retry; auth IPC may still be pending in background
-    signInTimerRef.current = setTimeout(() => {
-      setSigningIn(false);
-      setSignInError('Sign-in timed out. Check your browser and try again, or use Free Forever.');
-    }, 30_000);
   };
 
   const handleJoin = () => {
