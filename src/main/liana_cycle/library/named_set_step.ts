@@ -43,10 +43,18 @@ import type { StepDeclaration } from './step_declaration';
 // ruling this shared module implements; softballs_step.ts, named_set_step.ts and
 // discriminator_step.ts all use it identically rather than each re-deriving the same ordering.
 import {
-  corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates,
+  corroborateClaim, gatherFreeTextCandidates, gatherMortgageCandidates, gatherThisRunCandidates,
   spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
 } from './composer_step_evidence';
 import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
+// D-BP155-035/BISHOP/seg-freetext-all-steps, WIRING. Same additive stage-1(c) free-text source
+// boundary_step.ts's own D-BP155-010 header describes, appended LAST in owned-evidence priority --
+// STAGE 1 below (this file's own "gather owned, credit the first that names an option" loop, which
+// this step's own STAGE-1-vs-STAGE-2 mortgage-trap retry logic sits downstream of, unchanged). A
+// free-text candidate that gets credited but later proves unproductive still trips
+// `stage1WasUnproductive` exactly like any other owned candidate would -- STAGE 2 still tries a
+// fresh source; this addition changes nothing about that retry logic itself.
+// gatherMortgageCandidates()'s own `if (qid == null) return [];` gate is UNTOUCHED by this addition.
 // D-BP154-052/BISHOP-SEG/S52/seg-wiregate, WIRING (see softballs_step.ts's own header for the
 // full ruling) -- THE ONE SHARED RESOLVER, replacing this file's own local mirrored copy below.
 import { resolveNameToOption } from './entity_resolution';
@@ -286,6 +294,7 @@ export async function runNamedSetStep(
   const ownedCandidates = [
     ...(await gatherMortgageCandidates(input.qid, query)),
     ...gatherThisRunCandidates(ctx),
+    ...gatherFreeTextCandidates(query),
   ];
   let text = '';
   let via = '';

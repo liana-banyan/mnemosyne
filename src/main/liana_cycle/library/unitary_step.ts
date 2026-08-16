@@ -35,10 +35,13 @@ import { registerNameNumbered } from './method_registry';
 import type { MethodIdentity } from './method_identity';
 import type { StepDeclaration } from './step_declaration';
 import {
-  corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates,
+  corroborateClaim, gatherFreeTextCandidates, gatherMortgageCandidates, gatherThisRunCandidates,
   spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
 } from './composer_step_evidence';
 import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
+// D-BP155-035/BISHOP/seg-freetext-all-steps, WIRING. Same additive stage-1(c) free-text source
+// boundary_step.ts's own D-BP155-010 header describes, appended LAST in owned-evidence priority.
+// gatherMortgageCandidates()'s own `if (qid == null) return [];` gate is UNTOUCHED by this addition.
 
 // ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
 
@@ -199,6 +202,7 @@ export async function runUnitaryStep(
   const ownedCandidates = [
     ...(await gatherMortgageCandidates(input.qid, query)),
     ...gatherThisRunCandidates(ctx),
+    ...gatherFreeTextCandidates(query),
   ];
   let text = '';
   let via = '';

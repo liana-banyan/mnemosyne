@@ -58,10 +58,15 @@ import type { StepDeclaration } from './step_declaration';
 // ruling this shared module implements; softballs_step.ts, named_set_step.ts and
 // discriminator_step.ts all use it identically rather than each re-deriving the same ordering.
 import {
-  corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates,
+  corroborateClaim, gatherFreeTextCandidates, gatherMortgageCandidates, gatherThisRunCandidates,
   spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
 } from './composer_step_evidence';
 import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
+// D-BP155-035/BISHOP/seg-freetext-all-steps, WIRING. Same additive stage-1(c) free-text source
+// boundary_step.ts's own D-BP155-010 header describes, appended LAST in owned-evidence priority --
+// after THE MORTGAGE (exact prior-query match) and THIS RUN'S OWN passages -- so free-text is only
+// ever credited when nothing more specific already answered. gatherMortgageCandidates()'s own
+// `if (qid == null) return [];` gate (composer_step_evidence.ts:157) is UNTOUCHED by this addition.
 // D-BP154-052/BISHOP-SEG/S52/seg-wiregate, WIRING (entity_resolution.ts was BUILT, tested, but not
 // consumed anywhere -- FD-BP154-08 "tests pass is never ACTIVE"). Replaces this file's own local
 // toLetters()+stripListLetterPrefix() two-step retry (below) with THE ONE SHARED RESOLVER -- same
@@ -266,6 +271,7 @@ export async function runSoftballsStep(
   const ownedCandidates = [
     ...(await gatherMortgageCandidates(input.qid, query)),
     ...gatherThisRunCandidates(ctx),
+    ...gatherFreeTextCandidates(query),
   ];
   let text = '';
   let via = '';
