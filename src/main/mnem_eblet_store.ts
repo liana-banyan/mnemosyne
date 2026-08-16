@@ -26,6 +26,24 @@
 // (~432k files, measured live) is deliberately NOT among these roots -- see the comment on
 // estateDoctrineRoots() for why. Far-end proof (query returning real doctrine text, index
 // count before/after) is in the M2 return doc, not repeated here.
+//
+// BP155 Yoke (D-BP155-017, "Gemma is the Head Librarian through MnemosyneC"): two additive
+// changes on top of KN-BP147-M2, both fail-soft, neither touches the BM25 scoring path's
+// existing byte-for-byte output when semantic signal is unavailable:
+//   1. A fourth root, the Founder's own `.claude\projects\...\memory\` topic-file tree
+//      (MEMORY_ROOT below) -- see estateDoctrineRoots()'s own comment for the count. Its
+//      files carry YAML frontmatter, not the `.eblet.md`/`HARDWIRE-*.md` naming convention
+//      the other three roots use, so isIndexableEbletFile() now takes the root as a second
+//      argument and applies a root-specific inclusion rule (see below).
+//   2. EbletIndexEntry gains an optional `semanticCode` field, populated at index-build time
+//      by the SAME semantic_soccerball_emit() already used for verified_eblets.jsonl (BP137
+//      Yoke) -- no new embedder, no new vector store. queryEbletStoreEntries() combines this
+//      with the existing BM25 score: real keyword hits get an additive semantic tie-break
+//      bonus (can only raise their score, never lower it), and entries with ZERO keyword
+//      overlap but high semantic similarity become newly-visible low-priority candidates,
+//      capped below the weakest possible real single-token BM25 hit so they can never
+//      outrank one. See SEMANTIC_BOOST_WEIGHT/SEMANTIC_ONLY_BASE/SEMANTIC_RECALL_THRESHOLD's
+//      doc comments for the exact bound math.
 
 import {
   existsSync,
@@ -227,7 +245,7 @@ function bundledDefaultEbletRoot(): string {
 // tier, walkEbletStore's recursion, the BM25 index) was real; nothing pointed it at the
 // estate's own doctrine. This is that wire.
 //
-// Three bounded, named roots -- NOT the ~431k-file `.claude/state/eblets/` corpus this
+// Bounded, named roots -- NOT the ~431k-file `.claude/state/eblets/` corpus this
 // module's own loadOrRebuildIndex() doc comment already anticipated (that tree's CANON
 // subdir alone holds ~288k files; PIXIE_DUST_BP051_FULL_REMINE_VERBATIM another ~143k --
 // verified live via Get-ChildItem -Recurse -File count, session of this Yoke). That much
@@ -236,9 +254,17 @@ function bundledDefaultEbletRoot(): string {
 // walk+read of 431k files is not "a real, defaulted, discoverable configuration" -- it is
 // a startup hang. If the estate wants that corpus indexed too, that is a separate, later
 // ticket with its own bounded-subset design, not a silent side effect of this one.
+//
+// BP155 Yoke (D-BP155-017, Head Librarian wiring): the D-BP155-016 trace reported the first
+// root below as "does not exist on this machine" (Glob false-negative, confirmed by direct
+// `fs.existsSync`/`readdirSync` this session -- it holds 29 files, 20 of them .eblet.md,
+// oldest dated 2026-07-22, well before that trace ran). It was never dead; re-verified
+// live, not assumed. No path change was needed here -- see the Yoke's own return doc for
+// the full re-verification evidence (existsSync true 3 ways, mtime range, live substrate
+// stats jump 962->1014 after this Yoke's other additions).
 function estateDoctrineRoots(): string[] {
   return [
-    // BP146 canon, this workspace (27 files measured live this session).
+    // BP146 canon, this workspace (29 files measured live this session, 20 .eblet.md).
     'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\Asteroid-ProofVault\\state\\eblets\\CANON',
     // BP082-BP145 canon, sibling repo (922 files measured live this session; ticket
     // said 921 -- off by one, one file landed between the ticket being written and
@@ -246,6 +272,14 @@ function estateDoctrineRoots(): string[] {
     'C:\\Users\\Administrator\\Documents\\Asteroid-ProofVault\\state\\eblets\\CANON',
     // The HardWires themselves.
     'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\HARDWIRE',
+    // BP155 Yoke: the Founder's own living memory -- MEMORY.md's topic-file shorthand, the
+    // KEEPER digests, and the BP-canon archive -- 885 indexable files measured live this
+    // session (1,131 total .md, minus 80 Rule-66 `.superseded.<ts>` siblings and 166
+    // `*_VIOLATION_SUPERSEDE.md` stub artifacts under the generalized filter below). This is
+    // the estate's freshest, most-curated doctrine layer and was entirely invisible to the
+    // substrate before this Yoke -- confirmed absent from `estateDoctrineRoots()` by the
+    // D-BP155-016 trace and by this Yoke's own pre-change read of this function.
+    MEMORY_ROOT,
   ];
 }
 
@@ -369,25 +403,62 @@ function deriveCategory(fullPath: string): EbletCategory {
 // NOT match HARDWIRE_CONVENTION.md (underscore), which stays out of the index by the same
 // rule that keeps it out of git's own glob-based tooling elsewhere in this estate.
 const HARDWIRE_DOC_PATTERN = /^HARDWIRE-.*\.md$/;
+
+// BP155 Yoke: the Founder's own memory topic-file tree -- YAML-frontmattered *.md docs
+// (MEMORY.md itself, KEEPER digests, feedback_/project_/canon_/reference_/correction_-
+// prefixed topic files), never named *.eblet.md or HARDWIRE-*.md. Read several live before
+// choosing this rule (project_founder_four_goal_campaign_order_bp147.md,
+// keeper_bp046_disciplines.md, MEMORY.md) -- all share the same convention: `---` YAML
+// frontmatter (name/description/metadata/handle/catalog) followed by markdown body. The
+// frontmatter is doctrine-shaped but not RIGIDLY structured enough to make parsing it a
+// precondition for indexing (some files have no frontmatter at all, e.g.
+// daniel_ryan_removed.md, deep_read_session_12.md) -- so, consistent with how every other
+// root here is walked (whole-file text into title+snippet, no frontmatter-only extraction),
+// EVERY non-superseded/non-stub *.md file under this root is indexed by full text, same as
+// the other three roots' *.eblet.md files.
+const MEMORY_ROOT = 'C:\\Users\\Administrator\\.claude\\projects\\C--Users-Administrator-Documents\\memory';
+
 // The estate's own live-editing convention (HARDWIRE_CONVENTION.md, Rule 66 "version never
 // overwrite") produces `<name>.superseded.<UTC-ts>[.md]` siblings on every edit, and a
-// separate hook produces `<name>_AUGUR_AUGUR_PRICING_VIOLATION_SUPERSEDE.md` stubs (~2KB
+// separate hook produces `<name>_AUGUR_AUGUR_<REASON>_VIOLATION_SUPERSEDE.md` stubs (~2KB
 // inert artifacts -- verified live: 8 of these exist under HARDWIRE/ this session, would
 // have polluted BM25 with near-duplicate short files had they not been filtered). Both are
 // excluded regardless of which pattern above matched the file.
+//
+// BP155 Yoke widening: the memory root carries BOTH the `_PRICING_VIOLATION_SUPERSEDE.md`
+// variant the original pattern caught AND a `_CLOSEOUT_VIOLATION_SUPERSEDE.md` sibling
+// variant it did not (measured live this session: 124 PRICING-only vs 166 total
+// `*_VIOLATION_SUPERSEDE.md` files under the memory root -- the literal-PRICING pattern
+// would have silently let 42 stub artifacts into the index). Generalized to match the
+// stub-artifact SHAPE (any reason token, same `_VIOLATION_SUPERSEDE.md` suffix) rather than
+// the one literal reason string HARDWIRE/ happened to produce -- strictly narrower false-
+// exclusion risk than adding a second hardcoded literal, and covers both roots with one rule.
 function isSupersededOrStubArtifact(name: string): boolean {
-  return name.includes('.superseded.') || name.endsWith('_AUGUR_AUGUR_PRICING_VIOLATION_SUPERSEDE.md');
+  return name.includes('.superseded.') || /_VIOLATION_SUPERSEDE\.md$/.test(name);
 }
 
-function isIndexableEbletFile(name: string): boolean {
+/**
+ * BP155 Yoke: `root` is now REQUIRED (was file-shape-only before this Yoke) because the
+ * memory root's inclusion rule is deliberately broader than the other three roots' -- see
+ * MEMORY_ROOT's own doc comment for why a frontmatter-shape check was rejected in favor of
+ * "every non-superseded/non-stub *.md file, full text". Every existing (non-memory) root is
+ * completely unaffected: this is a strict narrowing of the check to an additional `root ===
+ * MEMORY_ROOT` branch, not a change to the *.eblet.md/HARDWIRE-*.md rule those roots use.
+ */
+function isIndexableEbletFile(name: string, root: string): boolean {
   if (isSupersededOrStubArtifact(name)) return false;
+  if (root === MEMORY_ROOT) return name.endsWith('.md');
   return name.endsWith('.eblet.md') || HARDWIRE_DOC_PATTERN.test(name);
 }
 
 /**
  * SEG-1: Recursively walk `root` and collect all indexable doctrine file paths --
  * *.eblet.md (original scope) plus HARDWIRE-*.md (KN-BP147-M2), minus superseded/stub
- * artifacts (see isIndexableEbletFile above).
+ * artifacts (see isIndexableEbletFile above). BP155 Yoke: `root` is passed through to
+ * isIndexableEbletFile() unchanged for every recursion level (it is the WALK's starting
+ * root, not the current subdirectory), so the memory root's broader *.md rule applies to
+ * every file under it including its keepers/iron_tablets/tablets/topic_files/archives
+ * subdirectories, while every other root keeps the original narrower rule.
  * Uses an explicit stack (no recursion) to handle deep trees safely.
  */
 function walkEbletStore(root: string): string[] {
@@ -405,7 +476,7 @@ function walkEbletStore(root: string): string[] {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         stack.push(full);
-      } else if (isIndexableEbletFile(entry.name)) {
+      } else if (isIndexableEbletFile(entry.name, root)) {
         out.push(full);
       }
     }
@@ -421,7 +492,46 @@ export interface EbletIndexEntry {
   title: string;
   snippet: string;   // first 200 chars of content
   mtime: number;
+  /** BP155 Yoke (Head Librarian wiring, D-BP155-017): 32-hex SimHash code from
+   *  semantic_soccerball_emit(`${title}\n${snippet}`) -- the SAME function already used for
+   *  verified_eblets.jsonl (BP137 Yoke), no new embedder introduced. Computed once at index-
+   *  build time and reused across rebuilds for unchanged (path, mtime) pairs (see
+   *  loadOrRebuildIndex()) so a rebuild triggered by one new/edited file never re-embeds the
+   *  whole corpus. Optional/absent for entries indexed before this Yoke, or when the embed
+   *  call failed soft (Ollama unreachable) at compute time -- readers MUST treat absence as
+   *  "no semantic signal for this entry", never as zero similarity (see
+   *  queryEbletStoreEntries()'s scoring branch below). */
+  semanticCode?: string;
 }
+
+/** BP155 Yoke: bounded-concurrency map -- Ollama is one local process; unbounded
+ *  Promise.all across a corpus-sized fan-out (low thousands of entries) both serializes
+ *  behind one process's real capacity and opens far more simultaneous sockets than useful.
+ *  8 is a conservative concurrency chosen against this session's measured real warm-call
+ *  latency (~140ms/call against live nomic-embed-text, see the Yoke's return doc for the
+ *  pasted curl proof). Never throws itself -- `fn` is expected to be fail-soft internally
+ *  (semantic_soccerball_emit already is), so one failing item never aborts the batch. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]);
+    }
+  }
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
+/** BP155 Yoke: concurrency ceiling for the embed fan-out in loadOrRebuildIndex(). */
+const SEMANTIC_INDEX_EMBED_CONCURRENCY = 8;
 
 /** Path to the persistent index JSONL file. */
 function getIndexPath(): string {
@@ -544,10 +654,41 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
   // Rebuild: walk all roots
   console.log('[EbletIndex] Rebuilding index…');
   const allPaths: string[] = [];
+  const perRootCounts: Record<string, number> = {};
   for (const root of getEbletStoreRoots()) {
     if (existsSync(root)) {
-      allPaths.push(...walkEbletStore(root));
+      const found = walkEbletStore(root);
+      allPaths.push(...found);
+      perRootCounts[root] = found.length;
+    } else {
+      perRootCounts[root] = 0;
     }
+  }
+  // BP155 Yoke: name what each root actually contributed, per-root, every rebuild -- "check
+  // the PARSER before the SOLVER". A root that silently resolves 0 files is this estate's
+  // signature defect (a failure indistinguishable from success); this makes it visible in
+  // the log on every rebuild instead of only when someone thinks to ask.
+  for (const [root, count] of Object.entries(perRootCounts)) {
+    console.log(`[EbletIndex] root contributed ${count} indexable file(s): ${root}`);
+  }
+
+  // BP155 Yoke: reuse semanticCode from the PRIOR on-disk index when (path, mtime) are
+  // unchanged, so a rebuild triggered by ONE new/edited file does not re-embed the entire
+  // corpus every time -- only genuinely new/changed entries pay the Ollama round-trip. Read
+  // straight off disk (not _indexCache, which may already be stale/absent at this point).
+  const priorByPath = new Map<string, EbletIndexEntry>();
+  if (existsSync(indexPath)) {
+    try {
+      const priorRaw = readFileSync(indexPath, 'utf-8');
+      for (const line of priorRaw.split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        try {
+          const e = JSON.parse(t) as EbletIndexEntry;
+          if (e.path) priorByPath.set(e.path, e);
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* no reuse available, fall through */ }
   }
 
   const entries: EbletIndexEntry[] = [];
@@ -566,8 +707,47 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
       const title = rawBase.replace(/_/g, ' ').slice(0, 120);
       const snippet = raw.slice(0, 200);
       const category = deriveCategory(fullPath);
-      entries.push({ path: fullPath, category, title, snippet, mtime });
+      const prior = priorByPath.get(fullPath);
+      const reusedSemanticCode = prior && prior.mtime === mtime ? prior.semanticCode : undefined;
+      const entry: EbletIndexEntry = { path: fullPath, category, title, snippet, mtime };
+      if (reusedSemanticCode !== undefined) entry.semanticCode = reusedSemanticCode;
+      entries.push(entry);
     } catch { /* skip unreadable */ }
+  }
+
+  // BP155 Yoke: fill in semanticCode for every entry that did NOT get one reused above (new
+  // files, changed files, or the very first build after this Yoke). Fail-soft per entry --
+  // semantic_soccerball_emit() already returns null (never throws) on any Ollama error; a
+  // failed embed just leaves that entry's semanticCode absent, it never blocks indexing or
+  // fails the rebuild. This is the ONLY place the CANON/HARDWIRE/memory corpus gets embedded
+  // -- query time embeds the query text alone (see queryEbletStoreEntries()).
+  const needsEmbed = entries.filter((e) => e.semanticCode === undefined);
+  if (needsEmbed.length > 0) {
+    console.log(
+      `[EbletIndex] computing semantic codes for ${needsEmbed.length} new/changed ` +
+      `entr${needsEmbed.length === 1 ? 'y' : 'ies'} (of ${entries.length} total, ` +
+      `${entries.length - needsEmbed.length} reused from prior index)…`,
+    );
+    let embedFailures = 0;
+    await mapWithConcurrency(needsEmbed, SEMANTIC_INDEX_EMBED_CONCURRENCY, async (e) => {
+      try {
+        const code = await semantic_soccerball_emit(`${e.title}\n${e.snippet}`);
+        if (code) {
+          e.semanticCode = code;
+        } else {
+          embedFailures++;
+        }
+      } catch {
+        // Belt-and-suspenders: semantic_soccerball_emit's own contract is fail-soft
+        // (returns null, never throws), but a rebuild must never abort on ANY per-entry
+        // failure regardless of which layer it originated in.
+        embedFailures++;
+      }
+    });
+    console.log(
+      `[EbletIndex] semantic code fill complete: ${needsEmbed.length - embedFailures}/` +
+      `${needsEmbed.length} succeeded${embedFailures > 0 ? ` (${embedFailures} fail-soft, Ollama likely unreachable -- those entries fall back to BM25-only ranking)` : ''}`,
+    );
   }
 
   // Write index atomically
@@ -725,6 +905,30 @@ function bm25Score(
 /** Categories returned to LLM prompt by default (SEG-4 "just want the answers"). */
 const PRIORITY_CATEGORIES = new Set<EbletCategory>(['verified', 'canon', 'active', 'snapshot-canon']);
 
+// ─── BP155 Yoke: semantic scoring bounds (retrieval, not verbatim-serve) ──────
+//
+// Bound math (must-not-get-worse guarantee): PRIORITY_CATEGORIES' lowest CATEGORY_WEIGHT is
+// 3 ('snapshot-canon'). The weakest possible REAL single-token BM25 hit in that category is
+// `idf * 1 * 3` where `idf = log(1 + corpusSize)`. At this corpus's live size (~1,000-2,500
+// entries after this Yoke's new roots), idf is ~6.9-7.8, so the weakest real keyword hit
+// scores >=~20.7. SEMANTIC_ONLY_BASE + SEMANTIC_BOOST_WEIGHT (the maximum score a ZERO-
+// keyword-overlap candidate can ever reach, at similarity 1.0) is capped at 0.5 + 8 = 8.5 --
+// always less than the weakest real keyword hit. A pure-semantic candidate can therefore
+// only ever fill space a keyword match left empty (top-3 has fewer than 3 real BM25 hits);
+// it can never outrank or displace one. Real keyword hits (bm25 > 0) only ever gain an
+// ADDITIVE bonus from semantic similarity (never a subtraction), so their score can only
+// stay the same or increase relative to the pre-Yoke pure-BM25 ranking.
+const SEMANTIC_BOOST_WEIGHT = 8;
+const SEMANTIC_ONLY_BASE = 0.5;
+/** Below SEMANTIC_SERVE_THRESHOLD (0.85, the verbatim-serve bar measured in the BP137 Yoke's
+ *  Twain/Rand table) but above the worst measured false-positive (0.741, "Einstein's
+ *  birthday" vs a stored Twain-birthday question) with real margin. This gate is for
+ *  RETRIEVAL (adding an eblet to context), not verbatim-serve -- the cost of a false
+ *  positive here is one extra loosely-related eblet in context, not a wrong fact served as
+ *  true, so a somewhat lower bar than SEMANTIC_SERVE_THRESHOLD is an intentional, bounded
+ *  risk, not a widened gate to force a pass. */
+const SEMANTIC_RECALL_THRESHOLD = 0.80;
+
 /** D-BP148-045/BISHOP (Wrasse Serving Path): one structured hit from the production
  *  eblet_index.jsonl corpus (914 records / 877 canon at time of writing) -- the SAME
  *  BM25-scored top-3 result queryEbletStore() below has always returned, just with
@@ -780,13 +984,43 @@ async function queryEbletStoreEntries(query: string): Promise<EbletRetrievalHit[
   const candidates = indexEntries.filter((e) => allowedCategories.has(e.category));
   if (candidates.length === 0) return [];
 
+  // BP155 Yoke: one live embed call for the QUERY text only -- every candidate's
+  // semanticCode is already persisted at index-build time (see loadOrRebuildIndex()), so
+  // this NEVER re-embeds the corpus per query. Fails soft to null (Ollama down/timeout/
+  // model missing) -- every branch below treats null exactly like "no candidate has a
+  // semanticCode", which reproduces the pre-Yoke pure-BM25 ranking byte-for-byte.
+  let queryCode: string | null = null;
+  try {
+    queryCode = await semantic_soccerball_emit(effectiveQuery);
+  } catch {
+    queryCode = null; // belt-and-suspenders; semantic_soccerball_emit is already fail-soft
+  }
+
   // Score using snippet + title tokens (fast — no full file read)
   const scored = candidates
     .map((e) => {
       const tokens = Array.from(
         new Set([...tokenize(e.title), ...tokenize(e.snippet)]),
       );
-      return { entry: e, score: bm25Score(queryTokens, tokens, corpusSize, e.category) };
+      const bm25 = bm25Score(queryTokens, tokens, corpusSize, e.category);
+      let semanticSim = 0;
+      if (queryCode && e.semanticCode) {
+        semanticSim = Math.max(0, computeSemanticSimilarity(queryCode, e.semanticCode));
+      }
+      let score: number;
+      if (bm25 > 0) {
+        // Real keyword hit -- semantic is an ADDITIVE tie-break bonus only, see the bound
+        // math above SEMANTIC_BOOST_WEIGHT. Can only raise this candidate's score.
+        score = bm25 + SEMANTIC_BOOST_WEIGHT * semanticSim;
+      } else if (semanticSim >= SEMANTIC_RECALL_THRESHOLD) {
+        // Zero keyword overlap, high semantic similarity -- new coverage this Yoke enables
+        // (e.g. a paraphrased question whose answer lives in the memory root and shares no
+        // BM25 token with the query). Capped below the weakest real single-token hit.
+        score = SEMANTIC_ONLY_BASE + SEMANTIC_BOOST_WEIGHT * semanticSim;
+      } else {
+        score = 0;
+      }
+      return { entry: e, score };
     })
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score)
