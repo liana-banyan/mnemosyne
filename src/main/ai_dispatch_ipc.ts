@@ -97,6 +97,16 @@ import {
 // an import cycle with openai_compat_server.ts (only canonical_pipeline.ts <-> that file has one
 // -- see canonical_pipeline.ts's own KN-BP146-M6 comment for that fork-in-the-road).
 import { OPENAI_COMPAT_SERVER_HOST, OPENAI_COMPAT_SERVER_PORT } from './openai_compat_server';
+// D-BP155-029/BISHOP/seg-meter-net-and-auditlist: the substrate savings meter (billing
+// instrument, substrate_savings_receipt.ts). Its 'cloud_escalation' tier previously only ever
+// received UNMEASURED input from substrate_api.ts's /substrate/query -> SubstrateRouter path,
+// whose own cloud_escalation branch is a routing SIGNAL that never itself makes a network call
+// (see substrate_router.ts Step 3's comment) -- the survivorship-bias defect the Founder ordered
+// closed. THIS file is where the codebase's real cloud spend actually happens (TIER 3 cheap
+// cloud, TIER 4 flagship, and the explicit-flagship-brain-pick branch, all via dispatchViaBrain()
+// below), and was never wired to the meter at all before this ticket. See
+// _emitCloudEscalationSavingsReceipt() and its three call sites (search this file for that name).
+import { emitSavingsReceipt } from './substrate_savings_receipt';
 
 const OLLAMA_API_BASE = 'http://127.0.0.1:11434';
 // KN-BP146-M6: THE NEXUS's own address. Used ONLY at the 'ai-dispatch:query-engine' handler's
@@ -222,6 +232,45 @@ async function dispatchViaBrain(
 
   envelope.latency_ms = Date.now() - t0;
   return envelope;
+}
+
+// D-BP155-029/BISHOP/seg-meter-net-and-auditlist: emits one substrate-savings-meter receipt
+// (tier: 'cloud_escalation') for a REAL cloud call this file just made via dispatchViaBrain()'s
+// flagship branch -- the codebase's actual real-money cloud-call site, previously never wired to
+// the meter at all. Carries dispatchViaBrain()'s REAL Anthropic-usage-reported input_tokens/
+// output_tokens straight through to emitSavingsReceipt() -- never estimated, never guessed: those
+// fields are `number | null` on SEGResultEnvelope, null exactly when the provider did not report
+// them (an errored/no-credential call never reached the network, or the response omitted usage)
+// or no call was attempted, which correctly resolves the receipt to UNMEASURED rather than a
+// fabricated number (see emitSavingsReceipt's cloud_escalation branch in
+// substrate_savings_receipt.ts). Called unconditionally after every dispatchViaBrain() call at a
+// paid rung (success or failure) so a failed/blocked cloud attempt is itself an honest record,
+// not a silent gap -- exactly the "what it could NOT measure as prominently as what it could"
+// discipline the meter's own header names. Exported (not private) so a compiled-dist test
+// harness (this file's existing convention, see ai_dispatch_ipc_escalation_ladder.test.ts) can
+// exercise it directly. Non-fatal by design, mirrors substrate_api.ts's own _emitSavingsReceipt:
+// a receipt-write failure must never break the answer the user is waiting on.
+export function _emitCloudEscalationSavingsReceipt(
+  result: SEGResultEnvelope,
+  routingRaw: string,
+): void {
+  try {
+    emitSavingsReceipt({
+      tier: 'cloud_escalation',
+      routing_raw: routingRaw,
+      model_used: result.model_id,
+      input_tokens: result.input_tokens,
+      output_tokens: result.output_tokens,
+      served_text_chars: result.content ? result.content.length : null,
+      latency_ms: result.latency_ms,
+      // This IPC handler has no notion of substrate_api.ts's global degraded-mode flag (that
+      // belongs to the separate HTTP /substrate/query path) -- false here means "not
+      // applicable to this pipeline", never a claim that degraded mode was checked and found off.
+      degraded: false,
+    });
+  } catch (err) {
+    console.warn('[ai_dispatch_ipc] cloud-escalation savings receipt emit failed (non-fatal):', err);
+  }
 }
 
 // v0.1.57.1: module-scope streaming state — AbortController for in-flight stream,
@@ -1297,6 +1346,12 @@ export function registerAiDispatchIPC(): void {
             // means a STRUCTURAL failure to produce content (HTTP error, missing key, empty
             // response) -- never a judgment call on how confident the text sounds.
             const tier3Result = await dispatchViaBrain(CHEAP_CLOUD_BRAIN, chatMessages);
+            // D-BP155-029/BISHOP/seg-meter-net-and-auditlist: real cloud call, real usage tokens
+            // (when the call succeeded) -- feed the savings meter unconditionally.
+            _emitCloudEscalationSavingsReceipt(
+              tier3Result,
+              `ladder_tier3_cheap_cloud:${CHEAP_CLOUD_BRAIN.model_id}${tier3Result.error ? ':error' : ':ok'}`,
+            );
             const tier3Abstained = Boolean(tier3Result.error) || !tier3Result.content;
             trace.push(
               `tier3(cheap_cloud:${CHEAP_CLOUD_BRAIN.model_id}): abstained=${tier3Abstained}` +
@@ -1349,6 +1404,12 @@ export function registerAiDispatchIPC(): void {
               (activeBrain && activeBrain.kind === 'flagship' ? activeBrain : undefined) ??
               DEFAULT_BRAINS.find((b) => b.brain_id === 'claude-sonnet-4-6')!;
             const tier4Result = await dispatchViaBrain(flagshipBrain, chatMessages);
+            // D-BP155-029/BISHOP/seg-meter-net-and-auditlist: real cloud call, real usage tokens
+            // (when the call succeeded) -- feed the savings meter unconditionally.
+            _emitCloudEscalationSavingsReceipt(
+              tier4Result,
+              `ladder_tier4_flagship:${flagshipBrain.model_id}${tier4Result.error ? ':error' : ':ok'}`,
+            );
             trace.push(`tier4(flagship:${flagshipBrain.model_id}): error=${tier4Result.error ?? '(none)'}`);
             if (answerCacheModeOn && !tier4Result.error && tier4Result.content && isQaRelevant(currentTurnQuestion, tier4Result.content)) {
               try {
@@ -1438,6 +1499,12 @@ export function registerAiDispatchIPC(): void {
         }
         void (async () => {
           const result = await dispatchViaBrain(activeBrain, chatMessages);
+          // D-BP155-029/BISHOP/seg-meter-net-and-auditlist: real cloud call, real usage tokens
+          // (when the call succeeded) -- feed the savings meter unconditionally.
+          _emitCloudEscalationSavingsReceipt(
+            result,
+            `explicit_flagship_pick:${activeBrain.brain_id}${result.error ? ':error' : ':ok'}`,
+          );
           sessionInferenceCount++;
 
           // BP136 Yoke: write-back -- "compute once". A real, $-costing flagship/frontier

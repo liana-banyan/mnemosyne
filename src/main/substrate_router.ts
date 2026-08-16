@@ -361,6 +361,17 @@ export class SubstrateRouter {
     }
 
     // ── Step 3: AI Burst — cloud escalation ───────────────────────────────────
+    // D-BP155-029/BISHOP/seg-meter-net-and-auditlist: this is a ROUTING SIGNAL only -- unlike
+    // Step 2b above (_tryOllama, a real network call), this branch never itself calls a cloud
+    // provider, so model_used/input_tokens_real/output_tokens_real are never set here and a
+    // savings receipt emitted from this result (substrate_api.ts's _emitSavingsReceipt) honestly
+    // resolves to UNMEASURED actual cost. The codebase's real cloud spend happens through a
+    // SEPARATE pipeline, ai_dispatch_ipc.ts's escalation ladder (TIER 3/4, dispatchViaBrain()),
+    // which is now wired directly to the same savings-receipt instrument via its own
+    // _emitCloudEscalationSavingsReceipt() -- see that file. Making THIS router actually place a
+    // cloud call is a real behavior/cost change (every ai_burst miss would start spending money)
+    // and is out of this ticket's scope, which is instrumentation of an existing spend, not a
+    // new one.
     return {
       hit: false,
       routing: 'cloud_escalation',
