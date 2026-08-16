@@ -54,6 +54,8 @@ import {
   mkdirSync,
   writeFileSync,
   renameSync,
+  watch,
+  type FSWatcher,
 } from 'fs';
 import { resolve, join, basename } from 'path';
 import { createHash } from 'crypto';
@@ -280,6 +282,9 @@ function estateDoctrineRoots(): string[] {
     // substrate before this Yoke -- confirmed absent from `estateDoctrineRoots()` by the
     // D-BP155-016 trace and by this Yoke's own pre-change read of this function.
     MEMORY_ROOT,
+    // D-BP155-018: the rulings root -- see RULINGS_ROOT's own comment above for why this is
+    // walked shallow+pattern-filtered rather than recursively like the other roots.
+    RULINGS_ROOT,
   ];
 }
 
@@ -392,6 +397,10 @@ function deriveCategory(fullPath: string): EbletCategory {
   if (p.includes('/state/eblets/TRAILS/'))                   return 'trail';
   if (/\/state\/eblets\/BP\d/.test(p))                       return 'session';
   if (p.includes('AntigravityWorkspace') && p.includes('/canon/')) return 'snapshot-canon';
+  // D-BP155-018: a Founder ruling is authoritative doctrine, same standing as CANON -- weight
+  // it accordingly so it is actually competitive in PRIORITY_CATEGORIES/BM25 against the canon
+  // eblet it may be correcting, rather than sitting at the lowest 'active' weight.
+  if (p.includes('/BISHOP_DROPZONE/') && RULINGS_FILE_PATTERN.test(basename(p))) return 'canon';
   return 'active';
 }
 
@@ -417,6 +426,24 @@ const HARDWIRE_DOC_PATTERN = /^HARDWIRE-.*\.md$/;
 // EVERY non-superseded/non-stub *.md file under this root is indexed by full text, same as
 // the other three roots' *.eblet.md files.
 const MEMORY_ROOT = 'C:\\Users\\Administrator\\.claude\\projects\\C--Users-Administrator-Documents\\memory';
+
+// D-BP155-018 (keep-current fix): BISHOP_DROPZONE holds 621 files across 66 subdirectories
+// (measured live this session) -- indexing it wholesale would be exactly the "cold walk of a
+// huge unrelated tree" estateDoctrineRoots()'s own comment already warns against. Only
+// `RULINGS_BP*.md` at the TOP LEVEL (5 files measured live: BP149/152/153/154/155) is the
+// named target (FD-BP155-02's own text: "Ruling files under
+// LianaBanyanPlatform\BISHOP_DROPZONE\RULINGS_*.md are NOT an indexed substrate root"). So
+// this root is indexed SHALLOW (top-level directory entries only, no recursion into the other
+// 66 subdirectories) and PATTERN-FILTERED (RULINGS_*.md only) -- see SHALLOW_PATTERN_ROOTS,
+// walkShallowPatternRoot(), and isIndexableEbletFile()'s RULINGS_ROOT branch below.
+const RULINGS_ROOT = 'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\BISHOP_DROPZONE';
+const RULINGS_FILE_PATTERN = /^RULINGS_.*\.md$/;
+
+/** Roots walked SHALLOW (top-level directory entries only) and filtered to a specific
+ *  filename pattern, instead of the full recursive *.eblet.md/HARDWIRE-*.md/*.md walk every
+ *  other root uses. Currently just RULINGS_ROOT; a Set so a future narrow root can join
+ *  without a chain of `root === X || root === Y` checks. */
+const SHALLOW_PATTERN_ROOTS = new Set<string>([RULINGS_ROOT]);
 
 // The estate's own live-editing convention (HARDWIRE_CONVENTION.md, Rule 66 "version never
 // overwrite") produces `<name>.superseded.<UTC-ts>[.md]` siblings on every edit, and a
@@ -448,7 +475,35 @@ function isSupersededOrStubArtifact(name: string): boolean {
 function isIndexableEbletFile(name: string, root: string): boolean {
   if (isSupersededOrStubArtifact(name)) return false;
   if (root === MEMORY_ROOT) return name.endsWith('.md');
+  // D-BP155-018: RULINGS_ROOT's own inclusion rule is narrower than every other root's --
+  // only the specific `RULINGS_BP*.md` shape, not "every .md" (MEMORY_ROOT's rule) and not
+  // *.eblet.md/HARDWIRE-*.md (the other roots' rule). See RULINGS_ROOT's own comment for why.
+  if (root === RULINGS_ROOT) return RULINGS_FILE_PATTERN.test(name);
   return name.endsWith('.eblet.md') || HARDWIRE_DOC_PATTERN.test(name);
+}
+
+/**
+ * D-BP155-018: shallow, single-directory, pattern-filtered walk -- used ONLY for roots in
+ * SHALLOW_PATTERN_ROOTS (currently RULINGS_ROOT). Deliberately does NOT recurse into
+ * subdirectories, unlike walkEbletStore() below: RULINGS_ROOT's parent (BISHOP_DROPZONE) holds
+ * 66 subdirectories / 621 files total (measured live) that are out of scope for this ticket --
+ * see RULINGS_ROOT's own comment. A single readdirSync, filtered through
+ * isIndexableEbletFile(), mirrors the top-level branch of walkEbletStore()'s loop without its
+ * stack-based recursion.
+ */
+function walkShallowPatternRoot(root: string): string[] {
+  const out: string[] = [];
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) continue; // shallow: subdirectories deliberately not walked
+    if (isIndexableEbletFile(entry.name, root)) out.push(join(root, entry.name));
+  }
+  return out;
 }
 
 /**
@@ -502,6 +557,27 @@ export interface EbletIndexEntry {
    *  "no semantic signal for this entry", never as zero similarity (see
    *  queryEbletStoreEntries()'s scoring branch below). */
   semanticCode?: string;
+  /** D-BP155-018 (supersession, minimum viable): the `supersedes:` value parsed out of this
+   *  entry's own frontmatter (flat or nested under `metadata:`), e.g.
+   *  `canon_memory_md_keyhole_640_lines_consolidation_needed_bp091` -- the OTHER entry's
+   *  filename-derived key (see entryKey() near queryEbletStoreEntries()) that THIS entry
+   *  claims to supersede. Absent when the file has no `supersedes:` line, or the line's value
+   *  is the literal `nothing`. This is a raw, unresolved reference -- resolving it against a
+   *  live entry and demoting/marking the target only happens at query time (see
+   *  queryEbletStoreEntries()), never here, so a supersedes claim survives even on a rebuild
+   *  where the target file hasn't been walked/read this pass. */
+  supersedes?: string;
+  /** D-BP155-018: one-time-migration sentinel. `true` once this entry's `supersedes` field has
+   *  actually been checked (found or genuinely absent) at least once. Entries written by code
+   *  before this field existed have neither `supersedes` NOR `supersedesChecked` -- without
+   *  this sentinel, the zero-I/O reuse path in loadOrRebuildIndex() could not tell "genuinely
+   *  has no supersedes claim" apart from "predates the feature and was never checked", and
+   *  would either silently miss real supersedes claims on every untouched pre-migration file
+   *  forever, or re-read every file's content on every rebuild forever to be safe (defeating
+   *  the whole point of the reuse optimization). With the sentinel: unchecked entries get ONE
+   *  cheap frontmatter-only read (no embedding call) the first time they are encountered after
+   *  this Yoke, then are marked checked and never read again for this purpose while unchanged. */
+  supersedesChecked?: true;
 }
 
 /** BP155 Yoke: bounded-concurrency map -- Ollama is one local process; unbounded
@@ -562,6 +638,25 @@ const INDEX_CACHE_TTL_MS = 60_000; // re-check delta every 60s
  * change at any depth.
  */
 function treeMaxMtime(root: string): number {
+  // D-BP155-018: SHALLOW_PATTERN_ROOTS (RULINGS_ROOT) must not pay a full recursive stat walk
+  // of its 66 unrelated subdirectories / 621 files just to answer "did anything change" --
+  // check the root dir's own mtime plus its direct children only, matching
+  // walkShallowPatternRoot()'s own non-recursive scope.
+  if (SHALLOW_PATTERN_ROOTS.has(root)) {
+    let max = 0;
+    try {
+      max = statSync(root).mtimeMs;
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+        if (entry.isDirectory()) continue;
+        try {
+          const m = statSync(join(root, entry.name)).mtimeMs;
+          if (m > max) max = m;
+        } catch { /* skip unreadable */ }
+      }
+    } catch { /* skip */ }
+    return max;
+  }
+
   let max = 0;
   const stack = [root];
   while (stack.length) {
@@ -657,7 +752,11 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
   const perRootCounts: Record<string, number> = {};
   for (const root of getEbletStoreRoots()) {
     if (existsSync(root)) {
-      const found = walkEbletStore(root);
+      // D-BP155-018: SHALLOW_PATTERN_ROOTS (RULINGS_ROOT) get the non-recursive,
+      // pattern-filtered walk -- see walkShallowPatternRoot()'s own comment.
+      const found = SHALLOW_PATTERN_ROOTS.has(root)
+        ? walkShallowPatternRoot(root)
+        : walkEbletStore(root);
       allPaths.push(...found);
       perRootCounts[root] = found.length;
     } else {
@@ -691,10 +790,52 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
     } catch { /* no reuse available, fall through */ }
   }
 
+  // D-BP155-018 (keep-current fix): a rebuild triggered by ONE new/changed file must not pay
+  // a readFileSync of every OTHER unchanged file in the corpus just to reconstruct
+  // title/snippet/category -- those are pure functions of file content+path, so for any
+  // (path, mtime) pair that matches the PRIOR on-disk index exactly, reuse the whole entry
+  // (title/snippet/category/supersedes/semanticCode) verbatim rather than re-deriving it. Only
+  // new or changed files pay the read. Before this fix, semanticCode alone was reused (see
+  // priorByPath above, BP155 Yoke) but title/snippet/category were recomputed via readFileSync
+  // for EVERY entry on EVERY rebuild regardless of whether anything changed -- real I/O work
+  // this ticket's "do not rebuild all 1,899 entries on every query" constraint rules out.
+  let reusedZeroIoCount = 0;
+  let reusedBackfillCount = 0;
   const entries: EbletIndexEntry[] = [];
   for (const fullPath of allPaths) {
     try {
       const mtime = statSync(fullPath).mtimeMs;
+      const prior = priorByPath.get(fullPath);
+      if (prior && prior.mtime === mtime) {
+        if (prior.supersedesChecked) {
+          // Unchanged AND already checked for a supersedes claim -- reuse verbatim, zero I/O.
+          entries.push(prior);
+          reusedZeroIoCount++;
+          continue;
+        }
+        // D-BP155-018 one-time migration: unchanged content, but this entry predates the
+        // supersedes feature and was never checked for one. Cheap frontmatter-only read (no
+        // Ollama call, no embedding recompute -- semanticCode still carries over from `prior`)
+        // so this file is never re-read for this purpose again once `supersedesChecked` lands
+        // in the persisted index.
+        try {
+          const rawFm = readFileSync(fullPath, 'utf-8');
+          const fmEnd = rawFm.indexOf('\n---', 4);
+          const frontmatter = rawFm.startsWith('---') && fmEnd > 0 ? rawFm.slice(0, fmEnd) : rawFm.slice(0, 2000);
+          const m = frontmatter.match(/^\s*supersedes:\s*["']?([^"'\n#]+?)["']?\s*$/m);
+          const backfilled: EbletIndexEntry = { ...prior, supersedesChecked: true };
+          if (m) {
+            const val = m[1].trim();
+            if (val && val.toLowerCase() !== 'nothing') backfilled.supersedes = val;
+          }
+          entries.push(backfilled);
+        } catch {
+          entries.push(prior); // unreadable now -- keep prior data, leave unchecked for next pass
+        }
+        reusedBackfillCount++;
+        continue;
+      }
+
       const raw = readFileSync(fullPath, 'utf-8');
       // KN-BP147-M2: fullPath now may be a HARDWIRE-*.md doc, which does not carry the
       // .eblet.md suffix -- strip whichever suffix actually applies so titles for both
@@ -707,13 +848,41 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
       const title = rawBase.replace(/_/g, ' ').slice(0, 120);
       const snippet = raw.slice(0, 200);
       const category = deriveCategory(fullPath);
-      const prior = priorByPath.get(fullPath);
-      const reusedSemanticCode = prior && prior.mtime === mtime ? prior.semanticCode : undefined;
-      const entry: EbletIndexEntry = { path: fullPath, category, title, snippet, mtime };
-      if (reusedSemanticCode !== undefined) entry.semanticCode = reusedSemanticCode;
+      // D-BP155-018 (supersession, minimum viable): parse a `supersedes:` line out of the
+      // YAML frontmatter block (first `---`...`---`), flat (`supersedes: x`) or nested under
+      // `metadata:` (`  supersedes: x`) -- both shapes are real, live conventions (compare
+      // feedback_never_compact_memory_offload_to_eblet_bp155.md's nested
+      // `metadata.supersedes` against a flat-frontmatter canon eblet). Deliberately NOT a YAML
+      // parser -- one regex over the frontmatter slice, matching this file's existing
+      // frontmatter-is-not-rigidly-parsed convention (see MEMORY_ROOT's own comment above).
+      // "nothing" is the file's own convention for "supersedes nothing" (see
+      // canon_train_on_truth_run_blind_bp153.eblet.md) and is treated as absent.
+      let supersedes: string | undefined;
+      const fmEnd = raw.indexOf('\n---', 4);
+      const frontmatter = raw.startsWith('---') && fmEnd > 0 ? raw.slice(0, fmEnd) : raw.slice(0, 2000);
+      const supersedesMatch = frontmatter.match(/^\s*supersedes:\s*["']?([^"'\n#]+?)["']?\s*$/m);
+      if (supersedesMatch) {
+        const val = supersedesMatch[1].trim();
+        if (val && val.toLowerCase() !== 'nothing') supersedes = val;
+      }
+      const entry: EbletIndexEntry = { path: fullPath, category, title, snippet, mtime, supersedesChecked: true };
+      if (supersedes !== undefined) entry.supersedes = supersedes;
+      // NOTE: semanticCode is deliberately left unset here -- this branch is reached only when
+      // `prior` is absent or `prior.mtime !== mtime` (the unchanged case already `continue`d
+      // above with the full prior entry, semanticCode included). Reusing a prior semanticCode
+      // for content that just changed would serve a stale embedding under a fresh mtime; the
+      // needsEmbed filter below picks up every entry with semanticCode === undefined and
+      // computes it fresh.
       entries.push(entry);
     } catch { /* skip unreadable */ }
   }
+  console.log(
+    `[EbletIndex] rebuild: ${reusedZeroIoCount}/${allPaths.length} unchanged+already-checked ` +
+    `entries reused with zero file reads; ${reusedBackfillCount} unchanged entries paid a ` +
+    `one-time supersedes-backfill read (no embed call); ` +
+    `${allPaths.length - reusedZeroIoCount - reusedBackfillCount} new/changed entries fully ` +
+    `read from disk`,
+  );
 
   // BP155 Yoke: fill in semanticCode for every entry that did NOT get one reused above (new
   // files, changed files, or the very first build after this Yoke). Fail-soft per entry --
@@ -770,6 +939,193 @@ export function invalidateIndexCache(): void {
   _indexCache = null;
 }
 
+// ─── D-BP155-018: keep-current watchers + explicit force-refresh + failure marking ─────────
+//
+// THE DEFECT THIS FIXES: loadOrRebuildIndex()'s in-memory `_indexCache` TTL (60s, see
+// INDEX_CACHE_TTL_MS above) means a query made LESS than 60s after the previous query's index
+// load never even reaches the on-disk mtime comparison -- it returns the in-memory cache
+// unconditionally. Measured live this session: a file written into MEMORY_ROOT seconds after a
+// prior query returned byte-identical stale results on the very next query, then a query made
+// >60s later picked up both that file and a second one correctly (rebuild fired, index grew
+// 1899 -> 1901). So the mechanism DOES work, but only outside a 60-second blind window after
+// every query -- exactly the "a newly added file... does not get picked up" defect the ticket
+// names, and exactly reproducible on demand (see this Yoke's own return doc for the paired
+// before/after query transcripts).
+//
+// FIX: an fs.watch() per root, debounced, that calls invalidateIndexCache() the moment a
+// change is detected -- this clears `_indexCache` regardless of how recently the last query
+// ran, so the 60s TTL can never again mask a real edit. A background rebuild is ALSO kicked
+// off after the same debounce so the index is typically already warm by the time a query
+// arrives (not required for correctness -- invalidateIndexCache() alone is sufficient for the
+// next query to self-heal -- but removes the "first query after an edit pays the rebuild cost"
+// latency tax). Neither changes loadOrRebuildIndex()'s own algorithm; this is purely an
+// additional trigger for the same function, plus bookkeeping so a failed background rebuild is
+// NAMED (Truth-Always) rather than silently leaving the last-known-good index in place with no
+// signal that it may now be stale.
+
+interface RebuildOutcome {
+  status: 'ok' | 'failed';
+  at: number;
+  error?: string;
+}
+
+/** Timestamp of the most recent raw fs.watch event across every watched root, BEFORE
+ *  debouncing -- used by getIndexFreshnessSignal() below to answer "is there a known change
+ *  that the current in-memory index has not yet incorporated" even while the debounce timer is
+ *  still pending or a rebuild is still in flight. */
+let _lastChangeDetectedAt: number | null = null;
+/** Result of the most recently COMPLETED watcher-triggered (or force-refresh-triggered)
+ *  background rebuild attempt. `null` until the first one runs. */
+let _lastRebuildOutcome: RebuildOutcome | null = null;
+/** Guards against overlapping background rebuilds when several fs.watch events debounce in
+ *  quick succession (e.g. an editor that writes a file twice on save) -- coalesces to one
+ *  in-flight rebuild rather than firing a fresh loadOrRebuildIndex() per event. */
+let _rebuildInFlight: Promise<void> | null = null;
+
+const WATCH_DEBOUNCE_MS = 1500;
+const _activeWatchers: FSWatcher[] = [];
+const _watcherDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const _watcherSetupErrors: string[] = [];
+
+/**
+ * Invalidate the cache immediately (so the NEXT query, whenever it comes, is forced to
+ * re-check disk regardless of the 60s TTL) and kick a background rebuild so the index is
+ * already warm by the time that query arrives. Coalesces concurrent calls into one in-flight
+ * rebuild. Never throws -- failure is recorded into `_lastRebuildOutcome`, not propagated,
+ * because this runs from an fs.watch callback with no caller to report to.
+ */
+function triggerBackgroundRebuild(reason: string): void {
+  invalidateIndexCache();
+  if (_rebuildInFlight) return; // a rebuild is already in flight; it will pick up the latest state
+  _rebuildInFlight = (async () => {
+    try {
+      await loadOrRebuildIndex();
+      _lastRebuildOutcome = { status: 'ok', at: Date.now() };
+    } catch (e) {
+      const reasonMsg = e instanceof Error ? (e.stack ?? e.message) : String(e);
+      _lastRebuildOutcome = { status: 'failed', at: Date.now(), error: reasonMsg };
+      console.error(`[EbletIndex] background rebuild FAILED (trigger: ${reason}):`, e);
+    } finally {
+      _rebuildInFlight = null;
+    }
+  })();
+}
+
+/**
+ * Start one fs.watch() per resolved eblet store root (recursive for the normal roots, shallow
+ * for SHALLOW_PATTERN_ROOTS -- matching walkShallowPatternRoot()'s own non-recursive scope so
+ * the watcher's blast radius matches the indexer's). Idempotent: calling twice is a no-op if
+ * watchers are already active, so app re-init paths can call this defensively. Safe to call
+ * outside Electron (roots simply won't exist yet in most non-Electron test contexts, and
+ * fs.watch on a missing path throws synchronously, caught per-root below) -- never throws.
+ *
+ * Fail-soft, NAMED: a root whose watcher fails to start (fs.watch throws, e.g. on a
+ * filesystem/OS combination that does not support `recursive: true`) is recorded into
+ * `_watcherSetupErrors` rather than silently leaving that one root unmonitored with no signal
+ * -- surfaced via getEbletIndexStats().watcherErrors.
+ */
+export function startEbletIndexWatchers(): void {
+  if (_activeWatchers.length > 0) return; // already running
+  const roots = getEbletStoreRoots();
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    const shallow = SHALLOW_PATTERN_ROOTS.has(root);
+    try {
+      const watcher = watch(root, { recursive: !shallow }, (_eventType, filename) => {
+        _lastChangeDetectedAt = Date.now();
+        const key = root; // one debounce timer per root -- rapid multi-file edits collapse to one rebuild
+        const existing = _watcherDebounceTimers.get(key);
+        if (existing) clearTimeout(existing);
+        _watcherDebounceTimers.set(key, setTimeout(() => {
+          _watcherDebounceTimers.delete(key);
+          triggerBackgroundRebuild(`watch:${root}${filename ? `:${filename}` : ''}`);
+        }, WATCH_DEBOUNCE_MS));
+      });
+      _activeWatchers.push(watcher);
+    } catch (e) {
+      const msg = `Failed to watch root "${root}" (recursive=${!shallow}): ${e instanceof Error ? e.message : String(e)}`;
+      _watcherSetupErrors.push(msg);
+      console.error(`[EbletIndex] ${msg}`);
+    }
+  }
+  console.log(
+    `[EbletIndex] keep-current watchers active on ${_activeWatchers.length}/${roots.length} root(s)` +
+    (_watcherSetupErrors.length > 0 ? ` (${_watcherSetupErrors.length} failed to start, see watcherErrors)` : ''),
+  );
+}
+
+/** Stop every active watcher (app shutdown / test teardown). */
+export function stopEbletIndexWatchers(): void {
+  for (const w of _activeWatchers.splice(0)) {
+    try { w.close(); } catch { /* already closed */ }
+  }
+  for (const t of _watcherDebounceTimers.values()) clearTimeout(t);
+  _watcherDebounceTimers.clear();
+}
+
+/**
+ * Explicit force-refresh (constraint 3's "belt and suspenders" path): a caller that KNOWS it
+ * just wrote a file (e.g. writeVerifiedEblet() below, or an MCP tool call made right after a
+ * memory write) can demand a synchronous reread instead of waiting on the debounced watcher
+ * path. Bypasses the 60s TTL and the watcher debounce entirely -- always re-checks disk NOW.
+ * Never throws: a failure is recorded into `_lastRebuildOutcome` (same as the watcher path) and
+ * surfaced in the returned stats' `refreshStatus`/`refreshError`, and the function still
+ * returns the best available stats (the last-known-good in-memory index) rather than rejecting.
+ */
+export async function forceRefreshEbletIndex(): Promise<EbletIndexStats> {
+  invalidateIndexCache();
+  try {
+    await loadOrRebuildIndex();
+    _lastRebuildOutcome = { status: 'ok', at: Date.now() };
+  } catch (e) {
+    const reasonMsg = e instanceof Error ? (e.stack ?? e.message) : String(e);
+    _lastRebuildOutcome = { status: 'failed', at: Date.now(), error: reasonMsg };
+    console.error('[EbletIndex] forceRefreshEbletIndex FAILED:', e);
+  }
+  return getEbletIndexStats();
+}
+
+/**
+ * Constraint 3's "a refresh failure must be NAMED, never silent": answers whether the index a
+ * query is about to be served from is known-possibly-stale, and why. Three independent signals,
+ * any one of which is enough to report stale=true:
+ *   1. A background rebuild attempt (watcher- or force-refresh-triggered) FAILED and no
+ *      successful rebuild has happened since -- the in-memory index may already be behind disk
+ *      and nothing is currently correcting it beyond the next lazy TTL check.
+ *   2. A raw fs.watch event fired (a file changed) AFTER the current in-memory index was last
+ *      loaded, and the debounced rebuild it should trigger has not completed yet -- a real
+ *      change is known and not yet reflected.
+ *   3. Zero watchers are active on this process (e.g. every root's fs.watch() call threw) --
+ *      the automatic keep-current path does not exist at all for this session; only the 60s
+ *      lazy TTL check and explicit force-refresh remain.
+ * Cheap by design (compares timestamps already being tracked; no disk I/O) so it is safe to
+ * call on every query.
+ */
+export function getIndexFreshnessSignal(): { stale: boolean; reason?: string } {
+  if (_lastRebuildOutcome?.status === 'failed') {
+    const sinceOk = _lastRebuildOutcome.at;
+    if (!_indexCache || _indexCache.loadedAt <= sinceOk) {
+      return {
+        stale: true,
+        reason: `last background index rebuild failed at ${new Date(_lastRebuildOutcome.at).toISOString()}: ${_lastRebuildOutcome.error}. Serving the last-known-good index; call mnem_force_refresh_substrate to retry.`,
+      };
+    }
+  }
+  if (_lastChangeDetectedAt !== null && (!_indexCache || _indexCache.loadedAt < _lastChangeDetectedAt)) {
+    return {
+      stale: true,
+      reason: `a file change was detected at ${new Date(_lastChangeDetectedAt).toISOString()} that the current index (loaded ${_indexCache ? new Date(_indexCache.loadedAt).toISOString() : 'never'}) has not yet incorporated -- a debounced rebuild is pending or in flight.`,
+    };
+  }
+  if (_activeWatchers.length === 0) {
+    return {
+      stale: true,
+      reason: 'no keep-current watchers are active on this process (startEbletIndexWatchers() was not called, or every root failed to start -- see watcherErrors); the index only refreshes on the 60s lazy TTL check or an explicit force-refresh.',
+    };
+  }
+  return { stale: false };
+}
+
 /**
  * BP132 Yoke #21 E10: warm the eblet index at boot instead of waiting for the first
  * Ask to trigger a lazy rebuild. Two benefits: (1) the first real Ask of a session
@@ -822,6 +1178,26 @@ export interface EbletIndexStats {
   // is NOT the same thing and must not be presented to a human/caller as though it were.
   status?: 'ok' | 'failed';
   error?: string;
+  /** D-BP155-018: 'ok' when the most recent watcher/force-refresh-triggered background
+   *  rebuild attempt succeeded (or none has run yet this process); 'failed' when it errored --
+   *  see `refreshError`. Distinct from `status` above: `status` is warmEbletIndex()'s own
+   *  boot-time outcome, this is the ONGOING keep-current path's outcome, which can flip to
+   *  'failed' at any point during a long-running session after boot succeeded. */
+  refreshStatus?: 'ok' | 'failed';
+  refreshError?: string;
+  /** Count of fs.watch() watchers currently active (one per resolved root, minus any that
+   *  failed to start -- see watcherErrors). Zero means the automatic keep-current path is not
+   *  running on this process at all. */
+  watchersActive?: number;
+  /** Non-empty when one or more roots' fs.watch() call threw at startEbletIndexWatchers() time
+   *  (see that function's own doc comment) -- a root missing from this list's coverage but not
+   *  named here would be a silent gap; this is the NAMED version. */
+  watcherErrors?: string[];
+  /** True when a known file change has not yet been incorporated into the in-memory index
+   *  (debounced rebuild pending/in-flight) -- same signal getIndexFreshnessSignal() computes,
+   *  duplicated onto stats for callers that only look at mnem_get_substrate_stats and never
+   *  call mnem_query_substrate directly. */
+  pendingChangeNotYetIndexed?: boolean;
 }
 
 /**
@@ -835,8 +1211,27 @@ export function getEbletIndexStats(): EbletIndexStats {
     if (existsSync(indexPath)) indexMtime = statSync(indexPath).mtimeMs;
   } catch { /* fallback */ }
 
+  // D-BP155-018: refreshStatus/watchersActive/watcherErrors/pendingChangeNotYetIndexed are
+  // process-wide keep-current bookkeeping, independent of whether `_indexCache` itself is
+  // populated -- report them even on the "index not yet built" early return below, since a
+  // caller checking freshness right after boot (before the first query has warmed the cache)
+  // still needs to know whether watchers are even running.
+  const refreshStatus = _lastRebuildOutcome?.status;
+  const refreshError = _lastRebuildOutcome?.status === 'failed' ? _lastRebuildOutcome.error : undefined;
+  const pendingChangeNotYetIndexed = _lastChangeDetectedAt !== null
+    && (!_indexCache || _indexCache.loadedAt < _lastChangeDetectedAt);
+
   if (!_indexCache) {
-    return { totalIndexed: 0, byCategory: {}, lastRefreshTimestamp: indexMtime };
+    return {
+      totalIndexed: 0,
+      byCategory: {},
+      lastRefreshTimestamp: indexMtime,
+      refreshStatus,
+      refreshError,
+      watchersActive: _activeWatchers.length,
+      watcherErrors: _watcherSetupErrors.length > 0 ? [..._watcherSetupErrors] : undefined,
+      pendingChangeNotYetIndexed,
+    };
   }
   const byCategory: Partial<Record<EbletCategory, number>> = {};
   for (const e of _indexCache.entries) {
@@ -846,6 +1241,11 @@ export function getEbletIndexStats(): EbletIndexStats {
     totalIndexed: _indexCache.entries.length,
     byCategory,
     lastRefreshTimestamp: indexMtime,
+    refreshStatus,
+    refreshError,
+    watchersActive: _activeWatchers.length,
+    watcherErrors: _watcherSetupErrors.length > 0 ? [..._watcherSetupErrors] : undefined,
+    pendingChangeNotYetIndexed,
   };
 }
 
@@ -959,6 +1359,16 @@ export interface EbletRetrievalHit {
  * Default behaviour surfaces canon/active/snapshot-canon eblets only.
  * Historical-mine (pixie-dust) is only returned when explicitly requested.
  */
+/** D-BP155-018 (supersession): the same filename-derived key used as `title`'s raw input
+ *  (rawBase in loadOrRebuildIndex()) and as the value a file's own `supersedes:` frontmatter
+ *  line names -- e.g. path `...\canon_memory_md_keyhole_640_lines_consolidation_needed_bp091
+ *  .eblet.md` and frontmatter value `canon_memory_md_keyhole_640_lines_consolidation_needed_
+ *  bp091` both reduce to this same key. Kept as a standalone function (not inlined at the two
+ *  call sites) so the two derivations can never drift apart. */
+function entryKey(fullPath: string): string {
+  return fullPath.endsWith('.eblet.md') ? basename(fullPath, '.eblet.md') : basename(fullPath, '.md');
+}
+
 async function queryEbletStoreEntries(query: string): Promise<EbletRetrievalHit[]> {
   // Parse optional category filter prefix
   let categoryFilter: EbletCategory | null = null;
@@ -1020,21 +1430,42 @@ async function queryEbletStoreEntries(query: string): Promise<EbletRetrievalHit[
       } else {
         score = 0;
       }
-      return { entry: e, score };
+      return { entry: e, score, supersededByTitle: undefined as string | undefined };
     })
-    .filter((r) => r.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
+    .filter((r) => r.score > 0);
+
+  // D-BP155-018 (supersession, minimum viable per ticket's "do not build a whole supersession
+  // engine" instruction): only relevant when BOTH the superseding entry and the entry it names
+  // actually matched THIS query (both present in `scored`, pre-slice) -- matching the ticket's
+  // own condition, "when both match a query". A supersedes claim whose target never surfaces
+  // for a given query needs no marker on that query's results.
+  const scoredByKey = new Map(scored.map((r) => [entryKey(r.entry.path), r]));
+  for (const r of scored) {
+    if (!r.entry.supersedes) continue;
+    const target = scoredByKey.get(r.entry.supersedes);
+    if (!target || target === r) continue;
+    // Demote (never remove -- the ticket requires a MARKER, not silent hiding) so the
+    // superseded entry sorts below real hits instead of potentially outranking the doctrine
+    // that corrects it; multiplied rather than zeroed so relative ordering among several
+    // superseded entries is still meaningful if more than one is ever in play.
+    target.score = target.score * 0.001;
+    target.supersededByTitle = r.entry.title;
+  }
+
+  const winners = scored.sort((a, b) => b.score - a.score).slice(0, 3);
 
   // Lazy-load full body for top-3 winners only (SEG-3 discipline)
   const results: EbletRetrievalHit[] = [];
-  for (const r of scored) {
+  for (const r of winners) {
+    const marker = r.supersededByTitle
+      ? `[SUPERSEDED BY "${r.supersededByTitle}" -- do not treat this as current guidance; retrieve that entry instead.]\n\n`
+      : '';
     try {
       const raw = readFileSync(r.entry.path, 'utf-8');
-      const content = raw.slice(0, SNIPPET_WINDOW);
+      const content = marker + raw.slice(0, SNIPPET_WINDOW);
       results.push({ title: r.entry.title, category: r.entry.category, path: r.entry.path, content });
     } catch {
-      results.push({ title: r.entry.title, category: r.entry.category, path: r.entry.path, content: r.entry.snippet });
+      results.push({ title: r.entry.title, category: r.entry.category, path: r.entry.path, content: marker + r.entry.snippet });
     }
   }
   return results;
