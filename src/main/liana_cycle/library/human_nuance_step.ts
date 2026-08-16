@@ -82,10 +82,13 @@ import { registerNameNumbered } from './method_registry';
 import type { MethodIdentity } from './method_identity';
 import type { StepDeclaration } from './step_declaration';
 import {
-  corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates,
+  corroborateClaim, gatherFreeTextCandidates, gatherMortgageCandidates, gatherThisRunCandidates,
   spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
 } from './composer_step_evidence';
 import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
+// D-BP155-035/BISHOP/seg-freetext-all-steps, WIRING. Same additive stage-1(c) free-text source
+// boundary_step.ts's own D-BP155-010 header describes, appended LAST in owned-evidence priority.
+// gatherMortgageCandidates()'s own `if (qid == null) return [];` gate is UNTOUCHED by this addition.
 import { loadOriginProvenance } from './origin_provenance_store';
 import type { OriginProvenance } from './origin_provenance_store';
 // D-BP154-052/BISHOP-SEG/S52/seg-wiregate, WIRING (see softballs_step.ts's own header for the
@@ -738,6 +741,7 @@ export async function runHumanNuanceStep(
   const ownedCandidates = [
     ...(await gatherMortgageCandidates(input.qid, query)),
     ...gatherThisRunCandidates(ctx),
+    ...gatherFreeTextCandidates(query),
   ];
   let text = ''; let via = ''; let provenance: ClaimProvenance | undefined;
   type Extraction = {

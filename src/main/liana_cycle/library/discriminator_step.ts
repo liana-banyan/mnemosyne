@@ -46,10 +46,19 @@ import type { StepDeclaration } from './step_declaration';
 // ruling this shared module implements; softballs_step.ts, named_set_step.ts and
 // discriminator_step.ts all use it identically rather than each re-deriving the same ordering.
 import {
-  corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates,
+  corroborateClaim, gatherFreeTextCandidates, gatherMortgageCandidates, gatherThisRunCandidates,
   spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority,
 } from './composer_step_evidence';
 import type { ClaimProvenance, CorroborationResult } from './composer_step_evidence';
+// D-BP155-035/BISHOP/seg-freetext-all-steps, WIRING. Same additive stage-1(c) free-text source
+// boundary_step.ts's own D-BP155-010 header describes -- wired into fetchAndExtract()'s own
+// `owned` array below, PARAMETERIZED BY askQuery exactly like gatherMortgageCandidates() already
+// is, so each of the five independent asks (KIND/ENUMERATION/PROPERTY/SUBREGION/REGISTER) only
+// ever sees free-text evidence judged relevant to THAT ask's own query text -- never a single pool
+// shared indiscriminately across all five. This is the SECOND (and, this ticket, LAST) step named
+// explicitly by the dispatch as carrying "multi-stage mortgage-trap retry logic... its own history
+// of live-measured defects" -- see this ticket's own return for the removal-test results this
+// caution earned. gatherMortgageCandidates()'s own `if (qid == null) return [];` gate is UNTOUCHED.
 // D-BP154-063/BISHOP-SEG/S52/seg-wiregate, WIRING. THE ONE SHARED CATEGORY-PARSE GATE replaces
 // this file's own local "following X is/are" regex (previously duplicated, byte-identical, from
 // softballs_step.ts -- the Founder's own explicit instruction this dispatch: "extract it; every
@@ -565,7 +574,11 @@ export async function runDiscriminatorStep(
     extractionError?: string; fetchError?: string;
     stage1Value: T | null; stage2Value: T | null; stage2Via?: string;
   }> {
-    const owned = [...(await gatherMortgageCandidates(input.qid, askQuery)), ...gatherThisRunCandidates(ctx)];
+    const owned = [
+      ...(await gatherMortgageCandidates(input.qid, askQuery)),
+      ...gatherThisRunCandidates(ctx),
+      ...gatherFreeTextCandidates(askQuery),
+    ];
     let text = ''; let via = ''; let provenance: ClaimProvenance | undefined;
     for (const c of owned) { if (namesAnyOption(c.text)) { text = c.text; via = c.via; provenance = c.provenance; break; } }
     const describeFailure = (rawOut: { truncated?: boolean; failureCause?: 'transport' | 'http-error' | 'parse-error'; failureDetail?: string }) => (
