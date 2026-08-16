@@ -283,7 +283,7 @@ describe('substrate_savings_receipt: (d) a zero-savings period reports zero, not
 });
 
 describe('substrate_savings_receipt: cloud_escalation and abstain never claim an avoided flagship call', () => {
-  it('cloud_escalation records flagship_call_avoided=false and UNMEASURED actual cost', () => {
+  it('cloud_escalation records flagship_call_avoided=false and UNMEASURED actual cost when no real tokens/model were carried (the substrate_router.ts routing-signal-only path)', () => {
     const r = emitSavingsReceipt({
       tier: 'cloud_escalation', routing_raw: 'cloud_escalation', model_used: null,
       input_tokens: null, output_tokens: null, served_text_chars: null, latency_ms: 10,
@@ -291,5 +291,102 @@ describe('substrate_savings_receipt: cloud_escalation and abstain never claim an
     });
     expect(r.flagship_call_avoided).toBe(false);
     expect(r.actual_cost_usd).toBe(UNMEASURED);
+  });
+});
+
+describe('substrate_savings_receipt: (D-BP155-029) cloud_escalation prices real tokens exactly like local_model, closing the survivorship-bias defect', () => {
+  it('a cloud_escalation record WITH real provider-reported tokens and a priced model produces a real actual_cost_usd, not UNMEASURED', () => {
+    // Mirrors ai_dispatch_ipc.ts's dispatchViaBrain() flagship branch: real Anthropic usage
+    // field-reported input/output tokens, a real model_used. Model id matches the FRESH_TABLE
+    // fixture's priced entry so this proves the PRICING branch, not a missing-rate exclusion.
+    const r = emitSavingsReceipt({
+      tier: 'cloud_escalation', routing_raw: 'ladder_tier4_flagship:claude-sonnet-5:ok',
+      model_used: 'claude-sonnet-5', input_tokens: 1200, output_tokens: 400,
+      served_text_chars: 1600, latency_ms: 2200,
+      degraded: false, as_of: '2026-08-15T00:00:00.000Z', price_table_path: priceTablePath,
+    });
+    expect(r.flagship_call_avoided).toBe(false); // a paid call was made, never "avoided"
+    expect(typeof r.actual_cost_usd).toBe('number');
+    // 1200/1e6 * 2.00 + 400/1e6 * 10.00 = 0.0024 + 0.004 = 0.0064
+    expect(r.actual_cost_usd).toBeCloseTo(0.0064, 10);
+    expect(r.actual_cost_basis).toMatch(/priced at claude-sonnet-5 table rate/);
+    expect(r.actual_cost_basis).toMatch(/real provider-reported token counts/);
+  });
+
+  it('a cloud_escalation record with real tokens but NO price-table rate for the model still resolves UNMEASURED, never guessed', () => {
+    const r = emitSavingsReceipt({
+      tier: 'cloud_escalation', routing_raw: 'ladder_tier3_cheap_cloud:claude-haiku-4-7:ok',
+      model_used: 'claude-haiku-4-7', input_tokens: 500, output_tokens: 150,
+      served_text_chars: 600, latency_ms: 900,
+      degraded: false, as_of: '2026-08-15T00:00:00.000Z', price_table_path: priceTablePath,
+    });
+    expect(r.actual_cost_usd).toBe(UNMEASURED);
+    expect(r.actual_cost_basis).toMatch(/no_rate_for_model/);
+    expect(r.cost_avoided_usd).toBe(UNMEASURED);
+  });
+
+  it('period aggregate: before/after on the SAME window shows the lower-bound-shaped number becoming a real net figure once a cloud escalation is priced, and states measurement_scope + records_excluded_unmeasured_by_tier explicitly', () => {
+    // "Before": one substrate hit only -- the pre-fix shape (a lower bound over substrate/local
+    // hits; nothing paid ever entered the sum because cloud_escalation was hardcoded UNMEASURED).
+    emitSavingsReceipt({
+      tier: 'substrate_hit', routing_raw: 'substrate_hit', model_used: null,
+      input_tokens: null, output_tokens: null, served_text_chars: 400, latency_ms: 5,
+      degraded: false, as_of: '2026-08-15T00:00:00.000Z', price_table_path: priceTablePath,
+    });
+    const before = computePeriodAggregate(
+      'before-window', '2026-08-14T00:00:00.000Z', '2026-08-16T00:00:00.000Z', logFile,
+    );
+    expect(before.total_queries).toBe(1);
+    expect(before.by_tier.cloud_escalation).toBe(0);
+    const beforeCostAvoided = before.cost_avoided_usd;
+
+    // "After": a REAL priced cloud escalation lands in the SAME window (the actual fix this
+    // ticket makes reachable -- a real Anthropic call's real usage tokens flowing to the meter).
+    // Capture the individual receipt's OWN cost_avoided_usd independently of the aggregate call.
+    const secondReceipt = emitSavingsReceipt({
+      tier: 'cloud_escalation', routing_raw: 'ladder_tier4_flagship:claude-sonnet-5:ok',
+      model_used: 'claude-sonnet-5', input_tokens: 1200, output_tokens: 400,
+      served_text_chars: 1600, latency_ms: 2200,
+      degraded: false, as_of: '2026-08-15T00:02:00.000Z', price_table_path: priceTablePath,
+    });
+    expect(typeof secondReceipt.cost_avoided_usd).toBe('number');
+    const after = computePeriodAggregate(
+      'after-window', '2026-08-14T00:00:00.000Z', '2026-08-16T00:00:00.000Z', logFile,
+    );
+    expect(after.total_queries).toBe(2);
+    expect(after.by_tier.cloud_escalation).toBe(1);
+    expect(after.records_with_measured_saving).toBe(2);
+    expect(after.records_excluded_unmeasured).toBe(0);
+    expect(after.records_excluded_unmeasured_by_tier.cloud_escalation).toBe(0);
+    // The net figure now reflects a REAL paid call's cost eating into savings -- verify the
+    // aggregate is EXACTLY the independently-computed sum of the two individual receipts' own
+    // cost_avoided_usd values (a true net sum across tiers), never silently clamped, dropped, or
+    // re-flattered. This ties computePeriodAggregate's output back to per-record ground truth
+    // instead of trusting the aggregate's own arithmetic in isolation.
+    expect(after.cost_avoided_usd).toBeCloseTo(
+      beforeCostAvoided + (secondReceipt.cost_avoided_usd as number), 10,
+    );
+
+    // The instrument must SAY what it is, in the output itself -- not leave a reader to assume.
+    expect(after.measurement_scope).toMatch(/NET figure across ALL traffic/);
+    expect(after.measurement_scope).toMatch(/NOT a lower bound/);
+    expect(after.measurement_scope).toContain('records_excluded_unmeasured_by_tier');
+  });
+
+  it('period aggregate: an UNPRICED cloud escalation is visible in records_excluded_unmeasured_by_tier, so a reader can never mistake silence for zero spend', () => {
+    emitSavingsReceipt({
+      tier: 'cloud_escalation', routing_raw: 'ladder_tier3_cheap_cloud:claude-haiku-4-7:ok',
+      model_used: 'claude-haiku-4-7', input_tokens: 500, output_tokens: 150,
+      served_text_chars: 600, latency_ms: 900,
+      degraded: false, as_of: '2026-08-15T00:00:00.000Z', price_table_path: priceTablePath,
+    });
+    const agg = computePeriodAggregate(
+      'unpriced-cloud-window', '2026-08-14T00:00:00.000Z', '2026-08-16T00:00:00.000Z', logFile,
+    );
+    expect(agg.total_queries).toBe(1);
+    expect(agg.by_tier.cloud_escalation).toBe(1);
+    expect(agg.cost_avoided_usd).toBe(0); // nothing measurable this window
+    expect(agg.records_excluded_unmeasured).toBe(1);
+    expect(agg.records_excluded_unmeasured_by_tier.cloud_escalation).toBe(1);
   });
 });

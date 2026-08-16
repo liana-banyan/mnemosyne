@@ -27,6 +27,20 @@
 //     intact because the whole thing was regenerated." True tamper-proofing needs an external
 //     anchor (e.g. periodic hash publication somewhere the licensee does not control) which is
 //     out of scope for this ticket and is named as an open item in the Return.
+//
+// D-BP155-029/BISHOP/seg-meter-net-and-auditlist (Founder-ordered fix, survivorship bias):
+//   The meter's own author (this file) named the flaw and the Founder ordered it closed: "Cloud
+//   escalations always record UNMEASURED actual cost, so the expensive queries never enter the
+//   total. The aggregate is a lower bound over queries the substrate fully handled, not a net
+//   statement across all your traffic." The cloud_escalation branch of emitSavingsReceipt() below
+//   no longer hardcodes UNMEASURED -- it prices real provider-reported tokens exactly like
+//   local_model does, whenever a caller carries them through (see ai_dispatch_ipc.ts's
+//   dispatchViaBrain() + _emitCloudEscalationSavingsReceipt, the codebase's actual real-money
+//   cloud-call site). computePeriodAggregate()'s new `measurement_scope` field states plainly, in
+//   the output itself, that cost_avoided_usd is a NET figure across all traffic, not a lower
+//   bound -- and `records_excluded_unmeasured_by_tier` shows, per tier, how much of that net
+//   figure is still honestly unpriced (see the price-table-provenance gap named in the Return
+//   and in SAVINGS_METER_AUDITOR_DISPUTE_LIST_BP155.md item 1).
 
 import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
@@ -102,12 +116,34 @@ export interface PeriodAggregate {
   by_tier: Record<SavingsTier, number>;
   flagship_calls_avoided: number;
   flagship_calls_made: number;
-  /** Sum of cost_avoided_usd over records where it was a real number -- excludes UNMEASURED. */
+  /** Sum of cost_avoided_usd over records where it was a real number -- excludes UNMEASURED.
+   *  See `measurement_scope` below for what this sum represents (NET, not a lower bound). */
   cost_avoided_usd: number;
   /** How many of total_queries contributed a numeric cost_avoided_usd to the sum above. */
   records_with_measured_saving: number;
   /** How many were excluded from the sum because a rate, count, or served text was missing. */
   records_excluded_unmeasured: number;
+  /** D-BP155-029/BISHOP/seg-meter-net-and-auditlist: same exclusion count as
+   *  records_excluded_unmeasured, broken out per tier, so a reader can see WHICH tier(s) are
+   *  contributing the unmeasured count -- e.g. cloud_escalation records excluded because the
+   *  price table has no rate for the model actually dispatched, even though real provider token
+   *  counts were captured. This is what tells "instrumented but unpriced" (a config/price-table
+   *  gap) apart from "never instrumented" (an architecture gap) -- see the dispute list. */
+  records_excluded_unmeasured_by_tier: Record<SavingsTier, number>;
+  /** D-BP155-029/BISHOP/seg-meter-net-and-auditlist (Founder-ordered fix, closing the
+   *  survivorship-bias defect): states, unconditionally and in the output itself, what
+   *  cost_avoided_usd above represents -- a NET figure across ALL traffic that reached a
+   *  routing decision in this window (substrate_hit, local_model, cloud_escalation, abstain
+   *  are ALL included in by_tier and in the from/to window scan), summed only over records
+   *  where both actual_cost_usd and counterfactual_cost_usd were real numbers. It is NOT a
+   *  lower bound restricted to substrate/local hits: a cloud_escalation record enters the sum
+   *  exactly like any other tier once its provider reports real token counts AND the price
+   *  table carries a rate for the model used. When cloud escalations are UNMEASURED (see
+   *  records_excluded_unmeasured_by_tier.cloud_escalation), the resulting number is honestly a
+   *  net figure over the SUBSET of traffic that was priceable this window, not a claim that no
+   *  cloud spend occurred -- read this field together with records_excluded_unmeasured_by_tier,
+   *  never cost_avoided_usd alone. */
+  measurement_scope: string;
   confidence: string;
 }
 
@@ -215,8 +251,32 @@ export function emitSavingsReceipt(input: SavingsReceiptInput): SavingsReceipt {
       }
     }
   } else if (input.tier === 'cloud_escalation') {
+    // D-BP155-029/BISHOP/seg-meter-net-and-auditlist: this branch used to hardcode UNMEASURED
+    // for every cloud_escalation record regardless of what `input` carried -- exactly the
+    // survivorship-bias defect the Founder named: "Cloud escalations always record UNMEASURED
+    // actual cost, so the expensive queries never enter the total." Fixed by pricing this
+    // EXACTLY like local_model above: a real provider-reported input/output token count, a
+    // real model_used, and a price-table rate for that model_id together produce a real number;
+    // anything missing produces UNMEASURED, never a guess. The caller now carries real usage
+    // through this path for the calls that actually spend money -- see
+    // ai_dispatch_ipc.ts's dispatchViaBrain() (Anthropic Messages API's own `usage.input_tokens`/
+    // `usage.output_tokens` field) and its _emitCloudEscalationSavingsReceipt call sites. The
+    // OTHER cloud_escalation source in this codebase, substrate_router.ts's SubstrateRouter.query()
+    // Step 3, is a routing SIGNAL that never itself makes a network call (see that file's own
+    // comment at Step 3) -- receipts emitted from THAT path still correctly resolve UNMEASURED
+    // below, honestly, because no real tokens/model ever reach this function from there.
     flagship_call_avoided = false;
-    actual_cost_basis = 'cloud escalation was triggered by the router; the downstream flagship call, if made, happens outside this routing decision point and its real cost is not observable here';
+    if (input.input_tokens == null || input.output_tokens == null || !input.model_used) {
+      actual_cost_basis = 'cloud escalation was triggered but real provider-reported token counts and/or a model_used were not carried through to this receipt (this is expected from substrate_router.ts\'s routing-signal-only cloud_escalation, which never itself makes a network call); recorded as UNMEASURED rather than guessed';
+    } else {
+      const rate = lookupRate(input.model_used, asOf, tablePath);
+      if (!rate.ok) {
+        actual_cost_basis = `cloud model "${input.model_used}" cost could not be priced: ${rate.reason} (${rate.detail})`;
+      } else {
+        actual_cost_usd = actualCostFromRate(rate, input.input_tokens, input.output_tokens);
+        actual_cost_basis = `priced at ${input.model_used} table rate, price_table_version=${rate.table_version}, real provider-reported token counts (Anthropic Messages API usage field)`;
+      }
+    }
   } else {
     // abstain (miss / peer_sync)
     actual_cost_usd = 0;
@@ -406,6 +466,26 @@ export function computePeriodAggregate(
   const records_with_measured_saving = measured.length;
   const records_excluded_unmeasured = inWindow.length - measured.length;
 
+  const records_excluded_unmeasured_by_tier = TIER_ORDER.reduce((acc, t) => {
+    acc[t] = 0;
+    return acc;
+  }, {} as Record<SavingsTier, number>);
+  for (const r of inWindow) {
+    if (typeof r.cost_avoided_usd !== 'number') {
+      records_excluded_unmeasured_by_tier[r.tier] = (records_excluded_unmeasured_by_tier[r.tier] ?? 0) + 1;
+    }
+  }
+
+  const measurement_scope =
+    'NET figure across ALL traffic that reached a routing decision in this window ' +
+    '(substrate_hit, local_model, cloud_escalation, abstain all included) -- NOT a lower bound ' +
+    'restricted to substrate/local hits. cost_avoided_usd sums only records where both ' +
+    'actual_cost_usd and counterfactual_cost_usd were real numbers; see ' +
+    'records_excluded_unmeasured_by_tier for which tier(s) contributed the exclusions -- a ' +
+    'nonzero cloud_escalation count there means real cloud spend occurred this window that is ' +
+    'NOT reflected in cost_avoided_usd (unpriced, not unmeasured-by-design). Read this field ' +
+    'together with records_excluded_unmeasured_by_tier, never cost_avoided_usd alone.';
+
   const confidence =
     inWindow.length === 0
       ? 'no records in this window'
@@ -422,6 +502,8 @@ export function computePeriodAggregate(
     cost_avoided_usd,
     records_with_measured_saving,
     records_excluded_unmeasured,
+    records_excluded_unmeasured_by_tier,
+    measurement_scope,
     confidence,
   };
 }
