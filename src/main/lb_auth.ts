@@ -229,6 +229,98 @@ export function getLBSession(): LBSession | null {
   return loadSession();
 }
 
+// ─── Token refresh (D-BP155-025) ───────────────────────────────────────────────
+// lb_auth's Supabase session is now the single identity AuthManager consumes for
+// membership lookups (see membership_lookup.ts). access_token is a short-lived Supabase
+// JWT (default 1h); this decodes its `exp` claim WITHOUT verifying the signature -- we
+// never trust the claim for authorization, only to decide locally whether to bother
+// refreshing before making a REST call. The actual authorization check happens
+// server-side via Postgres RLS when the token is sent as the Authorization header.
+
+function decodeJwtExpMs(token: string): number | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payloadJson = Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const payload = JSON.parse(payloadJson) as { exp?: number };
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Exchange the session's refresh_token for a new access_token via Supabase's GoTrue
+ * token endpoint. Returns the refreshed session (persisted) on success.
+ *
+ * Returns { ok: false, invalid: true } ONLY when Supabase explicitly rejects the
+ * refresh_token (expired/revoked) -- the caller should treat the link as broken and
+ * clear it. Any other failure (network, timeout, 5xx) returns { ok: false, invalid:
+ * false } and the caller MUST leave the existing session and any cached membership
+ * result untouched -- an unreachable auth server is not proof the link is dead.
+ */
+export async function refreshLBSession(
+  session: LBSession,
+): Promise<{ ok: true; session: LBSession } | { ok: false; invalid: boolean }> {
+  const cfg = getSupabaseConfig();
+  if (!cfg) return { ok: false, invalid: false };
+
+  try {
+    const result = await supabaseFetch(`${cfg.url}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: { apikey: cfg.anonKey, Authorization: `Bearer ${cfg.anonKey}` },
+      body: { refresh_token: session.refresh_token },
+    });
+
+    if (!result.ok) {
+      // Supabase returns 400 invalid_grant for a dead/rotated refresh token.
+      const invalid = result.status === 400 || result.status === 401;
+      return { ok: false, invalid };
+    }
+
+    const data = result.data as { access_token?: string; refresh_token?: string };
+    if (!data.access_token || !data.refresh_token) return { ok: false, invalid: false };
+
+    const refreshed: LBSession = {
+      ...session,
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+    };
+    persistSession(refreshed);
+    return { ok: true, session: refreshed };
+  } catch {
+    // Network error / timeout — not proof the refresh token is invalid.
+    return { ok: false, invalid: false };
+  }
+}
+
+/**
+ * Returns a session with an access_token safe to use for a REST call right now:
+ * refreshes proactively if the current token is within 5 minutes of expiry (or its
+ * expiry can't be decoded), returns it as-is otherwise. If the refresh_token itself is
+ * confirmed dead, clears the local session and returns null. A transient refresh
+ * failure (network) returns the EXISTING (possibly stale) session rather than null, so
+ * a momentary outage never looks like "unlinked."
+ */
+export async function getValidLBSession(): Promise<LBSession | null> {
+  const session = loadSession();
+  if (!session) return null;
+
+  const expMs = decodeJwtExpMs(session.access_token);
+  const needsRefresh = expMs === null || expMs < Date.now() + 5 * 60 * 1000;
+  if (!needsRefresh) return session;
+
+  const result = await refreshLBSession(session);
+  if (result.ok) return result.session;
+  if (result.invalid) {
+    clearSession();
+    return null;
+  }
+  // Transient failure — keep using the old token; the REST call may still fail with
+  // 401, which the caller treats as a distinct "unauthorized" outcome, not as unlinked.
+  return session;
+}
+
 /**
  * Revoke the device link and clear the local session.
  */

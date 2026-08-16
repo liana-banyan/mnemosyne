@@ -150,12 +150,16 @@ export interface FederationStatus {
 }
 
 // Phase 7 — Auth types
+// D-BP155-025: 'unknown' added — an LB account is linked but membership couldn't be
+// determined yet (no cached result, live lookup hasn't succeeded). Mirrors
+// src/main/auth_manager.ts's AuthStatus exactly; see that file's header.
 export type AuthStatus =
   | 'unauthenticated'
   | 'trial_active'
   | 'trial_expired'
   | 'member'
-  | 'validating';
+  | 'validating'
+  | 'unknown';
 
 export interface MemberInfo {
   user_id: string;
@@ -165,6 +169,8 @@ export interface MemberInfo {
   membership_expires?: string;
   badge_tier?: 'stamped' | 'ghost';
   avatar_url?: string;
+  member_number?: number;
+  tags?: string[];
 }
 
 export interface AuthState {
@@ -174,6 +180,8 @@ export interface AuthState {
   trial_days_remaining?: number;
   token_expires?: number;
   degraded: boolean;
+  membershipSource?: 'live' | 'cached' | 'unreachable' | 'unchecked';
+  membershipCheckedAt?: number;
 }
 
 // ── The Crystal -- durable chonk-handle store (KN-BP147-M2, D-BP147-005) ──────────────────

@@ -5587,6 +5587,9 @@ ${args.teachingText}
           });
         }
       }
+      // D-BP155-025 — a fresh link means a fresh identity to check; don't wait for the
+      // periodic timer to find out whether this identity is a member.
+      void authManager?.refreshMembership();
     }
     return { ok: result.ok, error: result.error };
   });
@@ -10082,6 +10085,18 @@ app.whenReady().then(async () => {
 
   // Initialize auth manager (Phase 7)
   authManager = new AuthManager();
+  // D-BP155-025 — "Sign in with existing LB Account" (AuthGate) now opens the real,
+  // already-working LB Account tab (Tab 14) instead of the retired OAuth round-trip.
+  // Window/dashboard lifecycle lives here in index.ts, not in AuthManager.
+  authManager.setOpenLbAccountLinkHandler(() => {
+    openDashboard({ focus: true });
+    const wins = [dashboardWindow, hearthConjunctionWindow, overlayWindow];
+    for (const win of wins) {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('navigate:focus-tab', { tabId: 'lb-account' });
+      }
+    }
+  });
   authManager.init();
   authManager.onStateChanged((state) => {
     substrateServer?.setDegradedMode(state.degraded);
@@ -10089,6 +10104,15 @@ app.whenReady().then(async () => {
       setMode('fallback');
     }
   });
+  // D-BP155-025 — periodic live membership re-check (the old refreshIfNeeded() this
+  // replaces was dead code, never called from anywhere). Picks up a membership
+  // purchased or lapsed elsewhere without requiring an app restart. A failed check
+  // never touches the cache — see AuthManager.refreshMembership().
+  setInterval(() => {
+    authManager?.refreshMembership().catch((err) => {
+      console.warn('[Auth] Periodic membership refresh failed:', err);
+    });
+  }, 15 * 60 * 1000);
 
   // ?6 BP041 ? Hide Electron menu bar by default (non-technical member protection).
   // Ctrl+Shift+D toggles developer menu on/off at runtime.
@@ -10196,6 +10220,11 @@ app.whenReady().then(async () => {
                 crewman_number: result.session.crewman_number,
               });
             }
+          }
+          // D-BP155-025 — same reasoning as the lb:link-device handler above: this is
+          // the OS-deep-link completion of the identical magic-link flow.
+          if (result.ok && result.session) {
+            void authManager?.refreshMembership();
           }
         })();
       } else if (payload.type === 'membership-activated') {
