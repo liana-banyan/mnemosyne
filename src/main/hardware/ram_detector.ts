@@ -163,20 +163,150 @@ export function detectVramGb(): number | null {
 }
 
 /**
+ * ── VRAM gate ──────────────────────────────────────────────────────────
+ * D-BP155-051 / BISHOP / seg-vram-gates-model
+ *
+ * The Founder's ruling (memory: reference_m3_uses_gemma2_9b_vram_bound_not_
+ * ram_bound_bp155.md): model capacity is governed by VRAM, not system RAM.
+ * M3 (TERENO, 31.9 GB system RAM -> 'full' RAM tier) has gemma4:12b PULLED
+ * but must never run it there -- insufficient VRAM forces Ollama into a
+ * ~70/30 GPU/CPU split that is unusably slow. M3 runs gemma2:9b instead.
+ * RAM alone said "full tier -> gemma4:12b"; VRAM is what actually gates it.
+ *
+ * Measured model weight sizes -- live GET http://127.0.0.1:11434/api/tags
+ * on M0 (LIANABANYAN), 2026-08-16, "size" field (bytes on disk):
+ *   llama3.3:70b   42,520,413,916 B = 39.60 GB  (measured, Q4_K_M, 70.6B params)
+ *   gemma4:12b      7,556,508,396 B =  7.04 GB  (measured, Q4_K_M, 11.9B params)
+ *   llama3.1:8b     4,920,753,328 B =  4.58 GB  (measured, Q4_K_M, 8.0B params)
+ * gemma2:9b and gemma2:2b are NOT pulled on M0 (confirmed via `ollama list`
+ * and a live /api/show 404 "model not found"), so their weight size could
+ * NOT be measured in this environment. Their figures below are ESTIMATES,
+ * not measurements: scaled from gemma4:12b's measured Q4_K_M density
+ * (7.04 GB / 11.9B params = 0.591 GB/B) applied to each model's nominal
+ * parameter count (9B, 2B). Named explicitly rather than presented as a
+ * measurement -- see MODEL_WEIGHTS_GB.measured below.
+ *
+ * Overhead allowance (a stated allowance, not a measurement -- this
+ * environment has no GPU memory profiler to observe live inference VRAM
+ * use): weight size x 1.2 (20% for KV-cache + activation buffer at
+ * moderate context) + a flat 0.5 GB floor for driver/runtime overhead.
+ * Deliberately conservative: this gate only needs to tell "fits" from
+ * "doesn't fit", not predict an exact byte count.
+ *
+ * Check against the Founder's own datapoint: required(gemma4:12b) = 8.9 GB,
+ * required(gemma2:9b) = 6.9 GB. M3's VRAM sits between those two figures
+ * (constrained dedicated GPU, well short of the 8.9 GB gemma4:12b needs,
+ * comfortably above the 6.9 GB gemma2:9b needs) -- so the gate steps
+ * gemma4:12b down to gemma2:9b there, matching the ruling. See the M3 test
+ * case for the exact assumed VRAM figure used and why it is not a live
+ * measurement of that remote machine.
+ */
+interface ModelWeight {
+  gb: number;
+  measured: boolean; // false = scaled estimate, not read from a live source
+}
+
+const MODEL_WEIGHTS_GB: Record<string, ModelWeight> = {
+  'gemma2:2b': { gb: 1.18, measured: false },   // scaled estimate (not pulled on M0)
+  'gemma2:9b': { gb: 5.32, measured: false },   // scaled estimate (not pulled on M0)
+  'gemma4:12b': { gb: 7.04, measured: true },   // live /api/tags size, 2026-08-16
+  'llama3.1:8b': { gb: 4.58, measured: true },  // live /api/tags size, 2026-08-16
+  'llama3.3:70b': { gb: 39.60, measured: true }, // live /api/tags size, 2026-08-16
+};
+
+const VRAM_OVERHEAD_FACTOR = 1.2;
+const VRAM_OVERHEAD_FLOOR_GB = 0.5;
+
+/** Required VRAM (GB) for a model, or null if the model isn't in the measured/estimated table. */
+export function requiredVramGb(model: string): number | null {
+  const w = MODEL_WEIGHTS_GB[model];
+  if (!w) return null;
+  return Math.round((w.gb * VRAM_OVERHEAD_FACTOR + VRAM_OVERHEAD_FLOOR_GB) * 10) / 10;
+}
+
+// Largest-to-smallest step-down ladder used when detected VRAM can't hold
+// the RAM tier's raw recommendation. applyVramGate walks DOWN this list
+// from whatever model the RAM tier picked, looking for the first one that fits.
+const MODEL_STEP_DOWN_LADDER = ['gemma4:12b', 'gemma2:9b', 'gemma2:2b'];
+
+export interface VramGateResult {
+  model: string | null;
+  note?: string;
+}
+
+/**
+ * Gates a RAM-tier's raw model recommendation against detected VRAM.
+ * - tierModel === null (nano) passes through untouched -- nothing to gate.
+ * - vramGb === null (detection failed or unsupported platform) is UNKNOWN,
+ *   NOT zero -- falls back to the RAM-tier recommendation with an honest
+ *   note so a human can tell "no GPU" from "couldn't measure".
+ * - Otherwise steps down the ladder until a model whose required VRAM
+ *   fits, naming both the RAM-tier recommendation and the VRAM-constrained
+ *   choice in the note. A silent downgrade is the defect this exists to prevent.
+ */
+export function applyVramGate(tierModel: string | null, vramGb: number | null): VramGateResult {
+  if (tierModel === null) return { model: null };
+
+  if (vramGb === null) {
+    return {
+      model: tierModel,
+      note: 'VRAM undetectable (no GPU or detection failed) -- using RAM-tier recommendation',
+    };
+  }
+
+  const required = requiredVramGb(tierModel);
+  if (required === null || vramGb >= required) {
+    return { model: tierModel };
+  }
+
+  const ladderIdx = MODEL_STEP_DOWN_LADDER.indexOf(tierModel);
+  if (ladderIdx === -1) {
+    return {
+      model: tierModel,
+      note: `VRAM (${vramGb} GB) may be insufficient for ${tierModel} (needs ~${required} GB); no smaller fallback known for this model`,
+    };
+  }
+
+  for (let i = ladderIdx + 1; i < MODEL_STEP_DOWN_LADDER.length; i++) {
+    const candidate = MODEL_STEP_DOWN_LADDER[i];
+    const candRequired = requiredVramGb(candidate);
+    if (candRequired !== null && vramGb >= candRequired) {
+      return {
+        model: candidate,
+        note: `RAM tier recommends ${tierModel} (needs ~${required} GB VRAM); detected VRAM ${vramGb} GB is insufficient -- stepped down to ${candidate}`,
+      };
+    }
+  }
+
+  const floor = MODEL_STEP_DOWN_LADDER[MODEL_STEP_DOWN_LADDER.length - 1];
+  return {
+    model: floor,
+    note: `RAM tier recommends ${tierModel} (needs ~${required} GB VRAM); detected VRAM ${vramGb} GB is insufficient even for the smallest fallback ${floor} -- expect CPU-split slowdown`,
+  };
+}
+
+/**
  * Right-size lookup — BP091 canon §3.1 + Amendment (5-tier user-facing).
- * Maps RAM + VRAM to hardware tier + recommended model.
+ * Maps RAM + VRAM to hardware tier + recommended model. RAM decides the
+ * TIER (and coopTier, unchanged by this gate — those feed membership and
+ * pricing elsewhere); VRAM now gates the MODEL selection within that tier
+ * via applyVramGate, stepping down when detected VRAM can't hold the
+ * tier's raw pick. See the VRAM gate block above for the full rationale.
  *
  * 5-tier system: NANO → LITE → CORE → FULL → ULTRA
  *
- * Thresholds:
+ * RAM thresholds (unchanged):
  *   ramGb < 8        → nano  · null        · NANO (read-only)
  *   8 <= ramGb < 12  → lite  · gemma2:2b   · LITE
  *   12 <= ramGb < 24 → core  · gemma2:9b   · CORE
- *   24 <= ramGb < 48 → full  · gemma4:12b  · FULL  (VRAM-aware sub-routing for logs)
- *   ramGb >= 48      → ultra · gemma4:12b  · ULTRA
+ *   24 <= ramGb < 48 → full  · gemma4:12b  · FULL  (VRAM-gated, may step down)
+ *   ramGb >= 48      → ultra · gemma4:12b  · ULTRA (VRAM-gated, may step down)
  *
  * Example: Son's machine (15.8 GB RAM) → CORE → gemma2:9b.
- * Example: Founder's machine (31.9 GB RAM) → FULL → gemma4:12b.
+ * Example: M3/TERENO (31.9 GB RAM) → FULL tier's raw pick is gemma4:12b,
+ * but M3's constrained VRAM steps the model down to gemma2:9b — see the
+ * VRAM gate block above and the M3 test case.
+ * Example: M0/LIANABANYAN (61.6 GB RAM) → ULTRA → gemma4:12b (ample VRAM).
  */
 export function rightSize(ramGb: number, vramGb: number | null): RightSize {
   // Check for config override first — key is "override_model" (not "model")
@@ -194,39 +324,51 @@ export function rightSize(ramGb: number, vramGb: number | null): RightSize {
   }
 
   let ramTier: HardwareTier;
-  let autoModel: string | null;
+  let tierModel: string | null; // RAM tier's raw recommendation, BEFORE the VRAM gate
   let coopTier: CoopTier;
-  let note: string | undefined;
 
   if (ramGb < 8) {
     ramTier = 'nano';
-    autoModel = null;
+    tierModel = null;
     coopTier = 'NANO';
-    note = 'Mesh participation only';
   } else if (ramGb < 12) {
     ramTier = 'lite';
-    autoModel = 'gemma2:2b';
+    tierModel = 'gemma2:2b';
     coopTier = 'LITE';
   } else if (ramGb < 24) {
     ramTier = 'core';
-    autoModel = 'gemma2:9b';
+    tierModel = 'gemma2:9b';
     coopTier = 'CORE';
-    // VRAM detection still useful for logging — may influence inference speed
-    if (vramGb !== null && vramGb < 6) {
-      note = 'CPU inference (slower but stable)';
-    }
   } else if (ramGb < 48) {
     ramTier = 'full';
-    autoModel = 'gemma4:12b';
+    tierModel = 'gemma4:12b';
     coopTier = 'FULL';
-    // VRAM detection for sub-tier logging
-    if (vramGb !== null && vramGb < 8) {
-      note = 'CPU inference (slower, 24+ GB RAM compensates)';
-    }
   } else {
     ramTier = 'ultra';
-    autoModel = 'gemma4:12b';
+    tierModel = 'gemma4:12b';
     coopTier = 'ULTRA';
+  }
+
+  let autoModel: string | null;
+  let note: string | undefined;
+
+  if (ramTier === 'nano') {
+    autoModel = null;
+    note = 'Mesh participation only';
+  } else {
+    const gated = applyVramGate(tierModel, vramGb);
+    autoModel = gated.model;
+    note = gated.note;
+  }
+
+  // An explicit override always wins over the VRAM gate — a human's
+  // deliberate choice is never silently overridden — but if the override
+  // exceeds detected VRAM, surface a warning instead of downgrading it.
+  if (overrideModel && vramGb !== null) {
+    const overrideRequired = requiredVramGb(overrideModel);
+    if (overrideRequired !== null && vramGb < overrideRequired) {
+      note = `Override "${overrideModel}" needs ~${overrideRequired} GB VRAM; detected VRAM ${vramGb} GB is below that — expect CPU-split slowdown`;
+    }
   }
 
   return {
