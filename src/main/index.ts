@@ -9892,6 +9892,17 @@ app.whenReady().then(async () => {
     .then(({ warmEbletIndex }) => warmEbletIndex())
     .catch((e) => console.error('[Startup] Eblet index warm-up failed (non-fatal):', e));
 
+  // D-BP155-018 (keep-current fix): start fs.watch()-based keep-current watchers on every
+  // resolved eblet store root so a file added/edited/removed anywhere under them invalidates
+  // the in-memory index the moment the debounce settles, instead of only ever self-healing on
+  // the next query made >60s after the previous one (see mnem_eblet_store.ts's own
+  // "D-BP155-018: keep-current watchers" section for the full defect writeup). Fire-and-forget,
+  // non-fatal to app boot -- a watcher-start failure is recorded into watcherErrors (surfaced
+  // via mnem_get_substrate_stats), never thrown.
+  import('./mnem_eblet_store')
+    .then(({ startEbletIndexWatchers }) => startEbletIndexWatchers())
+    .catch((e) => console.error('[Startup] Eblet index keep-current watchers failed to start (non-fatal):', e));
+
   // Initialize substrate API server (Phase 3: full implementation)
   substrateServer = new SubstrateAPIServer();
   await substrateServer.start();

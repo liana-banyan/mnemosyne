@@ -35,7 +35,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { queryEbletStore, getEbletIndexStats, writeVerifiedEblet } from './mnem_eblet_store';
+import { queryEbletStore, getEbletIndexStats, writeVerifiedEblet, getIndexFreshnessSignal, forceRefreshEbletIndex } from './mnem_eblet_store';
 import { runGiantConcordance, type ConcordanceResult } from './plow/giant_concordance';
 // D-BP154-074/BISHOP-SEG/S74/seg-ambient -- AMBIENT BROWSER CAPTURE. See ambient_capture_auth.ts's
 // own header for why this is a SEPARATE, narrower-privileged key from _authToken above, and
@@ -153,8 +153,38 @@ function buildMcpServer(): McpServer {
         console.error('[MCP] mnem_query_substrate: queryEbletStore threw:', e);
         error = String(e);
       }
-      const result: { eblets: string[]; error?: string } = error ? { eblets, error } : { eblets };
+      // D-BP155-018: "a refresh failure must be NAMED, never silent" -- getIndexFreshnessSignal()
+      // is a cheap timestamp comparison (no disk I/O), safe to call on every query. When the
+      // index is known-possibly-behind-disk (a background rebuild failed, a detected change
+      // hasn't been incorporated yet, or no keep-current watcher is even running), this
+      // response carries that fact alongside the results rather than returning results that
+      // LOOK current with no way for the caller to tell otherwise.
+      const freshness = getIndexFreshnessSignal();
+      const result: { eblets: string[]; error?: string; indexStale?: boolean; staleReason?: string } = {
+        eblets,
+        ...(error ? { error } : {}),
+        ...(freshness.stale ? { indexStale: true, staleReason: freshness.reason } : {}),
+      };
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    },
+  );
+
+  // ── Tool 1b: mnem_force_refresh_substrate ─────────────────────────────────
+  // D-BP155-018 constraint 3's "belt and suspenders": explicit force-refresh for a caller that
+  // KNOWS it just wrote a file and wants a synchronous reread NOW, rather than waiting on the
+  // debounced fs.watch path (typically <=WATCH_DEBOUNCE_MS + rebuild time, but not
+  // instantaneous). Does not replace the automatic path -- it is additive, same contract as
+  // SubstratedFolderWatcher's manual controls alongside its own automatic watching.
+  server.registerTool(
+    'mnem_force_refresh_substrate',
+    {
+      description: 'Force an immediate substrate index rebuild (bypasses the normal 60s lazy check and the debounced file watcher). Use right after writing/editing a file you need to be queryable immediately.',
+      inputSchema: {},
+    },
+    async () => {
+      pushRecentCall('mnem_force_refresh_substrate', 'mcp_client');
+      const stats = await forceRefreshEbletIndex();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(stats) }] };
     },
   );
 
@@ -547,7 +577,7 @@ export async function startMcpServer(): Promise<void> {
       _running = true;
       _activePort = port;
       console.log(`[MCP] Server listening on http://127.0.0.1:${port}/mcp`);
-      console.log('[MCP] 5 tools registered: mnem_query_substrate, mnem_record_qa, mnem_get_substrate_stats, mnem_run_giant_concordance, mnem_share_eblet_to_peer');
+      console.log('[MCP] 6 tools registered: mnem_query_substrate, mnem_force_refresh_substrate, mnem_record_qa, mnem_get_substrate_stats, mnem_run_giant_concordance, mnem_share_eblet_to_peer');
       console.log(`[MCP] Ambient browser capture routes: POST/GET http://127.0.0.1:${port}/capture{,/status} (key starts ${captureKeyPreview}…, full value at ${getCaptureKeyPath()})`);
       resolve();
     });
