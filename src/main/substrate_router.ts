@@ -39,6 +39,14 @@ export interface QueryResult {
   routing: 'substrate_hit' | 'local_ollama' | 'cloud_escalation' | 'peer_sync' | 'miss';
   latency_ms: number;
   cloud_cost_avoided_usd: number;
+  /** D-BP155-024 seg-savings-meter: real model id and real provider-reported token counts,
+   *  captured only when the provider actually reports them (Ollama's /api/generate response),
+   *  never estimated. Undefined when no model call was made (substrate_hit) or the provider
+   *  didn't report counts. Consumed by substrate_savings_receipt.ts at the call site in
+   *  substrate_api.ts -- this interface is additive only, existing consumers are unaffected. */
+  model_used?: string;
+  input_tokens_real?: number;
+  output_tokens_real?: number;
 }
 
 export interface QueryOptions {
@@ -331,7 +339,7 @@ export class SubstrateRouter {
     if (ollamaResult) {
       const newRecord: SubstrateRecord = {
         id: createHash('md5').update(queryText).digest('hex').slice(0, 12),
-        text: `${queryText} — ${ollamaResult.slice(0, 300)}`,
+        text: `${queryText} — ${ollamaResult.text.slice(0, 300)}`,
         source: 'local_ollama',
         keywords: [],
         ts: new Date().toISOString(),
@@ -344,6 +352,11 @@ export class SubstrateRouter {
         routing: 'local_ollama',
         latency_ms: Date.now() - t0,
         cloud_cost_avoided_usd: CLOUD_COST_PER_TOKEN_USD * TYPICAL_RESPONSE_TOKENS,
+        model_used: ollamaModel ?? FLOOR_MODEL,
+        // Real provider-reported counts when Ollama returned them; undefined otherwise, never
+        // guessed (D-BP155-024 seg-savings-meter).
+        ...(ollamaResult.inputTokens != null ? { input_tokens_real: ollamaResult.inputTokens } : {}),
+        ...(ollamaResult.outputTokens != null ? { output_tokens_real: ollamaResult.outputTokens } : {}),
       };
     }
 
@@ -356,10 +369,17 @@ export class SubstrateRouter {
     };
   }
 
+  /**
+   * D-BP155-024 seg-savings-meter: return shape widened (additively, private method, only
+   * internal caller updated alongside it) to carry Ollama's own real token counts
+   * (prompt_eval_count / eval_count) when it reports them, instead of discarding them. This is
+   * the router "printing what it received" -- real provider-measured counts, never estimated.
+   * Behavior (what gets tried, retried, or times out) is unchanged.
+   */
   private async _tryOllama(
     query: string,
     model = FLOOR_MODEL,
-  ): Promise<string | null> {
+  ): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null } | null> {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 8000);
@@ -377,8 +397,18 @@ export class SubstrateRouter {
       }).finally(() => clearTimeout(timeout));
 
       if (!res.ok) return null;
-      const data = await res.json() as { response?: string };
-      return data.response?.trim() ?? null;
+      const data = (await res.json()) as {
+        response?: string;
+        prompt_eval_count?: number;
+        eval_count?: number;
+      };
+      const text = data.response?.trim() ?? null;
+      if (!text) return null;
+      return {
+        text,
+        inputTokens: typeof data.prompt_eval_count === 'number' ? data.prompt_eval_count : null,
+        outputTokens: typeof data.eval_count === 'number' ? data.eval_count : null,
+      };
     } catch {
       return null;
     }

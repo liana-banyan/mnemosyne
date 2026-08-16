@@ -61,8 +61,13 @@ import {
 } from './passive_surveillance_emit';
 // BP140-K3 — Homework background worker (idle + AC-power gated, $0 local-Ollama-only).
 import { startHomeworkLoop } from './homework/homework_runner';
-import { SubstrateLocalIndex, SubstrateRouter, type FrameMode } from './substrate_router';
+import { SubstrateLocalIndex, SubstrateRouter, type FrameMode, type QueryResult } from './substrate_router';
 import { TelemetryStore, type RoutingSource } from './telemetry_store';
+// D-BP155-024 seg-savings-meter: the billing instrument. Emitted at the exact point this class
+// already records telemetry -- immediately after router.query() resolves, i.e. the routing
+// decision point (Founder's dispatch: "this is where a query's actual path is decided, so this
+// is where the measurement must be taken").
+import { emitSavingsReceipt, type SavingsTier } from './substrate_savings_receipt';
 import { getMobileHTML, getManifestJSON, getServiceWorker, getIconSVG } from './mobile_pwa';
 import type { FederationClient } from './federation_client';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -706,6 +711,7 @@ export class SubstrateAPIServer {
                     retryResult.latency_ms,
                     retryResult.cloud_cost_avoided_usd,
                   );
+                  this._emitSavingsReceipt(retryResult, isDegraded);
                   res.end(JSON.stringify({ ...retryResult, peer_sync_exchanged: exchanged }));
                   return;
                 }
@@ -718,6 +724,7 @@ export class SubstrateAPIServer {
             result.latency_ms,
             result.cloud_cost_avoided_usd,
           );
+          this._emitSavingsReceipt(result, isDegraded);
           res.end(JSON.stringify(result));
         } catch (err) {
           res.statusCode = 500;
@@ -2375,6 +2382,39 @@ ${nodesHtml}
       cloud_cost_avoided_usd,
       tokens_saved_est: Math.round(cloud_cost_avoided_usd / 0.000003),
     });
+  }
+
+  // ─── Savings receipt (billing instrument) ──────────────────────────────────
+  // D-BP155-024 seg-savings-meter. Maps substrate_router.ts's five routing outcomes onto the
+  // four SavingsTier values and emits one tamper-evident receipt per answered query. Non-fatal
+  // by design (mirrors _recordTelemetry / the other meters in this codebase): a receipt-write
+  // failure must never break the actual query response the user is waiting on.
+  private _emitSavingsReceipt(result: QueryResult, degraded: boolean): void {
+    try {
+      const tier: SavingsTier =
+        result.routing === 'substrate_hit'
+          ? 'substrate_hit'
+          : result.routing === 'local_ollama'
+          ? 'local_model'
+          : result.routing === 'cloud_escalation'
+          ? 'cloud_escalation'
+          : 'abstain'; // 'miss' | 'peer_sync'
+
+      const servedText = result.record?.text ?? null;
+
+      emitSavingsReceipt({
+        tier,
+        routing_raw: result.routing,
+        model_used: result.model_used ?? null,
+        input_tokens: result.input_tokens_real ?? null,
+        output_tokens: result.output_tokens_real ?? null,
+        served_text_chars: servedText ? servedText.length : null,
+        latency_ms: result.latency_ms,
+        degraded,
+      });
+    } catch (err) {
+      console.warn('[substrate-api] savings receipt emit failed (non-fatal):', err);
+    }
   }
 
   getAMPLIFYSnapshot(): object {

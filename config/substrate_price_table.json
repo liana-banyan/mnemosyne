@@ -1,0 +1,72 @@
+{
+  "_comment": "Price table for the substrate savings meter (billing instrument). Founder-controlled -- edit this file, never a constant in code. Every rate must carry source_url and verified_on. See LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md Part One, and the licensing paper 'Help Them Help Us Help Ourselves' (J. Jones / FounderDenken) that this instrument exists to make auditable.",
+  "table_version": "2026-08-15-v1",
+  "stale_after_days": 90,
+  "default_counterfactual_model": "claude-sonnet-5",
+  "counterfactual_tokens_per_char": {
+    "value": 0.25,
+    "basis": "4 characters per token, a commonly cited rough heuristic for English text. This is a DISCLOSED APPROXIMATION used only to size a hypothetical flagship call from a REAL served answer's character length -- it never substitutes for a real provider-reported token count on the actual-cost side of a receipt. Any record using this path sets counterfactual_tokens_estimated=true so it is never confused with a measured count."
+  },
+  "rates": [
+    {
+      "model_id": "claude-opus-5",
+      "provider": "anthropic",
+      "input_per_mtok_usd": 5.00,
+      "output_per_mtok_usd": 25.00,
+      "effective_from": "2026-01-01",
+      "effective_until": null,
+      "source_url": "LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md#part-one-the-price-table",
+      "verified_on": "2026-08-03",
+      "verified_by": "FounderDenken",
+      "note": "Founder-recorded rate, seeded from the spec doc's Part One table. PROVISIONAL until re-verified against live vendor pricing -- do not use to compute a billed figure without re-verifying first."
+    },
+    {
+      "model_id": "claude-sonnet-5",
+      "provider": "anthropic",
+      "input_per_mtok_usd": 2.00,
+      "output_per_mtok_usd": 10.00,
+      "effective_from": "2026-01-01",
+      "effective_until": "2026-08-31",
+      "source_url": "LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md#part-one-the-price-table",
+      "verified_on": "2026-08-03",
+      "verified_by": "FounderDenken",
+      "note": "Intro pricing window. Reverts to successor_rates below after effective_until. PROVISIONAL until re-verified against live vendor pricing."
+    },
+    {
+      "model_id": "claude-sonnet-5",
+      "provider": "anthropic",
+      "input_per_mtok_usd": 3.00,
+      "output_per_mtok_usd": 15.00,
+      "effective_from": "2026-09-01",
+      "effective_until": null,
+      "source_url": "LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md#part-one-the-price-table",
+      "verified_on": "2026-08-03",
+      "verified_by": "FounderDenken",
+      "note": "Successor rate, effective after the Sonnet 5 intro window closes. PROVISIONAL until re-verified against live vendor pricing."
+    },
+    {
+      "model_id": "claude-haiku-4-5",
+      "provider": "anthropic",
+      "input_per_mtok_usd": 1.00,
+      "output_per_mtok_usd": 5.00,
+      "effective_from": "2026-01-01",
+      "effective_until": null,
+      "source_url": "LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md#part-one-the-price-table",
+      "verified_on": "2026-08-03",
+      "verified_by": "FounderDenken",
+      "note": "PROVISIONAL until re-verified against live vendor pricing."
+    },
+    {
+      "model_id": "local-member-hardware",
+      "provider": "local",
+      "input_per_mtok_usd": 0,
+      "output_per_mtok_usd": 0,
+      "effective_from": "2026-01-01",
+      "effective_until": null,
+      "source_url": "LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md#part-one-the-price-table",
+      "verified_on": "2026-08-03",
+      "verified_by": "FounderDenken",
+      "note": "Covers the model-call cost only. Electricity and hardware amortization are real and NOT measured by this table -- every receipt priced against this entry is labeled 'excludes hardware and power' per the spec's explicit rule. Never presented as a true zero-cost claim."
+    }
+  ]
+}
