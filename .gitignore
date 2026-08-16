@@ -69,3 +69,19 @@ KN-BP141-7_verification_replay.mjs
 src/renderer/kn_bp141_9_harness.html
 src/renderer/kn_bp141_9_harness.tsx
 src/renderer/kn_bp141_9_receipt_031.json
+
+# BP155 credential-leak incident (D-BP155-031): full-history gitleaks scan found
+# a live Supabase JWT/generic-api-key pattern in resources/supabase_public.env
+# despite the "_public" name -- treat as sensitive until the Founder confirms
+# it holds only placeholder values. Also close off session-record/memory-mirror
+# paths as a platform-wide standard even though this repo has none tracked yet
+# (measured BP155: 0 files under BISHOP_DROPZONE or BISHOP_MEMORY_MIRROR here).
+resources/supabase_public.env
+BISHOP_DROPZONE/TRANSCRIPTS_MD/
+BISHOP_DROPZONE/00_FOUNDER_REVIEW/
+BISHOP_DROPZONE/03_BishopHandoffs/session_transcripts/
+BISHOP_MEMORY_MIRROR/
+*_transcript_*.md
+session_transcripts/
+TRANSCRIPTS_MD/
+
