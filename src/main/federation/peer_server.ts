@@ -62,6 +62,13 @@ import { getAnonKey, getAnonKeyHeaders } from '../shared/anon_key';
 import { peekAnnouncePayload, verifyAnnounceFrame } from './announce_frame';
 import { isUnauthenticatedLanDiscoveryAllowed } from './mesh_trust_settings';
 import { lookupKnownPeerPublicKey } from './constellation_discovery';
+// D-BP156-M0-008: HARDWIRE-24 mesh, Bishop-dispatch payload variant (a second wan-relay-route
+// payload shape, sibling to the domain-plow shape mic_dispatcher.ts already sends).
+import {
+  decryptFromRelay,
+  isValidMachineTaggedDispatchId,
+  type BishopDispatchPayload,
+} from './mic_dispatcher';
 
 export const PEER_SERVER_PORT = 7474;
 const PRESENCE_INTERVAL_MS = 60_000;
@@ -82,6 +89,22 @@ let _onPlowDomain: ((domain: string, questions: string[], ollamaBaseUrl: string,
 let _onDiagnosisPost: ((post: unknown) => Promise<void>) | null = null;
 let _onDiagnosisAnswer: ((answer: unknown) => Promise<void>) | null = null;
 let _onDiagnosisUpvote: ((data: unknown) => Promise<void>) | null = null;
+// D-BP156-M0-008: sibling hook to _onPlowDomain above, for HARDWIRE-24 Bishop-session mesh
+// dispatches instead of Ollama MC-question plow runs. Same injection pattern, same
+// "unregistered means refused, never silently no-op'd" convention as _onPlowDomain's own
+// /api/plow-domain handler (see handleInboundBishopDispatchEnvelope below for the WAN-side
+// caller; there is no LAN HTTP route for this one -- it only ever arrives via the relay).
+let _onBishopDispatch: ((payload: BishopDispatchPayload, verifiedOriginPeerId: string | null) => Promise<BishopDispatchResult>) | null = null;
+
+/** Result of handing a verified (or refused) bishop_dispatch payload to the registered hook. */
+export interface BishopDispatchResult {
+  ok: boolean;
+  /** True only if a worker was actually spawned. False for a file-write-only outcome
+   *  (unregistered hook, unverified sender, disallowed working dir, kill switch off, replay). */
+  spawned: boolean;
+  reason: string;
+  noticePath?: string;
+}
 
 // Presence config (set by startPeerServer caller)
 let _peerId: string | null = null;
@@ -123,11 +146,102 @@ export function registerPeerServerHooks(hooks: {
   onDiagnosisPost?: typeof _onDiagnosisPost;
   onDiagnosisAnswer?: typeof _onDiagnosisAnswer;
   onDiagnosisUpvote?: typeof _onDiagnosisUpvote;
+  onBishopDispatch?: typeof _onBishopDispatch;
 }): void {
   if (hooks.onPlowDomain) _onPlowDomain = hooks.onPlowDomain;
   if (hooks.onDiagnosisPost) _onDiagnosisPost = hooks.onDiagnosisPost;
   if (hooks.onDiagnosisAnswer) _onDiagnosisAnswer = hooks.onDiagnosisAnswer;
   if (hooks.onDiagnosisUpvote) _onDiagnosisUpvote = hooks.onDiagnosisUpvote;
+  if (hooks.onBishopDispatch) _onBishopDispatch = hooks.onBishopDispatch;
+}
+
+/**
+ * D-BP156-M0-008: the WAN-side entry point for an inbound bishop_dispatch payload -- there is
+ * no LAN HTTP route for this (unlike /api/plow-domain), because HARDWIRE-24's design targets
+ * the WAN relay specifically (the Founder ruled out the LAN/SMB transport, see this dispatch's
+ * ticket). A poller that reads a real inbound wan-relay-route payload for this peer (not built
+ * by this dispatch -- see the Yoke-return's honest "what remains unwired" note) calls this
+ * function with the raw `payload_encrypted` string it received.
+ *
+ * Decrypts, then verifies the Ed25519 signature the sender attached via signAnnouncePayload
+ * (announce_frame.ts) using the SAME trust-on-first-use policy peer_server.ts already applies
+ * to the LAN /api/plow-domain path (resolvePlowDomainRequest, above): prefer a previously
+ * learned key for the claimed peer id, fall back to the self-declared key embedded in this
+ * same frame only when no previously-learned key exists. An unsigned payload (signAnnouncePayload
+ * failed soft on the sender side) or a payload whose signature fails verification is passed to
+ * the hook with `verifiedOriginPeerId: null` -- the hook (bishop_dispatch_handler.ts) is
+ * responsible for refusing to spawn on an unverified origin; this function does not refuse on
+ * the caller's behalf because a file-write-only audit record is still valuable even for an
+ * unverified sender (see HARDWIRE-24 Section 8, "a return filed is a claim, not a fact").
+ */
+export async function handleInboundBishopDispatchEnvelope(
+  payloadEncrypted: string,
+): Promise<BishopDispatchResult> {
+  if (!_onBishopDispatch) {
+    return { ok: false, spawned: false, reason: 'onBishopDispatch handler not registered' };
+  }
+
+  const selfId = _peerId ?? undefined;
+  if (!selfId) {
+    return { ok: false, spawned: false, reason: 'this peer has no registered peer id (registerPresenceConfig not called yet)' };
+  }
+
+  let plaintext: string;
+  try {
+    plaintext = await decryptFromRelay(payloadEncrypted, selfId);
+  } catch (err) {
+    return { ok: false, spawned: false, reason: `decrypt failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  // The plaintext is either a signed announce frame (peekAnnouncePayload succeeds) or, if the
+  // sender's signAnnouncePayload failed soft, a bare JSON envelope. Try signed first.
+  let rawPayload: Record<string, unknown> | null = null;
+  let verifiedOriginPeerId: string | null = null;
+
+  const peeked = peekAnnouncePayload(plaintext);
+  if (peeked) {
+    const claimedOrigin = typeof peeked.payload.originPeerId === 'string' ? peeked.payload.originPeerId : undefined;
+    const knownKey = claimedOrigin ? lookupKnownPeerPublicKey(claimedOrigin) : undefined;
+    const keyToVerify = knownKey ?? peeked.claimedPublicKeyHex;
+    if (keyToVerify) {
+      const verified = verifyAnnounceFrame(plaintext, keyToVerify);
+      if (verified.valid && verified.payload) {
+        rawPayload = verified.payload;
+        verifiedOriginPeerId = claimedOrigin ?? null;
+      }
+    }
+  }
+
+  // Unsigned fallback -- only reached when peekAnnouncePayload/verifyAnnounceFrame did not
+  // already produce a verified payload above. verifiedOriginPeerId stays null: the hook must
+  // treat this exactly like a failed verification for spawn purposes.
+  if (!rawPayload) {
+    try {
+      const parsed = JSON.parse(plaintext) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object') rawPayload = parsed;
+    } catch {
+      return { ok: false, spawned: false, reason: 'decrypted payload is neither a valid signed frame nor valid JSON' };
+    }
+  }
+
+  if (!rawPayload || rawPayload.kind !== 'bishop_dispatch') {
+    return { ok: false, spawned: false, reason: 'decrypted payload is not a bishop_dispatch envelope' };
+  }
+  const dispatchId = rawPayload.dispatchId;
+  const promptText = rawPayload.promptText;
+  const workingDir = rawPayload.workingDir;
+  const originPeerId = rawPayload.originPeerId;
+  if (
+    !isValidMachineTaggedDispatchId(dispatchId) ||
+    typeof promptText !== 'string' ||
+    typeof workingDir !== 'string' ||
+    typeof originPeerId !== 'string'
+  ) {
+    return { ok: false, spawned: false, reason: 'bishop_dispatch envelope missing/malformed required fields' };
+  }
+
+  const payload: BishopDispatchPayload = { kind: 'bishop_dispatch', dispatchId, promptText, workingDir, originPeerId };
+  return _onBishopDispatch(payload, verifiedOriginPeerId);
 }
 
 export function registerPresenceConfig(config: {

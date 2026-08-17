@@ -28,6 +28,8 @@ import { getAnonKey } from '../shared/anon_key';
 // resolvePlowDomainRequest() for the receiving side).
 import { signAnnouncePayload } from './announce_frame';
 import { getStablePeerId } from './peer-discovery';
+// D-BP156-M0-008: HARDWIRE-24 mesh, Bishop-dispatch payload variant. getStablePeerId already
+// imported above is reused (not re-imported) by callers of dispatchBishopDispatchViaRelay.
 
 const PEER_SERVER_PORT = 7474;
 
@@ -64,7 +66,7 @@ function isLanPeer(peerAddress: string): boolean {
  * full key exchange uses emailHash + sessionNonce from wan_soccerball_address.
  * SEG-5: relay sees only opaque ciphertext + target peer_id.
  */
-async function encryptForRelay(
+export async function encryptForRelay(
   plaintext: string,
   targetPeerId: string,
   _sharedSecret?: string,
@@ -88,6 +90,74 @@ async function encryptForRelay(
   const ivB64 = btoa(String.fromCharCode(...iv));
   const ctB64 = btoa(String.fromCharCode(...new Uint8Array(ct)));
   return JSON.stringify({ iv: ivB64, ct: ctB64 });
+}
+
+// D-BP156-M0-008: shared POST-to-wan-relay-route-with-fallback helper, extracted verbatim out
+// of dispatchDomainViaRelay's own body (same headers, same timeout, same base->fallback order,
+// same swallow-network-error-into-null behavior) so the new bishop-dispatch payload variant
+// below reuses the exact retry/circuit-breaker behavior instead of forking it, per this
+// dispatch's explicit instruction ("reuse the existing encryption, retry, and circuit-breaker
+// code verbatim. Do not fork it, do not reimplement it."). Zero behavior change for
+// dispatchDomainViaRelay's own call site -- this is a pure extraction.
+async function postToRelayRouteWithFallback(
+  payloadEncrypted: string,
+  targetPeerId: string,
+): Promise<Response | null> {
+  // BP132 Yoke #23 Task 6: shared helper so a stranger's install still authenticates.
+  const anonKey = getAnonKey();
+
+  const tryRoute = async (base: string): Promise<Response | null> => {
+    try {
+      return await fetch(`${base}/wan-relay-route`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(anonKey ? { 'Authorization': `Bearer ${anonKey}` } : {}),
+        },
+        body: JSON.stringify({ payload_encrypted: payloadEncrypted, target_peer_id: targetPeerId }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      return null;
+    }
+  };
+
+  let res = await tryRoute(RELAY_BASE);
+  if (!res || !res.ok) {
+    res = await tryRoute(RELAY_BASE_FALLBACK);
+  }
+  return res;
+}
+
+/**
+ * Decrypt a Thorax AES-256-GCM payload produced by encryptForRelay(). Symmetric counterpart,
+ * added D-BP156-M0-008 -- did not exist anywhere in this codebase before this dispatch (a
+ * repo-wide grep for `decryptForRelay`/`decryptFromRelay` before writing this function found
+ * zero hits). `selfPeerId` must be the SAME value the sender used as `targetPeerId` when
+ * calling encryptForRelay (i.e. the receiver's own stable peer id) -- the key derivation is
+ * sha256(targetPeerId + ":thorax-relay-v1")`, unchanged from encryptForRelay above.
+ */
+export async function decryptFromRelay(
+  payloadEncrypted: string,
+  selfPeerId: string,
+  _sharedSecret?: string,
+): Promise<string> {
+  const keyMaterial = _sharedSecret ?? selfPeerId;
+  const rawKey = createHash('sha256').update(`${keyMaterial}:thorax-relay-v1`).digest();
+
+  const cryptoKey = await globalThis.crypto.subtle.importKey(
+    'raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt'],
+  );
+
+  const parsed = JSON.parse(payloadEncrypted) as { iv?: string; ct?: string };
+  if (typeof parsed.iv !== 'string' || typeof parsed.ct !== 'string') {
+    throw new Error('decryptFromRelay: payload_encrypted missing iv/ct');
+  }
+  const iv = Uint8Array.from(atob(parsed.iv), (c) => c.charCodeAt(0));
+  const ct = Uint8Array.from(atob(parsed.ct), (c) => c.charCodeAt(0));
+
+  const pt = await globalThis.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ct);
+  return new TextDecoder().decode(pt);
 }
 
 /**
@@ -122,29 +192,7 @@ async function dispatchDomainViaRelay(
     };
   }
 
-  // BP132 Yoke #23 Task 6: shared helper so a stranger's install still authenticates.
-  const anonKey = getAnonKey();
-
-  const tryRoute = async (base: string): Promise<Response | null> => {
-    try {
-      return await fetch(`${base}/wan-relay-route`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(anonKey ? { 'Authorization': `Bearer ${anonKey}` } : {}),
-        },
-        body: JSON.stringify({ payload_encrypted: payloadEncrypted, target_peer_id: peer.id }),
-        signal: AbortSignal.timeout(15_000),
-      });
-    } catch {
-      return null;
-    }
-  };
-
-  let res = await tryRoute(RELAY_BASE);
-  if (!res || !res.ok) {
-    res = await tryRoute(RELAY_BASE_FALLBACK);
-  }
+  const res = await postToRelayRouteWithFallback(payloadEncrypted, peer.id);
 
   if (!res || !res.ok) {
     return {
@@ -171,6 +219,143 @@ async function dispatchDomainViaRelay(
     error: undefined,
   };
 }
+
+// ─── Bishop dispatch payload (D-BP156-M0-008, HARDWIRE-24) ─────────────────────
+//
+// A second payload shape carried over the SAME wan-relay-route transport as
+// dispatchDomainViaRelay above, for coordinating a Claude-Code Bishop session across the
+// mesh rather than an Ollama MC-question plow run. Reuses encryptForRelay and
+// postToRelayRouteWithFallback verbatim (see both above) -- nothing about the transport,
+// encryption, retry, or fallback behavior is forked or reimplemented for this variant.
+
+/**
+ * HARDWIRE-24 Section 3: a dispatch id crossing the mesh must carry the machine
+ * ("D-BP155-M0-001", "D-BP155-M3-001"). A bare "D-BP155-001" is malformed once the mesh is
+ * live and must be rejected, not silently accepted. Matches any machine tag of the form
+ * "M<digits>" (not hardcoded to M0/M3 only) so a future M1/M2 machine label is not rejected
+ * by a narrower pattern than HARDWIRE-24 itself specifies.
+ */
+const MACHINE_TAGGED_DISPATCH_ID_RE = /^D-BP\d+-M\d+-\d+(?:-[A-Za-z0-9]+)?$/;
+
+export function isValidMachineTaggedDispatchId(id: unknown): id is string {
+  return typeof id === 'string' && MACHINE_TAGGED_DISPATCH_ID_RE.test(id);
+}
+
+export interface BishopDispatchPayload {
+  kind: 'bishop_dispatch';
+  dispatchId: string;
+  promptText: string;
+  workingDir: string;
+  /** Self-declared by the sender inside the SIGNED envelope (see signAnnouncePayload,
+   *  announce_frame.ts) -- the receiver verifies this against an Ed25519 signature rather than
+   *  trusting it at face value. See dispatchBishopDispatchViaRelay's doc comment for the honest
+   *  limit of what that signature does and does not prove. */
+  originPeerId: string;
+}
+
+export interface BishopDispatchSendResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * D-BP156-M0-008 (design-constraint follow-up): the seam for a future second carrier. Today
+ * there is exactly ONE implementation (wanRelayBishopDispatchTransport, below, wrapping
+ * dispatchBishopDispatchViaRelay) -- this repo already has a real, proven, hash-verified LAN
+ * transport (MnemosyneC's Federation/MIC layer, MESH_6_RECEIPT_BP063 + the BP131 3-machine
+ * mesh runs) that the Founder is considering wiring to this SAME payload/receive-side logic
+ * later, for an enterprise/LAN-only case. This interface exists so that day's change is
+ * "write a second implementation and pick one at the call site," not a rewrite of the payload
+ * shape, validation, or receive-side hook -- see bishop_dispatch_handler.ts's own note on why
+ * the security guardrails there are carrier-blind by construction (LAN is a latency
+ * optimization, never a trust boundary; a LAN implementation of this interface would still need
+ * to produce a cryptographically verified origin peer id, not merely "arrived from this
+ * subnet"). Deliberately NOT a plugin registry or config-driven carrier selection -- one
+ * interface, one implementation, nothing speculative beyond that.
+ */
+export interface BishopDispatchTransport {
+  send(
+    peer: ConstellationPeer,
+    dispatchId: string,
+    promptText: string,
+    workingDir: string,
+    selfPeerId: string,
+  ): Promise<BishopDispatchSendResult>;
+}
+
+/**
+ * Sends a Bishop-session dispatch (a HARDWIRE-24 cross-machine coordination unit, not an MC
+ * question) to `peer` over the WAN relay. Reuses encryptForRelay and
+ * postToRelayRouteWithFallback UNCHANGED from dispatchDomainViaRelay above -- the only new
+ * code here is the payload shape itself, the machine-tag validation, and signing the plaintext
+ * with this machine's existing Thorax Ed25519 keypair (announce_frame.ts's
+ * signAnnouncePayload, the SAME primitive peer_server.ts already uses to authenticate the LAN
+ * /api/plow-domain path) before encrypting it.
+ *
+ * HONEST LIMIT, stated because this gates a capability that can launch a CLI worker on the
+ * receiving machine: encryptForRelay's key derivation is sha256(targetPeerId + ":thorax-relay-
+ * v1") -- confidentiality against the relay operator, but NOT sender authentication by itself,
+ * since a peer's id is public (advertised in peer_presence). The Ed25519 signature above is
+ * what actually proves origin; the receiver (bishop_dispatch_handler.ts) verifies it against a
+ * previously-learned key for the claimed peer id where one exists, falling back to
+ * trust-on-first-use exactly as resolvePlowDomainRequest() already does for the LAN path
+ * (peer_server.ts) -- this is real authentication, but TOFU, not a full PKI. Combined with the
+ * receiver's own hardcoded origin-peer-id allowlist (Founder-named M0 id), this is materially
+ * stronger than an unauthenticated self-declared field, but it is not cryptographic proof
+ * against a peer id learned for the first time from a malicious sender.
+ */
+export async function dispatchBishopDispatchViaRelay(
+  peer: ConstellationPeer,
+  dispatchId: string,
+  promptText: string,
+  workingDir: string,
+  selfPeerId: string,
+): Promise<BishopDispatchSendResult> {
+  if (!isValidMachineTaggedDispatchId(dispatchId)) {
+    return {
+      ok: false,
+      error: `dispatch id "${String(dispatchId)}" is not machine-tagged (HARDWIRE-24 Section 3 ` +
+        `requires the form D-BP<n>-M<n>-<n>); refusing to send an untagged id`,
+    };
+  }
+
+  const payload: BishopDispatchPayload = {
+    kind: 'bishop_dispatch',
+    dispatchId,
+    promptText,
+    workingDir,
+    originPeerId: selfPeerId,
+  };
+
+  const signed = signAnnouncePayload(dispatchId, payload as unknown as Record<string, unknown>);
+  // signAnnouncePayload fails soft (returns null) per its own doc comment -- falls back to an
+  // unsigned plaintext JSON envelope rather than throwing. The receiver's own handler refuses
+  // an unsigned/unverifiable bishop_dispatch outright (see bishop_dispatch_handler.ts) rather
+  // than ever trusting an unsigned originPeerId claim for the auto-spawn decision.
+  const plaintext = signed ? signed.signedHex : JSON.stringify(payload);
+
+  let payloadEncrypted: string;
+  try {
+    payloadEncrypted = await encryptForRelay(plaintext, peer.id);
+  } catch (err) {
+    return { ok: false, error: `Thorax encrypt failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  const res = await postToRelayRouteWithFallback(payloadEncrypted, peer.id);
+  if (!res || !res.ok) {
+    return { ok: false, error: `WAN relay route failed: HTTP ${res?.status ?? 'unreachable'}` };
+  }
+  return { ok: true };
+}
+
+/** The one implementation of BishopDispatchTransport that exists today. A caller that wants to
+ *  stay carrier-agnostic (e.g. a future dispatcher that picks WAN vs LAN by peer locality, the
+ *  same way dispatchDomainViaRelay's own sibling isLanPeer() check already does for the
+ *  domain-plow path) should depend on the BishopDispatchTransport interface, not directly on
+ *  dispatchBishopDispatchViaRelay -- so a second (LAN) implementation is additive later. */
+export const wanRelayBishopDispatchTransport: BishopDispatchTransport = {
+  send: dispatchBishopDispatchViaRelay,
+};
 
 export function generateWorkloadId(): string {
   return 'mic_' + randomBytes(6).toString('hex');
