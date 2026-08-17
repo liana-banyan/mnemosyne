@@ -154,12 +154,22 @@ export function getAllowedWorkdirRoot(): string {
 
 /** Resolves `workingDir` and checks it is contained inside the allowed root -- lexically
  *  (resolve() collapses ".." segments, so a naive "../../escape" traversal is caught here)
- *  AND, when the path exists on disk, by realpath (catches a symlink planted inside the
- *  allowed root that points outside it -- resolve() alone does not follow symlinks). A
- *  working dir that does not exist yet is accepted on the lexical check alone (documented
- *  limitation: a not-yet-existing path cannot be realpath-checked; the CLI worker will fail
- *  to start with a real cwd error if the directory is genuinely missing, which is a safe
- *  failure mode, not a security hole -- it never RUNS with dubious cwd, it errors). */
+ *  AND by realpath (catches a symlink planted inside the allowed root that points outside it --
+ *  resolve() alone does not follow symlinks).
+ *
+ *  D-BP156-M0-022 REVISED: a working dir that does not exist is now REFUSED here, not accepted
+ *  on the lexical check alone. The original judgment ("a safe failure mode, not a security
+ *  hole -- it never RUNS with dubious cwd, it errors") was right about security and wrong about
+ *  safety: a missing cwd handed to `spawn()` on Windows produces `spawn <exe> ENOENT`, a message
+ *  that names the EXECUTABLE, not the directory -- a real failure that accuses an innocent
+ *  component. That misdirection cost a live session three wrong diagnoses in a row (transient,
+ *  then a spawn-code regression, then a caller-side transform) before the actual shape of the
+ *  gap was found by reading this function. Refusing here, with a reason distinguishable from
+ *  the containment refusal above (different fault, different remedy: this one means "the
+ *  directory needs to be created or the payload's workingDir is wrong," not "the sender is
+ *  attempting a path-traversal escape"), converts an illegible downstream failure into a
+ *  self-diagnosing guardrail refusal -- independent of whether a missing cwd is what actually
+ *  happened in any specific run. */
 export function isWorkingDirAllowed(workingDir: string): { ok: boolean; resolved: string; reason?: string } {
   const allowedRoot = resolve(getAllowedWorkdirRoot());
   const resolved = resolve(workingDir);
@@ -169,17 +179,19 @@ export function isWorkingDirAllowed(workingDir: string): { ok: boolean; resolved
     return { ok: false, resolved, reason: `"${resolved}" escapes allowed root "${allowedRoot}"` };
   }
 
-  if (existsSync(resolved)) {
-    try {
-      const realResolved = realpathSync(resolved);
-      const realAllowedRoot = existsSync(allowedRoot) ? realpathSync(allowedRoot) : allowedRoot;
-      const realContained = realResolved === realAllowedRoot || realResolved.startsWith(realAllowedRoot + sep);
-      if (!realContained) {
-        return { ok: false, resolved, reason: `"${resolved}" resolves (via symlink) to "${realResolved}", which escapes "${realAllowedRoot}"` };
-      }
-    } catch (err) {
-      return { ok: false, resolved, reason: `realpath check failed: ${err instanceof Error ? err.message : String(err)}` };
+  if (!existsSync(resolved)) {
+    return { ok: false, resolved, reason: `REFUSED: working directory does not exist: "${resolved}"` };
+  }
+
+  try {
+    const realResolved = realpathSync(resolved);
+    const realAllowedRoot = existsSync(allowedRoot) ? realpathSync(allowedRoot) : allowedRoot;
+    const realContained = realResolved === realAllowedRoot || realResolved.startsWith(realAllowedRoot + sep);
+    if (!realContained) {
+      return { ok: false, resolved, reason: `"${resolved}" resolves (via symlink) to "${realResolved}", which escapes "${realAllowedRoot}"` };
     }
+  } catch (err) {
+    return { ok: false, resolved, reason: `realpath check failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 
   return { ok: true, resolved };
