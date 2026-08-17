@@ -49,6 +49,7 @@ function makeRow(overrides: Partial<RelayRouteRow> = {}): RelayRouteRow {
 function makeFetchMock(opts: {
   rows: RelayRouteRow[];
   claimSucceeds?: boolean;
+  replyWriteFails?: boolean;
 }): { fetchImpl: FetchLike; calls: Array<{ method: string; url: string; body?: unknown }> } {
   const calls: Array<{ method: string; url: string; body?: unknown }> = [];
   const claimSucceeds = opts.claimSucceeds ?? true;
@@ -73,6 +74,14 @@ function makeFetchMock(opts: {
     }
     if (method === 'PATCH' && url.includes('/rest/v1/peer_presence')) {
       return new Response(null, { status: 204 });
+    }
+    // D-BP156-M0-014: reply-leg write. Defaults to success (2xx) unless the test opts into
+    // failure via opts.replyWriteFails, matching this suite's existing claimSucceeds convention.
+    if (method === 'POST' && url.includes('/rest/v1/relay_route_replies')) {
+      if (opts.replyWriteFails) {
+        return new Response(JSON.stringify({ error: 'simulated reply write failure' }), { status: 500 });
+      }
+      return new Response(null, { status: 201 });
     }
     return new Response(JSON.stringify({ error: 'unhandled in test mock' }), { status: 500 });
   }) as unknown as FetchLike;
@@ -329,6 +338,80 @@ describe('pollBishopDispatchRoutesOnce', () => {
     expect(summary.processed).toBe(1);
     expect(handleEnvelope).toHaveBeenCalledTimes(1);
     expect(calls.some((c) => c.url.includes('mc-1') && c.method === 'PATCH')).toBe(false);
+  });
+
+  // D-BP156-M0-014: the reply leg -- a builder's result travels back to the conductor via
+  // relay_route_replies. See bishop_dispatch_reply.ts for the mechanism's own dedicated tests;
+  // these prove the LISTENER actually calls it, with the right correlation fields, for both an
+  // ok:true and an ok:false result, and that a reply write failure never affects the
+  // relay_routes finalize (already-proven, non-fatal by construction).
+  test('a successfully handled row writes a matching reply to relay_route_replies', async () => {
+    const row = makeRow();
+    const { fetchImpl, calls } = makeFetchMock({ rows: [row] });
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned', noticePath: 'C:\\notices\\n1.json' }));
+
+    const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
+
+    expect(summary.repliesWritten).toBe(1);
+    const reply = calls.find((c) => c.method === 'POST' && c.url.includes('/rest/v1/relay_route_replies'));
+    expect(reply).toBeDefined();
+    expect(reply?.body).toMatchObject({
+      route_id: row.id,
+      peer_id: PEER_ID,
+      answer_json: { kind: 'bishop_dispatch_reply', ok: true, spawned: true, reason: 'spawned', noticePath: 'C:\\notices\\n1.json' },
+    });
+    expect(typeof (reply?.body as { processing_ms?: number })?.processing_ms).toBe('number');
+  });
+
+  test('an ok:false result (refusal) still writes its reply -- a refusal is a real, reportable outcome', async () => {
+    const row = makeRow();
+    const { fetchImpl, calls } = makeFetchMock({ rows: [row] });
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: false, spawned: false, reason: 'sender not on allowlist' }));
+
+    const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
+
+    expect(summary.repliesWritten).toBe(1);
+    const reply = calls.find((c) => c.method === 'POST' && c.url.includes('/rest/v1/relay_route_replies'));
+    expect(reply?.body).toMatchObject({
+      route_id: row.id,
+      answer_json: { kind: 'bishop_dispatch_reply', ok: false, spawned: false, reason: 'sender not on allowlist' },
+    });
+  });
+
+  test('the reply write uses only apikey/Authorization headers built from the anon key -- never a service-role header shape', async () => {
+    const row = makeRow();
+    const capturedInits: RequestInit[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      capturedInits.push(init ?? {});
+      if ((init?.method ?? 'GET') === 'GET' && url.includes('/rest/v1/relay_routes')) return new Response(JSON.stringify([row]), { status: 200 });
+      if (url.includes('/rest/v1/relay_routes')) return new Response(JSON.stringify([{ id: row.id }]), { status: 200 });
+      if (url.includes('/rest/v1/peer_presence')) return new Response(null, { status: 204 });
+      if (url.includes('/rest/v1/relay_route_replies')) return new Response(null, { status: 201 });
+      return new Response(null, { status: 500 });
+    }) as unknown as FetchLike;
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: false, reason: 'file-write-only' }));
+
+    await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
+
+    const replyInit = capturedInits.find((i) => (i.headers as Record<string, string> | undefined)?.['apikey'] === ANON_KEY && String(i.body ?? '').includes('bishop_dispatch_reply'));
+    expect(replyInit).toBeDefined();
+    const headers = replyInit?.headers as Record<string, string>;
+    expect(headers.apikey).toBe(ANON_KEY);
+    expect(headers.Authorization).toBe(`Bearer ${ANON_KEY}`);
+  });
+
+  test('a reply write FAILURE never blocks or alters the relay_routes finalize -- non-fatal by construction', async () => {
+    const row = makeRow();
+    const { fetchImpl, calls } = makeFetchMock({ rows: [row], replyWriteFails: true });
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+
+    const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
+
+    expect(summary.repliesWritten).toBe(0); // write failed, honestly reflected
+    expect(summary.processed).toBe(1); // but the row itself was still processed and finalized
+    const finalize = calls.find((c) => c.method === 'PATCH' && c.url.includes(`id=eq.${row.id}`) && !c.url.includes('status=eq.pending'));
+    expect(finalize?.body).toEqual({ status: 'answered' });
   });
 
   test('the peer_presence heartbeat is written every tick, independent of whether any row was found', async () => {
