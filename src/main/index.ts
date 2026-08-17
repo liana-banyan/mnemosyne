@@ -424,6 +424,7 @@ import { setDagBridgeMeshHook, getDagEmitCount } from './dag_bridge';
 // v0.4.0 BP083 — MIC Dispatcher + The Diagnosis + Peer Server
 import { registerMicIpc } from './federation/mic_ipc';
 import { registerDiagnosisIpc } from './diagnosis/diagnosis_ipc';
+import { registerBishopDispatchMeshHook } from './federation/bishop_dispatch_wiring';
 import { runCatacombMigrationCheck } from './diagnosis/catacomb_migrator';
 import { startPeerServer, stopPeerServer, getCurrentTier, registerPresenceConfig } from './federation/peer_server';
 // KN-BP144-16 Phase 1: LAN discovery opt-out setting (defaults to refuse-unauthenticated).
@@ -5568,6 +5569,9 @@ ${args.teachingText}
   registerDiagnosisIpc();
   // -- KN-BP144-16 Phase 1: LAN discovery opt-out (default: refuse unauthenticated) -----------
   registerMeshTrustSettingsIpc();
+  // -- D-BP156-M0-008: HARDWIRE-24 mesh, Bishop-dispatch WAN relay hook (auto-spawn is
+  //    default-DISABLED via LB_MESH_AUTO_SPAWN_ENABLED -- see bishop_dispatch_handler.ts) ------
+  registerBishopDispatchMeshHook();
 
   // -- app:request-quit (renderer-invokable graceful quit) --------------------
   ipcMain.handle('app:request-quit', () => { app.quit(); });
