@@ -160,6 +160,30 @@ describe('isWorkingDirAllowed — directory-traversal guardrail', () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toMatch(/symlink|resolves/);
   });
+
+  test('D-BP156-M0-022 REGRESSION: a lexically-contained but NON-EXISTENT directory is refused, with a reason distinguishable from a containment escape — reproduces the shape that made spawn() report a misleading ENOENT naming the wrong component', async () => {
+    const { isWorkingDirAllowed } = await import('./bishop_dispatch_handler');
+    const allowedRoot = join(TEST_LEDGER_ROOT, 'allowed');
+    mkdirSync(allowedRoot, { recursive: true });
+    process.env.LB_MESH_ALLOWED_WORKDIR_ROOT = allowedRoot;
+
+    // Lexically inside the allowed root -- would have passed the OLD lexical-only check -- but
+    // never created on disk.
+    const neverCreated = join(allowedRoot, 'sub', 'never-created-project');
+    expect(existsSync(neverCreated)).toBe(false);
+
+    const result = isWorkingDirAllowed(neverCreated);
+
+    // FAILS against the pre-fix code (old behavior: ok:true, accepted on the lexical check
+    // alone, deferring the real failure to spawn() where it surfaces as a misleading
+    // "spawn <exe> ENOENT" that names the wrong component). PASSES once the existence check is
+    // unconditional.
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/does not exist/);
+    // Distinguishable from the containment-escape reason (different fault, different remedy) --
+    // must NOT read as an escape/traversal refusal.
+    expect(result.reason).not.toMatch(/escapes allowed root/);
+  });
 });
 
 describe('isAutoSpawnEnabled — kill switch, default DISABLED', () => {
@@ -221,6 +245,28 @@ describe('handleBishopDispatch — end-to-end guardrail evaluation', () => {
     );
     expect(result.spawned).toBe(false);
     expect(result.reason).toMatch(/working dir not allowed/);
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+
+  test('D-BP156-M0-022 REGRESSION: a lexically-allowed but never-created working dir is refused end-to-end and NEVER handed to spawnImpl as cwd', async () => {
+    process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const spawnImpl = vi.fn();
+    const neverCreated = join(TEST_LEDGER_ROOT, 'workdir', 'never-created-subdir');
+    expect(existsSync(neverCreated)).toBe(false);
+
+    const result = await handleBishopDispatch(
+      makePayload({ workingDir: neverCreated }),
+      '1a78f7c9bdd5e830', spawnImpl as never,
+    );
+
+    // FAILS against the pre-fix code: old isWorkingDirAllowed() accepted a not-yet-existing
+    // path on the lexical check alone, so this would have proceeded to spawnImpl with a cwd
+    // that does not exist -- exactly the shape that produced a misleading "spawn <exe> ENOENT"
+    // on the real 0.9.24 run instead of a clear guardrail refusal.
+    expect(result.spawned).toBe(false);
+    expect(result.reason).toMatch(/working dir not allowed/);
+    expect(result.reason).toMatch(/does not exist/);
     expect(spawnImpl).not.toHaveBeenCalled();
   });
 
