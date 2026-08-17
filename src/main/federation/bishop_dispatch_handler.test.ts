@@ -108,6 +108,33 @@ describe('writeYokeNoticeFile — Step 3, the file IS the wake', () => {
   });
 });
 
+describe('getAllowedWorkdirRoot — default root portability', () => {
+  afterEach(() => {
+    vi.doUnmock('node:os');
+  });
+
+  test('D-BP156-M0-022 REGRESSION: derives the default from THIS machine\'s home directory (os.homedir()) at call time, not a hardcoded username', async () => {
+    delete process.env.LB_MESH_ALLOWED_WORKDIR_ROOT;
+    // Mocked to a value that provably differs from whatever account runs this test suite (this
+    // dev machine's own account happens to BE "Administrator", so a literal-string assertion
+    // against the old hardcoded default would coincidentally pass on both pre- and post-fix code
+    // here -- mocking os.homedir() is what actually discriminates the two).
+    const fakeHome = join(TEST_LEDGER_ROOT, 'fake-home-for-a-different-account');
+    vi.doMock('node:os', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:os')>();
+      return { ...actual, homedir: () => fakeHome };
+    });
+
+    const { getAllowedWorkdirRoot } = await import('./bishop_dispatch_handler');
+
+    // FAILS against the pre-fix code, which returns the literal hardcoded string
+    // 'C:\Users\Administrator\Documents' regardless of what os.homedir() reports -- ignoring the
+    // mock entirely. PASSES only once the default is genuinely DERIVED from os.homedir() at call
+    // time, which is exactly what makes it portable to any account/machine.
+    expect(getAllowedWorkdirRoot()).toBe(join(fakeHome, 'Documents'));
+  });
+});
+
 describe('isWorkingDirAllowed — directory-traversal guardrail', () => {
   test('accepts a directory genuinely inside the allowed root', async () => {
     const { isWorkingDirAllowed } = await import('./bishop_dispatch_handler');

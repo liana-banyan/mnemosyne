@@ -36,6 +36,7 @@
 import { existsSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
+import { homedir } from 'node:os';
 import type { BishopDispatchPayload } from './mic_dispatcher';
 import type { BishopDispatchResult } from './peer_server';
 
@@ -145,7 +146,17 @@ function isOriginAllowed(verifiedOriginPeerId: string | null): boolean {
 
 // ─── Guardrail (b): working-directory allowlist ─────────────────────────────────────────────
 
-const DEFAULT_ALLOWED_WORKDIR_ROOT = 'C:\\Users\\Administrator\\Documents';
+// D-BP156-M0-022 (follow-up, own commit): was hardcoded 'C:\Users\Administrator\Documents' --
+// M0's own username, on a product that ships to other machines/accounts (the same portability
+// defect class already found compiled into app.asar as DEFAULT_LEDGER_ROOT/canonDir). Node's
+// own os.homedir() resolves to whatever account actually owns the running process on any
+// machine, any username, any OS -- deliberately NOT Electron's app.getPath('documents'), which
+// requires a real running Electron `app` singleton and would break this file's own OFFLINE test
+// suite (bishop_dispatch_handler.test.ts) the same way getOrCreateKeypair()'s app.getPath
+// dependency already breaks standalone scripts (see bishop_dispatch_send_ipc.ts's header).
+// Still just a DEFAULT: LB_MESH_ALLOWED_WORKDIR_ROOT remains the documented, expected-to-be-set
+// per-machine override (see getAllowedWorkdirRoot() below).
+const DEFAULT_ALLOWED_WORKDIR_ROOT = join(homedir(), 'Documents');
 
 export function getAllowedWorkdirRoot(): string {
   const envVal = process.env.LB_MESH_ALLOWED_WORKDIR_ROOT;
