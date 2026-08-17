@@ -268,6 +268,32 @@ export function getSpawnPermissionMode(): string {
  *  that touches process creation; every guardrail above it is a pure decision function. */
 export type SpawnFn = typeof spawn;
 
+/** D-BP156-M0-022: outcome of the bounded immediate-failure window below. `spawned: false`
+ *  means the OS never actually created the process (a synchronous-class failure -- ENOENT for
+ *  a missing binary/cwd, EACCES, etc. -- surfaced via child_process's 'error' event). `spawned:
+ *  true` means either the process is confirmed running (no 'error' within the grace window) OR
+ *  it already ran to completion within that same short window ('exit' fired first) -- either
+ *  way, the OS did create a real process, which is the only claim this field makes. */
+export interface LaunchOutcome {
+  spawned: boolean;
+  error?: string;
+}
+
+/** D-BP156-M0-022: how long launchWorker() waits, after calling spawnImpl(), before deciding
+ *  what to report. NOT a wait for the worker's full lifetime (that can run up to
+ *  LB_MESH_SPAWN_TIMEOUT_MS, default 30 minutes) -- it exists solely to give Node's own
+ *  child_process implementation one full macrotask turn to deliver a synchronous-class launch
+ *  failure. Node's internal spawn() defers a same-call failure (ENOENT, EACCES, bad cwd) to
+ *  `process.nextTick` specifically so `.on('error', ...)` attached immediately after the call
+ *  still catches it (see lib/internal/child_process.js's `onErrorNT` in Node's own source) --
+ *  and the nextTick queue is always fully drained before the next macrotask (setImmediate/
+ *  setTimeout) runs. One `setImmediate` tick is therefore sufficient to observe that class of
+ *  failure without blocking on anything slower (a real launch that later fails on auth, e.g.
+ *  the ~3.2s exit this codebase has already measured, is unaffected -- this window elapses long
+ *  before that and reports `spawned: true`, correctly: the process DID launch). */
+const SPAWN_IMMEDIATE_OUTCOME_GRACE = (): Promise<void> =>
+  new Promise((resolve) => setImmediate(resolve));
+
 /**
  * Launches `claude -p <promptText> --output-format text --model <model> --permission-mode
  * <mode>` with `cwd: workingDir`. promptText and workingDir are passed as DISCRETE ARGV ARRAY
@@ -280,11 +306,22 @@ export type SpawnFn = typeof spawn;
  * Caller (spawnBishopWorkerIfAllowed) is responsible for every guardrail (allowlists, kill
  * switch, dedupe, concurrency cap) -- this function assumes all of that has already passed and
  * only implements: safe invocation, the concurrency-count bookkeeping, and the hard timeout.
+ *
+ * D-BP156-M0-022: returns a Promise<LaunchOutcome> instead of `void`. Previously this function
+ * was fire-and-forget and the caller (handleBishopDispatch) reported `spawned: true` the instant
+ * it decided to attempt a launch, before the OS process-creation call had resolved one way or
+ * the other -- a real run (`D-BP156-M3-007`) recorded a `SPAWN_ERROR ENOENT` on disk 76ms before
+ * the mesh reply asserted `spawned: true` for that same dispatch. `spawned` is `BishopDispatch-
+ * Result`'s own documented field ("True only if a worker was actually spawned" -- peer_server.ts)
+ * and a false `true` there is a false receipt a conductor can act on. This function now waits
+ * one bounded grace window (see SPAWN_IMMEDIATE_OUTCOME_GRACE above) so the caller can report
+ * what actually happened instead of what was merely attempted, without blocking on the worker's
+ * full (up to 30-minute) lifetime.
  */
-function launchWorker(
+async function launchWorker(
   payload: BishopDispatchPayload,
   spawnImpl: SpawnFn,
-): void {
+): Promise<LaunchOutcome> {
   const cliPath = getSpawnCliPath();
   const args = [
     '-p', payload.promptText,
@@ -311,13 +348,14 @@ function launchWorker(
     });
   } catch (err) {
     finish();
+    const detail = err instanceof Error ? err.message : String(err);
     logSpawnEvent({
       dispatchId: payload.dispatchId,
       originPeerId: payload.originPeerId,
       decision: 'SPAWN_FAILED',
-      detail: err instanceof Error ? err.message : String(err),
+      detail,
     });
-    return;
+    return { spawned: false, error: detail };
   }
 
   const timeoutMs = getSpawnTimeoutMs();
@@ -332,26 +370,49 @@ function launchWorker(
   }, timeoutMs);
   timer.unref?.();
 
-  child.once('exit', (code, signal) => {
-    clearTimeout(timer);
-    finish();
-    logSpawnEvent({
-      dispatchId: payload.dispatchId,
-      originPeerId: payload.originPeerId,
-      decision: 'SPAWN_EXITED',
-      detail: `code=${code ?? 'null'} signal=${signal ?? 'null'}`,
+  // D-BP156-M0-022: resolved exactly once, by whichever of the three settles first -- a genuine
+  // 'error' (process never created), a genuine 'exit' that lands within the grace window (a
+  // real, if very fast, launch-and-complete), or the grace window itself elapsing with neither
+  // (a real, still-running process -- the common case for a working launch).
+  const outcome = new Promise<LaunchOutcome>((resolveOutcome) => {
+    let outcomeSettled = false;
+    const settleOutcome = (result: LaunchOutcome) => {
+      if (outcomeSettled) return;
+      outcomeSettled = true;
+      resolveOutcome(result);
+    };
+
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      finish();
+      logSpawnEvent({
+        dispatchId: payload.dispatchId,
+        originPeerId: payload.originPeerId,
+        decision: 'SPAWN_EXITED',
+        detail: `code=${code ?? 'null'} signal=${signal ?? 'null'}`,
+      });
+      // Exiting (even non-zero -- e.g. a downstream auth failure) still means the OS DID create
+      // the process. That is the only claim `spawned` makes; whatever the worker did with its
+      // life is a separate question this field does not answer.
+      settleOutcome({ spawned: true });
     });
-  });
-  child.once('error', (err) => {
-    clearTimeout(timer);
-    finish();
-    logSpawnEvent({
-      dispatchId: payload.dispatchId,
-      originPeerId: payload.originPeerId,
-      decision: 'SPAWN_ERROR',
-      detail: err instanceof Error ? err.message : String(err),
+    child.once('error', (err) => {
+      clearTimeout(timer);
+      finish();
+      const detail = err instanceof Error ? err.message : String(err);
+      logSpawnEvent({
+        dispatchId: payload.dispatchId,
+        originPeerId: payload.originPeerId,
+        decision: 'SPAWN_ERROR',
+        detail,
+      });
+      settleOutcome({ spawned: false, error: detail });
     });
+
+    void SPAWN_IMMEDIATE_OUTCOME_GRACE().then(() => settleOutcome({ spawned: true }));
   });
+
+  return outcome;
 }
 
 // ─── Guardrail (g): logging ──────────────────────────────────────────────────────────────────
@@ -429,7 +490,16 @@ export async function handleBishopDispatch(
   // All guardrails passed. Mark BEFORE spawning to close the replay race window (favors
   // never-double-spawn over guaranteed-single-attempt, per the dispatch's own instruction).
   markSpawned(payload.dispatchId);
-  launchWorker(payload, spawnImpl);
+  // 'SPAWNED' logged here records the DECISION to attempt a launch -- correct to log
+  // immediately, and distinct from the returned BishopDispatchResult below, which now waits for
+  // launchWorker()'s bounded outcome (D-BP156-M0-022) so `spawned` reports what happened, not
+  // merely what was attempted.
   logSpawnEvent({ dispatchId: payload.dispatchId, originPeerId: payload.originPeerId, decision: 'SPAWNED' });
-  return { ok: true, spawned: true, reason: 'spawned', noticePath };
+  const outcome = await launchWorker(payload, spawnImpl);
+  return {
+    ok: true,
+    spawned: outcome.spawned,
+    reason: outcome.spawned ? 'spawned' : `spawn failed: ${outcome.error ?? 'unknown error'}`,
+    noticePath,
+  };
 }

@@ -273,6 +273,48 @@ describe('handleBishopDispatch — end-to-end guardrail evaluation', () => {
     expect(second.reason).toMatch(/concurrency cap/);
   });
 
+  test('D-BP156-M0-022 REGRESSION: an immediate (ENOENT-class) spawn failure is reported as spawned:false, not spawned:true — reproduces D-BP156-M3-007 (SPAWN_ERROR ENOENT recorded 76ms before the reply asserted spawned:true)', async () => {
+    process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+
+    // Mimics real Node child_process behavior for a synchronous-class launch failure: spawnImpl
+    // returns a ChildProcess-shaped EventEmitter synchronously, then the 'error' event fires on
+    // process.nextTick (exactly how Node's own internal spawn() defers an ENOENT/EACCES/bad-cwd
+    // failure -- see lib/internal/child_process.js's onErrorNT) -- i.e. BEFORE any macrotask,
+    // and therefore before handleBishopDispatch's grace window elapses.
+    const fakeChild = makeFakeChild();
+    const spawnImpl = vi.fn().mockImplementation(() => {
+      process.nextTick(() => {
+        fakeChild.emit('error', new Error(
+          'spawn C:\\Users\\Admin\\AppData\\Roaming\\Claude\\claude-code\\2.1.229\\claude.exe ENOENT',
+        ));
+      });
+      return fakeChild;
+    });
+
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never);
+
+    // The bug this reproduces: the OLD code returned `{ spawned: true, reason: 'spawned' }`
+    // unconditionally right after calling launchWorker(), never inspecting whether the process
+    // actually launched -- so this assertion FAILS against the pre-fix code and PASSES once
+    // handleBishopDispatch awaits launchWorker()'s real outcome.
+    expect(result.spawned).toBe(false);
+    expect(result.reason).toMatch(/ENOENT/);
+  });
+
+  test('D-BP156-M0-022: a real launch that is still running once the grace window elapses is honestly reported spawned:true (no false negative)', async () => {
+    process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    // Never emits 'error' or 'exit' -- a legitimately still-running worker (the common case).
+    const fakeChild = makeFakeChild();
+    const spawnImpl = vi.fn().mockReturnValue(fakeChild);
+
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never);
+
+    expect(result.spawned).toBe(true);
+    expect(result.reason).toBe('spawned');
+  });
+
   test('SHELL-INJECTION SAFETY: a promptText containing shell metacharacters reaches spawnImpl as one untouched argv element, never a shell string', async () => {
     process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
     const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
