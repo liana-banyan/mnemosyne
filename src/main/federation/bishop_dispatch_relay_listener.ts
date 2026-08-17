@@ -169,8 +169,22 @@ export function extractEncryptedEnvelope(row: RelayRouteRow): string | null {
  *  marked `error` as a logged no-op (never crashes, never left at `pending` forever, never
  *  handed to the decrypt/dispatch path with a non-string). */
 export function hasBishopDispatchKind(row: RelayRouteRow): boolean {
-  const pj = row.payload_json;
-  return !!pj && typeof pj === 'object' && pj['kind'] === BISHOP_DISPATCH_KIND;
+  return isBishopDispatchPayload(row.payload_json);
+}
+
+/** D-BP156-M0-016: the same `payload_json.kind === 'bishop_dispatch'` check as
+ *  `hasBishopDispatchKind` above, factored out to take just the `payload_json` value rather
+ *  than a full `RelayRouteRow` -- so `index.ts`'s `startRelayRoutePoll` (whose own local row
+ *  shape does not carry every `RelayRouteRow` field, e.g. no `created_at`/`status`/
+ *  `wire_format`/`ttl_seconds`) can reuse this EXACT, already-tested discriminator to skip a
+ *  bishop_dispatch row rather than re-implementing the same string comparison a second place.
+ *  Both callers now share one definition of "is this row ours" -- this listener via
+ *  `hasBishopDispatchKind`, and `startRelayRoutePoll` via this function directly -- so the two
+ *  pollers can never drift out of agreement on which rows belong to which poller. */
+export function isBishopDispatchPayload(
+  payloadJson: Record<string, unknown> | null | undefined,
+): boolean {
+  return !!payloadJson && typeof payloadJson === 'object' && payloadJson['kind'] === BISHOP_DISPATCH_KIND;
 }
 
 /** Respects `ttl_seconds` (scope item 5). Fails OPEN (treats as not-expired) when `ttl_seconds`
