@@ -1,6 +1,6 @@
-# Seed Facts — Engineering
+# Seed Facts - Engineering
 
-20 general-knowledge facts from MnemosyneC's own hand-authored starter set ("starter_chocolate", not MMLU-Pro, not scraped from any third-party source). These exist so a fresh install has something real to recall on the very first question instead of an empty substrate — ask about any topic below and MnemosyneC should answer from local memory.
+20 general-knowledge facts from MnemosyneC's own hand-authored starter set ("starter_chocolate", not MMLU-Pro, not scraped from any third-party source). These exist so a fresh install has something real to recall on the very first question instead of an empty substrate. Ask about any topic below and MnemosyneC should answer from local memory.
 
 ## Facts
 

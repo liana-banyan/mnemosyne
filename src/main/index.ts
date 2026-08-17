@@ -3653,11 +3653,11 @@ function registerIPCHandlers(): void {
     };
 
     // D-BP155-054: hardware-tier-aware model pick, replacing the prior hardcoded
-    // 'gemma4:12b' — a low-VRAM machine forced into a 12b model runs Ollama at a slow
+    // 'gemma4:12b'. A low-VRAM machine forced into a 12b model runs Ollama at a slow
     // ~70/30 GPU/CPU split (see D-BP155-051's applyVramGate()). detectHardwareTierFull()
     // already runs the RAM+VRAM gate and names both the tier and the recommended model;
     // this handler is the LEAN installer's primary "no local AI" first-run path, so its
-    // messaging must never be a silent no-op — name what is missing, how to install
+    // messaging must never be a silent no-op: name what is missing, how to install
     // Ollama, and which model this specific machine should pull.
     const { detectHardwareTierFull } = await import('./hardware/ram_detector');
     const tierInfo = detectHardwareTierFull();
@@ -3674,7 +3674,7 @@ function registerIPCHandlers(): void {
         await ollamaManager.init();
         const statusAfterInit = ollamaManager.getStatus();
         if (!statusAfterInit.running) {
-          // Neither pre-installed nor bundled found — this is expected on every LEAN-installer
+          // Neither pre-installed nor bundled found: this is expected on every LEAN-installer
           // first run (LEAN ships with no resources/ollama at all). Loud + actionable, never a
           // silent no-op: name what's missing, open the real download page, and name the exact
           // model this machine should pull once Ollama is installed.
@@ -3682,8 +3682,8 @@ function registerIPCHandlers(): void {
           emitStatus(
             'waiting_ollama',
             `No local AI engine found on this computer (checked for a running Ollama, an ` +
-            `installed Ollama, and a bundled one — this is the Lean installer, so none is ` +
-            `bundled). Opening ollama.com/download/windows now. Install it, then click Resume — ` +
+            `installed Ollama, and a bundled one -- this is the Lean installer, so none is ` +
+            `bundled). Opening ollama.com/download/windows now. Install it, then click Resume -- ` +
             `MnemosyneC will pull ${MODEL} for your machine (detected: ${tierInfo.displayName}, ` +
             `${tierInfo.ramGb} GB RAM${tierInfo.vramGb != null ? `, ${tierInfo.vramGb} GB VRAM` : ''}).`,
           );
