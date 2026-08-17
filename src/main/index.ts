@@ -3652,6 +3652,17 @@ function registerIPCHandlers(): void {
       event.sender.send('lean-install-error', { message, retryable });
     };
 
+    // D-BP155-054: hardware-tier-aware model pick, replacing the prior hardcoded
+    // 'gemma4:12b' — a low-VRAM machine forced into a 12b model runs Ollama at a slow
+    // ~70/30 GPU/CPU split (see D-BP155-051's applyVramGate()). detectHardwareTierFull()
+    // already runs the RAM+VRAM gate and names both the tier and the recommended model;
+    // this handler is the LEAN installer's primary "no local AI" first-run path, so its
+    // messaging must never be a silent no-op — name what is missing, how to install
+    // Ollama, and which model this specific machine should pull.
+    const { detectHardwareTierFull } = await import('./hardware/ram_detector');
+    const tierInfo = detectHardwareTierFull();
+    const MODEL = tierInfo.recommendedModel ?? 'gemma2:9b';
+
     try {
       // Step 1: Check if Ollama daemon is already running
       const status = ollamaManager.getStatus();
@@ -3663,16 +3674,25 @@ function registerIPCHandlers(): void {
         await ollamaManager.init();
         const statusAfterInit = ollamaManager.getStatus();
         if (!statusAfterInit.running) {
-          // Neither pre-installed nor bundled found — send user to download page
+          // Neither pre-installed nor bundled found — this is expected on every LEAN-installer
+          // first run (LEAN ships with no resources/ollama at all). Loud + actionable, never a
+          // silent no-op: name what's missing, open the real download page, and name the exact
+          // model this machine should pull once Ollama is installed.
           shell.openExternal('https://ollama.com/download/windows');
-          emitStatus('waiting_ollama', 'Install Ollama, then click Resume.');
-          return { ok: false, waitingForInstall: true };
+          emitStatus(
+            'waiting_ollama',
+            `No local AI engine found on this computer (checked for a running Ollama, an ` +
+            `installed Ollama, and a bundled one — this is the Lean installer, so none is ` +
+            `bundled). Opening ollama.com/download/windows now. Install it, then click Resume — ` +
+            `MnemosyneC will pull ${MODEL} for your machine (detected: ${tierInfo.displayName}, ` +
+            `${tierInfo.ramGb} GB RAM${tierInfo.vramGb != null ? `, ${tierInfo.vramGb} GB VRAM` : ''}).`,
+          );
+          return { ok: false, waitingForInstall: true, recommendedModel: MODEL, tier: tierInfo.tier };
         }
         emitStatus('ollama_ready', 'Found your local AI engine. Setting up...');
       }
 
-      // Step 3: Check if full-tier model is already available
-      const MODEL = 'gemma4:12b';
+      // Step 3: Check if the hardware-tier-recommended model is already available
       const hasModel = await ollamaManager.hasModel(MODEL);
       if (hasModel) {
         emitStatus('model_ready', 'Full AI model already on your machine.');
@@ -3703,10 +3723,12 @@ function registerIPCHandlers(): void {
         });
       }
 
-      // Step 4: Write SKU tier file and signal completion
+      // Step 4: Write SKU tier file and signal completion. D-BP155-054: record the model
+      // actually pulled/detected (tierInfo/MODEL above), not a hardcoded 'full'/'gemma4:12b'
+      // that would misreport every machine this Yoke's VRAM gate steps down to a smaller model.
       writeFileSync(
         join(app.getPath('userData'), 'sku_tier.json'),
-        JSON.stringify({ tier: 'full', model: 'gemma4:12b' }),
+        JSON.stringify({ tier: tierInfo.tier, model: MODEL }),
       );
       emitStatus('done', 'Your AI is ready.');
       return { ok: true };

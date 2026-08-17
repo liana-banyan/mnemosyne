@@ -18,6 +18,8 @@
     "catacombs:build": "node scripts/catacombs-indexer.mjs",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
+    "dist:win:complete": "npm run build && electron-builder --win --publish never",
+    "dist:win:lean": "npm run build && node scripts/gen_lean_builder_config.mjs && electron-builder --win --config release/electron-builder.lean.json --publish never",
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:linux": "npm run build && electron-builder --linux",
     "publish:win": "npm run build && electron-builder --win --publish always",
