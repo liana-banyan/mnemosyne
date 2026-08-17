@@ -425,6 +425,12 @@ import { setDagBridgeMeshHook, getDagEmitCount } from './dag_bridge';
 import { registerMicIpc } from './federation/mic_ipc';
 import { registerDiagnosisIpc } from './diagnosis/diagnosis_ipc';
 import { registerBishopDispatchMeshHook } from './federation/bishop_dispatch_wiring';
+// D-BP156-M0-013: HARDWIRE-24 mesh, the inbound listener D-BP156-M0-008 left unbuilt -- polls
+// relay_routes for bishop_dispatch-shaped rows addressed to this peer and hands them to
+// handleInboundBishopDispatchEnvelope. See that file's header for the measured schema, the
+// anon-key credential rationale, and the honest send-side/race findings this dispatch reports
+// but does not fix (out of this ticket's ownership).
+import { startBishopDispatchRelayListenerWithDefaults } from './federation/bishop_dispatch_relay_listener';
 import { runCatacombMigrationCheck } from './diagnosis/catacomb_migrator';
 import { startPeerServer, stopPeerServer, getCurrentTier, registerPresenceConfig } from './federation/peer_server';
 // KN-BP144-16 Phase 1: LAN discovery opt-out setting (defaults to refuse-unauthenticated).
@@ -10474,6 +10480,12 @@ app.whenReady().then(async () => {
     startRelayRoutePoll(_relayPeerId);
     // D6c — self-heal watchdog starts 60s after poll loop; monitors poll_count delta
     startRelayPollWatchdog(_relayPeerId);
+
+    // D-BP156-M0-013: HARDWIRE-24 mesh inbound listener -- separate poll loop, separate table
+    // filter (payload_json.kind === 'bishop_dispatch' only), never touches a row startRelayRoutePoll
+    // above already owns. See bishop_dispatch_relay_listener.ts's header for the full design note,
+    // including the honest finding that the send side cannot yet deliver a row for this to see.
+    startBishopDispatchRelayListenerWithDefaults();
 
     // BP132 Yoke #21 A1: startRelayAnswerPoller() was fully built (PID-lock singleton,
     // exponential backoff, crash-loop guard, liveness watchdog) but never called anywhere
