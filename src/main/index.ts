@@ -430,6 +430,12 @@ import { registerBishopDispatchMeshHook } from './federation/bishop_dispatch_wir
 // plow_domain_wiring.ts's header for why revive-not-retire (federated_andon.ts/mic_dispatcher.ts
 // already POST to /api/plow-domain expecting a live answer).
 import { registerPlowDomainMeshHook } from './federation/plow_domain_wiring';
+// D-BP156-M0-020: the SEND-side trigger D-BP156-M0-016 (send-path fix) left unbuilt -- the send
+// path (dispatchBishopDispatchViaRelay) existed and was offline-tested but had no IPC handler,
+// npm script, or UI control calling it. See bishop_dispatch_send_ipc.ts's header for the full
+// standalone-vs-in-process investigation (must run in-process: the Ed25519 signature needs the
+// real Electron app's persisted keypair).
+import { registerBishopDispatchSendIpc } from './federation/bishop_dispatch_send_ipc';
 // D-BP156-M0-013: HARDWIRE-24 mesh, the inbound listener D-BP156-M0-008 left unbuilt -- polls
 // relay_routes for bishop_dispatch-shaped rows addressed to this peer and hands them to
 // handleInboundBishopDispatchEnvelope. See that file's header for the measured schema and the
@@ -5590,6 +5596,10 @@ ${args.teachingText}
   //    see plow_domain_wiring.ts's header). LAN-only, /api/plow-domain, unrelated to the WAN
   //    Bishop-dispatch hook above. ---------------------------------------------------------
   registerPlowDomainMeshHook();
+  // -- D-BP156-M0-020: the SEND-side IPC trigger for dispatchBishopDispatchViaRelay -- was
+  //    built and offline-tested (D-BP156-M0-016) but unreachable from anywhere until this
+  //    dispatch. See bishop_dispatch_send_ipc.ts's header. ---------------------------------
+  registerBishopDispatchSendIpc();
 
   // -- app:request-quit (renderer-invokable graceful quit) --------------------
   ipcMain.handle('app:request-quit', () => { app.quit(); });

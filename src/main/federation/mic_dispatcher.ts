@@ -256,6 +256,13 @@ export interface BishopDispatchPayload {
 export interface BishopDispatchSendResult {
   ok: boolean;
   error?: string;
+  /** D-BP156-M0-020: the `relay_routes.id` of the row this send just inserted, present only
+   *  when ok is true. postBishopDispatchRelayRoute already sends `Prefer: return=representation`
+   *  (see below) so the insert response body already contains this row -- previously that body
+   *  was fetched and immediately discarded, leaving a successful send with no way for a caller
+   *  to name which row it produced. This is the field a sender-side receipt (a caller printing
+   *  "sent, relay_routes row <id> to peer <targetPeerId>") is built from. */
+  routeId?: string;
 }
 
 // D-BP156-M0-016: relay_routes INSERT for a bishop_dispatch row, mirroring wan_dispatch.ts's
@@ -277,7 +284,7 @@ async function postBishopDispatchRelayRoute(
   payloadEncrypted: string,
   targetPeerId: string,
   dispatchId: string,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; routeId?: string }> {
   const anonKey = getAnonKey();
   const supabaseUrl = getSupabaseUrl();
 
@@ -315,7 +322,20 @@ async function postBishopDispatchRelayRoute(
       const errText = await res.text().catch(() => '');
       return { ok: false, error: `relay_routes insert failed: HTTP ${res.status} ${errText.slice(0, 200)}` };
     }
-    return { ok: true };
+    // D-BP156-M0-020: `Prefer: return=representation` (set above) makes PostgREST echo the
+    // inserted row(s) back in the response body -- read the id out of it instead of discarding
+    // the body, so a caller has a real receipt (relay_routes row id) for what was just sent.
+    // Tolerant of a malformed/empty body (still `ok: true` -- the insert itself already
+    // succeeded per res.ok above; a missing/unparseable id only means the receipt is
+    // incomplete, never that the send failed).
+    let routeId: string | undefined;
+    try {
+      const rows = (await res.json()) as Array<{ id?: string }>;
+      routeId = rows[0]?.id;
+    } catch {
+      // response body missing/not JSON -- leave routeId undefined, insert already succeeded
+    }
+    return { ok: true, ...(routeId ? { routeId } : {}) };
   } catch (err) {
     return { ok: false, error: `relay_routes insert error: ${err instanceof Error ? err.message : String(err)}` };
   }
