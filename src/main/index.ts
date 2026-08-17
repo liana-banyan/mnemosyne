@@ -425,11 +425,16 @@ import { setDagBridgeMeshHook, getDagEmitCount } from './dag_bridge';
 import { registerMicIpc } from './federation/mic_ipc';
 import { registerDiagnosisIpc } from './diagnosis/diagnosis_ipc';
 import { registerBishopDispatchMeshHook } from './federation/bishop_dispatch_wiring';
+// D-BP156-M0-014: revives the onPlowDomain hook (dead code -- never registered anywhere until
+// this dispatch; verified independently, not only per the prior dispatch's report). See
+// plow_domain_wiring.ts's header for why revive-not-retire (federated_andon.ts/mic_dispatcher.ts
+// already POST to /api/plow-domain expecting a live answer).
+import { registerPlowDomainMeshHook } from './federation/plow_domain_wiring';
 // D-BP156-M0-013: HARDWIRE-24 mesh, the inbound listener D-BP156-M0-008 left unbuilt -- polls
 // relay_routes for bishop_dispatch-shaped rows addressed to this peer and hands them to
-// handleInboundBishopDispatchEnvelope. See that file's header for the measured schema, the
-// anon-key credential rationale, and the honest send-side/race findings this dispatch reports
-// but does not fix (out of this ticket's ownership).
+// handleInboundBishopDispatchEnvelope. See that file's header for the measured schema and the
+// anon-key credential rationale. Its send-side/claim-race findings, originally reported as
+// blocking, were closed by D-BP156-M0-016 (see that file's header, corrected by D-BP156-M0-014).
 import {
   startBishopDispatchRelayListenerWithDefaults,
   isBishopDispatchPayload,
@@ -5581,6 +5586,10 @@ ${args.teachingText}
   // -- D-BP156-M0-008: HARDWIRE-24 mesh, Bishop-dispatch WAN relay hook (auto-spawn is
   //    default-DISABLED via LB_MESH_AUTO_SPAWN_ENABLED -- see bishop_dispatch_handler.ts) ------
   registerBishopDispatchMeshHook();
+  // -- D-BP156-M0-014: revives onPlowDomain (was dead -- never registered before this dispatch,
+  //    see plow_domain_wiring.ts's header). LAN-only, /api/plow-domain, unrelated to the WAN
+  //    Bishop-dispatch hook above. ---------------------------------------------------------
+  registerPlowDomainMeshHook();
 
   // -- app:request-quit (renderer-invokable graceful quit) --------------------
   ipcMain.handle('app:request-quit', () => { app.quit(); });

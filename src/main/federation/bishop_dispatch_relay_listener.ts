@@ -46,18 +46,19 @@
  * a `kind` key of any value inside `payload_json` -- zero collision risk with the existing
  * MC-question path, which this listener never claims, PATCHes, or otherwise touches.
  *
- * ── HONEST FINDING (BLOCKING, not fixed by this dispatch) ───────────────────────────────────
- * `dispatchBishopDispatchViaRelay` (`mic_dispatcher.ts`, already-built, commit `74703251`) POSTs
- * `{ payload_encrypted, target_peer_id }` to the `wan-relay-route` edge function. That function's
- * real source (`LianaBanyanPlatform\platform\supabase\functions\wan-relay-route\index.ts`,
- * read, not modified, this dispatch is `mnemosyne`-only) requires BOTH `target_peer_id` AND
- * `hex_frame` and returns HTTP 400 ("target_peer_id and hex_frame are required") when `hex_frame`
- * is absent -- and `dispatchBishopDispatchViaRelay` never sends `hex_frame` at all. **No
- * bishop_dispatch row can reach `relay_routes` through that send path today; the edge function
- * rejects the POST before any row is inserted.** This listener is correct and ready for the row
- * shape it will need to handle once that is fixed, but the fix itself is outside this ticket's
- * ownership (`mic_dispatcher.ts` is explicitly "already built -- do not rebuild") and is reported
- * here rather than silently patched. See this dispatch's Yoke-return for the full finding.
+ * ── HONEST FINDING, ORIGINALLY BLOCKING -- CLOSED BY `D-BP156-M0-016`, NOT BY THIS DISPATCH ──
+ * **CORRECTION filed by `D-BP156-M0-014` (2026-08-17), after verifying `mic_dispatcher.ts`'s
+ * current source rather than trusting this paragraph as still current.** This section originally
+ * reported, as a live blocker: `dispatchBishopDispatchViaRelay` POSTs `{ payload_encrypted,
+ * target_peer_id }` to the `wan-relay-route` edge function, which requires BOTH `target_peer_id`
+ * AND `hex_frame` and 400s without `hex_frame` -- which `dispatchBishopDispatchViaRelay` never
+ * sent, so "no bishop_dispatch row can reach relay_routes through that send path." **That is no
+ * longer true.** `D-BP156-M0-016` (commit `61cb159b`) replaced the edge-function POST with
+ * `postBishopDispatchRelayRoute` (`mic_dispatcher.ts`, ~line 276), which INSERTs directly into
+ * `relay_routes` via PostgREST with the anon key, mirroring `wan_dispatch.ts`'s proven
+ * `insertRelayRoute()`, and explicitly sets `hex_frame: payloadEncrypted` to satisfy the
+ * NOT-NULL legacy column -- see that function's own doc comment for the full fix. The send path
+ * is closed; this listener's receive side was already correct and needed no change for this.
  *
  * ── ROW-LEVEL IDEMPOTENCY ────────────────────────────────────────────────────────────────────
  * On top of `bishop_dispatch_handler.ts`'s existing per-dispatchId dedupe-ever marker, this file
@@ -68,26 +69,32 @@
  * left at `status: 'pending'` after this listener has decided it owns it (bishop-dispatch-shaped),
  * so a re-read on the next poll's `status=eq.pending` filter cannot see it again.
  *
- * ── LOAD-BEARING NOTE ON A SEPARATE, PRE-EXISTING RACE (reported, not fixed here) ────────────
- * `src/main/index.ts`'s `startRelayRoutePoll()` (BP086, long-lived, out of this ticket's scope)
- * ALSO selects `relay_routes?target_peer_id=eq.<self>&status=eq.pending` and unconditionally
- * PATCHes every row it sees to `status:'processing'` before running it through the Ollama
- * MC-answer pipeline -- it has no kind-check and does not skip a row it does not understand. Once
- * the send-side hex_frame bug above is fixed, a real bishop_dispatch row will be visible to BOTH
- * pollers on the identical query, and `startRelayRoutePoll`'s already-running, faster-interval
- * loop will very likely win the claim race and silently misroute it into the Ollama pipeline
- * before this listener ever sees it. This listener's conditional claim (above) protects it from
- * DOUBLE-PROCESSING a row, but cannot make it WIN a race against a poller with no discriminator.
- * Fixing that is a follow-up outside this ticket (`startRelayRoutePoll` needs its own
- * `payload_json?.kind` skip-guard) and is reported here as a blocking finding for a genuine live
- * round trip, not implemented, because `index.ts`'s existing relay-poll logic is explicitly out of
- * this dispatch's ownership.
+ * ── A SEPARATE, PRE-EXISTING RACE -- ALSO CLOSED BY `D-BP156-M0-016`, NOT BY THIS DISPATCH ───
+ * **CORRECTION filed by `D-BP156-M0-014` (2026-08-17), after verifying `index.ts`'s current
+ * source.** This section originally reported, as a live blocker: `src/main/index.ts`'s
+ * `startRelayRoutePoll()` selected the identical `relay_routes?target_peer_id=eq.<self>&
+ * status=eq.pending` query with no kind-check, so once the send-side bug above was fixed a real
+ * bishop_dispatch row would be visible to both pollers and `startRelayRoutePoll`'s faster loop
+ * would likely win the claim race and misroute it into the Ollama pipeline. **That guard now
+ * exists.** `D-BP156-M0-016`'s commit message names this exact fix ("startRelayRoutePoll claim
+ * race"); `index.ts`'s `startRelayRoutePoll()` now imports `isBishopDispatchPayload` from this
+ * file and `continue`s past any bishop_dispatch-shaped row BEFORE its "mark processing" PATCH,
+ * leaving it at `status:'pending'` for this listener's own conditional claim to win -- see
+ * `index.ts`'s inline comment at that `continue` for the same discriminator-sharing rationale
+ * `isBishopDispatchPayload`'s own doc comment (below) describes.
+ *
+ * ── REPLY LEG (`D-BP156-M0-014`) ─────────────────────────────────────────────────────────────
+ * This listener's own poll tick now also writes the builder's result back to the conductor,
+ * via `bishop_dispatch_reply.ts`'s `writeBishopDispatchReply` -- see that file's header for the
+ * full mechanism (`relay_route_replies`, anon key, proven pattern) and for why the reply is
+ * inert data only, never a second spawn path.
  */
 
 import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 import { getStablePeerId } from './peer-discovery';
 import { handleInboundBishopDispatchEnvelope } from './peer_server';
 import type { BishopDispatchResult } from './peer_server';
+import { writeBishopDispatchReply } from './bishop_dispatch_reply';
 
 /** The one literal this listener claims. Matches `BishopDispatchPayload.kind` (mic_dispatcher.ts)
  *  -- not re-imported as a type-level union because the check here is against untyped JSON
@@ -210,10 +217,17 @@ export interface PollTickSummary {
   processed: number;
   malformed: number;
   errored: number;
+  /** D-BP156-M0-014: count of replies successfully POSTed to relay_route_replies this tick.
+   *  Never blocks processed/errored above -- a reply write failure is logged and reflected only
+   *  here, matching writeBishopDispatchReply()'s own non-fatal, best-effort contract. */
+  repliesWritten: number;
 }
 
 function emptySummary(): PollTickSummary {
-  return { seen: 0, skippedNotOurs: 0, claimLost: 0, expired: 0, processed: 0, malformed: 0, errored: 0 };
+  return {
+    seen: 0, skippedNotOurs: 0, claimLost: 0, expired: 0, processed: 0, malformed: 0, errored: 0,
+    repliesWritten: 0,
+  };
 }
 
 /** Conditional PATCH: only succeeds (returns true) if the row was still `status='pending'` at
@@ -384,9 +398,24 @@ export async function pollBishopDispatchRoutesOnce(
       continue;
     }
 
+    const rowStartMs = nowMs();
     try {
       const result = await handleEnvelope(envelope);
       await finalizeStatus(fetchImpl, config.supabaseUrl, config.anonKey, row.id, result.ok ? 'answered' : 'error');
+      // D-BP156-M0-014: write the reply leg -- the builder's result travels back to the
+      // conductor via relay_route_replies (see bishop_dispatch_reply.ts's header for the full
+      // mechanism). Best-effort, matching finalizeStatus/writeHeartbeat above: a failed reply
+      // write is logged inside writeBishopDispatchReply itself and must never affect this row's
+      // relay_routes status (already finalized above) or throw into this poll tick.
+      if (await writeBishopDispatchReply(
+        { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey, fetchImpl },
+        row.id,
+        config.peerId,
+        result,
+        nowMs() - rowStartMs,
+      )) {
+        summary.repliesWritten++;
+      }
       if (result.ok) {
         summary.processed++;
         console.log(`[bishop-relay-listener] row ${row.id.slice(0, 8)} handled: spawned=${result.spawned} reason=${result.reason}`);

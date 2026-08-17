@@ -545,6 +545,45 @@ export function resolvePlowDomainRequest(body: string): PlowDomainRequestOk | Pl
   return { ok: true, domain: outer.domain, questions: outer.questions, ollamaBaseUrl: outer.ollamaBaseUrl, model: outer.model };
 }
 
+export interface PlowDomainHttpResult {
+  status: number;
+  body: unknown;
+}
+
+/**
+ * D-BP156-M0-014: the full resolve-and-dispatch behavior behind `/api/plow-domain` (hook-
+ * registered check, auth/parse via resolvePlowDomainRequest, hook invocation), extracted so it
+ * can be exercised through a real `registerPeerServerHooks({onPlowDomain})` registration in a
+ * test without needing a live HTTP listener -- the same testability extraction this file
+ * already applies to `handleInboundBishopDispatchEnvelope` (the WAN entry point) and
+ * `resolvePlowDomainRequest` (the auth/parse step alone, which this function calls). No
+ * behavior change versus the inline block this replaces: same status codes, same error
+ * messages, same catch scope; `handleRequest`'s `/api/plow-domain` branch below now just reads
+ * the body and forwards the result.
+ */
+export async function handlePlowDomainRequestBody(body: string): Promise<PlowDomainHttpResult> {
+  if (!_onPlowDomain) {
+    return { status: 503, body: { error: 'Plow domain handler not registered' } };
+  }
+  try {
+    const resolved = resolvePlowDomainRequest(body);
+    if (!resolved.ok) {
+      console.warn(`[PeerServer] REFUSED /api/plow-domain: ${resolved.error}`);
+      return { status: resolved.status, body: { error: resolved.error } };
+    }
+    const { domain, questions, ollamaBaseUrl, model } = resolved;
+    const result = await _onPlowDomain(
+      domain,
+      questions,
+      ollamaBaseUrl ?? 'http://127.0.0.1:11434',
+      model ?? getEffectiveOllamaModel() ?? getRecommendedModel() ?? 'llama3.3:70b',
+    );
+    return { status: 200, body: result };
+  } catch (err) {
+    return { status: 500, body: { error: String(err) } };
+  }
+}
+
 function sendJson(res: ServerResponse, statusCode: number, data: unknown): void {
   const body = JSON.stringify(data);
   res.writeHead(statusCode, {
@@ -590,29 +629,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   // Plow domain
   if (url === '/api/plow-domain' && method === 'POST') {
-    if (!_onPlowDomain) {
-      sendJson(res, 503, { error: 'Plow domain handler not registered' });
-      return;
-    }
-    try {
-      const body = await readBody(req);
-      const resolved = resolvePlowDomainRequest(body);
-      if (!resolved.ok) {
-        console.warn(`[PeerServer] REFUSED /api/plow-domain: ${resolved.error}`);
-        sendJson(res, resolved.status, { error: resolved.error });
-        return;
-      }
-      const { domain, questions, ollamaBaseUrl, model } = resolved;
-      const result = await _onPlowDomain(
-        domain,
-        questions,
-        ollamaBaseUrl ?? 'http://127.0.0.1:11434',
-        model ?? getEffectiveOllamaModel() ?? getRecommendedModel() ?? 'llama3.3:70b',
-      );
-      sendJson(res, 200, result);
-    } catch (err) {
-      sendJson(res, 500, { error: String(err) });
-    }
+    const body = await readBody(req);
+    const { status, body: respBody } = await handlePlowDomainRequestBody(body);
+    sendJson(res, status, respBody);
     return;
   }
 
