@@ -1782,6 +1782,19 @@ contextBridge.exposeInMainWorld('amplify', {
     return () => ipcRenderer.removeListener('mesh-test:progress', handler);
   },
 
+  // D-BP156-M0-020: HARDWIRE-24 mesh, Bishop-dispatch SEND trigger. Calls the real send path
+  // (dispatchBishopDispatchViaRelay via bishop_dispatch_send_ipc.ts's registerBishopDispatchSendIpc
+  // handler) -- must run in-process because the Ed25519 signature needs the real Electron app's
+  // persisted keypair (see that file's header for the investigation). This is the same seam
+  // scripts/bishop_dispatch_send_cli.mjs drives over CDP, mirroring meshTestRunOneClick above.
+  bishopDispatchSendViaRelay: (req: {
+    targetPeerId: string;
+    dispatchId: string;
+    promptText: string;
+    workingDir: string;
+  }): Promise<{ ok: boolean; error?: string; routeId?: string; targetPeerId: string; dispatchId: string }> =>
+    ipcRenderer.invoke('bishop-dispatch:send-via-relay', req),
+
   // KN-BP142-5: Liana Cycle Engine caller -- same three-shape pattern (run-now / get-status /
   // progress listener) as meshTestRunOneClick/meshTestIsActive/onMeshTestProgress above. See
   // src/main/plow/liana_cycle_scheduler.ts for the trigger policy, kill switch, and receipt.

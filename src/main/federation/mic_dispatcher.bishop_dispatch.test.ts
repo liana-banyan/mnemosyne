@@ -148,6 +148,11 @@ describe('dispatchBishopDispatchViaRelay', () => {
 
     // Row starts pending, exactly like every other relay_routes insert in this codebase.
     expect(body.status).toBe('pending');
+
+    // D-BP156-M0-020: `Prefer: return=representation` means the mocked response body carries
+    // the inserted row back (json() resolves to [{ id: 'route-row-1' }], set up above) -- the
+    // send path must surface that id to the caller as the sender's own receipt, not discard it.
+    expect(result.routeId).toBe('route-row-1');
   });
 
   test('returns ok:false when the relay_routes insert fails, with no fallback-base retry', async () => {
