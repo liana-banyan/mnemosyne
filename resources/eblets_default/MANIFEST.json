@@ -1,16 +1,16 @@
 {
   "generated_by": "scripts/build_seed_corpus.mjs",
-  "generated_at": "2026-08-16T23:43:12.259Z",
+  "generated_at": "2026-08-17T00:06:00.293Z",
   "dispatch": "D-BP155-054/BISHOP/seg-split-installer-seed-corpus",
-  "note": "PROPOSED corpus — the Founder approves the final manifest before this ships in a build. Per-component origin and license; not one blanket claim.",
-  "source_gate": "Every seed_*.eblet.md item is sourced exclusively from resources/chocolates/starter_chocolate.jsonl entries whose provenance field starts with \"starter_chocolate:\" — canonical_plow:wikipedia:* and canonical_plow:openalex:* entries present in the per-category chocolates/*.jsonl files were categorically excluded (third-party sourced, fails Gate 1).",
+  "note": "PROPOSED corpus. The Founder approves the final manifest before this ships in a build. Per-component origin and license, not one blanket claim.",
+  "source_gate": "Every seed_*.eblet.md item is sourced exclusively from resources/chocolates/starter_chocolate.jsonl entries whose provenance field starts with \"starter_chocolate:\". canonical_plow:wikipedia:* and canonical_plow:openalex:* entries present in the per-category chocolates/*.jsonl files were categorically excluded (third-party sourced, fails Gate 1).",
   "total_files": 17,
   "total_seed_facts": 280,
   "items": [
     {
       "filename": "welcome_to_mnemosynec.eblet.md",
       "category": "onboarding",
-      "origin": "Hand-authored by Liana Banyan Corporation — generic onboarding document",
+      "origin": "Hand-authored by Liana Banyan Corporation - generic onboarding document",
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "third_party_content": false
@@ -18,7 +18,7 @@
     {
       "filename": "how_the_wan_mesh_works.eblet.md",
       "category": "onboarding",
-      "origin": "Hand-authored by Liana Banyan Corporation — generic onboarding document",
+      "origin": "Hand-authored by Liana Banyan Corporation - generic onboarding document",
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "third_party_content": false
@@ -26,7 +26,7 @@
     {
       "filename": "adding_your_own_eblets.eblet.md",
       "category": "onboarding",
-      "origin": "Hand-authored by Liana Banyan Corporation — generic onboarding document",
+      "origin": "Hand-authored by Liana Banyan Corporation - generic onboarding document",
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "third_party_content": false
@@ -41,7 +41,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_business.eblet.md",
@@ -53,7 +53,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_chemistry.eblet.md",
@@ -65,7 +65,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_computer_science.eblet.md",
@@ -77,7 +77,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_economics.eblet.md",
@@ -89,7 +89,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_engineering.eblet.md",
@@ -101,7 +101,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_health.eblet.md",
@@ -113,7 +113,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_history.eblet.md",
@@ -125,7 +125,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_law.eblet.md",
@@ -137,7 +137,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_math.eblet.md",
@@ -149,7 +149,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_other.eblet.md",
@@ -161,7 +161,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_philosophy.eblet.md",
@@ -173,7 +173,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_physics.eblet.md",
@@ -185,7 +185,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     },
     {
       "filename": "seed_psychology.eblet.md",
@@ -197,7 +197,7 @@
       "author": "Liana Banyan Corporation",
       "license": "SSPL-1.0",
       "generated_by": "scripts/build_seed_corpus.mjs",
-      "generated_at": "2026-08-16"
+      "generated_at": "2026-08-17"
     }
   ]
 }

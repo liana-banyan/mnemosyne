@@ -1,6 +1,6 @@
-# Seed Facts — Computer Science
+# Seed Facts - Computer Science
 
-20 general-knowledge facts from MnemosyneC's own hand-authored starter set ("starter_chocolate", not MMLU-Pro, not scraped from any third-party source). These exist so a fresh install has something real to recall on the very first question instead of an empty substrate — ask about any topic below and MnemosyneC should answer from local memory.
+20 general-knowledge facts from MnemosyneC's own hand-authored starter set ("starter_chocolate", not MMLU-Pro, not scraped from any third-party source). These exist so a fresh install has something real to recall on the very first question instead of an empty substrate. Ask about any topic below and MnemosyneC should answer from local memory.
 
 ## Facts
 
@@ -8,7 +8,7 @@
 A: Big-O notation describes the upper bound on the growth rate of an algorithm's time or space complexity as input size n grows. O(1) is constant, O(log n) is logarithmic, O(n) is linear, O(n²) is quadratic.
 
 **Q: What is the difference between a stack and a queue?**
-A: A stack is LIFO (Last In First Out) — items are pushed and popped from the top. A queue is FIFO (First In First Out) — items are enqueued at the back and dequeued from the front.
+A: A stack is LIFO (Last In First Out) - items are pushed and popped from the top. A queue is FIFO (First In First Out) - items are enqueued at the back and dequeued from the front.
 
 **Q: What is a binary search tree?**
 A: A binary search tree (BST) is a tree data structure where each node's left subtree contains only smaller values and right subtree only larger values, enabling O(log n) search, insert, and delete in balanced cases.
@@ -23,7 +23,7 @@ A: TCP/IP is the fundamental internet protocol suite. TCP (Transmission Control 
 A: A hash table stores key-value pairs using a hash function to map keys to array indices. It offers O(1) average-case lookup, insert, and delete. Collisions are handled by chaining or open addressing.
 
 **Q: What is the halting problem?**
-A: The halting problem asks whether an arbitrary program will finish running or loop forever on given input. Turing proved this is undecidable — no general algorithm can solve it for all possible programs.
+A: The halting problem asks whether an arbitrary program will finish running or loop forever on given input. Turing proved this is undecidable - no general algorithm can solve it for all possible programs.
 
 **Q: What is object-oriented programming?**
 A: OOP organizes software around objects that combine data (attributes) and behavior (methods). Key principles: encapsulation (hiding internals), inheritance (reusing parent class features), polymorphism (multiple forms).

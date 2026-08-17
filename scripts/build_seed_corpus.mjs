@@ -1,23 +1,23 @@
 #!/usr/bin/env node
-// build_seed_corpus.mjs — D-BP155-054/BISHOP/seg-split-installer-seed-corpus
+// build_seed_corpus.mjs -- D-BP155-054/BISHOP/seg-split-installer-seed-corpus
 //
 // Builds the eblets_default seed corpus that ships inside BOTH installer
 // variants (COMPLETE and LEAN). Source is resources/chocolates/starter_chocolate.jsonl
-// ONLY — never the per-category resources/chocolates/<cat>.jsonl files, because those
+// ONLY -- never the per-category resources/chocolates/<cat>.jsonl files, because those
 // files interleave "starter_chocolate:*" (hand-authored, safe) entries with
 // "canonical_plow:wikipedia:*" / "canonical_plow:openalex:*" entries (verbatim
 // third-party excerpts pulled from Wikipedia/OpenAlex during Plow runs). Only
-// starter_chocolate.jsonl is 100% starter_chocolate provenance — verified by this
+// starter_chocolate.jsonl is 100% starter_chocolate provenance -- verified by this
 // script's own gate below, which throws if any other provenance prefix is found.
 //
 // This is a build-time script, not shipped itself. Regenerate with:
 //   node scripts/build_seed_corpus.mjs
 //
 // Four hard gates applied (Founder's order, D-BP155-054):
-//   1. HIS TO LICENSE — starter_chocolate.jsonl entries only (see provenance gate below).
-//   2. NO SECRETS — plain short-answer facts; gitleaks run separately over the output dir.
-//   3. NOT THE PRIVATE MOAT — general knowledge Q&A, zero estate/canon/HARDWIRE content.
-//   4. ACTUALLY USEFUL ON FIRST RUN — demonstrative, durable, general facts across 14 domains.
+//   1. HIS TO LICENSE -- starter_chocolate.jsonl entries only (see provenance gate below).
+//   2. NO SECRETS -- plain short-answer facts; gitleaks run separately over the output dir.
+//   3. NOT THE PRIVATE MOAT -- general knowledge Q&A, zero estate/canon/HARDWIRE content.
+//   4. ACTUALLY USEFUL ON FIRST RUN -- demonstrative, durable, general facts across 14 domains.
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -56,7 +56,7 @@ function loadEntries() {
   const bad = entries.filter((e) => !String(e.provenance || '').startsWith('starter_chocolate:'));
   if (bad.length > 0) {
     throw new Error(
-      `build_seed_corpus: GATE 1 FAILED — ${bad.length} entries in ${SOURCE_JSONL} do not carry ` +
+      `build_seed_corpus: GATE 1 FAILED -- ${bad.length} entries in ${SOURCE_JSONL} do not carry ` +
       `"starter_chocolate:" provenance (found: ${[...new Set(bad.map((e) => String(e.provenance).split(':')[0]))].join(', ')}). ` +
       `Refusing to build a corpus containing possible third-party content. Fix the source file, do not widen this gate.`
     );
@@ -76,19 +76,23 @@ function groupByCategory(entries) {
 }
 
 function escapeMd(text) {
-  return String(text).replace(/\r\n/g, '\n').trim();
+  // Normalize em-dashes to a plain " - " (Rule 10/133, no em-dashes in anything this
+  // estate ships) -- the source starter_chocolate.jsonl answer text predates that rule
+  // and carries a handful of real em-dashes; this is a formatting normalization only,
+  // never a factual edit.
+  return String(text).replace(/\r\n/g, '\n').replace(/—/g, ' - ').replace(/ {2,}/g, ' ').trim();
 }
 
 function renderEbletFile(category, items) {
   const display = CATEGORY_DISPLAY[category] || category;
   const lines = [];
-  lines.push(`# Seed Facts — ${display}`);
+  lines.push(`# Seed Facts - ${display}`);
   lines.push('');
   lines.push(
     `${items.length} general-knowledge facts from MnemosyneC's own hand-authored starter set ` +
     `("starter_chocolate", not MMLU-Pro, not scraped from any third-party source). These exist so ` +
     `a fresh install has something real to recall on the very first question instead of an empty ` +
-    `substrate — ask about any topic below and MnemosyneC should answer from local memory.`
+    `substrate. Ask about any topic below and MnemosyneC should answer from local memory.`
   );
   lines.push('');
   lines.push('## Facts');
@@ -136,13 +140,13 @@ function main() {
     console.log(`[build_seed_corpus] wrote ${filename} (${items.length} facts)`);
   }
 
-  // Pre-existing eblets_default files — documented in the manifest too (per-component,
+  // Pre-existing eblets_default files, documented in the manifest too (per-component,
   // not one blanket claim), unmodified by this script.
   const preExisting = [
     {
       filename: 'welcome_to_mnemosynec.eblet.md',
       category: 'onboarding',
-      origin: 'Hand-authored by Liana Banyan Corporation — generic onboarding document',
+      origin: 'Hand-authored by Liana Banyan Corporation - generic onboarding document',
       author: 'Liana Banyan Corporation',
       license: 'SSPL-1.0',
       third_party_content: false,
@@ -150,7 +154,7 @@ function main() {
     {
       filename: 'how_the_wan_mesh_works.eblet.md',
       category: 'onboarding',
-      origin: 'Hand-authored by Liana Banyan Corporation — generic onboarding document',
+      origin: 'Hand-authored by Liana Banyan Corporation - generic onboarding document',
       author: 'Liana Banyan Corporation',
       license: 'SSPL-1.0',
       third_party_content: false,
@@ -158,7 +162,7 @@ function main() {
     {
       filename: 'adding_your_own_eblets.eblet.md',
       category: 'onboarding',
-      origin: 'Hand-authored by Liana Banyan Corporation — generic onboarding document',
+      origin: 'Hand-authored by Liana Banyan Corporation - generic onboarding document',
       author: 'Liana Banyan Corporation',
       license: 'SSPL-1.0',
       third_party_content: false,
@@ -169,8 +173,8 @@ function main() {
     generated_by: 'scripts/build_seed_corpus.mjs',
     generated_at: new Date().toISOString(),
     dispatch: 'D-BP155-054/BISHOP/seg-split-installer-seed-corpus',
-    note: 'PROPOSED corpus — the Founder approves the final manifest before this ships in a build. Per-component origin and license; not one blanket claim.',
-    source_gate: 'Every seed_*.eblet.md item is sourced exclusively from resources/chocolates/starter_chocolate.jsonl entries whose provenance field starts with "starter_chocolate:" — canonical_plow:wikipedia:* and canonical_plow:openalex:* entries present in the per-category chocolates/*.jsonl files were categorically excluded (third-party sourced, fails Gate 1).',
+    note: 'PROPOSED corpus. The Founder approves the final manifest before this ships in a build. Per-component origin and license, not one blanket claim.',
+    source_gate: 'Every seed_*.eblet.md item is sourced exclusively from resources/chocolates/starter_chocolate.jsonl entries whose provenance field starts with "starter_chocolate:". canonical_plow:wikipedia:* and canonical_plow:openalex:* entries present in the per-category chocolates/*.jsonl files were categorically excluded (third-party sourced, fails Gate 1).',
     total_files: manifestItems.length + preExisting.length,
     total_seed_facts: entries.length,
     items: [...preExisting, ...manifestItems],

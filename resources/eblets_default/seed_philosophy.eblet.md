@@ -1,6 +1,6 @@
-# Seed Facts — Philosophy
+# Seed Facts - Philosophy
 
-20 general-knowledge facts from MnemosyneC's own hand-authored starter set ("starter_chocolate", not MMLU-Pro, not scraped from any third-party source). These exist so a fresh install has something real to recall on the very first question instead of an empty substrate — ask about any topic below and MnemosyneC should answer from local memory.
+20 general-knowledge facts from MnemosyneC's own hand-authored starter set ("starter_chocolate", not MMLU-Pro, not scraped from any third-party source). These exist so a fresh install has something real to recall on the very first question instead of an empty substrate. Ask about any topic below and MnemosyneC should answer from local memory.
 
 ## Facts
 
@@ -59,7 +59,7 @@ A: Analytic philosophy (Russell, Wittgenstein, Frege) emphasizes logical analysi
 A: The sorites paradox: if you remove one grain from a heap of sand, it remains a heap. But removing grains one by one eventually leaves no heap. It raises questions about vagueness and sharp boundaries in concepts.
 
 **Q: What is Descartes' method of doubt?**
-A: Descartes used radical skepticism to find indubitable truths. He doubted everything until reaching "cogito ergo sum" (I think therefore I am) — the only thing he could not doubt was that he was doing the doubting.
+A: Descartes used radical skepticism to find indubitable truths. He doubted everything until reaching "cogito ergo sum" (I think therefore I am) - the only thing he could not doubt was that he was doing the doubting.
 
 **Q: What is the trolley problem vs. the doctrine of double effect?**
 A: The doctrine of double effect permits harmful actions if the harm is a foreseen but unintended side effect of achieving a good end. It differs from utilitarian calculation by considering intention, explaining different moral intuitions about similar outcomes.

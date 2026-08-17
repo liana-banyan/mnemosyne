@@ -1,6 +1,6 @@
-# Seed Facts — Law
+# Seed Facts - Law
 
-20 general-knowledge facts from MnemosyneC's own hand-authored starter set ("starter_chocolate", not MMLU-Pro, not scraped from any third-party source). These exist so a fresh install has something real to recall on the very first question instead of an empty substrate — ask about any topic below and MnemosyneC should answer from local memory.
+20 general-knowledge facts from MnemosyneC's own hand-authored starter set ("starter_chocolate", not MMLU-Pro, not scraped from any third-party source). These exist so a fresh install has something real to recall on the very first question instead of an empty substrate. Ask about any topic below and MnemosyneC should answer from local memory.
 
 ## Facts
 
@@ -38,13 +38,13 @@ A: Corporate law governs the formation, operation, and dissolution of corporatio
 A: International humanitarian law (the laws of war) regulates armed conflict, protecting civilians and combatants. Key instruments include the Geneva Conventions. It establishes war crimes and crimes against humanity.
 
 **Q: What is the principle of freedom of speech in US constitutional law?**
-A: The First Amendment protects freedom of speech from government restriction. However, it is not absolute — exceptions include incitement to imminent lawless action, true threats, and obscenity.
+A: The First Amendment protects freedom of speech from government restriction. However, it is not absolute - exceptions include incitement to imminent lawless action, true threats, and obscenity.
 
 **Q: What is administrative law?**
 A: Administrative law governs the activities of governmental agencies, including rulemaking, adjudication, and enforcement. Judicial review can overturn agency actions that are arbitrary, capricious, or unconstitutional.
 
 **Q: What is the concept of mens rea in criminal law?**
-A: Mens rea is the mental element of a crime — the guilty mind. Most crimes require both a guilty act (actus reus) and guilty mind. Levels include intent, knowledge, recklessness, and negligence.
+A: Mens rea is the mental element of a crime - the guilty mind. Most crimes require both a guilty act (actus reus) and guilty mind. Levels include intent, knowledge, recklessness, and negligence.
 
 **Q: What is environmental law?**
 A: Environmental law regulates human interaction with the environment. In the US, laws include the Clean Air Act, Clean Water Act, and NEPA. International agreements include the Paris Climate Agreement.
