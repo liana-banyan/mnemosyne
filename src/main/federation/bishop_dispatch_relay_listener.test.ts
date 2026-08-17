@@ -14,6 +14,7 @@ import {
   pollBishopDispatchRoutesOnce,
   extractEncryptedEnvelope,
   hasBishopDispatchKind,
+  isBishopDispatchPayload,
   isRowExpired,
   startBishopDispatchRelayListener,
   type RelayRouteRow,
@@ -133,6 +134,32 @@ describe('pure predicates', () => {
 
   test('isRowExpired: fails open (not expired) on an unparseable created_at', () => {
     expect(isRowExpired(makeRow({ created_at: 'not-a-date' }), Date.now())).toBe(false);
+  });
+
+  // D-BP156-M0-016: isBishopDispatchPayload is the discriminator index.ts's startRelayRoutePoll
+  // reuses (rather than re-implementing) to skip a bishop_dispatch row -- see index.ts and this
+  // file's own hasBishopDispatchKind, which is now defined IN TERMS OF isBishopDispatchPayload
+  // so the two callers can never drift out of agreement on which rows belong to which poller.
+  describe('isBishopDispatchPayload', () => {
+    test('true for a bishop_dispatch-shaped payload_json', () => {
+      expect(isBishopDispatchPayload({ kind: 'bishop_dispatch', payload_encrypted: '{}' })).toBe(true);
+    });
+    test('false for an ordinary MC-question payload_json (no kind field)', () => {
+      expect(isBishopDispatchPayload({ domain: 'chemistry', prompt: 'what is X?', question_id: 1 })).toBe(false);
+    });
+    test('false for null/undefined payload_json', () => {
+      expect(isBishopDispatchPayload(null)).toBe(false);
+      expect(isBishopDispatchPayload(undefined)).toBe(false);
+    });
+    test('false for a different kind value', () => {
+      expect(isBishopDispatchPayload({ kind: 'eblet_topical' })).toBe(false);
+    });
+    test('agrees with hasBishopDispatchKind on the same row', () => {
+      const bishopRow = makeRow();
+      const mcRow = makeRow({ payload_json: { domain: 'chemistry', prompt: 'x' } });
+      expect(isBishopDispatchPayload(bishopRow.payload_json)).toBe(hasBishopDispatchKind(bishopRow));
+      expect(isBishopDispatchPayload(mcRow.payload_json)).toBe(hasBishopDispatchKind(mcRow));
+    });
   });
 });
 

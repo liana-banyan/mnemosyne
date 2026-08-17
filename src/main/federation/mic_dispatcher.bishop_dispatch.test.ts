@@ -1,10 +1,20 @@
 // mic_dispatcher.bishop_dispatch.test.ts — D-BP156-M0-008, HARDWIRE-24 mesh.
+// Updated D-BP156-M0-016 (send-path fix): dispatchBishopDispatchViaRelay no longer POSTs to
+// the wan-relay-route edge function (it 400s without hex_frame, which the old send path never
+// sent -- verified against the edge function's real source). It now INSERTs directly into
+// relay_routes via PostgREST with the anon key, mirroring wan_dispatch.ts's proven
+// insertRelayRoute() sender. The two tests below that asserted the OLD (broken) `/wan-relay-
+// route` + `{payload_encrypted, target_peer_id}` shape are rewritten to assert the real,
+// edge-function-validated shape instead.
 //
 // OFFLINE, MOCKED. fetch is stubbed; no real network call, no real Supabase relay, no real
 // second machine involved. Proves: (1) the bishop_dispatch payload variant round-trips through
 // the SAME Thorax AES-256-GCM encryption dispatchDomainViaRelay already uses (encryptForRelay/
-// decryptFromRelay), and (2) an untagged dispatch id is rejected before any network call is
-// even attempted (HARDWIRE-24 Section 3).
+// decryptFromRelay), (2) an untagged dispatch id is rejected before any network call is even
+// attempted (HARDWIRE-24 Section 3), and (3) the fixed send path builds a relay_routes row
+// shape (target_peer_id, hex_frame, payload_json.kind/payload_encrypted) that satisfies both
+// the edge function's real validation (target_peer_id + hex_frame required) AND
+// bishop_dispatch_relay_listener.ts's own row-shape discriminator.
 //
 // Run: npx vitest run src/main/federation/mic_dispatcher.bishop_dispatch.test.ts
 
@@ -78,49 +88,88 @@ describe('dispatchBishopDispatchViaRelay', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test('posts a Thorax-encrypted payload to wan-relay-route for a properly tagged id', async () => {
+  test('inserts a bishop_dispatch row directly into relay_routes for a properly tagged id, ' +
+    'in a shape the real edge function validation and the inbound listener both accept', async () => {
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 200 });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: async () => [{ id: 'route-row-1' }],
+    });
 
     const result = await dispatchBishopDispatchViaRelay(
       mockPeer, 'D-BP156-M3-001', 'prompt text', 'C:\\Users\\Administrator\\Documents\\proj', 'self-peer-id',
     );
 
     expect(result.ok).toBe(true);
+    // Exactly one call -- no edge-function fallback-base retry (that concept belonged to the
+    // OLD, broken wan-relay-route send path; the fixed path is a single direct table insert).
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain('/wan-relay-route');
-    const body = JSON.parse(init.body as string) as { payload_encrypted: string; target_peer_id: string };
+
+    // Targets the relay_routes TABLE via PostgREST, never the wan-relay-route edge function.
+    expect(url).toContain('/rest/v1/relay_routes');
+    expect(url).not.toContain('/wan-relay-route');
+    expect((init.method ?? '').toUpperCase()).toBe('POST');
+
+    // No service-role key anywhere in the request -- a shipped client can only ever hold the
+    // anon/publishable key (HARD CONSTRAINT of this dispatch).
+    const headers = init.headers as Record<string, string>;
+    const authHeader = headers['Authorization'] ?? '';
+    expect(authHeader.toLowerCase()).not.toContain('service_role');
+
+    const body = JSON.parse(init.body as string) as {
+      target_peer_id: string;
+      hex_frame: string;
+      payload_json: { kind: string; payload_encrypted: string };
+      status: string;
+    };
+
+    // Satisfies the real edge function's validation (target_peer_id AND hex_frame both
+    // required, verified against wan-relay-route/index.ts's real source) even though this
+    // send path bypasses the edge function entirely -- the schema requirement (hex_frame is a
+    // NOT NULL column) is the same either way.
     expect(body.target_peer_id).toBe('target-peer-id');
+    expect(typeof body.hex_frame).toBe('string');
+    expect(body.hex_frame.length).toBeGreaterThan(0);
+
+    // Satisfies bishop_dispatch_relay_listener.ts's own discriminator: payload_json.kind ===
+    // 'bishop_dispatch' AND payload_json.payload_encrypted is a non-empty string.
+    expect(body.payload_json.kind).toBe('bishop_dispatch');
+    expect(typeof body.payload_json.payload_encrypted).toBe('string');
+    expect(body.payload_json.payload_encrypted.length).toBeGreaterThan(0);
+
     // payload_encrypted must be opaque ciphertext -- never the plaintext dispatch id/prompt.
-    expect(body.payload_encrypted).not.toContain('D-BP156-M3-001');
-    expect(body.payload_encrypted).not.toContain('prompt text');
-    const parsedEnvelope = JSON.parse(body.payload_encrypted) as { iv: string; ct: string };
+    expect(body.payload_json.payload_encrypted).not.toContain('D-BP156-M3-001');
+    expect(body.payload_json.payload_encrypted).not.toContain('prompt text');
+    const parsedEnvelope = JSON.parse(body.payload_json.payload_encrypted) as { iv: string; ct: string };
     expect(typeof parsedEnvelope.iv).toBe('string');
     expect(typeof parsedEnvelope.ct).toBe('string');
+
+    // Row starts pending, exactly like every other relay_routes insert in this codebase.
+    expect(body.status).toBe('pending');
   });
 
-  test('falls back to the second relay base when the first is unreachable', async () => {
+  test('returns ok:false when the relay_routes insert fails, with no fallback-base retry', async () => {
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    fetchMock
-      .mockResolvedValueOnce({ ok: false, status: 503 })
-      .mockResolvedValueOnce({ ok: true, status: 200 });
-
-    const result = await dispatchBishopDispatchViaRelay(
-      mockPeer, 'D-BP156-M3-002', 'p', 'C:\\wd', 'self-peer-id',
-    );
-    expect(result.ok).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  test('returns ok:false when both relay bases fail', async () => {
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    fetchMock.mockResolvedValue({ ok: false, status: 500 });
+    fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => 'insert error' });
 
     const result = await dispatchBishopDispatchViaRelay(
       mockPeer, 'D-BP156-M3-003', 'p', 'C:\\wd', 'self-peer-id',
     );
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/WAN relay route failed/);
+    expect(result.error).toMatch(/relay_routes insert failed/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('returns ok:false (never throws) on a network error', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockRejectedValue(new Error('ECONNRESET'));
+
+    const result = await dispatchBishopDispatchViaRelay(
+      mockPeer, 'D-BP156-M3-004', 'p', 'C:\\wd', 'self-peer-id',
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/relay_routes insert error/);
   });
 });

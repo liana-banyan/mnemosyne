@@ -23,7 +23,7 @@ import type {
 import { discoverPeers } from './constellation_discovery';
 import { randomBytes, createHash } from 'crypto';
 import { networkInterfaces } from 'os';
-import { getAnonKey } from '../shared/anon_key';
+import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 // KN-BP144-16 Phase 1: sign the LAN /api/plow-domain dispatch (see peer_server.ts's
 // resolvePlowDomainRequest() for the receiving side).
 import { signAnnouncePayload } from './announce_frame';
@@ -258,6 +258,69 @@ export interface BishopDispatchSendResult {
   error?: string;
 }
 
+// D-BP156-M0-016: relay_routes INSERT for a bishop_dispatch row, mirroring wan_dispatch.ts's
+// insertRelayRoute() -- the proven, anon-key-only sender that produced 5,694 `answered` rows
+// (verified live, WAN_RELAY_SCHEMA_VERIFIED_BP156.md). This does NOT reuse
+// postToRelayRouteWithFallback above: that helper POSTs `{payload_encrypted, target_peer_id}`
+// to the `wan-relay-route` EDGE FUNCTION, which requires `target_peer_id` AND `hex_frame` and
+// returns HTTP 400 without both (verified against the edge function's real source,
+// LianaBanyanPlatform\platform\supabase\functions\wan-relay-route\index.ts) -- the exact
+// defect this dispatch (D-BP156-M0-016) exists to fix. The proven sender instead INSERTs
+// directly into the `relay_routes` TABLE via PostgREST with the anon/publishable key
+// (getAnonKey()/getSupabaseUrl(), same as every other real poller in this codebase), never
+// invoking the edge function at all. dispatchDomainViaRelay/postToRelayRouteWithFallback
+// above are left completely untouched -- out of this dispatch's scope, and already flagged
+// elsewhere (wan_dispatch.ts's own header) as a known-broken sibling path, not fixed here.
+const BISHOP_DISPATCH_TTL_SECONDS = 300;
+
+async function postBishopDispatchRelayRoute(
+  payloadEncrypted: string,
+  targetPeerId: string,
+  dispatchId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const anonKey = getAnonKey();
+  const supabaseUrl = getSupabaseUrl();
+
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/relay_routes`, {
+      method: 'POST',
+      headers: {
+        apikey: anonKey,
+        Authorization: `Bearer ${anonKey}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify({
+        target_peer_id: targetPeerId,
+        // relay_routes.hex_frame is a NOT NULL legacy column (verified live,
+        // WAN_RELAY_SCHEMA_VERIFIED_BP156.md / wan_dispatch.ts's insertRelayRoute doc
+        // comment). The bishop_dispatch listener (bishop_dispatch_relay_listener.ts) reads
+        // payload_json.payload_encrypted exclusively and never looks at hex_frame -- so this
+        // column is populated with the SAME already-opaque ciphertext purely to satisfy the
+        // schema, never with plaintext promptText/dispatchId.
+        hex_frame: payloadEncrypted,
+        payload_json: {
+          kind: 'bishop_dispatch',
+          payload_encrypted: payloadEncrypted,
+        },
+        status: 'pending',
+        session_id: dispatchId,
+        ttl_seconds: BISHOP_DISPATCH_TTL_SECONDS,
+        wire_format: 'json-legacy',
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      return { ok: false, error: `relay_routes insert failed: HTTP ${res.status} ${errText.slice(0, 200)}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `relay_routes insert error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
 /**
  * D-BP156-M0-008 (design-constraint follow-up): the seam for a future second carrier. Today
  * there is exactly ONE implementation (wanRelayBishopDispatchTransport, below, wrapping
@@ -285,10 +348,14 @@ export interface BishopDispatchTransport {
 
 /**
  * Sends a Bishop-session dispatch (a HARDWIRE-24 cross-machine coordination unit, not an MC
- * question) to `peer` over the WAN relay. Reuses encryptForRelay and
- * postToRelayRouteWithFallback UNCHANGED from dispatchDomainViaRelay above -- the only new
- * code here is the payload shape itself, the machine-tag validation, and signing the plaintext
- * with this machine's existing Thorax Ed25519 keypair (announce_frame.ts's
+ * question) to `peer` over the WAN relay. Reuses encryptForRelay UNCHANGED from
+ * dispatchDomainViaRelay above. As of D-BP156-M0-016 this does NOT reuse
+ * postToRelayRouteWithFallback (that helper targets the wan-relay-route edge function, which
+ * 400s without a hex_frame it never sends -- see postBishopDispatchRelayRoute's doc comment
+ * above for the full finding); the encrypted envelope is instead INSERTed directly into
+ * relay_routes via postBishopDispatchRelayRoute, mirroring the proven wan_dispatch.ts sender.
+ * The only new code here beyond the payload shape itself is the machine-tag validation and
+ * signing the plaintext with this machine's existing Thorax Ed25519 keypair (announce_frame.ts's
  * signAnnouncePayload, the SAME primitive peer_server.ts already uses to authenticate the LAN
  * /api/plow-domain path) before encrypting it.
  *
@@ -341,11 +408,7 @@ export async function dispatchBishopDispatchViaRelay(
     return { ok: false, error: `Thorax encrypt failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  const res = await postToRelayRouteWithFallback(payloadEncrypted, peer.id);
-  if (!res || !res.ok) {
-    return { ok: false, error: `WAN relay route failed: HTTP ${res?.status ?? 'unreachable'}` };
-  }
-  return { ok: true };
+  return postBishopDispatchRelayRoute(payloadEncrypted, peer.id, dispatchId);
 }
 
 /** The one implementation of BishopDispatchTransport that exists today. A caller that wants to

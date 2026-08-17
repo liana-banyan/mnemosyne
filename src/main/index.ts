@@ -430,7 +430,10 @@ import { registerBishopDispatchMeshHook } from './federation/bishop_dispatch_wir
 // handleInboundBishopDispatchEnvelope. See that file's header for the measured schema, the
 // anon-key credential rationale, and the honest send-side/race findings this dispatch reports
 // but does not fix (out of this ticket's ownership).
-import { startBishopDispatchRelayListenerWithDefaults } from './federation/bishop_dispatch_relay_listener';
+import {
+  startBishopDispatchRelayListenerWithDefaults,
+  isBishopDispatchPayload,
+} from './federation/bishop_dispatch_relay_listener';
 import { runCatacombMigrationCheck } from './diagnosis/catacomb_migrator';
 import { startPeerServer, stopPeerServer, getCurrentTier, registerPresenceConfig } from './federation/peer_server';
 // KN-BP144-16 Phase 1: LAN discovery opt-out setting (defaults to refuse-unauthenticated).
@@ -8779,6 +8782,22 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
       const routes: Array<{ id: string; hex_frame: string; payload_json: Record<string, unknown> | null; session_id: string | null }> = await res.json();
 
       for (const route of routes) {
+        // D-BP156-M0-016: a bishop_dispatch row belongs to bishop_dispatch_relay_listener.ts's
+        // dedicated poller, never to this MC-answer poller (bishop_dispatch_relay_listener.ts's
+        // own header flagged this exact race as an honest, unfixed finding under D-BP156-M0-013).
+        // Skip it here, BEFORE the "mark processing" PATCH below, so the row stays at
+        // status:'pending' for that listener's conditional claim to win -- this poller must
+        // never touch, claim, or process a bishop_dispatch row. Verified live (WAN_RELAY_SCHEMA_
+        // VERIFIED_BP156.md): zero of 6,657 real rows carry a payload_json.kind key of any
+        // value, so this check is collision-free with every existing MC-question row. Nothing
+        // else about this loop's claiming/processing behavior for an ordinary row is changed.
+        // isBishopDispatchPayload is the SAME discriminator bishop_dispatch_relay_listener.ts
+        // itself uses (hasBishopDispatchKind), reused here rather than re-implemented, so the
+        // two pollers can never drift out of agreement on which rows belong to which poller.
+        if (isBishopDispatchPayload(route.payload_json)) {
+          continue;
+        }
+
         // Mark processing
         await fetch(`${supabaseUrl}/rest/v1/relay_routes?id=eq.${route.id}`, {
           method: 'PATCH',
