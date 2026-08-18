@@ -170,6 +170,20 @@ describe('handlePlowDomainRequestBody — onPlowDomain hook revival', () => {
 describe('resolveVramGatedPlowModel — VRAM gate consultation, D-BP157-029', () => {
   beforeEach(() => {
     vi.resetModules();
+    // D-BP157-034/BISHOP/seg-fix-test-failures: the describe block above this one registers
+    // `vi.doMock('../hardware/ram_detector', ...)` (identity applyVramGate, fixed requiredVramGb)
+    // in several of its tests, most recently the "throwing hook" test. `vi.doMock` factories are
+    // NOT cleared by `vi.resetModules()` -- resetModules only clears the module instance cache,
+    // so the next dynamic import of '../hardware/ram_detector' still resolves through whatever
+    // factory was last registered, even in a later, unrelated describe block in the same file.
+    // Every test below calls resolveVramGatedPlowModel with its OWN injected `detector` argument
+    // specifically so it exercises the REAL applyVramGate/requiredVramGb from ram_detector.ts --
+    // proven by running any one of these tests in isolation (`vitest run ... -t "<name>"`), where
+    // they pass; the leaked identity mock from the sibling describe block is what made them fail
+    // when the whole file ran together. `vi.doUnmock` is the non-hoisted counterpart to
+    // `vi.doMock` and undoes exactly that registration, restoring the real module for this block
+    // without touching (or weakening) a single assertion below.
+    vi.doUnmock('../hardware/ram_detector');
   });
 
   test('model fits -- unchanged, not downgraded, no note', async () => {
