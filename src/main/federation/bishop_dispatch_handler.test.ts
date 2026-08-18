@@ -45,6 +45,8 @@ const ENV_KEYS = [
   // reads %APPDATA%, same as this suite points LB_LEDGER_ROOT at a fresh tmpdir) plus the
   // elevated-mode override, snapshotted/cleared/restored exactly like every other guardrail knob.
   'APPDATA', 'LB_MESH_SPAWN_ELEVATED_PERMISSION_MODE',
+  // D-BP157-041: the dedicated worker CLAUDE_CONFIG_DIR override, same discipline.
+  'LB_MESH_WORKER_CLAUDE_CONFIG_DIR',
 ];
 
 /** A fake ChildProcess that never exits on its own (tests that need it to "exit" call
@@ -107,6 +109,18 @@ function writeConsentSettings(appdataRoot: string, consentGranted: boolean): voi
   const dir = join(appdataRoot, 'MnemosyneC', 'config');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'mesh_auto_spawn_consent.json'), JSON.stringify({ consentGranted }), 'utf8');
+}
+
+/** D-BP157-041: seeds the default worker CLAUDE_CONFIG_DIR location (LB_LEDGER_ROOT/YOKE/
+ *  WORKER_CLAUDE_CONFIG) with a single, non-secret marker file, so isWorkerClaudeConfigDirProvisioned's
+ *  content-blind "non-empty directory" check passes. Deliberately NOT a real credential shape --
+ *  the function under test never reads file content, only presence, and this suite must never
+ *  write anything that looks like a real token either. Returns the directory path used. */
+function provisionWorkerClaudeConfigDir(ledgerRoot: string): string {
+  const dir = join(ledgerRoot, 'YOKE', 'WORKER_CLAUDE_CONFIG');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'TEST-MARKER-NOT-A-CREDENTIAL.txt'), 'provisioned by test\n', 'utf8');
+  return dir;
 }
 
 beforeEach(() => {
@@ -419,9 +433,10 @@ describe('handleBishopDispatch -- D-BP157-033 consent gate, coupled with the kil
     expect(result.issues.find((i) => i.code === 'MESH_AUTO_SPAWN_CONSENT_NOT_GRANTED')).toBeUndefined();
   });
 
-  test('both ON: spawns, argv carries the elevated bypassPermissions mode, and a MESH_AUTO_SPAWN_CONSENT_GRANTED issue is legible in the reply', async () => {
+  test('both ON, worker CLAUDE_CONFIG_DIR provisioned: spawns, argv carries the elevated bypassPermissions mode, and a MESH_AUTO_SPAWN_CONSENT_GRANTED issue is legible in the reply', async () => {
     process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
     writeConsentSettings(TEST_APPDATA, true);
+    provisionWorkerClaudeConfigDir(TEST_LEDGER_ROOT); // D-BP157-041: elevated mode now also gates on this
     const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
     const fakeChild = makeFakeChild();
     const spawnImpl = vi.fn().mockReturnValue(fakeChild);
@@ -437,6 +452,27 @@ describe('handleBishopDispatch -- D-BP157-033 consent gate, coupled with the kil
     expect(issue).toBeDefined();
     expect(issue!.evidence).toMatch(/permissionMode=bypassPermissions/);
     expect(issue!.evidence).toMatch(/consentGranted=true/);
+  });
+
+  test('D-BP157-041: both ON but worker CLAUDE_CONFIG_DIR NOT provisioned: refuses to spawn (loud), never falls back to the account default', async () => {
+    process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
+    writeConsentSettings(TEST_APPDATA, true);
+    // Deliberately no provisionWorkerClaudeConfigDir() call -- the default location
+    // (TEST_LEDGER_ROOT/YOKE/WORKER_CLAUDE_CONFIG) does not exist at all.
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const spawnImpl = vi.fn();
+    const claimImpl = vi.fn();
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never, claimImpl as never);
+
+    expect(result.spawned).toBe(false);
+    expect(result.reason).toMatch(/not provisioned/i);
+    // The refusal happens BEFORE the HARDWIRE-25 claim -- no claim spent on a worker that will
+    // never run, and no process, real or fake, ever created.
+    expect(claimImpl).not.toHaveBeenCalled();
+    expect(spawnImpl).not.toHaveBeenCalled();
+    const issue = result.issues.find((i) => i.code === 'WORKER_CLAUDE_CONFIG_DIR_NOT_PROVISIONED');
+    expect(issue).toBeDefined();
+    expect(issue!.message).toMatch(/not provisioned/i);
   });
 
   test('both OFF: never spawns, matching the pre-existing kill-switch-off behavior', async () => {
@@ -465,6 +501,110 @@ describe('handleBishopDispatch -- D-BP157-033 consent gate, coupled with the kil
     const modeIdx = args.indexOf('--permission-mode');
     expect(args[modeIdx + 1]).toBe('default');
     expect(result.issues.find((i) => i.code === 'MESH_AUTO_SPAWN_CONSENT_NOT_GRANTED')).toBeDefined();
+  });
+});
+
+// D-BP157-041, ITEM 2: getWorkerClaudeConfigDir/isWorkerClaudeConfigDirProvisioned are pure
+// enough to test directly (no process, no claim), matching this file's own established idiom.
+describe('getWorkerClaudeConfigDir / isWorkerClaudeConfigDirProvisioned — D-BP157-041 config-dir plumbing', () => {
+  test('getWorkerClaudeConfigDir defaults to LB_LEDGER_ROOT/YOKE/WORKER_CLAUDE_CONFIG', async () => {
+    const { getWorkerClaudeConfigDir } = await import('./bishop_dispatch_handler');
+    expect(getWorkerClaudeConfigDir()).toBe(join(TEST_LEDGER_ROOT, 'YOKE', 'WORKER_CLAUDE_CONFIG'));
+  });
+
+  test('LB_MESH_WORKER_CLAUDE_CONFIG_DIR overrides the default', async () => {
+    process.env.LB_MESH_WORKER_CLAUDE_CONFIG_DIR = 'D:\\custom\\worker-claude-config';
+    const { getWorkerClaudeConfigDir } = await import('./bishop_dispatch_handler');
+    expect(getWorkerClaudeConfigDir()).toBe('D:\\custom\\worker-claude-config');
+  });
+
+  test('isWorkerClaudeConfigDirProvisioned: false when the directory does not exist at all', async () => {
+    const { isWorkerClaudeConfigDirProvisioned } = await import('./bishop_dispatch_handler');
+    expect(isWorkerClaudeConfigDirProvisioned(join(TEST_LEDGER_ROOT, 'never-created'))).toBe(false);
+  });
+
+  test('isWorkerClaudeConfigDirProvisioned: false when the directory exists but is empty', async () => {
+    const { isWorkerClaudeConfigDirProvisioned } = await import('./bishop_dispatch_handler');
+    const dir = join(TEST_LEDGER_ROOT, 'empty-config-dir');
+    mkdirSync(dir, { recursive: true });
+    expect(isWorkerClaudeConfigDirProvisioned(dir)).toBe(false);
+  });
+
+  test('isWorkerClaudeConfigDirProvisioned: true when the directory exists and is non-empty -- content-blind, never reads the file', async () => {
+    const { isWorkerClaudeConfigDirProvisioned } = await import('./bishop_dispatch_handler');
+    const dir = provisionWorkerClaudeConfigDir(TEST_LEDGER_ROOT);
+    expect(isWorkerClaudeConfigDirProvisioned(dir)).toBe(true);
+  });
+});
+
+// D-BP157-041, ITEM 2: the child process actually receives CLAUDE_CONFIG_DIR only under the
+// exact two-gate coupling the dispatch requires -- proven at the spawnImpl call boundary, the
+// same way SHELL-INJECTION SAFETY above proves argv shape at that same boundary.
+describe('launchWorker — CLAUDE_CONFIG_DIR only reaches the child when both gates are on', () => {
+  test('both gates ON, dir provisioned: spawnImpl receives env.CLAUDE_CONFIG_DIR pointed at the provisioned dir', async () => {
+    process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
+    writeConsentSettings(TEST_APPDATA, true);
+    const configDir = provisionWorkerClaudeConfigDir(TEST_LEDGER_ROOT);
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const fakeChild = makeFakeChild();
+    const spawnImpl = vi.fn().mockReturnValue(fakeChild);
+    const claimImpl = makeControllableClaimImpl(0);
+
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never, claimImpl as never);
+
+    expect(result.spawned).toBe(true);
+    const [, , opts] = spawnImpl.mock.calls[0] as [string, string[], { env?: Record<string, string> }];
+    expect(opts.env).toBeDefined();
+    expect(opts.env!.CLAUDE_CONFIG_DIR).toBe(configDir);
+  });
+
+  test('kill switch ON, consent OFF (not elevated): spawnImpl receives no env override at all, even though the config dir is unprovisioned', async () => {
+    process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
+    writeConsentSettings(TEST_APPDATA, false);
+    // Deliberately NOT provisioning the config dir -- proves the restrictive path never even
+    // looks at it.
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const fakeChild = makeFakeChild();
+    const spawnImpl = vi.fn().mockReturnValue(fakeChild);
+    const claimImpl = makeControllableClaimImpl(0);
+
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never, claimImpl as never);
+
+    expect(result.spawned).toBe(true);
+    const [, , opts] = spawnImpl.mock.calls[0] as [string, string[], { env?: Record<string, string> }];
+    expect(opts.env).toBeUndefined();
+  });
+
+  test('consent ON, kill switch OFF (not elevated, never reaches launchWorker): no spawn at all, config dir never consulted', async () => {
+    writeConsentSettings(TEST_APPDATA, true);
+    // Deliberately NOT provisioning the config dir -- the kill switch being off means
+    // launchWorker() (and therefore the config-dir check) is never reached at all.
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const spawnImpl = vi.fn();
+    const claimImpl = vi.fn();
+
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never, claimImpl as never);
+
+    expect(result.spawned).toBe(false);
+    expect(result.reason).toMatch(/auto-spawn kill switch is disabled/);
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(claimImpl).not.toHaveBeenCalled();
+  });
+
+  test('argv still carries --output-format json regardless of the config-dir gate', async () => {
+    process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const fakeChild = makeFakeChild();
+    const spawnImpl = vi.fn().mockReturnValue(fakeChild);
+    const claimImpl = makeControllableClaimImpl(0);
+
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never, claimImpl as never);
+
+    expect(result.spawned).toBe(true);
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[], Record<string, unknown>];
+    const formatIdx = args.indexOf('--output-format');
+    expect(formatIdx).toBeGreaterThanOrEqual(0);
+    expect(args[formatIdx + 1]).toBe('json');
   });
 });
 
@@ -851,6 +991,148 @@ describe('deriveCompletionOutcome — pure completion-status derivation (no I/O)
     const result = deriveCompletionOutcome('D-TEST-4', null, null, 'SIGTERM');
     expect(result.lifecycle).toBe('failed');
     expect(result.issues[0]?.code).toBe('SPAWN_KILLED_BY_SIGNAL');
+  });
+});
+
+// D-BP157-041, ITEM 1: parseWorkerJsonOutput -- pure, no I/O, tolerant of malformed/absent input.
+describe('parseWorkerJsonOutput — D-BP157-041 --output-format json parsing', () => {
+  // THE EXACT MEASURED FIXTURE (SEG_RETURN_BP157_041 dispatch, Bishop M0, by hand, 2026-08-18):
+  // 11 turns ran, duration_api_ms is 0, zero tokens, empty result, and the CLI still claims
+  // subtype:"success" is_error:false.
+  const MEASURED_NO_MODEL_CALL_JSON = JSON.stringify({
+    type: 'result', subtype: 'success', is_error: false, duration_ms: 393,
+    duration_api_ms: 0, num_turns: 11, result: '', total_cost_usd: 0,
+    usage: { input_tokens: 0, output_tokens: 0 }, modelUsage: {}, permission_denials: [],
+  });
+
+  test('parses the exact measured fixture correctly', async () => {
+    const { parseWorkerJsonOutput } = await import('./bishop_dispatch_handler');
+    const parsed = parseWorkerJsonOutput(MEASURED_NO_MODEL_CALL_JSON);
+    expect(parsed).toEqual({
+      numTurns: 11, durationApiMs: 0, inputTokens: 0, outputTokens: 0,
+      totalCostUsd: 0, resultLength: 0, subtype: 'success', isError: false,
+    });
+  });
+
+  test('parses a genuine-success shape (real tokens, non-empty result)', async () => {
+    const { parseWorkerJsonOutput } = await import('./bishop_dispatch_handler');
+    const json = JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, duration_ms: 8123,
+      duration_api_ms: 7800, num_turns: 3, result: 'did the thing\nBISHOP-DISPATCH-WORK-COMPLETE',
+      total_cost_usd: 0.0123, usage: { input_tokens: 512, output_tokens: 128 },
+    });
+    const parsed = parseWorkerJsonOutput(json);
+    expect(parsed).toEqual({
+      numTurns: 3, durationApiMs: 7800, inputTokens: 512, outputTokens: 128,
+      totalCostUsd: 0.0123, resultLength: 'did the thing\nBISHOP-DISPATCH-WORK-COMPLETE'.length,
+      subtype: 'success', isError: false,
+    });
+  });
+
+  test('malformed JSON returns null, never throws', async () => {
+    const { parseWorkerJsonOutput } = await import('./bishop_dispatch_handler');
+    expect(parseWorkerJsonOutput('not json at all')).toBeNull();
+    expect(parseWorkerJsonOutput('{"unterminated": ')).toBeNull();
+  });
+
+  test('null, empty, or whitespace-only log returns null', async () => {
+    const { parseWorkerJsonOutput } = await import('./bishop_dispatch_handler');
+    expect(parseWorkerJsonOutput(null)).toBeNull();
+    expect(parseWorkerJsonOutput('')).toBeNull();
+    expect(parseWorkerJsonOutput('   \n  ')).toBeNull();
+  });
+
+  test('a JSON array (valid JSON, wrong shape) returns null rather than throwing', async () => {
+    const { parseWorkerJsonOutput } = await import('./bishop_dispatch_handler');
+    expect(parseWorkerJsonOutput('[1,2,3]')).toBeNull();
+  });
+
+  test('missing/wrong-typed fields default to zero/null rather than throwing', async () => {
+    const { parseWorkerJsonOutput } = await import('./bishop_dispatch_handler');
+    const parsed = parseWorkerJsonOutput('{"type":"result"}');
+    expect(parsed).toEqual({
+      numTurns: 0, durationApiMs: 0, inputTokens: 0, outputTokens: 0,
+      totalCostUsd: 0, resultLength: 0, subtype: null, isError: null,
+    });
+  });
+});
+
+// D-BP157-041, ITEM 1: deriveCompletionOutcome folds parseWorkerJsonOutput's fields into `issues`
+// and raises the new WORKER_NO_MODEL_CALL signature -- "the check that would have saved two
+// sessions." Lifecycle itself (asserted above, unchanged) must never be decided by the CLI's own
+// subtype/is_error verdict.
+describe('deriveCompletionOutcome — D-BP157-041 JSON telemetry folded into issues', () => {
+  const MEASURED_NO_MODEL_CALL_JSON = JSON.stringify({
+    type: 'result', subtype: 'success', is_error: false, duration_ms: 393,
+    duration_api_ms: 0, num_turns: 11, result: '', total_cost_usd: 0,
+    usage: { input_tokens: 0, output_tokens: 0 }, modelUsage: {}, permission_denials: [],
+  });
+
+  test('THE MEASURED SIGNATURE: 11 turns, duration_api_ms 0, zero tokens, empty result, CLI claims success -> lifecycle "failed" anyway, WORKER_NO_MODEL_CALL raised, CLI verdict recorded but not trusted', async () => {
+    const { deriveCompletionOutcome } = await import('./bishop_dispatch_handler');
+    const result = deriveCompletionOutcome('D-BP157-041-TEST', MEASURED_NO_MODEL_CALL_JSON, 0, null);
+
+    // Lifecycle is decided by the pre-existing sentinel logic alone -- the empty result contains
+    // no sentinel, so this is 'failed' via NO_COMPLETION_SENTINEL, exactly as it would have been
+    // before this dispatch even existed. The CLI's own "success" verdict changes nothing here.
+    expect(result.lifecycle).toBe('failed');
+
+    const codes = result.issues.map((i) => i.code);
+    expect(codes).toContain('NO_COMPLETION_SENTINEL');
+    expect(codes).toContain('WORKER_JSON_TELEMETRY');
+    expect(codes).toContain('WORKER_NO_MODEL_CALL');
+
+    const noModelCall = result.issues.find((i) => i.code === 'WORKER_NO_MODEL_CALL')!;
+    expect(noModelCall.message).toMatch(/before any model call happened/i);
+    expect(noModelCall.message).toMatch(/hooks/i);
+    expect(noModelCall.evidence).toMatch(/num_turns=11/);
+    expect(noModelCall.evidence).toMatch(/duration_api_ms=0/);
+    expect(noModelCall.evidence).toMatch(/total_tokens=0/);
+
+    const telemetry = result.issues.find((i) => i.code === 'WORKER_JSON_TELEMETRY')!;
+    expect(telemetry.message).toMatch(/cli_subtype=success/);
+    expect(telemetry.message).toMatch(/cli_is_error=false/);
+  });
+
+  test('a genuine success (real tokens, sentinel present) -> lifecycle "completed", WORKER_JSON_TELEMETRY present, WORKER_NO_MODEL_CALL absent', async () => {
+    const { deriveCompletionOutcome, COMPLETION_SENTINEL } = await import('./bishop_dispatch_handler');
+    const json = JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, duration_api_ms: 7800, num_turns: 3,
+      result: `did the thing\n${COMPLETION_SENTINEL}`, total_cost_usd: 0.02,
+      usage: { input_tokens: 512, output_tokens: 128 },
+    });
+    const result = deriveCompletionOutcome('D-BP157-041-OK', json, 0, null);
+
+    expect(result.lifecycle).toBe('completed');
+    const codes = result.issues.map((i) => i.code);
+    expect(codes).not.toContain('NO_COMPLETION_SENTINEL');
+    expect(codes).not.toContain('WORKER_NO_MODEL_CALL');
+    expect(codes).toContain('WORKER_JSON_TELEMETRY');
+  });
+
+  test('malformed or absent JSON: no telemetry issues added, base lifecycle/issues unaffected (no throw)', async () => {
+    const { deriveCompletionOutcome } = await import('./bishop_dispatch_handler');
+    const withGarbage = deriveCompletionOutcome('D-BP157-041-GARBLED', 'not json, just noise', 0, null);
+    expect(withGarbage.lifecycle).toBe('failed');
+    expect(withGarbage.issues.map((i) => i.code)).toEqual(['NO_COMPLETION_SENTINEL']);
+
+    const withNull = deriveCompletionOutcome('D-BP157-041-NULL', null, 0, null);
+    expect(withNull.lifecycle).toBe('failed');
+    expect(withNull.issues.map((i) => i.code)).toEqual(['NO_COMPLETION_SENTINEL']);
+  });
+
+  test('non-zero exit still surfaces JSON telemetry alongside SPAWN_NONZERO_EXIT', async () => {
+    const { deriveCompletionOutcome } = await import('./bishop_dispatch_handler');
+    const json = JSON.stringify({
+      subtype: 'error_during_execution', is_error: true, duration_api_ms: 500,
+      num_turns: 1, result: '', usage: { input_tokens: 10, output_tokens: 0 },
+    });
+    const result = deriveCompletionOutcome('D-BP157-041-NONZERO', json, 1, null);
+    expect(result.lifecycle).toBe('failed');
+    const codes = result.issues.map((i) => i.code);
+    expect(codes).toEqual(['SPAWN_NONZERO_EXIT', 'WORKER_JSON_TELEMETRY']);
+    // duration_api_ms is non-zero here, so WORKER_NO_MODEL_CALL correctly does not fire.
+    expect(codes).not.toContain('WORKER_NO_MODEL_CALL');
   });
 });
 
