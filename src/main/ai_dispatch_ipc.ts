@@ -591,16 +591,53 @@ const PREFERRED_LOCAL_FIRST_MODEL = 'llama3.3:70b';
  *  chain (args.model_override ?? activeBrainLocalModel ?? settings.preferred_model); when any
  *  of those fired, `explicitModel` is non-empty and this function returns `fallbackModel`
  *  (the caller's own fully-resolved `model` variable) completely untouched -- this never
- *  overrides a real user pick. Only when NONE of those three fired (the caller was about to
- *  fall through to selectedGemmaModel/FLOOR_MODEL) does this check whether the stronger
- *  PREFERRED_LOCAL_FIRST_MODEL is actually installed and reachable, and prefer it. Non-fatal
- *  on any Ollama-reachability error -- falls back to `fallbackModel` exactly as before this
- *  ticket. */
-export async function resolveTier1Model(explicitModel: string | undefined, fallbackModel: string): Promise<string> {
+ *  overrides a real user pick, and that returned `fallbackModel` was itself already run through
+ *  resolveVramGatedModel() at the call site (D-BP157-029) with wasExplicit=true, so the explicit
+ *  branch here needs no gate of its own; the record, if any, was already logged there. Only when
+ *  NONE of those three fired (the caller was about to fall through to selectedGemmaModel/
+ *  FLOOR_MODEL) does this check whether the stronger PREFERRED_LOCAL_FIRST_MODEL is actually
+ *  installed and reachable, and prefer it. Non-fatal on any Ollama-reachability error -- falls
+ *  back to `fallbackModel` exactly as before this ticket.
+ *
+ *  D-BP157-042/BISHOP/seg-close-loose-ends: D-BP157-029 gated the three OTHER answer-time model
+ *  chains against detected VRAM and flagged this preference rung as a FOURTH, ungated mechanism
+ *  -- PREFERRED_LOCAL_FIRST_MODEL (llama3.3:70b) requires ~48 GB VRAM (measured disk-basis
+ *  weight, see ram_detector.ts MODEL_WEIGHTS_GB) and was being selected purely on "is it
+ *  installed," never checked against what the machine actually has (M0's real card measures
+ *  15.92 GB) -- exactly the hazard the gate exists to prevent. Gated here the same way: the
+ *  preference is now validated against detected VRAM before being returned, and steps DOWN to
+ *  `fallbackModel` (itself already VRAM-gated by the caller, see above) when it does not fit,
+ *  always with a console.warn record, never silent. Unknown VRAM (vramGb === null) PERMITS the
+ *  preference through unchanged, with a record, same policy as resolveVramGatedModel's own
+ *  vramGb===null branch -- an unmeasured machine is not a small machine. Note: llama3.3:70b has
+ *  no entry in ram_detector.ts's MODEL_STEP_DOWN_LADDER, so applyVramGate()/resolveVramGatedModel
+ *  would return it unchanged with only an advisory note rather than stepping it down (no smaller
+ *  fallback known to the ladder for it) -- `fallbackModel` is used as this rung's step-down
+ *  target instead, since it is the caller's own next-best, already-validated choice, not a value
+ *  this function invents. `detector` is injectable so tests can exercise both branches without a
+ *  real GPU, mirroring resolveVramGatedModel's own injectable-detector pattern; production call
+ *  sites rely on the default (cached real detector, shared with the other three chains). */
+export async function resolveTier1Model(
+  explicitModel: string | undefined,
+  fallbackModel: string,
+  detector: () => VramDetectionResult = getCachedVramDetectionForAsk,
+): Promise<string> {
   if (explicitModel) return fallbackModel;
   try {
     const installed = await getInstalledOllamaModelsSafe();
-    if (installed.includes(PREFERRED_LOCAL_FIRST_MODEL)) return PREFERRED_LOCAL_FIRST_MODEL;
+    if (installed.includes(PREFERRED_LOCAL_FIRST_MODEL)) {
+      const detailed = detector();
+      if (detailed.vramGb === null) {
+        console.warn(`[VramGate] resolveTier1Model: VRAM undetectable (method=${detailed.method}, confidence=${detailed.confidence}) -- permitting preferred local model ${PREFERRED_LOCAL_FIRST_MODEL} without a fit check`);
+        return PREFERRED_LOCAL_FIRST_MODEL;
+      }
+      const required = requiredVramGb(PREFERRED_LOCAL_FIRST_MODEL);
+      if (required === null || detailed.vramGb >= required) {
+        return PREFERRED_LOCAL_FIRST_MODEL;
+      }
+      console.warn(`[VramGate] resolveTier1Model: preferred local model ${PREFERRED_LOCAL_FIRST_MODEL} needs ~${required} GB VRAM; detected VRAM ${detailed.vramGb} GB (method=${detailed.method}, confidence=${detailed.confidence}) is insufficient -- stepped down to ${fallbackModel}`);
+      return fallbackModel;
+    }
   } catch {
     // non-fatal -- fall back to the caller's existing resolution
   }
