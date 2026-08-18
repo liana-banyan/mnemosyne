@@ -57,6 +57,19 @@ describe('handlePlowDomainRequestBody — onPlowDomain hook revival', () => {
 
   test('once registered, a request that clears authentication reaches the hook and returns its result as 200', async () => {
     vi.doMock('./mesh_trust_settings', () => ({ isUnauthenticatedLanDiscoveryAllowed: () => true }));
+    // D-BP157-029/BISHOP/seg-rewire-vram-gate: the request below carries an explicit `model`
+    // field, so resolveVramGatedPlowModel's wasExplicit=true branch never downgrades it -- this
+    // fake detector reports ample VRAM purely so the gate's own execSync-based real detector is
+    // never invoked in this offline suite (see peer_server.vram_gate.test.ts for the gate's own
+    // dedicated coverage of insufficient/unknown VRAM).
+    vi.doMock('../hardware/ram_detector', () => ({
+      detectHardwareTier: () => ({ tier: 'ultra', ramGb: 64 }),
+      getRecommendedModel: () => 'gemma4:12b',
+      getCachedEffectiveModel: () => null,
+      applyVramGate: (tierModel: string | null) => ({ model: tierModel }),
+      requiredVramGb: () => 7.5,
+      detectVramGbDetailed: () => ({ vramGb: 16, method: 'registry', confidence: 'measured' }),
+    }));
     const peerServer = await import('./peer_server');
     const hookResult = { ebletsWritten: 3, quarantined: 1, andonEvents: 0, status: 'GREEN' };
     const receivedArgs: unknown[] = [];
@@ -86,10 +99,20 @@ describe('handlePlowDomainRequestBody — onPlowDomain hook revival', () => {
     // some string, without asserting on hardware-dependent model-selection logic that belongs
     // to those modules' own tests, not this one.
     vi.doMock('../brain_registry/brain_registry', () => ({ getActiveBrain: () => undefined, hasPersistedBrainChoice: () => false }));
+    // D-BP157-029/BISHOP/seg-rewire-vram-gate: this mock now fully replaces '../hardware/
+    // ram_detector' exports, so applyVramGate/requiredVramGb/detectVramGbDetailed (added to
+    // peer_server.ts's import list by this dispatch) must be included here too, or they resolve
+    // to undefined inside peer_server.ts and resolveVramGatedPlowModel throws. Ample VRAM +
+    // "no smaller fallback known" (identity applyVramGate) keeps this test's own concern (the
+    // fallback CHAIN, not VRAM-gating behavior) isolated -- gate behavior itself has its own
+    // dedicated coverage in peer_server.vram_gate.test.ts.
     vi.doMock('../hardware/ram_detector', () => ({
       detectHardwareTier: () => ({ tier: 'core', ramGb: 16 }),
       getRecommendedModel: () => 'gemma4:12b',
       getCachedEffectiveModel: () => null,
+      applyVramGate: (tierModel: string | null) => ({ model: tierModel }),
+      requiredVramGb: () => null,
+      detectVramGbDetailed: () => ({ vramGb: 16, method: 'registry', confidence: 'measured' }),
     }));
     const peerServer = await import('./peer_server');
     const receivedArgs: unknown[] = [];
@@ -112,6 +135,16 @@ describe('handlePlowDomainRequestBody — onPlowDomain hook revival', () => {
 
   test('a throwing hook is caught and reported as 500, never crashes', async () => {
     vi.doMock('./mesh_trust_settings', () => ({ isUnauthenticatedLanDiscoveryAllowed: () => true }));
+    // D-BP157-029/BISHOP/seg-rewire-vram-gate: same reasoning as the "once registered" test
+    // above -- explicit model in the request, ample-VRAM fake detector keeps this offline.
+    vi.doMock('../hardware/ram_detector', () => ({
+      detectHardwareTier: () => ({ tier: 'ultra', ramGb: 64 }),
+      getRecommendedModel: () => 'gemma4:12b',
+      getCachedEffectiveModel: () => null,
+      applyVramGate: (tierModel: string | null) => ({ model: tierModel }),
+      requiredVramGb: () => 7.5,
+      detectVramGbDetailed: () => ({ vramGb: 16, method: 'registry', confidence: 'measured' }),
+    }));
     const peerServer = await import('./peer_server');
     const hook = vi.fn(async () => { throw new Error('boom'); });
     peerServer.registerPeerServerHooks({ onPlowDomain: hook });
@@ -124,5 +157,79 @@ describe('handlePlowDomainRequestBody — onPlowDomain hook revival', () => {
 
     expect(status).toBe(500);
     expect(body).toMatchObject({ error: expect.stringContaining('boom') });
+  });
+});
+
+// D-BP157-029/BISHOP/seg-rewire-vram-gate: direct unit coverage of resolveVramGatedPlowModel,
+// the new VRAM-gate consultation this dispatch wires into handlePlowDomainRequestBody's model
+// resolution (formerly `model ?? getEffectiveOllamaModel() ?? getRecommendedModel() ?? 'llama3.3:70b'`,
+// which never consulted VRAM -- see SEG_RETURN_BP157_021_VRAM_GATE.md section 2, chain B). Tested
+// directly against the exported pure function with an injected detector (3rd argument) so this
+// suite never touches the real execSync-based detector -- fully offline, same convention as the
+// HTTP-level tests above.
+describe('resolveVramGatedPlowModel — VRAM gate consultation, D-BP157-029', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  test('model fits -- unchanged, not downgraded, no note', async () => {
+    const peerServer = await import('./peer_server');
+    const out = peerServer.resolveVramGatedPlowModel(
+      'gemma2:9b', false,
+      () => ({ vramGb: 16, method: 'registry', confidence: 'measured' }),
+    );
+    expect(out.model).toBe('gemma2:9b');
+    expect(out.downgraded).toBe(false);
+    expect(out.note).toBeUndefined();
+  });
+
+  test('model does not fit -- stepped down, with an issue recorded', async () => {
+    const peerServer = await import('./peer_server');
+    const out = peerServer.resolveVramGatedPlowModel(
+      'gemma4:12b', false,
+      () => ({ vramGb: 3, method: 'registry', confidence: 'measured' }),
+    );
+    expect(out.model).not.toBe('gemma4:12b');
+    expect(out.downgraded).toBe(true);
+    expect(typeof out.note).toBe('string');
+    expect(out.note!.length).toBeGreaterThan(0);
+  });
+
+  test('explicit /api/plow-domain "model" wins even when it does not fit, with an issue recorded', async () => {
+    const peerServer = await import('./peer_server');
+    const out = peerServer.resolveVramGatedPlowModel(
+      'gemma4:12b', true,
+      () => ({ vramGb: 3, method: 'registry', confidence: 'measured' }),
+    );
+    expect(out.model).toBe('gemma4:12b');
+    expect(out.downgraded).toBe(false);
+    expect(out.note).toMatch(/insufficient/);
+  });
+
+  test('VRAM unknown -- permitted through, recorded, never silently shrunk', async () => {
+    const peerServer = await import('./peer_server');
+    const out = peerServer.resolveVramGatedPlowModel(
+      'gemma4:12b', false,
+      () => ({ vramGb: null, method: 'none', confidence: 'unknown', note: 'No GPU adapter data available' }),
+    );
+    expect(out.model).toBe('gemma4:12b');
+    expect(out.downgraded).toBe(false);
+    expect(typeof out.note).toBe('string');
+  });
+
+  test('a capped ~4095 MiB CIM reading (cim-capped-rejected, vramGb: null) is never treated as a real 4 GB', async () => {
+    const peerServer = await import('./peer_server');
+    const out = peerServer.resolveVramGatedPlowModel(
+      'gemma4:12b', false,
+      () => ({
+        vramGb: null,
+        method: 'cim-capped-rejected',
+        confidence: 'unknown',
+        note: 'AdapterRAM reading sits at/above the Windows uint32 ~4 GiB ceiling -- reporting unknown rather than the capped, likely-wrong number',
+      }),
+    );
+    expect(out.model).toBe('gemma4:12b');
+    expect(out.vramGb).toBeNull();
+    expect(out.vramMethod).toBe('cim-capped-rejected');
   });
 });

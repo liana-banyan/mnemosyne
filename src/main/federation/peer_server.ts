@@ -21,7 +21,7 @@ import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { app, BrowserWindow } from 'electron';
 import type { IncomingMessage, ServerResponse } from 'http';
-import { detectHardwareTier, getRecommendedModel, getCachedEffectiveModel } from '../hardware/ram_detector';
+import { detectHardwareTier, getRecommendedModel, getCachedEffectiveModel, applyVramGate, requiredVramGb, detectVramGbDetailed, type VramDetectionResult } from '../hardware/ram_detector';
 // BP135 Yoke #35: brain_registry.ts is the store ai-dispatch:query's real Ask handler reads via
 // getActiveBrain() -- "the exact installed Ollama tag the user picked in ASK's model selector"
 // (see ai_dispatch_ipc.ts). index.ts's WAN plow answer paths now honor this SAME store; presence
@@ -48,6 +48,70 @@ function getEffectiveOllamaModel(): string | null {
 /** Returns whether an override is currently active. */
 function isOverrideActive(): boolean {
   return getCachedEffectiveModel()?.overrideActive ?? false;
+}
+
+// ── D-BP157-029/BISHOP/seg-rewire-vram-gate: VRAM gate consultation for /api/plow-domain ──────
+//
+// The old chain was `model ?? getEffectiveOllamaModel() ?? getRecommendedModel() ?? 'llama3.3:70b'`
+// -- the WAN peer's caller-supplied `model` field (a sender's explicit choice) is authoritative
+// and is honored as-is even if it does not fit (mirrors ai_dispatch_ipc.ts's model_override
+// precedence). getEffectiveOllamaModel()'s own persisted-brain preference is machine-made/
+// possibly-stale (see that function's own doc comment above), so when no explicit model arrives
+// the resolved candidate is validated against detected VRAM and may be stepped down. Nothing is
+// written back to brain_registry.json/right-size.json here -- only the in-memory model used to
+// answer THIS request. Unknown VRAM permits-and-records, same policy as ai_dispatch_ipc.ts.
+export interface VramGateOutcome {
+  model: string;
+  requestedModel: string;
+  wasExplicit: boolean;
+  downgraded: boolean;
+  vramGb: number | null;
+  vramMethod: string;
+  vramConfidence: string;
+  requiredVramGbForRequested: number | null;
+  note?: string;
+}
+
+// Same rationale as ai_dispatch_ipc.ts's cache: VRAM is static per session; detectVramGbDetailed()
+// execSyncs a PowerShell registry query on Windows and must not run synchronously on every single
+// /api/plow-domain WAN request. Cached once per process (ram_detector.ts is not editable by this
+// dispatch -- see its own _cachedEffectiveModel for the same pattern one layer down).
+let _cachedVramDetectionForPlow: VramDetectionResult | null = null;
+function getCachedVramDetectionForPlow(): VramDetectionResult {
+  if (_cachedVramDetectionForPlow === null) {
+    _cachedVramDetectionForPlow = detectVramGbDetailed();
+  }
+  return _cachedVramDetectionForPlow;
+}
+
+/** `detector` is injectable so the test suite stays offline (peer_server.plow_domain.test.ts). */
+export function resolveVramGatedPlowModel(
+  requestedModel: string,
+  wasExplicit: boolean,
+  detector: () => VramDetectionResult = getCachedVramDetectionForPlow,
+): VramGateOutcome {
+  const detailed = detector();
+  const required = requiredVramGb(requestedModel);
+
+  if (wasExplicit) {
+    let note: string | undefined;
+    if (required !== null && detailed.vramGb !== null && detailed.vramGb < required) {
+      note = `Explicit /api/plow-domain "model" field "${requestedModel}" needs ~${required} GB VRAM; detected VRAM ${detailed.vramGb} GB (method=${detailed.method}, confidence=${detailed.confidence}) is insufficient -- honoring the explicit pick anyway, expect CPU-split slowdown`;
+    }
+    return {
+      model: requestedModel, requestedModel, wasExplicit: true, downgraded: false,
+      vramGb: detailed.vramGb, vramMethod: detailed.method, vramConfidence: detailed.confidence,
+      requiredVramGbForRequested: required, note,
+    };
+  }
+
+  const gated = applyVramGate(requestedModel, detailed.vramGb);
+  const chosen = gated.model ?? requestedModel;
+  return {
+    model: chosen, requestedModel, wasExplicit: false, downgraded: chosen !== requestedModel,
+    vramGb: detailed.vramGb, vramMethod: detailed.method, vramConfidence: detailed.confidence,
+    requiredVramGbForRequested: required, note: gated.note,
+  };
 }
 import type { MicStartPayload } from './mic_types';
 import { getOrCreateKeypair } from '../thorax/ed25519_keypair';
@@ -634,11 +698,24 @@ export async function handlePlowDomainRequestBody(body: string): Promise<PlowDom
       return { status: resolved.status, body: { error: resolved.error } };
     }
     const { domain, questions, ollamaBaseUrl, model } = resolved;
+    // D-BP157-029/BISHOP/seg-rewire-vram-gate: `model` present in the request is the sender's
+    // explicit pick (never downgraded); absent, the candidate is the persisted/auto chain below,
+    // which IS validated against detected VRAM. See resolveVramGatedPlowModel's own doc comment.
+    const wasExplicitPlowModel = typeof model === 'string' && model.length > 0;
+    const preGatePlowModel = model ?? getEffectiveOllamaModel() ?? getRecommendedModel() ?? 'llama3.3:70b';
+    const vramGate = resolveVramGatedPlowModel(preGatePlowModel, wasExplicitPlowModel);
+    if (vramGate.note) {
+      // Not folded into the response body: the pre-existing hook-result shape is a stable
+      // contract for federated_andon.ts/mic_dispatcher.ts callers and this dispatch's own
+      // coordination note says change nothing not asked for -- logged as the legible record
+      // instead (still never silent).
+      console.warn(`[VramGate] /api/plow-domain: ${vramGate.note}`);
+    }
     const result = await _onPlowDomain(
       domain,
       questions,
       ollamaBaseUrl ?? 'http://127.0.0.1:11434',
-      model ?? getEffectiveOllamaModel() ?? getRecommendedModel() ?? 'llama3.3:70b',
+      vramGate.model,
     );
     return { status: 200, body: result };
   } catch (err) {
