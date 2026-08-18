@@ -54,7 +54,7 @@
  */
 
 import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
-import type { BishopDispatchResult } from './peer_server';
+import type { BishopDispatchResult, WorkLifecycle, WorkMaturity, WorkIssue } from './peer_server';
 
 const BISHOP_DISPATCH_REPLY_KIND = 'bishop_dispatch_reply';
 const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
@@ -71,13 +71,36 @@ export interface ReplyWriteConfig {
 }
 
 /** Everything a reader needs to identify a reply and read its inert result. Never anything
- *  executable -- see this file's header, "WHAT THIS FILE DOES NOT DO." */
+ *  executable -- see this file's header, "WHAT THIS FILE DOES NOT DO."
+ *
+ *  D-BP157-023: carries a `stage` discriminator plus the full status vocabulary
+ *  (SEG_RETURN_BP157_015's design) instead of just `ok`/`spawned`/`reason`/`noticePath`. `stage:
+ *  'launch'` is the row `writeBishopDispatchReply` posts immediately after `handleEnvelope`
+ *  resolves (proves `lifecycle` at most as far as `'begun'`/`'failed'`/`'refused'` -- it cannot
+ *  prove `'completed'`, because it is written before the worker's real lifetime has elapsed).
+ *  `stage: 'completion'` is the SECOND, LATER row `writeBishopDispatchCompletionReply` posts from
+ *  inside `launchWorker`'s own `child.once('exit', ...)` handler once the worker has actually
+ *  exited -- this is the row that can prove `'completed'`. Both rows share the same `route_id`;
+ *  `pollForBishopDispatchReply`'s existing `order=created_at.desc&limit=1` query returns whichever
+ *  is newest with zero changes, so the completion reply naturally supersedes the launch reply once
+ *  it lands. */
 export interface BishopDispatchReplyAnswer {
   kind: 'bishop_dispatch_reply';
+  stage: 'launch' | 'completion';
   ok: boolean;
+  lifecycle: WorkLifecycle;
+  maturity?: WorkMaturity;
+  issues: WorkIssue[];
   spawned: boolean;
   reason: string;
   noticePath?: string;
+  effectiveId?: string;
+  /** Present on `stage: 'completion'` rows only -- where the worker's full log lives, named
+   *  rather than shipped whole (the log can grow large over a 30-minute run). */
+  workerLogPointer?: string;
+  /** Present on `stage: 'completion'` rows only -- the last ~4000 chars of the worker's captured
+   *  stdout+stderr, bounded so a large log never blows up this row's payload size. */
+  tailExcerpt?: string;
 }
 
 /**
@@ -98,10 +121,15 @@ export async function writeBishopDispatchReply(
   const fetchImpl = config.fetchImpl ?? fetch;
   const answer: BishopDispatchReplyAnswer = {
     kind: BISHOP_DISPATCH_REPLY_KIND,
+    stage: 'launch',
     ok: result.ok,
+    lifecycle: result.lifecycle,
+    ...(result.maturity !== undefined ? { maturity: result.maturity } : {}),
+    issues: result.issues,
     spawned: result.spawned,
     reason: result.reason,
     ...(result.noticePath !== undefined ? { noticePath: result.noticePath } : {}),
+    ...(result.effectiveId !== undefined ? { effectiveId: result.effectiveId } : {}),
   };
   try {
     const res = await fetchImpl(`${config.supabaseUrl}/rest/v1/relay_route_replies`, {
@@ -126,6 +154,72 @@ export async function writeBishopDispatchReply(
     return res.ok;
   } catch (err) {
     console.warn(`[bishop-dispatch-reply] write FAILED for route ${routeId.slice(0, 8)} (non-fatal):`, err);
+    return false;
+  }
+}
+
+/** Everything the stage-2/completion write needs, derived by `bishop_dispatch_handler.ts`'s
+ *  `deriveCompletionOutcome` (or a test double of it) once the worker has actually exited. */
+export interface BishopDispatchCompletionInput {
+  effectiveId: string;
+  lifecycle: WorkLifecycle;
+  issues: WorkIssue[];
+  workerLogPointer: string;
+  tailExcerpt: string;
+}
+
+/**
+ * D-BP157-023, THE RETURN LEG (SEG_RETURN_BP157_015 Part 2). A SECOND, LATER row into the SAME
+ * `relay_route_replies` bus `writeBishopDispatchReply` already proved works -- posted from inside
+ * `launchWorker`'s own `child.once('exit', ...)` handler, whenever that fires, however long the
+ * worker actually ran (up to `LB_MESH_SPAWN_TIMEOUT_MS`). `route_id` carries no uniqueness
+ * constraint (measured, `SEG_RETURN_BP157_009`'s schema dump), so this is a legitimate append,
+ * never a conflict with the stage-1 launch row already posted for the same route id. Same
+ * best-effort, non-fatal, never-throws contract as `writeBishopDispatchReply` above.
+ */
+export async function writeBishopDispatchCompletionReply(
+  config: ReplyWriteConfig,
+  routeId: string,
+  peerId: string,
+  completion: BishopDispatchCompletionInput,
+  processingMs: number,
+): Promise<boolean> {
+  const fetchImpl = config.fetchImpl ?? fetch;
+  const answer: BishopDispatchReplyAnswer = {
+    kind: BISHOP_DISPATCH_REPLY_KIND,
+    stage: 'completion',
+    ok: true, // the message (this completion determination) was handled -- see `lifecycle` for the work outcome
+    lifecycle: completion.lifecycle,
+    issues: completion.issues,
+    spawned: true, // only ever called after a worker's own 'exit' event fired -- a process was created
+    reason: `worker exited; lifecycle=${completion.lifecycle}`,
+    effectiveId: completion.effectiveId,
+    workerLogPointer: completion.workerLogPointer,
+    tailExcerpt: completion.tailExcerpt,
+  };
+  try {
+    const res = await fetchImpl(`${config.supabaseUrl}/rest/v1/relay_route_replies`, {
+      method: 'POST',
+      headers: {
+        apikey: config.anonKey,
+        Authorization: `Bearer ${config.anonKey}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({
+        route_id: routeId,
+        peer_id: peerId,
+        answer_json: answer,
+        processing_ms: processingMs,
+      }),
+      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      console.warn(`[bishop-dispatch-reply] completion write REFUSED for route ${routeId.slice(0, 8)}: HTTP ${res.status}`);
+    }
+    return res.ok;
+  } catch (err) {
+    console.warn(`[bishop-dispatch-reply] completion write FAILED for route ${routeId.slice(0, 8)} (non-fatal):`, err);
     return false;
   }
 }

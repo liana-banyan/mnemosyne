@@ -94,16 +94,71 @@ let _onDiagnosisUpvote: ((data: unknown) => Promise<void>) | null = null;
 // "unregistered means refused, never silently no-op'd" convention as _onPlowDomain's own
 // /api/plow-domain handler (see handleInboundBishopDispatchEnvelope below for the WAN-side
 // caller; there is no LAN HTTP route for this one -- it only ever arrives via the relay).
-let _onBishopDispatch: ((payload: BishopDispatchPayload, verifiedOriginPeerId: string | null) => Promise<BishopDispatchResult>) | null = null;
+let _onBishopDispatch: ((payload: BishopDispatchPayload, verifiedOriginPeerId: string | null, routeId?: string) => Promise<BishopDispatchResult>) | null = null;
+
+// ─── D-BP157-023: the status vocabulary — SEG_RETURN_BP157_015's design, implemented ───────────
+//
+// `ok` (below) means ONLY "the message was received and handled" — TRANSPORT scope, unchanged
+// from before this dispatch (peer_server.ts's own three genuine transport failures below already
+// set it correctly; FD-BP157-06 retroactively ratifies that reading). Whether WORK happened is a
+// SEPARATE pair of axes, per the Founder's own list ("work begun and work completed and work
+// built and work wired in and work operating correctly or work issues follow"):
+//   LIFECYCLE — did this dispatch's execution start/finish. Observed-only: every value below is
+//   set from something that already happened (a process event, a file's presence), never from an
+//   intention. See bishop_dispatch_handler.ts's evidence table (its own header comment) for
+//   exactly which observer sets which value.
+//   MATURITY — how durable/verified is the capability the dispatch produced. Deliberately NEVER
+//   set by any automated code path in this mesh (grep confirms: no assignment to `maturity`
+//   exists outside this type definition) — it is set only by whoever files the RETURNS document,
+//   citing specific evidence for the rung claimed. Automating it is exactly the BP156 defect
+//   ("built" read as "completed") this design exists to stop repeating.
+export type WorkLifecycle = 'refused' | 'begun' | 'completed' | 'failed';
+export type WorkMaturity = 'built' | 'wired_in' | 'operating_correctly';
+
+/** A single falsifiable observation, always tied to the evidence it was read off of. Any
+ *  observer (a guardrail, launchWorker's exit handler, a human filing a RETURNS doc) may append
+ *  one; `issues` is never optional on `BishopDispatchResult` so a reader never has to guess
+ *  whether an absent field means "checked, none found" or "never checked." */
+export interface WorkIssue {
+  code: string;
+  message: string;
+  evidence: string;
+  observedAtUtc: string;
+  observedBy: string;
+}
 
 /** Result of handing a verified (or refused) bishop_dispatch payload to the registered hook. */
 export interface BishopDispatchResult {
+  /** TRANSPORT ONLY: decoded/verified and handed to the hook without throwing. Never means "and
+   *  the work succeeded" — see `lifecycle` for that. */
   ok: boolean;
+  /** Set only when ok === false — the transport-level reason (hook unregistered, no peer id,
+   *  decrypt failed, malformed envelope). */
+  transportReason?: string;
+  /** WORK axis 1 — see the module-level comment above and bishop_dispatch_handler.ts's own
+   *  evidence table for exactly which observer sets which value. */
+  lifecycle: WorkLifecycle;
+  /** WORK axis 2 — applies only to code-change dispatches; set by a human/Bishop reviewer citing
+   *  evidence, never by this mesh's own machinery. Absent when not yet assessed. */
+  maturity?: WorkMaturity;
+  /** Always present, `[]` when none — never an optional field a caller could use to dodge
+   *  reporting a known issue. */
+  issues: WorkIssue[];
   /** True only if a worker was actually spawned. False for a file-write-only outcome
    *  (unregistered hook, unverified sender, disallowed working dir, kill switch off, replay). */
   spawned: boolean;
+  /** Legacy human-readable string, kept for existing readers that pattern-match on it. */
   reason: string;
   noticePath?: string;
+  /** HARDWIRE-25 effective id (possibly "-W<n>"-suffixed) — needed to correlate a later
+   *  stage-2/completion reply back to this stage-1/launch reply for the same underlying dispatch. */
+  effectiveId?: string;
+}
+
+/** Builds a single-issue array for a transport-level (ok:false) failure below, so each of the
+ *  six early-return sites states its own falsifiable code/evidence instead of a bare string. */
+function transportIssue(code: string, message: string, evidence: string): WorkIssue[] {
+  return [{ code, message, evidence, observedAtUtc: new Date().toISOString(), observedBy: 'handleInboundBishopDispatchEnvelope' }];
 }
 
 // Presence config (set by startPeerServer caller)
@@ -176,21 +231,25 @@ export function registerPeerServerHooks(hooks: {
  */
 export async function handleInboundBishopDispatchEnvelope(
   payloadEncrypted: string,
+  routeId?: string,
 ): Promise<BishopDispatchResult> {
   if (!_onBishopDispatch) {
-    return { ok: false, spawned: false, reason: 'onBishopDispatch handler not registered' };
+    const reason = 'onBishopDispatch handler not registered';
+    return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue('HOOK_NOT_REGISTERED', reason, 'peer_server.ts:_onBishopDispatch is null'), spawned: false, reason };
   }
 
   const selfId = _peerId ?? undefined;
   if (!selfId) {
-    return { ok: false, spawned: false, reason: 'this peer has no registered peer id (registerPresenceConfig not called yet)' };
+    const reason = 'this peer has no registered peer id (registerPresenceConfig not called yet)';
+    return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue('NO_SELF_PEER_ID', reason, 'peer_server.ts:_peerId is null'), spawned: false, reason };
   }
 
   let plaintext: string;
   try {
     plaintext = await decryptFromRelay(payloadEncrypted, selfId);
   } catch (err) {
-    return { ok: false, spawned: false, reason: `decrypt failed: ${err instanceof Error ? err.message : String(err)}` };
+    const reason = `decrypt failed: ${err instanceof Error ? err.message : String(err)}`;
+    return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue('DECRYPT_FAILED', reason, `selfId=${selfId}`), spawned: false, reason };
   }
 
   // The plaintext is either a signed announce frame (peekAnnouncePayload succeeds) or, if the
@@ -220,12 +279,14 @@ export async function handleInboundBishopDispatchEnvelope(
       const parsed = JSON.parse(plaintext) as Record<string, unknown>;
       if (parsed && typeof parsed === 'object') rawPayload = parsed;
     } catch {
-      return { ok: false, spawned: false, reason: 'decrypted payload is neither a valid signed frame nor valid JSON' };
+      const reason = 'decrypted payload is neither a valid signed frame nor valid JSON';
+      return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue('UNPARSEABLE_PAYLOAD', reason, 'JSON.parse threw and peekAnnouncePayload found no signed frame'), spawned: false, reason };
     }
   }
 
   if (!rawPayload || rawPayload.kind !== 'bishop_dispatch') {
-    return { ok: false, spawned: false, reason: 'decrypted payload is not a bishop_dispatch envelope' };
+    const reason = 'decrypted payload is not a bishop_dispatch envelope';
+    return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue('WRONG_ENVELOPE_KIND', reason, `kind=${rawPayload ? String(rawPayload.kind) : 'null'}`), spawned: false, reason };
   }
   const dispatchId = rawPayload.dispatchId;
   const promptText = rawPayload.promptText;
@@ -237,11 +298,12 @@ export async function handleInboundBishopDispatchEnvelope(
     typeof workingDir !== 'string' ||
     typeof originPeerId !== 'string'
   ) {
-    return { ok: false, spawned: false, reason: 'bishop_dispatch envelope missing/malformed required fields' };
+    const reason = 'bishop_dispatch envelope missing/malformed required fields';
+    return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue('MALFORMED_FIELDS', reason, `dispatchId=${String(dispatchId)} promptText=${typeof promptText} workingDir=${typeof workingDir} originPeerId=${typeof originPeerId}`), spawned: false, reason };
   }
 
   const payload: BishopDispatchPayload = { kind: 'bishop_dispatch', dispatchId, promptText, workingDir, originPeerId };
-  return _onBishopDispatch(payload, verifiedOriginPeerId);
+  return _onBishopDispatch(payload, verifiedOriginPeerId, routeId);
 }
 
 export function registerPresenceConfig(config: {

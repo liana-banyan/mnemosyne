@@ -20,6 +20,13 @@ export function registerBishopDispatchMeshHook(): void {
   if (_registered) return;
   _registered = true;
   registerPeerServerHooks({
-    onBishopDispatch: (payload, verifiedOriginPeerId) => handleBishopDispatch(payload, verifiedOriginPeerId),
+    // D-BP157-023: routeId threaded through -- it is what lets launchWorker's own exit handler
+    // post a stage-2/completion reply, much later, back to the SAME relay_route_replies row this
+    // dispatch arrived on. spawnImpl/claimImpl are left undefined here (not omitted) so
+    // handleBishopDispatch's own default parameters (the real spawn/execFileSync) still apply --
+    // an explicit `undefined` argument triggers a JS default parameter exactly like an omitted
+    // one; this file has no reason to import those two just to pass them through unchanged.
+    onBishopDispatch: (payload, verifiedOriginPeerId, routeId) =>
+      handleBishopDispatch(payload, verifiedOriginPeerId, undefined, undefined, routeId),
   });
 }
