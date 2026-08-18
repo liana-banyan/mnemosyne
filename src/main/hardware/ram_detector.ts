@@ -84,82 +84,347 @@ export function getTotalRamGb(): number {
 }
 
 /**
- * Detects VRAM in GB (rounded to 1 decimal). Returns null on error or unsupported platform.
+ * ── VRAM detector rewrite ──────────────────────────────────────────────
+ * D-BP157-025 / BISHOP / seg-fix-vram-detector
  *
- * Windows: Get-CimInstance Win32_VideoController (wmic removed in Win11 24H2/WS2025)
- * macOS: system_profiler SPDisplaysDataType -json → parse spdisplays_vram
- * Linux: nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits
+ * MEASURED DEFECT (see BISHOP_DROPZONE/SEG_RETURN_BP157_021_VRAM_GATE.md and
+ * this dispatch's own return, SEG_RETURN_BP157_025_VRAM_DETECTOR_FIX.md):
+ * Win32_VideoController.AdapterRAM is a 32-bit (uint32) CIM field. Any card
+ * with real VRAM above ~4 GiB reports a wrapped/capped value near the
+ * ceiling instead of its true size. MEASURED on M3 (RTX 3070, real 8192
+ * MiB -> reported 4095 MiB) and independently MEASURED on M0 (RX 9070 XT,
+ * real ~16 GB -> reported 4095 MiB, the SAME byte value 4,293,918,720 as
+ * M3's card) -- two different vendors, two different real capacities, the
+ * identical wrong number. This is a Windows CIM platform defect, not an
+ * NVIDIA-specific or card-specific one. M0 also has NO nvidia-smi on PATH
+ * at all (verified: not on PATH, direct invocation fails), so any fix
+ * relying on nvidia-smi as ground truth is wrong for this estate.
+ *
+ * FIX: primary source is the 64-bit registry value
+ * HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-
+ * 08002be10318}\<NNNN>\HardwareInformation.qwMemorySize, per adapter
+ * subkey. MEASURED on M0 (D-BP157-025): RX 9070 XT registry value =
+ * 17,095,983,104 bytes = 15.92 GB (correct, vs. AdapterRAM's wrong 4095
+ * MiB); integrated AMD GPU registry value = 2,147,483,648 bytes = 2.00 GB,
+ * which EXACTLY MATCHES its own (uncapped, below-ceiling) AdapterRAM
+ * reading -- proof the CIM field is accurate only strictly below the
+ * ceiling, and proof the registry field is the trustworthy 64-bit
+ * superset. No new dependency, no new shipped binary: this is a stock
+ * Windows registry value read via the same execSync+powershell mechanism
+ * already used here. A GPU perf-counter path (`Get-Counter 'GPU Adapter
+ * Memory'`) was also tried and MEASURED to expose current *usage* in
+ * bytes (e.g. a live "Dedicated Usage" instance reading 4,344,918,016
+ * bytes at the moment queried), not total *capacity* -- unusable for this
+ * purpose, ruled out. CIM AdapterRAM is kept only as a last-resort
+ * fallback (registry key missing/inaccessible), with any reading at or
+ * above the measured ceiling zone treated as unreliable and rejected
+ * rather than trusted -- see CIM_ADAPTERRAM_SUSPECT_CEILING_BYTES below.
+ * nvidia-smi, when present, is consulted ONLY as an optional corroborator
+ * (logged, never assigned as the returned value) -- required because M0
+ * has none at all and an NVIDIA-only method is not vendor-agnostic.
  */
-export function detectVramGb(): number | null {
+
+/** One GPU adapter's raw readings, gathered from whichever Windows sources succeeded. */
+export interface GpuAdapterReading {
+  name: string;
+  /** HardwareInformation.qwMemorySize — 64-bit, trustworthy, no known ceiling. */
+  registryBytes?: number | null;
+  /** Win32_VideoController.AdapterRAM — 32-bit (uint32), capped near 4 GiB. */
+  cimAdapterRamBytes?: number | null;
+}
+
+export type VramDetectionMethod =
+  | 'registry'
+  | 'cim'
+  | 'cim-capped-rejected'
+  | 'macos-system-profiler'
+  | 'linux-nvidia-smi'
+  | 'none';
+
+export interface VramDetectionResult {
+  vramGb: number | null;
+  method: VramDetectionMethod;
+  /** 'measured' = trustworthy source (registry, or a below-ceiling CIM reading on its own).
+   *  'low' = a usable but less-trusted source. 'unknown' = genuinely could not tell —
+   *  never a plausible-looking wrong number, never a silent zero. */
+  confidence: 'measured' | 'low' | 'unknown';
+  note?: string;
+  adapters?: Array<{ name: string; gb: number | null; source: string }>;
+}
+
+// MEASURED, D-BP157-025: two different real cards (RTX 3070 8192 MiB on M3;
+// RX 9070 XT ~16 GB on M0) both report the identical capped AdapterRAM value
+// 4,293,918,720 bytes (4095 MiB) — the Windows uint32 ceiling. A correctly
+// reporting adapter well below the ceiling (M0's integrated GPU, 2 GiB) is
+// NOT affected: its AdapterRAM matches its own registry value exactly. Any
+// AdapterRAM reading at or above this threshold is therefore treated as
+// unreliable and rejected rather than trusted as a real number.
+const CIM_ADAPTERRAM_SUSPECT_CEILING_BYTES = 4_000_000_000; // ~3.73 GiB
+
+function bytesToGbRounded(bytes: number): number {
+  return Math.round((bytes / (1024 * 1024 * 1024)) * 10) / 10;
+}
+
+/**
+ * Pure decision function — takes already-gathered adapter readings (real or
+ * injected for tests) and decides the VRAM figure. No process execution
+ * here, which is what makes this unit-testable offline (see
+ * ram_detector.vram_detect.test.ts).
+ *
+ * Multi-adapter policy: uses the LARGEST single adapter's VRAM, never a sum.
+ * MEASURED, D-BP157-021/025: this machine has a dGPU + an iGPU; summing
+ * their capacities (the OLD code's `Measure-Object -Sum`) both compounds the
+ * uint32 undercount AND is conceptually wrong — a model runs on one adapter,
+ * not the total of all adapters in the box.
+ */
+export function resolveVramFromWindowsAdapters(adapters: GpuAdapterReading[]): VramDetectionResult {
+  if (!adapters || adapters.length === 0) {
+    return {
+      vramGb: null,
+      method: 'none',
+      confidence: 'unknown',
+      note: 'No GPU adapters found on this machine (no discrete or integrated GPU detected) — not zero, genuinely unknown/absent',
+      adapters: [],
+    };
+  }
+
+  const perAdapter = adapters.map((a) => {
+    if (typeof a.registryBytes === 'number' && a.registryBytes > 0) {
+      return { name: a.name, gb: bytesToGbRounded(a.registryBytes), source: 'registry' };
+    }
+    if (typeof a.cimAdapterRamBytes === 'number' && a.cimAdapterRamBytes > 0) {
+      if (a.cimAdapterRamBytes >= CIM_ADAPTERRAM_SUSPECT_CEILING_BYTES) {
+        return { name: a.name, gb: null, source: 'cim-capped-rejected' };
+      }
+      return { name: a.name, gb: bytesToGbRounded(a.cimAdapterRamBytes), source: 'cim' };
+    }
+    return { name: a.name, gb: null, source: 'none' };
+  });
+
+  const known = perAdapter.filter((a) => a.gb !== null) as Array<{ name: string; gb: number; source: string }>;
+
+  if (known.length === 0) {
+    const anyCapped = perAdapter.some((a) => a.source === 'cim-capped-rejected');
+    return {
+      vramGb: null,
+      method: anyCapped ? 'cim-capped-rejected' : 'none',
+      confidence: 'unknown',
+      note: anyCapped
+        ? 'Every adapter\'s AdapterRAM reading sits at/above the Windows uint32 ~4 GiB ceiling and no 64-bit registry value was available — reporting unknown rather than the capped, likely-wrong number'
+        : 'No usable VRAM reading from any detected adapter',
+      adapters: perAdapter,
+    };
+  }
+
+  const best = known.reduce((a, b) => (b.gb > a.gb ? b : a));
+  const usedRegistryOnly = known.every((a) => a.source === 'registry');
+
+  return {
+    vramGb: best.gb,
+    method: usedRegistryOnly ? 'registry' : 'cim',
+    confidence: usedRegistryOnly ? 'measured' : 'low',
+    note:
+      known.length > 1
+        ? `Multiple adapters detected (${known.map((a) => `${a.name}: ${a.gb} GB via ${a.source}`).join(', ')}); using the largest single adapter, not summed`
+        : undefined,
+    adapters: perAdapter,
+  };
+}
+
+/** Impure: gathers real adapter data via the 64-bit registry value. Returns null on any failure. */
+function queryWindowsAdaptersViaRegistry(): GpuAdapterReading[] | null {
+  try {
+    const script = [
+      "$base = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'",
+      '$results = @()',
+      'Get-ChildItem $base -ErrorAction SilentlyContinue | ForEach-Object {',
+      '  $p = Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue',
+      "  $qw = $p.'HardwareInformation.qwMemorySize'",
+      '  if ($qw -and $p.DriverDesc) {',
+      '    $results += [PSCustomObject]@{ Name = $p.DriverDesc; Bytes = [int64]$qw }',
+      '  }',
+      '}',
+      "if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json -Compress }",
+    ].join('\n');
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    const out = execSync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, {
+      encoding: 'utf8',
+      timeout: 8000,
+      windowsHide: true,
+    });
+    const trimmed = out.trim();
+    if (!trimmed) return null;
+    const parsed = JSON.parse(trimmed);
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    return arr.map((x: { Name?: unknown; Bytes?: unknown }) => ({
+      name: String(x.Name),
+      registryBytes: Number(x.Bytes),
+    }));
+  } catch (err) {
+    console.warn('[ram_detector] Registry VRAM query failed:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+/** Impure: gathers real adapter data via CIM AdapterRAM (last-resort fallback only). */
+function queryWindowsAdaptersViaCim(): GpuAdapterReading[] | null {
+  try {
+    const out = execSync(
+      'powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM | ConvertTo-Json -Compress"',
+      { encoding: 'utf8', timeout: 8000, windowsHide: true }
+    );
+    const trimmed = out.trim();
+    if (!trimmed) return null;
+    const parsed = JSON.parse(trimmed);
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    return arr.map((x: { Name?: unknown; AdapterRAM?: unknown }) => ({
+      name: String(x.Name),
+      cimAdapterRamBytes: typeof x.AdapterRAM === 'number' ? x.AdapterRAM : null,
+    }));
+  } catch (err) {
+    console.warn('[ram_detector] CIM VRAM query failed:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+/** Impure: nvidia-smi, corroboration only — never the primary source, never the returned value. */
+function queryNvidiaSmiTotalGb(): number | null {
+  try {
+    const out = execSync('nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits', {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    const lines = out.split('\n').map((l) => l.trim()).filter(Boolean);
+    const values = lines.map((v) => parseInt(v, 10)).filter((n) => !isNaN(n) && n > 0);
+    if (values.length === 0) return null;
+    return Math.round((Math.max(...values) / 1024) * 10) / 10;
+  } catch {
+    // Not present or not an NVIDIA box — expected and normal on much of this
+    // estate's hardware (M0 has none at all). Not an error condition.
+    return null;
+  }
+}
+
+/**
+ * Full detection result: method used, confidence, and an honest note.
+ * See detectVramGb() below for the backward-compatible number|null wrapper
+ * every existing caller in this file uses.
+ */
+export function detectVramGbDetailed(): VramDetectionResult {
   try {
     const plat = platform();
 
     if (plat === 'win32') {
-      // Win11 24H2 / WS2025: wmic removed. Use Get-CimInstance (works all Windows versions).
-      try {
-        const psOutput = execSync(
-          'powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty AdapterRAM | Measure-Object -Sum | Select-Object -ExpandProperty Sum"',
-          { encoding: 'utf8', timeout: 8000, windowsHide: true }
-        );
-        const totalBytes = parseInt(psOutput.trim(), 10);
-        if (!isNaN(totalBytes) && totalBytes > 0) {
-          const gb = totalBytes / (1024 * 1024 * 1024);
-          const result = Math.round(gb * 10) / 10;
-          console.log(`[ram_detector] VRAM detected via CIM: ${result} GB`);
-          return result;
-        }
-      } catch (err) {
-        console.warn('[ram_detector] CIM VRAM detection failed:', err instanceof Error ? err.message : String(err));
+      const registryAdapters = queryWindowsAdaptersViaRegistry();
+      let result: VramDetectionResult;
+
+      if (registryAdapters && registryAdapters.length > 0) {
+        result = resolveVramFromWindowsAdapters(registryAdapters);
+      } else {
+        const cimAdapters = queryWindowsAdaptersViaCim();
+        result =
+          cimAdapters && cimAdapters.length > 0
+            ? resolveVramFromWindowsAdapters(cimAdapters)
+            : {
+                vramGb: null,
+                method: 'none',
+                confidence: 'unknown',
+                note: 'No GPU adapter data available from either the registry or CIM',
+                adapters: [],
+              };
       }
-      return null;
+
+      // Corroboration only — logged, never assigned to result.vramGb.
+      const nvidiaGb = queryNvidiaSmiTotalGb();
+      if (nvidiaGb !== null) {
+        if (result.vramGb === null) {
+          console.log(
+            `[ram_detector] nvidia-smi reports ${nvidiaGb} GB, but primary detection found no usable reading; nvidia-smi is corroboration-only and is not substituted in as the value`
+          );
+        } else if (Math.abs(result.vramGb - nvidiaGb) > 0.5) {
+          console.warn(
+            `[ram_detector] nvidia-smi (${nvidiaGb} GB) disagrees with ${result.method} (${result.vramGb} GB) by more than 0.5 GB`
+          );
+        } else {
+          console.log(`[ram_detector] nvidia-smi corroborates ${result.method}: ${nvidiaGb} GB vs ${result.vramGb} GB`);
+        }
+      }
+
+      console.log(
+        `[ram_detector] VRAM detected via ${result.method} (confidence: ${result.confidence}): ${result.vramGb ?? 'unknown'} GB`
+      );
+      return result;
     } else if (plat === 'darwin') {
-      // macOS: system_profiler SPDisplaysDataType -json
-      const output = execSync('system_profiler SPDisplaysDataType -json', {
-        encoding: 'utf8',
-        timeout: 5000,
-      });
-      const data = JSON.parse(output);
-      const displays = data?.SPDisplaysDataType || [];
-      const vrams: number[] = [];
-      for (const display of displays) {
-        const vramStr = display?.spdisplays_vram || display?.spdisplays_vram_shared;
-        if (vramStr) {
-          // Parse "8192 MB" or "8 GB"
-          const match = vramStr.match(/(\d+)\s*(MB|GB)/i);
-          if (match) {
-            const val = parseInt(match[1], 10);
-            const unit = match[2].toUpperCase();
-            const gb = unit === 'GB' ? val : val / 1024;
-            vrams.push(gb);
+      // macOS: system_profiler SPDisplaysDataType -json — unaffected by the
+      // Windows uint32 defect this dispatch targets; left as-is, not
+      // empirically retested this session (no macOS box available).
+      try {
+        const output = execSync('system_profiler SPDisplaysDataType -json', {
+          encoding: 'utf8',
+          timeout: 5000,
+        });
+        const data = JSON.parse(output);
+        const displays = data?.SPDisplaysDataType || [];
+        const vrams: number[] = [];
+        for (const display of displays) {
+          const vramStr = display?.spdisplays_vram || display?.spdisplays_vram_shared;
+          if (vramStr) {
+            const match = vramStr.match(/(\d+)\s*(MB|GB)/i);
+            if (match) {
+              const val = parseInt(match[1], 10);
+              const unit = match[2].toUpperCase();
+              const gb = unit === 'GB' ? val : val / 1024;
+              vrams.push(gb);
+            }
           }
         }
+        if (vrams.length === 0) {
+          return { vramGb: null, method: 'macos-system-profiler', confidence: 'unknown', note: 'No display VRAM entries parsed from system_profiler output' };
+        }
+        const maxGb = Math.round(Math.max(...vrams) * 10) / 10;
+        return { vramGb: maxGb, method: 'macos-system-profiler', confidence: 'measured' };
+      } catch (err) {
+        return { vramGb: null, method: 'macos-system-profiler', confidence: 'unknown', note: `system_profiler failed: ${err instanceof Error ? err.message : String(err)}` };
       }
-      if (vrams.length === 0) return null;
-      const maxGb = Math.max(...vrams);
-      return Math.round(maxGb * 10) / 10;
     } else if (plat === 'linux') {
-      // Linux: nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits
+      // Linux: nvidia-smi is the only source here (unchanged) — left as-is,
+      // out of this dispatch's scope (Windows CIM defect only). A non-NVIDIA
+      // Linux box degrades honestly to unknown, same as before.
       try {
         const output = execSync('nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits', {
           encoding: 'utf8',
           timeout: 5000,
         });
-        const lines = output.split('\n').map(l => l.trim()).filter(Boolean);
-        const values = lines.map(v => parseInt(v, 10)).filter(n => !isNaN(n) && n > 0);
-        if (values.length === 0) return null;
+        const lines = output.split('\n').map((l) => l.trim()).filter(Boolean);
+        const values = lines.map((v) => parseInt(v, 10)).filter((n) => !isNaN(n) && n > 0);
+        if (values.length === 0) {
+          return { vramGb: null, method: 'linux-nvidia-smi', confidence: 'unknown', note: 'nvidia-smi returned no parseable values' };
+        }
         const maxMb = Math.max(...values);
-        const gb = maxMb / 1024;
-        return Math.round(gb * 10) / 10;
+        const gb = Math.round((maxMb / 1024) * 10) / 10;
+        return { vramGb: gb, method: 'linux-nvidia-smi', confidence: 'measured' };
       } catch {
-        // nvidia-smi not available — return null
-        return null;
+        return { vramGb: null, method: 'linux-nvidia-smi', confidence: 'unknown', note: 'nvidia-smi not available (not present, or no NVIDIA GPU) — not zero, genuinely unknown' };
       }
     }
-    return null;
+    return { vramGb: null, method: 'none', confidence: 'unknown', note: `Unsupported platform: ${plat}` };
   } catch (err) {
     console.warn('[ram_detector] VRAM detection failed:', err);
-    return null;
+    return { vramGb: null, method: 'none', confidence: 'unknown', note: `Detection threw: ${err instanceof Error ? err.message : String(err)}` };
   }
+}
+
+/**
+ * Detects VRAM in GB (rounded to 1 decimal). Returns null on error, unsupported
+ * platform, or when detection genuinely cannot tell — NEVER a plausible-looking
+ * wrong number, NEVER a silent zero. Backward-compatible number|null surface
+ * for every existing caller in this file (rightSize, detectHardwareTierFull,
+ * resolveEffectiveModel, getAllTiers). Use detectVramGbDetailed() for the full
+ * method/confidence/note breakdown.
+ */
+export function detectVramGb(): number | null {
+  return detectVramGbDetailed().vramGb;
 }
 
 /**
@@ -200,6 +465,31 @@ export function detectVramGb(): number | null {
  * gemma4:12b down to gemma2:9b there, matching the ruling. See the M3 test
  * case for the exact assumed VRAM figure used and why it is not a live
  * measurement of that remote machine.
+ *
+ * FLAGGED, NOT RESOLVED -- D-BP157-025 / BISHOP / seg-fix-vram-detector,
+ * task 4: gemma2:9b's weight below was corrected from a scaled estimate
+ * (5.32 GB) to M3's MEASURED live resident size (7.1 GB, via `ollama ps`),
+ * which the task specified directly and which was 33.5% above the old
+ * estimate. Running 7.1 GB through the SAME overhead formula below yields
+ * required(gemma2:9b) = 9.0 GB -- which now slightly EXCEEDS
+ * required(gemma4:12b) = 8.9 GB, inverting the "Check against..." paragraph
+ * above. Root cause: gemma4:12b/llama3.1:8b/llama3.3:70b's `measured: true`
+ * entries are disk/weight file sizes (live GET /api/tags "size" field), NOT
+ * resident runtime VRAM; gemma2:9b's corrected entry is now the ONLY one
+ * measured on a resident-memory basis. The two kinds of "measured: true"
+ * are not on the same basis, and the apparent inversion may be partly (or
+ * wholly) an artifact of that units mismatch rather than gemma2:9b
+ * genuinely needing more headroom than gemma4:12b. PRACTICAL CONSEQUENCE:
+ * with the corrected numbers, there is no VRAM value where gemma4:12b
+ * fails to fit (needs less than 8.9 GB) while gemma2:9b fits (needs at
+ * least 9.0 GB) -- the gate's step-down loop, unchanged, still degrades
+ * safely by skipping the non-fitting gemma2:9b rung and landing on
+ * gemma2:2b instead (see ram_detector.vram_detect.test.ts for this exact
+ * scenario asserted). This SEG's scope is the detector + honest weights,
+ * NOT redesigning the tier ladder or re-measuring gemma4:12b's resident
+ * VRAM the same way -- both are explicitly OUT OF SCOPE here and are filed
+ * for a follow-up SEG rather than silently patched. Left un-silently: this
+ * comment, plus SEG_RETURN_BP157_025_VRAM_DETECTOR_FIX.md.
  */
 interface ModelWeight {
   gb: number;
@@ -207,8 +497,13 @@ interface ModelWeight {
 }
 
 const MODEL_WEIGHTS_GB: Record<string, ModelWeight> = {
-  'gemma2:2b': { gb: 1.18, measured: false },   // scaled estimate (not pulled on M0)
-  'gemma2:9b': { gb: 5.32, measured: false },   // scaled estimate (not pulled on M0)
+  'gemma2:2b': { gb: 1.18, measured: false },   // scaled estimate (not pulled on M0) -- unmeasured, gets the conservative margin below
+  // CORRECTED D-BP157-025: was 5.32 GB (scaled disk-weight estimate). MEASURED
+  // by M3 via live `ollama ps` resident size = 7.1 GB, 33.5% above the old
+  // estimate. See the FLAGGED comment above this table for the consequence
+  // (gemma4:12b's own entry is disk-weight, not resident, so the two
+  // "measured: true" values are not on the same basis -- not resolved here).
+  'gemma2:9b': { gb: 7.1, measured: true },     // measured: M3 `ollama ps` resident size, D-BP157-025
   'gemma4:12b': { gb: 7.04, measured: true },   // live /api/tags size, 2026-08-16
   'llama3.1:8b': { gb: 4.58, measured: true },  // live /api/tags size, 2026-08-16
   'llama3.3:70b': { gb: 39.60, measured: true }, // live /api/tags size, 2026-08-16
@@ -216,12 +511,20 @@ const MODEL_WEIGHTS_GB: Record<string, ModelWeight> = {
 
 const VRAM_OVERHEAD_FACTOR = 1.2;
 const VRAM_OVERHEAD_FLOOR_GB = 0.5;
+// D-BP157-025 task 4: an unmeasured weight must be treated conservatively,
+// not optimistically -- a wrong-low estimate would let the gate say a model
+// "fits" when it might not, the exact failure class this gate exists to
+// prevent. Applied as an extra multiplier on TOP of the standard overhead
+// factor, only when the weight itself is a scaled estimate (measured: false).
+const UNMEASURED_WEIGHT_SAFETY_MARGIN = 1.15;
 
 /** Required VRAM (GB) for a model, or null if the model isn't in the measured/estimated table. */
 export function requiredVramGb(model: string): number | null {
   const w = MODEL_WEIGHTS_GB[model];
   if (!w) return null;
-  return Math.round((w.gb * VRAM_OVERHEAD_FACTOR + VRAM_OVERHEAD_FLOOR_GB) * 10) / 10;
+  const base = w.gb * VRAM_OVERHEAD_FACTOR + VRAM_OVERHEAD_FLOOR_GB;
+  const withMargin = w.measured ? base : base * UNMEASURED_WEIGHT_SAFETY_MARGIN;
+  return Math.round(withMargin * 10) / 10;
 }
 
 // Largest-to-smallest step-down ladder used when detected VRAM can't hold
