@@ -100,6 +100,27 @@
  *            determined without moving credential material (forbidden), is documented at
  *            getWorkerClaudeConfigDir's own definition below and in this dispatch's return doc.
  *
+ *      D-BP157-045/BISHOP/seg-blocked-write-signal closes a blind spot D-BP157-041's own
+ *      WORKER_NO_MODEL_CALL check does not cover, MEASURED by BishopM3 on TERENO
+ *      (D-BP157-M3-015_ADDENDUM-01): a worker that DID call the model (real duration_api_ms,
+ *      real tokens), produced real `result` prose explaining it was denied every write, exited 0,
+ *      and never printed the completion sentinel -- indistinguishable, before this dispatch, from
+ *      a worker that could write but simply forgot the sentinel. New issue code
+ *      WORKER_BLOCKED_NO_WRITES (deriveCompletionOutcome, below) fires only on that exact clean-
+ *      exit/no-sentinel branch, only when the JSON telemetry shows a real model call with real
+ *      result text, and only when corroborated by EITHER `permission_denials` being non-empty
+ *      (the CLI's own direct signal, parsed into WorkerJsonSummary.permissionDenialsCount) OR the
+ *      `permissionContext` the exit handler already has in closure scope (the literal
+ *      `{ elevated, permissionMode }` this same launch decided via resolveEffectivePermissionMode
+ *      before spawning) showing the restrictive, non-elevated mode was used. The second signal was
+ *      chosen as primary because it is a value this file already knows with certainty, not an
+ *      inference; `permission_denials` was MEASURED [] in every real capture available to this
+ *      dispatch (including runs independently known to be blocked), so it strengthens the
+ *      diagnosis when populated but is not trusted as the sole gate. The issue message carries a
+ *      capped excerpt (WorkerJsonSummary.resultExcerpt, RESULT_EXCERPT_CAP_CHARS = 400) of the
+ *      worker's own `result` text, since M3's worker explained its own blockage in plain English
+ *      and that explanation is more useful to an operator than a byte count.
+ *
  * NEVER interpolates promptText (or any payload field) into a shell string. child_process.spawn
  * is called with an explicit argv array and shell:false (Node's own default for spawn, stated
  * explicitly here anyway so a future edit cannot silently flip it) -- see spawnBishopWorker()
@@ -718,9 +739,28 @@ export interface WorkerJsonSummary {
   outputTokens: number;
   totalCostUsd: number;
   resultLength: number;
+  /** D-BP157-045: capped excerpt of the CLI's own `result` string (raw prose, not just its
+   *  length) -- see RESULT_EXCERPT_CAP_CHARS below. Added because a worker that reasoned but
+   *  could not write often explains itself in plain English inside `result` (MEASURED:
+   *  D-BP157-M3-015_ADDENDUM-01's worker did exactly this: "This session's permissions block
+   *  all node -e/--eval execution and all file writes categorically..."), and that explanation
+   *  is more useful to an operator than a byte count. Empty string when `result` is absent or
+   *  non-string, same as resultLength 0 in that case. */
+  resultExcerpt: string;
+  /** D-BP157-045: length of the CLI's own `permission_denials` array, when present and an
+   *  array; 0 when absent, non-array, or genuinely empty -- these three cases are
+   *  indistinguishable from this field alone, by design (see deriveCompletionOutcome's
+   *  WORKER_BLOCKED_NO_WRITES doc comment for why this file does not lean on this field alone). */
+  permissionDenialsCount: number;
   subtype: string | null;
   isError: boolean | null;
 }
+
+/** D-BP157-045: cap for WorkerJsonSummary.resultExcerpt, in characters. "A few hundred
+ *  characters," per the dispatch's own instruction -- large enough to carry a worker's full
+ *  self-diagnosis (M3's quoted excerpts ran under 300 chars each) without letting a large
+ *  `result` blob dominate a WorkIssue message. */
+export const RESULT_EXCERPT_CAP_CHARS = 400;
 
 /** Tolerant by construction: malformed JSON, an empty/null log, or a wrong-shaped object all
  *  return `null` rather than throwing -- a worker that (for whatever reason, e.g. an older
@@ -742,6 +782,11 @@ export function parseWorkerJsonOutput(logContent: string | null): WorkerJsonSumm
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return null;
   const o = obj as Record<string, unknown>;
   const usage = (typeof o.usage === 'object' && o.usage !== null) ? (o.usage as Record<string, unknown>) : {};
+  const rawResult = typeof o.result === 'string' ? o.result : '';
+  const resultExcerpt = rawResult.length > RESULT_EXCERPT_CAP_CHARS
+    ? `${rawResult.slice(0, RESULT_EXCERPT_CAP_CHARS)}... [truncated, cap=${RESULT_EXCERPT_CAP_CHARS} chars]`
+    : rawResult;
+  const permissionDenialsCount = Array.isArray(o.permission_denials) ? o.permission_denials.length : 0;
   return {
     numTurns: typeof o.num_turns === 'number' ? o.num_turns : 0,
     durationApiMs: typeof o.duration_api_ms === 'number' ? o.duration_api_ms : 0,
@@ -749,6 +794,8 @@ export function parseWorkerJsonOutput(logContent: string | null): WorkerJsonSumm
     outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
     totalCostUsd: typeof o.total_cost_usd === 'number' ? o.total_cost_usd : 0,
     resultLength: typeof o.result === 'string' ? o.result.length : 0,
+    resultExcerpt,
+    permissionDenialsCount,
     subtype: typeof o.subtype === 'string' ? o.subtype : null,
     isError: typeof o.is_error === 'boolean' ? o.is_error : null,
   };
@@ -771,9 +818,20 @@ export function deriveCompletionOutcome(
   logContent: string | null,
   code: number | null,
   signal: NodeJS.Signals | null,
+  /** D-BP157-045: OPTIONAL, backward compatible -- every pre-existing call site (this file's own
+   *  exit handler below, and every pre-045 test) omits it and behaves exactly as before. When the
+   *  caller passes it, it is the SAME `{ mode, elevated }` resolveEffectivePermissionMode() already
+   *  decided for this launch -- launchWorker's exit handler has this in closure scope for free, no
+   *  new I/O, no new state. This is the "handler KNOWS which mode it passed" signal from
+   *  D-BP157-M3-015_ADDENDUM-01 Section 3. */
+  permissionContext?: { elevated: boolean; permissionMode: string },
 ): { lifecycle: WorkLifecycle; issues: WorkIssue[] } {
   let lifecycle: WorkLifecycle;
   const issues: WorkIssue[] = [];
+  // D-BP157-045: tracks the ONE branch WORKER_BLOCKED_NO_WRITES can further diagnose -- a clean
+  // exit (code 0, no signal) that never printed the sentinel. Set below, read after the JSON
+  // telemetry block.
+  let noSentinelOnCleanExit = false;
 
   // ─── lifecycle, decided EXACTLY as before D-BP157-041 -- signal/exit-code/sentinel only.
   // The CLI's own `subtype`/`is_error` verdict (parsed below) is NEVER consulted here, per this
@@ -800,6 +858,7 @@ export function deriveCompletionOutcome(
     lifecycle = 'completed';
   } else {
     lifecycle = 'failed';
+    noSentinelOnCleanExit = true;
     issues.push(makeIssue(
       'NO_COMPLETION_SENTINEL',
       'worker exited code 0 but the completion sentinel was never found in its captured log -- ' +
@@ -821,7 +880,8 @@ export function deriveCompletionOutcome(
       `worker's --output-format json result: num_turns=${parsed.numTurns} ` +
         `duration_api_ms=${parsed.durationApiMs} input_tokens=${parsed.inputTokens} ` +
         `output_tokens=${parsed.outputTokens} total_cost_usd=${parsed.totalCostUsd} ` +
-        `result_length=${parsed.resultLength} cli_subtype=${parsed.subtype ?? 'unknown'} ` +
+        `result_length=${parsed.resultLength} permission_denials_count=${parsed.permissionDenialsCount} ` +
+        `cli_subtype=${parsed.subtype ?? 'unknown'} ` +
         `cli_is_error=${parsed.isError ?? 'unknown'} -- cli_subtype/cli_is_error are recorded ` +
         `ONLY, never used to decide lifecycle above`,
       `effectiveId=${effectiveId}`,
@@ -829,7 +889,8 @@ export function deriveCompletionOutcome(
     ));
 
     const totalTokens = parsed.inputTokens + parsed.outputTokens;
-    if (parsed.durationApiMs === 0 && totalTokens === 0 && parsed.numTurns > 0) {
+    const modelWasCalled = parsed.durationApiMs > 0 || totalTokens > 0;
+    if (!modelWasCalled && parsed.numTurns > 0) {
       issues.push(makeIssue(
         'WORKER_NO_MODEL_CALL',
         `worker consumed ${parsed.numTurns} turn(s) (duration_api_ms=0, zero input/output ` +
@@ -842,6 +903,77 @@ export function deriveCompletionOutcome(
           `total_tokens=${totalTokens}`,
         'deriveCompletionOutcome JSON parse',
       ));
+    }
+
+    // ─── D-BP157-045: WORKER_BLOCKED_NO_WRITES -- the shape WORKER_NO_MODEL_CALL was built to
+    // catch does NOT cover: the model WAS called (real duration_api_ms and/or real tokens, so
+    // WORKER_NO_MODEL_CALL correctly does not fire above), the CLI produced real `result` prose,
+    // the process exited 0, and STILL no completion sentinel and no durable artifact resulted.
+    // MEASURED, D-BP157-M3-015_ADDENDUM-01: a worker ran 391.3s, spent real tokens, wrote 2071
+    // bytes of reasoned prose explaining it was denied every write ("This session's permissions
+    // block all node -e/--eval execution and all file writes categorically") and exited 0 having
+    // committed nothing. Before this dispatch that run was indistinguishable from a worker that
+    // could write but simply forgot to print the sentinel (plain NO_COMPLETION_SENTINEL) -- an
+    // operator had to open the raw log by hand to tell the two apart.
+    //
+    // Two candidate corroborating signals were evaluated, per this dispatch's own instruction to
+    // prefer a signal the CLI actually emits over one this file infers:
+    //   1. `permission_denials` (parsed.permissionDenialsCount). MEASURED across every real
+    //      `--output-format json` capture available to this dispatch on this codebase (M0's own
+    //      genuine-success run D-BP157-M0-050.log, and the by-hand hook-eaten and invalid-API-key
+    //      captures quoted in BP021_transcript_2026-08-18-1649_5ddb7588.md) -- this array was `[]`
+    //      in EVERY case, including ones that were clearly blocked by something (an absorbed turn,
+    //      an auth failure). D-BP157-M3-015_ADDENDUM-01's own raw JSON was not directly readable
+    //      from this machine (the log lives on TERENO, a separate machine this dispatch was
+    //      explicitly told not to reach over the mesh for) and the addendum quotes only the
+    //      worker's prose, never the raw `permission_denials` value. So whether the CLI actually
+    //      populates this array for a genuine write-tool denial remains UNVERIFIED by this
+    //      dispatch -- used here as a STRENGTHENING signal when non-empty, never as the sole gate.
+    //   2. `permissionContext` (the `{ elevated, permissionMode }` launchWorker() already decided
+    //      via resolveEffectivePermissionMode() before spawning this exact worker). This is not
+    //      inferred -- it is the literal value passed on the CLI's own `--permission-mode` argv
+    //      element for this run, always available to the real call site below, unlike (1). CHOSEN
+    //      as the primary gate for that reason: `elevated === false` means this worker was spawned
+    //      under the restrictive default mode, which cannot use tools without a human present --
+    //      real model engagement plus real output plus no artifact plus a restrictive mode is
+    //      the measured shape, not a guess.
+    // Fires ONLY on the clean-exit/no-sentinel branch (noSentinelOnCleanExit) -- signal-killed and
+    // non-zero-exit already have their own distinct, sufficient issue codes and are out of scope
+    // for this diagnosis (see D-BP157-045 dispatch, item 2: only the two clean-exit-no-sentinel
+    // shapes, (b) and (c), were indistinguishable before this change).
+    if (noSentinelOnCleanExit && modelWasCalled && parsed.resultLength > 0) {
+      const deniedByPermissionDenials = parsed.permissionDenialsCount > 0;
+      const deniedByKnownMode = permissionContext !== undefined && permissionContext.elevated === false;
+      if (deniedByPermissionDenials || deniedByKnownMode) {
+        issues.push(makeIssue(
+          'WORKER_BLOCKED_NO_WRITES',
+          `worker exited code 0 and DID call the model for real (duration_api_ms=${parsed.durationApiMs} ` +
+            `input_tokens=${parsed.inputTokens} output_tokens=${parsed.outputTokens}, ` +
+            `${parsed.resultLength} bytes of result text) but never printed the completion sentinel ` +
+            `and left no durable artifact -- the worker ran and reasoned but could not act, distinct ` +
+            `from WORKER_NO_MODEL_CALL (no model call at all) and from a plain NO_COMPLETION_SENTINEL ` +
+            `(which alone does not say WHY). ` +
+            (deniedByPermissionDenials
+              ? `CLI reported permission_denials_count=${parsed.permissionDenialsCount} for this run -- ` +
+                `the direct signal. `
+              : `CLI's own permission_denials array was empty or absent for this run (MEASURED: it has ` +
+                `been [] in every real capture available to this dispatch, including runs that were ` +
+                `independently known to be blocked, so its absence here is not evidence against ` +
+                `blockage -- see this issue's code comment). `) +
+            (deniedByKnownMode
+              ? `The handler itself launched this worker with the restrictive permission mode ` +
+                `"${permissionContext!.permissionMode}" (mesh auto-spawn consent not granted) -- a ` +
+                `worker in that mode cannot use tools without a human present, which is the primary ` +
+                `signal this issue was raised on. `
+              : '') +
+            `Worker's own words (result text, capped at ${RESULT_EXCERPT_CAP_CHARS} chars): ` +
+            `"${parsed.resultExcerpt}"`,
+          `effectiveId=${effectiveId} permissionDenialsCount=${parsed.permissionDenialsCount} ` +
+            `permissionMode=${permissionContext?.permissionMode ?? 'unknown'} ` +
+            `elevated=${permissionContext?.elevated ?? 'unknown'} resultLength=${parsed.resultLength}`,
+          'deriveCompletionOutcome JSON parse',
+        ));
+      }
     }
   }
 
@@ -1173,8 +1305,14 @@ async function launchWorker(
           // worker wrote nothing before exiting. deriveCompletionOutcome treats null the same as
           // "no sentinel found."
         }
+        // D-BP157-045: `effectivePermissionMode`/`elevated` are this same launchWorker() call's
+        // own closure variables (decided above, before argv was built) -- passing them through is
+        // not new I/O or new state, just handing the exit handler a fact it already has.
         const { lifecycle: completionLifecycle, issues: completionIssues } =
-          deriveCompletionOutcome(effectiveId, logContent, code, signal);
+          deriveCompletionOutcome(effectiveId, logContent, code, signal, {
+            elevated,
+            permissionMode: effectivePermissionMode,
+          });
         if (!routeId) return; // no carrier to post a completion reply through (e.g. a future LAN carrier, or a direct/offline call)
         const completion: BishopDispatchCompletionInput = {
           effectiveId,
