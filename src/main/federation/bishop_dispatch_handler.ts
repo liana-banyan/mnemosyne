@@ -66,13 +66,47 @@
  *      commands. Neither gate alone is sufficient -- see resolveEffectivePermissionMode() below,
  *      the pure function that encodes this truth table, and its callers.
  *
+ *      D-BP157-041/BISHOP/seg-fix-worker-output-and-hooks closes two more gaps, MEASURED (not
+ *      inferred) by Bishop M0 running the real CLI by hand, no mesh involved: `claude -p ... --
+ *      output-format text` exits 0 in 10-26s with a 1-byte (bare newline) log -- the exact
+ *      production symptom. The same command with `--output-format json` reveals why: the JSON
+ *      shows `num_turns:11, duration_api_ms:0, usage:{input_tokens:0,output_tokens:0},
+ *      result:""` while still claiming `subtype:"success", is_error:false`. Eleven turns ran and
+ *      NONE of them reached the model -- confirmed by a THIRD run with CLAUDE_CONFIG_DIR pointed
+ *      at an empty temp dir (no hooks, no settings.json), which exits in ~4s with a real
+ *      (if unauthenticated) response. The account's SessionStart/UserPromptSubmit/SessionEnd
+ *      hooks (~15 across this account's settings.json) consume the worker's turns before any
+ *      model call happens. Two changes, both in launchWorker() below:
+ *        (j) argv's `--output-format` is now `json`, not `text`. The captured worker log is
+ *            parsed (parseWorkerJsonOutput below) and its real numbers -- num_turns,
+ *            duration_api_ms, token counts, total_cost_usd, result length -- are folded into
+ *            deriveCompletionOutcome's `issues`, alongside a new WORKER_NO_MODEL_CALL issue
+ *            raised exactly when duration_api_ms is 0 and total tokens are 0 while num_turns is
+ *            greater than 0 -- the measured "turns ran, nothing reached the model" signature.
+ *            The CLI's own `subtype`/`is_error` verdict is recorded but never trusted as the
+ *            lifecycle signal; the existing sentinel-based lifecycle logic (evidence table above
+ *            deriveCompletionOutcome) is unchanged and still authoritative.
+ *        (k) when (and only when) BOTH the kill switch and the mesh auto-spawn consent gate are
+ *            satisfied (the same `elevated` boolean resolveEffectivePermissionMode already
+ *            computes), the spawned worker's child process gets its own CLAUDE_CONFIG_DIR (see
+ *            getWorkerClaudeConfigDir/isWorkerClaudeConfigDirProvisioned below), pointed at a
+ *            directory under this estate's own ledger root -- NOT C:\Users\Administrator\.claude
+ *            -- so it starts with zero hooks (no settings.json there means no hooks run at all)
+ *            instead of inheriting the account's full hook set. If that directory is not
+ *            provisioned (does not exist or is empty), launchWorker() REFUSES to spawn with a
+ *            distinct, loud WORKER_CLAUDE_CONFIG_DIR_NOT_PROVISIONED error -- it never falls back
+ *            to leaving CLAUDE_CONFIG_DIR unset, because that would silently restore the exact
+ *            bug this closes. What that directory needs provisioned, and what could not be
+ *            determined without moving credential material (forbidden), is documented at
+ *            getWorkerClaudeConfigDir's own definition below and in this dispatch's return doc.
+ *
  * NEVER interpolates promptText (or any payload field) into a shell string. child_process.spawn
  * is called with an explicit argv array and shell:false (Node's own default for spawn, stated
  * explicitly here anyway so a future edit cannot silently flip it) -- see spawnBishopWorker()
  * below and its accompanying shell-injection test in bishop_dispatch_handler.test.ts.
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, realpathSync, openSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, realpathSync, openSync, closeSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import type { StdioOptions } from 'node:child_process';
@@ -516,6 +550,68 @@ export function getElevatedSpawnPermissionMode(): string {
   return envVal && envVal.trim().length > 0 ? envVal : DEFAULT_ELEVATED_PERMISSION_MODE;
 }
 
+// ─── D-BP157-041, ITEM 2: a dedicated CLAUDE_CONFIG_DIR for elevated-mode workers ───────────
+//
+// THE MEASURED CAUSE (Bishop M0, by hand, no mesh involved -- see the header doc block above and
+// SEG_RETURN_BP157_038/040): a bare `claude -p ...` run under this account's real
+// CLAUDE_CONFIG_DIR (default ~/.claude, ~15 hooks across SessionStart/UserPromptSubmit/
+// SessionEnd) reports zero API time and zero tokens across 11 turns, still claiming success. The
+// same command with CLAUDE_CONFIG_DIR pointed at an empty directory (no settings.json => no
+// hooks at all) returns a real response in seconds. A worker spawned under the elevated
+// (bypassPermissions) permission mode -- the only mode that can actually perform the work a
+// dispatch asks for -- must not inherit the account's hook set.
+//
+// getWorkerClaudeConfigDir() defaults to a directory under THIS estate's own ledger root, never
+// under C:\Users\Administrator\.claude -- this dispatch is explicitly forbidden from editing
+// anything under the account's real .claude directory, and pointing the default anywhere inside
+// it would risk exactly that. The ledger root is a tree this codebase already owns and already
+// writes per-worker artifacts under (YOKE/WORKER_LOGS sits right next to YOKE/WORKER_CLAUDE_CONFIG).
+const DEFAULT_WORKER_CLAUDE_CONFIG_DIR_NAME = 'WORKER_CLAUDE_CONFIG';
+
+export function getWorkerClaudeConfigDir(): string {
+  const envVal = process.env.LB_MESH_WORKER_CLAUDE_CONFIG_DIR;
+  if (envVal && envVal.trim().length > 0) return envVal;
+  return join(resolveLedgerRoot(), 'YOKE', DEFAULT_WORKER_CLAUDE_CONFIG_DIR_NAME);
+}
+
+/**
+ * "Provisioned" means a human has deliberately populated this directory -- deliberately NOT a
+ * check for any specific credential filename. Two reasons, both load-bearing, both MEASURED this
+ * dispatch (D-BP157-041):
+ *
+ *   1. This machine's OWN account ~/.claude has no `.credentials.json` or any other file at its
+ *      top level that looks like an auth token (verified via a names-only `Get-ChildItem -Force`
+ *      listing -- nothing was read, nothing was printed). Whatever this account's own working
+ *      auth mechanism actually is, it is not a plain file at the conventional CLAUDE_CONFIG_DIR
+ *      path on this machine -- so hard-coding that filename as "the" provisioning check would be
+ *      testing for something this very machine's own real, working config does not have.
+ *   2. Even if the exact filename were known, this dispatch is explicitly FORBIDDEN from reading,
+ *      copying, or printing credential material -- so it could never distinguish a real token
+ *      file from an empty placeholder by content, only by presence.
+ *
+ * A non-empty directory is therefore the honest, safe, CONTENT-BLIND signal used here: it proves
+ * a human did something deliberate (most plausibly, ran `claude /login` once with
+ * CLAUDE_CONFIG_DIR pointed at this exact directory -- the CLI's own standard way to seed a fresh
+ * config dir), without this code ever inspecting what got written. What exactly the CLI writes
+ * there, and whether it is sufficient on its own (independent of whatever non-file mechanism this
+ * account's interactive sessions actually use) is UNVERIFIED -- explicitly flagged, not silently
+ * assumed, in this dispatch's return doc. Until an operator provisions it and confirms a worker
+ * authenticates, this directory stays empty and every elevated-mode launch refuses loudly rather
+ * than silently falling back to the account's own CLAUDE_CONFIG_DIR.
+ */
+export function isWorkerClaudeConfigDirProvisioned(
+  dir: string,
+  existsFn: (p: string) => boolean = existsSync,
+  readDirFn: (p: string) => string[] = readdirSync,
+): boolean {
+  if (!existsFn(dir)) return false;
+  try {
+    return readDirFn(dir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Pure decision function -- the exact truth table FD-BP157-05 requires. BOTH `autoSpawnEnabled`
  *  (the existing LB_MESH_AUTO_SPAWN_ENABLED kill switch, guardrail (c), already checked and
  *  required to be true before handleBishopDispatch() ever calls launchWorker(), which is the only
@@ -607,6 +703,57 @@ export const COMPLETION_SENTINEL = 'BISHOP-DISPATCH-WORK-COMPLETE';
 // mechanism, log-capture (stdioOption -> the real fd opened for workerLogPath), and sentinel
 // detection (deriveCompletionOutcome below, reading that same log) are untouched.
 
+// ─── D-BP157-041, ITEM 1: parse the worker's `--output-format json` captured log ────────────
+
+/** Fields this file cares about, pulled out of the CLI's single-JSON-object `-p ... --output-
+ *  format json` result. `subtype`/`isError` are carried through for the record only -- per this
+ *  dispatch's own instruction, they are NEVER used to decide `lifecycle` (see
+ *  deriveCompletionOutcome below, which keeps deciding lifecycle from signal/exit-code/sentinel
+ *  alone); a run with zero API time and zero tokens is a failure regardless of what the CLI
+ *  itself reports here. */
+export interface WorkerJsonSummary {
+  numTurns: number;
+  durationApiMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalCostUsd: number;
+  resultLength: number;
+  subtype: string | null;
+  isError: boolean | null;
+}
+
+/** Tolerant by construction: malformed JSON, an empty/null log, or a wrong-shaped object all
+ *  return `null` rather than throwing -- a worker that (for whatever reason, e.g. an older
+ *  `--output-format text` override via LB_MESH_SPAWN env knobs, or a log truncated by a crash)
+ *  did not emit valid JSON must degrade to "no telemetry available," never crash
+ *  deriveCompletionOutcome. Every field defaults to a zero/null value when absent or
+ *  wrong-typed, rather than throwing on a missing key -- the CLI's own JSON shape is not this
+ *  file's contract to enforce. */
+export function parseWorkerJsonOutput(logContent: string | null): WorkerJsonSummary | null {
+  if (!logContent) return null;
+  const trimmed = logContent.trim();
+  if (!trimmed) return null;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return null;
+  const o = obj as Record<string, unknown>;
+  const usage = (typeof o.usage === 'object' && o.usage !== null) ? (o.usage as Record<string, unknown>) : {};
+  return {
+    numTurns: typeof o.num_turns === 'number' ? o.num_turns : 0,
+    durationApiMs: typeof o.duration_api_ms === 'number' ? o.duration_api_ms : 0,
+    inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
+    outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
+    totalCostUsd: typeof o.total_cost_usd === 'number' ? o.total_cost_usd : 0,
+    resultLength: typeof o.result === 'string' ? o.result.length : 0,
+    subtype: typeof o.subtype === 'string' ? o.subtype : null,
+    isError: typeof o.is_error === 'boolean' ? o.is_error : null,
+  };
+}
+
 /** Pure decision function -- the easiest thing to get exhaustively right, independently
  *  testable without any process/file I/O (matches this file's own established idiom:
  *  isOriginAllowed, isWorkingDirAllowed, isAutoSpawnEnabled are all pure too). Exported so
@@ -625,42 +772,80 @@ export function deriveCompletionOutcome(
   code: number | null,
   signal: NodeJS.Signals | null,
 ): { lifecycle: WorkLifecycle; issues: WorkIssue[] } {
+  let lifecycle: WorkLifecycle;
+  const issues: WorkIssue[] = [];
+
+  // ─── lifecycle, decided EXACTLY as before D-BP157-041 -- signal/exit-code/sentinel only.
+  // The CLI's own `subtype`/`is_error` verdict (parsed below) is NEVER consulted here, per this
+  // dispatch's own instruction: a run with zero API time and zero tokens is a failure regardless
+  // of what the CLI calls it, but a worker that truly did work must still be provable by the
+  // sentinel alone, unchanged.
   if (signal) {
-    return {
-      lifecycle: 'failed',
-      issues: [makeIssue(
-        'SPAWN_KILLED_BY_SIGNAL',
-        `worker process was killed by signal ${signal} before it could report completion`,
-        `effectiveId=${effectiveId} signal=${signal}`,
-        'launchWorker exit handler',
-      )],
-    };
-  }
-  if (code !== 0) {
-    return {
-      lifecycle: 'failed',
-      issues: [makeIssue(
-        'SPAWN_NONZERO_EXIT',
-        `worker process exited with non-zero code ${code ?? 'null'}`,
-        `effectiveId=${effectiveId} code=${code ?? 'null'}`,
-        'launchWorker exit handler',
-      )],
-    };
-  }
-  if (logContent && logContent.includes(COMPLETION_SENTINEL)) {
-    return { lifecycle: 'completed', issues: [] };
-  }
-  return {
-    lifecycle: 'failed',
-    issues: [makeIssue(
+    lifecycle = 'failed';
+    issues.push(makeIssue(
+      'SPAWN_KILLED_BY_SIGNAL',
+      `worker process was killed by signal ${signal} before it could report completion`,
+      `effectiveId=${effectiveId} signal=${signal}`,
+      'launchWorker exit handler',
+    ));
+  } else if (code !== 0) {
+    lifecycle = 'failed';
+    issues.push(makeIssue(
+      'SPAWN_NONZERO_EXIT',
+      `worker process exited with non-zero code ${code ?? 'null'}`,
+      `effectiveId=${effectiveId} code=${code ?? 'null'}`,
+      'launchWorker exit handler',
+    ));
+  } else if (logContent && logContent.includes(COMPLETION_SENTINEL)) {
+    lifecycle = 'completed';
+  } else {
+    lifecycle = 'failed';
+    issues.push(makeIssue(
       'NO_COMPLETION_SENTINEL',
       'worker exited code 0 but the completion sentinel was never found in its captured log -- ' +
         'the measured D-BP156-M3-011/D-BP157-M3-002 shape: a clean exit that produced zero ' +
         'durable evidence of work. code=0 is not evidence of work.',
       `effectiveId=${effectiveId} code=0 logBytes=${logContent?.length ?? 0}`,
       'launchWorker exit handler',
-    )],
-  };
+    ));
+  }
+
+  // ─── D-BP157-041, ITEM 1: fold the parsed `--output-format json` telemetry in, regardless of
+  // which lifecycle branch above fired. Always-legible record (WORKER_JSON_TELEMETRY) plus a
+  // distinct, loud diagnosis (WORKER_NO_MODEL_CALL) for the exact measured signature: turns ran,
+  // no API time, no tokens -- "the check that would have saved two sessions."
+  const parsed = parseWorkerJsonOutput(logContent);
+  if (parsed) {
+    issues.push(makeIssue(
+      'WORKER_JSON_TELEMETRY',
+      `worker's --output-format json result: num_turns=${parsed.numTurns} ` +
+        `duration_api_ms=${parsed.durationApiMs} input_tokens=${parsed.inputTokens} ` +
+        `output_tokens=${parsed.outputTokens} total_cost_usd=${parsed.totalCostUsd} ` +
+        `result_length=${parsed.resultLength} cli_subtype=${parsed.subtype ?? 'unknown'} ` +
+        `cli_is_error=${parsed.isError ?? 'unknown'} -- cli_subtype/cli_is_error are recorded ` +
+        `ONLY, never used to decide lifecycle above`,
+      `effectiveId=${effectiveId}`,
+      'deriveCompletionOutcome JSON parse',
+    ));
+
+    const totalTokens = parsed.inputTokens + parsed.outputTokens;
+    if (parsed.durationApiMs === 0 && totalTokens === 0 && parsed.numTurns > 0) {
+      issues.push(makeIssue(
+        'WORKER_NO_MODEL_CALL',
+        `worker consumed ${parsed.numTurns} turn(s) (duration_api_ms=0, zero input/output ` +
+          `tokens) -- the turns were consumed BEFORE any model call happened, not because the ` +
+          `work was trivial. MEASURED cause (SEG_RETURN_BP157_038/040, reproduced by hand with ` +
+          `no mesh involved): the account's SessionStart/UserPromptSubmit hooks absorb the turn ` +
+          `before the model is ever reached. The CLI itself reported subtype="${parsed.subtype ?? 'unknown'}" ` +
+          `is_error=${parsed.isError ?? 'unknown'} for this same run -- do not trust that verdict.`,
+        `effectiveId=${effectiveId} num_turns=${parsed.numTurns} duration_api_ms=${parsed.durationApiMs} ` +
+          `total_tokens=${totalTokens}`,
+        'deriveCompletionOutcome JSON parse',
+      ));
+    }
+  }
+
+  return { lifecycle, issues };
 }
 
 /** Everything the stage-2/completion write needs, already derived. Mirrors
@@ -754,6 +939,55 @@ async function launchWorker(
   const cliPath = getSpawnCliPath();
   const model = getSpawnModel();
 
+  // D-BP157-033: consent-gated permission mode. `true` for autoSpawnEnabled below is not a
+  // shortcut -- launchWorker() is only ever reached (production or test) after
+  // handleBishopDispatch's guardrail (c) kill-switch check has already passed, so within this
+  // function the kill switch is always known-true; resolveEffectivePermissionMode() itself stays
+  // a general pure function testable at all four truth-table cells independent of that call site.
+  //
+  // D-BP157-041: moved ABOVE the HARDWIRE-25 claim (it used to sit just before building argv,
+  // well after the claim) so the new CLAUDE_CONFIG_DIR provisioning check below can refuse
+  // cheaply, before a HARDWIRE-25 claim is spent on a worker that is not going to run.
+  const consentGranted = isMeshAutoSpawnConsentGranted();
+  const { mode: effectivePermissionMode, elevated } = resolveEffectivePermissionMode(true, consentGranted);
+
+  // ─── D-BP157-041, ITEM 2: dedicated CLAUDE_CONFIG_DIR, elevated mode only ────────────────
+  // Only reached at all when BOTH the kill switch and mesh auto-spawn consent are satisfied
+  // (elevated === true) -- exactly the same two-gate coupling resolveEffectivePermissionMode
+  // already enforces for the permission mode itself. Under the restrictive (non-elevated) mode,
+  // behavior is byte-for-byte unchanged from before this dispatch: no CLAUDE_CONFIG_DIR override
+  // is even considered.
+  let workerClaudeConfigDir: string | undefined;
+  if (elevated) {
+    const candidateDir = getWorkerClaudeConfigDir();
+    if (!isWorkerClaudeConfigDirProvisioned(candidateDir)) {
+      const refusalDetail =
+        `candidateDir=${candidateDir} elevated=true consentGranted=${consentGranted} ` +
+        `permissionMode=${effectivePermissionMode}`;
+      logSpawnEvent({
+        dispatchId: payload.dispatchId,
+        originPeerId: payload.originPeerId,
+        decision: 'SPAWN_REFUSED_CONFIG_DIR_UNPROVISIONED',
+        detail: refusalDetail,
+      });
+      return {
+        spawned: false,
+        errorCode: 'WORKER_CLAUDE_CONFIG_DIR_NOT_PROVISIONED',
+        error:
+          `mesh auto-spawn consent is granted and the elevated permission mode would be used, but ` +
+          `the dedicated worker CLAUDE_CONFIG_DIR "${candidateDir}" is not provisioned (does not ` +
+          `exist, or exists but is empty). Refusing to spawn under the account's own ` +
+          `CLAUDE_CONFIG_DIR instead -- that would silently restore the measured "hooks consume ` +
+          `every turn before any model call happens" bug (SEG_RETURN_BP157_038/040). An operator ` +
+          `must provision this directory (e.g. run "CLAUDE_CONFIG_DIR=<dir> claude /login" by ` +
+          `hand once) before an elevated-mode worker can be spawned.`,
+        permissionMode: effectivePermissionMode,
+        consentGranted,
+      };
+    }
+    workerClaudeConfigDir = candidateDir;
+  }
+
   // ─── HARDWIRE-25: claim the id before anything gets written under it ─────────────────────
   const claimTtlHours = getClaimTtlHours();
   const claimResult = claimEffectiveDispatchId(payload.dispatchId, getClaimActor(), model, claimTtlHours, claimImpl);
@@ -814,17 +1048,11 @@ async function launchWorker(
 
   const promptTextForChild = payload.promptText + childActorNotice + completionInstruction;
 
-  // D-BP157-033: consent-gated permission mode. `true` for autoSpawnEnabled below is not a
-  // shortcut -- launchWorker() is only ever reached (production or test) after
-  // handleBishopDispatch's guardrail (c) kill-switch check has already passed, so within this
-  // function the kill switch is always known-true; resolveEffectivePermissionMode() itself stays
-  // a general pure function testable at all four truth-table cells independent of that call site.
-  const consentGranted = isMeshAutoSpawnConsentGranted();
-  const { mode: effectivePermissionMode } = resolveEffectivePermissionMode(true, consentGranted);
-
+  // D-BP157-041, ITEM 1: 'json', not 'text' -- see parseWorkerJsonOutput/deriveCompletionOutcome
+  // above and this file's header doc block, item (j).
   const args = [
     '-p', promptTextForChild,
-    '--output-format', 'text',
+    '--output-format', 'json',
     '--model', model,
     '--permission-mode', effectivePermissionMode,
   ];
@@ -847,6 +1075,7 @@ async function launchWorker(
     decision: 'SPAWN_ATTEMPT',
     detail: `effectiveId=${effectiveId} claimed=${claimResult.claimed} claimDetail=${claimResult.detail} ` +
       `permissionMode=${effectivePermissionMode} consentGranted=${consentGranted} ` +
+      `claudeConfigDir=${workerClaudeConfigDir ?? '(unset, account default)'} ` +
       `workerLog=${logOpenError ? `OPEN_FAILED(${logOpenError}), falling back to stdio:ignore` : workerLogPath}`,
   });
 
@@ -866,6 +1095,13 @@ async function launchWorker(
       shell: false,
       windowsHide: true,
       stdio: stdioOption,
+      // D-BP157-041, ITEM 2: only present when `elevated` gated it on above -- omitting the
+      // `env` key entirely (rather than passing `env: process.env` unconditionally) preserves
+      // this file's pre-existing behavior byte-for-byte on every non-elevated launch, since Node
+      // already inherits process.env by default when `env` is omitted from spawn options.
+      ...(workerClaudeConfigDir
+        ? { env: { ...process.env, CLAUDE_CONFIG_DIR: workerClaudeConfigDir } }
+        : {}),
     });
   } catch (err) {
     finish();
