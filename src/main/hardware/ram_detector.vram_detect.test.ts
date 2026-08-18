@@ -117,33 +117,76 @@ describe('resolveVramFromWindowsAdapters — no discrete GPU at all', () => {
   });
 });
 
-describe('requiredVramGb — corrected gemma2:9b weight and conservative-unmeasured margin', () => {
-  test('gemma2:9b required VRAM reflects M3\'s measured 7.1 GB resident size (~9.0 GB with overhead)', () => {
-    // 7.1 * 1.2 (overhead) + 0.5 (floor) = 9.02 -> rounds to 9.0. Matches the
-    // dispatch's own stated "true requirement about 9.02 GB" almost exactly.
-    expect(requiredVramGb('gemma2:9b')).toBe(9.0);
+describe('requiredVramGb — D-BP157-031 resident-basis formula, D-BP157-026 measured weights', () => {
+  // D-BP157-034/BISHOP/seg-fix-test-failures: this whole describe block encoded the
+  // PRE-D-BP157-031 numbers (double-counted overhead on a resident measurement) and was missed
+  // when this file's sibling, ram_detector.vram_gate.test.ts, was updated for that fix. Every
+  // number below is recomputed from the CURRENT MODEL_WEIGHTS_GB table and requiredVramGb()
+  // formula in ram_detector.ts (verified by reading that source directly, not assumed):
+  //   gemma2:2b  : basis resident, gb 3.28 -> 3.28 + 0.5 (VRAM_RESIDENT_HEADROOM_GB) = 3.78 -> 3.8
+  //   gemma2:9b  : basis resident, gb 7.1  -> 7.1  + 0.5                            = 7.6  -> 7.6
+  //   llama3.1:8b: basis resident, gb 8.52 -> 8.52 + 0.5                            = 9.02 -> 9.0
+  //   gemma4:12b : basis resident, gb 12.17-> 12.17+ 0.5                            = 12.67-> 12.7
+  //   llama3.3:70b: basis disk, gb 39.60 -> 39.60*1.2 (VRAM_OVERHEAD_FACTOR) + 0.5 (FLOOR) = 48.02 -> 48.0
+  // All five table entries now carry `measured: true`, so UNMEASURED_WEIGHT_SAFETY_MARGIN (the
+  // 1.15x multiplier applied only when `measured: false`) does not fire for any of them --
+  // confirmed arithmetically: llama3.3:70b's own required figure, 48.0, is exactly the
+  // no-margin disk-basis calculation above; with the margin applied it would be 48.02 * 1.15 =
+  // 55.2, not 48.0.
+
+  test('gemma2:9b required VRAM reflects the resident basis (D-BP157-031): 7.1 GB measured + flat headroom, no double-counted overhead', () => {
+    // RESOLUTION 2 (D-BP157-031) closed the double-count this test used to encode: a resident
+    // measurement (a live `ollama ps`/GET /api/ps reading) already contains the KV-cache and
+    // activation overhead a loaded model needs -- applying VRAM_OVERHEAD_FACTOR (1.2x) on top
+    // of it a second time, as the old 9.0 GB expectation did, double-counted that overhead.
+    // The corrected formula adds only the small flat VRAM_RESIDENT_HEADROOM_GB (0.5 GB) margin
+    // for context-growth/sample variance: 7.1 + 0.5 = 7.6.
+    expect(requiredVramGb('gemma2:9b')).toBe(7.6);
   });
 
-  test('gemma2:2b (still unmeasured) carries the extra conservative safety margin', () => {
-    // 1.18 * 1.2 + 0.5 = 1.916; * 1.15 conservative margin = 2.2034 -> 2.2.
-    expect(requiredVramGb('gemma2:2b')).toBe(2.2);
+  test('gemma2:2b is no longer unmeasured -- D-BP157-026 measured it resident at 3.28 GiB, so it now carries the resident-basis headroom, not the unmeasured safety margin', () => {
+    // The OLD test's premise ("still unmeasured") is false, not just its number: gemma2:2b was
+    // a 1.18 GB scaled disk ESTIMATE (measured: false) before D-BP157-026; it is now a real
+    // `GET /api/ps size_vram` resident reading of 3.28 GiB (measured: true, basis: 'resident').
+    // 3.28 + 0.5 (VRAM_RESIDENT_HEADROOM_GB) = 3.78 -> rounds to 3.8. No UNMEASURED_WEIGHT_
+    // SAFETY_MARGIN applies, because `measured` is true.
+    expect(requiredVramGb('gemma2:2b')).toBe(3.8);
   });
 
-  test('FLAGGED consequence, asserted honestly rather than hidden: gemma2:9b now requires MORE than gemma4:12b', () => {
-    // See the FLAGGED comment block in ram_detector.ts above MODEL_WEIGHTS_GB:
-    // gemma4:12b's "measured: true" entry is a disk/weight size, not a
-    // resident size, so the two "measured: true" values are not on the same
-    // basis. This is a known, filed, NOT-silently-resolved data-quality gap.
-    expect(requiredVramGb('gemma2:9b')!).toBeGreaterThan(requiredVramGb('gemma4:12b')!);
+  // A genuine "conservative unmeasured margin" test is not included here: as of D-BP157-026/
+  // D-BP157-031, every entry in MODEL_WEIGHTS_GB carries `measured: true` (including
+  // llama3.3:70b, whose disk-file size is a real confirmed reading even though it has never
+  // been loaded/resident-measured), so UNMEASURED_WEIGHT_SAFETY_MARGIN currently has no live
+  // exerciser anywhere in the table -- asserting it against llama3.3:70b would be FALSE (see
+  // the describe-block comment above: that would require 55.2, not the correct 48.0). Filing
+  // this honestly rather than fabricating a passing assertion for a code path nothing currently
+  // exercises.
+
+  test('the ladder is monotonic under the corrected resident-basis numbers: 2b < 9b < 8b-class < 12b < 70b', () => {
+    // This test previously asserted the OPPOSITE (gemma2:9b required MORE than gemma4:12b) --
+    // that was the double-counted-overhead defect itself, encoded as a "FLAGGED" expectation
+    // rather than fixed. D-BP157-031 fixed the root cause (see the describe-block comment
+    // above), so the correct assertion is that the ladder is monotonic, not inverted.
+    const b2 = requiredVramGb('gemma2:2b')!;
+    const b9 = requiredVramGb('gemma2:9b')!;
+    const l8 = requiredVramGb('llama3.1:8b')!;
+    const b12 = requiredVramGb('gemma4:12b')!;
+    const b70 = requiredVramGb('llama3.3:70b')!;
+    expect(b2).toBeLessThan(b9);
+    expect(b9).toBeLessThan(l8);
+    expect(l8).toBeLessThan(b12);
+    expect(b12).toBeLessThan(b70);
   });
 
-  test('consequence in the gate: gemma2:9b is unreachable as a step-down rung — the ladder safely skips it and lands on gemma2:2b', () => {
-    // At 8.5 GB: gemma4:12b needs 8.9 (does not fit) -> gemma2:9b needs 9.0
-    // (does not fit either, per the flagged finding above) -> gemma2:2b
-    // needs 2.2 (fits). The gate degrades safely rather than crashing or
-    // recommending a model that needs MORE VRAM than what was rejected.
+  test('consequence in the gate: gemma2:9b is REACHABLE as a step-down rung now that its required VRAM is corrected to 7.6 GB', () => {
+    // At 8.5 GB: gemma4:12b needs 12.7 (does not fit) -> gemma2:9b needs 7.6, and 8.5 >= 7.6, so
+    // it FITS -- the gate lands on gemma2:9b directly, never reaching gemma2:2b. This is the
+    // mirror image of the old (defective) expectation: that test encoded the same overhead
+    // double-count as the FLAGGED test above, which made gemma2:9b's required VRAM (9.0)
+    // wrongly exceed 8.5 and unreachable. Verified by hand against MODEL_STEP_DOWN_LADDER =
+    // ['gemma4:12b', 'gemma2:9b', 'gemma2:2b'] and requiredVramGb() as read from source above.
     const result = applyVramGate('gemma4:12b', 8.5);
-    expect(result.model).toBe('gemma2:2b');
+    expect(result.model).toBe('gemma2:9b');
     expect(result.note).toBeDefined();
   });
 });
