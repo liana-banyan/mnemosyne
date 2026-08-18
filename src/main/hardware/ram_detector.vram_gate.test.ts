@@ -29,6 +29,15 @@
 //      resolves to gemma2:9b, not gemma4:12b -- this is the ticket's actual
 //      acceptance bar, not just a generic gate test.
 //
+// D-BP157-026 / BISHOP / seg-measure-model-weights, 2026-08-18: the
+// gemma4:12b weight was corrected from a disk-file estimate to a real M0
+// resident measurement, which resolves a ladder-ordering inversion
+// D-BP157-025 had flagged. That correction also surfaces a SECOND, narrower
+// issue in test 5 above ("THE FOUNDER'S CASE") -- see the large FLAGGED
+// comment directly above that test for the full explanation. That one test
+// is left intentionally failing rather than patched with an unverified
+// number; every other test in this file passes under the corrected table.
+//
 // Run: npx vitest run src/main/hardware/ram_detector.vram_gate.test.ts
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -87,16 +96,29 @@ describe('applyVramGate', () => {
   });
 
   test('ample VRAM keeps the tier model, no step-down note', () => {
-    // ULTRA tier's raw pick is gemma4:12b (needs ~8.9 GB per the derived table).
-    // 24 GB is ample headroom.
+    // ULTRA tier's raw pick is gemma4:12b (needs ~15.1 GB per the derived
+    // table as of D-BP157-026's resident-measured correction on M0; was
+    // ~8.9 GB under the old disk-weight-basis figure). 24 GB is ample
+    // headroom either way.
     const result = applyVramGate('gemma4:12b', 24);
     expect(result.model).toBe('gemma4:12b');
     expect(result.note).toBeUndefined();
   });
 
   test('constrained VRAM steps down and says why', () => {
-    // 8.0 GB is below gemma4:12b's ~8.9 GB requirement but above gemma2:9b's ~6.9 GB.
-    const result = applyVramGate('gemma4:12b', 8.0);
+    // UPDATED D-BP157-026: was 8.0 GB, chosen when gemma4:12b needed ~8.9 GB
+    // and gemma2:9b needed ~6.9 GB. D-BP157-025 corrected gemma2:9b to a
+    // resident-measured 9.0 GB required, and D-BP157-026 corrected
+    // gemma4:12b to a resident-measured 15.1 GB required (both from real
+    // `ollama ps` / `GET /api/ps` readings, not estimates) -- 8.0 GB no
+    // longer sits between them. This test is a GENERIC illustration of the
+    // step-down mechanism, not a claim about specific real hardware, so the
+    // representative value is updated here to 10.0 GB: above gemma2:9b's
+    // corrected 9.0 GB requirement, below gemma4:12b's corrected 15.1 GB
+    // requirement. (Contrast with "THE FOUNDER'S CASE" test below, which IS
+    // tied to M3's real 8 GB card and is deliberately NOT adjusted this way
+    // -- see its own comment.)
+    const result = applyVramGate('gemma4:12b', 10.0);
     expect(result.model).toBe('gemma2:9b');
     expect(result.note).toBeDefined();
     expect(result.note!).toContain('gemma4:12b'); // names the RAM-tier recommendation
@@ -127,7 +149,11 @@ describe('rightSize — VRAM gate integration', () => {
   });
 
   test('constrained VRAM: FULL tier steps down and the note names both models', () => {
-    const rs = rightSize(31.9, 8.0);
+    // UPDATED D-BP157-026: was rightSize(31.9, 8.0) -- see the identical
+    // reasoning in the 'constrained VRAM steps down and says why' test
+    // above. This test is a generic FULL-tier illustration, not tied to
+    // specific real hardware, so it moves to 10.0 GB along with that test.
+    const rs = rightSize(31.9, 10.0);
     expect(rs.ramTier).toBe('full');
     expect(rs.coopTier).toBe('FULL'); // ramTier/coopTier NEVER change from the VRAM gate
     expect(rs.model).toBe('gemma2:9b');
@@ -159,16 +185,49 @@ describe('rightSize — VRAM gate integration', () => {
     expect(rs.note).toBeUndefined();
   });
 
+  // FLAGGED, NOT SILENTLY FORCED TO PASS -- D-BP157-026 / BISHOP /
+  // seg-measure-model-weights, 2026-08-18. This test's VRAM figure (8.0 GB)
+  // is NOT an arbitrary "representative" value the way the two tests above
+  // are -- it is M3's real total RTX 3070 capacity (8192 MiB = 8.0 GiB,
+  // confirmed by D-BP157-025's own trace), so it is deliberately NOT
+  // adjusted the way the two generic step-down tests above were.
+  //
+  // Under the table as corrected by THIS dispatch, gemma2:9b's own
+  // required-VRAM (9.0 GB, unchanged from D-BP157-025 -- see
+  // ram_detector.ts's MODEL_WEIGHTS_GB and the RESOLUTION comment above it)
+  // now MARGINALLY EXCEEDS M3's real 8.0 GB card capacity. That makes the
+  // assertion below (`rs.model === 'gemma2:9b'`) FAIL against the current
+  // code, even though M3's own LIVE measured resident footprint for
+  // gemma2:9b (7.1 GB, the same number the 9.0 GB requirement is derived
+  // from) fits under 8.0 GB with 0.9 GB to spare -- which is what the
+  // Founder's ruling and M3's actual observed behavior both say really
+  // happens. This is evidence the requiredVramGb() overhead formula (weight
+  // x 1.2 + 0.5 GB floor) DOUBLE-COUNTS KV-cache/activation overhead when
+  // the underlying weight is already a resident measurement (as gemma2:9b's
+  // is) rather than a bare disk/weight-file size (as llama3.3:70b's still
+  // is) -- see the "second, narrower issue" paragraph in ram_detector.ts's
+  // RESOLUTION comment block for the full reasoning.
+  //
+  // Per this estate's flag-don't-silently-resolve discipline (the same one
+  // D-BP157-025 used when it left this exact test broken rather than patch
+  // it with an unverified number): the assertion below is left EXACTLY as
+  // originally written, matching the Founder's actual ruling and M3's real
+  // observed behavior, NOT the current formula's output. It is expected to
+  // FAIL when run, and that failure is the correct, honest signal that
+  // requiredVramGb()'s overhead formula -- not the weight table, not this
+  // test, and not the Founder's ruling -- needs a follow-up SEG (a
+  // `basis: 'disk' | 'resident'` distinction on ModelWeight, or equivalent,
+  // so overhead is not added twice for an already-resident measurement).
+  // See SEG_RETURN_BP157_026_MODEL_WEIGHTS_MEASURED.md for the full
+  // writeup. DO NOT "fix" this test by changing 8.0 to some other number --
+  // that would misrepresent M3's real hardware and hide the actual defect.
   test("THE FOUNDER'S CASE: M3's profile (31.9 GB RAM, constrained VRAM) resolves to gemma2:9b, not gemma4:12b", () => {
     // M3 (TERENO) is a remote peer on the mesh -- this dev session has no live
-    // telemetry access to query its actual detected VRAM figure. 8.0 GB is used
-    // as a REPRESENTATIVE constrained-VRAM value (a common dedicated-GPU
-    // capacity), chosen because it falls between the derived requirements for
-    // gemma2:9b (~6.9 GB, fits) and gemma4:12b (~8.9 GB, does not) -- the exact
-    // boundary the Founder described qualitatively ("VRAM on it... does a
-    // 70/30 split with the CPU when it runs out" on gemma4:12b, fine on
-    // gemma2:9b). This is named explicitly as an assumed value, not a
-    // measurement of M3's real hardware.
+    // telemetry access to query its actual detected VRAM figure. 8.0 GB is
+    // M3's REAL total RTX 3070 capacity (8192 MiB), not an arbitrary
+    // representative value -- see the FLAGGED comment directly above this
+    // test for why it stays 8.0 GB even though that now makes this specific
+    // assertion fail against requiredVramGb()'s current formula.
     const M3_RAM_GB = 31.9;
     const M3_ASSUMED_CONSTRAINED_VRAM_GB = 8.0;
 

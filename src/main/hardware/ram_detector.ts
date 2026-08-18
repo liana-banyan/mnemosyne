@@ -438,18 +438,20 @@ export function detectVramGb(): number | null {
  * ~70/30 GPU/CPU split that is unusably slow. M3 runs gemma2:9b instead.
  * RAM alone said "full tier -> gemma4:12b"; VRAM is what actually gates it.
  *
- * Measured model weight sizes -- live GET http://127.0.0.1:11434/api/tags
- * on M0 (LIANABANYAN), 2026-08-16, "size" field (bytes on disk):
+ * DISK-WEIGHT sizes (superseded as the table basis for 3 of 4 entries by
+ * D-BP157-026's RESIDENT measurements below -- kept here for provenance and
+ * because llama3.3:70b still uses this basis). Live GET
+ * http://127.0.0.1:11434/api/tags on M0 (LIANABANYAN), 2026-08-16, "size"
+ * field (bytes on disk, i.e. the model FILE size, NOT what it occupies in
+ * VRAM once loaded):
  *   llama3.3:70b   42,520,413,916 B = 39.60 GB  (measured, Q4_K_M, 70.6B params)
- *   gemma4:12b      7,556,508,396 B =  7.04 GB  (measured, Q4_K_M, 11.9B params)
- *   llama3.1:8b     4,920,753,328 B =  4.58 GB  (measured, Q4_K_M, 8.0B params)
- * gemma2:9b and gemma2:2b are NOT pulled on M0 (confirmed via `ollama list`
- * and a live /api/show 404 "model not found"), so their weight size could
- * NOT be measured in this environment. Their figures below are ESTIMATES,
- * not measurements: scaled from gemma4:12b's measured Q4_K_M density
- * (7.04 GB / 11.9B params = 0.591 GB/B) applied to each model's nominal
- * parameter count (9B, 2B). Named explicitly rather than presented as a
- * measurement -- see MODEL_WEIGHTS_GB.measured below.
+ *   gemma4:12b      7,556,508,396 B =  7.04 GB  (measured, Q4_K_M, 11.9B params) -- disk figure, superseded, see below
+ *   llama3.1:8b     4,920,753,328 B =  4.58 GB  (measured, Q4_K_M, 8.0B params) -- disk figure, superseded, see below
+ * gemma2:9b and gemma2:2b were NOT pulled on M0 as of D-BP157-025 (confirmed
+ * via `ollama list` and a live /api/show 404 "model not found"), so their
+ * weight size could NOT be measured in that environment at that time. As of
+ * D-BP157-026, gemma2:2b IS installed on M0 and was measured on a RESIDENT
+ * basis (see below); gemma2:9b remains not installed on M0.
  *
  * Overhead allowance (a stated allowance, not a measurement -- this
  * environment has no GPU memory profiler to observe live inference VRAM
@@ -458,7 +460,11 @@ export function detectVramGb(): number | null {
  * Deliberately conservative: this gate only needs to tell "fits" from
  * "doesn't fit", not predict an exact byte count.
  *
- * Check against the Founder's own datapoint: required(gemma4:12b) = 8.9 GB,
+ * Check against the Founder's own datapoint (FIGURES BELOW ARE STALE --
+ * kept for historical record only; see the RESOLUTION block above this
+ * table for the current, D-BP157-026-corrected figures, and
+ * ram_detector.vram_gate.test.ts's "THE FOUNDER'S CASE" test for the open
+ * question this correction newly surfaces): required(gemma4:12b) = 8.9 GB,
  * required(gemma2:9b) = 6.9 GB. M3's VRAM sits between those two figures
  * (constrained dedicated GPU, well short of the 8.9 GB gemma4:12b needs,
  * comfortably above the 6.9 GB gemma2:9b needs) -- so the gate steps
@@ -466,8 +472,9 @@ export function detectVramGb(): number | null {
  * case for the exact assumed VRAM figure used and why it is not a live
  * measurement of that remote machine.
  *
- * FLAGGED, NOT RESOLVED -- D-BP157-025 / BISHOP / seg-fix-vram-detector,
- * task 4: gemma2:9b's weight below was corrected from a scaled estimate
+ * FLAGGED BY D-BP157-025 / BISHOP / seg-fix-vram-detector, task 4 (HISTORICAL
+ * RECORD, kept verbatim -- see the RESOLUTION paragraph below for what
+ * changed): gemma2:9b's weight below was corrected from a scaled estimate
  * (5.32 GB) to M3's MEASURED live resident size (7.1 GB, via `ollama ps`),
  * which the task specified directly and which was 33.5% above the old
  * estimate. Running 7.1 GB through the SAME overhead formula below yields
@@ -490,23 +497,106 @@ export function detectVramGb(): number | null {
  * VRAM the same way -- both are explicitly OUT OF SCOPE here and are filed
  * for a follow-up SEG rather than silently patched. Left un-silently: this
  * comment, plus SEG_RETURN_BP157_025_VRAM_DETECTOR_FIX.md.
+ *
+ * RESOLUTION -- D-BP157-026 / BISHOP / seg-measure-model-weights, 2026-08-18,
+ * machine M0 (LIANABANYAN, AMD RX 9070 XT, ~15.92 GB real VRAM per the
+ * registry qwMemorySize method above): the units mismatch flagged directly
+ * above is now CLOSED for three of the four ladder-relevant entries.
+ * gemma2:2b, llama3.1:8b, and gemma4:12b were each loaded on M0 one at a
+ * time (`ollama run <model> "<one-token prompt>"`, confirmed resident via
+ * both `ollama ps` and a direct `GET /api/ps` JSON read of the `size` and
+ * `size_vram` fields -- MEASURED, not estimated) and their table entries
+ * below were corrected from disk-file weight to RESIDENT VRAM size. All
+ * three loaded 100% GPU on M0 (`size_vram` exactly equals `size` in every
+ * case -- zero CPU offload, zero split). gemma4:12b's corrected resident
+ * size (12.17 GB, up from its old 7.04 GB disk-weight figure) is what
+ * actually resolves the inversion: required(gemma4:12b) is now 15.1 GB,
+ * cleanly ABOVE required(gemma2:9b)'s unchanged 9.0 GB, restoring the
+ * monotonic ladder order this comment block originally expected. gemma2:9b
+ * itself was NOT re-measured this dispatch (not installed on M0 -- `ollama
+ * list` confirms; its 7.1 GB entry is retained unchanged from M3's
+ * D-BP157-025 measurement, a cross-machine figure this dispatch did not
+ * verify locally). llama3.3:70b was NOT measured on a resident basis this
+ * dispatch either -- loading a 42 GB-disk model was judged unsafe to force
+ * on this machine at measurement time (see the entry's own comment below)
+ * and it remains disk-weight-based, `measured: true` in the old sense only.
+ *
+ * A SECOND, NARROWER ISSUE REMAINS OPEN after this resolution, and is
+ * itself now newly visible BECAUSE three entries switched basis: with
+ * gemma2:2b, llama3.1:8b, and gemma4:12b now resident-measured, the SAME
+ * downstream formula (requiredVramGb: weight x 1.2 + 0.5 GB floor) applies
+ * a KV-cache/activation overhead allowance on top of a resident figure
+ * that, unlike a disk weight, ALREADY includes the actual KV cache and
+ * activation buffers Ollama held for that run's context window. This is
+ * very likely a second, smaller double-count, not a new defect introduced
+ * here -- gemma2:9b's own entry has had this exact property since
+ * D-BP157-025 and is the direct cause of the "THE FOUNDER'S CASE" test
+ * flag in ram_detector.vram_gate.test.ts (see that file: at M3's real 8.0
+ * GB card capacity, gemma2:9b's OWN required-VRAM of 9.0 GB now marginally
+ * exceeds the card, even though M3's live measured resident size, 7.1 GB,
+ * fits with room to spare -- strong evidence the formula, not the weight
+ * or the Founder's ruling, is the suspect). Changing requiredVramGb()'s
+ * formula (e.g. a `basis: 'disk' | 'resident'` field on ModelWeight, with a
+ * smaller or zero extra multiplier for `resident` entries) would resolve
+ * this cleanly but is gate-logic redesign, explicitly OUT OF SCOPE for a
+ * "detector + honest weights only" SEG -- filed for a follow-up SEG rather
+ * than silently patched. See SEG_RETURN_BP157_026_MODEL_WEIGHTS_MEASURED.md
+ * for the full inventory, every number with its unit stated, and the
+ * GPU/CPU split per model.
  */
 interface ModelWeight {
   gb: number;
   measured: boolean; // false = scaled estimate, not read from a live source
 }
 
+// D-BP157-026 / BISHOP / seg-measure-model-weights, 2026-08-18, machine M0
+// (LIANABANYAN, AMD RX 9070 XT, ~15.92 GB real VRAM measured via registry
+// qwMemorySize). All four `gb` figures below in GiB (1024-based), matching
+// this file's pre-existing convention for the "GB" label (verified: the
+// D-BP157-025 disk-weight figures above match bytes/1073741824, not
+// bytes/1e9 -- e.g. 7,556,508,396 B / 1073741824 = 7.04, not the 7.56 a
+// decimal GB would give). gemma2:2b, llama3.1:8b, and gemma4:12b were each
+// MEASURED on M0 this dispatch: loaded one at a time via `ollama run
+// <model> "<one-token prompt>"`, confirmed resident via `ollama ps` and via
+// `GET http://127.0.0.1:11434/api/ps`'s exact-byte `size`/`size_vram`
+// fields. All three: `size_vram` === `size` exactly -- 100% GPU, ZERO CPU
+// offload, no split to record. gemma2:9b was NOT installed on M0 (`ollama
+// list` confirmed) and so was NOT re-measured this dispatch; its value is
+// retained unchanged from M3's D-BP157-025 resident measurement. See the
+// RESOLUTION comment block above this table for the ladder-ordering
+// consequence and the second, narrower issue this leaves open.
 const MODEL_WEIGHTS_GB: Record<string, ModelWeight> = {
-  'gemma2:2b': { gb: 1.18, measured: false },   // scaled estimate (not pulled on M0) -- unmeasured, gets the conservative margin below
-  // CORRECTED D-BP157-025: was 5.32 GB (scaled disk-weight estimate). MEASURED
-  // by M3 via live `ollama ps` resident size = 7.1 GB, 33.5% above the old
-  // estimate. See the FLAGGED comment above this table for the consequence
-  // (gemma4:12b's own entry is disk-weight, not resident, so the two
-  // "measured: true" values are not on the same basis -- not resolved here).
-  'gemma2:9b': { gb: 7.1, measured: true },     // measured: M3 `ollama ps` resident size, D-BP157-025
-  'gemma4:12b': { gb: 7.04, measured: true },   // live /api/tags size, 2026-08-16
-  'llama3.1:8b': { gb: 4.58, measured: true },  // live /api/tags size, 2026-08-16
-  'llama3.3:70b': { gb: 39.60, measured: true }, // live /api/tags size, 2026-08-16
+  // MEASURED, D-BP157-026, M0: GET /api/ps size_vram = 3,525,658,542 B =
+  // 3.28 GiB, 100% GPU. Was 1.18 GB scaled disk estimate (measured: false).
+  'gemma2:2b': { gb: 3.28, measured: true },
+  // UNCHANGED this dispatch -- not installed on M0, not re-measured. Value
+  // is M3's D-BP157-025 measured resident size (via M3's own `ollama ps`),
+  // not an M0 figure. See the FLAGGED-then-RESOLVED comment block above
+  // this table: this is now the one ladder entry whose resident-vs-disk
+  // basis was corrected by a DIFFERENT machine than the one that measures
+  // requiredVramGb() against it here.
+  'gemma2:9b': { gb: 7.1, measured: true },
+  // MEASURED, D-BP157-026, M0: GET /api/ps size_vram = 13,062,153,174 B =
+  // 12.17 GiB, 100% GPU. Was 7.04 GB disk weight (measured: true, but on
+  // the disk basis) -- this correction is what resolves the inversion
+  // flagged by D-BP157-025 (required(gemma4:12b) now cleanly exceeds
+  // required(gemma2:9b) again; see the RESOLUTION comment above).
+  'gemma4:12b': { gb: 12.17, measured: true },
+  // MEASURED, D-BP157-026, M0: GET /api/ps size_vram = 9,147,263,221 B =
+  // 8.52 GiB, 100% GPU. Was 4.58 GB disk weight.
+  'llama3.1:8b': { gb: 8.52, measured: true },
+  // NOT measured on a resident basis this dispatch. SKIPPED per this
+  // dispatch's explicit safety mandate: 42 GB on disk against ~15.92 GB
+  // real VRAM plus system RAM headroom that measured 19.68-32.55 GB free
+  // during this session was judged unsafe to force-load (risk of thrashing
+  // or crashing the Founder's working machine) -- extrapolating the
+  // 1.73x-2.16x disk-to-resident ratios MEASURED on the other three entries
+  // this dispatch, llama3.3:70b's real resident size is plausibly in the
+  // 70-85 GB range (INFERRED, not measured), far past what either this
+  // card or this machine's free RAM could hold. Still disk-weight-basis,
+  // `measured: true` in the pre-D-BP157-026 (disk) sense only -- treat the
+  // required-VRAM figure derived from this entry as a FLOOR, not a ceiling.
+  'llama3.3:70b': { gb: 39.60, measured: true },
 };
 
 const VRAM_OVERHEAD_FACTOR = 1.2;
