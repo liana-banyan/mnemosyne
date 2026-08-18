@@ -231,11 +231,20 @@ const LB_PUBLIC_KEYS: Record<string, RootKeyEntry> = {
     // Provisioned 2026-08-18 (BP157, FD-BP157-13 as amended by the Founder's explicit
     // instruction to generate on M0). Private half lives OUTSIDE both repos at
     // C:\Users\Administrator\.lb-root-keys\ with an icacls owner-only ACL.
-    // KNOWN LIMITATION, recorded deliberately: this key was generated on a NETWORKED
-    // machine. FD-BP157-13 specified an offline ceremony precisely so that a network or
-    // CI compromise could not forge a manifest. Until this is rotated to an offline-born
-    // root, a compromise of M0 is equivalent to manifest forgery. The keyId registry
-    // exists to make that rotation a normal signed release.
+    // ACCEPTED RISK, PERMANENT POSTURE. Do not read this as a to-do.
+    // FD-BP157-13 originally specified an offline ceremony. It was SUPERSEDED by the
+    // Founder: "I'm never running it on an offline machine, bc there is no point in an
+    // offline machine." There is therefore NO PENDING ROTATION to an offline-born root
+    // and no one is waiting to perform one.
+    // What remains true and is the accepted cost: this key lives on a networked machine,
+    // so a compromise of M0 is equivalent to manifest forgery. The estate has leaked
+    // credentials off a networked machine once before (BP155), so this is a lived risk
+    // rather than a theoretical one.
+    // The only upgrade path still open is a non-extractable HSM key (e.g. Azure Key
+    // Vault, alongside the existing Trusted Signing identity), which would remove the
+    // copy-the-file attack entirely at the cost of concentrating both the code-signing
+    // identity and the manifest root in one tenancy. That is a Founder decision and has
+    // NOT been taken. The keyId registry makes any such move a normal signed release.
     publicKeyHex: '302a300506032b65700321003b31e58e45f7373ed002793515ec112c1bb42a94d6abeef6bdb417f6705b77f6',
     algorithm: 'ed25519',
     status: 'active',

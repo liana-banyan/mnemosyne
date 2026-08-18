@@ -1010,7 +1010,8 @@ describe('parseWorkerJsonOutput — D-BP157-041 --output-format json parsing', (
     const parsed = parseWorkerJsonOutput(MEASURED_NO_MODEL_CALL_JSON);
     expect(parsed).toEqual({
       numTurns: 11, durationApiMs: 0, inputTokens: 0, outputTokens: 0,
-      totalCostUsd: 0, resultLength: 0, subtype: 'success', isError: false,
+      totalCostUsd: 0, resultLength: 0, resultExcerpt: '', permissionDenialsCount: 0,
+      subtype: 'success', isError: false,
     });
   });
 
@@ -1020,13 +1021,49 @@ describe('parseWorkerJsonOutput — D-BP157-041 --output-format json parsing', (
       type: 'result', subtype: 'success', is_error: false, duration_ms: 8123,
       duration_api_ms: 7800, num_turns: 3, result: 'did the thing\nBISHOP-DISPATCH-WORK-COMPLETE',
       total_cost_usd: 0.0123, usage: { input_tokens: 512, output_tokens: 128 },
+      permission_denials: [],
     });
     const parsed = parseWorkerJsonOutput(json);
     expect(parsed).toEqual({
       numTurns: 3, durationApiMs: 7800, inputTokens: 512, outputTokens: 128,
       totalCostUsd: 0.0123, resultLength: 'did the thing\nBISHOP-DISPATCH-WORK-COMPLETE'.length,
+      resultExcerpt: 'did the thing\nBISHOP-DISPATCH-WORK-COMPLETE', permissionDenialsCount: 0,
       subtype: 'success', isError: false,
     });
+  });
+
+  // D-BP157-045: resultExcerpt capping and permissionDenialsCount parsing.
+  test('D-BP157-045: result text longer than RESULT_EXCERPT_CAP_CHARS is truncated with a marker', async () => {
+    const { parseWorkerJsonOutput, RESULT_EXCERPT_CAP_CHARS } = await import('./bishop_dispatch_handler');
+    const longResult = 'x'.repeat(RESULT_EXCERPT_CAP_CHARS + 50);
+    const json = JSON.stringify({ type: 'result', duration_api_ms: 100, num_turns: 1, result: longResult, usage: { input_tokens: 1, output_tokens: 1 } });
+    const parsed = parseWorkerJsonOutput(json);
+    expect(parsed?.resultLength).toBe(RESULT_EXCERPT_CAP_CHARS + 50);
+    expect(parsed?.resultExcerpt.startsWith('x'.repeat(RESULT_EXCERPT_CAP_CHARS))).toBe(true);
+    expect(parsed?.resultExcerpt).toMatch(/truncated, cap=400 chars/);
+    expect(parsed?.resultExcerpt.length).toBeGreaterThan(RESULT_EXCERPT_CAP_CHARS);
+    expect(parsed?.resultExcerpt.length).toBeLessThan(longResult.length);
+  });
+
+  test('D-BP157-045: result text at or under the cap is not truncated', async () => {
+    const { parseWorkerJsonOutput, RESULT_EXCERPT_CAP_CHARS } = await import('./bishop_dispatch_handler');
+    const shortResult = 'y'.repeat(RESULT_EXCERPT_CAP_CHARS);
+    const json = JSON.stringify({ type: 'result', result: shortResult, usage: {} });
+    const parsed = parseWorkerJsonOutput(json);
+    expect(parsed?.resultExcerpt).toBe(shortResult);
+  });
+
+  test('D-BP157-045: permission_denials array length is parsed into permissionDenialsCount', async () => {
+    const { parseWorkerJsonOutput } = await import('./bishop_dispatch_handler');
+    const json = JSON.stringify({ type: 'result', result: 'x', usage: {}, permission_denials: [{ tool: 'Write' }, { tool: 'Bash' }] });
+    const parsed = parseWorkerJsonOutput(json);
+    expect(parsed?.permissionDenialsCount).toBe(2);
+  });
+
+  test('D-BP157-045: non-array or absent permission_denials defaults to 0, never throws', async () => {
+    const { parseWorkerJsonOutput } = await import('./bishop_dispatch_handler');
+    expect(parseWorkerJsonOutput(JSON.stringify({ type: 'result', result: 'x', usage: {} }))?.permissionDenialsCount).toBe(0);
+    expect(parseWorkerJsonOutput(JSON.stringify({ type: 'result', result: 'x', usage: {}, permission_denials: 'not-an-array' }))?.permissionDenialsCount).toBe(0);
   });
 
   test('malformed JSON returns null, never throws', async () => {
@@ -1052,7 +1089,8 @@ describe('parseWorkerJsonOutput — D-BP157-041 --output-format json parsing', (
     const parsed = parseWorkerJsonOutput('{"type":"result"}');
     expect(parsed).toEqual({
       numTurns: 0, durationApiMs: 0, inputTokens: 0, outputTokens: 0,
-      totalCostUsd: 0, resultLength: 0, subtype: null, isError: null,
+      totalCostUsd: 0, resultLength: 0, resultExcerpt: '', permissionDenialsCount: 0,
+      subtype: null, isError: null,
     });
   });
 });
@@ -1133,6 +1171,147 @@ describe('deriveCompletionOutcome — D-BP157-041 JSON telemetry folded into iss
     expect(codes).toEqual(['SPAWN_NONZERO_EXIT', 'WORKER_JSON_TELEMETRY']);
     // duration_api_ms is non-zero here, so WORKER_NO_MODEL_CALL correctly does not fire.
     expect(codes).not.toContain('WORKER_NO_MODEL_CALL');
+  });
+});
+
+// D-BP157-045/BISHOP/seg-blocked-write-signal: BishopM3's measured blind spot. A worker that DID
+// call the model (real duration_api_ms, real tokens), produced real `result` prose, exited 0, and
+// never printed the sentinel was indistinguishable from a worker that could write but forgot the
+// sentinel. WORKER_BLOCKED_NO_WRITES closes that gap. Fixture numbers are M3's own, from
+// D-BP157-M3-015_ADDENDUM-01: 391.3s elapsed, 2071 bytes captured, exit 0, model called with real
+// tokens, no sentinel, no artifact -- the exact measured shape.
+describe('deriveCompletionOutcome — D-BP157-045 WORKER_BLOCKED_NO_WRITES', () => {
+  // Not M3's literal 2071-byte log (that raw JSON was not directly readable from this machine --
+  // it lives on TERENO -- and the addendum quotes only prose excerpts, never the full blob), but
+  // shaped to match every MEASURED fact the addendum gives: real API time, real tokens, a
+  // substantial `result` explaining a write/exec block, no sentinel anywhere in it, exit 0.
+  const M3_015_SHAPED_RESULT =
+    "What I couldn't do: independently re-test Node's fs.existsSync on that path or the " +
+    'one-level-deeper repo path from a fresh process. This session\'s permissions block all ' +
+    "node -e/--eval execution and all file writes categorically, no exceptions, regardless of " +
+    'content or target path. I tried three times (two scratch probes, one real write) and ' +
+    'stopped rather than keep retrying a blocked action. I have neither a Founder override nor ' +
+    'working Write access right now, so nothing got committed, this report only exists in this chat.';
+  const M3_015_SHAPED_JSON = JSON.stringify({
+    type: 'result', subtype: 'success', is_error: false, duration_ms: 391300,
+    duration_api_ms: 38500, num_turns: 14, result: M3_015_SHAPED_RESULT,
+    total_cost_usd: 0.41, usage: { input_tokens: 6100, output_tokens: 812 },
+    permission_denials: [],
+  });
+
+  test('THE MEASURED SHAPE (M3-015 numbers): real model call, real result prose, exit 0, no sentinel, restrictive mode -> WORKER_BLOCKED_NO_WRITES fires alongside NO_COMPLETION_SENTINEL', async () => {
+    const { deriveCompletionOutcome } = await import('./bishop_dispatch_handler');
+    const result = deriveCompletionOutcome('D-BP157-M3-015', M3_015_SHAPED_JSON, 0, null, {
+      elevated: false,
+      permissionMode: 'default',
+    });
+
+    // Lifecycle: still decided by sentinel logic alone, unchanged.
+    expect(result.lifecycle).toBe('failed');
+
+    const codes = result.issues.map((i) => i.code);
+    expect(codes).toContain('NO_COMPLETION_SENTINEL');
+    expect(codes).toContain('WORKER_JSON_TELEMETRY');
+    expect(codes).toContain('WORKER_BLOCKED_NO_WRITES');
+    // The two shapes this dispatch was built to distinguish must never both fire for one run.
+    expect(codes).not.toContain('WORKER_NO_MODEL_CALL');
+
+    const blocked = result.issues.find((i) => i.code === 'WORKER_BLOCKED_NO_WRITES')!;
+    expect(blocked.message).toMatch(/DID call the model for real/);
+    expect(blocked.message).toContain('restrictive permission mode "default"');
+    expect(blocked.message).toMatch(/permission_denials array was empty or absent/);
+    expect(blocked.message).toContain('capped at 400 chars');
+    // The worker's own words must appear (truncated to the cap, since the fixture result is
+    // longer than 400 chars) -- this is the "worker's own words" requirement, not just byte counts.
+    expect(blocked.message).toContain(M3_015_SHAPED_RESULT.slice(0, 400));
+    expect(blocked.evidence).toMatch(/permissionDenialsCount=0/);
+    expect(blocked.evidence).toMatch(/permissionMode=default/);
+    expect(blocked.evidence).toMatch(/elevated=false/);
+  });
+
+  test('permission_denials non-empty is sufficient on its own, even without permissionContext', async () => {
+    const { deriveCompletionOutcome } = await import('./bishop_dispatch_handler');
+    const json = JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, duration_api_ms: 5000, num_turns: 2,
+      result: 'attempted the write, tool use was denied', usage: { input_tokens: 100, output_tokens: 40 },
+      permission_denials: [{ tool_name: 'Write' }],
+    });
+    // No permissionContext passed at all -- the CLI's own signal must be enough by itself.
+    const result = deriveCompletionOutcome('D-TEST-PD', json, 0, null);
+    const codes = result.issues.map((i) => i.code);
+    expect(codes).toContain('WORKER_BLOCKED_NO_WRITES');
+    const blocked = result.issues.find((i) => i.code === 'WORKER_BLOCKED_NO_WRITES')!;
+    expect(blocked.message).toMatch(/permission_denials_count=1|permissionDenialsCount=1/);
+    expect(blocked.message).toContain('the direct signal');
+  });
+
+  test('genuine success (real tokens, sentinel present) -> WORKER_BLOCKED_NO_WRITES does NOT fire', async () => {
+    const { deriveCompletionOutcome, COMPLETION_SENTINEL } = await import('./bishop_dispatch_handler');
+    const json = JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, duration_api_ms: 7800, num_turns: 3,
+      result: `did the thing\n${COMPLETION_SENTINEL}`, total_cost_usd: 0.02,
+      usage: { input_tokens: 512, output_tokens: 128 }, permission_denials: [],
+    });
+    const result = deriveCompletionOutcome('D-BP157-045-OK', json, 0, null, { elevated: false, permissionMode: 'default' });
+    expect(result.lifecycle).toBe('completed');
+    expect(result.issues.map((i) => i.code)).not.toContain('WORKER_BLOCKED_NO_WRITES');
+  });
+
+  test('the no-model-call shape (D-BP157-041 fixture) -> WORKER_BLOCKED_NO_WRITES does NOT fire, WORKER_NO_MODEL_CALL does', async () => {
+    const { deriveCompletionOutcome } = await import('./bishop_dispatch_handler');
+    const json = JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, duration_api_ms: 0, num_turns: 11,
+      result: '', usage: { input_tokens: 0, output_tokens: 0 }, permission_denials: [],
+    });
+    const result = deriveCompletionOutcome('D-BP157-045-NOMODEL', json, 0, null, { elevated: false, permissionMode: 'default' });
+    const codes = result.issues.map((i) => i.code);
+    expect(codes).toContain('WORKER_NO_MODEL_CALL');
+    expect(codes).not.toContain('WORKER_BLOCKED_NO_WRITES');
+  });
+
+  test('real model call, real result, but elevated=true and permission_denials empty -> WORKER_BLOCKED_NO_WRITES does NOT fire (plain NO_COMPLETION_SENTINEL only, per shape (c))', async () => {
+    const { deriveCompletionOutcome } = await import('./bishop_dispatch_handler');
+    const json = JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, duration_api_ms: 9000, num_turns: 4,
+      result: 'did some work but forgot to print the sentinel', usage: { input_tokens: 300, output_tokens: 150 },
+      permission_denials: [],
+    });
+    // elevated: true -- the worker COULD write; no corroborating signal says it was blocked.
+    const result = deriveCompletionOutcome('D-BP157-045-ELEVATED', json, 0, null, { elevated: true, permissionMode: 'bypassPermissions' });
+    const codes = result.issues.map((i) => i.code);
+    expect(codes).toContain('NO_COMPLETION_SENTINEL');
+    expect(codes).not.toContain('WORKER_BLOCKED_NO_WRITES');
+    expect(codes).not.toContain('WORKER_NO_MODEL_CALL');
+  });
+
+  test('real model call but empty result text -> WORKER_BLOCKED_NO_WRITES does NOT fire even under restrictive mode (nothing to quote, weaker evidence)', async () => {
+    const { deriveCompletionOutcome } = await import('./bishop_dispatch_handler');
+    const json = JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, duration_api_ms: 3000, num_turns: 2,
+      result: '', usage: { input_tokens: 50, output_tokens: 0 }, permission_denials: [],
+    });
+    const result = deriveCompletionOutcome('D-BP157-045-EMPTYRESULT', json, 0, null, { elevated: false, permissionMode: 'default' });
+    const codes = result.issues.map((i) => i.code);
+    expect(codes).not.toContain('WORKER_BLOCKED_NO_WRITES');
+    expect(codes).toContain('NO_COMPLETION_SENTINEL');
+  });
+
+  test('signal-killed and non-zero-exit paths never raise WORKER_BLOCKED_NO_WRITES, regardless of telemetry', async () => {
+    const { deriveCompletionOutcome } = await import('./bishop_dispatch_handler');
+    const withSignal = deriveCompletionOutcome('D-BP157-045-SIG', M3_015_SHAPED_JSON, null, 'SIGTERM', { elevated: false, permissionMode: 'default' });
+    expect(withSignal.issues.map((i) => i.code)).not.toContain('WORKER_BLOCKED_NO_WRITES');
+
+    const withNonZero = deriveCompletionOutcome('D-BP157-045-NZ', M3_015_SHAPED_JSON, 1, null, { elevated: false, permissionMode: 'default' });
+    expect(withNonZero.issues.map((i) => i.code)).not.toContain('WORKER_BLOCKED_NO_WRITES');
+  });
+
+  test('pre-045 call sites that omit permissionContext still behave exactly as before (backward compatible)', async () => {
+    const { deriveCompletionOutcome } = await import('./bishop_dispatch_handler');
+    const result = deriveCompletionOutcome('D-BP157-045-NOCTX', M3_015_SHAPED_JSON, 0, null);
+    // No permissionContext and permission_denials is empty in this fixture, so the corroborating
+    // condition is not met -- WORKER_BLOCKED_NO_WRITES correctly does not fire, and nothing throws.
+    expect(result.issues.map((i) => i.code)).not.toContain('WORKER_BLOCKED_NO_WRITES');
+    expect(result.lifecycle).toBe('failed');
   });
 });
 
