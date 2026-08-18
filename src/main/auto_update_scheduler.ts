@@ -228,9 +228,17 @@ interface RootKeyEntry {
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 const LB_PUBLIC_KEYS: Record<string, RootKeyEntry> = {
   'lb-root-2026-01': {
-    publicKeyHex: PLACEHOLDER_KEY_SENTINEL,
+    // Provisioned 2026-08-18 (BP157, FD-BP157-13 as amended by the Founder's explicit
+    // instruction to generate on M0). Private half lives OUTSIDE both repos at
+    // C:\Users\Administrator\.lb-root-keys\ with an icacls owner-only ACL.
+    // KNOWN LIMITATION, recorded deliberately: this key was generated on a NETWORKED
+    // machine. FD-BP157-13 specified an offline ceremony precisely so that a network or
+    // CI compromise could not forge a manifest. Until this is rotated to an offline-born
+    // root, a compromise of M0 is equivalent to manifest forgery. The keyId registry
+    // exists to make that rotation a normal signed release.
+    publicKeyHex: '302a300506032b65700321003b31e58e45f7373ed002793515ec112c1bb42a94d6abeef6bdb417f6705b77f6',
     algorithm: 'ed25519',
-    status: 'placeholder',
+    status: 'active',
   },
 };
 

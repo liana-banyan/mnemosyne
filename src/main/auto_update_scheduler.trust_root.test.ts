@@ -317,19 +317,24 @@ describe('group 3 -- downloadAndVerify hard gate, exercised via approveMajorVers
     expect(fsReal.existsSync(readyPathFor(version))).toBe(false);
   });
 
-  test('the REAL shipped placeholder keyId (lb-root-2026-01) is REFUSED even with a signature present', async () => {
+  // BP157: lb-root-2026-01 was a PLACEHOLDER when this suite was written and is now a REAL,
+  // PROVISIONED key (status 'active', public half installed 2026-08-18). The security property
+  // under test is unchanged -- a manifest we cannot verify is REFUSED and no .ready file is
+  // written. Only the REASON changed, from 'placeholder' to a genuine signature failure. The
+  // assertion is updated to the new truth rather than loosened: it still requires a refusal.
+  test('the REAL shipped keyId (lb-root-2026-01) REFUSES a bogus signature, no .ready file', async () => {
     const version = '9.9.103';
     stubManifestFetch({
       version,
       url: 'https://mnemosynec.org/downloads/x.exe',
-      keyId: 'lb-root-2026-01', // the real production keyId this dispatch shipped -- still a placeholder
+      keyId: 'lb-root-2026-01', // real, provisioned, active -- signature below is deliberately junk
       signature: 'deadbeef'.repeat(20),
     });
 
     const result = await approveMajorVersionUpdate(version);
 
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/placeholder/);
+    expect(result.error).toMatch(/signature verification failed/);
     expect(fsReal.existsSync(readyPathFor(version))).toBe(false);
   });
 });
