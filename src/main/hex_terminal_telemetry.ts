@@ -74,8 +74,17 @@ import { resolve, join } from 'path';
 // silent cwd-relative fallback). Reused rather than reinvented because this module must ALSO run
 // standalone under plain `node` with no Electron runtime at all, for the far-end proof's
 // separate-process read-back step.
+//
+// CORRECTED D-BP158-006/BISHOP: this fallback name mirrors crystal_store.ts's own
+// USERDATA_APP_NAME -- see that file's header comment for the full correction. In short, the
+// main process now calls app.setPath('userData', %APPDATA%\MnemosyneC) at startup, so the
+// non-Electron fallback here must resolve the SAME directory or a standalone reader diverges
+// from the live app silently. This module is currently unreferenced by any importer in this
+// repo (verified BP158 Phase 0 -- grep found no other file requiring it), so this correction has
+// no live behavioral effect today; it is made anyway so the constant is not wrong if/when this
+// module is wired in.
 
-const USERDATA_APP_NAME = 'amplify-computer';
+const USERDATA_APP_NAME = 'MnemosyneC';
 
 function resolveHexTelemetryDir(): string {
   const envOverride = process.env.MNEM_HEX_TELEMETRY_DIR;

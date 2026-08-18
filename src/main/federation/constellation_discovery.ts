@@ -37,7 +37,7 @@ export const UDP_BEACON_PORT = 7475;
 const BEACON_INTERVAL_MS = 30_000;
 const BEACON_ADDRESS = '255.255.255.255'; // IPv4 broadcast
 
-const PEERS_DIR = () => join(app.getPath('appData'), 'MnemosyneC');
+const PEERS_DIR = () => app.getPath('userData');
 const PEERS_FILE = () => join(PEERS_DIR(), 'constellation_peers.json');
 
 function ensurePeersDir(): void {

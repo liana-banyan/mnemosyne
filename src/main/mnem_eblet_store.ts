@@ -110,14 +110,22 @@ type ElectronAppShape = {
   getAppPath: () => string;
 };
 
-// The app.getPath('userData') app-name component. Electron derives this from package.json's
-// `name` field (mnemosyne/package.json:2 = "amplify-computer"), NOT electron-builder's
-// `productName` ("MnemosyneC") -- same distinction crystal_store.ts's own USERDATA_APP_NAME
-// comment documents, verified there against the live shipping app's on-disk footprint
-// (%APPDATA%\amplify-computer exists; %APPDATA%\MnemosyneC does not). Mirrored here rather
-// than imported, to avoid this module taking on crystal_store.ts as a load-bearing dependency
-// for one string constant.
-const USERDATA_APP_NAME = 'amplify-computer';
+// The app.getPath('userData') app-name component, for the non-Electron fallback path only
+// (fallbackUserDataPath() below) -- the real Electron branch (getElectronApp() below) always
+// asks app.getPath('userData') directly and needs no hardcoded name.
+//
+// CORRECTED D-BP158-006/BISHOP (supersedes the BP147-era claim this comment used to make, which
+// crystal_store.ts's own USERDATA_APP_NAME comment also used to make and has now also been
+// corrected there): package.json's `name` field is still "amplify-computer" (deliberately left
+// unchanged by this ticket -- renaming it would alter electron-builder's installer identity/
+// update channel) but the main process (src/main/index.ts, top of file) now calls
+// `app.setPath('userData', %APPDATA%\MnemosyneC)` once at startup, so the app's ACTUAL running
+// userData directory is MnemosyneC, not the package-name-derived default. The old comment's
+// factual claim that "%APPDATA%\MnemosyneC does not exist" is measurably false as of this
+// ticket -- it is where the mesh peer identity keypair already lives. Mirrored here rather than
+// imported, to avoid this module taking on crystal_store.ts as a load-bearing dependency for one
+// string constant.
+const USERDATA_APP_NAME = 'MnemosyneC';
 
 let _electronAppCache: ElectronAppShape | null = null; // only ever caches a POSITIVE resolution -- see comment above.
 

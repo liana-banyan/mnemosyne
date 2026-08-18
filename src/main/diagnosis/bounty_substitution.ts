@@ -18,7 +18,7 @@ import type { DiagnosisBounty } from './diagnosis_types';
 // ─── Test-net Marks ledger ────────────────────────────────────────────────────
 
 function ledgerDir(): string {
-  const d = join(app.getPath('appData'), 'MnemosyneC', 'Vault', 'test-net-ledger');
+  const d = join(app.getPath('userData'), 'Vault', 'test-net-ledger');
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
   return d;
 }

@@ -106,17 +106,25 @@ function resolveVaultRoot(args: CliArgs): string | null {
 }
 
 /** Runtime output path: CLI --out, else MNEM_SUBSTRATE_OUTPUT env var, else the OS-standard
- *  per-user Electron userData convention for this app ({platform data dir}/amplify-computer/
- *  substrate/verified_eblets.jsonl -- "amplify-computer" is package.json's `name` field, which
- *  is what Electron's app.getPath('userData') derives from absent an explicit app.setName()
- *  override; grepped this repo's main process for app.setName()/setPath('userData', ...) and
- *  found neither, so this mirrors the real runtime path). Built from env vars / homedir() only
- *  -- no operator-specific path segment anywhere in this function. */
+ *  per-user Electron userData convention for this app ({platform data dir}/MnemosyneC/
+ *  substrate/verified_eblets.jsonl).
+ *
+ *  CORRECTED D-BP158-006/BISHOP: this used to read "amplify-computer" on the finding that
+ *  package.json's `name` field is what app.getPath('userData') derives from absent an explicit
+ *  app.setName()/setPath('userData', ...) override, and that a grep of this repo's main process
+ *  at the time found neither. That grep is now stale: src/main/index.ts (top of file) calls
+ *  `app.setPath('userData', %APPDATA%\MnemosyneC)` once at startup, so the live app's actual
+ *  runtime userData path is MnemosyneC, not the package-name-derived default, even though
+ *  package.json's `name` field itself is deliberately left as "amplify-computer" (renaming it
+ *  would alter electron-builder's installer identity/update channel, out of scope for that
+ *  ticket). Updated so this standalone CLI tool's fallback mirrors the ACTUAL runtime path
+ *  again. Built from env vars / homedir() only -- no operator-specific path segment anywhere in
+ *  this function. */
 function resolveOutputPath(args: CliArgs): string {
   if (args.out) return resolve(args.out);
   if (process.env.MNEM_SUBSTRATE_OUTPUT) return resolve(process.env.MNEM_SUBSTRATE_OUTPUT);
 
-  const appFolderName = 'amplify-computer'; // package.json "name" -- Electron's default app name
+  const appFolderName = 'MnemosyneC'; // matches the app's actual runtime userData folder (see comment above)
   const plat = platform();
   let base: string;
   if (plat === 'win32') {
