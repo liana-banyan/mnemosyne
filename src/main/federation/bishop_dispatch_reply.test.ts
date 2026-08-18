@@ -50,7 +50,7 @@ describe('writeBishopDispatchReply', () => {
 
   test('POSTs to relay_route_replies with route_id/peer_id/answer_json/processing_ms, using only anon-key headers', async () => {
     const { fetchImpl, calls } = makeFetchMock(201);
-    const result: BishopDispatchResult = { ok: true, spawned: true, reason: 'spawned' };
+    const result: BishopDispatchResult = { ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' };
 
     const ok = await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 4321);
 
@@ -67,14 +67,14 @@ describe('writeBishopDispatchReply', () => {
     expect(body).toEqual({
       route_id: ROUTE_ID,
       peer_id: PEER_ID,
-      answer_json: { kind: 'bishop_dispatch_reply', ok: true, spawned: true, reason: 'spawned' },
+      answer_json: { kind: 'bishop_dispatch_reply', stage: 'launch', ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' },
       processing_ms: 4321,
     });
   });
 
   test('includes noticePath in answer_json only when the result carries one', async () => {
     const { fetchImpl, calls } = makeFetchMock(201);
-    const result: BishopDispatchResult = { ok: true, spawned: false, reason: 'file-write-only', noticePath: 'C:\\notices\\n1.json' };
+    const result: BishopDispatchResult = { ok: true, lifecycle: 'refused', issues: [], spawned: false, reason: 'file-write-only', noticePath: 'C:\\notices\\n1.json' };
 
     await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 10);
 
@@ -84,7 +84,7 @@ describe('writeBishopDispatchReply', () => {
 
   test('a non-2xx response is reported as failure (false), never throws', async () => {
     const { fetchImpl } = makeFetchMock(500);
-    const result: BishopDispatchResult = { ok: true, spawned: true, reason: 'spawned' };
+    const result: BishopDispatchResult = { ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' };
 
     await expect(
       writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 10),
@@ -93,7 +93,7 @@ describe('writeBishopDispatchReply', () => {
 
   test('a network error is caught and reported as failure (false), never throws', async () => {
     const fetchImpl = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as FetchLike;
-    const result: BishopDispatchResult = { ok: true, spawned: true, reason: 'spawned' };
+    const result: BishopDispatchResult = { ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' };
 
     await expect(
       writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 10),

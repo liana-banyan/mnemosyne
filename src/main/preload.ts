@@ -1795,6 +1795,25 @@ contextBridge.exposeInMainWorld('amplify', {
   }): Promise<{ ok: boolean; error?: string; routeId?: string; targetPeerId: string; dispatchId: string }> =>
     ipcRenderer.invoke('bishop-dispatch:send-via-relay', req),
 
+  // D-BP157-023: HARDWIRE-24 mesh, the return leg's M0-side PULL trigger. Calls the real,
+  // previously-uncalled pollForBishopDispatchReply (bishop_dispatch_reply.ts) via
+  // bishop_dispatch_poll_ipc.ts's registerBishopDispatchPollIpc handler -- returns the newest
+  // relay_route_replies row for a given routeId (a stage:'launch' row if that is all that has
+  // landed yet, a stage:'completion' row once the worker has actually exited). Mirrors
+  // bishopDispatchSendViaRelay above; this is the CDP seam scripts/bishop_dispatch_poll_reply_
+  // cli.mjs drives.
+  bishopDispatchPollReply: (req: {
+    routeId: string;
+    timeoutMs?: number;
+  }): Promise<{
+    ok: boolean;
+    error?: string;
+    routeId: string;
+    found: boolean;
+    answer?: unknown;
+    processingMs?: number;
+  }> => ipcRenderer.invoke('bishop-dispatch:poll-reply', req),
+
   // KN-BP142-5: Liana Cycle Engine caller -- same three-shape pattern (run-now / get-status /
   // progress listener) as meshTestRunOneClick/meshTestIsActive/onMeshTestProgress above. See
   // src/main/plow/liana_cycle_scheduler.ts for the trigger policy, kill switch, and receipt.

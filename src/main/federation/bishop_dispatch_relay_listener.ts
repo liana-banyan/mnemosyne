@@ -129,8 +129,12 @@ export interface RelayRouteRow {
 export type FetchLike = typeof fetch;
 
 /** Injectable so tests never touch real peer_server.ts module state (electron app.getPath,
- *  real Ed25519 keys, etc.) -- defaults to the real handleInboundBishopDispatchEnvelope. */
-export type EnvelopeHandlerFn = (payloadEncrypted: string) => Promise<BishopDispatchResult>;
+ *  real Ed25519 keys, etc.) -- defaults to the real handleInboundBishopDispatchEnvelope.
+ *  D-BP157-023: widened to accept the row's own `route_id` as an optional second argument, so it
+ *  can be threaded all the way into `handleBishopDispatch`/`launchWorker` for the return-leg's
+ *  stage-2/completion reply (see bishop_dispatch_reply.ts's `writeBishopDispatchCompletionReply`
+ *  and this file's own call site below). */
+export type EnvelopeHandlerFn = (payloadEncrypted: string, routeId?: string) => Promise<BishopDispatchResult>;
 
 export interface BishopRelayListenerConfig {
   peerId: string;
@@ -400,7 +404,10 @@ export async function pollBishopDispatchRoutesOnce(
 
     const rowStartMs = nowMs();
     try {
-      const result = await handleEnvelope(envelope);
+      // D-BP157-023: row.id is this route's routeId -- threaded through so the eventual
+      // stage-2/completion reply (posted much later, from inside launchWorker's own exit
+      // handler) can be correlated back to this same relay_route_replies route id.
+      const result = await handleEnvelope(envelope, row.id);
       await finalizeStatus(fetchImpl, config.supabaseUrl, config.anonKey, row.id, result.ok ? 'answered' : 'error');
       // D-BP156-M0-014: write the reply leg -- the builder's result travels back to the
       // conductor via relay_route_replies (see bishop_dispatch_reply.ts's header for the full

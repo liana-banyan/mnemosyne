@@ -27,18 +27,54 @@
  *        (g) every spawn AND every refusal logged to the ledger with dispatch id, origin peer
  *            id, decision, and a real UTC clock call
  *
+ *      D-BP157-007 added two more things launchWorker() does once the seven guardrails above have
+ *      already passed:
+ *        (h) HARDWIRE-25 claim: the dispatch id is claimed via yoke_claim.sh before the worker
+ *            can write anything under it; a bare id already held by a live actor gets the worker
+ *            reassigned to a deterministic "-W1"/"-W2"/... child id instead. D-BP157-010 found,
+ *            and D-BP157-012 CLOSED, a gap here: at cap exhaustion (every candidate refused) this
+ *            is now an EIGHTH GUARDRAIL, not a non-refusing side effect -- launchWorker() fails
+ *            closed and refuses to spawn under an unclaimed id, logging a distinct
+ *            SPAWN_REFUSED_UNCLAIMED beat event so the refusal is loud, not silent.
+ *        (i) the worker's stdout+stderr are captured to a real log file under
+ *            `${LB_LEDGER_ROOT}/YOKE/WORKER_LOGS/<effectiveDispatchId>.log`, not discarded.
+ *
+ *      D-BP157-010 closes a gap D-BP157-007 flagged rather than hid: (h)'s yoke_claim.sh call
+ *      is now reached through an injectable `claimImpl: ClaimExecFn` parameter (mirroring
+ *      `spawnImpl: SpawnFn`), so bishop_dispatch_handler.test.ts's stated "no real process is
+ *      ever spawned" guarantee holds again. Production default is unchanged: execFileSync, same
+ *      arguments, same behavior.
+ *
+ *      D-BP157-012 closes the gap D-BP157-010 found and documented but correctly left alone as
+ *      out of its own scope: launchWorker() did not gate spawning on claimResult.claimed, so at
+ *      cap exhaustion (MAX_CHILD_SUFFIX_ATTEMPTS suffix attempts, 21 total tries) it still
+ *      launched a worker under an unclaimed id -- HARDWIRE-25's guard failed OPEN under exactly
+ *      the contention it exists to catch. Per Founder ruling FD-BP157-02 ("PUT ALL THAT WE BUILD
+ *      IN"), launchWorker() now REFUSES TO SPAWN when claimResult.claimed is false: no argv is
+ *      built, no worker log is opened, spawnImpl is never called, and a distinct beat-file
+ *      decision (SPAWN_REFUSED_UNCLAIMED) is logged naming the dispatch id, attempts tried, and
+ *      the cap, so an operator can distinguish this refusal from "ran and did nothing" or "never
+ *      arrived." The happy path (claim wins, bare id or any suffix) is unchanged.
+ *
  * NEVER interpolates promptText (or any payload field) into a shell string. child_process.spawn
  * is called with an explicit argv array and shell:false (Node's own default for spawn, stated
  * explicitly here anyway so a future edit cannot silently flip it) -- see spawnBishopWorker()
  * below and its accompanying shell-injection test in bishop_dispatch_handler.test.ts.
  */
 
-import { existsSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, realpathSync, openSync, closeSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
+import type { StdioOptions } from 'node:child_process';
 import { homedir } from 'node:os';
 import type { BishopDispatchPayload } from './mic_dispatcher';
-import type { BishopDispatchResult } from './peer_server';
+import type { BishopDispatchResult, WorkLifecycle, WorkIssue } from './peer_server';
+import { getStablePeerId } from './peer-discovery';
+import {
+  writeBishopDispatchCompletionReply,
+  getDefaultReplyWriteConfig,
+  type BishopDispatchCompletionInput,
+} from './bishop_dispatch_reply';
 
 // ─── Ledger root (refuted-premise note, D-BP156-M0-008) ────────────────────────────────────
 //
@@ -70,8 +106,27 @@ function getSpawnLogPath(): string {
   return join(resolveLedgerRoot(), 'YOKE', 'HEARTBEAT', 'BISHOP_DISPATCH_SPAWN.beat');
 }
 
+// D-BP157-007, work item 1: the worker's own stdout/stderr, captured instead of discarded.
+// Alongside the existing YOKE/HEARTBEAT/ and YOKE/NOTICES/.spawned/ artifacts, named by the
+// EFFECTIVE (possibly HARDWIRE-25-suffixed, see claimEffectiveDispatchId below) dispatch id so a
+// successor reading a suffixed return/canoe/beat can find the matching log by the same id.
+function getWorkerLogDir(): string {
+  return join(resolveLedgerRoot(), 'YOKE', 'WORKER_LOGS');
+}
+
+function getWorkerLogPath(effectiveDispatchId: string): string {
+  return join(getWorkerLogDir(), `${effectiveDispatchId}.log`);
+}
+
 function nowUtc(): string {
   return new Date().toISOString();
+}
+
+/** Builds a single falsifiable `WorkIssue`, tying it to the evidence it was read off of --
+ *  matches peer_server.ts's own `transportIssue()` helper for the transport-level (ok:false)
+ *  side of the same status vocabulary (D-BP157-023, SEG_RETURN_BP157_015's design). */
+function makeIssue(code: string, message: string, evidence: string, observedBy: string): WorkIssue {
+  return { code, message, evidence, observedAtUtc: nowUtc(), observedBy };
 }
 
 // ─── Step 3: the yoke file write (unconditional) ────────────────────────────────────────────
@@ -228,6 +283,150 @@ function markSpawned(dispatchId: string): void {
   writeFileSync(join(dir, `${dispatchId}.spawned`), `${nowUtc()}\n`, 'utf8');
 }
 
+// ─── HARDWIRE-25: the claim protocol, closing the parent/child collision gap ────────────────
+//
+// D-BP157-007, work item 3. `hasAlreadySpawned()` above only dedupes THIS relay's own repeat
+// delivery of the same dispatch id -- it has no way to know a resident Bishop session, reached
+// through a different channel entirely, is already alive and working the identical id (the
+// measured BP156-M3-011 incident: two live actors, one dispatch id, one return path, "neither of
+// us knows the other exists" -- M3's own words, filed in D-BP156-M3-011_PARENT_SESSION.md).
+// HARDWIRE-25 (proposed D-BP157-003, ratified per FD-BP157-01) closes that gap: before this
+// handler lets a spawned worker write anything under a dispatch id, it claims that id via the
+// existing yoke_claim.sh atomic-create protocol (HARDWIRE-24 Section 5). If the bare id is
+// already claimed by a live actor, the spawned worker becomes a CHILD and is assigned a
+// deterministic -W1, -W2, ... suffix -- never a fresh top-level id, never random -- so a reader
+// can always find a child's output by appending -W<n> to the parent id in order.
+//
+// yoke_claim.sh is invoked, not reimplemented -- that is the entire point of HARDWIRE-25's own
+// wording. It runs under bash.
+//
+// D-BP157-014 CORRECTED the line above (previously: "DEFAULT_BASH_PATH below is the bare command
+// name so a PATH-resolved bash is used first, exactly the same portability idiom DEFAULT_CLI_PATH
+// already uses for `claude`"). That idiom was measured wrong twice over on this machine by the
+// Founder's own live run tonight (2026-08-18): a bare 'bash' resolves to
+// C:\Windows\System32\bash.exe (the WSL launcher stub), not a real Git-for-Windows bash, and
+// separately, a plausible manual LB_MESH_BASH_PATH override of C:\Program Files\Git\usr\bin\bash.exe
+// is ALSO wrong -- invoked directly (not from inside an already-configured bash), it starts WITHOUT
+// the MSYS PATH prepended, so coreutils including `date` are missing, which is exactly the failure
+// yoke_claim.sh hit 21 times in a row that run (see that script's own D-BP157-014 hardening of
+// now_utc()/expires_utc()/is_expired(), which now also fails loudly instead of silently on a
+// missing `date`). C:\Program Files\Git\bin\bash.exe is the one that sets up its own environment
+// (prepends /mingw64/bin:/usr/bin to PATH) and was empirically verified working, invoked directly,
+// on this machine this dispatch. Resolved in explicit, ordered preference below -- first existing
+// well-known Git-for-Windows bash location wins, bare 'bash' is the last-resort fallback so a
+// machine with none of the well-known layouts still attempts something rather than hard-failing at
+// import time. LB_MESH_BASH_PATH (see getBashPath() below) still overrides everything.
+
+const KNOWN_GIT_BASH_PATHS = [
+  'C:\\Program Files\\Git\\bin\\bash.exe',
+  'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+  join(homedir(), 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe'),
+];
+
+/** D-BP157-014: ordered default-bash resolution, first KNOWN_GIT_BASH_PATHS entry that exists on
+ *  disk wins; falls back to the bare command name (the old, now-measured-unreliable behavior) only
+ *  if none of the well-known locations exist. `existsFn` is injectable so tests can exercise the
+ *  ordering without depending on this machine's actual disk layout. */
+export function resolveDefaultBashPath(existsFn: (p: string) => boolean = existsSync): string {
+  for (const candidate of KNOWN_GIT_BASH_PATHS) {
+    if (existsFn(candidate)) return candidate;
+  }
+  return 'bash';
+}
+
+const DEFAULT_BASH_PATH = resolveDefaultBashPath();
+const DEFAULT_CLAIM_ACTOR = 'MNEMOSYNEC-AUTOSPAWN';
+const MAX_CHILD_SUFFIX_ATTEMPTS = 20;
+
+/** D-BP157-010: injectable so tests never actually shell out (see bishop_dispatch_handler.test.ts)
+ *  -- the default is the real node:child_process.execFileSync. Mirrors SpawnFn/spawnImpl exactly:
+ *  this is the ONLY function tryClaim() below touches to invoke yoke_claim.sh; every guardrail
+ *  and retry decision around it (tryClaim's try/catch, claimEffectiveDispatchId's suffix walk)
+ *  stays real code, exercised for real, with only the actual OS-level process creation faked. */
+export type ClaimExecFn = typeof execFileSync;
+
+export function getBashPath(): string {
+  const envVal = process.env.LB_MESH_BASH_PATH;
+  return envVal && envVal.trim().length > 0 ? envVal : DEFAULT_BASH_PATH;
+}
+
+/** Default derived from the ledger root, matching yoke_claim.sh's own directory convention
+ *  (HARDWIRE\tools\ sits alongside HARDWIRE\LEDGER\, the ledger root's parent) -- overridable
+ *  directly for a layout that does not follow that convention. */
+export function getYokeClaimScriptPath(): string {
+  const envVal = process.env.LB_MESH_YOKE_CLAIM_SCRIPT_PATH;
+  if (envVal && envVal.trim().length > 0) return envVal;
+  return join(resolveLedgerRoot(), '..', 'tools', 'yoke_claim.sh');
+}
+
+export function getClaimActor(): string {
+  const envVal = process.env.LB_MESH_CLAIM_ACTOR;
+  return envVal && envVal.trim().length > 0 ? envVal : DEFAULT_CLAIM_ACTOR;
+}
+
+/** Defaults to the spawn timeout expressed in whole hours (minimum 1) so a claim does not
+ *  meaningfully outlive the worker it was taken for; LB_MESH_CLAIM_TTL_HOURS overrides directly,
+ *  matching every other numeric guardrail's env-override idiom in this file. */
+export function getClaimTtlHours(): number {
+  const envVal = process.env.LB_MESH_CLAIM_TTL_HOURS;
+  const parsed = envVal ? Number.parseInt(envVal, 10) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return Math.max(1, Math.ceil(getSpawnTimeoutMs() / 3_600_000));
+}
+
+/** Invokes `yoke_claim.sh claim <id> <actor> <model> <ttlHours>` via claimImpl (execFileSync in
+ *  production) -- synchronous and short-lived (a single local file create), matching the rest of
+ *  this file's synchronous guardrail style. Exit code 0 means the claim was won; any non-zero
+ *  exit (already claimed, or the script/bash itself could not run) is reported back as ok:false
+ *  with whatever detail is available, never thrown past this function. */
+function tryClaim(
+  dispatchId: string,
+  actor: string,
+  model: string,
+  ttlHours: number,
+  claimImpl: ClaimExecFn,
+): { ok: boolean; detail: string } {
+  try {
+    const stdout = claimImpl(getBashPath(), [getYokeClaimScriptPath(), 'claim', dispatchId, actor, model, String(ttlHours)], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    return { ok: true, detail: stdout.trim() };
+  } catch (err) {
+    const e = err as { stderr?: Buffer | string; message?: string };
+    const detail = e.stderr ? String(e.stderr).trim() : (e.message ?? String(err));
+    return { ok: false, detail };
+  }
+}
+
+/** Resolves the EFFECTIVE dispatch id a spawned worker must use for every artifact it writes
+ *  (return, canoe, beat, worker log). Tries the bare id first; if it is already claimed by a
+ *  live actor, tries "<id>-W1", then "-W2", ... deterministically (never randomly) until a claim
+ *  is won or the attempt cap is reached. `claimed: false` on return means every attempt,
+ *  including the bare id, was refused -- the caller still gets an effectiveId (the last
+ *  candidate tried) to log honestly, but no claim file was actually written for it. */
+export function claimEffectiveDispatchId(
+  baseId: string,
+  actor: string,
+  model: string,
+  ttlHours: number,
+  claimImpl: ClaimExecFn,
+): { effectiveId: string; claimed: boolean; detail: string } {
+  let candidate = baseId;
+  for (let n = 0; n <= MAX_CHILD_SUFFIX_ATTEMPTS; n++) {
+    candidate = n === 0 ? baseId : `${baseId}-W${n}`;
+    const result = tryClaim(candidate, actor, model, ttlHours, claimImpl);
+    if (result.ok) {
+      return { effectiveId: candidate, claimed: true, detail: result.detail };
+    }
+    if (n === MAX_CHILD_SUFFIX_ATTEMPTS) {
+      return { effectiveId: candidate, claimed: false, detail: result.detail };
+    }
+  }
+  // Unreachable (the loop above always returns), kept only so TypeScript sees every path return.
+  return { effectiveId: candidate, claimed: false, detail: 'claim resolution fell through unexpectedly' };
+}
+
 // ─── Guardrail (e)/(f): concurrency cap and timeout ─────────────────────────────────────────
 
 const DEFAULT_MAX_CONCURRENT_SPAWNS = 2;
@@ -286,9 +485,11 @@ export function getSpawnPermissionMode(): string {
   return envVal && envVal.trim().length > 0 ? envVal : DEFAULT_PERMISSION_MODE;
 }
 
-/** Injectable so tests never actually spawn a process (see bishop_dispatch_handler.test.ts) --
- *  the default is the real node:child_process.spawn. This is the ONLY function in this file
- *  that touches process creation; every guardrail above it is a pure decision function. */
+/** Injectable so tests never actually spawn the CLI worker process (see
+ *  bishop_dispatch_handler.test.ts) -- the default is the real node:child_process.spawn. This is
+ *  the ONLY function in this file that creates the CLI worker's process; every guardrail above it
+ *  is a pure decision function. (D-BP157-010: ClaimExecFn/claimImpl above is the analogous
+ *  injection point for the separate yoke_claim.sh subprocess tryClaim() shells out to.) */
 export type SpawnFn = typeof spawn;
 
 /** D-BP156-M0-022: outcome of the bounded immediate-failure window below. `spawned: false`
@@ -300,7 +501,116 @@ export type SpawnFn = typeof spawn;
 export interface LaunchOutcome {
   spawned: boolean;
   error?: string;
+  /** D-BP157-023: which WorkIssue code the caller should file when spawned is false -- lets
+   *  handleBishopDispatch's final return distinguish a HARDWIRE-25 claim refusal from a real
+   *  process-launch failure without re-deriving that distinction from the error string. */
+  errorCode?: string;
+  /** D-BP157-023: the HARDWIRE-25 effective (possibly "-W<n>"-suffixed) id this launch attempt
+   *  actually used -- carried up into BishopDispatchResult.effectiveId so a later completion
+   *  reply can be matched to the right worker log by anyone reading the stage-1 reply alone. */
+  effectiveId?: string;
 }
+
+// ─── D-BP157-023, THE RETURN LEG (SEG_RETURN_BP157_015 Part 2) ─────────────────────────────────
+//
+// The core problem: bishop_dispatch_relay_listener.ts's poll tick resolves `handleEnvelope()`
+// after launchWorker's one-setImmediate-tick grace window -- milliseconds, never the worker's
+// real lifetime (up to LB_MESH_SPAWN_TIMEOUT_MS, default 30 minutes). The reply that tick posts
+// (writeBishopDispatchReply, stage:'launch') can therefore only ever prove lifecycle 'begun' or
+// 'failed', never 'completed'. This section is the SECOND, LATER write into the SAME already-
+// proven relay_route_replies bus, triggered by an event handler that already exists:
+// launchWorker's own `child.once('exit', ...)` below fires whenever the worker actually exits,
+// however long that takes, because it is a callback on the long-running MnemosyneC.exe process
+// that did the spawn -- NO NEW DAEMON is required on the receiving machine, this is one more
+// branch inside an event handler already registered every time a worker is launched.
+//
+// The worker is a one-shot `claude -p` process that knows nothing about the relay or about
+// route ids -- the only channel this file has into telling it "say when you're done" is the same
+// prompt-injection paragraph HARDWIRE-25 already uses for the child-actor notice (see
+// promptTextForChild below). COMPLETION_SENTINEL is that instruction's target string; a worker
+// that never prints it, even on a clean exit 0, reproduces the exact D-BP156-M3-011/
+// D-BP157-M3-002 shape this dispatch was built to stop being invisible: "code=0 is not evidence
+// of work" (M3's own words, SEG_RETURN_BP157_018 Part 6).
+
+export const COMPLETION_SENTINEL = 'BISHOP-DISPATCH-WORK-COMPLETE';
+
+/** Pure decision function -- the easiest thing to get exhaustively right, independently
+ *  testable without any process/file I/O (matches this file's own established idiom:
+ *  isOriginAllowed, isWorkingDirAllowed, isAutoSpawnEnabled are all pure too). Exported so
+ *  bishop_dispatch_handler.test.ts can exercise every branch directly against sample log
+ *  content, without needing a real child process or a real exit event.
+ *
+ *  Evidence table (SEG_RETURN_BP157_015 Part 1): a non-null `signal` means the OS killed the
+ *  process (the SPAWN_TIMEOUT_KILLED path, or an external kill) -- 'failed', never 'completed',
+ *  regardless of what the log contains. A non-zero exit code is the same: 'failed'. Only a clean
+ *  exit (code 0, no signal) with the sentinel actually present in the captured log counts as
+ *  'completed' -- a clean exit WITHOUT the sentinel is 'failed' with a NO_COMPLETION_SENTINEL
+ *  issue, which is deliberately the same shape D-BP156-M3-011/D-BP157-M3-002 already measured. */
+export function deriveCompletionOutcome(
+  effectiveId: string,
+  logContent: string | null,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): { lifecycle: WorkLifecycle; issues: WorkIssue[] } {
+  if (signal) {
+    return {
+      lifecycle: 'failed',
+      issues: [makeIssue(
+        'SPAWN_KILLED_BY_SIGNAL',
+        `worker process was killed by signal ${signal} before it could report completion`,
+        `effectiveId=${effectiveId} signal=${signal}`,
+        'launchWorker exit handler',
+      )],
+    };
+  }
+  if (code !== 0) {
+    return {
+      lifecycle: 'failed',
+      issues: [makeIssue(
+        'SPAWN_NONZERO_EXIT',
+        `worker process exited with non-zero code ${code ?? 'null'}`,
+        `effectiveId=${effectiveId} code=${code ?? 'null'}`,
+        'launchWorker exit handler',
+      )],
+    };
+  }
+  if (logContent && logContent.includes(COMPLETION_SENTINEL)) {
+    return { lifecycle: 'completed', issues: [] };
+  }
+  return {
+    lifecycle: 'failed',
+    issues: [makeIssue(
+      'NO_COMPLETION_SENTINEL',
+      'worker exited code 0 but the completion sentinel was never found in its captured log -- ' +
+        'the measured D-BP156-M3-011/D-BP157-M3-002 shape: a clean exit that produced zero ' +
+        'durable evidence of work. code=0 is not evidence of work.',
+      `effectiveId=${effectiveId} code=0 logBytes=${logContent?.length ?? 0}`,
+      'launchWorker exit handler',
+    )],
+  };
+}
+
+/** Everything the stage-2/completion write needs, already derived. Mirrors
+ *  bishop_dispatch_reply.ts's own BishopDispatchCompletionInput shape exactly (re-exported type,
+ *  not redefined) -- effectiveId/workerLogPointer/tailExcerpt are added by the exit handler
+ *  below, lifecycle/issues come straight from deriveCompletionOutcome. */
+export type CompletionReplyFn = (
+  routeId: string,
+  completion: BishopDispatchCompletionInput,
+  processingMs: number,
+) => Promise<boolean>;
+
+/** Production default: resolves this machine's own stable peer id (getStablePeerId(), the SAME
+ *  resolution bishop_dispatch_relay_listener.ts's own config.peerId already uses) and the same
+ *  anon-key config writeBishopDispatchReply's own getDefaultReplyWriteConfig() already resolves
+ *  -- no new credential path. Deliberately NEVER called by bishop_dispatch_handler.test.ts (every
+ *  test that reaches the exit-handler completion branch injects its own completionReplyImpl mock,
+ *  mirroring spawnImpl/claimImpl's existing injection discipline) so this file's stated "no real
+ *  process is ever spawned, no real network" OFFLINE guarantee extends to this seam too --
+ *  getStablePeerId()'s own fallback path shells out to a real `powershell` command, which must
+ *  never run inside this suite. */
+const defaultCompletionReplyImpl: CompletionReplyFn = (routeId, completion, processingMs) =>
+  writeBishopDispatchCompletionReply(getDefaultReplyWriteConfig(), routeId, getStablePeerId(), completion, processingMs);
 
 /** D-BP156-M0-022: how long launchWorker() waits, after calling spawnImpl(), before deciding
  *  what to report. NOT a wait for the worker's full lifetime (that can run up to
@@ -340,18 +650,123 @@ const SPAWN_IMMEDIATE_OUTCOME_GRACE = (): Promise<void> =>
  * one bounded grace window (see SPAWN_IMMEDIATE_OUTCOME_GRACE above) so the caller can report
  * what actually happened instead of what was merely attempted, without blocking on the worker's
  * full (up to 30-minute) lifetime.
+ *
+ * D-BP157-007: two further changes, both scoped to this function.
+ *   Work item 3 (HARDWIRE-25): before building argv, claims payload.dispatchId via
+ *   claimEffectiveDispatchId(). If the bare id is already held by a live actor (the resident-
+ *   session collision HARDWIRE-25 exists to close), the worker becomes a child under a
+ *   deterministic "-W<n>" suffix, and promptText gets one appended paragraph telling the worker
+ *   its effective id -- the only channel this function has into a one-shot `-p` worker's own
+ *   behavior, since promptText's content is not otherwise under this file's control.
+ *   Work item 1: stdio is no longer 'ignore'. A per-dispatch log file, named by the EFFECTIVE
+ *   (possibly suffixed) id, captures the worker's stdout+stderr via a real fd (fs.openSync),
+ *   never a pipe -- so there is no "unread pipe fills and blocks the child" hazard to guard
+ *   against. If the log file cannot be opened, that failure is logged to the beat file
+ *   (SPAWN_ATTEMPT, detail names the error) and stdio falls back to 'ignore' -- loud, not silent.
+ *
+ * D-BP157-010: `claimImpl` is now a required parameter here (threaded from handleBishopDispatch's
+ * defaulted `claimImpl: ClaimExecFn = execFileSync`), mirroring how `spawnImpl` is threaded --
+ * closes the gap D-BP157-007 flagged in its own return (tryClaim() called execFileSync
+ * unconditionally, silently breaking this test file's stated "no real process is ever spawned"
+ * guarantee for every test that reaches this function). Production default is unchanged: the real
+ * execFileSync, called the same way, with the same arguments, as before this dispatch.
  */
 async function launchWorker(
   payload: BishopDispatchPayload,
   spawnImpl: SpawnFn,
+  claimImpl: ClaimExecFn,
+  routeId: string | undefined,
+  completionReplyImpl: CompletionReplyFn,
 ): Promise<LaunchOutcome> {
   const cliPath = getSpawnCliPath();
+  const model = getSpawnModel();
+
+  // ─── HARDWIRE-25: claim the id before anything gets written under it ─────────────────────
+  const claimTtlHours = getClaimTtlHours();
+  const claimResult = claimEffectiveDispatchId(payload.dispatchId, getClaimActor(), model, claimTtlHours, claimImpl);
+  const effectiveId = claimResult.effectiveId;
+
+  // D-BP157-012: FAIL CLOSED. claimEffectiveDispatchId() walks the bare id, then up to
+  // MAX_CHILD_SUFFIX_ATTEMPTS deterministic "-W<n>" suffixes (see its own doc comment above), and
+  // reports claimed:false only when EVERY one of those attempts -- MAX_CHILD_SUFFIX_ATTEMPTS + 1
+  // total, bare id included -- was refused. D-BP157-010 found and DOCUMENTED (correctly left
+  // unfixed, out of its own scope) that launchWorker() proceeded to spawn anyway under that last,
+  // still-unclaimed candidate id -- the guard failed OPEN under exactly the contention HARDWIRE-25
+  // exists to close. Refuse here, before anything is built for a worker that would write under an
+  // id nothing actually holds a claim on: no argv, no worker-log open, no spawnImpl call, no entry
+  // in _activeSpawns. The refusal is logged as a distinct beat-file decision (SPAWN_REFUSED_
+  // UNCLAIMED, never folded into SPAWN_FAILED/SPAWN_ERROR) so an operator can tell "refused
+  // because the dispatch id could not be claimed" apart from "ran and did nothing" and from "never
+  // arrived."
+  if (!claimResult.claimed) {
+    const attemptsTried = MAX_CHILD_SUFFIX_ATTEMPTS + 1; // bare id + up to MAX_CHILD_SUFFIX_ATTEMPTS suffixes
+    const refusalDetail =
+      `dispatchId=${payload.dispatchId} attemptsTried=${attemptsTried} cap=${MAX_CHILD_SUFFIX_ATTEMPTS} ` +
+      `lastCandidate=${effectiveId} lastClaimDetail=${claimResult.detail}`;
+    logSpawnEvent({
+      dispatchId: payload.dispatchId,
+      originPeerId: payload.originPeerId,
+      decision: 'SPAWN_REFUSED_UNCLAIMED',
+      detail: refusalDetail,
+    });
+    return {
+      spawned: false,
+      errorCode: 'SPAWN_REFUSED_UNCLAIMED',
+      effectiveId,
+      error:
+        `HARDWIRE-25 claim refused: could not claim dispatch id "${payload.dispatchId}" after ` +
+        `${attemptsTried} attempts (bare id plus up to ${MAX_CHILD_SUFFIX_ATTEMPTS} deterministic ` +
+        `child suffixes); last candidate tried was "${effectiveId}" (${claimResult.detail}). ` +
+        `Refusing to spawn under an unclaimed id.`,
+    };
+  }
+
+  const childActorNotice = effectiveId === payload.dispatchId
+    ? ''
+    : `\n\n[HARDWIRE-25 CHILD ACTOR NOTICE] The dispatch id "${payload.dispatchId}" ` +
+      `is already claimed by a live actor (${claimResult.detail}). Per HARDWIRE-25, you are a CHILD ` +
+      `of that dispatch. Your effective dispatch id for every artifact you write -- return, canoe, ` +
+      `beat, and worker log -- is "${effectiveId}". Do not write to the bare id's path; write to the ` +
+      `"${effectiveId}" path instead.`;
+
+  // D-BP157-023, THE RETURN LEG: unconditionally appended (previously only appended for the
+  // HARDWIRE-25 child-notice branch above) -- every spawned worker, bare id or child, is told to
+  // print the sentinel when done, since every spawned worker's completion needs to be
+  // distinguishable from a clean exit that did nothing (see deriveCompletionOutcome above).
+  const completionInstruction =
+    `\n\n[BISHOP DISPATCH COMPLETION SENTINEL] When you have finished all requested work, print ` +
+    `the exact line "${COMPLETION_SENTINEL}" (with no other text on that line) as the very last ` +
+    `line of your output, so the dispatching machine can distinguish your work actually ` +
+    `finishing from your process merely exiting having done nothing.`;
+
+  const promptTextForChild = payload.promptText + childActorNotice + completionInstruction;
+
   const args = [
-    '-p', payload.promptText,
+    '-p', promptTextForChild,
     '--output-format', 'text',
-    '--model', getSpawnModel(),
+    '--model', model,
     '--permission-mode', getSpawnPermissionMode(),
   ];
+
+  // ─── Work item 1: open a real log file for the worker's stdout+stderr ────────────────────
+  const workerLogPath = getWorkerLogPath(effectiveId);
+  let logFd: number | null = null;
+  let logOpenError: string | null = null;
+  try {
+    mkdirSync(getWorkerLogDir(), { recursive: true });
+    logFd = openSync(workerLogPath, 'a');
+  } catch (err) {
+    logOpenError = err instanceof Error ? err.message : String(err);
+  }
+  const stdioOption: StdioOptions = logFd !== null ? ['ignore', logFd, logFd] : ['ignore', 'ignore', 'ignore'];
+
+  logSpawnEvent({
+    dispatchId: payload.dispatchId,
+    originPeerId: payload.originPeerId,
+    decision: 'SPAWN_ATTEMPT',
+    detail: `effectiveId=${effectiveId} claimed=${claimResult.claimed} claimDetail=${claimResult.detail} ` +
+      `workerLog=${logOpenError ? `OPEN_FAILED(${logOpenError}), falling back to stdio:ignore` : workerLogPath}`,
+  });
 
   _activeSpawns.add(payload.dispatchId);
   let settled = false;
@@ -362,24 +777,30 @@ async function launchWorker(
   };
 
   let child: ReturnType<SpawnFn>;
+  const spawnStartMs = Date.now(); // D-BP157-023: base for the eventual completion reply's processingMs
   try {
     child = spawnImpl(cliPath, args, {
       cwd: payload.workingDir,
       shell: false,
       windowsHide: true,
-      stdio: 'ignore',
+      stdio: stdioOption,
     });
   } catch (err) {
     finish();
+    if (logFd !== null) { try { closeSync(logFd); } catch { /* best-effort */ } }
     const detail = err instanceof Error ? err.message : String(err);
     logSpawnEvent({
       dispatchId: payload.dispatchId,
       originPeerId: payload.originPeerId,
       decision: 'SPAWN_FAILED',
-      detail,
+      detail: `effectiveId=${effectiveId} workerLog=${workerLogPath} ${detail}`,
     });
-    return { spawned: false, error: detail };
+    return { spawned: false, errorCode: 'SPAWN_FAILED', effectiveId, error: detail };
   }
+
+  // The child process duplicates logFd for its own use once spawned; close the parent's copy so
+  // a long-running MnemosyneC process does not leak a file descriptor per worker spawned.
+  if (logFd !== null) { try { closeSync(logFd); } catch { /* best-effort */ } }
 
   const timeoutMs = getSpawnTimeoutMs();
   const timer = setTimeout(() => {
@@ -388,7 +809,7 @@ async function launchWorker(
       dispatchId: payload.dispatchId,
       originPeerId: payload.originPeerId,
       decision: 'SPAWN_TIMEOUT_KILLED',
-      detail: `exceeded ${timeoutMs}ms`,
+      detail: `effectiveId=${effectiveId} workerLog=${workerLogPath} exceeded ${timeoutMs}ms`,
     });
   }, timeoutMs);
   timer.unref?.();
@@ -412,12 +833,44 @@ async function launchWorker(
         dispatchId: payload.dispatchId,
         originPeerId: payload.originPeerId,
         decision: 'SPAWN_EXITED',
-        detail: `code=${code ?? 'null'} signal=${signal ?? 'null'}`,
+        detail: `effectiveId=${effectiveId} workerLog=${workerLogPath} code=${code ?? 'null'} signal=${signal ?? 'null'}`,
       });
       // Exiting (even non-zero -- e.g. a downstream auth failure) still means the OS DID create
       // the process. That is the only claim `spawned` makes; whatever the worker did with its
       // life is a separate question this field does not answer.
-      settleOutcome({ spawned: true });
+      settleOutcome({ spawned: true, effectiveId });
+
+      // ─── D-BP157-023, THE RETURN LEG ────────────────────────────────────────────────────────
+      // This 'exit' listener already fires whenever the worker actually exits, however long that
+      // took (up to LB_MESH_SPAWN_TIMEOUT_MS) -- no new daemon, one more branch inside an event
+      // handler already registered above. Fire-and-forget: never awaited by, and never delays,
+      // settleOutcome above -- stage-1 (this function's own return) must stay fast, matching
+      // SPAWN_IMMEDIATE_OUTCOME_GRACE's own bounded-window contract.
+      void (async () => {
+        let logContent: string | null = null;
+        try {
+          logContent = readFileSync(workerLogPath, 'utf8');
+        } catch {
+          // Nothing captured -- e.g. the earlier log-open fallback to stdio:'ignore', or the
+          // worker wrote nothing before exiting. deriveCompletionOutcome treats null the same as
+          // "no sentinel found."
+        }
+        const { lifecycle: completionLifecycle, issues: completionIssues } =
+          deriveCompletionOutcome(effectiveId, logContent, code, signal);
+        if (!routeId) return; // no carrier to post a completion reply through (e.g. a future LAN carrier, or a direct/offline call)
+        const completion: BishopDispatchCompletionInput = {
+          effectiveId,
+          lifecycle: completionLifecycle,
+          issues: completionIssues,
+          workerLogPointer: `${effectiveId}.log`,
+          tailExcerpt: logContent ? logContent.slice(-4000) : '',
+        };
+        try {
+          await completionReplyImpl(routeId, completion, Date.now() - spawnStartMs);
+        } catch (err) {
+          console.warn('[bishop_dispatch_handler] completion reply write failed (non-fatal):', err);
+        }
+      })();
     });
     child.once('error', (err) => {
       clearTimeout(timer);
@@ -427,12 +880,12 @@ async function launchWorker(
         dispatchId: payload.dispatchId,
         originPeerId: payload.originPeerId,
         decision: 'SPAWN_ERROR',
-        detail,
+        detail: `effectiveId=${effectiveId} workerLog=${workerLogPath} ${detail}`,
       });
-      settleOutcome({ spawned: false, error: detail });
+      settleOutcome({ spawned: false, errorCode: 'SPAWN_ERROR', effectiveId, error: detail });
     });
 
-    void SPAWN_IMMEDIATE_OUTCOME_GRACE().then(() => settleOutcome({ spawned: true }));
+    void SPAWN_IMMEDIATE_OUTCOME_GRACE().then(() => settleOutcome({ spawned: true, effectiveId }));
   });
 
   return outcome;
@@ -469,17 +922,27 @@ export function logSpawnEvent(entry: SpawnLogEntry): void {
  * (Step 3, unconditional -- "the file IS the wake"). Then evaluates all seven spawn guardrails
  * in order, refusing (and logging the refusal) at the first one that fails, and only calling
  * launchWorker() when every guardrail passes.
+ *
+ * D-BP157-023: `routeId` (the relay_routes row id this dispatch arrived on, threaded all the way
+ * down from bishop_dispatch_relay_listener.ts) is optional and carrier-supplied -- when absent
+ * (a direct/offline call, or a future carrier that has no such id), the return leg's stage-2
+ * completion write is simply never attempted; every other guardrail and behavior is identical.
+ * `completionReplyImpl` defaults to the real network write and is only ever exercised via
+ * launchWorker's exit handler, long after this function has already returned.
  */
 export async function handleBishopDispatch(
   payload: BishopDispatchPayload,
   verifiedOriginPeerId: string | null,
   spawnImpl: SpawnFn = spawn,
+  claimImpl: ClaimExecFn = execFileSync,
+  routeId?: string,
+  completionReplyImpl: CompletionReplyFn = defaultCompletionReplyImpl,
 ): Promise<BishopDispatchResult> {
   const { path: noticePath, alreadyExisted } = writeYokeNoticeFile(payload, verifiedOriginPeerId);
 
   const refuse = (reason: string): BishopDispatchResult => {
     logSpawnEvent({ dispatchId: payload.dispatchId, originPeerId: payload.originPeerId, decision: 'REFUSED', detail: reason });
-    return { ok: true, spawned: false, reason, noticePath };
+    return { ok: true, lifecycle: 'refused', issues: [], spawned: false, reason, noticePath };
   };
 
   if (!isOriginAllowed(verifiedOriginPeerId)) {
@@ -518,11 +981,27 @@ export async function handleBishopDispatch(
   // launchWorker()'s bounded outcome (D-BP156-M0-022) so `spawned` reports what happened, not
   // merely what was attempted.
   logSpawnEvent({ dispatchId: payload.dispatchId, originPeerId: payload.originPeerId, decision: 'SPAWNED' });
-  const outcome = await launchWorker(payload, spawnImpl);
+  const outcome = await launchWorker(payload, spawnImpl, claimImpl, routeId, completionReplyImpl);
+  // D-BP157-023: this is STAGE 1 ONLY -- 'begun' means the OS created the process (or it already
+  // ran to completion inside the short grace window), never 'completed'. Proving 'completed'
+  // requires the worker's real exit, which launchWorker's own exit handler observes and posts as
+  // a SEPARATE, LATER reply (see writeBishopDispatchCompletionReply) -- this function has already
+  // returned by the time that happens for any real (non-instant) worker.
+  const issues: WorkIssue[] = outcome.spawned
+    ? []
+    : [makeIssue(
+        outcome.errorCode ?? 'SPAWN_ERROR',
+        outcome.error ?? 'unknown error',
+        `dispatchId=${payload.dispatchId} effectiveId=${outcome.effectiveId ?? payload.dispatchId}`,
+        'launchWorker',
+      )];
   return {
     ok: true,
+    lifecycle: outcome.spawned ? 'begun' : 'failed',
+    issues,
     spawned: outcome.spawned,
     reason: outcome.spawned ? 'spawned' : `spawn failed: ${outcome.error ?? 'unknown error'}`,
     noticePath,
+    effectiveId: outcome.effectiveId,
   };
 }

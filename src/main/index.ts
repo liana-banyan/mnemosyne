@@ -436,6 +436,12 @@ import { registerPlowDomainMeshHook } from './federation/plow_domain_wiring';
 // standalone-vs-in-process investigation (must run in-process: the Ed25519 signature needs the
 // real Electron app's persisted keypair).
 import { registerBishopDispatchSendIpc } from './federation/bishop_dispatch_send_ipc';
+// D-BP157-023: the return leg's M0-side PULL -- pollForBishopDispatchReply (bishop_dispatch_
+// reply.ts, D-BP156-M0-014) existed and was offline-tested but nothing ever called it (that
+// file's own header said so plainly). This is the call site: an IPC handler a person triggers
+// on demand, mirroring registerBishopDispatchSendIpc's shape exactly. See that file's header for
+// why a pull command, not a second background daemon.
+import { registerBishopDispatchPollIpc } from './federation/bishop_dispatch_poll_ipc';
 // D-BP156-M0-013: HARDWIRE-24 mesh, the inbound listener D-BP156-M0-008 left unbuilt -- polls
 // relay_routes for bishop_dispatch-shaped rows addressed to this peer and hands them to
 // handleInboundBishopDispatchEnvelope. See that file's header for the measured schema and the
@@ -5600,6 +5606,10 @@ ${args.teachingText}
   //    built and offline-tested (D-BP156-M0-016) but unreachable from anywhere until this
   //    dispatch. See bishop_dispatch_send_ipc.ts's header. ---------------------------------
   registerBishopDispatchSendIpc();
+  // -- D-BP157-023: the return leg's M0-side pull -- was built and offline-tested
+  //    (D-BP156-M0-014) but unreachable from anywhere until this dispatch. See
+  //    bishop_dispatch_poll_ipc.ts's header. -----------------------------------------------
+  registerBishopDispatchPollIpc();
 
   // -- app:request-quit (renderer-invokable graceful quit) --------------------
   ipcMain.handle('app:request-quit', () => { app.quit(); });

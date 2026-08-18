@@ -176,13 +176,16 @@ describe('pollBishopDispatchRoutesOnce', () => {
   test('a well-formed bishop_dispatch row is claimed, handed to the envelope handler, and marked answered', async () => {
     const row = makeRow();
     const { fetchImpl, calls } = makeFetchMock({ rows: [row] });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
 
     const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
 
     expect(summary).toMatchObject({ seen: 1, processed: 1, errored: 0, malformed: 0, expired: 0, claimLost: 0, skippedNotOurs: 0 });
     expect(handleEnvelope).toHaveBeenCalledTimes(1);
-    expect(handleEnvelope).toHaveBeenCalledWith(JSON.stringify({ iv: 'aa', ct: 'bb' }));
+    // D-BP157-023: handleEnvelope is now called with the row's own id as a second argument, so a
+    // later stage-2/completion reply (posted from inside launchWorker's exit handler) can be
+    // correlated back to this same route.
+    expect(handleEnvelope).toHaveBeenCalledWith(JSON.stringify({ iv: 'aa', ct: 'bb' }), row.id);
 
     const finalize = calls.find((c) => c.method === 'PATCH' && c.url.includes(`id=eq.${row.id}`) && !c.url.includes('status=eq.pending'));
     expect(finalize?.body).toEqual({ status: 'answered' });
@@ -191,7 +194,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
   test('an expired row (ttl_seconds) is skipped: never handed to the envelope handler, marked expired', async () => {
     const row = makeRow({ created_at: '2026-08-17T00:00:00.000Z', ttl_seconds: 150 });
     const { fetchImpl, calls } = makeFetchMock({ rows: [row] });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
 
     // nowMs is 10s after created_at in baseConfig; override to be well past the 150s ttl.
     const config = { ...baseConfig(fetchImpl, handleEnvelope), nowMs: () => new Date('2026-08-17T00:10:00.000Z').getTime() };
@@ -211,7 +214,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
       payload_json: { domain: 'chemistry', prompt: 'what is X?', question_id: 1, wire_format: 'json-legacy' },
     });
     const { fetchImpl, calls } = makeFetchMock({ rows: [mcRow] });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
 
     const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
 
@@ -224,7 +227,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
   test('a row already claimed by something else before we could (lost the conditional-claim race) is skipped, not re-fired', async () => {
     const row = makeRow();
     const { fetchImpl, calls } = makeFetchMock({ rows: [row], claimSucceeds: false });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
 
     const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
 
@@ -243,7 +246,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
     // not, once PATCHed away -- this directly exercises the claim gate that makes that true).
     const row = makeRow();
     const { fetchImpl: fetchTick1 } = makeFetchMock({ rows: [row], claimSucceeds: true });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
     const summary1 = await pollBishopDispatchRoutesOnce(baseConfig(fetchTick1, handleEnvelope), 1);
     expect(summary1.processed).toBe(1);
 
@@ -264,6 +267,8 @@ describe('pollBishopDispatchRoutesOnce', () => {
     // Mirrors bishop_dispatch_handler.ts's real refusal shape for guardrail (a), sender allowlist.
     const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({
       ok: true,
+      lifecycle: 'refused',
+      issues: [],
       spawned: false,
       reason: 'sender not on allowlist (verified=null, allowed=[1a78f7c9bdd5e830])',
     }));
@@ -279,7 +284,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
   test('a malformed inbound payload (envelope handler returns ok:false) never crashes the poll loop, marks error', async () => {
     const row = makeRow();
     const { fetchImpl, calls } = makeFetchMock({ rows: [row] });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: false, spawned: false, reason: 'decrypt failed: bad tag' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: false, lifecycle: 'failed', issues: [], spawned: false, reason: 'decrypt failed: bad tag' }));
 
     const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
 
@@ -303,7 +308,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
   test('a row with kind=bishop_dispatch but a malformed payload_encrypted is claimed and marked error, handler never called', async () => {
     const row = makeRow({ payload_json: { kind: 'bishop_dispatch', payload_encrypted: 42 } });
     const { fetchImpl, calls } = makeFetchMock({ rows: [row] });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
 
     const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
 
@@ -315,13 +320,13 @@ describe('pollBishopDispatchRoutesOnce', () => {
 
   test('a failed GET (non-2xx) never throws and returns an empty summary', async () => {
     const fetchImpl = (async () => new Response('server error', { status: 500 })) as unknown as FetchLike;
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
     await expect(pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1)).resolves.toMatchObject({ seen: 0 });
   });
 
   test('a network error on the GET never throws and returns an empty summary', async () => {
     const fetchImpl = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as FetchLike;
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
     await expect(pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1)).resolves.toMatchObject({ seen: 0 });
   });
 
@@ -329,7 +334,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
     const bishopRow = makeRow({ id: 'bishop-1' });
     const mcRow = makeRow({ id: 'mc-1', payload_json: { domain: 'physics', prompt: 'q' } });
     const { fetchImpl, calls } = makeFetchMock({ rows: [mcRow, bishopRow] });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
 
     const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
 
@@ -348,7 +353,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
   test('a successfully handled row writes a matching reply to relay_route_replies', async () => {
     const row = makeRow();
     const { fetchImpl, calls } = makeFetchMock({ rows: [row] });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned', noticePath: 'C:\\notices\\n1.json' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned', noticePath: 'C:\\notices\\n1.json' }));
 
     const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
 
@@ -366,7 +371,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
   test('an ok:false result (refusal) still writes its reply -- a refusal is a real, reportable outcome', async () => {
     const row = makeRow();
     const { fetchImpl, calls } = makeFetchMock({ rows: [row] });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: false, spawned: false, reason: 'sender not on allowlist' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: false, lifecycle: 'refused', issues: [], spawned: false, reason: 'sender not on allowlist' }));
 
     const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
 
@@ -390,7 +395,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
       if (url.includes('/rest/v1/relay_route_replies')) return new Response(null, { status: 201 });
       return new Response(null, { status: 500 });
     }) as unknown as FetchLike;
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: false, reason: 'file-write-only' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'refused', issues: [], spawned: false, reason: 'file-write-only' }));
 
     await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
 
@@ -404,7 +409,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
   test('a reply write FAILURE never blocks or alters the relay_routes finalize -- non-fatal by construction', async () => {
     const row = makeRow();
     const { fetchImpl, calls } = makeFetchMock({ rows: [row], replyWriteFails: true });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
 
     const summary = await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
 
@@ -416,7 +421,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
 
   test('the peer_presence heartbeat is written every tick, independent of whether any row was found', async () => {
     const { fetchImpl, calls } = makeFetchMock({ rows: [] });
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
 
     await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 7);
 
@@ -438,7 +443,7 @@ describe('startBishopDispatchRelayListener', () => {
       if (url.includes('/rest/v1/relay_routes')) return new Response(JSON.stringify([]), { status: 200 });
       return new Response(null, { status: 204 });
     }) as unknown as FetchLike;
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
     const config: BishopRelayListenerConfig = { peerId: PEER_ID, supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, handleEnvelope };
 
     const handle = startBishopDispatchRelayListener(config, 1000);
@@ -469,7 +474,7 @@ describe('startBishopDispatchRelayListener', () => {
       }
       return new Response(null, { status: 204 });
     }) as unknown as FetchLike;
-    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, spawned: true, reason: 'spawned' }));
+    const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
     const config: BishopRelayListenerConfig = { peerId: PEER_ID, supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, handleEnvelope };
 
     const handle = startBishopDispatchRelayListener(config, 1000); // interval shorter than the 5s fake GET

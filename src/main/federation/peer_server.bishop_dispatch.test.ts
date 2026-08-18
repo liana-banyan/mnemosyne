@@ -47,7 +47,7 @@ describe('handleInboundBishopDispatchEnvelope — malformed input never crashes'
     peerServer.registerPresenceConfig({
       peerId: 'self-peer-id', emailHash: null, wanSoccerballId: 'x', relaySessionId: 'x', supabaseUrl: 'x',
     });
-    peerServer.registerPeerServerHooks({ onBishopDispatch: async () => ({ ok: true, spawned: false, reason: 'stub' }) });
+    peerServer.registerPeerServerHooks({ onBishopDispatch: async () => ({ ok: true, lifecycle: 'refused', issues: [], spawned: false, reason: 'stub' }) });
     const encrypted = await encryptForRelay(JSON.stringify({ domain: 'chemistry', questions: [] }), 'self-peer-id');
     const result = await peerServer.handleInboundBishopDispatchEnvelope(encrypted);
     expect(result.ok).toBe(false);
@@ -60,7 +60,7 @@ describe('handleInboundBishopDispatchEnvelope — malformed input never crashes'
     peerServer.registerPresenceConfig({
       peerId: 'self-peer-id', emailHash: null, wanSoccerballId: 'x', relaySessionId: 'x', supabaseUrl: 'x',
     });
-    peerServer.registerPeerServerHooks({ onBishopDispatch: async () => ({ ok: true, spawned: false, reason: 'stub' }) });
+    peerServer.registerPeerServerHooks({ onBishopDispatch: async () => ({ ok: true, lifecycle: 'refused', issues: [], spawned: false, reason: 'stub' }) });
     const encrypted = await encryptForRelay(JSON.stringify({
       kind: 'bishop_dispatch', dispatchId: 'D-BP148-046', promptText: 'p', workingDir: 'C:\\wd', originPeerId: 'x',
     }), 'self-peer-id');
@@ -82,7 +82,7 @@ describe('handleInboundBishopDispatchEnvelope — malformed input never crashes'
 
   test('decrypting with a peer id that never registered presence is refused, not thrown', async () => {
     const peerServer = await import('./peer_server');
-    peerServer.registerPeerServerHooks({ onBishopDispatch: async () => ({ ok: true, spawned: false, reason: 'stub' }) });
+    peerServer.registerPeerServerHooks({ onBishopDispatch: async () => ({ ok: true, lifecycle: 'refused', issues: [], spawned: false, reason: 'stub' }) });
     // _peerId was never set in this fresh module instance (vi.resetModules() above) -- this is
     // the path under test.
     const result = await peerServer.handleInboundBishopDispatchEnvelope('anything');
@@ -107,7 +107,7 @@ describe('handleInboundBishopDispatchEnvelope — signed envelope verification',
     peerServer.registerPeerServerHooks({
       onBishopDispatch: async (payload, origin) => {
         receivedCalls.push({ payload, origin });
-        return { ok: true, spawned: false, reason: 'test-stub' };
+        return { ok: true, lifecycle: 'refused', issues: [], spawned: false, reason: 'test-stub' };
       },
     });
 
@@ -151,7 +151,7 @@ describe('handleInboundBishopDispatchEnvelope — signed envelope verification',
     peerServer.registerPeerServerHooks({
       onBishopDispatch: async (payload, origin) => {
         receivedCalls.push({ payload, origin });
-        return { ok: true, spawned: false, reason: 'test-stub' };
+        return { ok: true, lifecycle: 'refused', issues: [], spawned: false, reason: 'test-stub' };
       },
     });
 
@@ -195,7 +195,7 @@ describe('handleInboundBishopDispatchEnvelope — signed envelope verification',
     peerServer.registerPeerServerHooks({
       onBishopDispatch: async (_payload, origin) => {
         receivedCalls.push({ origin });
-        return { ok: true, spawned: false, reason: 'test-stub' };
+        return { ok: true, lifecycle: 'refused', issues: [], spawned: false, reason: 'test-stub' };
       },
     });
 
