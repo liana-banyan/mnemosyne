@@ -34,12 +34,19 @@
 //      strong model is installed -- explicit user/setting intent wins over the new default.
 //   6. resolveTier1Model: with no explicit pick and Ollama reachable, if llama3.3:70b is
 //      installed it is preferred over the fallback -- the actual "make local Ollama the first
-//      MODEL rung, strongest available" behavior this ticket adds. SKIPPED (not failed) if
-//      Ollama at 127.0.0.1:11434 is unreachable or llama3.3:70b is not installed on this
-//      machine -- this assertion is real-network-dependent by design (there is no mock
-//      injection point for ollamaManager in this file), consistent with this ticket's
-//      "measure, do not assert" mandate: it proves the real local daemon's real state, not a
-//      simulated one.
+//      MODEL rung, strongest available" behavior this ticket adds -- PROVIDED it fits detected
+//      VRAM. D-BP157-042/BISHOP/seg-close-loose-ends gated this rung against the same VRAM gate
+//      D-BP157-029 wired into the other three answer-time model chains (llama3.3:70b needs ~48
+//      GB, an ungated preference-on-install-alone was exactly the hazard the gate exists to
+//      prevent); this assertion now MEASURES the real detector's output (dist/main/hardware/
+//      ram_detector.js's own detectVramGbDetailed/requiredVramGb, the same functions
+//      resolveTier1Model's default detector uses) to decide which of the two outcomes (prefer
+//      llama3.3:70b, or step down to fallbackModel) is the correct one to assert, rather than
+//      assuming installed implies preferred. SKIPPED (not failed) if Ollama at
+//      127.0.0.1:11434 is unreachable or llama3.3:70b is not installed on this machine -- this
+//      assertion is real-network-dependent by design (there is no mock injection point for
+//      ollamaManager in this file), consistent with this ticket's "measure, do not assert"
+//      mandate: it proves the real local daemon's real state, not a simulated one.
 //   7. resolveTier1Model: with no explicit pick and Ollama unreachable (or the preferred model
 //      not installed), falls back to `fallbackModel` untouched -- never throws, never widens.
 //
@@ -160,12 +167,30 @@ try {
 }
 
 if (ollamaReachable && llama70bInstalled) {
+  // D-BP157-042/BISHOP/seg-close-loose-ends: MEASURE the real detector's output (same functions
+  // resolveTier1Model's own default detector uses) rather than assuming installed implies
+  // preferred -- llama3.3:70b is only preferred when it also fits detected VRAM.
+  const RAM_DETECTOR_DIST_PATH = path.join(__dirname, '..', '..', 'dist', 'main', 'hardware', 'ram_detector');
+  const { detectVramGbDetailed, requiredVramGb } = require(RAM_DETECTOR_DIST_PATH);
+  const detailed = detectVramGbDetailed();
+  const required = requiredVramGb('llama3.3:70b');
+  const fitsVram = detailed.vramGb === null || required === null || detailed.vramGb >= required;
+  const detail = `detected VRAM ${detailed.vramGb} GB (method=${detailed.method}, confidence=${detailed.confidence}), required ~${required} GB`;
+
   const noExplicitResult = await resolveTier1Model(undefined, FALLBACK_SENTINEL);
-  assert(
-    noExplicitResult === 'llama3.3:70b',
-    'no explicit pick + llama3.3:70b installed -> TIER 1 prefers llama3.3:70b over the fallback',
-    `got "${noExplicitResult}"`,
-  );
+  if (fitsVram) {
+    assert(
+      noExplicitResult === 'llama3.3:70b',
+      'no explicit pick + llama3.3:70b installed + fits detected VRAM -> TIER 1 prefers llama3.3:70b over the fallback',
+      `got "${noExplicitResult}"; ${detail}`,
+    );
+  } else {
+    assert(
+      noExplicitResult === FALLBACK_SENTINEL,
+      'no explicit pick + llama3.3:70b installed but does NOT fit detected VRAM (D-BP157-042 gate) -> TIER 1 steps down to fallbackModel',
+      `got "${noExplicitResult}"; ${detail}`,
+    );
+  }
 } else {
   skip(
     'no explicit pick + llama3.3:70b installed -> prefers llama3.3:70b',
