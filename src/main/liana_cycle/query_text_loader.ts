@@ -89,6 +89,25 @@ function resolveQueryFilePath(): string {
     const packagedPath = resolve(resourcesPath, 'liana_survey_queries.json');
     if (existsSync(packagedPath)) return packagedPath;
   }
+  // D-BP157-055/BISHOP/seg-restore-survey-queries: a plain `node <path>` invocation of a script
+  // that merely IMPORTS this module (e.g. a measurement driver launched from the Founder's home
+  // directory, not the repo root) has a `process.cwd()` that is NOT the repo root, so the
+  // cwd-relative candidate below silently resolved to the wrong drive location entirely
+  // (observed: "C:\Users\Administrator\resources\..." instead of the repo's resources/ dir).
+  // Anchor to THIS FILE's own location instead, which is stable regardless of the caller's cwd.
+  // Both the compiled `dist/main/liana_cycle/query_text_loader.js` and the source
+  // `src/main/liana_cycle/query_text_loader.ts` sit exactly three directories below the repo
+  // root (dist/main/liana_cycle -> dist/main -> dist -> repo root; src/main/liana_cycle ->
+  // src/main -> src -> repo root), so the same three-level walk up from `__dirname` lands on
+  // the repo root in both dev and compiled contexts, matching the packaged-vs-dev split
+  // env_loader.ts already establishes (multiple ordered candidates, first-found wins; see that
+  // file's `loadWorkingKeysEnv()`).
+  const repoRootRelativePath = resolve(__dirname, '..', '..', '..', 'resources', 'liana_survey_queries.json');
+  if (existsSync(repoRootRelativePath)) return repoRootRelativePath;
+  // Historical cwd-relative fallback -- kept so an already-working invocation (cwd IS the repo
+  // root: `npm run dev`, `electron .`, or a test runner launched from the repo root) is
+  // unaffected, and so the refusal-error path below still names a sensible last-resort path
+  // when the file genuinely does not exist anywhere.
   return resolve(process.cwd(), 'resources', 'liana_survey_queries.json');
 }
 
