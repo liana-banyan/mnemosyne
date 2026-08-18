@@ -14,6 +14,10 @@ import { app, ipcMain, BrowserWindow, Notification } from 'electron';
 // BP134 Yoke #29 Part 2: node-to-node propagation -- detect a newer peer, pull + verify
 // its installer against THIS SAME canonical manifest fetch's sha256 before ever trusting it.
 import { findNewerPeers, pullAndVerifyFromPeers, seedLocalArtifactCache } from './keys_engines/mesh_update_propagation';
+// D-BP157-035: the trust-root fix. Reuses the SAME Thorax Ed25519 verify primitive
+// peer_artifact_client.ts:144-149 already uses for peer-signed hashes (no second crypto
+// implementation, per SEG_RETURN_BP157_032_TRUST_ROOT_DESIGN.md Part C / Part 2.C).
+import { verifyFrame } from './thorax/sign_verify';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -171,11 +175,64 @@ function notifySecurityEvent(msg: string): void {
   console.error('[auto-update] SECURITY EVENT:', msg);
 }
 
-// ─── LB public key ───────────────────────────────────────────────────────────
-// Placeholder — compose with release-sign.yml workflow at build time.
-// When the EV cert + signing workflow lands, replace null with the bundled
-// Ed25519 public key (PEM string). SHA-256 is the enforced gate for v1.
-const LB_PUBLIC_KEY: string | null = null;
+// ─── LB Update Root public key registry (D-BP157-035) ─────────────────────────
+// SEG_RETURN_BP157_032_TRUST_ROOT_DESIGN.md Part 2.A/F, per FOUNDER RULING FD-BP157-12
+// ("use the certificate and the IP ledger — with the chaining that we designed for eblet
+// provenance"). This registry pins the LB Update Root Ed25519 public key(s) INSIDE the
+// application itself, compiled from this source file into dist/main/auto_update_scheduler.js,
+// which ships inside app.asar alongside the Authenticode-signed MnemosyneC.exe /
+// MnemosyneC-Setup-*.exe (scripts/sign.cjs, Azure Trusted Signing).
+//
+// HONEST SCOPE (MEASURED: package.json's electron-builder `build` block, read in full this
+// pass, sets `asar: true` but declares no `electronFuses` / asar-integrity configuration).
+// This means the Authenticode signature on the .exe does NOT, by default, cryptographically
+// bind the contents of app.asar (and therefore this constant) the way the design's Part A
+// aspirationally describes. What this registry DOES protect: a version_trust.json entry
+// cannot be trusted merely because it was served over HTTPS or because a peer offered it —
+// it must carry a valid Ed25519 signature from a keyId listed here. What it does NOT protect
+// (accepted residual risk, named explicitly in the design's Part G item 1, unchanged by this
+// dispatch): an attacker who ALREADY has write access to the install directory can overwrite
+// this compiled constant (and the rest of app.asar) without necessarily invalidating the
+// Authenticode signature on the .exe wrapper — closing that gap needs OS-level ACLs / Windows
+// Code Integrity (WDAC) or an electron-builder asar-integrity fuse, neither of which this
+// dispatch adds. Nor does this protect against compromise of the Azure Trusted Signing
+// account/CI secrets (a legitimately Microsoft-signed malicious binary), nor does it establish
+// any trust on a machine's very first install — this is an UPDATE-time trust root only.
+const PLACEHOLDER_KEY_SENTINEL = 'PLACEHOLDER_KEY_NOT_PROVISIONED_DO_NOT_TRUST';
+
+interface RootKeyEntry {
+  /** DER-encoded SPKI Ed25519 public key, lowercase hex — SAME encoding
+   *  ed25519_keypair.ts's getOrCreateKeypair() and sign_verify.ts's verifyFrame() already use
+   *  everywhere else in this codebase (no new key encoding invented). Or the sentinel above
+   *  when the real key has not yet been provisioned. */
+  publicKeyHex: string;
+  algorithm: 'ed25519';
+  status: 'active' | 'placeholder';
+}
+
+// keyId -> root key entry. Rotation (Part F): a compromised/retired keyId is simply removed
+// (or left present but never re-issued) in the NEXT Authenticode-signed app release — old,
+// already-published manifest entries signed under an old keyId remain verifiable as long as
+// that keyId stays in this map, so a machine that is offline across a rotation does not brick;
+// an unrecognized keyId is refused (fail closed), never silently accepted.
+//
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// 'lb-root-2026-01' below is a PLACEHOLDER keyId/entry, NOT a real provisioned root key. Per
+// this dispatch's ABSOLUTE CONSTRAINT ON KEY MATERIAL, no production root keypair was
+// generated, and no private key was created, printed, or stored anywhere by this change. This
+// placeholder MUST be replaced with a real, offline-generated Ed25519 public key (DER SPKI
+// hex) before any release ships with signature enforcement live. verifyManifestEntrySignature()
+// below REFUSES every manifest entry naming this keyId while it carries the sentinel value —
+// exactly like a missing or unknown keyId — so the update path fails closed, not open, until a
+// real key is provisioned.
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+const LB_PUBLIC_KEYS: Record<string, RootKeyEntry> = {
+  'lb-root-2026-01': {
+    publicKeyHex: PLACEHOLDER_KEY_SENTINEL,
+    algorithm: 'ed25519',
+    status: 'placeholder',
+  },
+};
 
 // ─── Download + SHA-256 + Ed25519 verify ─────────────────────────────────────
 
@@ -184,6 +241,92 @@ interface VersionEntry {
   url: string;
   sha256: string;
   signature?: string;
+  /** Which LB_PUBLIC_KEYS entry this signature was produced with. Mandatory for a signature
+   *  to be accepted — see verifyManifestEntrySignature(). */
+  keyId?: string;
+  /** Carried through from version_trust.json's per-entry tier field ('latest', etc.) and bound
+   *  into the signed canonical string so a signed entry cannot be silently relabeled to a
+   *  different tier without invalidating its signature. */
+  tier?: string;
+}
+
+/**
+ * Deterministic canonical string bound by the Ed25519 signature over a version_trust.json
+ * entry. Mirrors the existing `${version}:${hash}` canonical-string pattern
+ * peer_artifact_client.ts already uses for peer-signed hashes -- same shape, same reasoning:
+ * a fixed, unambiguous field order so signer and verifier always hash identical bytes.
+ * Exported so tests can construct valid signed fixtures without duplicating this format.
+ */
+export function canonicalManifestEntryString(entry: {
+  keyId?: string;
+  tier?: string;
+  version: string;
+  url: string;
+  sha256: string;
+}): string {
+  return `${entry.keyId ?? ''}:${entry.tier ?? 'latest'}:${entry.version}:${entry.url}:${entry.sha256}`;
+}
+
+export interface ManifestSignatureCheck {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * The hard, mandatory signature gate (Part C of the design). FAILS CLOSED on every path:
+ * missing signature, missing keyId, unknown keyId, or the still-placeholder key are ALL
+ * treated identically to a bad signature -- refuse, never warn-and-proceed.
+ *
+ * Reuses verifyFrame() from thorax/sign_verify.ts exactly as peer_artifact_client.ts:144-149
+ * already does for peer-signed artifact hashes -- no new crypto primitive. entry.signature is
+ * expected to be signFrame(canonicalManifestEntryString(entry), rootPrivateKeyHex): the
+ * canonical string with a 128-hex-char Ed25519 signature appended, matching the exact
+ * frameHex+signature wire shape sign_verify.ts already defines.
+ */
+export function verifyManifestEntrySignature(
+  entry: {
+    version?: string;
+    url?: string;
+    sha256?: string;
+    signature?: string;
+    keyId?: string;
+    tier?: string;
+  },
+  keyRegistry: Record<string, RootKeyEntry> = LB_PUBLIC_KEYS,
+): ManifestSignatureCheck {
+  if (!entry.version || !entry.url || !entry.sha256) {
+    return { ok: false, reason: 'incomplete manifest entry (missing version, url, or sha256)' };
+  }
+  if (!entry.signature || entry.signature.length === 0) {
+    return { ok: false, reason: 'missing signature' };
+  }
+  if (!entry.keyId || entry.keyId.length === 0) {
+    return { ok: false, reason: 'missing keyId' };
+  }
+  const keyEntry = keyRegistry[entry.keyId];
+  if (!keyEntry) {
+    return { ok: false, reason: `unknown keyId '${entry.keyId}'` };
+  }
+  if (keyEntry.status === 'placeholder' || keyEntry.publicKeyHex === PLACEHOLDER_KEY_SENTINEL) {
+    return { ok: false, reason: `keyId '${entry.keyId}' is still the placeholder root key -- not provisioned for release` };
+  }
+
+  const canonical = canonicalManifestEntryString({
+    keyId: entry.keyId,
+    tier: entry.tier,
+    version: entry.version,
+    url: entry.url,
+    sha256: entry.sha256,
+  });
+  try {
+    const verified = verifyFrame(entry.signature, keyEntry.publicKeyHex);
+    if (!verified.valid || verified.frameHex !== canonical) {
+      return { ok: false, reason: 'signature verification failed (bad signature, tampered manifest entry, or wrong key)' };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: `signature verification error: ${e}` };
+  }
 }
 
 async function downloadAndVerify(entry: VersionEntry): Promise<void> {
@@ -220,20 +363,27 @@ async function downloadAndVerify(entry: VersionEntry): Promise<void> {
     // Write to staged path
     fs.writeFileSync(stagedPath, buffer);
 
-    // Ed25519 signature verification (when LB_PUBLIC_KEY is bundled)
-    if (entry.signature && LB_PUBLIC_KEY) {
-      try {
-        const verify = crypto.createVerify('ed25519');
-        verify.update(buffer);
-        const valid = verify.verify(LB_PUBLIC_KEY, Buffer.from(entry.signature, 'hex'));
-        if (!valid) {
-          fs.unlinkSync(stagedPath);
-          throw new Error('Ed25519 signature verification failed — update rejected');
-        }
-      } catch (sigErr) {
-        if (fs.existsSync(stagedPath)) try { fs.unlinkSync(stagedPath); } catch { /* noop */ }
-        throw new Error(`Signature verification error: ${sigErr}`);
-      }
+    // Ed25519 signature verification over the MANIFEST ENTRY -- MANDATORY, fail closed.
+    // D-BP157-035: the two prior defects this fixes were (1) LB_PUBLIC_KEY was always null,
+    // so this gate was permanently inert, and (2) the old code used
+    // crypto.createVerify('ed25519'), which Node does not support for streaming verify at all
+    // (MEASURED on this machine's installed Node v24.11.0: `crypto.createVerify('ed25519')`
+    // constructs without error, but `.verify()` throws `TypeError: Invalid digest` -- it would
+    // have thrown on every real signed update, not merely no-op'd). This uses the same
+    // one-shot `crypto.verify(null, message, keyObject, signature)` shape sign_verify.ts's
+    // verifyFrame() already uses successfully elsewhere in this codebase.
+    //
+    // Same "write-then-delete" refusal pattern as the SHA-256 mismatch check above, before
+    // ever promoting the staged file to <version>.exe.ready -- this is the choke point BOTH
+    // checkAndMaybeDownload()'s site-download fallback AND approveMajorVersionUpdate() call
+    // through (D-BP157-030's major-version approve path), so this one gate protects both.
+    const sigCheck = verifyManifestEntrySignature(entry);
+    if (!sigCheck.ok) {
+      try { fs.unlinkSync(stagedPath); } catch { /* noop */ }
+      const msg = `Manifest signature check FAILED (${sigCheck.reason}) -- update REFUSED for v${entry.version}`;
+      appendUpdateHistory({ event: 'signature_rejected', version: entry.version, reason: sigCheck.reason });
+      notifySecurityEvent(msg);
+      throw new Error(msg);
     }
 
     // Promote staged → ready
@@ -243,7 +393,8 @@ async function downloadAndVerify(entry: VersionEntry): Promise<void> {
       event: 'download_complete',
       version: entry.version,
       sha256: actualSha,
-      signature_valid: entry.signature ? (LB_PUBLIC_KEY ? true : 'sha256_only') : 'n/a',
+      signature_valid: true,
+      keyId: entry.keyId,
     });
     notifyPatchReady(entry.version);
   } catch (e) {
@@ -273,7 +424,10 @@ function promoteVerifiedFileToReady(version: string, sourcePath: string): void {
 
 // ─── Check and maybe download ─────────────────────────────────────────────────
 
-async function checkAndMaybeDownload(): Promise<void> {
+// Exported (D-BP157-035) so a direct test can exercise the manifest-signature gate ahead of
+// the mesh path without needing the 6-hour polling loop -- same reasoning fetchLatestVersionTrustEntry
+// above was already exported for.
+export async function checkAndMaybeDownload(): Promise<void> {
   const cfg = getAutoUpdateConfig();
   if (!cfg.autoUpdates) return;
 
@@ -292,6 +446,7 @@ async function checkAndMaybeDownload(): Promise<void> {
         url?: string;
         sha256?: string;
         signature?: string;
+        keyId?: string;
       }>;
     };
 
@@ -313,6 +468,26 @@ async function checkAndMaybeDownload(): Promise<void> {
     if (cfg.majorVersionRequiresApproval && isMajorJump(currentVer, latestVer)) {
       notifyMajorAvailable(latestVer);
       return; // notification only, no auto-download
+    }
+
+    // D-BP157-035 / SEG_RETURN_BP157_032_TRUST_ROOT_DESIGN.md Part D: the manifest's sha256
+    // must be verified against the pinned root BEFORE it is trusted as the reference hash for
+    // EITHER the mesh path or the site path below -- otherwise an unsigned or tampered
+    // manifest entry could still steer this node to accept peer-served bytes matching an
+    // unverified hash (FD-BP156-04: LAN/mesh is a carrier, never a trust boundary; being
+    // offered by a peer must confer nothing). Once this passes, mesh delivery becomes strictly
+    // a transport optimization: pullAndVerifyFromPeers() below re-hashes what it actually
+    // downloaded against THIS SAME now-verified latestEntry.sha256, never a peer's
+    // self-reported hash (mesh_update_propagation.ts is untouched by this dispatch).
+    // downloadAndVerify() re-checks this same signature independently further down as
+    // defense-in-depth for the site-download path and for approveMajorVersionUpdate()'s
+    // separate manifest fetch.
+    const manifestSigCheck = verifyManifestEntrySignature(latestEntry);
+    if (!manifestSigCheck.ok) {
+      const msg = `version_trust.json 'latest' entry (v${latestVer}) failed signature verification (${manifestSigCheck.reason}) -- update REFUSED, mesh and site paths both skipped`;
+      appendUpdateHistory({ event: 'manifest_signature_rejected', version: latestVer, reason: manifestSigCheck.reason });
+      notifySecurityEvent(msg);
+      return;
     }
 
     // BP134 Yoke #29 Part 2: try the mesh before the site. peers advertising this exact
@@ -354,6 +529,8 @@ async function checkAndMaybeDownload(): Promise<void> {
         url: latestEntry.url,
         sha256: latestEntry.sha256,
         signature: latestEntry.signature,
+        keyId: latestEntry.keyId,
+        tier: latestEntry.tier,
       });
       // Seed this node's own artifact cache so it can serve latestVer onward to ITS
       // peers via peer_artifact_server -- this is what makes one site download cascade
@@ -401,7 +578,7 @@ export async function fetchLatestVersionTrustEntry(): Promise<VersionEntry | nul
       headers: { 'Cache-Control': 'no-cache' },
     });
     if (!resp.ok) return null;
-    const trust = (await resp.json()) as { versions?: Array<VersionEntry & { tier?: string }> };
+    const trust = (await resp.json()) as { versions?: Array<VersionEntry> };
     const latestEntry = trust.versions?.find((v) => v.tier === 'latest');
     if (!latestEntry?.version || !latestEntry.url || !latestEntry.sha256) return null;
     return latestEntry;
