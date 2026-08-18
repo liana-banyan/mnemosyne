@@ -543,10 +543,35 @@ export function detectVramGb(): number | null {
  * than silently patched. See SEG_RETURN_BP157_026_MODEL_WEIGHTS_MEASURED.md
  * for the full inventory, every number with its unit stated, and the
  * GPU/CPU split per model.
+ *
+ * RESOLUTION 2 -- D-BP157-031 / BISHOP / seg-vram-basis-formula: the
+ * double-count flagged directly above is now CLOSED with a `basis: 'disk' |
+ * 'resident'` field on ModelWeight, exactly as RESOLUTION's closing
+ * paragraph proposed. A `'disk'` weight (a bare file size) genuinely needs
+ * the KV-cache/activation overhead allowance added, because a resident load
+ * is bigger than its file. A `'resident'` weight (a live `ollama ps` /
+ * `GET /api/ps` measurement, as gemma2:2b, gemma2:9b, gemma4:12b, and
+ * llama3.1:8b all now are) already IS the loaded-and-running footprint --
+ * that measurement already contains whatever KV cache and activation
+ * buffers Ollama held for the run it was taken from. Applying the same 20%
+ * multiplier again on top double-counts it, which is exactly the defect
+ * that made "THE FOUNDER'S CASE" test fail. See requiredVramGb() below for
+ * the corrected, basis-conditional formula, and
+ * SEG_RETURN_BP157_031_VRAM_BASIS_FORMULA.md for the full before/after
+ * table and the arithmetic that makes THE FOUNDER'S CASE pass honestly.
  */
 interface ModelWeight {
   gb: number;
   measured: boolean; // false = scaled estimate, not read from a live source
+  // 'disk' = a weight/file size (e.g. GET /api/tags "size") -- needs the
+  // disk-to-resident overhead allowance added on top, because a loaded
+  // model is bigger than its file.
+  // 'resident' = a live loaded-model measurement (e.g. GET /api/ps
+  // "size_vram") -- the KV-cache/activation overhead is ALREADY INSIDE this
+  // number; applying the disk overhead allowance again would double-count
+  // it. Only a small headroom margin is added, for a reason distinct from
+  // that overhead -- see VRAM_RESIDENT_HEADROOM_GB below.
+  basis: 'disk' | 'resident';
 }
 
 // D-BP157-026 / BISHOP / seg-measure-model-weights, 2026-08-18, machine M0
@@ -568,23 +593,26 @@ interface ModelWeight {
 const MODEL_WEIGHTS_GB: Record<string, ModelWeight> = {
   // MEASURED, D-BP157-026, M0: GET /api/ps size_vram = 3,525,658,542 B =
   // 3.28 GiB, 100% GPU. Was 1.18 GB scaled disk estimate (measured: false).
-  'gemma2:2b': { gb: 3.28, measured: true },
+  // RESIDENT basis: this IS the loaded-and-running footprint already.
+  'gemma2:2b': { gb: 3.28, measured: true, basis: 'resident' },
   // UNCHANGED this dispatch -- not installed on M0, not re-measured. Value
   // is M3's D-BP157-025 measured resident size (via M3's own `ollama ps`),
   // not an M0 figure. See the FLAGGED-then-RESOLVED comment block above
   // this table: this is now the one ladder entry whose resident-vs-disk
   // basis was corrected by a DIFFERENT machine than the one that measures
-  // requiredVramGb() against it here.
-  'gemma2:9b': { gb: 7.1, measured: true },
+  // requiredVramGb() against it here. RESIDENT basis: 7.1 GB is M3's own
+  // `ollama ps` reading of the loaded model, not a file size.
+  'gemma2:9b': { gb: 7.1, measured: true, basis: 'resident' },
   // MEASURED, D-BP157-026, M0: GET /api/ps size_vram = 13,062,153,174 B =
   // 12.17 GiB, 100% GPU. Was 7.04 GB disk weight (measured: true, but on
   // the disk basis) -- this correction is what resolves the inversion
   // flagged by D-BP157-025 (required(gemma4:12b) now cleanly exceeds
-  // required(gemma2:9b) again; see the RESOLUTION comment above).
-  'gemma4:12b': { gb: 12.17, measured: true },
+  // required(gemma2:9b) again; see the RESOLUTION comment above). RESIDENT
+  // basis: loaded-and-running footprint, overhead already inside it.
+  'gemma4:12b': { gb: 12.17, measured: true, basis: 'resident' },
   // MEASURED, D-BP157-026, M0: GET /api/ps size_vram = 9,147,263,221 B =
-  // 8.52 GiB, 100% GPU. Was 4.58 GB disk weight.
-  'llama3.1:8b': { gb: 8.52, measured: true },
+  // 8.52 GiB, 100% GPU. Was 4.58 GB disk weight. RESIDENT basis.
+  'llama3.1:8b': { gb: 8.52, measured: true, basis: 'resident' },
   // NOT measured on a resident basis this dispatch. SKIPPED per this
   // dispatch's explicit safety mandate: 42 GB on disk against ~15.92 GB
   // real VRAM plus system RAM headroom that measured 19.68-32.55 GB free
@@ -593,26 +621,67 @@ const MODEL_WEIGHTS_GB: Record<string, ModelWeight> = {
   // 1.73x-2.16x disk-to-resident ratios MEASURED on the other three entries
   // this dispatch, llama3.3:70b's real resident size is plausibly in the
   // 70-85 GB range (INFERRED, not measured), far past what either this
-  // card or this machine's free RAM could hold. Still disk-weight-basis,
-  // `measured: true` in the pre-D-BP157-026 (disk) sense only -- treat the
+  // card or this machine's free RAM could hold. Still DISK basis --
+  // `measured: true` in the pre-D-BP157-026 (disk-file) sense only -- this
+  // is genuinely a file size, not a loaded-model reading, so it correctly
+  // gets the full disk-to-resident overhead added below. Treat the
   // required-VRAM figure derived from this entry as a FLOOR, not a ceiling.
-  'llama3.3:70b': { gb: 39.60, measured: true },
+  'llama3.3:70b': { gb: 39.60, measured: true, basis: 'disk' },
 };
 
+// Applied ONLY to basis: 'disk' entries -- a resident measurement already
+// contains this overhead (see the RESOLUTION 2 comment above MODEL_WEIGHTS_GB).
 const VRAM_OVERHEAD_FACTOR = 1.2;
 const VRAM_OVERHEAD_FLOOR_GB = 0.5;
+// D-BP157-031: a resident measurement already includes KV-cache/activation
+// overhead for the run it was captured from, but that run's context length
+// is not necessarily the longest context a real session will use, and the
+// measurement is a single sample, not a guaranteed ceiling. This is a
+// SEPARATE concern from VRAM_OVERHEAD_FACTOR/VRAM_OVERHEAD_FLOOR_GB above
+// (which model the disk-file-to-resident gap itself, a gap that does not
+// exist for an already-resident number) -- it is a small flat buffer for
+// context growth and measurement-to-measurement variance beyond what a
+// single sample captured, not a stand-in for the removed disk overhead.
+// Deliberately small and flat (not a percentage) so it cannot silently
+// re-introduce the double-count this dispatch exists to remove.
+const VRAM_RESIDENT_HEADROOM_GB = 0.5;
 // D-BP157-025 task 4: an unmeasured weight must be treated conservatively,
 // not optimistically -- a wrong-low estimate would let the gate say a model
 // "fits" when it might not, the exact failure class this gate exists to
-// prevent. Applied as an extra multiplier on TOP of the standard overhead
-// factor, only when the weight itself is a scaled estimate (measured: false).
+// prevent. Applied as an extra multiplier on TOP of the basis-appropriate
+// base figure, only when the weight itself is a scaled estimate
+// (measured: false), regardless of basis.
 const UNMEASURED_WEIGHT_SAFETY_MARGIN = 1.15;
 
-/** Required VRAM (GB) for a model, or null if the model isn't in the measured/estimated table. */
+/**
+ * Required VRAM (GB) for a model, or null if the model isn't in the
+ * measured/estimated table.
+ *
+ * D-BP157-031: the formula now branches on `basis`. A `'disk'` weight is a
+ * bare file size and genuinely needs the full KV-cache/activation overhead
+ * allowance added -- a resident load is bigger than its file. A
+ * `'resident'` weight is already a live loaded-model measurement; that
+ * overhead is already inside it, so only a small flat headroom margin is
+ * added instead (VRAM_RESIDENT_HEADROOM_GB), for context-growth/sample
+ * variance, not the same thing as the disk overhead being skipped.
+ *
+ * No-basis default: an entry reaching this function with a `basis` value
+ * other than the literal string 'resident' is treated as 'disk' -- the
+ * CONSERVATIVE choice. 'disk' applies the larger overhead and therefore
+ * reports a HIGHER required-VRAM figure, which can only make the gate step
+ * a model DOWN, never let an under-provisioned card accept one it can't
+ * hold. Defaulting the other way (treating an unrecognized/missing basis as
+ * 'resident') would silently skip real overhead on a weight that might
+ * still need it -- the permissive, unsafe direction -- so it is not done.
+ */
 export function requiredVramGb(model: string): number | null {
   const w = MODEL_WEIGHTS_GB[model];
   if (!w) return null;
-  const base = w.gb * VRAM_OVERHEAD_FACTOR + VRAM_OVERHEAD_FLOOR_GB;
+  const basis: 'disk' | 'resident' = w.basis === 'resident' ? 'resident' : 'disk';
+  const base =
+    basis === 'resident'
+      ? w.gb + VRAM_RESIDENT_HEADROOM_GB
+      : w.gb * VRAM_OVERHEAD_FACTOR + VRAM_OVERHEAD_FLOOR_GB;
   const withMargin = w.measured ? base : base * UNMEASURED_WEIGHT_SAFETY_MARGIN;
   return Math.round(withMargin * 10) / 10;
 }
