@@ -2442,6 +2442,13 @@ function AutomaticUpdatesSection() {
   const [showConsentModal, setShowConsentModal] = React.useState(false);
   const [showHistoryModal, setShowHistoryModal] = React.useState(false);
   const [pendingApproveVersion, setPendingApproveVersion] = React.useState<{ version: string; readyPath: string } | null>(null);
+  // D-BP157-030: mirrors pendingApproveVersion above -- the same review-then-explicit-click
+  // pattern, for the ONE event that never had a renderer listener at all (see this component's
+  // onAutoUpdateMajorAvailable subscription below, and auto_update_scheduler.ts's
+  // approveMajorVersionUpdate/declineMajorVersionUpdate for the main-process half).
+  const [pendingMajorVersion, setPendingMajorVersion] = React.useState<{ version: string } | null>(null);
+  const [currentAppVersion, setCurrentAppVersion] = React.useState<string>('');
+  const [majorDecision, setMajorDecision] = React.useState<{ state: 'idle' | 'processing' | 'error' | 'declined'; error?: string }>({ state: 'idle' });
 
   // Load config from main process on mount + migrate legacy key
   React.useEffect(() => {
@@ -2471,6 +2478,59 @@ function AutomaticUpdatesSection() {
     });
     return cleanup ?? undefined;
   }, []);
+
+  // D-BP157-030: subscribe to major-available events from main -- mirrors the
+  // onAutoUpdateApproveRequired subscription immediately above exactly. This is the listener
+  // that never existed: notifyMajorAvailable() (auto_update_scheduler.ts) has fired this event
+  // since M21, but until now nothing in the renderer ever called setPendingMajorVersion, so the
+  // "open MnemosyneC to review and install" notification text had no screen to send the user to.
+  React.useEffect(() => {
+    const cleanup = (window.amplify as any)?.onAutoUpdateMajorAvailable?.((data: { version: string }) => {
+      setMajorDecision({ state: 'idle' });
+      setPendingMajorVersion(data);
+    });
+    return cleanup ?? undefined;
+  }, []);
+
+  // Current version, for the "vA.B.C -> vX.Y.Z" review line -- same IPC every other version
+  // display in this app already uses (DiagnosticModeTab.tsx, MnemosyneTabView.tsx, etc.).
+  React.useEffect(() => {
+    (window.amplify as any)?.getAppVersion?.()
+      .then((v: { version: string } | undefined) => { if (v?.version) setCurrentAppVersion(v.version); })
+      .catch(() => { /* not available in web / dev */ });
+  }, []);
+
+  async function handleApproveMajorVersion(): Promise<void> {
+    if (!pendingMajorVersion) return;
+    setMajorDecision({ state: 'processing' });
+    try {
+      const result = await (window.amplify as any)?.approveMajorUpdate?.(pendingMajorVersion.version);
+      if (result?.ok) {
+        // Success routes into the ALREADY-BUILT pendingApproveVersion/"Install Now" flow via
+        // notifyApproveRequired() (main-process side) -- clear this banner, the "Update vX ready
+        // to install" one below will appear once that event lands.
+        setPendingMajorVersion(null);
+        setMajorDecision({ state: 'idle' });
+      } else {
+        setMajorDecision({ state: 'error', error: result?.error ?? 'Approval failed for an unknown reason.' });
+      }
+    } catch (e) {
+      setMajorDecision({ state: 'error', error: String(e) });
+    }
+  }
+
+  async function handleDeclineMajorVersion(): Promise<void> {
+    if (!pendingMajorVersion) return;
+    const version = pendingMajorVersion.version;
+    try {
+      await (window.amplify as any)?.declineMajorUpdate?.(version);
+    } catch { /* best-effort audit write; the decline still takes effect locally below */ }
+    // A real, recorded outcome (main process appended major_version_declined to the update
+    // history JSONL, readable via "View Update History") -- never a silent dismissal. The app
+    // stays on its current version; nothing further happens.
+    setPendingMajorVersion(null);
+    setMajorDecision({ state: 'declined' });
+  }
 
   async function persistCfg(updates: Partial<AutoUpdateConfig>): Promise<void> {
     const next = { ...cfg, ...updates };
@@ -2606,6 +2666,50 @@ function AutomaticUpdatesSection() {
                   </div>
                 </label>
               </div>
+
+              {/* D-BP157-030: Major-version review/approve banner -- the screen
+                  notifyMajorAvailable()'s OS notification ("open MnemosyneC to review and
+                  install") has promised since M21 but never had a listener until now. Shows
+                  current vs offered version, names it explicitly as a MAJOR/full version change
+                  (never conflated with the ordinary patch-ready banner below), and requires a
+                  deliberate click either way -- there is no default action. */}
+              {pendingMajorVersion && (
+                <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.3)' }}>
+                  <div style={{ fontSize: 10, color: '#f87171', fontWeight: 700, marginBottom: 2 }}>
+                    Major version update available
+                  </div>
+                  <div style={{ fontSize: 9, color: '#94a3b8', marginBottom: 6, lineHeight: 1.5 }}>
+                    {currentAppVersion ? `v${currentAppVersion} -> ` : ''}v{pendingMajorVersion.version} is a MAJOR version jump, not a routine patch.
+                    Review before approving -- this requires your explicit approval every time, regardless of your Automatic Updates setting above.
+                  </div>
+                  {majorDecision.state === 'error' && (
+                    <div style={{ fontSize: 9, color: '#f87171', marginBottom: 6 }}>
+                      {majorDecision.error ?? 'Approval failed.'}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      onClick={handleApproveMajorVersion}
+                      disabled={majorDecision.state === 'processing'}
+                      style={{ ...s.btn, background: 'rgba(248,113,113,0.15)', borderColor: 'rgba(248,113,113,0.4)', color: '#f87171', fontWeight: 700, opacity: majorDecision.state === 'processing' ? 0.6 : 1 }}
+                    >
+                      {majorDecision.state === 'processing' ? 'Downloading + verifying…' : `Approve v${pendingMajorVersion.version}`}
+                    </button>
+                    <button
+                      onClick={handleDeclineMajorVersion}
+                      disabled={majorDecision.state === 'processing'}
+                      style={{ ...s.btn, color: '#64748b' }}
+                    >
+                      Decline
+                    </button>
+                  </div>
+                </div>
+              )}
+              {majorDecision.state === 'declined' && !pendingMajorVersion && (
+                <div style={{ marginTop: 10, fontSize: 9, color: '#64748b' }}>
+                  Major version update declined. MnemosyneC remains on the current version.
+                </div>
+              )}
 
               {/* Pending approve notification */}
               {cfg.installTiming === 'approve' && pendingApproveVersion && (

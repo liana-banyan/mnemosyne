@@ -264,6 +264,11 @@ declare global {
       onAutoUpdatePatchReady: (cb: (data: { version: string }) => void) => () => void;
       onAutoUpdateMajorAvailable: (cb: (data: { version: string }) => void) => () => void;
       onAutoUpdateApproveRequired: (cb: (data: { version: string; readyPath: string }) => void) => () => void;
+      // D-BP157-030: the missing major-version review/approve action (closes the gap flagged in
+      // SEG_RETURN_BP157_027_MESH_UPDATE_CONSENT.md Part 1 -- onAutoUpdateMajorAvailable above
+      // had no renderer consumer and no main-process action for its own event).
+      approveMajorUpdate?: (version: string) => Promise<{ ok: boolean; error?: string }>;
+      declineMajorUpdate?: (version: string) => Promise<{ ok: boolean }>;
       // Mesh Trust / Peer Verification (D-BP148-038 Authorizations panel)
       getMeshTrustSettings?: () => Promise<{ allowUnauthenticatedLanDiscovery: boolean }>;
       setMeshTrustAllowUnauthenticatedLanDiscovery?: (allow: boolean) => Promise<{ allowUnauthenticatedLanDiscovery: boolean }>;

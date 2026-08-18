@@ -53,6 +53,7 @@
  * offline-tested so that caller can be added later without re-deriving this mechanism.
  */
 
+import { app } from 'electron';
 import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 import type { BishopDispatchResult, WorkLifecycle, WorkMaturity, WorkIssue } from './peer_server';
 
@@ -60,6 +61,51 @@ const BISHOP_DISPATCH_REPLY_KIND = 'bishop_dispatch_reply';
 const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
 const DEFAULT_POLL_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
+
+/**
+ * D-BP157-030, Item 1 (SEG_RETURN_BP157_027_MESH_UPDATE_CONSENT.md Part 4e / Part 5 items 1-2).
+ * MEASURED failure this session: M0 was on 0.9.23 while its source was 0.9.25, M3 was on 0.9.25
+ * lacking the latest commits, and NEITHER machine could see the other's version in a dispatch
+ * reply -- both reached wrong conclusions until a 56 MB bundle was manually searched to prove
+ * the gap. This is the fix: derive the responder's own version + dev/installed build kind from
+ * the REAL runtime, every time a reply is written, never a hardcoded literal.
+ *
+ * `buildKind` reuses this codebase's one existing IS_DEV convention verbatim
+ * (`auto_updater.ts:48`, `index.ts:540`: `NODE_ENV==='development' || !app.isPackaged`) so
+ * "installed" here means exactly what it means everywhere else in this app.
+ *
+ * Returns undefined -- never a fabricated value -- when `app` is unavailable, e.g. under vitest,
+ * where 'electron' resolves to a path STRING rather than the real module (MEASURED,
+ * node_modules/electron/index.js: `module.exports = getElectronPath()`), so destructuring `app`
+ * off it yields `undefined` and `app.getVersion()` throws. A reply written outside a real
+ * Electron main process simply omits the version fields rather than lying about them.
+ */
+function getResponderVersionInfo(): { appVersion: string; buildKind: 'dev' | 'installed' } | undefined {
+  try {
+    const appVersion = app.getVersion();
+    if (!appVersion) return undefined;
+    const buildKind: 'dev' | 'installed' =
+      process.env.NODE_ENV === 'development' || !app.isPackaged ? 'dev' : 'installed';
+    return { appVersion, buildKind };
+  } catch {
+    return undefined;
+  }
+}
+
+/** D-BP157-030: builds a single VERSION_SKEW WorkIssue, mirroring peer_server.ts's own
+ *  `transportIssue()` helper shape exactly (`code`/`message`/`evidence`/`observedAtUtc`/
+ *  `observedBy`) rather than inventing a new vocabulary. This is an OBSERVATION, never a
+ *  refusal -- a skewed peer still did its work; this only stops a reader from silently treating
+ *  a stale-code reply as equivalent evidence to a current-code one. */
+function versionSkewIssue(localVersion: string, responderVersion: string): WorkIssue {
+  return {
+    code: 'VERSION_SKEW',
+    message: `This reply came from a peer running a different app version than this machine -- treat its results as advisory, not equivalent evidence, until the version gap is understood.`,
+    evidence: `local=${localVersion} responder=${responderVersion}`,
+    observedAtUtc: new Date().toISOString(),
+    observedBy: 'pollForBishopDispatchReply',
+  };
+}
 
 /** Injectable so tests never touch a real network. Defaults to the real global fetch. */
 export type FetchLike = typeof fetch;
@@ -101,6 +147,16 @@ export interface BishopDispatchReplyAnswer {
   /** Present on `stage: 'completion'` rows only -- the last ~4000 chars of the worker's captured
    *  stdout+stderr, bounded so a large log never blows up this row's payload size. */
   tailExcerpt?: string;
+  /** D-BP157-030: the responder's own `app.getVersion()`, derived at write time, never
+   *  hardcoded. OPTIONAL so an older peer that predates this field still parses cleanly on
+   *  read -- a missing field means "peer too old to report," not a parse error. */
+  responderVersion?: string;
+  /** D-BP157-030: 'dev' when running from source (`NODE_ENV==='development' || !app.isPackaged`,
+   *  this codebase's one existing IS_DEV convention), 'installed' otherwise. Tonight both the bare
+   *  version number AND this distinction mattered -- M0 was a dev build one version behind its
+   *  own source tree, and a bare semver alone would have hidden that. OPTIONAL for the same
+   *  older-peer reason as `responderVersion`. */
+  responderBuildKind?: 'dev' | 'installed';
 }
 
 /**
@@ -119,6 +175,7 @@ export async function writeBishopDispatchReply(
   processingMs: number,
 ): Promise<boolean> {
   const fetchImpl = config.fetchImpl ?? fetch;
+  const versionInfo = getResponderVersionInfo();
   const answer: BishopDispatchReplyAnswer = {
     kind: BISHOP_DISPATCH_REPLY_KIND,
     stage: 'launch',
@@ -130,6 +187,7 @@ export async function writeBishopDispatchReply(
     reason: result.reason,
     ...(result.noticePath !== undefined ? { noticePath: result.noticePath } : {}),
     ...(result.effectiveId !== undefined ? { effectiveId: result.effectiveId } : {}),
+    ...(versionInfo ? { responderVersion: versionInfo.appVersion, responderBuildKind: versionInfo.buildKind } : {}),
   };
   try {
     const res = await fetchImpl(`${config.supabaseUrl}/rest/v1/relay_route_replies`, {
@@ -185,6 +243,7 @@ export async function writeBishopDispatchCompletionReply(
   processingMs: number,
 ): Promise<boolean> {
   const fetchImpl = config.fetchImpl ?? fetch;
+  const versionInfo = getResponderVersionInfo();
   const answer: BishopDispatchReplyAnswer = {
     kind: BISHOP_DISPATCH_REPLY_KIND,
     stage: 'completion',
@@ -196,6 +255,7 @@ export async function writeBishopDispatchCompletionReply(
     effectiveId: completion.effectiveId,
     workerLogPointer: completion.workerLogPointer,
     tailExcerpt: completion.tailExcerpt,
+    ...(versionInfo ? { responderVersion: versionInfo.appVersion, responderBuildKind: versionInfo.buildKind } : {}),
   };
   try {
     const res = await fetchImpl(`${config.supabaseUrl}/rest/v1/relay_route_replies`, {
@@ -244,6 +304,31 @@ export function isBishopDispatchReply(
 }
 
 /**
+ * D-BP157-030, Item 1's read-side half: this is "where a reply is received" in this codebase
+ * today -- Part 3 of SEG_RETURN_BP157_027_MESH_UPDATE_CONSENT.md found no conductor-side
+ * UI/IPC consumer exists yet for ANY reply field, so `pollForBishopDispatchReply` (this
+ * function's caller) is the one real "reply received" point to annotate. If the reply carries a
+ * `responderVersion` and it differs from THIS machine's own (derived the same way, via
+ * `getResponderVersionInfo()`), append one `VERSION_SKEW` WorkIssue to a COPY of the answer's
+ * `issues` array -- never mutates the row read off the wire, and never touches `ok`/`lifecycle`/
+ * `spawned`. This is deliberately observation-only: a skewed peer still did its work; a future
+ * conductor-side reader is simply stopped from silently treating a stale-code reply as
+ * equivalent evidence to a current-code one, without this ever becoming a refusal or a new
+ * denial-of-service vector against the mesh (mirrors the design doc's Part 4e explicitly).
+ * When either version is unavailable (e.g. this machine's own `app` is unreachable, matching
+ * `getResponderVersionInfo()`'s own defensive return), no issue is added -- absence of a
+ * comparison is not evidence of no skew, so this never fabricates a false "clean" result either.
+ */
+function annotateVersionSkew(answer: BishopDispatchReplyAnswer): BishopDispatchReplyAnswer {
+  const localVersion = getResponderVersionInfo()?.appVersion;
+  if (!localVersion || !answer.responderVersion || answer.responderVersion === localVersion) {
+    return answer;
+  }
+  const existingIssues = Array.isArray(answer.issues) ? answer.issues : [];
+  return { ...answer, issues: [...existingIssues, versionSkewIssue(localVersion, answer.responderVersion)] };
+}
+
+/**
  * Bounded poll for the reply to a specific bishop_dispatch relay_routes row, mirroring
  * wan_dispatch.ts's pollForReply() (same table, same anon-key auth, same "poll until deadline or
  * found" shape). Never throws; returns null on timeout or if a non-bishop_dispatch-reply row is
@@ -276,7 +361,7 @@ export async function pollForBishopDispatchReply(
       const rows = (await res.json()) as Array<{ answer_json: Record<string, unknown> | null; processing_ms: number }>;
       const row = rows[0];
       if (row && isBishopDispatchReply(row.answer_json)) {
-        return { answer: row.answer_json, processingMs: row.processing_ms };
+        return { answer: annotateVersionSkew(row.answer_json), processingMs: row.processing_ms };
       }
     } catch {
       // Transient poll error -- keep trying until deadline, matching wan_dispatch.ts's

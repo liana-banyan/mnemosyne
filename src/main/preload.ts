@@ -428,6 +428,14 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.on('auto-update-approve-required', handler);
     return () => ipcRenderer.removeListener('auto-update-approve-required', handler);
   },
+  // D-BP157-030: the missing major-version consent action -- mirrors approveAutoUpdateInstall's
+  // shape but round-trips ok/error since a major-version approval does real network I/O
+  // (re-fetch + download + SHA-256 verify) that can fail, unlike the fire-and-forget install-an-
+  // already-staged-file case above.
+  approveMajorUpdate: (version: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('approve-major-update', version),
+  declineMajorUpdate: (version: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('decline-major-update', version),
 
   onUpdateStateChanged: (cb: (state: UpdateState) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: UpdateState) => cb(state);
