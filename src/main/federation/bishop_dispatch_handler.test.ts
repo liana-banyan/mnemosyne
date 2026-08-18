@@ -18,6 +18,10 @@ import { tmpdir } from 'node:os';
 import type { BishopDispatchPayload } from './mic_dispatcher';
 
 let TEST_LEDGER_ROOT: string;
+// D-BP157-033: mesh_auto_spawn_consent.ts persists under %APPDATA%\MnemosyneC\config\ -- pointed
+// at a fresh tmpdir per test, exactly like TEST_LEDGER_ROOT, so this suite never touches a real
+// %APPDATA% and so consent state never leaks between tests.
+let TEST_APPDATA: string;
 const ORIGINAL_ENV: Record<string, string | undefined> = {};
 
 function snapshotAndClearEnv(keys: string[]): void {
@@ -37,6 +41,10 @@ const ENV_KEYS = [
   'LB_LEDGER_ROOT', 'LB_MESH_AUTO_SPAWN_ENABLED', 'LB_MESH_ALLOWED_ORIGINS',
   'LB_MESH_ALLOWED_WORKDIR_ROOT', 'LB_MESH_MAX_CONCURRENT_SPAWNS', 'LB_MESH_SPAWN_TIMEOUT_MS',
   'LB_MESH_SPAWN_CLI_PATH', 'LB_MESH_SPAWN_MODEL', 'LB_MESH_SPAWN_PERMISSION_MODE',
+  // D-BP157-033: the new consent gate's own persistence env var (mesh_auto_spawn_consent.ts
+  // reads %APPDATA%, same as this suite points LB_LEDGER_ROOT at a fresh tmpdir) plus the
+  // elevated-mode override, snapshotted/cleared/restored exactly like every other guardrail knob.
+  'APPDATA', 'LB_MESH_SPAWN_ELEVATED_PERMISSION_MODE',
 ];
 
 /** A fake ChildProcess that never exits on its own (tests that need it to "exit" call
@@ -90,11 +98,24 @@ function makePayload(overrides: Partial<BishopDispatchPayload> = {}): BishopDisp
   };
 }
 
+/** D-BP157-033: writes mesh_auto_spawn_consent.ts's own persisted settings file directly, at
+ *  its own documented path convention, under the given %APPDATA% root -- deliberately NOT
+ *  importing that module and calling its setter, so these tests exercise
+ *  bishop_dispatch_handler.ts's consumption of the setting through the real on-disk shape a
+ *  renderer-driven write would actually produce, not a shared in-memory shortcut. */
+function writeConsentSettings(appdataRoot: string, consentGranted: boolean): void {
+  const dir = join(appdataRoot, 'MnemosyneC', 'config');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'mesh_auto_spawn_consent.json'), JSON.stringify({ consentGranted }), 'utf8');
+}
+
 beforeEach(() => {
   vi.resetModules();
   snapshotAndClearEnv(ENV_KEYS);
   TEST_LEDGER_ROOT = mkdtempSync(join(tmpdir(), 'bishop-dispatch-test-'));
+  TEST_APPDATA = mkdtempSync(join(tmpdir(), 'bishop-dispatch-appdata-test-'));
   process.env.LB_LEDGER_ROOT = TEST_LEDGER_ROOT;
+  process.env.APPDATA = TEST_APPDATA;
   // Default the allowed-workdir-root to this test's own tmpdir so makePayload()'s default
   // workingDir (under TEST_LEDGER_ROOT) passes the allowlist guardrail by default -- tests that
   // specifically exercise the workdir guardrail override this explicitly.
@@ -105,6 +126,7 @@ beforeEach(() => {
 afterEach(() => {
   restoreEnv();
   try { rmSync(TEST_LEDGER_ROOT, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  try { rmSync(TEST_APPDATA, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
 });
 
 describe('resolveLedgerRoot', () => {
@@ -312,6 +334,140 @@ describe('isAutoSpawnEnabled — kill switch, default DISABLED', () => {
   });
 });
 
+// D-BP157-033: the pure truth table -- both the kill switch AND the new mesh auto-spawn consent
+// toggle must be true before the elevated permission mode is used. No I/O, no spawn, no claim --
+// exercises resolveEffectivePermissionMode() directly against all four cells.
+describe('resolveEffectivePermissionMode -- D-BP157-033 consent-gated elevated permission mode', () => {
+  test('kill switch ON, consent OFF -> restrictive default mode, not elevated (today\'s unchanged behavior)', async () => {
+    const { resolveEffectivePermissionMode, getSpawnPermissionMode } = await import('./bishop_dispatch_handler');
+    expect(resolveEffectivePermissionMode(true, false)).toEqual({ mode: getSpawnPermissionMode(), elevated: false });
+  });
+
+  test('kill switch OFF, consent ON -> restrictive default mode, not elevated (consent alone is never sufficient)', async () => {
+    const { resolveEffectivePermissionMode, getSpawnPermissionMode } = await import('./bishop_dispatch_handler');
+    expect(resolveEffectivePermissionMode(false, true)).toEqual({ mode: getSpawnPermissionMode(), elevated: false });
+  });
+
+  test('both OFF -> restrictive default mode, not elevated', async () => {
+    const { resolveEffectivePermissionMode, getSpawnPermissionMode } = await import('./bishop_dispatch_handler');
+    expect(resolveEffectivePermissionMode(false, false)).toEqual({ mode: getSpawnPermissionMode(), elevated: false });
+  });
+
+  test('both ON -> elevated bypassPermissions mode -- the only combination that ever elevates', async () => {
+    const { resolveEffectivePermissionMode, getElevatedSpawnPermissionMode } = await import('./bishop_dispatch_handler');
+    expect(resolveEffectivePermissionMode(true, true)).toEqual({ mode: getElevatedSpawnPermissionMode(), elevated: true });
+  });
+
+  test('getSpawnPermissionMode default is the literal string "default" -- CONFIRMS the D-BP157-033 diagnosis', async () => {
+    const { getSpawnPermissionMode } = await import('./bishop_dispatch_handler');
+    expect(getSpawnPermissionMode()).toBe('default');
+  });
+
+  test('getElevatedSpawnPermissionMode default is "bypassPermissions", one of the four modes `claude --help` accepts', async () => {
+    const { getElevatedSpawnPermissionMode } = await import('./bishop_dispatch_handler');
+    expect(getElevatedSpawnPermissionMode()).toBe('bypassPermissions');
+  });
+
+  test('LB_MESH_SPAWN_ELEVATED_PERMISSION_MODE overrides only the elevated cell, restrictive cell unaffected', async () => {
+    process.env.LB_MESH_SPAWN_ELEVATED_PERMISSION_MODE = 'acceptEdits';
+    const { resolveEffectivePermissionMode } = await import('./bishop_dispatch_handler');
+    expect(resolveEffectivePermissionMode(true, true)).toEqual({ mode: 'acceptEdits', elevated: true });
+    expect(resolveEffectivePermissionMode(true, false)).toEqual({ mode: 'default', elevated: false });
+  });
+});
+
+describe('handleBishopDispatch -- D-BP157-033 consent gate, coupled with the kill switch', () => {
+  test('kill switch ON, consent OFF: still spawns (unchanged behavior), argv carries the restrictive mode, and a MESH_AUTO_SPAWN_CONSENT_NOT_GRANTED issue is legible in the reply', async () => {
+    process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
+    writeConsentSettings(TEST_APPDATA, false);
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const fakeChild = makeFakeChild();
+    const spawnImpl = vi.fn().mockReturnValue(fakeChild);
+    const claimImpl = makeControllableClaimImpl(0);
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never, claimImpl as never);
+
+    expect(result.spawned).toBe(true);
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[], Record<string, unknown>];
+    const modeIdx = args.indexOf('--permission-mode');
+    expect(modeIdx).toBeGreaterThanOrEqual(0);
+    expect(args[modeIdx + 1]).toBe('default');
+
+    const issue = result.issues.find((i) => i.code === 'MESH_AUTO_SPAWN_CONSENT_NOT_GRANTED');
+    expect(issue).toBeDefined();
+    expect(issue!.evidence).toMatch(/permissionMode=default/);
+    expect(issue!.evidence).toMatch(/consentGranted=false/);
+    expect(result.issues.find((i) => i.code === 'MESH_AUTO_SPAWN_CONSENT_GRANTED')).toBeUndefined();
+  });
+
+  test('consent ON, kill switch OFF: never spawns -- the kill switch alone gates whether launchWorker is reached at all', async () => {
+    // LB_MESH_AUTO_SPAWN_ENABLED intentionally left unset (disabled by default).
+    writeConsentSettings(TEST_APPDATA, true);
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const spawnImpl = vi.fn();
+    const claimImpl = vi.fn();
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never, claimImpl as never);
+
+    expect(result.spawned).toBe(false);
+    expect(result.lifecycle).toBe('refused');
+    expect(result.reason).toMatch(/auto-spawn kill switch is disabled/);
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(claimImpl).not.toHaveBeenCalled();
+    // No permission-mode decision was ever reached, so neither consent issue code appears --
+    // this refusal must read as "kill switch off," never silently reuse a consent-shaped code.
+    expect(result.issues.find((i) => i.code === 'MESH_AUTO_SPAWN_CONSENT_GRANTED')).toBeUndefined();
+    expect(result.issues.find((i) => i.code === 'MESH_AUTO_SPAWN_CONSENT_NOT_GRANTED')).toBeUndefined();
+  });
+
+  test('both ON: spawns, argv carries the elevated bypassPermissions mode, and a MESH_AUTO_SPAWN_CONSENT_GRANTED issue is legible in the reply', async () => {
+    process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
+    writeConsentSettings(TEST_APPDATA, true);
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const fakeChild = makeFakeChild();
+    const spawnImpl = vi.fn().mockReturnValue(fakeChild);
+    const claimImpl = makeControllableClaimImpl(0);
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never, claimImpl as never);
+
+    expect(result.spawned).toBe(true);
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[], Record<string, unknown>];
+    const modeIdx = args.indexOf('--permission-mode');
+    expect(args[modeIdx + 1]).toBe('bypassPermissions');
+
+    const issue = result.issues.find((i) => i.code === 'MESH_AUTO_SPAWN_CONSENT_GRANTED');
+    expect(issue).toBeDefined();
+    expect(issue!.evidence).toMatch(/permissionMode=bypassPermissions/);
+    expect(issue!.evidence).toMatch(/consentGranted=true/);
+  });
+
+  test('both OFF: never spawns, matching the pre-existing kill-switch-off behavior', async () => {
+    writeConsentSettings(TEST_APPDATA, false);
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const spawnImpl = vi.fn();
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never);
+
+    expect(result.spawned).toBe(false);
+    expect(result.reason).toMatch(/auto-spawn kill switch is disabled/);
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+
+  test('no consent settings file on disk at all (fresh install): treated as OFF, same as explicit false', async () => {
+    process.env.LB_MESH_AUTO_SPAWN_ENABLED = 'true';
+    // Deliberately no writeConsentSettings() call -- TEST_APPDATA has no
+    // MnemosyneC\config\mesh_auto_spawn_consent.json at all.
+    const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
+    const fakeChild = makeFakeChild();
+    const spawnImpl = vi.fn().mockReturnValue(fakeChild);
+    const claimImpl = makeControllableClaimImpl(0);
+    const result = await handleBishopDispatch(makePayload(), '1a78f7c9bdd5e830', spawnImpl as never, claimImpl as never);
+
+    expect(result.spawned).toBe(true);
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[], Record<string, unknown>];
+    const modeIdx = args.indexOf('--permission-mode');
+    expect(args[modeIdx + 1]).toBe('default');
+    expect(result.issues.find((i) => i.code === 'MESH_AUTO_SPAWN_CONSENT_NOT_GRANTED')).toBeDefined();
+  });
+});
+
 describe('handleBishopDispatch — end-to-end guardrail evaluation', () => {
   test('kill switch disabled: file is written, hook returns ok, but nothing is spawned', async () => {
     const { handleBishopDispatch } = await import('./bishop_dispatch_handler');
@@ -498,15 +654,38 @@ describe('handleBishopDispatch — end-to-end guardrail evaluation', () => {
     // shell must be explicitly false -- the single guarantee that argv elements are passed
     // atomically to the OS and never re-parsed.
     expect(opts.shell).toBe(false);
-    // The malicious string must appear as EXACTLY ONE argv element, byte-for-byte unmodified --
-    // never split on its embedded metacharacters, never concatenated into a longer string.
-    const matchingArgs = args.filter((a) => a === maliciousPrompt);
+    // D-BP157-034/BISHOP/seg-fix-test-failures: this assertion used to require the malicious
+    // string to appear as an argv element EQUAL to it. D-BP157-007 (HARDWIRE-25's effective-id
+    // notice, and the always-on completion-sentinel instruction) now has launchWorker() build
+    // `promptTextForChild = payload.promptText + childActorNotice + completionInstruction`
+    // (bishop_dispatch_handler.ts, launchWorker(), around the `const args = ['-p',
+    // promptTextForChild, ...]` line) before passing it as the '-p' argv value, so the argv
+    // element that carries the prompt now CONTAINS it rather than being byte-for-byte EQUAL to
+    // it. Verified safe before loosening this assertion, from both the source above and this
+    // test's own captured spawnImpl call (args = ["-p", "<maliciousPrompt>\n\n[BISHOP DISPATCH
+    // COMPLETION SENTINEL] ...", "--output-format", "text", "--model", "sonnet",
+    // "--permission-mode", "default"], opts.shell === false):
+    //   - the prompt still reaches spawnImpl as exactly ONE argv array element (args[1], the
+    //     '-p' value) -- never split across elements, never duplicated;
+    //   - that one element is built by concatenating THREE fixed strings (the prompt, the
+    //     child-actor notice, the completion instruction) -- not by joining the prompt with a
+    //     CLI flag; every flag (`--output-format`, `--model`, `--permission-mode`, and their
+    //     values) remains its own distinct array element, never glued to the prompt;
+    //   - the metacharacters in maliciousPrompt (`"`, `;`, `$()`, backticks, `&`, `\`) are not
+    //     escaped, stripped, split, or re-quoted anywhere in that element -- they appear as a
+    //     raw, untouched, byte-for-byte PREFIX of the argv element.
+    // The assertion below is at least as strict as the original on every property that matters
+    // for injection safety: still exactly one argv element carries the payload, still checked
+    // for byte-for-byte content (via containment rather than full equality, since trailing fixed
+    // text is now appended), and still confirmed distinct from every flag element.
+    const matchingArgs = args.filter((a) => a.includes(maliciousPrompt));
     expect(matchingArgs).toHaveLength(1);
+    expect(matchingArgs[0].startsWith(maliciousPrompt)).toBe(true);
     // And it must never have been used to build a single joined command string anywhere in the
     // call (i.e. no argv element is a superstring containing both the prompt AND another flag
     // glued together, which would indicate string concatenation rather than array construction).
     for (const a of args) {
-      if (a !== maliciousPrompt) expect(a).not.toContain('rm -rf');
+      if (!a.includes(maliciousPrompt)) expect(a).not.toContain('rm -rf');
     }
   });
 });

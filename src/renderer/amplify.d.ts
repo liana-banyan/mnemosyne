@@ -19,6 +19,13 @@ export interface AutoUpdateConfig {
   majorVersionRequiresApproval: boolean;
 }
 
+// D-BP157-033: mesh auto-spawn tool-execution consent (mirrors src/main/federation/
+// mesh_auto_spawn_consent.ts's own interface -- kept as a separate renderer-side declaration,
+// not an import, matching how AutoUpdateConfig above is declared rather than imported).
+export interface MeshAutoSpawnConsentSettings {
+  consentGranted: boolean;
+}
+
 export interface FrameModePayload {
   mode: FrameMode;
   forced_mode: FrameMode | null;
@@ -272,6 +279,10 @@ declare global {
       // Mesh Trust / Peer Verification (D-BP148-038 Authorizations panel)
       getMeshTrustSettings?: () => Promise<{ allowUnauthenticatedLanDiscovery: boolean }>;
       setMeshTrustAllowUnauthenticatedLanDiscovery?: (allow: boolean) => Promise<{ allowUnauthenticatedLanDiscovery: boolean }>;
+      // D-BP157-033: mesh auto-spawn tool-execution consent -- a SEPARATE toggle from Mesh Trust
+      // above and from AutoUpdateConfig.autoUpdates; see mesh_auto_spawn_consent.ts's own header.
+      getMeshAutoSpawnConsentSettings?: () => Promise<MeshAutoSpawnConsentSettings>;
+      setMeshAutoSpawnConsentGranted?: (granted: boolean) => Promise<MeshAutoSpawnConsentSettings>;
       // MoneyPenny
       getMoneyPennyUrl: () => Promise<{ url: string; ips: string[]; port: number }>;
       // Auth (Phase 7)

@@ -43,7 +43,7 @@
 // change to what that setting means or defaults to, only a way to see and flip it.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { AutomaticUpdatesConsentPanel } from '../DiagnosticModeTab';
+import { AutomaticUpdatesConsentPanel, MeshAutoSpawnConsentPanel } from '../DiagnosticModeTab';
 import { loadNexusAuthoritySettings } from '../../settings/nexus_authority_settings_store';
 import { NEXUS_ARM_NAMES, type NexusArmName } from '../../../shared/plow/browser_authority_types';
 import type { MoreSubView } from './types';
@@ -583,6 +583,16 @@ export function AuthorizationsPanel({ onSubViewChange }: AuthorizationsPanelProp
         padding: 16, marginBottom: 14,
       }}>
         <AutomaticUpdatesConsentPanel />
+      </div>
+      { /* D-BP157-033: mesh auto-spawn tool-execution consent -- a SEPARATE toggle from
+           Automatic Updates above, same reuse-not-fork pattern (this component is defined once
+           in DiagnosticModeTab.tsx and mounted both there and here, exactly like
+           AutomaticUpdatesConsentPanel already is). */ }
+      <div style={{
+        background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 10,
+        padding: 16, marginBottom: 14,
+      }}>
+        <MeshAutoSpawnConsentPanel />
       </div>
       <MeshTrustSection />
       <PaidEscalationSection />
