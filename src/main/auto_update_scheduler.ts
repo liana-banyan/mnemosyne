@@ -309,7 +309,13 @@ export function verifyManifestEntrySignature(
     keyId?: string;
     tier?: string;
   },
-  keyRegistry: Record<string, RootKeyEntry> = LB_PUBLIC_KEYS,
+  // D-BP157-052: defaults to compiled LB_PUBLIC_KEYS UNION the local root-rotation overlay
+  // (getEffectiveKeyRegistry(), defined further below in this file) instead of LB_PUBLIC_KEYS
+  // alone -- this is what makes a rotation-introduced key immediately usable for verifying a
+  // NEW version_trust.json entry, without a recompile. Overlay is additive only (Requirement
+  // 4): a compiled keyId can never be shadowed. Callers that explicitly pass a keyRegistry
+  // (every existing test in auto_update_scheduler.trust_root.test.ts does) are unaffected.
+  keyRegistry: Record<string, RootKeyEntry> = getEffectiveKeyRegistry(),
 ): ManifestSignatureCheck {
   if (!entry.version || !entry.url || !entry.sha256) {
     return { ok: false, reason: 'incomplete manifest entry (missing version, url, or sha256)' };
@@ -344,6 +350,316 @@ export function verifyManifestEntrySignature(
   } catch (e) {
     return { ok: false, reason: `signature verification error: ${e}` };
   }
+}
+
+// ─── Root-rotation overlay (D-BP157-052) ───────────────────────────────────────
+// THE PROBLEM this section fixes: LB_PUBLIC_KEYS above is COMPILED APP CODE. A client older
+// than the release that introduces a new keyId fails closed on "unknown keyId" (by design --
+// see verifyManifestEntrySignature above) and then has no path back: it never sees another
+// signed update, forever. SEG_RETURN_BP157_048_EXISTING_TRUST_INVENTORY.md's design verdict
+// (Question 3) is implemented here: a SIGNED root-rotation announcement, carried over the
+// SAME already-fetched, already-unconditionally-polled version_trust.json this file already
+// reads in checkAndMaybeDownload() below -- no new daemon, no new poller, no new channel.
+//
+// TRUST MODEL, one line each (also restated in the SEG return document):
+//   1. NEVER TOFU               -- verifyRotationAnnouncement() only accepts a signature from a
+//                                   keyId already present in compiledRegistry ∪ overlay.keys;
+//                                   an unknown signedBy is refused before any crypto runs.
+//   2. REPLAY / ROLLBACK        -- verifyRotationAnnouncement() rejects sequence <=
+//                                   overlay.highWaterSequence; applyRotationAnnouncement()
+//                                   persists the new high-water mark ONLY on acceptance.
+//   3. ADDITIVE vs REVOCATION   -- `add` and `revoke` are separate fields; revoke can name only
+//                                   overlay-introduced keyIds (never a compiledRegistry keyId --
+//                                   refused outright), and the post-apply trusted set is checked
+//                                   non-empty before anything is persisted.
+//   4. OVERLAY IS ADDITIVE ONLY -- getEffectiveKeyRegistry() always starts from compiledRegistry
+//                                   and only ADDS active overlay keys on top; a compiled keyId
+//                                   entry can never be shadowed or replaced by an overlay entry.
+//   5. PERSISTENCE              -- lb_root_trust_overlay.json in the SAME userData directory
+//                                   thorax_ed25519.json already uses (getUserDataDir()), same
+//                                   plain-JSON-on-disk convention, no new storage mechanism.
+//   6. PEER PROVENANCE UNDISTURBED -- verifyFrame() itself (thorax/sign_verify.ts) is never
+//                                   edited; this section only calls it, exactly as
+//                                   peer_artifact_client.ts's downloadFromPeer() already does
+//                                   independently. See this dispatch's return doc for the
+//                                   explicit check that peer_artifact_client.ts is untouched.
+//   7. FAIL CLOSED, LOUDLY      -- every rejection returns a distinct `reason` string and
+//                                   checkAndMaybeDownload() below appends a
+//                                   'root_rotation_rejected' row (with that reason) to the SAME
+//                                   update-history JSONL every other security event already
+//                                   writes to; acceptance likewise writes 'root_rotation_accepted'.
+
+/** One trusted-key entry as persisted in the local overlay file. Mirrors RootKeyEntry's shape
+ *  (same publicKeyHex/algorithm fields) plus overlay-only bookkeeping (status can be 'revoked'
+ *  here, which RootKeyEntry/LB_PUBLIC_KEYS never uses -- a compiled entry is never revoked). */
+interface OverlayKeyEntry {
+  publicKeyHex: string;
+  algorithm: 'ed25519';
+  status: 'active' | 'revoked';
+  addedAtUtc: string;
+  introducedBySequence: number;
+}
+
+interface TrustOverlay {
+  /** Highest rotation-announcement sequence number ever ACCEPTED. Requirement 2 (replay /
+   *  rollback protection): any announcement with sequence <= this value is refused. */
+  highWaterSequence: number;
+  keys: Record<string, OverlayKeyEntry>;
+}
+
+const EMPTY_OVERLAY: TrustOverlay = { highWaterSequence: 0, keys: {} };
+
+/** SAME userData directory, SAME plain-JSON-on-disk convention thorax_ed25519.json already
+ *  uses (ed25519_keypair.ts's getOrCreateKeypair(), STORE_FILENAME = 'thorax_ed25519.json') --
+ *  no new persistence convention invented (Requirement 5). */
+export function getTrustOverlayPath(): string {
+  return path.join(getUserDataDir(), 'lb_root_trust_overlay.json');
+}
+
+function isValidOverlayShape(v: unknown): v is TrustOverlay {
+  if (!v || typeof v !== 'object') return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.highWaterSequence !== 'number' || !Number.isFinite(o.highWaterSequence)) return false;
+  if (!o.keys || typeof o.keys !== 'object') return false;
+  for (const entry of Object.values(o.keys as Record<string, unknown>)) {
+    if (!entry || typeof entry !== 'object') return false;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.publicKeyHex !== 'string' || e.publicKeyHex.length === 0) return false;
+    if (e.algorithm !== 'ed25519') return false;
+    if (e.status !== 'active' && e.status !== 'revoked') return false;
+  }
+  return true;
+}
+
+/**
+ * Requirement 4: "If the overlay is missing, corrupt or unparseable, fall back cleanly to
+ * compiled-only and keep working." Every failure path here (missing file, unparseable JSON,
+ * wrong shape) returns EMPTY_OVERLAY rather than throwing -- an update check must never be
+ * blocked by a damaged local file.
+ */
+export function loadTrustOverlay(): TrustOverlay {
+  try {
+    const p = getTrustOverlayPath();
+    if (!fs.existsSync(p)) return { ...EMPTY_OVERLAY, keys: {} };
+    const raw = fs.readFileSync(p, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!isValidOverlayShape(parsed)) {
+      console.error('[auto-update] trust overlay file has an invalid shape -- falling back to compiled-only');
+      return { ...EMPTY_OVERLAY, keys: {} };
+    }
+    return parsed;
+  } catch (e) {
+    console.error('[auto-update] trust overlay file is corrupt/unreadable -- falling back to compiled-only:', e);
+    return { ...EMPTY_OVERLAY, keys: {} };
+  }
+}
+
+function saveTrustOverlay(overlay: TrustOverlay): void {
+  const p = getTrustOverlayPath();
+  const dir = path.dirname(p);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(overlay, null, 2));
+}
+
+/**
+ * Requirement 4 (additive, never a replacement): compiledRegistry is authoritative and always
+ * wins -- an overlay entry sharing a keyId with a compiled entry is ignored, never merged over
+ * it. Only overlay keys with status 'active' contribute. This is what
+ * verifyManifestEntrySignature() below now consults by default, so a version-manifest entry
+ * signed by a rotation-introduced key becomes usable the moment the overlay accepts it.
+ */
+export function getEffectiveKeyRegistry(
+  compiledRegistry: Record<string, RootKeyEntry> = LB_PUBLIC_KEYS,
+  overlay: TrustOverlay = loadTrustOverlay(),
+): Record<string, RootKeyEntry> {
+  const merged: Record<string, RootKeyEntry> = { ...compiledRegistry };
+  for (const [keyId, entry] of Object.entries(overlay.keys)) {
+    if (keyId in compiledRegistry) continue; // compiled entries can never be shadowed
+    if (entry.status !== 'active') continue;
+    merged[keyId] = { publicKeyHex: entry.publicKeyHex, algorithm: entry.algorithm, status: 'active' };
+  }
+  return merged;
+}
+
+export interface TrustRootAnnouncement {
+  /** Monotonic. Requirement 2. */
+  sequence: number;
+  /** Additive: new keyIds to trust. Requirement 3. */
+  add?: Array<{ keyId: string; publicKeyHex: string; algorithm?: 'ed25519' }>;
+  /** Revocation: overlay-introduced keyIds ONLY -- a compiled keyId here is refused outright.
+   *  Requirement 3. Separate field from `add` by design, never inferred from it. */
+  revoke?: string[];
+  /** keyId of the ALREADY-TRUSTED signer (compiled or previously-accepted overlay). Requirement 1. */
+  signedBy: string;
+  /** signFrame(canonicalRotationString(...), signerPrivateKeyHex). */
+  signature: string;
+}
+
+/**
+ * Deterministic canonical string bound by the rotation announcement's signature. Same reasoning
+ * as canonicalManifestEntryString above: a fixed field order and separator so signer and
+ * verifier always hash identical bytes, and every field the signature must protect (sequence,
+ * every added key's id/algorithm/publicKeyHex, every revoked keyId, and who signed it) is
+ * bound in -- nothing can be altered post-signature without invalidating it.
+ */
+export function canonicalRotationString(a: {
+  sequence: number;
+  add?: Array<{ keyId: string; publicKeyHex: string; algorithm?: string }>;
+  revoke?: string[];
+  signedBy: string;
+}): string {
+  const addPart = (a.add ?? [])
+    .map((k) => `${k.keyId}:${k.algorithm ?? 'ed25519'}:${k.publicKeyHex}`)
+    .join(',');
+  const revokePart = (a.revoke ?? []).slice().join(',');
+  return `${a.sequence}:${a.signedBy}:add=[${addPart}]:revoke=[${revokePart}]`;
+}
+
+export interface RotationCheckResult {
+  ok: boolean;
+  reason?: string;
+  /** Present only when ok=true -- the overlay applyRotationAnnouncement() should persist. */
+  nextOverlay?: TrustOverlay;
+}
+
+/**
+ * Pure verification: does NOT touch disk (both compiledRegistry and overlay are ordinary
+ * parameters, defaulted to the real ones so production call sites don't have to pass them, but
+ * fully injectable for tests -- same pattern verifyManifestEntrySignature() already uses).
+ * Returns the overlay that WOULD result if applied; applyRotationAnnouncement() below is the
+ * only place that actually persists it.
+ */
+export function verifyRotationAnnouncement(
+  announcement: Partial<TrustRootAnnouncement>,
+  compiledRegistry: Record<string, RootKeyEntry> = LB_PUBLIC_KEYS,
+  overlay: TrustOverlay = loadTrustOverlay(),
+): RotationCheckResult {
+  if (typeof announcement.sequence !== 'number' || !Number.isFinite(announcement.sequence)) {
+    return { ok: false, reason: 'malformed rotation announcement (missing/invalid sequence)' };
+  }
+  if (!announcement.signedBy || announcement.signedBy.length === 0) {
+    return { ok: false, reason: 'malformed rotation announcement (missing signedBy)' };
+  }
+  if (!announcement.signature || announcement.signature.length === 0) {
+    return { ok: false, reason: 'missing signature' };
+  }
+
+  // Requirement 2: replay / rollback protection, checked before any crypto runs.
+  if (announcement.sequence <= overlay.highWaterSequence) {
+    return {
+      ok: false,
+      reason: `replay or rollback refused (sequence ${announcement.sequence} <= high-water mark ${overlay.highWaterSequence})`,
+    };
+  }
+
+  // Requirement 1: NEVER TOFU. The signer must already be trusted -- compiled, or a
+  // previously-accepted, still-active overlay key. An announcement cannot vouch for itself.
+  const effective = getEffectiveKeyRegistry(compiledRegistry, overlay);
+  const signerEntry = effective[announcement.signedBy];
+  if (!signerEntry) {
+    return { ok: false, reason: `unknown signer keyId '${announcement.signedBy}' (not trusted -- TOFU refused)` };
+  }
+  if (signerEntry.status === 'placeholder' || signerEntry.publicKeyHex === PLACEHOLDER_KEY_SENTINEL) {
+    return { ok: false, reason: `signer keyId '${announcement.signedBy}' is still the placeholder root key -- not provisioned` };
+  }
+
+  const canonical = canonicalRotationString({
+    sequence: announcement.sequence,
+    add: announcement.add,
+    revoke: announcement.revoke,
+    signedBy: announcement.signedBy,
+  });
+  let verified: { valid: boolean; frameHex: string };
+  try {
+    verified = verifyFrame(announcement.signature, signerEntry.publicKeyHex);
+  } catch (e) {
+    return { ok: false, reason: `signature verification error: ${e}` };
+  }
+  if (!verified.valid || verified.frameHex !== canonical) {
+    return { ok: false, reason: 'signature verification failed (bad signature, tampered announcement, or wrong key)' };
+  }
+
+  // Requirement 3: the compiled-in root can NEVER be removed by an announcement. Refuse the
+  // WHOLE announcement (not a silent partial-apply) if it tries.
+  const revokeList = announcement.revoke ?? [];
+  for (const keyId of revokeList) {
+    if (keyId in compiledRegistry) {
+      return { ok: false, reason: `revocation of compiled-in root key '${keyId}' refused` };
+    }
+  }
+
+  // Build the candidate next overlay.
+  const nextKeys: Record<string, OverlayKeyEntry> = { ...overlay.keys };
+  for (const keyId of revokeList) {
+    const existing = nextKeys[keyId];
+    if (existing) nextKeys[keyId] = { ...existing, status: 'revoked' };
+    // Revoking a keyId that was never introduced is a no-op, not an error -- idempotent under
+    // an out-of-order or duplicated relay of the same announcement content.
+  }
+  const nowIso = new Date().toISOString();
+  for (const k of announcement.add ?? []) {
+    if (!k.keyId || !k.publicKeyHex) {
+      return { ok: false, reason: 'malformed rotation announcement (an "add" entry is missing keyId or publicKeyHex)' };
+    }
+    if (k.keyId in compiledRegistry) {
+      // Adding a keyId that already exists compiled is a no-op (compiled always wins per
+      // getEffectiveKeyRegistry) rather than an error -- not a security-relevant case.
+      continue;
+    }
+    nextKeys[k.keyId] = {
+      publicKeyHex: k.publicKeyHex,
+      algorithm: k.algorithm ?? 'ed25519',
+      status: 'active',
+      addedAtUtc: nowIso,
+      introducedBySequence: announcement.sequence,
+    };
+  }
+
+  // Requirement 3, last-resort guard: the resulting trusted set (compiled UNION overlay-active)
+  // must never be empty -- this is what "bricks updates permanently" looks like. Compiled keys
+  // can never be revoked (checked above), so in normal production this can only ever be
+  // violated if compiledRegistry itself is empty (a test scenario) -- checked defensively
+  // regardless, since defense-in-depth here costs nothing.
+  const nextOverlay: TrustOverlay = { highWaterSequence: announcement.sequence, keys: nextKeys };
+  const resultingRegistry = getEffectiveKeyRegistry(compiledRegistry, nextOverlay);
+  if (Object.keys(resultingRegistry).length === 0) {
+    return { ok: false, reason: 'refused: applying this announcement would leave an empty trusted-key set' };
+  }
+
+  return { ok: true, nextOverlay };
+}
+
+/**
+ * Verifies (via verifyRotationAnnouncement above) AND, only on success, persists the resulting
+ * overlay to disk and records the outcome in the same update-history JSONL every other
+ * security-relevant event in this file already writes to (Requirement 7 -- fail closed,
+ * loudly, no silent rejection).
+ */
+export function applyRotationAnnouncement(
+  announcement: Partial<TrustRootAnnouncement>,
+  compiledRegistry: Record<string, RootKeyEntry> = LB_PUBLIC_KEYS,
+): RotationCheckResult {
+  const overlay = loadTrustOverlay();
+  const result = verifyRotationAnnouncement(announcement, compiledRegistry, overlay);
+  if (!result.ok || !result.nextOverlay) {
+    appendUpdateHistory({
+      event: 'root_rotation_rejected',
+      sequence: announcement.sequence,
+      signedBy: announcement.signedBy,
+      reason: result.reason,
+    });
+    notifySecurityEvent(`Root-rotation announcement REFUSED (${result.reason})`);
+    return result;
+  }
+  saveTrustOverlay(result.nextOverlay);
+  appendUpdateHistory({
+    event: 'root_rotation_accepted',
+    sequence: announcement.sequence,
+    signedBy: announcement.signedBy,
+    added: (announcement.add ?? []).map((k) => k.keyId),
+    revoked: announcement.revoke ?? [],
+  });
+  return result;
 }
 
 async function downloadAndVerify(entry: VersionEntry): Promise<void> {
@@ -465,7 +781,32 @@ export async function checkAndMaybeDownload(): Promise<void> {
         signature?: string;
         keyId?: string;
       }>;
+      // D-BP157-052: root-rotation announcements, carried on the SAME already-fetched,
+      // already-unconditionally-polled version_trust.json this function already reads every
+      // 6 hours from first boot -- no new channel, no new poller. Processed below regardless
+      // of whether a new app version is available, so a client parks on an old version_trust
+      // entry (or none at all) but still learns about a rotated root key.
+      rootRotations?: Array<Partial<TrustRootAnnouncement>>;
     };
+
+    // Process root-rotation announcements FIRST, in ascending sequence order, before touching
+    // the version-manifest logic below -- a rotation may introduce the very key that signs the
+    // 'latest' entry this poll is about to check, and applyRotationAnnouncement()'s own
+    // sequence/signature gates make processing them out of order harmless either way (each is
+    // independently verified; a rejected one is recorded and skipped, never blocks the rest).
+    if (Array.isArray(trust.rootRotations) && trust.rootRotations.length > 0) {
+      const ordered = [...trust.rootRotations].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+      for (const announcement of ordered) {
+        try {
+          applyRotationAnnouncement(announcement);
+        } catch (e) {
+          // Defense-in-depth only -- applyRotationAnnouncement() itself never throws on a bad
+          // announcement (it returns { ok:false, reason }), but a poll cycle must never abort
+          // because of a root-rotation entry regardless.
+          console.error('[auto-update] root-rotation processing threw unexpectedly:', e);
+        }
+      }
+    }
 
     const latestEntry = trust.versions?.find((v) => v.tier === 'latest');
     if (!latestEntry?.version) throw new Error('No latest entry in version_trust.json');
