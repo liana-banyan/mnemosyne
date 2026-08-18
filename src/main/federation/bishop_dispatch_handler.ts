@@ -536,7 +536,15 @@ export function getActiveSpawnCount(): number {
  *  switch. Cursor's agent.cmd (the other reference pattern in this estate's memory) was
  *  deliberately NOT chosen as the default specifically because it IS a .cmd file. */
 const DEFAULT_CLI_PATH = 'claude';
-const DEFAULT_MODEL = 'sonnet';
+// D-BP158-M0-001: PINNED, not an alias. FD-BP157-09 requires every SEG to be Sonnet 5, and the
+// standing SEG rule is "always Sonnet, model pinned explicitly." The bare alias 'sonnet' means
+// "whatever the installed CLI thinks is latest," which on CLI 2.0.37 resolved to Sonnet 4.5 --
+// measured in the only mesh worker ever proven to do real work (D-BP157-M0-050.log billed
+// claude-sonnet-4-5-20250929). The claim file recorded "MODEL: sonnet" and read as compliant, so
+// the violation was invisible. Two fixes were applied together: the spawn-path CLI was upgraded
+// 2.0.37 -> 2.1.227 (FD-BP157-11, version skew), and this constant was pinned. Do not revert this
+// to an alias: the alias is what made the defect silent.
+const DEFAULT_MODEL = 'claude-sonnet-5';
 const DEFAULT_PERMISSION_MODE = 'default';
 
 export function getSpawnCliPath(): string {
