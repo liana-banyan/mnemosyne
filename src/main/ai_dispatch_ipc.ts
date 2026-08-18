@@ -22,6 +22,14 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { app } from 'electron';
 import { FLOOR_MODEL } from '../shared/floor-model';
+// D-BP157-029/BISHOP/seg-rewire-vram-gate: the VRAM gate (D-BP157-025's detector) previously
+// governed only the LEAN installer's first-run pick and the Settings UI display -- it was never
+// consulted on this file's two live-answer model-resolution chains (see
+// SEG_RETURN_BP157_021_VRAM_GATE.md section 2, chain A). detectVramGbDetailed/applyVramGate/
+// requiredVramGb are used below by resolveVramGatedModel(); ram_detector.ts itself is NOT
+// modified by this dispatch (D-BP157-026 is concurrently editing it -- coordination note in this
+// dispatch's own ticket).
+import { applyVramGate, requiredVramGb, detectVramGbDetailed, type VramDetectionResult } from './hardware/ram_detector';
 // D-BP151-037/BISHOP/seg-query-capture-archive
 import { captureQuery } from './query_capture/query_capture_store';
 import {
@@ -599,6 +607,87 @@ export async function resolveTier1Model(explicitModel: string | undefined, fallb
   return fallbackModel;
 }
 
+// ── D-BP157-029/BISHOP/seg-rewire-vram-gate: VRAM gate consultation ───────────────────────────
+//
+// Precedence (per the dispatch ruling): an EXPLICIT caller-supplied model (args.model_override)
+// is authoritative -- a human naming a model in the Ask model picker is an intentional act, and
+// is honored as-is even if it does not fit, per task 1's ruling. Everything BELOW that --
+// activeBrainLocalModel (a persisted brain_registry.json pick, which may itself just be the
+// VRAM-blind "biggest installed gemma wins" first-run heuristic, not a deliberate re-pick --
+// see task 4), settings.preferred_model, selectedGemmaModel, and the hardcoded FLOOR_MODEL floor
+// -- is machine-made or possibly-stale, so it IS validated against detected VRAM and may be
+// stepped down. The persisted-choice bug (task 4): this function NEVER writes back to
+// brain_registry.json or settings -- the downgrade applies only to the `model` variable used for
+// THIS single answer; the persisted active_brain_id is left exactly as the user (or the
+// first-run heuristic) set it, so a later machine with more VRAM (or a corrected persisted pick)
+// is never permanently pinned by an in-memory decision made here.
+//
+// Unknown VRAM (detectVramGbDetailed() confidence: 'unknown', e.g. the Windows CIM uint32
+// ~4 GiB ceiling defect D-BP157-025 fixed) is PERMITTED, never silently downgraded and never
+// blocked -- applyVramGate's own vramGb===null branch already implements exactly this ("falls
+// back to the RAM-tier recommendation with an honest note"), reused here unchanged.
+export interface VramGateOutcome {
+  /** The model actually to be used for this answer. */
+  model: string;
+  requestedModel: string;
+  wasExplicit: boolean;
+  downgraded: boolean;
+  vramGb: number | null;
+  vramMethod: string;
+  vramConfidence: string;
+  requiredVramGbForRequested: number | null;
+  /** Legible record, present whenever the gate has anything to say (downgrade, insufficient-
+   *  but-honored-explicit-pick, or unknown-VRAM permit) -- never silent. */
+  note?: string;
+}
+
+// VRAM is static per machine/session; detectVramGbDetailed()'s Windows branch execSyncs a
+// PowerShell registry query, which is fine as a rare (Settings UI / first-run) cost but would be
+// a real per-query latency regression if run synchronously on every single 'ai-dispatch:query'
+// call -- this file's two model-resolution chains never touched hardware detection before this
+// dispatch. Cached once per process, mirroring ram_detector.ts's own _cachedEffectiveModel
+// singleton pattern (ram_detector.ts is not editable by this dispatch, so the cache lives here).
+let _cachedVramDetectionForAsk: VramDetectionResult | null = null;
+function getCachedVramDetectionForAsk(): VramDetectionResult {
+  if (_cachedVramDetectionForAsk === null) {
+    _cachedVramDetectionForAsk = detectVramGbDetailed();
+  }
+  return _cachedVramDetectionForAsk;
+}
+
+/** Consults the VRAM gate for a resolved candidate model. `detector` is injectable so the test
+ *  suite stays fully offline (see ai_dispatch_ipc_vram_gate.test.ts) -- production call sites
+ *  below rely on the default (cached real detector). */
+export function resolveVramGatedModel(
+  requestedModel: string,
+  wasExplicit: boolean,
+  detector: () => VramDetectionResult = getCachedVramDetectionForAsk,
+): VramGateOutcome {
+  const detailed = detector();
+  const required = requiredVramGb(requestedModel);
+
+  if (wasExplicit) {
+    // Never downgraded -- see the module-level rationale above. Still recorded, never silent.
+    let note: string | undefined;
+    if (required !== null && detailed.vramGb !== null && detailed.vramGb < required) {
+      note = `Explicit model_override "${requestedModel}" needs ~${required} GB VRAM; detected VRAM ${detailed.vramGb} GB (method=${detailed.method}, confidence=${detailed.confidence}) is insufficient -- honoring the explicit pick anyway, expect CPU-split slowdown`;
+    }
+    return {
+      model: requestedModel, requestedModel, wasExplicit: true, downgraded: false,
+      vramGb: detailed.vramGb, vramMethod: detailed.method, vramConfidence: detailed.confidence,
+      requiredVramGbForRequested: required, note,
+    };
+  }
+
+  const gated = applyVramGate(requestedModel, detailed.vramGb);
+  const chosen = gated.model ?? requestedModel;
+  return {
+    model: chosen, requestedModel, wasExplicit: false, downgraded: chosen !== requestedModel,
+    vramGb: detailed.vramGb, vramMethod: detailed.method, vramConfidence: detailed.confidence,
+    requiredVramGbForRequested: required, note: gated.note,
+  };
+}
+
 export function registerAiDispatchIPC(): void {
   // ── ai-dispatch:list-local-models ────────────────────────────────────────
   ipcMain.handle('ai-dispatch:list-local-models', async () => {
@@ -735,7 +824,16 @@ export function registerAiDispatchIPC(): void {
       // label. Computed once here and reused below for the flagship-routing check.
       const activeBrain = args.model_override ? undefined : getActiveBrain();
       const activeBrainLocalModel = activeBrain && activeBrain.kind === 'local' ? activeBrain.model_id : undefined;
-      const model = args.model_override ?? activeBrainLocalModel ?? settings.preferred_model ?? selectedGemmaModel ?? FLOOR_MODEL;
+      const preGateModel = args.model_override ?? activeBrainLocalModel ?? settings.preferred_model ?? selectedGemmaModel ?? FLOOR_MODEL;
+      // D-BP157-029/BISHOP/seg-rewire-vram-gate: consult the VRAM gate. model_override is the
+      // only explicit tier here -- args.model_override !== undefined is what resolveVramGatedModel
+      // treats as authoritative-never-downgraded; everything else in the chain above is
+      // machine-made/persisted and gets validated.
+      const vramGate = resolveVramGatedModel(preGateModel, args.model_override !== undefined);
+      const model = vramGate.model;
+      if (vramGate.note) {
+        console.warn(`[VramGate] ai-dispatch:query: ${vramGate.note}`);
+      }
 
       const status = ollamaManager.getStatus();
       const reachable = status.running || (await ollamaManager.isReachable());
@@ -1962,7 +2060,14 @@ export function registerAiDispatchIPC(): void {
       const selectedGemmaModel = ollamaManager.getSelectedModel();
       const activeBrain = getActiveBrain();
       const activeBrainLocalModel = activeBrain && activeBrain.kind === 'local' ? activeBrain.model_id : undefined;
-      const model = activeBrainLocalModel ?? settings.preferred_model ?? selectedGemmaModel ?? FLOOR_MODEL;
+      const preGateModel = activeBrainLocalModel ?? settings.preferred_model ?? selectedGemmaModel ?? FLOOR_MODEL;
+      // D-BP157-029/BISHOP/seg-rewire-vram-gate: 'ai-dispatch:query-engine' has no model_override
+      // argument at all -- the whole chain is machine-made/persisted, so it is validated.
+      const vramGate = resolveVramGatedModel(preGateModel, false);
+      const model = vramGate.model;
+      if (vramGate.note) {
+        console.warn(`[VramGate] ai-dispatch:query-engine: ${vramGate.note}`);
+      }
       // KN-BP144-8 Phase 1: no domain classifier exists for free-typed questions yet -- 'general'
       // is not a member of domain_operator_map.ts's Domain union, so getOperatorsForDomain()
       // falls back to BASE_OPERATORS (wikipedia/wikidata/openalex/commoncrawl/crossref, all

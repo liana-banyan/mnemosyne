@@ -8764,6 +8764,74 @@ function scheduleZombieFlush(peerId: string): void {
   }, 60 * 60 * 1000);
 }
 
+// ── D-BP157-029/BISHOP/seg-rewire-vram-gate: VRAM gate consultation for the WAN mesh answer ───
+// path (the `answerModel` chain below, formerly `payload.model > activeBrainLocalModel >
+// ollamaManager.getSelectedModel() > 'gemma4:12b'`, never consulted VRAM -- see
+// SEG_RETURN_BP157_021_VRAM_GATE.md section 2, chain C). payload.model is an explicit per-request
+// override (a real asker's intentional pick) and is honored as-is, never downgraded; everything
+// below it (a persisted brain_registry pick, the biggest-installed-gemma heuristic, or the
+// hardcoded 'gemma4:12b' floor) is machine-made/possibly-stale and IS validated. Nothing is
+// written back to brain_registry.json -- the downgrade applies only to the in-memory model used
+// to answer THIS one relay-poll route.
+export interface VramGateOutcome {
+  model: string;
+  requestedModel: string;
+  wasExplicit: boolean;
+  downgraded: boolean;
+  vramGb: number | null;
+  vramMethod: string;
+  vramConfidence: string;
+  requiredVramGbForRequested: number | null;
+  note?: string;
+}
+
+/** The three gate primitives this function needs, always passed in explicitly rather than
+ *  statically imported -- this file has no static import of ram_detector.ts anywhere (grep-
+ *  confirmed: every one of this file's other 5 call sites uses `await import('./hardware/
+ *  ram_detector')` at point of use, never a top-of-file import), so this keeps the SAME idiom,
+ *  AND it is what lets the test suite inject a fake detector and stay fully offline without
+ *  needing to import this 10,000+-line Electron-main-process file at all (see index.relay_route_
+ *  race_guard.test.ts's own header for why this file is never imported directly by its tests). */
+export interface VramGateDeps {
+  applyVramGate: (tierModel: string | null, vramGb: number | null) => { model: string | null; note?: string };
+  requiredVramGb: (model: string) => number | null;
+  detectVramGbDetailed: () => { vramGb: number | null; method: string; confidence: string; note?: string };
+}
+
+export function resolveVramGatedAnswerModel(
+  requestedModel: string,
+  wasExplicit: boolean,
+  deps: VramGateDeps,
+): VramGateOutcome {
+  const detailed = deps.detectVramGbDetailed();
+  const required = deps.requiredVramGb(requestedModel);
+
+  if (wasExplicit) {
+    let note: string | undefined;
+    if (required !== null && detailed.vramGb !== null && detailed.vramGb < required) {
+      note = `Explicit payload.model "${requestedModel}" needs ~${required} GB VRAM; detected VRAM ${detailed.vramGb} GB (method=${detailed.method}, confidence=${detailed.confidence}) is insufficient -- honoring the explicit pick anyway, expect CPU-split slowdown`;
+    }
+    return {
+      model: requestedModel, requestedModel, wasExplicit: true, downgraded: false,
+      vramGb: detailed.vramGb, vramMethod: detailed.method, vramConfidence: detailed.confidence,
+      requiredVramGbForRequested: required, note,
+    };
+  }
+
+  const gated = deps.applyVramGate(requestedModel, detailed.vramGb);
+  const chosen = gated.model ?? requestedModel;
+  return {
+    model: chosen, requestedModel, wasExplicit: false, downgraded: chosen !== requestedModel,
+    vramGb: detailed.vramGb, vramMethod: detailed.method, vramConfidence: detailed.confidence,
+    requiredVramGbForRequested: required, note: gated.note,
+  };
+}
+
+// Same rationale as ai_dispatch_ipc.ts/peer_server.ts's caches: VRAM is static per session;
+// detectVramGbDetailed() execSyncs a PowerShell registry query on Windows and must not run
+// synchronously on every single relay-poll answer. Cached once per process.
+let _cachedVramDetectionForRelayAnswer: { vramGb: number | null; method: string; confidence: string; note?: string } | null = null;
+
 // D6c — relay poll counter; incremented on each pollOnce() tick for watchdog monitoring
 let _relayPollCount = 0;
 let _relayPollInterval: NodeJS.Timeout | null = null;
@@ -8994,11 +9062,30 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           // is on disk; otherwise fall through to the hardware-aware chain below.
           const activeBrain = hasPersistedBrainChoice() ? getActiveBrain() : undefined;
           const activeBrainLocalModel = activeBrain?.kind === 'local' ? activeBrain.model_id : undefined;
-          const answerModel: string =
-            (typeof payload.model === 'string' ? (payload.model as string) : undefined) ||
+          const explicitPayloadModel: string | undefined =
+            typeof payload.model === 'string' ? (payload.model as string) : undefined;
+          const preGateAnswerModel: string =
+            explicitPayloadModel ||
             activeBrainLocalModel ||
             ollamaManager.getSelectedModel() ||
             'gemma4:12b';
+          // D-BP157-029/BISHOP/seg-rewire-vram-gate: consult the VRAM gate before this box
+          // actually answers with preGateAnswerModel -- see resolveVramGatedAnswerModel's own
+          // doc comment (above startRelayRoutePoll) for the full precedence rationale.
+          if (_cachedVramDetectionForRelayAnswer === null) {
+            const { detectVramGbDetailed: _detectVramGbDetailed } = await import('./hardware/ram_detector');
+            _cachedVramDetectionForRelayAnswer = _detectVramGbDetailed();
+          }
+          const { applyVramGate: _applyVramGate, requiredVramGb: _requiredVramGb } = await import('./hardware/ram_detector');
+          const answerModelGate = resolveVramGatedAnswerModel(preGateAnswerModel, explicitPayloadModel !== undefined, {
+            applyVramGate: _applyVramGate,
+            requiredVramGb: _requiredVramGb,
+            detectVramGbDetailed: () => _cachedVramDetectionForRelayAnswer!,
+          });
+          const answerModel: string = answerModelGate.model;
+          if (answerModelGate.note) {
+            console.warn(`[VramGate] relay-poll answer model: ${answerModelGate.note}`);
+          }
 
           // BP133 Yoke #24 Task 1: single authoritative substrate toggle, responder side.
           // The asker (wan_dispatch.ts) sets payload.substrate_enabled explicitly; this is
@@ -9424,6 +9511,11 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 substrate_context_injected: contextInjected,
                 answered_by: answeredBy,
                 plow_trace: plowTrace,
+                // D-BP157-029/BISHOP/seg-rewire-vram-gate: legible record of the VRAM-gate
+                // decision for the model that answered (or would have answered) this route --
+                // never a silent downgrade. Additive field; existing consumers reading only the
+                // pre-existing keys above are unaffected.
+                vram_gate: answerModelGate,
               } : {
                 answer,
                 plow_loop_iterations: plowIterations,
@@ -9436,6 +9528,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 substrate_context_injected: contextInjected,
                 answered_by: answeredBy,
                 plow_trace: plowTrace,
+                vram_gate: answerModelGate,
               },
               processing_ms: processingMs,
             }),
