@@ -6,11 +6,28 @@
 // only anon-key-style headers; the read side finds a matching reply, ignores a non-matching one,
 // and times out cleanly; and the pure isBishopDispatchReply predicate.
 //
+// D-BP157-030: 'electron' is now mocked too (vi.mock('electron', ...), matching
+// bishop_dispatch_send_ipc.test.ts's existing convention for a file that imports `app`) so the
+// new responderVersion/responderBuildKind fields and the VERSION_SKEW annotation can be tested
+// deterministically instead of relying on the unmocked-electron fallback (which always yields
+// `undefined` -- see bishop_dispatch_reply.ts's own getResponderVersionInfo() doc comment).
+//
 // Run: npx vitest run src/main/federation/bishop_dispatch_reply.test.ts
 
-import { describe, test, expect, vi } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// vi.mock factories are hoisted above imports/consts, so the mock object it closes over must be
+// created via vi.hoisted() (bishop_dispatch_send_ipc.test.ts's own documented reason).
+const mockApp = vi.hoisted(() => ({
+  getVersion: vi.fn(() => '0.9.25'),
+  isPackaged: true,
+}));
+
+vi.mock('electron', () => ({ app: mockApp }));
+
 import {
   writeBishopDispatchReply,
+  writeBishopDispatchCompletionReply,
   pollForBishopDispatchReply,
   isBishopDispatchReply,
   type FetchLike,
@@ -21,6 +38,21 @@ const SUPABASE_URL = 'https://example.supabase.co';
 const ANON_KEY = 'anon-key-test';
 const ROUTE_ID = 'route-abc-123';
 const PEER_ID = 'peer-def-456';
+
+// getResponderVersionInfo()'s buildKind reads process.env.NODE_ENV directly, so it is pinned to
+// a known, definitely-not-'development' value for every test in this file (saved/restored, never
+// left mutated for other test files that may run in the same process) rather than trusting
+// whatever the ambient test-runner value happens to be.
+let savedNodeEnv: string | undefined;
+beforeEach(() => {
+  mockApp.getVersion.mockReturnValue('0.9.25');
+  mockApp.isPackaged = true;
+  savedNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'bishop-test-fixed';
+});
+afterEach(() => {
+  process.env.NODE_ENV = savedNodeEnv;
+});
 
 describe('isBishopDispatchReply', () => {
   test('true for a bishop_dispatch_reply-shaped answer_json', () => {
@@ -67,9 +99,39 @@ describe('writeBishopDispatchReply', () => {
     expect(body).toEqual({
       route_id: ROUTE_ID,
       peer_id: PEER_ID,
-      answer_json: { kind: 'bishop_dispatch_reply', stage: 'launch', ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' },
+      answer_json: {
+        kind: 'bishop_dispatch_reply', stage: 'launch', ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned',
+        // D-BP157-030: derived from the mocked app.getVersion()/app.isPackaged, not hardcoded
+        // in bishop_dispatch_reply.ts itself -- see getResponderVersionInfo().
+        responderVersion: '0.9.25', responderBuildKind: 'installed',
+      },
       processing_ms: 4321,
     });
+  });
+
+  test('D-BP157-030: responderVersion/responderBuildKind reflect app.getVersion()/isPackaged, and buildKind is "dev" when unpackaged', async () => {
+    mockApp.getVersion.mockReturnValue('0.9.23');
+    mockApp.isPackaged = false;
+    const { fetchImpl, calls } = makeFetchMock(201);
+    const result: BishopDispatchResult = { ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' };
+
+    await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 1);
+
+    const body = JSON.parse(calls[0]?.init.body as string);
+    expect(body.answer_json.responderVersion).toBe('0.9.23');
+    expect(body.answer_json.responderBuildKind).toBe('dev');
+  });
+
+  test('D-BP157-030: omits responderVersion/responderBuildKind entirely (never a fabricated value) when app.getVersion() throws', async () => {
+    mockApp.getVersion.mockImplementation(() => { throw new Error('app not ready'); });
+    const { fetchImpl, calls } = makeFetchMock(201);
+    const result: BishopDispatchResult = { ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' };
+
+    await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 1);
+
+    const body = JSON.parse(calls[0]?.init.body as string);
+    expect('responderVersion' in body.answer_json).toBe(false);
+    expect('responderBuildKind' in body.answer_json).toBe(false);
   });
 
   test('includes noticePath in answer_json only when the result carries one', async () => {
@@ -98,6 +160,36 @@ describe('writeBishopDispatchReply', () => {
     await expect(
       writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 10),
     ).resolves.toBe(false);
+  });
+});
+
+describe('writeBishopDispatchCompletionReply', () => {
+  function makeFetchMock(status: number): { fetchImpl: FetchLike; calls: Array<{ url: string; init: RequestInit }> } {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      return new Response(status < 300 ? null : JSON.stringify({ error: 'nope' }), { status });
+    }) as unknown as FetchLike;
+    return { fetchImpl, calls };
+  }
+
+  test('D-BP157-030: the stage-2/completion row also carries responderVersion/responderBuildKind', async () => {
+    mockApp.getVersion.mockReturnValue('0.9.25');
+    mockApp.isPackaged = true;
+    const { fetchImpl, calls } = makeFetchMock(201);
+
+    await writeBishopDispatchCompletionReply(
+      { supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl },
+      ROUTE_ID,
+      PEER_ID,
+      { effectiveId: 'D-BP157-030-W1', lifecycle: 'completed', issues: [], workerLogPointer: 'C:\\log.txt', tailExcerpt: 'done' },
+      50,
+    );
+
+    const body = JSON.parse(calls[0]?.init.body as string);
+    expect(body.answer_json.stage).toBe('completion');
+    expect(body.answer_json.responderVersion).toBe('0.9.25');
+    expect(body.answer_json.responderBuildKind).toBe('installed');
   });
 });
 
@@ -165,5 +257,51 @@ describe('pollForBishopDispatchReply', () => {
 
     expect(attempt).toBeGreaterThanOrEqual(3);
     expect(result?.answer.ok).toBe(false);
+  });
+
+  test('D-BP157-030: appends a VERSION_SKEW WorkIssue (observation, not a refusal) when the reply\'s responderVersion differs from this machine\'s own', async () => {
+    mockApp.getVersion.mockReturnValue('0.9.25'); // this machine
+    const fetchImpl = (async () => new Response(JSON.stringify([{
+      answer_json: {
+        kind: 'bishop_dispatch_reply', ok: true, spawned: true, reason: 'spawned', issues: [],
+        responderVersion: '0.9.23', responderBuildKind: 'installed', // the peer that replied
+      },
+      processing_ms: 5,
+    }]), { status: 200 })) as unknown as FetchLike;
+
+    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, sleepImpl: instantSleep }, ROUTE_ID, 5000);
+
+    expect(result).not.toBeNull();
+    // Observation only -- ok/lifecycle/spawned untouched, the peer still did its work.
+    expect(result?.answer.ok).toBe(true);
+    expect(result?.answer.spawned).toBe(true);
+    const skewIssue = result?.answer.issues.find((i) => i.code === 'VERSION_SKEW');
+    expect(skewIssue).toBeDefined();
+    expect(skewIssue?.evidence).toBe('local=0.9.25 responder=0.9.23');
+    expect(skewIssue?.observedBy).toBe('pollForBishopDispatchReply');
+  });
+
+  test('D-BP157-030: no VERSION_SKEW issue when responderVersion matches this machine\'s own', async () => {
+    mockApp.getVersion.mockReturnValue('0.9.25');
+    const fetchImpl = (async () => new Response(JSON.stringify([{
+      answer_json: { kind: 'bishop_dispatch_reply', ok: true, spawned: true, reason: 'spawned', issues: [], responderVersion: '0.9.25' },
+      processing_ms: 5,
+    }]), { status: 200 })) as unknown as FetchLike;
+
+    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, sleepImpl: instantSleep }, ROUTE_ID, 5000);
+
+    expect(result?.answer.issues.some((i) => i.code === 'VERSION_SKEW')).toBe(false);
+  });
+
+  test('D-BP157-030: no VERSION_SKEW issue when the peer reply predates this field (older peer, responderVersion absent)', async () => {
+    mockApp.getVersion.mockReturnValue('0.9.25');
+    const fetchImpl = (async () => new Response(JSON.stringify([{
+      answer_json: { kind: 'bishop_dispatch_reply', ok: true, spawned: true, reason: 'spawned', issues: [] },
+      processing_ms: 5,
+    }]), { status: 200 })) as unknown as FetchLike;
+
+    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, sleepImpl: instantSleep }, ROUTE_ID, 5000);
+
+    expect(result?.answer.issues.some((i) => i.code === 'VERSION_SKEW')).toBe(false);
   });
 });

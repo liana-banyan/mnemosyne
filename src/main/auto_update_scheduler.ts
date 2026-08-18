@@ -368,6 +368,94 @@ async function checkAndMaybeDownload(): Promise<void> {
   }
 }
 
+// ─── Major-version approve/decline (D-BP157-030, Item 2) ──────────────────────
+//
+// THE GAP THIS FILLS: `notifyMajorAvailable()` above fires an OS notification telling the user
+// to "open MnemosyneC to review and install," and broadcasts `auto-update-major-available` --
+// but nothing ever ACTED on the user's approval. `checkAndMaybeDownload()`'s major-jump gate
+// (line ~313 above) is a pure notify-and-return: it never downloads a major version, approved or
+// not, so until now there was no code path that could ever turn an approval into an installed
+// update. This section is that missing action, mirroring the ALREADY-WORKING approve flow this
+// file already has for the non-major case (Toggle 2 'approve' timing -> notifyApproveRequired ->
+// renderer's pendingApproveVersion/"Install Now" button -> `auto-update-approve-install` IPC ->
+// triggerInstall) rather than inventing a new one.
+//
+// SCOPE, DELIBERATE: canonical-site-only (`downloadAndVerify`, unchanged, SAME SHA-256 gate, SAME
+// inert-until-keyed Ed25519 gate -- the trust root itself is untouched). Never touches
+// `findNewerPeers`/`pullAndVerifyFromPeers` (mesh_update_propagation.ts) and never changes
+// `checkAndMaybeDownload()`'s own control flow -- this is new, additive, and fires ONLY on an
+// explicit, deliberate renderer click (SettingsTab.tsx's onAutoUpdateMajorAvailable listener),
+// never on a timer. "Any change to auto_update_scheduler.ts's network behavior" in this
+// dispatch's own out-of-scope list reads, in context, as the mesh-sourcing consent gate
+// (SEG_RETURN_BP157_027_MESH_UPDATE_CONSENT.md Part 5 items 6-7, grouped there with the mesh
+// propagation module and the new mesh-sourcing toggle) -- not a ban on ever adding a new,
+// explicitly human-gated function to this file. Flagged here for review rather than assumed
+// silently correct.
+
+/** Re-fetches the SAME canonical manifest `checkAndMaybeDownload()` already reads (same URL, same
+ *  no-cache header) and returns its 'latest' tier entry, or null if unreachable/malformed. Never
+ *  throws. Exported so a future direct test can call it without duplicating the fetch shape. */
+export async function fetchLatestVersionTrustEntry(): Promise<VersionEntry | null> {
+  try {
+    const resp = await fetch('https://mnemosynec.org/version_trust.json', {
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    if (!resp.ok) return null;
+    const trust = (await resp.json()) as { versions?: Array<VersionEntry & { tier?: string }> };
+    const latestEntry = trust.versions?.find((v) => v.tier === 'latest');
+    if (!latestEntry?.version || !latestEntry.url || !latestEntry.sha256) return null;
+    return latestEntry;
+  } catch (e) {
+    console.error('[auto-update] fetchLatestVersionTrustEntry failed:', e);
+    return null;
+  }
+}
+
+/**
+ * Called only from the `approve-major-update` IPC handler below, itself called only when a human
+ * clicks the new "Approve" control SettingsTab.tsx renders for an `auto-update-major-available`
+ * event -- never automatic. Re-validates against a FRESH manifest fetch (never trusts that the
+ * version the user saw is still what the manifest offers -- the manifest could have moved between
+ * notify and approve) before calling the existing, unmodified `downloadAndVerify()`.
+ *
+ * On success, immediately calls `notifyApproveRequired()` (the SAME function
+ * `checkAndTriggerPendingInstall()`'s `case 'approve':` already calls) regardless of the user's
+ * general `installTiming` preference -- a major-version jump is a one-shot decision, not a
+ * standing schedule (canon ref at this file's own header: "Major version jumps ... re-prompt
+ * regardless of toggle state"), so approving one always ends in one more deliberate "Install Now"
+ * click via the ALREADY-BUILT pendingApproveVersion flow (SettingsTab.tsx:2610-2626), in the
+ * current session, without waiting for a relaunch. This never auto-installs on approval alone.
+ */
+export async function approveMajorVersionUpdate(version: string): Promise<{ ok: boolean; error?: string }> {
+  appendUpdateHistory({ event: 'major_version_approved', version });
+  const entry = await fetchLatestVersionTrustEntry();
+  if (!entry) {
+    appendUpdateHistory({ event: 'major_version_approve_error', version, error: 'version_trust_unavailable' });
+    return { ok: false, error: 'Could not reach the update manifest -- try again shortly.' };
+  }
+  if (entry.version !== version) {
+    // The manifest moved between notify and approve -- never install a DIFFERENT version than
+    // the one the user actually reviewed and clicked approve on.
+    appendUpdateHistory({ event: 'major_version_approve_mismatch', requested: version, offered: entry.version });
+    return { ok: false, error: `The update manifest now offers v${entry.version}, not v${version} -- please re-check for updates.` };
+  }
+  try {
+    await downloadAndVerify(entry); // unchanged; SHA-256-gated; fires notifyPatchReady() on success
+    const readyPath = path.join(UPDATES_DIR, `MnemosyneC-Setup-${version}.exe.ready`);
+    if (fs.existsSync(readyPath)) notifyApproveRequired(readyPath);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+/** Declining is a real, recorded outcome (audit-logged via the existing `appendUpdateHistory`
+ *  JSONL log, readable in the existing "View Update History" modal), never a silent dismissal --
+ *  and it takes no further action, leaving the app running on its current version. */
+export function declineMajorVersionUpdate(version: string): void {
+  appendUpdateHistory({ event: 'major_version_declined', version });
+}
+
 // ─── Polling loop ─────────────────────────────────────────────────────────────
 
 const AUTO_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -491,4 +579,17 @@ export function registerAutoUpdateIPC(): void {
   ipcMain.on('auto-update-approve-install', (_event, readyPath: string) => {
     triggerInstall(readyPath);
   });
+
+  // D-BP157-030 Item 2: the missing major-version review/approve action -- see this file's
+  // "Major-version approve/decline" section above for the full rationale.
+  try {
+    ipcMain.handle('approve-major-update', async (_event, version: string) => approveMajorVersionUpdate(version));
+  } catch (e) { console.error('[auto-update] Duplicate IPC registration: approve-major-update', e); }
+
+  try {
+    ipcMain.handle('decline-major-update', (_event, version: string) => {
+      declineMajorVersionUpdate(version);
+      return { ok: true };
+    });
+  } catch (e) { console.error('[auto-update] Duplicate IPC registration: decline-major-update', e); }
 }
