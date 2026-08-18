@@ -211,10 +211,11 @@ export function describeDemand(r: DemandResult): string {
 //     "within/in <Capitalized Span>" rule) -- a term's role inside a named theory is exactly what a
 //     resolved framework level means structurally.
 //   - DEFINE: the MOST SPECIFIC surveyed level (the last one -- whole-phrase, or existence-check
-//     when the nest produced one) returned at least one denotation whose sentence kind-checks
-//     (elements/kind_check.ts's checkKind(), NOT a second classifier) as DEFINITION-STATEMENT -- a
-//     clause stating what a term means is exactly a denotation answering "what does this mean",
-//     which is what DEFINE requires.
+//     when the nest produced one) returned at least one denotation whose sentence EITHER kind-checks
+//     (elements/kind_check.ts's checkKind(), NOT a second classifier -- unmodified, see D-BP157-053
+//     below for why) as DEFINITION-STATEMENT, OR carries a real-prose definitional construction per
+//     looksLikeDefinitionalProse() (this file, D-BP157-053) -- a clause stating what a term means is
+//     exactly a denotation answering "what does this mean", which is what DEFINE requires.
 //   - RANK / CLASSIFY / IDENTIFY / INFER: NOT YET DERIVABLE from the surveyed ASK term's own
 //     denotations alone. These four characterize an OPERATION ON THE OPTIONS (order them, sort
 //     them into categories, pick the member that fits, draw a conclusion) -- none of that is
@@ -224,6 +225,84 @@ export function describeDemand(r: DemandResult): string {
 //     the accurate report of what this element can and cannot see yet, named per canon R-5 --
 //     "a question whose demand no method serves is a teaching prompt, not a failure."
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP157-053/BISHOP/seg-define-detection-bug -- THE DEFINE-DETECTION FIX FOR THE SURVEYED-ASK
+// PATH, SPECIFICALLY. Ratified by D-BP150-014's own return, "SURVEYED-ASK vs QUESTION-STRING
+// DEMAND," reason 2 (this file's own sibling return doc): "fixing it needs either a second, more
+// general definitional-shape check for the SURVEYED-ASK path specifically, or a different signal
+// entirely." This is that second check. checkKind() (elements/kind_check.ts) is NOT modified --
+// its DEFINITION_LEAD_RE is a closed, sentence-INITIAL rule ("^It (describes|refers to|denotes|
+// means|represents|indicates|explains)") that matches the MMLU-Pro OPTION-phrasing convention
+// (D4's extraction target -- an option written as a self-contained gloss, "It describes a process
+// that..."), never how real Google prose actually states a definition. Verified live at D-BP150-014
+// qid 85: the real passage found by Survey, "A sampling method is called biased if it
+// systematically favors some outcomes over others.", kind-checks as plain PROPOSITION (it has a
+// finite-verb marker, "is", but no DEFINITION_LEAD_RE match) -- so determineDemandFromSurveyedAsk()
+// never fired DEFINE for the one qid it should have. That miss is confirmed here, from the code,
+// not merely asserted from the return document (HARDWIRE-26): kind_check.ts:93's regex is exactly
+// as narrow as the return doc says, and this file's DEFINE loop (below) previously consulted
+// nothing else.
+//
+// checkKind() is left untouched on purpose, matching this ticket's own instruction not to
+// silently change other behavior: survey_answers.ts's E-SURVEY-ANSWERS still relies on
+// checkKind() to type MMLU-Pro OPTION text (where the "It describes..." convention is the correct,
+// intended signal -- qid 85's own options F-5 canon table), and widening DEFINITION_LEAD_RE there
+// would change that unrelated call site's behavior with no test coverage in this ticket. Instead,
+// this second check lives HERE, scoped to the surveyed-ask DEFINE path only, and runs ALONGSIDE
+// (never replacing) the checkKind() check above -- an MMLU-Pro-shaped denotation is still caught by
+// checkKind() exactly as before; a real-prose denotation is now ALSO caught, by this pattern set.
+//
+// GRAMMATICAL SIGNALS ONLY, closed class, same discipline as kind_check.ts's own header: every
+// pattern below is a generic English definitional/naming construction (copula + "called"/"known
+// as"/"defined as", or the reporting verbs "refers to"/"denotes"), not a word pulled from any
+// benchmark question's own vocabulary.
+//
+// KNOWN, DECLARED LIMITATION: "is/are/was/were called X" also matches the English idiom "called
+// into question/doubt", which is NOT a definition (it means "disputed"), so that idiom is excluded
+// by a negative lookahead. This is a grammatical exception (a fixed idiom), not a domain-vocabulary
+// carve-out. No claim is made that every possible false positive is excluded -- only this measured
+// one, plus the general shape a definitional clause takes in prose.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+const REAL_PROSE_DEFINITION_PATTERNS: { re: RegExp; label: string }[] = [
+  {
+    re: /\b(?:is|are|was|were)\s+(?:called|known\s+as)\s+(?!into\b)/i,
+    label: '"is/are/was/were called/known as" (naming construction; excludes the "called into '
+      + 'question/doubt" idiom, which is not definitional)',
+  },
+  {
+    re: /\b(?:is|are|was|were)\s+defined\s+as\b/i,
+    label: '"is/are/was/were defined as"',
+  },
+  {
+    re: /\brefers?\s+to\b/i,
+    label: '"refers/refer to"',
+  },
+  {
+    re: /\bdenotes?\b/i,
+    label: '"denotes"',
+  },
+];
+
+/**
+ * Real-prose definitional-shape check, SCOPED TO THE SURVEYED-ASK DEFINE PATH (this file). Pure,
+ * mechanical, grammatical-signal only -- see the section header immediately above for the full
+ * discipline and why this exists alongside checkKind() rather than inside it.
+ */
+export function looksLikeDefinitionalProse(
+  sentence: string,
+): { isMatch: boolean; label: string | null; matchedText: string | null } {
+  const t = String(sentence ?? '').trim();
+  if (!t) return { isMatch: false, label: null, matchedText: null };
+  for (const { re, label } of REAL_PROSE_DEFINITION_PATTERNS) {
+    const m = re.exec(t);
+    if (m) {
+      return { isMatch: true, label, matchedText: m[0].trim() };
+    }
+  }
+  return { isMatch: false, label: null, matchedText: null };
+}
 
 export function determineDemandFromSurveyedAsk(nested: SurveyAskNestedResult): DemandResult {
   const frameworkLevel = nested.levels.find((l) => l.level.label === 'framework');
@@ -248,6 +327,23 @@ export function determineDemandFromSurveyedAsk(nested: SurveyAskNestedResult): D
           derivedFrom: 'surveyed-ask',
         };
       }
+      // D-BP157-053: checkKind()'s DEFINITION_LEAD_RE only fires on the MMLU-Pro option-phrasing
+      // convention ("It describes/refers to/..."), not on how real Google prose states a
+      // definition -- see this file's section header above. This second, narrower check catches
+      // the real-prose shape without touching checkKind() or its other call sites.
+      const realProse = looksLikeDefinitionalProse(d.sentence);
+      if (realProse.isMatch) {
+        return {
+          demand: 'DEFINE',
+          why: `the most specific surveyed level ("${mostSpecific.surveyedTerm}") returned a `
+            + `denotation carrying a real-prose definitional construction (${realProse.label}, `
+            + `matched "${realProse.matchedText}") even though it does not kind-check as `
+            + `DEFINITION-STATEMENT (kind-check: ${kc.type ?? 'unrecognized'}) -- `
+            + `determineDemandFromSurveyedAsk()'s D-BP157-053 fix for the D-BP150-014 qid-85 DEFINE `
+            + `miss: "${d.sentence}"`,
+          derivedFrom: 'surveyed-ask',
+        };
+      }
     }
     if (mostSpecific.survey.denotations.length === 0) {
       return {
@@ -263,9 +359,10 @@ export function determineDemandFromSurveyedAsk(nested: SurveyAskNestedResult): D
   return {
     demand: null,
     why: 'the surveyed ask carries no framework level and no denotation kind-checks as a '
-      + 'DEFINITION-STATEMENT -- RANK/CLASSIFY/IDENTIFY/INFER are not yet derivable from the '
-      + 'surveyed ASK term\'s own denotations alone (they characterize the operation on the '
-      + 'OPTIONS, not the ASK); an honest gap, not a fabrication -- see D-BP150-014\'s return',
+      + 'DEFINITION-STATEMENT or carries a real-prose definitional construction (D-BP157-053) -- '
+      + 'RANK/CLASSIFY/IDENTIFY/INFER are not yet derivable from the surveyed ASK term\'s own '
+      + 'denotations alone (they characterize the operation on the OPTIONS, not the ASK); an honest '
+      + 'gap, not a fabrication -- see D-BP150-014\'s return',
     derivedFrom: 'surveyed-ask',
   };
 }
