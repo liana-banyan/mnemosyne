@@ -455,6 +455,10 @@ import { runCatacombMigrationCheck } from './diagnosis/catacomb_migrator';
 import { startPeerServer, stopPeerServer, getCurrentTier, registerPresenceConfig } from './federation/peer_server';
 // KN-BP144-16 Phase 1: LAN discovery opt-out setting (defaults to refuse-unauthenticated).
 import { registerMeshTrustSettingsIpc } from './federation/mesh_trust_settings';
+// D-BP157-033: mesh auto-spawn tool-execution consent (defaults to OFF -- see that file's own
+// header for why this is a SEPARATE consent from both AutoUpdateConfig.autoUpdates and the
+// existing LB_MESH_AUTO_SPAWN_ENABLED kill switch).
+import { registerMeshAutoSpawnConsentIpc } from './federation/mesh_auto_spawn_consent';
 // BP134 Yoke #29 Part 2: this node must run peer_artifact_server so OTHER nodes' mesh-pull
 // (auto_update_scheduler.ts's findNewerPeers/pullAndVerifyFromPeers) has something to reach --
 // the client-side pull code already existed (BP087 Wave 4) but this server was never started.
@@ -5595,6 +5599,9 @@ ${args.teachingText}
   registerDiagnosisIpc();
   // -- KN-BP144-16 Phase 1: LAN discovery opt-out (default: refuse unauthenticated) -----------
   registerMeshTrustSettingsIpc();
+  // -- D-BP157-033: mesh auto-spawn tool-execution consent (default: OFF -- separate from the
+  //    LB_MESH_AUTO_SPAWN_ENABLED kill switch AND from AutoUpdateConfig.autoUpdates) -----------
+  registerMeshAutoSpawnConsentIpc();
   // -- D-BP156-M0-008: HARDWIRE-24 mesh, Bishop-dispatch WAN relay hook (auto-spawn is
   //    default-DISABLED via LB_MESH_AUTO_SPAWN_ENABLED -- see bishop_dispatch_handler.ts) ------
   registerBishopDispatchMeshHook();

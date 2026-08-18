@@ -56,6 +56,16 @@
  *      the cap, so an operator can distinguish this refusal from "ran and did nothing" or "never
  *      arrived." The happy path (claim wins, bare id or any suffix) is unchanged.
  *
+ *      D-BP157-033 confirmed the exact cause of "spawns, exits 0, produces nothing": argv's
+ *      `--permission-mode` was unconditionally `getSpawnPermissionMode()` (default "default"), and
+ *      a non-interactive, detached worker under that mode has no human present to approve a tool
+ *      call, so it can write nothing. Per FD-BP157-04/FD-BP157-05, a NEW, SEPARATE consent gate
+ *      (mesh_auto_spawn_consent.ts, mirroring mesh_trust_settings.ts's shape, OFF by default) is
+ *      now required, IN ADDITION TO the existing kill switch (guardrail (c) above), before a
+ *      worker is launched under an elevated permission mode that can actually write files and run
+ *      commands. Neither gate alone is sufficient -- see resolveEffectivePermissionMode() below,
+ *      the pure function that encodes this truth table, and its callers.
+ *
  * NEVER interpolates promptText (or any payload field) into a shell string. child_process.spawn
  * is called with an explicit argv array and shell:false (Node's own default for spawn, stated
  * explicitly here anyway so a future edit cannot silently flip it) -- see spawnBishopWorker()
@@ -75,6 +85,10 @@ import {
   getDefaultReplyWriteConfig,
   type BishopDispatchCompletionInput,
 } from './bishop_dispatch_reply';
+// D-BP157-033: the new, separate mesh auto-spawn consent gate (FD-BP157-04/FD-BP157-05) --
+// see resolveEffectivePermissionMode() below for how this is coupled with the existing
+// LB_MESH_AUTO_SPAWN_ENABLED kill switch (isAutoSpawnEnabled() above).
+import { isMeshAutoSpawnConsentGranted } from './mesh_auto_spawn_consent';
 
 // ─── Ledger root (refuted-premise note, D-BP156-M0-008) ────────────────────────────────────
 //
@@ -485,6 +499,49 @@ export function getSpawnPermissionMode(): string {
   return envVal && envVal.trim().length > 0 ? envVal : DEFAULT_PERMISSION_MODE;
 }
 
+// ─── D-BP157-033: consent-gated elevated permission mode ───────────────────────────────────
+//
+// `claude --help` (run this session, no agent spawned) confirms the installed CLI's
+// `--permission-mode` accepts exactly: "acceptEdits", "bypassPermissions", "default", "plan".
+// Only "bypassPermissions" removes every tool-approval prompt -- "acceptEdits" still leaves
+// non-Edit tools (Bash, in particular, which a worker needs for "run this command" / "git push"
+// style dispatches) gated on an approval that a detached, non-interactive process can never
+// answer, so it would not close the measured gap. "plan" is strictly read-only and cannot write
+// at all. DEFAULT_ELEVATED_PERMISSION_MODE is therefore "bypassPermissions" -- the one mode that
+// actually lets an unattended worker do the work a dispatch asks for.
+const DEFAULT_ELEVATED_PERMISSION_MODE = 'bypassPermissions';
+
+export function getElevatedSpawnPermissionMode(): string {
+  const envVal = process.env.LB_MESH_SPAWN_ELEVATED_PERMISSION_MODE;
+  return envVal && envVal.trim().length > 0 ? envVal : DEFAULT_ELEVATED_PERMISSION_MODE;
+}
+
+/** Pure decision function -- the exact truth table FD-BP157-05 requires. BOTH `autoSpawnEnabled`
+ *  (the existing LB_MESH_AUTO_SPAWN_ENABLED kill switch, guardrail (c), already checked and
+ *  required to be true before handleBishopDispatch() ever calls launchWorker(), which is the only
+ *  production caller of this function) AND `consentGranted` (mesh_auto_spawn_consent.ts's NEW,
+ *  separate toggle) must be true before the elevated permission mode is used. Neither alone is
+ *  sufficient:
+ *    - kill switch ON, consent OFF  -> restrictive mode (today's unchanged default behavior; an
+ *      operator who has not yet granted the new consent sees no behavior change from before this
+ *      dispatch -- the worker still spawns, but cannot use tools without a human present).
+ *    - kill switch OFF, consent ON  -> never reaches this function at all (handleBishopDispatch's
+ *      guardrail (c) refuses to spawn before launchWorker is called) -- included in the table
+ *      here only so a reader auditing this function in isolation sees the full four-cell truth
+ *      table, not just the two cells production code can actually reach.
+ *    - kill switch ON,  consent ON  -> elevated mode.
+ *    - kill switch OFF, consent OFF -> never reaches this function; no spawn at all.
+ *  Exported and kept pure (no I/O) so bishop_dispatch_handler.test.ts can exercise all four cells
+ *  directly, independent of the full spawn/claim/log machinery -- matches this file's own
+ *  established idiom (isOriginAllowed, isWorkingDirAllowed, isAutoSpawnEnabled are all pure too). */
+export function resolveEffectivePermissionMode(
+  autoSpawnEnabled: boolean,
+  consentGranted: boolean,
+): { mode: string; elevated: boolean } {
+  const elevated = autoSpawnEnabled === true && consentGranted === true;
+  return { mode: elevated ? getElevatedSpawnPermissionMode() : getSpawnPermissionMode(), elevated };
+}
+
 /** Injectable so tests never actually spawn the CLI worker process (see
  *  bishop_dispatch_handler.test.ts) -- the default is the real node:child_process.spawn. This is
  *  the ONLY function in this file that creates the CLI worker's process; every guardrail above it
@@ -509,6 +566,14 @@ export interface LaunchOutcome {
    *  actually used -- carried up into BishopDispatchResult.effectiveId so a later completion
    *  reply can be matched to the right worker log by anyone reading the stage-1 reply alone. */
   effectiveId?: string;
+  /** D-BP157-033: which permission mode this launch attempt actually used
+   *  (resolveEffectivePermissionMode()'s result), and whether the mesh auto-spawn consent toggle
+   *  was granted at decision time. Undefined only on the HARDWIRE-25 claim-refusal path
+   *  (SPAWN_REFUSED_UNCLAIMED), which returns before a permission mode is ever decided --
+   *  handleBishopDispatch() uses that undefined-ness to know whether to append the
+   *  permission-mode WorkIssue at all. */
+  permissionMode?: string;
+  consentGranted?: boolean;
 }
 
 // ─── D-BP157-023, THE RETURN LEG (SEG_RETURN_BP157_015 Part 2) ─────────────────────────────────
@@ -533,6 +598,14 @@ export interface LaunchOutcome {
 // of work" (M3's own words, SEG_RETURN_BP157_018 Part 6).
 
 export const COMPLETION_SENTINEL = 'BISHOP-DISPATCH-WORK-COMPLETE';
+
+// D-BP157-033 verified this sentinel path stays intact under the new consent-gated elevated
+// permission mode: promptTextForChild (which carries completionInstruction, below) is still built
+// once and passed unchanged as the single `-p` argv element regardless of which permission mode is
+// chosen -- resolveEffectivePermissionMode() only changes the VALUE of the separate
+// `--permission-mode` argv element two positions later (see launchWorker's `args` array). Delivery
+// mechanism, log-capture (stdioOption -> the real fd opened for workerLogPath), and sentinel
+// detection (deriveCompletionOutcome below, reading that same log) are untouched.
 
 /** Pure decision function -- the easiest thing to get exhaustively right, independently
  *  testable without any process/file I/O (matches this file's own established idiom:
@@ -741,11 +814,19 @@ async function launchWorker(
 
   const promptTextForChild = payload.promptText + childActorNotice + completionInstruction;
 
+  // D-BP157-033: consent-gated permission mode. `true` for autoSpawnEnabled below is not a
+  // shortcut -- launchWorker() is only ever reached (production or test) after
+  // handleBishopDispatch's guardrail (c) kill-switch check has already passed, so within this
+  // function the kill switch is always known-true; resolveEffectivePermissionMode() itself stays
+  // a general pure function testable at all four truth-table cells independent of that call site.
+  const consentGranted = isMeshAutoSpawnConsentGranted();
+  const { mode: effectivePermissionMode } = resolveEffectivePermissionMode(true, consentGranted);
+
   const args = [
     '-p', promptTextForChild,
     '--output-format', 'text',
     '--model', model,
-    '--permission-mode', getSpawnPermissionMode(),
+    '--permission-mode', effectivePermissionMode,
   ];
 
   // ─── Work item 1: open a real log file for the worker's stdout+stderr ────────────────────
@@ -765,6 +846,7 @@ async function launchWorker(
     originPeerId: payload.originPeerId,
     decision: 'SPAWN_ATTEMPT',
     detail: `effectiveId=${effectiveId} claimed=${claimResult.claimed} claimDetail=${claimResult.detail} ` +
+      `permissionMode=${effectivePermissionMode} consentGranted=${consentGranted} ` +
       `workerLog=${logOpenError ? `OPEN_FAILED(${logOpenError}), falling back to stdio:ignore` : workerLogPath}`,
   });
 
@@ -795,7 +877,7 @@ async function launchWorker(
       decision: 'SPAWN_FAILED',
       detail: `effectiveId=${effectiveId} workerLog=${workerLogPath} ${detail}`,
     });
-    return { spawned: false, errorCode: 'SPAWN_FAILED', effectiveId, error: detail };
+    return { spawned: false, errorCode: 'SPAWN_FAILED', effectiveId, error: detail, permissionMode: effectivePermissionMode, consentGranted };
   }
 
   // The child process duplicates logFd for its own use once spawned; close the parent's copy so
@@ -838,7 +920,7 @@ async function launchWorker(
       // Exiting (even non-zero -- e.g. a downstream auth failure) still means the OS DID create
       // the process. That is the only claim `spawned` makes; whatever the worker did with its
       // life is a separate question this field does not answer.
-      settleOutcome({ spawned: true, effectiveId });
+      settleOutcome({ spawned: true, effectiveId, permissionMode: effectivePermissionMode, consentGranted });
 
       // ─── D-BP157-023, THE RETURN LEG ────────────────────────────────────────────────────────
       // This 'exit' listener already fires whenever the worker actually exits, however long that
@@ -882,10 +964,11 @@ async function launchWorker(
         decision: 'SPAWN_ERROR',
         detail: `effectiveId=${effectiveId} workerLog=${workerLogPath} ${detail}`,
       });
-      settleOutcome({ spawned: false, errorCode: 'SPAWN_ERROR', effectiveId, error: detail });
+      settleOutcome({ spawned: false, errorCode: 'SPAWN_ERROR', effectiveId, error: detail, permissionMode: effectivePermissionMode, consentGranted });
     });
 
-    void SPAWN_IMMEDIATE_OUTCOME_GRACE().then(() => settleOutcome({ spawned: true, effectiveId }));
+    void SPAWN_IMMEDIATE_OUTCOME_GRACE().then(() =>
+      settleOutcome({ spawned: true, effectiveId, permissionMode: effectivePermissionMode, consentGranted }));
   });
 
   return outcome;
@@ -995,6 +1078,30 @@ export async function handleBishopDispatch(
         `dispatchId=${payload.dispatchId} effectiveId=${outcome.effectiveId ?? payload.dispatchId}`,
         'launchWorker',
       )];
+
+  // D-BP157-033: legible, always-distinct record of which permission mode this launch attempt
+  // used and why -- an operator must be able to tell "consent not granted, ran restricted" apart
+  // from "ran and did nothing" (NO_COMPLETION_SENTINEL, the return leg's own issue) and from
+  // "never arrived" (no record at all). Present whenever launchWorker() got far enough to decide
+  // a permission mode -- i.e. every outcome except the HARDWIRE-25 SPAWN_REFUSED_UNCLAIMED path,
+  // which returns before that decision is ever made (outcome.permissionMode stays undefined
+  // there, and only there).
+  if (outcome.permissionMode !== undefined) {
+    issues.push(makeIssue(
+      outcome.consentGranted ? 'MESH_AUTO_SPAWN_CONSENT_GRANTED' : 'MESH_AUTO_SPAWN_CONSENT_NOT_GRANTED',
+      outcome.consentGranted
+        ? `mesh auto-spawn consent is granted (mesh_auto_spawn_consent.ts); worker launched with ` +
+          `elevated permission mode "${outcome.permissionMode}"`
+        : `mesh auto-spawn consent is NOT granted (mesh_auto_spawn_consent.ts, off by default); ` +
+          `worker launched with restrictive permission mode "${outcome.permissionMode}" -- a ` +
+          `non-interactive worker under this mode cannot use tools without a human present to ` +
+          `approve them, and will typically exit having done nothing`,
+      `dispatchId=${payload.dispatchId} effectiveId=${outcome.effectiveId ?? payload.dispatchId} ` +
+        `permissionMode=${outcome.permissionMode} consentGranted=${outcome.consentGranted}`,
+      'handleBishopDispatch permission-mode decision',
+    ));
+  }
+
   return {
     ok: true,
     lifecycle: outcome.spawned ? 'begun' : 'failed',

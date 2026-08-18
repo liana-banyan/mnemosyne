@@ -8,7 +8,7 @@
 // log_tail, env_loader_status, relay_answer_poller_state).
 
 import React, { useCallback, useEffect, useState } from 'react';
-import type { UpdateState, AutoUpdateConfig } from '../amplify.d';
+import type { UpdateState, AutoUpdateConfig, MeshAutoSpawnConsentSettings } from '../amplify.d';
 
 interface DiagnosticStatus {
   pollerStarted: boolean;
@@ -128,6 +128,10 @@ export function DiagnosticModeTab(): React.ReactElement {
 
       <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #1e2a38' }}>
         <AutomaticUpdatesConsentPanel />
+      </div>
+
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #1e2a38' }}>
+        <MeshAutoSpawnConsentPanel />
       </div>
     </div>
   );
@@ -296,6 +300,149 @@ export function AutomaticUpdatesConsentPanel(): React.ReactElement {
               }}
             >
               I agree — enable
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              style={{
+                background: 'none', color: '#94a3b8', border: '1px solid #334155', borderRadius: 6,
+                padding: '5px 10px', fontSize: 11, cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── D-BP157-033/BISHOP/seg-worker-permission-consent: mesh auto-spawn tool-execution consent ──
+//
+// A SEPARATE consent from AutomaticUpdatesConsentPanel above, per this dispatch's own
+// instruction: permitting a peer machine's dispatch to drive TOOL EXECUTION on this one (write
+// files, run commands, unattended) is a materially different decision from permitting a version
+// bump. Mirrors AutomaticUpdatesConsentPanel's own shape exactly (same confirm-before-enable
+// flow, same "turning off needs no confirmation" asymmetry, same OFF-by-default posture) over a
+// SEPARATE persisted flag (mesh_auto_spawn_consent.ts, %APPDATA%\MnemosyneC\config\
+// mesh_auto_spawn_consent.json -- a different file from auto-update-config.json).
+//
+// This toggle alone changes nothing: bishop_dispatch_handler.ts's resolveEffectivePermissionMode()
+// requires BOTH this consent AND the existing, operator-set LB_MESH_AUTO_SPAWN_ENABLED kill
+// switch to be true before a spawned worker ever runs under an elevated permission mode. With
+// the kill switch off (the shipped default), granting this consent has no observable effect --
+// the confirmation copy below says so explicitly rather than implying this toggle alone is
+// dangerous when the kill switch has never been turned on.
+//
+// D-BP148-038: exported (matching AutomaticUpdatesConsentPanel's own export) so
+// compass/AuthorizationsPanel.tsx can mount this SAME component instead of forking a second copy.
+
+const MASC_DEFAULT: MeshAutoSpawnConsentSettings = { consentGranted: false };
+
+export function MeshAutoSpawnConsentPanel(): React.ReactElement {
+  const [cfg, setCfg] = useState<MeshAutoSpawnConsentSettings>(MASC_DEFAULT);
+  const [loaded, setLoaded] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const remote = await (window as any).amplify?.getMeshAutoSpawnConsentSettings?.();
+      if (remote) setCfg({ ...MASC_DEFAULT, ...remote });
+    } catch { /* dev mode / not available -- keep OFF default */ }
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const persist = useCallback(async (granted: boolean) => {
+    setBusy(true);
+    try {
+      const res = await (window as any).amplify?.setMeshAutoSpawnConsentGranted?.(granted);
+      setCfg(res ? { ...MASC_DEFAULT, ...res } : { consentGranted: granted });
+    } catch { /* dev mode noop -- local state already reflects intent */ }
+    finally { setBusy(false); }
+  }, []);
+
+  const handleToggleClick = useCallback(() => {
+    if (cfg.consentGranted) {
+      // Returning to the safe default needs no confirmation, matching every other consent
+      // control in this app (AutomaticUpdatesConsentPanel, Mesh Trust's own toggle).
+      void persist(false);
+    } else {
+      setConfirming(true);
+    }
+  }, [cfg.consentGranted, persist]);
+
+  const confirmEnable = useCallback(() => {
+    setConfirming(false);
+    void persist(true);
+  }, [persist]);
+
+  if (!loaded) return <></>;
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: '#f0fdf4', marginBottom: 4 }}>
+        🤖 Mesh Auto-Spawn Tool Execution
+      </div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10, lineHeight: 1.5 }}>
+        A mesh peer's Bishop dispatch can already wake a worker on this machine if the
+        operator-set auto-spawn kill switch is on -- but today that worker runs under a
+        restrictive permission mode that cannot write files or run commands without a human
+        present to approve each one. This toggle, separate from Automatic Updates above and off
+        by default, lets a spawned worker actually do the work a dispatch asks for, unattended.
+        It requires the kill switch to ALSO be on -- by itself it changes nothing.
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#cbd5e1' }}>
+            Allow mesh-dispatched workers to execute tools unattended on this machine
+          </div>
+          <div style={{ fontSize: 9, color: '#475569', marginTop: 2, lineHeight: 1.5 }}>
+            {cfg.consentGranted
+              ? 'Enabled -- combined with the auto-spawn kill switch, a spawned worker runs under an elevated permission mode that can write files and run commands with no one here to approve them.'
+              : 'Disabled -- a spawned worker (if the kill switch is on) runs under the restrictive default permission mode and cannot use tools without approval, so it will typically exit having done nothing.'}
+          </div>
+        </div>
+        <button
+          onClick={handleToggleClick}
+          disabled={busy}
+          style={{
+            padding: '3px 10px', borderRadius: 6, fontSize: 10, fontWeight: 700,
+            cursor: 'pointer', whiteSpace: 'nowrap' as const, flexShrink: 0,
+            border: cfg.consentGranted ? '1px solid rgba(251,191,36,0.4)' : '1px solid rgba(100,116,139,0.3)',
+            background: cfg.consentGranted ? 'rgba(251,191,36,0.1)' : 'rgba(100,116,139,0.06)',
+            color: cfg.consentGranted ? '#fbbf24' : '#64748b',
+            opacity: busy ? 0.6 : 1,
+          }}
+        >
+          {cfg.consentGranted ? 'ON' : 'OFF'}
+        </button>
+      </div>
+
+      {confirming && (
+        <div style={{
+          marginTop: 10, padding: '8px 10px', borderRadius: 6,
+          background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)',
+        }}>
+          <div style={{ fontSize: 10, color: '#e2e8f0', marginBottom: 8, lineHeight: 1.5 }}>
+            This opens a real trust boundary: once the auto-spawn kill switch is also on, a mesh
+            peer's dispatch will be able to make this machine write files and run commands with
+            no one here to approve each one. The LAN is a carrier, never a trust boundary --
+            being on the same network is not authentication, so turn this on only if you trust
+            every peer allowed to dispatch to this machine (the sender allowlist). Turn this on?
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={confirmEnable}
+              style={{
+                background: '#f59e0b', color: '#0a0f1a', border: 'none', borderRadius: 6,
+                padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+              }}
+            >
+              I understand the risk -- enable
             </button>
             <button
               onClick={() => setConfirming(false)}

@@ -457,6 +457,17 @@ contextBridge.exposeInMainWorld('amplify', {
   setMeshTrustAllowUnauthenticatedLanDiscovery: (allow: boolean): Promise<{ allowUnauthenticatedLanDiscovery: boolean }> =>
     ipcRenderer.invoke('mesh-trust:set-allow-unauthenticated-lan-discovery', allow),
 
+  // D-BP157-033: mesh auto-spawn tool-execution consent -- SEPARATE from Mesh Trust above (that
+  // one governs whether an unsigned peer message is accepted at all; this one governs, for a
+  // dispatch that already passed every other guardrail including the operator-set
+  // LB_MESH_AUTO_SPAWN_ENABLED kill switch, whether the resulting worker runs under a permission
+  // mode that can actually write files/run commands unattended, or stays restricted). See
+  // src/main/federation/mesh_auto_spawn_consent.ts's own header for the full rationale.
+  getMeshAutoSpawnConsentSettings: (): Promise<import('./federation/mesh_auto_spawn_consent').MeshAutoSpawnConsentSettings> =>
+    ipcRenderer.invoke('mesh-auto-spawn-consent:get-settings'),
+  setMeshAutoSpawnConsentGranted: (granted: boolean): Promise<import('./federation/mesh_auto_spawn_consent').MeshAutoSpawnConsentSettings> =>
+    ipcRenderer.invoke('mesh-auto-spawn-consent:set-consent-granted', granted),
+
   // ── MV-CN Peer Mesh (SAGA 3 BP045 W1) ───────────────────────────────────
   getMeshState: (): Promise<{ peers: unknown[]; relayConnected: boolean; ownPeerId: string }> =>
     ipcRenderer.invoke('get-mesh-state'),
