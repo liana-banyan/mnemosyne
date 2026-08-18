@@ -1,0 +1,729 @@
+// magnitude_step.ts -- D-BP154-022/BISHOP-SEG/S22/seg-magnitude
+//
+// THE FIFTH COMPOSER STEP: MAGNITUDE. FD-BP153-01, ratified, completing FD-BP152-38 ("Yes. that.
+// now code it, please"), verbatim:
+//
+//   "A superlative resolves by magnitude, ranked WITHIN THE FRAME. The frame is established
+//   first: which options are legitimate members of the category the question names, and which
+//   are not. Non-members are removed and are never ranked. Magnitude decides only among the
+//   survivors."
+//
+// THE FRAME IS NOT RE-DERIVED HERE. terminator_step.ts's own deriveTerminatorEliminations() --
+// pure, exported, already unit-tested, already fixed twice this campaign (D-BP154-020's
+// vocabulary-mismatch fix, D-BP154-021's middle-parenthetical fix) -- is the ONE place
+// Softballs:1/NamedSet:1/Discriminator:1's own stated facts become an elimination set. Imported
+// and reused UNCHANGED, never duplicated, so a future fix to that reducer can never silently
+// diverge between what THE TERMINATOR uses to abstain and what THE MAGNITUDE uses to rank. This
+// is a DIFFERENT discipline from this file's own category/property parsing below (duplicated
+// locally, per this codebase's established "steps stay self-contained" convention for SMALL,
+// qid-agnostic text parsers, same as discriminator_step.ts's own comment on its twin) --
+// deriveTerminatorEliminations() is a substantial, correctness-critical, actively-maintained
+// reducer, not a one-line parser; reusing it is the safer engineering choice here, not a breach
+// of that convention's intent.
+//
+// classify_cascade.ts is FORBIDDEN and was NOT read to build this file -- built from FD-BP153-01's
+// ruling text alone, never ported from that file's own ranking machinery. Only the same generic,
+// already-shared primitives comparative_cascade.ts exports (appearsIn/gemmaExtract/list/toLetters),
+// read-only, unmodified, plus composer_step_evidence.ts's own shared evidence-gathering helpers
+// (already used identically by softballs_step.ts/named_set_step.ts/discriminator_step.ts).
+//
+// NEVER ON THE FULL OPTION LIST. If NONE of Softballs:1/NamedSet:1/Discriminator:1 actually ran
+// (ok:true) earlier in this same stack, there is no established frame -- "zero eliminations" is
+// NOT "the frame is everything"; it is "the frame was never built", and this step refuses to run
+// rather than silently ranking every option (FD-BP153-01's own "confident-wrong-answer generator"
+// -- an unframed magnitude answer). Same refusal on a self-contradictory frame (the SAME
+// contradiction deriveTerminatorEliminations() itself detects) or a frame degenerated to fewer
+// than two survivors (nothing left to rank, or already unique without magnitude).
+//
+// THE ORDERING IS EXTRACTED, NEVER COMPUTED (HARDWIRE-22). The conversational authority (Gemini)
+// is asked ONE real question -- the SAME "ask a source, then extract what it stated" pattern
+// Softballs/NamedSet/Discriminator already use -- and the LOCAL extraction model (gemmaExtract,
+// Ollama) only ever copies what that answer's own text states, with a verbatim span per ranked
+// entry, the SAME four-part discipline (name maps to a frame option, span non-empty, span
+// verbatim in the passage, span about that option) every other step in this estate already
+// applies. Ollama is never asked to compare or rank anything itself -- gemmaExtract's own system
+// prompt already enforces "report only what it states... do not choose between options" (that
+// instruction is unmodified by this file).
+//
+// NO NUMBERS FROM THIS FILE'S OWN KNOWLEDGE, EVER. A population-density figure (or any other
+// magnitude fact) must come from a source that STATES it, with a verbatim span -- this file
+// contains no such figure, anywhere, for any option, and never will. If a stated ordering is
+// never obtained, this step ABSTAINS (ok:false) -- it never falls back to a number this file's
+// own author happens to know.
+//
+// DISAGREEMENT ACROSS INDEPENDENT SOURCES IS REPORTED, NEVER RESOLVED BY FORCE. Every owned
+// candidate that names a frame option is extracted independently (not just the first match, the
+// established pattern the other three steps use); if two or more disagree on the relative order
+// of options they both rank, this step reports that disagreement and refuses (ok:false) rather
+// than silently picking one.
+//
+// NO RULE HERE MAY SELECT A PARTICULAR LETTER (FD-BP153-06) -- every option letter is treated
+// identically by every function below; which end of a stated ordering is "the answer" is decided
+// only by deriveMagnitudeTargetExtreme()'s reading of the QUESTION's own wording (negation +
+// stated direction), never by which letter that reading happens to land on.
+import { appearsIn, gemmaExtract, googleBlocks, list, toLetters, } from '../methods/comparative_cascade';
+import { registerNameNumbered } from './method_registry';
+import { corroborateClaim, gatherMortgageCandidates, gatherThisRunCandidates, spanIsVerbatimInPassage, summarizeCorroboration, tryConversationalAuthority, } from './composer_step_evidence';
+import { deriveTerminatorEliminations } from './terminator_step';
+import { existsSync, readFileSync } from 'node:fs';
+// ───────────────────── pure parts (unit-testable without a live Ollama/browser) ─────────────────────
+/** Reads the FULL superlative property phrase the question itself names -- byte-identical to
+ *  named_set_step.ts's own deriveNamedSetProperty() / discriminator_step.ts's own
+ *  deriveDiscriminatorSuperlativeProperty(), duplicated (not imported) for the same "steps stay
+ *  self-contained" reason those two files' own headers already state. Pure text-structure parsing
+ *  of the question's OWN wording, never a judgment -- returns null (never a guess) when the
+ *  question does not fit this shape. */
+export function deriveMagnitudeSuperlativeProperty(question) {
+    const m1 = question.match(/\bone of\s+(?:the\s+)?([a-z0-9][^?]*?)\??$/i);
+    if (m1 && m1[1].trim())
+        return m1[1].trim();
+    const m2 = question.match(/\bconsidered\s+(?:the\s+)?([a-z0-9][^?]*?)\??$/i);
+    if (m2 && m2[1].trim())
+        return m2[1].trim();
+    return null;
+}
+/** Reads which end of the stated property the QUESTION ITSELF demands (FD-BP153-01's own "the
+ *  extreme the question demands"). Pure text-structure parsing, nothing else: is the question
+ *  negated ("...is NOT..."), and does the property phrase itself say "most" or "least"? A
+ *  NOT-question about a "most" property targets the LEAST end (qid 98's own shape: "NOT
+ *  considered one of the world's MOST densely populated regions" -> target = least); a direct
+ *  question, or a "least" property, targets the opposite way round. Defaults the property's own
+ *  direction to 'most' when neither word literally appears (the common unmarked superlative
+ *  shape) -- this is a reading of which WORD the question used, never a guess about which OPTION
+ *  is extreme, and applies identically regardless of the actual category or options named
+ *  (FD-BP153-06). */
+export function deriveMagnitudeTargetExtreme(question, property) {
+    const negated = /\bnot\b/i.test(question);
+    const propertyDirection = /\bleast\b/i.test(property) ? 'least' : 'most';
+    if (!negated)
+        return propertyDirection;
+    return propertyDirection === 'most' ? 'least' : 'most';
+}
+/** THE ONE QUERY -- restricted to `frame`, NEVER the full option list (FD-BP153-01). */
+export function buildMagnitudeQuery(property, frame, OPT) {
+    return `Considering ONLY the following (do not discuss or rank any other option) -- `
+        + `${list(frame, OPT)} -- order them from the one that BEST fits "${property}" to the one `
+        + `that LEAST fits it. State the full order explicitly, from most to least, and say so for `
+        + `every one of them.`;
+}
+/** THE ONE CORROBORATION QUERY (FD-BP154-02): re-asks whether the single DECISIVE claim (the
+ *  option this step's own targetExtreme reading selects) holds, for a second, independent
+ *  document. */
+export function buildMagnitudeCorroborationQuery(property, extremeEntry, targetExtreme) {
+    return `Is ${extremeEntry.name} the ${targetExtreme} "${property}"? Answer plainly and `
+        + `directly, stating clearly whether it is or is not.`;
+}
+/** THE VERIFY-THE-SPAN CHOKE POINT (FD-BP153-07 FIX 2's own discipline, applied here to an
+ *  ordered list instead of a set): (a) non-empty `name`, (b) maps to a KNOWN option, (c) that
+ *  option is IN `frame` -- an option outside the frame is never a candidate here at all, not even
+ *  a discard (FD-BP153-01: magnitude ranks only survivors), (d) non-empty `span`, (e) span
+ *  VERBATIM in `passage`, (f) span itself ABOUT the named option (appearsIn). Any failure of
+ *  (d)/(e)/(f) is a DISCARD and is counted. Array ORDER is preserved from the extraction as-given
+ *  (most to least) -- trusted from the model's own stated sequence exactly as every other step in
+ *  this estate trusts an extracted field's CONTENT once its span is verified, never independently
+ *  re-derived from the span text. */
+export function verifyMagnitudeOrder(raw, passage, frame, OPT) {
+    const entries = Array.isArray(raw) ? raw : [];
+    const frameSet = new Set(frame);
+    const order = [];
+    const seen = new Set();
+    let discarded = 0;
+    for (const entry of entries) {
+        const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+        const span = typeof entry?.span === 'string' ? entry.span.trim() : '';
+        if (!name)
+            continue; // nothing named -- not a candidate value, not a discard
+        let matched = toLetters([name], OPT);
+        if (matched.length === 0) {
+            const stripped = stripListLetterPrefix(name);
+            if (stripped !== name)
+                matched = toLetters([stripped], OPT);
+        }
+        if (matched.length === 0)
+            continue; // names no known option -- not a candidate value here
+        const L = matched[0];
+        if (!frameSet.has(L))
+            continue; // names an option OUTSIDE the frame -- never ranked, not a discard
+        if (!span || !spanIsVerbatimInPassage(passage, span) || !appearsIn(span, OPT[L])) {
+            discarded++;
+            continue;
+        }
+        if (seen.has(L))
+            continue; // one entry per option; a repeat is neither kept nor double-counted
+        seen.add(L);
+        order.push({ letter: L, name: OPT[L], span });
+    }
+    return { order, discarded };
+}
+/** Two independently-obtained orderings DISAGREE when, restricted to the options BOTH of them
+ *  ranked (at least two in common -- a single shared item has no relative order to disagree
+ *  about), the relative sequence differs. Pure set/sequence comparison, no interpretation. */
+export function magnitudeOrdersDisagree(a, b) {
+    const bLetters = new Set(b.map((e) => e.letter));
+    const aLetters = new Set(a.map((e) => e.letter));
+    const aRestricted = a.filter((e) => bLetters.has(e.letter)).map((e) => e.letter);
+    const bRestricted = b.filter((e) => aLetters.has(e.letter)).map((e) => e.letter);
+    if (aRestricted.length < 2 || bRestricted.length < 2)
+        return false;
+    return aRestricted.join(',') !== bRestricted.join(',');
+}
+function emptyMagnitudeResult(overrides) {
+    return {
+        ok: false, frame: [], property: null, targetExtreme: null, query: null, order: [], discarded: 0,
+        unranked: [], via: 'n/a', disagreement: null,
+        ...overrides,
+    };
+}
+// D-BP154-046 SWEEP, LAW 11 FIX. Latent in this file (D-BP154-015's own fix, softballs_step.ts,
+// was never carried here): gemma4:12b's `name` field can echo the passage's OWN "L) text"
+// list()-formatting -- a leading "<letter>) " token the SOURCE'S OWN formatting put there, never
+// a new equivalence. Applied identically at both this file's own name->letter matching sites.
+function stripListLetterPrefix(name) {
+    return name.replace(/^[A-Za-z]\)\s*/, '');
+}
+function summaryLine(OPT, r) {
+    if (!r.ok)
+        return `MAGNITUDE: FAILED -- ${r.error}`;
+    const orderText = r.order.length
+        ? r.order.map((e, i) => `${i + 1}. ${e.letter}) ${e.name} [source: "${e.span}"]`).join('  |  ')
+        : '(none stated)';
+    const unrankedText = r.unranked.length
+        ? r.unranked.map((L) => `${L}) ${OPT[L]}`).join(', ')
+        : '(none)';
+    const discardNote = r.discarded ? ` -- discarded ${r.discarded} candidate(s) with no verifiable span` : '';
+    const provenanceNote = r.answerProvenance ? `  ||  ANSWERED VIA ${r.answerProvenance.mechanism}: ${r.answerProvenance.detail}` : '';
+    const corrobNote = r.corroboration ? `  ||  ${summarizeCorroboration(r.corroboration)}` : '';
+    const frozenNote = r.frozenSource
+        ? r.frozenSource.obtained
+            ? `  ||  FROZEN SOURCE: "${r.frozenSource.sourceTitle}" (${r.frozenSource.sourceUrl}) -- covers every survivor -- `
+                + `${r.frozenSource.entries.map((e) => `${e.letter}) ${e.name}: ${e.figureText}`).join('; ')}`
+            : `  ||  FROZEN SOURCE: attempted, NOT obtained -- ${r.frozenSource.error} -- ranking below is NOT from a unified dataset`
+        : '';
+    return `MAGNITUDE -- frame: {${r.frame.join(', ')}}  ||  target: ${r.targetExtreme}  ||  `
+        + `query: "${r.query}"  ||  ORDER (source-stated, most to least, verified): ${orderText}`
+        + `${discardNote}  ||  UNRANKED (source silent -- omission, not an extreme): ${unrankedText}`
+        + `${provenanceNote}${corrobNote}${frozenNote}`;
+}
+/** Extracts a leading numeric magnitude from a density figure's own text (e.g. "150 people per
+ *  km2" -> 150; "about 1,200/km2" -> 1200). Pure text parsing, no unit conversion, no judgment --
+ *  returns null (never a guess) when no number is present. */
+export function parseDensityFigure(figureText) {
+    const m = figureText.replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
+    if (!m)
+        return null;
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : null;
+}
+/** One passage this run had a chance to be the frozen source -- owned evidence, the conversational
+ *  authority's own answer, or one Google organic result block. Unified so every candidate goes
+ *  through the IDENTICAL per-entry extraction+verification discipline below, regardless of which
+ *  mechanism produced it (D-BP154-044: "acquire it through the machine, not around it" -- every
+ *  candidate here comes through ctx.askGoogle/ctx.askConversationalAuthority, THE PAIL's own
+ *  recording wrapper, exactly like every other step's query in this estate; nothing here reads a
+ *  URL or a page outside that wiring). */
+// D-BP154-044, NEW; D-BP154-045 FIX 2, REWRITTEN. THE ONE PINNED PATH, hardcoded and explicit --
+// this is the SPECIFIC eblet minted this ticket (mint_geography_eblet.py's own receipt sidecar),
+// not a general REFERENCE-tree reader. A missing or unreadable file is "not pinned", never a
+// guess -- same discipline origin_provenance_store.ts's own loadOriginProvenance() already
+// establishes for a local eblet read.
+//
+// FIX 2, live-measured: Stage A2 used to run the receipt's raw PROSE text through the SAME
+// generic `namesEverySurvivor()`/gemmaExtract pipeline the live conversational/document stages
+// use -- `appearsIn(prose, "North Africa")` failed because the acquired prose literally says
+// "Northern Africa", a different string. Founder's fix: "the bridge is already in the acquired
+// text and it is STATED, not invented... match on the M49 code." The receipt's own STRUCTURED
+// `regions[]` array already carries BOTH the option-facing name (`nameInQuestionSet`, recorded at
+// mint time by reading the augmented question's own option text) AND the source's own stated M49
+// code (`m49Code`, copied verbatim from a span like "Northern Africa (M49 015)") -- this reader
+// returns THAT structure directly, so matching never touches free prose or any synonym/similarity
+// logic: it is EXACT equality between a frame option's own text and the receipt's own recorded
+// `nameInQuestionSet`, with the source-stated M49 code carried through as the audit trail proving
+// the bridge is a stated identifier, not an inference.
+const PINNED_GEOGRAPHY_DENSITY_RECEIPT_PATH = 'C:\\Users\\Administrator\\Documents\\Asteroid-ProofVault\\state\\eblets\\REFERENCE\\mmlu_pro_geography\\density_un_m49_south_america_northern_africa_central_asia_2025.receipt.json';
+function readPinnedGeographyDensityReceipt() {
+    try {
+        if (!existsSync(PINNED_GEOGRAPHY_DENSITY_RECEIPT_PATH))
+            return null;
+        const raw = JSON.parse(readFileSync(PINNED_GEOGRAPHY_DENSITY_RECEIPT_PATH, 'utf8'));
+        const contentHash = typeof raw.contentHash === 'string' ? raw.contentHash : '';
+        const sourceName = typeof raw.sourceName === 'string' ? raw.sourceName : '';
+        if (!contentHash || !Array.isArray(raw.regions))
+            return null;
+        const regions = [];
+        for (const r of raw.regions) {
+            const nameInQuestionSet = typeof r.nameInQuestionSet === 'string' ? r.nameInQuestionSet : '';
+            const m49Code = typeof r.m49Code === 'string' ? r.m49Code : '';
+            const nameInSource = typeof r.nameInSource === 'string' ? r.nameInSource : '';
+            const population = typeof r.population === 'string' ? r.population : '';
+            const area = typeof r.area === 'string' ? r.area : '';
+            const density = typeof r.density === 'string' ? r.density : '';
+            const span = typeof r.span === 'string' ? r.span : '';
+            // A region record missing its own stated M49 code carries no deterministic bridge --
+            // excluded here rather than matched by name alone (this file's own "match on the code" fix).
+            if (!nameInQuestionSet || !m49Code || !density || !span)
+                continue;
+            regions.push({ nameInQuestionSet, m49Code, nameInSource, population, area, density, span });
+        }
+        if (regions.length === 0)
+            return null;
+        return { regions, contentHash, sourceName };
+    }
+    catch {
+        return null; // unreadable/corrupt -- "not pinned", never fabricated.
+    }
+}
+/** D-BP154-045 FIX 2. Matches EVERY letter in `frame` against the pinned receipt's own
+ *  `nameInQuestionSet` field -- EXACT string equality, no synonym table, no similarity score,
+ *  never a model asked whether two labels mean the same thing (HARDWIRE-22). A frame option with
+ *  no exact match is reported by letter, honestly, as lacking a stated code/bridge -- never
+ *  guessed via substring or fuzzy matching. Returns null (never partial) unless EVERY frame
+ *  letter matches. */
+export function matchPinnedRegionsToFrame(receipt, frame, OPT) {
+    const unmatchedLetters = [];
+    const entries = [];
+    for (const L of frame) {
+        const region = receipt.regions.find((r) => r.nameInQuestionSet === OPT[L]);
+        if (!region) {
+            unmatchedLetters.push(L);
+            continue;
+        }
+        entries.push({
+            letter: L, name: OPT[L],
+            figureText: `${region.density} (M49 ${region.m49Code}, "${region.nameInSource}": population ${region.population}, area ${region.area})`,
+            span: region.span,
+        });
+    }
+    return { entries, unmatchedLetters };
+}
+/** THE ONE ATTEMPT at a single, frozen, apples-to-apples source. D-BP154-044, Founder verbatim:
+ *  "Use my free tier with google in Mnemosynec - specifically the liana cycle, or the browser we
+ *  made to do this very thing" -- every candidate below is acquired THROUGH the machine's own
+ *  authority path (gatherMortgageCandidates/gatherThisRunCandidates for owned evidence,
+ *  tryConversationalAuthority for Gemini, googleBlocks for Google document search), never an
+ *  out-of-band fetch. Tried in that order (FD-BP153-04: consult what is already owned before a
+ *  new query; FD-BP154-02: Gemini answers before Google is asked to corroborate). Requires ONE
+ *  candidate's OWN text to state a verifiable figure for EVERY option in `frame` before it is
+ *  accepted -- a passage naming only some survivors is skipped in favor of the next candidate,
+ *  never patched together with a second passage (that would be exactly the "mismatched-source
+ *  ranking" the Founder's own dispatch forbids using quietly). Returns `obtained: false` (never a
+ *  guess) when no single candidate covers every survivor. */
+export async function attemptFrozenDensitySource(ctx, frame, OPT, property) {
+    const query = `Compare the population density (people per square kilometer) of the following, `
+        + `citing a single source and its reference year, with a figure for each: ${list(frame, OPT)}`;
+    const mcOptions = frame.map((L) => `${L}) ${OPT[L]}`);
+    const namesEverySurvivor = (t) => frame.every((L) => appearsIn(t, OPT[L]));
+    const candidates = [];
+    // STAGE A: OWNED EVIDENCE (FD-BP153-04) -- zero new queries when it already answers.
+    for (const c of [...(await gatherMortgageCandidates(undefined, query)), ...gatherThisRunCandidates(ctx)]) {
+        if (namesEverySurvivor(c.text)) {
+            candidates.push({ text: c.text, sourceUrl: null, sourceTitle: `owned evidence (${c.via})`, mechanism: 'OWNED_EVIDENCE' });
+        }
+    }
+    // STAGE A2: THE PINNED CATEGORY-COLUMN DEPOSIT (D-BP154-044; D-BP154-045 FIX 2). One SPECIFIC,
+    // already-minted sand-stratum eblet (Asteroid-ProofVault REFERENCE/mmlu_pro_geography/) is read
+    // here, zero network, exactly like Stage A's own owned-evidence discipline -- this is the ONE
+    // narrow, explicit, one-off pin this ticket authorizes; it is NOT a general "read any REFERENCE
+    // eblet" mechanism (that stays unbuilt). Matches EACH frame letter against the receipt's own
+    // structured `nameInQuestionSet` field (EXACT equality -- see matchPinnedRegionsToFrame()'s own
+    // header for why this is "match on the stated M49 code", not a text-similarity read). When
+    // EVERY frame letter matches, this returns immediately -- no live query spent at all, the
+    // strongest form of "consult what is already owned before a new query" (FD-BP153-04). When only
+    // SOME match, the unmatched letters are named, honestly, in the eventual failure -- reported,
+    // never silently dropped, never patched with a guess.
+    let pinnedUnmatchedNote = '';
+    const pinnedReceipt = readPinnedGeographyDensityReceipt();
+    if (pinnedReceipt) {
+        const { entries, unmatchedLetters } = matchPinnedRegionsToFrame(pinnedReceipt, frame, OPT);
+        if (unmatchedLetters.length === 0 && entries.length === frame.length) {
+            const numericallyRankable = entries.every((e) => parseDensityFigure(e.figureText) !== null);
+            const result = {
+                attempted: true, obtained: true,
+                sourceUrl: null,
+                sourceTitle: `pinned Category Column deposit (mmlu_pro_geography, ${pinnedReceipt.sourceName}, contentHash ${pinnedReceipt.contentHash.slice(0, 16)}...)`,
+                entries, numericallyRankable, mechanism: 'OWNED_EVIDENCE',
+            };
+            return result;
+        }
+        if (unmatchedLetters.length > 0) {
+            pinnedUnmatchedNote = ` The pinned Category Column deposit (mmlu_pro_geography) was checked but did not cover `
+                + `${unmatchedLetters.map((L) => `${L}) ${OPT[L]}`).join(', ')} -- no region in that deposit carries a `
+                + `stated M49 code matching this option's own text; never matched by name similarity.`;
+        }
+    }
+    // STAGE B: PERPLEXITY (D-BP154-044/FD-BP154-19, Founder verbatim: "you can use claude or
+    // perplexity as facts gathering - perplexity is excellent for such"; preferred here specifically
+    // because it returns citations with source URLs -- a verbatim span PLUS a named third-party
+    // document, arriving together, exactly the admission shape this function needs). Tried FIRST
+    // among the conversational stages, through ctx.askConversationalAuthorityAs (method_registry.ts,
+    // D-BP154-044) -- THE PAIL's own recording wrapper, same as every other query here; never an
+    // out-of-band fetch. Absent (undefined) on any caller that has not wired it -- falls straight
+    // through to Stage B2 with zero behavior change for every pre-existing test/call site.
+    if (ctx.askConversationalAuthorityAs) {
+        const pr = await ctx.askConversationalAuthorityAs('user_perplexity', query, mcOptions);
+        if (pr.ok && namesEverySurvivor(pr.text)) {
+            // A REAL citation URL, when Perplexity supplied one, is genuinely stronger provenance than
+            // `null` -- carried through, never fabricated when citations is empty.
+            const citedUrl = pr.citations.find((u) => u && u.trim()) ?? null;
+            candidates.push({
+                text: pr.text, sourceUrl: citedUrl,
+                sourceTitle: citedUrl ? `Perplexity (${pr.via}), citing ${citedUrl}` : `Perplexity (${pr.via})`,
+                mechanism: 'CONVERSATIONAL_ANSWER',
+            });
+        }
+    }
+    // STAGE B2: GEMINI (the app's own default conversational authority) -- FD-BP154-02.
+    if (ctx.askConversationalAuthority) {
+        const cr = await tryConversationalAuthority(ctx, query, mcOptions);
+        if (cr.ok && namesEverySurvivor(cr.text)) {
+            candidates.push({ text: cr.text, sourceUrl: null, sourceTitle: `conversational authority (${cr.via})`, mechanism: 'CONVERSATIONAL_ANSWER' });
+        }
+    }
+    // STAGE C: GOOGLE DOCUMENT SEARCH ("google in MnemosyneC... the liana cycle").
+    const res = await googleBlocks(ctx.askGoogle, query);
+    if (res.ok) {
+        for (const block of res.blocks.filter((b) => b.kind === 'organic' && b.url && b.url.trim() && b.body && b.body.trim())) {
+            if (namesEverySurvivor(block.body)) {
+                candidates.push({ text: block.body, sourceUrl: block.url, sourceTitle: block.title || block.url, mechanism: 'DOCUMENT_CORROBORATION' });
+            }
+        }
+    }
+    for (const candidate of candidates) {
+        const instruction = `From the passage, for EACH of the following, copy the exact verbatim `
+            + `sentence or clause stating its population density (a figure, or an explicit density `
+            + `comparison). If the passage does not state a density figure for one of them, omit it -- `
+            + `do not guess. Options: ${frame.map((L) => `${L}) ${OPT[L]}`).join('; ')}`;
+        const shape = '{"entries":[{"name":"exact option name from the list","figureText":"the stated density figure or phrase, verbatim","span":"verbatim sentence or clause from the passage"}]}';
+        const rawOut = {};
+        // eslint-disable-next-line no-await-in-loop -- stops at the first candidate that fully covers
+        // the frame; not a fan-out worth parallelizing.
+        const ex = await gemmaExtract(instruction, candidate.text, shape, rawOut);
+        if (ex === null)
+            continue;
+        const rawEntries = Array.isArray(ex.entries) ? ex.entries : [];
+        const verified = [];
+        for (const raw of rawEntries) {
+            const name = typeof raw?.name === 'string' ? raw.name.trim() : '';
+            const figureText = typeof raw?.figureText === 'string' ? raw.figureText.trim() : '';
+            const span = typeof raw?.span === 'string' ? raw.span.trim() : '';
+            if (!name || !figureText || !span)
+                continue;
+            let matched = toLetters([name], OPT);
+            if (matched.length === 0) {
+                const stripped = stripListLetterPrefix(name);
+                if (stripped !== name)
+                    matched = toLetters([stripped], OPT);
+            }
+            if (matched.length === 0)
+                continue;
+            const L = matched[0];
+            if (!frame.includes(L))
+                continue;
+            if (!spanIsVerbatimInPassage(candidate.text, span) || !appearsIn(span, OPT[L]))
+                continue;
+            if (verified.some((v) => v.letter === L))
+                continue;
+            verified.push({ letter: L, name: OPT[L], figureText, span });
+        }
+        const coveredLetters = new Set(verified.map((e) => e.letter));
+        if (frame.every((L) => coveredLetters.has(L))) {
+            const entries = frame.map((L) => verified.find((e) => e.letter === L));
+            const numericallyRankable = entries.every((e) => parseDensityFigure(e.figureText) !== null);
+            return {
+                attempted: true, obtained: true, sourceUrl: candidate.sourceUrl, sourceTitle: candidate.sourceTitle,
+                entries, numericallyRankable, mechanism: candidate.mechanism,
+            };
+        }
+    }
+    return {
+        attempted: true, obtained: false, sourceUrl: null, sourceTitle: null, entries: [],
+        numericallyRankable: false,
+        error: `no single candidate (${candidates.length} tried, through owned evidence / the pinned `
+            + `Category Column deposit / the conversational authority / Google document search) stated a `
+            + `verifiable ${property.includes('densit') ? '' : 'density '}figure for every survivor -- could `
+            + `not obtain one apples-to-apples dataset covering every survivor.${pinnedUnmatchedNote}`,
+    };
+}
+// ───────────────── the live step (frame -> owned evidence -> conversational -> corroboration; needs a real run to verify) ─────────────────
+/**
+ * Runs THE MAGNITUDE as the fifth Composer step: establishes the frame from
+ * Softballs:1/NamedSet:1/Discriminator:1's already-computed results (via terminator_step.ts's own
+ * deriveTerminatorEliminations(), reused unchanged), then ranks ONLY the survivors -- owned
+ * evidence tried first (every candidate, so a genuine cross-source disagreement can be detected),
+ * then the conversational authority (Gemini) answers the one ranking question (FD-BP154-02), then
+ * -- when there is a decisive claim -- ONE Google corroboration pass names a third-party document
+ * that independently states the same thing. Cannot be exercised end to end under vitest -- same
+ * boundary softballs_step.ts's/named_set_step.ts's/discriminator_step.ts's own headers state. The
+ * pure parts above carry the real unit tests; this function is verified by a live in-app run
+ * (this ticket's own return).
+ */
+export async function runMagnitudeStep(input, ctx, priorResults) {
+    const OPT = input.options;
+    if (!OPT || Object.keys(OPT).length === 0) {
+        const result = emptyMagnitudeResult({
+            error: 'this question has no lettered options -- MAGNITUDE ranks options and cannot run without them',
+        });
+        return { result, summary: summaryLine({}, result) };
+    }
+    const optSafe = OPT;
+    const all = Object.keys(optSafe);
+    const findRaw = (id) => priorResults.find((r) => r.id === id)?.raw ?? null;
+    const softballsRaw = findRaw('Softballs:1');
+    const namedSetRaw = findRaw('NamedSet:1');
+    const discriminatorRaw = findRaw('Discriminator:1');
+    // D-BP154-043 FIX, live-measured: this file's own frame establishment (the deriveTerminatorEliminations()
+    // call just below) had NOT been updated when HumanNuance:1 (D-BP154-033) or Unitary:1
+    // (D-BP154-043) were added to terminator_step.ts's own elimination sources -- a real qid-98 live
+    // run caught the consequence directly: Magnitude:1 ranked a 7-member frame while Terminator:1's
+    // OWN full reduction (now consulting HumanNuance:1/Unitary:1 too) had already narrowed to 5,
+    // Terminator refused the mismatched ranking, and an amendment-permitted tie-break was lost to a
+    // stale frame. Read here (same findRaw() pattern as softballsRaw/namedSetRaw/discriminatorRaw
+    // above) so this file's own frame can never again silently diverge from Terminator:1's.
+    const humanNuanceRaw = findRaw('HumanNuance:1');
+    const unitaryRaw = findRaw('Unitary:1');
+    const anyFrameStepRan = Boolean(softballsRaw?.ok || namedSetRaw?.ok || discriminatorRaw?.ok || humanNuanceRaw?.ok || unitaryRaw?.ok);
+    if (!anyFrameStepRan) {
+        const result = emptyMagnitudeResult({
+            error: 'no frame was established -- Softballs:1, NamedSet:1, Discriminator:1, HumanNuance:1, '
+                + 'or Unitary:1 must run (and succeed) earlier in this same stack before MAGNITUDE can rank '
+                + 'anything; ranking the full option list is exactly the unframed magnitude answer '
+                + 'FD-BP153-01 forbids',
+        });
+        return { result, summary: summaryLine(OPT, result) };
+    }
+    const { eliminated, contradiction } = deriveTerminatorEliminations(optSafe, softballsRaw?.ok ? softballsRaw : null, namedSetRaw?.ok ? namedSetRaw : null, discriminatorRaw?.ok ? discriminatorRaw : null, humanNuanceRaw?.ok ? humanNuanceRaw : null, unitaryRaw?.ok ? unitaryRaw : null);
+    if (contradiction) {
+        const result = emptyMagnitudeResult({
+            error: `the frame is self-contradictory (${contradiction.reason}) -- MAGNITUDE refuses to rank on a contradictory frame`,
+        });
+        return { result, summary: summaryLine(OPT, result) };
+    }
+    const eliminatedLetters = new Set(eliminated.map((e) => e.letter));
+    const frame = all.filter((L) => !eliminatedLetters.has(L));
+    if (frame.length < 2) {
+        const result = emptyMagnitudeResult({
+            frame,
+            error: `the frame has ${frame.length} survivor(s) -- nothing to rank (a unique or empty frame does not need magnitude)`,
+        });
+        return { result, summary: summaryLine(OPT, result) };
+    }
+    const property = deriveMagnitudeSuperlativeProperty(input.question);
+    if (!property) {
+        const result = emptyMagnitudeResult({
+            frame,
+            error: 'could not determine the superlative property this question names (no "one of X"/"considered X" phrase found) -- refusing rather than guessing what to rank by',
+        });
+        return { result, summary: summaryLine(OPT, result) };
+    }
+    const targetExtreme = deriveMagnitudeTargetExtreme(input.question, property);
+    const query = buildMagnitudeQuery(property, frame, optSafe);
+    const namesAnyFrameOption = (t) => frame.some((L) => appearsIn(t, optSafe[L]));
+    const mcOptions = frame.map((L) => `${L}) ${optSafe[L]}`);
+    // STAGE 0, D-BP154-043, NEW: THE FROZEN SOURCE. Tried FIRST, before owned evidence/the
+    // conversational authority -- Founder's own correction: a magnitude ranking must be grounded in
+    // "a single frozen source and year defining boundaries and densities for ALL surviving regions...
+    // Not model recall." Only ever taken as the ranking basis when it covers EVERY frame member with
+    // a verified, numerically-comparable figure from the SAME document; otherwise this is reported
+    // (frozenSource on the result, below) and the pre-existing owned-evidence/conversational/
+    // corroboration pipeline runs exactly as it always has.
+    const frozenSource = await attemptFrozenDensitySource(ctx, frame, optSafe, property);
+    if (frozenSource.obtained && frozenSource.numericallyRankable) {
+        const sorted = [...frozenSource.entries].sort((a, b) => (parseDensityFigure(b.figureText) ?? 0) - (parseDensityFigure(a.figureText) ?? 0));
+        const order = sorted.map((e) => ({ letter: e.letter, name: e.name, span: e.span }));
+        const extremeEntry = targetExtreme === 'least' ? order[order.length - 1] : order[0];
+        const corroboration = extremeEntry
+            ? await corroborateClaim(ctx, buildMagnitudeCorroborationQuery(property, extremeEntry, targetExtreme), extremeEntry.name)
+            : undefined;
+        const result = {
+            ok: true, frame, property, targetExtreme, query, frozenSource, order, discarded: 0, unranked: [],
+            via: `frozen-source: "${frozenSource.sourceTitle}" (${frozenSource.sourceUrl})`,
+            answerProvenance: {
+                mechanism: 'DOCUMENT_CORROBORATION',
+                sourceId: `document:${frozenSource.sourceUrl}`,
+                detail: `single frozen source covering every survivor: ${frozenSource.sourceTitle} (${frozenSource.sourceUrl})`,
+            },
+            corroboration, disagreement: null,
+        };
+        return { result, summary: summaryLine(OPT, result) };
+    }
+    // D-BP154-022 FIX, live-measured this ticket: the FIRST live run against a real, clean, fully-
+    // stated ordering ("...the full order from most to least ... is C) ... as the most ..., A) ...
+    // as the second most ..., and F) ... as the least ...") returned `order: []` -- the local
+    // extraction model appears to have looked for a SEPARATE sentence per option and, finding all
+    // three named inside ONE compound sentence, extracted nothing rather than guess how to split
+    // it. This is an INSTRUCTION-CLARITY fix only, not a relaxation of the verify choke point below
+    // (verifyMagnitudeOrder's own verbatim-span + appearsIn checks are UNCHANGED and still both
+    // required) -- explicitly permitting the SAME whole sentence to be copied as the span for more
+    // than one entry when a single sentence states the whole order, exactly as the passage above
+    // does. A span still has to be genuinely present in the passage AND about the named option;
+    // this only tells the model that "its own clause" and "its own sentence, shared with others" are
+    // both acceptable shapes.
+    const instruction = `From the passage, list the options below in the order the passage states `
+        + `-- from the one it says is MOST "${property}" to the one it says is LEAST. For each one, `
+        + `copy the exact verbatim sentence or clause that states its relative position -- if the `
+        + `passage states the WHOLE order in one sentence, copy that SAME whole sentence as the span `
+        + `for every option it names, do not leave options out just because they share one sentence. `
+        + `Do not include an option the passage does not place in the order -- an omission is not a `
+        + `statement. Options: ${frame.map((L) => `${L}) ${optSafe[L]}`).join('; ')}`;
+    const shape = '{"order":[{"name":"exact option name from the list, in the stated most-to-least order","span":"verbatim sentence or clause stating its relative position -- may repeat the same sentence across entries if one sentence names them all"}]}';
+    async function extractFrom(candidateText) {
+        const rawOut = {};
+        const ex = await gemmaExtract(instruction, candidateText, shape, rawOut);
+        if (ex === null) {
+            const cause = rawOut.truncated
+                ? 'the local extraction model truncated its output before finishing'
+                : rawOut.failureCause
+                    ? `the local extraction model failed (${rawOut.failureCause}${rawOut.failureDetail ? `: ${rawOut.failureDetail}` : ''})`
+                    : 'the local extraction model failed for an unclassified reason';
+            return { order: [], discarded: 0, extractionError: cause };
+        }
+        const { order, discarded } = verifyMagnitudeOrder(ex.order, candidateText, frame, optSafe);
+        return { order, discarded };
+    }
+    // STAGE 1: OWNED EVIDENCE FIRST -- EVERY candidate that names a frame option is extracted
+    // independently (not just the first match, unlike the other three steps' simpler loop), so a
+    // genuine cross-source DISAGREEMENT can be detected rather than silently picking whichever
+    // candidate happened to be gathered first (this step's own dispatch, point 5).
+    const ownedCandidates = [
+        ...(await gatherMortgageCandidates(input.qid, query)),
+        ...gatherThisRunCandidates(ctx),
+    ];
+    const productiveOwned = [];
+    for (const c of ownedCandidates) {
+        if (!namesAnyFrameOption(c.text))
+            continue;
+        // eslint-disable-next-line no-await-in-loop -- bounded, small candidate list; each must be
+        // extracted independently to detect a genuine disagreement, not a fan-out worth parallelizing.
+        const extraction = await extractFrom(c.text);
+        if (extraction.order.length > 0) {
+            productiveOwned.push({ text: c.text, via: c.via, provenance: c.provenance, extraction });
+        }
+    }
+    for (let i = 1; i < productiveOwned.length; i++) {
+        if (magnitudeOrdersDisagree(productiveOwned[0].extraction.order, productiveOwned[i].extraction.order)) {
+            const result = emptyMagnitudeResult({
+                frame, property, targetExtreme, query, frozenSource,
+                disagreement: { detailA: productiveOwned[0].via, detailB: productiveOwned[i].via },
+                error: `the ordering is CONTRADICTED across independent sources (${productiveOwned[0].via} vs `
+                    + `${productiveOwned[i].via}) -- reported as a disagreement, never resolved by force`,
+            });
+            return { result, summary: summaryLine(OPT, result) };
+        }
+    }
+    let text = '';
+    let via = '';
+    let provenance;
+    let extraction = null;
+    if (productiveOwned.length > 0) {
+        text = productiveOwned[0].text;
+        via = productiveOwned[0].via;
+        provenance = productiveOwned[0].provenance;
+        extraction = productiveOwned[0].extraction;
+    }
+    // STAGE 2: GEMINI ANSWERS (FD-BP154-02) -- tried when nothing owned was productive.
+    let conversationalError;
+    if (!extraction || extraction.order.length === 0) {
+        const cr = await tryConversationalAuthority(ctx, query, mcOptions);
+        if (cr.ok && namesAnyFrameOption(cr.text)) {
+            const cExtraction = await extractFrom(cr.text);
+            if (cExtraction.order.length > 0 || !text) {
+                text = cr.text;
+                via = cr.via;
+                provenance = cr.provenance;
+                extraction = cExtraction;
+            }
+        }
+        else {
+            conversationalError = cr.error ?? 'conversational authority answered but named no frame option';
+        }
+    }
+    if (!text) {
+        const result = emptyMagnitudeResult({
+            frame, property, targetExtreme, query, frozenSource,
+            error: `no usable answer from any authority -- owned evidence: ${ownedCandidates.length} candidate(s) tried, none usable; `
+                + `conversational authority: ${conversationalError ?? 'not tried'} -- THE MAGNITUDE is UNAVAILABLE, not "no ordering stated"`,
+        });
+        return { result, summary: summaryLine(OPT, result) };
+    }
+    if (!extraction || extraction.extractionError) {
+        const result = emptyMagnitudeResult({
+            frame, property, targetExtreme, query, frozenSource, via,
+            error: `extraction failed -- ${extraction?.extractionError ?? 'the local extraction model failed for an unclassified reason'} -- reported as a FAILURE, never an empty "no ordering stated"`,
+        });
+        return { result, summary: summaryLine(OPT, result) };
+    }
+    if (extraction.order.length === 0) {
+        const result = emptyMagnitudeResult({
+            frame, property, targetExtreme, query, frozenSource, via, discarded: extraction.discarded,
+            error: `no usable answer from any authority -- the credited passage (${via}) produced zero verified `
+                + `ordering entries (${extraction.discarded} candidate(s) discarded for no verifiable span) -- `
+                + `THE MAGNITUDE is UNAVAILABLE, not "no ordering stated"`,
+        });
+        return { result, summary: summaryLine(OPT, result) };
+    }
+    const orderedLetters = new Set(extraction.order.map((e) => e.letter));
+    const unranked = frame.filter((L) => !orderedLetters.has(L));
+    // STAGE 3: GOOGLE CORROBORATES A NAMED CLAIM -- ONE query, for the single decisive claim only
+    // (the extreme entry this step's own targetExtreme reading selects).
+    const extremeEntry = targetExtreme === 'least'
+        ? extraction.order[extraction.order.length - 1]
+        : extraction.order[0];
+    let corroboration;
+    if (extremeEntry) {
+        corroboration = await corroborateClaim(ctx, buildMagnitudeCorroborationQuery(property, extremeEntry, targetExtreme), extremeEntry.name);
+    }
+    const result = {
+        ok: true, frame, property, targetExtreme, query, frozenSource, order: extraction.order, discarded: extraction.discarded,
+        unranked, via, answerProvenance: provenance, corroboration, disagreement: null,
+    };
+    return { result, summary: summaryLine(OPT, result) };
+}
+// ───────────────────────── registration (inert until stacked and run) ─────────────────────────
+const MAGNITUDE_DECLARATION = {
+    id: 'liana_cycle.magnitude_step.runMagnitudeStep',
+    version: '1',
+    sourceFile: 'src/main/liana_cycle/library/magnitude_step.ts',
+    sourceLine: 1,
+    exportName: 'runMagnitudeStep',
+    exportKind: 'function',
+    whatItDoes: 'Ranks ONLY the survivors the frame left (Softballs:1/NamedSet:1/Discriminator:1\'s own '
+        + 'already-computed eliminations, reused via terminator_step.ts\'s deriveTerminatorEliminations(), '
+        + 'never the full option list) by the superlative property the question names -- tried against '
+        + 'owned evidence first (every candidate, so a genuine cross-source disagreement can be found), '
+        + 'then the conversational authority (Gemini), which answers it (FD-BP154-02); shows exactly '
+        + 'what the source stated for the order, with the verbatim sentence it said so in, plus ONE '
+        + 'Google corroboration naming a third-party document for the decisive (extreme) claim. Refuses '
+        + 'to run at all when no frame was established, the frame is self-contradictory, or the frame '
+        + 'has fewer than two survivors. Never guesses an ordering, never supplies a magnitude figure '
+        + 'from its own knowledge, and reports a genuine cross-source disagreement rather than '
+        + 'resolving it by force.',
+    inputs: 'MethodQuestionInput (question, options, qid) plus MethodRunContext (askGoogle, askConversationalAuthority, ownedPassages, emit) '
+        + 'plus the accumulated results of any Softballs:1/NamedSet:1/Discriminator:1 steps already run earlier in the same stack, to runMagnitudeStep().',
+    outputs: 'Promise<{ result: MagnitudeResult, summary: string }> -- the frame this ranking was restricted to, the target '
+        + 'extreme the question demands, the stated order with verbatim spans, discard counts, the answer mechanism, '
+        + 'a document corroboration attempt, and any cross-source disagreement found.',
+    decidesOrReports: 'DECIDES_AND_REFUSES',
+    queryText: {
+        issuesQuery: true,
+        description: 'One primary ranking question per run, restricted to the frame -- owned evidence tried first (every candidate), '
+            + 'then the conversational authority (FD-BP153-01 magnitude-within-the-frame, FD-BP154-02) -- plus at most one Google '
+            + 'corroboration query for the single decisive (extreme) claim, hardcoded inline in this file.',
+        loadedFromQueryResource: false,
+    },
+    attribution: {
+        kind: 'ATTRIBUTED',
+        founderRuling: 'BP153/BP154',
+        quote: 'A superlative resolves by magnitude, ranked WITHIN THE FRAME. The frame is established '
+            + 'first: which options are legitimate members of the category the question names, and '
+            + 'which are not. Non-members are removed and are never ranked. Magnitude decides only '
+            + 'among the survivors.',
+        citedAt: 'FD-BP153-01 (completing FD-BP152-38, "Yes. that. now code it, please"), D-BP154-022',
+    },
+    orphanEvidence: 'N/A -- not an orphan. Live: registered via registerMagnitudeStep() (this file), executed '
+        + 'by script_bridge.ts\'s runOneStep() for id "Magnitude:1", the same wiring pattern '
+        + 'Softballs:1, NamedSet:1, Discriminator:1, and Terminator:1 already use.',
+};
+/** Registers 'Magnitude:1'. Called from script_bridge.ts's ensureRegistryPopulated(),
+ *  idempotently -- same try/catch shape as the other Composer step registrations there. */
+export function registerMagnitudeStep() {
+    return registerNameNumbered('Magnitude', 1, MAGNITUDE_DECLARATION);
+}

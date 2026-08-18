@@ -20,7 +20,7 @@ import { app } from 'electron';
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
 function baseDir(): string {
-  return join(app.getPath('appData'), 'MnemosyneC');
+  return app.getPath('userData');
 }
 
 function scheduleFile(): string {

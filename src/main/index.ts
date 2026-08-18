@@ -43,6 +43,35 @@
 // none requires editing any line outside itself.
 // ============================================================================
 
+// ============================================================================
+// D-BP158-006/BISHOP/seg-userdata-migration-and-partition -- USERDATA REPOINT
+// ============================================================================
+// "It is MnemosyneC" is canonical (Founder ruling, BP158). package.json's `name` field stays
+// "amplify-computer" -- renaming it would change electron-builder's installer identity/update
+// channel, a much bigger, unauthorized blast radius. Instead this repoints Electron's userData
+// directory explicitly via app.setPath(), to the SAME %APPDATA%\MnemosyneC\ location the mesh
+// peer identity keys (identity/localPeerKeypair.ts) already live in. After this call,
+// app.getPath('userData') returns MnemosyneC everywhere in this process, with no hardcoded
+// app-name string required at any call site.
+//
+// MUST BE THE VERY FIRST EXECUTABLE STATEMENT IN THIS FILE, before every other import,
+// including env_loader below. Verified BP158 Phase 0: this file statically imports
+// './caithedral_tools_ipc' (see IMPORT APPEND ZONE further down), whose own top-level code
+// (a bare `try { require(...) }` at module scope, NOT inside any function) eagerly requires
+// './crystal/crystal_store', whose own top-level code evaluates
+// `const CRYSTAL_DIR = resolveCrystalDir()` -- a call to app.getPath('userData') -- AT MODULE
+// LOAD TIME, i.e. during THIS file's own static-import phase. A statement placed after that
+// import (or after any import preceding it) would run too late: crystal_store.ts would already
+// have latched onto the OLD (pre-repoint) userData path for the lifetime of the process.
+// CommonJS `require()` calls execute in exact source order, so placing this block before the
+// first import guarantees it runs before any transitively-required module's own top-level code
+// -- confirmed sound by this file's own precedent immediately below (KN-BP145-N6 already
+// interleaves executable code between import statements at this same file scope; tsc's
+// CommonJS output preserves that order, it does not hoist across it).
+import { app as _earlyApp } from 'electron';
+import { join as _earlyPathJoin } from 'path';
+_earlyApp.setPath('userData', _earlyPathJoin(_earlyApp.getPath('appData'), 'MnemosyneC'));
+
 import './env_loader';
 import log from 'electron-log/main';
 log.initialize({ preload: true });
@@ -583,42 +612,6 @@ let _capturedOllamaPath: string | null = null;
 let _capturedActiveModel: string = 'unknown';
 let _capturedTargetModel: string = 'unknown';
 
-/**
- * SEG-V0148-P1-RENAME-USERDATA: first-launch migration when package name changed
- * from "amplify-computer" → "mnemosynec". Copies (does not move) the old userData
- * directory to the new path so existing user settings/model state are preserved.
- */
-function migrateUserDataIfNeeded(): void {
-  if (process.platform !== 'win32') return;
-  const appData = process.env.APPDATA;
-  if (!appData) return;
-  const oldPath = join(appData, 'amplify-computer');
-  const newPath = app.getPath('userData');
-  if (!existsSync(oldPath) || existsSync(newPath)) return;
-
-  const migrationStart = Date.now();
-  console.log(`[userData migration] Starting: ${oldPath} → ${newPath}`);
-  try {
-    cpSync(oldPath, newPath, { recursive: true });
-    const elapsed = Date.now() - migrationStart;
-    let fileCount = 0;
-    try {
-      const countFiles = (dir: string): number => {
-        let n = 0;
-        for (const e of readdirSync(dir, { withFileTypes: true })) {
-          n += e.isDirectory() ? countFiles(join(dir, e.name)) : 1;
-        }
-        return n;
-      };
-      fileCount = countFiles(newPath);
-    } catch { /* non-fatal */ }
-    console.log(
-      `[userData migration] userData migration: copied ${oldPath} → ${newPath} (${fileCount} files, ${elapsed}ms)`,
-    );
-  } catch (e) {
-    console.error('[userData migration] Migration failed:', String(e));
-  }
-}
 
 // --- SAGA 4: Tier persistence + agent IPC handlers ---------------------------
 
@@ -8108,7 +8101,7 @@ ${args.teachingText}
   safeHandle('lifecycle:get-profile-path', async () => {
     return {
       appData: app.getPath('appData'),
-      mnemosyneCPath: join(app.getPath('appData'), 'MnemosyneC'),
+      mnemosyneCPath: app.getPath('userData'),
     };
   });
 
@@ -9595,7 +9588,7 @@ function startRelayPollWatchdog(peerId: string): void {
   const { mkdirSync: fsMkdirSync, appendFileSync: fsAppendFileSync } = require('fs') as typeof import('fs');
 
   let lastPollCount = _relayPollCount;
-  const watchdogLogDir = pathJoin(electronApp.getPath('appData'), 'MnemosyneC', 'logs');
+  const watchdogLogDir = pathJoin(electronApp.getPath('userData'), 'logs');
   try { fsMkdirSync(watchdogLogDir, { recursive: true }); } catch { /* ignore */ }
   const watchdogLogPath = pathJoin(watchdogLogDir, 'watchdog.log');
 
@@ -10033,8 +10026,13 @@ app.whenReady().then(async () => {
     return;
   }
 
-  // SEG-V0148-P1-RENAME-USERDATA: migrate amplify-computer → mnemosynec on first launch after rename
-  migrateUserDataIfNeeded();
+  // SEG-V0148-P1-RENAME-USERDATA: migrateUserDataIfNeeded() DELETED at D-BP158-M0-004 by
+  // Founder ruling, BP158: "delete it." The app.setPath('userData') call added at the top of
+  // this file armed it for the first time: on any machine without %APPDATA%\MnemosyneC it
+  // would have cpSync-copied the entire old amplify-computer tree at every launch, unasked.
+  // A disabled landmine is still a landmine. The scoped, reviewed replacement is
+  // BISHOP_DROPZONE\MIGRATE_USERDATA_BP158_006.ps1, which moves only crystal\ and
+  // nexus_authority_flags.json, never keys\, and refuses to overwrite.
 
   // v0.4.1 BP083: Catacomb migration check (Preserved-Forever 1-year pheromone-fade)
   runCatacombMigrationCheck().catch((err) =>
@@ -10687,7 +10685,7 @@ app.whenReady().then(async () => {
 
   // v0.4.0 BP083 SEG-5 (carried forward v0.4.2): Post-install restart prompt (version-bump detection)
   {
-    const lastVersionPath = join(app.getPath('appData'), 'MnemosyneC', '.last_version');
+    const lastVersionPath = join(app.getPath('userData'), '.last_version');
     const currentVersion = app.getVersion();
     const lastVersion = existsSync(lastVersionPath) ? readFileSync(lastVersionPath, 'utf8').trim() : null;
     if (lastVersion && lastVersion !== currentVersion) {

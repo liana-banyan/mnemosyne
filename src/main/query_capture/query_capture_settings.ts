@@ -57,9 +57,14 @@ function getElectronApp(): ElectronAppShape | null {
 }
 
 function fallbackUserDataPath(): string {
+  // CORRECTED D-BP158-006/BISHOP: the real Electron branch above already calls
+  // getElectronApp()?.getPath('userData') directly, which now resolves to %APPDATA%\MnemosyneC
+  // (see src/main/index.ts's app.setPath('userData', ...) call at the top of that file). This
+  // fallback is only reached outside Electron (e.g. this file's own test), so it must resolve
+  // the SAME directory or a standalone reader disagrees with the live app.
   if (process.platform === 'win32') {
     const appData = process.env.APPDATA;
-    if (appData) return join(appData, 'amplify-computer');
+    if (appData) return join(appData, 'MnemosyneC');
   }
   // Last-resort, test-only fallback -- never used when real Electron or %APPDATA% is present.
   return join(process.cwd(), '.query_capture_settings_fallback');

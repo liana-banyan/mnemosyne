@@ -14,7 +14,7 @@ import { app } from 'electron';
 import { detectHardwareTier, getRecommendedModel } from '../hardware/ram_detector';
 import type { HardwareTier } from '../hardware/ram_detector';
 
-const CONFIG_FILE = () => join(app.getPath('appData'), 'MnemosyneC', 'config.json');
+const CONFIG_FILE = () => join(app.getPath('userData'), 'config.json');
 
 interface AppConfig {
   selectedModel: string;
@@ -24,7 +24,7 @@ interface AppConfig {
 }
 
 function ensureConfigDir(): void {
-  const dir = join(app.getPath('appData'), 'MnemosyneC');
+  const dir = app.getPath('userData');
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }

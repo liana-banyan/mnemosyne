@@ -17,7 +17,7 @@ export interface LocalPeerKeypair {
 }
 
 function canonicalKeysDir(): string {
-  return join(app.getPath('appData'), 'MnemosyneC', 'keys');
+  return join(app.getPath('userData'), 'keys');
 }
 
 function peerIdFromPublicHex(publicKeyHex: string): string {
@@ -30,7 +30,7 @@ function candidateKeysDirs(): string[] {
   const dirs: string[] = [];
 
   // 1. Canonical current-user Roaming (primary)
-  try { dirs.push(join(app.getPath('appData'), 'MnemosyneC', 'keys')); } catch { /* pre-ready */ }
+  try { dirs.push(join(app.getPath('userData'), 'keys')); } catch { /* pre-ready */ }
 
   // 2. LocalAppData (some Electron templates write here)
   const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local');

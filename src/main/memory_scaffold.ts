@@ -18,7 +18,7 @@ import { createHash } from 'crypto';
  * Returns the base directory path.
  */
 export function ensureMnemosyneCFolders(): string {
-  const baseDir = join(app.getPath('appData'), 'MnemosyneC');
+  const baseDir = app.getPath('userData');
 
   const folders = [
     baseDir,
@@ -111,7 +111,7 @@ let _memoryMdCache: string | null = null;
 let _memoryWatcherActive = false;
 
 function getMemoryMdPath(): string {
-  return join(app.getPath('appData'), 'MnemosyneC', 'MEMORY.md');
+  return join(app.getPath('userData'), 'MEMORY.md');
 }
 
 // SEG-2 BP083: fallback identity when MEMORY.md genuinely cannot be loaded.
@@ -128,7 +128,7 @@ function readMemoryMdFromDisk(): string {
   const memPath = getMemoryMdPath();
   if (!existsSync(memPath)) {
     // Edge case: regenerate if missing — ensure parent dir exists first (fresh-install robustness)
-    const baseDir = join(app.getPath('appData'), 'MnemosyneC');
+    const baseDir = app.getPath('userData');
     if (!existsSync(baseDir)) {
       mkdirSync(baseDir, { recursive: true });
     }
@@ -184,7 +184,7 @@ export function resetMemoryMdToTemplate(): string {
     }
   } catch { /* non-fatal */ }
   _memoryMdCache = null;
-  const baseDir = join(app.getPath('appData'), 'MnemosyneC');
+  const baseDir = app.getPath('userData');
   generateMemoryMd(baseDir, app.getVersion());
   return getMemoryMd();
 }
@@ -264,7 +264,7 @@ export function registerMemoryScaffoldIPC(): void {
     try {
       const memPath = getMemoryMdPath();
       if (!existsSync(memPath)) {
-        const baseDir = join(app.getPath('appData'), 'MnemosyneC');
+        const baseDir = app.getPath('userData');
         generateMemoryMd(baseDir, app.getVersion());
       }
       const errMsg = await shell.openPath(memPath);

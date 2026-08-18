@@ -1,0 +1,383 @@
+// definitional_cascade.ts -- D-BP149-043/BISHOP/S43/seg-method2build
+//
+// METHOD 2 of the Liana Cycle method registry: THE DEFINITIONAL CASCADE. Shape: the question
+// turns on what a term MEANS, and the options are competing statements of that meaning.
+// Taught by the Founder's qid 85 walkthrough (bias), FounderCascadeWorkedByHand.txt Excerpt
+// 7 -- he never orders anything for that question. He categorizes the options by shared
+// predicate, looks up the definition of the term, establishes the REGISTER (statistics, not
+// sewing, not K-pop), reduces the definition to its core sense, and matches on sense rather
+// than tokens. Rules 12, 13 and 11 of his fourteen -- see
+// C:\Users\Administrator\Documents\LianaBanyanPlatform\BISHOP_DROPZONE\METHOD_2_TEACHING_BP149.md
+// for the ticket's own reading of the excerpt, stage by stage.
+//
+// SHARED PREFIX -- stages 0, 1 and 2 of Method 1 (comparative_cascade.ts), REUSED NOT COPIED.
+// Founder, BP149, verbatim (method_registry.ts header): "Use stages 0, 1 and 2 from Method 1,
+// then add ... rules 12, 13 and 11 -- a different cascade for a different question shape."
+// runStage0RegisterGate() and extractAssertedMentions() are imported from comparative_cascade.ts
+// (which was given a small, behavior-preserving refactor by this ticket to make that import
+// possible -- see that file's own "shared stages 0/1/2" header block). Both stages were built
+// and calibrated for comparative/ranking questions (region membership, dense/sparse vocabulary);
+// applied here to a definitional question they are EXPECTED to mostly find nothing to do, and
+// that is reported honestly in the transcript, not hidden -- an honest no-op is not a bug.
+//
+// D1 THROUGH D5, HIS RULES 12/13/11 -- new to this file, the actual Method 2 machinery:
+//   D1 categorize options by shared predicate (rule 12) -- mechanical vocabulary clustering, no
+//      model call anywhere.
+//   D2-D4 (D-BP150-016, SUPERSEDES the original D2/D3/D4 below) -- SURVEY THE ASK instead of
+//      collapsing it. The original D2/D3/D4 each independently CHOSE a single sense of the term:
+//      D2 looked the bare term up once, D3 GUESSED one register from option vocabulary and
+//      verified only that guess, D4 reduced the verified passage to ONE core sense. Canon F-1
+//      (canon_liana_methods_are_compositions_of_named_elements_bp150.eblet.md) is the measured
+//      failure this caused: on qid 85, Stage 1's inverse call fetched the SAMPLING fold of "bias"
+//      ("A sampling method is called biased if it systematically favors some outcomes over
+//      others") and discarded it against every option, then D2/D3/D4 independently re-fetched
+//      and silently carried forward the ESTIMATOR fold instead ("bias is the tendency of a
+//      statistic to overestimate or underestimate the population parameter") -- two different
+//      folds inside ONE register (statistics), picked between with no record that a choice had
+//      even been made. qid 85's key (E) lives in the SAMPLING fold; the ESTIMATOR fold points at
+//      J. Had D5 been implemented against the collapsed sense, it would have answered confidently
+//      and wrongly. surveyAsk() (elements/survey_ask.ts, E-SURVEY-ASK) replaces D2/D3/D4's
+//      collapse: it enumerates every verified denotation of the term, unranked, each carried
+//      forward with its verbatim sentence, source, source-stated register and aspect. It picks
+//      nothing. D1 (mechanical clustering) is untouched below; it is not part of the collapse.
+//   D5 match on sense (E-MATCH-UP) -- DELIBERATELY NOT IMPLEMENTED. HARDWIRE-22 + this ticket's
+//      own instruction: no bigram overlap, no embedding distance, no forced pick. Measured this
+//      session: a bigram scorer gave all ten of qid 46's options an identical 0.35; a narrow
+//      YES/NO to the local model scored 1 of 4 and flipped its own answer at temperature 0.
+//      This stage ends in an HONEST ABSTAIN carrying EVERY surveyed denotation forward as a
+//      sourced fact, plus the surviving candidate pool -- not one collapsed core sense. An
+//      abstain at D5 is a PASS for this ticket -- nothing here is tuned to reach the answer key,
+//      and canon marks E-MATCH-UP UNSOLVED: implementing it here would smuggle the unsolved
+//      sense-matching problem in disguised, and on qid 85 itself it would answer J and be wrong.
+import { avgOptionWordCount, registerMethod } from '../method_registry';
+import { appearsIn, extractAssertedMentions, googleBlocks, HIGH_WORDS, LOW_WORDS, runStage0RegisterGate, } from './comparative_cascade';
+// D-BP150-016 -- E-SURVEY-ASK, wired in to replace D2/D3/D4's collapse. Ratified canon:
+//   Asteroid-ProofVault/state/eblets/CANON/
+//     canon_liana_methods_are_compositions_of_named_elements_bp150.eblet.md
+import { surveyAsk } from '../elements/survey_ask';
+// D-BP150-017 -- E-FIELD-GATE, the Founder's own qid 85 proof procedure: ask what FIELD the term
+// is in, eliminate by co-occurring vocabulary, and (when the elimination is unambiguous) scope
+// the survey and drop denotations belonging to eliminated fields. Wired HERE, at the call site,
+// rather than inside surveyAsk() itself -- surveyAsk() is a general-purpose element used by other
+// callers (surveyAskNested's per-level calls) that do not necessarily have an ASK/options pair to
+// gate against yet; the cascade is the caller that actually holds `input.question` and `OPT`, so
+// it is the natural place to run the field ask before surveyAsk and to filter its output after.
+// See field_gate.ts's own header for the full procedure and its hard guard against ever picking
+// among survivors (that remains D5/E-MATCH-UP, still not implemented, still an honest abstain).
+import { dropDenotationsByEliminatedFields, fieldGate, foldGate } from '../elements/field_gate';
+function nowIso() {
+    return new Date().toISOString();
+}
+// Calibrated against the six real BP149 questions in the canon comparison table: qid 85's ten
+// options average ~11 words each and nine of ten literally begin "It describes..." -- a set of
+// competing statements of what a term means, not short members of one category (contrast qid
+// 98's region names, avg ~2 words). MIN_AVG_OPTION_WORDS mirrors comparative_cascade.ts's own
+// MAX_AVG_OPTION_WORDS_FOR_RANKING (6) from the opposite side, so a question in the gap between
+// the two (qid 92's referent-object question, avg ~3.3 words, no definitional cue) matches
+// neither method and correctly falls through to "no method matches, ask the human."
+const MIN_AVG_OPTION_WORDS_FOR_DEFINITIONS = 5;
+const DEFINITIONAL_CUE_RE = /\b(correctly (explains|describes|defines)|best (explains|describes|defines)|which of the following statements|refers to|is defined as|means)\b/i;
+function shapeTest(input) {
+    if (!input.options || Object.keys(input.options).length < 2) {
+        return { matches: false, reason: 'no option pool of competing statements to match on sense' };
+    }
+    if (!DEFINITIONAL_CUE_RE.test(input.question)) {
+        return { matches: false, reason: 'question does not ask what a term means or which statement correctly explains/defines it' };
+    }
+    const avgWords = avgOptionWordCount(input.options);
+    if (avgWords < MIN_AVG_OPTION_WORDS_FOR_DEFINITIONS) {
+        return {
+            matches: false,
+            reason: `options are too short (avg ${avgWords.toFixed(1)} words, < ${MIN_AVG_OPTION_WORDS_FOR_DEFINITIONS}) to be competing statements of a definition`,
+        };
+    }
+    return {
+        matches: true,
+        reason: `question asks what a term means and options are full competing statements (avg ${avgWords.toFixed(1)} words) -- shape recognized, method not yet taught`,
+    };
+}
+// ─────────────────────────── D1: categorize by shared predicate (rule 12), mechanical ───────────────────────────
+const D1_STOPWORDS = new Set([
+    'it', 'describes', 'a', 'an', 'the', 'of', 'that', 'results', 'in', 'is', 'are', 'to', 'for',
+    'on', 'with', 'and', 'or', 'process', 'which', 'this', 'be', 'has', 'have', 'their', 'from',
+    'by', 'as', 'at', 'not', 'no',
+]);
+function significantWords(text) {
+    return new Set(text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !D1_STOPWORDS.has(w)));
+}
+/** D1, rule 12: "Well, first, I categorize the possible answers... A, B, sorta C but more to
+ *  that, D, E same as C ... G does not." Mechanical clustering by shared CONTENT vocabulary --
+ *  no model call anywhere, arithmetic over the option text only, per HARDWIRE-22 ("the code
+ *  decides"). Two options join a cluster when they share at least MIN_SHARED_WORDS significant
+ *  (non-stopword) words; connected components over that graph are the clusters. A component of
+ *  size 1 is reported as an odd one out (isolated -- nothing else in the set shares its
+ *  vocabulary at all). If nothing is isolated at this threshold, the option(s) with the fewest
+ *  total shared-word connections are reported instead, explicitly labeled by degree rather than
+ *  isolation so the finding is never overstated beyond what the arithmetic actually shows. */
+const MIN_SHARED_WORDS = 2;
+function categorizeBySharedPredicate(OPT) {
+    const letters = Object.keys(OPT);
+    const wordSets = {};
+    for (const L of letters)
+        wordSets[L] = significantWords(OPT[L]);
+    const degree = {};
+    for (const L of letters)
+        degree[L] = 0;
+    const parent = {};
+    for (const L of letters)
+        parent[L] = L;
+    const find = (x) => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+    const union = (a, b) => { const ra = find(a); const rb = find(b); if (ra !== rb)
+        parent[ra] = rb; };
+    for (let i = 0; i < letters.length; i++) {
+        for (let j = i + 1; j < letters.length; j++) {
+            const a = letters[i];
+            const b = letters[j];
+            let shared = 0;
+            for (const w of wordSets[a])
+                if (wordSets[b].has(w))
+                    shared++;
+            if (shared >= MIN_SHARED_WORDS) {
+                union(a, b);
+                degree[a]++;
+                degree[b]++;
+            }
+        }
+    }
+    const groups = {};
+    for (const L of letters) {
+        const r = find(L);
+        (groups[r] || (groups[r] = [])).push(L);
+    }
+    const clusters = Object.values(groups).filter((g) => g.length > 1);
+    let oddOneOut = Object.values(groups).filter((g) => g.length === 1).flat();
+    let oddOneOutBasis = 'isolated';
+    if (!oddOneOut.length && letters.length) {
+        const minDeg = Math.min(...letters.map((L) => degree[L]));
+        oddOneOut = letters.filter((L) => degree[L] === minDeg);
+        oddOneOutBasis = 'min-degree';
+    }
+    return { clusters, oddOneOut, oddOneOutBasis, wordSets };
+}
+// ─────────────────────────── D2: the bare term ───────────────────────────
+/** Pulls the term the question is actually asking about off the definitional cue phrase itself
+ *  ("...correctly explains BIAS?" -> "bias") -- code, not a model guess. Falls back to the last
+ *  content word in the question if no cue phrase is found (shapeTest already required one to
+ *  reach this point, so the fallback is a safety net, not the normal path). */
+function extractBareTerm(question) {
+    const m = question.match(/(?:explains?|describes?|defines?|refers to|means)\s+([a-z][a-z0-9 '-]*?)\s*[?.!]*\s*$/i);
+    if (m && m[1].trim())
+        return m[1].trim();
+    const stripped = question.replace(/[?.!]+$/, '').trim();
+    const words = stripped.split(/\s+/);
+    return words[words.length - 1] || stripped;
+}
+// D3's original register-guess lexicon (guessRegisterFromOptions/REGISTER_LEXICON) is REMOVED as
+// of D-BP150-016 -- it guessed exactly one register from option vocabulary, which is the collapse
+// this ticket replaces. surveyAsk()'s own per-source register extraction (source-stated, verified
+// verbatim, never guessed from option vocabulary) supersedes it; see survey_ask.ts's own header.
+// ─────────────────────────── run ───────────────────────────
+async function run(input, ctx) {
+    const { askGoogle, emit } = ctx;
+    const OPT = input.options;
+    const ALL = Object.keys(OPT);
+    const KEY = input.correctAnswer;
+    const t0 = Date.now();
+    const say = (text) => emit({ kind: 'header', text, ts: nowIso() });
+    const step = (text) => emit({ kind: 'stage', text: `-> ${text}`, ts: nowIso() });
+    const fact = (text) => emit({ kind: 'fact', text: `+ ${text}`, ts: nowIso() });
+    const note = (text) => emit({ kind: 'note', text, ts: nowIso() });
+    say(`METHOD definitional-cascade -- ${input.qid != null ? `qid ${input.qid}` : 'free-text'}`);
+    note(`   ${input.question}`);
+    note(`   ${ALL.map((L) => `${L}) ${OPT[L]}`).join('  ')}`);
+    // ── SHARED PREFIX: stages 0, 1 and 2 of Method 1, reused not copied (see this file's header) ──
+    let pool = [...ALL];
+    pool = await runStage0RegisterGate(OPT, pool, ctx);
+    const inverseQuestion = /\bNOT\b/i.test(input.question)
+        ? input.question.replace(/\bNOT\s+/i, ' ').replace(/\s+/g, ' ').trim()
+        : input.question;
+    step('STAGE 1  ask the inverse -- one cheap source, the question turned around (shared code, comparative_cascade.ts)');
+    const q1Text = `${inverseQuestion} ${ALL.map((L) => `${L}) ${OPT[L]}`).join(' ')}`;
+    note(`   ${q1Text}`);
+    const denseVotes = {};
+    const leastVotes = {};
+    const res1 = await googleBlocks(askGoogle, q1Text);
+    if (res1.ok) {
+        fact(`Google [${res1.via}]: ${res1.text}`);
+        const mentions = await extractAssertedMentions(res1.text, ALL, OPT, note);
+        for (const { L, sentence: s } of mentions) {
+            if (HIGH_WORDS.test(s) && !LOW_WORDS.test(s))
+                denseVotes[L] = (denseVotes[L] || 0) + 1;
+            else if (LOW_WORDS.test(s) && !HIGH_WORDS.test(s))
+                leastVotes[L] = (leastVotes[L] || 0) + 1;
+        }
+        note(`   >> asserted-high votes: ${JSON.stringify(denseVotes)}   asserted-low votes: ${JSON.stringify(leastVotes)}`);
+    }
+    else {
+        note(`   no answer (${res1.via})`);
+    }
+    step('STAGE 2  Jar Method -- remove the blocks we now KNOW are not the answer');
+    const jarElim = Object.keys(denseVotes).filter((L) => pool.includes(L) && denseVotes[L] >= 1);
+    if (jarElim.length) {
+        const before = pool.length;
+        pool = pool.filter((L) => !jarElim.includes(L));
+        fact(`Jar Method removed ${jarElim.join(', ')}   pool ${before} -> ${pool.length}`);
+    }
+    else {
+        note("   Jar Method removed nothing -- stage 1's high/low vocabulary (built for ranking questions) found nothing to assert here, which is an honest no-op for a definitional question, not a failure");
+    }
+    // ── D1: categorize by shared predicate, mechanical ──
+    say('D1  CATEGORIZE OPTIONS BY SHARED PREDICATE (rule 12) -- mechanical, no model');
+    const survivingOPT = {};
+    for (const L of pool)
+        survivingOPT[L] = OPT[L];
+    const d1 = categorizeBySharedPredicate(survivingOPT);
+    if (d1.clusters.length) {
+        for (const cluster of d1.clusters) {
+            note(`   cluster: ${cluster.join(', ')}   (${cluster.map((L) => `${L}: ${[...d1.wordSets[L]].join('/')}`).join('   ')})`);
+        }
+    }
+    else {
+        note('   no cluster reached the 2-shared-word threshold');
+    }
+    note(`   odd one out (${d1.oddOneOutBasis === 'isolated' ? 'shares no significant vocabulary with anything else' : 'fewest shared-vocabulary connections of the set'}): ${d1.oddOneOut.join(', ') || '(none)'}`);
+    // ── D1.5: FIELD GATE (E-FIELD-GATE) -- ask what field the term is in, eliminate by vocabulary ──
+    // D-BP150-017. The Founder's own qid 85 proof: "Where did we ask Google, in survey, what field
+    // this was in? ... it would eliminate the other 3 ... by elimination, what it HAS to be." See
+    // field_gate.ts's header for the full procedure. Runs BEFORE D2/surveyAsk so a single surviving
+    // field can scope the survey query; runs again AFTER surveyAsk (below) at the fold level, inside
+    // whatever field survived, on the denotations surveyAsk actually found.
+    say('D1.5  FIELD GATE -- ask what field the term is in, eliminate by co-occurring vocabulary (E-FIELD-GATE, wired D-BP150-017)');
+    const term = extractBareTerm(input.question);
+    note(`   term: "${term}"`);
+    const fieldResult = await fieldGate(term, input.question, OPT, ctx);
+    note(`   ${fieldResult.why}`);
+    // ── D2: SURVEY THE ASK -- enumerate denotations, do not collapse (E-SURVEY-ASK) ──
+    // D-BP150-016, see this file's header for the qid 85 failure this closes. Term extraction off
+    // the definitional cue phrase stays here (mechanical, code -- E-CATALYST-WORDS/D2's own job);
+    // surveyAsk() takes the extracted term and does its OWN Google queries ("define <term>" and
+    // "other meanings of <term>"), emitting every verified denotation to the transcript itself, on
+    // its own line, sourced -- that visibility is half the deliverable, per this ticket.
+    //
+    // D-BP150-018 (B): SCOPED, PLURAL. Measured on qid 85 (this ticket's governing evidence): when
+    // the field gate leaves MULTIPLE survivors (its ordinary case, not the rare ONE_SURVIVOR case),
+    // the old wiring left the survey term completely unconstrained and the SAMPLING register never
+    // got a scoped query at all. Every survivor the field gate reports now gets its own "<term> in
+    // <field>" query -- scoped like D3 was, across every survivor instead of one guess. Nothing here
+    // picks a field; `fieldResult.survivors` can be any length, including 0 (unconstrained, define/
+    // other-meanings only) or many (one scoped query each).
+    //
+    // D-BP150-018 (C): STAGE 1'S HAUL, REUSED. Stage 1 ("ask the inverse", above) already fetched
+    // Google blocks that may state a denotation of `term` -- Survey never saw them before this
+    // ticket because it only ran its own two queries. Reused here at zero extra Google cost, minus
+    // any block that reproduces one of THIS question's own options verbatim (answer-key
+    // contamination -- see stage1BlocksForSurvey below), through the identical verification
+    // extractDenotationFromBlock()/appearsIn() every other denotation gets.
+    const scopeFieldNames = fieldResult.survivors.map((s) => s.name);
+    const stage1BlocksForSurvey = [];
+    if (res1.ok) {
+        for (const block of res1.blocks) {
+            const passage = [block.title, block.body].filter(Boolean).join(' -- ');
+            const contaminatingOption = Object.entries(OPT).find(([, optText]) => appearsIn(passage, optText));
+            if (contaminatingOption) {
+                note(`   excluding Stage 1 block [${block.url || block.title || '(no url)'}] from Survey reuse -- reproduces option ${contaminatingOption[0]}'s text verbatim (answer-key contamination)`);
+                continue;
+            }
+            stage1BlocksForSurvey.push(block);
+        }
+    }
+    say(`D2  SURVEY THE ASK -- enumerate denotations, do not collapse (E-SURVEY-ASK, wired D-BP150-016; `
+        + `scoped-plural + Stage-1 reuse, D-BP150-018)`
+        + (scopeFieldNames.length ? ` -- scoped to ${scopeFieldNames.length} surviving field(s): ${scopeFieldNames.join(', ')}` : ' -- no surviving field, unconstrained')
+        + (stage1BlocksForSurvey.length ? `; reusing ${stage1BlocksForSurvey.length} Stage 1 block(s)` : ''));
+    note(`   term: "${term}"`);
+    const survey = await surveyAsk(term, ctx, {
+        scopeFields: scopeFieldNames,
+        // D-BP150-019 FIX 1(b). Every denotation -- freshly queried or reused from Stage 1 -- now gets
+        // checked for near-verbatim reproduction of one of these OPTIONS, on top of the pre-existing
+        // exact-match filter below (kept: it is a cheap, coarse pre-filter that saves a wasted Gemma
+        // call on obviously-contaminated Stage-1 blocks; the hardened check inside surveyAsk() is the
+        // authoritative, comprehensive guard that runs regardless of source).
+        options: OPT,
+        extraBlockSources: stage1BlocksForSurvey.length
+            ? [{ query: `STAGE 1 reused (ask the inverse): ${q1Text}`, blocks: stage1BlocksForSurvey }]
+            : [],
+    });
+    // ── D2.5: drop any already-surveyed denotation whose source-stated register names a field the
+    // field gate ELIMINATED, then run the SAME elimination one level down, at the FOLD level, inside
+    // whatever field survived -- "THEN APPLY THE SAME ELIMINATION AT THE FOLD LEVEL", per this
+    // ticket. Never picks a single surviving fold; see field_gate.ts's foldGate() header.
+    const { kept: foldableDenotations, dropped: droppedDenotations } = dropDenotationsByEliminatedFields(survey.denotations, fieldResult);
+    if (droppedDenotations.length) {
+        say(`D2.5  DROP DENOTATIONS FROM ELIMINATED FIELDS -- ${droppedDenotations.length} dropped, ${foldableDenotations.length} kept`);
+        for (const { denotation, why } of droppedDenotations) {
+            note(`   dropped "${denotation.sentence}" -- ${why}`);
+        }
+    }
+    say('D2.6  FOLD GATE -- same elimination, one level down, inside the surviving field (E-FIELD-GATE, fold form)');
+    const foldResult = foldGate(foldableDenotations, term, input.question, OPT, fieldResult.decision === 'ONE_SURVIVOR' ? fieldResult.survivors[0].name : 'unconstrained (field gate did not narrow to one)');
+    note(`   ${foldResult.why}`);
+    // ── D5: match on sense (E-MATCH-UP) -- DO NOT FAKE THIS. Honest abstain. ──
+    // D-BP150-017 HARD GUARD: the field gate and fold gate above narrow candidate FIELDS and FOLDS
+    // (senses); neither ever narrows to an OPTION letter. Even when foldGate() leaves exactly one
+    // surviving fold, D5 -- matching that surviving sense to one of the ten OPTIONS -- remains
+    // unimplemented on purpose. Adding that step here would be E-MATCH-UP smuggled in under a
+    // different name, and canon still marks E-MATCH-UP UNSOLVED.
+    say('D5  MATCH ON SENSE -- NOT IMPLEMENTED, HONEST ABSTAIN (E-MATCH-UP is UNSOLVED per canon)');
+    note('   no bigram overlap, no embedding distance, no forced pick, no "here are the options, pick one"');
+    note('   measured this session: a bigram scorer gave all ten of qid 46\'s options an identical 0.35; a narrow YES/NO to the local model scored 1 of 4 and flipped its own answer at temperature 0');
+    note(`   surviving candidate pool: ${pool.join(', ')}`);
+    note(`   field gate [${fieldResult.decision}]: ${fieldResult.why}`);
+    note(`   fold gate [${foldResult.decision}]: ${foldResult.why}`);
+    if (survey.denotations.length) {
+        note(`   ${survey.denotations.length} surveyed denotation(s) carried forward, UNRESOLVED -- comparing these against the options is E-MATCH-UP, not run here:`);
+        survey.denotations.forEach((d, i) => {
+            // Matched by sentence, not index -- foldResult.outcomes is built from foldableDenotations,
+            // which is survey.denotations MINUS anything D2.5 dropped, so the two arrays can diverge.
+            const foldOutcome = foldResult.outcomes.find((o) => o.candidate.sentence === d.sentence);
+            const wasDropped = droppedDenotations.some((dd) => dd.denotation.sentence === d.sentence);
+            const foldNote = foldOutcome
+                ? `, fold gate: ${foldOutcome.survives ? 'SURVIVES' : 'ELIMINATED'} (${foldOutcome.why})`
+                : wasDropped ? ', fold gate: DROPPED before fold gate ran (register belonged to an eliminated field)' : '';
+            note(`      denotation ${i + 1} [${d.aspect.aspect}${d.register ? `, register: ${d.register}` : ', register: unstated'}]: "${d.sentence}" (${d.sourceUrl || d.sourceTitle || 'source unknown'})${foldNote}`);
+        });
+    }
+    else {
+        note('   survey found no verifiable denotation to carry forward -- an honest empty result, not a fabrication');
+    }
+    note('   sense-matching is not yet solved -- this is the exact case the Language Matrix / E-MATCH-UP exists to close, per the teaching');
+    const elapsedS = ((Date.now() - t0) / 1000).toFixed(1);
+    emit({ kind: 'result', text: `ABSTAIN (D5/E-MATCH-UP not implemented)   pool=${pool.join(',')}${KEY != null ? `  key=${KEY}` : ''}`, ts: nowIso() });
+    note(`   ${elapsedS}s`);
+    const denotationBasisParts = survey.denotations.map((d, i) => `denotation ${i + 1} [${d.aspect.aspect}${d.register ? `, register: ${d.register}` : ', register: unstated'}]: "${d.sentence}"`);
+    const basisParts = [
+        `D1 clustered ${Object.keys(survivingOPT).length} options (odd one out: ${d1.oddOneOut.join(', ') || 'none'})`,
+        `D1.5 FIELD GATE [${fieldResult.decision}]: ${fieldResult.why}`,
+        `D2 surveyed "${term}" via E-SURVEY-ASK (does not collapse), scoped to ${scopeFieldNames.length} field(s) [${scopeFieldNames.join(', ') || 'none'}] plus ${survey.reusedSources.length} reused Stage-1 source(s) (D-BP150-018): ${survey.denotations.length} denotation(s) found, ${survey.discarded.length} block(s) discarded`,
+        ...(droppedDenotations.length ? [`D2.5 dropped ${droppedDenotations.length} denotation(s) whose register belonged to an eliminated field`] : []),
+        `D2.6 FOLD GATE [${foldResult.decision}]: ${foldResult.why}`,
+        ...denotationBasisParts,
+        'D5 sense-matching (E-MATCH-UP) not implemented -- deliberate honest abstain per the BP149 teaching, HARDWIRE-22 and canon (E-MATCH-UP UNSOLVED)',
+    ];
+    return {
+        qid: input.qid,
+        question: input.question,
+        verdict: null,
+        correct: KEY,
+        abstain: true,
+        freeText: input.qid == null,
+        basis: `${basisParts.join('; ')}. candidates: ${pool.join(', ')}`,
+    };
+}
+export const definitionalCascadeMethod = {
+    id: 'definitional-cascade',
+    name: 'The Definitional Cascade',
+    // D-BP150-003: this method resolves what a term MEANS. Its answer is a meaning, so its demand
+    // is DEFINE. It must not run on a question that demands anything else.
+    demand: 'DEFINE',
+    taughtBy: "the Founder's qid 85 walkthrough (bias), FounderCascadeWorkedByHand.txt Excerpt 7 -- D1 built BP149 (D-BP149-043); D2-D4's collapse replaced by E-SURVEY-ASK's enumeration BP150 (D-BP150-016) after qid 85's own two-fold defect; D5 (sense-matching / E-MATCH-UP) deliberately left an honest abstain, not yet solved",
+    shapeDescription: 'the question turns on what a term means and the options are competing statements of that meaning',
+    shapeTest,
+    run,
+};
+registerMethod(definitionalCascadeMethod);

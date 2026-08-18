@@ -87,13 +87,28 @@ import type {
 
 // ─── Storage location ──────────────────────────────────────────────────────
 
-// The app.getPath('userData') app-name component. Electron derives this from package.json's
-// `name` field (mnemosyne/package.json:2), NOT electron-builder's `productName` ("MnemosyneC",
-// build.productName in the same file) -- those are different fields serving different purposes
-// (installer/shortcut display name vs. app identity). Verified BP147 Phase 0 against the live
-// shipping app's actual on-disk footprint (%APPDATA%\amplify-computer exists; %APPDATA%\
-// MnemosyneC does not), not just reasoned from the field.
-const USERDATA_APP_NAME = "amplify-computer";
+// The app.getPath('userData') app-name component, for the non-Electron fallback branch below
+// ONLY (step 2). Inside Electron, the branch above this one asks app.getPath('userData')
+// directly and needs no hardcoded name at all.
+//
+// CORRECTED D-BP158-006/BISHOP (supersedes the BP147 Phase 0 claim this comment used to make):
+// this constant used to read "amplify-computer" on the theory that Electron derives userData
+// from package.json's `name` field (mnemosyne/package.json:2 = "amplify-computer"), NOT
+// electron-builder's `productName` ("MnemosyneC"), and that BP147 Phase 0 had verified
+// %APPDATA%\amplify-computer exists while %APPDATA%\MnemosyneC does not. That reasoning about
+// how Electron derives the default was correct, but the "MnemosyneC does not exist" half of the
+// claim is now MEASURED FALSE: %APPDATA%\MnemosyneC exists today and is where the mesh peer
+// identity keypair (identity/localPeerKeypair.ts) already lives. As of this ticket, the main
+// process (src/main/index.ts, top of file) calls `app.setPath('userData', ...)` once at startup
+// to repoint Electron's userData to %APPDATA%\MnemosyneC explicitly -- package.json's `name`
+// field is deliberately left as "amplify-computer" (changing it would alter electron-builder's
+// installer identity/update channel), but the running app's actual userData directory is now
+// MnemosyneC. This fallback constant is updated to match so a non-Electron process reading this
+// same store (librarian-mcp, the kill-and-restart proof scripts, tests) resolves the SAME
+// directory the real running app now uses -- the exact two-stores-disagree failure mode this
+// module's own header comment describes is what silently reappears if this constant is left as
+// "amplify-computer" while the live app moves to "MnemosyneC".
+const USERDATA_APP_NAME = "MnemosyneC";
 
 function resolveCrystalDir(): string {
   const envOverride = process.env.MNEM_CRYSTAL_DIR;

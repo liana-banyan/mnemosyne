@@ -27,7 +27,7 @@ import { SALT_LEVEL_CONFIGS } from './diagnosis_types';
 // ─── Storage paths ────────────────────────────────────────────────────────────
 
 function diagnosisDir(): string {
-  const d = join(app.getPath('appData'), 'MnemosyneC', 'substrate', 'diagnosis');
+  const d = join(app.getPath('userData'), 'substrate', 'diagnosis');
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
   return d;
 }
@@ -37,7 +37,7 @@ function diagnosisPath(id: string): string {
 }
 
 function verifiedEbletPath(id: string): string {
-  const d = join(app.getPath('appData'), 'MnemosyneC', 'substrate');
+  const d = join(app.getPath('userData'), 'substrate');
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
   return join(d, `diagnosis_verified_${id}.json`);
 }

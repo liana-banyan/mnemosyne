@@ -920,10 +920,10 @@ export function registerAiDispatchIPC(): void {
       let memoryMdContent = '';
       try {
         memoryMdContent = getMemoryMd();
-        const memPath = join(app.getPath('appData'), 'MnemosyneC', 'MEMORY.md');
+        const memPath = join(app.getPath('userData'), 'MEMORY.md');
         console.log(`[Ask] MEMORY.md loaded: ${memoryMdContent.length} bytes from ${memPath}`);
       } catch (err) {
-        const memPath = join(app.getPath('appData'), 'MnemosyneC', 'MEMORY.md');
+        const memPath = join(app.getPath('userData'), 'MEMORY.md');
         console.warn(`[Ask] MEMORY.md MISSING at ${memPath} — err:`, err);
       }
 

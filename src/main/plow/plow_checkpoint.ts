@@ -27,11 +27,11 @@ export interface PlowCheckpoint {
 }
 
 function checkpointPath(): string {
-  return join(app.getPath('appData'), 'MnemosyneC', 'Substrate', '.plow_checkpoint.json');
+  return join(app.getPath('userData'), 'Substrate', '.plow_checkpoint.json');
 }
 
 function ensureSubstrateDir(): void {
-  const dir = join(app.getPath('appData'), 'MnemosyneC', 'Substrate');
+  const dir = join(app.getPath('userData'), 'Substrate');
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
