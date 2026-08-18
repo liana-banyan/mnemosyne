@@ -1,0 +1,302 @@
+{
+  "name": "amplify-computer",
+  "version": "0.9.23",
+  "description": "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (SSPL)",
+  "homepage": "https://lianabanyan.com",
+  "private": true,
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev:renderer\" \"wait-on http://127.0.0.1:5173 && npm run dev:main\"",
+    "dev:renderer": "vite --config vite.renderer.config.ts",
+    "dev:main": "tsc -p tsconfig.main.json && electron .",
+    "dev:main:cdp": "tsc -p tsconfig.main.json && electron . --remote-debugging-port=9333",
+    "dev:cdp": "concurrently -k \"npm run dev:renderer\" \"wait-on http://127.0.0.1:5173 && npm run dev:main:cdp\"",
+    "mesh-test:cli": "node scripts/mesh-test-cli.mjs",
+    "build": "node scripts/unicode-check.mjs && npm run build:renderer && npm run build:main",
+    "build:renderer": "vite build --config vite.renderer.config.ts",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:hugo": "node scripts/copy-hugo-bundle.mjs",
+    "catacombs:build": "node scripts/catacombs-indexer.mjs",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:win:complete": "npm run build && electron-builder --win --publish never",
+    "dist:win:lean": "npm run build && node scripts/gen_lean_builder_config.mjs && electron-builder --win --config release/electron-builder.lean.json --publish never",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "publish:win": "npm run build && electron-builder --win --publish always",
+    "publish:mac": "npm run build && electron-builder --mac --publish always",
+    "publish:linux": "npm run build && electron-builder --linux --publish always"
+  },
+  "keywords": [
+    "mnemosyne",
+    "cai-hearth",
+    "memory-overlay",
+    "liana-banyan",
+    "cooperative-ai"
+  ],
+  "author": {
+    "name": "Liana Banyan Corporation",
+    "email": "support@lianabanyan.com",
+    "url": "https://lianabanyan.com"
+  },
+  "license": "SSPL-1.0",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "@google/generative-ai": "^0.24.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@peculiar/asn1-schema": "^2.7.0",
+    "@peculiar/asn1-tsp": "^2.7.0",
+    "@peculiar/asn1-x509": "^2.7.0",
+    "@supabase/supabase-js": "^2.110.0",
+    "allotment": "^1.20.5",
+    "caithedral-core": "file:./caithedral-core",
+    "electron-log": "^5.4.4",
+    "electron-updater": "^6.1.7",
+    "mathjs": "^15.2.0",
+    "qrcode": "^1.5.4",
+    "qrcode.react": "^4.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "ws": "^8.20.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^20.14.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "electron": "^31.0.1",
+    "electron-builder": "^24.13.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.4.5",
+    "vite": "^5.3.1",
+    "vitest": "^4.1.9",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.lianabanyan.mnemosyne",
+    "productName": "MnemosyneC",
+    "icon": "assets/app-icon",
+    "copyright": "Copyright 2026 Liana Banyan Corporation. All rights reserved. SSPL licensed.",
+    "asar": true,
+    "asarUnpack": [
+      "resources/ollama/**",
+      "dist/main/relay_answer/**"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/**/*.map",
+      "assets/tray-icon.png",
+      "assets/app-icon.ico",
+      "assets/app-icon.png",
+      "assets/app-icon-*.png",
+      "src/renderer/public/**/*",
+      "static/**/*",
+      "!static/cephas/**",
+      "!static/**/*.map",
+      "node_modules/**/*",
+      "!node_modules/.cache/**",
+      "!node_modules/**/{test,__tests__,tests,powered-test,example,examples}/**",
+      "!node_modules/caithedral-core/release/**",
+      "!node_modules/caithedral-core/node_modules/**",
+      "!node_modules/caithedral-core/.git/**"
+    ],
+    "extraFiles": [
+      {
+        "from": "assets/post_install_message.txt",
+        "to": "README_INSTALL.txt"
+      },
+      {
+        "from": "LICENSE_SSPL.md",
+        "to": "LICENSE_SSPL.txt"
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "resources/ollama",
+        "to": "ollama",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/supabase_public.env",
+        "to": "supabase_public.env"
+      },
+      {
+        "from": "resources/liana_survey_queries.json",
+        "to": "liana_survey_queries.json"
+      },
+      {
+        "from": "resources/eblets_default",
+        "to": "eblets_default",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/mmlu_pro_bundled",
+        "to": "mmlu_pro_bundled",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/chocolates",
+        "to": "chocolates",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/mmlu_pro",
+        "to": "mmlu_pro",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": {
+      "provider": "generic",
+      "url": "https://mnemosynec.ai/download/",
+      "channel": "latest"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signingHashAlgorithms": [
+        "sha256"
+      ],
+      "signDlls": false,
+      "signAndEditExecutable": true,
+      "sign": "./scripts/sign.cjs",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "artifactName": "MnemosyneC-Setup-${version}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MnemosyneC",
+      "include": "assets/installer.nsh",
+      "license": "assets/LICENSE.rtf",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    },
+    "portable": {
+      "artifactName": "MnemosyneC-Portable-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "assets/entitlements.mac.plist",
+      "entitlementsInherit": "assets/entitlements.mac.plist",
+      "notarize": false,
+      "identity": null
+    },
+    "dmg": {
+      "title": "Mnemosyne ${version}",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "internetEnabled": false
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Office",
+      "maintainer": "Liana Banyan Corporation <support@lianabanyan.com>",
+      "synopsis": "MnemosyneC - Cooperative AI Peer. Mesh-native knowledge substrate for distributed cooperative intelligence.",
+      "description": "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (SSPL)"
+    },
+    "deb": {
+      "packageCategory": "utils",
+      "priority": "optional",
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils"
+      ]
+    },
+    "rpm": {
+      "packageCategory": "Applications/Internet"
+    },
+    "afterSign": "scripts/notarize.cjs"
+  }
+}
