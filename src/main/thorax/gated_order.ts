@@ -81,10 +81,42 @@ export function canonicalGatedOrder(o: UnsignedGatedOrder): string {
           o.nonce, o.codeCommitment, String(o.codeWindow), o.custody].join('|');
 }
 
-/** Burned (code, window) pairs. Binding stops cross-order reuse; only this stops the SAME
- *  order being replayed inside its own window. Process-local by design: a durable store is
- *  the right home for it and is a separate ticket, so this is stated rather than implied. */
-const burned = new Set<string>();
+/**
+ * D-BP158-M0-013: the burn record is DURABLE, and the guarantee lives in the database.
+ *
+ * An in-process Set was the first version and it was not good enough: it forgets on restart,
+ * it is not shared between processes, and two concurrent signings could both pass the check
+ * before either recorded it. `public.founder_order_burns` carries a UNIQUE index on
+ * (code_window, code_commitment), so the SECOND insert fails at the database. That is an
+ * atomic guarantee no application-side check can offer, and it survives a crash.
+ *
+ * The table stores the COMMITMENT, never the code, consistent with everything else here. It
+ * also doubles as the audit trail of every gated authorization ever issued, which is why it
+ * records issuer, subject, scope and custody alongside.
+ *
+ * The store is INJECTED so this module stays testable without a database, and so a caller can
+ * substitute a different durable backend later without touching the signing logic.
+ */
+export interface BurnStore {
+  /** Record a code as consumed. MUST return false if it was already burned, and MUST decide
+   *  that atomically rather than by reading first and writing after. */
+  burn(record: {
+    codeWindow: number; codeCommitment: string;
+    issuer: string; subject: string; scope: string; nonce: string; custody: CustodyRegime;
+  }): boolean;
+}
+
+/** Fallback for tests and for any caller that has not supplied a durable store. It is
+ *  deliberately named so nobody mistakes it for the real one in a stack trace. */
+export class InMemoryBurnStoreNotDurable implements BurnStore {
+  private seen = new Set<string>();
+  burn(r: { codeWindow: number; codeCommitment: string }): boolean {
+    const k = `${r.codeWindow}|${r.codeCommitment}`;
+    if (this.seen.has(k)) return false;
+    this.seen.add(k);
+    return true;
+  }
+}
 
 export class GateRefusal extends Error {}
 
@@ -112,6 +144,9 @@ export function issueGatedOrder(params: {
   seed?: Buffer;
   custody: CustodyRegime;
   nowUnixSeconds?: number;
+  /** REQUIRED for any gate-required scope. Supply the durable store; the in-memory one is
+   *  for tests and is named so a stack trace makes that obvious. */
+  burnStore?: BurnStore;
 }): GatedOrder {
   const now = params.nowUnixSeconds ?? Math.floor(Date.now() / 1000);
 
@@ -139,14 +174,27 @@ export function issueGatedOrder(params: {
       throw new GateRefusal(`Founder code refused: ${res.reason}`);
     }
     window = windowFor(now);
-    const burnKey = `${params.code}|${window}`;
-    if (burned.has(burnKey)) {
-      throw new GateRefusal(
-        `that code was already used for window ${window}. Refusing: single use per window, ` +
-        `otherwise one tap could authorize two orders.`);
-    }
-    burned.add(burnKey);
     commitment = commitToCode(params.code, window);
+
+    if (!params.burnStore) {
+      throw new GateRefusal(
+        `scope "${params.scope}" requires a burn store so a code can only authorize one order. ` +
+        `Refusing to sign without one: without a durable burn, a single tap could authorize ` +
+        `any number of orders inside its window, and a restart would forget every prior use.`);
+    }
+    // Burn BEFORE signing. If the record cannot be taken, nothing is signed. Signing first and
+    // recording after would leave a signed order behind on any failure between the two.
+    const fresh = params.burnStore.burn({
+      codeWindow: window, codeCommitment: commitment,
+      issuer: params.issuer, subject: params.subject, scope: params.scope,
+      nonce: params.nonce, custody: params.custody,
+    });
+    if (!fresh) {
+      throw new GateRefusal(
+        `that code was already used for window ${window}. Refusing: one tap authorizes one ` +
+        `order. This is enforced by a unique index in the database, so it holds across ` +
+        `restarts, across processes, and against a race.`);
+    }
   }
 
   const unsigned: UnsignedGatedOrder = {
