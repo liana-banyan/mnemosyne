@@ -3482,7 +3482,8 @@ export function diagnoseNoConsensusScatterDecline(
 }
 
 /** KN-BP144-7 T2: the ONE parse-level choke point that turns a dispatch-level observation plus
- *  "did resolveAuthorityLetterMatch find a letter" into the closed 7-value vocabulary, shared by
+ *  "did resolveAuthorityLetterMatch find a letter" into the closed 9-value vocabulary (grown from
+ *  seven, D-BP159-011 -- see browser_authority_types.ts's own banner), shared by
  *  every one of the five browser-authority call sites inside runAuthorityEnsemble below (never
  *  re-derived per-authority, so the classification logic cannot diverge the way T1's own
  *  rationale warns against). Pure, no I/O:
