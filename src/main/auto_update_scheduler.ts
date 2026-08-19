@@ -217,14 +217,31 @@ interface RootKeyEntry {
 // an unrecognized keyId is refused (fail closed), never silently accepted.
 //
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-// 'lb-root-2026-01' below is a PLACEHOLDER keyId/entry, NOT a real provisioned root key. Per
-// this dispatch's ABSOLUTE CONSTRAINT ON KEY MATERIAL, no production root keypair was
-// generated, and no private key was created, printed, or stored anywhere by this change. This
-// placeholder MUST be replaced with a real, offline-generated Ed25519 public key (DER SPKI
-// hex) before any release ships with signature enforcement live. verifyManifestEntrySignature()
-// below REFUSES every manifest entry naming this keyId while it carries the sentinel value —
-// exactly like a missing or unknown keyId — so the update path fails closed, not open, until a
-// real key is provisioned.
+// CORRECTED D-BP158-M0-009. THIS ENTRY IS REAL AND LIVE. IT IS NOT A PLACEHOLDER.
+//
+// The block that stood here said 'lb-root-2026-01' below is a PLACEHOLDER, NOT a real
+// provisioned root key. That was true when written and became FALSE when the key was actually
+// provisioned at BP157 and pasted in below. The prose was never updated, and it caused a real
+// error: a BP158 SEG audit read this comment, reported the trust root as missing from the
+// shipped registry, and that false finding was filed as an open work item and repeated to the
+// Founder before anyone checked the value four lines down.
+//
+// MEASURED 2026-08-19: the publicKeyHex below is a genuine Ed25519 SPKI-DER key with status
+// 'active', and it matches the provisioned root's public half at
+// C:\Users\Administrator\.lb-root-keys\lb-root-2026-01.private.json.pubkey.txt byte for byte.
+// A live end-to-end proof signed an order with the real root PRIVATE key and verified it with
+// the COMPILED public key below: genuine order authorized; scope-widened, subject-swapped,
+// unknown-issuer and expired orders all refused.
+//
+// The sentinel machinery is still real and still correct: verifyManifestEntrySignature() below
+// refuses any entry whose key is PLACEHOLDER_KEY_NOT_PROVISIONED_DO_NOT_TRUST or whose status
+// is not 'active', so the path fails closed. That guard simply does not apply to this entry.
+//
+// ACCEPTED RISK, unchanged: the private half lives on networked M0 per FD-BP157-14. See the
+// per-entry note below, which is current.
+//
+// IF YOU ARE ABOUT TO REPORT THIS KEY AS MISSING: read the value, not this comment. That is
+// the mistake this paragraph exists to stop you repeating.
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 const LB_PUBLIC_KEYS: Record<string, RootKeyEntry> = {
   'lb-root-2026-01': {
