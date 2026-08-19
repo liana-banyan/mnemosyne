@@ -3965,6 +3965,40 @@ function registerIPCHandlers(): void {
     runBrowserAuthorityQueryFromMain(query),
   );
 
+  // D-BP159-001/BISHOP/M0/land-todo-007 -- ADDITIVE SIBLING of the channel immediately above.
+  // Nothing about that channel, runBrowserAuthorityQueryFromMain(), or any existing caller
+  // changes; this registers a SECOND channel alongside it and is the only new surface.
+  //
+  // THE MEASURED DEFECT THIS CLOSES (BP159, verified against this file's own source, not
+  // inferred): runBrowserAuthorityQueryFromMain() is `return observed.raw` -- a deliberate
+  // byte-identical-behavior wrapper (see its header). On a structural Google verification /
+  // rate-limit challenge, runBrowserAuthorityQueryFromMainObserved() returns
+  // `{ raw: null, dispatchOutcome: 'no_result', challengeDetected: true }` (this file, the
+  // `if (r.challenge)` branch). The wrapper then returns `observed.raw`, i.e. bare `null`, and
+  // `challengeDetected` -- the ONE bit that separates "Google told us to stop" from "the page
+  // genuinely had no answer" -- is computed, console.warn'd, and dropped on the floor.
+  //
+  // For the IN-APP Liana Cycle that loss is already avoided: buildLianaAskGoogle() (above) calls
+  // the Observed variant directly and rebuilds an honest non-null empty carrying the flag, which
+  // is what lets comparative_cascade.ts's googleBlocks() halt with ZERO further retries instead
+  // of aiming more automated traffic at a page that just refused us.
+  //
+  // But the OUT-OF-PROCESS measurement driver (LianaBanyanPlatform's
+  // BISHOP_DROPZONE\D-BP150-014_measure_driver.js, via D-BP158-005_cdp_ask_google.js) reaches
+  // this app over CDP and can only call what preload.ts exposes on window.amplify -- which was
+  // only the LOSSY channel. So every throttled query arrived at the driver as a bare `null`,
+  // indistinguishable from a genuine empty, and D-BP158-M3-005's outcome classifier scored it
+  // SUCCESS-then-EMPTY: it never tripped its circuit breaker, and the run kept querying a source
+  // that was refusing it while recording the refusals as real method failures. That is TODO-007's
+  // exact defect surviving inside TODO-007's own fix, and it is why this channel exists.
+  //
+  // This handler adds NO new capability and NO new automation: it exposes the SAME observation
+  // object the in-app path has consumed since D-BP152-050, to a caller that could already trigger
+  // the query. It fabricates nothing -- absence still surfaces as `raw: null`.
+  safeHandle('nexus-browser-authority-run-query-observed', (_event, query: BrowserAuthorityQuery) =>
+    runBrowserAuthorityQueryFromMainObserved(query),
+  );
+
   // D-BP150-001/BISHOP/S01/seg-audible -- CALL AN AUDIBLE, the pending-pause table.
   //
   // A pause lives here between the moment the engine asks for it and the moment the operator

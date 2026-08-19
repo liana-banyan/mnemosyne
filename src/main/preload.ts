@@ -765,6 +765,24 @@ contextBridge.exposeInMainWorld('amplify', {
   ): Promise<import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null> =>
     ipcRenderer.invoke('nexus-browser-authority-run-query', query),
 
+  // D-BP159-001/BISHOP/M0/land-todo-007 -- ADDITIVE sibling of the method immediately above,
+  // which is left byte-identical. Wraps the 'nexus-browser-authority-run-query-observed' channel
+  // index.ts's registerIPCHandlers() registers next to the lossy one; see that registration's
+  // header for the full measured reason this exists.
+  //
+  // THE DIFFERENCE, in one line: runBrowserAuthorityQuery() resolves `observed.raw`, so a
+  // structural Google verification/rate-limit challenge and a genuinely empty page BOTH arrive as
+  // bare `null` and cannot be told apart. This method resolves the WHOLE observation, so
+  // `challengeDetected` survives the IPC hop and an out-of-process caller can stop instead of
+  // recording a refusal as a real empty result. Fabricates nothing: absence is still `raw: null`.
+  runBrowserAuthorityQueryObserved: (
+    query: import('../shared/plow/browser_authority_types').BrowserAuthorityQuery,
+  ): Promise<{
+    raw: import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null;
+    dispatchOutcome?: string;
+    challengeDetected?: boolean;
+  }> => ipcRenderer.invoke('nexus-browser-authority-run-query-observed', query),
+
   // D-BP149-034/BISHOP/S34/seg-lianaterminal -- the Liana Cycle terminal. lianaTerminalRun drives
   // the ported founder_cascade_v2.mjs cascade in the main process (liana_terminal_engine.ts) and
   // resolves once the run completes; onLianaTerminalEvent subscribes to the live stage-by-stage
@@ -2676,6 +2694,15 @@ declare global {
       runBrowserAuthorityQuery?: (
         query: import('../shared/plow/browser_authority_types').BrowserAuthorityQuery,
       ) => Promise<import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null>;
+      // D-BP159-001/BISHOP/M0/land-todo-007 -- observation-preserving sibling; see the
+      // contextBridge definition above for why the lossy one could not carry challengeDetected.
+      runBrowserAuthorityQueryObserved?: (
+        query: import('../shared/plow/browser_authority_types').BrowserAuthorityQuery,
+      ) => Promise<{
+        raw: import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null;
+        dispatchOutcome?: string;
+        challengeDetected?: boolean;
+      }>;
       // D-BP149-034/BISHOP/S34/seg-lianaterminal
       lianaTerminalRun?: (
         input: string,
