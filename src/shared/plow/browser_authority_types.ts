@@ -251,8 +251,8 @@ export interface BrowserAuthorityRawExtraction {
    *  (not false) on every pre-fix caller and on any extraction this check does not run for
    *  (the interactive authorities, or a genuine successful extraction). Deliberately kept OUT of
    *  the closed BrowserAuthorityAttemptOutcome/BrowserAuthorityDispatchOutcome vocabularies below
-   *  (KN-BP144-7's "exactly these seven values, no free text" contract, and T2's "strict subset
-   *  of the seven" contract) -- this ticket does not touch that ensemble-receipt instrumentation;
+   *  (KN-BP144-7's "exactly these nine values, no free text" contract, and T2's "strict subset
+   *  of the nine" contract) -- this ticket does not touch that ensemble-receipt instrumentation;
    *  this is a separate, narrower signal read only by the Liana Cycle's own askGoogle wrapper
    *  (index.ts) and comparative_cascade.ts's googleBlocks(). */
   challengeDetected?: boolean;
@@ -454,31 +454,45 @@ export function distillExtraction(
 // ─── KN-BP144-7 ("Make The Silent Authorities Loud"): closed-vocabulary attempt-outcome ───────
 // instrumentation. PURELY ADDITIVE -- nothing below this banner is read by, or changes, any
 // answering/scoring/elimination decision anywhere in this repo. It exists solely so a receipt
-// can say, per question and per authority, WHICH of these seven (and only these seven) states
+// can say, per question and per authority, WHICH of these nine (and only these nine) states
 // actually happened, instead of every non-answer looking like the same absent key. See
 // KN-BP144-7_MAKE_THE_SILENT_AUTHORITIES_LOUD.md for the full rationale (the qid 92 run
 // 039-vs-040 delta this closes).
 //
-// T1's closed vocabulary, EXACTLY these seven values, no free text:
+// D-BP159-011 (2026-08-19): grew from seven values to nine. The measurement driver could not
+// distinguish a source that actively refused us (rate limit / verification challenge) from a
+// plain transport failure (could not reach the source at all) -- the vocabulary had no word for
+// either, so both silently collapsed into 'no_result', a value that already means something
+// else ("asked, returned successfully, produced nothing usable"). Recording a throttle as
+// no_result is exactly the "every non-answer looks like the same absent key" failure KN-BP144-7
+// exists to close, one layer deeper. 'throttled' and 'transport_error' below name those two
+// states honestly instead. See D-BP159-010 for the scoping SEG that proved the T1/T2 subset
+// relation is a real type-enforced invariant, and the Founder's ruling to extend the vocabulary
+// rather than map dishonestly into the existing seven.
+//
+// T1's closed vocabulary, EXACTLY these nine values, no free text:
 export type BrowserAuthorityAttemptOutcome =
-  | 'not_attempted'  // the pipeline never asked
-  | 'disabled'       // asked, authority is switched off
-  | 'not_signed_in'  // asked, no valid session
-  | 'timeout'        // asked, exceeded its window, nothing returned
-  | 'no_result'      // asked, returned successfully, produced nothing usable
-  | 'parse_failed'   // asked, returned text, the letter could not be extracted
-  | 'answered';      // asked, returned, parsed into a candidate
+  | 'not_attempted'     // the pipeline never asked
+  | 'disabled'          // asked, authority is switched off
+  | 'not_signed_in'     // asked, no valid session
+  | 'timeout'           // asked, exceeded its window, nothing returned
+  | 'no_result'         // asked, returned successfully, produced nothing usable
+  | 'parse_failed'      // asked, returned text, the letter could not be extracted
+  | 'answered'          // asked, returned, parsed into a candidate
+  | 'throttled'         // asked, the source refused further queries (rate limit or verification challenge)
+  | 'transport_error';  // asked, could not reach the source at all
 
 // T2 dispatch-level vocabulary (the bridge/main-process leg, index.ts's
-// runBrowserAuthorityQueryFromMainObserved): a strict SUBSET of the seven above, plus
+// runBrowserAuthorityQueryFromMainObserved): a strict SUBSET of the nine above, plus
 // 'dispatched' -- a non-final, internal-only signal meaning "a real, non-empty extraction came
 // back; hand it to parse level (the ensemble) to decide no_result/parse_failed/answered." T2
 // deliberately narrows dispatch level to distinguish ONLY disabled/not_signed_in/timeout/
-// no_result (never parse_failed/answered/not_attempted -- those are not observable at the
-// transport layer; not_attempted in particular can only be known by whoever decides NOT to call
-// this leg at all, which is the ensemble's own per-authority gate, not this leg).
+// no_result/throttled/transport_error (never parse_failed/answered/not_attempted -- those are
+// not observable at the transport layer; not_attempted in particular can only be known by
+// whoever decides NOT to call this leg at all, which is the ensemble's own per-authority gate,
+// not this leg).
 export type BrowserAuthorityDispatchOutcome =
-  | 'disabled' | 'not_signed_in' | 'timeout' | 'no_result' | 'dispatched';
+  | 'disabled' | 'not_signed_in' | 'timeout' | 'no_result' | 'throttled' | 'transport_error' | 'dispatched';
 
 /** The five browser authorities plus the swarm -- T3's "all five browser authorities plus the
  *  swarm, every time, including the ones that were never attempted." specialist_swarm is not a

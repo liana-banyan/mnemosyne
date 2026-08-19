@@ -407,7 +407,13 @@ export async function googleBlocks(
         ? 'a network/navigation timeout'
         : lastFailureReason === 'no_result' || lastFailureReason === 'dispatched'
           ? 'the page loaded and genuinely contained no usable answer'
-          : 'unknown -- the real cause could not be classified from what askGoogle returned';
+          // D-BP159-011, ADDITIVE ONLY: two new BrowserAuthorityDispatchOutcome values, no
+          // existing arm above touched.
+          : lastFailureReason === 'throttled'
+            ? 'the source refused further queries (rate limit or verification challenge)'
+            : lastFailureReason === 'transport_error'
+              ? 'a transport failure reaching the source'
+              : 'unknown -- the real cause could not be classified from what askGoogle returned';
   return { ok: false, text: '', blocks: [], sources: [], via: `${reasonText} (${tries} of ${tries} attempts)` };
 }
 
