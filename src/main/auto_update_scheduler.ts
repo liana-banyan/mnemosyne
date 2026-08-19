@@ -266,6 +266,31 @@ const LB_PUBLIC_KEYS: Record<string, RootKeyEntry> = {
     algorithm: 'ed25519',
     status: 'active',
   },
+
+  // ── D-BP158-M0-017: the Founder ATTESTATION key ──────────────────────────────────────────
+  // Signs the receipts emitted by the `founder-code-verify` and `founder-break-glass` edge
+  // functions. Those receipts are the proof that a live authenticator code, or an emailed
+  // break-glass link, authorized a specific order.
+  //
+  // WHY IT IS A SEPARATE keyId FROM THE ROOT, and this is the point of the whole exercise:
+  // the private half of THIS key was generated in the Founder's own browser and set as a
+  // Supabase function secret. BISHOP HAS NEVER SEEN IT AND CANNOT REACH IT. As of
+  // D-BP158-M0-016 the Management API token and the CLI login were both revoked (measured:
+  // HTTP 401, and Unauthorized), so Bishop can no longer read, set, or overwrite function
+  // secrets. Bishop therefore cannot manufacture an attestation, which is exactly the
+  // property the root key alone could never provide, because the root key is a file on a
+  // machine Bishop controls.
+  //
+  // Public half only, obviously: a public key VERIFIES a receipt and can never PRODUCE one.
+  // Shipping it means M3, a member, or an auditor checks an attestation OFFLINE with no call
+  // back to us. VALIDATED before it was pasted here: 88 hex chars, correct Ed25519 SPKI
+  // prefix, 32 raw key bytes, and it imports as an ed25519 public key through the same
+  // createPublicKey path the verifiers use.
+  'lb-attest-2026-01': {
+    publicKeyHex: '302a300506032b6570032100dc035f3d59f0be2899082b400fe2a1fbeb3bba669a4ce006a480d35ac88c8684',
+    algorithm: 'ed25519',
+    status: 'active',
+  },
 };
 
 // ─── Download + SHA-256 + Ed25519 verify ─────────────────────────────────────
