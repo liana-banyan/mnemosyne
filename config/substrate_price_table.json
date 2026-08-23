@@ -1,72 +1,111 @@
 {
-  "_comment": "Price table for the substrate savings meter (billing instrument). Founder-controlled -- edit this file, never a constant in code. Every rate must carry source_url and verified_on. See LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md Part One, and the licensing paper 'Help Them Help Us Help Ourselves' (J. Jones / FounderDenken) that this instrument exists to make auditable.",
-  "table_version": "2026-08-15-v1",
+  "_comment": "Price table for the substrate savings meter (billing instrument). Founder-controlled -- edit this file, never a constant in code. Every rate must carry source_url and verified_on. See LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md Part One, and the licensing paper 'Help Them Help Us Help Ourselves' (J. Jones / FounderDenken) that this instrument exists to make auditable. Rule 66 siblings: C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.json.superseded.20260820T190241Z.json (table_version 2026-08-20-v2, written verbatim before the D-BP160-M0-037 gemma2:2b change_log edit) -> C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.json.superseded.20260820T183050Z.json (table_version 2026-08-15-v1, written verbatim before the D-BP160-M0-033 edit).",
+  "table_version": "2026-08-20-v3",
   "stale_after_days": 90,
   "default_counterfactual_model": "claude-sonnet-5",
   "counterfactual_tokens_per_char": {
     "value": 0.25,
     "basis": "4 characters per token, a commonly cited rough heuristic for English text. This is a DISCLOSED APPROXIMATION used only to size a hypothetical flagship call from a REAL served answer's character length -- it never substitutes for a real provider-reported token count on the actual-cost side of a receipt. Any record using this path sets counterfactual_tokens_estimated=true so it is never confused with a measured count."
   },
+  "change_log": [
+    {
+      "changed_on": "2026-08-20T19:02:41Z",
+      "changed_by": "D-BP160-M0-037/BISHOP/M0, Founder-ordered FIX 1",
+      "authorization": "Founder-ordered, dispatch D-BP160-M0-037",
+      "what_changed": "No new rate row added here -- gemma2:2b is LOCAL Ollama inference (confirmed via `ollama list` on this machine, ID 8ccf136fdd52, and directly benchmarked in LianaBanyanPlatform/BISHOP_DROPZONE/M0_LOCAL_INFERENCE_MEASUREMENT_BP160.md), so it is covered by the existing local-member-hardware row below (provider: local, $0/mtok, verified_on 2026-08-03, verified_by FounderDenken) exactly the way gemma4:12b, llama3.1:8b, and mistral:7b already are. The actual fix was in the ALLOWLIST that resolves a raw Ollama model id to this table's model_id: LianaBanyanPlatform/BISHOP_DROPZONE/D-BP159-009_price_table_map.json's model_id_price_map.known_local_models was missing a gemma2:2b entry, which is why a benchmark run correctly reported it as unpriced_unknown_model rather than silently guessing it was free. That allowlist now maps gemma2:2b -> local-member-hardware, reusing this table's existing row and the estate's existing local_inference_no_api_cost costCategory vocabulary (D-BP159-009_cost_axis.js) rather than inventing a second one. This change_log entry exists for audit-trail completeness on the real price table side, per this file's own discipline of recording what changed and why even when no rate figure moved.",
+      "corroboration": [
+        "`ollama list` output, LianaBanyanPlatform/BISHOP_DROPZONE/M0_LOCAL_INFERENCE_MEASUREMENT_BP160.md Section 1: gemma2:2b, ID 8ccf136fdd52, 1.6 GB.",
+        "Direct benchmark of gemma2:2b via /api/generate, same file, Sections 3 and 6 (cold + warm runs, 100% GPU, same local unmetered Ollama daemon already covered by the local-member-hardware row)."
+      ]
+    },
+    {
+      "changed_on": "2026-08-20T18:30:50Z",
+      "changed_by": "D-BP160-M0-033/BISHOP/M0/seg-token-price-reconciliation",
+      "authorization": "Founder-authorized, per dispatch D-BP160-M0-033",
+      "what_changed": "Corrected the claude-sonnet-5 successor row (previously effective_from 2026-09-01, $3.00/$15.00, PROVISIONAL). The scheduled 2026-09-01 increase to $3/$15 was CANCELLED by the provider; standing rate remains $2.00/$10.00 with no end date. The cancelled row is NOT deleted -- it is retained below with status CANCELLED, its effective window neutralized so it can never be selected as a currently-effective rate (see that row's own note for the mechanism), so a future reader can see a change was announced and then withdrawn. The claude-sonnet-5 intro row's effective_until was extended from 2026-08-31 to null to reflect that the intro rate is now the permanent standing rate. Cache-read and cache-write (5-minute and 1-hour TTL) rates were added to every anthropic-provider row that previously carried only input_per_mtok_usd/output_per_mtok_usd; this closes the gap named in D-BP160-M0-026 (measured cache-read ratio 25.38:1 with no cache rate on file).",
+      "corroboration": [
+        "Provider pricing docs fetched live 2026-08-20T17:35:47Z, stored at C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform\\BISHOP_DROPZONE\\D-BP160-M0-028_anthropic_rate_card_history.json (snapshot_id 2026-08-20T17:35:47Z-anthropic-v1), source_url https://platform.claude.com/docs/en/about-claude/pricing. That page's own note, quoted verbatim in that file: 'The $2/$10 per million input/output token pricing for Claude Sonnet 5, announced at launch as introductory pricing through August 31, 2026, is now the standard price. The previously scheduled increase to $3/$15 per million input/output tokens on September 1, 2026 will not occur.'",
+        "Founder screenshot of the provider pricing page showing Claude Sonnet 5 at $2 / $10 / $2.50 / $0.20 per MTok (base input / output / cache write 5m / cache read).",
+        "C:\\Users\\Administrator\\Downloads\\BatchProcessingClaude.md, whose batch-pricing table (50 percent of standard, line ~89 onward) reconciles to $2/$10 standard for Claude Sonnet 5 with zero disagreements across the nine listed models."
+      ]
+    }
+  ],
   "rates": [
     {
       "model_id": "claude-opus-5",
       "provider": "anthropic",
       "input_per_mtok_usd": 5.00,
       "output_per_mtok_usd": 25.00,
+      "cache_write_5m_per_mtok_usd": 6.25,
+      "cache_write_1h_per_mtok_usd": 10.00,
+      "cache_read_per_mtok_usd": 0.50,
       "effective_from": "2026-01-01",
       "effective_until": null,
       "source_url": "LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md#part-one-the-price-table",
       "verified_on": "2026-08-03",
       "verified_by": "FounderDenken",
-      "note": "Founder-recorded rate, seeded from the spec doc's Part One table. PROVISIONAL until re-verified against live vendor pricing -- do not use to compute a billed figure without re-verifying first."
+      "note": "Founder-recorded rate, seeded from the spec doc's Part One table. PROVISIONAL until re-verified against live vendor pricing -- do not use to compute a billed figure without re-verifying first. Cache write/read fields added 2026-08-20 by D-BP160-M0-033, sourced from LianaBanyanPlatform/BISHOP_DROPZONE/D-BP160-M0-028_anthropic_rate_card_history.json (snapshot 2026-08-20T17:35:47Z-anthropic-v1), itself fetched live from https://platform.claude.com/docs/en/about-claude/pricing. base_input_per_mtok_usd on that snapshot's opus-5 row matches this row's input_per_mtok_usd (5.00), corroborating the base rate at the same time the cache fields were added."
     },
     {
       "model_id": "claude-sonnet-5",
       "provider": "anthropic",
       "input_per_mtok_usd": 2.00,
       "output_per_mtok_usd": 10.00,
+      "cache_write_5m_per_mtok_usd": 2.50,
+      "cache_write_1h_per_mtok_usd": 4.00,
+      "cache_read_per_mtok_usd": 0.20,
       "effective_from": "2026-01-01",
-      "effective_until": "2026-08-31",
+      "effective_until": null,
       "source_url": "LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md#part-one-the-price-table",
-      "verified_on": "2026-08-03",
-      "verified_by": "FounderDenken",
-      "note": "Intro pricing window. Reverts to successor_rates below after effective_until. PROVISIONAL until re-verified against live vendor pricing."
+      "verified_on": "2026-08-20",
+      "verified_by": "D-BP160-M0-033/BISHOP/M0, Founder-authorized",
+      "note": "Was the 'intro pricing window' row, effective_until 2026-08-31, note reading 'Reverts to successor_rates below after effective_until.' As of 2026-08-20, three independent sources (see top-level change_log above) confirm the scheduled 2026-09-01 increase to $3/$15 was CANCELLED and $2.00/$10.00 is now the standing rate with no scheduled end -- effective_until extended from 2026-08-31 to null accordingly. Cache write/read fields sourced from LianaBanyanPlatform/BISHOP_DROPZONE/D-BP160-M0-028_anthropic_rate_card_history.json (snapshot 2026-08-20T17:35:47Z-anthropic-v1), matching Founder screenshot figures ($2 / $10 / $2.50 / $0.20 per MTok) verbatim. See the CANCELLED row below (same model_id, effective_from 2026-09-01) for the withdrawn increase, retained rather than deleted."
     },
     {
       "model_id": "claude-sonnet-5",
       "provider": "anthropic",
+      "status": "CANCELLED",
       "input_per_mtok_usd": 3.00,
       "output_per_mtok_usd": 15.00,
       "effective_from": "2026-09-01",
-      "effective_until": null,
+      "effective_until": "2026-08-20",
       "source_url": "LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md#part-one-the-price-table",
       "verified_on": "2026-08-03",
       "verified_by": "FounderDenken",
-      "note": "Successor rate, effective after the Sonnet 5 intro window closes. PROVISIONAL until re-verified against live vendor pricing."
+      "cancelled_on": "2026-08-20",
+      "cancelled_by": "D-BP160-M0-033/BISHOP/M0, Founder-authorized",
+      "cancelled_reason": "The scheduled 2026-09-01 increase to $3.00/$15.00 for claude-sonnet-5 was announced and then withdrawn by the provider before it ever took effect. Provider page (https://platform.claude.com/docs/en/about-claude/pricing, fetched 2026-08-20T17:35:47Z, stored in D-BP160-M0-028_anthropic_rate_card_history.json) states verbatim: 'The previously scheduled increase to $3/$15 per million input/output tokens on September 1, 2026 will not occur.' Corroborated by a Founder screenshot and by C:\\Users\\Administrator\\Downloads\\BatchProcessingClaude.md's batch pricing table. This row is PRESERVED, not deleted, per Rule 66 and the estate's HIVI discipline (knowing what was true when, including an announcement later withdrawn).",
+      "note": "DO NOT USE THIS RATE. Retained for history only. effective_until was deliberately set to 2026-08-20 (before effective_from, 2026-09-01), making the [effective_from, effective_until] window empty/inverted by construction -- findCurrentRate()-style selectors that require effective_from <= atIso <= effective_until can therefore never match this row for any real atIso, so it cannot be silently picked up as 'currently effective' by any consumer of this table. The live standing rate is the claude-sonnet-5 row above (effective_from 2026-01-01, effective_until null, $2.00/$10.00). No cache_write/cache_read fields are recorded on this row: this rate never went live, so no provider-published cache multiplier for it was ever confirmed, and none is invented here."
     },
     {
       "model_id": "claude-haiku-4-5",
       "provider": "anthropic",
       "input_per_mtok_usd": 1.00,
       "output_per_mtok_usd": 5.00,
+      "cache_write_5m_per_mtok_usd": 1.25,
+      "cache_write_1h_per_mtok_usd": 2.00,
+      "cache_read_per_mtok_usd": 0.10,
       "effective_from": "2026-01-01",
       "effective_until": null,
       "source_url": "LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md#part-one-the-price-table",
       "verified_on": "2026-08-03",
       "verified_by": "FounderDenken",
-      "note": "PROVISIONAL until re-verified against live vendor pricing."
+      "note": "PROVISIONAL until re-verified against live vendor pricing. Cache write/read fields added 2026-08-20 by D-BP160-M0-033, sourced from LianaBanyanPlatform/BISHOP_DROPZONE/D-BP160-M0-028_anthropic_rate_card_history.json (snapshot 2026-08-20T17:35:47Z-anthropic-v1); base_input_per_mtok_usd on that snapshot's haiku-4-5 row matches this row's input_per_mtok_usd (1.00)."
     },
     {
       "model_id": "local-member-hardware",
       "provider": "local",
       "input_per_mtok_usd": 0,
       "output_per_mtok_usd": 0,
+      "cache_write_5m_per_mtok_usd": 0,
+      "cache_write_1h_per_mtok_usd": 0,
+      "cache_read_per_mtok_usd": 0,
       "effective_from": "2026-01-01",
       "effective_until": null,
       "source_url": "LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md#part-one-the-price-table",
       "verified_on": "2026-08-03",
       "verified_by": "FounderDenken",
-      "note": "Covers the model-call cost only. Electricity and hardware amortization are real and NOT measured by this table -- every receipt priced against this entry is labeled 'excludes hardware and power' per the spec's explicit rule. Never presented as a true zero-cost claim."
+      "note": "Covers the model-call cost only. Electricity and hardware amortization are real and NOT measured by this table -- every receipt priced against this entry is labeled 'excludes hardware and power' per the spec's explicit rule. Never presented as a true zero-cost claim. Cache write/read fields added 2026-08-20 by D-BP160-M0-033 for schema consistency with the other rows -- zero is not a provider-sourced figure here (there is no vendor cache rate for local hardware), it is the same structural zero already established for input/output on this row, extended to the new fields rather than left absent."
     }
   ]
 }

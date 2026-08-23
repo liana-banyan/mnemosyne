@@ -20,8 +20,16 @@
 // parse-error too). TEST 6: the SUCCESS path is byte-identical -- a passage that extracts cleanly
 // returns the exact same parsed value as before this ticket, proving no behavior change there.
 
-import { describe, test, expect } from 'vitest';
-import { gemmaExtract } from './comparative_cascade';
+import { describe, test, expect, vi } from 'vitest';
+import {
+  gemmaExtract,
+  sizeGemmaContext,
+  estimateGemmaPromptTokens,
+  GEMMA_NUM_PREDICT,
+  GEMMA_NUM_CTX_CEILING,
+  GEMMA_NUM_CTX_FLOOR,
+  GEMMA_NUM_CTX_SAFETY_TOKENS,
+} from './comparative_cascade';
 
 type RawOut = {
   text?: string;
@@ -215,11 +223,101 @@ describe('D-BP154-006 TEST 6 (SUCCESS PATH UNCHANGED): a clean extraction return
       // D-BP154-033: num_predict raised 1024 -> 2048, MEASURED (comparative_cascade.ts's own
       // gemmaExtract() header comment names the live measurement) -- this assertion tracks
       // whatever gemmaExtract() actually sends, not a stale hardcoded ceiling.
-      expect(parsedBody.options).toEqual({ temperature: 0, num_predict: 2048 });
+      // D-BP162-M0-039, UPDATED: num_ctx is now ALWAYS present (previously absent -- the whole
+      // point of this ticket). Its value is sized to this exact prompt by sizeGemmaContext(), so
+      // this assertion recomputes the expected value the same way rather than hardcoding a number
+      // that would drift the moment the prompt text above changes.
+      expect(parsedBody.options.temperature).toBe(0);
+      expect(parsedBody.options.num_predict).toBe(GEMMA_NUM_PREDICT);
+      expect(parsedBody.options.num_ctx).toBe(sizeGemmaContext(parsedBody.prompt).numCtx);
       expect(parsedBody.prompt).toContain('copy the stated kind');
       expect(parsedBody.prompt).toContain('South America: Continent.');
     } finally {
       global.fetch = originalFetch;
     }
+  });
+});
+
+describe('D-BP162-M0-039 TEST 7: num_ctx is SIZED to the prompt, never absent, never a silent-truncation default', () => {
+  test('a normal-size prompt gets a num_ctx comfortably above the estimate, and it is LOGGED (console.log) -- the call reaches the model', async () => {
+    const originalFetch = global.fetch;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    let capturedBody: string | undefined;
+    global.fetch = (async (_url: unknown, init: { body?: string }) => {
+      capturedBody = init?.body;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ response: JSON.stringify({ x: 'y' }), done_reason: 'stop' }),
+      };
+    }) as unknown as typeof fetch;
+    try {
+      const result = await gemmaExtract('extract something', 'a short passage', '{"x":"y"}');
+      expect(result).toEqual({ x: 'y' }); // the call actually reached the model
+      const parsedBody = JSON.parse(capturedBody!);
+      expect(parsedBody.options.num_ctx).toBeGreaterThanOrEqual(GEMMA_NUM_CTX_FLOOR);
+      expect(parsedBody.options.num_ctx).toBeLessThanOrEqual(GEMMA_NUM_CTX_CEILING);
+      // Logged on every successful sizing, per D-BP162-M0-039 requirement 5.
+      expect(logSpy.mock.calls.some((c) => String(c[0]).includes('[gemmaExtract] num_ctx='))).toBe(true);
+    } finally {
+      global.fetch = originalFetch;
+      logSpy.mockRestore();
+    }
+  });
+
+  test('a prompt whose estimate would exceed GEMMA_NUM_CTX_CEILING REFUSES loudly and never calls fetch() -- no truncation', async () => {
+    const originalFetch = global.fetch;
+    const fetchSpy = vi.fn();
+    global.fetch = fetchSpy as unknown as typeof fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Build a passage long enough that promptTokens + GEMMA_NUM_PREDICT + GEMMA_NUM_CTX_SAFETY_TOKENS
+    // exceeds GEMMA_NUM_CTX_CEILING, using the SAME estimator the production code uses (never a
+    // second, invented one).
+    const oversizedPassage = 'x'.repeat(
+      Math.ceil((GEMMA_NUM_CTX_CEILING - GEMMA_NUM_PREDICT - GEMMA_NUM_CTX_SAFETY_TOKENS + 1000) * 3.5),
+    );
+    try {
+      const rawOut: { failureCause?: 'transport' | 'http-error' | 'parse-error' | 'ceiling-exceeded'; failureDetail?: string } = {};
+      const result = await gemmaExtract('extract something', oversizedPassage, '{"x":"y"}', rawOut);
+      expect(result).toBeNull();
+      expect(fetchSpy).not.toHaveBeenCalled(); // REFUSED -- the model was never called
+      expect(rawOut.failureCause).toBe('ceiling-exceeded');
+      expect(rawOut.failureDetail).toMatch(/exceeds the .* ceiling by/);
+      expect(errorSpy.mock.calls.some((c) => String(c[0]).includes('[gemmaExtract] REFUSED'))).toBe(true);
+    } finally {
+      global.fetch = originalFetch;
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe('D-BP162-M0-039 TEST 8: sizeGemmaContext() and estimateGemmaPromptTokens() unit behavior', () => {
+  test('estimateGemmaPromptTokens reuses the estate convention Math.ceil(chars/3.5)', () => {
+    expect(estimateGemmaPromptTokens('a'.repeat(35))).toBe(10);
+    expect(estimateGemmaPromptTokens('')).toBe(0);
+  });
+
+  test('sizeGemmaContext fits a small prompt at the floor and never below it', () => {
+    const sizing = sizeGemmaContext('short prompt');
+    expect(sizing.ok).toBe(true);
+    expect(sizing.numCtx).toBe(GEMMA_NUM_CTX_FLOOR);
+  });
+
+  test('sizeGemmaContext refuses (ok:false) once promptTokens + reserve + safety exceeds the ceiling, and reports the overage honestly', () => {
+    const tooLong = 'x'.repeat(Math.ceil((GEMMA_NUM_CTX_CEILING + 500) * 3.5));
+    const sizing = sizeGemmaContext(tooLong);
+    expect(sizing.ok).toBe(false);
+    expect(sizing.ceiling).toBe(GEMMA_NUM_CTX_CEILING);
+    expect(sizing.overage).toBeGreaterThan(0);
+    expect(sizing.numCtx).toBeUndefined();
+  });
+
+  test('sizeGemmaContext rounds up to the next power of two, never returns a value it did not fit', () => {
+    // Pick a passage long enough to need more than the floor but comfortably under the ceiling.
+    const midPassage = 'word '.repeat(3000); // ~15000 chars -> ~4286 estimated tokens
+    const sizing = sizeGemmaContext(midPassage);
+    expect(sizing.ok).toBe(true);
+    expect(sizing.numCtx! & (sizing.numCtx! - 1)).toBe(0); // power of two
+    expect(sizing.numCtx!).toBeGreaterThanOrEqual(sizing.needed);
   });
 });
