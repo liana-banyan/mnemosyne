@@ -68,6 +68,9 @@
 // property). On qid 98 this derivation reproduces the Founder's own wording closely enough that
 // the live proof reaches the same result his hand-worked run did (see this ticket's return).
 
+import os from 'node:os';
+import httpModule from 'node:http';
+import httpsModule from 'node:https';
 import { avgOptionWordCount, registerMethod } from '../method_registry';
 import type { LianaMethod, MethodQuestionInput, MethodRunContext, ShapeTestResult } from '../method_registry';
 import type {
@@ -76,9 +79,89 @@ import type {
   LianaTerminalOutcome,
 } from '../../../shared/liana_cycle/liana_terminal_types';
 import { loadRegisterGate } from '../register_gate_loader';
+// D-BP164-M0-068/BISHOP/M0/seg-cu -- unified LLM/token cost leg. See cost_instrument.ts's own
+// header for the full finding (SEG-CI, D-BP164-M0-057): the production cost instrument never
+// measured a single LLM token before this ticket. gemmaExtract() below is the one real Ollama
+// call site reachable from runLianaCycleQuestion(); this import wires it into the SAME per-run
+// ledger the Google leg already populates (a separate, clearly-labeled leg, never folded in).
+import { recordLlmCall } from '../cost_instrument';
 
 const OLLAMA_API_BASE = process.env.OLLAMA_API_BASE ?? 'http://127.0.0.1:11434';
 const MODEL = process.env.CASCADE_MODEL ?? 'gemma4:12b';
+
+// D-BP164-M0-068 -- PIN BY DIGEST, NEVER BY NAME (standing order, real discrepancy caught this
+// session: on this machine, `gemma4:12b` is digest `4eb23ef187e2` and `gemma2:2b` is
+// `8ccf136fdd52` -- a tag can be repointed at different weights without the tag string itself
+// changing). Resolved from Ollama's own `/api/tags` listing (the SAME endpoint
+// ollama_adapter.py's `list_models()` already uses, librarian-mcp/r10_cross_vendor), memoized
+// per (process, model) pair -- including a failed resolution, so an unreachable Ollama daemon
+// does not retry a doomed network call on every single gemmaExtract() invocation. Read-only,
+// never guessed: returns null, not a fabricated digest, on any failure.
+//
+// DELIBERATELY node:http/node:https, NOT the global `fetch()` gemmaExtract()'s own /api/generate
+// call above uses. MEASURED, not guessed: this file's own pre-existing test suite (every
+// classify_cascade.*.test.ts sibling with a `queuedFetch()`-style helper -- named_set_recall,
+// invalid_draw, repeated_draws, completion_follow_up, and others) replaces `global.fetch` with a
+// STATEFUL queue that pops exactly one pre-scripted response per call, asserting call COUNT and
+// call ORDER against real /api/generate traffic only -- it has no concept of a second endpoint. A
+// digest lookup routed through that same `fetch()` symbol was tried first and MEASURED to
+// silently consume one queued response meant for a real extraction call, shifting every
+// subsequent response by one and producing exactly the failure class this comment now prevents
+// (9 pre-existing test files broke: `npx vitest run src/main/liana_cycle/methods/` regressed from
+// 1 pre-existing failure to 10 before this fix, 1 after -- see this ticket's own work receipt for
+// the full before/after count). Routing the digest lookup through Node's own http/https client
+// instead means it is invisible to every `global.fetch` mock in this codebase, present and future,
+// without requiring any change to those ~20 pre-existing test files.
+let cachedGemmaModelDigest: { model: string; digest: string | null } | null = null;
+export async function resolveGemmaModelDigest(model: string): Promise<string | null> {
+  if (cachedGemmaModelDigest && cachedGemmaModelDigest.model === model) {
+    return cachedGemmaModelDigest.digest;
+  }
+  try {
+    const digest = await new Promise<string | null>((resolve) => {
+      let url: URL;
+      try {
+        url = new URL('/api/tags', OLLAMA_API_BASE);
+      } catch {
+        resolve(null);
+        return;
+      }
+      const transport: typeof httpModule | typeof httpsModule = url.protocol === 'https:' ? httpsModule : httpModule;
+      const req = transport.get(url, { timeout: 5_000 }, (res) => {
+        if ((res.statusCode ?? 0) >= 400) {
+          res.resume();
+          resolve(null);
+          return;
+        }
+        let body = '';
+        res.setEncoding('utf-8');
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(body) as { models?: Array<{ name?: string; digest?: string }> };
+            const found = (j.models ?? []).find((m) => m.name === model);
+            resolve(typeof found?.digest === 'string' ? found.digest : null);
+          } catch {
+            resolve(null);
+          }
+        });
+      });
+      req.on('timeout', () => req.destroy());
+      req.on('error', () => resolve(null));
+    });
+    cachedGemmaModelDigest = { model, digest };
+    return digest;
+  } catch {
+    cachedGemmaModelDigest = { model, digest: null };
+    return null;
+  }
+}
+/** Test-only escape hatch: clears the digest memo so a test that swaps global.fetch between
+ *  cases is not silently served a stale cached digest from an earlier case. Production code never
+ *  calls this. */
+export function _resetGemmaModelDigestCacheForTests(): void {
+  cachedGemmaModelDigest = null;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -453,6 +536,118 @@ export async function googleBlocks(
 // a failure of this function at all -- it is a SUCCESSFUL parse whose fields happen to be null/empty,
 // so this function returns the parsed object exactly as before; a caller distinguishes it from every
 // failure above by the simple fact that gemmaExtract() returned non-null.
+//
+// D-BP162-M0-039/BISHOP-SEG/S39/seg-numctx-ceiling, ADDITIVE, a FIFTH cause -- 'ceiling-exceeded':
+//
+// MEASURED DEFECT this closes: gemmaExtract() never set `num_ctx` in the Ollama request options.
+// Ollama's own scheduler picks a VRAM-based default when the field is absent -- this machine's own
+// server.log records it explicitly: `msg="vram-based default context" total_vram="15.9 GiB"
+// default_num_ctx=4096`. Every prompt (instruction + passage + shape template) built by this
+// function is silently truncated to fit inside that 4096-token window with NO signal to the caller
+// -- the exact mechanism behind BP161's "confident, fluent summary of 14% of a document."
+//
+// THE FIX, per Founder ruling ("change it to NOT truncate... do you think 20x?") as narrowed by
+// Bishop's counter-ruling (NOT a fixed multiplier -- VRAM scales with context, and a fixed 20x
+// (81920) risked being itself a contributor to a live-suspect 9x throughput regression on this
+// same hardware): SIZE `num_ctx` TO THE ESTIMATED PROMPT, WITH A HARD CEILING, AND REFUSE RATHER
+// THAN TRUNCATE.
+//
+//   1. ESTIMATE: `estimateGemmaPromptTokens()` below reuses this estate's own existing convention
+//      -- `Math.ceil(chars / 3.5)`, the exact formula `estimateTokens()` in
+//      LianaBanyanPlatform\BISHOP_DROPZONE\MIC_CHANNEL\mic_channel_missive.js uses (that file's own
+//      comment calls it "deliberately conservative"). No second estimator invented.
+//   2. BUDGET: the estimate must cover the FULL context window Ollama allocates for this call --
+//      input prompt AND the model's own output -- so the budget is
+//      promptTokens + GEMMA_NUM_PREDICT (the num_predict this function already sends, 2048) +
+//      GEMMA_NUM_CTX_SAFETY_TOKENS (a fixed template/special-token buffer). Rounded UP to the next
+//      power of two (llama.cpp's own natural context-window boundaries), floored at
+//      GEMMA_NUM_CTX_FLOOR (4096, Ollama's own current default -- never smaller than what every
+//      call already silently got before this fix).
+//   3. CEILING, MEASURED not guessed (this ticket, this machine's Ollama server.log, ROCm/AMD RX
+//      9070 XT -- note Windows' own WMI AdapterRAM figure for this card reads ~4 GiB, a known WMI
+//      32-bit-field limitation; Ollama's own live ROCm probe, `total_vram="15.9 GiB"`, is the
+//      authoritative number and is what this ceiling is built from):
+//        num_ctx=16384   -> predicted  8.3 GiB  (fits, measured twice)
+//        num_ctx=32768   -> predicted  9.0 GiB  (fits, measured three times) -- CHOSEN CEILING
+//        num_ctx=131072  -> predicted 12.5 GiB  ("predicted to exceed available memory, evicting"
+//                            -- loads only by evicting a co-resident model; exactly the kind of
+//                            memory-pressure contention the 9x-slowdown investigation (6.2 tok/sec
+//                            measured today vs BP160's 56-57 on identical hardware) names as a live
+//                            suspect -- rejected as the ceiling for that reason, not merely because
+//                            it is larger.
+//        num_ctx=262144  -> predicted 18.1 GiB  (n_ctx_train, this model's own architectural max)
+//                            -- EXCEEDS the measured 15.9 GiB total outright ("cannot meet free
+//                            memory target of 1206 MiB, need to reduce device memory by 180 MiB").
+//                            Confirmed unfit, not merely undesirable.
+//      GEMMA_NUM_CTX_CEILING = 32768 leaves ~6.9 GiB of the measured 15.9 GiB free for the
+//      co-resident nomic-embed-text model and OS/driver overhead -- comfortably inside the fitting
+//      region, nowhere near the eviction/overflow boundary. This is 8x the current silent 4096
+//      default (not the Founder's floated 20x/81920 -- Bishop's ruling, above, is why).
+//   4. REFUSE, NEVER TRUNCATE: `sizeGemmaContext()` returns `{ ok: false, ... }` when the budget
+//      exceeds GEMMA_NUM_CTX_CEILING. gemmaExtract() checks this BEFORE the `fetch()` call below --
+//      the model is never invoked, no request is sent, and the refusal is logged loudly
+//      (console.error) naming the estimate, the ceiling, and the overage, then returns null with
+//      `rawOut.failureCause = 'ceiling-exceeded'` -- a fifth, distinctly-named cause alongside the
+//      four above, never conflated with an ordinary extraction failure. This mirrors
+//      `validateCelpane()`/`validateMissive()` (mic_channel_missive.js), which refuses malformed
+//      traffic with a named reason rather than silently trimming it to fit.
+//   5. LOGGED ON EVERY CALL, not just refusals: a successful sizing also logs (console.log) the
+//      chosen `num_ctx` and the token estimate that produced it, so truncation risk stays visible
+//      instead of silent -- see the two `console.log`/`console.error` call sites inside
+//      gemmaExtract() below.
+
+/** Same estimator convention as mic_channel_missive.js's `estimateTokens()`
+ *  (LianaBanyanPlatform\BISHOP_DROPZONE\MIC_CHANNEL\mic_channel_missive.js, line ~137-140):
+ *  `Math.ceil(chars / 3.5)`. Deliberately conservative (over-estimates rather than under), reused
+ *  verbatim rather than inventing a second estimator for this same estate. */
+export function estimateGemmaPromptTokens(text: string): number {
+  return Math.ceil(text.length / 3.5);
+}
+
+// D-BP153-034/D-BP154-033's own measured num_predict (see gemmaExtract()'s request body below for
+// the full measurement history) -- pulled out to a named constant so the context budget below and
+// the request body stay in sync by construction, never two numbers that can drift apart.
+export const GEMMA_NUM_PREDICT = 2048;
+
+// Fixed buffer for chat-template/BOS/special-token overhead the raw chars/3.5 estimate does not
+// see (the estimate covers the literal prompt text only). Small and constant, not a second
+// tolerance on the ceiling itself.
+export const GEMMA_NUM_CTX_SAFETY_TOKENS = 256;
+
+// Never smaller than Ollama's own current vram-based default (see the ticket comment above) -- this
+// fix must never make num_ctx SMALLER than what every call already silently received before it.
+export const GEMMA_NUM_CTX_FLOOR = 4096;
+
+// MEASURED hard ceiling -- see the ticket comment above for the four data points this was chosen
+// from (16384/32768 fit with headroom; 131072 fits only by evicting a co-resident model; 262144
+// measured to exceed total VRAM outright).
+export const GEMMA_NUM_CTX_CEILING = 32768;
+
+export interface GemmaContextSizing {
+  ok: boolean;
+  promptTokens: number;
+  needed: number;
+  numCtx?: number;
+  ceiling?: number;
+  overage?: number;
+}
+
+/** Sizes `num_ctx` to the estimated prompt (+ output reserve + safety buffer), rounded up to the
+ *  next power of two, floored at GEMMA_NUM_CTX_FLOOR. Returns `{ ok: false }` (never a value) when
+ *  the budget exceeds GEMMA_NUM_CTX_CEILING -- the caller (gemmaExtract(), below) must refuse the
+ *  call rather than send a request that would silently truncate. Pure and synchronous: no network,
+ *  no side effects, so it is trivially unit-testable on its own (see this file's own
+ *  comparative_cascade.test.ts / comparative_cascade.gemma_extract_failure_causes.test.ts). */
+export function sizeGemmaContext(promptText: string): GemmaContextSizing {
+  const promptTokens = estimateGemmaPromptTokens(promptText);
+  const needed = promptTokens + GEMMA_NUM_PREDICT + GEMMA_NUM_CTX_SAFETY_TOKENS;
+  if (needed > GEMMA_NUM_CTX_CEILING) {
+    return { ok: false, promptTokens, needed, ceiling: GEMMA_NUM_CTX_CEILING, overage: needed - GEMMA_NUM_CTX_CEILING };
+  }
+  let numCtx = GEMMA_NUM_CTX_FLOOR;
+  while (numCtx < needed) numCtx *= 2;
+  return { ok: true, promptTokens, needed, numCtx };
+}
 
 /** D-BP154-033, module-private, used only by gemmaExtract()'s own fallback path (see that
  *  function's own comment for the live-measured defect this exists to handle). Scans `text` for
@@ -503,11 +698,25 @@ export async function gemmaExtract(
   // genuinely empty extraction) and on a truncated read (that case already has its own signal).
   // Optional and additive, same discipline as `truncated`: every existing caller that does not read
   // these two fields compiles and behaves byte-identically to before this ticket.
+  // D-BP162-M0-039, ADDITIVE: `'ceiling-exceeded'` is a FIFTH failureCause -- see this file's own
+  // "D-BP162-M0-039" ticket comment above sizeGemmaContext() for the full rationale. Set ONLY when
+  // the estimated prompt would not fit inside GEMMA_NUM_CTX_CEILING; the round trip is never
+  // attempted in that case (no fetch(), no model call). Optional and additive, same discipline as
+  // every field above it.
+  // D-BP164-M0-068, ADDITIVE: `costRecord` is set on every real Ollama round trip this call
+  // makes (ok or not -- same "every real call, ok or not" discipline as the Google leg), mirroring
+  // `truncated`/`failureCause` above: an optional out-param, never a return-type change, so every
+  // existing caller that does not read this field compiles and behaves byte-identically. Also
+  // always pushed into cost_instrument.ts's own per-run AsyncLocalStorage ledger (recordLlmCall())
+  // regardless of whether a caller reads rawOut at all -- rawOut.costRecord exists so a caller
+  // that does not go through runLianaCycleQuestion()'s ledger (a direct unit test, a future
+  // standalone script) can still see the same record without reaching into module-private state.
   rawOut?: {
     text?: string;
     truncated?: boolean;
-    failureCause?: 'transport' | 'http-error' | 'parse-error';
+    failureCause?: 'transport' | 'http-error' | 'parse-error' | 'ceiling-exceeded';
     failureDetail?: string;
+    costRecord?: import('../cost_instrument').LlmCallCostRecord;
   },
 ): Promise<Record<string, unknown> | null> {
   const prompt = `Read the passage and report only what it states. Do not reason about which answer is correct. Do not choose between options.
@@ -520,6 +729,34 @@ TASK: ${instruction}
 Return ONLY JSON in this shape, no prose, no fence:
 ${shape}
 Use null where the passage does not state it. Never guess.`;
+
+  // D-BP162-M0-039 -- SIZE num_ctx TO THE ESTIMATED PROMPT, WITH A HARD CEILING, AND REFUSE RATHER
+  // THAN TRUNCATE. See the ticket comment above sizeGemmaContext() for the full measurement and
+  // rationale. Checked BEFORE the network try/catch below -- a refusal never calls fetch() at all.
+  const sizing = sizeGemmaContext(prompt);
+  if (!sizing.ok) {
+    console.error(
+      `[gemmaExtract] REFUSED -- estimated prompt ${sizing.promptTokens} tokens ` +
+      `(+ ${GEMMA_NUM_PREDICT} output reserve + ${GEMMA_NUM_CTX_SAFETY_TOKENS} safety = ${sizing.needed} needed) ` +
+      `exceeds the ${sizing.ceiling}-token num_ctx ceiling by ${sizing.overage} tokens -- ` +
+      `not calling the model, refusing rather than silently truncating (D-BP162-M0-039).`,
+    );
+    if (rawOut) {
+      rawOut.failureCause = 'ceiling-exceeded';
+      rawOut.failureDetail =
+        `estimated ${sizing.promptTokens} prompt tokens (needed ${sizing.needed} with output reserve ` +
+        `and safety buffer) exceeds the ${sizing.ceiling}-token ceiling by ${sizing.overage} tokens`;
+    }
+    return null;
+  }
+  console.log(`[gemmaExtract] num_ctx=${sizing.numCtx} (estimated prompt ${sizing.promptTokens} tokens, needed ${sizing.needed})`);
+
+  // D-BP164-M0-068 -- timing captured around the SAME fetch() this function already makes, no new
+  // network call. ts_start/t0 are taken here (after the ceiling-exceeded refusal above, which
+  // never calls fetch() at all and therefore is correctly never recorded as a "real call").
+  const llmTsStart = nowIso();
+  const llmT0 = Date.now();
+
   let res: Response;
   try {
     const controller = new AbortController();
@@ -558,7 +795,13 @@ Use null where the passage does not state it. Never guess.`;
       // live failure; both fixes
       // are required together, and this comment names that plainly rather than claiming this one
       // number was the whole story.
-      body: JSON.stringify({ model: MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: 2048 } }),
+      //
+      // D-BP162-M0-039 -- num_ctx ADDED, was previously ABSENT (see this file's own ticket comment
+      // above sizeGemmaContext()). `sizing.numCtx` is computed just above from this exact `prompt`
+      // string, sized to fit it plus GEMMA_NUM_PREDICT plus a safety buffer, capped at
+      // GEMMA_NUM_CTX_CEILING (32768, VRAM-measured) -- never Ollama's silent 4096 VRAM-based
+      // default this prompt would otherwise have been truncated into.
+      body: JSON.stringify({ model: MODEL, prompt, stream: false, think: false, options: { temperature: 0, num_predict: GEMMA_NUM_PREDICT, num_ctx: sizing.numCtx } }),
       signal: controller.signal,
     }).finally(() => clearTimeout(timeout));
   } catch (err) {
@@ -567,6 +810,23 @@ Use null where the passage does not state it. Never guess.`;
     if (rawOut) {
       rawOut.failureCause = 'transport';
       rawOut.failureDetail = err instanceof Error ? err.message : String(err);
+    }
+    // D-BP164-M0-068 -- a transport failure IS a real call attempt (it spent latency dialing
+    // Ollama and failing), so it is recorded, same "every real call, ok or not" discipline the
+    // Google leg follows for a thrown askGoogle call. No token counts are possible -- there was
+    // no HTTP response to read them from -- so tokens.measured stays honestly false, never guessed.
+    {
+      const detail = err instanceof Error ? err.message : String(err);
+      const costRecord = recordLlmCall({
+        model: MODEL,
+        modelDigest: await resolveGemmaModelDigest(MODEL),
+        machineId: os.hostname(),
+        ts_start: llmTsStart,
+        ts_end: nowIso(),
+        latency_ms: Date.now() - llmT0,
+        tokens: { measured: false, reason: `transport failure, no HTTP response received: ${detail}` },
+      });
+      if (rawOut) rawOut.costRecord = costRecord;
     }
     return null;
   }
@@ -589,10 +849,54 @@ Use null where the passage does not state it. Never guess.`;
       rawOut.failureCause = 'http-error';
       rawOut.failureDetail = `HTTP ${res.status}`;
     }
+    // D-BP164-M0-068 -- the round trip completed (an HTTP response came back), but an error status
+    // carries no usage data in Ollama's own API -- tokens.measured stays false, named, never a
+    // guessed zero.
+    {
+      const costRecord = recordLlmCall({
+        model: MODEL,
+        modelDigest: await resolveGemmaModelDigest(MODEL),
+        machineId: os.hostname(),
+        ts_start: llmTsStart,
+        ts_end: nowIso(),
+        latency_ms: Date.now() - llmT0,
+        tokens: { measured: false, reason: `HTTP ${res.status} error response -- Ollama does not report prompt_eval_count/eval_count on an error status` },
+      });
+      if (rawOut) rawOut.costRecord = costRecord;
+    }
     return null;
   }
+  // D-BP164-M0-068 -- tracks whether the cost record below has already been recorded for this
+  // call, so the outer catch (which also fires when res.json() itself throws, BEFORE that record
+  // is ever reached) never double-records the same round trip.
+  let llmCostRecorded = false;
   try {
-    const j = (await res.json()) as { response?: string; done_reason?: string };
+    const j = (await res.json()) as { response?: string; done_reason?: string; prompt_eval_count?: number; eval_count?: number };
+    // D-BP164-M0-068 -- REAL TOKEN COUNTS, read from the SAME parsed body already obtained above
+    // for the extraction text -- no second network call, no subprocess, no estimate. This is the
+    // exact technique librarian-mcp's ollama_adapter.py already proved (prompt_eval_count/
+    // eval_count on Ollama's own response), applied here for the first time in the production
+    // liana_cycle path. Recorded HERE, before the truncation/JSON.parse logic below runs, so a
+    // record exists regardless of whether the model's own JSON parses cleanly, is recovered by
+    // extractFirstBalancedJson(), or fails outright -- the ROUND TRIP happened and cost real
+    // tokens/latency either way; whether the extraction ITSELF succeeded is a separate fact
+    // (failureCause/truncated above), never conflated with whether the call was measured.
+    {
+      const hasCounts = typeof j.prompt_eval_count === 'number' && typeof j.eval_count === 'number';
+      const costRecord = recordLlmCall({
+        model: MODEL,
+        modelDigest: await resolveGemmaModelDigest(MODEL),
+        machineId: os.hostname(),
+        ts_start: llmTsStart,
+        ts_end: nowIso(),
+        latency_ms: Date.now() - llmT0,
+        tokens: hasCounts
+          ? { measured: true, input_tokens: j.prompt_eval_count as number, output_tokens: j.eval_count as number }
+          : { measured: false, reason: 'Ollama response body did not include prompt_eval_count/eval_count fields' },
+      });
+      if (rawOut) rawOut.costRecord = costRecord;
+      llmCostRecorded = true;
+    }
     const t = (j.response || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
     if (rawOut) rawOut.text = t;
     // D-BP153-034 -- TRUNCATION IS NOT SILENCE. Ollama reports `done_reason: 'length'` when the
@@ -633,6 +937,24 @@ Use null where the passage does not state it. Never guess.`;
     if (rawOut && rawOut.truncated !== true) {
       rawOut.failureCause = 'parse-error';
       rawOut.failureDetail = err instanceof Error ? err.message : String(err);
+    }
+    // D-BP164-M0-068 -- only reached, un-recorded, when res.json() itself threw (the body was not
+    // JSON at all) BEFORE this call's cost record above was ever built -- a real round trip still
+    // happened and cost real latency, so it is recorded here, once, guarded by llmCostRecorded so
+    // the JSON.parse(t)-threw path (which already recorded above, since `j` WAS obtained there)
+    // is never double-counted.
+    if (!llmCostRecorded) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const costRecord = recordLlmCall({
+        model: MODEL,
+        modelDigest: await resolveGemmaModelDigest(MODEL),
+        machineId: os.hostname(),
+        ts_start: llmTsStart,
+        ts_end: nowIso(),
+        latency_ms: Date.now() - llmT0,
+        tokens: { measured: false, reason: `res.json() itself threw, body was not JSON at all: ${detail}` },
+      });
+      if (rawOut) rawOut.costRecord = costRecord;
     }
     return null;
   }

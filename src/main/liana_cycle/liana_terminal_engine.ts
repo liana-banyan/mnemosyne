@@ -62,6 +62,15 @@ import { buildPriorAcquisitionOwnedPassages } from './evidence/cross_acquisition
 // called unconditionally, every run -- see runLianaCycleQuestion()'s own D-BP152-039 comment.
 import { runSurveyStage } from './survey_stage';
 import type { SurveyStageResult } from './survey_stage';
+// D-BP164-M0-046/BISHOP/M0/seg-survey-gating-and-cost-wiring. Two ADDITIVE modules: the cache
+// half of BP158's "cache forever" ruling (survey_cache.ts), and the production wiring of
+// D-BP159-009_cost_axis.js's own dollar-priced Google leg (cost_instrument.ts, D-BP164-M0-044's
+// own measured gap). See resolveSurveyEnabled() and the Survey call site below for the gate this
+// restores, and the runLianaCycleQuestion() outer wrapper below for the cost-ledger wiring.
+import { surveyCacheKey, safeDefaultSurveyCacheStore } from './survey_cache';
+import type { SurveyCacheStore } from './survey_cache';
+import { wrapAskGoogleWithCostInstrument, summarizeGoogleCostLedger, runWithLlmCostLedger, summarizeLlmCostLedger } from './cost_instrument';
+import type { GoogleCallCostRecord } from './cost_instrument';
 // D-BP152-016/BISHOP/seg-sc01-wire-and-score. Scores what Survey (immediately above) already
 // produced -- no new query, no model call, no altered control flow. REUSED, not forked: this is
 // the exact scoreSc01PivotTerms() built and committed at D-BP152-015 (f66c4386), unmodified.
@@ -199,6 +208,72 @@ function resolveAmbiguityQueryTransport(ambiguityQueryTransport: 'google' | 'gem
   if (ambiguityQueryTransport === 'google') return 'google';
   if (process.env.AMBIGUITY_QUERY_TRANSPORT === 'gemma') return 'gemma';
   return 'google';
+}
+
+// D-BP164-M0-046/BISHOP/M0/seg-survey-gating-and-cost-wiring -- THE GATE IS RESTORED, WITH THE
+// OPPOSITE DEFAULT FROM BEFORE. D-BP152-039 (FD-BP152-20/FD-BP152-09, "no modes and no flags")
+// made Survey run unconditionally and REMOVED the gate that used to sit here, not merely turned
+// it off. BP150's own ratified R-1 (canon_liana_methods_are_compositions_of_named_elements_
+// bp150.eblet.md): "Survey runs unconditionally, before method selection, and its output feeds
+// every shapeTest()." That is what D-BP152-039 built, correctly, per that ruling.
+//
+// BP158, LATER, after a REAL Google throttle at ~18 consecutive queries (canon_survey_sparingly_
+// cache_forever_bp158vault.eblet.md), reversed the SPIRIT of R-1 without anyone updating this
+// call site: Founder, verbatim, quoted in that canon: "I don't want to apply methods
+// indiscriminately to all the questions... AND we DON'T really need to, to denote all the
+// answers, before we apply." Tonight, BP164, restated live and even more directly: "I don't want
+// to automatically run survey, it uses google calls without purpose, and the Liana Cycle explains
+// this." THE LATER RULING GOVERNS -- this function implements BP158/BP164, not R-1's
+// "unconditionally", as the record now states it.
+//
+// D-BP164-M0-044 measured (and this ticket's own dispatch repeats): BP158's own text names WHAT
+// to cut (survey scope: "only the terms the current decision actually turns on") and orders
+// caching ("cache forever"), but it never states a precise, code-checkable CONDITION for "this
+// question does or does not need a live Survey call". Inventing one (e.g. "skip Survey when a
+// method is already known") was flagged unratified by the prior dispatch and is NOT invented
+// here either. What ships instead, exactly as this ticket's own order requires: the cache (see
+// survey_cache.ts, always consulted first, REGARDLESS of this flag -- a cache hit costs nothing,
+// so BP158's "sparingly" has no argument against reusing a free answer) plus this EXPLICIT
+// opt-in flag, DEFAULT OFF. The gating condition itself (when should a FRESH, uncached question
+// survey automatically) is left on the Founder's desk -- see this ticket's own return.
+//
+// `surveyEnabled` reuses the exact parameter this file has threaded end-to-end since D-BP151-026
+// under the name `contingencyOperatorSurvey` (renderer -> preload -> index.ts -> here) --
+// D-BP152-039 left it ACCEPTED-AND-IGNORED rather than delete it precisely so a future ticket
+// could revive it without touching every lockstep caller; this is that ticket. NO caller
+// (index.ts, preload.ts, LianaCycleTab.tsx, script_bridge.ts) needed to change: the parameter is
+// positional, and the one live caller (index.ts's 'liana-terminal-run' handler) already passes
+// whatever the renderer sends, which is `undefined` on every build (its own UI control was
+// removed D-BP152-012 and never rebuilt) -- so production gets the new default, OFF, for free.
+function resolveSurveyEnabled(surveyEnabled: boolean | undefined): boolean {
+  if (surveyEnabled === true) return true;
+  if (surveyEnabled === false) return false;
+  if (process.env.LIANA_SURVEY_ENABLED === '1') return true;
+  return false;
+}
+
+/** Empty, structurally-valid stand-ins for the four Survey sub-results, used ONLY on the
+ *  SKIPPED (opt-in flag OFF, no cache hit) path so every downstream reader of `surveyResult`
+ *  (demand derivation, SC-01 scoring) sees a real, honestly-labeled "nothing surveyed" value
+ *  instead of a crash or an undefined. Mirrors the EXACT shape survey_stage.ts's own runSurveyStage()
+ *  already uses for its own "SKIPPED" step3 case (FD-BP152-01/D-BP153-017) -- not a new pattern. */
+function buildSkippedSurveyResult(askText: string): SurveyStageResult {
+  const why = 'SURVEY SKIPPED -- the opt-in flag (surveyEnabled) is OFF and no cached answer exists for this '
+    + 'exact question (BP158/BP164: "I don\'t want to automatically run survey, it uses google calls without '
+    + 'purpose"). Zero Google calls were made. DEMAND falls through to the structural path or reports UNKNOWN, '
+    + 'exactly as it does on a live Survey run that resolves no term.';
+  return {
+    askText,
+    term: null,
+    termWhy: why,
+    step2: { term: null, nested: null, ambiguity: null, ambiguityNested: [], negationNamed: false, constraints: [], operation: null, thresholdQuestions: [], why },
+    step3: { perOption: null, grouping: null, why },
+    step4: { term: null, field: null, verified: false, why },
+    step6: { named: [], eliminated: [], eliminatedLetters: [], why },
+    askNegated: false,
+    neverAnswersTheQuestion: true,
+    why,
+  };
 }
 
 /** D-BP152-011/BISHOP/seg-splice-toggle -- WHICH OF THE THREE INPUTS ACTUALLY GOVERNED THIS RUN.
@@ -356,21 +431,21 @@ async function runLianaCycleQuestionInner(
    *  and behaving identically. Independent of `audible` above -- either, both, or neither may be
    *  armed; see stepped_audible.ts's header for what combining them does and does not change. */
   steppedAudible?: SteppedAudibleChannel | null,
-  /** D-BP152-039 REMOVAL, ATTRIBUTED (FD-BP152-20: "fix the gate properly so survey doesn't need
-   *  the env var"; FD-BP152-09: "no modes and no flags"). ACCEPTED-AND-IGNORED -- this parameter
-   *  is NO LONGER READ ANYWHERE IN THIS FUNCTION. Survey (Founder steps 2/3/4/6, survey_stage.ts)
-   *  now runs on EVERY call, unconditionally, and DEMAND is always derived from the surveyed ask
-   *  (demand_test.ts's determineDemandFromSurveyedAsk()/determineDemandFromOperationAnswer()/
-   *  determineDemandFromAmbiguityNested()), never from the old CUES-table `determineDemand()` path
-   *  that used to run when this was false/omitted -- that path is REMOVED, not merely unreached.
-   *  The parameter itself is kept, rather than deleted from the signature, because removing it
-   *  would require editing every caller in lockstep (index.ts's 'liana-terminal-run' handler,
-   *  preload.ts, amplify.d.ts, LianaCycleTab.tsx, and this file's own contingency-operator test),
-   *  several of them renderer files this ticket's own process-safety instruction says to avoid
-   *  touching without cause -- see this ticket's own return, "THINGS I NOTICED AND DID NOT DO".
-   *  Every existing caller keeps compiling and passing whatever it already passes; the value is
-   *  simply never consulted now. DISCLOSED REGRESSION RISK: turning Survey on for every run may
-   *  change results on questions that previously reached a method via the CUES table. */
+  /** D-BP164-M0-046 REVIVAL, ATTRIBUTED (BP158 + tonight's live BP164 restatement: "I don't want
+   *  to automatically run survey, it uses google calls without purpose"). NO LONGER ACCEPTED-AND-
+   *  IGNORED -- see resolveSurveyEnabled() (above in this file) for the gate this now drives.
+   *  `undefined`/omitted (every existing caller today -- the renderer control that used to set
+   *  this was removed D-BP152-012 and never rebuilt) or explicit `false` = Survey does NOT run a
+   *  fresh live query for this run; a CACHED prior answer for this exact question is still used
+   *  if one exists (survey_cache.ts, unconditional, BP158 "cache forever"). Explicit `true`, or
+   *  `LIANA_SURVEY_ENABLED=1`, re-arms the D-BP152-039 unconditional-per-run Survey behavior this
+   *  parameter used to be ignored under. DISCLOSED REGRESSION RISK, carried forward and reversed
+   *  in direction from D-BP152-039's own disclosure: every run that does NOT explicitly opt in
+   *  (which, as of this ticket, is every existing production caller) now derives DEMAND without
+   *  Survey's surveyed-ask/operation/ambiguity paths -- only the UNCHANGED structural path
+   *  (determineDemandFromQuestionStructure()) can still resolve a demand; every other question
+   *  reports DEMAND UNKNOWN honestly rather than fabricating one. This is the Founder's own
+   *  ordered tradeoff (fewer unwanted Google calls, more honest abstains), not a bug. */
   contingencyOperatorSurvey?: boolean,
   /** D-BP151-032, ADDITIVE/OPTIONAL. Only consulted when `contingencyOperatorSurvey` is on (SURVEY
    *  STEP 2's ambiguity query does not run at all otherwise). undefined = resolveAmbiguityQueryTransport()'s
@@ -407,6 +482,16 @@ async function runLianaCycleQuestionInner(
   // D-BP154-008, ADDITIVE/OPTIONAL, placed LAST -- see runLianaCycleQuestion()'s own D-BP154-008
   // comment on this same parameter, above, for the full ruling.
   currentAcquisitionId?: string,
+  /** D-BP164-M0-046, ADDITIVE/OPTIONAL, placed LAST -- same "no existing call site shifts
+   *  meaning" convention as currentAcquisitionId above. Undefined for every existing caller
+   *  (index.ts's IPC handler, every pre-existing test): the Survey call site below then
+   *  constructs the real, disk-persisted FileSurveyCacheStore itself (survey_cache.ts's own
+   *  defaultSurveyCacheFilePath(), lazily, so `electron.app` is never touched by a caller that
+   *  never reaches this branch). A caller that supplies its own store (every fixture test this
+   *  ticket adds) gets a fully isolated, disk-free cache -- no test can pollute or be polluted by
+   *  the real production cache file, and no test needs to mock `electron` merely to exercise the
+   *  cache-hit path. */
+  surveyCache?: SurveyCacheStore,
 ): Promise<LianaTerminalOutcome> {
   const trimmed = input.trim();
   const runMode = normalizeRunMode(mode);
@@ -614,14 +699,17 @@ async function runLianaCycleQuestionInner(
     // `ask_google`.
     await requestStepZeroPause(steppedAudible ?? null, steppedLog, step0Events, effectiveAskGoogle, emit, parsed.options);
 
-    // D-BP152-039 REMOVAL -- this used to branch on `contingencyOperatorSurveyOn` (Contingency
-    // Operator: Survey Splice), with an `else` running the untouched D-BP150-003 CUES-table path
-    // (`determineDemand(methodInput)`) when the gate was off. Per FD-BP152-20 ("fix the gate
-    // properly so survey doesn't need the env var") and FD-BP152-09 ("no modes and no flags"),
-    // SURVEY IS SIMPLY PART OF THE ACCEPTED SCRIPT: it runs on EVERY call, unconditionally, below
-    // -- the `else` branch (and the `determineDemand()` CUES-table call it made) is REMOVED, not
-    // merely unreached. DISCLOSED REGRESSION RISK: turning Survey on for every run may change
-    // results on questions that previously reached a method via the CUES table.
+    // D-BP164-M0-046 REVIVAL -- see resolveSurveyEnabled()'s own header (above in this file) for
+    // the full ruling this restores: BP150 R-1 (unconditional) was correct when built, BP158 and
+    // tonight's live BP164 restatement reversed its SPIRIT ("I don't want to automatically run
+    // survey, it uses google calls without purpose"), and this call site was never updated until
+    // now. Three paths below, in priority order: (1) a cached prior answer for this EXACT
+    // question is always checked first and reused for zero calls, regardless of the flag --
+    // BP158 "cache forever" has no argument against reusing a free answer; (2) the flag ON, no
+    // cache hit -- runs Survey live, exactly as D-BP152-039 built it, then caches the result; (3)
+    // the flag OFF (the default, and every existing production caller today), no cache hit --
+    // Survey is skipped, zero Google calls, DEMAND falls through to the unchanged structural path
+    // or reports UNKNOWN honestly.
     let demandResult: DemandResult;
     let surveyResult: SurveyStageResult;
     // D-BP152-016. Populated (or explicitly errored) below -- SC-01 scores FounderStep2Result,
@@ -630,66 +718,14 @@ async function runLianaCycleQuestionInner(
     // method-not-taught abstain, or a real verdict).
     let sc01Result: LianaSc01Result | null = null;
     let sc01ScoringError: string | null = null;
-    {
-      emit({
-        kind: 'stage',
-        text: '-> SURVEY -- Survey (Founder steps 2, 3, 4, 6) runs before method selection, and DEMAND is derived from the surveyed ask (FD-BP152-20/FD-BP152-09: Survey is part of the accepted script, no longer a gated splice)',
-        ts: nowIso(),
-      });
-      // Survey's own MethodRunContext. Reuses the SAME injected askGoogle by reference (raw, not
-      // wrapped by wrapAskGoogleWithAudible -- see this ticket's return, THINGS I NOTICED AND DID
-      // NOT DO, for why Call an Audible's per-call pause was not extended to cover Survey's own
-      // Google calls; that was not ordered here). wrapForSteppedAudible('survey', ...) below IS
-      // wired -- that is Part 3's own requirement, not an extra.
-      // D-BP152-044, ADDITIVE: `askConversationalAuthority` threaded straight through (undefined on
-      // every caller that omits it -- byte-identical then). NOTE: when Stepped Audible is ON for
-      // survey, wrapForSteppedAudible() below returns a NEW ctx object carrying only
-      // { askGoogle, emit } (stepped_audible.ts, this ticket's own FORBIDDEN "pause plumbing", not
-      // touched) -- on that combination the two META-questions honestly fall back to Google, same
-      // as if this were never wired, rather than crashing or fabricating an authority.
-      // FD-BP153-04, ADDITIVE: an honest empty accessor, not omitted -- Survey is about to fetch
-      // its own first passage, so nothing is owned yet at this point in the run. Present (not
-      // undefined) so a reader of this ctx does not need to guess whether ownedPassages is
-      // supported here at all; see MethodRunContext.ownedPassages's own doc comment
-      // (method_registry.ts) for the full ruling this field implements.
-      const surveyCtx: MethodRunContext = {
-        askGoogle: effectiveAskGoogle, emit, askConversationalAuthority, ownedPassages: () => [],
-      };
-      const surveyStepWrap = wrapForSteppedAudible('survey', surveyCtx, steppedAudible ?? null, steppedLog);
-      if (steppedAudible) {
-        const surveyStepDefs = buildUpfrontStepList('survey');
-        if (surveyStepDefs) {
-          emit({ kind: 'stage', text: `-> STEPPED AUDIBLE -- SURVEY: ${surveyStepDefs.length} step(s) this phase will execute, listed before the first one starts`, ts: nowIso() });
-          surveyStepDefs.forEach((d, i) => {
-            const head = d.attribution === 'ATTRIBUTED'
-              ? `step ${i + 1}/${surveyStepDefs.length}: ${d.codeLabel}  ->  Founder step ${d.founderStepNumber}, verbatim: "${d.founderWords}"  (${d.founderSource})`
-              : `step ${i + 1}/${surveyStepDefs.length}: ${d.codeLabel}  ->  UNATTRIBUTED -- TARE, no Founder order`;
-            note(emit, `   ${head}`);
-          });
-        }
-      }
-      surveyResult = await runSurveyStage(parsed.question, parsed.options, surveyStepWrap.ctx, {
-        // D-BP151-032: already-resolved value (param + env override), passed straight through --
-        // survey_stage.ts invents no default of its own beyond matching this same polarity.
-        ambiguityQueryTransport: resolvedAmbiguityQueryTransport,
-      });
+    // D-BP152-016/BISHOP/seg-sc01-wire-and-score, EXTRACTED (unchanged logic, now callable from
+    // both the cache-hit and the live-survey path below, so it is not duplicated). SC-01 scores
+    // whatever FounderStep2Result this run ended up with -- no new query, no model call, byte-
+    // identical whether scoring succeeds, finds nothing, or throws. GATED so a throw here can
+    // never abort the run: "A scorer that can kill a run is worse than no scorer" (dispatch).
+    const scoreSc01ForThisRun = (step2: SurveyStageResult['step2']): void => {
       try {
-        await surveyStepWrap.finish();
-      } catch (e) {
-        if (e instanceof SteppedAudibleAbandoned) {
-          note(emit, '   STEPPED AUDIBLE abandoned during SURVEY -- Survey\'s own findings above are unaffected; every step response up to and including this one is kept.');
-        } else {
-          throw e;
-        }
-      }
-      // D-BP152-016/BISHOP/seg-sc01-wire-and-score. SC-01 scores what Survey (immediately above)
-      // already produced -- no new query, no model call, control flow below this block is
-      // byte-identical whether scoring succeeds, finds nothing, or throws. GATED so a throw here
-      // can never abort the run: "A scorer that can kill a run is worse than no scorer" (dispatch).
-      // Emitted via the SAME emit()/note() mechanism every other transcript line uses, so it lands
-      // in the run receipt automatically -- no new receipt field written from here, no new file.
-      try {
-        const scored = scoreSc01PivotTerms(parsed.qid ?? -1, parsed.question, surveyResult.step2);
+        const scored = scoreSc01PivotTerms(parsed.qid ?? -1, parsed.question, step2);
         sc01Result = scored;
         emit({ kind: 'result', text: `SC-01 (pivot terms named and defined): ${scored.why}`, ts: nowIso() });
         for (const t of scored.terms) {
@@ -711,6 +747,96 @@ async function runLianaCycleQuestionInner(
       } catch (e) {
         sc01ScoringError = e instanceof Error ? e.message : String(e);
         emit({ kind: 'note', text: `   SC-01 SCORING ERRORED (non-fatal, run continues unaffected): ${sc01ScoringError}`, ts: nowIso() });
+      }
+    };
+    {
+      const surveyEnabledResolved = resolveSurveyEnabled(contingencyOperatorSurvey);
+      const cacheKey = surveyCacheKey(parsed.question, parsed.options);
+      // Lazily constructed, and SAFE outside a real Electron process (safeDefaultSurveyCacheStore()
+      // falls back to a no-op NullSurveyCacheStore rather than throwing -- see its own header for
+      // the exact crash this guard fixes, measured against this codebase's own pre-existing tests).
+      const cacheStore: SurveyCacheStore = surveyCache ?? safeDefaultSurveyCacheStore();
+      const cachedSurvey = await cacheStore.get(cacheKey);
+      if (cachedSurvey) {
+        // ── PATH 1: CACHE HIT -- zero Google calls, regardless of surveyEnabledResolved ────────
+        surveyResult = cachedSurvey;
+        emit({
+          kind: 'stage',
+          text: '-> SURVEY -- CACHE HIT (BP158 "cache forever": persist every denotation obtained, resolve from the store on a '
+            + 'second encounter, zero network cost) -- reusing a prior surveyed answer for this exact question, no Google call made',
+          ts: nowIso(),
+        });
+        note(emit, `   cache key (sha256 of normalized question+options): ${cacheKey}`);
+        scoreSc01ForThisRun(surveyResult.step2);
+      } else if (surveyEnabledResolved) {
+        // ── PATH 2: LIVE SURVEY (opt-in flag ON) -- exactly the D-BP152-039 unconditional body ──
+        emit({
+          kind: 'stage',
+          text: '-> SURVEY -- Survey (Founder steps 2, 3, 4, 6) runs before method selection, and DEMAND is derived from the surveyed ask (surveyEnabled=true, no cache hit for this question -- BP164 opt-in path)',
+          ts: nowIso(),
+        });
+        // Survey's own MethodRunContext. Reuses the SAME injected askGoogle by reference (raw, not
+        // wrapped by wrapAskGoogleWithAudible -- see this ticket's return, THINGS I NOTICED AND DID
+        // NOT DO, for why Call an Audible's per-call pause was not extended to cover Survey's own
+        // Google calls; that was not ordered here). wrapForSteppedAudible('survey', ...) below IS
+        // wired -- that is Part 3's own requirement, not an extra.
+        // D-BP152-044, ADDITIVE: `askConversationalAuthority` threaded straight through (undefined on
+        // every caller that omits it -- byte-identical then). NOTE: when Stepped Audible is ON for
+        // survey, wrapForSteppedAudible() below returns a NEW ctx object carrying only
+        // { askGoogle, emit } (stepped_audible.ts, this ticket's own FORBIDDEN "pause plumbing", not
+        // touched) -- on that combination the two META-questions honestly fall back to Google, same
+        // as if this were never wired, rather than crashing or fabricating an authority.
+        // FD-BP153-04, ADDITIVE: an honest empty accessor, not omitted -- Survey is about to fetch
+        // its own first passage, so nothing is owned yet at this point in the run. Present (not
+        // undefined) so a reader of this ctx does not need to guess whether ownedPassages is
+        // supported here at all; see MethodRunContext.ownedPassages's own doc comment
+        // (method_registry.ts) for the full ruling this field implements.
+        const surveyCtx: MethodRunContext = {
+          askGoogle: effectiveAskGoogle, emit, askConversationalAuthority, ownedPassages: () => [],
+        };
+        const surveyStepWrap = wrapForSteppedAudible('survey', surveyCtx, steppedAudible ?? null, steppedLog);
+        if (steppedAudible) {
+          const surveyStepDefs = buildUpfrontStepList('survey');
+          if (surveyStepDefs) {
+            emit({ kind: 'stage', text: `-> STEPPED AUDIBLE -- SURVEY: ${surveyStepDefs.length} step(s) this phase will execute, listed before the first one starts`, ts: nowIso() });
+            surveyStepDefs.forEach((d, i) => {
+              const head = d.attribution === 'ATTRIBUTED'
+                ? `step ${i + 1}/${surveyStepDefs.length}: ${d.codeLabel}  ->  Founder step ${d.founderStepNumber}, verbatim: "${d.founderWords}"  (${d.founderSource})`
+                : `step ${i + 1}/${surveyStepDefs.length}: ${d.codeLabel}  ->  UNATTRIBUTED -- TARE, no Founder order`;
+              note(emit, `   ${head}`);
+            });
+          }
+        }
+        surveyResult = await runSurveyStage(parsed.question, parsed.options, surveyStepWrap.ctx, {
+          // D-BP151-032: already-resolved value (param + env override), passed straight through --
+          // survey_stage.ts invents no default of its own beyond matching this same polarity.
+          ambiguityQueryTransport: resolvedAmbiguityQueryTransport,
+        });
+        try {
+          await surveyStepWrap.finish();
+        } catch (e) {
+          if (e instanceof SteppedAudibleAbandoned) {
+            note(emit, '   STEPPED AUDIBLE abandoned during SURVEY -- Survey\'s own findings above are unaffected; every step response up to and including this one is kept.');
+          } else {
+            throw e;
+          }
+        }
+        // BP158 "cache forever" -- persist this real answer so the NEXT run with this exact
+        // question (cache-hit path above) never pays for it again. Non-fatal on any disk failure
+        // (FileSurveyCacheStore's own rule); a cache-write failure never affects this run's own
+        // result.
+        await cacheStore.set(cacheKey, parsed.question, surveyResult);
+        scoreSc01ForThisRun(surveyResult.step2);
+      } else {
+        // ── PATH 3: SKIPPED -- opt-in flag OFF (the default), no cache hit -- zero Google calls ──
+        surveyResult = buildSkippedSurveyResult(parsed.question);
+        emit({
+          kind: 'stage',
+          text: '-> SURVEY -- SKIPPED (surveyEnabled is OFF, the default -- BP158/BP164, Founder verbatim: "I don\'t want to '
+            + 'automatically run survey, it uses google calls without purpose") -- zero Google calls made for this question',
+          ts: nowIso(),
+        });
+        scoreSc01ForThisRun(surveyResult.step2);
       }
       // D-BP152-005, PART 2 -- the operation query (FD-BP152-05) is the DIRECT signal for exactly
       // this value: Founder, BP152, verbatim, quoted at askOperation()'s own header
@@ -1098,10 +1224,34 @@ export async function runLianaCycleQuestion(
   // nothing beyond what qid and the query already select, never a crash or a behavior change on
   // that path.
   currentAcquisitionId?: string,
+  // D-BP164-M0-046, ADDITIVE/OPTIONAL, placed LAST -- passthrough only, so a caller (every
+  // fixture test this ticket adds) can inject an isolated cache store; see runLianaCycleQuestionInner's
+  // own doc comment on this same parameter for the full ruling.
+  surveyCache?: SurveyCacheStore,
 ): Promise<LianaTerminalOutcome> {
-  const outcome = await runLianaCycleQuestionInner(
+  // D-BP164-M0-046, ADDITIVE, ALWAYS ON -- unlike `contingencyOperatorSurvey`/`mode` above, this
+  // is never gated: it only OBSERVES what askGoogle already does, never changes what it returns
+  // or how it behaves (see cost_instrument.ts's own header). Wrapping the RAW askGoogle HERE,
+  // before Inner (and every decorator Inner itself layers on top -- Assisted Mode, Audible,
+  // Survey's own ctx) ever sees it, is the SAME "one injection point" principle D-BP152-051
+  // already established at this exact call site: it counts every real call this run makes
+  // anywhere (every method, Survey, Step 0's own "ask Google this") exactly once, at its true
+  // source, regardless of which OTHER decorator wraps it further inside Inner.
+  const googleCostLedger: GoogleCallCostRecord[] = [];
+  const costInstrumentedAskGoogle = wrapAskGoogleWithCostInstrument(askGoogle, (r) => googleCostLedger.push(r));
+  // D-BP164-M0-068/BISHOP/M0/seg-cu -- SAME "one wrapping point, ALWAYS ON" principle as the
+  // Google leg above, applied to the LLM/token leg. runWithLlmCostLedger() gives THIS single call
+  // to runLianaCycleQuestionInner() its own isolated AsyncLocalStorage ledger scope; every
+  // gemmaExtract() call anywhere underneath it (any method, any depth) pushes into that SAME scope
+  // via cost_instrument.ts's recordLlmCall(), with no parameter threading required through the
+  // methods/ctx layers in between. See cost_instrument.ts's own header for the full finding this
+  // closes (SEG-CI, D-BP164-M0-057: the production instrument never measured an LLM token before
+  // this ticket) and for why this is a SEPARATE, clearly-labeled leg rather than folded into
+  // costLedger/costSummary above -- Google search cost and LLM/token cost are two different real
+  // things, and neither one is silently absorbed into the other's numbers.
+  const { result: outcome, ledger: llmCostLedger } = await runWithLlmCostLedger(() => runLianaCycleQuestionInner(
     input,
-    askGoogle,
+    costInstrumentedAskGoogle,
     emit,
     audible,
     steppedAudible,
@@ -1111,6 +1261,20 @@ export async function runLianaCycleQuestion(
     mode,
     assistedChannel,
     currentAcquisitionId,
-  );
-  return { ...outcome, mode: normalizeRunMode(mode) };
+    surveyCache,
+  ));
+  // ALWAYS present (empty array/zero-call summary on a run that made no Google calls at all) --
+  // same "an override that leaves no trace makes the receipt a lie" rule `mode` above follows
+  // (FD-BP152-07), applied to cost accounting: a reader must never have to infer "zero calls"
+  // from the field's ABSENCE. llmCostLedger/llmCostSummary follow the identical convention,
+  // ALWAYS present, empty/zero on a run that made no real Ollama calls (e.g. ambiguityQueryTransport
+  // stayed 'google' the whole run, or no method reached gemmaExtract() at all).
+  return {
+    ...outcome,
+    mode: normalizeRunMode(mode),
+    costLedger: googleCostLedger,
+    costSummary: summarizeGoogleCostLedger(googleCostLedger),
+    llmCostLedger,
+    llmCostSummary: summarizeLlmCostLedger(llmCostLedger),
+  };
 }
