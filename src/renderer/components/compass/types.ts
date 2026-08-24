@@ -22,7 +22,11 @@ export type MoreSubView =
   | 'membership'
   | 'help'
   | 'power'
-  | 'authorizations';
+  | 'authorizations'
+  // D-M3004-023/BISHOP-M0/prove-it-button: additive-only new destination -- a separate
+  // surface from the existing "Prove It Now" (Proof tab), never a replacement for it. See
+  // compass/SwappableTerminalPanes.tsx's own header for the full rationale.
+  | 'terminal-panes';
 
 /** Single navigation callback threaded down through every Compass tab so the Ask home's
  *  quick-starts (Phase 3) can deep-link straight into a More sub-view instead of forcing a

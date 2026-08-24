@@ -32,6 +32,9 @@ import { DiagnosticModeTab } from '../DiagnosticModeTab';
 import { MeshTestTerminalTab } from '../MeshTestTerminalTab';
 import { PowerDiagnosticsPanel } from './PowerDiagnosticsPanel';
 import { AuthorizationsPanel } from './AuthorizationsPanel';
+// D-M3004-023/BISHOP-M0/prove-it-button: additive-only new destination, separate from the
+// existing "Prove It Now" (Proof tab) -- see that file's own header for the seam rationale.
+import { SwappableTerminalPanes } from './SwappableTerminalPanes';
 import type { MoreSubView } from './types';
 
 function HelpComposer(): React.ReactElement {
@@ -85,6 +88,9 @@ const MENU: MenuEntry[] = [
   // updates, mesh trust/peer verification, paid cloud escalation, Nexus authorities, and any
   // active benchmark/long-running task.
   { id: 'authorizations', icon: '🔐', label: 'Authorizations', desc: 'Permissions the app holds: updates, mesh trust, paid escalation, Nexus' },
+  // D-M3004-023/BISHOP-M0/prove-it-button: a separate, additive surface -- not a replacement
+  // for the existing "Prove It Now" (Proof tab), which is unmodified by this entry.
+  { id: 'terminal-panes', icon: '🖥️', label: 'Terminal Panes', desc: 'Swappable-role panes: run one proof question, watch the receipt JSON land live' },
 ];
 
 export interface MoreTabProps {
@@ -129,6 +135,7 @@ export function MoreTab({ subView, onSubViewChange, authState, currentMode, onMo
           {subView === 'help' && <HelpComposer />}
           {subView === 'power' && <PowerDiagnosticsPanel authState={authState} />}
           {subView === 'authorizations' && <AuthorizationsPanel onSubViewChange={onSubViewChange} />}
+          {subView === 'terminal-panes' && <SwappableTerminalPanes />}
         </div>
       </div>
     );

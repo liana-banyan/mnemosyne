@@ -124,11 +124,44 @@ function ProvenanceReceiptRow({ outcome }: { outcome: QuestionOutcome }): React.
   }
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginLeft: 16 }}>
-      {receipts.map((r, i) => (
-        <span key={i} style={{ fontSize: 9, color: r.verified ? '#6ee7b7' : '#facc15', fontFamily: 'monospace' }}>
-          [{r.source}{r.verified ? ' verified' : ' unverified'} hash:{r.contentHash.slice(0, 8)}]
-        </span>
-      ))}
+      {receipts.map((r, i) => {
+        // D-M3004-028: the click-to-open-source the Founder asked for. `provenanceUrl` has been
+        // carried on ProvenanceReceipt since BP137 Step 2 but was never rendered, so a receipt
+        // that HAD a source URL looked identical to one that did not. Receipts without a URL are
+        // rendered exactly as before -- same element, same styling, same text -- so nothing that
+        // ships today changes appearance or behaviour. Only the URL-bearing case gains the click.
+        const label = `[${r.source}${r.verified ? ' verified' : ' unverified'} hash:${r.contentHash.slice(0, 8)}]`;
+        const color = r.verified ? '#6ee7b7' : '#facc15';
+        if (!r.provenanceUrl) {
+          return (
+            <span key={i} style={{ fontSize: 9, color, fontFamily: 'monospace' }}>
+              {label}
+            </span>
+          );
+        }
+        return (
+          <button
+            key={i}
+            type="button"
+            onClick={() => window.amplify?.openExternal?.(r.provenanceUrl as string)}
+            title={`Open source: ${r.provenanceUrl}`}
+            style={{
+              fontSize: 9,
+              color,
+              fontFamily: 'monospace',
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              margin: 0,
+              cursor: 'pointer',
+              textDecoration: 'underline',
+              textUnderlineOffset: 2,
+            }}
+          >
+            {label}
+          </button>
+        );
+      })}
     </div>
   );
 }
