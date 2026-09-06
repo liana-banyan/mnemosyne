@@ -168,10 +168,13 @@ export async function runMMLUProConcordance(
             model,
             prompt,
             stream: false,
+            // D-BP200-M0-032: think MUST be a TOP-LEVEL field, not nested inside `options`.
+            // This was nested here and had NO EFFECT (live-verified elsewhere in this estate,
+            // BP134 canonical_pipeline.ts) -- moved to top-level below.
             // num_predict: 256 — gemma4:12b thinking model outputs <think> blocks;
             // 48 tokens (old value) truncated mid-think, breaking letter extraction.
-            // think: false — suppresses thinking for MCQ letter-only responses.
-            options: { num_predict: 256, temperature: voterTemps[i], think: false },
+            think: false,
+            options: { num_predict: 256, temperature: voterTemps[i] },
           }),
           signal: AbortSignal.timeout(45_000),
         });

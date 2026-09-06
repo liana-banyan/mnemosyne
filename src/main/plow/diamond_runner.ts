@@ -161,8 +161,12 @@ async function callOllama(
       model: OLLAMA_MODEL,
       prompt,
       stream: false,
-      // num_predict: 256 + think: false per v0.3.6 Mesh A canon fix
-      options: { num_predict: 256, temperature, think: false },
+      // D-BP200-M0-032: think MUST be a TOP-LEVEL field, not nested inside `options`.
+      // This was nested here and had NO EFFECT (live-verified elsewhere in this estate,
+      // BP134 canonical_pipeline.ts) -- moved to top-level below.
+      // num_predict: 256 per v0.3.6 Mesh A canon fix
+      think: false,
+      options: { num_predict: 256, temperature },
     };
 
     const resp = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {

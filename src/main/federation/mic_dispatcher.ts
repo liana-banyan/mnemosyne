@@ -280,6 +280,174 @@ export interface BishopDispatchSendResult {
 // elsewhere (wan_dispatch.ts's own header) as a known-broken sibling path, not fixed here.
 const BISHOP_DISPATCH_TTL_SECONDS = 300;
 
+// D-BP165-M0-013 ADDITION -- GAP 2 CLOSURE, READ THIS BEFORE REMOVING IT. Founder order (BP165,
+// verbatim): "make certain that all outbound and inbound traffic, which are celpanes or eblets...
+// are recorded as a matter of course... so that there is no way to cheat the system, and go around
+// the immutable ledgers." MEASURED at this dispatch (D-BP165-M0-013): postBishopDispatchRelayRoute()
+// below is a direct `fetch POST .../rest/v1/relay_routes` with NO ledger call anywhere on this path --
+// real bishop_dispatch traffic (this function's whole purpose) has never touched any durable ledger.
+// This is the exact gap D-BP165-M0-013's brief named by file and reasoning (mic_channel_send.js's own
+// header: "bishop_dispatch_send_cli.mjs already sends through the SAME relay_routes table... Anyone
+// holding the service-role key can POST directly and never touch the ledger" -- the CLI itself only
+// attaches over CDP and calls window.amplify.bishopDispatchSendViaRelay(...), which resolves HERE).
+//
+// WHY A PORTED HELPER, NOT A CROSS-REPO require() OF mic_channel_ledger.js: this file lives in the
+// mnemosyne repo (an Electron app, asar-packaged when built) and mic_channel_ledger.js lives in the
+// separate LianaBanyanPlatform repo. A relative require() reaching outside this project works in an
+// unpacked dev run but breaks once packaged (asar cannot resolve outside its own archive), and this
+// function runs inside the live Electron main process -- an unverified cross-repo runtime dependency
+// on a chokepoint like this is itself a new, undocumented bypass risk. The estate's OWN established
+// precedent for exactly this situation is mic_channel_crypto.js's own header: socceriHash/
+// signSocceriHash there are "PORTED, not reimplemented, from ... key_signer.ts ... because this
+// script must run as a plain Node process with no Electron app singleton available." The same
+// reasoning applies in reverse here: this code ports the SAME hash-chain shape mic_channel_ledger.js
+// writes (prev_entry_hash / entry_hash, per-peer CHAIN_HEAD.<peer id>.txt, the same dual
+// LB_LEDGER_ROOT convention, the same SHA-512-over-canonicalized-JSON primitive) so a single verify
+// pass (mic_channel_ledger_verify.js) can walk BOTH this file's peer log and the MIC channel's,
+// rather than inventing a fourth ledger shape.
+//
+// PEER IDENTITY: getStablePeerId() (imported above, already used elsewhere in this file for Bishop
+// dispatch) is used here, NOT the MIC channel's own Ed25519 keypair identity (mic_channel_keys.js) --
+// those are two independent identity systems in this estate, so this necessarily writes to its own
+// `mic_channel_log.<electron peer id>.jsonl` file rather than the MIC channel CLI's file. That is
+// correct, not a bug: readMergedLedger()/mic_channel_ledger_verify.js already treat every
+// `mic_channel_log.*.jsonl` file in the ledger directory as one more independent witness stream (the
+// same "one writer per file" discipline that file's own D-BP161-M0-014 section documents), and two
+// different identity systems writing two different files is exactly that discipline, not a collision.
+//
+// M3 DOWNCHAIN: ledgerRoot()/ledgerDir() below port the SAME dual-convention detection
+// mic_channel_ledger.js uses (LB_LEDGER_ROOT unset -> M0's repo-root-relative default; LB_LEDGER_ROOT
+// set and already ending in HARDWIRE\LEDGER -> used as-is) so M3 running this same compiled app
+// against its own LB_LEDGER_ROOT gets the fix automatically, with no M3-specific code path.
+function ledgerRootTs(): string {
+  const fromEnv = typeof process !== 'undefined' ? process.env?.LB_LEDGER_ROOT : undefined;
+  return fromEnv || 'C:\\Users\\Administrator\\Documents\\LianaBanyanPlatform';
+}
+
+function rootAlreadyEndsInHardwireLedgerTs(root: string): boolean {
+  const normalized = root.replace(/[\\/]+$/, '');
+  const segments = normalized.split(/[\\/]+/).filter(Boolean);
+  if (segments.length < 2) return false;
+  const lastTwo = segments.slice(-2).map((s) => s.toLowerCase());
+  return lastTwo[0] === 'hardwire' && lastTwo[1] === 'ledger';
+}
+
+function ledgerDirTs(): string {
+  // Lazily required (not top-level imported) so this file's existing, already-verified import graph
+  // is untouched for every caller that never reaches this code path.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const path = require('path') as typeof import('path');
+  const root = ledgerRootTs();
+  const hardwireLedgerDir = rootAlreadyEndsInHardwireLedgerTs(root)
+    ? root
+    : path.join(root, 'HARDWIRE', 'LEDGER');
+  return path.join(hardwireLedgerDir, 'MIC_CHANNEL');
+}
+
+/** Deterministic JSON serialization, sorted keys -- the same shape as mic_channel_crypto.js's
+ *  canonicalize(), ported for the same "two readers must hash identical bytes" reason. */
+function canonicalizeTs(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(canonicalizeTs).join(',') + ']';
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalizeTs(obj[k])).join(',') + '}';
+}
+
+/** D-BP165-M0-013 fix carried over from mic_channel_ledger.js's own stripUndefinedDeep() (found live
+ *  by that file's corruption-proof test run): an own-property with value `undefined` is INCLUDED by
+ *  canonicalizeTs() but SILENTLY DROPPED by JSON.stringify(), so the two can never agree unless
+ *  undefined-valued keys are removed before either runs. */
+function stripUndefinedDeepTs(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripUndefinedDeepTs);
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(obj)) {
+      if (obj[k] === undefined) continue;
+      out[k] = stripUndefinedDeepTs(obj[k]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Appends one hash-chained entry to this peer's traffic ledger. Mirrors mic_channel_ledger.js's
+ *  appendLedgerEntry() exactly (see that file for the full design rationale): per-peer
+ *  CHAIN_HEAD.<peer id>.txt, atomic-mkdir lock, prev_entry_hash/entry_hash via SHA-512 over
+ *  canonicalized JSON, declared chain_genesis marker on first use (never rewrites prior history).
+ *  Throws on a genuine I/O failure or lock timeout -- callers that ledger BEFORE sending rely on this
+ *  propagating rather than being swallowed, so a send this function could not durably record never
+ *  reaches the network. */
+function appendMicChannelLedgerEntryTs(rawEntry: Record<string, unknown>): void {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fs = require('fs') as typeof import('fs');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const path = require('path') as typeof import('path');
+
+  const entry = stripUndefinedDeepTs(rawEntry) as Record<string, unknown>;
+  const dir = ledgerDirTs();
+  fs.mkdirSync(dir, { recursive: true });
+
+  const peerId = getStablePeerId();
+  const logFile = path.join(dir, `mic_channel_log.${peerId}.jsonl`);
+  const chainHeadFile = path.join(dir, `CHAIN_HEAD.${peerId}.txt`);
+  const lockDir = path.join(dir, '.chain_lock');
+
+  const lockStart = Date.now();
+  for (;;) {
+    try {
+      fs.mkdirSync(lockDir);
+      break;
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'EEXIST') throw err;
+      if (Date.now() - lockStart > 15000) {
+        throw new Error(
+          `could not acquire mic_channel_ledger chain lock within 15000ms -- possible stale lock at ${lockDir}`,
+        );
+      }
+      const t0 = Date.now();
+      while (Date.now() - t0 < 5) { /* tiny synchronous busy-wait, matches mic_channel_ledger.js's fallback */ }
+    }
+  }
+
+  try {
+    let prevHash: string | null = null;
+    if (fs.existsSync(chainHeadFile)) {
+      const t = fs.readFileSync(chainHeadFile, 'utf8').trim();
+      prevHash = t || null;
+    }
+    const isGenesis = prevHash === null;
+
+    const bodyWithoutHash: Record<string, unknown> = {
+      logged_at: new Date().toISOString(),
+      ...entry,
+      prev_entry_hash: prevHash,
+    };
+    if (isGenesis) {
+      bodyWithoutHash.chain_genesis = true;
+      let existingLines = 0;
+      if (fs.existsSync(logFile)) {
+        existingLines = fs.readFileSync(logFile, 'utf8').split(/\r?\n/).filter((l) => l.trim()).length;
+      }
+      bodyWithoutHash.unchained_lines_before_genesis = existingLines;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const crypto = require('crypto') as typeof import('crypto');
+    const entryHash = crypto.createHash('sha512')
+      .update(Buffer.from(canonicalizeTs(bodyWithoutHash), 'utf8'))
+      .digest('hex');
+    const fullBody = { ...bodyWithoutHash, entry_hash: entryHash };
+
+    fs.appendFileSync(logFile, JSON.stringify(fullBody) + '\n', 'utf8');
+    fs.writeFileSync(chainHeadFile, entryHash + '\n', 'utf8');
+  } finally {
+    try { fs.rmdirSync(lockDir); } catch { /* already gone, not fatal */ }
+  }
+}
+
 async function postBishopDispatchRelayRoute(
   payloadEncrypted: string,
   targetPeerId: string,
@@ -287,6 +455,15 @@ async function postBishopDispatchRelayRoute(
 ): Promise<{ ok: boolean; error?: string; routeId?: string }> {
   const anonKey = getAnonKey();
   const supabaseUrl = getSupabaseUrl();
+
+  // D-BP165-M0-013: LEDGER-THEN-SEND. Left deliberately UNCAUGHT -- see the block comment above this
+  // function. A ledger write this process cannot durably complete must stop the send here, not be
+  // swallowed and let the POST below proceed unrecorded.
+  const attemptHash = createHash('sha512').update(payloadEncrypted).digest('hex');
+  appendMicChannelLedgerEntryTs({
+    direction: 'send_attempt', via: 'bishop_dispatch', kind: 'bishop_dispatch',
+    to: targetPeerId, dispatch_id: dispatchId, payload_sha512: attemptHash,
+  });
 
   try {
     const res = await fetch(`${supabaseUrl}/rest/v1/relay_routes`, {
@@ -318,9 +495,35 @@ async function postBishopDispatchRelayRoute(
       signal: AbortSignal.timeout(15_000),
     });
 
+    // D-BP165-M0-013: the OUTCOME ledger entry below is a second, separate observation, appended
+    // AFTER the network call has already completed one way or another. Unlike the pre-send attempt
+    // entry above (which is deliberately left to throw and block the send), a ledger-write failure
+    // HERE must never overwrite an already-true send result with a false one -- the POST already
+    // happened; misreporting it as failed could cause a caller to retry and duplicate a real,
+    // already-sent dispatch. So this one is wrapped: recorded when possible, loudly logged to
+    // console.error (never silently swallowed) when the ledger itself cannot be written, but the
+    // function's actual return value always reflects what the network call really did.
+    const logOutcome = (fields: Record<string, unknown>): void => {
+      try {
+        appendMicChannelLedgerEntryTs({ direction: 'sent', via: 'bishop_dispatch', ...fields });
+      } catch (ledgerErr) {
+        console.error(
+          '[mic_dispatcher] D-BP165-M0-013: could not record bishop_dispatch SEND OUTCOME to the ' +
+          'traffic ledger (the send attempt itself WAS already ledgered before this network call, ' +
+          'and the network result below is unaffected by this failure):',
+          ledgerErr,
+        );
+      }
+    };
+
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
-      return { ok: false, error: `relay_routes insert failed: HTTP ${res.status} ${errText.slice(0, 200)}` };
+      const error = `relay_routes insert failed: HTTP ${res.status} ${errText.slice(0, 200)}`;
+      logOutcome({
+        ok: false, http_status: res.status, error,
+        to: targetPeerId, dispatch_id: dispatchId, payload_sha512: attemptHash,
+      });
+      return { ok: false, error };
     }
     // D-BP156-M0-020: `Prefer: return=representation` (set above) makes PostgREST echo the
     // inserted row(s) back in the response body -- read the id out of it instead of discarding
@@ -335,9 +538,25 @@ async function postBishopDispatchRelayRoute(
     } catch {
       // response body missing/not JSON -- leave routeId undefined, insert already succeeded
     }
+    logOutcome({
+      ok: true, http_status: res.status,
+      route_id: routeId, to: targetPeerId, dispatch_id: dispatchId, payload_sha512: attemptHash,
+    });
     return { ok: true, ...(routeId ? { routeId } : {}) };
   } catch (err) {
-    return { ok: false, error: `relay_routes insert error: ${err instanceof Error ? err.message : String(err)}` };
+    // This catch is the network/pre-response failure path -- nothing was sent, so (unlike
+    // logOutcome above) it is safe and correct for a ledger failure here to propagate as part of
+    // reporting this attempt failed; there is no already-succeeded send it could misreport.
+    const error = `relay_routes insert error: ${err instanceof Error ? err.message : String(err)}`;
+    try {
+      appendMicChannelLedgerEntryTs({
+        direction: 'sent', via: 'bishop_dispatch', ok: false, error,
+        to: targetPeerId, dispatch_id: dispatchId, payload_sha512: attemptHash,
+      });
+    } catch (ledgerErr) {
+      console.error('[mic_dispatcher] D-BP165-M0-013: could not record bishop_dispatch SEND FAILURE to the traffic ledger:', ledgerErr);
+    }
+    return { ok: false, error };
   }
 }
 

@@ -49,6 +49,16 @@ import { notifyAmbientCapture } from './ambient_capture_bridge';
 // (loopback, extension origin) and delegates the actual grant/deny decision -- which always means
 // a native confirmation, never an automatic yes -- to requestPairing().
 import { requestPairing } from './ambient_capture_pairing';
+// D-BP207-SEG-09/BISHOP/seg-browser-authority-external -- closes the gap named in
+// D-BP207-SEG-06/D-BP207-BM01-001: nothing outside this Electron main process could reach
+// runBrowserAuthorityQueryFromMain (index.ts). distillExtraction is the SAME single choke
+// point browser_authority_types.ts's own header requires every caller to pass a raw
+// extraction through before it leaves this module's boundary ("components not answers") --
+// this file does not invent a second distillation. Type-only + one pure function import,
+// zero Electron dependency in browser_authority_types.ts, so this is a safe static import
+// (unlike runBrowserAuthorityQueryFromMain itself -- see the new tool below for why that one
+// is a dynamic, call-time-only import instead).
+import { distillExtraction, type BrowserAuthorityName, type BrowserAuthorityQuery } from '../shared/plow/browser_authority_types';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -329,6 +339,76 @@ function buildMcpServer(): McpServer {
           'kitchen_table/p2p_discovery.ts — all cover presence, app-update-artifact transfer, or ' +
           'batch mesh-test dispatch, not single-eblet peer sharing by id)',
       };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    },
+  );
+
+  // ── Tool 6: mnem_ask_browser_authority ────────────────────────────────────
+  // D-BP207-SEG-09/BISHOP/seg-browser-authority-external -- THE ONE NEW SURFACE THIS DISPATCH
+  // ADDS. D-BP207-SEG-06 and D-BP207-BM01-001 independently confirmed runBrowserAuthorityQueryFromMain
+  // (index.ts) already drives the user's own logged-in browser sessions (Google/Perplexity/
+  // Claude/ChatGPT/Gemini) at $0, own quota, but grepped both HTTP/MCP servers in this app and
+  // found ZERO references to it in either -- every real caller was inside this same Electron
+  // main process. This tool forwards to that SAME function, exactly the registerTool
+  // (typed-args-in, JSON-out) shape every tool above already uses. No new webview, no new
+  // session, no new mechanism -- one more tool on an existing board.
+  server.registerTool(
+    'mnem_ask_browser_authority',
+    {
+      description:
+        "Ask a question through one of the user's own logged-in browser sessions (Google, " +
+        "Perplexity, Claude, ChatGPT, or Gemini) via MnemosyneC's embedded Chromium webview -- " +
+        "the user's own account, own quota, $0, never a metered API. Returns a distilled fact " +
+        "plus its source URL, or success:false if the session is unavailable, signed out, or the " +
+        "extraction produced nothing usable. Note: user_perplexity is one-shot today (no " +
+        "multi-turn thread yet, unlike user_claude/user_chatgpt/user_gemini) -- see " +
+        "D-BP207-SEG-06 for the named gap.",
+      inputSchema: {
+        question: z.string().describe('The question to ask'),
+        authority: z.enum(['user_google', 'user_perplexity', 'user_claude', 'user_chatgpt', 'user_gemini'])
+          .describe("Which of the user's own logged-in browser sessions to use"),
+      },
+    },
+    async (args: { question: string; authority: BrowserAuthorityName }) => {
+      pushRecentCall('mnem_ask_browser_authority', 'mcp_client');
+      let result: { success: boolean; fact?: string; sourceUrl?: string; authority: BrowserAuthorityName; error?: string };
+      try {
+        // Dynamic, call-time-only import of index.ts's export -- NOT a static import. index.ts
+        // already statically imports THIS file (to call startMcpServer(), see that file's own
+        // `import { startMcpServer, ... } from './mcp_server'`), so a static import here of
+        // anything FROM index.ts would be a real load-time circular require. This repo's own
+        // established fix for that exact shape is plow_mc_answerer.ts's `await import('../index')`
+        // pattern (used at multiple call sites there, e.g. its Stage F2/F3 browser-authority
+        // bridges) -- this tool follows that existing convention rather than inventing a new one.
+        const mainModule = await import('./index');
+        const query: BrowserAuthorityQuery = { question: args.question, authority: args.authority };
+        const raw = await mainModule.runBrowserAuthorityQueryFromMain(query);
+        if (!raw) {
+          result = {
+            success: false,
+            authority: args.authority,
+            error: 'No extraction: session unavailable, signed out, or nothing usable was found (see the app log for the honest dispatchOutcome).',
+          };
+        } else {
+          // HONESTY FIREWALL: distillExtraction() is the single choke point
+          // browser_authority_types.ts's own header mandates -- the vendor's raw scraped snippet
+          // never crosses this tool's boundary, only the distilled fact does ("components not
+          // answers"). Returns null (never a fabricated result) on an empty snippet or missing URL.
+          const distilled = distillExtraction(raw, args.question);
+          if (!distilled) {
+            result = {
+              success: false,
+              authority: args.authority,
+              error: "Extraction returned an empty snippet or no source URL -- honestly reporting nothing usable, per this module's never-fabricate firewall.",
+            };
+          } else {
+            result = { success: true, fact: distilled.fact, sourceUrl: distilled.sourceUrl, authority: distilled.authority };
+          }
+        }
+      } catch (e) {
+        console.error('[MCP] mnem_ask_browser_authority: threw:', e);
+        result = { success: false, authority: args.authority, error: String(e) };
+      }
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     },
   );
@@ -662,7 +742,7 @@ export async function startMcpServer(): Promise<void> {
       _running = true;
       _activePort = port;
       console.log(`[MCP] Server listening on http://127.0.0.1:${port}/mcp`);
-      console.log('[MCP] 6 tools registered: mnem_query_substrate, mnem_force_refresh_substrate, mnem_record_qa, mnem_get_substrate_stats, mnem_run_giant_concordance, mnem_share_eblet_to_peer');
+      console.log('[MCP] 7 tools registered: mnem_query_substrate, mnem_force_refresh_substrate, mnem_record_qa, mnem_get_substrate_stats, mnem_run_giant_concordance, mnem_share_eblet_to_peer, mnem_ask_browser_authority');
       console.log(`[MCP] Ambient browser capture routes: POST/GET http://127.0.0.1:${port}/capture{,/status} (key starts ${captureKeyPreview}…, full value at ${getCaptureKeyPath()})`);
       console.log(`[MCP] One-click pairing route: POST http://127.0.0.1:${port}/pair (loopback + chrome-extension:// origin only; hands out the capture key ONLY after an explicit Allow click)`);
       resolve();

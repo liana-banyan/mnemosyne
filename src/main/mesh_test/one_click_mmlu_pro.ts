@@ -574,6 +574,7 @@ async function dispatchQuestionLocally(
         model,
         messages: [{ role: 'user', content: prompt }],
         stream: false,
+        think: false,
         options: { temperature: 0.0 },
       }),
       signal: AbortSignal.timeout(45_000),

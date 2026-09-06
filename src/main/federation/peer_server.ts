@@ -125,6 +125,14 @@ import { getAnonKey, getAnonKeyHeaders } from '../shared/anon_key';
 // KN-BP144-16 Phase 1: /api/plow-domain authentication (see that ticket's REPORT.md).
 import { peekAnnouncePayload, verifyAnnounceFrame } from './announce_frame';
 import { isUnauthenticatedLanDiscoveryAllowed } from './mesh_trust_settings';
+// D-BP202-BM02-002. mesh_remote_admin_consent.ts's own header (D-BP202-M0-01-h2cbp8us-001) names
+// THIS as its enforcement point: "This machine's declared answer to 'may another machine
+// administer me' is published on peer_server's /api/info as `remoteAdminConsent`." That claim was
+// not yet true when this dispatch read the file -- no import, no field, verified by grep before
+// this line was added. Wired now, mirroring how isUnauthenticatedLanDiscoveryAllowed() above is
+// imported and read into the same /api/info payload for the same reason (a peer must be able to
+// read this machine's own declared posture, not infer it).
+import { isRemoteAdministrationConsentGranted } from './mesh_remote_admin_consent';
 import { lookupKnownPeerPublicKey } from './constellation_discovery';
 // D-BP156-M0-008: HARDWIRE-24 mesh, Bishop-dispatch payload variant (a second wan-relay-route
 // payload shape, sibling to the domain-plow shape mic_dispatcher.ts already sends).
@@ -153,6 +161,11 @@ let _onPlowDomain: ((domain: string, questions: string[], ollamaBaseUrl: string,
 let _onDiagnosisPost: ((post: unknown) => Promise<void>) | null = null;
 let _onDiagnosisAnswer: ((answer: unknown) => Promise<void>) | null = null;
 let _onDiagnosisUpvote: ((data: unknown) => Promise<void>) | null = null;
+// D-BP202-BM02-007 Part B: read-back hook -- given a caller-supplied id, reports whether the
+// corresponding diagnosis artifact exists on disk plus its byte length and sha256, never the
+// content itself (registered by diagnosis_ipc.ts, backed by diagnosis_engine.ts's
+// checkDiagnosisArtifact()).
+let _onDiagnosisVerify: ((id: string) => Promise<{ exists: boolean; byteLength: number | null; sha256: string | null }>) | null = null;
 // D-BP156-M0-008: sibling hook to _onPlowDomain above, for HARDWIRE-24 Bishop-session mesh
 // dispatches instead of Ollama MC-question plow runs. Same injection pattern, same
 // "unregistered means refused, never silently no-op'd" convention as _onPlowDomain's own
@@ -265,12 +278,14 @@ export function registerPeerServerHooks(hooks: {
   onDiagnosisPost?: typeof _onDiagnosisPost;
   onDiagnosisAnswer?: typeof _onDiagnosisAnswer;
   onDiagnosisUpvote?: typeof _onDiagnosisUpvote;
+  onDiagnosisVerify?: typeof _onDiagnosisVerify;
   onBishopDispatch?: typeof _onBishopDispatch;
 }): void {
   if (hooks.onPlowDomain) _onPlowDomain = hooks.onPlowDomain;
   if (hooks.onDiagnosisPost) _onDiagnosisPost = hooks.onDiagnosisPost;
   if (hooks.onDiagnosisAnswer) _onDiagnosisAnswer = hooks.onDiagnosisAnswer;
   if (hooks.onDiagnosisUpvote) _onDiagnosisUpvote = hooks.onDiagnosisUpvote;
+  if (hooks.onDiagnosisVerify) _onDiagnosisVerify = hooks.onDiagnosisVerify;
   if (hooks.onBishopDispatch) _onBishopDispatch = hooks.onBishopDispatch;
 }
 
@@ -391,11 +406,50 @@ export function registerPresenceConfig(config: {
  * Reads provenance fields like "starter_chocolate:math:v0.3.7" → "math".
  */
 function getInstalledDomains(): string[] {
-  const chocolatesDir = join(app.getAppPath(), 'resources', 'chocolates');
+  // ── D-BP202-BM01-011. EVERY PACKAGED INSTALL REPORTED ZERO DOMAINS. ─────────────────────────
+  //
+  // MEASURED 2026-08-28. M2 (192.168.86.45) and M3 (192.168.86.156), both freshly installed from
+  // MnemosyneC-Lean-Setup-0.9.27.exe, reported `installedDomains: []` over /api/info while M0 --
+  // running the DEV tree -- reported all 19. The peers looked like empty brains for hours and the
+  // estate planned around "M2 needs its library filled".
+  //
+  // THE DATA WAS NEVER MISSING. package.json's electron-builder config maps
+  // `resources/chocolates -> chocolates` under extraResources, and the packaged output really does
+  // contain all 16 .jsonl files. What was wrong was the LOOKUP:
+  //
+  //   dev       app.getAppPath() === the repo root, so repo/resources/chocolates EXISTS  -> 19 domains
+  //   packaged  app.getAppPath() === .../resources/app.asar, so this looked for
+  //             .../resources/app.asar/resources/chocolates, which cannot exist       -> []
+  //
+  // And because the miss lands on `if (!existsSync(...)) return []`, it fails SILENTLY: an
+  // unreadable path is indistinguishable from a machine that genuinely has no domains. That is the
+  // same silent-success class as a truncated seed that still announces itself.
+  //
+  // THE HOUSE PATTERN ALREADY EXISTED AND THIS FILE SIMPLY DID NOT USE IT. resolveBundledDatasetPath()
+  // in liana_terminal_engine.ts and one_click_mmlu_pro.ts, resolveProvenanceDir() in
+  // origin_provenance_store.ts, and chocolate_consolidator.ts all pair a packed branch with the dev
+  // branch. I checked all five call sites that combine getAppPath() with 'resources': the other four
+  // are CORRECT. This was the only one missing its packed half, so this is a one-site defect, not a
+  // pattern to sweep.
+  const packagedChocolates =
+    typeof process !== 'undefined' && (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+      ? join((process as NodeJS.Process & { resourcesPath?: string }).resourcesPath!, 'chocolates')
+      : null;
+  const chocolatesDir =
+    app.isPackaged && packagedChocolates
+      ? packagedChocolates
+      : join(app.getAppPath(), 'resources', 'chocolates');
   const domains = new Set<string>();
 
   try {
-    if (!existsSync(chocolatesDir)) return [];
+    if (!existsSync(chocolatesDir)) {
+      // LAW 1: a negative must name its scope. "No chocolates directory" and "a directory holding
+      // no domains" are different facts and used to be reported identically as []. Say which.
+      console.warn(`[peer_server] getInstalledDomains: no chocolates directory at ${chocolatesDir} `
+        + `(app.isPackaged=${app.isPackaged}) -- reporting NO domains, which may mean the path is `
+        + `wrong rather than that none are installed. D-BP202-BM01-011.`);
+      return [];
+    }
     const files = readdirSync(chocolatesDir).filter((f) => f.endsWith('.jsonl'));
     for (const file of files) {
       try {
@@ -723,6 +777,78 @@ export async function handlePlowDomainRequestBody(body: string): Promise<PlowDom
   }
 }
 
+// ─── D-BP202-BM02-007 Part A: diagnosis-route signature discipline ────────────────────────────
+//
+// MEASURED by D-BP202-BM02-004 and re-confirmed reading this file top-to-bottom before writing
+// this function: /api/diagnosis/post, /api/diagnosis/answer and /api/diagnosis/upvote accepted
+// caller-supplied JSON with NO authentication whatsoever, right beside /api/plow-domain which
+// already does this correctly (resolvePlowDomainRequest, above). This function is that SAME
+// pattern -- same two accepted shapes, same trust-on-first-use key resolution
+// (lookupKnownPeerPublicKey preferred, self-declared key in the frame as fallback), same
+// unconditional refusal of a signature that IS present and fails verification, same
+// isUnauthenticatedLanDiscoveryAllowed() escape hatch for the legacy unsigned shape (default
+// false = fail closed) -- deliberately NOT a second auth scheme. Unlike resolvePlowDomainRequest
+// this has no opinion on the payload's shape (a DiagnosisPost vs. an answer vs. an upvote body
+// vs. a verify-by-id request all differ) -- it hands back the verified inner payload object and
+// leaves shape extraction to the caller, exactly the way verifyAnnounceFrame's own `payload`
+// return already works for handleInboundBishopDispatchEnvelope above.
+export interface SignedDiagnosisRequestOk {
+  ok: true;
+  payload: Record<string, unknown>;
+}
+export interface SignedDiagnosisRequestRefused {
+  ok: false;
+  status: number;
+  error: string;
+}
+
+export function resolveSignedDiagnosisRequest(
+  body: string,
+): SignedDiagnosisRequestOk | SignedDiagnosisRequestRefused {
+  let outer: { signed_frame?: string } & Record<string, unknown>;
+  try {
+    outer = JSON.parse(body);
+  } catch {
+    return { ok: false, status: 400, error: 'request body is not valid JSON' };
+  }
+
+  if (typeof outer.signed_frame === 'string') {
+    const peeked = peekAnnouncePayload(outer.signed_frame);
+    if (!peeked) {
+      return { ok: false, status: 400, error: 'signed_frame present but malformed (failed to decode)' };
+    }
+    const senderPeerId = typeof peeked.payload.sender_peer_id === 'string' ? peeked.payload.sender_peer_id : undefined;
+    const knownKey = senderPeerId ? lookupKnownPeerPublicKey(senderPeerId) : undefined;
+    const keyToVerify = knownKey ?? peeked.claimedPublicKeyHex;
+
+    if (!keyToVerify) {
+      return { ok: false, status: 403, error: 'refused: signed_frame carried no public_key_hex and no previously-known key exists for this sender' };
+    }
+
+    const verified = verifyAnnounceFrame(outer.signed_frame, keyToVerify);
+    if (!verified.valid) {
+      // A refused signature stays refused, unconditionally -- never gated by the opt-out below.
+      return { ok: false, status: 403, error: `refused: ${verified.reason}` };
+    }
+    if (!verified.payload) {
+      return { ok: false, status: 400, error: 'signature verified but frame carried no payload' };
+    }
+    return { ok: true, payload: verified.payload };
+  }
+
+  // Legacy/unsigned shape -- accepted only when the Founder's single switch allows it, same as
+  // /api/plow-domain. The whole body IS the payload here, matching the pre-D-BP202-BM02-007
+  // behavior where the three diagnosis routes called _onDiagnosis*(JSON.parse(body)) directly.
+  if (!isUnauthenticatedLanDiscoveryAllowed()) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'refused: unsigned diagnosis request and unauthenticated LAN dispatch is disabled by default (D-BP202-BM02-007, mirrors KN-BP144-16)',
+    };
+  }
+  return { ok: true, payload: outer };
+}
+
 function sendJson(res: ServerResponse, statusCode: number, data: unknown): void {
   const body = JSON.stringify(data);
   res.writeHead(statusCode, {
@@ -746,6 +872,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (url === '/api/info' && method === 'GET') {
     const hwTier = detectHardwareTier();
     const installedDomains = getInstalledDomains();
+    // ── D-BP202-BM01-012. REPORT THE NUMBER THAT ACTUALLY DECIDES MODEL FIT. ────────────────────
+    //
+    // MEASURED 2026-08-28. /api/info reported `ramTier: "full", ramGb: 31.9` for BOTH M2 and M3.
+    // That is SYSTEM RAM. Both machines have 8 GB of VRAM, and VRAM is what decides whether a model
+    // loads onto the GPU at all. M2 ended up running gemma4:26b, which cannot fit: M0's gemma4:12b
+    // was measured occupying 12.2 GB of VRAM against 7.0 GB on disk, so a 26b needs roughly 25 GB.
+    // A reader of /api/info saw a plausible number that meant something else.
+    //
+    // NOTHING IS DETECTED FRESH HERE. detectVramGbDetailed() already lives in ram_detector.ts, is
+    // ALREADY imported by this file for the /api/plow-domain gate, and already carries its own two
+    // test suites. This only SURFACES what that gate was already deciding on, so a human, the seat
+    // roster, or the pre-installer can see the deciding figure rather than infer it.
+    //
+    // ramTier/ramGb ARE LEFT EXACTLY AS THEY WERE, deliberately. They are honest about what they
+    // are, and other callers already depend on them. The fix is not to redefine an existing field;
+    // it is to stop that field being the only one visible.
+    const vramDetail = detectVramGbDetailed();
     sendJson(res, 200, {
       id: _peerId ?? 'self',
       name: 'MnemosyneC Peer',
@@ -753,7 +896,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       ollamaModel: getEffectiveOllamaModel(),
       ramTier: hwTier.tier,
       ramGb: hwTier.ramGb,
+      vramGb: vramDetail.vramGb,
+      vramMethod: vramDetail.method,
+      vramConfidence: vramDetail.confidence,
       installedDomains,
+      // D-BP202-BM02-002. THE ENFORCEMENT POINT mesh_remote_admin_consent.ts's own header promised
+      // and did not yet deliver. Fails closed like every other read of that module: a false here
+      // (default, or any settings-read error) means an administering peer MUST NOT attempt lbmesh
+      // / WinRM administration against this machine. This field being absent (an old build, pre
+      // this dispatch) must ALSO be read as "not consented" by any caller -- never as consent by
+      // omission. See mesh_remote_admin_consent.ts for the full statement of what this can and
+      // cannot enforce (it cannot close an already-provisioned WinRM listener by itself).
+      remoteAdminConsent: isRemoteAdministrationConsentGranted(),
       capabilities: {
         ollamaModel: getEffectiveOllamaModel(),
         overrideActive: isOverrideActive(),
@@ -774,48 +928,100 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  // Diagnosis: post
+  // Diagnosis: post — D-BP202-BM02-007 Part A: now runs through resolveSignedDiagnosisRequest
+  // (same signature discipline as /api/plow-domain) before the hook ever sees the payload.
   if (url === '/api/diagnosis/post' && method === 'POST') {
     if (!_onDiagnosisPost) {
       sendJson(res, 503, { error: 'Diagnosis post handler not registered' });
       return;
     }
+    const body = await readBody(req);
+    const resolved = resolveSignedDiagnosisRequest(body);
+    if (!resolved.ok) {
+      console.warn(`[PeerServer] REFUSED /api/diagnosis/post: ${resolved.error}`);
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
     try {
-      const body = await readBody(req);
-      await _onDiagnosisPost(JSON.parse(body));
+      // Part B: the hook now rethrows on a real write failure (diagnosis_ipc.ts) instead of
+      // swallowing it -- this catch is what turns that into a truthful non-200 response.
+      await _onDiagnosisPost(resolved.payload);
       sendJson(res, 200, { ok: true });
     } catch (err) {
-      sendJson(res, 500, { error: String(err) });
+      sendJson(res, 500, { ok: false, error: String(err) });
     }
     return;
   }
 
-  // Diagnosis: answer
+  // Diagnosis: answer — same discipline as /api/diagnosis/post above.
   if (url === '/api/diagnosis/answer' && method === 'POST') {
     if (!_onDiagnosisAnswer) {
       sendJson(res, 503, { error: 'Diagnosis answer handler not registered' });
       return;
     }
+    const body = await readBody(req);
+    const resolved = resolveSignedDiagnosisRequest(body);
+    if (!resolved.ok) {
+      console.warn(`[PeerServer] REFUSED /api/diagnosis/answer: ${resolved.error}`);
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
     try {
-      const body = await readBody(req);
-      await _onDiagnosisAnswer(JSON.parse(body));
+      await _onDiagnosisAnswer(resolved.payload);
       sendJson(res, 200, { ok: true });
     } catch (err) {
-      sendJson(res, 500, { error: String(err) });
+      sendJson(res, 500, { ok: false, error: String(err) });
     }
     return;
   }
 
-  // Diagnosis: upvote
+  // Diagnosis: upvote — same discipline as /api/diagnosis/post above.
   if (url === '/api/diagnosis/upvote' && method === 'POST') {
     if (!_onDiagnosisUpvote) {
       sendJson(res, 503, { error: 'Diagnosis upvote handler not registered' });
       return;
     }
+    const body = await readBody(req);
+    const resolved = resolveSignedDiagnosisRequest(body);
+    if (!resolved.ok) {
+      console.warn(`[PeerServer] REFUSED /api/diagnosis/upvote: ${resolved.error}`);
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
     try {
-      const body = await readBody(req);
-      await _onDiagnosisUpvote(JSON.parse(body));
+      await _onDiagnosisUpvote(resolved.payload);
       sendJson(res, 200, { ok: true });
+    } catch (err) {
+      sendJson(res, 500, { ok: false, error: String(err) });
+    }
+    return;
+  }
+
+  // Diagnosis: verify — D-BP202-BM02-007 Part B. Read-back so a sender can confirm an artifact
+  // actually landed instead of trusting an unconditional 200. Same auth discipline as the three
+  // write routes above (same resolveSignedDiagnosisRequest). Returns ONLY existence + integrity
+  // figures (byte length, sha256) -- never the stored content -- so it cannot be used to
+  // exfiltrate substrate content off a peer.
+  if (url === '/api/diagnosis/verify' && method === 'POST') {
+    if (!_onDiagnosisVerify) {
+      sendJson(res, 503, { error: 'Diagnosis verify handler not registered' });
+      return;
+    }
+    const body = await readBody(req);
+    const resolved = resolveSignedDiagnosisRequest(body);
+    if (!resolved.ok) {
+      console.warn(`[PeerServer] REFUSED /api/diagnosis/verify: ${resolved.error}`);
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    const id = resolved.payload.id;
+    if (typeof id !== 'string' || id.length === 0) {
+      sendJson(res, 400, { error: 'verified payload missing required string field "id"' });
+      return;
+    }
+    try {
+      const check = await _onDiagnosisVerify(id);
+      sendJson(res, 200, check);
     } catch (err) {
       sendJson(res, 500, { error: String(err) });
     }

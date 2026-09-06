@@ -411,6 +411,21 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.invoke('set-auto-update-config', cfg),
   getUpdateHistory: (): Promise<Record<string, unknown>[]> =>
     ipcRenderer.invoke('get-update-history'),
+
+  // D-BP164-M0-002/BISHOP/SEG-DA -- open-at-login toggle (Founder BP163: "And can we build
+  // that start on startup into Mnemosynec so it always does that"). getOpenAtLoginState
+  // returns the member's stored preference, live OS state, legacy-Scheduled-Task detection,
+  // and the ready-to-paste elevated removal command in one round trip.
+  getOpenAtLoginState: (): Promise<{
+    ok: boolean;
+    preference: import('./startup/open_at_login_settings').OpenAtLoginSettings;
+    osState: { openAtLogin: boolean; executableWillLaunchAtLogin: boolean };
+    legacyTask: import('./startup/legacy_autostart_task_detector').LegacyAutostartTaskStatus;
+    legacyTaskRemovalCommand: string;
+    error?: string;
+  }> => ipcRenderer.invoke('open-at-login:get-state'),
+  setOpenAtLoginState: (desired: boolean): Promise<import('./startup/open_at_login_settings').ApplyResult> =>
+    ipcRenderer.invoke('open-at-login:set', desired),
   approveAutoUpdateInstall: (readyPath: string): void =>
     ipcRenderer.send('auto-update-approve-install', readyPath),
   onAutoUpdatePatchReady: (cb: (data: { version: string }) => void): (() => void) => {
@@ -467,6 +482,30 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.invoke('mesh-auto-spawn-consent:get-settings'),
   setMeshAutoSpawnConsentGranted: (granted: boolean): Promise<import('./federation/mesh_auto_spawn_consent').MeshAutoSpawnConsentSettings> =>
     ipcRenderer.invoke('mesh-auto-spawn-consent:set-consent-granted', granted),
+
+  // D-BP202-M0-01-h2cbp8us-001: THE THIRD CONSENT -- remote administration of this whole machine
+  // (a standing `lbmesh` local admin account plus WinRM on 5985), SEPARATE from both consents
+  // above. Auto-spawn governs what a worker may do INSIDE MnemosyneC; this governs whether
+  // another machine may administer the operating system itself, entirely outside the app. Read
+  // src/main/federation/mesh_remote_admin_consent.ts's header for the honest statement of what
+  // this flag can and cannot enforce before wiring a second consumer to it.
+  getMeshRemoteAdminConsentSettings: (): Promise<import('./federation/mesh_remote_admin_consent').MeshRemoteAdminConsentSettings> =>
+    ipcRenderer.invoke('mesh-remote-admin-consent:get-settings'),
+  setRemoteAdministrationConsentGranted: (granted: boolean): Promise<import('./federation/mesh_remote_admin_consent').MeshRemoteAdminConsentSettings> =>
+    ipcRenderer.invoke('mesh-remote-admin-consent:set-consent-granted', granted),
+
+  // D-BP202-BM02-014: HardWire Map -- package manifest + machine-aware preselection SPINE. Read-only
+  // from the renderer's side; no UI is wired to these calls yet (a sibling dispatch owns the
+  // preinstall screen). See src/main/installer/hardwire_map_ipc.ts for the full rationale.
+  getHardwireManifest: (): Promise<import('./installer/hardwire_manifest').PackageManifestEntry[]> =>
+    ipcRenderer.invoke('hardwire-map:get-manifest'),
+  getHardwireMachineProfile: (): Promise<import('./installer/hardwire_preselection').MachineProfile> =>
+    ipcRenderer.invoke('hardwire-map:get-machine-profile'),
+  getHardwirePreselection: (): Promise<{
+    schemaVersion: string;
+    profile: import('./installer/hardwire_preselection').MachineProfile;
+    decisions: import('./installer/hardwire_preselection').PackagePreselectionDecision[];
+  }> => ipcRenderer.invoke('hardwire-map:get-preselection'),
 
   // ── MV-CN Peer Mesh (SAGA 3 BP045 W1) ───────────────────────────────────
   getMeshState: (): Promise<{ peers: unknown[]; relayConnected: boolean; ownPeerId: string }> =>
@@ -968,6 +1007,25 @@ contextBridge.exposeInMainWorld('amplify', {
     error?: string;
   }> => ipcRenderer.invoke('liana-laboratory-list'),
 
+  // D-BP167-M0-049/BISHOP/seg-composer-persistence -- THE COMPOSER, PERSISTED. Wraps
+  // 'liana-composer-save-stack'/'liana-composer-list-stacks' (index.ts, registered next to
+  // 'liana-laboratory-save'/'liana-laboratory-list' above). A channel wholly separate from
+  // lianaScriptRun -- saving/listing a stack never runs it and never changes what running it
+  // computes. See composer_store.ts's own header for the full boundary (saving is not promoting).
+  lianaComposerSaveStack: (args: {
+    name: string;
+    steps: string[];
+    provenance: { runInput: string };
+  }): Promise<{ ok: boolean; path?: string; version?: string; supersededPath?: string | null; error?: string }> =>
+    ipcRenderer.invoke('liana-composer-save-stack', args),
+
+  // READ-ONLY: never writes, edits, or deletes a saved Composer stack file.
+  lianaComposerListStacks: (): Promise<{
+    ok: boolean;
+    stacks: import('../shared/liana_cycle/liana_terminal_types').LianaComposerStackSummary[];
+    error?: string;
+  }> => ipcRenderer.invoke('liana-composer-list-stacks'),
+
   // ── Nexus Authority persistent session (BP137 0.9.12 Stage F1) ─────────────
   // Thin wraps around the four IPC channels index.ts's registerIPCHandlers() registers next to
   // 'nexus-browser-authority-run-query' above -- see nexus_authority_persistent_session.ts's
@@ -1229,6 +1287,23 @@ contextBridge.exposeInMainWorld('amplify', {
     p2pStart: (peerId: string, displayName: string) => ipcRenderer.invoke('kitchen-table:p2p-start', { peerId, displayName }),
     p2pStop: () => ipcRenderer.invoke('kitchen-table:p2p-stop'),
     p2pPeers: () => ipcRenderer.invoke('kitchen-table:p2p-peers'),
+    // Cook Events? (D-BP165-M0-014, BP161 4b) -- append-only; no update/delete
+    // bridge method exists on purpose, see cook_events_store.ts file header.
+    recordCookEvent: (data: unknown) => ipcRenderer.invoke('kitchen-table:record-cook-event', data),
+    listCookEvents: () => ipcRenderer.invoke('kitchen-table:list-cook-events'),
+    listCookEventsForRecipe: (recipeId: string) => ipcRenderer.invoke('kitchen-table:list-cook-events-for-recipe', { recipeId }),
+    listCookEventsForAuthor: (authorId: string) => ipcRenderer.invoke('kitchen-table:list-cook-events-for-author', { authorId }),
+    listCookEventsByCooker: (cookedBy: string) => ipcRenderer.invoke('kitchen-table:list-cook-events-by-cooker', { cookedBy }),
+    // Mark-Back Vote? (D-BP165-M0-017, Phase Two) -- gated off by default
+    // behind KITCHEN_TABLE_MARKBACK_ENABLED; see mark_back_store.ts.
+    castMarkBackVote: (data: unknown) => ipcRenderer.invoke('kitchen-table:cast-mark-back-vote', data),
+    listMarkBackVotes: () => ipcRenderer.invoke('kitchen-table:list-mark-back-votes'),
+    listMarkBackVotesForRecipe: (recipeId: string) => ipcRenderer.invoke('kitchen-table:list-mark-back-votes-for-recipe', { recipeId }),
+    listMarkBackVotesByVoter: (voterId: string) => ipcRenderer.invoke('kitchen-table:list-mark-back-votes-by-voter', { voterId }),
+    tallyMarkBackEarnings: (peerId: string) => ipcRenderer.invoke('kitchen-table:tally-mark-back-earnings', { peerId }),
+    getRefundCreditBalance: (peerId: string) => ipcRenderer.invoke('kitchen-table:get-refund-credit-balance', { peerId }),
+    redeemRefundCredits: (peerId: string, recipeId: string, creditsToRedeem: number) =>
+      ipcRenderer.invoke('kitchen-table:redeem-refund-credits', { peerId, recipeId, creditsToRedeem }),
   },
 
   // ── SubstratedFolderWatcher™ (SAGA-γ v0.1.10) ────────────────────────────
@@ -1860,6 +1935,28 @@ contextBridge.exposeInMainWorld('amplify', {
   lianaCycleGetStatus: (): Promise<unknown> => ipcRenderer.invoke('liana-cycle:get-status'),
   lianaCycleSetEnabled: (enabled: boolean): Promise<{ ok: boolean; enabled: boolean }> =>
     ipcRenderer.invoke('liana-cycle:set-enabled', enabled),
+
+  // D-BP211-BM0-h2cbpq8k-017. THE METHOD TREE'S SWITCH -- THE OTHER ENGINE, THE OPPOSITE DEFAULT.
+  // Founder, 2026-09-02T19:03:06Z: "the two engines don't get the same switch, and yes have
+  // opposite defaults."
+  //
+  // DO NOT COLLAPSE THESE INTO lianaCycleSetEnabled ABOVE. They are different engines:
+  //   lianaCycle*      src/main/plow/liana_cycle_scheduler.ts   the AUTONOMOUS runner. FAILS CLOSED
+  //                    (absent settings file = OFF). It has never run in production, and starting
+  //                    a continuous scheduler by accident is the risk it guards against.
+  //   methodTree*      src/main/liana_cycle/method_tree_switch.ts   the TAUGHT method registry.
+  //                    FAILS OPEN (absent settings file = ON). It has run in production many
+  //                    times; a fail-closed default here would silently turn off the half that
+  //                    already works, on any fresh machine or cleared userData.
+  //
+  // `failsOpen: true` is returned by the getter ON PURPOSE, so a UI can label the control honestly
+  // instead of a future reader having to guess which default this particular switch carries.
+  methodTreeGetEnabled: (): Promise<{ enabled: boolean; settingsPath: string; failsOpen: boolean }> =>
+    ipcRenderer.invoke('method-tree:get-enabled'),
+  methodTreeSetEnabled: (
+    enabled: boolean,
+  ): Promise<{ ok: boolean; enabled: boolean; settingsPath: string }> =>
+    ipcRenderer.invoke('method-tree:set-enabled', enabled),
   onLianaCycleProgress: (cb: (payload: unknown) => void): (() => void) => {
     const handler = (_event: unknown, payload: unknown) => cb(payload);
     ipcRenderer.on('liana-cycle:progress', handler);
@@ -2980,6 +3077,18 @@ declare global {
         p2pStart: (peerId: string, displayName: string) => Promise<{ ok: boolean; active: boolean }>;
         p2pStop: () => Promise<{ ok: boolean }>;
         p2pPeers: () => Promise<{ peers: unknown[]; active: boolean }>;
+        recordCookEvent: (data: unknown) => Promise<unknown>;
+        listCookEvents: () => Promise<unknown[]>;
+        listCookEventsForRecipe: (recipeId: string) => Promise<unknown[]>;
+        listCookEventsForAuthor: (authorId: string) => Promise<unknown[]>;
+        listCookEventsByCooker: (cookedBy: string) => Promise<unknown[]>;
+        castMarkBackVote: (data: unknown) => Promise<unknown>;
+        listMarkBackVotes: () => Promise<unknown[]>;
+        listMarkBackVotesForRecipe: (recipeId: string) => Promise<unknown[]>;
+        listMarkBackVotesByVoter: (voterId: string) => Promise<unknown[]>;
+        tallyMarkBackEarnings: (peerId: string) => Promise<number>;
+        getRefundCreditBalance: (peerId: string) => Promise<number>;
+        redeemRefundCredits: (peerId: string, recipeId: string, creditsToRedeem: number) => Promise<unknown>;
       };
       // SKU (BP078 Scope 6.5)
       sku: {

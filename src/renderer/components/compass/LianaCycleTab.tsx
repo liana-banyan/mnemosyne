@@ -26,6 +26,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   LianaAudibleAction,
   LianaAudiblePause,
+  LianaComposerStackSummary,
   LianaLaboratoryStepSummary,
   LianaSteppedAction,
   LianaSteppedPause,
@@ -350,15 +351,37 @@ export function LianaCycleTab() {
   // BP152, verbatim (FD-BP152-20): "I want to use it to stack methods in whatever order I want -
   // I don't need the lego shapes, I just want them NameNumbered... so that I can mix and match as
   // I please." `composerStack` is the ordered list of ids he has picked, in the order he wants
-  // them to run -- reordering THIS array is the entire feature. Never persisted (no localStorage,
-  // unlike `recent`/`oneAudibleMode` above) -- this ticket's own FORBIDDEN list says no
-  // persistence for this UI.
+  // them to run -- reordering THIS array is the entire feature. In-memory `useState` only, still
+  // -- no localStorage, same as it always was.
+  //
+  // D-BP167-M0-049/BISHOP/seg-composer-persistence SUPERSEDES the "never persisted" line D-BP152-
+  // 043 wrote here. That ticket's own FORBIDDEN list said no persistence FOR THAT TICKET's scope;
+  // D-BP167-M0-033 (read-and-report) found the resulting evaporate-on-unmount behavior is the
+  // single thing standing between the Founder's own "we seriously need to make more methods"
+  // remark and a registry that actually accumulates (BP149 doctrine). Persistence is now built,
+  // deliberately OUT-OF-BAND of this in-memory array: `saveComposerStackHandler`/
+  // `loadComposerSavedStacks` below (composer_store.ts, main process) write/read a separate,
+  // named, Rule-66-versioned on-disk record; Save/Load copy INTO or OUT OF `composerStack`, they
+  // never make this array itself persistent. Saving never promotes into method_registry.ts -- see
+  // composer_store.ts's own header for that boundary.
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerRegistry, setComposerRegistry] = useState<ComposerRegistryEntry[]>([]);
   const [composerRegistryState, setComposerRegistryState] = useState<'idle' | 'loading' | 'loaded' | 'unavailable'>('idle');
   const [composerStack, setComposerStack] = useState<string[]>([]);
   const [composerRunning, setComposerRunning] = useState(false);
   const [composerResult, setComposerResult] = useState<ScriptRunResponse | null>(null);
+
+  // D-BP167-M0-049/BISHOP/seg-composer-persistence -- SAVE. Mirrors laboratoryName/laboratory
+  // Saving/laboratoryResult's own shape (composer_store.ts is the same on-disk pattern as
+  // laboratory_store.ts). `composerSaveName` is a separate text field from the question box --
+  // naming the stack is not the same act as typing the question to run it against.
+  const [composerSaveName, setComposerSaveName] = useState('');
+  const [composerSaving, setComposerSaving] = useState(false);
+  const [composerSaveResult, setComposerSaveResult] = useState<{ ok: boolean; path?: string; version?: string; error?: string } | null>(null);
+  // LIST/LOAD. Mirrors laboratorySteps/laboratoryListState exactly.
+  const [composerSavedStacks, setComposerSavedStacks] = useState<LianaComposerStackSummary[]>([]);
+  const [composerSavedListState, setComposerSavedListState] = useState<'idle' | 'loading' | 'loaded' | 'unavailable'>('idle');
+
   // D-BP154-017/BISHOP-SEG/S17/seg-classify -- which step row's provenance chain is expanded
   // (Founder, BP154: "click a result, see the chain of where it came from"). Index into
   // composerResult.result.steps/results; null = nothing expanded. Reset whenever a new stack run
@@ -855,6 +878,64 @@ export function LianaCycleTab() {
     }
   }, []);
 
+  // D-BP167-M0-049/BISHOP/seg-composer-persistence -- LIST. Read-only; loaded on demand (opening
+  // the Composer panel), not on mount, same lazy-load shape as loadComposerRegistry/
+  // loadLaboratorySteps above.
+  const loadComposerSavedStacks = useCallback(async () => {
+    if (!window.amplify?.lianaComposerListStacks) {
+      setComposerSavedListState('unavailable');
+      return;
+    }
+    setComposerSavedListState('loading');
+    try {
+      const res = await window.amplify.lianaComposerListStacks();
+      setComposerSavedStacks(res.stacks ?? []);
+      setComposerSavedListState('loaded');
+    } catch {
+      setComposerSavedListState('unavailable');
+    }
+  }, []);
+
+  // SAVE. Saves the CURRENT composerStack (whatever the operator has authored right now) under
+  // `composerSaveName`, with provenance naming the question currently in the box. Never runs the
+  // stack, never touches method_registry.ts. Refreshes the saved-stacks list on success so the new
+  // (or newly versioned) entry shows up immediately without a second manual refresh.
+  const saveComposerStackHandler = useCallback(async () => {
+    const name = composerSaveName.trim();
+    if (!name || composerStack.length === 0 || composerSaving) return;
+    if (!window.amplify?.lianaComposerSaveStack) {
+      setComposerSaveResult({ ok: false, error: 'Preload bridge missing (lianaComposerSaveStack) -- rebuild main and restart the app.' });
+      return;
+    }
+    setComposerSaving(true);
+    try {
+      const res = await window.amplify.lianaComposerSaveStack({
+        name,
+        steps: composerStack,
+        provenance: { runInput: input.trim() },
+      });
+      setComposerSaveResult(res);
+      if (res.ok) void loadComposerSavedStacks();
+    } catch (err) {
+      setComposerSaveResult({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setComposerSaving(false);
+    }
+  }, [composerSaveName, composerStack, composerSaving, input, loadComposerSavedStacks]);
+
+  // LOAD. Replaces composerStack with the saved record's steps, in the SAME order -- the BP150
+  // ordered-elements structure, preserved exactly. Deliberately does NOT auto-run the stack (load
+  // is "put it back in the workbench for review/edit", not "run it again") and does NOT clear the
+  // question box (the operator may want to try the reloaded stack against a different question
+  // than the one it was originally authored against). Also seeds composerSaveName with the
+  // record's own name, so a subsequent edit-then-Save naturally versions forward under Rule 66
+  // instead of the operator having to retype the name to overwrite-with-a-new-version.
+  const loadComposerStackFromSaved = useCallback((stack: LianaComposerStackSummary) => {
+    setComposerStack([...stack.steps]);
+    setComposerSaveName(stack.name);
+    setComposerSaveResult(null);
+  }, []);
+
   // D-BP154-010/BISHOP/S10/seg-thepail -- THE PAIL, lock condition 4: "the evidence we already own
   // is VISIBLE... not orphaned." Same lazy-load-on-open, refreshable-on-demand shape as
   // loadComposerRegistry above. Read-only on the main-process side (summarizeEvidenceStore()) --
@@ -928,10 +1009,11 @@ export function LianaCycleTab() {
         void loadEvidenceStoreSummary();
         void loadFounderProof();
         void loadKnownGoodQueries();
+        void loadComposerSavedStacks();
       }
       return willOpen;
     });
-  }, [loadComposerRegistry, loadEvidenceStoreSummary, loadFounderProof, loadKnownGoodQueries]);
+  }, [loadComposerRegistry, loadEvidenceStoreSummary, loadFounderProof, loadKnownGoodQueries, loadComposerSavedStacks]);
 
   // Add / remove / move-up / move-down -- "That is the whole interaction" (this ticket's own
   // words). Duplicates are allowed on purpose: the Founder's own ask is "iterations galore", and
@@ -2137,6 +2219,96 @@ export function LianaCycleTab() {
                             style={{ background: 'none', border: '1px solid #7f1d1d', borderRadius: 4, color: '#fca5a5', cursor: 'pointer', padding: '2px 6px', fontSize: 11 }}>
                             Remove
                           </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* D-BP167-M0-049/BISHOP/seg-composer-persistence -- SAVE THIS STACK. Writes the
+                    CURRENT composerStack to disk under the given name via composer_store.ts
+                    (Rule 66 versioned, provenance-recorded, never promoted into
+                    method_registry.ts). Disabled when there is nothing to save or no name given,
+                    exactly the same disabled-state discipline the Laboratory's own "Keep" button
+                    (below, elsewhere in this file) already uses. */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif' }}>
+                    Save this stack (so it is here next time, not just this session):
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      type="text"
+                      value={composerSaveName}
+                      onChange={(e) => setComposerSaveName(e.target.value)}
+                      placeholder="Name this stack…"
+                      disabled={composerSaving}
+                      style={{
+                        flex: 1, background: '#0d1117', color: '#e2e8f0', border: '1px solid #1e2a38',
+                        borderRadius: 4, padding: '6px 8px', fontSize: 12, fontFamily: 'system-ui, sans-serif',
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void saveComposerStackHandler()}
+                      disabled={composerStack.length === 0 || !composerSaveName.trim() || composerSaving}
+                      style={{
+                        background: 'none',
+                        border: `1px solid ${composerStack.length === 0 || !composerSaveName.trim() || composerSaving ? '#334155' : '#7dd3fc'}`,
+                        borderRadius: 4,
+                        color: composerStack.length === 0 || !composerSaveName.trim() || composerSaving ? '#334155' : '#7dd3fc',
+                        cursor: composerStack.length === 0 || !composerSaveName.trim() || composerSaving ? 'default' : 'pointer',
+                        padding: '6px 10px', fontSize: 12, fontFamily: 'system-ui, sans-serif',
+                      }}
+                    >
+                      {composerSaving ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                  {composerSaveResult && (
+                    <div style={{ fontSize: 10, fontFamily: 'monospace', color: composerSaveResult.ok ? '#86efac' : '#fca5a5', wordBreak: 'break-word' }}>
+                      {composerSaveResult.ok
+                        ? `saved: ${composerSaveResult.path} (version ${composerSaveResult.version})`
+                        : `NOT saved: ${composerSaveResult.error}`}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+                    <span style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'system-ui, sans-serif' }}>
+                      Saved stacks{composerSavedStacks.length > 0 ? ` (${composerSavedStacks.length})` : ''}:
+                    </span>
+                    <button type="button" onClick={() => void loadComposerSavedStacks()} style={{ background: 'none', border: 'none', color: '#22d3ee', cursor: 'pointer', fontSize: 11 }}>
+                      Refresh
+                    </button>
+                  </div>
+                  {composerSavedListState === 'loading' && (
+                    <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'system-ui, sans-serif' }}>Loading…</div>
+                  )}
+                  {composerSavedListState === 'unavailable' && (
+                    <div style={{ fontSize: 11, color: '#fca5a5', fontFamily: 'system-ui, sans-serif' }}>Preload bridge missing -- rebuild main and restart the app.</div>
+                  )}
+                  {composerSavedListState === 'loaded' && composerSavedStacks.length === 0 && (
+                    <div style={{ fontSize: 11, color: '#475569', fontFamily: 'system-ui, sans-serif', fontStyle: 'italic' }}>None saved yet.</div>
+                  )}
+                  {composerSavedStacks.length > 0 && (
+                    <div style={{ maxHeight: 160, minHeight: 40, overflowY: 'auto', resize: 'vertical', border: '1px solid #1e2a38', borderRadius: 4, padding: 2 }}>
+                      {composerSavedStacks.map((stack) => (
+                        <div key={stack.name} style={{
+                          display: 'flex', flexDirection: 'column', gap: 2, padding: '5px 6px', marginBottom: 3,
+                          background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 4,
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'system-ui, sans-serif', fontWeight: 600, flex: 1 }}>{stack.name}</span>
+                            <span style={{ color: '#475569', fontSize: 10, fontFamily: 'monospace' }}>v{stack.version}</span>
+                            <button type="button" onClick={() => loadComposerStackFromSaved(stack)} title="Load into the stack above"
+                              style={{ background: 'none', border: '1px solid #334155', borderRadius: 4, color: '#7dd3fc', cursor: 'pointer', padding: '2px 8px', fontSize: 11 }}>
+                              Load
+                            </button>
+                          </div>
+                          <div style={{ color: '#64748b', fontSize: 10, fontFamily: 'monospace' }}>
+                            {stack.steps.length} step{stack.steps.length === 1 ? '' : 's'} -- {stack.steps.join(' -> ')}
+                          </div>
+                          <div style={{ color: '#475569', fontSize: 10, fontFamily: 'system-ui, sans-serif' }}>
+                            by {stack.savedBy} · {stack.savedAt} · authored against: {stack.provenance.runInput || '(none recorded)'}
+                          </div>
                         </div>
                       ))}
                     </div>

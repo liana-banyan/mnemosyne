@@ -181,7 +181,7 @@ async function dispatchViaBrain(
       const res = await fetch(`${brain.api_endpoint}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: brain.model_id, messages, stream: false }),
+        body: JSON.stringify({ model: brain.model_id, messages, stream: false, think: false }),
         signal: AbortSignal.timeout(60_000),
       });
       if (!res.ok) {
@@ -1828,6 +1828,7 @@ export function registerAiDispatchIPC(): void {
               model,
               messages: chatMessages,
               stream: true,
+              think: false,
               options: { num_predict: 1024, temperature: 0.7 },
             }),
             signal: queryController.signal,

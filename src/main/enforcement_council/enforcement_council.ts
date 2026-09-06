@@ -2,10 +2,24 @@
  * enforcement_council.ts -- M4 Court Package · Pattern-aware Council
  *
  * BP089 · Mountain 2 · Wave II (M4 confirmed live · Bishop ratification)
+ *
+ * D-BP162-M0-039 CORRECTION (doc-only, no behavior change): D-BP162-M0-034 certified ZERO live
+ * blood-rule violations and found why -- this file's vote() is PURE REGEX/PATTERN MATCHING
+ * (memberVote() below: shard/article/pattern string tests against `req.question`) with NO
+ * `fetch()` to Ollama, and no model of any kind, anywhere in this file. loadPackage() returns a
+ * static `{ version: 'M4-1.0.0', modelTag: 'gemma4:12b' }` object; `modelTag` is metadata carried
+ * on the returned handle, not a driver of any inference call -- nothing in this file reads it to
+ * dial a model. The header below previously described this as provisional ("until then... slots
+ * in when M4 model wire completes"); it was not provisional, it IS the whole implementation, and
+ * has been since M4 shipped. Enforcement is judgment-shaped by definition (deciding whether a
+ * blood-rule was violated), so this is also the CORRECT state per HARDWIRE-22 (Founder verbatim:
+ * "never give gemma anything that requires judgement... make that a blood rule") -- see vote()'s
+ * own doc comment below for what any future model use here would have to route through instead.
+ *
  * loadPackage() returns version 'M4-1.0.0'.
- * vote() uses shard/article/pattern configs to produce deterministic verdicts.
- * Real gemma4:12b inference slots in when M4 model wire completes;
- * until then, rule-based heuristics provide full smoke-test coverage.
+ * vote() uses shard/article/pattern configs to produce deterministic verdicts -- string/regex
+ * matching only, no model call. This IS the Council's actual, permanent decision mechanism, not a
+ * smoke-test stand-in for one.
  *
  * Canon ref: canon_minor_council_star_chamber_free_local_multi_model_consensus_requires_mountain_1_substrate_priming_bp089
  */
@@ -127,8 +141,19 @@ export class EnforcementCouncil {
   /**
    * Run a vote across all 3 Council members.
    * Each member inspects the question using its shard / article / pattern config.
-   * Deterministic rule-based scoring provides full smoke-test coverage.
-   * Real gemma4:12b inference slots in at the model-wire integration pass.
+   * Deterministic rule-based scoring (memberVote() below, regex/string matching only) is this
+   * method's ENTIRE mechanism -- there is no model call to wire in, at this pass or any future
+   * one. D-BP162-M0-039 CORRECTION (doc-only): the prior comment here ("Real gemma4:12b inference
+   * slots in at the model-wire integration pass") described this as a placeholder awaiting a model
+   * wire. It is not a placeholder; adding one would ADD cost and ~6 tok/sec latency for no
+   * measured gain, and would create the exact blood-rule exposure D-BP162-M0-034's zero-violation
+   * certification just found absent. Enforcement is judgment-shaped by definition -- deciding
+   * whether a blood-rule was violated is a judgment call -- so per HARDWIRE-22 (Founder verbatim:
+   * "never give gemma anything that requires judgement... make that a blood rule") this method
+   * must never call gemma4:12b or any raw Gemma tier directly. If a future ticket genuinely needs
+   * model assistance on this path, it must route through a dedicated JUDGMENT MODULE whose
+   * judging steps escalate to a flagship-tier model -- never a raw Gemma adjudication (see
+   * dispatcher.ts's escalateToAdjudicator() for the matching correction on the adjudication side).
    */
   async vote(req: CouncilVoteRequest): Promise<[CouncilVoteTuple, CouncilVoteTuple, CouncilVoteTuple]> {
     const results = this.cfg.members.map(m => this.memberVote(m, req)) as
@@ -272,8 +297,13 @@ export class EnforcementCouncil {
     return { violation: false };
   }
 
-  /** Keep-alive ping to warm the Council model context. */
+  /** D-BP162-M0-039 CORRECTION (doc-only): this is a no-op stub -- the body below does nothing.
+   *  The prior comments here ("Keep-alive ping to warm the Council model context" /
+   *  "M4 wires ollama keep-alive on gemma4:12b") described a future Ollama keep-alive call that
+   *  was never implemented and, per this file's own header correction above, should not be: vote()
+   *  makes no model call for this to keep warm. Left as a stub only because some caller may still
+   *  invoke it by name; it performs no action. */
   async keepWarm(): Promise<void> {
-    // M4 wires ollama keep-alive on gemma4:12b
+    // No-op. There is no model context to warm -- see this method's own doc comment above.
   }
 }

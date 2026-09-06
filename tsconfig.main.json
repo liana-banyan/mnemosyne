@@ -4,5 +4,15 @@
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/main/**/*", "src/shared/**/*"]
+  "include": [
+    "src/main/**/*",
+    "src/shared/**/*",
+    "src/substrate/**/*"
+  ],
+  "exclude": [
+    "**/*.superseded.*.ts",
+    "**/*.superseded.*.tsx",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
 }

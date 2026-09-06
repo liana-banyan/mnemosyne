@@ -1591,6 +1591,11 @@ export function SettingsTab({
       {/* M21: Card 1b: Automatic Updates — below App Version */}
       <AutomaticUpdatesSection />
 
+      {/* D-BP164-M0-002/BISHOP/SEG-DA: Founder BP163 "start on startup" -- own section,
+          self-contained (own state, own IPC calls), same mounting convention as
+          AutomaticUpdatesSection above. */}
+      <OpenAtLoginSection />
+
       {/* BP137 Yoke v2b Stage C: Nexus Authority per-arm picker — new section, self-contained */}
       <NexusAuthoritySettings />
 
@@ -2866,6 +2871,150 @@ const styles = {
     fontWeight: 600,
   },
 };
+
+// ─── D-BP164-M0-002/BISHOP/SEG-DA: Open at Login Section ─────────────────────
+// Founder BP163, verbatim (relayed via D-BP163-M0-050): "And can we build that start on
+// startup into Mnemosynec so it always does that." This is that member-visible toggle --
+// deliberately in Settings, not a Scheduled Task, because a member installing MnemosyneC will
+// never run an elevated PowerShell command (see legacy_autostart_task_detector.ts's header for
+// why the M0-only Scheduled Task stopgap does not ship to anyone else). Default is OFF --
+// justified in open_at_login_settings.ts's own header; this component never overrides that
+// default, it only reflects and changes the member's own election.
+//
+// Reconciliation: the main process refuses to turn this ON while the legacy Scheduled Task is
+// present or its detection query is inconclusive (fail closed -- see
+// applyPreferenceToOS()'s own header). This component surfaces that refusal plainly and shows
+// the ready-to-paste ELEVATED command a human must run themselves; it never attempts removal.
+
+interface OpenAtLoginGetStateResultLocal {
+  ok: boolean;
+  preference: { openAtLogin: boolean };
+  osState: { openAtLogin: boolean; executableWillLaunchAtLogin: boolean };
+  legacyTask: { present: boolean; taskName: string; state?: string; queryError?: string };
+  legacyTaskRemovalCommand: string;
+  error?: string;
+}
+
+interface OpenAtLoginApplyResultLocal {
+  ok: boolean;
+  reason?: 'legacy-task-present' | 'legacy-task-query-inconclusive';
+  preference: { openAtLogin: boolean };
+  osState: { openAtLogin: boolean; executableWillLaunchAtLogin: boolean };
+  legacyTask: { present: boolean; taskName: string; state?: string; queryError?: string };
+}
+
+function OpenAtLoginSection() {
+  const s = styles;
+  const [loaded, setLoaded] = React.useState(false);
+  const [state, setState] = React.useState<OpenAtLoginGetStateResultLocal | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [blockedReason, setBlockedReason] = React.useState<string | null>(null);
+
+  async function refresh(): Promise<void> {
+    try {
+      const result = await (window.amplify as any)?.getOpenAtLoginState?.() as OpenAtLoginGetStateResultLocal | undefined;
+      if (result) setState(result);
+    } catch { /* not available in web / dev */ }
+    setLoaded(true);
+  }
+
+  React.useEffect(() => {
+    let mounted = true;
+    (async () => { await refresh(); if (!mounted) return; })();
+    return () => { mounted = false; };
+  }, []);
+
+  async function handleToggle(checked: boolean): Promise<void> {
+    setBusy(true);
+    setBlockedReason(null);
+    try {
+      const result = await (window.amplify as any)?.setOpenAtLoginState?.(checked) as OpenAtLoginApplyResultLocal | undefined;
+      if (result) {
+        setState((prev) => prev ? { ...prev, preference: result.preference, osState: result.osState, legacyTask: result.legacyTask } : prev);
+        if (!result.ok) {
+          setBlockedReason(
+            result.reason === 'legacy-task-present'
+              ? 'Blocked: a legacy Scheduled Task is already registered to autostart this app. Remove it first (see the command below), or leave this toggle off.'
+              : 'Blocked: could not confirm whether a conflicting Scheduled Task exists, so this refused to enable a second autostart path. Try again, or check the command below.',
+          );
+        }
+      }
+      // Re-read live OS state so the checkbox always reflects reality, not just our optimistic guess.
+      await refresh();
+    } catch { /* dev mode noop */ }
+    setBusy(false);
+  }
+
+  if (!loaded) {
+    return (
+      <section style={s.section}>
+        <div style={s.sectionHeader}>Start MnemosyneC at Login</div>
+        <div style={s.card}>
+          <div style={{ fontSize: 10, color: '#64748b' }}>Loading…</div>
+        </div>
+      </section>
+    );
+  }
+
+  const pref = state?.preference?.openAtLogin ?? false;
+  const legacyPresent = state?.legacyTask?.present ?? false;
+  const legacyInconclusive = !!state?.legacyTask?.queryError;
+  const removalCommand = state?.legacyTaskRemovalCommand ?? '';
+
+  return (
+    <section style={s.section}>
+      <div style={s.sectionHeader}>Start MnemosyneC at Login</div>
+      <div style={s.card}>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: busy ? 'default' : 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={pref}
+            disabled={busy}
+            onChange={(e) => handleToggle(e.target.checked)}
+            style={{ accentColor: '#6ee7b7', marginTop: 1 }}
+          />
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 600, color: '#cbd5e1' }}>
+              Automatically start MnemosyneC when I log in to Windows
+            </div>
+            <div style={{ fontSize: 9, color: '#475569', marginTop: 2, lineHeight: 1.5 }}>
+              Off by default. Uses Windows' own per-user login-item mechanism -- no administrator
+              rights needed, and reversible with one click either way.
+            </div>
+          </div>
+        </label>
+
+        {(legacyPresent || legacyInconclusive) && (
+          <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.3)' }}>
+            <div style={{ fontSize: 10, color: '#f87171', fontWeight: 700, marginBottom: 4 }}>
+              {legacyPresent ? 'A separate autostart entry is already registered on this machine' : 'Could not confirm the autostart entry is clear'}
+            </div>
+            <div style={{ fontSize: 9, color: '#94a3b8', marginBottom: 6, lineHeight: 1.5 }}>
+              This machine has a Windows Scheduled Task ({state?.legacyTask?.taskName}) that also
+              starts MnemosyneC at logon. Running both at once would launch two independent
+              copies of the app. This toggle refuses to turn on while that task is present. To
+              remove it, run this command yourself in an ELEVATED PowerShell window (this app
+              cannot do it for you -- it does not have administrator rights):
+            </div>
+            <div style={{ fontSize: 9, fontFamily: 'monospace', color: '#e2e8f0', background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.25)', borderRadius: 4, padding: '6px 8px', wordBreak: 'break-all', userSelect: 'text' }}>
+              {removalCommand}
+            </div>
+          </div>
+        )}
+
+        {blockedReason && (
+          <div style={{ marginTop: 8, fontSize: 9, color: '#f87171' }}>{blockedReason}</div>
+        )}
+
+        {state?.osState && (
+          <div style={{ marginTop: 8, fontSize: 9, color: '#64748b' }}>
+            Current Windows state: {state.osState.openAtLogin ? 'registered to launch at login' : 'not registered'}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
 
 // ─── SEG-Q-4 BP078: Auto-Prepare FULL Upgrade Panel ──────────────────────────
 

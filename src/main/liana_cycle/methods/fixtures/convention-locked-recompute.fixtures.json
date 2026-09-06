@@ -1,0 +1,15 @@
+{
+  "methodId": "convention-locked-recompute",
+  "fixtures": [
+    {
+      "name": "founding example, dataset question_id 791 (internal qid 20) -- shape fires. run() is NOT exercised here: this method calls a live gemma2:2b model via Ollama inside run() (see file header), and its own hand-written vitest fixtures in convention_locked_recompute.test.ts make the identical choice (grep confirms .run( never appears in that file) -- this fixture asserts shapeTest() only, honestly reported as NOT-RUN by the harness rather than faked or silently skipped.",
+      "qid": 20,
+      "expectShapeMatches": true
+    },
+    {
+      "name": "fewer than 2 options -- shape refuses",
+      "input": { "question": "x", "options": { "A": "foo" } },
+      "expectShapeMatches": false
+    }
+  ]
+}

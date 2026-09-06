@@ -336,10 +336,12 @@ interface BrowserAuthorityExtractionResultMessage {
    *  module recognizes, or when extraction found nothing -- same never-fabricate contract as
    *  `citations` above. */
   results: SearchResultCandidate[];
-  /** D-BP152-050/BISHOP/seg-honest-failure-reasons -- true only when isGoogleChallengeUrl()
-   *  structurally identified the landed page as a Google verification/rate-limit challenge
-   *  (URL-only check, never page prose). Always present (never omitted) on this static
-   *  (Google/Perplexity) extraction path -- see extractBrowserAuthorityAnswer()'s own header. */
+  /** D-BP152-050/BISHOP/seg-honest-failure-reasons, generalized D-BP213-XO-62 -- true only when
+   *  isKnownChallengeUrl() structurally identified the landed page as a KNOWN verification/rate-
+   *  limit challenge (URL-only check via CHALLENGE_URL_RULES, never page prose). Today that table
+   *  has exactly one verified entry (Google's /sorry/ redirect) -- see that table's own header for
+   *  why Perplexity has no entry yet. Always present (never omitted) on this static (Google/
+   *  Perplexity) extraction path -- see extractBrowserAuthorityAnswer()'s own header. */
   challenge: boolean;
 }
 
@@ -400,24 +402,65 @@ function firstNonEmptyTextMatch(selectors: string[]): { text: string; selector: 
 // verification/rate-limit challenge (this file's own R-MECHANISM-VERIFY comment above,
 // GOOGLE_ORGANIC_RESULT_CONTAINER_SELECTORS's header, already documented hitting exactly this
 // redirect live before this ticket existed) -- not a path any genuine search-result page ever
-// uses, so a URL match here cannot collide with a real answer page. Deliberately conservative:
-// this recognizes ONLY the one structural marker actually observed live; it does not attempt to
-// guess at other vendors' or other challenge shapes, per this ticket's own "an honest unknown
-// beats a confidently wrong reason" rule -- a challenge this function does not recognize simply
-// falls through to the existing (unchanged) success/no-match reporting below, not a fabricated
-// 'challenge' verdict. Parses the URL properly (new URL(), same primitive this file already uses
-// elsewhere -- extractCitationsFromElement/extractGoogleOrganicResults above) rather than
-// regex-matching the raw string, and anchors the FULL hostname with `$` -- this closes an exact
-// isolated-verification finding (D-BP152-050 own test pass): a naive
-// `/^https:\/\/(?:www\.)?google\.[a-z.]{2,24}\/sorry\//` would also match a lookalike hostname
-// like "google.com.attacker.net" (its `[a-z.]` class happily spans extra dot-separated labels).
-// Matching on the parsed `url.hostname` with a `$`-anchored pattern cannot be fooled the same way.
-function isGoogleChallengeUrl(url: string): boolean {
+// uses, so a URL match here cannot collide with a real answer page. Parses the URL properly
+// (new URL(), same primitive this file already uses elsewhere -- extractCitationsFromElement/
+// extractGoogleOrganicResults above) rather than regex-matching the raw string, and anchors the
+// FULL hostname with `$` -- this closes an exact isolated-verification finding (D-BP152-050 own
+// test pass): a naive `/^https:\/\/(?:www\.)?google\.[a-z.]{2,24}\/sorry\//` would also match a
+// lookalike hostname like "google.com.attacker.net" (its `[a-z.]` class happily spans extra
+// dot-separated labels). Matching on the parsed `url.hostname` with a `$`-anchored pattern cannot
+// be fooled the same way.
+//
+// D-BP213-XO-62 (this ticket) -- GENERALIZED, table-driven. isKnownChallengeUrl() below is the
+// exact same mechanism as the paragraph above (protocol + parsed hostname + parsed pathname,
+// never page prose), refactored so a SECOND verified vendor rule is a one-entry addition to
+// CHALLENGE_URL_RULES, not a new function. Deliberately conservative, same as before: a challenge
+// shape this table does not recognize simply falls through to the existing (unchanged)
+// success/no-match reporting below, never a fabricated 'challenge' verdict.
+//
+// PERPLEXITY HAS NO ENTRY. This session searched this repo's live code, its `index.ts.
+// superseded.*` history, and every captured fixture on disk (scratchpad/**/*.log, *.json, *.md)
+// for a Perplexity 429/rate-limit/verification-challenge/captcha shape and found none -- the one
+// keyword hit was an unrelated paid-API 401 whose dispatch UUID happened to contain the digits
+// "429c". Founder order for this dispatch: do not visit perplexity.ai live to manufacture one,
+// and a guessed rule is worse than an honestly absent one (false confidence is exactly what this
+// fix exists to remove). The next dispatch that captures and verifies a real Perplexity
+// challenge/throttle page (URL shape, HTTP status, or a stable DOM marker -- never prose) adds
+// ONE entry to CHALLENGE_URL_RULES; nothing else in this function needs to change.
+//
+// Kept byte-identical shape to src/shared/plow/browser_authority_types.ts's own
+// CHALLENGE_URL_RULES/isKnownChallengeUrl -- NOT imported from there. This file's own header
+// above (D-BP154-011) documents why: Electron's sandboxed preload loader does not resolve
+// arbitrary local modules, only what it is given inline, and a relative import here once broke
+// this entire preload script's load (nothing in this file ran again in any sandboxed webview
+// until that import was removed). Drift between the two copies is pinned by
+// browser_authority_types.thread.test.ts's sibling unit-test file for the shared copy plus
+// manual review, the same convention this file already uses for mentionsAnyOption/
+// normalizeForOptionMatch/stripOptionLabelPrefix above.
+interface ChallengeUrlRule {
+  vendor: string;
+  hostnamePattern: RegExp;
+  pathnameMatches: (pathname: string) => boolean;
+}
+
+const CHALLENGE_URL_RULES: readonly ChallengeUrlRule[] = [
+  {
+    vendor: 'google',
+    hostnamePattern: /^(?:www\.)?google\.[a-z]{2,3}(?:\.[a-z]{2})?$/i,
+    pathnameMatches: (pathname) => pathname === '/sorry' || pathname.startsWith('/sorry/'),
+  },
+  // Perplexity: see this section's own header above -- no verified structural rule exists yet.
+  // Add a { vendor: 'perplexity', hostnamePattern: ..., pathnameMatches: ... } entry here, and
+  // ONLY here, once one is captured and verified live.
+];
+
+function isKnownChallengeUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') return false;
-    if (!/^(?:www\.)?google\.[a-z]{2,3}(?:\.[a-z]{2})?$/i.test(parsed.hostname)) return false;
-    return parsed.pathname === '/sorry' || parsed.pathname.startsWith('/sorry/');
+    return CHALLENGE_URL_RULES.some(
+      (rule) => rule.hostnamePattern.test(parsed.hostname) && rule.pathnameMatches(parsed.pathname),
+    );
   } catch {
     return false;
   }
@@ -428,12 +471,12 @@ function extractBrowserAuthorityAnswer(
 ): Omit<BrowserAuthorityExtractionResultMessage, 'results'> {
   const selectors = authority === 'user_perplexity' ? PERPLEXITY_ANSWER_SELECTORS : GOOGLE_ANSWER_SELECTORS;
   const match = firstNonEmptyTextMatch(selectors);
-  // Structural only, URL-based -- see isGoogleChallengeUrl()'s own header above. Computed for
+  // Structural only, URL-based -- see isKnownChallengeUrl()'s own header above. Computed for
   // both branches below (checked regardless of whether a selector happened to match) because a
   // challenge page's own UI chrome text ("Try again", a button label) could in principle satisfy
   // firstNonEmptyTextMatch()'s length/denylist heuristics by accident; the structural URL fact
   // takes priority over that best-effort text match either way.
-  const challenge = window.location.href ? isGoogleChallengeUrl(window.location.href) : false;
+  const challenge = window.location.href ? isKnownChallengeUrl(window.location.href) : false;
 
   if (!match || challenge) {
     return { success: false, authority, snippet: '', sourceUrl: null, selectorUsed: null, citations: [], challenge };

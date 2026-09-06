@@ -2,7 +2,9 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "CommonJS",
-    "lib": ["ES2020"],
+    "lib": [
+      "ES2020"
+    ],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -10,18 +12,39 @@
     "moduleResolution": "node",
     "resolveJsonModule": true,
     "paths": {
-      "caithedral-core/tools/soccerball": ["./node_modules/caithedral-core/dist/main/tools/soccerball_tools"],
-      "caithedral-core/tools/eblit": ["./node_modules/caithedral-core/dist/main/tools/eblit_tools"],
-      "caithedral-core/tools/substrace": ["./node_modules/caithedral-core/dist/main/tools/substrace_tools"],
-      "caithedral-core/tools/quilt": ["./node_modules/caithedral-core/dist/main/tools/quilt_tools"],
-      "caithedral-core/tools/substrate_address": ["./node_modules/caithedral-core/dist/main/tools/substrate_address"],
-      "caithedral-core/tools/dag_soccerball": ["./node_modules/caithedral-core/dist/main/tools/dag_soccerball_tools"],
-      "caithedral-core/dns/wan_soccerball_address": ["./node_modules/caithedral-core/dist/main/dns/wan_soccerball_address"]
+      "caithedral-core/tools/soccerball": [
+        "./node_modules/caithedral-core/dist/main/tools/soccerball_tools"
+      ],
+      "caithedral-core/tools/eblit": [
+        "./node_modules/caithedral-core/dist/main/tools/eblit_tools"
+      ],
+      "caithedral-core/tools/substrace": [
+        "./node_modules/caithedral-core/dist/main/tools/substrace_tools"
+      ],
+      "caithedral-core/tools/quilt": [
+        "./node_modules/caithedral-core/dist/main/tools/quilt_tools"
+      ],
+      "caithedral-core/tools/substrate_address": [
+        "./node_modules/caithedral-core/dist/main/tools/substrate_address"
+      ],
+      "caithedral-core/tools/dag_soccerball": [
+        "./node_modules/caithedral-core/dist/main/tools/dag_soccerball_tools"
+      ],
+      "caithedral-core/dns/wan_soccerball_address": [
+        "./node_modules/caithedral-core/dist/main/dns/wan_soccerball_address"
+      ]
     },
     "outDir": "./dist/main",
     "rootDir": "./src/main",
     "sourceMap": true
   },
-  "include": ["src/main/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/main/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.superseded.*.ts",
+    "**/*.superseded.*.tsx"
+  ]
 }

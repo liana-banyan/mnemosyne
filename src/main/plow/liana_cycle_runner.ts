@@ -52,7 +52,50 @@
 
 import type { VerifiedEbletEntry } from '../mnem_eblet_store';
 import type { CoronerRecord, LocalCoronerOutcomeInput } from './answer_coroner';
-import { classifyLocalOutcome } from './answer_coroner';
+import { classifyLocalOutcome, LIANA_ARM_TRACE_MARKER } from './answer_coroner';
+
+/**
+ * D-BP208-BM01-012. A VISIBLY SYNTHETIC traceSummary for the Coroner.
+ *
+ * WHAT WAS WRONG. This file has always passed its `answer` object straight in as `plowTrace`, and
+ * that object carries no `traceSummary`. `classifyCore()` decides an outcome's class by
+ * string-matching that field, so EVERY branch it gates was false for this arm and its outcomes
+ * came out as `honest-abstain`, `single-shot-wrong` and `single-shot-right` -- measured at
+ * D-BP208-BM01-009. `single-shot-wrong` means "no plow ran, answeredBy=single_shot (or unset)",
+ * so this arm's misses were being attributed to a mechanism it never used.
+ *
+ * THIS IS NOT A PLOW TRACE AND MUST NEVER BE READ AS ONE. It is built here, from this arm's own
+ * fields, and it says so in its own text. The marker is what unlocks the liana-cycle-* classes in
+ * answer_coroner.ts; nothing written before this dispatch carries it, which is what makes the
+ * change additive.
+ *
+ * D-BP208-BM01-0f202922-002: EXPORTED, so the SWEEP arm can call the same builder instead of
+ * carrying its own copy. `mmlu_pro_liana_cycle_sweep.cjs` decides each item's outcome itself and
+ * had no coroner call at all (t-5ef38f48). Wiring it without THIS would have handed the Coroner a
+ * traceSummary-less object and reproduced the exact mis-classification D-BP208-BM01-012 just
+ * fixed -- `single-shot-wrong` on an arm that never ran a plow. Two copies of this rule would
+ * drift the moment either is touched, which is the Founder's standing downchain rule: whatever you
+ * fix for one arm you fix for the whole chain. One builder, two callers.
+ */
+export function buildSyntheticLianaTraceSummary(
+  a: Record<string, unknown>,
+  // D-BP208-BM01-0f202922-002: the caller names ITSELF here. This string is stamped into a receipt
+  // that outlives the run, and a sweep receipt claiming `source=liana_cycle_runner.ts` would be a
+  // small, permanent lie about its own provenance. Defaulted, so every existing call is unchanged.
+  source: string = 'liana_cycle_runner.ts',
+): string {
+  const method = typeof a.method === 'string' ? a.method : 'none';
+  const basis = typeof a.basis === 'string' ? a.basis : '';
+  const abstain = a.abstain === true;
+  return [
+    LIANA_ARM_TRACE_MARKER,
+    `source=${source}`,
+    'NOT_A_PLOW_TRACE',
+    `method=${method}`,
+    `abstain=${abstain}`,
+    basis ? `basis=${basis.slice(0, 160)}` : 'basis=none',
+  ].join(' ');
+}
 // KN-BP142-10: the Rooting Rule (canon BP142) made structural. The SAME shared tier
 // classification/ROOTED predicate that gates mnem_eblet_store.ts's computeHonestVerification()
 // (the verified:true write gate) also gates mintLedgerMark() below (the Mark-mint write gate),
@@ -225,6 +268,13 @@ export type MissType = 'compute-decompose-type' | 'conceptual-authority-type' | 
 const COMPUTE_DECOMPOSE_MISS_CLASSES = new Set(['compute-wrong', 'bad-decomposition']);
 const CONCEPTUAL_AUTHORITY_MISS_CLASSES = new Set([
   'authority-empty', 'coverage-gap', 'ungrounded-adjudication', 'plow-discordant',
+  // D-BP206-M0-h2cbp11qc-001, board card seq 149. Added in the SAME dispatch that split
+  // 'plow-unanimous-wrong' out of 'plow-discordant' in answer_coroner.ts, because this Set is
+  // typed Set<string> rather than Set<WrongClass> and would NOT have failed the typecheck: a
+  // confidently-wrong unanimous plow would have quietly dropped out of the conceptual/authority
+  // TYPE bucket and into the abstain-or-other catch-all, and nothing anywhere would have said so.
+  // That is the same silent-miscategorization defect the card exists to fix, one layer down.
+  'plow-unanimous-wrong',
   'substrate-gap', 'single-shot-wrong', 'minor-council-wrong',
 ]);
 
@@ -687,7 +737,13 @@ export async function runLianaCycleTurn(
       isAbstain: chosenLetter === null,
       answeredBy: 'liana_cycle_runner',
       peerId,
-      plowTrace: answer as unknown as Record<string, unknown>,
+      // D-BP208-BM01-012: the arm's own fields, PLUS a visibly synthetic traceSummary so the
+      // Coroner classifies on evidence instead of falling through every gate to a default.
+      plowTrace: {
+        ...(answer as unknown as Record<string, unknown>),
+        traceSummary: buildSyntheticLianaTraceSummary(answer as unknown as Record<string, unknown>),
+        traceSummarySynthetic: true,
+      },
     };
     let record = classifyLocalOutcome(outcomeInput);
 
@@ -750,7 +806,13 @@ export async function runLianaCycleTurn(
           isAbstain: escalatedChosenLetter === null,
           answeredBy: 'liana_cycle_runner_escalated',
           peerId,
-          plowTrace: escalatedAnswer as unknown as Record<string, unknown>,
+          // D-BP208-BM01-012: same synthetic traceSummary on the escalated answer, or the
+          // escalation path would keep the old degenerate labels while the base path moved.
+          plowTrace: {
+            ...(escalatedAnswer as unknown as Record<string, unknown>),
+            traceSummary: buildSyntheticLianaTraceSummary(escalatedAnswer as unknown as Record<string, unknown>),
+            traceSummarySynthetic: true,
+          },
         };
         const escalatedRecord = classifyLocalOutcome(escalatedOutcomeInput);
         escalatedAnswerClass = escalatedRecord.answerClass;

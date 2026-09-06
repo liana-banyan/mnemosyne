@@ -43,12 +43,40 @@ describe('state_the_question_step.ts -- registration is inert', () => {
     }
   });
 
-  test('registering StateTheQuestion:1 alongside registerKnownMethods() does not disturb the pre-existing ten entries', async () => {
+  // D-BP164-M0-114/BISHOP/M0/seg-resume -- counts bumped from ten/eleven to fifteen/sixteen: five
+  // entries (IdentifyUntaught, InferUntaught, LocateInFrameworkUntaught, ArithmeticCascade,
+  // Stage3SymbolicCascade) were added to ../method_registry.ts's registerKnownMethods() to close
+  // the gap between that catalog and the 8 already-live LianaMethod entries the executable
+  // registry holds. See that file's own "D-BP164-M0-114" section for the full account. This test's
+  // own assertion (StateTheQuestion:1 coexists, undisturbed, alongside the pre-existing entries) is
+  // unchanged in kind -- only the base count moved.
+  //
+  // D-BP167-M0-056/BISHOP-M0/SEG -- counts bumped AGAIN, seventeen/eighteen: D-BP165-M0-022 added
+  // two more entries (ComputeGemmaCascade:1, ComputeSelectCascade:1) to registerKnownMethods()
+  // without updating this test, drift caught during a liana_cycle suite diagnosis. Verified against
+  // ../method_registry.ts's own registerKnownMethods() (its doc comment there says "the SEVENTEEN
+  // pre-existing entries") and confirmed 17 is what the function actually returns. This is the
+  // SAME drift class as method_registry.test.ts and library/survey_steps.test.ts (23 vs 21) --
+  // see D-BP167-M0-056's own SEG return for the full account.
+  //
+  // D-BP207-SEG-A, card t-00173320 -- counts bumped AGAIN, twenty-one/twenty-two. This card was
+  // carded as "THE LIANA CYCLE TEST SUITE IS NON-DETERMINISTIC," but MEASURED, live, on the current
+  // vitest 4.1.9: this test fails DETERMINISTICALLY even run completely alone, with
+  // `--no-file-parallelism`, every time -- not flaky, not order-dependent. D-BP168-M0-126 (a later,
+  // unrelated dispatch) added FOUR more entries to ../method_registry.ts's registerKnownMethods()
+  // (PythagoreanTheoremCascade:1, QuadraticFormulaCascade:1, PermutationCombinationCascade:1,
+  // LawOfCosinesCascade:1 -- confirmed by direct read of that function and by calling it against the
+  // compiled dist: returns exactly 21 identities today) without updating this test -- the SAME
+  // drift class the two comments above already describe, recurring a third time. This is bucket-1
+  // (stale count), not bucket-3 (singleton pollution); the card's own "reset the registry between
+  // tests" diagnosis does not apply to this specific assertion. The doc comment's "seventeen" is
+  // now itself stale too and is corrected here.
+  test('registering StateTheQuestion:1 alongside registerKnownMethods() does not disturb the pre-existing twenty-one entries', async () => {
     const { registry, step } = await freshModules();
     const known = registry.registerKnownMethods();
     step.registerStateTheQuestionStep();
-    expect(registry.listAllEntries().length).toBe(11);
-    expect(known.length).toBe(10); // registerKnownMethods() itself still returns exactly ten
+    expect(registry.listAllEntries().length).toBe(22);
+    expect(known.length).toBe(21); // registerKnownMethods() itself still returns exactly twenty-one
     expect(registry.lookupById('StateTheQuestion:1')).toBeTruthy();
     expect(registry.lookupById('Survey:1')).toBeTruthy();
   });

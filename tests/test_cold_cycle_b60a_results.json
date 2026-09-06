@@ -1,0 +1,77 @@
+{
+  "suite": "cold-cycle-b60a",
+  "session": "BP037",
+  "bushel": "60-A",
+  "pass_count": 5,
+  "total": 5,
+  "all_pass": true,
+  "gates": [
+    {
+      "id": "G-COLD-START",
+      "name": "Cold-start: Sprite spin-up from clean cluster → first-success delivery",
+      "passed": true,
+      "details": {
+        "canary_delivered": true,
+        "state_coherence_ok": true,
+        "canary_latency_ms": 6,
+        "stale_files_cleared": 0
+      },
+      "errors": []
+    },
+    {
+      "id": "G-UPDATE",
+      "name": "Update path: in-flight Sprite resigned + re-fired, no zombie",
+      "passed": true,
+      "details": {
+        "resolution": "resigned_and_refired",
+        "new_dispatch_id": "upd-upd-test-mt3cmsud",
+        "v1_on_disk": false,
+        "v2_on_disk": true,
+        "errors_in_receipt": []
+      },
+      "errors": []
+    },
+    {
+      "id": "G-BORROW",
+      "name": "Borrow path: cross-cluster pane lease auto-releases within ≤1 blink",
+      "passed": true,
+      "details": {
+        "lease_id": "f489c8f1-d4fd-4ed9-b626-7f4a1671a32f",
+        "blink_duration_ms": 80,
+        "wait_ms": 102,
+        "auto_released": true,
+        "release_latency_ms": 8,
+        "pane_still_leased_post_release": false
+      },
+      "errors": []
+    },
+    {
+      "id": "G-WARM-REGRESSION",
+      "name": "Warm-path regression: T1-T4 all pass after cold-cycle additions",
+      "passed": true,
+      "details": {
+        "sub_tests": [
+          "T1-single-delivery",
+          "T2-3sprite-race",
+          "T3-throughput",
+          "T4-intra-reject"
+        ]
+      },
+      "errors": []
+    },
+    {
+      "id": "G-INTEGRATION",
+      "name": "Integration: cold→warm→update→borrow full lifecycle",
+      "passed": true,
+      "details": {
+        "cold_delivered": true,
+        "warm_dispatches": 5,
+        "update_resolution": "resigned_and_refired",
+        "borrow_auto_released": true
+      },
+      "errors": []
+    }
+  ],
+  "substrate_root": "C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\lb_cold_cycle_b60a_1787340915353",
+  "ts": "2026-08-21T19:35:15.871Z"
+}

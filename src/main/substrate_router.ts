@@ -402,6 +402,7 @@ export class SubstrateRouter {
           model,
           prompt: query,
           stream: false,
+          think: false,
           options: { num_predict: 200 },
         }),
         signal: controller.signal,

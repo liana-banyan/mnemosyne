@@ -118,7 +118,7 @@ async function ollamaGenerate(
   const res = await fetch(`${baseUrl}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, prompt, stream: false }),
+    body: JSON.stringify({ model, prompt, stream: false, think: false }),
     signal: AbortSignal.timeout(effectiveTimeoutMs),
   });
   const text = await res.text();

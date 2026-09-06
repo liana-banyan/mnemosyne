@@ -83,6 +83,10 @@ import type {
   CrystalLogRecord,
   BindResult,
   ResolvedChonk,
+  CrystalMintMeta,
+  CrystalPowerState,
+  GuardedResolveResult,
+  PowerStateResult,
 } from "./crystal_types";
 
 // ─── Storage location ──────────────────────────────────────────────────────
@@ -266,13 +270,37 @@ function appendRecord(rec: CrystalLogRecord): void {
 /**
  * mintChonk -- register a chonk handle. Idempotent: re-minting the same pearl set is a
  * no-op that returns the existing address rather than writing a duplicate 'mint' record.
+ *
+ * BP162 D-BP162-M0-031: `meta` is a NEW, OPTIONAL second parameter carrying the six
+ * Keystone Connector Typing fields (crystalType/crystalColor/graySubShade/whiteSubShade/
+ * keystoneMaterial/powerState). Omitting it entirely (every pre-BP162 call site does)
+ * produces the EXACT same record shape as before -- the mint record literal below starts
+ * from the original 5-key object and only gains extra keys when `meta` supplies them.
+ * `meta` NEVER reaches deriveMintAddress(); the sid above is derived from `pearls` alone,
+ * computed before `meta` is even inspected.
+ *
+ * Re-minting an ALREADY-minted sid with a different `meta` is intentionally a no-op here
+ * (matching the pre-existing alreadyMinted guard's own idempotent-no-op-on-repeat
+ * semantics) -- typing/retyping a Crystal after its first mint, or re-grading its
+ * Keystone's material, is out of scope for this dispatch and is left as an explicit,
+ * documented follow-up (D-BP162-M0-025 section 2 recommends routing it through
+ * mutateChonkBinding()-shaped governance); it is not silently attempted here.
  */
-function mintChonk(pearls: string[]): string {
+function mintChonk(pearls: string[], meta?: CrystalMintMeta): string {
   const sid = deriveMintAddress(pearls);
   const existing = readAllRecords();
   const alreadyMinted = existing.some((r) => r.op === "mint" && r.sid === sid);
   if (!alreadyMinted) {
-    appendRecord({ v: 1, op: "mint", sid, ts: utcTs(), pearls: [...pearls].sort() });
+    const rec: CrystalLogRecord = { v: 1, op: "mint", sid, ts: utcTs(), pearls: [...pearls].sort() };
+    if (meta) {
+      if (meta.crystalType !== undefined) rec.crystalType = meta.crystalType;
+      if (meta.crystalColor !== undefined) rec.crystalColor = meta.crystalColor;
+      if (meta.graySubShade !== undefined) rec.graySubShade = meta.graySubShade;
+      if (meta.whiteSubShade !== undefined) rec.whiteSubShade = meta.whiteSubShade;
+      if (meta.keystoneMaterial !== undefined) rec.keystoneMaterial = meta.keystoneMaterial;
+      if (meta.powerState !== undefined) rec.powerState = meta.powerState;
+    }
+    appendRecord(rec);
   }
   return sid;
 }
@@ -299,7 +327,116 @@ function resolveChonk(sid: string): ResolvedChonk | null {
       bindings[r.key] = r.target;
     }
   }
-  return { sid, pearls: mintRec.pearls, bindings };
+  const result: ResolvedChonk = { sid, pearls: mintRec.pearls, bindings };
+  // BP162 D-BP162-M0-031: additive-only. Each key below is set ONLY when the mint record
+  // actually carries it, so a pre-BP162 mint record (none of these six keys ever present)
+  // resolves to the exact same {sid, pearls, bindings} object shape as before this change --
+  // no new keys appear on old data. This function does NOT gate on powerState; it always
+  // returns the full replay regardless of ON/OFF, exactly as it did pre-BP162 for every
+  // existing caller. See resolveChonkGuarded() below for the power-aware entry point.
+  if (mintRec.crystalType !== undefined) result.crystalType = mintRec.crystalType;
+  if (mintRec.crystalColor !== undefined) result.crystalColor = mintRec.crystalColor;
+  if (mintRec.graySubShade !== undefined) result.graySubShade = mintRec.graySubShade;
+  if (mintRec.whiteSubShade !== undefined) result.whiteSubShade = mintRec.whiteSubShade;
+  if (mintRec.keystoneMaterial !== undefined) result.keystoneMaterial = mintRec.keystoneMaterial;
+  return result;
+}
+
+// ─── Power state -- BP162 D-BP162-M0-031, additive, governed ──────────────
+
+/**
+ * currentPowerState -- folds the latest 'power' record (if any) over the mint record's own
+ * optional initial powerState, defaulting to "ON". Pure read, no I/O beyond readAllRecords.
+ * A sid with no mint record has no meaningful power state; callers that care already check
+ * resolveChonk()/resolveChonkGuarded() for existence first.
+ */
+function currentPowerState(sid: string): CrystalPowerState {
+  const records = readAllRecords().filter((r) => r.sid === sid);
+  let latest: CrystalPowerState | undefined;
+  let latestTs = "";
+  for (const r of records) {
+    if (r.op === "power" && r.powerState && r.ts >= latestTs) {
+      latest = r.powerState;
+      latestTs = r.ts;
+    }
+  }
+  if (latest) return latest;
+  const mintRec = records.find((r) => r.op === "mint");
+  return (mintRec && mintRec.powerState) || "ON";
+}
+
+/**
+ * resolveChonkGuarded -- the power-aware resolution entry point. Distinguishes:
+ *   - never minted:            { found: false, poweredOff: false, chonk: null }
+ *   - minted, currently OFF:   { found: true,  poweredOff: true,  chonk: null }
+ *   - minted, currently ON:    { found: true,  poweredOff: false, chonk: <ResolvedChonk> }
+ * "Powered-down MUST mean its connectors do not resolve, while the Crystal and all its
+ * files remain on disk untouched" (Founder ruling, D-BP162-M0-025 section 5): this function
+ * enforces exactly that -- when OFF, `chonk` is withheld (bindings do not resolve to a
+ * caller) but nothing on disk is read differently, touched, or deleted. resolveChonk()
+ * itself is left completely unchanged (see its own comment above) so every pre-BP162 caller
+ * keeps its exact existing null/non-null contract; this is a NEW, additional function.
+ */
+function resolveChonkGuarded(sid: string): GuardedResolveResult {
+  const chonk = resolveChonk(sid);
+  if (!chonk) {
+    return { sid, found: false, poweredOff: false, powerState: "ON", chonk: null };
+  }
+  const powerState = currentPowerState(sid);
+  if (powerState === "OFF") {
+    return { sid, found: true, poweredOff: true, powerState, chonk: null };
+  }
+  return { sid, found: true, poweredOff: false, powerState, chonk };
+}
+
+/**
+ * setCrystalPowerState -- the ONLY way a Crystal's power state changes after mint. Governed
+ * the same way mutateChonkBinding() governs a binding change: one of the three named
+ * MutationReason values, plus a non-empty audit note. Never overwrites anything in place --
+ * appends a NEW 'power' record to the log (see currentPowerState()'s fold-latest-wins read
+ * above). Nothing under CRYSTAL_DIR is deleted or rewritten by this function; it only ever
+ * appends one line to crystal_log.jsonl.
+ */
+function setCrystalPowerState(
+  sid: string,
+  powerState: CrystalPowerState,
+  reason: MutationReason,
+  note: string
+): PowerStateResult {
+  if (!isMutationReason(reason)) {
+    return {
+      ok: false,
+      sid,
+      powerState: null,
+      accepted: "rejected-invalid-reason",
+      error: `"${String(reason)}" is not a permitted mutation reason`,
+    };
+  }
+  if (!note || !note.trim()) {
+    return {
+      ok: false,
+      sid,
+      powerState: null,
+      accepted: "rejected-invalid-reason",
+      error: "setCrystalPowerState requires a non-empty note for the audit trail",
+    };
+  }
+  const current = resolveChonk(sid);
+  if (!current) {
+    return {
+      ok: false,
+      sid,
+      powerState: null,
+      accepted: "rejected-not-minted",
+      error: `sid ${sid} was never minted -- call mintChonk() first`,
+    };
+  }
+  const existingState = currentPowerState(sid);
+  if (existingState === powerState) {
+    return { ok: true, sid, powerState, accepted: "idempotent-noop" };
+  }
+  appendRecord({ v: 1, op: "power", sid, ts: utcTs(), powerState, reason, note });
+  return { ok: true, sid, powerState, accepted: "powered" };
 }
 
 // ─── bindChonk -- THE CHANGE GATE, DEFAULT (ADDITIVE) PATH ─────────────────
@@ -426,6 +563,10 @@ module.exports = {
   bindChonk,
   mutateChonkBinding,
   crystalStats,
+  // BP162 D-BP162-M0-031 additions -- see each function's own doc comment above.
+  resolveChonkGuarded,
+  setCrystalPowerState,
+  currentPowerState,
 };
 
 

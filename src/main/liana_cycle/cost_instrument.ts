@@ -90,6 +90,13 @@ import os from 'node:os';
 import { readFileSync } from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AskGoogleFn } from './method_registry';
+// D-BP165-M0-007: same cap discipline (2000 chars, first-N, original length + truncated flag
+// always recorded) compute_sidecar.ts's own per-sample capture uses, reused here rather than a
+// second, potentially-diverging implementation -- see compute_sidecar.ts's own header comment on
+// capRawModelOutput() for the full rationale. Only the SHAPE is imported here (the type); a caller
+// wanting to CAP text calls compute_sidecar.ts's own capRawModelOutput() before ever reaching
+// recordLlmCall() -- this file never caps a second time (see recordLlmCall's own doc comment).
+import type { CappedRawOutput } from '../plow/compute_sidecar';
 
 export interface GoogleCallCostRecord {
   callIndex: number;
@@ -313,6 +320,18 @@ export interface LlmCallCostRecord {
      *  alone. Null when no counterfactual could be priced. */
     counterfactual_model: string | null;
   };
+  /** D-BP165-M0-007, ADDITIVE OPTIONAL FIELD. LAW 2 finding this dispatch: this interface had NO
+   *  text field at all before this line -- a real Ollama completion (ok, rejected, or disagreeing)
+   *  was priced and timed but its actual content was never captured anywhere, making a rejected
+   *  run undiagnosable (see this file's own D-BP165-M0-007 header note, and
+   *  compute_sidecar.ts's matching capRawModelOutput()). Optional and undefined on every
+   *  pre-existing call site (comparative_cascade.ts's gemmaExtract(), compute_gemma_cascade.ts's
+   *  computeGemmaCallModel()) that does not pass it -- this field's absence changes nothing about
+   *  those callers. Capped at RAW_MODEL_OUTPUT_CAP_CHARS (2000) chars, first-N, with
+   *  originalLength/truncated always recorded -- see compute_sidecar.ts's capRawModelOutput() for
+   *  the single shared implementation. Null when the call produced no text at all (a transport/
+   *  HTTP failure) as opposed to undefined when the caller simply did not opt in to capturing it. */
+  rawOutput?: CappedRawOutput | null;
 }
 
 export interface LlmCostSummary {
@@ -466,6 +485,11 @@ export function recordLlmCall(input: {
   ts_end: string;
   latency_ms: number;
   tokens: LlmCallCostRecord['tokens'];
+  /** D-BP165-M0-007, ADDITIVE OPTIONAL PARAMETER -- see LlmCallCostRecord.rawOutput's own doc
+   *  comment. Every pre-existing call site omits this and is unaffected (undefined in, undefined
+   *  out below). Pass the ALREADY-CAPPED result of compute_sidecar.ts's capRawModelOutput() --
+   *  this function does not cap a second time, it only threads the field through. */
+  rawOutput?: CappedRawOutput | null;
 }): LlmCallCostRecord {
   const store = llmLedgerStorage.getStore();
   let dollars: LlmCallCostRecord['dollars'];
@@ -496,6 +520,7 @@ export function recordLlmCall(input: {
     leg: 'gemma-ollama-local-llm',
     tokens: input.tokens,
     dollars,
+    ...(input.rawOutput !== undefined ? { rawOutput: input.rawOutput } : {}),
   };
   if (store) {
     store.push(record);
@@ -503,6 +528,20 @@ export function recordLlmCall(input: {
     console.warn('[CostInstrument] recordLlmCall() invoked outside runWithLlmCostLedger() -- record computed but not attached to any run\'s ledger (expected for a standalone script or a test calling gemmaExtract() directly).');
   }
   return record;
+}
+
+/** D-BP200-M0-025, ADDITIVE EXPORT. Returns the LIVE array backing the currently-active
+ *  AsyncLocalStorage ledger scope (the same store recordLlmCall() pushes onto), or null when no
+ *  runWithLlmCostLedger() scope is active. Read-only use intended: a caller can snapshot
+ *  `.length` before doing work and diff against a later snapshot to attribute a SUBSET of an
+ *  in-flight ledger's records to one internal sub-step (e.g. plow_mc_answerer.ts's
+ *  PLOW_ESCALATE_ON_VERBOSE needing to know just its own cheap first pass's output-token count
+ *  without disturbing the outer harness's single whole-item ledger). Does not copy the array, so
+ *  mutating the returned reference would corrupt the real ledger -- callers must only read it.
+ *  Added because llmLedgerStorage itself is module-private by design (AsyncLocalStorage should
+ *  not be handed out raw); this is a narrow, read-only peephole onto it, not a new sink. */
+export function getCurrentLlmLedgerSnapshot(): LlmCallCostRecord[] | null {
+  return llmLedgerStorage.getStore() ?? null;
 }
 
 /** Rolls a run's own LLM cost ledger up into a summary. Pure arithmetic over records already

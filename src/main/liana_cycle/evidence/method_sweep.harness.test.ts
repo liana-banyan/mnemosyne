@@ -73,6 +73,13 @@ interface MethodSweepResult {
   abstain: boolean;
   /** Set when the method threw rather than returning an outcome. A throw is a finding. */
   threw: string | null;
+  /** D-BP220-BM0-006/BISHOP-SEG, ADDITIVE, 2026-09-05 -- true only for a method carrying
+   *  `quarantined: true` (method_registry.ts). Such a method is NOT swept (its run() is never
+   *  called at all here) because its run() now unconditionally throws a quarantine refusal, by
+   *  design, on every call -- that is not a finding about THIS question, it is a standing fence.
+   *  See methods/set_equivalence_match.ts for the first (and, as of this writing, only) example
+   *  and the measured reason it is fenced. Absent/false for every other method. */
+  quarantined?: boolean;
 }
 
 describe(`METHOD SWEEP -- qid ${QID} against every registered method`, () => {
@@ -94,6 +101,28 @@ describe(`METHOD SWEEP -- qid ${QID} against every registered method`, () => {
     try {
       for (const method of listMethods()) {
         if (!method.run) continue;
+
+        // D-BP220-BM0-006/BISHOP-SEG, 2026-09-05 -- QUARANTINE GATE. A quarantined method's run()
+        // now throws unconditionally, on every call, by design (see MethodSweepResult.quarantined
+        // above) -- calling it here would not measure anything about THIS question, it would just
+        // re-demonstrate the standing fence every single sweep. Recorded as its own row (never
+        // silently dropped) so the report still names every registered method, but genuinely not
+        // swept: zero queries issued, no verdict, no throw recorded against it.
+        if (method.quarantined) {
+          results.push({
+            methodId: method.id,
+            methodName: method.name,
+            demand: method.demand,
+            queriesAsked: [],
+            queryCount: 0,
+            shape: deriveRunShape([], { qid: parsed.qid, verdict: null, abstain: true, error: 'quarantined -- not swept', method: method.id }),
+            verdict: null,
+            abstain: true,
+            threw: null,
+            quarantined: true,
+          });
+          continue;
+        }
 
         const events: LianaTerminalEvent[] = [];
         const session = newAcquisitionSession({
@@ -151,6 +180,14 @@ describe(`METHOD SWEEP -- qid ${QID} against every registered method`, () => {
     for (const r of results) {
       lines.push('='.repeat(78));
       lines.push(`METHOD: ${r.methodId}  (${r.methodName})   serves demand: ${r.demand}`);
+      if (r.quarantined) {
+        lines.push('  *** QUARANTINED -- NOT SWEPT. This method\'s run() throws a refusal on every');
+        lines.push('      call by design (see method_registry.ts\'s `quarantined` field and this');
+        lines.push('      method\'s own file header for the measured reason). Calling it here would');
+        lines.push('      not be a finding about this question, only a repeat of the standing fence.');
+        lines.push('');
+        continue;
+      }
       lines.push(`  stopped at: ${r.shape.stoppedAt || '(no result event)'}`);
       lines.push(`  last stage: ${r.shape.lastStage || '(none)'}`);
       lines.push(`  verdict: ${r.verdict ?? 'none'}   abstain: ${r.abstain}${r.threw ? `   THREW: ${r.threw}` : ''}`);

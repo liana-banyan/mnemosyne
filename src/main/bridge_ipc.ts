@@ -66,6 +66,7 @@ export function registerBridgeIPC(): void {
               model: 'gemma2:2b',
               prompt: body,
               stream: false,
+              think: false,
               options: { num_predict: 512, temperature: 0.7 },
             }),
           });

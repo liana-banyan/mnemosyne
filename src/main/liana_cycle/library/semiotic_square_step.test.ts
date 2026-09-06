@@ -194,6 +194,10 @@ describe('qid 85 (real corpus text) -- the axis the mechanism actually mines, tr
 // ─────────────────────── registration/wiring smoke test ───────────────────────
 
 describe('registration/wiring smoke test', () => {
+  // D-BP207-SEG-A, card t-00173320. Same measured contention finding as
+  // borromean_test.test.ts's identical smoke test -- see that file's own comment for the full
+  // account (D-BP168-M0-114's diagnosis, confirmed again this dispatch on a full-suite run).
+  // Per-test timeout raised, code under test unchanged.
   test('SemioticSquare:1 is registered and executable', async () => {
     const { registerSemioticSquareStep } = await import('./semiotic_square_step');
     const { listComposerRegistry } = await import('./script_bridge');
@@ -202,5 +206,5 @@ describe('registration/wiring smoke test', () => {
     const entry = entries.find((e) => e.id === 'SemioticSquare:1');
     expect(entry).toBeDefined();
     expect(entry?.executable).toBe(true);
-  });
+  }, 20000);
 });

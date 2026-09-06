@@ -1,0 +1,26 @@
+{
+  "methodId": "umbrella-or-school-check",
+  "fixtures": [
+    {
+      "name": "founding example, dataset question_id 5152 (internal qid 92) -- shape fires, run() returns the honest UMBRELLA=true BOTH-LIVE (B and E) low-confidence abstain, never a forced single letter",
+      "qid": 92,
+      "expectShapeMatches": true,
+      "runModelFree": true,
+      "expectAbstain": true,
+      "expectVerdict": null
+    },
+    {
+      "name": "fewer than 2 options -- shape refuses",
+      "input": { "question": "Within Critical Security Studies, x?", "options": { "A": "foo" } },
+      "expectShapeMatches": false
+    },
+    {
+      "name": "no attribution operator in the stem -- shape refuses",
+      "input": {
+        "question": "What is the capital of France?",
+        "options": { "A": "Paris", "B": "London", "C": "Berlin" }
+      },
+      "expectShapeMatches": false
+    }
+  ]
+}

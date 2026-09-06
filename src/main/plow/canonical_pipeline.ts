@@ -26,9 +26,17 @@
  * Caithedral™ spelling per BP081 blood statute.
  */
 
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { type CandidateEblet, type SpecialistKeys, SPECIALIST_REGISTRY, type SpecialistName } from './specialist_adapters';
+// D-BP220-BM0-014 Stage 1 (durable-write projection guard): runScribe below accepts
+// DurableWritable[], never raw CandidateEblet[], so a future call site that still has raw
+// candidates must route them through toDurableWritable() (which refuses UNTRUSTED ones)
+// before it can even compile -- see specialist_adapters.ts's own doc comment on both.
+import { type DurableWritable, toDurableWritable } from './specialist_adapters';
 import { getOperatorsForDomain } from './domain_operator_map';
+// D-BP219-BM0-034: ore capture for Stage 5/6 discards (Saladin-challenged + Furnace-cap
+// overflow). See ore_store.ts's own header for the full leak trace and design rationale.
+import { buildOreRecord, writeOreRecords, type OreRecord, type OreCandidateInput } from './ore_store';
 // KN-BP144-8 Phase 1: rooting_rule.ts has zero imports of its own (confirmed dependency-free,
 // no circular-import risk) -- used by runCanonicalFreeTextQuestion's substrate-first gate below.
 import { type RootingTier, classifyCorroborationTier, isRooted } from '../rooting_rule';
@@ -48,7 +56,17 @@ import { OPENAI_COMPAT_SERVER_HOST, OPENAI_COMPAT_SERVER_PORT, readCurrentToken 
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ConcordanceClass = 'CONCORDANT' | 'PARTIAL' | 'DISCORDANT';
+// D-BP167-M0-036: 'NO_VOTER_OUTPUT' is a NEW, FOURTH member, added alongside the pre-existing
+// three (never replacing 'DISCORDANT') -- measured defect (qid 4632, the Founder's own n=5 run,
+// mmlu_pro_plow_subset_report_D-BP166-M0-045_VOTEONLY_CONDA_n5.json.checkpoint.jsonl): three
+// voters that each produced NO PARSEABLE LETTER (voterLetters:[null,null,null]) were reported
+// as concordance:'DISCORDANT', the same word used for voters that genuinely disagreed. Absence
+// is not disagreement -- computeLetterConcordance() (plow_mc_answerer.ts) now returns this
+// distinct value when zero of the voters produced a letter at all, so a receipt reader (and
+// every gate/trigger keyed on the concordance string, see G2_CONC below and the Escalation/Star
+// Chamber triggers in plow_mc_answerer.ts) can no longer mistake an instrument failure for a
+// considered voter disagreement.
+export type ConcordanceClass = 'CONCORDANT' | 'PARTIAL' | 'DISCORDANT' | 'NO_VOTER_OUTPUT';
 
 export type GateId = 'G1_FACT' | 'G2_CONC' | 'G3_BMV' | 'G4_LAT';
 
@@ -98,6 +116,18 @@ export interface CanonicalPlowQuestionResult {
    *  ran (zero facts survived to arbitrate) or every voter call failed -- an honest absence,
    *  never backfilled with a guess. */
   answerText?: string | null;
+  /** D-BP219-BM0-034, ADDITIVE/OPTIONAL, same convention as answerText above. Present only on
+   *  the normal Stage 5/6 path (the one that actually ran Saladin + the Furnace cap this
+   *  question); absent (undefined) on the Federated-Andon-recovered branch and the early
+   *  substrate-only-miss branch below, since neither of those runs Saladin/Furnace at all --
+   *  undefined there is an honest "did not apply", never backfilled with 0. Lets a receipt
+   *  reader reconcile candidatesRaw -> candidatesPostMiner -> (challenged-kept + capped-kept +
+   *  candidatesPostFurnace) and see the accounting balance, per this dispatch's own hard rule
+   *  that a receipt whose numbers do not add up is the defect it exists to fix. */
+  oreChallengedCount?: number;
+  oreCappedCount?: number;
+  /** Joins this result's ore back to the candidate_ore.jsonl records it produced (ore_store.ts). */
+  oreRunId?: string;
 }
 
 export interface CanonicalPlowDomainResult {
@@ -327,6 +357,17 @@ export async function callOllama(
     });
     if (resp.status === 400) {
       // BP083 fallback: this peer's Ollama version rejects the `think` field outright.
+      // D-BP200-M0-032: this fallback is CORRECT and must stay, but it was previously MUTE --
+      // a peer running a pre-think Ollama would silently run every voter call in thinking mode,
+      // forever, with nothing on the console to say so. Name it loudly: which URL and model
+      // dropped `think`, so a peer stuck in this state is visible instead of invisible.
+      console.warn(
+        `[canonical_pipeline/callOllama] THINK FIELD REJECTED (HTTP 400) -- retrying WITHOUT ` +
+        `think:false. url=${ollamaBaseUrl} model=${model}. This peer's Ollama predates the ` +
+        `think param and is now running in THINKING MODE for this call -- if this is gemma4:12b ` +
+        `or another thinking-capable model, expect empty/truncated responses under a tight ` +
+        `num_predict budget (see BP134 above). Upgrade this peer's Ollama to clear this warning.`,
+      );
       resp = await fetch(`${ollamaBaseUrl}/api/generate`, {
         method: 'POST',
         headers,
@@ -334,7 +375,38 @@ export async function callOllama(
         signal: AbortSignal.timeout(timeoutMs),
       });
     }
-    if (!resp.ok) return null;
+    // D-BP206-M0-h2cbp11qc-001 (board card seq 25, "trace which model the measurement harness
+    // actually calls"). THIS LINE USED TO BE A BARE `if (!resp.ok) return null;` AND THAT WAS THE
+    // DEFECT. Nothing on this path ever verifies the model exists before calling it -- the plow
+    // takes `config.model ?? 'gemma4:12b'` (line ~1393) and compute_gemma_cascade.ts takes
+    // `process.env.CASCADE_MODEL ?? 'gemma4:12b'`, neither checked against /api/tags. So an absent
+    // model returns HTTP 404 here and became an indistinguishable `null`, identical to a timeout,
+    // a down server, or a refusal. That null then reads downstream as an empty/abstaining voter --
+    // THE EXACT SAME OBSERVABLE as the BP134 think:false bug documented above. Two entirely
+    // different root causes, one signature, and the measurement cannot tell them apart. On a
+    // campaign whose product is a measured cost collapse, an instrument that cannot say which model
+    // answered is the thing to fix first.
+    // THIS DOES NOT CHANGE BEHAVIOR: it still returns null, and every caller is untouched. It
+    // changes SILENCE into a named failure, the same way D-BP200-M0-032 made the BP083 think-400
+    // fallback loud directly above. Note for whoever picks up the rest of card seq 25: the two
+    // MMLU-Pro sweep harnesses are NOT affected and are the good example -- both
+    // mmlu_pro_plow_sweep.cjs and mmlu_pro_liana_cycle_sweep.cjs pin the model DIGEST, resolve it
+    // live against /api/tags, and refuse to run on a mismatch or an unpinned model. The exposure is
+    // every path that does NOT go through them.
+    if (!resp.ok) {
+      const isMissingModel = resp.status === 404;
+      console.warn(
+        `[canonical_pipeline/callOllama] OLLAMA CALL FAILED, returning null. ` +
+        `status=${resp.status} url=${ollamaBaseUrl} model=${model}` +
+        (isMissingModel
+          ? ` -- HTTP 404 MEANS THE MODEL IS NOT INSTALLED ON THIS HOST. Every call in this run ` +
+            `will return null and will read downstream as an empty or abstaining voter, which is ` +
+            `indistinguishable from the BP134 think:false signature. DO NOT report a run in this ` +
+            `state as a measurement: nothing answered. Check \`ollama list\` on this host.`
+          : ''),
+      );
+      return null;
+    }
     const data = (await resp.json()) as { response?: string };
     return data.response?.trim() ?? null;
   } catch {
@@ -446,7 +518,12 @@ export function evaluateGates(
     },
     {
       gate: 'G2_CONC',
-      passed: concordance !== 'DISCORDANT',
+      // D-BP167-M0-036: NO_VOTER_OUTPUT (zero voters produced a parseable letter) is exactly as
+      // gate-failing as DISCORDANT (voters produced letters that disagreed) always was -- this
+      // is a propagation fix, not a new policy: before this dispatch a zero-voter-output result
+      // was mislabeled 'DISCORDANT' and already failed this gate, so adding the new label here
+      // keeps that pre-existing behavior byte-identical rather than silently loosening it.
+      passed: concordance !== 'DISCORDANT' && concordance !== 'NO_VOTER_OUTPUT',
       detail: `Concordance: ${concordance}`,
     },
     {
@@ -470,21 +547,53 @@ export async function runSaladin(
   candidates: CandidateEblet[],
   ollamaBaseUrl: string,
   model: string,
-): Promise<{ passed: CandidateEblet[]; challenged: CandidateEblet[] }> {
+): Promise<{
+  passed: CandidateEblet[];
+  challenged: CandidateEblet[];
+  /** ── SALADIN OUTAGE ACCOUNTING (D-BP200-M0-h2cbp8qg-050) ──────────────────────────────────
+   *
+   *  HOW MANY CANDIDATES WERE JUDGED BY THE HEURISTIC FALLBACK RATHER THAN BY THE MODEL.
+   *
+   *  THE MEASURED DEFECT. Both fallback paths below demand a weight the real data never carries:
+   *  the null path needs `weight >= 0.7`, the throw path needs `weight >= 0.75`, and EVERY
+   *  specialist candidate measured on 2026-08-27 carried weight EXACTLY 0.60 (wikipedia, arxiv,
+   *  openalex, crossref, all of them). Both thresholds are therefore UNREACHABLE BY CONSTRUCTION.
+   *
+   *  SO AN OLLAMA OUTAGE BURNS 100% OF CANDIDATES, candidatesPostFurnace drops to 0, G1_FACT
+   *  fails, and the run reports a tidy RED. AN INSTRUMENT FAILURE WEARING THE COSTUME OF A
+   *  LEGITIMATE RESULT -- which is precisely what Law 2 (check the instrument before the patient)
+   *  and Law 1 (a negative must name its scope) exist to stop.
+   *
+   *  WHAT THIS FIX DOES AND DELIBERATELY DOES NOT DO. It makes the outage VISIBLE and nothing
+   *  more. The pass/fail POLICY is left exactly as it was, byte for byte, because loosening it
+   *  would let unvetted content reach the silos during an outage -- a correctness question about
+   *  what may enter a silo, which is the Founder's ruling to make and not a bug to be quietly
+   *  patched around. The silence was the defect. The conservatism was not. */
+  decidedByFallback: number;
+  /** Of `decidedByFallback`, how many were CHALLENGED by it. When this equals the candidate count,
+   *  the Furnace did not judge anything -- Ollama did not answer, and the caller is looking at an
+   *  outage, not a verdict. */
+  fallbackChallenged: number;
+}> {
   const passed: CandidateEblet[] = [];
   const challenged: CandidateEblet[] = [];
+  let decidedByFallback = 0;
+  let fallbackChallenged = 0;
 
   for (const candidate of candidates) {
     try {
-      const prompt = SALADIN_CHALLENGE_PROMPT(candidate.content.slice(0, 400));
+      const prompt = SALADIN_CHALLENGE_PROMPT(candidate.content.unwrap('PROMPT').slice(0, 400));
       const response = await callOllama(prompt, ollamaBaseUrl, model, 0.2);
 
       if (response === null) {
-        // Ollama unavailable — heuristic fallback: pass if content is substantial
-        if (candidate.content.length >= 150 && candidate.weight >= 0.7) {
+        // Ollama unavailable — heuristic fallback: pass if content is substantial.
+        // POLICY UNCHANGED ON PURPOSE. See the outage-accounting comment on the return type.
+        decidedByFallback++;
+        if (candidate.content.unwrap('LOG').length >= 150 && candidate.weight >= 0.7) {
           passed.push(candidate);
         } else {
           // Heuristic: flag short/low-weight content as challenged
+          fallbackChallenged++;
           challenged.push(candidate);
         }
         continue;
@@ -500,16 +609,29 @@ export async function runSaladin(
         passed.push(candidate);
       }
     } catch {
-      // On error, apply heuristic
+      // On error, apply heuristic. POLICY UNCHANGED ON PURPOSE.
+      decidedByFallback++;
       if (candidate.weight >= 0.75) {
         passed.push(candidate);
       } else {
+        fallbackChallenged++;
         challenged.push(candidate);
       }
     }
   }
 
-  return { passed, challenged };
+  // LAW 2. Say it out loud when the instrument, not the evidence, decided the outcome.
+  if (decidedByFallback > 0) {
+    console.warn(
+      `[saladin] INSTRUMENT WARNING: ${decidedByFallback} of ${candidates.length} candidates were ` +
+      `judged by the heuristic fallback, not by the model -- Ollama did not answer. ` +
+      `${fallbackChallenged} of those were challenged. ` +
+      (fallbackChallenged === candidates.length && candidates.length > 0
+        ? `EVERY candidate was burned by the fallback: treat candidatesPostFurnace=0 as an OUTAGE, NOT a verdict.`
+        : ``),
+    );
+  }
+  return { passed, challenged, decidedByFallback, fallbackChallenged };
 }
 
 // ─── Three Fates (3-voter arbitration) ───────────────────────────────────────
@@ -522,7 +644,7 @@ async function runThreeFates(
 ): Promise<{ answers: (string | null)[]; concordance: ConcordanceClass }> {
   const factsContext = candidates
     .slice(0, 5)
-    .map((c, i) => `[Source ${i + 1} — ${c.source}]: ${c.content.slice(0, 400)}`)
+    .map((c, i) => `[Source ${i + 1} — ${c.source}]: ${c.content.unwrap('PROMPT').slice(0, 400)}`)
     .join('\n\n');
 
   const temperatures = [0.0, 0.2, 0.4];
@@ -544,7 +666,7 @@ export async function runScribe(
   domain: string,
   question: string,
   questionId: string,
-  candidates: CandidateEblet[],
+  candidates: DurableWritable[],
   bmvScore: number,
   concordance: ConcordanceClass,
   gateOutcomes: GateOutcome[],
@@ -788,7 +910,7 @@ async function runCanonicalQuestion(
 
   // ── Stage 4: Miner — anti-popularity filter ───────────────────────────────
   const postMiner = allCandidates.filter(
-    (c) => c.weight >= MINER_MIN_WEIGHT && c.content.length >= MINER_MIN_CONTENT_LEN,
+    (c) => c.weight >= MINER_MIN_WEIGHT && c.content.unwrap('LOG').length >= MINER_MIN_CONTENT_LEN,
   );
 
   onProgress({
@@ -808,10 +930,56 @@ async function runCanonicalQuestion(
   // raises this to postFurnaceCap only when field-sowing's deepHarvest passed a higher value --
   // the live A/B/C button always calls with the default 6, unchanged).
   const saladinePassedSorted = saladinePassedFull
-    .sort((a, b) => b.weight - a.weight)
-    .slice(0, postFurnaceCap);
+    .sort((a, b) => b.weight - a.weight);
+  // UNCHANGED SURVIVOR SET: postFurnaceKept is byte-for-byte the same slice this file already
+  // computed pre-D-BP219-BM0-034 (same sort, same slice(0, postFurnaceCap)) -- this dispatch
+  // only ADDS a name for the overflow slice below so it can be ore'd, never touches which
+  // candidates flow downstream.
+  const postFurnaceKept = saladinePassedSorted.slice(0, postFurnaceCap);
+  const postFurnaceCapped = saladinePassedSorted.slice(postFurnaceCap); // the "seventh" onward
 
-  void saladineChallengd; // used only for logging; not needed downstream
+  // D-BP219-BM0-034: USE EVERY PART OF THE BUFFALO. Before this dispatch both saladineChallengd
+  // (failed Saladin) and postFurnaceCapped (passed Saladin but ranked below the cap) were fully
+  // materialized here and then discarded with no file, eblet, or table -- confirmed by receipt
+  // (candidates_raw: 11, candidatesPostFurnace: 6, eblets_written: 1). Ore each discarded
+  // candidate BEFORE it is dropped, labelled distinctly (CHALLENGED vs CAPPED -- see ore_store.ts
+  // header) so the Founder's "gold that the seventh has lost" (CAPPED) is findable on its own,
+  // never merged with genuinely-challenged candidates. This is a WRITE ONLY: postFurnaceKept
+  // below is identical to the old postFurnace, so nothing about which candidates reach Three
+  // Fates or the final answer changes.
+  const oreRunId = randomUUID();
+  try {
+    // D-BP220-BM0-014 Stage 2: `c.content` is now a CandidateContent, not a bare string, so
+    // it can no longer satisfy OreCandidateInput's `content: string` merely by reference --
+    // ore_store.ts is not owned by this dispatch (its own header already documents an
+    // explicit ALLOW-LIST copy, never `...candidate`, for the exact same reason this dispatch
+    // exists), so the unwrap happens HERE, at this owned call site, preserving the EXACT same
+    // set of candidates ore'd as before (no new filtering) -- only the content extraction
+    // changed from implicit (bare string) to explicit ('DURABLE_STORE' sink, since ore_store.ts
+    // persists these records to candidate_ore.jsonl).
+    const toOreCandidateInput = (c: CandidateEblet): OreCandidateInput => ({
+      source: c.source,
+      content: c.content.unwrap('DURABLE_STORE'),
+      weight: c.weight,
+      sid: c.sid,
+      domain: c.domain,
+    });
+    const oreRecords: OreRecord[] = [
+      ...saladineChallengd.map((c) => buildOreRecord({
+        runId: oreRunId, class: 'CHALLENGED', stage: 'Saladin', candidate: toOreCandidateInput(c),
+        questionId, question, rank: null, cap: null,
+      })),
+      ...postFurnaceCapped.map((c, i) => buildOreRecord({
+        runId: oreRunId, class: 'CAPPED', stage: 'Furnace', candidate: toOreCandidateInput(c),
+        questionId, question, rank: postFurnaceCap + i + 1, cap: postFurnaceCap,
+      })),
+    ];
+    writeOreRecords(oreRecords);
+  } catch (oreErr) {
+    // Ore is a bonus write, never a gate -- a disk/permission failure here must not break the
+    // pipeline's real answer path. Logged loudly so the loss is visible, never silent.
+    console.warn(`[CanonicalPipeline] ore write failed (non-fatal), runId=${oreRunId}:`, oreErr);
+  }
 
   onProgress({
     type: 'saladin-done',
@@ -821,8 +989,9 @@ async function runCanonicalQuestion(
   });
 
   // ── Stage 6: Furnace — Angel of Death ────────────────────────────────────
-  // Furnace = Saladin's output (candidates Saladin didn't challenge)
-  const postFurnace = saladinePassedSorted;
+  // Furnace = Saladin's output (candidates Saladin didn't challenge), capped to postFurnaceCap.
+  // Overflow beyond the cap (postFurnaceCapped) is ore'd above, class CAPPED, never here.
+  const postFurnace = postFurnaceKept;
 
   onProgress({
     type: 'furnace-done',
@@ -942,7 +1111,7 @@ async function runCanonicalQuestion(
         // Use the escalation-recovered candidates
         const recoveredCandidates = resolution.candidates;
         const { ebletsWritten: recoveredEblets, record: recoveredRecord } = await runScribe(
-          domain, question, questionId, recoveredCandidates,
+          domain, question, questionId, toDurableWritable(recoveredCandidates),
           bmvScore, concordance, gateOutcomes, andonTriggered, finalRetries, writeEbletFn,
         );
         return {
@@ -975,7 +1144,7 @@ async function runCanonicalQuestion(
   const writeCandidates = postFurnace.length > 0 ? postFurnace : [];
   const { ebletsWritten, record } = await runScribe(
     domain, question, questionId,
-    writeCandidates, bmvScore, concordance, gateOutcomes,
+    toDurableWritable(writeCandidates), bmvScore, concordance, gateOutcomes,
     andonTriggered, finalRetries, writeEbletFn,
   );
 
@@ -1005,6 +1174,13 @@ async function runCanonicalQuestion(
     candidatesPostFurnace: postFurnace.length,
     scribes: [record],
     answerText,
+    // D-BP219-BM0-034: accounting balance check for a reader --
+    // candidatesRaw >= candidatesPostMiner >= (oreChallengedCount + oreCappedCount +
+    // candidatesPostFurnace) should always hold; a mismatch is the defect this dispatch exists
+    // to catch.
+    oreChallengedCount: saladineChallengd.length,
+    oreCappedCount: postFurnaceCapped.length,
+    oreRunId,
   };
 
   return finalResult;

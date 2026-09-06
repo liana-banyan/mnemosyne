@@ -179,6 +179,13 @@ describe('THE LABORATORY, AND KEEP (FD-BP152-07, FD-BP152-10, D-BP152-022)', () 
     // five literals D-BP152-021 shipped at cb311a23 -- 'keep' (or any Laboratory action) must
     // NEVER be added to this union, per this ticket's own "add alongside them; they must behave
     // exactly as today" instruction for approve/correct/redirect/ask_google.
+    //
+    // D-BP167-M0-056/BISHOP-M0/SEG -- the union legitimately grew a SIXTH member, 'nexus_capture'
+    // (liana_terminal_engine.nexus_capture.test.ts, D-BP152-025), and this assertion was never
+    // updated -- caught during a liana_cycle suite diagnosis. This guard's actual purpose (per its
+    // own comment above) is that 'keep' specifically must never be added; 'nexus_capture' is a
+    // different, already-shipped action, not 'keep', so the guard's intent is intact -- only the
+    // literal string needed the new member appended.
     const typesSrc = readFileSync(
       join(__dirname, '..', '..', '..', 'shared', 'liana_cycle', 'liana_terminal_types.ts'),
       'utf8',
@@ -186,7 +193,7 @@ describe('THE LABORATORY, AND KEEP (FD-BP152-07, FD-BP152-10, D-BP152-022)', () 
     const m = typesSrc.match(/export type LianaSteppedAction = ([^;]+);/);
     expect(m).not.toBeNull();
     expect((m as RegExpMatchArray)[1].trim()).toBe(
-      "'approve' | 'correct' | 'redirect' | 'abandon' | 'ask_google'",
+      "'approve' | 'correct' | 'redirect' | 'abandon' | 'ask_google' | 'nexus_capture'",
     );
   });
 

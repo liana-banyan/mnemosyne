@@ -178,6 +178,18 @@ describe('the inverse error the dispatch names explicitly: survival-under-remova
 });
 
 describe('registration/wiring smoke test', () => {
+  // D-BP207-SEG-A, card t-00173320. MEASURED, not guessed: this test passes clean standalone
+  // (23/23 in this file alone, ~1.3s) and in a sequential re-run, but times out at the DEFAULT
+  // 5000ms only when the full ~100-file liana_cycle suite runs in parallel at once -- confirmed
+  // again this dispatch (full-suite run, this test timed out at exactly 5012ms while every
+  // OTHER test in this file passed). D-BP168-M0-114 diagnosed this as pure parallel-worker
+  // resource contention (dynamic `import()` + module evaluation queued behind ~100 other files'
+  // worker threads), never a hang or infinite loop in the code under test -- there is no
+  // await-forever path here, only two dynamic imports and two synchronous calls. FIX: give this
+  // one test more wall-clock headroom (20000ms) rather than changing the code it exercises,
+  // exactly the card's own "isolate the two contention cases" instruction -- vitest's third
+  // `test()` argument sets a PER-TEST timeout without touching the suite-wide default any other
+  // test still relies on.
   test('Borromean:1 is registered and executable', async () => {
     const { registerBorromeanTestStep } = await import('./borromean_test');
     const { listComposerRegistry } = await import('./script_bridge');
@@ -186,5 +198,5 @@ describe('registration/wiring smoke test', () => {
     const entry = entries.find((e) => e.id === 'Borromean:1');
     expect(entry).toBeDefined();
     expect(entry?.executable).toBe(true);
-  });
+  }, 20000);
 });

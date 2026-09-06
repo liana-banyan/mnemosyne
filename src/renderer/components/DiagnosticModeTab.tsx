@@ -8,7 +8,12 @@
 // log_tail, env_loader_status, relay_answer_poller_state).
 
 import React, { useCallback, useEffect, useState } from 'react';
-import type { UpdateState, AutoUpdateConfig, MeshAutoSpawnConsentSettings } from '../amplify.d';
+import type {
+  UpdateState,
+  AutoUpdateConfig,
+  MeshAutoSpawnConsentSettings,
+  MeshRemoteAdminConsentSettings,
+} from '../amplify.d';
 
 interface DiagnosticStatus {
   pollerStarted: boolean;
@@ -132,6 +137,10 @@ export function DiagnosticModeTab(): React.ReactElement {
 
       <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #1e2a38' }}>
         <MeshAutoSpawnConsentPanel />
+      </div>
+
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #1e2a38' }}>
+        <RemoteAdministrationConsentPanel />
       </div>
     </div>
   );
@@ -439,6 +448,171 @@ export function MeshAutoSpawnConsentPanel(): React.ReactElement {
               onClick={confirmEnable}
               style={{
                 background: '#f59e0b', color: '#0a0f1a', border: 'none', borderRadius: 6,
+                padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+              }}
+            >
+              I understand the risk -- enable
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              style={{
+                background: 'none', color: '#94a3b8', border: '1px solid #334155', borderRadius: 6,
+                padding: '5px 10px', fontSize: 11, cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── D-BP202-M0-01-h2cbp8us-001/BISHOP/BM01: remote-administration consent ───────────────────
+//
+// THE THIRD CONSENT, and the largest of the three. AutomaticUpdatesConsentPanel permits a version
+// bump. MeshAutoSpawnConsentPanel permits tool execution INSIDE MnemosyneC. This one permits
+// another machine to administer THE WHOLE COMPUTER through a standing local admin account
+// (`lbmesh`) over PowerShell Remoting, entirely outside this app.
+//
+// Mirrors both panels above exactly: same confirm-before-enable flow, same "turning off needs no
+// confirmation" asymmetry, same OFF-by-default posture, over a SEPARATE persisted flag
+// (mesh_remote_admin_consent.ts, %APPDATA%\MnemosyneC\config\mesh_remote_admin_consent.json).
+//
+// THE ONE PLACE THIS PANEL DELIBERATELY DIFFERS FROM ITS SIBLINGS: it tells the user, in the
+// visible copy and not only in a code comment, that turning it OFF does not close a WinRM
+// listener that has already been provisioned. An app cannot stop a Windows service. Claiming
+// otherwise on screen would be the worst kind of security theater -- the kind a person relies on.
+// See mesh_remote_admin_consent.ts's header for the full statement of what the flag enforces
+// (the administering peer reads this machine's declared answer from /api/info and refuses) and
+// what it does not.
+//
+// Exported, matching its two siblings, so compass/AuthorizationsPanel.tsx mounts this SAME
+// component rather than forking a second copy.
+
+const RAC_DEFAULT: MeshRemoteAdminConsentSettings = { consentGranted: false };
+
+export function RemoteAdministrationConsentPanel(): React.ReactElement {
+  const [cfg, setCfg] = useState<MeshRemoteAdminConsentSettings>(RAC_DEFAULT);
+  const [loaded, setLoaded] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const remote = await (window as any).amplify?.getMeshRemoteAdminConsentSettings?.();
+      if (remote) setCfg({ ...RAC_DEFAULT, ...remote });
+    } catch { /* dev mode / not available -- keep OFF default */ }
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const persist = useCallback(async (granted: boolean) => {
+    setBusy(true);
+    try {
+      const res = await (window as any).amplify?.setRemoteAdministrationConsentGranted?.(granted);
+      setCfg(res ? { ...RAC_DEFAULT, ...res } : { consentGranted: granted });
+    } catch { /* dev mode noop -- local state already reflects intent */ }
+    finally { setBusy(false); }
+  }, []);
+
+  const handleToggleClick = useCallback(() => {
+    if (cfg.consentGranted) {
+      // Returning to the safe default needs no confirmation, matching every other consent
+      // control in this app.
+      void persist(false);
+    } else {
+      setConfirming(true);
+    }
+  }, [cfg.consentGranted, persist]);
+
+  const confirmEnable = useCallback(() => {
+    setConfirming(false);
+    void persist(true);
+  }, [persist]);
+
+  if (!loaded) return <></>;
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: '#f0fdf4', marginBottom: 4 }}>
+        🔧 Remote Administration Of This Computer
+      </div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10, lineHeight: 1.5 }}>
+        The two consents above stay inside MnemosyneC: one lets it update itself, the other lets a
+        mesh dispatch run tools within the app. This one is larger than both. It permits another
+        computer on the mesh to administer this entire machine through a dedicated administrator
+        account and Windows PowerShell Remoting -- installing software, reading and writing any
+        file, running any command -- outside this app entirely. Off by default. Only turn it on
+        for a computer you own.
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#cbd5e1' }}>
+            Allow another machine on the mesh to administer this computer
+          </div>
+          <div style={{ fontSize: 9, color: '#475569', marginTop: 2, lineHeight: 1.5 }}>
+            {cfg.consentGranted
+              ? 'Enabled -- this computer publishes that it consents to remote administration, and a mesh peer may act on that through the dedicated admin account.'
+              : 'Disabled -- this computer publishes that it does not consent, and a mesh peer must not attempt an administrative action against it.'}
+          </div>
+        </div>
+        <button
+          onClick={handleToggleClick}
+          disabled={busy}
+          style={{
+            padding: '3px 10px', borderRadius: 6, fontSize: 10, fontWeight: 700,
+            cursor: 'pointer', whiteSpace: 'nowrap' as const, flexShrink: 0,
+            border: cfg.consentGranted ? '1px solid rgba(248,113,113,0.4)' : '1px solid rgba(100,116,139,0.3)',
+            background: cfg.consentGranted ? 'rgba(248,113,113,0.1)' : 'rgba(100,116,139,0.06)',
+            color: cfg.consentGranted ? '#f87171' : '#64748b',
+            opacity: busy ? 0.6 : 1,
+          }}
+        >
+          {cfg.consentGranted ? 'ON' : 'OFF'}
+        </button>
+      </div>
+
+      { /* Shown whenever the consent is ON, not only during the confirm step: the limit is a
+           standing fact about this control, and a person who turned it on last week and comes
+           back to turn it off deserves to see it exactly when they are relying on it. */ }
+      {cfg.consentGranted && !confirming && (
+        <div style={{
+          marginTop: 10, padding: '8px 10px', borderRadius: 6,
+          background: 'rgba(148,163,184,0.06)', border: '1px solid rgba(148,163,184,0.2)',
+          fontSize: 9, color: '#94a3b8', lineHeight: 1.6,
+        }}>
+          Switching this off withdraws consent and mesh peers will stop, but it does not by itself
+          close PowerShell Remoting or remove the administrator account, because an app cannot turn
+          off a Windows service. To fully close it, run <span style={{ color: '#cbd5e1' }}>Disable-PSRemoting</span> in
+          an elevated PowerShell and remove the <span style={{ color: '#cbd5e1' }}>lbmesh</span> account.
+        </div>
+      )}
+
+      {confirming && (
+        <div style={{
+          marginTop: 10, padding: '8px 10px', borderRadius: 6,
+          background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.3)',
+        }}>
+          <div style={{ fontSize: 10, color: '#e2e8f0', marginBottom: 8, lineHeight: 1.5 }}>
+            This grants another machine administrative control of this one. Whoever operates that
+            machine will be able to install software, read and change any file here, and run any
+            command as an administrator, with nobody present to approve it. Being on the same
+            network is not authentication -- the LAN is a carrier, never a trust boundary -- so
+            turn this on only for a computer you own and an operator you are.
+            <br /><br />
+            Turning it back off later withdraws consent, but does not by itself close PowerShell
+            Remoting or delete the administrator account; that takes Disable-PSRemoting in an
+            elevated terminal. Turn this on?
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={confirmEnable}
+              style={{
+                background: '#ef4444', color: '#0a0f1a', border: 'none', borderRadius: 6,
                 padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
               }}
             >

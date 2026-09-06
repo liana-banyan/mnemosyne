@@ -201,7 +201,18 @@ describe('assertion (a): the panel lists every registry entry at runtime', () =>
     // same reason -- a real, executable Composer step, not an orphan.
     // D-BP154-043 adds a fourteenth, 'Unitary' (unitary_step.ts), excluded here for the same
     // reason -- a real, executable Composer step, not an orphan.
-    const orphanIds = entries.filter((e) => !['ComparativeCascade', 'DefinitionalCascade', 'ClassifyCascade', 'Survey', 'StateTheQuestion', 'Softballs', 'NamedSet', 'Discriminator', 'Terminator', 'Magnitude', 'HumanNuance', 'Purpose', 'OriginFrame', 'Unitary'].includes(e.name));
+    // D-BP168-M0-114 TRIAGE FIX (D-BP168-M0-114): D-BP154-053 adds a fifteenth, 'BoundaryStability'
+    // (boundary_step.ts), D-BP154-058 a sixteenth, 'TargetClass' (target_class_step.ts), D-BP154-065
+    // a seventeenth, 'NoConsensus' (no_consensus_step.ts), D-BP154-072 an eighteenth, 'Borromean'
+    // (borromean_test.ts), and D-BP155-004 a nineteenth, 'SemioticSquare' (semiotic_square_step.ts)
+    // -- all excluded here for the same reason as the fourteen above: each is a real, executable
+    // Composer step with its own registerXStep()/runXStep() wired into script_bridge.ts's own
+    // EXECUTABLE_IDS set (script_bridge.ts:331-336, self-documented by dispatch id) and its own
+    // dispatch branch in the executor. This whitelist had simply never been told, the identical
+    // stale-list drift D-BP167-M0-056 already fixed for method_registry.test.ts/survey_steps.
+    // test.ts/state_the_question_step.test.ts/laboratory_store.test.ts -- not a HARDWIRE-22
+    // violation, a stale test allowlist.
+    const orphanIds = entries.filter((e) => !['ComparativeCascade', 'DefinitionalCascade', 'ClassifyCascade', 'Survey', 'StateTheQuestion', 'Softballs', 'NamedSet', 'Discriminator', 'Terminator', 'Magnitude', 'HumanNuance', 'Purpose', 'OriginFrame', 'Unitary', 'BoundaryStability', 'TargetClass', 'NoConsensus', 'Borromean', 'SemioticSquare'].includes(e.name));
     expect(orphanIds.length).toBeGreaterThanOrEqual(6);
     for (const e of orphanIds) {
       expect(e.executable, `${e.id} must not claim to be executable -- it is BLOCKED per HARDWIRE-22`).toBe(false);

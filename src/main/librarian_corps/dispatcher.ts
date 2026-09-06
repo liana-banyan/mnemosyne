@@ -207,7 +207,15 @@ async function escalateToAdjudicator(
   }
 
   // Adjudicator: use the highest-confidence vote (lowest latency = most confident)
-  // In production, this would route to a flagship gemma4:12b adjudicator_council.
+  // D-BP162-M0-039 CORRECTION (doc-only): the line this replaces read "In production, this would
+  // route to a flagship gemma4:12b adjudicator_council" -- that phrase conflates "flagship" and
+  // "gemma4:12b" in one breath, for an ADJUDICATION step, which is judgment by definition. Per
+  // HARDWIRE-22 (Founder verbatim: "never give gemma anything that requires judgement... make that
+  // a blood rule"), that must never happen: gemma4:12b is never the adjudicator. This file's own
+  // header (line 5, above the imports) already names the correct target -- "flagship
+  // adjudicator_council" -- with no Gemma reference; this comment was the one place that drifted
+  // from it. Any future wiring of this escalation path must route through a dedicated JUDGMENT
+  // MODULE whose judging steps escalate to a flagship-tier model, never raw Gemma adjudication.
   // For this mountain: use the vote with the lowest latency as the authoritative answer.
   const sorted = [...councilResponse.votes].sort((a, b) => a.latencyMs - b.latencyMs);
   const adjudicatedVote = sorted[0];

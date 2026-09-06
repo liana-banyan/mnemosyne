@@ -13,7 +13,7 @@ export function registerGemmaMultiSegIPC(): void {
       fetch(ollamaUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, prompt: question, stream: false }),
+        body: JSON.stringify({ model, prompt: question, stream: false, think: false }),
       })
         .then((r) => r.json() as Promise<{ response: string }>)
         .then((d) => d.response)

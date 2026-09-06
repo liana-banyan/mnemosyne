@@ -586,6 +586,98 @@ export interface EbletIndexEntry {
    *  cheap frontmatter-only read (no embedding call) the first time they are encountered after
    *  this Yoke, then are marked checked and never read again for this purpose while unchanged. */
   supersedesChecked?: true;
+  /** D-BP219-BM0-035 (tagging discipline fix): normalized tag slugs parsed out of this entry's
+   *  own frontmatter at index-build time -- see parseTagsFromFrontmatter() below for the exact
+   *  extraction/normalization rule. PRIOR DEFECT: EbletIndexEntry had NO field to hold a tag at
+   *  all -- every authored `tags:`/`topics:` frontmatter line in the corpus was parsed by
+   *  nothing and stored nowhere, making ~2,880 hand-tagged records structurally unqueryable by
+   *  tag (Founder, BP219: "your tagging discipline is being thrown away at the door"). Direct
+   *  measurement this ticket (grep across the four real estateDoctrineRoots(), not the
+   *  ~432k-file .claude/state/eblets/ tree this file deliberately never walks) found the
+   *  authored-tag premise partly wrong: `tags:`/`topics:` are both nearly unused on disk today
+   *  (1 file each across ~4,960 files checked); `related:` is the common list-of-slugs field
+   *  (362+ files) but it is a CROSS-REFERENCE to other eblets (same shape supersedes uses), not
+   *  a topic-tag vocabulary, so it is deliberately NOT folded into `tags` here -- see this
+   *  ticket's return doc for the full count breakdown. This field exists so whatever tags ARE
+   *  authored (now or going forward) have a slot instead of being silently dropped.
+   *  ALWAYS an array (never a bare string, never null) once `tagsChecked` is true -- an
+   *  authored-zero-tags entry is `tags: []` with `tagsChecked: true`. `tags` being `undefined`
+   *  (paired with `tagsChecked` also undefined) means "indexed before this feature existed, not
+   *  yet checked" -- the same absence-vs-empty distinction supersedes/supersedesChecked already
+   *  establish above; readers MUST NOT treat an absent `tags` as "authored no tags". */
+  tags?: string[];
+  /** D-BP219-BM0-035: one-time-migration sentinel, identical pattern to supersedesChecked
+   *  above. `true` once this entry's frontmatter has actually been scanned for `tags:`/
+   *  `topics:` at least once (whether or not any were found). Lets the zero-I/O reuse path in
+   *  loadOrRebuildIndex() distinguish "checked, genuinely has no tags" (tags: [], tagsChecked:
+   *  true) from "predates this feature, never checked" (tags undefined, tagsChecked undefined)
+   *  without re-reading every unchanged file on every rebuild. */
+  tagsChecked?: true;
+}
+
+/** D-BP219-BM0-035: parse `tags:` or `topics:` out of a YAML frontmatter slice (same
+ *  deliberately-not-a-YAML-parser convention this file already uses for `supersedes:` --
+ *  one regex over the frontmatter block, not a real YAML parser). Accepts either authored key
+ *  (both are real, both vanishingly rare on disk today -- see the `tags` field's own doc
+ *  comment for the measured counts) and normalizes both into the same array so a reader never
+ *  has to care which key an author actually used. Handles the three real shapes seen in this
+ *  estate's frontmatter:
+ *    - inline flow list:   `tags: [Foo Bar, baz-qux]`
+ *    - inline single value: `tags: solo-tag`
+ *    - YAML block list:     `tags:\n  - Foo Bar\n  - baz-qux`
+ *  Normalization rule (matches this estate's existing lowercase-hyphenated slug convention,
+ *  e.g. entryKey()'s filename-derived keys and supersedes' own values): trim surrounding
+ *  whitespace/quotes, lowercase, collapse any run of whitespace/underscore into a single
+ *  hyphen, strip characters outside [a-z0-9-]. Empty results after normalization are dropped.
+ *  Never throws -- returns [] on no match or on any malformed line, exactly like the
+ *  supersedes regex's own fail-soft convention. */
+export function parseTagsFromFrontmatter(frontmatter: string): string[] {
+  const normalize = (raw: string): string =>
+    raw
+      .trim()
+      .replace(/^["']|["']$/g, '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_]+/g, '-')
+      .replace(/[^a-z0-9-]/g, '')
+      .replace(/-{2,}/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+  const out = new Set<string>();
+
+  // Flow-list or single-value form: `tags: [a, b]` or `tags: a` on one line.
+  const flowMatch = frontmatter.match(/^\s*(?:tags|topics):\s*\[([^\]]*)\]\s*$/mi);
+  if (flowMatch) {
+    for (const piece of flowMatch[1].split(',')) {
+      const n = normalize(piece);
+      if (n) out.add(n);
+    }
+  } else {
+    const inlineMatch = frontmatter.match(/^\s*(?:tags|topics):\s*(?!\[|\s*$)(.+?)\s*$/mi);
+    if (inlineMatch) {
+      const n = normalize(inlineMatch[1]);
+      if (n) out.add(n);
+    }
+  }
+
+  // YAML block-list form: `tags:` (or `topics:`) alone on a line, followed by `  - value` lines.
+  const blockHeaderMatch = frontmatter.match(/^\s*(?:tags|topics):\s*$/mi);
+  if (blockHeaderMatch && blockHeaderMatch.index !== undefined) {
+    const after = frontmatter.slice(blockHeaderMatch.index + blockHeaderMatch[0].length);
+    const lines = after.split('\n');
+    for (const line of lines) {
+      const itemMatch = line.match(/^\s*-\s*(.+?)\s*$/);
+      if (!itemMatch) {
+        // First non-list-item, non-blank line ends the block.
+        if (line.trim() !== '') break;
+        continue;
+      }
+      const n = normalize(itemMatch[1]);
+      if (n) out.add(n);
+    }
+  }
+
+  return Array.from(out);
 }
 
 /** BP155 Yoke: bounded-concurrency map -- Ollama is one local process; unbounded
@@ -815,26 +907,37 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
       const mtime = statSync(fullPath).mtimeMs;
       const prior = priorByPath.get(fullPath);
       if (prior && prior.mtime === mtime) {
-        if (prior.supersedesChecked) {
-          // Unchanged AND already checked for a supersedes claim -- reuse verbatim, zero I/O.
+        if (prior.supersedesChecked && prior.tagsChecked) {
+          // Unchanged AND already checked for both a supersedes claim and tags -- reuse
+          // verbatim, zero I/O. D-BP219-BM0-035: gated on tagsChecked too, same reasoning as
+          // supersedesChecked -- an entry that predates the tags feature must not be silently
+          // reused forever with tags left undefined; see the one-time backfill branch below.
           entries.push(prior);
           reusedZeroIoCount++;
           continue;
         }
-        // D-BP155-018 one-time migration: unchanged content, but this entry predates the
-        // supersedes feature and was never checked for one. Cheap frontmatter-only read (no
-        // Ollama call, no embedding recompute -- semanticCode still carries over from `prior`)
-        // so this file is never re-read for this purpose again once `supersedesChecked` lands
-        // in the persisted index.
+        // D-BP155-018 / D-BP219-BM0-035 one-time migration: unchanged content, but this entry
+        // predates the supersedes feature and/or the tags feature and was never checked for
+        // one or both. Cheap frontmatter-only read (no Ollama call, no embedding recompute --
+        // semanticCode still carries over from `prior`) so this file is never re-read for
+        // either purpose again once both `supersedesChecked` and `tagsChecked` land in the
+        // persisted index.
         try {
           const rawFm = readFileSync(fullPath, 'utf-8');
           const fmEnd = rawFm.indexOf('\n---', 4);
           const frontmatter = rawFm.startsWith('---') && fmEnd > 0 ? rawFm.slice(0, fmEnd) : rawFm.slice(0, 2000);
-          const m = frontmatter.match(/^\s*supersedes:\s*["']?([^"'\n#]+?)["']?\s*$/m);
-          const backfilled: EbletIndexEntry = { ...prior, supersedesChecked: true };
-          if (m) {
-            const val = m[1].trim();
-            if (val && val.toLowerCase() !== 'nothing') backfilled.supersedes = val;
+          const backfilled: EbletIndexEntry = { ...prior };
+          if (!prior.supersedesChecked) {
+            const m = frontmatter.match(/^\s*supersedes:\s*["']?([^"'\n#]+?)["']?\s*$/m);
+            backfilled.supersedesChecked = true;
+            if (m) {
+              const val = m[1].trim();
+              if (val && val.toLowerCase() !== 'nothing') backfilled.supersedes = val;
+            }
+          }
+          if (!prior.tagsChecked) {
+            backfilled.tags = parseTagsFromFrontmatter(frontmatter);
+            backfilled.tagsChecked = true;
           }
           entries.push(backfilled);
         } catch {
@@ -873,7 +976,13 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
         const val = supersedesMatch[1].trim();
         if (val && val.toLowerCase() !== 'nothing') supersedes = val;
       }
-      const entry: EbletIndexEntry = { path: fullPath, category, title, snippet, mtime, supersedesChecked: true };
+      // D-BP219-BM0-035: same frontmatter slice, parsed for tags too -- new/changed files pay
+      // one extra regex pass, no extra I/O (frontmatter already in memory from the read above).
+      const tags = parseTagsFromFrontmatter(frontmatter);
+      const entry: EbletIndexEntry = {
+        path: fullPath, category, title, snippet, mtime,
+        supersedesChecked: true, tags, tagsChecked: true,
+      };
       if (supersedes !== undefined) entry.supersedes = supersedes;
       // NOTE: semanticCode is deliberately left unset here -- this branch is reached only when
       // `prior` is absent or `prior.mtime !== mtime` (the unchanged case already `continue`d
@@ -1378,13 +1487,32 @@ function entryKey(fullPath: string): string {
 }
 
 async function queryEbletStoreEntries(query: string): Promise<EbletRetrievalHit[]> {
-  // Parse optional category filter prefix
+  // Parse optional category:/tag: filter prefixes -- either or both, in any order, e.g.
+  // "tag:big-kahuna category:canon cost collapse" or "category:canon tag:big-kahuna ...".
+  // D-BP219-BM0-035: `tag:<slug>` is new this ticket, added alongside the pre-existing
+  // `category:<name>` prefix rather than replacing it -- see this function's own header doc
+  // comment (near EbletRetrievalHit) for the category: convention this mirrors. `<slug>` is
+  // matched against an entry's normalized `tags` array (see parseTagsFromFrontmatter()); an
+  // entry with `tags` still undefined (indexed before this feature, never backfilled) never
+  // matches a tag: filter -- it is not silently treated as tagged or untagged either way,
+  // it is simply excluded from a tag-filtered query until the next rebuild backfills it.
   let categoryFilter: EbletCategory | null = null;
+  let tagFilter: string | null = null;
   let effectiveQuery = query;
-  const catMatch = query.match(/^category:(\S+)\s*(.*)/i);
-  if (catMatch) {
-    categoryFilter = catMatch[1].toLowerCase() as EbletCategory;
-    effectiveQuery = catMatch[2].trim();
+  for (;;) {
+    const catMatch = effectiveQuery.match(/^category:(\S+)\s*(.*)/i);
+    if (catMatch) {
+      categoryFilter = catMatch[1].toLowerCase() as EbletCategory;
+      effectiveQuery = catMatch[2].trim();
+      continue;
+    }
+    const tagMatch = effectiveQuery.match(/^tag:(\S+)\s*(.*)/i);
+    if (tagMatch) {
+      tagFilter = tagMatch[1].toLowerCase();
+      effectiveQuery = tagMatch[2].trim();
+      continue;
+    }
+    break;
   }
 
   const indexEntries = await loadOrRebuildIndex();
@@ -1399,7 +1527,10 @@ async function queryEbletStoreEntries(query: string): Promise<EbletRetrievalHit[
     ? new Set<EbletCategory>([categoryFilter])
     : PRIORITY_CATEGORIES;
 
-  const candidates = indexEntries.filter((e) => allowedCategories.has(e.category));
+  let candidates = indexEntries.filter((e) => allowedCategories.has(e.category));
+  if (tagFilter) {
+    candidates = candidates.filter((e) => e.tags?.includes(tagFilter as string));
+  }
   if (candidates.length === 0) return [];
 
   // BP155 Yoke: one live embed call for the QUERY text only -- every candidate's
@@ -2138,6 +2269,40 @@ export function isEmptyAnswerBodyShapedEblet(
   return isEmptyBodyOptionLetterAnswer(entry.answer ?? '');
 }
 
+/** D-BP166-M0-017/BISHOP/seg-retrieval-class-filter: benchmark-seed-vs-operating admissibility
+ *  gate, a NEW axis distinct from the four contamination quarantines above (FIX 1-4 all concern
+ *  answer-key leaks / bad-writer shapes; this concerns whether a record is genuine operating
+ *  knowledge at all). D-BP166-M0-009 (prior read-only SEG) measured the live
+ *  %APPDATA%\MnemosyneC\substrate\verified_eblets.jsonl (301 records): 280 carry a
+ *  `starter_chocolate:`-prefixed provenance and are MMLU-style benchmark trivia seeded for
+ *  measurement (e.g. "What does the Pythagorean theorem state?"); the other 21 carry a
+ *  `sprite:`-prefixed provenance and are genuine operational records. This dispatch re-measured
+ *  the same live file directly (scratchpad/prefix_scan.js, 2026-08-24): confirmed exactly two
+ *  provenance prefixes exist among all 301 records, `starter_chocolate` (280) and `sprite` (21) --
+ *  no other benchmark-ish prefix is present, so `starter_chocolate:` is the correct and complete
+ *  discriminator today. NOTE: the VerifiedEbletEntry.provenance doc comment above (line ~1514)
+ *  claims the format is `spider:<name>:<session> | sprite:<id>:<session>` -- that comment is
+ *  STALE against the live data (neither `spider:` nor `starter_chocolate:` matches its claimed
+ *  shape); flagged here rather than silently fixed, since correcting that comment is out of this
+ *  dispatch's authorized scope.
+ *
+ *  Rule 66 / vault-sacrosanct: quarantine BY NON-RETRIEVAL ONLY, same convention as the four
+ *  predicates above -- the record stays on disk, byte-identical, forever. This predicate is
+ *  OPT-IN exclusion (default-admitted) via the `admitBenchmarkSeed` parameter on
+ *  queryVerifiedEbletsTopical, not a standing quarantine like FIX 1-4: callers that want
+ *  benchmark trivia excluded from an operating-question's retrieved context pass
+ *  `admitBenchmarkSeed: false`; every existing caller that does not pass it keeps receiving
+ *  benchmark-seed content exactly as before (back-compat mandatory). */
+const BENCHMARK_SEED_PROVENANCE_PREFIXES = ['starter_chocolate'];
+
+export function isBenchmarkSeedEblet(
+  entry: Pick<VerifiedEbletEntry, 'provenance'>,
+): boolean {
+  const provenance = entry.provenance ?? '';
+  const prefix = provenance.split(':')[0];
+  return BENCHMARK_SEED_PROVENANCE_PREFIXES.includes(prefix);
+}
+
 /** BP136 Yoke (answer-cache v1): question<->question similarity, DISTINCT from
  *  computeQaRelevance() above (which scores question-vs-ANSWER overlap). This scores how
  *  similar a NEW question is to a STORED question, for the answer-cache serve-verbatim
@@ -2614,6 +2779,11 @@ export async function queryVerifiedEbletsTopical(
   question: string,
   domain: string,
   topK = 3,
+  // D-BP166-M0-017/BISHOP/seg-retrieval-class-filter: OPTIONAL, defaults to true == existing
+  // behavior unchanged (back-compat mandatory, no existing caller's output changes without an
+  // explicit edit to pass false). See isBenchmarkSeedEblet()'s doc comment above for what this
+  // excludes and why.
+  admitBenchmarkSeed = true,
 ): Promise<VerifiedEbletEntry[]> {
   // D-BP148-007/KNIGHT/M1/seg-e7c1: resolveUserDataPath() replaces the old unguarded
   // `app.getPath('userData')` -- byte-identical when real Electron is present.
@@ -2701,14 +2871,39 @@ export async function queryVerifiedEbletsTopical(
   // above -- this is exactly the retrieval path (mesh-test B/C conditions, tools ON, answer-keys
   // OFF) the ticket traced the Aristotle "incontinence" miss through. See
   // isEmptyAnswerBodyShapedEblet()'s doc comment for the full empirical basis.
-  const entries = afterScrapeShapeQuarantine.filter((e) => !isEmptyAnswerBodyShapedEblet(e));
-  const emptyBodyQuarantinedCount = afterScrapeShapeQuarantine.length - entries.length;
+  const entriesAfterQuarantine = afterScrapeShapeQuarantine.filter((e) => !isEmptyAnswerBodyShapedEblet(e));
+  const emptyBodyQuarantinedCount = afterScrapeShapeQuarantine.length - entriesAfterQuarantine.length;
   if (emptyBodyQuarantinedCount > 0) {
     console.log(
       `[EbletStore] queryVerifiedEbletsTopical: excluded ${emptyBodyQuarantinedCount} ` +
       `empty-answer-body bare-letter eblet(s) from retrieval for domain=${domain} (KN-BP142-6 ` +
       `FIX 4, Rule 66 quarantine-by-non-retrieval, not deleted)`,
     );
+  }
+
+  // D-BP166-M0-017/BISHOP/seg-retrieval-class-filter: benchmark-seed admissibility gate, opt-in
+  // exclusion only (see isBenchmarkSeedEblet()'s doc comment above). FAIL OPEN (Law 3): if
+  // excluding benchmark-seed content would empty the result set, fall back to the unfiltered set
+  // and log rather than returning nothing.
+  let entries = entriesAfterQuarantine;
+  if (!admitBenchmarkSeed) {
+    const afterBenchmarkSeedFilter = entriesAfterQuarantine.filter((e) => !isBenchmarkSeedEblet(e));
+    const benchmarkSeedFilteredCount = entriesAfterQuarantine.length - afterBenchmarkSeedFilter.length;
+    if (afterBenchmarkSeedFilter.length === 0 && entriesAfterQuarantine.length > 0) {
+      console.log(
+        `[EbletStore] queryVerifiedEbletsTopical: benchmark-seed filter (admitBenchmarkSeed=false) ` +
+        `would empty the result set for domain=${domain} (${benchmarkSeedFilteredCount} excluded of ` +
+        `${entriesAfterQuarantine.length}); FAILING OPEN to the unfiltered set rather than returning nothing`,
+      );
+    } else {
+      entries = afterBenchmarkSeedFilter;
+      if (benchmarkSeedFilteredCount > 0) {
+        console.log(
+          `[EbletStore] queryVerifiedEbletsTopical: excluded ${benchmarkSeedFilteredCount} ` +
+          `benchmark-seed eblet(s) (admitBenchmarkSeed=false) from retrieval for domain=${domain}`,
+        );
+      }
+    }
   }
 
   if (entries.length === 0) return [];

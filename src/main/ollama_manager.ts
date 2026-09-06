@@ -279,10 +279,9 @@ export class OllamaManager {
       const DLL_NOT_FOUND_SIGNED   = -1073741515;
       if (code === DLL_NOT_FOUND_UNSIGNED || code === DLL_NOT_FOUND_SIGNED) {
         const vcMsg =
-          'Ollama failed to start — VC++ 2019 x64 runtime may be missing. ' +
-          'Reinstall MnemosyneC to repair (the installer includes vc_redist.x64.exe), ' +
-          'or run vc_redist.x64.exe from the install directory: ' +
-          '%LOCALAPPDATA%\\Programs\\MnemosyneC\\resources\\vcredist\\vc_redist.x64.exe';
+          'Ollama failed to start — the Microsoft Visual C++ 2015-2022 x64 Redistributable is missing. ' +
+          'Download and install it from Microsoft: https://aka.ms/vc14/vc_redist.x64.exe, ' +
+          'then restart MnemosyneC.';
         console.error(`[Ollama] ${vcMsg}`);
         this.onStatusUpdate?.({ branch, message: vcMsg, vcredistRequired: true });
       }
@@ -583,14 +582,16 @@ export class OllamaManager {
     }
 
     if (await this.hasFloorModel()) {
-      this.status.model = FLOOR_MODEL;
+      // t-5f9dea90: report the ALIAS actually on disk, not the hardcoded FLOOR_MODEL constant --
+      // hasFloorModel() only proves membership in FLOOR_MODEL_ALIASES, not which one is installed.
+      this.status.model = (await this.listModels()).find((m) => isFloorModel(m)) ?? FLOOR_MODEL;
       emit('ready', '✓ Your private AI is ready.');
       return { ok: true };
     }
 
     emit('importing_bundled', 'Setting up your AI model…');
     if (this._importBundledModels() && (await this.hasFloorModel())) {
-      this.status.model = FLOOR_MODEL;
+      this.status.model = (await this.listModels()).find((m) => isFloorModel(m)) ?? FLOOR_MODEL;
       emit('ready', '✓ Your private AI is ready.');
       return { ok: true };
     }
@@ -838,6 +839,7 @@ export class OllamaManager {
           model,
           prompt,
           stream: false,
+          think: false,
           options: { num_predict: 256, temperature: 0.7 },
         }),
         signal: controller.signal,

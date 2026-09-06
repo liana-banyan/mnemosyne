@@ -57,6 +57,7 @@
 
 import {
   distillExtraction,
+  decideBrowserLookupRefusal,
   isBrowserAuthorityEnabled,
   type BrowserAuthorityAdapterConfig,
   type BrowserAuthorityDispatchOutcome,
@@ -153,6 +154,24 @@ export async function runBrowserAuthorityLookup(
   const trimmedQuestion = question.trim();
   if (!trimmedQuestion) return null;
 
+
+  // ── D-BP221-BM0-005: THE HARD ADMISSION GATE, AT THE CHOKEPOINT. ────────────────────────────
+  // A browser lookup against an unburned benchmark item BURNS that item for measurement forever,
+  // and a burn discovered afterward is indistinguishable from an accident. decideBrowserLookupRefusal
+  // has existed and been compiled and live since BP220 with ZERO callers -- built, never wired.
+  //
+  // WIRED HERE AND NOT AT THE CALL SITES, DELIBERATELY. The plan in browser_authority_types.ts
+  // named "five call sites in one file." A measured count found FIFTEEN live invocations across
+  // THREE files (13 in plow_mc_answerer.ts, 1 here, 1 in star_chamber_dispatch.ts). A gate copied
+  // to fifteen places is a gate that is missing from the sixteenth. Every one of those callers
+  // reaches the browser THROUGH this function, so one check here cannot be bypassed by forgetting.
+  //
+  // FAIL-OPEN IS DECLARED, NOT HIDDEN (the Founder's firearm rule): with no benchmarkCorpusId the
+  // gate PERMITS and says so in its own reason string. Absence of a corpus id is not evidence the
+  // question is safe -- it means nobody told this code what corpus it is touching.
+  const refusal = decideBrowserLookupRefusal(config.benchmarkCorpusId);
+  if (refusal.refuse) return null;
+
   const authority: BrowserAuthorityName = config.preferredAuthority ?? 'user_google';
   // WIRE-THE-LOOP fix: pass mcOptions through unmodified when the caller supplied any -- see
   // BrowserAuthorityQuery.mcOptions / buildBrowserAuthorityQueryUrl()'s doc comments for the
@@ -164,6 +183,9 @@ export async function runBrowserAuthorityLookup(
     // BP139 Authority Ensemble: threaded through unmodified -- absent/false on every
     // pre-ensemble caller, see BrowserAuthorityQuery.embedOptionsForGoogle's own doc comment.
     ...(config.embedOptionsForGoogle ? { embedOptionsForGoogle: true } : {}),
+    // Carried onto the query so anything logging this lookup records WHAT it was judged against,
+    // not merely that it was permitted.
+    ...(config.benchmarkCorpusId ? { benchmarkCorpusId: config.benchmarkCorpusId } : {}),
   };
 
   const raw = await bridge.runQueryInUserBrowser(query);
@@ -221,12 +243,35 @@ export async function runBrowserAuthorityLookupObserved(
     return { result: null, dispatchOutcome: 'no_result', raw: null };
   }
 
+
+  // ── D-BP221-BM0-005: THE HARD ADMISSION GATE, AT THE CHOKEPOINT. ────────────────────────────
+  // A browser lookup against an unburned benchmark item BURNS that item for measurement forever,
+  // and a burn discovered afterward is indistinguishable from an accident. decideBrowserLookupRefusal
+  // has existed and been compiled and live since BP220 with ZERO callers -- built, never wired.
+  //
+  // WIRED HERE AND NOT AT THE CALL SITES, DELIBERATELY. The plan in browser_authority_types.ts
+  // named "five call sites in one file." A measured count found FIFTEEN live invocations across
+  // THREE files (13 in plow_mc_answerer.ts, 1 here, 1 in star_chamber_dispatch.ts). A gate copied
+  // to fifteen places is a gate that is missing from the sixteenth. Every one of those callers
+  // reaches the browser THROUGH this function, so one check here cannot be bypassed by forgetting.
+  //
+  // FAIL-OPEN IS DECLARED, NOT HIDDEN (the Founder's firearm rule): with no benchmarkCorpusId the
+  // gate PERMITS and says so in its own reason string. Absence of a corpus id is not evidence the
+  // question is safe -- it means nobody told this code what corpus it is touching.
+  const refusal = decideBrowserLookupRefusal(config.benchmarkCorpusId);
+  // 'disabled' is the honest outcome: the lookup was never dispatched. It is NOT 'no_result',
+  // which would falsely claim the browser was asked and came back empty.
+  if (refusal.refuse) return { result: null, dispatchOutcome: 'disabled', raw: null };
+
   const authority: BrowserAuthorityName = config.preferredAuthority ?? 'user_google';
   const query: BrowserAuthorityQuery = {
     question: trimmedQuestion,
     authority,
     ...(config.mcOptions && config.mcOptions.length > 0 ? { mcOptions: config.mcOptions } : {}),
     ...(config.embedOptionsForGoogle ? { embedOptionsForGoogle: true } : {}),
+    // Carried onto the query so anything logging this lookup records WHAT it was judged against,
+    // not merely that it was permitted.
+    ...(config.benchmarkCorpusId ? { benchmarkCorpusId: config.benchmarkCorpusId } : {}),
   };
 
   if (bridge.runQueryInUserBrowserObserved) {

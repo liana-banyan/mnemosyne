@@ -45,15 +45,28 @@ import type { SurveyAskNestedResult } from './elements/survey_ask';
 // module (verified by reading its import block, BP153).
 import { extractSuperlativeMatch } from './methods/classify_cascade';
 
-/** The six demand types read off the BP150 benchmark corpus. THE LIST IS OPEN, but per canon R-7
- *  a new type is a Founder act -- never inferred here from a question that matched nothing. */
+/** The six demand types read off the BP150 benchmark corpus, plus a seventh added at BP164.
+ *  THE LIST IS OPEN, but per canon R-7 a new type is a Founder act -- never inferred here from a
+ *  question that matched nothing.
+ *
+ *  D-BP164-M0-112/BISHOP/M0/seg-toolbox -- 'COMPUTE' ADDED, R-7 SATISFIED. `arithmetic_cascade.ts`
+ *  and `stage3_symbolic_cascade.ts` (D-BP164-M0-037, D-BP164-M0-054) each carried a PROVISIONAL
+ *  `demand: 'COMPUTE' as unknown as LianaDemand` cast, both stating in their own headers that
+ *  adding 'COMPUTE' here is the unmade Founder act R-7 requires. This dispatch's Founder ruling
+ *  makes that act: "we need to make an open-ended response, clearly, to run that. And when the
+ *  next test has a different requirement of necessity, like it's True/False only, we will add
+ *  that to the list of things we can do, as well." COMPUTE is the first of that open list: the
+ *  answer is a value derived by computation from the question text alone (OlympiadBench,
+ *  ASDiv/GSM8K, and the Stage 3 generated shapes). Both cascades' casts are removed in the same
+ *  dispatch (see each file's own `demand:` line) now that this is a real member, not a workaround. */
 export type LianaDemand =
   | 'RANK'                  // the answer is a position in an ordering            (qid 98)
   | 'DEFINE'                // the answer is a meaning                            (qid 85)
   | 'IDENTIFY'              // the answer is a member or instance                 (qid 66)
   | 'CLASSIFY'              // the answer assigns items to categories             (qid 46)
   | 'INFER'                 // the answer is a conclusion drawn from evidence     (qid 72)
-  | 'LOCATE-IN-FRAMEWORK';  // the answer is a term's role inside a named theory   (qid 92)
+  | 'LOCATE-IN-FRAMEWORK'   // the answer is a term's role inside a named theory   (qid 92)
+  | 'COMPUTE';              // the answer is a value derived by computation        (BP164)
 
 export interface DemandResult {
   /** null = no demand could be determined. Per canon R-5 that is a teaching prompt, not a
@@ -608,34 +621,290 @@ export function determineDemandFromOperationAnswer(rawAnswer: string | null): De
 // the survey actually derived.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP164-M0-112/BISHOP/M0/seg-toolbox -- SECOND STRUCTURAL DETECTOR, COMPUTE, ADDED HERE (NOT
+// A PARALLEL PATH). Founder ruling this dispatch: "we need to make an open-ended response,
+// clearly... and when the next test has a different requirement of necessity, like it's
+// True/False only, we will add that to the list of things we can do, as well." That is an order
+// to make ADDING a structural demand shape easy and obvious, not a one-off. So this function was
+// refactored from one hardcoded check into an ORDERED LIST of small detectors
+// (STRUCTURAL_DEMAND_DETECTORS below), tried in order, first match wins -- the superlative/CLASSIFY
+// detector above is detector 1, unchanged in wording or behavior; COMPUTE is detector 2; a future
+// True/False detector is a THIRD ENTRY in the same list, not a bolted-on branch.
+//
+// WHAT COMPUTE DETECTS. An open-ended (no lettered option pool, or fewer than two options -- the
+// same threshold every cascade's own shapeTest() already uses) question whose own grammar asks for
+// a derived value: a "compute/calculate/find/determine/evaluate/solve for/what is/how many/how
+// much" cue PLUS numeric or algebraic/LaTeX math content (a digit, or a LaTeX math delimiter/
+// command). Both conditions are read from `question`/`options` ONLY -- the same two fields this
+// file's other structural derivations read, never a dataset's `answer_type` or any other
+// answer-adjacent field (PART TEN, REPLICATION_PROTOCOL_BP159.md).
+//
+// THIS IS DEMAND, NOT SELECTION. Matching COMPUTE here says only "this answer must be a computed
+// value" -- it does NOT claim any registered method can produce one. `method_registry.ts`'s
+// `selectMethod()` still runs every COMPUTE method's own `shapeTest()` afterward and can honestly
+// refuse (e.g. neither `arithmetic_cascade.ts` nor `stage3_symbolic_cascade.ts` matches a
+// competition-math system-of-equations problem) -- that is `no_method_matched`, a DIFFERENT and
+// more informative outcome than `demand_unknown`, per this file's canon R-5 doctrine (name what is
+// missing, don't just say nothing ran).
+//
+// WHY THIS EXTENDS THE PATH RATHER THAN A NEW ONE (per this dispatch's own instruction to look at
+// what exists before building): it is the SAME function, the SAME last-resort ordering (tried only
+// after all three surveyed-ask derivations refuse), the SAME 'question-string' labeling discipline,
+// and the SAME refuse-beats-guess return shape as the CLASSIFY detector it now sits beside.
+const COMPUTE_CUE_RE = /\b(compute|calculate|evaluate|determine|find (?:the|all)|what is|how many|how much|solve for)\b/i;
+const MATH_CONTENT_RE = /[0-9]|\$[^$]*\$|\\frac|\\log|\\sum|\\int|\\sqrt|\^\d|\^\{|_\{/;
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// D-BP165-M0-020/BISHOP/M0/seg-demand -- THIRD AND FOURTH STRUCTURAL DETECTORS, WIDENING FOR
+// ORDINARY LETTERED MCQ STEMS. Founder ruling this dispatch, verbatim: "do #2, widen the
+// structural detector ... Narrow, additive, keeps Survey off, and it is the same structural path
+// already extended once at D-BP164-M0-112 for exactly this kind of reason."
+//
+// THE MEASURED FAILURE THIS CLOSES. D-BP165-M0-019's n=50 stratified sweep (seed 42, dataset sha
+// 51d7b60cb50f027a564d57df2e8db671af7f084c34481cfb37285b6d3eb0c1b1) returned 50 of 50 ABSTAINED,
+// ZERO LLM CALLS: 42/50 `demand_unknown`, the other 8 reached classify-cascade (routed by the
+// pre-existing `classify-superlative` detector below) and abstained only because their frame
+// query needs `askGoogle`, a SEPARATE, already-known limitation (Survey is OFF by default,
+// Founder's own preference) -- not this file's problem and not touched here. Every one of the 42
+// `demand_unknown` items carries a LETTERED OPTION POOL (an ordinary MMLU-Pro MCQ) -- exactly the
+// shape `compute-open-ended` (D-BP164-M0-112) refuses on sight (`hasOptionPool` returns null
+// immediately) and no detector in this list had ever looked at.
+//
+// WHY WIDENING, NOT A NEW DETECTOR CLASS, AND NO NEW LianaDemand MEMBER. Canon R-7: "a new type is
+// a Founder act, never inferred here." Neither entry below mints one. Both map a real MCQ shape
+// onto a demand type that ALREADY EXISTS: COMPUTE (D-BP164-M0-112) and IDENTIFY (BP150 corpus,
+// registered with `run: null` in untaught_shapes.ts, D-BP153-008, so a question that resolves to
+// it gets an honest "recognized shape, not yet taught" instead of silence). Both entries read ONLY
+// `question` and `options` -- never `answer`/`answer_index`/`category`/`src`
+// (PART TEN, REPLICATION_PROTOCOL_BP159.md) -- and both return `demand: null` freely rather than
+// stretch a type past what it means (this dispatch's own instruction: "a wrong demand is worse
+// than demand_unknown").
+//
+// FIXTURES ARE REAL, NOT INVENTED. Every question_id cited below is drawn from the ACTUAL 42-item
+// `demand_unknown` set the n=50 baseline report names
+// (BISHOP_DROPZONE/D-BP165-M0-019_MMLU_PRO_SWEEP/mmlu_pro_subset_report_D-BP165-M0-019.json,
+// `perItem[].error === "demand_unknown"`), read directly against
+// C:\Users\Administrator\Documents\DATASETS\MMLU-Pro\mmlu-pro-test.jsonl (12,032 rows, 14
+// categories) -- not the six-question BP150 corpus these older detectors were tuned against.
+//
+// ── ENTRY 3: compute-mcq-numeric-options (COMPUTE) ──
+// WHAT IT DETECTS. The EXACT SAME two signals `compute-open-ended` already requires on the
+// question text (COMPUTE_CUE_RE, MATH_CONTENT_RE -- unmodified, reused, never duplicated-and-
+// diverged) PLUS one new signal read from `options`, which is what "using the options it is
+// already handed" (the Founder's own phrase, this dispatch) means concretely: every option value
+// contains at least one digit (`allOptionsCarryADigit()` below). That third signal is what tells a
+// genuinely computed-value MCQ (qid 638's ten dollar-figure options; qid 8165's ten bare numbers)
+// apart from an MCQ whose options are qualitative (names, categories, prose claims) -- the exact
+// case `compute-open-ended` was already correctly refusing, and still refuses, unchanged: this is
+// an ADDITIVE new list entry, not an edit to that function's body.
+//
+// MEASURED AGAINST THE REAL 42: 14 convert -- qid 638 (business, loan payoff balance, options
+// "90000.00".."150000.00"), 712 (business, tile count + cost), 3769 (chemistry, molecular weight,
+// options like "1.01 x 10^5 g/mole"), 4632 (chemistry, lipid-molecule count), 8165/8430/8597/9027
+// (math, bare numbers or short numeric expressions), 8567 (math, "14 x 3" / "21 x 4" -- literal
+// arithmetic expressions rather than evaluated numbers, still all-digit-bearing and still COMPUTE:
+// per `compute-open-ended`'s own header, whether any registered method's shapeTest() actually fits
+// THIS question's specific shape is a method-selection question, never a demand question), 9761
+// (physics, retina image separation), 11601/11634/11790/12241 (engineering: transformer
+// efficiency, heat flux, boundary-layer thickness, drag force -- several with PROSE-WRAPPED
+// numeric options, e.g. "880lb_f for the whole plate and 124lb_f for the first 10 ft", still
+// all-digit-bearing so still caught).
+//
+// WHAT IT STILL LEAVES UNMAPPED, ON PURPOSE (an honest gap, not smoothed over). qid 584 -- THE
+// FOUNDER'S OWN NAMED FIXTURE -- has an all-numeric option pool but its `question` field carries NO
+// verb at all: a bare table ("Policy Face Value of Policy Premium Rate Term of Policy Premium 1
+// $9,000 ..."), src `stemez-Business`, whose actual ask appears to have been stripped by the
+// dataset's own source extraction. COMPUTE_CUE_RE correctly finds no cue because there genuinely is
+// none in the question text, and this detector, like every other one in this file, never guesses a
+// missing verb from the option shape alone. qid 3960/4221/9219 spell their numbers as WORDS ("five
+// seconds", not "5"), so MATH_CONTENT_RE's literal-digit requirement -- unchanged scope, D-BP164-
+// M0-112 -- never fires. qid 2957 (a genetics pedigree cross) has cue+math on the question but its
+// options are genotype notation with NO digits at all (`allOptionsCarryADigit` correctly returns
+// false -- that answer is not a computed value, it is an assignment). qid 7420/10608 have all-digit
+// options but no COMPUTE_CUE_RE phrase in the question. None of these are silently absorbed; they
+// stay `demand_unknown` and this comment names exactly why.
+//
+// ── ENTRY 4: identify-mcq-condition (IDENTIFY) ──
+// WHAT IT DETECTS. The generic MMLU-Pro "which (one) of the following ... is/are/does/would/can/
+// should/results/cannot/must [a stated condition, possibly negated]" stem, plus the explicit
+// imperative "Identify ...". Per `LianaDemand`'s own doc comment, IDENTIFY is "the answer is a
+// member or instance", and the CUES table above (this file, the unused scaffold) already carries
+// the same grammatical idea for it ("asks which member or instance satisfies a stated condition")
+// -- this entry gives that idea a home in the LIVE structural path, grammar tuned to real MCQ
+// stems rather than re-derived from nothing. "Which of the following entities cannot sue for
+// libel" and "Identify the antecedent of the following conditional proposition" both ask exactly
+// this: pick the OPTION -- a member of the lettered set -- that does or does not satisfy the
+// condition the question states. This is NOT DEFINE (DEFINE asks what a term MEANS; this asks
+// which member QUALIFIES).
+//
+// GUARDED AGAINST LOCATE-IN-FRAMEWORK. `FRAMEWORK_CUE_RE` below mirrors the CUES table's own
+// LOCATE-IN-FRAMEWORK regex byte-for-byte (kept as a separate constant, not imported, so this new
+// entry is never coupled to that scaffold's own lifecycle/removal). A question that both names a
+// capitalized framework ("Within Critical Security Studies, ...") and also happens to phrase itself
+// as "which of the following" is NOT claimed here -- checked directly against all 42 real fixtures,
+// zero collide, but the guard costs one regex test and this file's own doctrine is refuse-beats-
+// guess (canon R-5): a possible LOCATE-IN-FRAMEWORK question reported UNKNOWN here is not a new
+// gap, since no structural detector in this file has ever produced that demand type.
+//
+// MEASURED AGAINST THE REAL 42 (the 14 above already removed by the ordering below): 7 more
+// convert -- qid 1525 (law, "does not apply to solicitation"), 5283 (other, "cannot sue for
+// libel"), 5471 (other, "results in establishment of a price..."), 5818 (other, "the impact on
+// assets and liabilities"), 6054 (health, "not a reason for increased risk..."), 6637 (health, THE
+// FOUNDER'S OWN OTHER NAMED FIXTURE, "Which of the following statements is correct?"), 10948
+// (philosophy, "Identify the antecedent of...").
+//
+// TOTAL MEASURED CONVERSION: 21 of the 42 `demand_unknown` items now resolve a demand, across 9 of
+// the 14 categories (business, law, chemistry, math, physics, engineering, other, health,
+// philosophy). The remaining 21 keep reporting `demand: null`, each with its own detector's `why`
+// naming what was checked and found absent -- see the two paragraphs above for the specific,
+// named reasons, not a blanket "no match".
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+const FRAMEWORK_CUE_RE = /\b(?:[Ww]ithin|[Ii]n|[Aa]ccording to|[Uu]nder)\s+[A-Z][\w-]*(?:\s+[A-Z][\w-]*)+\s*,/;
+const IDENTIFY_WHICH_RE = /\bwhich (?:one )?of the following\b[^?]{0,120}\b(is|are|does|would|can|should|results?|cannot|must)\b/i;
+const IDENTIFY_IMPERATIVE_RE = /^\s*identify\b/i;
+
+/** True only when an option pool exists (>= 2 entries, the same threshold every other structural
+ *  check in this file uses) AND every single option value contains at least one digit. This is the
+ *  new signal D-BP165-M0-020 reads from `options` -- a computed-value MCQ's options are dominated
+ *  by digits (dollar figures, bare numbers, scientific notation, unit-suffixed quantities); a
+ *  qualitative MCQ's options (names, categories, prose claims) essentially never are. Deliberately
+ *  ALL, not a majority or a threshold -- a single non-numeric option is evidence the pool is
+ *  qualitative, and refusing on that evidence (canon R-5) beats guessing past it. */
+function allOptionsCarryADigit(options: Record<string, string> | null): boolean {
+  if (!options) return false;
+  const values = Object.values(options);
+  if (values.length < 2) return false;
+  return values.every((v) => /\d/.test(v));
+}
+
+interface StructuralDemandDetector {
+  /** Short label for the transcript/why-string only -- not read by any caller. */
+  id: string;
+  detect(question: string, options: Record<string, string> | null): DemandResult | null;
+}
+
+/** ORDERED. First match wins. Adding a new structural shape (e.g. the Founder's own named
+ *  next example, True/False) is ONE NEW ENTRY here, in the shape the COMPUTE entry demonstrates --
+ *  never a special case bolted onto `determineDemandFromQuestionStructure()`'s body. */
+const STRUCTURAL_DEMAND_DETECTORS: StructuralDemandDetector[] = [
+  {
+    id: 'classify-superlative',
+    detect(question) {
+      const superlative = extractSuperlativeMatch(question);
+      if (!superlative) return null;
+      return {
+        demand: 'CLASSIFY',
+        why: `the question's own grammar carries a structural superlative ("${superlative.direction} `
+          + `${superlative.property}", a literal span of the question) -- the SAME signal `
+          + 'extractSuperlativeMatch() gives classify_cascade.ts\'s run() to route this question to its '
+          + 'superlative-by-magnitude path. CLASSIFY per FD-BP152-06 ("qid 98 is classify"). Derived '
+          + 'structurally because SURVEY STEP 2 produced no term, no usable operation answer, and no '
+          + 'surviving ambiguity-named term',
+        derivedFrom: 'question-string',
+      };
+    },
+  },
+  {
+    id: 'compute-open-ended',
+    detect(question, options) {
+      const hasOptionPool = !!options && Object.keys(options).length >= 2;
+      if (hasOptionPool) return null;
+      const cueMatch = question.match(COMPUTE_CUE_RE);
+      if (!cueMatch) return null;
+      if (!MATH_CONTENT_RE.test(question)) return null;
+      return {
+        demand: 'COMPUTE',
+        why: `the question has no lettered option pool (open-ended free response) and its own `
+          + `grammar carries a computation cue ("${cueMatch[0]}") alongside numeric/LaTeX math `
+          + 'content -- the answer must be a value derived by computation. This says only that '
+          + 'COMPUTE is the demand; whether any registered method\'s shapeTest() actually fits this '
+          + 'question\'s specific shape is decided separately, at method selection (D-BP164-M0-112)',
+        derivedFrom: 'question-string',
+      };
+    },
+  },
+  {
+    id: 'compute-mcq-numeric-options',
+    detect(question, options) {
+      if (!allOptionsCarryADigit(options)) return null;
+      const cueMatch = question.match(COMPUTE_CUE_RE);
+      if (!cueMatch) return null;
+      if (!MATH_CONTENT_RE.test(question)) return null;
+      return {
+        demand: 'COMPUTE',
+        why: 'the question carries a lettered option pool, but every option contains a digit (a '
+          + 'computed-value option set, not a qualitative one -- allOptionsCarryADigit()) and the '
+          + `question's own grammar carries a computation cue ("${cueMatch[0]}") alongside `
+          + 'numeric/LaTeX math content -- the answer must be a value (or arithmetic expression) '
+          + 'derived by computation, presented as MCQ rather than free response. Widened from '
+          + 'compute-open-ended (D-BP164-M0-112) at D-BP165-M0-020, Founder verbatim: "widen the '
+          + 'structural detector ... using the options it is already handed." This says only that '
+          + 'COMPUTE is the demand; whether any registered method\'s shapeTest() actually fits this '
+          + 'question\'s specific shape is decided separately, at method selection',
+        derivedFrom: 'question-string',
+      };
+    },
+  },
+  {
+    id: 'identify-mcq-condition',
+    detect(question, options) {
+      const hasOptionPool = !!options && Object.keys(options).length >= 2;
+      if (!hasOptionPool) return null;
+      // Defer to LOCATE-IN-FRAMEWORK rather than mis-claim it -- see this section's own header
+      // for why this guard costs nothing and no real fixture in the measured 42 needed it.
+      if (FRAMEWORK_CUE_RE.test(question)) return null;
+      const m = IDENTIFY_WHICH_RE.exec(question) ?? IDENTIFY_IMPERATIVE_RE.exec(question);
+      if (!m) return null;
+      return {
+        demand: 'IDENTIFY',
+        why: 'the question carries a lettered option pool and its own grammar asks which member of '
+          + `that set satisfies (or fails to satisfy) a stated condition ("${m[0].trim().slice(0, 60)}") `
+          + '-- IDENTIFY per LianaDemand\'s own doc comment ("the answer is a member or instance"). '
+          + 'Widened at D-BP165-M0-020 (Founder verbatim, this dispatch: "widen the structural '
+          + 'detector ... Narrow, additive"), the same structural path D-BP164-M0-112 first extended '
+          + 'for COMPUTE. Guarded against LOCATE-IN-FRAMEWORK (FRAMEWORK_CUE_RE, mirrors the CUES '
+          + 'table\'s own pattern) so a framework question is never mis-claimed here. IDENTIFY is '
+          + 'registered with `run: null` (untaught_shapes.ts, D-BP153-008) -- a question resolving '
+          + 'here reports "recognized shape, not yet taught," an honest, complete result, never a '
+          + 'silent demand_unknown',
+        derivedFrom: 'question-string',
+      };
+    },
+  },
+];
+
 /**
- * Derives DEMAND from the question's own grammar, using the SAME structural detector
- * `classify_cascade.ts`'s `run()` uses to route the question. See this section's header for why
- * this is a wiring fix rather than a widened gate, and for what it still refuses.
+ * Derives DEMAND from the question's own grammar and structure (no options field, cue words,
+ * math content), trying each entry of `STRUCTURAL_DEMAND_DETECTORS` in order and returning the
+ * first match. See that list's own header for why this is a wiring fix / open-ended-by-design
+ * extension point rather than a widened gate, and for what it still refuses.
  *
  * MUST be called only after `determineDemandFromSurveyedAsk()`,
  * `determineDemandFromOperationAnswer()`, and `determineDemandFromAmbiguityNested()` have all
  * failed to produce a demand -- it is a last resort, never a first opinion.
+ *
+ * `options` is OPTIONAL (defaults to `null`) so every pre-existing single-argument call site
+ * (this file's own tests included) keeps compiling and behaving identically -- omitting it simply
+ * means the compute-open-ended detector always sees "no option pool".
  */
-export function determineDemandFromQuestionStructure(question: string): DemandResult {
-  const superlative = extractSuperlativeMatch(question);
-  if (!superlative) {
-    return {
-      demand: null,
-      why: 'the question carries no structural superlative (SUPERLATIVE_PROPERTY_RE did not match a '
-        + 'literal span of it), so there is nothing in its own grammar to derive a demand from '
-        + 'either -- reporting UNKNOWN, which is a teaching prompt (canon R-5), not a guess',
-      derivedFrom: 'question-string',
-    };
+export function determineDemandFromQuestionStructure(
+  question: string,
+  options: Record<string, string> | null = null,
+): DemandResult {
+  for (const detector of STRUCTURAL_DEMAND_DETECTORS) {
+    const result = detector.detect(question, options);
+    if (result) return result;
   }
   return {
-    demand: 'CLASSIFY',
-    why: `the question's own grammar carries a structural superlative ("${superlative.direction} `
-      + `${superlative.property}", a literal span of the question) -- the SAME signal `
-      + 'extractSuperlativeMatch() gives classify_cascade.ts\'s run() to route this question to its '
-      + 'superlative-by-magnitude path. CLASSIFY per FD-BP152-06 ("qid 98 is classify"). Derived '
-      + 'structurally because SURVEY STEP 2 produced no term, no usable operation answer, and no '
-      + 'surviving ambiguity-named term',
+    demand: null,
+    why: 'the question carries no structural superlative (SUPERLATIVE_PROPERTY_RE did not match a '
+      + 'literal span of it); no computation cue plus math content either as open-ended free '
+      + 'response or, per D-BP165-M0-020, as an MCQ with an all-digit option pool; and no '
+      + '"which of the following .../Identify ..." condition-selection grammar either (again '
+      + `D-BP165-M0-020) -- so there is nothing in its own grammar to derive a demand from (tried: `
+      + `${STRUCTURAL_DEMAND_DETECTORS.map((d) => d.id).join(', ')}) -- reporting UNKNOWN, which is `
+      + 'a teaching prompt (canon R-5), not a guess',
     derivedFrom: 'question-string',
   };
 }

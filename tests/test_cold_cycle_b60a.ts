@@ -29,7 +29,7 @@ process.env.LB_SUBSTRATE_ROOT = TEST_ROOT;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const SR = require('../src/main/sprite_registry') as typeof import('../src/main/sprite_registry');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const CL = require('../src/main/celpane_lease') as typeof import('../src/main/celpane_lease');
+const CL = require('../src/main/pane_lease') as typeof import('../src/main/pane_lease');
 
 // ─── Test harness types ───────────────────────────────────────────────────
 

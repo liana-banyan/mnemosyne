@@ -42,6 +42,22 @@ export type WrongClass =
                               // facts behind it (candidatesPostFurnace falsy) -- must be de-
                               // confidenced; this is a materially weaker acceptance than coverage-gap.
   | 'plow-discordant'       // no voter majority (concordance=DISCORDANT), fell to abstain or guessed
+  // D-BP206-M0-h2cbp11qc-001, board card seq 149. VOTERS AGREEING ON A WRONG ANSWER IS NOT VOTERS
+  // DISAGREEING, and until now both landed in 'plow-discordant'. The terminal wrong branch below
+  // assigned that label to ANY wrong answer once a plow had run, whatever the concordance was --
+  // its own comment admitted the fudge, "voters disagreed less loudly". They did not disagree at
+  // all. A unanimous wrong answer is the engine being CONFIDENTLY wrong, which is a different
+  // defect with a different fix than voters splitting, and folding the two together corrupts the
+  // evidentiary class the whole proof page rests on. This is the same disease D-BP167-M0-036
+  // already cured once at the other end of the same enum, when voterLetters=[null,null,null] was
+  // being reported DISCORDANT and absence had to be split out from disagreement as
+  // 'NO_VOTER_OUTPUT'. Third time this word has been asked to mean something it does not.
+  // IT STAYS CORRECTABLE, unlike 'contested-key'. Contested-key is excluded because it arrived by
+  // the STRONGEST acceptance path (structured corroborator AND independent corroboration AND
+  // unanimous voters), where driving the count to zero would teach the engine to distrust its own
+  // best signal. This class has no such corroboration behind it -- it is unanimity alone, which is
+  // exactly the kind of confident miss that SHOULD be driven to zero.
+  | 'plow-unanimous-wrong'  // voters were CONCORDANT/unanimous and the answer was still wrong
   | 'substrate-gap'         // swarm ran, zero candidates survived miner+furnace
   | 'compute-wrong'         // compute sidecar ran and returned the wrong letter
   | 'bad-decomposition'     // [Phase 2] decompose engine generated wrong foundation queries
@@ -49,11 +65,26 @@ export type WrongClass =
   // that actually answered instead of falling through to a plow-* default. See classifyCore's
   // right/wrong terminal else branches.
   | 'single-shot-wrong'     // answeredBy=single_shot (or unset), no plowTrace, and it was wrong
-  | 'minor-council-wrong';  // answeredBy=minor_council, no plowTrace, and it was wrong
+  | 'minor-council-wrong'   // answeredBy=minor_council, no plowTrace, and it was wrong
+  // D-BP208-BM01-012: the Liana Cycle arm's own miss. Added because these were landing on
+  // 'single-shot-wrong', a class that means "no plow ran, answeredBy=single_shot (or unset)" --
+  // an entire arm's misses attributed to a mechanism it never used. Additive: only a trace
+  // carrying LIANA_ARM_TRACE_MARKER can reach it, and nothing written before this dispatch does.
+  | 'liana-cycle-wrong';
+
+/** D-BP208-BM01-012. Stamped by liana_cycle_runner.ts into a SYNTHETIC traceSummary. Self-
+ *  describing on purpose: a reader who finds this in a trace must never mistake it for a real
+ *  PLOW trace. It is the only key that unlocks the liana-cycle-* classes. */
+export const LIANA_ARM_TRACE_MARKER = 'arm=liana_cycle synthetic=true';
 
 export type AbstainClass =
   | 'honest-abstain'            // atom genuinely unverifiable -- CORRECT, leave as-is
-  | 'over-conservative-abstain'; // had the means but bailed (relevance gate over-fired, etc.)
+  | 'over-conservative-abstain' // had the means but bailed (relevance gate over-fired, etc.)
+  // D-BP208-BM01-012: a Liana Cycle abstention. NOT 'honest-abstain', which is what it used to
+  // get by default from an EMPTY traceSummary -- a label earned by absence of evidence rather
+  // than by evidence. Correctable, because this arm's own rejectionSamples can say why it
+  // declined and that answer is worth having rather than assuming.
+  | 'liana-cycle-abstain';
 
 export type RightClass =
   | 'substrate-hit'   // plow voters had relevant substrate candidates
@@ -62,7 +93,9 @@ export type RightClass =
   | 'compute'         // compute sidecar was correct
   // BP141 Yoke Task 4c: same no-plow-ran fix as WrongClass above, right-outcome side.
   | 'single-shot-right'    // answeredBy=single_shot (or unset), no plowTrace, and it was right
-  | 'minor-council-right'; // answeredBy=minor_council, no plowTrace, and it was right
+  | 'minor-council-right'  // answeredBy=minor_council, no plowTrace, and it was right
+  // D-BP208-BM01-012: the Liana Cycle arm's own hit, for the same reason as liana-cycle-wrong.
+  | 'liana-cycle-right';
 
 // BP141 Yoke Task 4b: a THIRD category, distinct from both WrongClass and AbstainClass -- an
 // UNATTEMPTED question (transport timeout / error before any answer was produced). Must never
@@ -451,12 +484,49 @@ function classifyCore(params: {
     } else if (candidatesPostFurnace !== null && candidatesPostFurnace === 0) {
       answerClass = 'substrate-gap';
     } else if (hasPlowTrace) {
-      // Default wrong class: plow ran but chose the wrong letter (voters disagreed less loudly)
-      answerClass = 'plow-discordant';
+      // D-BP206-M0-h2cbp11qc-001, board card seq 149. THIS BRANCH WAS THE BUG. It read
+      // "Default wrong class: plow ran but chose the wrong letter (voters disagreed less loudly)"
+      // and assigned 'plow-discordant' to every wrong answer that reached it, INCLUDING ones where
+      // the voters were unanimous. They did not disagree less loudly; they did not disagree at all.
+      // Split on what the voters actually did, which the classifier already knows.
+      answerClass = (concordance === 'CONCORDANT' || isUnanimousVote)
+        ? 'plow-unanimous-wrong'
+        : 'plow-discordant';
     } else {
       // BP141 Yoke Task 4c: same no-plow-ran fix as the isCorrect branch above -- plowTrace is
       // empty/absent, so there is no plow verdict to blame. Classify by the actual mechanism.
       answerClass = answeredBy === 'minor_council' ? 'minor-council-wrong' : 'single-shot-wrong';
+    }
+  }
+
+  // ── D-BP208-BM01-012. THE LIANA CYCLE ARM GETS ITS OWN CLASSES. ─────────────────────────────
+  //
+  // WHY THIS EXISTS. `liana_cycle_runner.ts` has called classifyLocalOutcome since it was written,
+  // passing its `answer` object as plowTrace -- an object with NO traceSummary. Measured
+  // D-BP208-BM01-009, every traceSummary-gated branch above is therefore false for that arm, and
+  // its outcomes came out as `honest-abstain`, `single-shot-wrong` and `single-shot-right`. The
+  // wrong ones are the worst of the three: `single-shot-wrong` means "no plow ran, answeredBy=
+  // single_shot (or unset)", so an entire arm's misses were attributed to a mechanism it never
+  // used. That was live and being recorded, not a hazard we might have created.
+  //
+  // ADDITIVE BY CONSTRUCTION, which is the XO's hard condition (D-BP208-XO-013). This block runs
+  // AFTER every existing branch and changes nothing they decided unless the trace carries the
+  // marker the Liana runner now stamps. NO INPUT THAT EXISTED BEFORE THIS DISPATCH CARRIES THAT
+  // MARKER, so no previously-pinned classification can move. The characterization test
+  // (answer_coroner.characterization.test.ts) is the proof, not this comment.
+  //
+  // THE MARKER IS DELIBERATELY UGLY AND SELF-DESCRIBING. A reader who finds `arm=liana_cycle
+  // synthetic=true` in a traceSummary must never think a PLOW trace produced it.
+  if (traceSummary.includes(LIANA_ARM_TRACE_MARKER)) {
+    if (outcome === 'abstain') {
+      answerClass = 'liana-cycle-abstain';
+      correctable = true;   // it is not an honest decline until the arm's own evidence says so
+    } else if (outcome === 'wrong') {
+      answerClass = 'liana-cycle-wrong';
+      correctable = true;
+    } else if (outcome === 'right') {
+      answerClass = 'liana-cycle-right';
+      correctable = false;
     }
   }
 
@@ -996,6 +1066,10 @@ function buildRoundupFromRecords(records: CoronerRecord[], runConfig?: RunConfig
     'coverage-gap',
     'ungrounded-adjudication',
     'plow-discordant',
+    // D-BP206-M0-h2cbp11qc-001, seq 149: listed here deliberately. A confidently-wrong unanimous
+    // plow IS a fixable engine defect and belongs in correctableWrongs and the prioritizedFixList,
+    // unlike 'contested-key' which is excluded for the opposite reason. See the enum doc comment.
+    'plow-unanimous-wrong',
     'substrate-gap',
     'compute-wrong',
     'bad-decomposition',

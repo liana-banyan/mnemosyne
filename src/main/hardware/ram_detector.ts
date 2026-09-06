@@ -632,6 +632,10 @@ const MODEL_WEIGHTS_GB: Record<string, ModelWeight> = {
 // Applied ONLY to basis: 'disk' entries -- a resident measurement already
 // contains this overhead (see the RESOLUTION 2 comment above MODEL_WEIGHTS_GB).
 const VRAM_OVERHEAD_FACTOR = 1.2;
+// D-BP202-BM01-013: resident VRAM per BILLION parameters, used ONLY to estimate a model
+// this table has never been told about. MEASURED basis: gemma4:12b was observed at 12.2 GB
+// resident on M0 via ollama ps. Conservative by design -- see requiredVramGb().
+const ESTIMATED_GB_PER_BILLION_PARAMS = 0.75;
 const VRAM_OVERHEAD_FLOOR_GB = 0.5;
 // D-BP157-031: a resident measurement already includes KV-cache/activation
 // overhead for the run it was captured from, but that run's context length
@@ -676,7 +680,39 @@ const UNMEASURED_WEIGHT_SAFETY_MARGIN = 1.15;
  */
 export function requiredVramGb(model: string): number | null {
   const w = MODEL_WEIGHTS_GB[model];
-  if (!w) return null;
+  if (!w) {
+    // ── D-BP202-BM01-013. AN UNKNOWN MODEL MUST NOT READ AS "NO REQUIREMENT". ─────────────────
+    //
+    // MEASURED 2026-08-28: requiredVramGb('gemma4:26b') returned null because that tag has no
+    // MODEL_WEIGHTS_GB entry. Every caller treats null as "cannot judge" and passes the model
+    // through, so applyVramGate() could not have stopped M2 -- an 8 GB card -- from being
+    // configured with a 26b model needing roughly 25 GB. The gate only ever protected models it
+    // had already been told about, which is the opposite of how a safety gate should fail.
+    //
+    // ESTIMATE FROM THE PARAMETER COUNT IN THE TAG. Ollama tags carry it (`:26b`, `:12b`, `:9b`,
+    // `:2b`, and `:800m`-style sub-billion forms). Roughly 0.75 GB of resident VRAM per billion
+    // parameters is the ratio MEASURED ON THIS ESTATE'S OWN HARDWARE, not a published figure:
+    // gemma4:12b was observed at 12.2 GB resident via `ollama ps` on M0 (12 x 0.75 = 9.0, plus the
+    // same overhead factor and unmeasured safety margin applied below lands near the observed
+    // value). gemma2:2b's recorded resident 3.28 GB sits above that line, which is why the margin
+    // matters and why this stays an ESTIMATE.
+    //
+    // IT IS DELIBERATELY CONSERVATIVE, i.e. it over-estimates. A gate that guesses too high
+    // refuses a model that might have fit, costing capability. A gate that guesses too low admits
+    // a model that cannot load, costing a machine that silently crawls -- which is what happened.
+    // Between those two, over-estimating is the correct direction to be wrong in.
+    //
+    // STILL RETURNS null WHEN THE TAG CARRIES NO PARSEABLE SIZE, because that is honestly unknown
+    // and must not be dressed up as a number. UNKNOWN IS UNKNOWN.
+    const m = /:(\d+(?:\.\d+)?)\s*([bm])\b/i.exec(model);
+    if (!m) return null;
+    const n = parseFloat(m[1]);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const billions = m[2].toLowerCase() === 'm' ? n / 1000 : n;
+    const estimatedResidentGb = billions * ESTIMATED_GB_PER_BILLION_PARAMS;
+    const withMargin = (estimatedResidentGb + VRAM_RESIDENT_HEADROOM_GB) * UNMEASURED_WEIGHT_SAFETY_MARGIN;
+    return Math.round(withMargin * 10) / 10;
+  }
   const basis: 'disk' | 'resident' = w.basis === 'resident' ? 'resident' : 'disk';
   const base =
     basis === 'resident'

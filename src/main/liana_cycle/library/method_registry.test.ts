@@ -51,7 +51,40 @@ describe('importing this module executes nothing', () => {
   });
 });
 
-describe('registerKnownMethods() registers the ten pre-existing entries', () => {
+describe('registerKnownMethods() registers the seventeen pre-existing entries', () => {
+  // D-BP164-M0-114/BISHOP/M0/seg-resume -- count and id list updated from ten to fifteen. Five
+  // entries were added to close the gap between this catalog and the 8 LianaMethod entries the
+  // executable registry (registerMethod/selectMethod, ../method_registry.ts) actually holds:
+  // identifyUntaught, inferUntaught, locateInFrameworkUntaught, arithmeticCascadeMethod, and
+  // stage3SymbolicCascadeMethod were all already live and wired (imported by
+  // liana_terminal_engine.ts) but had no Name:Number identity in this catalog before this dispatch.
+  // See ../method_registry.ts's own "D-BP164-M0-114" section, immediately above
+  // registerKnownMethods(), for the full account.
+  //
+  // D-BP167-M0-056/BISHOP-M0/SEG -- count and id list updated AGAIN, fifteen to seventeen.
+  // D-BP165-M0-022 added ComputeGemmaCascade:1 and ComputeSelectCascade:1 to
+  // registerKnownMethods() (../method_registry.ts, whose own doc comment there already says "the
+  // SEVENTEEN pre-existing entries") without updating this test -- caught during a liana_cycle
+  // suite diagnosis, not a new regression. Same drift class as
+  // library/state_the_question_step.test.ts and library/survey_steps.test.ts (23 vs 21); see
+  // D-BP167-M0-056's own SEG return for the full account.
+  //
+  // D-BP207-SEG-A, card t-00173320 -- count and id list updated AGAIN, seventeen to twenty-one.
+  // This card was carded as "THE LIANA CYCLE TEST SUITE IS NON-DETERMINISTIC," with a stated fix
+  // of "reset the registry between tests" for a suspected cross-file singleton-pollution bug. MEASURED,
+  // live, on the currently installed vitest 4.1.9: this exact assertion fails DETERMINISTICALLY,
+  // every time, run completely alone (`vitest run method_registry.test.ts`, nothing else) and also
+  // with `--no-file-parallelism` across the whole 4-file reproduction D-BP168-M0-114 used -- i.e. it
+  // is NOT flaky and NOT order-dependent today, whatever it was when that dispatch wrote its
+  // diagnosis. ROOT CAUSE: D-BP168-M0-126 (a later, unrelated composer-methods dispatch) added FOUR
+  // more entries to ../method_registry.ts's registerKnownMethods() -- PythagoreanTheoremCascade:1,
+  // QuadraticFormulaCascade:1, PermutationCombinationCascade:1, LawOfCosinesCascade:1 -- without
+  // updating this test's hardcoded expected list/count. Confirmed by calling
+  // dist/main/liana_cycle/method_registry.js's registerKnownMethods() directly: returns exactly 21
+  // identities today, matching the 4 new ids added below. This is bucket-1 (stale count, the SAME
+  // drift class this file's own two comments above already describe, recurring a third time), not
+  // the bucket-3 singleton-pollution defect the card's own text hypothesizes -- no registry reset
+  // mechanism is needed to fix this specific assertion.
   test('exactly the expected ids, no more, no less', async () => {
     const mod = await freshRegistryModule();
     const identities = mod.registerKnownMethods();
@@ -61,6 +94,17 @@ describe('registerKnownMethods() registers the ten pre-existing entries', () => 
       'DefinitionalCascade:1',
       'ClassifyCascade:1',
       'Survey:1',
+      'IdentifyUntaught:1',
+      'InferUntaught:1',
+      'LocateInFrameworkUntaught:1',
+      'ArithmeticCascade:1',
+      'Stage3SymbolicCascade:1',
+      'ComputeGemmaCascade:1',
+      'ComputeSelectCascade:1',
+      'PythagoreanTheoremCascade:1',
+      'QuadraticFormulaCascade:1',
+      'PermutationCombinationCascade:1',
+      'LawOfCosinesCascade:1',
       'partitionByAspect:1',
       'eliminateByAspect:1',
       'checkKindForAllOptions:1',
@@ -69,7 +113,7 @@ describe('registerKnownMethods() registers the ten pre-existing entries', () => 
       'formSubstitutionQueriesForAllOptions:1',
     ].sort();
     expect(ids).toEqual(expected);
-    expect(mod.listAllEntries().length).toBe(10);
+    expect(mod.listAllEntries().length).toBe(21);
   });
 
   test('every registered entry resolves to a real declaration via lookupById()', async () => {
@@ -115,11 +159,13 @@ describe('a duplicate Name:Number is an error, not an overwrite', () => {
     expect(() => mod.registerKnownMethods()).toThrow(/duplicate method id/);
   });
 
-  test('listAllEntries() still holds exactly the ten entries after a rejected duplicate attempt', async () => {
+  // D-BP207-SEG-A, card t-00173320 -- 17 -> 21, same stale-count drift as the test above; see that
+  // test's own comment for the full account (D-BP168-M0-126, 4 new registerKnownMethods() entries).
+  test('listAllEntries() still holds exactly the twenty-one entries after a rejected duplicate attempt', async () => {
     const mod = await freshRegistryModule();
     mod.registerKnownMethods();
     expect(() => mod.registerKnownMethods()).toThrow();
-    expect(mod.listAllEntries().length).toBe(10);
+    expect(mod.listAllEntries().length).toBe(21);
   });
 
   test('registerNameNumbered() throws on an exact Name:Number duplicate', async () => {

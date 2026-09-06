@@ -217,10 +217,12 @@ async function callOllamaOnce(
         model,
         prompt,
         stream: false,
-        // Estate canon fix (BP083) + giant_concordance.ts's identical live convention: think:
-        // false + num_predict >= MIN_NUM_PREDICT, or the thinking block eats the whole budget
-        // and `response` comes back empty.
-        options: { num_predict: MIN_NUM_PREDICT, temperature: 0, think: false },
+        // D-BP200-M0-032: think MUST be top-level. It was previously nested inside `options`
+        // here, which this estate has now live-verified (BP134, canonical_pipeline.ts) has NO
+        // EFFECT -- the thinking block still ate the budget silently despite looking correct.
+        // Moved to top-level below; num_predict floor comment (BP083 canon) is unchanged.
+        think: false,
+        options: { num_predict: MIN_NUM_PREDICT, temperature: 0 },
       }),
       signal: controller.signal,
     }).finally(() => clearTimeout(timeout));

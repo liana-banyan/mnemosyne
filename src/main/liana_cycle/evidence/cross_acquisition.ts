@@ -110,8 +110,16 @@ export function findPriorAcquisitionMatch(
  *  returns the stored response and nothing else -- `tries=1` means no retry, no `sleep()`, and no
  *  network reachable from this call. Returns '' (never throws, never fabricates) when the stored
  *  response carries no usable content -- an empty result here simply means this candidate does
- *  not answer the question, exactly as a live query that came back empty would. */
-async function resolveReusedText(m: PriorAcquisitionMatch, askedText: string): Promise<string> {
+ *  not answer the question, exactly as a live query that came back empty would.
+ *
+ *  D-BP164-M0-121/BISHOP/M0/seg-hex, EXPORTED (was module-private). THE SECOND, EXPLICIT FETCH.
+ *  connector_celpane.ts's own fetchConnectorCelpaneFullText() is the second half of a two-step
+ *  connector-resolves-to-a-celpane resolution (mintConnectorCelpane() finds the match via
+ *  findPriorAcquisitionMatch(), ALREADY exported, above -- and deliberately never calls this
+ *  function, so the celpane it mints carries a pointer, not the text). This export adds no new
+ *  behavior to this function and no new caller inside this file; it only lets a second module
+ *  reuse the ONE known-correct extraction path instead of a second, diverging copy of it. */
+export async function resolveReusedText(m: PriorAcquisitionMatch, askedText: string): Promise<string> {
   if (m.record.authority === 'conversational') {
     const r = m.record.response as ConversationalAuthorityResult | null;
     return (r?.text ?? '').trim();

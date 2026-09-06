@@ -1,0 +1,21 @@
+{
+  "methodId": "set-equivalence-match",
+  "fixtures": [
+    {
+      "name": "founding example, dataset question_id 6418 (internal qid 66) -- shape still fires (measurement/inspection is unaffected), but run() is QUARANTINED (2026-09-05) and must throw rather than compute or abstain -- see set_equivalence_match.ts header for the measured reason",
+      "qid": 66,
+      "expectShapeMatches": true,
+      "runModelFree": true
+    },
+    {
+      "name": "fewer than 2 options -- shape refuses",
+      "input": { "question": "x", "options": { "A": "hard palate" } },
+      "expectShapeMatches": false
+    },
+    {
+      "name": "all-single-item option set -- not a set-equivalence shape, shape refuses",
+      "input": { "question": "x", "options": { "A": "apples", "B": "oranges", "C": "pears" } },
+      "expectShapeMatches": false
+    }
+  ]
+}

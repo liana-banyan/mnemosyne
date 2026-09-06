@@ -32,7 +32,7 @@
 // THRESHOLD, already built + exported by the v2a session -- re-verified fresh this session at
 // psionic_predictor.ts:69-80/282 (no import cycle: psionic_predictor.ts itself only imports
 // from mnem_eblet_store.ts, never from this file).
-import { SPECIALIST_REGISTRY, type CandidateEblet, type SpecialistName } from './plow/specialist_adapters';
+import { SPECIALIST_REGISTRY, toDurableWritable, type CandidateEblet, type SpecialistName } from './plow/specialist_adapters';
 import { runSaladin, MINER_MIN_WEIGHT, MINER_MIN_CONTENT_LEN } from './plow/canonical_pipeline';
 import { runGiantConcordance } from './plow/giant_concordance';
 import { writeVerifiedEblet, isQaRelevant } from './mnem_eblet_store';
@@ -94,7 +94,10 @@ export async function runSpiderSwarmAndSaladin(
   const allCandidates = await fetchSpiderSwarmFacts(question, domain);
   const candidatesRaw = allCandidates.length;
   const postMiner = allCandidates.filter(
-    (c) => c.weight >= MINER_MIN_WEIGHT && c.content.length >= MINER_MIN_CONTENT_LEN,
+    // D-BP220-BM0-016: internal length-gate check, never displayed/persisted/prompted on its own
+    // -- matches the LOG sink precedent already used for the same Miner-gate pattern in
+    // canonical_pipeline.ts:913 and plow_mc_answerer.ts:3433/8481/9762 (via c.content.unwrap('LOG')).
+    (c) => c.weight >= MINER_MIN_WEIGHT && c.content.unwrap('LOG').length >= MINER_MIN_CONTENT_LEN,
   );
   console.log(`[CSIA] Spider swarm: raw=${candidatesRaw} postMiner=${postMiner.length}`);
 
@@ -116,7 +119,10 @@ export function buildCsiaResearchContext(survivors: CandidateEblet[]): string {
   if (survivors.length === 0) return '';
   const block = survivors
     .slice(0, 5)
-    .map((c, i) => `[CSIA Source ${i + 1} -- ${c.source}]: ${c.content.slice(0, 400)}`)
+    // D-BP220-BM0-016: this block is appended straight into ai_dispatch_ipc.ts's systemContent --
+    // a real model prompt -- so PROMPT is the honest sink (same shape as
+    // plow_mc_answerer.ts's renderFactForPrompt, which uses the same sink for the same pattern).
+    .map((c, i) => `[CSIA Source ${i + 1} -- ${c.source}]: ${c.content.unwrap('PROMPT').slice(0, 400)}`)
     .join('\n\n');
   return `Live research gathered this turn by the CSIA specialist swarm (unverified until the concordance gate; treat as supporting context, not settled fact):\n${block}\n\n`;
 }
@@ -251,7 +257,30 @@ export async function runCsiaConcordanceGateAndStore(
       },
     }, { computeSemanticCode });
 
-    for (const fact of survivors) {
+    // D-BP220-BM0-016 Part 3: this is a DURABLE, verified:true write of raw candidate content --
+    // the same shape as writeRoundEblets' pre-fix hole in plow_mc_answerer.ts. Route it through
+    // toDurableWritable() (specialist_adapters.ts), the ALREADY-BUILT guard the sibling dispatch
+    // wrote for exactly this: it refuses (omits, does not throw) any candidate carrying
+    // `trust === 'UNTRUSTED'` and unwraps the rest with `.unwrap('DURABLE_STORE')` internally, so
+    // `fact.content` below is already a plain string, safe-by-construction, never a bare
+    // `.content` read of an untrusted candidate.
+    //
+    // REACHABILITY, VERIFIED BEFORE WRITING THIS (per BM0's brief, honest-smaller-answer
+    // instruction): today this is a LATENT FRAGILITY, NOT A LIVE HOLE. Trace: `survivors` here
+    // is `opts.survivors`, and every one of the (five, ai_dispatch_ipc.ts) call sites into
+    // `runCsiaConcordanceGateAndStore` passes either `[]` or `csiaResearchSurvivors` verbatim;
+    // `csiaResearchSurvivors` is assigned exactly once in that file (`= swarmResult.survivors`,
+    // from `await runSpiderSwarmAndSaladin(...)`), which in turn only ever pulls from
+    // `fetchSpiderSwarmFacts` -> `SPECIALIST_REGISTRY[name]` for the 9 RESEARCH_SPECIALISTS names
+    // (wikipedia/wikidata/stackexchange/arxiv/wolfram/openalex/nist/pubmed/commoncrawl) -- none of
+    // which ever sets `.trust` (specialist_adapters.ts's own header comment confirms: only the one
+    // browser-authority construction site in plow_mc_answerer.ts ever sets `trust: 'UNTRUSTED'`,
+    // and this file never imports from or is called by plow_mc_answerer.ts). So no UNTRUSTED
+    // candidate can reach this write today. Fixed anyway, safe-by-construction, so a future call
+    // site that starts threading browser-authority candidates through this function cannot
+    // silently reopen the hole.
+    const durableSurvivors = toDurableWritable(survivors);
+    for (const fact of durableSurvivors) {
       await writeVerifiedEblet({
         // BUG1 FIX (ship-safety SEG): a class:'component' fact is a supporting fragment, not a
         // standalone answer to the user's question -- it must NEVER be stamped with the real
@@ -286,7 +315,10 @@ export async function runCsiaConcordanceGateAndStore(
       });
     }
 
-    console.log(`[CSIA] ${method}: STORED 1 whole_answer + ${survivors.length} component eblet(s)`);
+    console.log(`[CSIA] ${method}: STORED 1 whole_answer + ${durableSurvivors.length} component eblet(s)` +
+      (durableSurvivors.length !== survivors.length
+        ? ` (${survivors.length - durableSurvivors.length} UNTRUSTED candidate(s) refused by toDurableWritable)`
+        : ''));
     return { concordant: true, stored: true, matchCount, sources };
   } catch (err) {
     console.warn(`[CSIA] ${method}: writeVerifiedEblet (whole_answer/component) failed:`, err);
@@ -319,9 +351,21 @@ export function buildCsiaContextVerdict(
   survivors: CandidateEblet[],
   recursionRounds: number,
 ): CsiaContextVerdict {
+  // D-BP220-BM0-016: sink choice DISCLOSED, not forced to fit cleanly. `candidates` here is
+  // returned inside CsiaContextVerdict, which ai_dispatch_ipc.ts attaches verbatim to its
+  // `event.sender.send(...)` IPC payload for the renderer (per this function's own doc comment,
+  // "so a future UI (v2e's Prove It receipt) can render" it) -- confirmed by grep that NO
+  // renderer component reads `csiaContext` today, so as of this dispatch it is forwarded but not
+  // yet actually displayed by anything. None of the four ContentSinkKind values name this
+  // destination precisely: it is not fed to a model (not PROMPT), not written to the eblet store
+  // (not DURABLE_STORE), and does not leave this machine (not NETWORK, which the header comment
+  // ties to peer-node/embedding calls specifically). 'LOG' is the least-wrong fit -- internal,
+  // not persisted, not model-facing -- even though its own doc comment says "never displayed";
+  // flagged here rather than silently picked, for whoever owns specialist_adapters.ts to
+  // consider a fifth ContentSinkKind (e.g. 'DISPLAY') once the Prove It UI actually lands.
   const candidates: Array<{ text: string; source: string }> = [
     { text: modelAnswer, source: 'model_generated' },
-    ...survivors.slice(0, 5).map((s) => ({ text: s.content.slice(0, 400), source: s.source })),
+    ...survivors.slice(0, 5).map((s) => ({ text: s.content.unwrap('LOG').slice(0, 400), source: s.source })),
   ];
   return {
     verdict: 'CONTEXT',
@@ -406,13 +450,26 @@ export async function runCsiaRecursionAndContextVerdict(
       }
       for (const c of swarmResult.challenged) {
         if (!eliminatedSids.has(c.sid)) {
-          eliminatedFacts.push(`[${c.source}] ${c.content.slice(0, 200)}`);
+          // D-BP220-BM0-016: DURABLE_STORE -- `eliminatedFacts` is threaded straight into
+          // `tic.eliminated` on the whole_answer eblet write in
+          // runCsiaConcordanceGateAndStore()'s writeVerifiedEblet() call below, so this is a
+          // durable-store-bound read, not a log-only one.
+          eliminatedFacts.push(`[${c.source}] ${c.content.unwrap('DURABLE_STORE').slice(0, 200)}`);
           eliminatedSids.add(c.sid);
         }
       }
       cumulativeSources = Array.from(new Set([...cumulativeSources, ...swarmResult.sources]));
 
-      const pooledText = cumulativeSurvivors.map((s) => s.content).join(' ');
+      // D-BP220-BM0-016 Part 2 (the silent-runtime-bug fix): `.map((s) => s.content)` used to
+      // hand `Array.prototype.join` a plain string per element; now that `.content` is a
+      // `CandidateContent` class, `join` would stringify each one via implicit `toString()`,
+      // producing "[object Object] [object Object] ..." with zero compile error -- confirmed
+      // by a sibling dispatch's standalone repro. `pooledText` here feeds ONLY
+      // computeAnswerConvergence() (psionic_predictor.ts) immediately below, which does a pure
+      // Jaccard token-overlap similarity computation -- no model call, no persistence, no
+      // network egress, exactly the "relevance gate" case ContentSinkKind's own doc comment
+      // names for LOG. Sink chosen accordingly.
+      const pooledText = cumulativeSurvivors.map((s) => s.content.unwrap('LOG')).join(' ');
       const roundScore = pooledText.length > 0 ? computeAnswerConvergence(finalAnswer, pooledText) : 0;
       console.log(
         `[CSIA] recursion round ${round}: cumulative survivors=${cumulativeSurvivors.length} ` +

@@ -36,7 +36,13 @@ import fs from 'node:fs';
 import { join, resolve } from 'node:path';
 import { app } from 'electron';
 import type { LianaSc01Result, LianaTerminalEvent, LianaTerminalOutcome } from '../../shared/liana_cycle/liana_terminal_types';
-import { explainSelection, listMethods, selectMethod } from './method_registry';
+// D-BP165-M0-006/BISHOP-SEG/seg-fallthrough-on-abstain -- `selectMethod` itself is no longer
+// called from this file (its one call site, in the METHOD SELECTION block below, now calls the
+// ADDITIVE `selectEligibleMethods` instead -- see that function's own header, method_registry.ts,
+// for why: RULING 1, Founder BP165, "the selected method must fall through to the next eligible
+// one on an internal abstain", which selectMethod()'s "return the first match" contract cannot
+// express). selectMethod() itself is UNTOUCHED and still exported for any other caller.
+import { explainSelection, listMethods, selectEligibleMethods } from './method_registry';
 // D-BP150-003 -- the Demand Test. Runs before method selection; see its own header for exactly
 // which half of the canon it implements and which half is still a scaffold.
 // D-BP152-039 REMOVAL: `determineDemand` (the CUES-table lookup) is no longer imported here -- its
@@ -52,6 +58,26 @@ import type { AskGoogleFn, ConversationalAuthorityFn, EmitFn, MethodQuestionInpu
 // header for the full ruling (FD-BP153-04 boundary 4, lifted). The ONE call site below (this
 // file's own `ownedPassages()` builder) is the sole consumer of this import.
 import { buildPriorAcquisitionOwnedPassages } from './evidence/cross_acquisition';
+// D-BP164-M0-122/BISHOP-SEG-SILO, ADDITIVE. THE SEAM -- see connector_celpane.ts's own header,
+// "THE SEAM" section, for the full identification (this file's `ownedPassages()` builder, the
+// exact point a connector lookup belongs). mintConnectorCelpane() is the SAME two-step connector
+// D-BP164-M0-121 already built and proved standalone against real evidence-store data; this
+// ticket is the splice, not a new mechanism. Gated OFF by default -- see
+// isConnectorSiloEnabled() below -- so importing it changes nothing until the flag is set.
+import { mintConnectorCelpane } from './evidence/connector_celpane';
+import type { MintOutcome } from './evidence/connector_celpane';
+// D-BP164-M0-126/BISHOP-SEG-WIDEN, ADDITIVE. THE WIDENED GATE. mintConnectorCelpane() above is
+// keyed by qid (findPriorAcquisitionMatch() needs one to relocate an evidence-store acquisition) --
+// that is correctly qid-only and this ticket does not touch it. mintSiloCelpane() (method_silo.ts)
+// is keyed by LianaDemand TAG instead, never by qid -- "it's only a Silo by Tag" (Founder, this
+// ticket's own order, verbatim) -- so it is the SAME two-step connector shape
+// (mint/SiloMintOutcome, fetch/fetchSiloCelpaneFullText, connector_celpane.ts's own convention,
+// reused not forked) but with no qid dependency at all, which is exactly what lets it run for
+// free-text questions too. Gated OFF by default -- see isConnectorSiloEnabled() below -- so
+// importing it changes nothing until the flag is set.
+import { mintSiloCelpane } from './evidence/method_silo';
+import type { SiloMintOutcome } from './evidence/method_silo';
+import { mintMethodQueryReceipt } from './library/method_query_receipt_store';
 // D-BP151-026/BISHOP/seg-contingency-operator (Contingency Operator: Survey Splice), ORIGIN.
 // Founder, BP151, Q-20: "This is a case for Contingency Operators. Do it, and see if it works
 // before I ratify." runSurveyStage() (Founder steps 2, 3, 4, 6) was built D-BP151-025 but never
@@ -107,6 +133,128 @@ import './methods/classify_cascade';
 // header (method_registry.ts:30-35) requires keeping them apart. A live qid 98 run ended
 // `no_method_matched` on exactly this gap. See untaught_shapes.ts for why no runners were invented.
 import './methods/untaught_shapes';
+// D-BP164-M0-112/BISHOP/M0/seg-toolbox -- THE TOOLBOX ARGUMENT. Founder, BP164, verbatim: "What
+// would I lose if I needed a phillips head screwdriver, but my toolbox carries ALL of my tools?
+// Nothing. Wire them all to this entry point so that we can mix and match at will." Both files
+// below were built (D-BP164-M0-037, D-BP164-M0-054), self-register via the SAME import-time
+// `registerMethod()` convention as every method above, and were simply never imported here --
+// `D-BP164-M0-111`'s own measurement named this as one of three independently-sufficient reasons
+// two real OlympiadBench items abstained with zero method calls. REGISTERING THEM MAKES THEM
+// AVAILABLE; IT DOES NOT DECIDE WHICH METHOD RUNS -- each one's own shapeTest() still refuses a
+// question its narrow, honestly-stated shape does not cover (see each file's own header). Neither
+// is battle-tested against real competition-math prose (only against GSM8K/ASDiv-style word
+// problems and two exact generated templates, respectively) -- registered anyway, broken-tool-
+// labeled-plainly beats a toolbox silently missing a tool.
+import './methods/arithmetic_cascade';
+import './methods/stage3_symbolic_cascade';
+// D-BP164-M0-119/BISHOP-SEG/seg-compute -- COMPUTE+GEMMA, THE FOUNDER'S DIRECT ORDER THIS
+// DISPATCH: "Build the COMPUTE+gemma method and rerun those 2." Ports BP137 Yoke Stage A.2
+// (compute_sidecar.ts's computeViaModelExpression -- model derives ONE arithmetic expression,
+// NEVER trusted to compute it, two independent evaluators + N=3 agree-2-of-3 self-consistency
+// recompute it) into the Liana Cycle for the first time. Registered here, AFTER
+// arithmetic_cascade/stage3_symbolic_cascade (immediately above), NOT replacing either -- both
+// purely-symbolic SymPy paths are cheaper and keep their existing first chance to claim a question
+// via selectMethod()'s registration-order "first match wins" rule (method_registry.ts); this
+// method only runs when both of those have already refused. See
+// methods/compute_gemma_cascade.ts's own header for the full account, including exactly what was
+// changed (minimally, additively) in compute_sidecar.ts to make this import possible without a
+// second, diverging copy of that file's verified evaluator logic.
+import './methods/compute_gemma_cascade';
+// D-BP165-M0-022/BISHOP-M0/SEG -- COMPUTE-SELECT, THE MCQ-COMPUTE METHOD. Founder order verbatim,
+// BP165: "add a dedicated MCQ-compute method." D-BP165-M0-020 measured 14 items resolving demand
+// COMPUTE and then hitting no_method_matched: all three COMPUTE methods above explicitly refuse
+// any question carrying >=2 lettered options (their own shapeTest gates, UNTOUCHED by this
+// dispatch) -- MMLU-Pro is multiple choice, so none of them could ever run on it. This method is
+// the door: same model-derives-one-expression/two-evaluator-recompute/N=3-self-consistency
+// discipline (compute_sidecar.ts, imported, not copied), plus a genuinely new SELECT step that
+// matches the derived value against the question's own option pool, exactly-one-qualifies or
+// abstain. Registered LAST among the four COMPUTE-demand methods -- see
+// methods/compute_select_cascade.ts's own header for why that placement is chronological, not a
+// precedence decision (this method's own shape gate and the three siblings' are mutually
+// exclusive by construction: >=2 options here, free-text-only there).
+import './methods/compute_select_cascade';
+// D-BP168-M0-113/BISHOP-M0/seg-composer-methods -- FOUNDER ORDER, BP168, task t-8138911d: "MORE
+// METHODS FOR THE COMPOSER." method_selection_probe_report_D-BP168-M0-100.json (674 real
+// OlympiadBench solutions) found "pythagorean theorem" (14, joint-highest of 17 distinct phrases)
+// and "quadratic formula" (12, third-highest) named repeatedly with NO registered COMPUTE method
+// naming or teaching either -- confirmed by direct read of all four pre-existing COMPUTE methods'
+// shapeTest()/run() bodies. Both new methods below are the first COMPUTE-demand methods in this
+// estate to use compute_sidecar.ts's own `componentFacts` parameter (BP137 Stage A.3) to TEACH the
+// model a named formula as a fact, never the answer -- see each file's own header. Registered
+// LAST among the six COMPUTE-demand methods (selectMethod()'s "first match wins" rule,
+// method_registry.ts): both are narrowly, technique-specifically gated and therefore only ever
+// claim a question none of the four cheaper/more-generic siblings already claimed first.
+import './methods/pythagorean_theorem_cascade';
+import './methods/quadratic_formula_cascade';
+// D-BP168-M0-126/BISHOP-M0/seg-composer-methods -- FOUNDER ORDER, BP168, dispatch D-BP168-M0-126:
+// "BUILD THE HIGHEST-FREQUENCY ONES." method_selection_probe_report_D-BP168-M0-100.json (674 real
+// OlympiadBench solutions) found "permutation"+"combination" (25 combined, second-highest of 17
+// distinct phrases) and "law of cosines" (9, fourth-highest) named repeatedly with NO registered
+// COMPUTE method naming or teaching either. Both new methods below also use compute_sidecar.ts's
+// `componentFacts` parameter (BP137 Stage A.3) to TEACH the model a named formula as a fact, never
+// the answer -- see each file's own header. Registered LAST among the eight COMPUTE-demand methods
+// (selectMethod()'s "first match wins" rule, method_registry.ts): both are narrowly,
+// technique-specifically gated and therefore only ever claim a question none of the six
+// cheaper/more-generic siblings already claimed first.
+import './methods/permutation_combination_cascade';
+import './methods/law_of_cosines_cascade';
+// D-BP213-XO-35/BISHOP-XO, LEG 1 of the Didasko four-method build (Founder order 2026-09-03T03:48:43Z).
+// CLASSIFY-demand: masks the option list while deriving a compound classification tuple sub-part
+// by sub-part, then runs an exact row-by-row lookup against every revealed option row.
+// D-BP213-BM0-026: DELIBERATELY UNREGISTERED THE SAME NIGHT IT WAS WIRED. DO NOT RE-ENABLE THIS
+// LINE WITHOUT READING BISHOP_DROPZONE\D-BP213-BM0-026_LEG1_IS_AIMED_AT_THE_WRONG_DEFECT.md FIRST.
+//
+// MEASURED, NOT SUSPECTED. The method's win condition is "find the derived tuple among the option
+// rows". On its own founding example (dataset question_id 7260) the tuple the flagship derived was
+// (supply, quantity supplied, quantity supplied), which is OPTION I. THE DATASET KEY IS "G",
+// answer_index 6, verified directly against the file of record whose sha256 is
+// 51d7b60cb50f027a564d57df2e8db671af7f084c34481cfb37285b6d3eb0c1b1.
+//
+// So this method, WORKING EXACTLY AS DESIGNED, converts an honest "no option matches" abstention
+// into a confident WRONG answer. That is precisely the falsifier its own spec named, and it
+// violates the estate's standing doctrine that an abstention is a DEFECT SIGNAL and must never be
+// suppressed. It is unregistered rather than deleted because the masking machinery in it is sound
+// and the RE-AIMED method should reuse it.
+//
+// import './methods/anchored_lookup_guard';
+//
+// D-BP213-XO-41/BISHOP-XO/seg-composer-methods -- LEG 1 RE-AIMED. Founder order
+// 2026-09-03T06:33:14Z: "re-aim leg 1 as the key-and-options withholding method as well." Replaces
+// anchored_lookup_guard.ts above (which stays unregistered): the model here only ever copies out
+// literal text (verified as a literal substring of its source at runtime), CODE applies the fixed
+// same-good-price rule to decide supply/demand shift vs quantity supplied/demanded BEFORE the
+// option list is revealed, and options are consulted only for the final letter lookup -- see
+// D-BP213-XO-41_LEG1_REAIMED.md (BISHOP_DROPZONE) for the full design and its HARDWIRE-22 check.
+import './methods/withheld_curve_shift_guard';
+
+// D-BP213-XO-57/BISHOP-XO/seg-composer-methods -- LEG 2. Founder standing order: "make more
+// methods using didasko, into the liana cycle ... one leg at a time." Aimed at dataset
+// question_id 6418 (internal qid 66). HALF A (paraphrase-collision detection over a bounded item
+// universe) is real and wired; HALF B (deriving a verdict letter) always abstains with CANNOT
+// DECIDE today because no taught, sourced item-membership map exists for any domain yet -- a
+// declared platypus per D-BP213-XO-32_FOUR_METHOD_SPECS.md Method 2 falsifier #2, not a silent
+// gap. See set_equivalence_match.ts header for the full HARDWIRE-22 analysis.
+import './methods/set_equivalence_match';
+
+// D-BP213-XO-64 LEG 3: dataset question_id 5152 (internal qid 92), "REGISTER inside a named
+// school." Trigger (attribution-operator + label) fires broadly and blind-re-tests correctly on a
+// held-out question (question_id 5065, "The Federalist Papers"); the RESOLUTION half still
+// abstains with CANNOT DECIDE for every label except its one sourced founding-move entry
+// ("critical security studies") -- a declared, disclosed platypus on unmapped labels, same
+// discipline as set_equivalence_match.ts's empty item-membership map. See
+// umbrella_or_school_check.ts header for the full HARDWIRE-22 analysis and the blind-retest result.
+import './methods/umbrella_or_school_check';
+
+// D-BP213-XO-56 LEG 4: dataset question_id 791 (internal qid 20), "CONVENTION-LOCKED RECOMPUTE."
+// Trigger is a code-only lookup (rate token + "on the unpaid/declining/remaining/outstanding
+// balance[, method]" cue), deliberately narrowed to the one convention this file has a verified
+// computation path for. RESOLUTION extracts principal/payment/rate as verified literal spans (the
+// model performs zero arithmetic), builds the amortization schedule in code, and cross-checks it
+// against an independently-derived closed-form total -- the spec's own proposed "step 7" check was
+// proven a tautology (passes the flagship's real $106.62 error every time) and is REPLACED here,
+// not used. See convention_locked_recompute.ts header for the full account and D-BP213-XO-56_LEG4.md
+// (BISHOP_DROPZONE) for the proof.
+import './methods/convention_locked_recompute';
 
 // Re-exported so index.ts's existing closure (`(question) =>
 // runBrowserAuthorityQueryFromMain({...})`) keeps type-checking against exactly the same shape
@@ -250,6 +398,19 @@ function resolveSurveyEnabled(surveyEnabled: boolean | undefined): boolean {
   if (surveyEnabled === false) return false;
   if (process.env.LIANA_SURVEY_ENABLED === '1') return true;
   return false;
+}
+
+// D-BP164-M0-122/BISHOP-SEG-SILO -- DEFAULT OFF, same convention as resolveSurveyEnabled() above
+// and the estate's own LIANA_SURVEY_ENABLED gate: "a splice that changes existing results
+// silently is worse than no splice" (this ticket's own standing orders). No production caller
+// sets this env var today, so this is inert everywhere until an operator opts in. Chosen OFF
+// rather than a boolean parameter (unlike resolveSurveyEnabled) because nothing upstream of this
+// file (index.ts, preload.ts, the renderer) has a parameter slot for it yet, and adding one would
+// touch every lockstep caller for a mechanism this ticket's own orders describe as "plumbing
+// only, not an automatic selection condition" -- an env-only gate is the smallest change that
+// cannot alter any existing caller's behavior.
+function isConnectorSiloEnabled(): boolean {
+  return process.env.LIANA_CONNECTOR_SILO_ENABLED === '1';
 }
 
 /** Empty, structurally-valid stand-ins for the four Survey sub-results, used ONLY on the
@@ -548,14 +709,29 @@ async function runLianaCycleQuestionInner(
     // absence of an "assisted" line.
     note(emit, `   MODE: ${runMode.toUpperCase()} (D-BP152-051 -- ${runMode === 'assisted' ? 'the operator issues every query on his own browser; this app never sends one' : "today's automated behavior, the default"})`);
     // D-BP152-039 -- THE RECEIPT LINE, kept per Law 5 (HARDWIRE-23: the receipt shows which rule
-    // fired) even though Survey is no longer optional: the transcript must still state that
-    // Survey ran, so a reader never has to infer it from the absence of a "SURVEY SPLICE: OFF"
-    // line that no longer exists. Ambiguity Transport (a SEPARATE, still-live gate, untouched by
-    // this ticket) keeps its own source line exactly as before.
+    // fired): the transcript must still state Survey's own gate state, so a reader never has to
+    // infer it from the absence of a "SURVEY SPLICE: OFF" line. Ambiguity Transport (a SEPARATE,
+    // still-live gate, untouched by this ticket) keeps its own source line exactly as before.
+    //
+    // D-BP164-M0-126/BISHOP-SEG-WIDEN -- STALE TEXT FIXED, BEHAVIOR UNCHANGED. This line used to
+    // read hardcoded "Survey: ALWAYS ON (gate removed, FD-BP152-20 ...)", true only for the brief
+    // D-BP152-039 window where the opt-in gate really had been removed. D-BP164-M0-046 REVIVED that
+    // gate (resolveSurveyEnabled(), above in this file) per BP158/BP164's own ruling -- Founder,
+    // verbatim: "I don't want to automatically run survey, it uses google calls without purpose" --
+    // so by the time this line printed, the SURVEY stage line a few lines later was already
+    // correctly reporting SKIPPED-by-default while THIS line still claimed ALWAYS ON, contradicting
+    // it in the Founder's own terminal. Fixed to report the SAME resolveSurveyEnabled() value the
+    // SURVEY stage below actually acts on, computed once here (a second, cheap call to the same
+    // pure function -- resolveSurveyEnabled() reads only its parameter and one env var, no I/O, no
+    // side effect) so this line is never able to drift from the real gate again. Survey's default
+    // stays OFF; nothing about WHEN Survey runs changes here, only what this one line SAYS about it.
+    const surveyGateResolvedForGatesLine = resolveSurveyEnabled(contingencyOperatorSurvey);
     note(
       emit,
-      '   GATES -- Survey: ALWAYS ON (gate removed, FD-BP152-20 -- "fix the gate properly so survey '
-      + `doesn't need the env var") · Ambiguity Transport: ${resolvedAmbiguityQueryTransport} `
+      `   GATES -- Survey: ${surveyGateResolvedForGatesLine ? 'ON' : 'OFF (default)'} `
+      + `(opt-in flag, BP158/BP164 -- Founder verbatim: "I don't want to automatically run survey, `
+      + 'it uses google calls without purpose"; source: contingencyOperatorSurvey param or '
+      + `LIANA_SURVEY_ENABLED=1) · Ambiguity Transport: ${resolvedAmbiguityQueryTransport} `
       + `(source: ${ambiguityQueryTransportSource})`,
     );
     let parsed: ParsedInput;
@@ -887,7 +1063,11 @@ async function runLianaCycleQuestionInner(
       // classify_cascade.ts's own run() already trusts to route this exact question, matched it the
       // whole time. See determineDemandFromQuestionStructure()'s own header (demand_test.ts) for
       // why calling that existing detector is a wiring fix and not a widened gate.
-      const structuralDemandResult = determineDemandFromQuestionStructure(parsed.question);
+      // D-BP164-M0-112: second argument added (parsed.options) so the compute-open-ended
+      // structural detector (demand_test.ts) can tell an open-ended free-response question (no
+      // option pool) from a multiple-choice one, without paying for Survey. See that detector's
+      // own header for why this is the SAME structural path, extended, not a new one.
+      const structuralDemandResult = determineDemandFromQuestionStructure(parsed.question, parsed.options);
 
       const demandPath: 'nested' | 'operation' | 'ambiguity' | 'structural' | 'none' = surveyResult.step2.nested
         ? 'nested'
@@ -916,14 +1096,92 @@ async function runLianaCycleQuestionInner(
       note(emit, `   ${describeDemand(demandResult)}`);
     }
 
+    // D-BP165-M0-006/BISHOP-SEG/seg-silo-before-selection -- RULING 2 (Founder, BP165, verbatim:
+    // "2. before"). THE SILO LOOKUP NOW RUNS BEFORE METHOD SELECTION -- moved here from its former
+    // position (just above where `baseCtx` used to be built, further below in this function) so a
+    // question NO METHOD CLAIMS still reaches METHOD_SILO, instead of the "no method matches"
+    // early return (a few lines below) leaving the function before this code ever ran. VERIFIED
+    // (Law 2, check the instrument before the patient) before moving it: `mintSiloCelpane()`'s
+    // only input is `demandResult.demand`, already final by this point in the function (nothing
+    // below this line sets `demandResult` again) -- it reads no `selection`/`method`/`shape`
+    // state, so this move changes WHEN it runs, never WHAT it computes.
+    //
+    // STILL BEHIND isConnectorSiloEnabled() (LIANA_CONNECTOR_SILO_ENABLED='1', DEFAULT OFF,
+    // unchanged) -- with the flag off this block is a no-op exactly as it was at its old position,
+    // so a flag-off run is byte-identical to before this ticket (see this dispatch's own report
+    // for the direct proof). `connectorSiloOn` is declared HERE now; the qid-scoped connector
+    // splice and `baseCtx`, further below, read this SAME variable -- their own former
+    // `const connectorSiloOn = isConnectorSiloEnabled();` declaration there is removed, not
+    // duplicated (two `const` declarations of the same name in the same scope would not compile).
+    const connectorSiloOn = isConnectorSiloEnabled();
+    let siloByTagResult: SiloMintOutcome | null = null;
+    if (connectorSiloOn) {
+      if (demandResult.demand) {
+        siloByTagResult = mintSiloCelpane(demandResult.demand);
+        mintMethodQueryReceipt({
+          kind: 'silo_mint',
+          qid: parsed.qid ?? null,
+          demandKind: demandResult.demand,
+          methodId: null,
+          runId: currentAcquisitionId ?? null,
+          dispatchId: null,
+          ok: siloByTagResult.ok,
+          tokensEstimated: siloByTagResult.ok ? siloByTagResult.tokens : null,
+          bytesFetched: null,
+          withinBudget: siloByTagResult.ok ? siloByTagResult.withinBudget : null,
+          reason: siloByTagResult.ok ? null : siloByTagResult.reason,
+        });
+        if (siloByTagResult.ok) {
+          note(emit, `   CONNECTOR SILO (BY TAG): asked METHOD_SILO for tag ${demandResult.demand} `
+            + `(${freeText ? 'free-text question' : `qid ${parsed.qid}`}) -- minted celpane, `
+            + `${siloByTagResult.celpane.n} method(s) on file [${siloByTagResult.celpane.methods.join(', ')}], `
+            + `${siloByTagResult.tokens} tokens (${siloByTagResult.withinBudget ? 'within' : 'OVER'} the 50-token budget), `
+            + 'no second fetch performed yet (mint-only, this splice)');
+        } else {
+          note(emit, `   CONNECTOR SILO (BY TAG): asked METHOD_SILO for tag ${demandResult.demand} `
+            + `(${freeText ? 'free-text question' : `qid ${parsed.qid}`}) -- nothing resolved: `
+            + `${siloByTagResult.reason} -- this is a correct, honest empty result, not an error`);
+        }
+      } else {
+        // LAW 1: name the scope of the negative. No demand tag was resolved for this question
+        // (demandResult.demand is null -- DEMAND TEST above already reported why, "DEMAND PATH:
+        // none" / "demand unknown"), so there is no tag to query the silo with and it was not
+        // queried at all this run -- not "found nothing", but "nothing was asked".
+        mintMethodQueryReceipt({
+          kind: 'silo_mint',
+          qid: parsed.qid ?? null,
+          demandKind: null,
+          methodId: null,
+          runId: currentAcquisitionId ?? null,
+          dispatchId: null,
+          ok: false,
+          tokensEstimated: null,
+          bytesFetched: null,
+          withinBudget: null,
+          reason: 'no demand tag resolved for this question (demandResult.demand is null) -- METHOD_SILO was not queried this run',
+        });
+        note(emit, '   CONNECTOR SILO (BY TAG): not queried this run -- no demand tag was resolved for this question '
+          + '(see DEMAND TEST above), so there is no tag to look the silo up by');
+      }
+    }
+
     emit({ kind: 'stage', text: '-> METHOD SELECTION -- checking every method on file', ts: nowIso() });
     const methods = listMethods();
     for (const row of explainSelection(methodInput, demandResult.demand)) {
       note(emit, `   ${row.method.id} (${row.method.name}): ${row.eligible ? 'ELIGIBLE' : 'not run'} -- ${row.reason}`);
     }
 
-    const selection = selectMethod(methodInput, demandResult.demand);
-    if (!selection) {
+    // D-BP165-M0-006 -- RULING 1 (Founder, BP165, verbatim: "1. yes"). EVERY eligible method now
+    // gets a turn, in registration order, not just the first whose shapeTest() matched.
+    // selectEligibleMethods() (method_registry.ts, ADDITIVE -- selectMethod() itself is untouched
+    // and no longer called here) returns every match, in order. This block only handles the
+    // "nothing on file even claims this shape/demand" case, unchanged from before this ticket
+    // except for the `silo` field now carried on the return (RULING 2, below -- `siloByTagResult`/
+    // `connectorSiloOn` are computed earlier in this function now, before this point, see the
+    // block above "METHOD SELECTION"). The actual fallthrough loop (what happens once at least one
+    // method is eligible) is further below, after `baseCtx` is built once, shared by every attempt.
+    const eligible = selectEligibleMethods(methodInput, demandResult.demand);
+    if (eligible.length === 0) {
       const roster = methods.map((m) => `${m.id} [serves ${m.demand}] [taught by: ${m.taughtBy}]`).join('\n     ');
       // NAME THE DEMAND IN THE REFUSAL. Canon R-5: the operator must learn WHAT KIND of method is
       // missing, not merely that one is. "No method matches" tells him nothing he can act on;
@@ -934,7 +1192,12 @@ async function runLianaCycleQuestionInner(
       emit({ kind: 'result', text: headline, ts: nowIso() });
       note(emit, `   Methods on file:\n     ${roster}`);
       note(emit, '   This is not a failure -- it is the next teaching opportunity. Work this one by hand; the Liana Cycle records what you did and it becomes the next method.');
-      return {
+      // Built as an untyped record and cast at the return, not assigned straight to
+      // LianaTerminalOutcome -- `silo` is not (and this dispatch does not add it to)
+      // shared/liana_cycle/liana_terminal_types.ts, so a directly-typed literal here would fail
+      // TypeScript's excess-property check. See this same pattern at every other return site this
+      // ticket touches.
+      const noMatchOutcome: Record<string, unknown> = {
         qid: parsed.qid,
         question: parsed.question,
         verdict: null,
@@ -945,42 +1208,21 @@ async function runLianaCycleQuestionInner(
         options: parsed.options,
         ...(sc01Result ? { sc01: sc01Result } : {}),
         ...(sc01ScoringError ? { sc01ScoringError } : {}),
+        // D-BP165-M0-006, RULING 2 (Founder, BP165, verbatim: "2. before"): the silo lookup now
+        // runs BEFORE method selection, so a question NO METHOD CLAIMS still shows what the
+        // substrate held, instead of the function returning before that code ever ran.
+        ...(connectorSiloOn ? { silo: siloByTagResult } : {}),
       };
+      return noMatchOutcome as unknown as LianaTerminalOutcome;
     }
 
-    const { method, shape } = selection;
-    say(emit, `METHOD SELECTED: ${method.name} (${method.id})`);
-    note(emit, `   why: ${shape.reason}`);
-    note(emit, `   taught by: ${method.taughtBy}`);
-
-    if (!method.run) {
-      emit({ kind: 'result', text: `NOT YET TAUGHT -- ${method.name} is a registered method whose shape matched, but it has no runner yet.`, ts: nowIso() });
-      note(emit, '   This is a known shape, not an unknown one -- the Founder has not walked a case for it yet. That is the next teaching session.');
-      return { qid: parsed.qid, question: parsed.question, verdict: null, correct: parsed.correctAnswer, abstain: true, freeText, error: 'method_not_yet_taught', method: method.id, options: parsed.options, ...(sc01Result ? { sc01: sc01Result } : {}), ...(sc01ScoringError ? { sc01ScoringError } : {}) };
-    }
-
-    if (audible) {
-      note(emit, '   CALL AN AUDIBLE is ON -- this run stops before every Google query and again on what comes back. It waits until you say go; there is no timer.');
-    }
-    // D-BP151-023 -- REQUIREMENT A: THE STEP LIST, SHOWN UP FRONT, BEFORE THE FIRST STEP RUNS.
-    // Static per method (buildUpfrontStepList() reads no live state) so it can be printed here,
-    // before `method.run()` is even called. A method this ticket did not map (see
-    // stepped_audible.ts's header) gets an honest "not covered" line instead of an invented list.
-    if (steppedAudible) {
-      const stepDefs = buildUpfrontStepList(method.id);
-      if (stepDefs) {
-        emit({ kind: 'stage', text: `-> STEPPED AUDIBLE -- ${stepDefs.length} steps this run will execute, listed before the first one starts`, ts: nowIso() });
-        stepDefs.forEach((d, i) => {
-          const head = d.attribution === 'ATTRIBUTED'
-            ? `step ${i + 1}/${stepDefs.length}: ${d.codeLabel}  ->  Founder step ${d.founderStepNumber}, verbatim: "${d.founderWords}"  (${d.founderSource})`
-            : `step ${i + 1}/${stepDefs.length}: ${d.codeLabel}  ->  UNATTRIBUTED -- TARE, no Founder order`;
-          note(emit, `   ${head}`);
-        });
-        note(emit, '   STEPPED AUDIBLE is ON -- this run stops once per step above, after it completes and before the next begins. It waits until you respond; there is no timer.');
-      } else {
-        note(emit, `   STEPPED AUDIBLE has no step map for method "${method.id}" -- this run proceeds WITHOUT per-step pausing (same as stepped audible OFF). See stepped_audible.ts's header for why (scoped to comparative-cascade only).`);
-      }
-    }
+    // D-BP165-M0-006 -- the "CALL AN AUDIBLE is ON" note and the STEPPED AUDIBLE upfront step
+    // list used to live here, keyed off the single selected `method`. Both are method-specific
+    // (buildUpfrontStepList(method.id) in particular), so under RULING 1's fallthrough they now
+    // live INSIDE the per-method attempt loop, right before that attempt's own `method.run()` call
+    // -- see the loop below, past `baseCtx`. Moving them costs nothing: with exactly one eligible
+    // method (every run before this ticket), the loop body executes exactly once, in the exact
+    // same order relative to `method.run()` these two blocks always ran in.
     // FD-BP153-04, ADDITIVE: hands the selected method back the raw passages Survey (immediately
     // above) already acquired THIS RUN -- the ambiguity query's and the operation query's own
     // rawGooglePassage (survey_stage.ts's own INSTRUMENT-ONLY fields, D-BP152-004/005, unmodified)
@@ -1032,6 +1274,82 @@ async function runLianaCycleQuestionInner(
         { excludeAcquisitionId: currentAcquisitionId },
       )
       : [];
+    // D-BP164-M0-122/BISHOP-SEG-SILO -- THE SPLICE. ADDITIVE, BEHIND isConnectorSiloEnabled()
+    // (default OFF): `priorAcquisitionPassages` above is UNCHANGED, computed exactly as before,
+    // and remains the ONLY thing every existing method consumer (establishFrame()/
+    // extractNamedSetMembers()/runDiscriminator(), classify_cascade.ts) reads via
+    // `ownedPassages()`. This block computes a SECOND, PARALLEL result -- the two-step CONNECTOR
+    // shape (mintConnectorCelpane(), connector_celpane.ts, D-BP164-M0-121, unmodified) for the
+    // SAME {kind, askedText} pairs `buildPriorAcquisitionOwnedPassages()` just tried -- and hands
+    // it to methods through the NEW, OPTIONAL `ownedConnectors()` accessor (method_registry.ts)
+    // instead of pushing into `priorAcquisitionPassages`/`ownedPassages()`. A failure or an empty
+    // result on this path can therefore never touch the existing full-text reuse path: the two
+    // are structurally independent arrays built from independent function calls.
+    //
+    // OBSERVABILITY (this ticket's own requirement: "both steps must remain separately observable
+    // in a run's artifacts"). STEP ONE (mint) happens HERE, synchronously with the computation
+    // below, and is recorded two ways: a `kind:'stage'` transcript line (human-readable, lands in
+    // every run's own transcript/artifact exactly like every other stage boundary in this file)
+    // and a method_query_receipt_store.ts sand-stratum JSONL receipt (machine-readable, content-
+    // hashed, append-only -- the SAME "record every time a query is run" shape
+    // purpose_receipt_store.ts already establishes, reused not forked). STEP TWO (the second,
+    // explicit fetch) is NOT performed here -- nothing in this estate calls
+    // fetchConnectorCelpaneFullText() from inside a live method yet (this is plumbing, not an
+    // automatic selection condition, FD-BP164-08 STEP 4 remains reserved) -- but
+    // mintMethodQueryReceipt() is exported and ready for whichever future method call site
+    // performs that fetch, so its own observability is a one-line addition, not a new mechanism.
+    // `connectorSiloOn` is now declared earlier in this function (D-BP165-M0-006, RULING 2 -- see
+    // the silo-before-selection block above, right after the DEMAND TEST) -- reused here, not
+    // redeclared (two `const connectorSiloOn` in the same scope would not compile).
+    const priorAcquisitionConnectors: MintOutcome[] = [];
+    if (connectorSiloOn && parsed.qid != null) {
+      const connectorAttempts: Array<{ kind: string; askedText: string | undefined }> = [
+        { kind: 'ambiguity', askedText: surveyResult.step2.ambiguity?.fullQueryText },
+        { kind: 'operation', askedText: surveyResult.step2.operation?.fullQueryText },
+      ];
+      for (const attempt of connectorAttempts) {
+        if (!attempt.askedText || !attempt.askedText.trim()) continue;
+        const mintOutcome = mintConnectorCelpane(parsed.qid, attempt.kind, attempt.askedText, {
+          excludeAcquisitionId: currentAcquisitionId,
+        });
+        mintMethodQueryReceipt({
+          kind: 'connector_mint',
+          qid: parsed.qid,
+          demandKind: null,
+          methodId: null,
+          runId: currentAcquisitionId ?? null,
+          dispatchId: null,
+          ok: mintOutcome.ok,
+          tokensEstimated: mintOutcome.ok ? mintOutcome.tokens : null,
+          bytesFetched: null,
+          withinBudget: mintOutcome.ok ? mintOutcome.withinBudget : null,
+          reason: mintOutcome.ok ? null : mintOutcome.reason,
+        });
+        if (mintOutcome.ok) {
+          priorAcquisitionConnectors.push(mintOutcome);
+          note(emit, `   CONNECTOR SILO: minted celpane for qid ${parsed.qid} kind ${attempt.kind} via `
+            + `${mintOutcome.celpane.a} -- ${mintOutcome.tokens} tokens (${mintOutcome.withinBudget ? 'within' : 'OVER'} the 50-token budget), `
+            + `no second fetch performed yet (mint-only, this splice)`);
+        } else {
+          note(emit, `   CONNECTOR SILO: no celpane minted for qid ${parsed.qid} kind ${attempt.kind} -- ${mintOutcome.reason}`);
+        }
+      }
+    }
+    // D-BP164-M0-126/BISHOP-SEG-WIDEN -- THE GATE WIDENED, ORIGINAL RULING. Founder's own order,
+    // verbatim: "widen the silo gate to accept free text - because it's only a Silo by Tag - so
+    // ALL text queries will be allocated and tagged and categorized." The block immediately above
+    // this one is UNCHANGED and stays qid-scoped -- it reuses prior-acquisition EVIDENCE (a
+    // specific run's own fetched text), which genuinely cannot be addressed without a qid. THAT
+    // demand-tag lookup itself (`mintSiloCelpane(demandResult.demand)`, `siloByTagResult`) is a
+    // SEPARATE, PARALLEL resolution against the METHOD_SILO (method_silo.ts) by DEMAND TAG, not by
+    // qid -- see its own computation and header, D-BP165-M0-006, near the DEMAND TEST above, where
+    // it now runs (RULING 2, Founder BP165, verbatim: "2. before" -- moved from here, this exact
+    // spot, so a question NO METHOD CLAIMS still reaches it; the "NO METHOD SERVES THIS DEMAND"
+    // early return used to leave the function before this code ever ran, and Live-verified against
+    // id 2796 (OlympiadBench) confirmed no silo_mint receipt was written for that run at all).
+    // `siloByTagResult` and `connectorSiloOn` are both still in scope here, unchanged in value --
+    // this move only changed WHEN the lookup runs, never what it computes or how `baseCtx` below
+    // reads it.
     const baseCtx: MethodRunContext = {
       askGoogle: wrapAskGoogleWithAudible(effectiveAskGoogle, audible ?? null, emit, audibleLog),
       emit,
@@ -1073,49 +1391,183 @@ async function runLianaCycleQuestionInner(
         out.push(...priorAcquisitionPassages);
         return out;
       },
+      // D-BP164-M0-122/BISHOP-SEG-SILO -- ADDITIVE/OPTIONAL, only present when
+      // isConnectorSiloEnabled() is true (see computation above `baseCtx`). Omitted entirely
+      // (not merely an empty function) when the flag is off, so `'ownedConnectors' in ctx` reads
+      // false on every unflagged run -- a stronger "no behavior change" guarantee than returning
+      // an empty array from an always-present function.
+      ...(connectorSiloOn ? { ownedConnectors: (): MintOutcome[] => priorAcquisitionConnectors } : {}),
+      // D-BP164-M0-126/BISHOP-SEG-WIDEN -- ADDITIVE/OPTIONAL, same convention as `ownedConnectors`
+      // immediately above: only present when isConnectorSiloEnabled() is true, omitted entirely
+      // (not a function returning null) when the flag is off. Exposes the SAME mint-only,
+      // tag-keyed result already computed and logged above `baseCtx` (`siloByTagResult`) -- a
+      // method MAY call fetchSiloCelpaneFullText(celpane) itself if its own logic decides the
+      // detail behind it is needed; nothing in this estate calls this field yet (mirrors
+      // `ownedConnectors`'s own doc comment). This is plumbing only, not an automatic selection
+      // condition -- FD-BP164-08 STEP 4 remains reserved and is NOT decided by this field's mere
+      // presence, same guarantee `ownedConnectors` already carries.
+      ...(connectorSiloOn ? { ownedSilo: (): SiloMintOutcome | null => siloByTagResult } : {}),
     };
-    const stepWrap = wrapForSteppedAudible(method.id, baseCtx, steppedAudible ?? null, steppedLog);
-    const outcome = await method.run(methodInput, stepWrap.ctx);
-    try {
-      // D-BP151-023 -- flushes the trailing step buffer (STAGE 5b + the TERMINATOR notes that
-      // follow it with no further 'stage' event in between -- see stepped_audible.ts's header,
-      // "THE ONE GAP THIS DOES LEAVE"). A true no-op when stepped audible never armed.
-      await stepWrap.finish();
-    } catch (e) {
-      if (e instanceof SteppedAudibleAbandoned) {
-        // The method has ALREADY resolved `outcome` by the time this final pause fires (finish()
-        // only runs after `await method.run()` above returns) -- abandoning the final review does
-        // not retroactively un-produce a verdict the cascade already reached. "Abandoning keeps
-        // every note" (Founder, BP149) is honored here by keeping BOTH the real outcome and the
-        // stepped log up to and including this abandon record, rather than discarding either.
-        note(emit, '   STEPPED AUDIBLE abandoned at the final review pause -- the run\'s own outcome above is unaffected; every step response up to and including this one is kept.');
-      } else {
-        throw e;
+    // D-BP165-M0-006 -- RULING 1's FALLTHROUGH LOOP. Tries every eligible method, in registration
+    // order (REGISTRY itself, and therefore `eligible`'s own order, is never reordered by this
+    // ticket), until one produces a real verdict or the list is exhausted. AN ALL-ABSTAIN OUTCOME
+    // REMAINS A COMPLETE, CORRECT RESULT (HARDWIRE-22 honesty gate) -- nothing here makes a method
+    // answer to avoid an abstain; this loop only removes the LOCKOUT that stopped a later eligible
+    // method from ever being asked (the measured BP164 defect, item 2642: `arithmetic-cascade`
+    // claimed and internally abstained while `compute-gemma-cascade`, also eligible, never got a
+    // turn). `methodAttempts` keeps EVERY method's own reason, in order, attributed to its own id
+    // -- "a run where three methods each refused for a different honest reason is the highest-
+    // value diagnostic this system produces", this dispatch's own constraint.
+    const methodAttempts: Array<{ method: string; ran: boolean; abstained: boolean; reason: string }> = [];
+    for (let attemptIndex = 0; attemptIndex < eligible.length; attemptIndex++) {
+      const { method, shape } = eligible[attemptIndex];
+      say(emit, `METHOD SELECTED (attempt ${attemptIndex + 1}/${eligible.length}): ${method.name} (${method.id})`);
+      note(emit, `   why: ${shape.reason}`);
+      note(emit, `   taught by: ${method.taughtBy}`);
+
+      if (!method.run) {
+        emit({ kind: 'result', text: `NOT YET TAUGHT -- ${method.name} is a registered method whose shape matched, but it has no runner yet.`, ts: nowIso() });
+        note(emit, '   This is a known shape, not an unknown one -- the Founder has not walked a case for it yet. That is the next teaching session.');
+        methodAttempts.push({ method: method.id, ran: false, abstained: true, reason: 'registered method, shape matched, no runner yet (not yet taught)' });
+        note(emit, attemptIndex + 1 < eligible.length
+          ? '   RULING 1 (BP165): trying the next eligible method.'
+          : '   RULING 1 (BP165): no further eligible methods -- every one on file for this demand has been tried.');
+        continue;
       }
+
+      if (audible) {
+        note(emit, '   CALL AN AUDIBLE is ON -- this run stops before every Google query and again on what comes back. It waits until you say go; there is no timer.');
+      }
+      // D-BP151-023 -- REQUIREMENT A: THE STEP LIST, SHOWN UP FRONT, BEFORE THE FIRST STEP RUNS.
+      // Static per method (buildUpfrontStepList() reads no live state) so it can be printed here,
+      // before `method.run()` is even called. A method this ticket did not map (see
+      // stepped_audible.ts's header) gets an honest "not covered" line instead of an invented list.
+      if (steppedAudible) {
+        const stepDefs = buildUpfrontStepList(method.id);
+        if (stepDefs) {
+          emit({ kind: 'stage', text: `-> STEPPED AUDIBLE -- ${stepDefs.length} steps this run will execute, listed before the first one starts`, ts: nowIso() });
+          stepDefs.forEach((d, i) => {
+            const head = d.attribution === 'ATTRIBUTED'
+              ? `step ${i + 1}/${stepDefs.length}: ${d.codeLabel}  ->  Founder step ${d.founderStepNumber}, verbatim: "${d.founderWords}"  (${d.founderSource})`
+              : `step ${i + 1}/${stepDefs.length}: ${d.codeLabel}  ->  UNATTRIBUTED -- TARE, no Founder order`;
+            note(emit, `   ${head}`);
+          });
+          note(emit, '   STEPPED AUDIBLE is ON -- this run stops once per step above, after it completes and before the next begins. It waits until you respond; there is no timer.');
+        } else {
+          note(emit, `   STEPPED AUDIBLE has no step map for method "${method.id}" -- this run proceeds WITHOUT per-step pausing (same as stepped audible OFF). See stepped_audible.ts's header for why (scoped to comparative-cascade only).`);
+        }
+      }
+
+      const stepWrap = wrapForSteppedAudible(method.id, baseCtx, steppedAudible ?? null, steppedLog);
+      const outcome = await method.run(methodInput, stepWrap.ctx);
+      try {
+        // D-BP151-023 -- flushes the trailing step buffer (STAGE 5b + the TERMINATOR notes that
+        // follow it with no further 'stage' event in between -- see stepped_audible.ts's header,
+        // "THE ONE GAP THIS DOES LEAVE"). A true no-op when stepped audible never armed.
+        await stepWrap.finish();
+      } catch (e) {
+        if (e instanceof SteppedAudibleAbandoned) {
+          // The method has ALREADY resolved `outcome` by the time this final pause fires (finish()
+          // only runs after `await method.run()` above returns) -- abandoning the final review does
+          // not retroactively un-produce a verdict the cascade already reached. "Abandoning keeps
+          // every note" (Founder, BP149) is honored here by keeping BOTH the real outcome and the
+          // stepped log up to and including this abandon record, rather than discarding either.
+          note(emit, '   STEPPED AUDIBLE abandoned at the final review pause -- the run\'s own outcome above is unaffected; every step response up to and including this one is kept.');
+        } else {
+          throw e;
+        }
+      }
+
+      if (outcome.abstain) {
+        // D-BP165-M0-006, RULING 1 -- THE FALLTHROUGH ITSELF. This is the exact case the ruling
+        // was written for: `method.run()` was called, and it abstained INTERNALLY (not a
+        // shapeTest() refusal -- shapeTest() already said this method was eligible). Before this
+        // ticket the engine accepted this outcome and returned it, unconditionally, which is
+        // exactly how compute-gemma-cascade went unreached while eligible (item 2642). The reason
+        // is kept, attributed to this method's own id, and the next eligible method gets a turn.
+        const reason = outcome.error ?? outcome.basis ?? 'abstained (no reason recorded on the outcome)';
+        methodAttempts.push({ method: method.id, ran: true, abstained: true, reason });
+        note(emit, `   ${method.id} ABSTAINED: ${reason}`);
+        note(emit, attemptIndex + 1 < eligible.length
+          ? '   RULING 1 (BP165): trying the next eligible method.'
+          : '   RULING 1 (BP165): no further eligible methods -- every one on file for this demand has been tried.');
+        continue;
+      }
+
+      // A REAL VERDICT. D-BP153-003 -- THE KEY REJOINS HERE, AND ONLY HERE (unchanged from before
+      // this ticket, just now sitting inside the fallthrough loop instead of after a single
+      // guaranteed selection). `method.run()` has already returned; its verdict was produced by
+      // code that could not see the key (see the key-split block where `methodInput` is built).
+      // Scoring is therefore structurally after the fact, which is the whole point. The methods'
+      // own `ok`/`correct` fields now come back undefined (their `KEY != null` guards take the
+      // free-text branch), so these two lines are the sole source of both. Order matters: this
+      // must sit AFTER `...outcome` so it overrides rather than merges under it.
+      const scoredCorrect = parsed.correctAnswer;
+      const scoredOk = scoredCorrect != null && outcome.verdict != null
+        ? outcome.verdict === scoredCorrect
+        : undefined;
+      // Built as an untyped record and cast at the return -- see the `noMatchOutcome` comment
+      // above for why (`methodAttempts` is not on LianaTerminalOutcome either, same reason).
+      const successOutcome: Record<string, unknown> = {
+        ...outcome,
+        ...(scoredCorrect != null ? { correct: scoredCorrect } : {}),
+        ...(scoredOk !== undefined ? { ok: scoredOk } : {}),
+        method: method.id,
+        options: parsed.options,
+        ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
+        ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
+        ...(assistedLog.length ? { assistedLog: assistedLog.all() } : {}),
+        ...(sc01Result ? { sc01: sc01Result } : {}),
+        ...(sc01ScoringError ? { sc01ScoringError } : {}),
+        // Every EARLIER method's own abstain reason, if any -- a success after one or more
+        // fallthroughs still reports what was tried and refused before this method answered.
+        ...(methodAttempts.length ? { methodAttempts } : {}),
+      };
+      return successOutcome as unknown as LianaTerminalOutcome;
     }
-    // D-BP153-003 -- THE KEY REJOINS HERE, AND ONLY HERE. `method.run()` has already returned;
-    // its verdict was produced by code that could not see the key (see the key-split block where
-    // `methodInput` is built). Scoring is therefore structurally after the fact, which is the
-    // whole point. The methods' own `ok`/`correct` fields now come back undefined (their
-    // `KEY != null` guards take the free-text branch), so these two lines are the sole source of
-    // both. Order matters: this must sit AFTER `...outcome` so it overrides rather than merges
-    // under it.
-    const scoredCorrect = parsed.correctAnswer;
-    const scoredOk = scoredCorrect != null && outcome.verdict != null
-      ? outcome.verdict === scoredCorrect
-      : undefined;
-    return {
-      ...outcome,
-      ...(scoredCorrect != null ? { correct: scoredCorrect } : {}),
-      ...(scoredOk !== undefined ? { ok: scoredOk } : {}),
-      method: method.id,
+
+    // ALL ELIGIBLE METHODS EXHAUSTED, NONE PRODUCED A VERDICT. Per this ticket's own constraint,
+    // an all-abstain outcome is a COMPLETE, CORRECT result -- not a failure, and nothing above made
+    // any method answer to avoid it. `ranAny` distinguishes the two honest shapes this can take:
+    // every eligible method was a stub with no runner (`run: null` on all of them -- the legacy
+    // single-method `method_not_yet_taught` case, extended to however many stubs matched), or at
+    // least one method's `run()` was actually called and it honestly refused (new:
+    // `all_methods_abstained` -- impossible before this ticket, since the engine never tried past
+    // the first eligible method).
+    const ranAny = methodAttempts.some((a) => a.ran);
+    emit({
+      kind: 'result',
+      text: ranAny
+        ? `ALL ELIGIBLE METHODS ABSTAINED -- ${methodAttempts.length} method(s) tried for this demand, none produced a verdict.`
+        : `NOT YET TAUGHT -- ${methodAttempts.length} method(s) matched this question's shape, none has a runner yet.`,
+      ts: nowIso(),
+    });
+    note(emit, '   Per-method reasons, in order:');
+    for (const a of methodAttempts) {
+      note(emit, `     ${a.method}: ${a.reason}`);
+    }
+    note(emit, '   This is a complete, correct result (HARDWIRE-22 honesty gate) -- not a failure to fix.');
+    const allAbstainOutcome: Record<string, unknown> = {
+      qid: parsed.qid,
+      question: parsed.question,
+      verdict: null,
+      correct: parsed.correctAnswer,
+      abstain: true,
+      freeText,
+      error: ranAny ? 'all_methods_abstained' : 'method_not_yet_taught',
+      method: eligible[0].method.id,
       options: parsed.options,
+      methodAttempts,
       ...(audibleLog.length ? { audibleLog: audibleLog.all() } : {}),
       ...(steppedLog.length ? { steppedLog: steppedLog.all() } : {}),
       ...(assistedLog.length ? { assistedLog: assistedLog.all() } : {}),
       ...(sc01Result ? { sc01: sc01Result } : {}),
       ...(sc01ScoringError ? { sc01ScoringError } : {}),
+      // D-BP165-M0-006, RULING 2: even a claimed-but-unanswered question still shows what the
+      // substrate held.
+      ...(connectorSiloOn ? { silo: siloByTagResult } : {}),
     };
+    return allAbstainOutcome as unknown as LianaTerminalOutcome;
   } catch (e) {
     // THE OPERATOR ENDING A RUN IS NOT AN ERROR, and must not be transcribed as one. It is an
     // honest abstain that keeps every note typed on the way to it.

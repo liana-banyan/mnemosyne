@@ -115,6 +115,181 @@ export function runSympyMultiplication(a: number, b: number): Promise<SympyEvalR
   return runSympyArithmetic(`(${a})*(${b})`);
 }
 
+// ─── D-BP164-M0-054 EXTENSION: SYMBOLIC SOLVE / DIFFERENTIATE, SAME BRIDGE, SAME CONVENTION ──────
+//
+// Added for the Stage 3 SymPy-backed problem generator (BISHOP_DROPZONE\STAGE3_SYMPY_GENERATED_BP164.md).
+// Founder order, verbatim, BP164: "USE SymPy or whatever it is called, and USE THE LIANA CYCLE WHICH
+// ALREADY DOES ALL OF THIS." runSympyArithmetic()'s own whitelist (SYMPY_EXPR_WHITELIST_RE, above)
+// deliberately forbids every letter -- it only ever evaluates a closed numeric expression, and
+// cannot solve for a variable or differentiate. Solving/differentiating is a genuinely different
+// SymPy capability, not a duplicate of runSympyArithmetic's job, so these two functions are added
+// to THIS file, next to it, spawning python via the exact same `spawn('python', [...])` convention
+// (same shape as G2's own header comment: matches this repo's existing convention rather than
+// inventing a new process-invocation style) -- this keeps the estate at ONE file with a
+// `spawn('python', ...)` SymPy bridge, extended with two more narrow capabilities, not a second or
+// third independent bridge. Both functions restrict the symbol to the single literal name `x` --
+// deliberately not a caller-supplied symbol name -- so the whitelist regex only ever has to admit
+// one specific extra letter, never arbitrary caller text, keeping the same "whitelist BEFORE the
+// expression ever reaches the subprocess argv" discipline runSympyArithmetic's own header states.
+
+const SYMPY_SYMBOLIC_X_WHITELIST_RE = /^[\dx+\-*/^().eE\s=]+$/;
+
+export interface SympySolveResult {
+  /** Every real solution SymPy's own `solve()` returned, as strings exactly as SymPy printed them
+   *  (e.g. "3", "-2/5"). Never coerced to a JS number here -- a caller that needs a float should
+   *  parse/evaluate the specific string it cares about, so an exact rational solution is never
+   *  silently rounded by this bridge. */
+  solutions: string[];
+  raw: string;
+}
+
+/** Solves `equationExprEqualsZero` (an expression in `x` that SymPy should set to zero, e.g.
+ *  "3*x + 2 - 17" for the equation 3x+2=17) for `x`, via a real local SymPy subprocess. Same honest
+ *  null-on-every-failure-path discipline as runSympyArithmetic (missing python, missing sympy, a
+ *  non-whitelisted expression, a timeout, or a SymPy result this function cannot parse as a bracketed
+ *  solution list) -- never invents a solution. Restricted to a SINGLE symbol, `x`, always -- this is
+ *  a narrow linear/polynomial-equation solver for the Stage 3 generator's own use, not a general
+ *  computer-algebra front end. */
+export function runSympySolveForX(equationExprEqualsZero: string, timeoutMs = 10_000): Promise<SympySolveResult | null> {
+  const expr = equationExprEqualsZero.trim();
+  if (expr.length === 0 || expr.length > 300) return Promise.resolve(null);
+  if (!SYMPY_SYMBOLIC_X_WHITELIST_RE.test(expr)) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: SympySolveResult | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn('python', [
+        '-c',
+        `from sympy import symbols, sympify, solve\nx = symbols('x')\nprint(solve(sympify(${JSON.stringify(expr)}), x))`,
+      ]);
+    } catch {
+      finish(null);
+      return;
+    }
+
+    const stdout: string[] = [];
+    const timer = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch {
+        // process may have already exited -- nothing further to do
+      }
+      finish(null);
+    }, timeoutMs);
+
+    proc.stdout?.on('data', (d: Buffer) => stdout.push(d.toString()));
+    proc.stderr?.on('data', () => {
+      // stderr is not collected into the result; a non-zero exit code (checked on 'close') is what
+      // gates finish(null) -- collecting stderr text here is unnecessary for this narrow bridge.
+    });
+    proc.on('error', () => {
+      clearTimeout(timer);
+      finish(null);
+    });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        finish(null);
+        return;
+      }
+      const raw = stdout.join('').trim();
+      // SymPy's solve() prints a Python list literal, e.g. "[3]" or "[-2/5, 4]" or "[]". Parse it as
+      // a bracketed, comma-separated list of tokens -- never eval()'d, a plain string split.
+      const m = raw.match(/^\[(.*)\]$/);
+      if (!m) {
+        finish(null); // unrecognized shape -- honest null, never a guessed solution
+        return;
+      }
+      const inner = m[1].trim();
+      const solutions = inner.length === 0 ? [] : inner.split(',').map((s) => s.trim());
+      if (solutions.length === 0) {
+        finish(null); // SymPy found no solution -- honest null, not a fabricated one
+        return;
+      }
+      finish({ solutions, raw });
+    });
+  });
+}
+
+export interface SympyDerivativeAtPointResult {
+  /** The numeric value of d/dx[expression] evaluated at x=atX, as SymPy's own N() computed it. */
+  value: number;
+  raw: string;
+}
+
+/** Differentiates `expressionInX` (a polynomial expression in `x`, e.g. "4*x^2 + 3*x - 5") with
+ *  respect to `x` and evaluates the derivative at `x = atX`, via a real local SymPy subprocess
+ *  (`sympy.diff` then `.subs()`/`N()`). Same honest-null-on-every-failure-path discipline as
+ *  runSympyArithmetic/runSympySolveForX -- never invents a value. `atX` is validated as finite
+ *  before it is ever interpolated into the subprocess argv, matching runSympyMultiplication's own
+ *  finite-check discipline for its own numeric argument. */
+export function runSympyDerivativeAtPoint(expressionInX: string, atX: number, timeoutMs = 10_000): Promise<SympyDerivativeAtPointResult | null> {
+  const expr = expressionInX.trim();
+  if (expr.length === 0 || expr.length > 300) return Promise.resolve(null);
+  if (!SYMPY_SYMBOLIC_X_WHITELIST_RE.test(expr)) return Promise.resolve(null);
+  if (!Number.isFinite(atX)) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: SympyDerivativeAtPointResult | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn('python', [
+        '-c',
+        `from sympy import symbols, sympify, diff, N\nx = symbols('x')\nd = diff(sympify(${JSON.stringify(expr)}), x)\nprint(N(d.subs(x, ${atX})))`,
+      ]);
+    } catch {
+      finish(null);
+      return;
+    }
+
+    const stdout: string[] = [];
+    const timer = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch {
+        // process may have already exited -- nothing further to do
+      }
+      finish(null);
+    }, timeoutMs);
+
+    proc.stdout?.on('data', (d: Buffer) => stdout.push(d.toString()));
+    proc.stderr?.on('data', () => {
+      // see runSympySolveForX's own comment -- stderr text is not needed by this narrow bridge.
+    });
+    proc.on('error', () => {
+      clearTimeout(timer);
+      finish(null);
+    });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        finish(null);
+        return;
+      }
+      const raw = stdout.join('').trim();
+      const n = Number.parseFloat(raw);
+      if (!Number.isFinite(n)) {
+        finish(null);
+        return;
+      }
+      finish({ value: n, raw });
+    });
+  });
+}
+
 // ─── G1: DERIVED-QUANTITY RECONCILIATION ────────────────────────────────────────────────────────
 //
 // Ask the source for FACTORS, never products. Get density, separately get land area, then check

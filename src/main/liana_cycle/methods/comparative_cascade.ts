@@ -620,8 +620,42 @@ export const GEMMA_NUM_CTX_FLOOR = 4096;
 
 // MEASURED hard ceiling -- see the ticket comment above for the four data points this was chosen
 // from (16384/32768 fit with headroom; 131072 fits only by evicting a co-resident model; 262144
-// measured to exceed total VRAM outright).
+// measured to exceed total VRAM outright). This is the VRAM-fit CAPABILITY ceiling, left intact --
+// see GEMMA_NUM_CTX_RUN_CAP immediately below for the separate, currently-active RUN cap that sits
+// underneath it.
 export const GEMMA_NUM_CTX_CEILING = 32768;
+
+// D-BP164-M0-116/BISHOP-SEG/S116/seg-numctx-run-cap, ADDITIVE, sits UNDERNEATH GEMMA_NUM_CTX_CEILING
+// above, never replaces it -- Founder ruling, verbatim: "cap it at 4096 and rerun, especially since
+// we use hex connectors now, right?" (dispatch D-BP164-M0-116, correcting BISHOP-M0's own mistaken
+// Founder-facing assertion that num_ctx was already fixed at 4096; D-BP164-M0-114 measured it was
+// not -- it was dynamically sized up to GEMMA_NUM_CTX_CEILING via sizeGemmaContext() below).
+//
+// WHY A CAP, NOT JUST A FAIRNESS RULE: this estate's own thesis is that a model does not need to
+// HOLD everything because it can REACH for anything through hex connectors, each resolving to a
+// celpane of 10-50 tokens with a second fetch only if needed. If connectors work, a 4096 cap costs
+// nothing. If the cap hurts, the connectors are not doing their job -- either outcome is a real
+// result. It is also required for a fair comparison: the cold arm ran at 4096; a treatment arm
+// allowed up to 32768 would be winning on RESOURCES rather than on METHOD, exactly the contamination
+// the Founder stopped earlier (see comparative_cascade.ts's own PERIMETER/SURVEY gate history).
+//
+// THE DYNAMIC SIZING LOGIC ITSELF IS NOT DELETED -- sizeGemmaContext()'s estimate-then-round-up
+// algorithm, and the VRAM-measured GEMMA_NUM_CTX_CEILING above, both survive byte-for-byte so a
+// later Founder ruling can lift this cap without rebuilding anything. This constant is instead
+// threaded through sizeGemmaContext()'s new, OPTIONAL second parameter (`capOverride`) -- every
+// existing call site and every existing test that calls sizeGemmaContext(text) with ONE argument
+// (comparative_cascade.gemma_extract_failure_causes.test.ts's TEST 6/7/8 among them) is untouched
+// and keeps seeing the original GEMMA_NUM_CTX_CEILING-bounded behavior; only gemmaExtract()'s own
+// real network call, below, passes this constant explicitly and is therefore the only path capped.
+//
+// NOTE: this cap is set EQUAL TO GEMMA_NUM_CTX_FLOOR (4096) by construction. That equality is load
+// bearing for sizeGemmaContext()'s own "never returns a numCtx it did not fit" invariant: the
+// round-up loop starts at GEMMA_NUM_CTX_FLOOR, so whenever `needed` clears the effective ceiling
+// check it is already <= GEMMA_NUM_CTX_FLOOR too, and the loop exits immediately at exactly 4096 --
+// never above the cap. A future cap value BETWEEN the floor and GEMMA_NUM_CTX_CEILING would need
+// sizeGemmaContext()'s round-up loop re-examined for the same invariant; this comment names that
+// rather than leaving it a silent assumption.
+export const GEMMA_NUM_CTX_RUN_CAP = 4096;
 
 export interface GemmaContextSizing {
   ok: boolean;
@@ -634,15 +668,23 @@ export interface GemmaContextSizing {
 
 /** Sizes `num_ctx` to the estimated prompt (+ output reserve + safety buffer), rounded up to the
  *  next power of two, floored at GEMMA_NUM_CTX_FLOOR. Returns `{ ok: false }` (never a value) when
- *  the budget exceeds GEMMA_NUM_CTX_CEILING -- the caller (gemmaExtract(), below) must refuse the
+ *  the budget exceeds the effective ceiling -- the caller (gemmaExtract(), below) must refuse the
  *  call rather than send a request that would silently truncate. Pure and synchronous: no network,
  *  no side effects, so it is trivially unit-testable on its own (see this file's own
- *  comparative_cascade.test.ts / comparative_cascade.gemma_extract_failure_causes.test.ts). */
-export function sizeGemmaContext(promptText: string): GemmaContextSizing {
+ *  comparative_cascade.test.ts / comparative_cascade.gemma_extract_failure_causes.test.ts).
+ *
+ *  D-BP164-M0-116, ADDITIVE: `capOverride` is an OPTIONAL second parameter. When omitted (every
+ *  existing call site, every existing test that calls this with one argument), behavior is
+ *  byte-identical to before this ticket -- the effective ceiling is GEMMA_NUM_CTX_CEILING, exactly
+ *  as it always was. When provided, the effective ceiling becomes
+ *  `Math.min(GEMMA_NUM_CTX_CEILING, capOverride)` -- a caller can only ever tighten the ceiling
+ *  this function enforces, never loosen it past the VRAM-measured GEMMA_NUM_CTX_CEILING. */
+export function sizeGemmaContext(promptText: string, capOverride?: number): GemmaContextSizing {
   const promptTokens = estimateGemmaPromptTokens(promptText);
   const needed = promptTokens + GEMMA_NUM_PREDICT + GEMMA_NUM_CTX_SAFETY_TOKENS;
-  if (needed > GEMMA_NUM_CTX_CEILING) {
-    return { ok: false, promptTokens, needed, ceiling: GEMMA_NUM_CTX_CEILING, overage: needed - GEMMA_NUM_CTX_CEILING };
+  const effectiveCeiling = capOverride !== undefined ? Math.min(GEMMA_NUM_CTX_CEILING, capOverride) : GEMMA_NUM_CTX_CEILING;
+  if (needed > effectiveCeiling) {
+    return { ok: false, promptTokens, needed, ceiling: effectiveCeiling, overage: needed - effectiveCeiling };
   }
   let numCtx = GEMMA_NUM_CTX_FLOOR;
   while (numCtx < needed) numCtx *= 2;
@@ -718,7 +760,31 @@ export async function gemmaExtract(
     failureDetail?: string;
     costRecord?: import('../cost_instrument').LlmCallCostRecord;
   },
+  // D-BP206-M0-h2cbp11qc-001, board cards seq 81 and seq 161, executing two Founder rulings that
+  // were given on 2026-08-27 and never applied. ADDITIVE, and every existing call site that passes
+  // four arguments or fewer keeps byte-identical behavior.
+  //
+  // THE DEFECT. GEMMA_NUM_CTX_RUN_CAP = 4096 exists for ONE reason: to keep the comparative_cascade
+  // A/B comparison FAIR by giving both arms the same window. But it is enforced HERE, inside the one
+  // shared primitive every cascade reaches the model through, so it silently governs subsystems that
+  // are not running a comparison at all. classify_cascade.ts calls gemmaExtract() three times on its
+  // REAL extraction path and inherits a fairness cap it has no stake in; measured consequences were
+  // two failing tests in D-BP168-M0-114's triage and Stage 3 OlympiadBench items refused outright.
+  // One constant, two subsystems, damage in the one that never asked for it.
+  //
+  // WHAT I DID NOT DO, AND IT IS THE WHOLE POINT. I did not raise 4096. The Founder's standing law is
+  // that you never fix a context problem by buying context -- it corrupts the control. The ruling he
+  // gave was about SCOPE, not size: "should the cap be removed from the classify_cascade extraction
+  // path" -> Yes. So the cap stays exactly where fairness is being measured and is lifted where it
+  // never belonged. The VRAM-measured GEMMA_NUM_CTX_CEILING still applies in BOTH cases: this opts a
+  // caller out of a fairness constraint, never out of what the card actually fits on.
+  opts?: {
+    /** Default true: enforce the 4096 comparison-fairness run cap. Pass false ONLY from a caller
+     *  that is not running a controlled comparison. The VRAM capability ceiling still applies. */
+    applyRunCap?: boolean;
+  },
 ): Promise<Record<string, unknown> | null> {
+  const applyRunCap = opts?.applyRunCap !== false;
   const prompt = `Read the passage and report only what it states. Do not reason about which answer is correct. Do not choose between options.
 
 PASSAGE:
@@ -733,12 +799,24 @@ Use null where the passage does not state it. Never guess.`;
   // D-BP162-M0-039 -- SIZE num_ctx TO THE ESTIMATED PROMPT, WITH A HARD CEILING, AND REFUSE RATHER
   // THAN TRUNCATE. See the ticket comment above sizeGemmaContext() for the full measurement and
   // rationale. Checked BEFORE the network try/catch below -- a refusal never calls fetch() at all.
-  const sizing = sizeGemmaContext(prompt);
+  //
+  // D-BP164-M0-116 -- GEMMA_NUM_CTX_RUN_CAP passed explicitly as the second argument. This is the
+  // ONLY call site in the codebase that reaches the real Ollama round trip, so this one line is
+  // where the Founder's 4096 cap takes effect; sizeGemmaContext()'s own dynamic sizing algorithm
+  // and its VRAM-measured GEMMA_NUM_CTX_CEILING are untouched (see the constant's own comment).
+  // D-BP206-M0-h2cbp11qc-001: `undefined` here is not "no ceiling", it is "capability ceiling only".
+  // sizeGemmaContext() falls back to GEMMA_NUM_CTX_CEILING when no override is passed, so a caller
+  // that opts out of the fairness cap is still refused when the prompt genuinely will not fit.
+  const sizing = sizeGemmaContext(prompt, applyRunCap ? GEMMA_NUM_CTX_RUN_CAP : undefined);
   if (!sizing.ok) {
     console.error(
       `[gemmaExtract] REFUSED -- estimated prompt ${sizing.promptTokens} tokens ` +
       `(+ ${GEMMA_NUM_PREDICT} output reserve + ${GEMMA_NUM_CTX_SAFETY_TOKENS} safety = ${sizing.needed} needed) ` +
-      `exceeds the ${sizing.ceiling}-token num_ctx ceiling by ${sizing.overage} tokens -- ` +
+      `exceeds the ${sizing.ceiling}-token num_ctx ceiling (` +
+      (applyRunCap
+        ? `D-BP164-M0-116 comparison-fairness run cap ${GEMMA_NUM_CTX_RUN_CAP}, `
+        : `run cap NOT APPLIED for this caller per D-BP206-M0-h2cbp11qc-001, `) +
+      `VRAM-measured capability ceiling ${GEMMA_NUM_CTX_CEILING}) by ${sizing.overage} tokens -- ` +
       `not calling the model, refusing rather than silently truncating (D-BP162-M0-039).`,
     );
     if (rawOut) {
@@ -749,7 +827,10 @@ Use null where the passage does not state it. Never guess.`;
     }
     return null;
   }
-  console.log(`[gemmaExtract] num_ctx=${sizing.numCtx} (estimated prompt ${sizing.promptTokens} tokens, needed ${sizing.needed})`);
+  console.log(`[gemmaExtract] num_ctx=${sizing.numCtx} (estimated prompt ${sizing.promptTokens} tokens, needed ${sizing.needed}, `
+    + (applyRunCap
+      ? `D-BP164-M0-116 comparison-fairness run cap ${GEMMA_NUM_CTX_RUN_CAP})`
+      : `run cap NOT APPLIED, capability ceiling ${GEMMA_NUM_CTX_CEILING} only)`));
 
   // D-BP164-M0-068 -- timing captured around the SAME fetch() this function already makes, no new
   // network call. ts_start/t0 are taken here (after the ceiling-exceeded refusal above, which

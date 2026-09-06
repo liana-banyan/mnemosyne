@@ -43,7 +43,11 @@
 // change to what that setting means or defaults to, only a way to see and flip it.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { AutomaticUpdatesConsentPanel, MeshAutoSpawnConsentPanel } from '../DiagnosticModeTab';
+import {
+  AutomaticUpdatesConsentPanel,
+  MeshAutoSpawnConsentPanel,
+  RemoteAdministrationConsentPanel,
+} from '../DiagnosticModeTab';
 import { loadNexusAuthoritySettings } from '../../settings/nexus_authority_settings_store';
 import { NEXUS_ARM_NAMES, type NexusArmName } from '../../../shared/plow/browser_authority_types';
 import type { MoreSubView } from './types';
@@ -593,6 +597,17 @@ export function AuthorizationsPanel({ onSubViewChange }: AuthorizationsPanelProp
         padding: 16, marginBottom: 14,
       }}>
         <MeshAutoSpawnConsentPanel />
+      </div>
+      { /* D-BP202-M0-01-h2cbp8us-001: THE THIRD CONSENT -- remote administration of this whole
+           machine. Same reuse-not-fork pattern as the two panels above: defined once in
+           DiagnosticModeTab.tsx and mounted in both places. It sits LAST of the three
+           deliberately, in increasing order of what each one grants: a version bump, then tool
+           execution inside the app, then administration of the operating system itself. */ }
+      <div style={{
+        background: '#0d1117', border: '1px solid #1e2a38', borderRadius: 10,
+        padding: 16, marginBottom: 14,
+      }}>
+        <RemoteAdministrationConsentPanel />
       </div>
       <MeshTrustSection />
       <PaidEscalationSection />

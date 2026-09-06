@@ -129,7 +129,7 @@ export function getBackupOperatorsForDomain(domain: string): BackupSpecialistNam
 // These return real data where APIs are simple / no-key required.
 // Others return [] with a TODO comment.
 
-import type { CandidateEblet } from './specialist_adapters';
+import { CandidateContent, type CandidateEblet } from './specialist_adapters';
 
 const BACKUP_TIMEOUT_MS = 5000;
 
@@ -164,10 +164,12 @@ export async function fetchInternetArchive(question: string): Promise<CandidateE
     const docs = data.response?.docs ?? [];
     return docs.slice(0, 2).map((d) => ({
       source: 'internet_archive',
-      content: [d.title, d.description].filter(Boolean).join(' — ').slice(0, 500),
+      content: CandidateContent.wrap([d.title, d.description].filter(Boolean).join(' — ').slice(0, 500)),
       weight: 0.65,
       sid: stableId('internet_archive', d.title ?? ''),
-    })).filter((c) => c.content.length >= 100);
+      // D-BP220-BM0-016: internal Miner-style length gate, same LOG sink precedent used
+      // throughout specialist_adapters.ts (e.g. its wikidata/stackexchange adapters).
+    })).filter((c) => c.content.unwrap('LOG').length >= 100);
   } catch {
     return [];
   }
@@ -193,7 +195,7 @@ export async function fetchSecEdgar(question: string): Promise<CandidateEblet[]>
     if (text.length < 20) return [];
     return [{
       source: 'sec_edgar',
-      content: `SEC EDGAR search result for: ${question.slice(0, 120)}. Result available at https://efts.sec.gov search.`,
+      content: CandidateContent.wrap(`SEC EDGAR search result for: ${question.slice(0, 120)}. Result available at https://efts.sec.gov search.`),
       weight: 0.62,
       sid: stableId('sec_edgar', question),
     }];
@@ -235,7 +237,7 @@ export async function fetchNcbiBookshelf(question: string): Promise<CandidateEbl
     if (ids.length === 0) return [];
     return [{
       source: 'ncbi_bookshelf',
-      content: `NCBI Bookshelf: found ${ids.length} book entries for "${question.slice(0, 80)}". IDs: ${ids.slice(0, 3).join(', ')}.`,
+      content: CandidateContent.wrap(`NCBI Bookshelf: found ${ids.length} book entries for "${question.slice(0, 80)}". IDs: ${ids.slice(0, 3).join(', ')}.`),
       weight: 0.7,
       sid: stableId('ncbi_bookshelf', question),
     }];

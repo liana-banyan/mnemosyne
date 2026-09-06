@@ -233,6 +233,14 @@ export async function evaluateCriterionForOption(
       + 'passage does not address this at all, say "unclear" and leave the sentence empty.',
     res.text,
     '{"reading":"yes|no|unclear","sentence":"the verbatim sentence, or empty"}',
+    // D-BP206-M0-h2cbp11qc-001, executing the Founder rulings on board cards seq 81 and seq 161:
+    // the 4096 GEMMA_NUM_CTX_RUN_CAP exists to keep the comparative_cascade A/B COMPARISON fair.
+    // This is classify_cascade's real extraction path and it is not running that comparison, so it
+    // was inheriting a constraint it has no stake in and refusing genuinely long passages for it.
+    // The VRAM capability ceiling still applies -- this opts out of a fairness cap, not out of what
+    // the card can actually hold, and the number 4096 was NOT raised anywhere.
+    undefined,
+    { applyRunCap: false },
   );
   const reading = String((ex?.reading as string | undefined) || 'unclear').toLowerCase();
   const sentence = String((ex?.sentence as string | undefined) || '');
@@ -730,6 +738,11 @@ async function harvestPhrasesFromPassage(
       + 'or choose which one is most important. If none exist, return an empty list.',
     passage.text,
     '{"phrases":["verbatim phrase 1","verbatim phrase 2","verbatim phrase 3"]}',
+    // D-BP206-M0-h2cbp11qc-001, seq 81 / seq 161. Same reasoning as the call site above: harvesting
+    // verbatim phrases out of a real passage is not a controlled comparison, so the comparison's
+    // fairness cap does not belong here. Capability ceiling unchanged.
+    undefined,
+    { applyRunCap: false },
   );
   const raw = Array.isArray(ex?.phrases) ? (ex!.phrases as unknown[]) : [];
   const out: HarvestedCriterion[] = [];
@@ -809,6 +822,11 @@ export async function harvestCriteriaFromBankedPassages(
             + 'sentence empty.',
           passage.text,
           '{"reading":"yes|no|unclear","sentence":"the verbatim sentence, or empty"}',
+          // D-BP206-M0-h2cbp11qc-001, seq 81 / seq 161. Third and last gemmaExtract call site on
+          // classify_cascade's extraction path. Same scope ruling, same reasoning, same untouched
+          // capability ceiling.
+          undefined,
+          { applyRunCap: false },
         );
         const reading = String((ex?.reading as string | undefined) || 'unclear').toLowerCase();
         const sentence = String((ex?.sentence as string | undefined) || '');

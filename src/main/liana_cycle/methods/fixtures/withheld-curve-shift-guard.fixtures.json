@@ -1,0 +1,15 @@
+{
+  "methodId": "withheld-curve-shift-guard",
+  "fixtures": [
+    {
+      "name": "founding example, dataset question_id 46 (source_id 7260) -- shape fires. run() is NOT exercised here: this method calls a live gemma model via Ollama inside run() (see file header), and every one of its own hand-written vitest fixtures in withheld_curve_shift_guard.test.ts makes the identical choice (grep confirms .run( never appears in that file) -- this fixture asserts shapeTest() only, honestly reported as NOT-RUN by the harness rather than faked or silently skipped.",
+      "qid": 46,
+      "expectShapeMatches": true
+    },
+    {
+      "name": "fewer than 2 options -- shape refuses",
+      "input": { "question": "x", "options": { "A": "foo" } },
+      "expectShapeMatches": false
+    }
+  ]
+}

@@ -505,6 +505,7 @@ async function runForageEbletJob(item: HomeworkItem): Promise<ForageResult> {
         model,
         prompt,
         stream: false,
+        think: false,
         options: { num_predict: 400, temperature: 0.3 },
       }),
       signal: AbortSignal.timeout(FORAGE_TIMEOUT_MS),

@@ -88,15 +88,36 @@ describe('survey_steps.ts -- registerSurveyParts() registers exactly the six Sur
     }
   });
 
+  // D-BP164-M0-114/BISHOP/M0/seg-resume -- base count bumped from ten to fifteen: five entries
+  // (IdentifyUntaught, InferUntaught, LocateInFrameworkUntaught, ArithmeticCascade,
+  // Stage3SymbolicCascade) were added to ../method_registry.ts's registerKnownMethods() to close
+  // the gap between that catalog and the 8 already-live LianaMethod entries the executable
+  // registry holds. See that file's own "D-BP164-M0-114" section.
+  //
+  // D-BP167-M0-056/BISHOP-M0/SEG -- base count bumped AGAIN, fifteen to seventeen: D-BP165-M0-022
+  // added ComputeGemmaCascade:1 and ComputeSelectCascade:1 to registerKnownMethods() without
+  // updating this test -- caught during a liana_cycle suite diagnosis, not a new regression.
+  // 17 base + 6 survey parts = 23. Same drift class as method_registry.test.ts and
+  // library/state_the_question_step.test.ts; see D-BP167-M0-056's own SEG return for the full
+  // account of why 23 is the correct number, not 21.
+  //
+  // D-BP207-SEG-A, card t-00173320 -- base count bumped AGAIN, seventeen to twenty-one: 23 to 27.
+  // Carded as "non-deterministic," but MEASURED, live, on the current vitest 4.1.9: this assertion
+  // fails DETERMINISTICALLY even alone and with `--no-file-parallelism` -- not flaky. D-BP168-M0-126
+  // added FOUR entries to ../method_registry.ts's registerKnownMethods() (PythagoreanTheoremCascade:1,
+  // QuadraticFormulaCascade:1, PermutationCombinationCascade:1, LawOfCosinesCascade:1 -- confirmed by
+  // calling the compiled dist directly: returns 21, not 17) without updating this test. Bucket-1
+  // (stale count), same drift class as before, recurring a third time -- not the bucket-3 singleton-
+  // pollution defect the card's own text guesses at.
   test('assertion (b): Survey:1 still exists as the whole-sequence composite, untouched, alongside the six parts', async () => {
     const { registry, steps } = await freshModules();
-    registry.registerKnownMethods(); // registers Survey:1 (and the other 9 pre-existing entries)
+    registry.registerKnownMethods(); // registers Survey:1 (and the other 20 pre-existing entries)
     steps.registerSurveyParts(); // registers the six new parts -- no collision, no duplicate error
     const surveyComposite = registry.lookupById('Survey:1');
     expect(surveyComposite, 'Survey:1 must still resolve after registerSurveyParts() runs').toBeTruthy();
     expect(surveyComposite!.declaration.exportName).toBe('runSurveyStage');
-    // All 6 new parts plus the original 10 coexist -- 16 total, none overwritten.
-    expect(registry.listAllEntries().length).toBe(16);
+    // All 6 new parts plus the pre-existing 21 coexist -- 27 total, none overwritten.
+    expect(registry.listAllEntries().length).toBe(27);
     for (const id of EXPECTED_IDS) {
       expect(registry.lookupById(id), `${id} should also resolve`).toBeTruthy();
     }
@@ -106,7 +127,7 @@ describe('survey_steps.ts -- registerSurveyParts() registers exactly the six Sur
     const { registry, steps } = await freshModules();
     steps.registerSurveyParts();
     registry.registerKnownMethods();
-    expect(registry.listAllEntries().length).toBe(16);
+    expect(registry.listAllEntries().length).toBe(27);
     expect(registry.lookupById('Survey:1')).toBeTruthy();
     expect(registry.lookupById('DefineTheTerm:1')).toBeTruthy();
   });

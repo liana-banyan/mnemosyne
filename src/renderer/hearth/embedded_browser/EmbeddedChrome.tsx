@@ -316,6 +316,26 @@ export function EmbeddedChrome({ substrateContext, onInjectionResult, onBrowserA
             style={styles.webview}
             /* @ts-expect-error — webview is an Electron custom element not in React types */
             allowpopups="true"
+            /* D-BP158-006/BISHOP: explicit PERSISTED partition, per Founder ruling BP158 ("create
+               that partition set, as every MnemosyneC will need one, and clear it so it can then
+               persist what it should, the user who is logged into that computer"). Before this
+               change this <webview> carried NO partition attribute at all, so it fell back to
+               Electron's app-wide default session -- shared with every other unpartitioned
+               BrowserWindow/webview in the process and, before D-BP158-006's app.setPath() call,
+               rooted under the OLD amplify-computer userData directory. `persist:` is the
+               required prefix for a DURABLE (disk-backed, survives app restart) partition --
+               without it Electron treats the partition as in-memory/ephemeral. Naming mirrors
+               this repo's existing convention (nexus_authority_persistent_session.ts's
+               `persist:nexus-authority`, usage_barrel_scraper.ts's `persist:usage-barrel-
+               scraper`) -- a distinct, dedicated cookie jar for THIS embedded browser only, never
+               shared with those other two. Applying this is the intended "clear": a brand-new
+               partition string starts with zero cookies, so it signs the operator out of
+               whatever Google/Perplexity/etc. session this webview previously held, once, the
+               first time this build runs; the operator signs back in inside this same webview
+               same as before. `partition` needs no @ts-expect-error suppression here, unlike
+               `allowpopups` above -- verified by a clean `tsc -p tsconfig.renderer.json
+               --noEmit` pass; adding one anyway is itself a TS2578 "unused directive" error. */
+            partition="persist:mnemosynec-embedded-browser"
           />
         )}
       </div>

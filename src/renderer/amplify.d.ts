@@ -26,6 +26,134 @@ export interface MeshAutoSpawnConsentSettings {
   consentGranted: boolean;
 }
 
+// D-BP202-M0-01-h2cbp8us-001: THE THIRD CONSENT -- remote administration of the whole machine
+// (mirrors src/main/federation/mesh_remote_admin_consent.ts's own interface -- kept as a separate
+// renderer-side declaration, not an import, matching AutoUpdateConfig/MeshAutoSpawnConsentSettings
+// above). Deliberately a DISTINCT type from MeshAutoSpawnConsentSettings despite the identical
+// shape: they are three different decisions and a shared type would invite one call site to be
+// passed the wrong one.
+export interface MeshRemoteAdminConsentSettings {
+  consentGranted: boolean;
+}
+
+// D-BP202-BM02-014: HardWire Map spine -- mirrors src/main/installer/hardwire_manifest.ts and
+// hardwire_preselection.ts's own interfaces, kept as separate renderer-side declarations rather
+// than imports (matching every mirrored type above in this file). No UI consumes these yet -- a
+// sibling dispatch owns the preinstall screen these exist to serve.
+export type HardwarePackageCategory = 'runtime' | 'language' | 'model';
+export type HardwarePackageSourceKind = 'ollama-registry' | 'publisher-site' | 'lb-repository';
+
+export interface HardwirePackageSource {
+  kind: HardwarePackageSourceKind;
+  pinned: boolean;
+  pinnedReason?: string;
+  registryModel?: string;
+  homepageUrl: string;
+  versionResolutionUrl?: string;
+}
+
+export interface HardwirePackageSizeFigure {
+  valueGb: number;
+  verified: boolean;
+  sourceNote: string;
+}
+
+export interface HardwirePackageRequirements {
+  minVramGb?: number | null;
+  minRamGb?: number;
+  minDiskGb?: number;
+  dependsOn?: string[];
+}
+
+export interface HardwirePackageRationale {
+  recommended: string;
+  notRecommended: string;
+}
+
+export interface HardwirePackageLicense {
+  name: string;
+  url: string;
+  mustAcceptBeforeDownload: boolean;
+}
+
+export interface HardwirePackageFaqEntry {
+  question: string;
+  answer: string;
+}
+
+export interface HardwirePackageManifestEntry {
+  id: string;
+  displayName: string;
+  category: HardwarePackageCategory;
+  version: string;
+  source: HardwirePackageSource;
+  downloadSize: HardwirePackageSizeFigure;
+  installedSize: HardwirePackageSizeFigure;
+  requirements: HardwirePackageRequirements;
+  rationale: HardwirePackageRationale;
+  license: HardwirePackageLicense;
+  faq?: HardwirePackageFaqEntry[];
+}
+
+export type HardwireDetectedPlatform = 'win32' | 'darwin' | 'linux' | 'unknown';
+
+export interface HardwireMachineProfile {
+  ramGb: number;
+  vramGb: number | null;
+  os: HardwireDetectedPlatform;
+  gpuName?: string | null;
+  diskFreeGb?: number | null;
+  alreadyInstalled?: string[];
+}
+
+export type HardwirePreselectionDecisionKind = 'recommended' | 'not-recommended' | 'required' | 'incompatible';
+
+export interface HardwirePackagePreselectionDecision {
+  packageId: string;
+  decision: HardwirePreselectionDecisionKind;
+  checked: boolean;
+  reason: string;
+  alternativePackageId?: string | null;
+}
+
+// D-BP164-M0-002/BISHOP/SEG-DA: open-at-login toggle (Founder BP163: "And can we build that
+// start on startup into Mnemosynec so it always does that"). Mirrors
+// src/main/startup/open_at_login_settings.ts's own interfaces -- kept as a separate
+// renderer-side declaration, not an import, matching AutoUpdateConfig/MeshAutoSpawnConsentSettings
+// above.
+export interface OpenAtLoginSettings {
+  openAtLogin: boolean;
+}
+
+export interface OpenAtLoginOSState {
+  openAtLogin: boolean;
+  executableWillLaunchAtLogin: boolean;
+}
+
+export interface LegacyAutostartTaskStatus {
+  present: boolean;
+  taskName: string;
+  state?: string;
+  queryError?: string;
+}
+
+export interface OpenAtLoginGetStateResult {
+  ok: boolean;
+  preference: OpenAtLoginSettings;
+  osState: OpenAtLoginOSState;
+  legacyTask: LegacyAutostartTaskStatus;
+  legacyTaskRemovalCommand: string;
+  error?: string;
+}
+
+export interface OpenAtLoginApplyResult {
+  ok: boolean;
+  reason?: 'legacy-task-present' | 'legacy-task-query-inconclusive';
+  preference: OpenAtLoginSettings;
+  osState: OpenAtLoginOSState;
+  legacyTask: LegacyAutostartTaskStatus;
+}
+
 export interface FrameModePayload {
   mode: FrameMode;
   forced_mode: FrameMode | null;
@@ -267,6 +395,9 @@ declare global {
       getAutoUpdateConfig: () => Promise<AutoUpdateConfig>;
       setAutoUpdateConfig: (cfg: Partial<AutoUpdateConfig>) => Promise<AutoUpdateConfig>;
       getUpdateHistory: () => Promise<Record<string, unknown>[]>;
+      // D-BP164-M0-002/BISHOP/SEG-DA: open-at-login toggle -- see OpenAtLoginSettings etc. above
+      getOpenAtLoginState: () => Promise<OpenAtLoginGetStateResult>;
+      setOpenAtLoginState: (desired: boolean) => Promise<OpenAtLoginApplyResult>;
       approveAutoUpdateInstall: (readyPath: string) => void;
       onAutoUpdatePatchReady: (cb: (data: { version: string }) => void) => () => void;
       onAutoUpdateMajorAvailable: (cb: (data: { version: string }) => void) => () => void;
@@ -283,6 +414,19 @@ declare global {
       // above and from AutoUpdateConfig.autoUpdates; see mesh_auto_spawn_consent.ts's own header.
       getMeshAutoSpawnConsentSettings?: () => Promise<MeshAutoSpawnConsentSettings>;
       setMeshAutoSpawnConsentGranted?: (granted: boolean) => Promise<MeshAutoSpawnConsentSettings>;
+      // D-BP202-M0-01-h2cbp8us-001: THE THIRD CONSENT -- remote administration of this machine
+      // (the `lbmesh` account plus WinRM), separate from both toggles above.
+      getMeshRemoteAdminConsentSettings?: () => Promise<MeshRemoteAdminConsentSettings>;
+      setRemoteAdministrationConsentGranted?: (granted: boolean) => Promise<MeshRemoteAdminConsentSettings>;
+      // D-BP202-BM02-014: HardWire Map spine -- read-only manifest + preselection surface. No UI
+      // consumes these yet; a sibling dispatch owns the preinstall screen.
+      getHardwireManifest?: () => Promise<HardwirePackageManifestEntry[]>;
+      getHardwireMachineProfile?: () => Promise<HardwireMachineProfile>;
+      getHardwirePreselection?: () => Promise<{
+        schemaVersion: string;
+        profile: HardwireMachineProfile;
+        decisions: HardwirePackagePreselectionDecision[];
+      }>;
       // MoneyPenny
       getMoneyPennyUrl: () => Promise<{ url: string; ips: string[]; port: number }>;
       // Auth (Phase 7)
@@ -473,6 +617,19 @@ declare global {
       lianaLaboratoryList?: () => Promise<{
         ok: boolean;
         steps: import('../shared/liana_cycle/liana_terminal_types').LianaLaboratoryStepSummary[];
+        error?: string;
+      }>;
+      // D-BP167-M0-049/BISHOP/seg-composer-persistence -- THE COMPOSER, PERSISTED. A channel
+      // separate from lianaScriptRun -- saving/listing a stack never runs it and never promotes
+      // it into method_registry.ts.
+      lianaComposerSaveStack?: (args: {
+        name: string;
+        steps: string[];
+        provenance: { runInput: string };
+      }) => Promise<{ ok: boolean; path?: string; version?: string; supersededPath?: string | null; error?: string }>;
+      lianaComposerListStacks?: () => Promise<{
+        ok: boolean;
+        stacks: import('../shared/liana_cycle/liana_terminal_types').LianaComposerStackSummary[];
         error?: string;
       }>;
       // Nexus Authority persistent session (BP137 0.9.12 Stage F1)
@@ -956,6 +1113,214 @@ declare global {
           stats?: { mintedCount: number; logPath: string; logExists: boolean };
           error?: string;
         }>;
+      };
+    // --- D-BP168-M0-120 sync: properties present in src/main/preload.ts's
+    // authoritative Window.amplify declaration but missing here, added verbatim
+    // from preload.ts (single-cluster typecheck fix, see BISHOP_DROPZONE return).
+      checkOllama: () => Promise<{ installed: boolean; version?: string }>;
+      onUpdateStateChanged: (cb: (state: UpdateState) => void) => () => void;
+      getRelayTier: () => Promise<{ tier: string }>;
+      federationRejectInvite?: (data: { invite_token: string; source: string }) => Promise<{ ok: boolean; error?: string }>;
+      federationFetchSid?: (dag_id: string, peerId: string) => Promise<{ ok: boolean; node?: unknown; hash_verified: boolean; error?: string }>;
+      federationConnectPeer?: (peerId: string, relayUrl?: string) => Promise<{ success: boolean; error?: string }>;
+      sendSilentEmail?: (args?: unknown) => Promise<{ success: boolean; reason: string }>;
+      substrateAwakensRegister?: (email: string, displayName: string, ramTier: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+      substrateAwakensHandshake?: (token: string, email: string, displayName: string) => Promise<{ success: boolean; peerId?: string; displayName?: string; error?: string }>;
+      substrateAwakensGetState?: () => Promise<{ joined: boolean; peerId?: string; displayName?: string; joinedAt?: string } | null>;
+      showHearthConjunction?: () => Promise<{ ok: boolean }>;
+      runBrowserAuthorityQueryObserved?: (
+        query: import('../shared/plow/browser_authority_types').BrowserAuthorityQuery,
+      ) => Promise<{
+        raw: import('../shared/plow/browser_authority_types').BrowserAuthorityRawExtraction | null;
+        dispatchOutcome?: string;
+        challengeDetected?: boolean;
+      }>;
+      nexusAuthorityCapture?: () => Promise<{ ok: boolean; reason?: string }>;
+      nexusAuthorityBookmarksList?: () => Promise<{
+        ok: boolean;
+        bookmarks: Array<{ id: string; url: string; title: string; addedAt: string }>;
+        error?: string;
+      }>;
+      nexusAuthorityBookmarksAdd?: (url: string, title: string) => Promise<{
+        ok: boolean;
+        bookmarks: Array<{ id: string; url: string; title: string; addedAt: string }>;
+        error?: string;
+      }>;
+      nexusAuthorityBookmarksRemove?: (id: string) => Promise<{
+        ok: boolean;
+        bookmarks: Array<{ id: string; url: string; title: string; addedAt: string }>;
+        error?: string;
+      }>;
+      pantheonListTablets: (memberId: string, grade?: string, persona?: string) => Promise<unknown[]>;
+      pantheonActiveSessions: () => Promise<unknown[]>;
+      agentProbe: (agentId: string, opts?: { force?: boolean; modelId?: string }) => Promise<{ agentId: string; status: string; reason?: string; probed_at?: string }>;
+      agentSetApiKey: (agentId: string, keyValue: string) => Promise<{ ok: boolean; error?: string }>;
+      agentGetApiKeyStatus: () => Promise<Record<string, boolean>>;
+      agentGetTierChoices: () => Promise<Record<string, string>>;
+      agentSetTierChoice: (agentId: string, tierId: string) => Promise<{ ok: boolean }>;
+      agentGetPlugins: () => Promise<Array<{ id: string; displayName: string; subtitle: string; icon: string; tiers?: Array<{ id: string; label: string; tierClass: string; modelId: string }>; requiresKey?: string; source: string }>>;
+      agentGetPluginRegistry: () => Promise<Array<{ id: string; filename: string; displayName: string; ipLedgerRef?: string; authorHandle?: string; loadedAt: string }>>;
+      trailEblet?: {
+        list: () => Promise<{ files: string[]; dir: string }>;
+        read: (args: { filePath: string }) => Promise<{ ok: boolean; content?: string; error?: string }>;
+        listScreenshots: (args: { ebletPath: string }) => Promise<{ files: string[]; dir: string }>;
+        readScreenshot: (args: { filePath: string }) => Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
+      };
+      onFederationDeepLinkAccept?: (cb: (data: { token: string; slug: string }) => void) => () => void;
+      oauth?: {
+        startFlow: (platform: 'discord' | 'reddit') => Promise<{
+          success: boolean;
+          username?: string;
+          scopes?: string[];
+          error?: string;
+          needsRegistration?: boolean;
+        }>;
+        revokeToken: (platform: 'discord' | 'reddit') => Promise<{ ok: boolean }>;
+        accrueConnectMarks: (platform: 'discord' | 'reddit', amount: number) => Promise<{ ok: boolean; total?: number }>;
+        getConnectionInfo: (platform: 'discord' | 'reddit') => Promise<{ connected: boolean; username?: string }>;
+      };
+      writeChronosConsent?: (consentPayload: object) => Promise<{ ok: boolean; ebletPath?: string }>;
+      revokeChronosConsent?: (payload?: object) => Promise<{ ok: boolean; ebletPath?: string }>;
+      decodePearl?: (pearlId: string) => Promise<{ ok: boolean; pearl?: Record<string, string>; content?: string; error?: string }>;
+      bridge?: {
+        checkMessages: (count?: number) => Promise<{
+          ok: boolean; messages: Array<{id: string; type: string; from: string; to: string; content: string; ts: number; pinned?: boolean}>;
+          pinned: Array<{id: string; type: string; from: string; to: string; content: string; ts: number; pinned?: boolean}>;
+          total_in_file: number; yoke_path: string; read_at: string; error?: string;
+        }>;
+        sendMessage: (args: { to: string; type: string; content: string; from?: string }) => Promise<{ ok: boolean; message_id?: string; error?: string }>;
+      };
+      applyOnboardingPrefs?: (prefs: { displayName?: string; addDesktopShortcut?: boolean; addStartupItem?: boolean; apiKey?: string }) => Promise<{ ok: boolean; results?: Record<string, boolean> }>;
+      lbOptInGetState?: () => Promise<{ strikes: number; lastShown: number | null; decision: string }>;
+      lbOptInRecordStrike?: () => Promise<{ ok: boolean }>;
+      lbOptInSetDecision?: (decision: 'never' | 'pending' | 'linked') => Promise<{ ok: boolean }>;
+      ipLedgerGetGenesis?: () => Promise<unknown>;
+      ipLedgerFounderVcardQr?: () => Promise<{ dataUrl: string; vcard: string } | { error: string } | null>;
+      ipLedgerExecuteGenesisMint?: () => Promise<unknown>;
+      ipLedgerGenesisMintFull?: () => Promise<unknown>;
+      mcpGetStatus?: () => Promise<{
+        running: boolean;
+        port: number | null;
+        connectedClients: number;
+        recentCalls: Array<{ tool: string; ts: number; clientId: string }>;
+      }>;
+      mcpGetAuthToken?: () => Promise<string | null>;
+      runAndonReplowLoop?: (question: string, domain: string) => Promise<{
+        ok: boolean;
+        verdict: 'verified' | 'rejected' | 'quarantined';
+        ebletWritten: boolean;
+        question?: string;
+        answer?: string;
+        modelAnswer?: string;
+        error?: string;
+      }>;
+      loadDomainBank?: (domain: string) => Promise<Array<{
+        question: string;
+        options: string[];
+        correct_answer: string;
+        source_id: string;
+        source_category: string;
+      }>>;
+      runFieldSowing?: (fsConfig: {
+        domain: string;
+        maxPasses?: number;
+        timeBudgetMs?: number;
+        resume?: boolean;
+      }) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+      cancelFieldSowing?: () => Promise<{ ok: boolean }>;
+      onFieldSowingProgress?: (callback: (event: unknown) => void) => () => void;
+      refreshChocolatePack?: () => Promise<{ ok: boolean; manifest?: unknown; error?: string }>;
+      plowSeedFromBank?: () => Promise<{
+        ok: boolean;
+        written: number;
+        skipped: number;
+        total: number;
+        errors: string[];
+      }>;
+      onPlowSeedProgress?: (
+        callback: (data: { written: number; skipped: number; total: number; pct: number; done?: boolean }) => void,
+      ) => () => void;
+      plowResetAndReseedContext?: () => Promise<{ ok: boolean; written: number; total: number; backupPath: string }>;
+      onPlowResetReseedProgress?: (
+        callback: (data: { written: number; total: number; pct: number; done?: boolean }) => void,
+      ) => () => void;
+      getGoogleBaselines?: () => Promise<unknown>;
+      runBenchmark?: (config: { nPerDomain: number; randomSeed: number; model: string; ollamaBaseUrl: string }) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+      cancelBenchmark?: () => Promise<{ ok: boolean }>;
+      writeBenchmarkReceipt?: (args: { receiptMarkdown: string; timestamp: number }) => Promise<{ ok: boolean; path?: string }>;
+      onBenchmarkProgress?: (callback: (event: Record<string, unknown>) => void) => () => void;
+      runCanonicalPlow?: (config: {
+        domains: string[];
+        questionsPerDomain: number;
+        model?: string;
+        ollamaBaseUrl?: string;
+        specialistKeys?: { wolframApiKey?: string; stackExchangeKey?: string; pubmedApiKey?: string };
+      }) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+      cancelCanonicalPlow?: () => Promise<{ ok: boolean }>;
+      onCanonicalPlowProgress?: (callback: (event: Record<string, unknown>) => void) => () => void;
+      readClipboard?: () => Promise<string>;
+      onClipboardCaptureQA?: (callback: () => void) => () => void;
+      onAppVersionCheck?: (callback: (data: { version: string }) => void) => () => void;
+      onOnboardingAutoFlipCheck?: (callback: (data: { ollamaHealthy: boolean; gemmaPresent: boolean }) => void) => () => void;
+      dispatchListContentFiles?: () => Promise<unknown[]>;
+      dispatchDefaultPlatforms?: (cls: string) => Promise<string[]>;
+      dispatchGetFileBody?: (filePath: string) => Promise<{ v1Body?: string; v2Body?: string; error?: string }>;
+      dispatchFire?: (req: { filePath: string; platforms: string[]; ratifiedPlatforms: string[] }) => Promise<unknown>;
+      dispatchHistory?: () => Promise<unknown[]>;
+      dispatchCredentialStatus?: () => Promise<{ substack: boolean; medium: boolean; gmail: boolean; cephas: boolean; lianabanyan: boolean; hackernews: boolean }>;
+      onDispatchProgress?: (callback: (msg: string) => void) => () => void;
+      mnemoGetMemoryMd?: () => Promise<{ ok: boolean; content?: string; error?: string }>;
+      mnemoReloadMemoryMd?: () => Promise<{ ok: boolean; content?: string; error?: string }>;
+      mnemoResetMemoryMd?: () => Promise<{ ok: boolean; content?: string; error?: string }>;
+      mnemoOpenMemoryEditor?: () => Promise<{ ok: boolean; error?: string }>;
+      runDiamond?: (config: { mode: 'bare' | 'cooperative'; count: number }) => Promise<{ ok: boolean; summary?: unknown; error?: string }>;
+      cancelDiamond?: () => Promise<{ ok: boolean }>;
+      onDiamondProgress?: (callback: (event: Record<string, unknown>) => void) => () => void;
+      micStartDistributedPlow?: (config: { domains: string[]; questionsPerDomain: number; model?: string; ollamaBaseUrl?: string }) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
+      micCancel?: () => Promise<{ ok: boolean }>;
+      micGetPeers?: () => Promise<unknown[]>;
+      micAddPeer?: (peer: unknown) => Promise<{ ok: boolean }>;
+      micDiscoverPeers?: () => Promise<unknown[]>;
+      micEstimateWallclock?: (config: { domains: string[]; questionsPerDomain: number }) => Promise<{ estimatedMs: number; onlinePeers: number }>;
+      onMicStatusEvent?: (callback: (event: Record<string, unknown>) => void) => () => void;
+      diagnosisPost?: (input: { question: string; domain: string; context: string; priorAttempts: string; bounty: { rail: string; amount: number; barterDescription?: string }; visibility: string; source?: string }) => Promise<{ ok: boolean; id?: string; error?: string }>;
+      diagnosisList?: (filter?: { status?: string; domain?: string }) => Promise<{ ok: boolean; posts?: unknown[]; error?: string }>;
+      diagnosisGet?: (id: string) => Promise<{ ok: boolean; post?: unknown; error?: string }>;
+      diagnosisAnswer?: (args: { diagnosisId: string; answerText: string; sources: string[]; credentials?: string }) => Promise<{ ok: boolean; answerId?: string; error?: string }>;
+      diagnosisUpvote?: (args: { diagnosisId: string; answerId: string }) => Promise<{ ok: boolean; error?: string }>;
+      diagnosisAccept?: (args: { diagnosisId: string; answerId: string }) => Promise<{ ok: boolean; error?: string }>;
+      diagnosisMarksBalance?: () => Promise<{ ok: boolean; balance: number; error?: string }>;
+      onDiagnosisIncoming?: (callback: (data: unknown) => void) => () => void;
+      onDiagnosisAnswerReceived?: (callback: (data: { diagnosisId: string; answerId: string }) => void) => () => void;
+      onDiagnosisResolved?: (callback: (data: { diagnosisId: string; answerId: string }) => void) => () => void;
+      onShowRestartPrompt?: (callback: (data: { version: string; message: string }) => void) => () => void;
+      requestAppQuit?: () => Promise<void>;
+      getPlowWorkerState?: () => Promise<unknown>;
+      onPlowWorkerState?: (callback: (state: Record<string, unknown>) => void) => () => void;
+      plowCheckCheckpoint?: () => Promise<unknown>;
+      plowResumeFromCheckpoint?: () => Promise<{ ok: boolean; error?: string }>;
+      plowDiscardCheckpoint?: () => Promise<{ ok: boolean }>;
+      onPlowResumePrompt?: (callback: (data: Record<string, unknown>) => void) => () => void;
+      hardwareGetTier?: () => Promise<{ tier: unknown; allTiers: unknown[]; activeModel: string }>;
+      hardwareSetModel?: (model: string, tier: string) => Promise<{ ok: boolean }>;
+      hardwareResetModel?: () => Promise<{ ok: boolean; model: string }>;
+      lifecycleGetProfilePath?: () => Promise<{ appData: string; mnemosyneCPath: string }>;
+      helpGetPeerId?: () => Promise<{ peerId: string }>;
+      helpSendMessage?: (args: { text: string; imageUrl: string | null; fromPeer: string; toPeer: string | null }) => Promise<{ success: true; id: string } | { success: false; error: string }>;
+      helpLoadMessages?: (args: { limit: number }) => Promise<Array<{ id: string; from_peer: string; to_peer: string | null; content_text: string; content_image_url: string | null; created_at: string }> | { error: string }>;
+      helpUploadScreenshot?: (args: { base64Data: string; mimeType: string }) => Promise<{ url: string } | { error: string }>;
+      helpStartRealtimeSub?: () => Promise<{ ok: true } | { error: string }>;
+      onHelpMessageReceived?: (callback: (msg: { id: string; from_peer: string; to_peer: string | null; content_text: string; content_image_url: string | null; created_at: string }) => void) => () => void;
+      thunderclap: {
+        fireTrial02: (options: { flagshipTier: 'claude' | 'gemma' }) => Promise<{ status: string; accuracy?: string; receiptPath?: string }>;
+        checkGates: () => Promise<{ allGreen: boolean; output: string }>;
+        onLog: (callback: (line: string) => void) => void;
+        onComplete: (callback: (result: { accuracy: string; receiptPath: string; exitCode: number }) => void) => void;
+        onGatesFailed: (callback: (output: string) => void) => void;
+        removeAllListeners: () => void;
+      };
+      gemma: {
+        multiSegDispatch: (options: { question: string; workerCount?: number; model?: string }) => Promise<{ synthesized: string; variance: number; workerResponses: string[]; model: string; workerCount: number }>;
       };
     };
     // SEG-V0150-P0-DIAGNOSE-BRIDGE: sentinel -- set by preload before main bridge wires up

@@ -1,7 +1,20 @@
 // BP089 Mountain 3 · I-B · Librarian Corps Role
 // Each Librarian IS a persistent SEG with domain authority and cabinet keys.
-// Composed of a 3-member Minor Council of gemma4:12b sub-Librarians loaded via
+// Composed of a 3-member Minor Council of sub-Librarians loaded via
 // Marathon 4 `librarian_council` Court Package.
+//
+// D-BP162-M0-039 CORRECTION (doc-only, no behavior change): D-BP162-M0-034 certified ZERO live
+// blood-rule violations and found why -- runSubLibrarian() below (each Council member's actual
+// resolve step) is PURE pyramid-index lookup (resolveByTopic/resolveByAddress) plus file-cabinet
+// read (openCabinet) plus a plain eblet-store query fallback -- there is NO `fetch()` to Ollama and
+// no model of any kind, anywhere in this file. The line this replaces called the members
+// "gemma4:12b sub-Librarians"; they are not -- "sub-Librarian" names a role (one of the 3 Council
+// seats, each scoped to a disjoint sub-context partition, see SUB_CONTEXT_MAP below), not a model
+// binding. This is also the CORRECT state per HARDWIRE-22 (Founder verbatim: "never give gemma
+// anything that requires judgement... make that a blood rule") -- resolving a query to an address
+// and computing majority-vote consensus (computeConsensus() below) is deterministic index/lookup
+// work, not judgment, and stays that way; see runSubLibrarian()'s own doc comment below for the
+// same correction at the function level.
 //
 // Council pattern: 3 independent sub-Librarians each load a disjoint sub-context
 // of the same domain corpus. They answer in parallel (Promise.all). Dispatcher
@@ -107,6 +120,14 @@ const CABINET_PARTITION_MAP: Record<LibrarianRole, string> = {
 /**
  * A single sub-Librarian Council member resolves the request against its
  * assigned sub-context partition. Uses the pyramid index and file cabinet.
+ *
+ * D-BP162-M0-039 CORRECTION (doc-only): this function's entire mechanism is index/cabinet lookup
+ * -- resolveByAddress()/resolveByTopic() against the pyramid index, then openCabinet() for the
+ * matched partition, then queryEbletStore() as a fallback. No model call anywhere in this path.
+ * Per HARDWIRE-22, that is intentional and correct, not a gap awaiting a future wire: resolving
+ * "which address/content matches this query" is deterministic retrieval, not judgment. If a future
+ * ticket genuinely needs model assistance here, it must route through a dedicated JUDGMENT MODULE
+ * whose judging steps escalate to a flagship-tier model -- never a raw Gemma call on this path.
  */
 async function runSubLibrarian(
   memberId: 1 | 2 | 3,

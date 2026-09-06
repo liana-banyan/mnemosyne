@@ -631,13 +631,33 @@ function evaluateSandboxedFunction(expr: string): number | null {
   }
 }
 
+/** D-BP207-SEG-A, card t-e85c0467. FOUNDER RULING (2026-08-27T02:53:25.337Z, "do both"): teach the
+ *  notation per method AND normalize at the evaluator. This is the "normalize" half.
+ *  MEASURED ROOT CAUSE: a taught method states the exponent form as caret (`^`); gemma4:12b was
+ *  observed (D-BP168-M0-113) emitting Python-style `**` instead, a mathematically identical
+ *  derivation. evaluateRecursiveDescent()'s parsePow() only recognizes `^` -- for input containing
+ *  `**` it consumes one `*` as a multiplication operator, then parseFactor()/parseNumber() hits the
+ *  second `*` and throws "expected number", so Implementation 1 returns null while
+ *  evaluateSandboxedFunction() (Implementation 2, native JS `**`) would have returned the correct
+ *  value. evaluateArithmeticVerified() then rejects the whole candidate on `a === null`, discarding
+ *  a correct derivation on notation alone -- exactly the defect the card names. FIX: normalize
+ *  Python-style `**` to `^` ONCE, before EITHER evaluator runs, so both implementations are handed
+ *  the identical expression and can genuinely cross-check each other's arithmetic rather than one
+ *  of them failing to parse the model's notation choice. `\*\*` is converted, never a bare `*`
+ *  (multiplication is untouched). This is a strict superset of the prior behavior: an expression
+ *  with no `**` normalizes to itself. */
+function normalizeExponentNotation(expr: string): string {
+  return expr.replace(/\*\*/g, '^');
+}
+
 /** "VERIFY by recompute" (the Yoke's explicit requirement): two independently-implemented
  *  evaluators must agree within float epsilon before a local-arithmetic result is trusted.
  *  Disagreement, or either implementation failing outright, means the expression is not cleanly
  *  computable -- returns null so the caller falls through rather than guessing. */
 function evaluateArithmeticVerified(expr: string): number | null {
-  const a = evaluateRecursiveDescent(expr);
-  const b = evaluateSandboxedFunction(expr);
+  const normalized = normalizeExponentNotation(expr);
+  const a = evaluateRecursiveDescent(normalized);
+  const b = evaluateSandboxedFunction(normalized);
   if (a === null || b === null) return null;
   if (Math.abs(a - b) > Math.max(Math.abs(a) * 1e-9, 1e-9)) return null;
   return a;
@@ -652,7 +672,29 @@ function evaluateArithmeticVerified(expr: string): number | null {
  *  check's purpose. */
 const MODEL_EXPR_SAMPLE_COUNT = 3;
 const MODEL_EXPR_SAMPLE_TEMPERATURE = 0.3;
-const MODEL_EXPR_NUM_PREDICT = 60; // one short expression, not prose
+// D-BP165-M0-023. RAISED 60 -> 256 ON MEASUREMENT, NOT ON TASTE.
+// The BP165 n=50 MMLU-Pro sweep (seed 42, dataset sha 51d7b60c..., gemma4:12b digest 4eb23ef1...)
+// produced this sample-level rejection histogram across 42 real calls:
+//     truncated_num_predict: 12   <- LARGEST SINGLE CLASS
+//     non_arithmetic_output:  8
+//     recompute_failed:       3
+//     bare_number_no_operator:3
+//     self_consistency_insufficient_samples: 1
+// Truncation was the dominant failure mode. The old 60 was sized for the toy case (a bare
+// `250000*0.065*90/360` finishes in ~20 tokens, measured), NOT for real MMLU-Pro stems whose
+// derivations carry many more terms. 256 is NOT invented here: it is this codebase's own
+// established gemma budget, used for exactly this reason in diamond_runner.ts:165,
+// giant_concordance.ts:174 and mesh_comparison_runner.ts:183, each commented that 256 prevents
+// gemma4:12b truncation.
+// THIS IS NOT "BUYING CONTEXT". `num_predict` is the OUTPUT budget; `num_ctx` is the context
+// window and REMAINS CAPPED AT 4096 (GEMMA_NUM_CTX_RUN_CAP) on both arms, per the Founder's
+// standing rule that a context problem is never fixed by buying context. A ~500-token prompt plus
+// 256 output tokens sits well inside 4096, so this changes no arm's context and corrupts no
+// comparison.
+// SHARED ON PURPOSE: this constant serves compute_gemma_cascade AND compute_select_cascade, so the
+// fix lands on the whole downchain rather than one method (Founder, BP164: "whatever you fix for
+// you you need to fix for your entire downchain").
+const MODEL_EXPR_NUM_PREDICT = 256;
 
 /** BP137 Stage A.3: `componentFacts` are the SAME post-relevance-gate
  *  `factsForArbitration.slice(0,3)` strings plow_mc_answerer.ts already builds for the voters'
@@ -712,6 +754,128 @@ export function extractExpressionFromModelOutput(raw: string): string | null {
   return candidate;
 }
 
+// ─── D-BP165-M0-007: RAW-OUTPUT CAPTURE + PER-SAMPLE REJECTION CLASSIFICATION ──────────────────
+// LAW 2 finding this dispatch, verified by direct read before any code below was written: the
+// `raw` completion text inside the sampling loop below was a loop-local variable, handed to
+// extractExpressionFromModelOutput() and then DISCARDED -- never attached to the returned value,
+// never logged anywhere. At BP164 gemma4:12b made 3 real calls through compute-gemma-cascade, all
+// 3 were rejected, and the ONLY record left behind was a single disjunctive basis string
+// ("model answered NONE on every sample, emitted a non-arithmetic line every sample, or the
+// recomputed samples that did parse disagreed") -- the code never distinguished which. Everything
+// below exists to fix exactly that, additively: the pre-existing return shape of
+// computeViaModelExpression() (below) is UNCHANGED; a caller who wants the per-sample detail opts
+// in via the new optional `onSample` parameter.
+
+/** Cap for a raw model completion stored anywhere (a sample record here, or
+ *  cost_instrument.ts's LlmCallCostRecord.rawOutput) -- first-N characters, never a silent
+ *  truncation: originalLength and truncated are always recorded alongside the (possibly capped)
+ *  text so a 12,000-item sweep produces a bounded, still-honest artifact rather than either an
+ *  unusable multi-GB dump or a silently lossy one. */
+export const RAW_MODEL_OUTPUT_CAP_CHARS = 2000;
+
+export interface CappedRawOutput {
+  text: string;
+  originalLength: number;
+  truncated: boolean;
+}
+
+/** Exported so cost_instrument.ts (a sibling file this same dispatch also extends) applies the
+ *  IDENTICAL cap discipline rather than a second, potentially-diverging implementation. Returns
+ *  null only when there is no text at all to cap (caller decides what that means for its own
+ *  classification -- this helper never guesses a reason). */
+export function capRawModelOutput(raw: string | null | undefined): CappedRawOutput | null {
+  if (raw === null || raw === undefined) return null;
+  const originalLength = raw.length;
+  const truncated = originalLength > RAW_MODEL_OUTPUT_CAP_CHARS;
+  const text = truncated ? raw.slice(0, RAW_MODEL_OUTPUT_CAP_CHARS) : raw;
+  return { text, originalLength, truncated };
+}
+
+/** THE ENUM THAT REPLACES THE DISJUNCTIVE BASIS STRING. Every value the loop in
+ *  computeViaModelExpression() below can actually produce, named individually -- per this
+ *  dispatch's explicit order, DO NOT COLLAPSE THESE INTO ONE STRING. `'accepted'` is the terminal
+ *  success state (this sample's expression is part of the winning agree-2-of-3 group); every
+ *  other value names a specific way a sample failed to reach that state.
+ *    - 'empty_or_transport_error': the LEGACY (5-arg) ModelCallFn contract returns only
+ *      `string | null` -- a `null` can mean an empty response, an HTTP error, or a transport
+ *      failure, and this file cannot tell which apart at this layer (LAW 1: the negative "not
+ *      classified further" NAMES its scope here rather than pretending precision it does not
+ *      have). A caller that supplies the richer optional `callModelRich` (6th arg, see below)
+ *      gets 'empty_response' / 'transport_error' / 'http_error' distinguished instead.
+ *    - 'truncated_num_predict': only reachable via `callModelRich`, whose outcome can carry
+ *      Ollama's own `done_reason` -- set when `done_reason === 'length'` AND the sample did not
+ *      otherwise reach 'accepted' (a completion that finished cleanly within num_predict, done
+ *      or not, is judged on its content, not its done_reason).
+ *    - 'recompute_failed': the extracted candidate passed the whitelist AND had an operator (so
+ *      extractExpressionFromModelOutput did not reject it) but evaluateArithmeticVerified() (the
+ *      two-independent-evaluator recompute) still returned null -- e.g. the two implementations
+ *      disagreed, or the expression was syntactically well-formed but semantically malformed
+ *      (unbalanced parens the whitelist regex cannot catch). Not named in the dispatch's minimum
+ *      list; added because the code genuinely produces this outcome (dispatch: "add any others
+ *      the code really produces"). */
+export type ModelExpressionRejectionClass =
+  | 'none_escape_hatch'
+  | 'non_arithmetic_output'
+  | 'bare_number_no_operator'
+  | 'recompute_failed'
+  | 'empty_response'
+  | 'transport_error'
+  | 'http_error'
+  | 'empty_or_transport_error'
+  | 'truncated_num_predict'
+  | 'self_consistency_disagreement'
+  | 'self_consistency_insufficient_samples'
+  | 'accepted';
+
+export interface ModelExpressionSampleRecord {
+  sampleIndex: number; // 0-based, within MODEL_EXPR_SAMPLE_COUNT
+  rejection: ModelExpressionRejectionClass;
+  rawOutput: CappedRawOutput | null; // null only when the call produced no text at all
+  doneReason?: string | null; // only ever populated via callModelRich (see below)
+  parsedExpression: string | null;
+  parsedValue: number | null;
+}
+
+/** OPT-IN richer model-call contract (additive sibling of ModelCallFn above, never a replacement
+ *  for it -- see computeViaModelExpression()'s new 6th parameter). Lets a caller that HAS the
+ *  underlying Ollama response object (e.g. a future compute-gemma-cascade-style caller reading
+ *  `done_reason`/HTTP status directly) hand this file enough to classify precisely instead of
+ *  collapsing every null into 'empty_or_transport_error'. Wiring an actual call site to supply
+ *  this is OUT OF SCOPE for this dispatch (D-BP165-M0-007 owns compute_sidecar.ts, cost_instrument.ts,
+ *  and method_silo.ts only -- the real network call sites, e.g. methods/compute_gemma_cascade.ts,
+ *  belong to other dispatches); this type exists so that future wiring is a pure addition, not a
+ *  second refactor of this function. */
+export type ModelCallOutcome =
+  | { ok: true; text: string; doneReason?: string | null }
+  | { ok: false; failureKind: 'transport_error' | 'http_error' | 'empty_response'; detail?: string };
+
+export type ModelCallFnRich = (
+  prompt: string,
+  ollamaBaseUrl: string,
+  model: string,
+  temperature: number,
+  numPredict: number,
+) => Promise<ModelCallOutcome>;
+
+/** D-BP164-M0-119, ADDITIVE/MINIMAL REFACTOR -- exact shape of the local `callOllama` import
+ *  above, exported so a caller of computeViaModelExpression() (below) can inject a DIFFERENT
+ *  model-calling function without this file duplicating any of its own evaluator logic. Added
+ *  because the Liana Cycle's own gemma call site (methods/comparative_cascade.ts's gemmaExtract())
+ *  needs `think:false` sent TOP-LEVEL (not nested in `options`), an explicit `num_ctx` cap, and
+ *  every real round trip recorded through cost_instrument.ts's recordLlmCall() -- none of which
+ *  this file's own `callOllama` (canonical_pipeline.ts) does today. Rather than fork a second
+ *  copy of computeViaModelExpression's self-consistency/recompute logic to get those three things,
+ *  the model-calling step itself becomes swappable; the verification logic that makes this pattern
+ *  honest (evaluateArithmeticVerified per sample, agree-2-of-3 across samples, both below) is
+ *  untouched and never duplicated. */
+export type ModelCallFn = (
+  prompt: string,
+  ollamaBaseUrl: string,
+  model: string,
+  temperature: number,
+  numPredict: number,
+) => Promise<string | null>;
+
 /** BP137 Stage A.2: the model proposes (COMBINATION -- pick the formula, plug in the problem's own
  *  numbers, emit one expression); this function never trusts that proposal on its own. Two layers
  *  of verify-by-recompute, both required:
@@ -732,40 +896,163 @@ export function extractExpressionFromModelOutput(raw: string): string | null {
  *  reference material (see buildModelExpressionPrompt) -- they widen what the model CAN combine,
  *  they never bypass layers (a)/(b) above. A bad or irrelevant retrieved fact cannot force a wrong
  *  answer: it either fails to help the model converge (self-consistency still rejects, same as no
- *  facts) or the resulting value still has to clear matchValueToOption's tolerance downstream. */
+ *  facts) or the resulting value still has to clear matchValueToOption's tolerance downstream.
+ *  D-BP164-M0-119: `callModel` is an OPTIONAL 5th parameter, defaulting to this file's own
+ *  `callOllama` -- every pre-existing call site (plow_mc_answerer.ts via computeAnswer(), every
+ *  existing test) passes 4 or fewer arguments and is therefore byte-identical to before this
+ *  change; only a caller that explicitly supplies a 5th argument sees different network/cost
+ *  behavior.
+ *  D-BP165-M0-007, ADDITIVE AGAIN: two more OPTIONAL parameters, 6th and 7th. Every pre-existing
+ *  call site (including compute_gemma_cascade.ts's 5-argument call) passes 5 or fewer arguments
+ *  and is therefore byte-identical to before this change; the return type is UNCHANGED. `onSample`
+ *  (6th) is invoked once per sample, AFTER this function's own final classification (including the
+ *  post-loop self-consistency verdict) is known, with the capped raw text this dispatch's Founder
+ *  ruling ordered persisted -- this is how a caller diagnoses a 12k-item sweep without this
+ *  function's return type ever needing to carry per-sample detail. `callModelRich` (7th) is the
+ *  richer ModelCallFnRich contract (see its own doc comment above); when supplied it is used
+ *  INSTEAD of `callModel` for every sample this call makes, giving finer-grained classification
+ *  (empty vs transport vs HTTP, plus done_reason-based truncation detection) than the legacy
+ *  string-returning contract can support. */
 export async function computeViaModelExpression(
   researchQuery: string,
   ollamaBaseUrl: string,
   model: string,
   componentFacts?: string[],
+  callModel: ModelCallFn = callOllama,
+  onSample?: (sample: ModelExpressionSampleRecord) => void,
+  callModelRich?: ModelCallFnRich,
 ): Promise<{ value: number; expression: string } | null> {
   const prompt = buildModelExpressionPrompt(researchQuery, componentFacts);
-  const samples: Array<{ expression: string; value: number } | null> = [];
+  type InternalSample = {
+    parsed: { expression: string; value: number } | null;
+    rejection: ModelExpressionRejectionClass; // provisional -- 'accepted' is revisited post-loop
+    rawOutput: CappedRawOutput | null;
+    doneReason?: string | null;
+  };
+  const internalSamples: InternalSample[] = [];
+
   for (let i = 0; i < MODEL_EXPR_SAMPLE_COUNT; i++) {
-    const raw = await callOllama(prompt, ollamaBaseUrl, model, MODEL_EXPR_SAMPLE_TEMPERATURE, MODEL_EXPR_NUM_PREDICT);
+    let raw: string | null = null;
+    let doneReason: string | null | undefined;
+    let hardFailure: ModelExpressionRejectionClass | null = null;
+
+    if (callModelRich) {
+      const outcome = await callModelRich(prompt, ollamaBaseUrl, model, MODEL_EXPR_SAMPLE_TEMPERATURE, MODEL_EXPR_NUM_PREDICT);
+      if (outcome.ok) {
+        raw = outcome.text;
+        doneReason = outcome.doneReason ?? null;
+      } else {
+        hardFailure = outcome.failureKind;
+      }
+    } else {
+      raw = await callModel(prompt, ollamaBaseUrl, model, MODEL_EXPR_SAMPLE_TEMPERATURE, MODEL_EXPR_NUM_PREDICT);
+    }
+
+    if (hardFailure !== null) {
+      internalSamples.push({ parsed: null, rejection: hardFailure, rawOutput: null, doneReason: null });
+      continue;
+    }
     if (raw === null || raw.trim().length === 0) {
-      samples.push(null);
+      // Legacy ModelCallFn's null/empty is honestly named per LAW 1's scope rule above: this
+      // layer cannot tell an empty response apart from a transport/HTTP failure without
+      // callModelRich. capRawModelOutput(raw) still runs so a genuinely-empty-string response
+      // (as opposed to a true null) is at least visibly recorded as "" rather than absent.
+      internalSamples.push({
+        parsed: null,
+        rejection: 'empty_or_transport_error',
+        rawOutput: capRawModelOutput(raw),
+        doneReason: doneReason ?? null,
+      });
       continue;
     }
-    const expr = extractExpressionFromModelOutput(raw);
-    if (expr === null) {
-      samples.push(null);
-      continue;
+
+    const cappedRaw = capRawModelOutput(raw);
+    const firstLine = raw.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+    let rejection: ModelExpressionRejectionClass;
+    let parsed: { expression: string; value: number } | null = null;
+
+    if (/^none$/i.test(firstLine)) {
+      rejection = 'none_escape_hatch';
+    } else {
+      const expr = extractExpressionFromModelOutput(raw);
+      if (expr === null) {
+        // extractExpressionFromModelOutput() folds two distinct causes into one null: whitelist
+        // failure (prose/LaTeX/units) and whitelist-pass-but-no-operator (a bare number). Redo
+        // the same light punctuation-stripping it does, only to tell those two apart for the
+        // classification record -- never a second source of truth for the ACCEPT decision itself,
+        // which still runs through the real extractExpressionFromModelOutput() above.
+        const candidate = firstLine.replace(/^`+|`+$/g, '').replace(/[;.]+$/, '').trim();
+        if (!ARITHMETIC_WHITELIST_RE.test(candidate)) {
+          rejection = 'non_arithmetic_output';
+        } else {
+          rejection = 'bare_number_no_operator';
+        }
+      } else {
+        const value = evaluateArithmeticVerified(expr); // per-sample recompute, layer (a)
+        if (value === null) {
+          rejection = 'recompute_failed';
+        } else {
+          rejection = 'accepted'; // provisional -- self-consistency (layer b) revisits this below
+          parsed = { expression: expr, value };
+        }
+      }
     }
-    const value = evaluateArithmeticVerified(expr); // per-sample recompute, layer (a)
-    samples.push(value === null ? null : { expression: expr, value });
+
+    if (doneReason === 'length' && rejection !== 'accepted') {
+      rejection = 'truncated_num_predict';
+    }
+
+    internalSamples.push({ parsed, rejection, rawOutput: cappedRaw, doneReason: doneReason ?? null });
   }
 
-  const successes = samples.filter((s): s is { expression: string; value: number } => s !== null);
+  const successes = internalSamples
+    .map((s, idx) => ({ idx, parsed: s.parsed }))
+    .filter((s): s is { idx: number; parsed: { expression: string; value: number } } => s.parsed !== null);
+
+  let winner: { value: number; expression: string } | null = null;
+  let winningIdx = new Set<number>();
   for (const candidate of successes) {
     const agreeing = successes.filter(
-      (s) => Math.abs(s.value - candidate.value) <= Math.max(Math.abs(candidate.value) * 1e-6, 1e-6),
+      (s) => Math.abs(s.parsed.value - candidate.parsed.value) <= Math.max(Math.abs(candidate.parsed.value) * 1e-6, 1e-6),
     );
     if (agreeing.length >= 2) {
-      return { value: candidate.value, expression: candidate.expression }; // self-consistency, layer (b)
+      winner = { value: candidate.parsed.value, expression: candidate.parsed.expression }; // self-consistency, layer (b)
+      winningIdx = new Set(agreeing.map((s) => s.idx));
+      break;
     }
   }
-  return null; // disagreement or too few valid samples -- fall through, never guess
+
+  // Second pass: every sample provisionally 'accepted' by layer (a) that did NOT end up in the
+  // winning agree-2-of-3 group (or no winner was found at all) is reclassified -- an 'accepted'
+  // value must never leak out through onSample() when the actual return is null. Per this
+  // dispatch's own "do not collapse" order, two distinct causes are named rather than merged: a
+  // sample outvoted/disagreeing with the winner, versus a sample that parsed fine but had no
+  // partner to agree with at all (fewer than 2 valid samples total).
+  if (internalSamples.some((s) => s.rejection === 'accepted')) {
+    for (let idx = 0; idx < internalSamples.length; idx++) {
+      const s = internalSamples[idx];
+      if (s.rejection !== 'accepted') continue;
+      if (winningIdx.has(idx)) continue;
+      s.rejection = successes.length < 2
+        ? 'self_consistency_insufficient_samples'
+        : 'self_consistency_disagreement';
+    }
+  }
+
+  if (onSample) {
+    internalSamples.forEach((s, idx) => {
+      onSample({
+        sampleIndex: idx,
+        rejection: s.rejection,
+        rawOutput: s.rawOutput,
+        doneReason: s.doneReason ?? null,
+        parsedExpression: s.parsed?.expression ?? null,
+        parsedValue: s.parsed?.value ?? null,
+      });
+    });
+  }
+
+  return winner; // disagreement or too few valid samples -- fall through, never guess
 }
 
 // --- Wolfram Alpha Short Answers "compute" endpoint ---------------------------------------------

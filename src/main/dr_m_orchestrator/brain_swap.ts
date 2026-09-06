@@ -252,7 +252,7 @@ export class GemmaBrainAdapter implements CCI {
         const res = await fetch(`${OLLAMA_BASE}/api/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: modelId, prompt: fullPrompt, stream: false }),
+          body: JSON.stringify({ model: modelId, prompt: fullPrompt, stream: false, think: false }),
           signal: AbortSignal.timeout(90000),
         });
         if (!res.ok) return null;

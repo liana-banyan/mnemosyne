@@ -267,11 +267,11 @@ const STARTER_RECIPES: Array<Omit<Recipe, 'id' | 'createdAt' | 'updatedAt'>> = [
     title: "Grandma's Pasta",
     description: 'Simple, hearty tomato pasta the whole family loves. Ready in 25 minutes.',
     ingredients: [
-      { name: 'Spaghetti', amount: '400', unit: 'g', optional: false },
-      { name: 'Crushed tomatoes', amount: '400', unit: 'ml', optional: false },
-      { name: 'Garlic', amount: '3', unit: 'cloves', optional: false },
-      { name: 'Olive oil', amount: '2', unit: 'tbsp', optional: false },
-      { name: 'Fresh basil', amount: 'handful', unit: '', optional: true },
+      { id: 'starter-pasta-spaghetti', name: 'Spaghetti', amount: '400', unit: 'g', optional: false },
+      { id: 'starter-pasta-tomatoes', name: 'Crushed tomatoes', amount: '400', unit: 'ml', optional: false },
+      { id: 'starter-pasta-garlic', name: 'Garlic', amount: '3', unit: 'cloves', optional: false },
+      { id: 'starter-pasta-oliveoil', name: 'Olive oil', amount: '2', unit: 'tbsp', optional: false },
+      { id: 'starter-pasta-basil', name: 'Fresh basil', amount: 'handful', unit: '', optional: true },
     ],
     steps: [
       { stepNumber: 1, instruction: 'Boil pasta in salted water per package instructions.', durationMinutes: 12, photoRef: null },
@@ -287,10 +287,10 @@ const STARTER_RECIPES: Array<Omit<Recipe, 'id' | 'createdAt' | 'updatedAt'>> = [
     title: 'Tuesday Soup',
     description: 'Use whatever vegetables are in the fridge. Nourishing and zero-waste.',
     ingredients: [
-      { name: 'Mixed vegetables (carrots, celery, onion)', amount: '4', unit: 'cups chopped', optional: false },
-      { name: 'Chicken or vegetable broth', amount: '6', unit: 'cups', optional: false },
-      { name: 'Garlic', amount: '2', unit: 'cloves', optional: false },
-      { name: 'Salt and pepper', amount: 'to taste', unit: '', optional: false },
+      { id: 'starter-soup-vegetables', name: 'Mixed vegetables (carrots, celery, onion)', amount: '4', unit: 'cups chopped', optional: false },
+      { id: 'starter-soup-broth', name: 'Chicken or vegetable broth', amount: '6', unit: 'cups', optional: false },
+      { id: 'starter-soup-garlic', name: 'Garlic', amount: '2', unit: 'cloves', optional: false },
+      { id: 'starter-soup-saltpepper', name: 'Salt and pepper', amount: 'to taste', unit: '', optional: false },
     ],
     steps: [
       { stepNumber: 1, instruction: 'Sauté onion and garlic in a pot until soft, ~3 min.', durationMinutes: 3, photoRef: null },
@@ -306,13 +306,13 @@ const STARTER_RECIPES: Array<Omit<Recipe, 'id' | 'createdAt' | 'updatedAt'>> = [
     title: 'Saturday Pancakes',
     description: 'Weekend morning staple. Fluffy, golden, done in 20 minutes.',
     ingredients: [
-      { name: 'All-purpose flour', amount: '1.5', unit: 'cups', optional: false },
-      { name: 'Milk', amount: '1.25', unit: 'cups', optional: false },
-      { name: 'Egg', amount: '1', unit: 'large', optional: false },
-      { name: 'Baking powder', amount: '2', unit: 'tsp', optional: false },
-      { name: 'Butter', amount: '2', unit: 'tbsp melted', optional: false },
-      { name: 'Sugar', amount: '1', unit: 'tbsp', optional: false },
-      { name: 'Salt', amount: '0.5', unit: 'tsp', optional: false },
+      { id: 'starter-pancakes-flour', name: 'All-purpose flour', amount: '1.5', unit: 'cups', optional: false },
+      { id: 'starter-pancakes-milk', name: 'Milk', amount: '1.25', unit: 'cups', optional: false },
+      { id: 'starter-pancakes-egg', name: 'Egg', amount: '1', unit: 'large', optional: false },
+      { id: 'starter-pancakes-bakingpowder', name: 'Baking powder', amount: '2', unit: 'tsp', optional: false },
+      { id: 'starter-pancakes-butter', name: 'Butter', amount: '2', unit: 'tbsp melted', optional: false },
+      { id: 'starter-pancakes-sugar', name: 'Sugar', amount: '1', unit: 'tbsp', optional: false },
+      { id: 'starter-pancakes-salt', name: 'Salt', amount: '0.5', unit: 'tsp', optional: false },
     ],
     steps: [
       { stepNumber: 1, instruction: 'Whisk dry ingredients (flour, baking powder, sugar, salt).', durationMinutes: 2, photoRef: null },
@@ -400,10 +400,22 @@ export function RecipesView({ onScheduleMeal }: { onScheduleMeal?: (recipeName: 
       if (result?.text) {
         const match = result.text.match(/\{[\s\S]*\}/);
         if (match) {
-          const parsed = JSON.parse(match[0]) as { ingredients?: Ingredient[]; steps?: RecipeStep[] };
+          const parsed = JSON.parse(match[0]) as { ingredients?: Array<Omit<Ingredient, 'id'> & { id?: string }>; steps?: RecipeStep[] };
+          // D-BP166-M0-038 / BISHOP / seg-ingredient-key-bug: the AI response is
+          // freeform JSON and was never asked for an `id` (see the prompt above,
+          // which requests only {name,amount,unit,optional}). `Ingredient.id` is
+          // REQUIRED (kitchen_table_types.ts), so every parsed ingredient MUST be
+          // stamped with one here -- this is the creation site the required field
+          // exists to catch, and it was silently producing `undefined` ids before
+          // this fix, which is worse than an index key because every AI-suggested
+          // ingredient in a recipe collided on the same React key.
+          const stampedIngredients = (parsed.ingredients ?? []).map((ing) => ({
+            ...ing,
+            id: ing.id ?? generateId(),
+          }));
           setForm((f) => ({
             ...f,
-            ingredients: parsed.ingredients ?? f.ingredients,
+            ingredients: parsed.ingredients ? stampedIngredients : f.ingredients,
             steps: (parsed.steps ?? []).map((s, i) => ({ ...s, stepNumber: i + 1, photoRef: null })),
             aiSuggested: true,
           }));
@@ -509,8 +521,8 @@ export function RecipesView({ onScheduleMeal }: { onScheduleMeal?: (recipeName: 
               {selected.ingredients.length > 0 && (
                 <>
                   <div style={S.sectionLabel}>Ingredients</div>
-                  {selected.ingredients.map((ing, i) => (
-                    <div key={i} style={S.ingredientRow}>
+                  {selected.ingredients.map((ing) => (
+                    <div key={ing.id} style={S.ingredientRow}>
                       <span style={{ flex: 1, color: '#e2e8f0' }}>{ing.name}</span>
                       <span style={{ color: '#64748b' }}>{ing.amount} {ing.unit}</span>
                       {ing.optional && <span style={{ fontSize: 9, color: '#475569' }}>optional</span>}
@@ -662,8 +674,8 @@ function CreateForm({
         {form.ingredients.length > 0 && (
           <>
             <div style={S.sectionLabel}>Ingredients (AI-suggested)</div>
-            {form.ingredients.map((ing, i) => (
-              <div key={i} style={S.ingredientRow}>
+            {form.ingredients.map((ing) => (
+              <div key={ing.id} style={S.ingredientRow}>
                 <span style={{ flex: 1, color: '#e2e8f0' }}>{ing.name}</span>
                 <span style={{ color: '#64748b' }}>{ing.amount} {ing.unit}</span>
               </div>

@@ -146,7 +146,7 @@ async function ollamaGenerate(
   const res = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, prompt, stream: false }),
+    body: JSON.stringify({ model, prompt, stream: false, think: false }),
     signal: AbortSignal.timeout(effectiveTimeout),
   });
 
@@ -171,7 +171,7 @@ async function generateAnswer(systemPrompt: string, question: string): Promise<s
       const res = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gemma2:2b', prompt: shortPrompt, stream: false }),
+        body: JSON.stringify({ model: 'gemma2:2b', prompt: shortPrompt, stream: false, think: false }),
         signal: AbortSignal.timeout(60_000),
       });
       if (!res.ok) return null;

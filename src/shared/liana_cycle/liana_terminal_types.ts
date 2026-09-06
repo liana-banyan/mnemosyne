@@ -119,6 +119,127 @@ export interface LianaTerminalOutcome {
    *  about it, in order, verbatim -- same "keeps every note" convention as audibleLog/steppedLog
    *  above. Present only on a run that had `mode: 'assisted'` and reached at least one pause. */
   assistedLog?: LianaAssistedRecord[];
+  /** D-BP164-M0-046 (production cost wiring, D-BP164-M0-044's own measured gap: the tiktoken/
+   *  dollar-priced cost instrument, D-BP159-009_cost_axis.js, was wired into the standalone
+   *  benchmark harness only, never into this live path). ALWAYS present on EVERY run, same "an
+   *  override that leaves no trace makes the receipt a lie" rule `mode` above follows (FD-BP152-
+   *  07) -- an empty array is the honest, explicit "zero Google calls this run made", never an
+   *  absence a reader has to infer. One entry per REAL call reaching askGoogle, anywhere in the
+   *  run (every method, Survey, Step 0's own "ask Google this"), ok or not. */
+  costLedger?: LianaGoogleCallCostRecord[];
+  /** D-BP164-M0-046. Pure arithmetic roll-up of `costLedger` above -- never a second, independent
+   *  measurement. ALWAYS present alongside `costLedger`, same convention. */
+  costSummary?: LianaGoogleCostSummary;
+  /** D-BP164-M0-068 (SEG-CU, unified LLM/token cost leg). SEG-CI (D-BP164-M0-057) measured that
+   *  `costLedger`/`costSummary` above never carried a single LLM token count -- they are the
+   *  Google search leg ONLY. This is the SEPARATE, additive LLM/token leg: one entry per real
+   *  Ollama round trip made by gemmaExtract() (the 'gemma' ambiguityQueryTransport path and every
+   *  comparative/classify-cascade method that calls it), ALWAYS present, same "an override that
+   *  leaves no trace makes the receipt a lie" convention `costLedger` above already follows -- an
+   *  empty array is the honest "zero real LLM calls this run made", never inferred from absence.
+   *  Deliberately NEVER merged into costLedger/costSummary above: Google search cost and LLM
+   *  inference/token cost are two different real things, and a reader must be able to see both as
+   *  distinct columns, never one silently folded into the other. */
+  llmCostLedger?: LianaLlmCallCostRecord[];
+  /** D-BP164-M0-068. Pure arithmetic roll-up of `llmCostLedger` above -- never a second,
+   *  independent measurement. ALWAYS present alongside `llmCostLedger`, same convention. */
+  llmCostSummary?: LianaLlmCostSummary;
+}
+
+// ─────────────────────────── D-BP164-M0-046: PRODUCTION COST INSTRUMENT ───────────────────────────
+//
+// Structural mirror of GoogleCallCostRecord/GoogleCostSummary (src/main/liana_cycle/
+// cost_instrument.ts) -- NOT imported from there, for the SAME cross-boundary reason
+// ComparativeAbstainCluesReport/LianaSc01Result above are defined here rather than in their
+// main-only producer files: this file is shared main+renderer, cost_instrument.ts is main-only.
+// The real wrapAskGoogleWithCostInstrument()/summarizeGoogleCostLedger() functions (unmodified,
+// un-forked) are the only things that ever construct a value of this shape; every field name and
+// type below is copied from them verbatim.
+
+/** One real call that reached askGoogle. Deliberately carries NO per-call token count -- see
+ *  cost_instrument.ts's own header for the measured reason (a per-call synchronous tiktoken
+ *  subprocess was found to risk hanging past 30s on this machine) -- `tokens.measured` is always
+ *  `false` here, honestly, rather than a guessed number. */
+export interface LianaGoogleCallCostRecord {
+  callIndex: number;
+  ts_start: string;
+  ts_end: string;
+  latency_ms: number;
+  machineId: string;
+  query: string;
+  ok: boolean;
+  authority: string | null;
+  sourceUrl: string | null;
+  threw: boolean;
+  leg: 'google-cdp-browser-search';
+  tokens: { measured: false; reason: string };
+  dollars: {
+    actual_usd: number;
+    actual_priced: boolean;
+    actual_reason: string;
+    counterfactual_usd: number | null;
+    counterfactual_priced: boolean;
+    counterfactual_reason: string;
+    counterfactual_rate_source: string | null;
+  };
+}
+
+/** Pure roll-up of LianaGoogleCallCostRecord[] -- see cost_instrument.ts's summarizeGoogleCostLedger(). */
+export interface LianaGoogleCostSummary {
+  callCount: number;
+  totalLatencyMs: number;
+  totalActualUsd: number;
+  totalCounterfactualUsd: number | null;
+  machineId: string;
+}
+
+// ─────────────────────────── D-BP164-M0-068: UNIFIED LLM/TOKEN COST LEG ───────────────────────────
+//
+// Structural mirror of LlmCallCostRecord/LlmCostSummary (src/main/liana_cycle/cost_instrument.ts)
+// -- NOT imported from there, same cross-boundary reason as LianaGoogleCallCostRecord above. The
+// real recordLlmCall()/summarizeLlmCostLedger() functions (unmodified, un-forked) are the only
+// things that ever construct a value of this shape.
+
+/** One real Ollama round trip made by gemmaExtract(). Unlike LianaGoogleCallCostRecord, this DOES
+ *  carry a real per-call token count -- see cost_instrument.ts's own header for the measured
+ *  technique (Ollama's own prompt_eval_count/eval_count response fields, no tokenizer subprocess,
+ *  no hang risk). `tokens.measured` is false only when the round trip never reached a parsed
+ *  Ollama response carrying those fields (a transport failure, or an HTTP error body). */
+export interface LianaLlmCallCostRecord {
+  callIndex: number;
+  ts_start: string;
+  ts_end: string;
+  latency_ms: number;
+  machineId: string;
+  model: string;
+  /** PIN BY DIGEST, NEVER BY NAME (standing order, BP164) -- resolved from Ollama's own /api/tags
+   *  listing; null, never guessed, when it could not be resolved. */
+  modelDigest: string | null;
+  leg: 'gemma-ollama-local-llm';
+  tokens:
+    | { measured: true; input_tokens: number; output_tokens: number }
+    | { measured: false; reason: string };
+  dollars: {
+    actual_usd: number;
+    actual_priced: boolean;
+    actual_reason: string;
+    counterfactual_usd: number | null;
+    counterfactual_priced: boolean;
+    counterfactual_reason: string;
+    counterfactual_rate_source: string | null;
+    counterfactual_model: string | null;
+  };
+}
+
+/** Pure roll-up of LianaLlmCallCostRecord[] -- see cost_instrument.ts's summarizeLlmCostLedger(). */
+export interface LianaLlmCostSummary {
+  callCount: number;
+  totalLatencyMs: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalActualUsd: number;
+  totalCounterfactualUsd: number | null;
+  machineId: string;
 }
 
 // ─────────────────────────── D-BP152-051: ASSISTED MODE ───────────────────────────
@@ -566,4 +687,28 @@ export interface LianaLaboratoryStepSummary {
   /** Which qid/run this step was authored during, e.g. "98" or a free-text question -- this
    *  ticket's requirement 2, literal. */
   provenance: { runInput: string };
+}
+
+// D-BP167-M0-049/BISHOP/seg-composer-persistence -- THE COMPOSER, PERSISTED. RENDERER-FACING
+// shape only, same convention as LianaLaboratoryStepSummary immediately above: a summary of one
+// saved Composer stack, for the "saved stacks -- Load one" panel. The full on-disk record lives
+// in src/main/liana_cycle/library/composer_store.ts (ComposerStackRecord) and is deliberately not
+// re-exported here. SAVING IS A CHANNEL SEPARATE FROM 'liana-script-run' -- saving/listing a stack
+// never changes what running a stack computes; see composer_store.ts's own header for the full
+// "saving does not promote" boundary.
+export interface LianaComposerStackSummary {
+  /** His name for the stack, verbatim as typed. */
+  name: string;
+  /** Rule 66 plain-integer version, as a string ("1", "2", ...). */
+  version: string;
+  /** The ordered NameNumbered ids, exactly as composed -- BP150's ordered-elements structure,
+   *  preserved verbatim. Load sets composerStack to exactly this array, in this order. */
+  steps: string[];
+  savedBy: string;
+  savedAt: string;
+  /** Which question this stack was authored/last run against. */
+  provenance: { runInput: string };
+  /** ALWAYS false today -- no promotion path exists yet. See composer_store.ts's header for why
+   *  this is a deliberate, separate, human-written act rather than something a save can trigger. */
+  promoted: false;
 }

@@ -37,13 +37,159 @@
  * not the old 0.62-0.90 hand-typed guesses this replaces.
  */
 
+// --- D-BP220-BM0-014 Stage 2 (Option 3: brand `.content` itself) -------------------------------
+//
+// Stage 1 (DurableWritable/toDurableWritable, immediately below CandidateEblet) closes the
+// durable-write hole for callers that go through a durable-write entry point's typed parameter.
+// It does NOT stop a caller from doing `candidates.map((c) => c.content)` for some OTHER purpose
+// (a prompt, a network dispatch, a log line) and then handing THAT bare string[] somewhere unsafe
+// -- nothing about a plain `content: string` field stops the flattening itself. Stage 2 closes
+// that: `CandidateEblet.content` is `CandidateContent`, not `string`, and `CandidateContent` is a
+// genuine class with a PRIVATE constructor and a PRIVATE raw field -- TypeScript compares classes
+// with private members NOMINALLY, not structurally, so no other shape in this codebase can ever
+// satisfy it by accident. The only way to read a string back out is `.unwrap(sinkKind)`, which
+// takes a mandatory ContentSinkKind so a future call site's intent is legible at the type level.
+//
+// WHY NOT A BRANDED STRING (`string & { brand: true }`) INSTEAD: tried first, and rejected by
+// direct test (see the Stage 2 guard-demonstration snippet in this dispatch's scratchpad). A
+// branded-string intersection is still structurally a string for every read operation (.slice(),
+// .length, string concatenation all still work with zero unwrap), and -- critically -- TypeScript
+// arrays are covariant, so `CandidateContent[]` under that design would STILL be assignable to a
+// plain `string[]`-typed parameter with zero compile error. `.map((c) => c.content)` would have
+// kept typechecking into something usable as string[] -- exactly the flattening this Stage exists
+// to catch. Only a genuine non-string class closes that gap.
+export type ContentSinkKind = 'PROMPT' | 'DURABLE_STORE' | 'NETWORK' | 'LOG';
+
+/** See the Stage 2 header comment above for why this must be a real class (nominal typing via a
+ *  private member), not a branded string. `raw` and the constructor are both private: no code
+ *  outside this class -- not even code in this same file -- can read a `CandidateContent`'s
+ *  string value except through `.unwrap()`, and no code anywhere can construct one except
+ *  through `.wrap()`. */
+export class CandidateContent {
+  private constructor(private readonly raw: string) {}
+
+  /** THE ONLY way to construct a `CandidateContent`. Every specialist adapter in this file wraps
+   *  its extracted text through this before putting it on a `CandidateEblet.content` field. */
+  static wrap(raw: string): CandidateContent {
+    return new CandidateContent(raw);
+  }
+
+  /** THE ONLY way to get a plain string back out. `sink` is mandatory, not decorative: it makes
+   *  a call site's destination legible at the type level (a reviewer, or a future stricter
+   *  version of this method, can tell a PROMPT read from a DURABLE_STORE read without re-deriving
+   *  it from surrounding code). Every sink resolves to the same raw value today -- the
+   *  trust-aware SANITIZATION for untrusted candidates (sanitizeUntrustedContentForQuoting, the
+   *  fence markers, the UNTRUSTED-candidate refusal in toDurableWritable below) already lives at
+   *  each call site and continues to run AFTER this unwrap, completely unchanged; this method
+   *  only ever hands back the raw text, never decides on its own whether that text is safe for
+   *  the stated sink. */
+  unwrap(_sink: ContentSinkKind): string {
+    return this.raw;
+  }
+}
+
 export interface CandidateEblet {
   source: string;         // adapter name
-  content: string;        // factual content (must pass Miner: >= 100 chars)
+  content: CandidateContent; // factual content (must pass Miner: >= 100 chars). NEVER a bare
+  // string -- see the ContentSinkKind/CandidateContent header comment immediately above this
+  // interface. Read it back out via `.unwrap(sinkKind)`, never by any other means.
   weight: number;         // resolved via resolveSourceWeight() -- see SourceCredibilityLedger below
   sid: string;            // stable ID (hash of source + content prefix)
   provenance_url?: string;
   domain?: string;
+  /** D-BP220-BM0-003 (voter-path prompt-injection enforcement). OPTIONAL, absent for every one
+   *  of the 9(+) encyclopedia-swarm adapters in this file (Wikipedia/Wikidata/arXiv/etc.) -- they
+   *  never set it, so `c.trust` is `undefined` for them, byte-identical to pre-change behavior.
+   *  Set to the literal `'UNTRUSTED'` ONLY at the one call site in plow_mc_answerer.ts that
+   *  constructs a browser-authority candidate straight from a `BrowserAuthorityLookupResult`
+   *  (browser_authority_types.ts), carrying that object's own `trust`/`acquiredFrom`/
+   *  `acquiredAtUtc` fields through onto the candidate instead of flattening them away. Exists so
+   *  a consumer of `factsForArbitration`/`componentFactsList` can tell, per-candidate, "this is
+   *  scraped web text, not an encyclopedia extract" and render it as quoted evidence rather than
+   *  as trusted prompt text. See plow_mc_answerer.ts's `renderFactForPrompt`/
+   *  `sanitizeUntrustedContentForQuoting`. */
+  trust?: 'UNTRUSTED';
+  /** D-BP220-BM0-003, paired with `trust` above -- same value as the source
+   *  BrowserAuthorityLookupResult.acquiredFrom (e.g. 'google', 'perplexity'). Absent whenever
+   *  `trust` is absent. */
+  acquiredFrom?: string;
+  /** D-BP220-BM0-003, paired with `trust` above -- same ISO8601 value as the source
+   *  BrowserAuthorityLookupResult.acquiredAtUtc. Absent whenever `trust` is absent. */
+  acquiredAtUtc?: string;
+}
+
+// --- Durable-write projection guard (D-BP220-BM0-014, Stage 1: Option 2) ---------------------
+//
+// THE DISEASE this exists to close: `candidates.map((c) => c.content)` (or any equally silent
+// flattening of a `CandidateEblet[]` to a bare `string[]`) drops `c.trust`/`c.acquiredFrom`/
+// `c.acquiredAtUtc` at exactly the boundary where it matters most -- a DURABLE, verified:true
+// eblet write. Three separate prompt-injection/store-poisoning escapes were found in one day
+// (D-BP220-BM0-003/005/007 -- voter prompt, Star Chamber warm-seed, Stage D component write),
+// all the same flattening in different clothes. Each of those three fixes is a REVIEWER-
+// enforced guard: renderFactForPrompt/renderFactForStarChamberSeed (plow_mc_answerer.ts) and
+// writeRoundEblets' per-item `if (fact.trust === 'UNTRUSTED') continue` are all runtime checks
+// a future call site can simply fail to call. Nothing stops a fourth durable-write entry point
+// from doing `candidates.map((c) => c.content)` straight into a `verified: true` write; the
+// compiler has no opinion.
+//
+// `DurableWritable` is the fix: it is what a durable, verified:true eblet write legitimately
+// needs from a candidate, and it structurally CANNOT carry untrusted content, because the ONLY
+// way to produce one is `toDurableWritable()` immediately below, which refuses (omits) every
+// candidate carrying `trust === 'UNTRUSTED'` before it ever becomes a `DurableWritable`. A
+// durable-write entry point (runScribe in canonical_pipeline.ts; writeRoundEblets in
+// plow_mc_answerer.ts) declares its candidate parameter as `DurableWritable[]`, not
+// `CandidateEblet[]` -- so a future call site that still has raw `CandidateEblet[]` and tries
+// to hand it straight to one of those functions FAILS TO COMPILE, and the only way to make it
+// compile is to route through `toDurableWritable()` first, which is exactly the guard.
+export interface DurableWritable {
+  source: string;
+  content: string;
+  weight: number;
+  sid: string;
+  provenance_url?: string;
+  domain?: string;
+  /** NOMINAL BRAND, required (not optional) -- WITHOUT this field `DurableWritable` is a pure
+   *  structural SUBSET of `CandidateEblet` (every field above also exists on CandidateEblet,
+   *  with compatible types), so TypeScript's structural typing would let a bare
+   *  `CandidateEblet[]` -- UNTRUSTED candidates and all -- pass directly into a
+   *  `DurableWritable[]`-typed parameter with ZERO conversion and ZERO compile error. That is
+   *  not a hypothetical: it was verified by direct test (see the D-BP220-BM0-014 Stage 1
+   *  guard-demonstration snippet) that `runScribe(..., someCandidateEblets, ...)` compiled
+   *  clean with no brand field present, silently defeating the whole guard. This field exists
+   *  ONLY to make that impossible: `CandidateEblet` never carries it, so TypeScript refuses
+   *  the assignment with a real "property is missing" error. The ONLY place that ever sets it
+   *  is `toDurableWritable()` immediately below (via an explicit cast, since the brand carries
+   *  no real runtime meaning -- it exists purely for the compiler). */
+  readonly __durableWritableBrand: true;
+}
+
+/** THE ONLY way to produce a `DurableWritable[]`. Refuses (omits, does not throw -- matching
+ *  every other non-fatal per-candidate discipline already in this codebase, e.g. runScribe's
+ *  own try/catch-per-candidate and writeRoundEblets' pre-existing per-item `continue`) every
+ *  candidate carrying `trust === 'UNTRUSTED'`. A trusted candidate (`trust` absent -- every
+ *  encyclopedia-swarm adapter in this file) passes through with its `content` field unchanged:
+ *  byte-identical to the old `.map((c) => c.content)` behavior for the path that was always
+ *  safe. Pure, synchronous, no I/O -- safe to call at any durable-write call site. */
+export function toDurableWritable(candidates: readonly CandidateEblet[]): DurableWritable[] {
+  const out: DurableWritable[] = [];
+  for (const c of candidates) {
+    if (c.trust === 'UNTRUSTED') {
+      continue;
+    }
+    out.push({
+      source: c.source,
+      content: c.content.unwrap('DURABLE_STORE'),
+      weight: c.weight,
+      sid: c.sid,
+      provenance_url: c.provenance_url,
+      domain: c.domain,
+      // The brand: this object literal is the ONE place in this codebase allowed to set it.
+      // No cast needed -- `out.push(...)` already checks the literal against DurableWritable,
+      // and every required field (including this one) is present.
+      __durableWritableBrand: true,
+    });
+  }
+  return out;
 }
 
 // ─── Source Credibility Ledger (KN-BP145-C, BP145) ─────────────────────────────
@@ -413,7 +559,7 @@ export async function fetchWikipedia(question: string, domain: string, maxResult
 
         candidates.push({
           source: 'wikipedia',
-          content: content.slice(0, 800),
+          content: CandidateContent.wrap(content.slice(0, 800)),
           weight: resolveSourceWeight('wikipedia', domain),
           sid: stableId('wikipedia', content),
           provenance_url: summary.content_urls?.desktop?.page,
@@ -450,14 +596,14 @@ export async function fetchWikidata(question: string, domain: string, maxResults
         const content = `${r.label ?? ''}: ${r.description ?? ''}`;
         return {
           source: 'wikidata',
-          content: content.length >= 100 ? content : content + ' (Wikidata entity)',
+          content: CandidateContent.wrap(content.length >= 100 ? content : content + ' (Wikidata entity)'),
           weight: resolveSourceWeight('wikidata', domain),
           sid: stableId('wikidata', content),
           provenance_url: r.url,
           domain,
         };
       })
-      .filter((c) => c.content.length >= 100);
+      .filter((c) => c.content.unwrap('LOG').length >= 100);
   } catch { return []; }
 }
 
@@ -491,14 +637,14 @@ export async function fetchStackExchange(
         const content = `${item.title ?? ''}: ${rawBody.slice(0, 600)}`;
         return {
           source: 'stackexchange',
-          content: content.slice(0, 700),
+          content: CandidateContent.wrap(content.slice(0, 700)),
           weight: resolveSourceWeight('stackexchange', domain),
           sid: stableId('stackexchange', content),
           provenance_url: item.link,
           domain,
         };
       })
-      .filter((c) => c.content.length >= 100);
+      .filter((c) => c.content.unwrap('LOG').length >= 100);
   } catch { return []; }
 }
 
@@ -531,7 +677,7 @@ export async function fetchArxiv(question: string, domain: string): Promise<Cand
 
       entries.push({
         source: 'arxiv',
-        content,
+        content: CandidateContent.wrap(content),
         weight: resolveSourceWeight('arxiv', domain),
         sid: stableId('arxiv', content),
         provenance_url: link,
@@ -583,7 +729,7 @@ export async function fetchWolframAlpha(
 
     return [{
       source: 'wolfram',
-      content,
+      content: CandidateContent.wrap(content),
       weight: resolveSourceWeight('wolfram', domain),
       sid: stableId('wolfram', content),
       domain,
@@ -630,7 +776,7 @@ export async function fetchOpenAlex(question: string, domain: string): Promise<C
 
       candidates.push({
         source: 'openalex',
-        content,
+        content: CandidateContent.wrap(content),
         weight: resolveSourceWeight('openalex', domain),
         sid: stableId('openalex', content),
         provenance_url: work.doi ? `https://doi.org/${work.doi}` : undefined,
@@ -663,7 +809,7 @@ export async function fetchNIST(question: string, domain: string): Promise<Candi
         if (content.length < 100) continue;
         candidates.push({
           source: 'nist',
-          content,
+          content: CandidateContent.wrap(content),
           weight: resolveSourceWeight('nist', domain),
           sid: stableId('nist', content),
           provenance_url: doc.doi ? `https://doi.org/${doc.doi}` : undefined,
@@ -687,7 +833,7 @@ export async function fetchNIST(question: string, domain: string): Promise<Candi
           if (content.length >= 100) {
             return [{
               source: 'nist',
-              content,
+              content: CandidateContent.wrap(content),
               weight: resolveSourceWeight('nist', domain),
               sid: stableId('nist_webbook', content),
               provenance_url: wbUrl,
@@ -740,7 +886,7 @@ export async function fetchPubMed(
       if (content.length < 100) continue;
       candidates.push({
         source: 'pubmed',
-        content,
+        content: CandidateContent.wrap(content),
         weight: resolveSourceWeight('pubmed', domain),
         sid: stableId('pubmed', content),
         provenance_url: `https://pubmed.ncbi.nlm.nih.gov/${id}/`,
@@ -781,7 +927,7 @@ export async function fetchCommonCrawl(question: string, domain: string): Promis
 
           candidates.push({
             source: 'commoncrawl',
-            content,
+            content: CandidateContent.wrap(content),
             weight: resolveSourceWeight('commoncrawl', domain),
             sid: stableId('commoncrawl', entry.url),
             provenance_url: entry.url,
@@ -803,7 +949,7 @@ export async function fetchCommonCrawl(question: string, domain: string): Promis
       if (abstract.length >= 100) {
         return [{
           source: 'commoncrawl',
-          content: abstract.slice(0, 700),
+          content: CandidateContent.wrap(abstract.slice(0, 700)),
           weight: resolveSourceWeight('commoncrawl', domain),
           sid: stableId('duckduckgo', abstract),
           provenance_url: ddg.AbstractURL,
@@ -817,7 +963,7 @@ export async function fetchCommonCrawl(question: string, domain: string): Promis
         if (text.length >= 100) {
           return [{
             source: 'commoncrawl',
-            content: text.slice(0, 600),
+            content: CandidateContent.wrap(text.slice(0, 600)),
             weight: resolveSourceWeight('commoncrawl', domain),
             sid: stableId('duckduckgo', text),
             provenance_url: topic.FirstURL,
@@ -862,7 +1008,7 @@ export async function fetchEuropePMC(question: string, domain: string, maxResult
 
       candidates.push({
         source: 'europepmc',
-        content,
+        content: CandidateContent.wrap(content),
         weight: resolveSourceWeight('europepmc', domain),
         sid: stableId('europepmc', content),
         provenance_url: r.doi ? `https://doi.org/${r.doi}` : (r.pmid ? `https://europepmc.org/article/MED/${r.pmid}` : undefined),
@@ -913,7 +1059,7 @@ export async function fetchOpenFDA(question: string, domain: string, maxResults 
 
       candidates.push({
         source: 'openfda',
-        content,
+        content: CandidateContent.wrap(content),
         weight: resolveSourceWeight('openfda', domain),
         sid: stableId('openfda', content),
         provenance_url: r.set_id ? `https://api.fda.gov/drug/label.json?search=set_id:${r.set_id}` : undefined,
@@ -970,7 +1116,7 @@ export async function fetchMedlinePlus(question: string, domain: string, maxResu
 
       candidates.push({
         source: 'medlineplus',
-        content,
+        content: CandidateContent.wrap(content),
         weight: resolveSourceWeight('medlineplus', domain),
         sid: stableId('medlineplus', content),
         provenance_url: docUrl,
@@ -1015,7 +1161,7 @@ export async function fetchCrossref(question: string, domain: string, maxResults
 
       candidates.push({
         source: 'crossref',
-        content,
+        content: CandidateContent.wrap(content),
         weight: resolveSourceWeight('crossref', domain),
         sid: stableId('crossref', content),
         provenance_url: item.DOI ? `https://doi.org/${item.DOI}` : item.URL,
@@ -1073,7 +1219,7 @@ export async function fetchClinicalTrials(question: string, domain: string, maxR
 
       candidates.push({
         source: 'clinicaltrials',
-        content,
+        content: CandidateContent.wrap(content),
         weight: resolveSourceWeight('clinicaltrials', domain),
         sid: stableId('clinicaltrials', content),
         provenance_url: nctId ? `https://clinicaltrials.gov/study/${nctId}` : undefined,
@@ -1146,7 +1292,7 @@ export async function fetchWorldBank(question: string, domain: string): Promise<
 
     return [{
       source: 'worldbank',
-      content,
+      content: CandidateContent.wrap(content),
       weight: resolveSourceWeight('worldbank', domain),
       sid: stableId('worldbank', content),
       provenance_url: `https://data.worldbank.org/indicator/${indicator.code}?locations=${country.code}`,
@@ -1187,7 +1333,7 @@ export async function fetchSemanticScholar(question: string, domain: string, max
 
       candidates.push({
         source: 'semanticscholar',
-        content,
+        content: CandidateContent.wrap(content),
         weight: resolveSourceWeight('semanticscholar', domain),
         sid: stableId('semanticscholar', content),
         provenance_url: r.url,

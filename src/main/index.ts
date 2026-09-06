@@ -72,6 +72,38 @@ import { app as _earlyApp } from 'electron';
 import { join as _earlyPathJoin } from 'path';
 _earlyApp.setPath('userData', _earlyPathJoin(_earlyApp.getPath('appData'), 'MnemosyneC'));
 
+// D-BP164-M0-002/BISHOP/SEG-DA -- SINGLE-INSTANCE LOCK, as early as the file's own precedent
+// above allows (same interleaved-executable-code justification as the setPath() call just
+// above: tsc's CommonJS output preserves source order here, it does not hoist across it).
+// MnemosyneC never called app.requestSingleInstanceLock() anywhere before this dispatch --
+// verified by repo-wide grep at BP163 close and re-verified at BP164 start. Without it, a
+// double launch (the hand-registered Scheduled Task Bishop_MnemosyneC_Autostart_M0 firing
+// alongside a future in-app login item) does not "race for a lock" -- it runs as two fully
+// independent, uncoordinated processes, each with its own windows, relay polling, and IPC
+// servers. Requesting the lock THIS early, before any of the heavy imports/side effects below
+// run, means a second-launched process quits (see the process.exit(0) below) before it does
+// any of that work, not after. src/main/deep-link-handler.ts already carries an
+// app.on('second-instance', ...) LISTENER (registered later, inside app.whenReady(), by
+// registerDeepLinkProtocol()) that was previously dead code because nothing ever acquired the
+// lock for it to fire under. Read before this change: it parses any deep-link URL out of the
+// second instance's argv and focuses/restores this (the surviving) instance's window -- exactly
+// the correct, desired behavior for a second launch attempt, not a hazard. Waking it is safe.
+// KNOWN GAP, named explicitly: registerDeepLinkProtocol() runs late in the whenReady() handler
+// (after most other init), so there is a short window after 'ready' during which a second
+// launch's 'second-instance' event would fire with no listener yet attached -- the surviving
+// window would not be focused in that narrow case, though the second process would still quit
+// cleanly (that part does not depend on the listener). Moving that registration earlier would
+// touch an existing call site rather than only appending, which is out of this dispatch's
+// append-only-file-convention scope; flagged here rather than silently accepted.
+const _gotSingleInstanceLock = _earlyApp.requestSingleInstanceLock();
+if (!_gotSingleInstanceLock) {
+  // Another instance already holds the lock. app.quit() alone does not stop this synchronous
+  // module's remaining top-level code (imports below would still execute and do real work) --
+  // process.exit(0) is the standard Electron pattern for actually halting here.
+  _earlyApp.quit();
+  process.exit(0);
+}
+
 import './env_loader';
 import log from 'electron-log/main';
 log.initialize({ preload: true });
@@ -330,6 +362,11 @@ import { toggleMonitor, getMetrics, getAllMonitorStates } from './hearth/active_
 // yoke ledger directory yoke_watcher.ts already watches -- reused here rather than inventing a
 // second Mic mechanism, per this ticket's explicit instruction.
 import { runLianaCycleQuestion } from './liana_cycle/liana_terminal_engine';
+// D-BP211-BM0-h2cbpq8k-017, FOUNDER 2026-09-02T19:03:06Z: "the two engines don't get the same
+// switch, and yes have opposite defaults." This one FAILS OPEN -- absent settings file means ON,
+// only an explicit `"enabled": false` stops it. See method_tree_switch.ts's header for why the
+// plow side's fail-CLOSED default would be actively wrong here.
+import { readMethodTreeEnabledFromSettings, writeMethodTreeEnabledToSettings, methodTreeSettingsPath } from './liana_cycle/method_tree_switch';
 // D-BP152-043/BISHOP/seg-scratch-composer -- THE SCRATCH COMPOSER. Founder, BP152, verbatim
 // (FD-BP152-20): "I want the updated Mnemosynec Liana Cycle - the Scratch version... I want to
 // use it to stack methods in whatever order I want... NameNumbered... mix and match as I please."
@@ -394,6 +431,13 @@ registerCustomScheme();
 
 // BP052 v0.1.8 ? Kitchen Table? IPC store
 import { registerKitchenTableIpc } from './kitchen_table/kitchen_table_store';
+// D-BP165-M0-014 -- Cook Event? ledger IPC (append-only; separate from the CRUD
+// store above on purpose, see cook_events_store.ts file header)
+import { registerCookEventIpc } from './kitchen_table/cook_events_store';
+// D-BP165-M0-017 -- Mark-Back Vote? ledger IPC (Phase Two of D-BP165-M0-014;
+// gated off by default behind KITCHEN_TABLE_MARKBACK_ENABLED, see
+// mark_back_store.ts file header)
+import { registerMarkBackIpc } from './kitchen_table/mark_back_store';
 
 // BP060 Application 002 Step 1 ? Caithedral Tools IPC
 import { registerCaithedralToolsIPC, setMeshPointerAdvanceHook, dag_soccerball_emit_reexport } from './caithedral_tools_ipc';
@@ -420,6 +464,11 @@ import { registerDispatchIPC } from './dispatch/dispatch_ipc';
 
 // BP060 Application 002 Steps 3+4 ? AI Dispatch IPC (UI-8 backend)
 import { registerAiDispatchIPC } from './ai_dispatch_ipc';
+// D-BP165-M0-036/BISHOP/M0/seg-swappable-brains-slot-registry: named slot -> brain assignment
+// (multi-slot layer on top of brain_registry.ts's single active_brain_id), reusing THE NEXUS's
+// existing brain_registry catalog and the existing five browser authorities. Read-only Set A
+// Banyan-by-brain summary lives in the same module.
+import { registerSlotRegistryIPC } from './brain_registry/slot_registry_ipc';
 
 // D-BP151-037/BISHOP/seg-query-capture-archive -- Query Capture Archive (three acts: clear,
 // archive, delete). captureQuery is called directly (not just via IPC) at the ONE chokepoint
@@ -488,6 +537,12 @@ import { registerMeshTrustSettingsIpc } from './federation/mesh_trust_settings';
 // header for why this is a SEPARATE consent from both AutoUpdateConfig.autoUpdates and the
 // existing LB_MESH_AUTO_SPAWN_ENABLED kill switch).
 import { registerMeshAutoSpawnConsentIpc } from './federation/mesh_auto_spawn_consent';
+// D-BP202-M0-01-h2cbp8us-001: THE THIRD CONSENT -- remote administration of the whole machine
+// (the `lbmesh` account plus WinRM), defaults to OFF. Materially different from both the
+// version-bump consent and the auto-spawn tool-execution consent above; see that file's own
+// header for what it can and cannot enforce.
+import { registerMeshRemoteAdminConsentIpc } from './federation/mesh_remote_admin_consent';
+import { registerHardwireMapIpc } from './installer/hardwire_map_ipc';
 // BP134 Yoke #29 Part 2: this node must run peer_artifact_server so OTHER nodes' mesh-pull
 // (auto_update_scheduler.ts's findNewerPeers/pullAndVerifyFromPeers) has something to reach --
 // the client-side pull code already existed (BP087 Wave 4) but this server was never started.
@@ -554,6 +609,13 @@ import type { BindingTarget, MutationReason, BindResult, ResolvedChonk } from '.
 import { initCdpGuard } from './cdp_guard'; // D-BP151-038/BISHOP/seg-cdp-guard -- Founder BP151 "Build the guard." on D-BP151-034's named CDP-9333 gap
 import { initBatteryDispatchPluginEndpoint } from './battery_dispatch_plugin_endpoint'; // D-BP151-042/BISHOP/seg-battery-dispatch-endpoint -- Founder BP151 "Battery Dispatch is local plugins, so build the endpoint"; off by default, loopback-only, Bearer-authenticated
 import { saveLaboratoryStep, listLaboratorySteps } from './liana_cycle/library/laboratory_store'; // D-BP152-022/BISHOP/seg-laboratory-and-keep -- FD-BP152-10 tier 1 (the Laboratory); FD-BP152-07 ephemeral-unless-"keep"
+import { saveComposerStack, listComposerStacks } from './liana_cycle/library/composer_store'; // D-BP167-M0-049/BISHOP/seg-composer-persistence -- the Composer's operator-authored stack, made saveable/loadable; saving never promotes into method_registry.ts
+// D-BP164-M0-002/BISHOP/SEG-DA -- Founder BP163 "And can we build that start on startup into
+// Mnemosynec so it always does that": member-visible openAtLogin toggle, reconciled against the
+// hand-registered legacy Scheduled Task (see both modules' own headers for the full hazard and
+// default-OFF justification). Banked, unwired modules from D-BP163-M0-050, wired in as-is here.
+import { detectLegacyAutostartTask, LEGACY_AUTOSTART_TASK_NAME, LEGACY_AUTOSTART_TASK_REMOVAL_COMMAND } from './startup/legacy_autostart_task_detector';
+import { getOpenAtLoginPreference, getOSLoginItemState, applyPreferenceToOS, reconcileOpenAtLoginAtStartup } from './startup/open_at_login_settings';
 // --- END APPEND ZONE: IMPORT -------------------------------------------------
 
 // --- Constants --------------------------------------------------------------
@@ -716,6 +778,10 @@ let dashboardWindow: BrowserWindow | null = null;
 let folderWatcher: SubstratedFolderWatcher | null = null;
 let hearthConjunctionWindow: BrowserWindow | null = null;
 let moneyPennyWindow: BrowserWindow | null = null;
+// D-BP166-M0-018: the Founder's chat/conduit pane gets its OWN independent, resizable, movable
+// window -- not a general dock/undock system (no prior art for that here, and he explicitly does
+// not want the option-multiplier). Same pattern as moneyPennyWindow below.
+let conduitWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let substrateServer: SubstrateAPIServer | null = null;
 let federationClient: FederationClient | null = null;
@@ -1007,6 +1073,17 @@ const MONEY_PENNY_BOUNDS_FILE = join(SUBSTRATE_ROOT_MAIN, 'moneypenny_window_bou
 const MONEY_PENNY_MIN_WIDTH = 320;
 const MONEY_PENNY_MIN_HEIGHT = 480;
 
+// D-BP166-M0-018: Conduit (Founder chat/terminal pane) window bounds persistence -- same
+// per-window bounds-file convention as MoneyPenny above, own file so the two never collide.
+const CONDUIT_BOUNDS_FILE = join(SUBSTRATE_ROOT_MAIN, 'conduit_window_bounds.json');
+const CONDUIT_MIN_WIDTH = 480;
+// 560, not a smaller round number: verified live in-browser at 480x420 that the conversation
+// panes (the actual reading content, above the compose boxes) get compressed to ~10px and
+// effectively disappear below that height, because .compose is flex:0-0-auto (fixed to its own
+// content) and .panes only gets the leftover space. 560 was verified live to keep a real, readable
+// sliver of both conversation panes even at this floor.
+const CONDUIT_MIN_HEIGHT = 560;
+
 // SEG-V0146-CRIT-3: Dashboard + Hearth Conjunction window bounds persistence
 const DASHBOARD_BOUNDS_FILE = join(SUBSTRATE_ROOT_MAIN, 'dashboard_window_bounds.json');
 const DASHBOARD_MIN_WIDTH = 560;
@@ -1054,6 +1131,48 @@ function saveMoneyPennyBounds(bounds: Electron.Rectangle): void {
     require('fs').writeFileSync(MONEY_PENNY_BOUNDS_FILE, JSON.stringify(clampMoneyPennyBounds(bounds), null, 2), 'utf-8');
   } catch {
     // Non-fatal: window sizing should never block MoneyPenny.
+  }
+}
+
+// D-BP166-M0-018: Conduit window bounds helpers -- clamp/load/save mirror clampMoneyPennyBounds/
+// loadMoneyPennyBounds/saveMoneyPennyBounds above exactly, sized for a chat/terminal pane instead
+// of the mobile-portrait MoneyPenny window (wider default, less tall).
+function clampConduitBounds(bounds?: Partial<Electron.Rectangle>): Electron.Rectangle {
+  const workArea = screen.getDisplayMatching({
+    x: bounds?.x ?? screen.getPrimaryDisplay().workArea.x,
+    y: bounds?.y ?? screen.getPrimaryDisplay().workArea.y,
+    width: bounds?.width ?? 1,
+    height: bounds?.height ?? 1,
+  }).workArea;
+  const maxWidth = Math.floor(workArea.width * 0.9);
+  const maxHeight = Math.floor(workArea.height * 0.9);
+  const defaultWidth = Math.max(CONDUIT_MIN_WIDTH, Math.min(maxWidth, Math.floor(workArea.width * 0.42)));
+  const defaultHeight = Math.max(CONDUIT_MIN_HEIGHT, Math.min(maxHeight, Math.floor(workArea.height * 0.7)));
+  const width = Math.max(CONDUIT_MIN_WIDTH, Math.min(maxWidth, Math.floor(bounds?.width ?? defaultWidth)));
+  const height = Math.max(CONDUIT_MIN_HEIGHT, Math.min(maxHeight, Math.floor(bounds?.height ?? defaultHeight)));
+  const x = Math.max(workArea.x, Math.min(workArea.x + workArea.width - width, Math.floor(bounds?.x ?? workArea.x + (workArea.width - width) / 2)));
+  const minY = workArea.y + Math.floor(workArea.height * 0.125);
+  const y = Math.max(minY, Math.min(workArea.y + workArea.height - height, Math.floor(bounds?.y ?? minY)));
+  return getSafeBounds({ x, y, width, height });
+}
+
+function loadConduitBounds(): Electron.Rectangle {
+  if (!existsSync(CONDUIT_BOUNDS_FILE)) return clampConduitBounds();
+  try {
+    const parsed = JSON.parse(require('fs').readFileSync(CONDUIT_BOUNDS_FILE, 'utf-8')) as Partial<Electron.Rectangle>;
+    if (isStaleBounds(parsed)) return clampConduitBounds();
+    return clampConduitBounds(parsed);
+  } catch {
+    return clampConduitBounds();
+  }
+}
+
+function saveConduitBounds(bounds: Electron.Rectangle): void {
+  try {
+    require('fs').mkdirSync(SUBSTRATE_ROOT_MAIN, { recursive: true });
+    require('fs').writeFileSync(CONDUIT_BOUNDS_FILE, JSON.stringify(clampConduitBounds(bounds), null, 2), 'utf-8');
+  } catch {
+    // Non-fatal: window sizing should never block the Conduit window.
   }
 }
 
@@ -1472,6 +1591,12 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
       click: () => openMoneyPennyWindow(),
     },
     {
+      // D-BP166-M0-018: obvious, discoverable entry point matching the MoneyPenny Mobile item
+      // immediately above -- same tray menu, same "open its own window" convention.
+      label: 'Conduit (Founder chat window)',
+      click: () => openConduitWindow(),
+    },
+    {
       label: 'Open lianabanyan.com',
       click: () => shell.openExternal('https://lianabanyan.com'),
     },
@@ -1589,6 +1714,69 @@ function openMoneyPennyWindow(): void {
   });
 
   moneyPennyWindow.loadURL(getMoneyPennyURL(API_PORT));
+}
+
+// D-BP166-M0-018: THE FOUNDER'S CHAT/CONDUIT WINDOW. His ask, verbatim: "I am trying right now to
+// use it while still looking at the Claude Code UI, but since it has an elephant foot of the rest
+// of the page it is on, when I make the windows smaller it just compresses the space I have to
+// read and write." He also said "I also don't want to mess with people by adding too many
+// options" -- so this is ONE dedicated window for the live conduit pane (127.0.0.1:11488), not a
+// general dock/undock system. Pattern copied from openMoneyPennyWindow() above: same bounds-
+// persistence shape, same webPreferences security posture (contextIsolation, no nodeIntegration,
+// sandboxed, no preload -- this window only ever loads the local conduit server's own page, it
+// needs no bridge into this app's main-process APIs).
+function openConduitWindow(): void {
+  if (conduitWindow && !conduitWindow.isDestroyed()) {
+    conduitWindow.focus();
+    return;
+  }
+
+  const bounds = loadConduitBounds();
+  const workArea = screen.getDisplayMatching(bounds).workArea;
+
+  conduitWindow = new BrowserWindow({
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
+    minWidth: CONDUIT_MIN_WIDTH,
+    minHeight: CONDUIT_MIN_HEIGHT,
+    maxWidth: Math.floor(workArea.width * 0.9),
+    maxHeight: Math.floor(workArea.height * 0.9),
+    title: 'Conduit — Founder / Bishop / M3',
+    icon: join(__dirname, '../../assets/app-icon.ico'),
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      devTools: true,
+    },
+  });
+
+  conduitWindow.once('ready-to-show', () => {
+    conduitWindow?.show();
+  });
+
+  conduitWindow.on('resize', () => {
+    if (conduitWindow && !conduitWindow.isDestroyed()) {
+      saveConduitBounds(conduitWindow.getBounds());
+    }
+  });
+  conduitWindow.on('move', () => {
+    if (conduitWindow && !conduitWindow.isDestroyed()) {
+      saveConduitBounds(conduitWindow.getBounds());
+    }
+  });
+  conduitWindow.on('closed', () => {
+    conduitWindow = null;
+  });
+
+  // D-BP166-M0-018: ?compact=1 hides the commo status strip and the estate terminal box (the
+  // "elephant foot" and "the Third box being below" from his own complaint) inside this dedicated
+  // window ONLY -- conduit.html's default (no query param, e.g. the browser tab he already has
+  // open) renders exactly as before, unchanged. See conduit.html's own compact-mode CSS block.
+  conduitWindow.loadURL('http://127.0.0.1:11488/?compact=1');
 }
 
 // A-4 BP081 v0.1.59.1: Onboarding gate auto-flip (Ollama healthy + Gemma present)
@@ -1997,12 +2185,18 @@ interface BrowserAuthorityDispatchObservation {
   dispatchOutcome: BrowserAuthorityDispatchOutcome;
   /** D-BP152-050/BISHOP/seg-honest-failure-reasons, ADDITIVE/OPTIONAL -- true only when the
    *  static (Google/Perplexity) branch's own structural URL check (webview_preload.ts's
-   *  isGoogleChallengeUrl(), via the `r.challenge` field on its extraction-result message)
-   *  identified the landed page as a verification/rate-limit challenge. Deliberately NOT folded
-   *  into `dispatchOutcome`'s closed vocabulary above -- see that field's own header. Absent
-   *  (never false) everywhere this check does not run (the interactive branch, or a genuine
-   *  extraction). Read only by buildLianaAskGoogle() below and, through it,
-   *  comparative_cascade.ts's googleBlocks(). */
+   *  isKnownChallengeUrl(), via the `r.challenge` field on its extraction-result message)
+   *  identified the landed page as a verification/rate-limit challenge. D-BP213-XO-62: `throttled`
+   *  IS now also assigned on `dispatchOutcome` above for this same case (see this file's own
+   *  runOnceObserved -> `if (r.challenge)` branch) -- this field is kept as a SEPARATE, ADDITIONAL
+   *  signal rather than removed, because it is the one buildLianaAskGoogle() -> comparative_
+   *  cascade.ts's googleBlocks() actually branches on to HALT RETRIES immediately (checked before
+   *  it ever reads `dispatchOutcome`); `dispatchOutcome:'throttled'` is what every OTHER reader of
+   *  this observation (the T1 ensemble receipt, browser_authority_adapter.ts, mcp_server.ts) sees
+   *  instead of the old, indistinguishable-from-a-genuine-no-answer 'no_result'. Absent (never
+   *  false) everywhere this check does not run (the interactive branch, or a genuine extraction).
+   *  Read only by buildLianaAskGoogle() below and, through it, comparative_cascade.ts's
+   *  googleBlocks(). */
   challengeDetected?: boolean;
 }
 
@@ -2467,16 +2661,27 @@ export async function runBrowserAuthorityQueryFromMainObserved(
       // your computer network... IP address:... URL: https://www.google.com/sorry/index" --
       // hit while this app had issued repeated automated Google queries. The OLD code called
       // every failure mode "UNREACHABLE... no answer after 3 attempts", including this one.
-      // `dispatchOutcome` intentionally stays 'no_result' here (still honest: asked, got a
-      // response, nothing usable) so every OTHER, pre-existing caller of this function
-      // (unchanged by this ticket) keeps seeing exactly the outcome it always did;
-      // `challengeDetected` is the new, separate signal (see this file's own
-      // BrowserAuthorityDispatchObservation.challengeDetected header) that lets
-      // buildLianaAskGoogle() -> comparative_cascade.ts's googleBlocks() halt retries instead of
-      // sending more automated traffic at a page that just told us to stop.
+      //
+      // D-BP213-XO-62 CORRECTION: `dispatchOutcome` used to intentionally stay 'no_result' here,
+      // on the reasoning that `challengeDetected` (below) was the "real" signal and every OTHER
+      // caller of this function should see byte-identical behavior to before D-BP152-050. That
+      // reasoning is exactly the defect XO-60 measured this same night: 'throttled' has been a
+      // literal in BrowserAuthorityDispatchOutcome/BrowserAuthorityAttemptOutcome since D-BP159-011
+      // FOR THIS EXACT CASE ("the source refused further queries (rate limit or verification
+      // challenge)") and was never once assigned anywhere in this repo -- so any consumer that
+      // reads `dispatchOutcome` alone (plow_mc_answerer.ts's resolveEnsembleAttemptOutcome, the T1
+      // per-authority ensemble receipt, browser_authority_adapter.ts, mcp_server.ts) could not
+      // distinguish a rate-limited Google from a Google that genuinely had nothing -- a ring that
+      // was refused service reporting itself as a silent no-answer, which is worse than a visibly
+      // missing ring under Convergence Theory. `challengeDetected` stays exactly as it was
+      // (unchanged field, unchanged callers: buildLianaAskGoogle() -> comparative_cascade.ts's
+      // googleBlocks() still reads it FIRST and halts retries on it, before ever looking at
+      // `dispatchOutcome` -- see that function's own `raw.challengeDetected` check, which this
+      // change does not touch) -- this only fixes the field that was quietly lying to every OTHER
+      // reader.
       if (r.challenge) {
-        console.warn('[browser-authority-main] structural verification/rate-limit challenge detected (google.com/sorry/) -- resolving null, reporting challengeDetected:true, not retrying from this leg.');
-        return { raw: null, dispatchOutcome: 'no_result', challengeDetected: true };
+        console.warn('[browser-authority-main] structural verification/rate-limit challenge detected (google.com/sorry/) -- resolving null, dispatchOutcome:throttled, reporting challengeDetected:true, not retrying from this leg.');
+        return { raw: null, dispatchOutcome: 'throttled', challengeDetected: true };
       }
       // BP149 D-BP149-037: RESULTS-ONLY EXTRACTIONS ARE REAL EXTRACTIONS.
       //
@@ -3973,10 +4178,12 @@ function registerIPCHandlers(): void {
   // inferred): runBrowserAuthorityQueryFromMain() is `return observed.raw` -- a deliberate
   // byte-identical-behavior wrapper (see its header). On a structural Google verification /
   // rate-limit challenge, runBrowserAuthorityQueryFromMainObserved() returns
-  // `{ raw: null, dispatchOutcome: 'no_result', challengeDetected: true }` (this file, the
-  // `if (r.challenge)` branch). The wrapper then returns `observed.raw`, i.e. bare `null`, and
-  // `challengeDetected` -- the ONE bit that separates "Google told us to stop" from "the page
-  // genuinely had no answer" -- is computed, console.warn'd, and dropped on the floor.
+  // `{ raw: null, dispatchOutcome: 'throttled', challengeDetected: true }` (this file, the
+  // `if (r.challenge)` branch -- D-BP213-XO-62: `dispatchOutcome` used to read 'no_result' here,
+  // the exact defect that ticket closed). The wrapper then returns `observed.raw`, i.e. bare
+  // `null`, and BOTH `dispatchOutcome` and `challengeDetected` -- the bits that separate "Google
+  // told us to stop" from "the page genuinely had no answer" -- are computed, console.warn'd, and
+  // dropped on the floor.
   //
   // For the IN-APP Liana Cycle that loss is already avoided: buildLianaAskGoogle() (above) calls
   // the Observed variant directly and rebuilds an honest non-null empty carrying the flag, which
@@ -4047,6 +4254,34 @@ function registerIPCHandlers(): void {
   // (event.sender.send, same push convention as 'ask-engine-progress') so the Founder watches the
   // cascade live instead of pasting console output back into a chat window.
   safeHandle('liana-terminal-run', async (event, { input, audible, steppedAudible, contingencyOperatorSurvey, ambiguityQueryTransport, mode }: { input: string; audible?: boolean; steppedAudible?: boolean; contingencyOperatorSurvey?: boolean; ambiguityQueryTransport?: 'google' | 'gemma'; mode?: 'automated' | 'assisted' }) => {
+    // -- D-BP211-BM0-h2cbpq8k-017: THE METHOD TREE'S SWITCH, CHECKED AT ITS REAL ENTRY --------
+    // This handler is the method tree's PRODUCTION entry -- the WO traced it end to end from the
+    // Founder's keystroke to the file on disk. Gating anywhere else would leave a live path
+    // around the switch, which is the same shape of defect as a filtered Monitor beside an
+    // unfiltered push hook.
+    //
+    // IT FAILS OPEN. Absent, unreadable or malformed settings all mean ON. Reaching this branch
+    // requires someone to have written `"enabled": false` on purpose, so the message says where
+    // that file is rather than making the next person hunt for why the terminal went quiet.
+    //
+    // IT RETURNS A WELL-FORMED OUTCOME, NOT A THROW. The renderer destructures this object; an
+    // undefined return would turn "switched off" into a crash.
+    if (!readMethodTreeEnabledFromSettings()) {
+      const off = `the method tree is switched OFF in ${methodTreeSettingsPath()} ("enabled": false). ` +
+        'Nothing was run and nothing was written. Set it back to true, or delete that file, to re-enable ' +
+        '(this switch fails OPEN, so an absent file means ON).';
+      console.warn('[liana-terminal] REFUSED: ' + off);
+      return {
+        question: String(input ?? ''),
+        verdict: null,
+        ok: false,
+        abstain: true,
+        freeText: true,
+        basis: 'METHOD TREE SWITCHED OFF -- no method was consulted and no authority was called.',
+        error: off,
+      };
+    }
+    // ------------------------------------------------------------------------------------------
     // D-BP152-051/BISHOP/seg-assisted-mode. `mode` is OPTIONAL and defaults to 'automated' --
     // an older renderer, or the Founder simply not toggling it, produces exactly the run this
     // handler produced before this parameter existed. See this ticket's own comment below (next
@@ -4060,16 +4295,15 @@ function registerIPCHandlers(): void {
     // D-BP151-023 (Stepped Audible). `steppedAudible` is likewise OPTIONAL/OFF-by-default and
     // independent of `audible` -- see stepped_audible.ts's header for what happens when both are
     // armed on the same run.
-    // D-BP152-039 REMOVAL, ATTRIBUTED (FD-BP152-20: "fix the gate properly so survey doesn't need
-    // the env var"; FD-BP152-09: "no modes and no flags"). `contingencyOperatorSurvey` is now
-    // ACCEPTED-AND-IGNORED -- liana_terminal_engine.ts's runLianaCycleQuestion() no longer reads
-    // it at all; Survey (Founder steps 2/3/4/6) runs unconditionally on every call. The parameter
-    // is still threaded through here (rather than deleted from this handler's destructure) because
-    // this is one of several lockstep callers (preload.ts, amplify.d.ts, LianaCycleTab.tsx, this
-    // file's own contingency-operator test) and this ticket kept the parameter accepted rather
-    // than half-removing it piecemeal -- see liana_terminal_engine.ts's own D-BP152-039 comment.
-    // The formerly-cited isContingencyOperatorSurveySpliceEnabled()/CONTINGENCY_OPERATOR_SURVEY_
-    // SPLICE gate no longer exists.
+    // D-BP164-M0-046 AMENDMENT to the D-BP152-039 comment this replaces: `contingencyOperatorSurvey`
+    // is NO LONGER ignored -- see liana_terminal_engine.ts's resolveSurveyEnabled() for the gate it
+    // now drives (BP158/BP164: Survey no longer runs unconditionally; default OFF, cache checked
+    // first, this flag only arms a FRESH live Survey call when no cached answer exists). This
+    // handler still passes it straight through unchanged -- no renderer control sets it today (its
+    // old UI toggle was removed D-BP152-012 and never rebuilt), so production continues to send
+    // `undefined`, which resolves to the new default (OFF) with no change needed here. A future
+    // renderer control (there is none yet) could set it to re-arm Survey per the Founder's own
+    // choice; see liana_terminal_engine.ts's own D-BP164-M0-046 comment for the full ruling.
     // D-BP151-032 (Ambiguity Query Transport). `ambiguityQueryTransport` is likewise OPTIONAL --
     // UNCHANGED by this ticket (a separate, still-live gate) -- see
     // liana_terminal_engine.ts's resolveAmbiguityQueryTransport() for the gate (undefined ->
@@ -4465,6 +4699,26 @@ function registerIPCHandlers(): void {
   // 'liana-script-list-registry' is read-only: lists whatever library/method_registry.ts holds
   // AT THE MOMENT OF THE CALL (no caching here), so the composer panel shows an id a concurrent
   // dispatch registers after this ticket lands without this handler changing.
+  // D-BP211-BM0-h2cbpq8k-017. THE METHOD TREE'S SWITCH, OVER IPC.
+  // Named `method-tree:*` and NOT `liana-cycle:*` on purpose: `liana-cycle:set-enabled` already
+  // exists and belongs to the PLOW-SIDE scheduler. Two engines answering one channel name is the
+  // exact collision BP211 spent a dispatch untangling; rebuilding it in the IPC namespace right
+  // after taking it apart in prose would be indefensible.
+  safeHandle('method-tree:get-enabled', async () => ({
+    enabled: readMethodTreeEnabledFromSettings(),
+    settingsPath: methodTreeSettingsPath(),
+    failsOpen: true,
+  }));
+  safeHandle('method-tree:set-enabled', async (_event, enabled: boolean) => {
+    // Strict `=== true`. Anything else is OFF here, which is the opposite of the READ path's
+    // rule on purpose: a deliberate write should be unambiguous, while an absent file should not
+    // be read as a decision.
+    writeMethodTreeEnabledToSettings(enabled === true);
+    // Read it BACK rather than echoing the argument. Reporting what we were asked to do instead
+    // of what is now true on disk is how this estate ends up with buttons that say success.
+    return { ok: true, enabled: readMethodTreeEnabledFromSettings(), settingsPath: methodTreeSettingsPath() };
+  });
+
   safeHandle('liana-script-list-registry', async () => listComposerRegistry());
 
   // 'liana-script-run' is the ONE new run path. `steps` undefined/empty = THE DEFAULT -- STILL
@@ -5566,6 +5820,9 @@ ${args.teachingText}
   // -- AI Dispatch IPC (BP060 Application 002 Steps 3+4 ? UI-8 backend) ----
   registerAiDispatchIPC();
 
+  // -- Slot Registry IPC (D-BP165-M0-036: swappable-brains multi-slot layer) --------------------
+  registerSlotRegistryIPC();
+
   // -- Query Capture Archive IPC (D-BP151-037/BISHOP/seg-query-capture-archive) --
   registerQueryCaptureIPC();
 
@@ -5629,6 +5886,12 @@ ${args.teachingText}
   // -- D-BP157-033: mesh auto-spawn tool-execution consent (default: OFF -- separate from the
   //    LB_MESH_AUTO_SPAWN_ENABLED kill switch AND from AutoUpdateConfig.autoUpdates) -----------
   registerMeshAutoSpawnConsentIpc();
+  // -- D-BP202-M0-01-h2cbp8us-001: remote-administration consent (default: OFF -- the THIRD
+  //    consent, separate from both registrations above) ----------------------------------------
+  registerMeshRemoteAdminConsentIpc();
+  // -- D-BP202-BM02-014: HardWire Map package manifest + preselection engine (read-only; no
+  //    UI here, two sibling dispatches own the downloader and the preinstall screen) -----------
+  registerHardwireMapIpc();
   // -- D-BP156-M0-008: HARDWIRE-24 mesh, Bishop-dispatch WAN relay hook (auto-spawn is
   //    default-DISABLED via LB_MESH_AUTO_SPAWN_ENABLED -- see bishop_dispatch_handler.ts) ------
   registerBishopDispatchMeshHook();
@@ -5650,6 +5913,10 @@ ${args.teachingText}
 
   // -- Kitchen Table? + Atlas? + P2P (BP052 v0.1.8) ------------------------
   registerKitchenTableIpc(ipcMain);
+  // -- Cook Event? ledger (D-BP165-M0-014, BP161 4b) -------------------------
+  registerCookEventIpc(ipcMain);
+  // -- Mark-Back Vote? ledger (D-BP165-M0-017, Phase Two) --------------------
+  registerMarkBackIpc(ipcMain);
 
   // -- LB Account + Frontier Node IPC (BP065 Part A/B ? SEG-C2a/B2b) ---------
 
@@ -8637,6 +8904,80 @@ ${args.teachingText}
       return { ok: false as const, steps: [], error: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  // D-BP167-M0-049/BISHOP/seg-composer-persistence -- THE COMPOSER, PERSISTED. A channel wholly
+  // separate from 'liana-script-run' above -- saving a stack never runs it, and nothing here
+  // changes what running a stack computes. Saving never promotes into method_registry.ts; see
+  // composer_store.ts's own header for the full boundary.
+  safeHandle('liana-composer-save-stack', async (_event, args: {
+    name: string;
+    steps: string[];
+    provenance: { runInput: string };
+  }) => {
+    try {
+      return saveComposerStack({
+        name: args?.name ?? '',
+        steps: args?.steps ?? [],
+        provenance: args?.provenance ?? { runInput: '' },
+      });
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // READ-ONLY: nothing on this channel writes, edits, or deletes a saved Composer stack file.
+  safeHandle('liana-composer-list-stacks', async () => {
+    try {
+      const stacks = listComposerStacks().map((r) => ({
+        name: r.name,
+        version: r.version,
+        steps: r.steps,
+        savedBy: r.savedBy,
+        savedAt: r.savedAt,
+        provenance: r.provenance,
+        promoted: r.promoted,
+      }));
+      return { ok: true as const, stacks };
+    } catch (e) {
+      return { ok: false as const, stacks: [], error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // D-BP164-M0-002/BISHOP/SEG-DA -- open-at-login toggle. get-state returns everything the
+  // Settings UI needs to render in one round trip: the member's stored preference, the live
+  // OS-verified state (straight from app.getLoginItemSettings()), the legacy Scheduled Task
+  // detection result, and the ready-to-paste elevated removal command (never executed here --
+  // see legacy_autostart_task_detector.ts's header for why this process cannot run it itself).
+  safeHandle('open-at-login:get-state', async () => {
+    try {
+      const preference = getOpenAtLoginPreference();
+      const osState = getOSLoginItemState();
+      const legacyTask = await detectLegacyAutostartTask();
+      return {
+        ok: true as const,
+        preference,
+        osState,
+        legacyTask,
+        legacyTaskRemovalCommand: LEGACY_AUTOSTART_TASK_REMOVAL_COMMAND,
+      };
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  safeHandle('open-at-login:set', async (_event, desired: boolean) => {
+    try {
+      return await applyPreferenceToOS(desired === true);
+    } catch (err) {
+      return {
+        ok: false as const,
+        reason: undefined,
+        preference: getOpenAtLoginPreference(),
+        osState: getOSLoginItemState(),
+        legacyTask: { present: false, taskName: LEGACY_AUTOSTART_TASK_NAME, queryError: err instanceof Error ? err.message : String(err) },
+      };
+    }
+  });
   // --- END APPEND ZONE: IPC-HANDLER --------------------------------------
 }
 
@@ -10385,6 +10726,11 @@ app.whenReady().then(async () => {
   // IPC-HANDLER append zone -- see that function's header for the full contract. This call
   // cannot throw and never blocks app startup either way.
   getCrystalStore();
+  // D-BP164-M0-002/BISHOP/SEG-DA: self-heal the OS login-item registration to match the stored
+  // openAtLogin preference on every boot (covers a packaged reinstall/update resetting
+  // Electron's own login-item state without touching this module's JSON file). Never throws --
+  // see reconcileOpenAtLoginAtStartup()'s own header.
+  await reconcileOpenAtLoginAtStartup();
   // --- END APPEND ZONE: INIT-CALL -----------------------------------------
 
   // SAGA 10 BP045 W1 ? Register mnemosyne:// + mnemo:// deep-link protocols (BP065)

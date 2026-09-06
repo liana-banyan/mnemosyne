@@ -23,6 +23,7 @@ import {
   acceptAnswer,
   receiveDiagnosis,
   receiveAnswer,
+  checkDiagnosisArtifact,
 } from './diagnosis_engine';
 import { getMarksBalance } from './bounty_substitution';
 import { registerPeerServerHooks } from '../federation/peer_server';
@@ -120,6 +121,13 @@ export function registerDiagnosisIpc(): void {
   });
 
   // ── Register peer_server hooks for incoming Diagnosis objects ─────────────────
+  //
+  // D-BP202-BM02-007 Part B: these three hooks used to catch-log-and-SWALLOW every error, which
+  // is why peer_server.ts's /api/diagnosis/* routes always returned {ok:true} regardless of
+  // whether the write actually happened (the estate's silent-partial-delivery failure class).
+  // They now catch-log-and-RETHROW: the try/catch stays (so the console.error diagnostic is not
+  // lost), but the error now also propagates out to peer_server.ts's route handler, which turns
+  // it into a truthful non-200 HTTP response instead of the old unconditional 200.
   registerPeerServerHooks({
     onDiagnosisPost: async (data) => {
       try {
@@ -127,6 +135,7 @@ export function registerDiagnosisIpc(): void {
         broadcastDiagnosisEvent('diagnosis:incoming', data);
       } catch (err) {
         console.error('[DiagnosisIPC] receiveDiagnosis error:', err);
+        throw err;
       }
     },
     onDiagnosisAnswer: async (data) => {
@@ -136,6 +145,7 @@ export function registerDiagnosisIpc(): void {
         broadcastDiagnosisEvent('diagnosis:answer-received', { diagnosisId, answerId: answer.id });
       } catch (err) {
         console.error('[DiagnosisIPC] receiveAnswer error:', err);
+        throw err;
       }
     },
     onDiagnosisUpvote: async (data) => {
@@ -144,8 +154,15 @@ export function registerDiagnosisIpc(): void {
         await upvoteAnswer(diagnosisId, answerId);
       } catch (err) {
         console.error('[DiagnosisIPC] upvote error:', err);
+        throw err;
       }
     },
+    // D-BP202-BM02-007 Part B: read-back so a sender can confirm an artifact landed. Same auth
+    // discipline as the write hooks above (enforced upstream, in peer_server.ts's
+    // resolveSignedDiagnosisRequest, before this hook is ever called). Returns only
+    // existence/byte-length/sha256 -- checkDiagnosisArtifact() never reads the id back into a
+    // path without re-validating it (diagnosis_engine.ts's assertSafeDiagnosisId).
+    onDiagnosisVerify: async (id) => checkDiagnosisArtifact(id),
   });
 
   console.log('[DiagnosisIPC] v0.4.0 handlers registered');
