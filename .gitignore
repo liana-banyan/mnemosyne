@@ -85,3 +85,18 @@ BISHOP_MEMORY_MIRROR/
 session_transcripts/
 TRANSCRIPTS_MD/
 
+
+# Rule 66 versioning siblings: local history, never tracked.
+# Founder ruling BP221 (2026-09-06). LianaBanyanPlatform already carries this rule;
+# without it 181 siblings show as untracked here forever and every seat re-decides.
+*.superseded.*
+_superseded/
+
+# Never source control. BP221, same pass as the Rule 66 rule above.
+# BP159_M3_BUILD_ARTIFACTS_*: 350 MB of .exe installers and blockmaps. A plain
+#   git add -A writes these into history permanently and getting them back out
+#   means rewriting it.
+# .shadow_quarantine_BP155: the credential-leak quarantine. The one tree in this
+#   repo whose entire purpose is to hold what must not be published.
+BP159_M3_BUILD_ARTIFACTS_*/
+.shadow_quarantine_BP155/
