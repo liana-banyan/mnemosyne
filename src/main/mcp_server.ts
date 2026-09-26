@@ -15,12 +15,13 @@
  *     HARDWIRE-05 Prior Work Blood Rule check found this real 3-voter Ollama implementation
  *     already existed and matches this tool's exact (question, candidateAnswer) contract; the
  *     ticket's premise that it might have "no real implementation" is REFUTED.
- *   - mnem_share_eblet_to_peer  -> checked federation/*, keys_engines/peer_artifact_*,
- *     mesh_test/wan_dispatch.ts, kitchen_table/p2p_discovery.ts: rich peer/mesh infrastructure
- *     exists for presence, app-update-artifact transfer, and batch mesh-test dispatch, but NONE
- *     of it shares a single existing verified eblet (by id) to one peer on consent. No real
- *     implementation exists behind this tool -- it stays an HONEST, EXPLICIT not_implemented
- *     stub (a truthful stub beats a lying wire) rather than an invented concordance.
+ *   - mnem_share_eblet_to_peer  -> REAL, two directions (the KN-BP147-M1 not_implemented stub is history):
+ *       pull (D-BP223-BM0-X029-007): copies a peer's mesh-shared Hollerith cards into this node's silo, by tag,
+ *         keyword or connector, each file checked against the peer's signed manifest;
+ *       push (D-BP223-PQ005-012-X041, Founder 2026-09-26 "make WORK the one-click share-to-a-peer"): offers ONE of
+ *         this node's own verified cards to ONE peer; it lands there only on that peer's consent (same owner, an
+ *         allow-listed peer, or a person pressing accept on the held offer) and the peer answers with a receipt it
+ *         signs, which this node verifies and appends to {userData}\share_receipts\sent.jsonl.
  *
  * Transport strategy in Electron context:
  *  - HTTP/StreamableHTTP on port 11456 (primary for running app connections)
@@ -37,6 +38,8 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { queryEbletStore, getEbletIndexStats, writeVerifiedEblet, getIndexFreshnessSignal, forceRefreshEbletIndex } from './mnem_eblet_store';
 import { runGiantConcordance, type ConcordanceResult } from './plow/giant_concordance';
+// D-BP223-BM0-X030-059 INCEPTION: Stone Tablet exact-address lookup, called first inside mnem_query_substrate.
+import { stoneTabletMatch, gateStoneTabletByRank1, decideRuleB, type StoneTabletMatch, type RuleBDecision } from './mnem_stone_tablet_lookup';
 // D-BP154-074/BISHOP-SEG/S74/seg-ambient -- AMBIENT BROWSER CAPTURE. See ambient_capture_auth.ts's
 // own header for why this is a SEPARATE, narrower-privileged key from _authToken above, and
 // ambient_capture.ts's own header for why recordAmbientBrowserCapture() is a NEW CALLER into the
@@ -175,7 +178,18 @@ function buildMcpServer(): McpServer {
       // response carries that fact alongside the results rather than returning results that
       // LOOK current with no way for the caller to tell otherwise.
       const freshness = getIndexFreshnessSignal();
-      const result: { eblets: string[]; error?: string; indexStale?: boolean; staleReason?: string } = {
+      // D-BP223-BM0-X030-059 INCEPTION (Founder k/dd7cc937, k/97994e07): Stone Tablet lookup FIRST. An exact tablet hit
+      // hands over the ruling's address (k/ id, connector, path) before any eblet search result; a non-exact one is omitted.
+      // D-BP223-BM0-X030-103 (XO addendum, X030-100 measurement): the tablet never answers alone. It is served as stoneTablet
+      // only when it names the same ruling as the ranked search's rank 1 (eblets[0]); otherwise it is a stoneTabletHint.
+      const stone = stoneTabletMatch(args.question);
+      const gated = gateStoneTabletByRank1(stone, eblets[0]);
+      // D-BP223-BM0-X030-124 RULE B: this tool has ONE ranking (queryEbletStore). ruleB answers only when the exact tablet names
+      // the same ruling as eblets[0]; otherwise it says "I don't know" with the top candidates as hints. eblets are unchanged.
+      const ruleB = decideRuleB(args.question, { tablet: stone, rank1: eblets[0] ?? null, rankedTop: eblets.slice(0, 3) });
+      const result: { stoneTablet?: StoneTabletMatch; stoneTabletHint?: StoneTabletMatch; ruleB: RuleBDecision; eblets: string[]; error?: string; indexStale?: boolean; staleReason?: string } = {
+        ...gated,
+        ruleB,
         eblets,
         ...(error ? { error } : {}),
         ...(freshness.stale ? { indexStale: true, staleReason: freshness.reason } : {}),
@@ -313,14 +327,72 @@ function buildMcpServer(): McpServer {
   server.registerTool(
     'mnem_share_eblet_to_peer',
     {
-      description: 'Share a verified eblet to a peer node (opt-in, user-consent-gated).',
+      description:
+        'Share Hollerith card eblets with a peer, both directions. PUSH (default when ebletId names one card and no tags or ' +
+        'keywords are given; D-BP223-PQ005-012-X041): offer ONE of this node\'s own mesh-shareable cards to ONE peer; it lands ' +
+        'there only on that peer\'s consent (same owner, allow-listed, or a person accepting the held offer) and the peer answers ' +
+        'with a receipt it signs, verified here and appended to {userData}\\share_receipts\\sent.jsonl. PULL (tags or keywords, or ' +
+        'mode "pull"; D-BP223-BM0-X029-007): copy a peer\'s mesh-shared cards into this node\'s silo, each file verified against ' +
+        'the peer\'s signed manifest. Needs peerBaseUrl (e.g. http://192.168.86.45:7474) or a saved peerId.',
       inputSchema: {
-        ebletId: z.string().describe('ID of the eblet to share'),
-        peerId: z.string().optional().describe('Target peer ID (omit to broadcast to trusted peers)'),
+        ebletId: z.string().optional().describe('A 32-hex Hollerith card hex connector: the card to push, or the card to pull'),
+        peerId: z.string().optional().describe('Peer id; for a push it resolves the saved constellation address and known key'),
+        peerBaseUrl: z.string().optional().describe('Peer server base URL, e.g. http://192.168.86.45:7474'),
+        mode: z.enum(['push', 'pull']).optional().describe('push = offer my card to the peer; pull = copy the peer\'s cards here'),
+        file: z.string().optional().describe('push only: the card by file name in this node\'s silo, instead of ebletId'),
+        tags: z.array(z.string()).optional().describe('pull: every tag must match, e.g. ["hollerith-card","business"]'),
+        keywords: z.array(z.string()).optional().describe('pull: any keyword may match a tag, keyword or title word'),
+        expectedPublisherKeyHex: z.string().optional().describe('The peer\'s Thorax public key, if already known (pull: publisher; push: receiver)'),
+        limit: z.number().optional(),
       },
     },
-    async (_args: { ebletId: string; peerId?: string }) => {
+    async (args: { ebletId?: string; peerId?: string; peerBaseUrl?: string; mode?: 'push' | 'pull'; file?: string; tags?: string[]; keywords?: string[]; expectedPublisherKeyHex?: string; limit?: number }) => {
       pushRecentCall('mnem_share_eblet_to_peer', 'mcp_client');
+      // D-BP223-PQ005-012-X041: the PUSH. One card, one peer, the receiver's consent, a signed receipt back.
+      const wantsPush = args.mode === 'push' || (args.mode !== 'pull' && (args.ebletId || args.file) && !args.tags?.length && !args.keywords?.length);
+      if (wantsPush) {
+        try {
+          const ps = await import('./federation/peer_server');
+          const receipt = await ps.pushEbletToPeerFromThisNode({ peerBaseUrl: args.peerBaseUrl, peerId: args.peerId, connector: args.ebletId, file: args.file, expectedReceiverKeyHex: args.expectedPublisherKeyHex ?? null });
+          const success = receipt.receiptVerified && (receipt.action === 'written' || receipt.action === 'already_present' || receipt.action === 'replaced_with_superseded_sibling' || receipt.action === 'held_for_consent');
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ success, mode: 'push', receipt }) }] };
+        } catch (e) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, mode: 'push', reason: 'push threw: ' + String(e) }) }] };
+        }
+      }
+      // D-BP223-BM0-X029-007: the stub below is REPLACED. Dynamic imports keep peer_server/announce_frame (Electron-bound)
+      // out of this module's static graph, the same pattern mnem_ask_browser_authority uses below.
+      if (args.peerBaseUrl && (args.ebletId || args.tags?.length || args.keywords?.length)) {
+        try {
+          const lib = await import('./federation/hollerith_library_share');
+          const ps = await import('./federation/peer_server');
+          const af = await import('./federation/announce_frame');
+          const ks = await import('./thorax/ed25519_keypair');
+          const selfId = ps.getRegisteredPeerId() ?? ('self-' + ks.getOrCreateKeypair().public_key_hex.slice(-16));
+          const receipt = await lib.pullLibraryFromPeer({
+            peerBaseUrl: args.peerBaseUrl,
+            senderPeerId: selfId,
+            signPayload: (seed, payload) => af.signAnnouncePayload(seed, payload)?.signedHex ?? null,
+            query: { tags: args.tags, keywords: args.keywords, connectors: args.ebletId ? [args.ebletId] : undefined, limit: args.limit },
+            destDir: ps.hollerithSiloDir(),
+            expectedPublisherKeyHex: args.expectedPublisherKeyHex ?? null,
+            // D-BP223-BM0-X030-207: keep the served ORIGIN + TRAIL and append this copy's TRAIL hop, signed with this node's Thorax key.
+            tags: await (async () => {
+              const tg = await import('./federation/eblet_provenance_tags');
+              const kp = ks.getOrCreateKeypair();
+              return { tagsDir: ps.hollerithTagsDir(), signer: tg.signerFromKeypair(selfId, kp.public_key_hex, kp.private_key_hex) };
+            })(),
+          });
+          let indexRefresh: unknown = null;
+          if (receipt.written > 0) {
+            try { indexRefresh = await forceRefreshEbletIndex(); } catch (e) { indexRefresh = { error: String(e) }; }
+          }
+          const summary = { success: !receipt.error && receipt.refused === 0, publisherPeerIdRequested: args.peerId ?? null, receipt: { ...receipt, files: receipt.files.filter((f) => f.action === 'refused').slice(0, 20) }, indexRefresh };
+          return { content: [{ type: 'text' as const, text: JSON.stringify(summary) }] };
+        } catch (e) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, reason: 'library pull threw: ' + String(e) }) }] };
+        }
+      }
       // KN-BP147-M1: HARDWIRE-05 Prior Work Blood Rule check (this session) searched
       // federation/* (peer_server.ts, constellation_discovery.ts, presence_autoconnect.ts,
       // mic_dispatcher.ts), keys_engines/peer_artifact_client.ts + peer_artifact_server.ts,
@@ -331,13 +403,14 @@ function buildMcpServer(): McpServer {
       // contract. No real implementation exists behind this tool. Left as an honest, explicit
       // not_implemented stub per the ticket's own instruction ("a truthful stub beats a lying
       // wire") -- HARD RULE observed: nothing invented here.
+      // D-BP223-BM0-X029-007: reached only when the call lacks peerBaseUrl or any selector. The pre-X029-007 text said
+      // not_implemented; that is no longer true, so this now says exactly what is missing.
       const result: { success: boolean; reason?: string } = {
         success: false,
         reason:
-          'not_implemented: no real single-eblet peer-share function exists in this repo as of ' +
-          'KN-BP147-M1 (checked federation/*, keys_engines/peer_artifact_*, mesh_test/wan_dispatch.ts, ' +
-          'kitchen_table/p2p_discovery.ts — all cover presence, app-update-artifact transfer, or ' +
-          'batch mesh-test dispatch, not single-eblet peer sharing by id)',
+          'missing arguments: pass peerBaseUrl (e.g. http://192.168.86.45:7474) and at least one of ebletId (32-hex ' +
+          'connector), tags, keywords. The publisher must run MnemosyneC with POST /api/library/search and /api/library/fetch ' +
+          '(D-BP223-BM0-X029-007).',
       };
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     },

@@ -471,6 +471,25 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.invoke('mesh-trust:get-settings'),
   setMeshTrustAllowUnauthenticatedLanDiscovery: (allow: boolean): Promise<{ allowUnauthenticatedLanDiscovery: boolean }> =>
     ipcRenderer.invoke('mesh-trust:set-allow-unauthenticated-lan-discovery', allow),
+  // D-BP223-BM0-X030-073 P1: "Share presence with my other machines" (the relay beacon switch; peer_server.ts).
+  getPresenceShare: (): Promise<{ enabled: boolean; source: string; sameOwnerMesh: boolean; sameOwnerPeers: number; label: string }> =>
+    ipcRenderer.invoke('presence-share:get'),
+  setPresenceShare: (enabled: boolean): Promise<{ enabled: boolean; source: string; sameOwnerMesh: boolean; sameOwnerPeers: number; label: string }> =>
+    ipcRenderer.invoke('presence-share:set', enabled),
+  // D-BP223-BM0-X031-024: default-OFF network features (answerOtherMembersQuestions, sendStatusReport, syncWithLianaBanyan).
+  // A change takes effect at the next app start.
+  getNetworkFeatures: (): Promise<Array<{ key: string; enabled: boolean; source: string; label: string }>> =>
+    ipcRenderer.invoke('network-features:get'),
+  setNetworkFeature: (key: string, enabled: boolean): Promise<Array<{ key: string; enabled: boolean; source: string; label: string }>> =>
+    ipcRenderer.invoke('network-features:set', key, enabled),
+
+  // D-BP223-BM0-X029-019 (Founder k/d74e863d, k/fbce54d5): Nexus Authorities, how each flagship is reached. The user's
+  // own choice per provider (MANUAL or AUTOMATIC) and the user's OWN keys; no channel ever returns a key. See
+  // src/main/flagship_authorities/flagship_authorities_store.ts.
+  flagshipAuthoritiesList: (): Promise<{ ok: boolean; authorities: unknown[] }> => ipcRenderer.invoke('flagship-authorities:list'),
+  flagshipAuthoritiesSetAutomatic: (providerId: string, on: boolean): Promise<unknown> => ipcRenderer.invoke('flagship-authorities:set-automatic', providerId, on),
+  flagshipAuthoritiesSaveKey: (providerId: string, rawKey: string): Promise<unknown> => ipcRenderer.invoke('flagship-authorities:save-key', providerId, rawKey),
+  flagshipAuthoritiesRemoveKey: (providerId: string): Promise<unknown> => ipcRenderer.invoke('flagship-authorities:remove-key', providerId),
 
   // D-BP157-033: mesh auto-spawn tool-execution consent -- SEPARATE from Mesh Trust above (that
   // one governs whether an unsigned peer message is accepted at all; this one governs, for a
@@ -493,6 +512,22 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.invoke('mesh-remote-admin-consent:get-settings'),
   setRemoteAdministrationConsentGranted: (granted: boolean): Promise<import('./federation/mesh_remote_admin_consent').MeshRemoteAdminConsentSettings> =>
     ipcRenderer.invoke('mesh-remote-admin-consent:set-consent-granted', granted),
+
+  // D-BP223-PQ005-012-X041: share-to-a-peer. The FOURTH consent (an offered card landing in this silo: same owner lands,
+  // an enrolled or known peer is held for a press, a stranger is refused), the inbox that press acts on, and the one-click
+  // push itself (offer one of this node's own cards to one peer; the peer's signed receipt comes back verified).
+  getShareReceiveSettings: (): Promise<import('./federation/share_receive_consent').ShareReceiveSettings> =>
+    ipcRenderer.invoke('share-receive:get-settings'),
+  setShareReceiveSettings: (next: Partial<import('./federation/share_receive_consent').ShareReceiveSettings>): Promise<import('./federation/share_receive_consent').ShareReceiveSettings> =>
+    ipcRenderer.invoke('share-receive:set-settings', next),
+  listHeldShareOffers: (): Promise<import('./federation/hollerith_library_share').HeldOffer[]> =>
+    ipcRenderer.invoke('share-inbox:list'),
+  acceptHeldShareOffer: (senderPeerId: string, file: string): Promise<{ ok: boolean; action?: string; connector?: string; reason?: string }> =>
+    ipcRenderer.invoke('share-inbox:accept', senderPeerId, file),
+  rejectHeldShareOffer: (senderPeerId: string, file: string): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('share-inbox:reject', senderPeerId, file),
+  pushEbletToPeer: (args: import('./federation/peer_server').PushEbletArgs): Promise<import('./federation/hollerith_library_share').PushReceipt & { receiptPath: string | null }> =>
+    ipcRenderer.invoke('share:push-eblet', args),
 
   // D-BP202-BM02-014: HardWire Map -- package manifest + machine-aware preselection SPINE. Read-only
   // from the renderer's side; no UI is wired to these calls yet (a sibling dispatch owns the
@@ -1546,6 +1581,117 @@ contextBridge.exposeInMainWorld('amplify', {
     }> => ipcRenderer.invoke('ai-dispatch:answer-cache-meter-summary'),
   },
 
+  // ── My Savings Receipt (D-BP223-BM09-ARCHBISHOP-004-016, REDO of 004-010) ───────────────
+  // Founder-ordered launch incentive: "DOWNLOAD IT and PROVE IT and POST IT" -- a MEASURED,
+  // signed, hash-chain-verified receipt (separate namespace from aiDispatch above, which stays
+  // untouched; this reads the SAME substrate_savings_receipt.ts log through its own IPC channel).
+  savingsReceipt: {
+    getSummary: (args: { window: 'all' | 'hour' | 'day' | 'week' | 'fortnight' | 'month' | 'quarter' }): Promise<{
+      ok: boolean;
+      error?: string;
+      window?: string;
+      empty?: boolean;
+      chain_ok?: boolean;
+      chain_broken_at_index?: number | null;
+      chain_head?: string;
+      chain_records?: number;
+      first_record_utc?: string | null;
+      days_in_use?: number;
+      milestones_reached?: {
+        hour: boolean; day: boolean; week: boolean; fortnight: boolean; month: boolean; quarter: boolean;
+      };
+      aggregate?: {
+        window: string;
+        from_ts: string;
+        to_ts: string;
+        total_queries: number;
+        by_tier: Record<string, number>;
+        flagship_calls_avoided: number;
+        flagship_calls_made: number;
+        cost_avoided_usd: number;
+        records_with_measured_saving: number;
+        records_excluded_unmeasured: number;
+        records_excluded_unmeasured_by_tier: Record<string, number>;
+        measurement_scope: string;
+        confidence: string;
+      } | null;
+      receipt_block?: string | null;
+    }> => ipcRenderer.invoke('savings-receipt:summary', args),
+  },
+
+  // ── Prove It, "a question somebody else asked" (D-BP223-BM04-X033S3-009) ────────────────
+  // Separate namespace/IPC channels (PROVEIT_CHANNELS, src/shared/proveit_contract.ts) from
+  // savingsReceipt/scavengerHunt above -- the card store and outbox this namespace reads/writes
+  // are its own files under {userData}/substrate/proveit/, never the savings-receipt billing log.
+  proveIt: {
+    ask: (req: import('../shared/proveit_contract').ProveItAskRequest): Promise<import('../shared/proveit_contract').ProveItAskResponse> =>
+      ipcRenderer.invoke('proveit:ask', req),
+    askThisOne: (req: import('../shared/proveit_contract').ProveItAskThisOneRequest): Promise<import('../shared/proveit_contract').ProveItAskThisOneResponse> =>
+      ipcRenderer.invoke('proveit:ask-this-one', req),
+    addToSubstrate: (req: import('../shared/proveit_contract').ProveItAddToSubstrateRequest): Promise<import('../shared/proveit_contract').ProveItAddToSubstrateResponse> =>
+      ipcRenderer.invoke('proveit:add-to-substrate', req),
+    listSomebodyElse: (req?: import('../shared/proveit_contract').ProveItListRequest): Promise<import('../shared/proveit_contract').ProveItListResponse> =>
+      ipcRenderer.invoke('proveit:list-somebody-else', req),
+    vote: (req: import('../shared/proveit_contract').ProveItVoteRequest): Promise<import('../shared/proveit_contract').ProveItVoteResponse> =>
+      ipcRenderer.invoke('proveit:vote', req),
+    categories: (): Promise<import('../shared/proveit_contract').ProveItCategoriesResponse> =>
+      ipcRenderer.invoke('proveit:categories'),
+    suggestCategory: (text: string): Promise<{ ok: boolean; suggestion?: { text: string; suggestedAt: string; status: 'pending' }; error?: string }> =>
+      ipcRenderer.invoke('proveit:suggest-category', text),
+    getFlags: (): Promise<{ ok: boolean; settings?: { substrateLive: boolean }; error?: string }> =>
+      ipcRenderer.invoke('proveit:get-flags'),
+    // X039 (D-BP223-PQ004-006): persona picker + "Take it back" (PROVEIT_CHANNELS.listMyPersonas / .takeBack)
+    listMyPersonas: (): Promise<import('../shared/proveit_contract').ProveItListPersonasResponse> =>
+      ipcRenderer.invoke('proveit:list-my-personas'),
+    takeBack: (req: import('../shared/proveit_contract').ProveItTakeBackRequest): Promise<import('../shared/proveit_contract').ProveItTakeBackResponse> =>
+      ipcRenderer.invoke('proveit:take-back', req),
+    // Ticker (spec Section 3): one push event per step, streamed live -- never a batch.
+    onTicker: (handler: (event: import('../shared/proveit_contract').ProveItTickerEvent) => void): (() => void) => {
+      const h = (_evt: Electron.IpcRendererEvent, data: import('../shared/proveit_contract').ProveItTickerEvent) => handler(data);
+      ipcRenderer.on('proveit:ticker', h);
+      return () => ipcRenderer.removeListener('proveit:ticker', h);
+    },
+  },
+
+  // ── Scavenger Hunt / "Haystack Needle" test #2 (D-BP223-BM0-X033-022) ───────────────────
+  // Zero-model-call substrate phrase search + "did you mean" answer-with-sources. Separate
+  // namespace/IPC channels from savingsReceipt above -- this never touches the billing log.
+  scavengerHunt: {
+    search: (args: { phrase: string }): Promise<{
+      ok: boolean;
+      error?: string;
+      raw_phrase?: string;
+      normalized_phrase?: string;
+      aliases_fired?: string[];
+      substrate_empty?: boolean;
+      candidates?: Array<{ index: number; question: string; similarity: number; wouldAutoServe: boolean }>;
+      tokens_used?: number;
+      latency_ms?: number;
+      model_calls?: 0;
+    }> => ipcRenderer.invoke('scavenger-hunt:search', args),
+    select: (args: {
+      question: string;
+      raw_phrase: string;
+      normalized_phrase: string;
+      candidates_shown: number;
+      aliases_fired?: string[];
+    }): Promise<{
+      ok: boolean;
+      error?: string;
+      question?: string;
+      answer?: string;
+      sources?: string[];
+      tokens_used?: number;
+      latency_ms?: number;
+      model_calls?: 0;
+    }> => ipcRenderer.invoke('scavenger-hunt:select', args),
+    popular: (args?: { limit?: number }): Promise<{
+      ok: boolean;
+      error?: string;
+      popular?: Array<{ normalized_phrase: string; count: number }>;
+    }> => ipcRenderer.invoke('scavenger-hunt:popular', args),
+  },
+
   // ── Query Capture Archive (D-BP151-037/BISHOP/seg-query-capture-archive) ──
   // Local-only, same-machine, same-user IPC. Never reaches federation/relay code -- see
   // query_capture_ipc.ts's own header for why that boundary is deliberate.
@@ -2043,6 +2189,29 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.on('mesh-test-complete', handler);
     return () => ipcRenderer.removeListener('mesh-test-complete', handler);
   },
+
+  // D-BP223-BM0-X010-020-KAPPA: measured Cohen's kappa receipt for the proofs screen's
+  // "BP074 Sound Barrier" trophy. Returns { measured:false } (never a fabricated number)
+  // when no receipt resource is present.
+  getKappaReceipt: (): Promise<{
+    measured: boolean;
+    measuredUtc?: string;
+    method?: string;
+    primary?: { label: string; n: number; kappa: number; ci95: [number, number] };
+    corroboration?: Array<{ label: string; n: number; kappa: number; ci95: [number, number] }>;
+  }> => ipcRenderer.invoke('proofs:get-kappa-receipt'),
+
+  // D-BP223-BM0-X010-026-HUMANKAPPA: Rule 66 sibling of getKappaReceipt above -- the REAL
+  // AI-vs-human Kappa (Founder's hand-labeled 50-item sheet vs. gemma4:12b free path, same 50
+  // out-of-sample items). Same "measured:false, never a fabricated number" contract.
+  getKappaHumanReceipt: (): Promise<{
+    measured: boolean;
+    measuredUtc?: string;
+    method?: string;
+    primary?: { label: string; n: number; kappa: number; ci95: [number, number] };
+    raters?: string[];
+    accuracy?: Record<string, { correct: number; total: number; rate: number }>;
+  }> => ipcRenderer.invoke('proofs:get-kappa-human-receipt'),
 
   // SEG-2 v0.1.57: Test It Out — substrate-warming 5-question workout
   runTestItOut: (): Promise<{ success: boolean; score?: number; total?: number; error?: string }> =>

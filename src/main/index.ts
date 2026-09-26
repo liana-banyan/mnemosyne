@@ -464,6 +464,9 @@ import { registerDispatchIPC } from './dispatch/dispatch_ipc';
 
 // BP060 Application 002 Steps 3+4 ? AI Dispatch IPC (UI-8 backend)
 import { registerAiDispatchIPC } from './ai_dispatch_ipc';
+// D-BP223-BM04-X033S3-009: "Prove It, a question somebody else asked" -- ask/addToSubstrate/
+// listSomebodyElse/askThisOne/vote/categories IPC + the ticker broadcast.
+import { registerProveItIPC } from './proveit/ipc';
 // D-BP165-M0-036/BISHOP/M0/seg-swappable-brains-slot-registry: named slot -> brain assignment
 // (multi-slot layer on top of brain_registry.ts's single active_brain_id), reusing THE NEXUS's
 // existing brain_registry catalog and the existing five browser authorities. Read-only Set A
@@ -533,6 +536,8 @@ import { runCatacombMigrationCheck } from './diagnosis/catacomb_migrator';
 import { startPeerServer, stopPeerServer, getCurrentTier, registerPresenceConfig } from './federation/peer_server';
 // KN-BP144-16 Phase 1: LAN discovery opt-out setting (defaults to refuse-unauthenticated).
 import { registerMeshTrustSettingsIpc } from './federation/mesh_trust_settings';
+// D-BP223-BM0-X029-019: Nexus Authorities (how each flagship is reached), Settings panel IPC.
+import { registerFlagshipAuthoritiesIpc } from './flagship_authorities/flagship_authorities_ipc';
 // D-BP157-033: mesh auto-spawn tool-execution consent (defaults to OFF -- see that file's own
 // header for why this is a SEPARATE consent from both AutoUpdateConfig.autoUpdates and the
 // existing LB_MESH_AUTO_SPAWN_ENABLED kill switch).
@@ -542,6 +547,9 @@ import { registerMeshAutoSpawnConsentIpc } from './federation/mesh_auto_spawn_co
 // version-bump consent and the auto-spawn tool-execution consent above; see that file's own
 // header for what it can and cannot enforce.
 import { registerMeshRemoteAdminConsentIpc } from './federation/mesh_remote_admin_consent';
+// D-BP223-PQ005-012-X041: share-to-a-peer (push) consent, inbox and the one-click push IPC.
+import { registerShareReceiveConsentIpc } from './federation/share_receive_consent';
+import { hollerithInboxDir, hollerithSiloDir, hollerithTagsDir, getRegisteredPeerId, tagSignerForThisNode, pushEbletToPeerFromThisNode, type PushEbletArgs } from './federation/peer_server';
 import { registerHardwireMapIpc } from './installer/hardwire_map_ipc';
 // BP134 Yoke #29 Part 2: this node must run peer_artifact_server so OTHER nodes' mesh-pull
 // (auto_update_scheduler.ts's findNewerPeers/pullAndVerifyFromPeers) has something to reach --
@@ -552,6 +560,7 @@ import { startPeerArtifactServer } from './keys_engines/peer_artifact_server';
 // Both were fully built but never wired into boot (confirmed: zero call sites in src/).
 import { startRelayAnswerPoller } from './relay_answer';
 import { submitStartupDiagnostic } from './relay_answer/startup_diagnostic';
+import { isNetworkFeatureOn, resolveNetworkFeatures, setNetworkFeature, NETWORK_FEATURE_KEYS, type NetworkFeatureKey } from './startup/network_feature_settings';
 
 // SAGA 10 BP045 W1 ? mnemosyne:// + mnemo:// deep-link handler
 import { registerDeepLinkProtocol, handleStartupDeepLink } from './deep-link-handler';
@@ -2087,7 +2096,26 @@ function openHearthConjunctionWindow(): void {
 // It now targets ensureNexusAuthoritySession()'s always-alive hidden window instead, so this
 // works with ZERO visible Browser tab / Hearth Conjunction window open. hearthConjunctionWindow
 // itself, and everything else in openHearthConjunctionWindow() above, is completely untouched.
-const BROWSER_AUTHORITY_MAIN_TIMEOUT_MS = 20_000;
+// D-BP223-BM0-X014-010-TRUNCFIX, RAISED 20_000 -> 37_000. NOT a blind raise, and NOT a change of
+// meaning: this is still the OUTER cap on the whole navigate-scrape round trip. It moves because
+// webview_preload.ts's 'browser-authority-run-query' handler no longer scrapes once and returns
+// -- it now polls the answer element to stability (pollUrlQueryAnswerUntilStable, see that
+// function's own banner for the live measurement: a real Perplexity reply read 306 chars at the
+// fixed 2,500 ms scrape below and 935 chars once settled), so the INNER work legitimately takes
+// longer than it used to and the old 20 s cap would have cut a settling answer off at the knees.
+// Arithmetic, same pattern as BROWSER_AUTHORITY_INTERACTIVE_TIMEOUT_MS's own comment below:
+//   6.0 s  navigation + did-finish-load (MEASURED live this ticket against perplexity.ai/search)
+// + 2.5 s  BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS (unchanged, below)
+// + 3.0 s  URL_QUERY_FIRST_TEXT_MAX_WAIT_MS, worst case: attempt 1 finds no text at all
+// + 1.5 s  BROWSER_AUTHORITY_RETRY_DELAY_MS (unchanged, below)
+// + 20.0 s URL_QUERY_SETTLE_MAX_WAIT_MS, worst case: the retry DOES find text and polls it out
+// = 33.0 s inner worst case, leaving ~4 s of margin under this cap.
+// 37_000 is not a new number invented here -- it is the value BROWSER_AUTHORITY_INTERACTIVE_
+// TIMEOUT_MS below already carries for the identical class of problem (a generative answer that
+// renders over seconds, not a static DOM read). A page that never settles still ends HONESTLY and
+// promptly: the inner poll reports 'settle_timeout_still_growing' at 20 s, and this cap is the
+// backstop behind it, never the primary bound.
+const BROWSER_AUTHORITY_MAIN_TIMEOUT_MS = 37_000;
 // BP138 Yoke 0.9.15 FIX 2: raised from 1200ms -- live CDP verification (prior session) showed
 // Google's/Perplexity's answer DOM can still be populating client-side JS at 1200ms post-load
 // on a real network, producing a spurious selector-miss. 2500ms is cheap insurance relative to
@@ -2714,7 +2742,14 @@ export async function runBrowserAuthorityQueryFromMainObserved(
         // Perplexity) path has no login-wall detector of its own (unlike the interactive script
         // above), so 'not_signed_in' can never be observed here -- only genuinely reported reasons
         // are ever classified, per this ticket's own "never infer/deduce" refusal.
-        const dispatchOutcome: BrowserAuthorityDispatchOutcome = r.reason === 'outer_script_timeout' ? 'timeout' : 'no_result';
+        // D-BP223-BM0-X014-010-TRUNCFIX: 'settle_timeout_still_growing' joins 'outer_script_timeout'
+        // on the 'timeout' side of this classifier. It is webview_preload.ts's honest report that
+        // the page DID produce answer text but was still writing it when
+        // URL_QUERY_SETTLE_MAX_WAIT_MS fired -- the one thing that must never be confused with
+        // "the page was reached and had nothing" ('no_result'). No new literal is added to
+        // BrowserAuthorityDispatchOutcome's closed vocabulary; 'timeout' already meant exactly this.
+        const dispatchOutcome: BrowserAuthorityDispatchOutcome =
+          r.reason === 'outer_script_timeout' || r.reason === 'settle_timeout_still_growing' ? 'timeout' : 'no_result';
         return { raw: null, dispatchOutcome };
       }
       return {
@@ -5820,6 +5855,9 @@ ${args.teachingText}
   // -- AI Dispatch IPC (BP060 Application 002 Steps 3+4 ? UI-8 backend) ----
   registerAiDispatchIPC();
 
+  // -- Prove It, "a question somebody else asked" (D-BP223-BM04-X033S3-009) ----------------------
+  registerProveItIPC();
+
   // -- Slot Registry IPC (D-BP165-M0-036: swappable-brains multi-slot layer) --------------------
   registerSlotRegistryIPC();
 
@@ -5836,12 +5874,34 @@ ${args.teachingText}
     const { fetchCategoryPackage, prefetchAll } = await import('./catacombs/eblet_package_fetcher');
     const { contributeToCategory } = await import('./catacombs/contribute_to_category');
     const { checkAccess } = await import('./catacombs/license_gate');
+    // D-BP223-BM0-X015-007-CARWIRE (redispatched D-BP223-BM04-X015S3-R007): BOUNTY_POSTER_CAR_
+    // CAPSULE_ACCESS_ROSTER_BP210.md CONDITION 2. verifyGatedOrder() gate, pulled into its own
+    // Electron-free module (car_capsule_access_gate.ts) precisely so it stays unit-testable; see
+    // that file's header for the scope-choice judgment call flagged for the Founder.
+    const { checkCapsuleAccessBadge } = await import('./thorax/car_capsule_access_gate');
+    const { getOrCreateKeypair } = await import('./thorax/ed25519_keypair');
 
     // Bootstrap on registration (idempotent -- sentinel prevents re-run)
     bootstrapCatacombs().catch((err) => console.warn('[Catacombs] Bootstrap non-fatal:', err));
 
     safeHandle('catacombs:bootstrap', async () => bootstrapCatacombs());
-    safeHandle('catacombs:fetch-package', async (_e: unknown, slug: string) => fetchCategoryPackage(slug));
+    // FAIL CLOSED: a missing, expired, malformed, wrong-scope, or ungated badge REFUSES the
+    // fetch (a typed error object, never a thrown exception the renderer would have to guess
+    // about) rather than falling through to fetchCategoryPackage(). Proven both directions in
+    // src/main/thorax/car_capsule_access_gate.test.ts.
+    safeHandle('catacombs:fetch-package', async (
+      _e: unknown,
+      slug: string,
+      badge?: import('./thorax/gated_order').GatedOrder,
+    ) => {
+      const { public_key_hex } = getOrCreateKeypair();
+      const check = checkCapsuleAccessBadge(badge, public_key_hex);
+      if (!check.allowed) {
+        console.warn(`[Catacombs][CAR] fetch-package refused for slug "${slug}": ${check.reason}`);
+        return { slug, source: 'error' as const, error: `C.A.R. refused: ${check.reason}` };
+      }
+      return fetchCategoryPackage(slug);
+    });
     safeHandle('catacombs:prefetch-all', async () => prefetchAll());
     safeHandle('catacombs:get-manifest', async (_e: unknown, slug: string) => getManifest(slug));
     safeHandle('catacombs:list-eblets', async (_e: unknown, slug: string) => listEblets(slug));
@@ -5883,12 +5943,35 @@ ${args.teachingText}
   registerDiagnosisIpc();
   // -- KN-BP144-16 Phase 1: LAN discovery opt-out (default: refuse unauthenticated) -----------
   registerMeshTrustSettingsIpc();
+  // -- D-BP223-BM0-X030-073 P1: "Share presence with my other machines", the one relay-beacon switch -----------------
+  {
+    const { getPresenceShareState, setPresenceSharing } = require('./federation/peer_server') as typeof import('./federation/peer_server');
+    ipcMain.handle('presence-share:get', () => getPresenceShareState());
+    ipcMain.handle('presence-share:set', (_e, enabled: unknown) => setPresenceSharing(enabled === true));
+  }
+  // -- D-BP223-BM0-X031-024: the three default-OFF network feature switches (startup/network_feature_settings.ts) ------
+  ipcMain.handle('network-features:get', () => resolveNetworkFeatures());
+  ipcMain.handle('network-features:set', (_e, key: unknown, enabled: unknown) => {
+    if (typeof key !== 'string' || !(NETWORK_FEATURE_KEYS as readonly string[]).includes(key)) {
+      throw new Error('network-features:set: unknown feature');
+    }
+    return setNetworkFeature(key as NetworkFeatureKey, enabled === true);
+  });
+  // -- D-BP223-BM0-X029-019: Nexus Authorities -- the user's own MANUAL/AUTOMATIC choice and own keys per flagship --
+  registerFlagshipAuthoritiesIpc();
   // -- D-BP157-033: mesh auto-spawn tool-execution consent (default: OFF -- separate from the
   //    LB_MESH_AUTO_SPAWN_ENABLED kill switch AND from AutoUpdateConfig.autoUpdates) -----------
   registerMeshAutoSpawnConsentIpc();
   // -- D-BP202-M0-01-h2cbp8us-001: remote-administration consent (default: OFF -- the THIRD
   //    consent, separate from both registrations above) ----------------------------------------
   registerMeshRemoteAdminConsentIpc();
+  // -- D-BP223-PQ005-012-X041: the FOURTH consent (an offered card landing in this silo) plus the inbox a person accepts
+  //    held offers from, and the one-click push itself (share:push-eblet) ------------------------------------------------
+  registerShareReceiveConsentIpc({
+    inboxDir: hollerithInboxDir, siloDir: hollerithSiloDir, tagsDir: hollerithTagsDir,
+    selfPeerId: () => getRegisteredPeerId() ?? 'self', tagSigner: tagSignerForThisNode,
+  });
+  ipcMain.handle('share:push-eblet', (_evt, args: PushEbletArgs) => pushEbletToPeerFromThisNode(args ?? {}));
   // -- D-BP202-BM02-014: HardWire Map package manifest + preselection engine (read-only; no
   //    UI here, two sibling dispatches own the downloader and the preinstall screen) -----------
   registerHardwireMapIpc();
@@ -7656,7 +7739,8 @@ ${args.teachingText}
       const { getRingBearerIdentity } = await import('./ip_ledger/ring_bearer_keygen');
       const identity = getRingBearerIdentity();
       const supabaseUrl = getSupabaseUrl();
-      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
+      // D-BP223-BM0-X037-009: no service-role branch in client code. See stamp_certify.ts.
+      const supabaseKey = getAnonKey();
       if (!supabaseUrl || !supabaseKey) return { ok: false, error: 'Supabase config not available', entries: [] };
       const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
       const sb = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false }, realtime: { transport: ws as unknown as typeof WebSocket } });
@@ -7853,7 +7937,8 @@ ${args.teachingText}
       const { getRingBearerIdentity } = await import('./ip_ledger/ring_bearer_keygen');
       const identity = getRingBearerIdentity();
       const supabaseUrl = getSupabaseUrl();
-      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
+      // D-BP223-BM0-X037-009: no service-role branch in client code. See stamp_certify.ts.
+      const supabaseKey = getAnonKey();
       if (!supabaseUrl || !supabaseKey) return { ok: false, error: 'Supabase config not available' };
       const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
       const sb = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false }, realtime: { transport: ws as unknown as typeof WebSocket } });
@@ -7870,15 +7955,45 @@ ${args.teachingText}
       const signatureHex = typeof row?.signature_ed25519 === 'string'
         ? row.signature_ed25519.replace(/^\\x/, '')
         : '';
+      // D-BP223-BM0-X037-007. THE SIGNER'S KEY, NEVER THIS MACHINE'S.
+      // This handler used to paste `identity.public_key_hex` here, which is the LOCAL machine's
+      // key. That is correct only when this machine happens to be the signer, which is true in
+      // every development and test run and false the first time a proof is handed to somebody
+      // else. An exported proof then carried a signer id and a public key that did not belong
+      // to each other, and crypto.verify returned false on the recipient's machine. Green here,
+      // red there, which is the worst failure shape for the one artifact whose entire job is to
+      // be checked by a stranger.
+      // Resolve the signer's key from ring_bearer_registry by the entry's own
+      // ring_bearer_peer_id, and FAIL LOUDLY when it cannot be resolved. A wrong key that
+      // verifies false is worse than an honest "unknown signer", so never fall back to the
+      // local identity.
+      const signerPeerId = typeof row?.ring_bearer_peer_id === 'string' ? row.ring_bearer_peer_id : '';
+      if (!signerPeerId) {
+        return { ok: false, error: 'Ledger entry carries no ring_bearer_peer_id, so its signer cannot be identified. Refusing to emit a proof.' };
+      }
+      const { data: signerRow, error: signerErr } = await sb
+        .from('ring_bearer_registry')
+        .select('public_key_hex')
+        .eq('peer_id', signerPeerId)
+        .maybeSingle();
+      if (signerErr) {
+        return { ok: false, error: `Could not look up the signer's public key: ${signerErr.message}` };
+      }
+      const signerPublicKeyHex = typeof (signerRow as Record<string, unknown> | null)?.public_key_hex === 'string'
+        ? (signerRow as Record<string, string>).public_key_hex
+        : '';
+      if (!signerPublicKeyHex) {
+        return { ok: false, error: `No public key is on record for signer ${signerPeerId}. Refusing to emit a proof that cannot be verified off this machine.` };
+      }
       const proof = {
         entry_id: row?.entry_id,
         ring_bearer_peer_id: row?.ring_bearer_peer_id,
-        ring_bearer_public_key_hex: identity.public_key_hex,
+        ring_bearer_public_key_hex: signerPublicKeyHex,
         contribution_type: row?.contribution_type,
         payload_hash_hex: payloadHashHex,
         signature_ed25519_hex: signatureHex,
         stamped_at: row?.stamped_at,
-        verify_with: `node -e "const c=require('node:crypto');const h=Buffer.from('${payloadHashHex}','hex');const k=c.createPublicKey({key:Buffer.from('${identity.public_key_hex}','hex'),format:'der',type:'spki'});const s=Buffer.from('${signatureHex}','hex');console.log(c.verify(null,h,k,s))"`,
+        verify_with: `node -e "const c=require('node:crypto');const h=Buffer.from('${payloadHashHex}','hex');const k=c.createPublicKey({key:Buffer.from('${signerPublicKeyHex}','hex'),format:'der',type:'spki'});const s=Buffer.from('${signatureHex}','hex');console.log(c.verify(null,h,k,s))"`,
       };
       return { ok: true, proof };
     } catch (err) {
@@ -8092,6 +8207,56 @@ ${args.teachingText}
       }
     }
     return { model: 'gemma4-12b-unified', aggregate: 0.772, per_domain_available_12b: false };
+  });
+
+  // ── D-BP223-BM0-X010-020-KAPPA — Proofs-screen Kappa receipt IPC ──────────
+  // Serves the measured Cohen's kappa receipt for ProofAccordion.tsx's trophy card.
+  // Reads resources/kappa_receipt.json (bundled, regenerated only by
+  // BISHOP_DROPZONE\D-BP223-BM0-X010-020-KAPPA\compute_kappa.js against real
+  // checkpoint artifacts -- never hand-edited, never a fabricated constant).
+  // If the resource is missing or unreadable, returns { measured: false } so the
+  // renderer shows an honest "not yet measured" state instead of a stale/fake number.
+  safeHandle('proofs:get-kappa-receipt', async () => {
+    const { readFileSync, existsSync } = await import('fs');
+    const { join } = await import('path');
+    const basePath = app.isPackaged
+      ? join(process.resourcesPath, 'kappa_receipt.json')
+      : join(__dirname, '..', '..', 'resources', 'kappa_receipt.json');
+    if (existsSync(basePath)) {
+      try {
+        return JSON.parse(readFileSync(basePath, 'utf-8')) as unknown;
+      } catch {
+        // fallthrough to honest "not measured" below
+      }
+    }
+    return { measured: false };
+  });
+
+  // ── D-BP223-BM0-X010-026-HUMANKAPPA — real AI-vs-human Kappa receipt IPC ──────────
+  // Rule 66 sibling of proofs:get-kappa-receipt directly above: same bundled-resource pattern,
+  // same "never a fabricated fallback" contract, but for the Founder's own hand-labeled 50-item
+  // sheet vs. the free path's answers on the SAME 50 (out-of-sample) MMLU-Pro items, per his own
+  // tick (k/15d5f3f9, 2026-09-10 14:42 Central): "you label N items by hand ... the free path
+  // answers the same N, Kappa computed and shown beside the first." Reads
+  // resources/kappa_human_receipt.json (bundled, regenerated only by
+  // BISHOP_DROPZONE\D-BP223-BM0-X010-026-HUMANKAPPA\compute_human_kappa.mjs against the Founder's
+  // real filled sheet -- never hand-edited). Absent the file (sheet not returned yet), returns
+  // { measured: false } so the renderer shows an honest "not yet measured" state, same contract
+  // as the machine-vs-machine receipt beside it.
+  safeHandle('proofs:get-kappa-human-receipt', async () => {
+    const { readFileSync, existsSync } = await import('fs');
+    const { join } = await import('path');
+    const basePath = app.isPackaged
+      ? join(process.resourcesPath, 'kappa_human_receipt.json')
+      : join(__dirname, '..', '..', 'resources', 'kappa_human_receipt.json');
+    if (existsSync(basePath)) {
+      try {
+        return JSON.parse(readFileSync(basePath, 'utf-8')) as unknown;
+      } catch {
+        // fallthrough to honest "not measured" below
+      }
+    }
+    return { measured: false };
   });
 
   // Cancel token for the active benchmark run
@@ -8420,7 +8585,7 @@ ${args.teachingText}
     // so Realtime subscriptions work in the packaged Electron app where service-role
     // key is intentionally absent.
     const key =
-      process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
+      getAnonKey(); // X037-009b: no service-role branch in client code
     if (!url || !key) {
       console.warn('[help] SUPABASE_URL or Supabase key not set · help pipeline unavailable');
       return null;
@@ -8693,7 +8858,8 @@ ${args.teachingText}
   safeHandle('mesh:get-activity-summary', async () => {
     try {
       const supabaseUrl = getSupabaseUrl();
-      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
+      // D-BP223-BM0-X037-009: no service-role branch in client code. See stamp_certify.ts.
+      const supabaseKey = getAnonKey();
       if (!supabaseUrl || !supabaseKey) return { status: 'error', error: 'Supabase not configured' };
 
       const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
@@ -9202,6 +9368,26 @@ export function resolveVramGatedAnswerModel(
   };
 }
 
+/** D-BP223-M0-BROWSER_GATE_BYPASSES: pure, side-effect-free derivation of the corpus id fed to
+ *  CanonicalPlowMcConfig.benchmarkCorpusId at this WAN relay-route responder's own
+ *  callCanonicalPlowMcAnswererForMeshTest call site below -- see that field's own doc comment
+ *  (plow_mc_answerer.ts) for why this arms decideBrowserLookupRefusal's chokepoint gate.
+ *  wan_dispatch.ts (the only asker that currently POSTs to this responder) stamps every
+ *  question_id it sends as `mmlu-pro-wan-${...}` (see that file's payload_json construction,
+ *  "BP133 Yoke #24 Task 2"); that prefix, already on the wire today, IS the request's corpus
+ *  identity -- read here without adding a new payload field or touching the asker. Returns
+ *  undefined (declared fail-open PERMIT -- decideBrowserLookupRefusal's own reason string) for
+ *  any request that does not carry that prefix, i.e. the corpus is genuinely unknown -- never
+ *  defaulted to 'MMLU-Pro' blind for a future non-MMLU-Pro asker. Extracted as its own exported
+ *  pure function (never inlined at the call site) for the SAME reason resolveVramGatedAnswerModel
+ *  above is: so a test can assert its real, unmodified behavior without importing this
+ *  10,000+-line Electron main-process file (see index_vram_gate.test.ts's own header for the
+ *  slice-and-eval technique this dispatch's own test reuses). */
+export function deriveBenchmarkCorpusIdForRelayRequest(payload: Record<string, unknown>): string | undefined {
+  const requestQuestionId = typeof payload.question_id === 'string' ? payload.question_id : undefined;
+  return requestQuestionId && requestQuestionId.startsWith('mmlu-pro-wan-') ? 'MMLU-Pro' : undefined;
+}
+
 // Same rationale as ai_dispatch_ipc.ts/peer_server.ts's caches: VRAM is static per session;
 // detectVramGbDetailed() execSyncs a PowerShell registry query on Windows and must not run
 // synchronously on every single relay-poll answer. Cached once per process.
@@ -9268,6 +9454,20 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
         // two pollers can never drift out of agreement on which rows belong to which poller.
         if (isBishopDispatchPayload(route.payload_json)) {
           continue;
+        }
+
+        // D-BP223-BM0-X029-018 "You come first" (Founder k/0ee57a97). An eblet_topical lookup is
+        // light serving (a local store read, no model) and is never held back. Every other route is
+        // model work: while the person is using this computer, leave it PENDING (queued, untouched,
+        // not marked processing) and stop this tick; the next poll re-asks and resumes when idle.
+        const _precedencePayloadPeek = (route.payload_json as Record<string, unknown> | null) ?? {};
+        const _isLightTopicalLookup = _precedencePayloadPeek.query_type === 'eblet_topical';
+        const _precedenceAtStart = _isLightTopicalLookup
+          ? null
+          : await (await import('./user_precedence')).checkUserPrecedence({});
+        if (_precedenceAtStart?.yield) {
+          console.log(`[relay-poll] ${_precedenceAtStart.explanation} (${routes.length} route(s) left pending)`);
+          break;
         }
 
         // Mark processing
@@ -9598,10 +9798,16 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
             // meaning to the pre-extraction inline call (see that function's own doc comment for
             // the full per-field rationale, condensed there to avoid duplicating documentation).
             const { callCanonicalPlowMcAnswererForMeshTest } = await import('./plow/plow_mc_answerer');
+            // D-BP223-M0-BROWSER_GATE_BYPASSES: arm decideBrowserLookupRefusal for this WAN
+            // relay-route responder the same way one_click_mmlu_pro.ts's local-mode call site
+            // does -- see deriveBenchmarkCorpusIdForRelayRequest's own doc comment above for the
+            // full derivation rationale.
+            const benchmarkCorpusIdForPlow = deriveBenchmarkCorpusIdForRelayRequest(payload);
             const callResult = await callCanonicalPlowMcAnswererForMeshTest({
               effectivePrompt,
               researchQuery,
               domain: domainForSubstrate,
+              ...(benchmarkCorpusIdForPlow ? { benchmarkCorpusId: benchmarkCorpusIdForPlow } : {}),
               ollamaBaseUrl: 'http://127.0.0.1:11434',
               model: answerModel,
               choiceCount: choiceCountForPlow,
@@ -9867,6 +10073,10 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           const answeredBy: 'plow' | 'minor_council' | 'single_shot' =
             plowEnabled ? 'plow' : plowMaxIter > 0 ? 'minor_council' : 'single_shot';
 
+          // D-BP223-BM0-X029-018: label a result (and its processing_ms) produced while the desktop was in use.
+          const _precedenceAtEnd = await (await import('./user_precedence')).checkUserPrecedence({});
+          const desktopInUse = (_precedenceAtStart?.desktopInUse ?? false) || _precedenceAtEnd.desktopInUse;
+
           await fetch(`${supabaseUrl}/rest/v1/relay_route_replies`, {
             method: 'POST',
             headers: { ...headers, 'Prefer': 'return=minimal' },
@@ -9891,6 +10101,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 // never a silent downgrade. Additive field; existing consumers reading only the
                 // pre-existing keys above are unaffected.
                 vram_gate: answerModelGate,
+                desktop_in_use: desktopInUse,
               } : {
                 answer,
                 plow_loop_iterations: plowIterations,
@@ -9904,6 +10115,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 answered_by: answeredBy,
                 plow_trace: plowTrace,
                 vram_gate: answerModelGate,
+                desktop_in_use: desktopInUse,
               },
               processing_ms: processingMs,
             }),
@@ -9915,7 +10127,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
             body: JSON.stringify({ status: 'answered' }),
           });
 
-          console.log(`[relay-poll] answered route ${route.id.slice(0, 8)} in ${processingMs}ms`);
+          console.log(`[relay-poll] answered route ${route.id.slice(0, 8)} in ${processingMs}ms${desktopInUse ? ' (desktop in use)' : ''}`);
         } catch (err) {
           // D6a: detect AbortSignal timeout from ollama call — log + write structured error row
           const isOllamaTimeout = err instanceof Error &&
@@ -10039,6 +10251,12 @@ async function postAck(
 }
 
 function startMicBroadcastListener(peerId: string, appVersion: string): void {
+  // D-BP223-BM0-X031-027 (Founder, 2026-09-17: "Turn those OFF by default first"): no fleet_broadcast poll and no
+  // command handling (auto_update, config_set, fleet_warmup, ...) unless the user turned on fleetBroadcastListener.
+  if (!isNetworkFeatureOn('fleetBroadcastListener')) {
+    console.log('[X031-027] MIC broadcast listener NOT started: fleetBroadcastListener is off (default)');
+    return;
+  }
   const supabaseUrl = getSupabaseUrl();
   const supabaseKey =
     getAnonKey();
@@ -10132,6 +10350,21 @@ function startMicBroadcastListener(peerId: string, appVersion: string): void {
           (payload.payload_json?.prompt as string) ||
           'Answer with only the letter A. What is 1+1? A) 2 B) 3\nAnswer:';
 
+        // D-BP223-BM0-X029-018 "You come first": a remote-triggered model load (keep_alive 24h) is
+        // exactly the GPU load a person at this desk would feel. Defer it while they are using it.
+        const { checkUserPrecedence: _checkWarmPrecedence } = await import('./user_precedence');
+        const warmPrecedence = await _checkWarmPrecedence({ model: warmModel });
+        if (warmPrecedence.yield) {
+          await postAck(broadcastId, peerId, appVersion, 'deferred', {
+            model: warmModel,
+            status: 'user_has_precedence',
+            reasons: warmPrecedence.reasons,
+            explanation: warmPrecedence.explanation,
+          });
+          console.log(`[mic-broadcast] fleet_warmup deferred: ${warmPrecedence.explanation}`);
+          break;
+        }
+
         await postAck(broadcastId, peerId, appVersion, 'processing', {
           model: warmModel,
           status: 'warming',
@@ -10157,6 +10390,7 @@ function startMicBroadcastListener(peerId: string, appVersion: string): void {
             model: warmModel,
             status: 'hot',
             load_latency_ms: warmMs,
+            desktop_in_use: warmPrecedence.desktopInUse,
             keep_alive: '24h',
             test_answer: (data?.response as string)?.trim()?.slice(0, 5) ?? null,
           });
@@ -10999,29 +11233,62 @@ app.whenReady().then(async () => {
     const _supabaseUrl = getSupabaseUrl();
     const _anonKey =
       getAnonKey();
-    if (_supabaseUrl && _anonKey) {
-      _bootZombieCount = await bootZombieFlush(_relayPeerId, _supabaseUrl, _anonKey);
-      scheduleZombieFlush(_relayPeerId);
+    // D-BP223-BM0-X031-024 (Founder, 2026-09-17T11:20Z: "Make the relay poller and startup report OFF until the user
+    // turns them on"). One user switch, default OFF, governs every path that fetches other members' questions and
+    // answers them: the boot zombie flush, this relay_routes poll + its watchdog, and startRelayAnswerPoller below.
+    const _answerOthersOn = isNetworkFeatureOn('answerOtherMembersQuestions');
+    const _statusReportOn = isNetworkFeatureOn('sendStatusReport');
+    console.log(`[X031-024] network features: answerOtherMembersQuestions=${_answerOthersOn} sendStatusReport=${_statusReportOn} (default off)`);
+    console.log(`[X031-027] network features: ${(['lanShareListener', 'lanPeerProbe', 'fleetBroadcastListener', 'bishopDispatchListener', 'diagnosticCheckin'] as const).map((k) => `${k}=${isNetworkFeatureOn(k)}`).join(' ')} (default off)`);
+    if (_answerOthersOn) {
+      if (_supabaseUrl && _anonKey) {
+        _bootZombieCount = await bootZombieFlush(_relayPeerId, _supabaseUrl, _anonKey);
+        scheduleZombieFlush(_relayPeerId);
+      }
+      startRelayRoutePoll(_relayPeerId);
+      // D6c — self-heal watchdog starts 60s after poll loop; monitors poll_count delta
+      startRelayPollWatchdog(_relayPeerId);
     }
-    startRelayRoutePoll(_relayPeerId);
-    // D6c — self-heal watchdog starts 60s after poll loop; monitors poll_count delta
-    startRelayPollWatchdog(_relayPeerId);
 
     // D-BP156-M0-013: HARDWIRE-24 mesh inbound listener -- separate poll loop, separate table
     // filter (payload_json.kind === 'bishop_dispatch' only), never touches a row startRelayRoutePoll
     // above already owns. See bishop_dispatch_relay_listener.ts's header for the full design note,
     // including the honest finding that the send side cannot yet deliver a row for this to see.
+    // D-BP223-BM0-X031-027: returns a no-op handle unless the user turned on bishopDispatchListener (default off).
     startBishopDispatchRelayListenerWithDefaults();
 
     // BP132 Yoke #21 A1: startRelayAnswerPoller() was fully built (PID-lock singleton,
     // exponential backoff, crash-loop guard, liveness watchdog) but never called anywhere
     // in src/ — confirmed by repo-wide search. This is the WAN answer-side of the mesh:
     // without it, this peer never answers cross-WAN questions routed to it via Supabase.
-    if (_supabaseUrl && _anonKey) {
+    if (!_answerOthersOn) {
+      console.log('[X031-024] relay-answer poller NOT started: answerOtherMembersQuestions is off (default)');
+    } else if (_supabaseUrl && _anonKey) {
+      // D-BP223-BM0-X029-007. MEASURED ON M2 2026-09-16 19:2xZ: this call passed no model, so relay_answer/worker.ts fell
+      // back to its hardcoded FLOOR_MODEL 'gemma4:12b' and reloaded gemma4:12b (6.1 GB, spilling past M2's 8 GB card)
+      // for a ~50 s /api/generate roughly every 6 minutes, regardless of the Triad ruling (M2/M4 gemma2:2b). Now: an
+      // explicit MNEM_RELAY_ANSWER_MODEL env wins; else the persisted local ASK brain (same precedence peer_server.ts
+      // getEffectiveOllamaModel() uses), VRAM-gated; else undefined, which keeps the worker's old floor unchanged.
+      let relayAnswerModel: string | undefined = process.env.MNEM_RELAY_ANSWER_MODEL?.trim() || undefined;
+      if (!relayAnswerModel) {
+        try {
+          const b = hasPersistedBrainChoice() ? getActiveBrain() : undefined;
+          if (b?.kind === 'local') {
+            const { applyVramGate, detectVramGbDetailed } = await import('./hardware/ram_detector');
+            relayAnswerModel = applyVramGate(b.model_id, detectVramGbDetailed().vramGb).model ?? b.model_id;
+          }
+        } catch (e) {
+          console.warn('[X029-007] relay-answer model resolution failed; no model passed, worker will not answer routes (X029-012):', e);
+        }
+      }
+      // D-BP223-BM0-X029-012: the worker no longer has a hardcoded floor. undefined here now means "no configured brain":
+      // the worker polls and heartbeats but answers no route, instead of silently loading gemma4:12b.
+      console.log('[X029-012] relay-answer model=' + (relayAnswerModel ?? '(none configured: WAN routes will not be answered on this node)'));
       startRelayAnswerPoller({
         peerId: _relayPeerId,
         supabaseUrl: _supabaseUrl,
         anonKey: _anonKey,
+        model: relayAnswerModel,
       });
       console.log('[BP132 A1] relay-answer poller start requested peer=' + _relayPeerId.slice(0, 8));
     } else {
@@ -11035,12 +11302,15 @@ app.whenReady().then(async () => {
     // very first row already reflects relay_answer_poller_started=true instead of a false
     // reported at t=0. Re-submitted every 10 min so Bishop's DB view stays current, not
     // just a single boot-time snapshot (Truth-Always: state must not go stale silently).
-    setTimeout(() => {
-      submitStartupDiagnostic().catch((e) => console.error('[BP132 A1] startup diagnostic submit failed:', e));
-    }, 15_000);
-    setInterval(() => {
-      submitStartupDiagnostic().catch((e) => console.error('[BP132 A1] startup diagnostic resubmit failed:', e));
-    }, 10 * 60_000);
+    // D-BP223-BM0-X031-024: OFF until the user turns on "Send a status report to Liana Banyan"; no timers are armed.
+    if (_statusReportOn) {
+      setTimeout(() => {
+        submitStartupDiagnostic().catch((e) => console.error('[BP132 A1] startup diagnostic submit failed:', e));
+      }, 15_000);
+      setInterval(() => {
+        submitStartupDiagnostic().catch((e) => console.error('[BP132 A1] startup diagnostic resubmit failed:', e));
+      }, 10 * 60_000);
+    }
   }
 
   // BP086 I7c: MIC broadcast listener (auto_update / config_set / fleet_warmup /
@@ -11057,9 +11327,10 @@ app.whenReady().then(async () => {
   // window via the new diagnostic-mode:activate-permission IPC below — it does not
   // execute anything on its own.
   {
-    import('./diagnostic_mode').then(({ startDiagnosticPoller }) => {
-      startDiagnosticPoller();
-      console.log('[BP132 Yoke22] diagnostic mode poller started (idle until local permission granted)');
+    // D-BP223-BM0-X031-027: startDiagnosticPoller() arms nothing unless the user turned on diagnosticCheckin (default off).
+    import('./diagnostic_mode').then((diagMod) => {
+      diagMod.startDiagnosticPoller();
+      if (diagMod.pollerStarted) console.log('[BP132 Yoke22] diagnostic mode poller started (idle until local permission granted)');
     }).catch((e) => console.error('[BP132 Yoke22] diagnostic poller start failed (non-fatal):', e));
   }
 

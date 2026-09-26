@@ -26,6 +26,16 @@ export interface MeshAutoSpawnConsentSettings {
   consentGranted: boolean;
 }
 
+// D-BP223-BM0-X029-019: Nexus Authorities rows (mirrors src/main/flagship_authorities/flagship_authorities_store.ts
+// FlagshipAuthorityRow, declared here rather than imported, like the interfaces above). A row never carries a key.
+export interface FlagshipAuthorityRowView {
+  id: string; label: string; kind: 'subscription' | 'api' | 'aggregator';
+  automatic_on: boolean; needs_key: boolean; has_key: boolean | null; automatic_ready: boolean;
+  terms_note: string | null; bring_your_own: string | null; why: string; price: string | null;
+  key_page: string | null; key_hint: string | null; open_url: string | null; terms_url: string | null;
+}
+export type FlagshipAuthorityResultView = { ok: true; authority: FlagshipAuthorityRowView } | { ok: false; error: string };
+
 // D-BP202-M0-01-h2cbp8us-001: THE THIRD CONSENT -- remote administration of the whole machine
 // (mirrors src/main/federation/mesh_remote_admin_consent.ts's own interface -- kept as a separate
 // renderer-side declaration, not an import, matching AutoUpdateConfig/MeshAutoSpawnConsentSettings
@@ -410,6 +420,11 @@ declare global {
       // Mesh Trust / Peer Verification (D-BP148-038 Authorizations panel)
       getMeshTrustSettings?: () => Promise<{ allowUnauthenticatedLanDiscovery: boolean }>;
       setMeshTrustAllowUnauthenticatedLanDiscovery?: (allow: boolean) => Promise<{ allowUnauthenticatedLanDiscovery: boolean }>;
+      // D-BP223-BM0-X029-019: Nexus Authorities (how each flagship is reached). Rows never carry a key.
+      flagshipAuthoritiesList?: () => Promise<{ ok: boolean; authorities: FlagshipAuthorityRowView[] }>;
+      flagshipAuthoritiesSetAutomatic?: (providerId: string, on: boolean) => Promise<FlagshipAuthorityResultView>;
+      flagshipAuthoritiesSaveKey?: (providerId: string, rawKey: string) => Promise<FlagshipAuthorityResultView>;
+      flagshipAuthoritiesRemoveKey?: (providerId: string) => Promise<FlagshipAuthorityResultView>;
       // D-BP157-033: mesh auto-spawn tool-execution consent -- a SEPARATE toggle from Mesh Trust
       // above and from AutoUpdateConfig.autoUpdates; see mesh_auto_spawn_consent.ts's own header.
       getMeshAutoSpawnConsentSettings?: () => Promise<MeshAutoSpawnConsentSettings>;
@@ -418,6 +433,17 @@ declare global {
       // (the `lbmesh` account plus WinRM), separate from both toggles above.
       getMeshRemoteAdminConsentSettings?: () => Promise<MeshRemoteAdminConsentSettings>;
       setRemoteAdministrationConsentGranted?: (granted: boolean) => Promise<MeshRemoteAdminConsentSettings>;
+      // D-BP223-PQ005-012-X041: THE FOURTH CONSENT (an offered card landing in this silo), the inbox a person accepts
+      // held offers from, and the one-click push of one of this node's own cards to one peer (signed receipt back).
+      getShareReceiveSettings?: () => Promise<{ acceptFrom: 'same_owner' | 'enrolled'; allowPeers: string[] }>;
+      setShareReceiveSettings?: (next: { acceptFrom?: 'same_owner' | 'enrolled'; allowPeers?: string[] }) => Promise<{ acceptFrom: 'same_owner' | 'enrolled'; allowPeers: string[] }>;
+      listHeldShareOffers?: () => Promise<Array<{ senderPeerId: string; file: string; connector: string; sha256: string; trust: string; policy: string; receivedUtc: string; sourceStatus: string; title: string }>>;
+      acceptHeldShareOffer?: (senderPeerId: string, file: string) => Promise<{ ok: boolean; action?: string; connector?: string; reason?: string }>;
+      rejectHeldShareOffer?: (senderPeerId: string, file: string) => Promise<{ ok: boolean; reason?: string }>;
+      pushEbletToPeer?: (args: { peerBaseUrl?: string; peerId?: string; connector?: string; file?: string; expectedReceiverKeyHex?: string | null }) => Promise<{
+        action: string; reason?: string; error?: string; receiverPeerId: string | null; receiverKeyTrust: string; sharePolicy: string | null;
+        connector: string | null; file: string | null; sha256: string | null; signedReceipt: string | null; receiptVerified: boolean; httpStatus: number | null; receiptPath: string | null;
+      }>;
       // D-BP202-BM02-014: HardWire Map spine -- read-only manifest + preselection surface. No UI
       // consumes these yet; a sibling dispatch owns the preinstall screen.
       getHardwireManifest?: () => Promise<HardwirePackageManifestEntry[]>;
@@ -919,6 +945,118 @@ declare global {
           error?: string;
         }>;
       };
+      // D-BP223-BM09-ARCHBISHOP-004-016 ("My Savings Receipt", REDO of 004-010): Founder-ordered
+      // launch incentive "DOWNLOAD IT and PROVE IT and POST IT" -- a MEASURED, signed,
+      // hash-chain-verified receipt (separate namespace from aiDispatch above, whose
+      // getAnswerCacheMeterSummary is an unsigned ESTIMATE).
+      savingsReceipt?: {
+        getSummary: (args: { window: 'all' | 'hour' | 'day' | 'week' | 'fortnight' | 'month' | 'quarter' }) => Promise<{
+          ok: boolean;
+          error?: string;
+          window?: string;
+          empty?: boolean;
+          chain_ok?: boolean;
+          chain_broken_at_index?: number | null;
+          chain_head?: string;
+          chain_records?: number;
+          first_record_utc?: string | null;
+          days_in_use?: number;
+          milestones_reached?: {
+            hour: boolean; day: boolean; week: boolean; fortnight: boolean; month: boolean; quarter: boolean;
+          };
+          aggregate?: {
+            window: string;
+            from_ts: string;
+            to_ts: string;
+            total_queries: number;
+            by_tier: Record<string, number>;
+            flagship_calls_avoided: number;
+            flagship_calls_made: number;
+            cost_avoided_usd: number;
+            records_with_measured_saving: number;
+            records_excluded_unmeasured: number;
+            records_excluded_unmeasured_by_tier: Record<string, number>;
+            measurement_scope: string;
+            confidence: string;
+          } | null;
+          receipt_block?: string | null;
+        }>;
+      };
+      // D-BP223-BM04-X033S3-009 ("Prove It, a question somebody else asked"): mirrors
+      // src/main/preload.ts's `proveIt` namespace exactly. Separate namespace from savingsReceipt
+      // above (its own card store/outbox files, never the billing log) and from scavengerHunt
+      // below (its own zero-model-call phrase search, never a card).
+      proveIt?: {
+        ask: (req: import('../shared/proveit_contract').ProveItAskRequest) => Promise<import('../shared/proveit_contract').ProveItAskResponse>;
+        askThisOne: (req: import('../shared/proveit_contract').ProveItAskThisOneRequest) => Promise<import('../shared/proveit_contract').ProveItAskThisOneResponse>;
+        addToSubstrate: (req: import('../shared/proveit_contract').ProveItAddToSubstrateRequest) => Promise<import('../shared/proveit_contract').ProveItAddToSubstrateResponse>;
+        listSomebodyElse: (req?: import('../shared/proveit_contract').ProveItListRequest) => Promise<import('../shared/proveit_contract').ProveItListResponse>;
+        vote: (req: import('../shared/proveit_contract').ProveItVoteRequest) => Promise<import('../shared/proveit_contract').ProveItVoteResponse>;
+        categories: () => Promise<import('../shared/proveit_contract').ProveItCategoriesResponse>;
+        suggestCategory: (text: string) => Promise<{ ok: boolean; suggestion?: { text: string; suggestedAt: string; status: 'pending' }; error?: string }>;
+        getFlags: () => Promise<{ ok: boolean; settings?: { substrateLive: boolean }; error?: string }>;
+        listMyPersonas?: () => Promise<import('../shared/proveit_contract').ProveItListPersonasResponse>;
+        takeBack?: (req: import('../shared/proveit_contract').ProveItTakeBackRequest) => Promise<import('../shared/proveit_contract').ProveItTakeBackResponse>;
+        onTicker: (handler: (event: import('../shared/proveit_contract').ProveItTickerEvent) => void) => () => void;
+      };
+      // D-BP223-BM0-X033-022 (Scavenger Hunt / "Haystack Needle" test #2): zero-model-call
+      // substrate phrase search + "did you mean" answer-with-sources. Separate namespace from
+      // savingsReceipt above -- never touches the billing log.
+      scavengerHunt?: {
+        search: (args: { phrase: string }) => Promise<{
+          ok: boolean;
+          error?: string;
+          raw_phrase?: string;
+          normalized_phrase?: string;
+          aliases_fired?: string[];
+          substrate_empty?: boolean;
+          candidates?: Array<{ index: number; question: string; similarity: number; wouldAutoServe: boolean }>;
+          tokens_used?: number;
+          latency_ms?: number;
+          model_calls?: 0;
+        }>;
+        select: (args: {
+          question: string;
+          raw_phrase: string;
+          normalized_phrase: string;
+          candidates_shown: number;
+          aliases_fired?: string[];
+        }) => Promise<{
+          ok: boolean;
+          error?: string;
+          question?: string;
+          answer?: string;
+          sources?: string[];
+          tokens_used?: number;
+          latency_ms?: number;
+          model_calls?: 0;
+        }>;
+        popular: (args?: { limit?: number }) => Promise<{
+          ok: boolean;
+          error?: string;
+          popular?: Array<{ normalized_phrase: string; count: number }>;
+        }>;
+      };
+      // D-BP223-BM0-X010-020-KAPPA: measured Cohen's kappa receipt for the proofs screen's
+      // "BP074 Sound Barrier" trophy card. { measured:false } when no receipt is present --
+      // never a fabricated number.
+      getKappaReceipt?: () => Promise<{
+        measured: boolean;
+        measuredUtc?: string;
+        method?: string;
+        primary?: { label: string; n: number; kappa: number; ci95: [number, number] };
+        corroboration?: Array<{ label: string; n: number; kappa: number; ci95: [number, number] }>;
+      }>;
+      // D-BP223-BM0-X010-026-HUMANKAPPA: Rule 66 sibling of getKappaReceipt -- the REAL
+      // AI-vs-human Kappa (Founder's hand-labeled 50-item sheet vs. gemma4:12b free path).
+      getKappaHumanReceipt?: () => Promise<{
+        measured: boolean;
+        measuredUtc?: string;
+        method?: string;
+        primary?: { label: string; n: number; kappa: number; ci95: [number, number] };
+        raters?: string[];
+        accuracy?: Record<string, { correct: number; total: number; rate: number }>;
+      }>;
       // SEG-2 v0.1.57: Test It Out — substrate-warming 5-question workout
       runTestItOut?: () => Promise<{ success: boolean; score?: number; total?: number; error?: string }>;
       getTestItOutHistory?: () => Promise<{ runs: Array<{ ts: number; score: number; total: number; model: string }> }>;
@@ -1248,7 +1386,13 @@ declare global {
       runBenchmark?: (config: { nPerDomain: number; randomSeed: number; model: string; ollamaBaseUrl: string }) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
       cancelBenchmark?: () => Promise<{ ok: boolean }>;
       writeBenchmarkReceipt?: (args: { receiptMarkdown: string; timestamp: number }) => Promise<{ ok: boolean; path?: string }>;
-      onBenchmarkProgress?: (callback: (event: Record<string, unknown>) => void) => () => void;
+      onBenchmarkProgress?: (callback: (event:
+        | { type: 'domain-start'; domain: string; n: number; totalDomains: number; domainIndex: number }
+        | { type: 'question-done'; domain: string; questionIndex: number; n: number; verified: boolean; domainAccuracy: number }
+        | { type: 'domain-done'; domain: string; result: unknown }
+        | { type: 'complete'; result: unknown; receiptPath?: string }
+        | { type: 'error'; message: string }
+      ) => void) => () => void;
       runCanonicalPlow?: (config: {
         domains: string[];
         questionsPerDomain: number;
@@ -1278,12 +1422,12 @@ declare global {
       onDiamondProgress?: (callback: (event: Record<string, unknown>) => void) => () => void;
       micStartDistributedPlow?: (config: { domains: string[]; questionsPerDomain: number; model?: string; ollamaBaseUrl?: string }) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
       micCancel?: () => Promise<{ ok: boolean }>;
-      micGetPeers?: () => Promise<unknown[]>;
+      micGetPeers?: () => Promise<Record<string, unknown>[]>;
       micAddPeer?: (peer: unknown) => Promise<{ ok: boolean }>;
       micDiscoverPeers?: () => Promise<unknown[]>;
       micEstimateWallclock?: (config: { domains: string[]; questionsPerDomain: number }) => Promise<{ estimatedMs: number; onlinePeers: number }>;
       onMicStatusEvent?: (callback: (event: Record<string, unknown>) => void) => () => void;
-      diagnosisPost?: (input: { question: string; domain: string; context: string; priorAttempts: string; bounty: { rail: string; amount: number; barterDescription?: string }; visibility: string; source?: string }) => Promise<{ ok: boolean; id?: string; error?: string }>;
+      diagnosisPost?: (input: { question: string; domain: string; context: string; priorAttempts: string; bounty: { rail: string; amount: number; barterDescription?: string }; visibility: string; saltLevel?: 'pinch' | 'seasoning' | 'preserved_open' | 'preserved_forever'; source?: string }) => Promise<{ ok: boolean; id?: string; error?: string }>;
       diagnosisList?: (filter?: { status?: string; domain?: string }) => Promise<{ ok: boolean; posts?: unknown[]; error?: string }>;
       diagnosisGet?: (id: string) => Promise<{ ok: boolean; post?: unknown; error?: string }>;
       diagnosisAnswer?: (args: { diagnosisId: string; answerText: string; sources: string[]; credentials?: string }) => Promise<{ ok: boolean; answerId?: string; error?: string }>;
@@ -1322,25 +1466,39 @@ declare global {
       gemma: {
         multiSegDispatch: (options: { question: string; workerCount?: number; model?: string }) => Promise<{ synthesized: string; variance: number; workerResponses: string[]; model: string; workerCount: number }>;
       };
+      // Query Capture Archive (D-BP151-037/BISHOP/seg-query-capture-archive)
+      // D-BP223-BM0-X015-003-RENDERERBUILD: was mis-declared as a top-level Window sibling
+      // below, but src/main/preload.ts actually nests this inside the object passed to
+      // contextBridge.exposeInMainWorld('amplify', {...}), so window.queryCapture never
+      // existed at runtime -- every caller uses window.amplify.queryCapture. Moved in place.
+      queryCapture?: {
+        getEnabled: () => Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
+        setEnabled: (enabled: boolean) => Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
+        list: (status?: 'active' | 'cleared' | 'archived') => Promise<{ ok: boolean; entries?: QueryCaptureEntry[]; error?: string }>;
+        find: (searchText: string) => Promise<{ ok: boolean; entries?: QueryCaptureEntry[]; error?: string }>;
+        setStatus: (id: string, status: 'active' | 'cleared' | 'archived') => Promise<{ ok: boolean; error?: string }>;
+        remove: (id: string) => Promise<{ ok: boolean; error?: string }>;
+      };
+      // BP087 Brain Swap -- brain registry hot-swap
+      // D-BP223-BM0-X015-003-RENDERERBUILD: same mis-declaration as queryCapture above; moved
+      // inside the amplify block to match the real runtime nesting in src/main/preload.ts.
+      brainRegistry?: {
+        list: () => Promise<{ ok: boolean; brains?: unknown[]; active_brain_id?: string; error?: string }>;
+        getActive: () => Promise<{ ok: boolean; brain_id?: string; error?: string }>;
+        setActive: (brain_id: string) => Promise<{ ok: boolean; error?: string }>;
+        smokeTest: (brain_id: string) => Promise<{ ok: boolean; content?: string; brain_id?: string; kind?: string; latency_ms?: number; error?: string }>;
+      };
+      // MoneyPenny Orchestration Panel (src/renderer/components/AppTab.tsx handleMpAsk).
+      // D-BP223-BM0-X015-003-RENDERERBUILD: was entirely undeclared -- window.amplify.moneypenny
+      // is called only behind optional chaining in AppTab.tsx, so this is typed optional to
+      // match that call site honestly rather than asserting a guarantee preload.ts does not
+      // yet provide (no moneypenny IPC bridge exists in preload.ts as of this dispatch).
+      moneypenny?: {
+        orchestrate: (task: string) => Promise<{ briefing: string | null; error?: string }>;
+      };
     };
     // SEG-V0150-P0-DIAGNOSE-BRIDGE: sentinel -- set by preload before main bridge wires up
     __preloadLoaded?: boolean;
-    // Query Capture Archive (D-BP151-037/BISHOP/seg-query-capture-archive)
-    queryCapture?: {
-      getEnabled: () => Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
-      setEnabled: (enabled: boolean) => Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
-      list: (status?: 'active' | 'cleared' | 'archived') => Promise<{ ok: boolean; entries?: QueryCaptureEntry[]; error?: string }>;
-      find: (searchText: string) => Promise<{ ok: boolean; entries?: QueryCaptureEntry[]; error?: string }>;
-      setStatus: (id: string, status: 'active' | 'cleared' | 'archived') => Promise<{ ok: boolean; error?: string }>;
-      remove: (id: string) => Promise<{ ok: boolean; error?: string }>;
-    };
-    // BP087 Brain Swap -- brain registry hot-swap
-    brainRegistry?: {
-      list: () => Promise<{ ok: boolean; brains?: unknown[]; active_brain_id?: string; error?: string }>;
-      getActive: () => Promise<{ ok: boolean; brain_id?: string; error?: string }>;
-      setActive: (brain_id: string) => Promise<{ ok: boolean; error?: string }>;
-      smokeTest: (brain_id: string) => Promise<{ ok: boolean; content?: string; brain_id?: string; kind?: string; latency_ms?: number; error?: string }>;
-    };
   }
 }
 

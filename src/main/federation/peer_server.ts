@@ -7,12 +7,23 @@
  *   POST /api/plow-domain    → runs canonical_pipeline for one domain, returns result JSON
  *   POST /api/diagnosis/post → receives a Diagnosis post from Constellation
  *   POST /api/diagnosis/answer → receives a Diagnosis answer
+ *   POST /api/library/search → D-BP223-BM0-X029-007: signed; lists mesh-shared Hollerith card eblets by tag/keyword/connector,
+ *                              with a manifest signed by this node's Thorax key
+ *   POST /api/library/fetch  → D-BP223-BM0-X029-007: signed; returns those eblets by hex connector (Alexandrian copy)
  *
  * BP084 SEG-2: publishes peer presence to Supabase relay every 60 s
  *   for WAN NAT traversal (cross-NAT peers routed via wan-relay-route).
  * BP084 SEG-3: /api/info populated from ram_detector + chocolates registry.
  *
- * SCAFFOLD v0.4.0 — plain HTTP, no auth.
+ * SCAFFOLD v0.4.0 — plain HTTP, no auth. SUPERSEDED BY D-BP223-BM0-X030-073 P2 (XO X030 pick on Founder k/0a8d1c96):
+ *   every route on port 7474 now requires a signed Thorax frame (POST: body {signed_frame}; GET /api/info: header
+ *   x-mnem-signed-frame whose payload names route "/api/info" and a fresh issued_ms), EXCEPT the minimal unauthenticated
+ *   health ping GET /api/heartbeat, which returns {"ok":true} and no machine details. An unsigned request is refused 403
+ *   on every other route, whatever isUnauthenticatedLanDiscoveryAllowed() says. The bind stays 0.0.0.0 (LAN), because
+ *   the mesh needs it.
+ * D-BP223-BM0-X030-073 P1: the relay beacon (presence publish + heartbeat worker) runs only while "Share presence with my
+ *   other machines" is on (presence_share_settings.ts), and its email_hash is a per-install salted hash
+ *   (beacon_email_hash.ts); the salt is never sent.
  * Full Thorax encryption applied to WAN relay payloads (SEG-5, mic_dispatcher).
  */
 
@@ -123,8 +134,19 @@ import {
 import { getLBSession } from '../lb_auth';
 import { getAnonKey, getAnonKeyHeaders } from '../shared/anon_key';
 // KN-BP144-16 Phase 1: /api/plow-domain authentication (see that ticket's REPORT.md).
-import { peekAnnouncePayload, verifyAnnounceFrame } from './announce_frame';
+import { peekAnnouncePayload, verifyAnnounceFrame, signAnnouncePayload } from './announce_frame';
+// D-BP223-BM0-X029-007-MESH-CARDS-M2: the Alexandrian Library copy for Hollerith cards (POST /api/library/search,
+// POST /api/library/fetch). Pure module; this file only injects userData, this node's key and the key resolution below.
+import { handleLibraryRoute, pushEbletToPeer, type LibraryRouteContext, type PushReceipt } from './hollerith_library_share';
+// D-BP223-PQ005-012-X041: the fourth consent (an offered card landing here) and the TRAIL-hop signer for accepted offers.
+import { offerConsentFromSettings } from './share_receive_consent';
+import { signerFromKeypair, type TagSigner } from './eblet_provenance_tags';
+import { loadSavedPeers } from './constellation_discovery';
+import { appendFileSync, mkdirSync } from 'fs';
 import { isUnauthenticatedLanDiscoveryAllowed } from './mesh_trust_settings';
+// D-BP223-BM0-X030-073 P1: salted beacon email hash + the one presence switch.
+import { beaconEmailHashOrNull } from '../identity/beacon_email_hash';
+import { resolvePresenceShare, setSharePresenceChoice, type PresenceShareState } from './presence_share_settings';
 // D-BP202-BM02-002. mesh_remote_admin_consent.ts's own header (D-BP202-M0-01-h2cbp8us-001) names
 // THIS as its enforcement point: "This machine's declared answer to 'may another machine
 // administer me' is published on peer_server's /api/info as `remoteAdminConsent`." That claim was
@@ -134,6 +156,10 @@ import { isUnauthenticatedLanDiscoveryAllowed } from './mesh_trust_settings';
 // read this machine's own declared posture, not infer it).
 import { isRemoteAdministrationConsentGranted } from './mesh_remote_admin_consent';
 import { lookupKnownPeerPublicKey } from './constellation_discovery';
+// D-BP223-BM0-X010-004-MESHPLUMB: the enrollment registry gate. See resolveEnrolledSenderKey()
+// below for how this is layered onto the pre-existing trust-on-first-use resolution rather than
+// replacing it outright.
+import { lookupEnrolledPeerPublicKey, lookupEnrolledPeerOwnerId } from '../thorax/peer_enrollment_registry';
 // D-BP156-M0-008: HARDWIRE-24 mesh, Bishop-dispatch payload variant (a second wan-relay-route
 // payload shape, sibling to the domain-plow shape mic_dispatcher.ts already sends).
 import {
@@ -339,13 +365,22 @@ export async function handleInboundBishopDispatchEnvelope(
   const peeked = peekAnnouncePayload(plaintext);
   if (peeked) {
     const claimedOrigin = typeof peeked.payload.originPeerId === 'string' ? peeked.payload.originPeerId : undefined;
+    // D-BP223-BM0-X010-004-MESHPLUMB: the WAN path. Same enrollment-first resolution as the LAN
+    // signed_frame paths above -- see resolveEnrolledSenderKey()'s header comment. An ENROLLED
+    // origin whose signature fails verification is refused outright below (never falls through
+    // to a previously-learned or self-declared key); an UNENROLLED origin falls through to the
+    // pre-existing TOFU resolution unchanged, preserving peer_server.bishop_dispatch.test.ts's
+    // own "(TOFU)"-labeled test.
+    const enrolled = claimedOrigin ? resolveEnrolledSenderKey(claimedOrigin) : { key: null, reason: 'no originPeerId in frame' };
     const knownKey = claimedOrigin ? lookupKnownPeerPublicKey(claimedOrigin) : undefined;
-    const keyToVerify = knownKey ?? peeked.claimedPublicKeyHex;
+    const keyToVerify = enrolled.key ?? knownKey ?? peeked.claimedPublicKeyHex;
     if (keyToVerify) {
       const verified = verifyAnnounceFrame(plaintext, keyToVerify);
       if (verified.valid && verified.payload) {
         rawPayload = verified.payload;
         verifiedOriginPeerId = claimedOrigin ?? null;
+      } else if (enrolled.key) {
+        console.warn(`[PeerServer] REFUSED WAN bishop_dispatch: enrolled peer "${claimedOrigin}" failed signature check: ${verified.reason}`);
       }
     }
   }
@@ -487,8 +522,43 @@ function resolveLocalPublicKeyHex(): string | undefined {
   }
 }
 
-async function publishPresence(): Promise<void> {
+/** D-BP223-BM0-X030-073 P1: the current state of "Share presence with my other machines". Never throws (fails OFF). */
+export function getPresenceShareState(): PresenceShareState {
+  let registryPath: string | null = null;
+  try { registryPath = join(app.getPath('userData'), 'peer_enrollment_registry.json'); } catch { registryPath = null; }
+  try {
+    return resolvePresenceShare({ registryPath, selfOwnerId: _emailHash });
+  } catch (err) {
+    console.warn('[PeerServer] presence share state unreadable, beacon OFF:', err);
+    return { enabled: false, source: 'default_not_same_owner_mesh', sameOwnerMesh: false, sameOwnerPeers: 0, label: 'Share presence with my other machines', settingsPath: '' };
+  }
+}
+
+/** D-BP223-BM0-X030-073 P1: the ONE switch. Records the user's choice and applies it now (stops or starts the beacon). */
+export function setPresenceSharing(enabled: boolean): PresenceShareState {
+  setSharePresenceChoice(enabled);
+  const state = getPresenceShareState();
+  if (!state.enabled) {
+    stopHeartbeatWorker();
+    console.log('[PeerServer] presence sharing OFF: no presence publish, no heartbeat worker');
+  } else if (_server) {
+    startHeartbeatWorker();
+    publishPresence().catch(console.warn);
+  }
+  return state;
+}
+
+let _presenceOffLogged = false;
+
+/** Exported for tests and for the switch; the 60 s timer calls it too. */
+export async function publishPresence(): Promise<void> {
   if (!_peerId || !_supabaseUrl) return;
+  // D-BP223-BM0-X030-073 P1: nothing goes to the relay while the switch is off.
+  if (!getPresenceShareState().enabled) {
+    if (!_presenceOffLogged) { console.log('[PeerServer] presence publish skipped: "Share presence with my other machines" is off'); _presenceOffLogged = true; }
+    return;
+  }
+  _presenceOffLogged = false;
 
   const hwTier = detectHardwareTier();
   const installedDomains = getInstalledDomains();
@@ -549,7 +619,8 @@ async function publishPresence(): Promise<void> {
     version: app.getVersion(),
     machine_label: identityFields.machine_label,
     lan_addresses: identityFields.lan_addresses,
-    email_hash: identityFields.email_hash ?? _emailHash ?? null,
+    // D-BP223-BM0-X030-073 P1: per-install SALTED hash (salt local, never sent). Never the unsalted identityFields/_emailHash.
+    email_hash: beaconEmailHashOrNull(memberEmail),
     artifact_server_address: identityFields.artifact_server_address ?? undefined,
     relay_session_id: _relaySessionId ?? undefined,
     capabilities: {
@@ -643,6 +714,52 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+// ─── D-BP223-BM0-X010-004-MESHPLUMB: enrollment-registry gate ─────────────────────────────────
+//
+// THE FOUNDER'S ORDER, VERBATIM (k/c6cb1842): "peer_server.ts, discovery, and the WAN path
+// remain exactly as open as before... plumb the signed-assertion gate into peer_server.ts,
+// discovery and the WAN path." Every signed-frame path below used to resolve an unknown sender's
+// verification key with lookupKnownPeerPublicKey() (constellation_discovery.ts's beacon-learned
+// store, itself populated by trust-on-first-use) and, failing that, the SELF-DECLARED key
+// embedded in the very frame being verified -- KN-BP144-16's own doc comments name this
+// explicitly as "trust-on-first-use... callers should prefer [a previously-learned key] when
+// available." That is not the gap this dispatch closes -- HARDWIRE-03's actual gap is that NO
+// stronger tier existed at all.
+//
+// resolveEnrolledSenderKey() below adds exactly that stronger tier: peer_enrollment_registry.ts,
+// populated only through enroll_peer_order.ts's TOTP-gated path. It is checked FIRST. An
+// ENROLLED peer's signature is verified ONLY against its enrolled key -- a bad signature from an
+// enrolled peer_id is now refused outright, fail-closed, regardless of what the frame
+// self-declares. Two existing tests (peer_server.bishop_dispatch.test.ts's own "(TOFU)"-labeled
+// case, and every legacy-unsigned-shape test in this file) exercise peers that are NEVER enrolled
+// in any registry -- per this dispatch's own hard limit ("existing tests must still pass"), those
+// paths are left running exactly as before by design: an UNENROLLED peer still falls through to
+// the pre-existing TOFU/self-declared-key resolution, unchanged. This is a real, disclosed
+// tension between "make the live mesh safer tonight" and "break nothing already shipped" --
+// resolved here by making enrollment additive and strictly stronger than TOFU wherever it is
+// used, rather than by weakening or removing TOFU for peers nobody has enrolled yet. See this
+// dispatch's REPORT for the full statement of this tradeoff.
+function resolveEnrolledSenderKey(peerId: string): { key: string | null; reason: string } {
+  let registryPath: string;
+  try {
+    // `app` is already imported at module top (used throughout this file). Outside a real
+    // Electron main process app.getPath() returns undefined (verified directly in this repo's
+    // own peer_server.bishop_dispatch.test.ts header comment) -- join() then throws, caught
+    // below, which is exactly the desired "cannot check -> refuse" outcome in that environment.
+    registryPath = join(app.getPath('userData'), 'peer_enrollment_registry.json');
+  } catch (err) {
+    return {
+      key: null,
+      reason: `enrollment registry path unavailable (${err instanceof Error ? err.message : String(err)})`,
+    };
+  }
+  const key = lookupEnrolledPeerPublicKey(registryPath, peerId);
+  if (!key) {
+    return { key: null, reason: `peer "${peerId}" is not in the enrollment registry (${registryPath})` };
+  }
+  return { key, reason: 'enrolled' };
+}
+
 interface PlowDomainRequestOk {
   ok: true;
   domain: string;
@@ -690,8 +807,14 @@ export function resolvePlowDomainRequest(body: string): PlowDomainRequestOk | Pl
       return { ok: false, status: 400, error: 'signed_frame present but malformed (failed to decode)' };
     }
     const senderPeerId = typeof peeked.payload.sender_peer_id === 'string' ? peeked.payload.sender_peer_id : undefined;
+    // D-BP223-BM0-X010-004-MESHPLUMB: the enrollment registry is checked FIRST and, when the
+    // sender IS enrolled, is authoritative -- a bad signature from an enrolled peer_id is refused
+    // here even if it happens to verify against a previously-learned or self-declared key. An
+    // UNENROLLED sender falls through to the pre-existing resolution unchanged (see
+    // resolveEnrolledSenderKey()'s own header comment for why).
+    const enrolled = senderPeerId ? resolveEnrolledSenderKey(senderPeerId) : { key: null, reason: 'no sender_peer_id in frame' };
     const knownKey = senderPeerId ? lookupKnownPeerPublicKey(senderPeerId) : undefined;
-    const keyToVerify = knownKey ?? peeked.claimedPublicKeyHex;
+    const keyToVerify = enrolled.key ?? knownKey ?? peeked.claimedPublicKeyHex;
 
     if (!keyToVerify) {
       return { ok: false, status: 403, error: 'refused: signed_frame carried no public_key_hex and no previously-known key exists for this sender' };
@@ -699,6 +822,9 @@ export function resolvePlowDomainRequest(body: string): PlowDomainRequestOk | Pl
 
     const verified = verifyAnnounceFrame(outer.signed_frame, keyToVerify);
     if (!verified.valid) {
+      if (enrolled.key) {
+        console.warn(`[PeerServer] REFUSED /api/plow-domain: enrolled peer "${senderPeerId}" failed signature check: ${verified.reason}`);
+      }
       // A refused signature stays refused, unconditionally — never gated by the opt-out setting.
       return { ok: false, status: 403, error: `refused: ${verified.reason}` };
     }
@@ -758,6 +884,15 @@ export async function handlePlowDomainRequestBody(body: string): Promise<PlowDom
     const wasExplicitPlowModel = typeof model === 'string' && model.length > 0;
     const preGatePlowModel = model ?? getEffectiveOllamaModel() ?? getRecommendedModel() ?? 'llama3.3:70b';
     const vramGate = resolveVramGatedPlowModel(preGatePlowModel, wasExplicitPlowModel);
+    // D-BP223-BM0-X029-018 "You come first" (Founder k/0ee57a97): plow work for a peer is model work
+    // on THIS person's machine. While they are using it, refuse politely with 503 + retry hint
+    // (the work stays with the sender, nothing is lost); light serving on the GET routes is untouched.
+    const { checkUserPrecedence } = await import('../user_precedence');
+    const precedence = await checkUserPrecedence({ model: vramGate.model, ollamaUrl: ollamaBaseUrl ?? 'http://127.0.0.1:11434' });
+    if (precedence.yield) {
+      console.log(`[PeerServer] /api/plow-domain deferred: ${precedence.explanation}`);
+      return { status: 503, body: { error: 'user_has_precedence', reasons: precedence.reasons, explanation: precedence.explanation, retry_after_s: 120 } };
+    }
     if (vramGate.note) {
       // Not folded into the response body: the pre-existing hook-result shape is a stable
       // contract for federated_andon.ts/mic_dispatcher.ts callers and this dispatch's own
@@ -818,8 +953,11 @@ export function resolveSignedDiagnosisRequest(
       return { ok: false, status: 400, error: 'signed_frame present but malformed (failed to decode)' };
     }
     const senderPeerId = typeof peeked.payload.sender_peer_id === 'string' ? peeked.payload.sender_peer_id : undefined;
+    // D-BP223-BM0-X010-004-MESHPLUMB: same enrollment-first resolution as resolvePlowDomainRequest
+    // above -- see resolveEnrolledSenderKey()'s header comment for the full rationale.
+    const enrolled = senderPeerId ? resolveEnrolledSenderKey(senderPeerId) : { key: null, reason: 'no sender_peer_id in frame' };
     const knownKey = senderPeerId ? lookupKnownPeerPublicKey(senderPeerId) : undefined;
-    const keyToVerify = knownKey ?? peeked.claimedPublicKeyHex;
+    const keyToVerify = enrolled.key ?? knownKey ?? peeked.claimedPublicKeyHex;
 
     if (!keyToVerify) {
       return { ok: false, status: 403, error: 'refused: signed_frame carried no public_key_hex and no previously-known key exists for this sender' };
@@ -827,6 +965,9 @@ export function resolveSignedDiagnosisRequest(
 
     const verified = verifyAnnounceFrame(outer.signed_frame, keyToVerify);
     if (!verified.valid) {
+      if (enrolled.key) {
+        console.warn(`[PeerServer] REFUSED diagnosis request: enrolled peer "${senderPeerId}" failed signature check: ${verified.reason}`);
+      }
       // A refused signature stays refused, unconditionally -- never gated by the opt-out below.
       return { ok: false, status: 403, error: `refused: ${verified.reason}` };
     }
@@ -858,18 +999,87 @@ function sendJson(res: ServerResponse, statusCode: number, data: unknown): void 
   res.end(body);
 }
 
+// ─── D-BP223-BM0-X030-073 P2: every route signed, except the minimal health ping ──────────────────────────────────────
+
+/** Max age of a signed GET frame (replay window). */
+export const SIGNED_GET_MAX_AGE_MS = 5 * 60 * 1000;
+export const SIGNED_GET_HEADER = 'x-mnem-signed-frame';
+
+type FrameCheck = { ok: true; payload: Record<string, unknown> } | { ok: false; status: number; error: string };
+
+/** Verifies one signed Thorax frame with the same key tiers as every signed route: enrolled key, then a beacon-learned key,
+ *  then the frame's self-declared key (trust on first use). */
+export function verifySignedFrameHex(signedHex: string): FrameCheck {
+  const peeked = peekAnnouncePayload(signedHex);
+  if (!peeked) return { ok: false, status: 403, error: 'refused: signed frame malformed' };
+  const senderPeerId = typeof peeked.payload.sender_peer_id === 'string' ? peeked.payload.sender_peer_id : undefined;
+  const enrolled = senderPeerId ? resolveEnrolledSenderKey(senderPeerId) : { key: null, reason: 'no sender_peer_id' };
+  const knownKey = senderPeerId ? lookupKnownPeerPublicKey(senderPeerId) : undefined;
+  const keyToVerify = enrolled.key ?? knownKey ?? peeked.claimedPublicKeyHex;
+  if (!keyToVerify) return { ok: false, status: 403, error: 'refused: signed frame carried no public key' };
+  const verified = verifyAnnounceFrame(signedHex, keyToVerify);
+  if (!verified.valid || !verified.payload) return { ok: false, status: 403, error: `refused: ${verified.reason ?? 'signature did not verify'}` };
+  return { ok: true, payload: verified.payload };
+}
+
+/** POST routes: the body must carry a signed_frame that verifies. Unsigned is 403 regardless of any LAN setting. */
+export function requireSignedBody(body: string): FrameCheck {
+  let outer: { signed_frame?: unknown };
+  try { outer = JSON.parse(body) as { signed_frame?: unknown }; } catch { return { ok: false, status: 403, error: 'refused: unsigned request (body is not a signed frame)' }; }
+  if (!outer || typeof outer.signed_frame !== 'string') return { ok: false, status: 403, error: 'refused: unsigned request; every route on this port needs a signed frame (X030-073 P2)' };
+  return verifySignedFrameHex(outer.signed_frame);
+}
+
+/** GET routes: header x-mnem-signed-frame, payload.route === the path, payload.issued_ms fresh. */
+export function requireSignedGet(headers: IncomingMessage['headers'], route: string, nowMs: number = Date.now()): FrameCheck {
+  const raw = headers[SIGNED_GET_HEADER];
+  const hex = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof hex !== 'string' || !hex) return { ok: false, status: 403, error: `refused: unsigned request; send ${SIGNED_GET_HEADER} (X030-073 P2)` };
+  const v = verifySignedFrameHex(hex);
+  if (!v.ok) return v;
+  if (v.payload.route !== route) return { ok: false, status: 403, error: 'refused: signed frame is for a different route' };
+  const issued = Number(v.payload.issued_ms);
+  if (!Number.isFinite(issued) || Math.abs(nowMs - issued) > SIGNED_GET_MAX_AGE_MS) return { ok: false, status: 403, error: 'refused: signed frame is stale or undated' };
+  return v;
+}
+
+/** Exported for the X030-073 route tests; the live server calls it for every request. */
+export async function handlePeerRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  return handleRequest(req, res);
+}
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? '';
   const method = req.method ?? 'GET';
 
-  // Heartbeat
+  // Health ping: the ONE unauthenticated route. No version, no time, no machine details (X030-073 P2).
   if (url === '/api/heartbeat' && method === 'GET') {
-    sendJson(res, 200, { ok: true, version: app.getVersion(), ts: Date.now() });
+    sendJson(res, 200, { ok: true });
     return;
+  }
+
+  // Every POST route that is not the library pair is gated here, before any handler or registration check sees it.
+  // D-BP223-PQ005-012-X041: /api/library/offer is the PUSH (one card offered to this node, landed only on consent).
+  const SIGNED_POST_ROUTES = ['/api/plow-domain', '/api/diagnosis/post', '/api/diagnosis/answer', '/api/diagnosis/upvote', '/api/diagnosis/verify', '/api/library/search', '/api/library/fetch', '/api/library/offer'];
+  let preReadBody: string | null = null;
+  if (method === 'POST' && SIGNED_POST_ROUTES.includes(url)) {
+    preReadBody = await readBody(req);
+    const gate = requireSignedBody(preReadBody);
+    if (!gate.ok) {
+      console.warn(`[PeerServer] REFUSED ${url}: ${gate.error}`);
+      sendJson(res, gate.status, { error: gate.error });
+      return;
+    }
   }
 
   // Info (SEG-3: populated from ram_detector + chocolates registry)
   if (url === '/api/info' && method === 'GET') {
+    const gate = requireSignedGet(req.headers, '/api/info');
+    if (!gate.ok) {
+      console.warn(`[PeerServer] REFUSED /api/info: ${gate.error}`);
+      sendJson(res, gate.status, { error: gate.error });
+      return;
+    }
     const hwTier = detectHardwareTier();
     const installedDomains = getInstalledDomains();
     // ── D-BP202-BM01-012. REPORT THE NUMBER THAT ACTUALLY DECIDES MODEL FIT. ────────────────────
@@ -922,7 +1132,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   // Plow domain
   if (url === '/api/plow-domain' && method === 'POST') {
-    const body = await readBody(req);
+    const body = preReadBody ?? await readBody(req);
     const { status, body: respBody } = await handlePlowDomainRequestBody(body);
     sendJson(res, status, respBody);
     return;
@@ -935,7 +1145,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 503, { error: 'Diagnosis post handler not registered' });
       return;
     }
-    const body = await readBody(req);
+    const body = preReadBody ?? await readBody(req);
     const resolved = resolveSignedDiagnosisRequest(body);
     if (!resolved.ok) {
       console.warn(`[PeerServer] REFUSED /api/diagnosis/post: ${resolved.error}`);
@@ -959,7 +1169,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 503, { error: 'Diagnosis answer handler not registered' });
       return;
     }
-    const body = await readBody(req);
+    const body = preReadBody ?? await readBody(req);
     const resolved = resolveSignedDiagnosisRequest(body);
     if (!resolved.ok) {
       console.warn(`[PeerServer] REFUSED /api/diagnosis/answer: ${resolved.error}`);
@@ -981,7 +1191,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 503, { error: 'Diagnosis upvote handler not registered' });
       return;
     }
-    const body = await readBody(req);
+    const body = preReadBody ?? await readBody(req);
     const resolved = resolveSignedDiagnosisRequest(body);
     if (!resolved.ok) {
       console.warn(`[PeerServer] REFUSED /api/diagnosis/upvote: ${resolved.error}`);
@@ -1007,7 +1217,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 503, { error: 'Diagnosis verify handler not registered' });
       return;
     }
-    const body = await readBody(req);
+    const body = preReadBody ?? await readBody(req);
     const resolved = resolveSignedDiagnosisRequest(body);
     if (!resolved.ok) {
       console.warn(`[PeerServer] REFUSED /api/diagnosis/verify: ${resolved.error}`);
@@ -1028,7 +1238,127 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  // D-BP223-BM0-X029-007: Hollerith card library (search by tag / keyword / hex connector, then fetch).
+  // Signed requests only; same key resolution tiers as the routes above; only mesh_share + leak-clean eblets in
+  // {userData}\eblets\hollerith are ever listed or served (see hollerith_library_share.ts header).
+  const library = await handleLibraryRoute(url, method, () => (preReadBody != null ? Promise.resolve(preReadBody) : readBody(req)), libraryRouteContext());
+  if (library) {
+    if (library.status !== 200) console.warn(`[PeerServer] REFUSED ${url}: ${String(library.body.error ?? library.status)}`);
+    sendJson(res, library.status, library.body);
+    return;
+  }
+
   sendJson(res, 404, { error: 'Not found' });
+}
+
+/** D-BP223-BM0-X029-007: this node's peer id as registered by registerPresenceConfig (null before registration). */
+export function getRegisteredPeerId(): string | null {
+  return _peerId;
+}
+
+/** D-BP223-BM0-X029-007: the Hollerith silo inside the {userData}\eblets root mnem_eblet_store.ts already indexes. */
+export function hollerithSiloDir(): string {
+  return join(app.getPath('userData'), 'eblets', 'hollerith');
+}
+
+/** D-BP223-BM0-X030-207: ORIGIN / TRAIL / USE tag ledgers for the Hollerith silo (eblet_provenance_tags.ts). Beside the silo, not in it,
+ *  so the silo's eblet index and the shareability listing never see a jsonl ledger. */
+export function hollerithTagsDir(): string {
+  return join(app.getPath('userData'), 'eblet_tags', 'hollerith');
+}
+
+function libraryRouteContext(): LibraryRouteContext {
+  return {
+    siloDir: hollerithSiloDir(),
+    // X030-207: fetch serves each card's ORIGIN + TRAIL lines so provenance travels with the copy.
+    tagsDir: hollerithTagsDir(),
+    selfPeerId: _peerId ?? 'self',
+    resolveSenderKey: (peerId: string) => {
+      const enrolled = resolveEnrolledSenderKey(peerId);
+      if (enrolled.key) return { key: enrolled.key, trust: 'enrolled' };
+      const known = lookupKnownPeerPublicKey(peerId);
+      return known ? { key: known, trust: 'known' } : null;
+    },
+    // Same trust-on-first-use tier the /api/diagnosis/* routes accept for a signed frame. The trust tier used is
+    // returned to the requester (requester_trust) and recorded in its receipt, never hidden.
+    allowSelfDeclaredKey: true,
+    signPayload: (seed: string, payload: Record<string, unknown>) => signAnnouncePayload(seed, payload)?.signedHex ?? null,
+    // D-BP223-BM0-X030-067 pick B (Founder k/dc99f6ff): same-owner is PERSON-level. This node's owner id is the LB session email
+    // hash registered by registerPresenceConfig (null when not signed in, which shares no source_pending card to anyone). A
+    // requester's owner id comes ONLY from its TOTP-gated enrollment record, never from IP, LAN or anything it claims.
+    selfOwnerId: _emailHash,
+    resolveSenderOwnerId: (peerId: string) => {
+      try {
+        return lookupEnrolledPeerOwnerId(join(app.getPath('userData'), 'peer_enrollment_registry.json'), peerId);
+      } catch {
+        return null;
+      }
+    },
+    // D-BP223-PQ005-012-X041: the PUSH lands a card here only on this node's consent (share_receive_consent.ts, the fourth
+    // consent: same owner accepts, an enrolled or known peer is held in the inbox for a person's press, a stranger is refused).
+    offerConsent: offerConsentFromSettings(),
+    inboxDir: hollerithInboxDir(),
+    tagSigner: tagSignerForThisNode(),
+  };
+}
+
+/** X041: offers held for a person's consent live beside the silo, never inside it (the silo index must never list them). */
+export function hollerithInboxDir(): string {
+  return join(app.getPath('userData'), 'eblet_inbox', 'hollerith');
+}
+
+/** X041: this node's TRAIL-hop signer (the same shape the pull uses on the requester side); null when no keypair is available. */
+export function tagSignerForThisNode(): TagSigner | null {
+  try {
+    const kp = getOrCreateKeypair();
+    return signerFromKeypair(_peerId ?? ('self-' + kp.public_key_hex.slice(-16)), kp.public_key_hex, kp.private_key_hex);
+  } catch {
+    return null;
+  }
+}
+
+export interface PushEbletArgs {
+  /** e.g. http://192.168.86.45:7474; when absent, peerId is resolved through the saved constellation peers (address = ip:port) */
+  peerBaseUrl?: string;
+  peerId?: string;
+  connector?: string;
+  file?: string;
+  expectedReceiverKeyHex?: string | null;
+}
+
+/**
+ * D-BP223-PQ005-012-X041: the one-click share, from THIS node. The MCP tool (mnem_share_eblet_to_peer, mode push) and the
+ * renderer IPC (share:push-eblet) both call this; it signs with this node's Thorax key, offers the card, verifies the
+ * receiver's signed receipt, and appends the receipt to {userData}\share_receipts\sent.jsonl (append-only, never rewritten).
+ */
+export async function pushEbletToPeerFromThisNode(args: PushEbletArgs): Promise<PushReceipt & { receiptPath: string | null; receiverKeyHex: string | null }> {
+  let base = (args.peerBaseUrl ?? '').trim();
+  let expectedKey: string | null = args.expectedReceiverKeyHex ?? null;
+  if (!base && args.peerId) {
+    const peer = loadSavedPeers().find((p) => p.id === args.peerId);
+    if (!peer) throw new Error(`peer "${args.peerId}" is not among this node's saved constellation peers; pass peerBaseUrl`);
+    base = /^https?:\/\//.test(peer.address) ? peer.address : `http://${peer.address}`;
+    if (!expectedKey) expectedKey = resolveEnrolledSenderKey(peer.id).key ?? peer.public_key_hex ?? null;
+  } else if (args.peerId && !expectedKey) {
+    expectedKey = resolveEnrolledSenderKey(args.peerId).key ?? lookupKnownPeerPublicKey(args.peerId) ?? null;
+  }
+  if (!base) throw new Error('peerBaseUrl or a saved peerId is required');
+  const selfId = _peerId ?? ('self-' + getOrCreateKeypair().public_key_hex.slice(-16));
+  const receipt = await pushEbletToPeer({
+    peerBaseUrl: base, senderPeerId: selfId, siloDir: hollerithSiloDir(), connector: args.connector, file: args.file,
+    signPayload: (seed, payload) => signAnnouncePayload(seed, payload)?.signedHex ?? null,
+    expectedReceiverKeyHex: expectedKey, ownerId: _emailHash, tagsDir: hollerithTagsDir(),
+  });
+  let receiptPath: string | null = null;
+  try {
+    const dir = join(app.getPath('userData'), 'share_receipts');
+    mkdirSync(dir, { recursive: true });
+    receiptPath = join(dir, 'sent.jsonl');
+    appendFileSync(receiptPath, JSON.stringify({ ...receipt, receiver_key_hex: expectedKey }) + '\n', 'utf8');
+  } catch (err) {
+    console.warn('[PeerServer] share receipt not recorded:', err);
+  }
+  return { ...receipt, receiptPath, receiverKeyHex: expectedKey };
 }
 
 export function startPeerServer(): void {
@@ -1062,8 +1392,35 @@ export function startPeerServer(): void {
       publishPresence().catch(console.warn);
     }, PRESENCE_INTERVAL_MS);
 
-    // D6b: spawn independent worker_threads heartbeat — separate V8 isolate so it
-    // survives relay-poll main-thread hang (prevents "peer looks alive but can't answer" lie)
+    // D-BP223-BM0-X030-073 P1: the heartbeat worker is part of the relay beacon; it runs only while the switch is on.
+    if (getPresenceShareState().enabled) startHeartbeatWorker();
+    else console.log('[PeerServer] heartbeat worker not started: "Share presence with my other machines" is off');
+  });
+
+  _server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[PeerServer] Port ${PEER_SERVER_PORT} already in use — skipping start`);
+    } else {
+      console.error('[PeerServer] Server error:', err);
+    }
+    _server = null;
+  });
+}
+
+/** D-BP223-BM0-X030-073 P1: stops the relay heartbeat worker (part of the beacon). */
+function stopHeartbeatWorker(): void {
+  if (_heartbeatWorker) {
+    try { _heartbeatWorker.postMessage({ type: 'stop' }); } catch { /* ignore */ }
+    _heartbeatWorker = null;
+  }
+}
+
+/** D6b worker start, moved out of the listen callback unchanged (X030-073) so the presence switch can start it too.
+ *  D6b: spawn independent worker_threads heartbeat — separate V8 isolate so it
+ *  survives relay-poll main-thread hang (prevents "peer looks alive but can't answer" lie) */
+function startHeartbeatWorker(): void {
+  if (_heartbeatWorker) return;
+  {
     if (_peerId && _supabaseUrl) {
       try {
         const { Worker } = require('worker_threads') as typeof import('worker_threads');
@@ -1097,16 +1454,7 @@ export function startPeerServer(): void {
         console.warn('[PeerServer] D6b heartbeat_worker spawn failed (non-fatal — falling back to main-thread heartbeat):', err);
       }
     }
-  });
-
-  _server.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.warn(`[PeerServer] Port ${PEER_SERVER_PORT} already in use — skipping start`);
-    } else {
-      console.error('[PeerServer] Server error:', err);
-    }
-    _server = null;
-  });
+  }
 }
 
 export function stopPeerServer(): void {
