@@ -73,8 +73,12 @@ describe('startRelayRoutePoll (index.ts) — bishop_dispatch skip-guard, D-BP156
 
   test('the pre-existing claim PATCH for an ordinary (non-bishop_dispatch) row is still ' +
     'present, unconditional, and unchanged in shape (status:\'processing\')', () => {
-    expect(body).toContain("status: 'processing'");
-    expect(body).toContain('/rest/v1/relay_routes?id=eq.${route.id}');
+    // D-BP223-X043-010-RB: the claim is now a conditional route_set_status (pending -> processing)
+    // through the Phase A RPC; no direct table call remains anywhere in this poller.
+    expect(body).toContain("relaySetStatus(route.id, 'pending', 'processing')");
+    expect(body).not.toContain('/rest/v1/relay_routes');
+    expect(body).not.toContain('/rest/v1/relay_route_replies');
+    expect(body).not.toContain('/rest/v1/peer_presence');
   });
 
   test('the pre-existing MC-answer machinery (eblet_topical / plow branches) is still present ' +

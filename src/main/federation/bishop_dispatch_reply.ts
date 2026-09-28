@@ -56,6 +56,8 @@
 import { app } from 'electron';
 import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 import type { BishopDispatchResult, WorkLifecycle, WorkMaturity, WorkIssue } from './peer_server';
+import { getStablePeerId } from './peer-discovery';
+import { repliesOnly, routeRepliesForSender, routeReplyPut } from './relay_rpc';
 
 const BISHOP_DISPATCH_REPLY_KIND = 'bishop_dispatch_reply';
 const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
@@ -189,31 +191,15 @@ export async function writeBishopDispatchReply(
     ...(result.effectiveId !== undefined ? { effectiveId: result.effectiveId } : {}),
     ...(versionInfo ? { responderVersion: versionInfo.appVersion, responderBuildKind: versionInfo.buildKind } : {}),
   };
-  try {
-    const res = await fetchImpl(`${config.supabaseUrl}/rest/v1/relay_route_replies`, {
-      method: 'POST',
-      headers: {
-        apikey: config.anonKey,
-        Authorization: `Bearer ${config.anonKey}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
-      },
-      body: JSON.stringify({
-        route_id: routeId,
-        peer_id: peerId,
-        answer_json: answer,
-        processing_ms: processingMs,
-      }),
-      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      console.warn(`[bishop-dispatch-reply] write REFUSED for route ${routeId.slice(0, 8)}: HTTP ${res.status}`);
-    }
-    return res.ok;
-  } catch (err) {
-    console.warn(`[bishop-dispatch-reply] write FAILED for route ${routeId.slice(0, 8)} (non-fatal):`, err);
-    return false;
+  // D-BP223-X043-010-RB: through route_reply_put (Phase A RPC), proven with this install's owner secret.
+  const r = await routeReplyPut({
+    supabaseUrl: config.supabaseUrl, anonKey: config.anonKey, fetchImpl, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
+    routeId, peerId, answerJson: answer, processingMs,
+  });
+  if (!r.ok) {
+    console.warn(`[bishop-dispatch-reply] write REFUSED for route ${routeId.slice(0, 8)}: ${r.error}`);
   }
+  return r.ok;
 }
 
 /** Everything the stage-2/completion write needs, derived by `bishop_dispatch_handler.ts`'s
@@ -257,37 +243,24 @@ export async function writeBishopDispatchCompletionReply(
     tailExcerpt: completion.tailExcerpt,
     ...(versionInfo ? { responderVersion: versionInfo.appVersion, responderBuildKind: versionInfo.buildKind } : {}),
   };
-  try {
-    const res = await fetchImpl(`${config.supabaseUrl}/rest/v1/relay_route_replies`, {
-      method: 'POST',
-      headers: {
-        apikey: config.anonKey,
-        Authorization: `Bearer ${config.anonKey}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
-      },
-      body: JSON.stringify({
-        route_id: routeId,
-        peer_id: peerId,
-        answer_json: answer,
-        processing_ms: processingMs,
-      }),
-      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      console.warn(`[bishop-dispatch-reply] completion write REFUSED for route ${routeId.slice(0, 8)}: HTTP ${res.status}`);
-    }
-    return res.ok;
-  } catch (err) {
-    console.warn(`[bishop-dispatch-reply] completion write FAILED for route ${routeId.slice(0, 8)} (non-fatal):`, err);
-    return false;
+  // D-BP223-X043-010-RB: through route_reply_put (Phase A RPC), proven with this install's owner secret.
+  const r = await routeReplyPut({
+    supabaseUrl: config.supabaseUrl, anonKey: config.anonKey, fetchImpl, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
+    routeId, peerId, answerJson: answer, processingMs,
+  });
+  if (!r.ok) {
+    console.warn(`[bishop-dispatch-reply] completion write REFUSED for route ${routeId.slice(0, 8)}: ${r.error}`);
   }
+  return r.ok;
 }
 
 export interface ReplyPollConfig {
   supabaseUrl: string;
   anonKey: string;
   fetchImpl?: FetchLike;
+  /** D-BP223-X043-010-RB: the SENDER's peer id (replies are read through route_replies_for_sender,
+   *  which proves the sender). Defaults to this machine's getStablePeerId(). */
+  peerId?: string;
   /** Injectable so an offline test never actually sleeps. Defaults to a real setTimeout. */
   sleepImpl?: (ms: number) => Promise<void>;
   pollIntervalMs?: number;
@@ -345,23 +318,23 @@ export async function pollForBishopDispatchReply(
   const sleepImpl = config.sleepImpl ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const intervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const deadline = Date.now() + timeoutMs;
+  const senderPeerId = config.peerId ?? getStablePeerId();
 
   while (Date.now() < deadline) {
     await sleepImpl(intervalMs);
     try {
-      const res = await fetchImpl(
-        `${config.supabaseUrl}/rest/v1/relay_route_replies?route_id=eq.${encodeURIComponent(routeId)}` +
-          `&select=answer_json,processing_ms&order=created_at.desc&limit=1`,
-        {
-          headers: { apikey: config.anonKey, Authorization: `Bearer ${config.anonKey}` },
-          signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
-        },
-      );
-      if (!res.ok) continue;
-      const rows = (await res.json()) as Array<{ answer_json: Record<string, unknown> | null; processing_ms: number }>;
-      const row = rows[0];
-      if (row && isBishopDispatchReply(row.answer_json)) {
-        return { answer: annotateVersionSkew(row.answer_json), processingMs: row.processing_ms };
+      // D-BP223-X043-010-RB: sender-side read through route_replies_for_sender (Phase A RPC). It
+      // returns only replies to routes THIS peer sent (origin_peer_id proven at route_send).
+      const r = await routeRepliesForSender({
+        supabaseUrl: config.supabaseUrl, anonKey: config.anonKey, fetchImpl, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
+        peerId: senderPeerId, routeIds: [routeId],
+      });
+      if (!r.ok) continue;
+      const replies = repliesOnly(r.data);
+      const row = replies[replies.length - 1]; // server orders by reply created_at ASC; newest last
+      const answerJson = (row?.answer_json ?? null) as Record<string, unknown> | null;
+      if (row && isBishopDispatchReply(answerJson)) {
+        return { answer: annotateVersionSkew(answerJson), processingMs: row.processing_ms ?? 0 };
       }
     } catch {
       // Transient poll error -- keep trying until deadline, matching wan_dispatch.ts's

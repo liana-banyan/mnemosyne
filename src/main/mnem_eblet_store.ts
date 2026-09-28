@@ -2680,6 +2680,14 @@ export function computeQuestionSimilaritySymmetric(questionA: string, questionB:
  *  required code width) quantizes real cosine similarity coarsely enough that this margin,
  *  while real, is not huge -- a future increase in bit-count (still additive/optional) would
  *  sharpen it further; this is disclosed plainly in the BP137 report rather than glossed over. */
+/** D-BP223-X043-002-A (0.9.40), FOUNDER RULING, NEW MEANING: "a near match becomes a
+ *  SUGGESTION, never the served answer." The name is kept because other code imports it, but
+ *  this value is no longer a serve bar on the chat path. In ai_dispatch_ipc.ts a stored question
+ *  that clears it WITHOUT being an exact normalized match is returned as `nearMatchSuggestion`
+ *  ("A similar question was answered before: open it?") while the question still goes to the
+ *  normal answer path; only an exact match serves from the record. It also remains the
+ *  semantic discriminating floor the CSIA Psionic fast path must clear (necessary, no longer
+ *  sufficient: that path now also requires an exact question match). See near_match_suggestion.ts. */
 export const SEMANTIC_SERVE_THRESHOLD = 0.85;
 
 /** BP137 Yoke (Semantic Match Durable), STEP 2: scan every entry (not just a token-ranked

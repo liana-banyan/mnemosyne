@@ -46,6 +46,8 @@ import { encodeFrame, decodeFrame } from '../wire/hex-encode';
 import { randomUUID, createHash } from 'crypto';
 import { signFrame, verifyFrame } from '../thorax/sign_verify';
 import { fetchPearlFromMesh } from '../pearl/pearl_mesh_sync';
+import { getStablePeerId } from '../federation/peer-discovery';
+import { ownerProofHeaders, repliesOnly, routeRepliesForSender } from '../federation/relay_rpc';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -249,7 +251,12 @@ export async function dispatchQuestionToMesh(
   let totalHexBytes = 0;
   let totalJsonBytes = 0;
 
+  // D-BP223-X043-010-RB: wan-relay-route now also requires the sender's presence owner proof
+  // (x-lb-owner-secret header). No secret, no dispatch (fail closed).
+  const senderPeerId = getStablePeerId();
+  const ownerProof = ownerProofHeaders(senderPeerId);
   for (const peer of peerPool) {
+    if (!ownerProof) break;
     try {
       const resp = await fetch(`${config.supabase_url}/functions/v1/wan-relay-route`, {
         method: 'POST',
@@ -257,6 +264,7 @@ export async function dispatchQuestionToMesh(
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${config.supabase_service_key}`,
           'apikey': config.supabase_service_key,
+          ...ownerProof,
         },
         body: JSON.stringify({
           target_peer_id: peer.peer_id,
@@ -323,25 +331,21 @@ export async function dispatchQuestionToMesh(
       if (!routeId) { pending.delete(peerId); continue; }
 
       try {
-        const replyRes = await fetch(
-          `${config.supabase_url}/rest/v1/relay_route_replies` +
-          `?route_id=eq.${routeId}&select=*&limit=1`,
-          {
-            headers: {
-              'apikey': config.supabase_anon_key,
-              'Authorization': `Bearer ${config.supabase_anon_key}`,
-            },
-            signal: AbortSignal.timeout(8_000),
-          }
-        );
-
+        // D-BP223-X043-010-RB: sender-side read through route_replies_for_sender (Phase A RPC).
+        // relay_route_replies has hex_reply / answer_json columns; they are mapped onto the
+        // hex_frame / payload_json names this decoder already reads.
+        const replyRes = await routeRepliesForSender({
+          supabaseUrl: config.supabase_url, anonKey: config.supabase_anon_key, timeoutMs: 8_000,
+          peerId: senderPeerId, routeIds: [routeId],
+        });
         if (!replyRes.ok) continue;
-        const rows = (await replyRes.json()) as Array<{
-          route_id: string;
-          hex_frame?: string;
-          payload_json?: string;
-          created_at: string;
-        }>;
+        const rows: Array<{ route_id: string; hex_frame?: string; payload_json?: string; created_at: string }> =
+          repliesOnly(replyRes.data).map((r) => ({
+            route_id: r.route_id,
+            hex_frame: r.hex_reply ?? undefined,
+            payload_json: r.answer_json == null ? undefined : JSON.stringify(r.answer_json),
+            created_at: r.reply_created_at ?? '',
+          }));
 
         if (rows.length === 0) continue;
 

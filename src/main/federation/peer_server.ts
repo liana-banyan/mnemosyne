@@ -163,10 +163,13 @@ import { lookupEnrolledPeerPublicKey, lookupEnrolledPeerOwnerId } from '../thora
 // D-BP156-M0-008: HARDWIRE-24 mesh, Bishop-dispatch payload variant (a second wan-relay-route
 // payload shape, sibling to the domain-plow shape mic_dispatcher.ts already sends).
 import {
-  decryptFromRelay,
   isValidMachineTaggedDispatchId,
   type BishopDispatchPayload,
 } from './mic_dispatcher';
+// D-BP223-X043-007-RELAY-X25519: v2 relay open (per-peer X25519), replacing decryptFromRelay (v1,
+// key derived from this node's PUBLIC peer id). v1 is refused unless relayV1AcceptInbound is on.
+import { openRelayPayload, buildPresenceRelayX25519Field, type OpenResult } from './relay_v2_transport';
+import { OWNER_PROOF_HEADER, ownerProofHeaders } from './relay_rpc';
 
 export const PEER_SERVER_PORT = 7474;
 const PRESENCE_INTERVAL_MS = 60_000;
@@ -350,11 +353,20 @@ export async function handleInboundBishopDispatchEnvelope(
   }
 
   let plaintext: string;
+  let opened: OpenResult;
   try {
-    plaintext = await decryptFromRelay(payloadEncrypted, selfId);
+    opened = await openRelayPayload(payloadEncrypted, {
+      selfPeerId: selfId,
+      // Enrolled key first, then a beacon-learned key; never the frame's own claim (that is the
+      // TOFU fallback inside openRelayV2, reported as senderKeySource 'self_declared').
+      resolveTrustedSenderEd25519: (from) => resolveEnrolledSenderKey(from).key ?? lookupKnownPeerPublicKey(from) ?? undefined,
+    });
+    plaintext = opened.plaintext;
   } catch (err) {
+    const code = (err as { code?: unknown })?.code;
     const reason = `decrypt failed: ${err instanceof Error ? err.message : String(err)}`;
-    return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue('DECRYPT_FAILED', reason, `selfId=${selfId}`), spawned: false, reason };
+    const issueCode = code === 'V1_REFUSED' ? 'V1_REFUSED' : code === 'REPLAY' ? 'REPLAY_REFUSED' : 'DECRYPT_FAILED';
+    return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue(issueCode, reason, `selfId=${selfId} relayCode=${String(code ?? 'none')}`), spawned: false, reason };
   }
 
   // The plaintext is either a signed announce frame (peekAnnouncePayload succeeds) or, if the
@@ -365,6 +377,12 @@ export async function handleInboundBishopDispatchEnvelope(
   const peeked = peekAnnouncePayload(plaintext);
   if (peeked) {
     const claimedOrigin = typeof peeked.payload.originPeerId === 'string' ? peeked.payload.originPeerId : undefined;
+    // D-BP223-X043-007: a v2 frame names its sender in the AEAD-bound header ("from"). The signed
+    // inner payload must claim the SAME origin, or the frame is refused before any verification.
+    if (opened.wire === 'v2' && claimedOrigin !== undefined && claimedOrigin !== opened.from) {
+      const reason = `v2 frame sender "${opened.from}" does not match the signed payload's originPeerId "${claimedOrigin}"`;
+      return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue('SENDER_MISMATCH', reason, `from=${opened.from} origin=${claimedOrigin}`), spawned: false, reason };
+    }
     // D-BP223-BM0-X010-004-MESHPLUMB: the WAN path. Same enrollment-first resolution as the LAN
     // signed_frame paths above -- see resolveEnrolledSenderKey()'s header comment. An ENROLLED
     // origin whose signature fails verification is refused outright below (never falls through
@@ -414,6 +432,12 @@ export async function handleInboundBishopDispatchEnvelope(
   ) {
     const reason = 'bishop_dispatch envelope missing/malformed required fields';
     return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue('MALFORMED_FIELDS', reason, `dispatchId=${String(dispatchId)} promptText=${typeof promptText} workingDir=${typeof workingDir} originPeerId=${typeof originPeerId}`), spawned: false, reason };
+  }
+
+  // D-BP223-X043-007: same sender binding for the unsigned-JSON fallback path.
+  if (opened.wire === 'v2' && originPeerId !== opened.from) {
+    const reason = `v2 frame sender "${opened.from}" does not match the payload's originPeerId "${originPeerId}"`;
+    return { ok: false, transportReason: reason, lifecycle: 'failed', issues: transportIssue('SENDER_MISMATCH', reason, `from=${opened.from} origin=${originPeerId}`), spawned: false, reason };
   }
 
   const payload: BishopDispatchPayload = { kind: 'bishop_dispatch', dispatchId, promptText, workingDir, originPeerId };
@@ -598,6 +622,7 @@ export async function publishPresence(): Promise<void> {
   } catch {
     console.warn('[PeerServer] Thorax keypair unavailable -- publishing without public_key_hex');
   }
+  const relayX25519 = thoraxPublicKeyHex !== undefined ? buildPresenceRelayX25519Field(_peerId) : undefined;
 
   const relayBase =
     (typeof process !== 'undefined' && process.env?.RELAY_BASE)
@@ -631,10 +656,25 @@ export async function publishPresence(): Promise<void> {
       installedDomains,
       version: app.getVersion(),
       ...(thoraxPublicKeyHex !== undefined ? { public_key_hex: thoraxPublicKeyHex } : {}),
+      // D-BP223-X043-007-RELAY-X25519: this node's relay X25519 PUBLIC key, in an announcement
+      // signed by its Thorax Ed25519 key and bound to its peer id. Rides the existing
+      // capabilities jsonb (wan-relay-publish passes capabilities through unchanged), so no schema
+      // change. The X25519 private key is derived in memory and never leaves this machine.
+      ...(relayX25519 !== undefined ? { relay_x25519: relayX25519 } : {}),
     },
   };
 
   const postBody = JSON.stringify(body);
+  // D-BP223-X043-010-RB: wan-relay-publish writes peer_presence only with the owner proof
+  // (presence_put_own). The secret rides in a HEADER, never the body: the deployed function
+  // stores the body in wan_relay_records. No secret, no publish (fail closed).
+  const ownerProof = ownerProofHeaders(_peerId);
+  if (!ownerProof) {
+    const failMsg = 'presence publish skipped · presence owner secret unavailable (encrypted storage)';
+    console.error(`[PeerServer] ${failMsg}`);
+    broadcastDiagnosticEvent({ kind: 'presence_publish_failed', message: failMsg, at: new Date().toISOString() });
+    return;
+  }
   // BP132 Yoke #21 A2: return HTTP status + response body text on failure so the caller
   // can log/surface the real reason (edge-function rejection, 4xx validation error, network
   // failure, etc.) instead of a single opaque boolean. `httpStatus` is undefined only for a
@@ -647,7 +687,7 @@ export async function publishPresence(): Promise<void> {
       // This is very likely THE reason peer_presence stayed at 0 rows across Yoke #21/#22.
       const res = await fetch(`${base}/wan-relay-publish`, {
         method: 'POST',
-        headers: getAnonKeyHeaders({ 'Content-Type': 'application/json' }),
+        headers: getAnonKeyHeaders({ 'Content-Type': 'application/json', ...ownerProof }),
         body: postBody,
         signal: AbortSignal.timeout(10_000),
       });
@@ -1431,10 +1471,19 @@ function startHeartbeatWorker(): void {
           : 'https://relay.lianabanyan.com/functions/v1';
         const relayBaseFallback = 'https://ruuxzilgmuwddcofqecc.supabase.co/functions/v1';
         const supabaseAnonKey = getAnonKey();
+        // D-BP223-X043-010-RB: the worker writes presence through presence_put_own, which needs
+        // the owner secret. A worker thread cannot reach safeStorage, so it is handed over in
+        // memory (workerData is a structured clone inside this process; nothing is written).
+        const ownerProof = ownerProofHeaders(_peerId);
+        if (!ownerProof) {
+          console.warn('[PeerServer] heartbeat_worker not started: presence owner secret unavailable');
+          return;
+        }
         _heartbeatWorker = new Worker(workerPath, {
           workerData: {
             supabaseUrl: _supabaseUrl,
             supabaseAnonKey,
+            ownerSecret: ownerProof[OWNER_PROOF_HEADER],
             peerId: _peerId,
             version: app.getVersion(),
             relayBase,

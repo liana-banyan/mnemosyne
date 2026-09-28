@@ -16,6 +16,9 @@ let sharing = true;
 
 async function load(saltPath: string) {
   const m = await import('./substrate_awakens_ipc');
+  // D-BP223-X043-010-RB: the handshake now carries the presence owner proof (header); electron is mocked without
+  // safeStorage, so the post-resetModules relay_rpc instance gets a test secret.
+  (await import('./relay_rpc')).setOwnerSecretProviderForTests(() => 'd'.repeat(64));
   const cleanup = m.registerSubstrateAwakensIPC({ isPresenceSharingOn: () => sharing, saltPath });
   return { m, cleanup };
 }

@@ -22,6 +22,10 @@ export interface WorkerConfig {
   peerId: string;
   supabaseUrl: string;
   anonKey: string;
+  /** D-BP223-X043-010-RB: presence owner secret, handed over by the supervisor through the IPC
+   *  init message (in memory; a forked Node child cannot reach safeStorage). Sent only inside the
+   *  Phase A RPC bodies and the x-lb-owner-secret header. Never logged. */
+  ownerSecret?: string;
   model?: string;
   pollIntervalMs?: number;
   ollamaUrl?: string;
@@ -86,55 +90,62 @@ async function checkOllamaHealth(ollamaUrl: string): Promise<boolean> {
 
 // ─── Heartbeat ────────────────────────────────────────────────────────────────
 
-function writePollerHeartbeat(
+// D-BP223-X043-010-RB: presence and routes go through the Phase A RPCs, proven with the owner
+// secret. The direct PATCH of peer_presence and GET of relay_routes are refused once Phase B is
+// applied. The secret is only ever in a request BODY or the x-lb-owner-secret header.
+function rpcPost(supabaseUrl: string, anonKey: string, fn: string, body: object, timeoutMs: number): Promise<Response> {
+  return fetch(`${supabaseUrl}/rest/v1/rpc/${fn}`, {
+    method: 'POST',
+    headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+}
+
+export function writePollerHeartbeat(
   supabaseUrl: string,
   anonKey: string,
   peerId: string,
   pollCount: number,
+  ownerSecret: string,
 ): void {
   const heartbeatAt = new Date().toISOString();
   // BP102 fix: tell the supervisor the worker is alive BEFORE attempting the network write.
   // Liveness (process alive) must not depend on Supabase reachability.
   process.send?.({ type: 'heartbeat', heartbeatAt, pollCount });
-  fetch(`${supabaseUrl}/rest/v1/peer_presence?peer_id=eq.${encodeURIComponent(peerId)}`, {
-    method: 'PATCH',
-    headers: {
-      apikey: anonKey,
-      Authorization: `Bearer ${anonKey}`,
-      'Content-Type': 'application/json',
-      Prefer: 'return=minimal',
-    },
-    body: JSON.stringify({
-      relay_poller_heartbeat_at: heartbeatAt,
-      relay_poller_poll_count: pollCount,
-    }),
-    signal: AbortSignal.timeout(5000),
+  if (!ownerSecret) return;
+  rpcPost(supabaseUrl, anonKey, 'presence_put_own', {
+    p_peer_id: peerId,
+    p_secret: ownerSecret,
+    p_fields: { relay_poller_heartbeat_at: true, relay_poller_poll_count: pollCount },
+  }, 5000).then((res) => {
+    if (!res.ok) process.stderr.write(`[relay_worker] heartbeat refused (DB write only, liveness already reported): HTTP ${res.status}\n`);
   }).catch((e: unknown) => {
-    process.stderr.write(`[relay_worker] heartbeat PATCH failed (DB write only — liveness already reported): ${(e as Error).message}\n`);
+    process.stderr.write(`[relay_worker] heartbeat failed (DB write only, liveness already reported): ${(e as Error).message}\n`);
   });
 }
 
 // ─── Route fetch + process ────────────────────────────────────────────────────
 
-async function fetchPendingRoutes(
+export async function fetchPendingRoutes(
   supabaseUrl: string,
   anonKey: string,
   peerId: string,
+  ownerSecret: string,
 ): Promise<RelayRoute[]> {
-  const url =
-    `${supabaseUrl}/rest/v1/relay_routes` +
-    `?status=eq.pending&target_peer_id=eq.${encodeURIComponent(peerId)}` +
-    `&select=id,payload_json,target_peer_id&order=created_at.asc&limit=5`;
+  if (!ownerSecret) {
+    log('fetch routes skipped: no presence owner secret');
+    return [];
+  }
   try {
-    const res = await fetch(url, {
-      headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` },
-      signal: AbortSignal.timeout(SUPABASE_FETCH_TIMEOUT_MS),
-    });
+    const res = await rpcPost(supabaseUrl, anonKey, 'routes_fetch_mine',
+      { p_peer_id: peerId, p_secret: ownerSecret, p_status: 'pending', p_limit: 5 }, SUPABASE_FETCH_TIMEOUT_MS);
     if (!res.ok) {
       log(`fetch routes FAILED: HTTP ${res.status}`);
       return [];
     }
-    return ((await res.json()) as RelayRoute[]) ?? [];
+    const rows = (await res.json()) as RelayRoute[];
+    return Array.isArray(rows) ? rows.map((r) => ({ id: r.id, payload_json: r.payload_json, target_peer_id: r.target_peer_id })) : [];
   } catch (e: unknown) {
     log(`fetch routes network error: ${(e as Error).message}`);
     return [];
@@ -161,9 +172,10 @@ async function runOllama(
   return { answer: data?.response ?? '', elapsed };
 }
 
-async function submitReplyViaEdgeFunction(
+export async function submitReplyViaEdgeFunction(
   supabaseUrl: string,
   anonKey: string,
+  ownerSecret: string,
   routeId: string,
   peerId: string,
   answer: string,
@@ -177,6 +189,8 @@ async function submitReplyViaEdgeFunction(
         apikey: anonKey,
         Authorization: `Bearer ${anonKey}`,
         'Content-Type': 'application/json',
+        // D-BP223-X043-010-RB: owner proof for submit-relay-route-reply (header, never body).
+        'x-lb-owner-secret': ownerSecret,
       },
       // D-BP223-BM0-X029-018: desktop_in_use labels a result (and its processing_ms timing) produced
       // while the person was using this computer. Additive key; readers of { answer } are unaffected.
@@ -264,8 +278,8 @@ async function tick(config: Required<WorkerConfig>, pollCount: number): Promise<
   }
 
   // Fetch and process routes
-  const routes = await fetchPendingRoutes(config.supabaseUrl, config.anonKey, config.peerId);
-  writePollerHeartbeat(config.supabaseUrl, config.anonKey, config.peerId, pollCount);
+  const routes = await fetchPendingRoutes(config.supabaseUrl, config.anonKey, config.peerId, config.ownerSecret);
+  writePollerHeartbeat(config.supabaseUrl, config.anonKey, config.peerId, pollCount, config.ownerSecret);
 
   if (routes.length === 0) {
     if (pollCount % 20 === 0) {
@@ -300,7 +314,7 @@ async function tick(config: Required<WorkerConfig>, pollCount: number): Promise<
       const after = await askPrecedence(config.model);
       const desktopInUse = before.desktopInUse || after.desktopInUse;
       const submitted = await submitReplyViaEdgeFunction(
-        config.supabaseUrl, config.anonKey, route.id, config.peerId, answer, elapsed, desktopInUse,
+        config.supabaseUrl, config.anonKey, config.ownerSecret, route.id, config.peerId, answer, elapsed, desktopInUse,
       );
       if (submitted) {
         const processedAt = new Date().toISOString();
@@ -328,6 +342,7 @@ process.on('message', (msg: { type: string; config?: WorkerConfig }) => {
     peerId: cfg.peerId,
     supabaseUrl: (cfg.supabaseUrl ?? '').replace(/\/$/, ''),
     anonKey: cfg.anonKey,
+    ownerSecret: cfg.ownerSecret ?? '',
     // D-BP223-BM0-X029-012 (Founder k/ab297dcf via XO): NO hardcoded model fallback. FLOOR_MODEL is kept for the record
     // (Addendum never Deletion) but is no longer used: with no configured brain passed in, the worker keeps polling and
     // heartbeating but does NOT answer routes, so it can never load a model the node was not configured for.

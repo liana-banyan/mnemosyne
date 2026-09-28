@@ -91,7 +91,7 @@ function verdictLabel(v: HealthVerdict): string {
 
 export function FleetHealthPanel() {
   const [peers, setPeers] = useState<PeerHealth[]>([]);
-  const [lastAnswered, setLastAnswered] = useState<Record<string, string | null>>({});
+  const [lastAnswered] = useState<Record<string, string | null>>({});
   const [prevPollCounts, setPrevPollCounts] = useState<Record<string, { count: number; ts: number }>>({});
   const [pollRates, setPollRates] = useState<Record<string, number | null>>({});
   const [error, setError] = useState<string | null>(null);
@@ -178,27 +178,18 @@ export function FleetHealthPanel() {
     }
   }, [lastAnswered, pollRates, prevPollCounts]);
 
-  // Fetch relay_route_replies last_answered_at every 15s
+  // D-BP223-X043-010-RB: this used to read relay_route_replies FLEET-WIDE with the anon key
+  // (every machine's replies, readable by anyone). Replies are private to the sender and the
+  // replier once Phase B is applied, and no aggregate function exists yet (a counts-only
+  // relay_fleet_last_answered() is drafted, not applied, in
+  // BISHOP_DROPZONE\D-BP223-X043-007-RELAY-X25519\RELAY_PHASE_A2_ADDITIVE_DRAFT_NOT_APPLIED.sql).
+  // Until then "last answered" is left empty (the panel already renders a missing value as
+  // unknown) instead of reading other machines' rows. RelayReplyRow is kept for that function.
+  // Deliberately does NOT call setLastAnswered: a fresh {} each tick would change fetchPeers'
+  // dependencies and restart the effect below in a loop. The initial state stays as it is.
   const fetchAnswered = useCallback(async () => {
-    const sb = getSupabase();
-    if (!sb) return;
-    try {
-      const since = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // last 10 min
-      const { data } = await sb
-        .from('relay_route_replies')
-        .select('peer_id, created_at')
-        .gte('created_at', since)
-        .order('created_at', { ascending: false });
-
-      if (!data) return;
-      const byPeer: Record<string, string> = {};
-      for (const row of data as RelayReplyRow[]) {
-        if (!byPeer[row.peer_id]) byPeer[row.peer_id] = row.created_at;
-      }
-      setLastAnswered(byPeer);
-    } catch {
-      /* non-fatal */
-    }
+    const _unusedRowShape: RelayReplyRow[] = [];
+    void _unusedRowShape;
   }, []);
 
   useEffect(() => {

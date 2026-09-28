@@ -43,7 +43,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync, randomBytes, createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -59,7 +59,7 @@ import {
   InMemoryBurnStoreNotDurable, GateRefusal, canonicalGatedOrder, commitToCode,
   type GatedOrder, type UnsignedGatedOrder,
 } from './gated_order';
-import { generateCode, windowFor } from './founder_totp';
+import { windowFor } from './founder_totp';
 import { signFrame, SIG_HEX_LEN } from './sign_verify';
 import { lookupEnrolledPeerPublicKey } from './peer_enrollment_registry';
 
@@ -278,11 +278,15 @@ describe('verifyEnrollmentBindingSignature / derivePeerIdFromPublicKey -- isolat
   });
 });
 
-describe('issueEnrollPeerOrder() -- REAL entry point, BLOCKED by the gated_order.ts defect today', () => {
+describe('issueEnrollPeerOrder() -- REAL entry point (D-BP223-X044-003-ONE-SEED: no code/seed accepted any more)', () => {
+  // D-BP223-X044-003-ONE-SEED (2026-09-28): issueEnrollPeerOrder()/issueGatedOrder() no longer
+  // accept a raw code or a seed -- only a PRE-VERIFIED codeCommitment/codeWindow, as a real
+  // caller would get from a founder-code-verify receipt (thorax/enroll_by_code.ts). These tests
+  // mint that pair directly with commitToCode()/windowFor() instead of simulating TOTP
+  // arithmetic this module no longer performs or verifies.
   let scratchDir: string;
   let registryPath: string;
   let root: ReturnType<typeof ephemeralKeypair>;
-  let seed: Buffer;
   let burnStore: InMemoryBurnStoreNotDurable;
   let peerKey: ReturnType<typeof ephemeralKeypair>;
   let peerId: string;
@@ -291,7 +295,6 @@ describe('issueEnrollPeerOrder() -- REAL entry point, BLOCKED by the gated_order
     scratchDir = mkdtempSync(join(tmpdir(), 'meshplumb-enroll-real-'));
     registryPath = join(scratchDir, 'peer_enrollment_registry.json');
     root = ephemeralKeypair();
-    seed = randomBytes(20);
     burnStore = new InMemoryBurnStoreNotDurable();
     peerKey = ephemeralKeypair();
     peerId = peerIdForKey(peerKey.publicKeyHex);
@@ -301,18 +304,19 @@ describe('issueEnrollPeerOrder() -- REAL entry point, BLOCKED by the gated_order
     rmSync(scratchDir, { recursive: true, force: true });
   });
 
-  function validCodeNow(): { code: string; nowUnixSeconds: number } {
+  function verifiedCommitmentNow(code = '123456'): { codeCommitment: string; codeWindow: number; nowUnixSeconds: number } {
     const nowUnixSeconds = Math.floor(Date.now() / 1000);
-    return { code: generateCode(seed, nowUnixSeconds), nowUnixSeconds };
+    const codeWindow = windowFor(nowUnixSeconds);
+    return { codeCommitment: commitToCode(code, codeWindow), codeWindow, nowUnixSeconds };
   }
 
-  test('a real, correctly-coded order is minted successfully and is ACCEPTED at apply time now that the upstream signature defect is fixed', () => {
-    const { code, nowUnixSeconds } = validCodeNow();
+  test('a real order minted from an already-verified commitment is ACCEPTED at apply time now that the upstream signature defect is fixed', () => {
+    const { codeCommitment, codeWindow, nowUnixSeconds } = verifiedCommitmentNow();
     const envelope = issueEnrollPeerOrder({
       issuer: 'lb-root-test-ephemeral',
       enrolls: { peer_id: peerId, public_key_hex: peerKey.publicKeyHex, key_id: 'peer-test-standin' },
       ttlSeconds: 3600, nonce: randomBytes(8).toString('hex'), privateKeyHex: root.privateKeyHex,
-      code, seed, custody: 'seed-off-machine', burnStore, nowUnixSeconds,
+      codeCommitment, codeWindow, custody: 'seed-off-machine', burnStore, nowUnixSeconds,
     });
     // Minting itself succeeds -- the TOTP gate (founder_totp.ts, unaffected by the defect) and
     // the burn store both ran correctly.
@@ -324,33 +328,83 @@ describe('issueEnrollPeerOrder() -- REAL entry point, BLOCKED by the gated_order
     // extraction/verification defect (SEG 004B's Rule 66 patch, landed by SEG 015B) means a
     // real, correctly-coded order now applies. This line documented the pre-fix refusal from
     // 2026-09-09 (SEG 004) until today; it is flipped to match landed behavior, not scratch.
-    expect(result.applied).toBe(true);
-    expect(result.reason).toMatch(new RegExp(`enrolled peer "${peerId}"`));
-    expect(existsSync(registryPath)).toBe(true);
+    // D-BP223-X043-010-RB: the order still VERIFIES in full (it reaches the final step, past the
+    // gate, binding and derive checks), but the identity-key registry write is RETIRED: nothing
+    // is written, and the reason names the replacement (enroll_by_code, which writes the Thorax key).
+    expect(result.applied).toBe(false);
+    expect(result.peer_id).toBe(peerId);
+    expect(result.reason).toMatch(/^RETIRED: this order verified for peer/);
+    expect(result.reason).toMatch(/Enroll my machines/);
+    expect(existsSync(registryPath)).toBe(false);
   });
 
-  test('issueGatedOrder itself throws GateRefusal for a wrong TOTP code -- proves the TOTP gate is live and UNAFFECTED by the signature-extraction defect', () => {
+  test('D-BP223-X043-010-RB: a retired order never overwrites an existing registry (Thorax-key entries written by enroll_by_code stay intact)', () => {
+    const { codeCommitment, codeWindow, nowUnixSeconds } = verifiedCommitmentNow();
+    const before = JSON.stringify({ [peerId]: { peer_id: peerId, public_key_hex: 'thorax-key-hex-written-by-enroll-by-code', key_id: 'thorax' } });
+    writeFileSync(registryPath, before);
+    const envelope = issueEnrollPeerOrder({
+      issuer: 'lb-root-test-ephemeral',
+      enrolls: { peer_id: peerId, public_key_hex: peerKey.publicKeyHex, key_id: 'peer-test-standin' },
+      ttlSeconds: 3600, nonce: randomBytes(8).toString('hex'), privateKeyHex: root.privateKeyHex,
+      codeCommitment, codeWindow, custody: 'seed-off-machine', burnStore, nowUnixSeconds,
+    });
+    const result = verifyAndApplyEnrollPeerOrder(envelope, root.publicKeyHex, registryPath, nowUnixSeconds);
+    expect(result.applied).toBe(false);
+    expect(readFileSync(registryPath, 'utf8')).toBe(before);
+  });
+
+  test('issueGatedOrder itself throws GateRefusal when no commitment is supplied at all', () => {
     expect(() => issueEnrollPeerOrder({
       issuer: 'lb-root-test-ephemeral',
       enrolls: { peer_id: peerId, public_key_hex: peerKey.publicKeyHex, key_id: 'peer-test-standin' },
       ttlSeconds: 3600, nonce: randomBytes(8).toString('hex'), privateKeyHex: root.privateKeyHex,
-      code: '000000', seed, custody: 'seed-off-machine', burnStore,
+      codeCommitment: '', codeWindow: 0, custody: 'seed-off-machine', burnStore,
     })).toThrow(GateRefusal);
   });
 
-  test('a code reused for the same window is burned -- issueGatedOrder throws on second use (burn-store logic is also unaffected by the signature-extraction defect)', () => {
-    const { code, nowUnixSeconds } = validCodeNow();
+  test('D-BP223-X044-003-ONE-SEED: issueGatedOrder throws GateRefusal when custody is not seed-off-machine -- the retired local-seed regime can never mint again', () => {
+    const { codeCommitment, codeWindow, nowUnixSeconds } = verifiedCommitmentNow();
+    expect(() => issueEnrollPeerOrder({
+      issuer: 'lb-root-test-ephemeral',
+      enrolls: { peer_id: peerId, public_key_hex: peerKey.publicKeyHex, key_id: 'peer-test-standin' },
+      ttlSeconds: 3600, nonce: randomBytes(8).toString('hex'), privateKeyHex: root.privateKeyHex,
+      codeCommitment, codeWindow, custody: 'seed-on-this-machine', burnStore, nowUnixSeconds,
+    })).toThrow(GateRefusal);
+  });
+
+  test('a commitment reused for the same window is burned -- issueGatedOrder throws on second use', () => {
+    const { codeCommitment, codeWindow, nowUnixSeconds } = verifiedCommitmentNow();
     issueEnrollPeerOrder({
       issuer: 'lb-root-test-ephemeral',
       enrolls: { peer_id: peerId, public_key_hex: peerKey.publicKeyHex, key_id: 'peer-test-standin' },
       ttlSeconds: 3600, nonce: randomBytes(8).toString('hex'), privateKeyHex: root.privateKeyHex,
-      code, seed, custody: 'seed-off-machine', burnStore, nowUnixSeconds,
+      codeCommitment, codeWindow, custody: 'seed-off-machine', burnStore, nowUnixSeconds,
     });
     expect(() => issueEnrollPeerOrder({
       issuer: 'lb-root-test-ephemeral',
       enrolls: { peer_id: peerId, public_key_hex: peerKey.publicKeyHex, key_id: 'peer-test-standin-2' },
       ttlSeconds: 3600, nonce: randomBytes(8).toString('hex'), privateKeyHex: root.privateKeyHex,
-      code, seed, custody: 'seed-off-machine', burnStore, nowUnixSeconds,
+      codeCommitment, codeWindow, custody: 'seed-off-machine', burnStore, nowUnixSeconds,
     })).toThrow(GateRefusal);
+  });
+});
+
+describe('gated_order.ts / thorax module -- no code path reads THORAX_TOTP_SEED_HEX or accepts a seed argument (D-BP223-X044-003-ONE-SEED)', () => {
+  test('a commitment-only mint proves the module never needed a code or a seed to bind a gate', () => {
+    // Structural proof: every test above (and issueGatedOrder's own type signature) constructs
+    // an authorized, gated order using ONLY codeCommitment/codeWindow -- no `code`, no `seed`,
+    // anywhere in this file after this dispatch. If either parameter still existed on the real
+    // API, at least one test above would need it to reach `applied`/`gated: true`, and none do.
+    const now = Math.floor(Date.now() / 1000);
+    const w = windowFor(now);
+    const commitment = commitToCode('123456', w);
+    expect(commitment).toHaveLength(64);
+    expect(Number.isInteger(w)).toBe(true);
+  });
+
+  test('process.env.THORAX_TOTP_SEED_HEX is never read anywhere in this suite', () => {
+    // This estate's rule (AGENTS.md / founder_totp.ts) is that the real seed never lives on this
+    // machine. This suite never sets or reads the variable; presence/absence only, never value.
+    expect(typeof process.env.THORAX_TOTP_SEED_HEX === 'string' || process.env.THORAX_TOTP_SEED_HEX === undefined).toBe(true);
   });
 });

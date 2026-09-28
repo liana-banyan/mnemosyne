@@ -107,5 +107,32 @@ export function registerShareReceiveConsentIpc(deps: {
     return lib.acceptHeldOffer(deps.inboxDir(), deps.siloDir(), String(senderPeerId), String(file), deps.selfPeerId(), signer ? { tagsDir: deps.tagsDir(), signer } : null);
   });
   ipcMain.handle('share-inbox:reject', (_evt, senderPeerId: string, file: string) => lib.rejectHeldOffer(deps.inboxDir(), String(senderPeerId), String(file)));
+  // D-BP223-X043-002-D: READ-ONLY list of this node's own cards that pass the same shareability check the push itself
+  // runs (buildSiloIndex -> validateShareableEblet), so the Settings "Share a card" list only ever offers a card the
+  // push would send. It reads the silo; it writes nothing and changes no consent. Card bodies never leave main.
+  ipcMain.handle('share:list-my-cards', () => listMyShareableCards(deps.siloDir(), lib.buildSiloIndex));
   console.log('[ShareReceiveConsent] IPC handlers registered (D-BP223-PQ005-012-X041)');
+}
+
+/** One of this node's own cards as the Settings list shows it: identity and hash only, never the body. */
+export interface MyShareableCard {
+  connector: string;
+  file: string;
+  title: string;
+  sha256: string;
+  qid: number | null;
+  sourceStatus: string;
+  sourceLabel: string | null;
+}
+
+/** Pure (the index builder is injected) so it is testable without Electron. Package support files (not_a_card) are left out. */
+export function listMyShareableCards(
+  siloDir: string,
+  buildIndex: (dir: string) => { connectors: Array<{ connector: string; file: string; title: string; sha256: string; qid: number | null; sourceStatus: string; sourceLabel: string | null }>; skipped: unknown[] },
+): { cards: MyShareableCard[]; notShareableCount: number } {
+  const idx = buildIndex(siloDir);
+  const cards = idx.connectors
+    .filter((c) => c.sourceStatus === 'sourced' || c.sourceStatus === 'source_pending')
+    .map((c) => ({ connector: c.connector, file: c.file, title: c.title, sha256: c.sha256, qid: c.qid, sourceStatus: c.sourceStatus, sourceLabel: c.sourceLabel }));
+  return { cards, notShareableCount: idx.skipped.length };
 }

@@ -23,6 +23,10 @@ import { FlagshipAuthoritiesPanel } from '../settings/FlagshipAuthoritiesPanel';
 // D-BP151-037/BISHOP/seg-query-capture-archive -- new section, self-contained (own state,
 // own IPC calls), same mounting convention as NexusAuthoritySettings above.
 import { QueryCaptureArchivePanel } from './QueryCaptureArchivePanel';
+// D-BP223-X043-002-D: share one of my cards to a peer, and accept or refuse cards offered to me.
+import { ShareCardsPanel } from './ShareCardsPanel';
+// D-BP223-X043-007 (c): enroll my other machines (paste their code + authenticator code). Self-contained, own IPC (enroll:*).
+import { EnrollMachinesPanel } from '../settings/EnrollMachinesPanel';
 
 interface SettingsTabProps {
   authState: AuthState | null;
@@ -1684,6 +1688,13 @@ export function SettingsTab({
       {/* D-BP151-037/BISHOP/seg-query-capture-archive: Query Capture Archive — new section,
           self-contained (the consent switch + three-act list live entirely inside it). */}
       <QueryCaptureArchivePanel />
+
+      {/* D-BP223-X043-002-D: "the two machines sharing a card". Self-contained section (own state, own IPC:
+          share:list-my-cards, mic:get-peers, share:push-eblet, share-inbox:*, share-receive:*). UI only. */}
+      <ShareCardsPanel />
+
+      {/* D-BP223-X043-007 (c): "Enroll my machines". Own IPC (enroll:get-my-code, enroll:preview, enroll:submit, enroll:list). */}
+      <EnrollMachinesPanel />
 
       {/* Card 2: AI Capability (SEG-R-2) */}
       <section

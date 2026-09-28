@@ -27,6 +27,54 @@ import {
   type BishopDispatchPayload,
 } from './mic_dispatcher';
 import type { ConstellationPeer } from './mic_types';
+import { generateKeyPairSync } from 'node:crypto';
+import {
+  deriveRelayX25519FromEd25519,
+  signRelayX25519Announcement,
+} from './relay_x25519';
+import type { SealDeps } from './relay_v2_transport';
+import { installTestOwnerSecret, TEST_OWNER_SECRET } from './relay_rpc_legacy_test_shim';
+
+// D-BP223-X043-010-RB: the send goes through route_send (Phase A RPC) with the owner secret.
+installTestOwnerSecret();
+
+// D-BP223-X043-007-RELAY-X25519: dispatchBishopDispatchViaRelay now seals with v2 (per-peer
+// X25519). The recipient's key comes from its peer_presence row, which the send path reads with
+// its own fetch. These tests inject that lookup (sealDeps.fetchImpl) and this node's identity
+// (sealDeps.local) so the GLOBAL fetch mock below still sees exactly one call: the relay_routes
+// insert. The recipient's announcement is signed by an Ed25519 key the sender already trusts
+// (sealDeps.resolveTrusted, standing in for the enrollment registry): the normal, non-TOFU path.
+function edPair(): { pub: string; priv: string } {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519', {
+    publicKeyEncoding: { type: 'spki', format: 'der' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'der' },
+  });
+  return { pub: (publicKey as Buffer).toString('hex'), priv: (privateKey as Buffer).toString('hex') };
+}
+function makeSealDeps(selfPeerId: string, targetPeerId: string): SealDeps {
+  const selfEd = edPair();
+  const selfX = deriveRelayX25519FromEd25519(selfEd.priv);
+  const targetEd = edPair();
+  const targetX = deriveRelayX25519FromEd25519(targetEd.priv);
+  const targetAnn = signRelayX25519Announcement(targetPeerId, targetX.publicKeyHex, targetEd.priv);
+  return {
+    selfPeerId,
+    local: {
+      peerId: selfPeerId,
+      keypair: selfX,
+      announcement: signRelayX25519Announcement(selfPeerId, selfX.publicKeyHex, selfEd.priv),
+      ed25519PublicHex: selfEd.pub,
+    },
+    resolveTrusted: (id: string) => (id === targetPeerId ? targetEd.pub : undefined),
+    supabaseUrl: 'https://example.invalid',
+    anonKey: 'anon',
+    fetchImpl: (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => [{ peer_id: targetPeerId, capabilities: { public_key_hex: targetEd.pub, relay_x25519: targetAnn } }],
+    })) as unknown as typeof fetch,
+  };
+}
 
 describe('isValidMachineTaggedDispatchId', () => {
   test('accepts a properly machine-tagged id', () => {
@@ -91,14 +139,16 @@ describe('dispatchBishopDispatchViaRelay', () => {
   test('inserts a bishop_dispatch row directly into relay_routes for a properly tagged id, ' +
     'in a shape the real edge function validation and the inbound listener both accept', async () => {
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    // D-BP223-X043-010-RB: route_send returns the new route id as a JSON string.
     fetchMock.mockResolvedValueOnce({
       ok: true,
-      status: 201,
-      json: async () => [{ id: 'route-row-1' }],
+      status: 200,
+      text: async () => JSON.stringify('route-row-1'),
     });
 
     const result = await dispatchBishopDispatchViaRelay(
       mockPeer, 'D-BP156-M3-001', 'prompt text', 'C:\\Users\\Administrator\\Documents\\proj', 'self-peer-id',
+      makeSealDeps('self-peer-id', 'target-peer-id'),
     );
 
     expect(result.ok).toBe(true);
@@ -107,9 +157,11 @@ describe('dispatchBishopDispatchViaRelay', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
 
-    // Targets the relay_routes TABLE via PostgREST, never the wan-relay-route edge function.
-    expect(url).toContain('/rest/v1/relay_routes');
+    // D-BP223-X043-010-RB: targets the route_send RPC (Phase A), never the relay_routes table
+    // directly and never the wan-relay-route edge function. The owner secret is in the BODY only.
+    expect(url.endsWith('/rest/v1/rpc/route_send')).toBe(true);
     expect(url).not.toContain('/wan-relay-route');
+    expect(url).not.toContain(TEST_OWNER_SECRET);
     expect((init.method ?? '').toUpperCase()).toBe('POST');
 
     // No service-role key anywhere in the request -- a shipped client can only ever hold the
@@ -118,11 +170,19 @@ describe('dispatchBishopDispatchViaRelay', () => {
     const authHeader = headers['Authorization'] ?? '';
     expect(authHeader.toLowerCase()).not.toContain('service_role');
 
-    const body = JSON.parse(init.body as string) as {
-      target_peer_id: string;
-      hex_frame: string;
-      payload_json: { kind: string; payload_encrypted: string };
-      status: string;
+    const rpcBody = JSON.parse(init.body as string) as {
+      p_sender_peer_id: string; p_secret: string; p_target_peer_id: string; p_hex_frame: string;
+      p_payload_json: { kind: string; payload_encrypted: string }; p_session_id: string; p_ttl_seconds: number; p_wire_format: string;
+    };
+    expect(rpcBody.p_secret).toBe(TEST_OWNER_SECRET);
+    expect(rpcBody.p_sender_peer_id).toBe('self-peer-id');
+    expect(rpcBody.p_session_id).toBe('D-BP156-M3-001');
+    // The same row fields as before, in the RPC's argument names.
+    const body = {
+      target_peer_id: rpcBody.p_target_peer_id,
+      hex_frame: rpcBody.p_hex_frame,
+      payload_json: rpcBody.p_payload_json,
+      status: 'pending', // route_send always inserts status 'pending' (Phase A SQL)
     };
 
     // Satisfies the real edge function's validation (target_peer_id AND hex_frame both
@@ -142,15 +202,17 @@ describe('dispatchBishopDispatchViaRelay', () => {
     // payload_encrypted must be opaque ciphertext -- never the plaintext dispatch id/prompt.
     expect(body.payload_json.payload_encrypted).not.toContain('D-BP156-M3-001');
     expect(body.payload_json.payload_encrypted).not.toContain('prompt text');
-    const parsedEnvelope = JSON.parse(body.payload_json.payload_encrypted) as { iv: string; ct: string };
+    const parsedEnvelope = JSON.parse(body.payload_json.payload_encrypted) as { v: string; to: string; iv: string; ct: string };
+    // D-BP223-X043-007: a v2 frame addressed to the target, not the old v1 {iv, ct} shape.
+    expect(parsedEnvelope.v).toBe('v2');
+    expect(parsedEnvelope.to).toBe('target-peer-id');
     expect(typeof parsedEnvelope.iv).toBe('string');
     expect(typeof parsedEnvelope.ct).toBe('string');
 
     // Row starts pending, exactly like every other relay_routes insert in this codebase.
     expect(body.status).toBe('pending');
 
-    // D-BP156-M0-020: `Prefer: return=representation` means the mocked response body carries
-    // the inserted row back (json() resolves to [{ id: 'route-row-1' }], set up above) -- the
+    // D-BP156-M0-020 / X043-010-RB: route_send returns the inserted row's id (set up above) -- the
     // send path must surface that id to the caller as the sender's own receipt, not discard it.
     expect(result.routeId).toBe('route-row-1');
   });
@@ -161,6 +223,7 @@ describe('dispatchBishopDispatchViaRelay', () => {
 
     const result = await dispatchBishopDispatchViaRelay(
       mockPeer, 'D-BP156-M3-003', 'p', 'C:\\wd', 'self-peer-id',
+      makeSealDeps('self-peer-id', 'target-peer-id'),
     );
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/relay_routes insert failed/);
@@ -173,6 +236,7 @@ describe('dispatchBishopDispatchViaRelay', () => {
 
     const result = await dispatchBishopDispatchViaRelay(
       mockPeer, 'D-BP156-M3-004', 'p', 'C:\\wd', 'self-peer-id',
+      makeSealDeps('self-peer-id', 'target-peer-id'),
     );
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/relay_routes insert error/);

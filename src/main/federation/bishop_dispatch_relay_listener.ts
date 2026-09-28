@@ -96,6 +96,7 @@ import { handleInboundBishopDispatchEnvelope } from './peer_server';
 import type { BishopDispatchResult } from './peer_server';
 import { writeBishopDispatchReply } from './bishop_dispatch_reply';
 import { isNetworkFeatureOn } from '../startup/network_feature_settings';
+import { presencePutOwn, routeSetStatus, routesFetchMine } from './relay_rpc';
 
 /** The one literal this listener claims. Matches `BishopDispatchPayload.kind` (mic_dispatcher.ts)
  *  -- not re-imported as a type-level union because the check here is against untyped JSON
@@ -240,29 +241,21 @@ function emptySummary(): PollTickSummary {
  *  tell "I won the claim" (non-empty array) from "someone/something already moved this row"
  *  (empty array) without a second round trip. Any network/HTTP failure is treated as "did not
  *  claim" -- fails closed, never processes a row it cannot prove ownership of. */
+// D-BP223-X043-010-RB: every read and write below goes through the Phase A RPCs (relay_rpc.ts)
+// with this install's presence owner secret, never the tables directly. route_set_status with
+// fromStatus 'pending' is the same conditional claim the old `&status=eq.pending` PATCH was.
+function rpcBase(config: BishopRelayListenerConfig, fetchImpl: FetchLike) {
+  return { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey, fetchImpl, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS };
+}
+
 async function conditionalClaim(
   fetchImpl: FetchLike,
-  supabaseUrl: string,
-  anonKey: string,
+  config: BishopRelayListenerConfig,
   rowId: string,
-  newStatus: string,
+  newStatus: 'processing' | 'expired',
 ): Promise<boolean> {
-  try {
-    const res = await fetchImpl(
-      `${supabaseUrl}/rest/v1/relay_routes?id=eq.${encodeURIComponent(rowId)}&status=eq.pending`,
-      {
-        method: 'PATCH',
-        headers: restHeaders(anonKey, { Prefer: 'return=representation' }),
-        body: JSON.stringify({ status: newStatus }),
-        signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
-      },
-    );
-    if (!res.ok) return false;
-    const body = (await res.json()) as unknown[];
-    return Array.isArray(body) && body.length > 0;
-  } catch {
-    return false;
-  }
+  const r = await routeSetStatus({ ...rpcBase(config, fetchImpl), routeId: rowId, peerId: config.peerId, fromStatus: 'pending', toStatus: newStatus });
+  return r.ok && r.data === true;
 }
 
 /** Unconditional finalize -- only ever called on a row this listener already proved it owns
@@ -273,21 +266,12 @@ async function conditionalClaim(
  *  mode, at the cost of the row never reaching a terminal status if this single write fails. */
 async function finalizeStatus(
   fetchImpl: FetchLike,
-  supabaseUrl: string,
-  anonKey: string,
+  config: BishopRelayListenerConfig,
   rowId: string,
-  newStatus: string,
+  newStatus: 'answered' | 'error',
 ): Promise<void> {
-  try {
-    await fetchImpl(`${supabaseUrl}/rest/v1/relay_routes?id=eq.${encodeURIComponent(rowId)}`, {
-      method: 'PATCH',
-      headers: restHeaders(anonKey, { Prefer: 'return=minimal' }),
-      body: JSON.stringify({ status: newStatus }),
-      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
-    });
-  } catch (err) {
-    console.warn(`[bishop-relay-listener] finalize PATCH failed for row ${rowId} (non-fatal):`, err);
-  }
+  const r = await routeSetStatus({ ...rpcBase(config, fetchImpl), routeId: rowId, peerId: config.peerId, fromStatus: null, toStatus: newStatus });
+  if (!r.ok) console.warn(`[bishop-relay-listener] finalize failed for row ${rowId} (non-fatal): ${r.error}`);
 }
 
 /** Best-effort peer_presence heartbeat, matching relay_answer/worker.ts's writePollerHeartbeat
@@ -299,24 +283,15 @@ async function finalizeStatus(
  *  documented rather than silently assumed fine. */
 async function writeHeartbeat(
   fetchImpl: FetchLike,
-  supabaseUrl: string,
-  anonKey: string,
-  peerId: string,
+  config: BishopRelayListenerConfig,
   pollCount: number,
 ): Promise<void> {
-  try {
-    await fetchImpl(`${supabaseUrl}/rest/v1/peer_presence?peer_id=eq.${encodeURIComponent(peerId)}`, {
-      method: 'PATCH',
-      headers: restHeaders(anonKey, { Prefer: 'return=minimal' }),
-      body: JSON.stringify({
-        relay_poller_heartbeat_at: new Date().toISOString(),
-        relay_poller_poll_count: pollCount,
-      }),
-      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
-    });
-  } catch (err) {
-    console.warn('[bishop-relay-listener] heartbeat PATCH failed (non-fatal):', err);
-  }
+  const r = await presencePutOwn({
+    ...rpcBase(config, fetchImpl),
+    peerId: config.peerId,
+    fields: { relay_poller_heartbeat_at: true, relay_poller_poll_count: pollCount },
+  });
+  if (!r.ok) console.warn(`[bishop-relay-listener] heartbeat failed (non-fatal): ${r.error}`);
 }
 
 /**
@@ -338,28 +313,15 @@ export async function pollBishopDispatchRoutesOnce(
   // Best-effort liveness signal every tick, independent of whether any row is found -- this is
   // what lets a future reader tell "never ran" (relay_poller_poll_count: 0, as measured live for
   // M0/M3/NJS_3D_FACTORY before this dispatch) apart from "ran, found nothing this tick."
-  void writeHeartbeat(fetchImpl, config.supabaseUrl, config.anonKey, config.peerId, pollCount);
+  void writeHeartbeat(fetchImpl, config, pollCount);
 
   let rows: RelayRouteRow[];
-  try {
-    const url =
-      `${config.supabaseUrl}/rest/v1/relay_routes` +
-      `?target_peer_id=eq.${encodeURIComponent(config.peerId)}&status=eq.pending` +
-      `&select=id,created_at,payload_json,hex_frame,status,wire_format,ttl_seconds,session_id` +
-      `&order=created_at.asc&limit=${rowLimit}`;
-    const res = await fetchImpl(url, {
-      headers: restHeaders(config.anonKey),
-      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      console.warn(`[bishop-relay-listener] fetch pending rows FAILED: HTTP ${res.status}`);
-      return summary;
-    }
-    rows = ((await res.json()) as RelayRouteRow[]) ?? [];
-  } catch (err) {
-    console.warn('[bishop-relay-listener] fetch pending rows network error (non-fatal):', err);
+  const fetched = await routesFetchMine({ ...rpcBase(config, fetchImpl), peerId: config.peerId, status: 'pending', limit: rowLimit });
+  if (!fetched.ok) {
+    console.warn(`[bishop-relay-listener] fetch pending rows FAILED: ${fetched.error}`);
     return summary;
   }
+  rows = (fetched.data ?? []) as unknown as RelayRouteRow[];
 
   summary.seen = rows.length;
 
@@ -373,7 +335,7 @@ export async function pollBishopDispatchRoutesOnce(
     }
 
     if (isRowExpired(row, nowMs())) {
-      const won = await conditionalClaim(fetchImpl, config.supabaseUrl, config.anonKey, row.id, 'expired');
+      const won = await conditionalClaim(fetchImpl, config, row.id, 'expired');
       if (won) {
         summary.expired++;
         console.log(`[bishop-relay-listener] row ${row.id.slice(0, 8)} expired (ttl_seconds=${row.ttl_seconds}) -- skipped, never handed to the envelope handler`);
@@ -383,7 +345,7 @@ export async function pollBishopDispatchRoutesOnce(
       continue;
     }
 
-    const claimed = await conditionalClaim(fetchImpl, config.supabaseUrl, config.anonKey, row.id, 'processing');
+    const claimed = await conditionalClaim(fetchImpl, config, row.id, 'processing');
     if (!claimed) {
       // Someone/something else already moved this row off `pending` between our SELECT and our
       // PATCH -- row-level idempotency (scope item 6): never re-fire a row we did not win.
@@ -398,7 +360,7 @@ export async function pollBishopDispatchRoutesOnce(
       // decrypt/dispatch path with a non-string -- "a malformed inbound payload must never take
       // down the peer server."
       summary.malformed++;
-      await finalizeStatus(fetchImpl, config.supabaseUrl, config.anonKey, row.id, 'error');
+      await finalizeStatus(fetchImpl, config, row.id, 'error');
       console.warn(`[bishop-relay-listener] row ${row.id.slice(0, 8)} has kind='bishop_dispatch' but no usable payload_encrypted string -- marked error`);
       continue;
     }
@@ -409,7 +371,7 @@ export async function pollBishopDispatchRoutesOnce(
       // stage-2/completion reply (posted much later, from inside launchWorker's own exit
       // handler) can be correlated back to this same relay_route_replies route id.
       const result = await handleEnvelope(envelope, row.id);
-      await finalizeStatus(fetchImpl, config.supabaseUrl, config.anonKey, row.id, result.ok ? 'answered' : 'error');
+      await finalizeStatus(fetchImpl, config, row.id, result.ok ? 'answered' : 'error');
       // D-BP156-M0-014: write the reply leg -- the builder's result travels back to the
       // conductor via relay_route_replies (see bishop_dispatch_reply.ts's header for the full
       // mechanism). Best-effort, matching finalizeStatus/writeHeartbeat above: a failed reply
@@ -436,7 +398,7 @@ export async function pollBishopDispatchRoutesOnce(
       // loop or the host process -- exactly the "malformed inbound payload must never take down
       // the peer server" requirement, defended even against a bug in the handler itself.
       summary.errored++;
-      await finalizeStatus(fetchImpl, config.supabaseUrl, config.anonKey, row.id, 'error');
+      await finalizeStatus(fetchImpl, config, row.id, 'error');
       console.error(`[bishop-relay-listener] row ${row.id.slice(0, 8)} envelope handler THREW (caught, marked error):`, err);
     }
   }

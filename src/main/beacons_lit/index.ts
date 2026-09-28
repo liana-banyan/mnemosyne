@@ -22,6 +22,7 @@
 import { app } from 'electron';
 import { getStablePeerId } from '../federation/peer-discovery';
 import { getAnonKey as getSharedAnonKey } from '../shared/anon_key';
+import { ownerProofHeaders } from '../federation/relay_rpc';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -96,6 +97,11 @@ async function callHandshake(peerId: string): Promise<void> {
   if (_accessToken) {
     headers['Authorization'] = `Bearer ${_accessToken}`;
   }
+  // D-BP223-X043-010-RB: beacons-lit-handshake writes peer_presence only with the owner proof
+  // (x-lb-owner-secret header, never the body). No secret, no handshake (fail closed).
+  const ownerProof = ownerProofHeaders(peerId);
+  if (!ownerProof) throw new Error('presence owner secret unavailable -- beacons_lit handshake skipped');
+  Object.assign(headers, ownerProof);
 
   const appVersion = getCaiVersion();
 

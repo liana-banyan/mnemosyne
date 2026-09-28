@@ -1040,6 +1040,25 @@ export function LeanAskTab({ onSwitchToHome, handshakeSoundEnabled = false }: Le
       // If result.streaming === true: ask-engine-progress / ask-token-complete events drive
       // the rest — do NOT call setThinking(false) here.
 
+      // D-BP223-X043-002-A (0.9.40), Founder ruling: a near match becomes a SUGGESTION, never
+      // the served answer. ai-dispatch:query returns `nearMatchSuggestion` (additive, untyped in
+      // amplify.d.ts, same convention as selfContextLoaded) when a stored question was similar
+      // but not identical; this turn's answer still comes from the normal path. Attach it to
+      // this message so AskEngineView can offer "A similar question was answered before".
+      const nm = result?.ok ? (result as Record<string, unknown>).nearMatchSuggestion as Record<string, unknown> | undefined : undefined;
+      if (nm && typeof nm.question === 'string' && typeof nm.answer === 'string' && typeof nm.similarity === 'number') {
+        updateMsgEngine(aiId, {
+          nearMatchSuggestion: {
+            question: nm.question,
+            answer: nm.answer,
+            similarity: nm.similarity,
+            ebletId: typeof nm.ebletId === 'string' ? nm.ebletId : undefined,
+            provenance: typeof nm.provenance === 'string' ? nm.provenance : undefined,
+            verified: typeof nm.verified === 'boolean' ? nm.verified : undefined,
+          },
+        });
+      }
+
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       updateMsgAndSave(aiId, `⚠ Ask threw: ${errMsg}. See Diagnostic.`);

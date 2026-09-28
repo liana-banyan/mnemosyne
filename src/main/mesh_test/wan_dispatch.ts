@@ -36,6 +36,7 @@
 // the 2026-07-06 rows was found in either this repo or LianaBanyanPlatform).
 
 import { getStablePeerId } from '../federation/peer-discovery';
+import { repliesOnly, routeRepliesForSender, routeSend } from '../federation/relay_rpc';
 import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 import type { MmluProQuestion } from './one_click_mmlu_pro';
 // BP137 Yoke v2b Stage F3 (mesh synergy): promotes adjudicateDistributedAuthorities() from
@@ -136,6 +137,34 @@ export interface MeshSynergyPooledResult {
 interface SupabaseConfig {
   url: string;
   anonKey: string;
+}
+
+/**
+ * D-BP223-X043-010-RB. Every relay_routes INSERT in this file goes through route_send (Phase A
+ * RPC) proven with this install's presence owner secret; the server sets origin_peer_id from the
+ * proof. `row` keeps the old row shape so each call site reads the same as before. Returns the
+ * new route id, or null on any refusal or network error (callers already treat null as "skip").
+ */
+async function sendRelayRouteRow(
+  cfg: SupabaseConfig,
+  row: { target_peer_id: string; hex_frame: string; payload_json: unknown; session_id: string; ttl_seconds: number; wire_format: string },
+  timeoutMs: number,
+): Promise<string | null> {
+  const r = await routeSend({
+    supabaseUrl: cfg.url, anonKey: cfg.anonKey, timeoutMs,
+    senderPeerId: getStablePeerId(),
+    targetPeerId: row.target_peer_id,
+    hexFrame: row.hex_frame,
+    payloadJson: row.payload_json,
+    sessionId: row.session_id,
+    ttlSeconds: row.ttl_seconds,
+    wireFormat: row.wire_format,
+  });
+  if (!r.ok) {
+    console.error(`[wan_dispatch] relay_routes insert failed: ${r.error}`);
+    return null;
+  }
+  return typeof r.data === 'string' && r.data ? r.data : null;
 }
 
 function resolveSupabaseConfig(): SupabaseConfig | null {
@@ -263,15 +292,7 @@ export async function queryTopicalEbletsFromPeers(
   for (const peer of peers) {
     try {
       const ttlSeconds = Math.ceil(perPeerTimeoutMs / 1000) + 30;
-      const res = await fetch(`${cfg.url}/rest/v1/relay_routes`, {
-        method: 'POST',
-        headers: {
-          apikey: cfg.anonKey,
-          Authorization: `Bearer ${cfg.anonKey}`,
-          'Content-Type': 'application/json',
-          Prefer: 'return=representation',
-        },
-        body: JSON.stringify({
+      const routeId = await sendRelayRouteRow(cfg, {
           target_peer_id: peer.peerId,
           // hex_frame is a NOT NULL legacy column (see insertRelayRoute below) -- the
           // responder for this query_type reads payload_json exclusively.
@@ -283,16 +304,10 @@ export async function queryTopicalEbletsFromPeers(
             top_k: 3,
             batch_purpose: `oneclick_eblet_topical_${sessionId}`,
           },
-          status: 'pending',
           session_id: sessionId,
           ttl_seconds: ttlSeconds,
           wire_format: 'json-legacy',
-        }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) continue;
-      const rows = (await res.json()) as Array<{ id: string }>;
-      const routeId = rows[0]?.id;
+        }, 10_000);
       if (!routeId) continue;
 
       const reply = await pollForReply(cfg, routeId, perPeerTimeoutMs);
@@ -557,23 +572,7 @@ export async function insertRelayRoute(
     wire_format: 'json-legacy',
   };
   try {
-    const res = await fetch(`${cfg.url}/rest/v1/relay_routes`, {
-      method: 'POST',
-      headers: {
-        apikey: cfg.anonKey,
-        Authorization: `Bearer ${cfg.anonKey}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=representation',
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
-      console.error(`[wan_dispatch] relay_routes insert failed: HTTP ${res.status}`);
-      return null;
-    }
-    const rows = (await res.json()) as Array<{ id: string }>;
-    return rows[0]?.id ?? null;
+    return await sendRelayRouteRow(cfg, body, 10_000);
   } catch (e) {
     console.error('[wan_dispatch] relay_routes insert error:', e);
     return null;
@@ -591,17 +590,16 @@ export async function pollForReply(
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 2_000));
     try {
-      const res = await fetch(
-        `${cfg.url}/rest/v1/relay_route_replies?route_id=eq.${routeId}&select=answer_json,processing_ms&limit=1`,
-        {
-          headers: { apikey: cfg.anonKey, Authorization: `Bearer ${cfg.anonKey}` },
-          signal: AbortSignal.timeout(8_000),
-        },
-      );
-      if (!res.ok) continue;
-      const rows = (await res.json()) as Array<{ answer_json: Record<string, unknown> | null; processing_ms: number }>;
+      // D-BP223-X043-010-RB: sender-side read through route_replies_for_sender (Phase A RPC),
+      // which returns only replies to routes this peer sent. First reply by created_at, as before.
+      const r = await routeRepliesForSender({
+        supabaseUrl: cfg.url, anonKey: cfg.anonKey, timeoutMs: 8_000,
+        peerId: getStablePeerId(), routeIds: [routeId],
+      });
+      if (!r.ok) continue;
+      const rows = repliesOnly(r.data);
       if (rows.length > 0 && rows[0]) {
-        return { answerJson: rows[0].answer_json, processingMs: rows[0].processing_ms };
+        return { answerJson: (rows[0].answer_json as Record<string, unknown> | null) ?? null, processingMs: rows[0].processing_ms ?? 0 };
       }
     } catch {
       // transient poll error -- keep trying until deadline, matching the tolerant
@@ -921,21 +919,7 @@ export async function dispatchOptionFanOutToWanPeers(
 
       let routeId: string | null = null;
       try {
-        const res = await fetch(`${supabaseUrl}/rest/v1/relay_routes`, {
-          method: 'POST',
-          headers: {
-            apikey: anonKey,
-            Authorization: `Bearer ${anonKey}`,
-            'Content-Type': 'application/json',
-            Prefer: 'return=representation',
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(15_000),
-        });
-        if (res.ok) {
-          const rows = (await res.json()) as Array<{ id: string }>;
-          routeId = rows[0]?.id ?? null;
-        }
+        routeId = await sendRelayRouteRow(cfg, body, 15_000);
       } catch {
         // insert failed -- non-fatal
       }

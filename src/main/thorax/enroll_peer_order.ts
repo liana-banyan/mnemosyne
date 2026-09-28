@@ -95,13 +95,13 @@ export interface IssueEnrollPeerOrderParams {
   ttlSeconds: number;
   nonce: string;
   privateKeyHex: string;
-  /** Live 6-digit Founder code. Required -- issueGatedOrder() throws GateRefusal without one for
-   *  the 'enroll-peer' scope, unchanged. */
-  code: string;
-  /** The TOTP seed. In production this lives OFF this machine (see founder_totp.ts's own custody
-   *  discussion); this dispatch never touches the real seed -- every caller of this function in
-   *  this repo's test suite uses a freshly generated, ephemeral Buffer. */
-  seed: Buffer;
+  /** sha256(code|window) from an ALREADY-VERIFIED founder-code-verify receipt. RETIRED
+   *  2026-09-28 (D-BP223-X044-003-ONE-SEED): this function no longer accepts a raw code or a
+   *  seed; see gated_order.ts's header for why. Obtain this from
+   *  thorax/enroll_by_code.ts's FounderCodeReceipt (`receipt.code_commitment`). */
+  codeCommitment: string;
+  /** The TOTP window that commitment came from (`receipt.code_window`). */
+  codeWindow: number;
   custody: CustodyRegime;
   burnStore: BurnStore;
   nowUnixSeconds?: number;
@@ -109,10 +109,11 @@ export interface IssueEnrollPeerOrderParams {
 
 /**
  * Mint the enroll-peer order. Delegates the ENTIRE TOTP gate to issueGatedOrder() (thorax/
- * gated_order.ts, UNCHANGED) with scope='enroll-peer' -- it throws GateRefusal if the code is
- * missing, does not verify against the seed, or was already burned for that window, exactly as
- * that file already guarantees for every caller in this codebase. This function adds NOTHING to
- * that gate; it only binds the enrollment payload on top of an order that already passed it.
+ * gated_order.ts) with scope='enroll-peer' -- it throws GateRefusal if the commitment is
+ * missing/malformed, custody is not 'seed-off-machine', or the commitment was already burned
+ * for that window, exactly as that file already guarantees for every caller in this codebase.
+ * This function adds NOTHING to that gate; it only binds the enrollment payload on top of an
+ * order that already passed it. As of D-BP223-X044-003-ONE-SEED it never sees a code or a seed.
  */
 export function issueEnrollPeerOrder(params: IssueEnrollPeerOrderParams): EnrollPeerOrderEnvelope {
   const order = issueGatedOrder({
@@ -122,8 +123,8 @@ export function issueEnrollPeerOrder(params: IssueEnrollPeerOrderParams): Enroll
     ttlSeconds: params.ttlSeconds,
     nonce: params.nonce,
     privateKeyHex: params.privateKeyHex,
-    code: params.code,
-    seed: params.seed,
+    codeCommitment: params.codeCommitment,
+    codeWindow: params.codeWindow,
     custody: params.custody,
     nowUnixSeconds: params.nowUnixSeconds,
     burnStore: params.burnStore,
@@ -290,6 +291,37 @@ export function verifyAndApplyEnrollPeerOrder(
     };
   }
 
+  // D-BP223-X043-010-RB: THE WRITE BELOW IS RETIRED (Founder word "all as recommended",
+  // 2026-09-28, item "retire the old identity-key enrollment rule"). Steps 1 to 6 above still run
+  // in full, so this function still answers "is this a genuine, Founder-gated order for this
+  // identity key?", but it NO LONGER writes the registry. Reason: step 6 only admits a key that
+  // derives the peer id, which is the peer IDENTITY key (keys\peer.ed25519). Every reader of
+  // peer_enrollment_registry.json (peer_server.ts resolveEnrolledSenderKey, constellation_
+  // discovery.ts beacons, relay_v2_transport.ts for the relay X25519 fix) verifies THORAX-key
+  // signatures, so an identity key written here makes all of them REFUSE that peer (a trusted key
+  // that fails is a hard refusal). The only enrollment writer is now thorax/enroll_by_code.ts
+  // (Settings > "Enroll my machines"), which writes the Thorax key with three proofs (identity key
+  // derives the peer id, identity key signs the statement naming the Thorax key, Thorax key signs
+  // it) plus the Founder authenticator receipt. The old write is kept below as text for the
+  // record (Addendum, never Deletion) and is unreachable.
+  // The HARDWIRE\LEDGER\ORDERS\ORDER_enroll-peer_* files are marked superseded beside them.
+  return {
+    applied: false,
+    reason: `RETIRED: this order verified for peer "${enrolls.peer_id}", but enroll-peer orders no longer write ` +
+      'the enrollment registry: they carry the IDENTITY key and every registry reader checks the THORAX key. ' +
+      'Enroll through Settings > "Enroll my machines" (thorax/enroll_by_code.ts), which writes the Thorax key.',
+    peer_id: enrolls.peer_id,
+  };
+}
+
+/** D-BP223-X043-010-RB: the retired write path, kept as text for the record. Not exported, not
+ *  called. See verifyAndApplyEnrollPeerOrder above. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _retiredIdentityKeyEnrollmentWrite(
+  order: GatedOrder,
+  enrolls: EnrollmentFields,
+  registryPath: string,
+): EnrollApplyResult {
   const record: EnrolledPeerRecord = {
     peer_id: enrolls.peer_id,
     public_key_hex: enrolls.public_key_hex,

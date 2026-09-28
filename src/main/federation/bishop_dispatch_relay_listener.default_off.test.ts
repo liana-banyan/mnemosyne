@@ -10,6 +10,9 @@ vi.mock('./peer-discovery', () => ({ getStablePeerId: () => 'p'.repeat(16) }));
 vi.mock('../shared/anon_key', () => ({ getAnonKey: () => 'not-a-real-key', getSupabaseUrl: () => 'https://example.invalid' }));
 
 import { startBishopDispatchRelayListenerWithDefaults } from './bishop_dispatch_relay_listener';
+import { installTestOwnerSecret } from './relay_rpc_legacy_test_shim';
+
+installTestOwnerSecret();
 
 let dir = '';
 const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => [], text: async () => '[]' }));
@@ -51,6 +54,7 @@ describe('bishop_dispatch relay listener default off (X031-027)', () => {
     h.stop();
     const urls = fetchSpy.mock.calls.map((a) => String((a as unknown as [string])[0]));
     expect(urls.length).toBeGreaterThan(0);
-    expect(urls.some((u) => u.startsWith('https://example.invalid/rest/v1/relay_routes'))).toBe(true);
+    // D-BP223-X043-010-RB: the poll now reaches relay_routes through the Phase A RPC.
+    expect(urls.some((u) => u === 'https://example.invalid/rest/v1/rpc/routes_fetch_mine')).toBe(true);
   });
 });

@@ -482,6 +482,15 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.invoke('network-features:get'),
   setNetworkFeature: (key: string, enabled: boolean): Promise<Array<{ key: string; enabled: boolean; source: string; label: string }>> =>
     ipcRenderer.invoke('network-features:set', key, enabled),
+  // D-BP223-X043-007 (c): Settings "Enroll my machines" (src/main/thorax/enroll_by_code_ipc.ts).
+  enrollGetMyCode: (): Promise<{ ok: boolean; code?: string; peerId?: string; label?: string; error?: string }> =>
+    ipcRenderer.invoke('enroll:get-my-code'),
+  enrollPreview: (code: string): Promise<{ ok: boolean; peerId?: string; label?: string; thoraxFingerprint?: string; identityFingerprint?: string; alreadyEnrolled?: boolean; error?: string }> =>
+    ipcRenderer.invoke('enroll:preview', code),
+  enrollSubmit: (code: string, authCode: string): Promise<{ ok: boolean; peerId?: string; label?: string; error?: string }> =>
+    ipcRenderer.invoke('enroll:submit', { code, authCode }),
+  enrollList: (): Promise<{ ok: boolean; peers: Array<{ peerId: string; keyId: string; enrolledAt: string; label: string }> }> =>
+    ipcRenderer.invoke('enroll:list'),
 
   // D-BP223-BM0-X029-019 (Founder k/d74e863d, k/fbce54d5): Nexus Authorities, how each flagship is reached. The user's
   // own choice per provider (MANUAL or AUTOMATIC) and the user's OWN keys; no channel ever returns a key. See
@@ -528,6 +537,9 @@ contextBridge.exposeInMainWorld('amplify', {
     ipcRenderer.invoke('share-inbox:reject', senderPeerId, file),
   pushEbletToPeer: (args: import('./federation/peer_server').PushEbletArgs): Promise<import('./federation/hollerith_library_share').PushReceipt & { receiptPath: string | null }> =>
     ipcRenderer.invoke('share:push-eblet', args),
+  // D-BP223-X043-002-D: read-only list of this node's own shareable cards, for the Settings "Share a card" list.
+  listMyShareableCards: (): Promise<{ cards: import('./federation/share_receive_consent').MyShareableCard[]; notShareableCount: number }> =>
+    ipcRenderer.invoke('share:list-my-cards'),
 
   // D-BP202-BM02-014: HardWire Map -- package manifest + machine-aware preselection SPINE. Read-only
   // from the renderer's side; no UI is wired to these calls yet (a sibling dispatch owns the

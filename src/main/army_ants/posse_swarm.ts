@@ -10,6 +10,8 @@
 
 import { randomUUID } from 'crypto';
 import { type PosseSubClaim } from './posse_decompose';
+import { getStablePeerId } from '../federation/peer-discovery';
+import { repliesOnly, routeRepliesForSender, routeSend } from '../federation/relay_rpc';
 
 export interface SwarmSubResult {
   sub_claim_id: string;
@@ -234,7 +236,7 @@ async function dispatchSubClaim(
     ttl_seconds: Math.ceil(config.timeoutMs / 1000) + 30,
   };
 
-  const inserted = await supabasePost(config.supabaseUrl, config.serviceKey, 'relay_routes', routePayload);
+  const inserted = await relaySendRoute(config.supabaseUrl, config.serviceKey, routePayload);
   const routeId = inserted?.id;
   if (!routeId) return null;
 
@@ -245,10 +247,7 @@ async function dispatchSubClaim(
   }
   const deadline = Date.now() + effectiveTimeoutMs;
   while (Date.now() < deadline) {
-    const rows = await supabaseGet(
-      config.supabaseUrl, config.serviceKey,
-      `relay_route_replies?select=route_id,answer_json,hex_reply&route_id=eq.${routeId}`
-    );
+    const rows = await relayRepliesFor(config.supabaseUrl, config.serviceKey, routeId);
     if (rows && rows.length > 0) {
       const r = rows[0];
       let raw: string | null = null;
@@ -267,6 +266,26 @@ async function dispatchSubClaim(
     await sleep(2000);
   }
   return null;
+}
+
+// D-BP223-X043-010-RB: relay_routes / relay_route_replies go through the Phase A RPCs (route_send,
+// route_replies_for_sender) proven with this install's presence owner secret. That works with
+// either key (anon or service role), and the direct table calls it replaces are refused for anon
+// once Phase B is applied. Shapes match the old supabasePost / supabaseGet results.
+async function relaySendRoute(url: string, key: string, row: { target_peer_id: string; hex_frame: string; payload_json: unknown; session_id: string; ttl_seconds: number }): Promise<{ id: string } | null> {
+  const r = await routeSend({
+    supabaseUrl: url, anonKey: key, senderPeerId: getStablePeerId(),
+    targetPeerId: row.target_peer_id, hexFrame: row.hex_frame, payloadJson: row.payload_json,
+    sessionId: row.session_id, ttlSeconds: row.ttl_seconds,
+  });
+  if (!r.ok) throw new Error(`relay route_send failed: ${r.error}`);
+  return typeof r.data === 'string' && r.data ? { id: r.data } : null;
+}
+
+async function relayRepliesFor(url: string, key: string, routeId: string): Promise<Array<{ route_id: string; answer_json: any; hex_reply: string | null }>> {
+  const r = await routeRepliesForSender({ supabaseUrl: url, anonKey: key, peerId: getStablePeerId(), routeIds: [routeId] });
+  if (!r.ok) return [];
+  return repliesOnly(r.data).map((x) => ({ route_id: x.route_id, answer_json: x.answer_json, hex_reply: x.hex_reply }));
 }
 
 async function supabasePost(url: string, key: string, table: string, body: object): Promise<any> {

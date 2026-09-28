@@ -4,6 +4,13 @@
  */
 import { describe, test, expect, vi } from 'vitest';
 import { decomposeQuestion, healthCheck } from '../posse_decompose';
+import { installTestOwnerSecret, wrapLegacyFetch } from '../../federation/relay_rpc_legacy_test_shim';
+
+// D-BP223-X043-010-RB: the relay insert and reply read now go through route_send / route_replies_for_sender
+// (Phase A RPCs). The shim replays each RPC to these sequential legacy-shaped mocks; the sender id is pinned.
+vi.mock('../../federation/peer-discovery', () => ({ getStablePeerId: () => '1a78f7c9bdd5e830' }));
+installTestOwnerSecret();
+const stubFetch = (f: unknown) => vi.stubGlobal('fetch', wrapLegacyFetch(f as Parameters<typeof wrapLegacyFetch>[0]));
 
 // Mock fetch for relay insert + poll
 vi.stubGlobal('fetch', vi.fn());
@@ -34,7 +41,7 @@ describe('decomposeQuestion', () => {
       })  // GET relay_route_replies
       .mockResolvedValue({ ok: true, text: async () => JSON.stringify([]) }); // posse_sub_claims INSERTs
 
-    vi.stubGlobal('fetch', mockFetch);
+    stubFetch(mockFetch);
 
     const result = await decomposeQuestion(
       'q-test-001',
@@ -55,7 +62,7 @@ describe('decomposeQuestion', () => {
   });
 
   test('falls back to single sub-claim on malformed LLM response', async () => {
-    vi.stubGlobal('fetch', vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify([{ id: 'route-2' }]) })
       .mockResolvedValueOnce({
         ok: true,
@@ -79,7 +86,7 @@ describe('decomposeQuestion', () => {
   });
 
   test('handles timeout gracefully (no replies)', async () => {
-    vi.stubGlobal('fetch', vi.fn()
+    stubFetch(vi.fn()
       .mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify([{ id: 'route-3' }]) })
       .mockResolvedValue({ ok: true, text: async () => JSON.stringify([]) }) // empty polls
     );

@@ -106,6 +106,8 @@ if (!_gotSingleInstanceLock) {
 
 import './env_loader';
 import log from 'electron-log/main';
+// D-BP223-X043-010-RB: Phase A relay RPCs (owner-secret proven); see federation/relay_rpc.ts.
+import { presencePutOwn as relayPresencePutOwn, routeReplyPut as relayRouteReplyPut, routeSetStatus as relayRouteSetStatus, routesFetchMine as relayRoutesFetchMine } from './federation/relay_rpc';
 log.initialize({ preload: true });
 log.transports.file.level = 'info';
 log.transports.file.maxSize = 10 * 1024 * 1024; // 10 MB rotation
@@ -5943,6 +5945,8 @@ ${args.teachingText}
   registerDiagnosisIpc();
   // -- KN-BP144-16 Phase 1: LAN discovery opt-out (default: refuse unauthenticated) -----------
   registerMeshTrustSettingsIpc();
+  // -- D-BP223-X043-007 (c): Settings "Enroll my machines" (paste the other machine's code + authenticator code) -----
+  (require('./thorax/enroll_by_code_ipc') as typeof import('./thorax/enroll_by_code_ipc')).registerEnrollByCodeIpc();
   // -- D-BP223-BM0-X030-073 P1: "Share presence with my other machines", the one relay-beacon switch -----------------
   {
     const { getPresenceShareState, setPresenceSharing } = require('./federation/peer_server') as typeof import('./federation/peer_server');
@@ -7685,16 +7689,10 @@ ${args.teachingText}
     const peerId = getStablePeerId();
     if (!supabaseUrl || !anonKey) return { ok: false, error: 'Supabase config not available' };
     try {
-      // Clear existing key so ensurePeerKeypair re-generates
-      await fetch(
-        `${supabaseUrl}/rest/v1/peer_presence?peer_id=eq.${encodeURIComponent(peerId)}`,
-        {
-          method: 'PATCH',
-          headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-          body: JSON.stringify({ public_key_hex: null, private_key_hex_encrypted: null }),
-        },
-      );
-      const { ensurePeerKeypair } = await import('../substrate/peerKeyGen');
+      // Clear existing key so ensurePeerKeypair re-generates.
+      // D-BP223-X043-010-RB: through presence_put_own (owner proof), not a direct PATCH.
+      const { ensurePeerKeypair, clearPeerPublicKey } = await import('../substrate/peerKeyGen');
+      await clearPeerPublicKey(peerId, { supabaseUrl, anonKey });
       const result = await ensurePeerKeypair(peerId, { supabaseUrl, anonKey });
       return { ok: true, publicKeyHex: result.publicKeyHex, generated: true, peerId };
     } catch (err) {
@@ -9415,29 +9413,42 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
     'Authorization': `Bearer ${supabaseKey}`,
   };
 
+  // D-BP223-X043-010-RB: every relay read and write in this poller goes through the Phase A RPCs
+  // (federation/relay_rpc.ts) with this install's presence owner secret. The direct PostgREST
+  // table calls they replace are refused for anon once Phase B is applied.
+  const rpcBase = { supabaseUrl, anonKey: supabaseKey, timeoutMs: 10_000 };
+  const relaySetStatus = async (
+    routeId: string,
+    fromStatus: string | null,
+    toStatus: 'processing' | 'answered' | 'error' | 'expired',
+  ): Promise<boolean> => {
+    const r = await relayRouteSetStatus({ ...rpcBase, routeId, peerId, fromStatus, toStatus });
+    if (!r.ok) console.warn(`[relay-poll] status ${toStatus} refused route=${routeId.slice(0, 8)}: ${r.error}`);
+    return r.ok && r.data === true;
+  };
+  const relayReplyPut = async (row: { route_id: string; peer_id: string; answer_json: unknown; processing_ms?: number }): Promise<void> => {
+    const r = await relayRouteReplyPut({
+      ...rpcBase, routeId: row.route_id, peerId: row.peer_id, answerJson: row.answer_json, processingMs: row.processing_ms ?? null,
+    });
+    if (!r.ok) console.warn(`[relay-poll] reply refused route=${row.route_id.slice(0, 8)}: ${r.error}`);
+  };
+
   async function pollOnce() {
     _relayPollCount++;
     // K-D6-6-10: sync _relayPollCount to peer_presence every ~30s (every 6 polls × 5s cadence)
     // The heartbeat_worker sends relay_poller_poll_count:null which never updates the field;
     // this PATCH from the main thread is the only path that writes the actual count to Supabase.
     if (_relayPollCount % 6 === 1) {
-      fetch(`${supabaseUrl}/rest/v1/peer_presence?peer_id=eq.${encodeURIComponent(peerId)}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': supabaseKey,
-          'Authorization': `Bearer ${supabaseKey}`,
-          'Prefer': 'return=minimal',
-        },
-        body: JSON.stringify({ relay_poller_poll_count: _relayPollCount }),
-        signal: AbortSignal.timeout(10_000),
-      }).catch(() => { /* non-fatal */ });
+      relayPresencePutOwn({ ...rpcBase, peerId, fields: { relay_poller_poll_count: _relayPollCount } })
+        .catch(() => { /* non-fatal */ });
     }
     try {
-      const url = `${supabaseUrl}/rest/v1/relay_routes?target_peer_id=eq.${encodeURIComponent(peerId)}&status=eq.pending&select=id,hex_frame,payload_json,session_id`;
-      const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
-      if (!res.ok) return;
-      const routes: Array<{ id: string; hex_frame: string; payload_json: Record<string, unknown> | null; session_id: string | null }> = await res.json();
+      const fetched = await relayRoutesFetchMine({ ...rpcBase, peerId, status: 'pending', limit: 50 });
+      if (!fetched.ok) return;
+      const routes: Array<{ id: string; hex_frame: string; payload_json: Record<string, unknown> | null; session_id: string | null }> =
+        (fetched.data ?? []).map((r) => ({
+          id: r.id, hex_frame: r.hex_frame, payload_json: (r.payload_json as Record<string, unknown> | null) ?? null, session_id: r.session_id,
+        }));
 
       for (const route of routes) {
         // D-BP156-M0-016: a bishop_dispatch row belongs to bishop_dispatch_relay_listener.ts's
@@ -9470,12 +9481,9 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           break;
         }
 
-        // Mark processing
-        await fetch(`${supabaseUrl}/rest/v1/relay_routes?id=eq.${route.id}`, {
-          method: 'PATCH',
-          headers,
-          body: JSON.stringify({ status: 'processing' }),
-        });
+        // Mark processing. D-BP223-X043-010-RB: a conditional claim (pending -> processing); if
+        // another poller already moved the row, this one leaves it alone.
+        if (!(await relaySetStatus(route.id, 'pending', 'processing'))) continue;
 
         const startMs = Date.now();
         try {
@@ -9496,10 +9504,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
             // queryVerifiedEblets() -- so a federated peer can never leak an answer-key hit.
             const { queryVerifiedEbletsTopical } = await import('./mnem_eblet_store');
             const hits = await queryVerifiedEbletsTopical(topicalQuestion, topicalDomain, topicalTopK);
-            await fetch(`${supabaseUrl}/rest/v1/relay_route_replies`, {
-              method: 'POST',
-              headers: { ...headers, 'Prefer': 'return=minimal' },
-              body: JSON.stringify({
+            await relayReplyPut({
                 route_id: route.id,
                 peer_id: peerId,
                 answer_json: {
@@ -9516,13 +9521,8 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                   responder_peer_id: peerId,
                 },
                 processing_ms: Date.now() - startMs,
-              }),
-            });
-            await fetch(`${supabaseUrl}/rest/v1/relay_routes?id=eq.${route.id}`, {
-              method: 'PATCH',
-              headers,
-              body: JSON.stringify({ status: 'answered' }),
-            });
+              });
+            await relaySetStatus(route.id, null, 'answered');
             console.log(`[relay-poll] eblet_topical query answered route=${route.id.slice(0, 8)} hits=${hits.length}`);
             continue;
           }
@@ -9564,10 +9564,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 onProgress: (msg) => console.log(`[relay-poll] option-fanout route=${route.id.slice(0, 8)}: ${msg}`),
               });
               const processingMs = Date.now() - startMs;
-              await fetch(`${supabaseUrl}/rest/v1/relay_route_replies`, {
-                method: 'POST',
-                headers: { ...headers, 'Prefer': 'return=minimal' },
-                body: JSON.stringify({
+              await relayReplyPut({
                   route_id: route.id,
                   peer_id: peerId,
                   answer_json: {
@@ -9576,13 +9573,8 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                     peer_id: peerId,
                   },
                   processing_ms: processingMs,
-                }),
-              });
-              await fetch(`${supabaseUrl}/rest/v1/relay_routes?id=eq.${route.id}`, {
-                method: 'PATCH',
-                headers,
-                body: JSON.stringify({ status: 'answered' }),
-              });
+                });
+              await relaySetStatus(route.id, null, 'answered');
               console.log(`[relay-poll] option-fanout answered route=${route.id.slice(0, 8)} option=${assignedOptionForFanOut} verdict=${verdictResult.verdict}`);
               continue;
             } catch (err) {
@@ -9863,10 +9855,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                   return lm ? lm[1].toUpperCase() : null;
                 })(), confidence: 1 - councilVariance }];
                 // Write approaching_timeout signal to relay_route_replies (I8 MIC open-relay)
-                fetch(`${supabaseUrl}/rest/v1/relay_route_replies`, {
-                  method: 'POST',
-                  headers: { ...headers, 'Prefer': 'return=minimal' },
-                  body: JSON.stringify({
+                relayReplyPut({
                     route_id: route.id,
                     peer_id: peerId,
                     answer_json: {
@@ -9880,8 +9869,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                       council_variance: councilVariance,
                     },
                     processing_ms: Date.now() - startMs,
-                  }),
-                }).catch(() => { /* non-fatal — signal is best-effort */ });
+                  }).catch(() => { /* non-fatal — signal is best-effort */ });
                 console.log(`[relay-poll] approaching_timeout signal sent: route=${route.id.slice(0, 8)} iter=${iter} variance=${councilVariance.toFixed(3)} elapsed=${Date.now()-startMs}ms`);
               }
 
@@ -10077,10 +10065,7 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           const _precedenceAtEnd = await (await import('./user_precedence')).checkUserPrecedence({});
           const desktopInUse = (_precedenceAtStart?.desktopInUse ?? false) || _precedenceAtEnd.desktopInUse;
 
-          await fetch(`${supabaseUrl}/rest/v1/relay_route_replies`, {
-            method: 'POST',
-            headers: { ...headers, 'Prefer': 'return=minimal' },
-            body: JSON.stringify({
+          await relayReplyPut({
               route_id: route.id,
               peer_id: peerId,
               answer_json: abstainReason !== null ? {
@@ -10118,14 +10103,9 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
                 desktop_in_use: desktopInUse,
               },
               processing_ms: processingMs,
-            }),
-          });
+            });
 
-          await fetch(`${supabaseUrl}/rest/v1/relay_routes?id=eq.${route.id}`, {
-            method: 'PATCH',
-            headers,
-            body: JSON.stringify({ status: 'answered' }),
-          });
+          await relaySetStatus(route.id, null, 'answered');
 
           console.log(`[relay-poll] answered route ${route.id.slice(0, 8)} in ${processingMs}ms${desktopInUse ? ' (desktop in use)' : ''}`);
         } catch (err) {
@@ -10136,25 +10116,17 @@ function startRelayRoutePoll(peerId: string): NodeJS.Timeout {
           if (isOllamaTimeout && err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
             console.warn(`[WORKER] ollama call aborted after 8min · marking route error · route=${route.id.slice(0, 8)}`);
             try {
-              await fetch(`${supabaseUrl}/rest/v1/relay_route_replies`, {
-                method: 'POST',
-                headers: { ...headers, 'Prefer': 'return=minimal' },
-                body: JSON.stringify({
+              await relayReplyPut({
                   route_id: route.id,
                   peer_id: peerId,
                   answer_json: { status: 'error', error_message: 'ollama_timeout_8min', error_detail: 'AbortSignal.timeout(480000) fired — ollama did not respond within 8 minutes' },
                   processing_ms: Date.now() - startMs,
-                }),
-              });
+                });
             } catch { /* best-effort */ }
           } else {
             console.warn(`[relay-poll] error on route ${route.id.slice(0, 8)}:`, err);
           }
-          await fetch(`${supabaseUrl}/rest/v1/relay_routes?id=eq.${route.id}`, {
-            method: 'PATCH',
-            headers,
-            body: JSON.stringify({ status: 'error' }),
-          });
+          await relaySetStatus(route.id, null, 'error');
         }
       }
     } catch {

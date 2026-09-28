@@ -29,6 +29,7 @@ import {
   randomBytes,
   scryptSync,
 } from 'node:crypto';
+import { presencePutOwn } from '../main/federation/relay_rpc';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -117,24 +118,27 @@ async function fetchPeerPresenceRow(
 
 async function upsertPeerKeyColumns(
   peerId: string,
-  publicKeyHex: string,
+  publicKeyHex: string | null,
   config: SupabaseConfig
 ): Promise<boolean> {
-  const res = await fetch(
-    `${config.supabaseUrl}/rest/v1/peer_presence?peer_id=eq.${encodeURIComponent(peerId)}`,
-    {
-      method: 'PATCH',
-      headers: {
-        apikey: config.anonKey,
-        Authorization: `Bearer ${config.anonKey}`,
-        'Content-Type': 'application/json',
-      },
-      // D-BP223-BM0-X037-009: the PUBLIC half only. See ensurePeerKeypair below for why the
-      // private key is no longer sent anywhere.
-      body: JSON.stringify({ public_key_hex: publicKeyHex }),
-    }
-  );
-  return res.ok;
+  // D-BP223-X043-010-RB: through presence_put_own (Phase A RPC), proven with this install's
+  // presence owner secret. The direct PATCH it replaces is refused for anon once Phase B is applied.
+  // D-BP223-BM0-X037-009: the PUBLIC half only. See ensurePeerKeypair below for why the
+  // private key is no longer sent anywhere.
+  const r = await presencePutOwn({
+    supabaseUrl: config.supabaseUrl,
+    anonKey: config.anonKey,
+    peerId,
+    fields: { public_key_hex: publicKeyHex as string },
+  });
+  return r.ok;
+}
+
+/** D-BP223-X043-010-RB: clears this peer's public_key_hex (used by peer-key:regenerate). The old
+ *  handler also nulled private_key_hex_encrypted; that column is not self-service any more (and
+ *  held 0 rows, column SELECT revoked, X037-009), so it is left alone. */
+export async function clearPeerPublicKey(peerId: string, config: SupabaseConfig): Promise<boolean> {
+  return upsertPeerKeyColumns(peerId, null, config);
 }
 
 // ─── Core: ensurePeerKeypair ──────────────────────────────────────────────────

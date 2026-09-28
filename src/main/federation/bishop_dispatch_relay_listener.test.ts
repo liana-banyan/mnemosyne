@@ -22,6 +22,9 @@ import {
   type BishopRelayListenerConfig,
 } from './bishop_dispatch_relay_listener';
 import type { BishopDispatchResult } from './peer_server';
+import { installTestOwnerSecret, wrapLegacyFetch } from './relay_rpc_legacy_test_shim';
+
+installTestOwnerSecret();
 
 const PEER_ID = 'self-peer-id-abc123';
 const SUPABASE_URL = 'https://example.supabase.co';
@@ -86,7 +89,9 @@ function makeFetchMock(opts: {
     return new Response(JSON.stringify({ error: 'unhandled in test mock' }), { status: 500 });
   }) as unknown as FetchLike;
 
-  return { fetchImpl, calls };
+  // D-BP223-X043-010-RB: the listener now speaks the Phase A RPCs; the shim replays each RPC to
+  // this legacy-shaped fake so every assertion below still checks the same behavior.
+  return { fetchImpl: wrapLegacyFetch(fetchImpl as unknown as Parameters<typeof wrapLegacyFetch>[0]) as unknown as FetchLike, calls };
 }
 
 function baseConfig(fetchImpl: FetchLike, handleEnvelope: BishopRelayListenerConfig['handleEnvelope']): BishopRelayListenerConfig {
@@ -397,7 +402,7 @@ describe('pollBishopDispatchRoutesOnce', () => {
     }) as unknown as FetchLike;
     const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'refused', issues: [], spawned: false, reason: 'file-write-only' }));
 
-    await pollBishopDispatchRoutesOnce(baseConfig(fetchImpl, handleEnvelope), 1);
+    await pollBishopDispatchRoutesOnce(baseConfig(wrapLegacyFetch(fetchImpl as unknown as Parameters<typeof wrapLegacyFetch>[0]) as unknown as FetchLike, handleEnvelope), 1);
 
     const replyInit = capturedInits.find((i) => (i.headers as Record<string, string> | undefined)?.['apikey'] === ANON_KEY && String(i.body ?? '').includes('bishop_dispatch_reply'));
     expect(replyInit).toBeDefined();
@@ -427,7 +432,9 @@ describe('pollBishopDispatchRoutesOnce', () => {
 
     const heartbeat = calls.find((c) => c.method === 'PATCH' && c.url.includes('/peer_presence'));
     expect(heartbeat?.body).toMatchObject({ relay_poller_poll_count: 7 });
-    expect(typeof (heartbeat?.body as { relay_poller_heartbeat_at?: string })?.relay_poller_heartbeat_at).toBe('string');
+    // D-BP223-X043-010-RB: presence_put_own stamps relay_poller_heartbeat_at = now() on the SERVER
+    // whenever the key is present, so the client sends a marker (true), not its own clock.
+    expect((heartbeat?.body as { relay_poller_heartbeat_at?: unknown })?.relay_poller_heartbeat_at).toBe(true);
   });
 });
 
@@ -444,7 +451,7 @@ describe('startBishopDispatchRelayListener', () => {
       return new Response(null, { status: 204 });
     }) as unknown as FetchLike;
     const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
-    const config: BishopRelayListenerConfig = { peerId: PEER_ID, supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, handleEnvelope };
+    const config: BishopRelayListenerConfig = { peerId: PEER_ID, supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: wrapLegacyFetch(fetchImpl as unknown as Parameters<typeof wrapLegacyFetch>[0]) as unknown as FetchLike, handleEnvelope };
 
     const handle = startBishopDispatchRelayListener(config, 1000);
     await vi.advanceTimersByTimeAsync(0); // let the immediate first tick's microtasks flush
@@ -475,7 +482,7 @@ describe('startBishopDispatchRelayListener', () => {
       return new Response(null, { status: 204 });
     }) as unknown as FetchLike;
     const handleEnvelope = vi.fn(async (): Promise<BishopDispatchResult> => ({ ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' }));
-    const config: BishopRelayListenerConfig = { peerId: PEER_ID, supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, handleEnvelope };
+    const config: BishopRelayListenerConfig = { peerId: PEER_ID, supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: wrapLegacyFetch(fetchImpl as unknown as Parameters<typeof wrapLegacyFetch>[0]) as unknown as FetchLike, handleEnvelope };
 
     const handle = startBishopDispatchRelayListener(config, 1000); // interval shorter than the 5s fake GET
     await vi.advanceTimersByTimeAsync(0);

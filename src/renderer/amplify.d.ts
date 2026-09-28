@@ -444,6 +444,8 @@ declare global {
         action: string; reason?: string; error?: string; receiverPeerId: string | null; receiverKeyTrust: string; sharePolicy: string | null;
         connector: string | null; file: string | null; sha256: string | null; signedReceipt: string | null; receiptVerified: boolean; httpStatus: number | null; receiptPath: string | null;
       }>;
+      // D-BP223-X043-002-D: read-only list of this node's own shareable cards (share:list-my-cards).
+      listMyShareableCards?: () => Promise<{ cards: Array<{ connector: string; file: string; title: string; sha256: string; qid: number | null; sourceStatus: string; sourceLabel: string | null }>; notShareableCount: number }>;
       // D-BP202-BM02-014: HardWire Map spine -- read-only manifest + preselection surface. No UI
       // consumes these yet; a sibling dispatch owns the preinstall screen.
       getHardwireManifest?: () => Promise<HardwirePackageManifestEntry[]>;

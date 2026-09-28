@@ -24,14 +24,21 @@
 // Run: npx vitest run src/main/thorax/car_capsule_access_gate.test.ts
 
 import { describe, test, expect } from 'vitest';
-import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { generateKeyPairSync } from 'node:crypto';
 import {
   issueGatedOrder,
   InMemoryBurnStoreNotDurable,
+  commitToCode,
   type GatedOrder,
 } from './gated_order';
-import { generateCode } from './founder_totp';
+import { windowFor } from './founder_totp';
 import { checkCapsuleAccessBadge, CAR_CAPSULE_ACCESS_SCOPE } from './car_capsule_access_gate';
+
+// D-BP223-X044-003-ONE-SEED (2026-09-28): issueGatedOrder() no longer accepts a raw code or a
+// seed -- it takes an ALREADY-VERIFIED codeCommitment/codeWindow, exactly as a real caller would
+// get from a founder-code-verify receipt. These tests mint that pair directly with
+// commitToCode()/windowFor() (the same primitives gated_order.ts itself uses) rather than
+// simulating the TOTP arithmetic, since that arithmetic no longer lives in this module at all.
 
 function ephemeralKeypair(): { publicKeyHex: string; privateKeyHex: string } {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519', {
@@ -46,11 +53,14 @@ function ephemeralKeypair(): { publicKeyHex: string; privateKeyHex: string } {
 
 describe('checkCapsuleAccessBadge -- C.A.R. gate in front of catacombs:fetch-package', () => {
   const root = ephemeralKeypair();
-  const seed = randomBytes(20);
   const now = Math.floor(Date.parse('2026-09-13T05:00:00Z') / 1000);
+  const codeWindow = windowFor(now);
+  // Stands in for "an already-verified commitment from a founder-code-verify receipt" -- this
+  // module never sees, generates, or checks a real code any more, so any 64-hex commitment
+  // proves the same thing about THIS module's own logic.
+  const codeCommitment = commitToCode('123456', codeWindow);
 
   test('POSITIVE: a validly minted, correctly-scoped, gated badge is ALLOWED', () => {
-    const code = generateCode(seed, now);
     const badge: GatedOrder = issueGatedOrder({
       issuer: 'root',
       subject: 'catacombs-package-fetch',
@@ -58,8 +68,8 @@ describe('checkCapsuleAccessBadge -- C.A.R. gate in front of catacombs:fetch-pac
       ttlSeconds: 300,
       nonce: 'nonce-positive-001',
       privateKeyHex: root.privateKeyHex,
-      code,
-      seed,
+      codeCommitment,
+      codeWindow,
       custody: 'seed-off-machine',
       nowUnixSeconds: now,
       burnStore: new InMemoryBurnStoreNotDurable(),
@@ -91,8 +101,8 @@ describe('checkCapsuleAccessBadge -- C.A.R. gate in front of catacombs:fetch-pac
       privateKeyHex: root.privateKeyHex,
       nowUnixSeconds: now,
       custody: 'seed-off-machine',
-      // dispatch-work is not gate-required: no code/seed/burnStore needed to mint it, which is
-      // exactly the case this test proves gets refused for THIS gate.
+      // dispatch-work is not gate-required: no codeCommitment/burnStore needed to mint it, which
+      // is exactly the case this test proves gets refused for THIS gate.
     });
 
     console.log('[NEGATIVE B: wrong scope] badge object:', JSON.stringify(badge, null, 2));
@@ -104,7 +114,6 @@ describe('checkCapsuleAccessBadge -- C.A.R. gate in front of catacombs:fetch-pac
   });
 
   test('NEGATIVE C: a tampered badge (subject altered after signing) is REFUSED', () => {
-    const code = generateCode(seed, now);
     const badge: GatedOrder = issueGatedOrder({
       issuer: 'root',
       subject: 'catacombs-package-fetch',
@@ -112,8 +121,8 @@ describe('checkCapsuleAccessBadge -- C.A.R. gate in front of catacombs:fetch-pac
       ttlSeconds: 300,
       nonce: 'nonce-negative-c-001',
       privateKeyHex: root.privateKeyHex,
-      code,
-      seed,
+      codeCommitment,
+      codeWindow,
       custody: 'seed-off-machine',
       nowUnixSeconds: now,
       burnStore: new InMemoryBurnStoreNotDurable(),
@@ -130,7 +139,6 @@ describe('checkCapsuleAccessBadge -- C.A.R. gate in front of catacombs:fetch-pac
   });
 
   test('NEGATIVE D: an EXPIRED badge is REFUSED', () => {
-    const code = generateCode(seed, now);
     const badge: GatedOrder = issueGatedOrder({
       issuer: 'root',
       subject: 'catacombs-package-fetch',
@@ -138,8 +146,8 @@ describe('checkCapsuleAccessBadge -- C.A.R. gate in front of catacombs:fetch-pac
       ttlSeconds: 60,
       nonce: 'nonce-negative-d-001',
       privateKeyHex: root.privateKeyHex,
-      code,
-      seed,
+      codeCommitment,
+      codeWindow,
       custody: 'seed-off-machine',
       nowUnixSeconds: now,
       burnStore: new InMemoryBurnStoreNotDurable(),
@@ -156,7 +164,6 @@ describe('checkCapsuleAccessBadge -- C.A.R. gate in front of catacombs:fetch-pac
 
   test('NEGATIVE E: a badge signed by a DIFFERENT key than the one verified against is REFUSED', () => {
     const impostor = ephemeralKeypair();
-    const code = generateCode(seed, now);
     const badge: GatedOrder = issueGatedOrder({
       issuer: 'root',
       subject: 'catacombs-package-fetch',
@@ -164,8 +171,8 @@ describe('checkCapsuleAccessBadge -- C.A.R. gate in front of catacombs:fetch-pac
       ttlSeconds: 300,
       nonce: 'nonce-negative-e-001',
       privateKeyHex: impostor.privateKeyHex, // signed by an impostor key, not root's
-      code,
-      seed,
+      codeCommitment,
+      codeWindow,
       custody: 'seed-off-machine',
       nowUnixSeconds: now,
       burnStore: new InMemoryBurnStoreNotDurable(),

@@ -47,6 +47,8 @@ import {
   SEMANTIC_SERVE_THRESHOLD,
 } from './mnem_eblet_store';
 import { semantic_soccerball_emit, computeSemanticSimilarity } from './semantic_soccerball';
+// D-BP223-X043-002-A (0.9.40): near match = suggestion, never served (Founder ruling).
+import { decideSemanticNearMatch, isExactQuestionMatch as isExactNormalizedQuestionMatch, type NearMatchSuggestion } from './near_match_suggestion';
 // BP136 Yoke: answer-cache meter (read-through/write-back cost + routing telemetry)
 // BP145-M4 Slice 2: additive import of ESTIMATED_CHEAP_CLOUD_QUERY_COST_USD for the escalation
 // ladder's TIER 3 (cheap cloud) meter record.
@@ -1055,6 +1057,10 @@ export function registerAiDispatchIPC(): void {
       // ranking fix in queryVerifiedEblets (mnem_eblet_store.ts): even if some future caller
       // or data shape ever put a component back at index 0, it can never reach this gate.
       const topVerifiedHit = verifiedHits.find((h) => h.class !== 'component');
+      // D-BP223-X043-002-A: set when a stored question was SIMILAR but not identical. Never
+      // served; returned alongside the normal answer so the renderer can offer "A similar
+      // question was answered before: open it?".
+      let nearMatchSuggestion: NearMatchSuggestion | null = null;
       if (answerCacheModeOn && topVerifiedHit) {
         const isExactQuestionMatch =
           topVerifiedHit.question.trim().toLowerCase() === userMessage.trim().toLowerCase();
@@ -1172,15 +1178,26 @@ export function registerAiDispatchIPC(): void {
                 `[SemanticSoccerball] no stored entry has a semantic code yet -- falling back to token path. latency_ms=${semanticLatencyMs}`,
               );
             }
-            if (
-              nearest &&
-              nearest.similarity >= SEMANTIC_SERVE_THRESHOLD
-            ) {
+            // D-BP223-X043-002-A (0.9.40), FOUNDER RULING: a near match becomes a SUGGESTION,
+            // never the served answer. Similarity clearing SEMANTIC_SERVE_THRESHOLD no longer
+            // short-circuits the model call (that is how "What is Ayn Rand's birthday?" got a
+            // stored Mark Twain answer). Only an EXACT normalized match of the current-turn
+            // question serves here; a similar-but-different stored question is carried forward
+            // as nearMatchSuggestion and the question falls through to the normal answer path.
+            const nearDecision = decideSemanticNearMatch(currentTurnQuestion, nearest, SEMANTIC_SERVE_THRESHOLD);
+            if (nearDecision.action === 'suggest') {
+              nearMatchSuggestion = nearDecision.suggestion;
+              console.log(
+                `[AnswerCache] near match NOT served (suggestion only) semanticSim=${nearDecision.suggestion.similarity.toFixed(3)} ` +
+                  `stored question="${nearDecision.suggestion.question.slice(0, 80)}" -- falling through to the answer path.`,
+              );
+            }
+            if (nearest && nearDecision.action === 'serve') {
               const latency_ms = Date.now() - tQueryStart;
               recordAnswerCacheEvent({ routing: 'served_verbatim', cost_usd: 0, latency_ms });
               console.log(
-                `[AnswerCache] servedFromSubstrate=true exact=false semantic=true ` +
-                  `semanticSim=${nearest.similarity.toFixed(3)} (semantic-gate, isQaRelevant not required per BP137 addendum FIX 5) latency_ms=${latency_ms}`,
+                `[AnswerCache] servedFromSubstrate=true exact=true semantic=true ` +
+                  `semanticSim=${nearest.similarity.toFixed(3)} (exact current-turn question match) latency_ms=${latency_ms}`,
               );
               if (!event.sender.isDestroyed()) {
                 event.sender.send('ask-token-complete', {
@@ -1267,15 +1284,16 @@ export function registerAiDispatchIPC(): void {
             psionicPrediction.bestMemberQuestion,
           ) > 0;
           let psionicSemanticFloorPassed = false;
+          let psionicSemanticSimilarity = 0;
           let psionicFloorMethod = 'semantic-mode-off';
           if (isSemanticSoccerballModeEnabled(settings)) {
             if (psionicPrediction.bestMemberSemanticCode) {
               try {
                 const queryCodeForFloor = await semantic_soccerball_emit(currentTurnQuestion);
                 if (queryCodeForFloor) {
-                  psionicSemanticFloorPassed =
-                    computeSemanticSimilarity(queryCodeForFloor, psionicPrediction.bestMemberSemanticCode) >=
-                    SEMANTIC_SERVE_THRESHOLD;
+                  psionicSemanticSimilarity =
+                    computeSemanticSimilarity(queryCodeForFloor, psionicPrediction.bestMemberSemanticCode);
+                  psionicSemanticFloorPassed = psionicSemanticSimilarity >= SEMANTIC_SERVE_THRESHOLD;
                   psionicFloorMethod = 'semantic';
                 } else {
                   psionicFloorMethod = 'semantic-embed-unavailable';
@@ -1289,6 +1307,36 @@ export function registerAiDispatchIPC(): void {
             }
           }
           const psionicDiscriminatingFloorPassed = psionicTokenFloorPassed && psionicSemanticFloorPassed;
+          // D-BP223-X043-002-A (0.9.40), FOUNDER RULING: a near match becomes a SUGGESTION,
+          // never the served answer. Clearing SEMANTIC_SERVE_THRESHOLD against bestMember's
+          // stored question is similarity, not identity, so the zero-model fast path below now
+          // ALSO requires bestMember's stored question to be an EXACT normalized match of the
+          // current-turn question. A would-have-fired but non-identical prediction is offered
+          // as nearMatchSuggestion instead and the question goes to the normal answer path.
+          const psionicExactQuestionMatch = isExactNormalizedQuestionMatch(
+            currentTurnQuestion,
+            psionicPrediction.bestMemberQuestion,
+          );
+          if (
+            psionicDiscriminatingFloorPassed &&
+            !psionicExactQuestionMatch &&
+            psionicPrediction.confidence >= PSIONIC_FAST_PATH_THRESHOLD &&
+            psionicPrediction.corroboratingCount >= PSIONIC_MIN_CORROBORATION_FOR_FAST_PATH
+          ) {
+            console.log(
+              `[CSIA] Psionic FAST PATH NOT served (near match, suggestion only): ` +
+                `bestMemberQuestion="${psionicPrediction.bestMemberQuestion.slice(0, 60)}"`,
+            );
+            if (!nearMatchSuggestion) {
+              nearMatchSuggestion = {
+                question: psionicPrediction.bestMemberQuestion,
+                answer: psionicPrediction.answer,
+                similarity: psionicSemanticSimilarity,
+                provenance: `csia:psionic:${psionicPrediction.corroboratingCount}-source-convergence`,
+                verified: false,
+              };
+            }
+          }
           if (!psionicDiscriminatingFloorPassed) {
             console.log(
               `[CSIA] Psionic FAST PATH BLOCKED by discriminating-floor (method=${psionicFloorMethod}, ` +
@@ -1300,7 +1348,8 @@ export function registerAiDispatchIPC(): void {
           if (
             psionicPrediction.confidence >= PSIONIC_FAST_PATH_THRESHOLD &&
             psionicPrediction.corroboratingCount >= PSIONIC_MIN_CORROBORATION_FOR_FAST_PATH &&
-            psionicDiscriminatingFloorPassed
+            psionicDiscriminatingFloorPassed &&
+            psionicExactQuestionMatch
           ) {
             // CONVERGED FAST PATH: Psionic's own zero-LLM graph-walk is confident enough
             // (multi-source corroboration, not just one lucky keyword hit) AND cleared the
@@ -1670,7 +1719,7 @@ export function registerAiDispatchIPC(): void {
             }
           }
         })().finally(() => clearAppBusy());
-        return { ok: true, streaming: true, escalationLadder: true };
+        return { ok: true, streaming: true, escalationLadder: true, ...(nearMatchSuggestion ? { nearMatchSuggestion } : {}) };
       }
 
       // BP132 Yoke #21 C5: when the active/selected brain is 'flagship' (e.g. Claude),
@@ -1707,7 +1756,7 @@ export function registerAiDispatchIPC(): void {
             });
           }
           clearAppBusy();
-          return { ok: true, streaming: true, paidEscalationBlocked: true };
+          return { ok: true, streaming: true, paidEscalationBlocked: true, ...(nearMatchSuggestion ? { nearMatchSuggestion } : {}) };
         }
         if (!event.sender.isDestroyed()) {
           event.sender.send('ask-token-progress', { coldStart: false, delta: '', assembled: '', flagship: true, brainId: activeBrain.brain_id });
@@ -1866,7 +1915,7 @@ export function registerAiDispatchIPC(): void {
             });
           }
         })().finally(() => clearAppBusy());
-        return { ok: true, streaming: true, brainId: activeBrain.brain_id, kind: 'flagship' };
+        return { ok: true, streaming: true, brainId: activeBrain.brain_id, kind: 'flagship', ...(nearMatchSuggestion ? { nearMatchSuggestion } : {}) };
       }
 
       // v0.1.57.1: Abort any in-flight stream before starting a new one (AbortController discipline)
@@ -2135,7 +2184,7 @@ export function registerAiDispatchIPC(): void {
         }
       })().finally(() => clearAppBusy());
 
-      return { ok: true, streaming: true };
+      return { ok: true, streaming: true, ...(nearMatchSuggestion ? { nearMatchSuggestion } : {}) };
     },
   );
 

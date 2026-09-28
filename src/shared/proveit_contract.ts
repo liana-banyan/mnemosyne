@@ -70,6 +70,9 @@ export type ProveItAnsweredBy =
   | 'perplexity'
   | 'google'
   | 'by_hand'
+  // CARD_CONTRACT_v1.md section 5 (D-BP223-X043-003-A): the person's own local AI through the
+  // Conduit (Ollama), never a cloud brain -- a distinct answeredBy value so a card can say so.
+  | 'ollama'
   | 'mnemosynec_seed';
 
 export const PROVEIT_ANSWERED_BY_LABELS: Record<ProveItAnsweredBy, string> = {
@@ -79,6 +82,7 @@ export const PROVEIT_ANSWERED_BY_LABELS: Record<ProveItAnsweredBy, string> = {
   perplexity: 'Perplexity',
   google: 'Google',
   by_hand: 'by hand, model not stated',
+  ollama: 'Your own AI (Ollama)',
   mnemosynec_seed: 'MnemosyneC seed',
 };
 
@@ -92,6 +96,9 @@ export type ProveItAnswerMethod =
   | 'user_perplexity'
   | 'user_google'
   | 'by_hand'
+  // CARD_CONTRACT_v1.md section 5 (D-BP223-X043-003-A): answered by the person's own local AI
+  // through the Conduit (Ollama), maps to answeredBy 'ollama'.
+  | 'user_ollama'
   // Seed cards (spec Section 6) are materialized by the seed loader, never through an ask flow
   // or a Browser Authority plug -- 'seed' is this union's own marker for that case, distinct from
   // 'by_hand' (which always means a real person pasted a real answer this session).
@@ -104,6 +111,7 @@ export const ANSWER_METHOD_TO_ANSWERED_BY: Record<ProveItAnswerMethod, ProveItAn
   user_perplexity: 'perplexity',
   user_google: 'google',
   by_hand: 'by_hand',
+  user_ollama: 'ollama',
   seed: 'mnemosynec_seed',
 };
 

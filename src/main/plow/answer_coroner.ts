@@ -1215,6 +1215,14 @@ export async function runAnswerCoroner(opts: {
 
   log('fetching relay_routes (answered)...');
 
+  // D-BP223-X043-010-RB. SERVICE-ROLE-ONLY FLEET READ (the one intentional direct-table reader
+  // left in the app). The coroner analyses EVERY machine's answered routes and replies; no Phase A
+  // function returns other machines' rows, by design. Until Phase B these reads still work with
+  // the anon key; after Phase B they need opts.supabaseKey = a service-role key (operator only,
+  // never shipped), or the counts-only aggregate drafted in
+  // BISHOP_DROPZONE\D-BP223-X043-007-RELAY-X25519\RELAY_PHASE_A2_ADDITIVE_DRAFT_NOT_APPLIED.sql.
+  const phaseBHint = ' (after Phase B the fleet coroner needs the operator service-role key: pass supabaseKey)';
+
   // Fetch answered relay_routes, filtered by session if requested
   let routesUrl = `${supabaseUrl}/rest/v1/relay_routes?status=eq.answered&select=id,session_id,payload_json&limit=${limit}&order=created_at.desc`;
   if (opts.sessionFilter) {
@@ -1224,7 +1232,7 @@ export async function runAnswerCoroner(opts: {
   const routesRes = await fetch(routesUrl, { headers, signal: AbortSignal.timeout(20_000) });
   if (!routesRes.ok) {
     const txt = await routesRes.text().catch(() => '');
-    throw new Error(`relay_routes fetch failed: HTTP ${routesRes.status} ${txt.slice(0, 200)}`);
+    throw new Error(`relay_routes fetch failed: HTTP ${routesRes.status} ${txt.slice(0, 200)}${routesRes.status === 401 || routesRes.status === 403 ? phaseBHint : ''}`);
   }
   const routes = (await routesRes.json()) as RelayRouteRow[];
   log(`fetched ${routes.length} routes`);

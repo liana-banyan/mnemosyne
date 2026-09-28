@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { spawn } from 'child_process';
 import { app, ipcMain, BrowserWindow, Notification } from 'electron';
 // BP134 Yoke #29 Part 2: node-to-node propagation -- detect a newer peer, pull + verify
 // its installer against THIS SAME canonical manifest fetch's sha256 before ever trusting it.
@@ -114,6 +115,75 @@ function semverGt(a: string, b: string): boolean {
     if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false;
   }
   return false;
+}
+
+/**
+ * D-BP223-X043-002-C: strict three-part numeric compare. Returns 1 if a > b, -1 if a < b,
+ * 0 if equal. Numeric per part, so 0.9.10 > 0.9.9 (a string compare gets that wrong).
+ * Any non-numeric part compares as 0; callers only pass versions parsed by
+ * parseInstallerVersion() below, which guarantees three numeric parts.
+ */
+export function compareSemver(a: string, b: string): -1 | 0 | 1 {
+  const pa = a.split('.').map((x) => Number.parseInt(x, 10));
+  const pb = b.split('.').map((x) => Number.parseInt(x, 10));
+  for (let i = 0; i < 3; i++) {
+    const x = Number.isFinite(pa[i]) ? pa[i] : 0;
+    const y = Number.isFinite(pb[i]) ? pb[i] : 0;
+    if (x > y) return 1;
+    if (x < y) return -1;
+  }
+  return 0;
+}
+
+/**
+ * D-BP223-X043-002-C: the installer filenames this app stages or can find staged.
+ * downloadAndVerify() and promoteVerifiedFileToReady() write MnemosyneC-Setup-X.Y.Z.exe.ready;
+ * the site also ships MnemosyneC-Lean-Setup-X.Y.Z.exe, so that stem is accepted too.
+ * `suffix` is '.exe.ready' (a staged candidate) or '.exe' (a consumed installer).
+ */
+const INSTALLER_NAME_RE = /^MnemosyneC(?:-Lean)?-Setup-(\d+)\.(\d+)\.(\d+)(\.exe(?:\.ready)?)$/;
+
+export function parseInstallerVersion(fileName: string): { version: string; ready: boolean } | null {
+  const m = INSTALLER_NAME_RE.exec(fileName);
+  if (!m) return null;
+  return { version: `${m[1]}.${m[2]}.${m[3]}`, ready: m[4] === '.exe.ready' };
+}
+
+export interface PendingInstallerSelection {
+  /** The one .ready to install (max semver, strictly greater than running), or null. */
+  install: { file: string; version: string } | null;
+  /** .ready files that must never run: version <= running version. */
+  stale: { file: string; version: string }[];
+  /** .ready files that are newer than running but lost to a newer one; left in place. */
+  superseded: { file: string; version: string }[];
+  /** .ready files whose name carries no parseable version; never run. */
+  unparseable: string[];
+}
+
+/**
+ * D-BP223-X043-002-C: THE SELECTION RULE (pure, no I/O, unit-tested).
+ * The 2026-09-27 incident installed readyFiles[readyFiles.length - 1] (readdir order) with no
+ * version check, which ran 0.9.38, 0.9.37 and 0.9.36 in a chain and downgraded Program Files.
+ * Now: parse every .ready name, pick the MAX version, and only if it is STRICTLY GREATER than
+ * the running version. Everything at or below the running version is stale.
+ */
+export function selectPendingInstaller(readyFiles: string[], runningVersion: string): PendingInstallerSelection {
+  const out: PendingInstallerSelection = { install: null, stale: [], superseded: [], unparseable: [] };
+  const newer: { file: string; version: string }[] = [];
+  for (const file of readyFiles) {
+    const parsed = parseInstallerVersion(file);
+    if (!parsed || !parsed.ready) { out.unparseable.push(file); continue; }
+    if (compareSemver(parsed.version, runningVersion) > 0) newer.push({ file, version: parsed.version });
+    else out.stale.push({ file, version: parsed.version });
+  }
+  if (newer.length > 0) {
+    // Max semver wins; ties (Setup vs Lean-Setup of the same version) resolve by name so the
+    // result never depends on readdir order.
+    newer.sort((a, b) => compareSemver(b.version, a.version) || a.file.localeCompare(b.file));
+    out.install = newer[0];
+    out.superseded = newer.slice(1);
+  }
+  return out;
 }
 
 function isMajorJump(current: string, latest: string): boolean {
@@ -1072,19 +1142,94 @@ function scheduleInstallAt(scheduledTime: string, readyPath: string): void {
   setTimeout(() => triggerInstall(readyPath), delay);
 }
 
-function triggerInstall(readyPath: string): void {
-  const exePath = readyPath.replace('.ready', '');
+// D-BP223-X043-002-C: stale installers are MOVED here, never deleted (a user's downloaded
+// file is never silently destroyed). Consumed installers (.exe left after a spawn) go to
+// INSTALLED_DIR on the next check so nothing staged can ever run twice.
+const QUARANTINE_DIR = path.join(UPDATES_DIR, 'quarantine');
+const INSTALLED_DIR  = path.join(UPDATES_DIR, 'installed');
+
+function utcStamp(): string {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+/** Move a file into `destDir` without overwriting anything already there. Returns the new path. */
+function moveAside(srcPath: string, destDir: string, tag: string): string {
+  if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+  const base = `${path.basename(srcPath)}.${tag}.${utcStamp()}`;
+  let dest = path.join(destDir, base);
+  for (let n = 2; fs.existsSync(dest); n++) dest = path.join(destDir, `${base}.${n}`);
+  fs.renameSync(srcPath, dest);
+  return dest;
+}
+
+function quarantineReady(file: string, version: string | null, runningVersion: string, reason: string): void {
+  const from = path.join(UPDATES_DIR, file);
   try {
-    fs.renameSync(readyPath, exePath);
-    appendUpdateHistory({ event: 'install_scheduled', trigger: 'auto', path: exePath });
+    const to = moveAside(from, QUARANTINE_DIR, 'stale');
+    appendUpdateHistory({ event: 'ready_quarantined', version, running_version: runningVersion, reason, from, to });
+  } catch (e) {
+    appendUpdateHistory({ event: 'ready_quarantine_error', version, running_version: runningVersion, reason, from, error: String(e) });
+  }
+}
+
+// Paths already handed to the installer in this process. The before-quit handler fires again
+// when triggerInstall() itself calls app.quit(); the incident log shows that second call as a
+// benign ENOENT install_error. This set makes every repeat call a silent no-op.
+const installsTriggered = new Set<string>();
+let quitInstallRegistered = false;
+
+function triggerInstall(readyPath: string): void {
+  const resolved = path.resolve(readyPath);
+  if (installsTriggered.has(resolved)) return; // idempotent: second before-quit, double IPC
+  const running = app.getVersion();
+
+  // Revalidate at the moment of install, whatever the caller (launch, quit, scheduled, or the
+  // renderer's 'auto-update-approve-install' IPC, which passes a path string): the file must be
+  // a staged installer directly inside UPDATES_DIR whose version is STRICTLY newer than us.
+  const file = path.basename(resolved);
+  const parsed = parseInstallerVersion(file);
+  if (path.dirname(resolved) !== path.resolve(UPDATES_DIR) || !parsed || !parsed.ready) {
+    appendUpdateHistory({ event: 'install_refused', reason: 'not_a_staged_installer', path: resolved, running_version: running });
+    return;
+  }
+  if (!fs.existsSync(resolved)) {
+    // Consumed or moved since selection. Not an error; nothing to run.
+    appendUpdateHistory({ event: 'install_skipped', reason: 'ready_missing', version: parsed.version, path: resolved });
+    return;
+  }
+  if (compareSemver(parsed.version, running) <= 0) {
+    quarantineReady(file, parsed.version, running, 'not_newer_than_running_at_install');
+    return;
+  }
+
+  const exePath = resolved.slice(0, -'.ready'.length);
+  installsTriggered.add(resolved);
+  try {
+    // Renaming .ready to .exe consumes it: it can no longer be selected on any later quit.
+    fs.renameSync(resolved, exePath);
+    appendUpdateHistory({ event: 'install_scheduled', trigger: 'auto', version: parsed.version, running_version: running, path: exePath });
     // Spawn installer silently and quit
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { spawn } = require('child_process') as typeof import('child_process');
     spawn(exePath, ['/SILENT'], { detached: true, stdio: 'ignore' }).unref();
     app.quit();
   } catch (e) {
     console.error('[auto-update] triggerInstall failed:', e);
-    appendUpdateHistory({ event: 'install_error', error: String(e) });
+    appendUpdateHistory({ event: 'install_error', version: parsed.version, error: String(e) });
+    // Spawn failed synchronously: put the .ready back so a later, deliberate attempt can use it.
+    try { if (fs.existsSync(exePath) && !fs.existsSync(resolved)) fs.renameSync(exePath, resolved); } catch { /* noop */ }
+    installsTriggered.delete(resolved);
+  }
+}
+
+/** Move consumed installers (.exe, version <= running) out of the staging folder. */
+function sweepConsumedInstallers(files: string[], runningVersion: string): void {
+  for (const f of files) {
+    const parsed = parseInstallerVersion(f);
+    if (!parsed || parsed.ready) continue;
+    if (compareSemver(parsed.version, runningVersion) > 0) continue; // may still be running; leave it
+    try {
+      const to = moveAside(path.join(UPDATES_DIR, f), INSTALLED_DIR, 'consumed');
+      appendUpdateHistory({ event: 'installer_archived', version: parsed.version, running_version: runningVersion, to });
+    } catch { /* locked or gone; try again next launch */ }
   }
 }
 
@@ -1095,22 +1240,39 @@ export async function checkAndTriggerPendingInstall(): Promise<void> {
   if (!cfg.autoUpdates) return;
   if (!fs.existsSync(UPDATES_DIR)) return;
 
-  let readyFiles: string[];
+  let entries: string[];
   try {
-    readyFiles = fs.readdirSync(UPDATES_DIR).filter((f) => f.endsWith('.ready'));
+    entries = fs.readdirSync(UPDATES_DIR).filter((f) => {
+      try { return fs.statSync(path.join(UPDATES_DIR, f)).isFile(); } catch { return false; }
+    });
   } catch {
     return;
   }
+
+  const running = app.getVersion();
+  sweepConsumedInstallers(entries, running);
+
+  const readyFiles = entries.filter((f) => f.endsWith('.ready'));
   if (readyFiles.length === 0) return;
 
-  const readyPath = path.join(UPDATES_DIR, readyFiles[readyFiles.length - 1]); // latest
+  // D-BP223-X043-002-C: max semver, strictly newer than running; never readdir order.
+  const sel = selectPendingInstaller(readyFiles, running);
+  for (const s of sel.stale) quarantineReady(s.file, s.version, running, 'not_newer_than_running');
+  for (const u of sel.unparseable) quarantineReady(u, null, running, 'unparseable_name');
+  if (!sel.install) return;
+
+  const readyPath = path.join(UPDATES_DIR, sel.install.file);
 
   switch (cfg.installTiming) {
     case 'launch':
       triggerInstall(readyPath);
       break;
     case 'quit':
-      app.on('before-quit', () => triggerInstall(readyPath));
+      // Register once per process, however many times this check runs.
+      if (!quitInstallRegistered) {
+        quitInstallRegistered = true;
+        app.on('before-quit', () => triggerInstall(readyPath));
+      }
       break;
     case 'scheduled':
       scheduleInstallAt(cfg.scheduledTime, readyPath);

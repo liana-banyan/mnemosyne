@@ -9,6 +9,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 import { isNetworkFeatureOn } from '../startup/network_feature_settings';
+import { OWNER_PROOF_HEADER, ownerProofHeaders } from '../federation/relay_rpc';
 
 const MNEMOSYNE_HOME = join(homedir(), '.mnemosyne');
 const CRASH_LOG_FILE = join(MNEMOSYNE_HOME, 'poller_crash_log.json');
@@ -185,8 +186,11 @@ function spawnWorker(config: RelayAnswerPollerConfig): void {
   scheduleStableReset();
   writePollerLock(child.pid ?? process.pid);
 
-  // Send config to child
-  child.send({ type: 'init', config });
+  // Send config to child. D-BP223-X043-010-RB: plus the presence owner secret, in memory over
+  // the IPC channel (the child cannot reach safeStorage). Without it the child still heartbeats
+  // locally but makes no relay reads or writes (fail closed).
+  const ownerProof = ownerProofHeaders(config.peerId);
+  child.send({ type: 'init', config: { ...config, ownerSecret: ownerProof ? ownerProof[OWNER_PROOF_HEADER] : '' } });
 
   // Handle messages from child
   child.on('message', (msg: Record<string, unknown>) => {

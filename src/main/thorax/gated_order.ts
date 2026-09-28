@@ -4,9 +4,24 @@
  *
  * THE DESIGN RULE THIS FILE ENFORCES
  *   A gate you can route around is not a gate. `issueGatedOrder()` is the ONLY way to mint an
- *   order carrying a code commitment, and it will not sign until the code verifies. There is
- *   no "skip" parameter and no default seed. A caller that wants to bypass this has to stop
+ *   order carrying a code commitment, and it will not sign until a PRE-VERIFIED commitment is
+ *   supplied. There is no "skip" parameter and, as of D-BP223-X044-003-ONE-SEED (Founder ruling
+ *   2026-09-28, "RETIRE the two second-seed paths so nothing can ever ask for or use a second
+ *   TOTP seed"), no seed parameter either. A caller that wants to bypass this has to stop
  *   using this module entirely, which is a visible act rather than a quiet flag.
+ *
+ * RETIRED 2026-09-28: THE seed-on-this-machine LOCAL-VERIFY PATH
+ *   This file used to accept a raw `code` plus a `seed: Buffer` and call founder_totp.ts's
+ *   verifyFounderCode() itself. That meant ANY caller holding ANY Buffer could mint a "gated"
+ *   order labeled custody 'seed-off-machine' -- the custody field was a caller-supplied label,
+ *   never independently checked -- which is indistinguishable from a second, illegitimate
+ *   Founder authenticator. There is now exactly one way a code is ever verified: the
+ *   `founder-code-verify` Supabase edge function, which holds the one real seed off this
+ *   machine (see thorax/enroll_by_code.ts's verifyFounderReceipt() for the receipt shape and
+ *   offline signature check). Callers here supply the ALREADY-VERIFIED `codeCommitment` and
+ *   `codeWindow` from that receipt; this module never sees a code or a seed, and cannot verify
+ *   one. `custody` must be `'seed-off-machine'` for every gate-required scope -- there is no
+ *   other value this function will accept for those scopes any more.
  *
  * THE CODE NEVER TRAVELS
  *   The order carries `codeCommitment = sha256(code|window)`, not the code. The verifier
@@ -38,7 +53,7 @@
 
 import { createHash } from 'node:crypto';
 import { signFrame, verifyFrame, SIG_HEX_LEN } from './sign_verify';
-import { verifyFounderCode, windowFor, CustodyRegime } from './founder_totp';
+import type { CustodyRegime } from './founder_totp';
 
 /** Founder-ratified scopes, BP158. Closed list: there is deliberately no `admin`. */
 export const RATIFIED_SCOPES = [
@@ -125,8 +140,9 @@ export class GateRefusal extends Error {}
  *
  * Refusal cases, each distinct so a caller cannot mistake one for another:
  *   - scope not in the ratified vocabulary
- *   - scope requires a gate and no code was supplied
- *   - code does not verify against the seed
+ *   - scope requires a gate and no pre-verified code commitment was supplied
+ *   - custody is not 'seed-off-machine' for a gate-required scope (RETIRED: there is no
+ *     local-seed regime any more; see this file's header, D-BP223-X044-003-ONE-SEED)
  *   - code already burned for that window
  *   - expiry missing or not after issuedAt
  */
@@ -137,11 +153,13 @@ export function issueGatedOrder(params: {
   ttlSeconds: number;
   nonce: string;
   privateKeyHex: string;
-  /** Required for every gate-required scope. */
-  code?: string;
-  /** The seed. In the intended posture this lives OFF this machine and verification happens
-   *  remotely; passing it here is the `seed-on-this-machine` regime and is labeled as such. */
-  seed?: Buffer;
+  /** Required for every gate-required scope: sha256(code|window) from an ALREADY-VERIFIED
+   *  `founder-code-verify` receipt (thorax/enroll_by_code.ts's FounderCodeReceipt /
+   *  verifyFounderReceipt()). This module never sees the raw code and never sees a seed --
+   *  it only binds a commitment someone else already verified off-machine. */
+  codeCommitment?: string;
+  /** The TOTP window that commitment came from, from the same receipt. */
+  codeWindow?: number;
   custody: CustodyRegime;
   nowUnixSeconds?: number;
   /** REQUIRED for any gate-required scope. Supply the durable store; the in-memory one is
@@ -164,17 +182,23 @@ export function issueGatedOrder(params: {
   let window = 0;
 
   if (needsGate) {
-    if (!params.code || !params.seed) {
+    if (params.custody !== 'seed-off-machine') {
       throw new GateRefusal(
-        `scope "${params.scope}" REQUIRES a live Founder code. Refusing to sign without one. ` +
-        `Only "dispatch-work" may be issued ungated.`);
+        `scope "${params.scope}" requires custody 'seed-off-machine'. The 'seed-on-this-machine' ` +
+        `local-verify regime was RETIRED 2026-09-28 (D-BP223-X044-003-ONE-SEED): get a verified ` +
+        `code commitment from the founder-code-verify edge function instead (see ` +
+        `thorax/enroll_by_code.ts).`);
     }
-    const res = verifyFounderCode(params.code, params.seed, params.custody, now);
-    if (!res.valid) {
-      throw new GateRefusal(`Founder code refused: ${res.reason}`);
+    if (!params.codeCommitment || !/^[0-9a-f]{64}$/.test(params.codeCommitment) ||
+        !Number.isInteger(params.codeWindow)) {
+      throw new GateRefusal(
+        `scope "${params.scope}" REQUIRES a pre-verified Founder code commitment (codeCommitment ` +
+        `+ codeWindow) obtained from the founder-code-verify edge function. Refusing to sign ` +
+        `without one -- this module accepts no code and no seed, ever. Only "dispatch-work" may ` +
+        `be issued ungated.`);
     }
-    window = windowFor(now);
-    commitment = commitToCode(params.code, window);
+    window = params.codeWindow as number;
+    commitment = params.codeCommitment;
 
     if (!params.burnStore) {
       throw new GateRefusal(

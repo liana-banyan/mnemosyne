@@ -9,6 +9,7 @@
 import { queryEbletStore } from '../mnem_eblet_store';
 import { SubstrateLocalIndex } from '../substrate_router';
 import { getAnonKey } from '../shared/anon_key';
+import { ownerProofHeaders } from '../federation/relay_rpc';
 
 // ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -106,12 +107,12 @@ async function supabasePatch(
 
 // ── Relay POST helper (primary + fallback) ──────────────────────────────────────
 
-async function relayPost(path: string, body: unknown): Promise<Response | null> {
+async function relayPost(path: string, body: unknown, extraHeaders: Record<string, string> = {}): Promise<Response | null> {
   const tryFetch = async (base: string): Promise<Response | null> => {
     try {
       const res = await fetch(`${base}${path}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...extraHeaders },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(WAKE_TIMEOUT_MS),
       });
@@ -216,11 +217,17 @@ export async function dispatchSubstraceWake(opts: {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     (require('../federation/peer-discovery') as { getStablePeerId: () => string }).getStablePeerId();
 
+  // D-BP223-X043-010-RB: substrace-wake now requires the origin's presence owner proof
+  // (x-lb-owner-secret header). No secret, no wake.
+  const ownerProof = ownerProofHeaders(origin_peer_id);
+  if (!ownerProof) {
+    throw new Error('[wake_router] dispatchSubstraceWake: presence owner secret unavailable');
+  }
   const res = await relayPost('/substrace-wake', {
     target_peer_id: opts.target_peer_id,
     origin_peer_id,
     manifest: opts.manifest,
-  });
+  }, ownerProof);
 
   if (!res) {
     throw new Error('[wake_router] dispatchSubstraceWake: relay POST failed (primary + fallback both unreachable)');

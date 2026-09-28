@@ -17,9 +17,22 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
+// D-BP223-X043-007-RELAY-X25519: the tests in this file build their frames with encryptForRelay,
+// which is now the deprecated alias of the v1 LEGACY cipher (key derived from the public peer id).
+// peer_server.ts refuses v1 unless the user turns on relayV1AcceptInbound, so these tests turn
+// that one switch on through a module mock: they exercise the parsing, signature and hook logic
+// AFTER decryption, which is identical for v1 and v2. The v2 path, and "v1 refused when the
+// switch is off", are covered in relay_x25519.test.ts.
+function acceptV1ForThisTest(): void {
+  vi.doMock('./relay_crypto_settings', () => ({
+    isRelayCryptoSettingOn: (key: string) => key === 'relayV1AcceptInbound',
+  }));
+}
+
 describe('handleInboundBishopDispatchEnvelope — malformed input never crashes', () => {
   beforeEach(() => {
     vi.resetModules();
+    acceptV1ForThisTest();
   });
 
   test('garbage (non-JSON) payload_encrypted is refused, not thrown', async () => {
@@ -94,6 +107,7 @@ describe('handleInboundBishopDispatchEnvelope — malformed input never crashes'
 describe('handleInboundBishopDispatchEnvelope — signed envelope verification', () => {
   beforeEach(() => {
     vi.resetModules();
+    acceptV1ForThisTest();
   });
 
   test('an UNSIGNED envelope (signAnnouncePayload failed soft) is passed to the hook with verifiedOriginPeerId=null', async () => {

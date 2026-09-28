@@ -25,6 +25,7 @@ let server: http.Server;
 let ps: typeof import('./peer_server');
 const kp = ephemeralKeypair();
 const TEST_EMAIL = 'someone@example.org';
+const OWNER_SECRET = 'c'.repeat(64);
 
 async function signed(payload: Record<string, unknown>): Promise<string> {
   const { encodeFrame } = await import('../wire/hex-encode');
@@ -60,6 +61,9 @@ beforeAll(async () => {
   vi.doMock('../lb_auth', () => ({ getLBSession: () => ({ email: TEST_EMAIL }) }));
   vi.doMock('../identity/localPeerKeypair', () => ({ ensureLocalPeerKeypair: () => ({ publicKeyHex: kp.pub }) }));
   ps = await import('./peer_server');
+  // D-BP223-X043-010-RB: presence publish now carries the owner proof; safeStorage is mocked off here, so the
+  // (same, post-resetModules) relay_rpc instance gets a test secret.
+  (await import('./relay_rpc')).setOwnerSecretProviderForTests(() => OWNER_SECRET);
   ps.registerPeerServerHooks({
     onPlowDomain: async () => ({ ebletsWritten: 0, quarantined: 0, andonEvents: 0, status: 'ok' }),
     onDiagnosisPost: async () => undefined,
@@ -131,7 +135,8 @@ describe('P2: port 7474 routes (X030-073)', () => {
 describe('P1: salted beacon, one switch (X030-073)', () => {
   test('beacon body: salted email hash, never the salt, never the unsalted hash; switch off sends nothing', async () => {
     const bodies: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: string }) => { bodies.push(init.body); return new Response(JSON.stringify({ ok: true, tier: 'base' }), { status: 200 }); }));
+    const proofHeaders: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: string; headers: Record<string, string> }) => { bodies.push(init.body); proofHeaders.push(init.headers['x-lb-owner-secret']); return new Response(JSON.stringify({ ok: true, tier: 'base' }), { status: 200 }); }));
     const unsalted = createHash('sha256').update(TEST_EMAIL).digest('hex').slice(0, 32);
     ps.registerPresenceConfig({ peerId: 'x030073-self', emailHash: unsalted, wanSoccerballId: 'a'.repeat(32), relaySessionId: 'r'.repeat(32), supabaseUrl: 'https://example.invalid' });
 
@@ -151,6 +156,10 @@ describe('P1: salted beacon, one switch (X030-073)', () => {
     expect(bodies.join('')).not.toContain(salt);
     expect(bodies.join('')).not.toContain(unsalted);
     expect(bodies.join('')).not.toContain(TEST_EMAIL);
+    // D-BP223-X043-010-RB: the owner proof rides in the x-lb-owner-secret HEADER, never in the body (the deployed
+    // wan-relay-publish stores the body in wan_relay_records).
+    expect(proofHeaders[proofHeaders.length - 1]).toBe(OWNER_SECRET);
+    expect(bodies.join('')).not.toContain(OWNER_SECRET);
 
     // Switch OFF again: nothing more is sent.
     const n = bodies.length;

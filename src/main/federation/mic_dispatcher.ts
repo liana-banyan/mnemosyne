@@ -28,6 +28,9 @@ import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
 // resolvePlowDomainRequest() for the receiving side).
 import { signAnnouncePayload } from './announce_frame';
 import { getStablePeerId } from './peer-discovery';
+import { ownerProofHeaders, routeSend } from './relay_rpc';
+// D-BP223-X043-007-RELAY-X25519: v2 relay sealing (per-peer X25519 key agreement).
+import { sealRelayPayloadForPeer, type SealDeps, type SealResult } from './relay_v2_transport';
 // D-BP156-M0-008: HARDWIRE-24 mesh, Bishop-dispatch payload variant. getStablePeerId already
 // imported above is reused (not re-imported) by callers of dispatchBishopDispatchViaRelay.
 
@@ -61,36 +64,21 @@ function isLanPeer(peerAddress: string): boolean {
 }
 
 /**
- * Encrypt a MIC dispatch payload for WAN relay using Thorax AES-256-GCM.
- * Key derived from sha256(peerId + ":wan-mic-key-v1") for simplicity;
- * full key exchange uses emailHash + sessionNonce from wan_soccerball_address.
- * SEG-5: relay sees only opaque ciphertext + target peer_id.
+ * D-BP223-X043-007-RELAY-X25519: THE OLD KEY RULE WAS NOT SECRET. encryptForRelay derived its
+ * AES-256-GCM key from sha256(targetPeerId + ":thorax-relay-v1") and no caller ever passed a shared
+ * secret, so anyone who could read peer_presence (anon-readable) could decrypt every relay_routes
+ * row (also anon-readable). That v1 code now lives VERBATIM in relay_v1_legacy.ts, and every send
+ * in this file seals with v2 (relay_x25519.ts: per-peer X25519 + HKDF-SHA256 + AES-256-GCM, signed
+ * key announcements) through sealRelayPayloadForPeer (relay_v2_transport.ts).
+ *
+ * encryptForRelay / decryptFromRelay remain exported ONLY as deprecated aliases of the v1 legacy
+ * functions, for existing tests and for reading old frames during a transition window the user
+ * turns on (relay_crypto_settings.ts). No production send path calls encryptForRelay any more.
  */
-export async function encryptForRelay(
-  plaintext: string,
-  targetPeerId: string,
-  _sharedSecret?: string,
-): Promise<string> {
-  // Derive a deterministic key from targetPeerId; in production this is replaced
-  // by the shared emailHash+sessionNonce from wan_soccerball_address.ts key exchange.
-  const keyMaterial = _sharedSecret ?? targetPeerId;
-  const rawKey = createHash('sha256').update(`${keyMaterial}:thorax-relay-v1`).digest();
-
-  const cryptoKey = await globalThis.crypto.subtle.importKey(
-    'raw', rawKey, { name: 'AES-GCM' }, false, ['encrypt'],
-  );
-
-  const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
-  const ct = await globalThis.crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    cryptoKey,
-    new TextEncoder().encode(plaintext),
-  );
-
-  const ivB64 = btoa(String.fromCharCode(...iv));
-  const ctB64 = btoa(String.fromCharCode(...new Uint8Array(ct)));
-  return JSON.stringify({ iv: ivB64, ct: ctB64 });
-}
+export {
+  encryptForRelayV1Legacy as encryptForRelay,
+  decryptFromRelayV1Legacy as decryptFromRelay,
+} from './relay_v1_legacy';
 
 // D-BP156-M0-008: shared POST-to-wan-relay-route-with-fallback helper, extracted verbatim out
 // of dispatchDomainViaRelay's own body (same headers, same timeout, same base->fallback order,
@@ -105,6 +93,10 @@ async function postToRelayRouteWithFallback(
 ): Promise<Response | null> {
   // BP132 Yoke #23 Task 6: shared helper so a stranger's install still authenticates.
   const anonKey = getAnonKey();
+  // D-BP223-X043-010-RB: wan-relay-route now also requires the sender's presence owner proof
+  // (x-lb-owner-secret header). No secret, no send (fail closed, same as a network failure).
+  const ownerProof = ownerProofHeaders(getStablePeerId());
+  if (!ownerProof) return null;
 
   const tryRoute = async (base: string): Promise<Response | null> => {
     try {
@@ -113,6 +105,7 @@ async function postToRelayRouteWithFallback(
         headers: {
           'Content-Type': 'application/json',
           ...(anonKey ? { 'Authorization': `Bearer ${anonKey}` } : {}),
+          ...ownerProof,
         },
         body: JSON.stringify({ payload_encrypted: payloadEncrypted, target_peer_id: targetPeerId }),
         signal: AbortSignal.timeout(15_000),
@@ -127,37 +120,6 @@ async function postToRelayRouteWithFallback(
     res = await tryRoute(RELAY_BASE_FALLBACK);
   }
   return res;
-}
-
-/**
- * Decrypt a Thorax AES-256-GCM payload produced by encryptForRelay(). Symmetric counterpart,
- * added D-BP156-M0-008 -- did not exist anywhere in this codebase before this dispatch (a
- * repo-wide grep for `decryptForRelay`/`decryptFromRelay` before writing this function found
- * zero hits). `selfPeerId` must be the SAME value the sender used as `targetPeerId` when
- * calling encryptForRelay (i.e. the receiver's own stable peer id) -- the key derivation is
- * sha256(targetPeerId + ":thorax-relay-v1")`, unchanged from encryptForRelay above.
- */
-export async function decryptFromRelay(
-  payloadEncrypted: string,
-  selfPeerId: string,
-  _sharedSecret?: string,
-): Promise<string> {
-  const keyMaterial = _sharedSecret ?? selfPeerId;
-  const rawKey = createHash('sha256').update(`${keyMaterial}:thorax-relay-v1`).digest();
-
-  const cryptoKey = await globalThis.crypto.subtle.importKey(
-    'raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt'],
-  );
-
-  const parsed = JSON.parse(payloadEncrypted) as { iv?: string; ct?: string };
-  if (typeof parsed.iv !== 'string' || typeof parsed.ct !== 'string') {
-    throw new Error('decryptFromRelay: payload_encrypted missing iv/ct');
-  }
-  const iv = Uint8Array.from(atob(parsed.iv), (c) => c.charCodeAt(0));
-  const ct = Uint8Array.from(atob(parsed.ct), (c) => c.charCodeAt(0));
-
-  const pt = await globalThis.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ct);
-  return new TextDecoder().decode(pt);
 }
 
 /**
@@ -177,10 +139,9 @@ async function dispatchDomainViaRelay(
     model: payload.model ?? 'gemma4:12b',
   });
 
-  let payloadEncrypted: string;
-  try {
-    payloadEncrypted = await encryptForRelay(plaintext, peer.id);
-  } catch (err) {
+  // D-BP223-X043-007: v2 seal (per-peer X25519), replacing encryptForRelay(plaintext, peer.id).
+  const sealed = await sealRelayPayloadForPeer(plaintext, peer.id);
+  if (!sealed.ok) {
     return {
       peerId: peer.id,
       domain,
@@ -188,9 +149,10 @@ async function dispatchDomainViaRelay(
       quarantined: 0,
       andonEvents: 0,
       status: 'red',
-      error: `Thorax encrypt failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Thorax encrypt failed: ${sealed.error}`,
     };
   }
+  const payloadEncrypted = sealed.payloadEncrypted;
 
   const res = await postToRelayRouteWithFallback(payloadEncrypted, peer.id);
 
@@ -224,7 +186,7 @@ async function dispatchDomainViaRelay(
 //
 // A second payload shape carried over the SAME wan-relay-route transport as
 // dispatchDomainViaRelay above, for coordinating a Claude-Code Bishop session across the
-// mesh rather than an Ollama MC-question plow run. Reuses encryptForRelay and
+// mesh rather than an Ollama MC-question plow run. Reuses the relay sealing (v2 since X043-007) and
 // postToRelayRouteWithFallback verbatim (see both above) -- nothing about the transport,
 // encryption, retry, or fallback behavior is forked or reimplemented for this variant.
 
@@ -452,6 +414,9 @@ async function postBishopDispatchRelayRoute(
   payloadEncrypted: string,
   targetPeerId: string,
   dispatchId: string,
+  encWire: 'v2' | 'v1' = 'v2',
+  /** D-BP223-X043-010-RB: the sending peer id, proven to route_send by its owner secret. */
+  senderPeerId: string = getStablePeerId(),
 ): Promise<{ ok: boolean; error?: string; routeId?: string }> {
   const anonKey = getAnonKey();
   const supabaseUrl = getSupabaseUrl();
@@ -466,33 +431,30 @@ async function postBishopDispatchRelayRoute(
   });
 
   try {
-    const res = await fetch(`${supabaseUrl}/rest/v1/relay_routes`, {
-      method: 'POST',
-      headers: {
-        apikey: anonKey,
-        Authorization: `Bearer ${anonKey}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=representation',
+    // D-BP223-X043-010-RB: sent through route_send (Phase A RPC), proven with this install's
+    // presence owner secret; the server sets origin_peer_id from that proof. Direct INSERTs into
+    // relay_routes are refused for anon once Phase B is applied.
+    const sent = await routeSend({
+      supabaseUrl, anonKey, timeoutMs: 15_000,
+      senderPeerId,
+      targetPeerId,
+      // relay_routes.hex_frame is a NOT NULL legacy column (verified live,
+      // WAN_RELAY_SCHEMA_VERIFIED_BP156.md / wan_dispatch.ts's insertRelayRoute doc
+      // comment). The bishop_dispatch listener (bishop_dispatch_relay_listener.ts) reads
+      // payload_json.payload_encrypted exclusively and never looks at hex_frame -- so this
+      // column is populated with the SAME already-opaque ciphertext purely to satisfy the
+      // schema, never with plaintext promptText/dispatchId.
+      hexFrame: payloadEncrypted,
+      payloadJson: {
+        kind: 'bishop_dispatch',
+        payload_encrypted: payloadEncrypted,
+        // D-BP223-X043-007: which relay encryption sealed payload_encrypted. Informational
+        // only; the receiver decides from the frame itself, never from this field.
+        enc: encWire,
       },
-      body: JSON.stringify({
-        target_peer_id: targetPeerId,
-        // relay_routes.hex_frame is a NOT NULL legacy column (verified live,
-        // WAN_RELAY_SCHEMA_VERIFIED_BP156.md / wan_dispatch.ts's insertRelayRoute doc
-        // comment). The bishop_dispatch listener (bishop_dispatch_relay_listener.ts) reads
-        // payload_json.payload_encrypted exclusively and never looks at hex_frame -- so this
-        // column is populated with the SAME already-opaque ciphertext purely to satisfy the
-        // schema, never with plaintext promptText/dispatchId.
-        hex_frame: payloadEncrypted,
-        payload_json: {
-          kind: 'bishop_dispatch',
-          payload_encrypted: payloadEncrypted,
-        },
-        status: 'pending',
-        session_id: dispatchId,
-        ttl_seconds: BISHOP_DISPATCH_TTL_SECONDS,
-        wire_format: 'json-legacy',
-      }),
-      signal: AbortSignal.timeout(15_000),
+      sessionId: dispatchId,
+      ttlSeconds: BISHOP_DISPATCH_TTL_SECONDS,
+      wireFormat: 'json-legacy',
     });
 
     // D-BP165-M0-013: the OUTCOME ledger entry below is a second, separate observation, appended
@@ -516,30 +478,22 @@ async function postBishopDispatchRelayRoute(
       }
     };
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      const error = `relay_routes insert failed: HTTP ${res.status} ${errText.slice(0, 200)}`;
+    if (!sent.ok) {
+      // status 0 = no HTTP response (network failure or no owner secret): the old 'insert error'
+      // wording; any HTTP refusal keeps the old 'insert failed' wording.
+      const error = sent.status === 0
+        ? `relay_routes insert error: ${sent.error ?? 'unknown'}`
+        : `relay_routes insert failed: ${sent.error ?? 'unknown'}`;
       logOutcome({
-        ok: false, http_status: res.status, error,
+        ok: false, http_status: sent.status, error,
         to: targetPeerId, dispatch_id: dispatchId, payload_sha512: attemptHash,
       });
       return { ok: false, error };
     }
-    // D-BP156-M0-020: `Prefer: return=representation` (set above) makes PostgREST echo the
-    // inserted row(s) back in the response body -- read the id out of it instead of discarding
-    // the body, so a caller has a real receipt (relay_routes row id) for what was just sent.
-    // Tolerant of a malformed/empty body (still `ok: true` -- the insert itself already
-    // succeeded per res.ok above; a missing/unparseable id only means the receipt is
-    // incomplete, never that the send failed).
-    let routeId: string | undefined;
-    try {
-      const rows = (await res.json()) as Array<{ id?: string }>;
-      routeId = rows[0]?.id;
-    } catch {
-      // response body missing/not JSON -- leave routeId undefined, insert already succeeded
-    }
+    // route_send returns the new relay_routes row id: the caller's receipt.
+    const routeId: string | undefined = typeof sent.data === 'string' && sent.data ? sent.data : undefined;
     logOutcome({
-      ok: true, http_status: res.status,
+      ok: true, http_status: sent.status,
       route_id: routeId, to: targetPeerId, dispatch_id: dispatchId, payload_sha512: attemptHash,
     });
     return { ok: true, ...(routeId ? { routeId } : {}) };
@@ -587,8 +541,8 @@ export interface BishopDispatchTransport {
 
 /**
  * Sends a Bishop-session dispatch (a HARDWIRE-24 cross-machine coordination unit, not an MC
- * question) to `peer` over the WAN relay. Reuses encryptForRelay UNCHANGED from
- * dispatchDomainViaRelay above. As of D-BP156-M0-016 this does NOT reuse
+ * question) to `peer` over the WAN relay. Seals with the same v2 relay encryption as
+ * dispatchDomainViaRelay above (was encryptForRelay v1 until D-BP223-X043-007). As of D-BP156-M0-016 this does NOT reuse
  * postToRelayRouteWithFallback (that helper targets the wan-relay-route edge function, which
  * 400s without a hex_frame it never sends -- see postBishopDispatchRelayRoute's doc comment
  * above for the full finding); the encrypted envelope is instead INSERTed directly into
@@ -598,10 +552,13 @@ export interface BishopDispatchTransport {
  * signAnnouncePayload, the SAME primitive peer_server.ts already uses to authenticate the LAN
  * /api/plow-domain path) before encrypting it.
  *
- * HONEST LIMIT, stated because this gates a capability that can launch a CLI worker on the
- * receiving machine: encryptForRelay's key derivation is sha256(targetPeerId + ":thorax-relay-
- * v1") -- confidentiality against the relay operator, but NOT sender authentication by itself,
- * since a peer's id is public (advertised in peer_presence). The Ed25519 signature above is
+ * D-BP223-X043-007-RELAY-X25519 CORRECTION: the sentence that stood here said the v1 key
+ * derivation (sha256(targetPeerId + ":thorax-relay-v1")) gave "confidentiality against the relay
+ * operator". It did not: the peer id is public, so anyone with presence access could derive the
+ * key. Sends now seal with v2 (sealRelayPayloadForPeer: X25519 key agreement with the recipient's
+ * signed, verified relay key; relay_x25519.ts), which IS confidential against the relay operator
+ * and anyone reading relay_routes. v2 still does not replace sender authentication: the Ed25519
+ * signature above is
  * what actually proves origin; the receiver (bishop_dispatch_handler.ts) verifies it against a
  * previously-learned key for the claimed peer id where one exists, falling back to
  * trust-on-first-use exactly as resolvePlowDomainRequest() already does for the LAN path
@@ -616,6 +573,8 @@ export async function dispatchBishopDispatchViaRelay(
   promptText: string,
   workingDir: string,
   selfPeerId: string,
+  /** D-BP223-X043-007: optional, tests only. Production uses sealRelayPayloadForPeer's defaults. */
+  sealDeps?: SealDeps,
 ): Promise<BishopDispatchSendResult> {
   if (!isValidMachineTaggedDispatchId(dispatchId)) {
     return {
@@ -640,14 +599,13 @@ export async function dispatchBishopDispatchViaRelay(
   // than ever trusting an unsigned originPeerId claim for the auto-spawn decision.
   const plaintext = signed ? signed.signedHex : JSON.stringify(payload);
 
-  let payloadEncrypted: string;
-  try {
-    payloadEncrypted = await encryptForRelay(plaintext, peer.id);
-  } catch (err) {
-    return { ok: false, error: `Thorax encrypt failed: ${err instanceof Error ? err.message : String(err)}` };
+  // D-BP223-X043-007: v2 seal, replacing encryptForRelay(plaintext, peer.id) (public-id key).
+  const sealed: SealResult = await sealRelayPayloadForPeer(plaintext, peer.id, { selfPeerId, ...sealDeps });
+  if (!sealed.ok) {
+    return { ok: false, error: `Thorax encrypt failed: ${sealed.error}` };
   }
 
-  return postBishopDispatchRelayRoute(payloadEncrypted, peer.id, dispatchId);
+  return postBishopDispatchRelayRoute(sealed.payloadEncrypted, peer.id, dispatchId, sealed.wire, selfPeerId);
 }
 
 /** The one implementation of BishopDispatchTransport that exists today. A caller that wants to

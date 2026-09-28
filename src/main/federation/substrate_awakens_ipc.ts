@@ -14,6 +14,7 @@ import { detectHardwareTier } from '../hardware/ram_detector';
 // sha256(email) UNSALTED to the relay every 60 s (email_hash, and peer_id was its first 16 hex). It now uses the per-install
 // SALTED beacon hash (salt local, never sent) and obeys the one "Share presence with my other machines" switch.
 import { beaconEmailHashOrNull } from '../identity/beacon_email_hash';
+import { ownerProofHeaders } from './relay_rpc';
 
 const RELAY_BASE_PRIMARY = process.env.SUBSTRATE_AWAKENS_RELAY ?? 'https://relay.lianabanyan.com/functions/v1';
 const RELAY_BASE_FALLBACK = 'https://ruuxzilgmuwddcofqecc.supabase.co/functions/v1';
@@ -65,14 +66,14 @@ function isRetryableStatus(status: number): boolean {
   return status === 502 || status === 503 || status === 504;
 }
 
-async function relayPost(path: string, body: unknown): Promise<Response> {
+async function relayPost(path: string, body: unknown, extraHeaders: Record<string, string> = {}): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RELAY_TIMEOUT_MS);
 
   try {
     const primary = await fetch(`${RELAY_BASE_PRIMARY}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...extraHeaders },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -89,7 +90,7 @@ async function relayPost(path: string, body: unknown): Promise<Response> {
   try {
     return await fetch(`${RELAY_BASE_FALLBACK}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...extraHeaders },
       body: JSON.stringify(body),
       signal: controller2.signal,
     });
@@ -123,13 +124,13 @@ function stopHeartbeat(): void {
   }
 }
 
-function startHeartbeat(peanutRoll: () => object, isPresenceSharingOn: () => boolean): void {
+function startHeartbeat(peanutRoll: () => object, isPresenceSharingOn: () => boolean, ownerProof: Record<string, string> = {}): void {
   stopHeartbeat();
   heartbeatTimer = setInterval(async () => {
     // X030-098: the switch is read on every tick; turned off = the heartbeat stops and nothing more is sent.
     if (!isPresenceSharingOn()) { stopHeartbeat(); return; }
     try {
-      await relayPost('/wan-relay-publish', peanutRoll());
+      await relayPost('/wan-relay-publish', peanutRoll(), ownerProof);
     } catch {
       // Heartbeat failures are silent — next tick will retry
     }
@@ -196,7 +197,11 @@ export function registerSubstrateAwakensIPC(deps: SubstrateAwakensDeps = {}): ()
           },
         });
 
-        const res = await relayPost('/wan-relay-publish', peanutRoll());
+        // D-BP223-X043-010-RB: wan-relay-publish writes peer_presence only with the owner proof for
+        // this peer id (x-lb-owner-secret header, never the body, which the function stores).
+        const ownerProof = ownerProofHeaders(peerId);
+        if (!ownerProof) return { success: false, error: 'Handshake not sent: the presence owner secret is unavailable (Windows encrypted storage).' };
+        const res = await relayPost('/wan-relay-publish', peanutRoll(), ownerProof);
 
         if (!res.ok && !isRetryableStatus(res.status)) {
           const text = await res.text().catch(() => `HTTP ${res.status}`);
@@ -212,7 +217,7 @@ export function registerSubstrateAwakensIPC(deps: SubstrateAwakensDeps = {}): ()
           joinedAt: new Date().toISOString(),
         };
         writeState(state);
-        startHeartbeat(peanutRoll, isPresenceSharingOn);
+        startHeartbeat(peanutRoll, isPresenceSharingOn, ownerProof);
 
         return { success: true, peerId, displayName };
       } catch (err) {

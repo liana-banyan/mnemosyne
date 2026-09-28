@@ -24,6 +24,9 @@ const mockApp = vi.hoisted(() => ({
 }));
 
 vi.mock('electron', () => ({ app: mockApp }));
+// D-BP223-X043-010-RB: the reply path now reads/writes through the Phase A RPCs; the sender's peer id
+// comes from getStablePeerId() when not passed, pinned here so no real identity is touched.
+vi.mock('./peer-discovery', () => ({ getStablePeerId: () => 'p'.repeat(16) }));
 
 import {
   writeBishopDispatchReply,
@@ -33,6 +36,11 @@ import {
   type FetchLike,
 } from './bishop_dispatch_reply';
 import type { BishopDispatchResult } from './peer_server';
+import { installTestOwnerSecret, wrapLegacyFetch } from './relay_rpc_legacy_test_shim';
+
+installTestOwnerSecret();
+/** Replays each Phase A RPC to the suite's legacy-shaped fake (see relay_rpc_legacy_test_shim.ts). */
+const shim = (f: FetchLike): FetchLike => wrapLegacyFetch(f as unknown as Parameters<typeof wrapLegacyFetch>[0]) as unknown as FetchLike;
 
 const SUPABASE_URL = 'https://example.supabase.co';
 const ANON_KEY = 'anon-key-test';
@@ -84,7 +92,7 @@ describe('writeBishopDispatchReply', () => {
     const { fetchImpl, calls } = makeFetchMock(201);
     const result: BishopDispatchResult = { ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' };
 
-    const ok = await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 4321);
+    const ok = await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl) }, ROUTE_ID, PEER_ID, result, 4321);
 
     expect(ok).toBe(true);
     expect(calls).toHaveLength(1);
@@ -115,7 +123,7 @@ describe('writeBishopDispatchReply', () => {
     const { fetchImpl, calls } = makeFetchMock(201);
     const result: BishopDispatchResult = { ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' };
 
-    await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 1);
+    await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl) }, ROUTE_ID, PEER_ID, result, 1);
 
     const body = JSON.parse(calls[0]?.init.body as string);
     expect(body.answer_json.responderVersion).toBe('0.9.23');
@@ -127,7 +135,7 @@ describe('writeBishopDispatchReply', () => {
     const { fetchImpl, calls } = makeFetchMock(201);
     const result: BishopDispatchResult = { ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' };
 
-    await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 1);
+    await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl) }, ROUTE_ID, PEER_ID, result, 1);
 
     const body = JSON.parse(calls[0]?.init.body as string);
     expect('responderVersion' in body.answer_json).toBe(false);
@@ -138,7 +146,7 @@ describe('writeBishopDispatchReply', () => {
     const { fetchImpl, calls } = makeFetchMock(201);
     const result: BishopDispatchResult = { ok: true, lifecycle: 'refused', issues: [], spawned: false, reason: 'file-write-only', noticePath: 'C:\\notices\\n1.json' };
 
-    await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 10);
+    await writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl) }, ROUTE_ID, PEER_ID, result, 10);
 
     const body = JSON.parse(calls[0]?.init.body as string);
     expect(body.answer_json.noticePath).toBe('C:\\notices\\n1.json');
@@ -149,7 +157,7 @@ describe('writeBishopDispatchReply', () => {
     const result: BishopDispatchResult = { ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' };
 
     await expect(
-      writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 10),
+      writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl) }, ROUTE_ID, PEER_ID, result, 10),
     ).resolves.toBe(false);
   });
 
@@ -158,7 +166,7 @@ describe('writeBishopDispatchReply', () => {
     const result: BishopDispatchResult = { ok: true, lifecycle: 'begun', issues: [], spawned: true, reason: 'spawned' };
 
     await expect(
-      writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl }, ROUTE_ID, PEER_ID, result, 10),
+      writeBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl) }, ROUTE_ID, PEER_ID, result, 10),
     ).resolves.toBe(false);
   });
 });
@@ -179,7 +187,7 @@ describe('writeBishopDispatchCompletionReply', () => {
     const { fetchImpl, calls } = makeFetchMock(201);
 
     await writeBishopDispatchCompletionReply(
-      { supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl },
+      { supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl) },
       ROUTE_ID,
       PEER_ID,
       { effectiveId: 'D-BP157-030-W1', lifecycle: 'completed', issues: [], workerLogPointer: 'C:\\log.txt', tailExcerpt: 'done' },
@@ -202,7 +210,7 @@ describe('pollForBishopDispatchReply', () => {
       return new Response(JSON.stringify([{ answer_json: { kind: 'bishop_dispatch_reply', ok: true, spawned: true, reason: 'spawned' }, processing_ms: 999 }]), { status: 200 });
     }) as unknown as FetchLike;
 
-    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, sleepImpl: instantSleep }, ROUTE_ID, 5000);
+    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl), sleepImpl: instantSleep }, ROUTE_ID, 5000);
 
     expect(result).not.toBeNull();
     expect(result?.answer.ok).toBe(true);
@@ -220,7 +228,7 @@ describe('pollForBishopDispatchReply', () => {
     // real timeoutMs with an instant sleep so the while-loop's Date.now() deadline is what ends
     // the test, not real wall-clock waiting.
     const result = await pollForBishopDispatchReply(
-      { supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, sleepImpl: instantSleep, pollIntervalMs: 1 },
+      { supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl), sleepImpl: instantSleep, pollIntervalMs: 1 },
       ROUTE_ID,
       20,
     );
@@ -233,7 +241,7 @@ describe('pollForBishopDispatchReply', () => {
     const fetchImpl = (async () => new Response(JSON.stringify([]), { status: 200 })) as unknown as FetchLike;
 
     const result = await pollForBishopDispatchReply(
-      { supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, sleepImpl: instantSleep, pollIntervalMs: 1 },
+      { supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl), sleepImpl: instantSleep, pollIntervalMs: 1 },
       ROUTE_ID,
       20,
     );
@@ -250,7 +258,7 @@ describe('pollForBishopDispatchReply', () => {
     }) as unknown as FetchLike;
 
     const result = await pollForBishopDispatchReply(
-      { supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, sleepImpl: instantSleep, pollIntervalMs: 1 },
+      { supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl), sleepImpl: instantSleep, pollIntervalMs: 1 },
       ROUTE_ID,
       1000,
     );
@@ -269,7 +277,7 @@ describe('pollForBishopDispatchReply', () => {
       processing_ms: 5,
     }]), { status: 200 })) as unknown as FetchLike;
 
-    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, sleepImpl: instantSleep }, ROUTE_ID, 5000);
+    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl), sleepImpl: instantSleep }, ROUTE_ID, 5000);
 
     expect(result).not.toBeNull();
     // Observation only -- ok/lifecycle/spawned untouched, the peer still did its work.
@@ -288,7 +296,7 @@ describe('pollForBishopDispatchReply', () => {
       processing_ms: 5,
     }]), { status: 200 })) as unknown as FetchLike;
 
-    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, sleepImpl: instantSleep }, ROUTE_ID, 5000);
+    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl), sleepImpl: instantSleep }, ROUTE_ID, 5000);
 
     expect(result?.answer.issues.some((i) => i.code === 'VERSION_SKEW')).toBe(false);
   });
@@ -300,7 +308,7 @@ describe('pollForBishopDispatchReply', () => {
       processing_ms: 5,
     }]), { status: 200 })) as unknown as FetchLike;
 
-    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl, sleepImpl: instantSleep }, ROUTE_ID, 5000);
+    const result = await pollForBishopDispatchReply({ supabaseUrl: SUPABASE_URL, anonKey: ANON_KEY, fetchImpl: shim(fetchImpl), sleepImpl: instantSleep }, ROUTE_ID, 5000);
 
     expect(result?.answer.issues.some((i) => i.code === 'VERSION_SKEW')).toBe(false);
   });

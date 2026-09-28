@@ -114,6 +114,20 @@ export interface AskEngineState {
   /** KN-BP144-8 Phase 1, ADDITIVE: true while the substrate-first check is running, before
    *  the engine has decided whether to short-circuit or fall through to the specialist swarm. */
   substrateChecking?: boolean;
+  /** D-BP223-X043-002-A (0.9.40), ADDITIVE. Founder ruling: a near match becomes a SUGGESTION,
+   *  never the served answer. Present only when ai-dispatch:query found a stored question that
+   *  was similar but NOT identical; this turn's own answer came from the normal answer path.
+   *  Read off the query result's `nearMatchSuggestion` field by LeanAskTab.tsx. */
+  nearMatchSuggestion?: AskNearMatchSuggestion;
+}
+
+export interface AskNearMatchSuggestion {
+  question: string;
+  answer: string;
+  similarity: number;
+  ebletId?: string;
+  provenance?: string;
+  verified?: boolean;
 }
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────────────────
@@ -401,6 +415,60 @@ export function AskEngineView({ messageId, liveText, engine, onOpenExternal }: A
           {badges.map((b) => (
             <Pill key={b.stageId} stageId={b.stageId} color={b.color}>{b.node}</Pill>
           ))}
+        </div>
+      )}
+
+      {engine?.nearMatchSuggestion && <NearMatchSuggestionBox suggestion={engine.nearMatchSuggestion} />}
+    </div>
+  );
+}
+
+/** D-BP223-X043-002-A: "A similar question was answered before: open it?" The stored answer is
+ *  hidden until the user opens it, and is labeled as the answer to THAT question, never this one. */
+function NearMatchSuggestionBox({ suggestion }: { suggestion: AskNearMatchSuggestion }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      data-stage-id="completion:near-match-suggestion"
+      style={{
+        marginTop: 6,
+        padding: '6px 10px',
+        borderRadius: 6,
+        background: 'rgba(56,189,248,0.06)',
+        border: '1px solid rgba(56,189,248,0.35)',
+        color: '#bae6fd',
+        fontSize: 11,
+      }}
+    >
+      <div>
+        A similar question was answered before: <em>{suggestion.question}</em>{' '}
+        <span style={{ color: '#64748b' }}>({formatConfidence(suggestion.similarity)} similar)</span>{' '}
+        <button
+          type="button"
+          data-stage-id="completion:near-match-suggestion:toggle"
+          onClick={() => setOpen((v) => !v)}
+          style={{
+            background: 'none',
+            border: '1px solid rgba(56,189,248,0.5)',
+            borderRadius: 4,
+            color: '#7dd3fc',
+            fontSize: 10,
+            padding: '1px 6px',
+            cursor: 'pointer',
+            fontFamily: 'system-ui, sans-serif',
+          }}
+        >
+          {open ? 'Close it' : 'Open it?'}
+        </button>
+      </div>
+      {open && (
+        <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' as const, color: '#cbd5e1' }}>
+          <div style={{ color: '#64748b', fontSize: 10, marginBottom: 2 }}>
+            Stored answer to that question (not an answer to yours)
+            {suggestion.provenance ? <>. Provenance: {suggestion.provenance}</> : null}
+            {suggestion.ebletId ? <>. Card: {suggestion.ebletId.slice(0, 12)}</> : null}
+          </div>
+          {suggestion.answer}
         </div>
       )}
     </div>
